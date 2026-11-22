@@ -143,6 +143,24 @@ pub mod kill_credit {
     pub const RETURN_TO_DAMAGE_REPORT: u32 = 0x000d_9acf;
 }
 
+/// The game's announcer queue (docs/audio/audio.md, "The announcer
+/// queue"): up to five 12-byte lines from `QUEUE`,
+/// each a sound tag (`+0`), the playing sound (`+4`), a playing byte
+/// (`+8`) and an i16 delay in ticks (`+0xa`); the head is the line playing
+/// or next. `0x0023_ef80` queues a game event's sound through
+/// `0x0023_f140`, which drops a line when five wait.
+pub mod announcer_queue {
+    /// The head line; the others follow it, 12 bytes apart.
+    pub const QUEUE: u32 = 0x0050_2350;
+    /// The head's playing byte: set when its sound starts, cleared by the
+    /// sound's end callback (`0x0023_f120`).
+    pub const HEAD_PLAYING: u32 = 0x0050_2358;
+    /// The head's delay, i16 ticks: counted down to -1, which plays it.
+    pub const HEAD_DELAY: u32 = 0x0050_235a;
+    /// The lines queued, the head included (i32).
+    pub const COUNT: u32 = 0x0050_23ec;
+}
+
 /// Return addresses for the retail lobby leave and party leader queries.
 pub mod party_leave {
     pub const LOBBY_BACK_COUNT: u32 = 0x0025_11c5;
@@ -1494,6 +1512,11 @@ points! { ALL;
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// The announcer queue's update: counts the head line's delay down,
+    /// plays it when the delay runs out, and takes the next line once the
+    /// one playing has finished (`announcer_queue`). Skipping it holds
+    /// every queued line where it is.
+    ANNOUNCER_QUEUE_UPDATE @ 0x0023_f000: [fn() ret 0]; "docs/audio/audio.md";
     /// The sound listeners' update (stdcall, one argument, `ret 4`): for
     /// each local user mapped (`[0x4e8c20] + 0xc`) it sets the user's
     /// listener from its camera and marks it active (the byte at

@@ -1571,8 +1571,13 @@ a normal one; and **Bounced**, for a fall out of the map during a
 bounce. They are awarded to every player in the game, bots included,
 while the mode is on. The player sees a medal as Halo 2 shows its own, a
 line of the notification list with a medal glyph ([hud-kit.md](hud-kit.md),
-"The medals"); the film and Live count them. No announcer: the medals
-are silent.
+"The medals"); the film and Live count them. The announcer speaks each
+line the HUD shows, as Halo 2's speaks a multi-kill: a chain of three
+says "Superbounce", "Double bounce", "Triple bounce", one after another,
+and a Monster says "Monster bounce". Bounced is silent. The lines are
+AI-generated placeholders (`art/announcer`); how they queue with the
+game's own announcer is in [audio.md](../audio/audio.md#our-medals-announcer-lines),
+and `H2_FEATURES=-medal-announcer` turns them off.
 
 Code: the game's `crates/extensions/game/src/superbounce_chain.rs` (the chain, the
 table, the reads), stepped from `superbounce_mode`'s tick; tests in

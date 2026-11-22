@@ -660,7 +660,10 @@ mod tests {
             remainder: 0,
             inputs: Default::default(),
         };
-        let entry = |slot, owner| LayerItem { slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None };
+        let entry = |slot, owner| LayerItem {
+            slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None,
+            flags: crate::PartFlags::NONE, subparts: None, refusal: None,
+        };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
         b.open_view(key(0), camera()).unwrap();

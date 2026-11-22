@@ -373,6 +373,9 @@ pub fn plan_without_game(
             model: u32::MAX,
             rows: 0..0,
             lighting: None,
+            flags: frame_scene::PartFlags::NONE,
+            subparts: None,
+            refusal: None,
         };
         let fogged = data
             .words

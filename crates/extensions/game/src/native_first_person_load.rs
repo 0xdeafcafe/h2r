@@ -354,7 +354,7 @@ fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Er
         input,
         taken,
         refused,
-        implementations: _,
+        ..
     } = lit_parts(opened, &loaded, &materials);
     if !refused.is_empty() {
         let reasons = refused

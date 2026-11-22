@@ -1,7 +1,8 @@
-//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20 drawn
-//! from the scene's plan instead of the guest's draws under the layer
-//! call (docs/graphics/framescene.md, slice 4). On with the native
-//! renderer; `frame-scene.layers=off` leaves every layer to the D3D path.
+//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20, and
+//! the first person's layers 1, 7 and 8, drawn from the scene's plan
+//! instead of the guest's draws under the layer call
+//! (docs/graphics/framescene.md, slice 4). On with the native renderer;
+//! `frame-scene.layers=off` leaves every layer to the D3D path.
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), as
 //! `native_fog`'s:
@@ -9,10 +10,12 @@
 //! - first it sets back the bits it cleared at the last layer it took,
 //!   each only if the item still holds the mask it left;
 //! - then, when the current layer is one of [`LAYERS`] and the caller is
-//!   the scene's (`native_render::world_layers::layer_site`), it asks the
-//!   [`Host`] (boot's glue: the plan, the GPU layer sets and the D3D
-//!   device) for the native pass; the host clears the layer's bit on the
-//!   items it draws, from the list's first, and the guest draws the rest.
+//!   the scene's, or one of [`FIRST_PERSON_LAYERS`] and the caller the
+//!   first person's `0x0003fdf0` (`native_render::world_layers::layer_site`),
+//!   it asks the [`Host`] (boot's glue: the plan, the GPU layer sets, the
+//!   object models and the D3D device) for the native pass; the host
+//!   clears the layer's bit on the items it draws, from the list's first,
+//!   and the guest draws the rest.
 //!
 //! What the host refuses keeps its D3D draws (and so the admission of
 //! `native_world_layers`). The plan's outcomes are counted by cause for
@@ -36,6 +39,29 @@ pub const ID: &str = "frame-scene.layers";
 /// The layers taken.
 pub const LAYERS: [u32; 5] = [1, 5, 7, 8, 20];
 
+/// The first person's layers taken: `0x0003fdf0`'s calls besides layer
+/// 3, which `native_first_person` owns.
+pub const FIRST_PERSON_LAYERS: [u32; 3] = [1, 7, 8];
+
+/// Which caller's layer draw is about to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerCaller {
+    /// The scene's (`0x0002bcd0`): structure and object items.
+    Scene,
+    /// The first person's (`0x0003fdf0`): its arms' and weapon's items.
+    FirstPerson,
+}
+
+/// The caller of `layer` this stage takes, from the layer draw's return
+/// address; `None` for every other.
+pub fn caller(layer: u32, ret: u32) -> Option<LayerCaller> {
+    match layer_site(layer, ret) {
+        Site::Scene if LAYERS.contains(&layer) => Some(LayerCaller::Scene),
+        Site::FirstPerson if FIRST_PERSON_LAYERS.contains(&layer) => Some(LayerCaller::FirstPerson),
+        _ => None,
+    }
+}
+
 /// Whether the stage is placed: with the native renderer on, unless
 /// `frame-scene.layers=off`.
 pub fn on(switches: &hooks::Switches) -> bool {
@@ -45,13 +71,14 @@ pub fn on(switches: &hooks::Switches) -> bool {
 /// What draws the layers: boot's glue over the plan, the GPU world and
 /// the device.
 pub trait Host: Send + Sync {
-    /// Before `layer` of a scene view (`mem` the guest; `scene` one view
-    /// holding the layer's one pass, extracted here, [`extract`]): plans
-    /// the layer's items, clears the bit of those it draws over a preview,
-    /// reserves the native replacement, applies the masks and commits.
-    /// Returns what was cleared for the restore at the next layer draw, or
-    /// `None` to leave the layer to the D3D path.
-    fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, scene: &FrameScene) -> Option<Cleared>;
+    /// Before `layer` of a scene view or of the first person (`caller`;
+    /// `mem` the guest; `scene` one view holding the layer's one pass,
+    /// extracted here, [`extract`]): plans the layer's items, clears the
+    /// bit of those it draws over a preview, reserves the native
+    /// replacement, applies the masks and commits. Returns what was
+    /// cleared for the restore at the next layer draw, or `None` to leave
+    /// the layer to the D3D path.
+    fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene) -> Option<Cleared>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -84,6 +111,21 @@ pub fn count(layer: u32, outcome: &str, n: u64) {
     *o.entry(format!("layer_plan_{layer}_{outcome}")).or_default() += n;
 }
 
+/// [`count`] for `caller`'s layer: the first person's outcomes under
+/// `layer_plan_fp<layer>_<outcome>`.
+pub fn count_for(caller: LayerCaller, layer: u32, outcome: &str, n: u64) {
+    match caller {
+        LayerCaller::Scene => count(layer, outcome, n),
+        LayerCaller::FirstPerson => {
+            if n == 0 {
+                return;
+            }
+            let mut o = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());
+            *o.entry(format!("layer_plan_fp{layer}_{outcome}")).or_default() += n;
+        }
+    }
+}
+
 /// The counters `render.scene` reports: layer calls asked, layer calls
 /// drawn natively, items skipped, and the plan's outcomes by layer and
 /// cause.
@@ -102,12 +144,16 @@ pub fn counters() -> Vec<(String, u64)> {
 /// (`scene_extract::extract::layer`, each object item with its owner's
 /// lighting). Independent of the frame step's scene, whose observer at
 /// the same point may run before or after this one.
-pub fn extract(mem: &dyn GuestMemory, layer: u8) -> Option<Arc<FrameScene>> {
+pub fn extract(mem: &dyn GuestMemory, layer: u8, caller: LayerCaller) -> Option<Arc<FrameScene>> {
     let ro = Ro(mem);
     let camera = scene_extract::extract::camera(&ro)?;
     let mut b = SceneBuilder::default();
     b.begin(SceneId::default());
-    b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera).ok()?;
+    let kind = match caller {
+        LayerCaller::Scene => ViewKind::Game,
+        LayerCaller::FirstPerson => ViewKind::FirstPerson,
+    };
+    b.open_view(ViewKey { kind, player: 0, view: 0 }, camera).ok()?;
     scene_extract::extract::layer(&ro, layer, true, &mut b).ok()??;
     b.seal(Stamp::default())
 }
@@ -139,18 +185,16 @@ impl GuestWrite for Mem<'_> {
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let Some(layer) = Mem(mem).read_u32(skip::CURRENT_LAYER) else { return };
-    if !LAYERS.contains(&layer) || layer_site(layer, ret) != Site::Scene {
-        return;
-    }
+    let Some(caller) = caller(layer, ret) else { return };
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
     ASKED.fetch_add(1, Ordering::Relaxed);
-    let Some(scene) = extract(&*mem, layer as u8) else {
-        count(layer, "refused_unread", 1);
+    let Some(scene) = extract(&*mem, layer as u8, caller) else {
+        count_for(caller, layer, "refused_unread", 1);
         return;
     };
-    let Some(cleared) = host.ask(mem, layer, &scene) else { return };
+    let Some(cleared) = host.ask(mem, layer, caller, &scene) else { return };
     if cleared.items.is_empty() {
         return;
     }
@@ -184,7 +228,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20 and the first person's 1, 7 and 8 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -231,5 +275,20 @@ mod tests {
         assert!(c["layer_plan_5_taken"] >= 3);
         assert!(c["layer_plan_5_refused_object"] >= 2);
         assert!(!c.contains_key("layer_plan_7_taken"), "nothing counted, no row");
+        count_for(LayerCaller::FirstPerson, 8, "taken", 2);
+        let c: BTreeMap<String, u64> = counters().into_iter().collect();
+        assert!(c["layer_plan_fp8_taken"] >= 2, "the first person's apart");
+    }
+
+    #[test]
+    fn the_stage_takes_the_scenes_layers_and_the_first_persons_besides_layer_3() {
+        assert_eq!(caller(5, 0x0002_bf39), Some(LayerCaller::Scene));
+        assert_eq!(caller(20, 0x0002_c010), Some(LayerCaller::Scene));
+        assert_eq!(caller(1, 0x0004_00ab), Some(LayerCaller::FirstPerson));
+        assert_eq!(caller(8, 0x0004_01a7), Some(LayerCaller::FirstPerson));
+        assert_eq!(caller(7, 0x0004_0271), Some(LayerCaller::FirstPerson));
+        assert_eq!(caller(3, 0x0004_0136), None, "native_first_person's");
+        assert_eq!(caller(3, 0x0002_bed5), None, "native_objects' and the world's");
+        assert_eq!(caller(1, 0x0002_bd5c), None, "an alternate view's");
     }
 }

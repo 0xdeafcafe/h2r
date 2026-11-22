@@ -987,6 +987,12 @@ no other line (a bounce's landing has none of its own); a Bounced shows
 its own line. Each award is sent once, by its number
 (`superbounce_chain::Award::seq`; `superbounce_hud::Sent`).
 
+**The sound.** As a retail medal's line comes with its announcer sound
+("Game events and medals"), each medal line sent is handed to
+`medal_announcer::announce`, which queues the medal's clip behind the
+game's own announcer: every medal but Bounced has one
+([audio.md](../audio/audio.md#our-medals-announcer-lines)).
+
 | Medal | Earned | Line | Glyph |
 |---|---|---|---|
 | Superbounce | every bounce; its line on 1 and 7 and up | `Superbounce!` | U+E2A0, a slate-blue disc, one chevron rising off a strip |
