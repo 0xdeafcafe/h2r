@@ -39,7 +39,7 @@ const fn def(
     }
 }
 
-const STATE: &str = r#"{"title":"string","path":"string|null","dirty":"boolean","text?":"string","problems":"[{line,col,severity,message,code}]","check":"{ok,hash,name,version,errors:[{line,col,message}],report:{worst_tick_ops,budget,fits,costliest,handlers,slots,ir_bytes,ir_limit,capabilities,unhostable}|null}","mode":"auto|in_place|restart","reload_on_save":"boolean","reload":"{state:idle|sending|done|refused,mode?:in_place|restarted,hash?,tick?,reasons?,why?}"}"#;
+const STATE: &str = r#"{"title":"string","path":"string|null","dirty":"boolean","text?":"string","problems":"[{line,col,severity,message,code}]","check":"{ok,hash,name,version,errors:[{line,col,message}],report:{worst_tick_ops,budget,fits,costliest,handlers,slots,ir_bytes,ir_limit,capabilities,unhostable,settings:[{name,label,kind,value,text}],quick:[{kind,name,label,value}]}|null}","mode":"auto|in_place|restart","reload_on_save":"boolean","reload":"{state:idle|sending|done|refused,mode?:in_place|restarted,hash?,tick?,reasons?,why?}"}"#;
 
 const METHODS: &[MethodDef] = &[
     def(
@@ -228,6 +228,13 @@ pub fn state(r: &mut RulesEditor, with_text: bool) -> Value {
                     "grantable": c.grantable, "known": c.known,
                 })).collect::<Vec<_>>(),
                 "unhostable": rep.unhostable,
+                "settings": rep.settings.iter().map(|s| json!({
+                    "name": s.name, "label": s.label, "kind": s.kind,
+                    "value": s.value, "text": s.text,
+                })).collect::<Vec<_>>(),
+                "quick": rep.quick.iter().map(|q| json!({
+                    "kind": q.kind, "name": q.name, "label": q.label, "value": q.value,
+                })).collect::<Vec<_>>(),
             })),
         })
     });
@@ -290,6 +297,14 @@ mod tests {
         assert_eq!(v["reload"]["state"], "idle");
         assert!(v["text"].as_str().unwrap().contains("carrier slayer"));
         assert!(v["starters"].as_array().unwrap().iter().any(|s| s == "Slayer (built in)"));
+
+        // The report lists the script's settings and its Quick Options marks.
+        r.open_starter("SWAT").unwrap();
+        let v = state(&mut r, false);
+        let report = &v["check"]["report"];
+        assert!(!report["settings"].as_array().unwrap().is_empty(), "{v}");
+        assert_eq!(report["quick"].as_array().unwrap().len(), 5, "{v}");
+        assert_eq!(report["quick"][0]["kind"], "setting");
 
         r.text.push_str("\non kill( {\n");
         let v = state(&mut r, false);

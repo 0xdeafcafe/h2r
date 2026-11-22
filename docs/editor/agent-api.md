@@ -95,7 +95,7 @@ What goes through actions, from both sides:
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
 | Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
-| Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
+| Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress`, `UiBrowse` | the UI Screens tool | `ui.pick`, `ui.press`, `ui.select_folder` |
 | UI screen edits | `UiEdit(EditAction)`, `UndoIn(UiScreens)`, `RedoIn(UiScreens)` | the UI Screens tool's canvas drags, handles, nudges, inline text, Selected section and Save | `ui.select`, `ui.move`, `ui.set_rect`, `ui.set_text`, `ui.hide`, `ui.duplicate`, `ui.set_string`, `ui.revert`, `ui.undo`, `ui.redo`, `ui.save` |
@@ -251,14 +251,14 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
-| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
+| `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
-| `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
+| `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)) |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
@@ -293,13 +293,27 @@ Notes on some:
   documentation listing, read from that path now and not stored
   (`null` drops it); its `doc` says how many entries read, agreed with
   the map's names, disagreed and named.
+- **Variants of a script.** `doc.open {variant: {script: <starter>}}` (a
+  `rules.get` starter's name, or `open` for the script in the script
+  window) opens a new, unsaved variant of it: the record
+  `variants::portable::record_for` builds. `variant.get`'s `script` is
+  `null` for a record naming none, `{prefix, found: false}` when the
+  editor lacks the script, else `{name, about, scoring_carrier, options,
+  quick}`: each option has `index`, `name`, `label`, `description`,
+  `kind` (`bool`, `int`, `enum`), `value`, `text`, `default` and `quick`,
+  and each `quick` row `label`, `option` and `text`. `variant.set
+  {option, value}` sets one option by its name in the script (a bool as
+  0 or 1, an enum's value as its position from the option's low end); a
+  run of edits to one option is one `doc.undo` step. An unknown option
+  or a value out of range is `INVALID_PARAMS`, a built-in `REFUSED`.
 - **Game type scripts.** `rules.*` drive the one script the Game type
   script window shows (`app/rules_edit.rs`). Each answers its state:
   `title`, `path`, `dirty`, `problems` (each `line`, `col` from 1,
   `severity`, `message`, `code`; errors first), `check` (the
   [workbench](../game/rules-engine.md#workbench) report: `ok`, `hash`,
   `errors`, and `report` with the worst tick against the budget, the
-  handlers, slots, IR size and capabilities), `mode`, `reload_on_save`,
+  handlers, slots, IR size, capabilities, and the `settings` the
+  script's block names and the `quick` rows it marks), `mode`, `reload_on_save`,
   `reload` and the `starters` `rules.open {starter}` takes (a built-in's
   or example's name, any case). `rules.get {text: true}` adds the text.
   `rules.open` is `UNSAVED` over unsaved edits without `discard`, and

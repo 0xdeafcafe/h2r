@@ -202,7 +202,7 @@ pub const METHODS: &[MethodDef] = &[
     def(
         m::DOC_OPEN,
         "Open a document: a map of the source (or a .map path), a package, a variant (built-in, saved or new) or a playlist file (a path, default or blank). Refused over unsaved edits unless discard",
-        r#"{"map?":"string","path?":"string","package?":"string","variant?":{"builtin?":"integer","saved?":"integer","new?":"string (slayer, ctf, ...)"},"playlists?":"string (a path, default or blank)","discard?":"boolean"}"#,
+        r#"{"map?":"string","path?":"string","package?":"string","variant?":{"builtin?":"integer","saved?":"integer","new?":"string (slayer, ctf, ...)","script?":"string (a starter's name from rules.get, or open)"},"playlists?":"string (a path, default or blank)","discard?":"boolean"}"#,
         r#"{"doc":"string","name":"string|null","log":"[string]"}"#,
         r#"{"map":"example"}"#,
     ),
@@ -432,16 +432,16 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VARIANT_GET,
-        "The open variant: name, type, origin, every setting with its value and label, and its issues",
+        "The open variant: name, type, origin, every setting with its value and label, its issues, and the script it names (when the editor has it)",
         "{}",
-        r#"{"name":"string","type":"string","origin":"string","read_only":"boolean","dirty":"boolean","settings":"[{id,title,value,label}]","issues":"[string]"}"#,
+        r#"{"name":"string","type":"string","origin":"string","read_only":"boolean","dirty":"boolean","settings":"[{id,title,value,label}]","issues":"[string]","script":"{name,about,scoring_carrier,options:[{index,name,label,description,kind,value,text,default,quick}],quick:[{label,option,text}]}|{prefix,found:false}|null"}"#,
         "null",
     ),
     def(
         m::VARIANT_SET,
-        "Set a setting of the open variant (built-ins are read-only: copy first)",
-        r#"{"setting":"integer","value":"integer"}"#,
-        r#"{"setting":"integer","value":"integer","label":"string"}"#,
+        "Set a setting of the open variant, or one option of its script by name (built-ins are read-only: copy first)",
+        r#"{"setting?":"integer","option?":"string","value":"integer"}"#,
+        r#"{"setting?":"integer","option?":"string","value":"integer","label":"string"}"#,
         r#"{"setting":"$SETTING","value":"$VALUE"}"#,
     ),
     def(
