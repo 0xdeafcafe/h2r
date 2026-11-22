@@ -459,7 +459,6 @@ impl GpuModels {
 
     /// Records the pass for the last [`prepare`](Self::prepare): loads and
     /// keeps the target and depth, one indexed draw per (object, part).
-    #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
         device: &wgpu::Device,

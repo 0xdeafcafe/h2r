@@ -471,7 +471,6 @@ impl Tracker {
         records
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn unit(
         &mut self,
         tick: u64,

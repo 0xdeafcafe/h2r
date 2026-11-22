@@ -17,7 +17,7 @@ backtrace = "0.3"
 wgpu = { version = "30", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Metal's driver allocation total, read through wgpu's HAL device.
@@ -25,3 +25,6 @@ objc2-metal = { version = "0.3.2", optional = true, default-features = false, fe
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
+[lints]
+workspace = true

@@ -790,7 +790,6 @@ impl NativeWorld {
     }
 
     /// Records `layers`' draws that this world uploaded, in that order.
-    #[allow(clippy::too_many_arguments)]
     fn encode_layers(
         &mut self,
         layers: &[u8],
@@ -830,7 +829,6 @@ impl NativeWorld {
     /// ([`LAYERS_BEFORE`], [`LAYERS_AFTER`]) where they were uploaded,
     /// with the camera's view constants (`ViewInputs::from_camera`).
     /// Returns what the frustum kept.
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -1251,7 +1249,6 @@ impl NativeObjects {
     /// Clear what `clear` names, then draw the placements over what
     /// `color` and `depth` hold, seen by `camera`, with the world pass's
     /// depth rule. Returns how many (object, part) draws were made.
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,

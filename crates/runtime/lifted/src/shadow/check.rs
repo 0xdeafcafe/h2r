@@ -334,7 +334,6 @@ fn byte_runs(
 
 /// Compare at one pass of the original through the port's transfer
 /// point: `None` when everything matches.
-#[allow(clippy::too_many_arguments)]
 fn compare(
     live: &Guest,
     t: &TransferAbi,

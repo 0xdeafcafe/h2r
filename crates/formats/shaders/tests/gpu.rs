@@ -342,7 +342,6 @@ fn random_vertex_programs_match_interpreter() {
         for (vi, (inp, g)) in inputs.iter().zip(&got).enumerate() {
             let cpu = interp::run(&p, inp, &mut u.constants.clone());
             // `r` and `k` index the GPU and CPU outputs in step.
-            #[allow(clippy::needless_range_loop)]
             for r in 0..11 {
                 for k in 0..4 {
                     let (a, b) = (g[r][k], cpu.regs[r][k]);

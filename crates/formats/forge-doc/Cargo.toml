@@ -15,3 +15,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 scenario-edit = { path = "../../tools/scenario-edit" }
+
+[lints]
+workspace = true

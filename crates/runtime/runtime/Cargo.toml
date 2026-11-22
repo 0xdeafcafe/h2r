@@ -15,10 +15,10 @@ xbe.workspace = true
 x87.workspace = true
 # Interrupt and HLE-call events (docs/perf/profiling.md); dependency-free.
 timeline = { path = "../timeline" }
-rustc-hash = "2"
+rustc-hash = { workspace = true }
 # mmap of guest RAM and its copy-on-write bases (src/cow.rs); as the
 # other crates pin it.
-libc = "0.2"
+libc = { workspace = true }
 # The flat RAM window's fault region (src/window.rs).
 hostfault = { path = "../../recompiler/hostfault" }
 
@@ -28,3 +28,6 @@ windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_System_Me
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }
 runtime-test-probe = { path = "test-probe" }
+
+[lints]
+workspace = true

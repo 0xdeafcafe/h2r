@@ -1004,7 +1004,6 @@ impl WorldPipelines {
 
     /// The pass state is fixed for this GPU program. Only the attachment formats,
     /// inherited cull and stencil vary between its draws.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
         state: Option<&PassState>, cull: Option<Cull>, stencil: &wgpu::StencilState, usage: PipelineUse,
@@ -1572,7 +1571,6 @@ impl ProgramSet {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn material_pipelines(
         g: &mut Gpu, rigid: Option<&mut Rigid>, device: &wgpu::Device, color: wgpu::TextureFormat,
         depth: wgpu::TextureFormat, stencil: &wgpu::StencilState, cull: InheritedCull, cluster: bool, usage: PipelineUse,

@@ -427,7 +427,6 @@ impl History {
         out
     }
 }
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn channel<T: Symbols>(
     r: &mut T,

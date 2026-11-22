@@ -85,7 +85,6 @@ impl Route {
 
     /// The complete span is checked on the driver's phase. Between those
     /// checks the previous carrot is usable only with fresh local clearance.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn steer(
         &mut self,
         map: &MapData,

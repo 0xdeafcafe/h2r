@@ -10,3 +10,6 @@ sim-core.workspace = true
 
 [dev-dependencies]
 sim-core = { workspace = true, features = ["override"] }
+
+[lints]
+workspace = true

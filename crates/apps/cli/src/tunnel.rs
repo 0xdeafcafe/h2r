@@ -663,7 +663,6 @@ fn nap(d: Duration, stop: &AtomicBool) -> bool {
 
 /// Watches the running cloudflared; when it exits, starts it again with
 /// backoff until stopped.
-#[allow(clippy::too_many_arguments)]
 fn supervise(
     program: &Path,
     mode: &Mode,

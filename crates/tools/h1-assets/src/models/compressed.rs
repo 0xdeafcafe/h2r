@@ -117,7 +117,6 @@ pub struct Stats {
 /// Reads one kind of channel: `count` table entries at `table`, each a u32
 /// of key count (low 12 bits) and first key index (high 20 bits) into
 /// `times` (u16) and `values` (`size` bytes each).
-#[allow(clippy::too_many_arguments)]
 fn tracks<V: Copy>(
     table: &[u8],
     times: &[u8],

@@ -995,7 +995,6 @@ fn carrying(carrier: Option<u32>, at: Vec3) -> Objective {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn play(
     m: &mut Mind,
     at: Vec3,

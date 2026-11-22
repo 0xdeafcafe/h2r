@@ -54,7 +54,7 @@ anyhow.workspace = true
 # The heap profiler behind the `dhat-heap` feature (docs/perf/profiling.md).
 # Not optional, so the Buck rules always have it; unused without the feature.
 dhat = "0.3.3"
-sha2 = { version = "0.10", optional = true }
+sha2 = { workspace = true, optional = true }
 boot = { path = "../boot", default-features = false }
 host-data = { path = "../../live/host-data" }
 # Bots for sim runs and `h2 bots nav` (docs/game/bots.md).
@@ -104,7 +104,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 # Sim configuration and `h2 live maps import` read TOML.
-toml = "0.9"
+toml = { workspace = true }
 # map.glb's surface pictures are JPEG where opaque (live_looks.rs).
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 # map.glb.gz beside map.glb, for the art server to send compressed.
@@ -122,20 +122,20 @@ time = "0.3"
 # live_geometry tests: an independent glTF reader for map.glb, and PNG
 # decoding for the disc check's contact sheet.
 gltf = { version = "1", default-features = false, features = ["names"] }
-png = "0.18"
+png = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { workspace = true }
 # Paired LAN lab connections (TLS 1.3 and HMAC).
 ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 subtle = { version = "2", optional = true }
 # Enable runtime-detected ARM SHA instructions for full-image cache
 # validation. sha2-asm has no MSVC build; Windows uses the portable code.
-sha2 = { version = "0.10", features = ["asm"], optional = true }
+sha2 = { workspace = true, features = ["asm"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
@@ -225,3 +225,6 @@ required-features = ["desktop"]
 [[test]]
 name = "shader_all"
 required-features = ["desktop"]
+
+[lints]
+workspace = true

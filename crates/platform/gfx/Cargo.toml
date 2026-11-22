@@ -33,3 +33,6 @@ anyhow.workspace = true
 name = "window"
 path = "examples/window.rs"
 required-features = ["gpu"]
+
+[lints]
+workspace = true

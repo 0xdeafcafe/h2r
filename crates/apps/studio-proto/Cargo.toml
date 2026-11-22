@@ -10,3 +10,6 @@ publish = false
 agent-proto = { path = "../../extensions/agent-proto" }
 anyhow.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true

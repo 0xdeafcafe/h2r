@@ -754,7 +754,6 @@ impl GpuWorld {
     /// D3D pass already open on these attachments, the uniforms as writes
     /// ahead of them ([`FogSet::draws`]; `fogs` the fog unit the passes
     /// hold, the device's at the layer).
-    #[allow(clippy::too_many_arguments)]
     pub fn layer_draws(
         &mut self,
         layer: u8,
@@ -805,7 +804,6 @@ impl GpuWorld {
     /// the scene is made first ([`WaterSet::make_copy`]); `sampled` are
     /// the render targets' views in the set's `targets` order. Returns
     /// how many parts were drawn.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_water(
         &mut self,
         device: &wgpu::Device,
@@ -866,7 +864,6 @@ impl GpuWorld {
     /// views `sampled` in the set's `targets` order, and the uniforms
     /// ([`WaterSet::prepare`]'s bytes for the selected materials) as writes
     /// ahead of them.
-    #[allow(clippy::too_many_arguments)]
     pub fn water_draws(
         &mut self,
         device: &wgpu::Device,
@@ -900,7 +897,6 @@ impl GpuWorld {
     /// buffers by the commands, the view copy's scratch texture made now
     /// and filled by them, then the pass. The commands only record, so
     /// they run any number of times.
-    #[allow(clippy::too_many_arguments)]
     pub fn water_encoded(
         &mut self,
         device: &wgpu::Device,
@@ -996,7 +992,6 @@ impl GpuWorld {
     /// every pass of its material's layer-16 set, blended into the target
     /// over the depth (loaded and kept). The uniforms are
     /// [`GpuWorld::prepare_fog`]'s. Returns how many parts were drawn.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_fog(
         &mut self,
         device: &wgpu::Device,
@@ -1033,7 +1028,6 @@ impl GpuWorld {
     /// [`GpuWorld::encode_fog`] does layer 16's: for a host that owns its
     /// passes (the editor). The uniforms are [`GpuWorld::prepare_layer`]'s.
     /// Returns how many parts were drawn.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_layer(
         &mut self,
         layer: u8,
@@ -1053,7 +1047,6 @@ impl GpuWorld {
     /// [`GpuWorld::prepare_fog`] and [`GpuWorld::encode_fog`] as packets for
     /// the D3D pass already open on these attachments, the uniforms as
     /// writes ahead of them ([`FogSet::draws`]).
-    #[allow(clippy::too_many_arguments)]
     pub fn fog_draws(
         &mut self,
         device: &wgpu::Device,
@@ -1264,7 +1257,6 @@ impl GpuWorld {
     /// batch with its slot range. `target_size` is the colour target's in
     /// texels: a batch drawn with its own program covers it all (the
     /// game's viewport is in its vertex program's constants).
-    #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
         device: &wgpu::Device,
@@ -1281,7 +1273,6 @@ impl GpuWorld {
 
     /// Record precisely the guest's ordered part sequence, including repeated
     /// parts. Adjacent slots in the same batch may share a multi-draw.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_parts(
         &mut self,
         device: &wgpu::Device,
@@ -1318,7 +1309,6 @@ impl GpuWorld {
 
     /// All selected draws passed the owner and frustum checks before admission.
     /// Their index ranges are immutable and can be issued directly.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_selection(
         &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
@@ -1445,7 +1435,6 @@ impl GpuWorld {
         Ok(gfx::external::ExternalDraws { ranges, packets, discards: true, writes })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn record_spans(
         &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
@@ -1608,7 +1597,6 @@ impl GpuWorld {
 /// One view's draws of `set`'s selected parts in a pass of their own over
 /// `color` and `depth` (loaded and kept): [`GpuWorld::encode_fog`] and
 /// [`GpuWorld::encode_layer`].
-#[allow(clippy::too_many_arguments)]
 fn encode_set(
     set: &mut FogSet,
     label: &str,

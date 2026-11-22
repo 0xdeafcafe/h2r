@@ -125,7 +125,6 @@ pub struct FormFixtures {
 const EXCEPTION_BIT: u64 = 1 << 63;
 const WORDS: usize = 56;
 
-#[allow(clippy::needless_range_loop)]
 pub fn encode(forms: &[FormFixtures]) -> Vec<u8> {
     let inputs = Inputs::default();
     let mut out = Vec::new();

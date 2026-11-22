@@ -21,7 +21,7 @@ hid = ["dep:objc2-io-kit", "dep:objc2-core-foundation"]
 mem-watch.workspace = true
 thiserror.workspace = true
 serde = { version = "1", features = ["derive"] }
-toml = "0.9"
+toml = { workspace = true }
 gilrs = { version = "0.11", optional = true }
 
 # IOKit HID (pad_hid) is macOS only; GameController is every Apple
@@ -42,3 +42,6 @@ objc2-game-controller = { version = "0.3", optional = true, default-features = f
 objc2-core-haptics = { version = "0.3", optional = true, default-features = false, features = [
     "std", "block2", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer",
 ] }
+
+[lints]
+workspace = true

@@ -890,7 +890,6 @@ fn label(ui: &Ui, f: &FieldDef, text: &str, mixed: bool) {
 }
 
 /// One field's row; returns the edit made.
-#[allow(clippy::too_many_arguments)]
 fn field_row(
     ui: &Ui,
     scenario: &Scenario,
@@ -1057,7 +1056,6 @@ fn short(name: &str) -> &str {
 /// Three labelled drags for a vector field; an edit changes only the
 /// component dragged. `show` and `store` convert to and from what is shown
 /// (degrees for rotations).
-#[allow(clippy::too_many_arguments)]
 fn vector_row(
     ui: &Ui,
     f: &FieldDef,
