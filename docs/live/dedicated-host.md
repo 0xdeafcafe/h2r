@@ -893,6 +893,13 @@ and egress.
 
 ## Mac System Link spike
 
+To host a dedicated System Link game on the paired lab Mac for a joiner
+on another Mac, use `h2 lab run --dedicated`
+([Dedicated System Link host](../runtime/lab.md#dedicated-system-link-host)).
+It starts the same light serve with `H2_HOST_LOBBY=1` on the lab Mac's LAN
+address, can open the lobby itself, and takes agent calls through
+`h2 lab agent`. The steps below run both ends by hand on one Mac.
+
 The coordinator can test and build the CLI from this branch with the usual Cargo target directory. Point `H2_BIN` at the resulting release binary, or use the installed copy if it contains this change.
 
 ```sh
