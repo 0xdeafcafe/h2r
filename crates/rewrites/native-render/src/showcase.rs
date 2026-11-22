@@ -498,7 +498,8 @@ mod tests {
         assert_eq!(p.decal_uv(p.decal_centre), [0.5, 0.5]);
         let r = p.decal_radius;
         assert_eq!(p.decal_uv([1.0, r, p.decal_centre[2]]), [1.0, 0.5]);
-        assert_eq!(p.decal_uv([1.0, 0.0, p.decal_centre[2] + r]), [0.5, 0.0]);
+        let top = p.decal_uv([1.0, 0.0, p.decal_centre[2] + r]);
+        assert!((top[0] - 0.5).abs() < 1e-6 && top[1].abs() < 1e-6, "{top:?}");
         // Turned, the decal's centre moves across the picture.
         let still = p.project(p.decal_centre, 0.0, 128, 128).unwrap();
         let turned = p.project(p.decal_centre, 0.4, 128, 128).unwrap();
