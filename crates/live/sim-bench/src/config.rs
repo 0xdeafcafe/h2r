@@ -780,6 +780,10 @@ pub struct MatchConfig {
     /// (docs/runtime/sim.md, "Training the bounce sites").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub train: Option<crate::train::TrainConfig>,
+    /// Seam drops: every seat dropped onto candidate collision edges with
+    /// the pair word held at -3 (docs/runtime/sim.md, "Seam drops").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drops: Option<crate::drops::DropsConfig>,
     #[serde(default, rename = "bot")]
     pub bots: Vec<BotSpec>,
 }
@@ -895,10 +899,33 @@ pub fn load_match(path: &Path) -> Result<Match, String> {
 /// Checks `config` and resolves its bots; `read` loads a tuning file by
 /// the path the match file gives. Every problem is listed.
 pub fn resolve(
-    config: MatchConfig,
+    mut config: MatchConfig,
     read: &dyn Fn(&Path) -> Result<BotParams, String>,
 ) -> Result<Match, String> {
     let mut problems = Vec::new();
+    if let Some(d) = &config.drops {
+        // A drops file names its map in the table or the match, has a
+        // seat for every phantom unless it lists bots, plays with no
+        // time limit as teams and keeps the report light.
+        if config.map.trim().is_empty()
+            && let Some(m) = &d.map
+        {
+            config.map = m.clone();
+        }
+        if config.bots.is_empty() {
+            config.bots = d.seat_bots();
+        }
+        if config.time_limit_s.is_none() {
+            config.time_limit_s = Some(0);
+        }
+        // Free-for-all sims end at tick 0 (a sim bug), so team play.
+        if config.team_play.is_none() {
+            config.team_play = Some(true);
+        }
+        if config.detail.is_none() {
+            config.detail = Some(Detail::Training.name().into());
+        }
+    }
     if config.map.trim().is_empty() {
         problems.push("map: empty".to_string());
     }
@@ -1035,6 +1062,17 @@ pub fn resolve(
     }
     if let Some(t) = &config.train {
         problems.extend(t.problems(superbounce, config.drill.is_some()));
+        if !problems.is_empty() {
+            return Err(problems.join("\n"));
+        }
+    }
+    if let Some(d) = &config.drops {
+        problems.extend(d.problems(
+            &config.map,
+            superbounce,
+            config.drill.is_some(),
+            config.train.is_some(),
+        ));
         if !problems.is_empty() {
             return Err(problems.join("\n"));
         }

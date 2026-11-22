@@ -911,6 +911,21 @@ fn the_ground_truth_drill_loads() {
     assert_eq!((d.site, d.start), ([-10.62, 3.88, -3.19], None));
 }
 
+/// The seam drops example in docs/runtime/sim-examples stays valid.
+#[test]
+fn the_seam_drops_example_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("superbounce-drops.toml")).unwrap();
+    assert!(!m.superbounce);
+    assert_eq!(m.bots.len(), crate::drops::SEATS as usize);
+    assert!(m.team_play);
+    let d = m.config.drops.unwrap();
+    let s = d.settings("ascension").unwrap();
+    assert_eq!(s.heights, crate::drops::HEIGHTS.to_vec());
+    assert_eq!(s.across.len(), 13);
+    assert!(s.control.is_some());
+}
+
 #[test]
 fn think_and_component_keys() {
     let ok = |extra: &str| {
