@@ -58,9 +58,6 @@ pub const MEASURED_FALL: f32 = 2.43;
 /// The most a bounce site may need to fall onto it (world units) for a
 /// bot's standing jump to reach it.
 pub const STANDING_FALL: f32 = 0.5;
-/// A slot's width when the spot does not say (world units): Ascension's
-/// strip, y 3.8 to 4.0.
-pub const SLOT_WIDTH: f32 = 0.2;
 
 /// A bounce the planner can use: the spot as the bounce run takes it, and
 /// what the planner needs to know of its launch.
@@ -69,14 +66,14 @@ pub struct Site {
     pub bounce: Bounce,
     /// Launch speed straight up (world units a second).
     pub launch: f32,
-    /// How far the landing must fall onto the slot ([`STANDING_FALL`] is
-    /// what a standing jump gives).
+    /// How far the landing must fall onto the slot, as measured
+    /// ([`STANDING_FALL`] is what a standing jump gives); 0 for a scanned
+    /// site, which has no measured drop ([`Site::drop_known`]).
     pub fall: f32,
     /// The downward speed the landing must touch down at (world units a
-    /// second; 0 unknown).
+    /// second): a measured one, else the one threshold every seam shares
+    /// (`superbounce::speed::BOUNCE_SPEED`).
     pub need: f32,
-    /// The slot's width (world units; 0 unknown, read as [`SLOT_WIDTH`]).
-    pub width: f32,
     /// `Proven` when a game run bounced from it (measured, or verified).
     pub status: Status,
     /// Where a verified drop landed: the point to aim at instead of
@@ -90,6 +87,10 @@ pub struct Site {
     /// state, `None` with no line.
     pub knobs: Knobs,
     pub line: Option<learned::State>,
+    /// A single crease the scan found (`superbounce::Spot::candidate`):
+    /// the sim's training flies it, a route or a show-off does not until
+    /// it is proved ([`Site::plays`]).
+    pub candidate: bool,
 }
 
 impl Site {
@@ -110,13 +111,14 @@ impl Site {
             },
             launch: s.launch,
             fall: s.fall,
-            need: s.need,
-            width: s.width,
+            // The one threshold every seam shares, unless measured.
+            need: superbounce::speed::need(s),
             status: s.status,
             aim: None,
             height: None,
             knobs: Knobs::default(),
             line: None,
+            candidate: s.candidate(),
         })
     }
 
@@ -133,12 +135,12 @@ impl Site {
                 0.0
             },
             need: MEASURED_NEED,
-            width: SLOT_WIDTH,
             status: Status::Proven,
             aim: b.landing,
             height: None,
             knobs: Knobs::default(),
             line: None,
+            candidate: false,
         }
     }
 
@@ -167,6 +169,23 @@ impl Site {
         self.knobs = learned::knobs_for(lines, self.bounce.stand);
         self.line = learned::entry_for(lines, self.bounce.stand).map(|e| e.state);
         self
+    }
+
+    /// Whether a route or a show-off may bounce here: anything but a
+    /// candidate (a single crease or a V), which only plays once a game run
+    /// proved it. A learned line proves nothing (the training writes the
+    /// word, docs/game/bounce-search.md, "Rules and limits").
+    pub fn plays(&self) -> bool {
+        !self.candidate || self.proven()
+    }
+
+    /// Whether anything measured the drop onto it: a measured fall, a
+    /// verified height or a recipe's takeoff. A scanned site has none (the
+    /// scan carries no `fall`), so the training tries the drops as well as
+    /// the stand (`mind::practice::site_in`), from a floor the speed
+    /// model's drop over it (`bounce_route::launch_floor`).
+    pub fn drop_known(&self) -> bool {
+        self.fall > 0.0 || self.height.is_some() || self.bounce.takeoff.is_some()
     }
 
     /// A standing jump from the spot's `stand` reaches it. A learned `how`
@@ -648,17 +667,17 @@ pub fn store_learned(map: &str, lines: &[learned::Entry]) -> std::io::Result<Opt
 
 /// A spots file's first bytes and format version.
 pub const MAGIC: &[u8; 4] = b"H2SP";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 const HEADER: usize = 4 + 4 + 4 + 8 + 4;
-/// Kind (0 a slot, 1 crouch, 2 a single crease), status and lip count
-/// bytes, then the floats: edge, stand, fall,
-/// launch, drift, score, width, need, out, and [`MAX_LIP`] lip edges.
-const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 6 * MAX_LIP;
+/// Kind (0 a slot, 1 crouch, 2 a single crease, 3 a V, 4 a busy point),
+/// status and lip count bytes, then the floats: edge, stand, fall,
+/// launch, drift, score, need, out, and [`MAX_LIP`] lip edges.
+const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 2 + 6 * MAX_LIP;
 const SPOT_BYTES: usize = 3 + 4 * SPOT_FLOATS;
 
 /// The scanner's version. **Bump it whenever `superbounce`'s scan changes
 /// what it finds**: every file made by another version is scanned again.
-pub const SCAN: u32 = 4;
+pub const SCAN: u32 = 6;
 
 /// The stamp of a map's spots file: the nav generator and the scan
 /// version, for the map with `fingerprint`.
@@ -687,6 +706,8 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             (Kind::Bounce, Shape::Slot) => 0,
             (Kind::Crouch, _) => 1,
             (Kind::Bounce, Shape::Crease) => 2,
+            (Kind::Bounce, Shape::Vee) => 3,
+            (Kind::Bounce, Shape::Busy) => 4,
         });
         o.push(match s.status {
             Status::Likely => 0,
@@ -703,7 +724,7 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             .chain(&s.stand)
             .chain([&s.fall, &s.launch])
             .chain(&s.drift)
-            .chain([&s.score, &s.width, &s.need])
+            .chain([&s.score, &s.need])
             .chain(&s.out)
             .chain(lip.iter().flatten().flatten());
         for f in floats {
@@ -742,12 +763,14 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
                 return None;
             }
             let lip: Vec<[[f32; 3]; 2]> = (0..lip_len)
-                .map(|e| [v(18 + 6 * e), v(21 + 6 * e)])
+                .map(|e| [v(17 + 6 * e), v(20 + 6 * e)])
                 .collect();
             let (kind, shape) = match c[0] {
                 0 => (Kind::Bounce, Shape::Slot),
                 1 => (Kind::Crouch, Shape::Slot),
                 2 => (Kind::Bounce, Shape::Crease),
+                3 => (Kind::Bounce, Shape::Vee),
+                4 => (Kind::Bounce, Shape::Busy),
                 _ => return None,
             };
             Some(Spot {
@@ -765,9 +788,8 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
                 launch: f(10),
                 drift: [f(11), f(12)],
                 score: f(13),
-                width: f(14),
-                need: f(15),
-                out: [f(16), f(17)],
+                need: f(14),
+                out: [f(15), f(16)],
                 lip: Lip::new(&lip),
             })
         })

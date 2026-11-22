@@ -46,7 +46,6 @@ fn fall(speed: f32, off: f32, verdict: Course) -> Option<Predicted> {
         need: 4.28,
         edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
         stand: [0.0, 0.0, 0.0],
-        width: 0.2,
         fall: 1.1,
     })
 }
@@ -138,10 +137,12 @@ fn primed_the_speed_block_comes_with_the_live_speed_and_what_the_strip_needs() {
     assert_eq!(c[1].detail, "Fall 3 m for 13.0");
     assert_eq!(c[1].fill, Some(0.0));
     assert_eq!(current(&c), Some(Step::Speed));
-    // A strip a standing jump does.
+    // A strip with no drop needs the one threshold every seam shares, and
+    // says so: no "a jump is enough".
     let mut flat = primed();
     flat.nav_target.as_mut().unwrap().fall = 0.0;
-    assert_eq!(chain(&flat, None)[1].detail, "A jump is enough");
+    assert_eq!(need(&flat), Some(superbounce::speed::BOUNCE_SPEED));
+    assert!(chain(&flat, None)[1].detail.starts_with("Need "));
     // Standing still too long.
     let still = State {
         verb: Some(Verb::KeepMoving),

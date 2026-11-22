@@ -336,10 +336,11 @@ pub struct Predicted {
     pub speed: f64,
     /// The touchdown speed the strip needs, units/s.
     pub need: f64,
-    /// How far the landing is outside the slot, world units (0 inside).
+    /// How far the landing is outside the edge's catch
+    /// (`superbounce::CATCH`), world units (0 when caught).
     #[serde(default)]
     pub miss: f64,
-    /// In the slot and at least `need`: the lock-on is red.
+    /// Caught and at least `need`: the lock-on is red.
     #[serde(default)]
     pub locked: bool,
 }
@@ -415,7 +416,8 @@ pub struct SpotRecord {
     /// `measured` (a game run bounced from it) or `scan` (found in the
     /// collision geometry).
     pub source: String,
-    /// The line to draw.
+    /// Bounce: the target, the collision edge's two end vertices to the
+    /// float (a busy point's vertex twice). Crouch: the line to draw.
     pub edge: [[f32; 3]; 2],
     /// Where a player stands to use it: a unit's origin, standing.
     pub stand: [f32; 3],
@@ -428,10 +430,6 @@ pub struct SpotRecord {
     pub drift: [f32; 2],
     /// 0..1: how sure the scan is; 1 for a measured spot.
     pub score: f32,
-    /// Bounce: the slot's width, the gap between its two joints. Crouch:
-    /// the widest the forced band measures.
-    #[serde(default)]
-    pub width: f32,
     /// Bounce: the downward speed (world units a second) the landing must
     /// touch down at; `fall` is worked from it. Crouch: 0.
     #[serde(default)]
@@ -639,10 +637,9 @@ pub struct VerifyPoint {
     /// Drop: across the strip from the crease; default +Y.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift: Option<[f32; 2]>,
-    /// Drop: the slot's width (default 0.2) and the touchdown speed it
-    /// needs (default 4.3), for the landing classifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<f32>,
+    /// Drop: the touchdown speed it needs (default 4.3), for the landing
+    /// classifier. How far off the edge still counts is the one catch,
+    /// `superbounce::CATCH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<f32>,
 }

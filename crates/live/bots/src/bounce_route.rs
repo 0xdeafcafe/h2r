@@ -45,10 +45,19 @@ pub const LEDGE_OVER: f32 = 2.5;
 /// A launch floor for a site that needs a drop: the nav mesh's point
 /// nearest the site's target sideways, within [`LEDGE_REACH`], whose floor
 /// is the drop height over the target, to [`LEDGE_UNDER`] below and
-/// [`LEDGE_OVER`] above it. The [`Ledge`] a plan is made with.
+/// [`LEDGE_OVER`] above it. A site with no measured drop
+/// ([`Site::drop_known`]) takes the speed model's drop instead, the one
+/// that touches down at the threshold every seam shares
+/// (`superbounce::speed::fall`), for the training's drops to try. The
+/// [`Ledge`] a plan is made with.
 pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
     let t = s.target();
-    let over = [t[0], t[1], t[2] + s.drop_height()];
+    let height = if s.drop_known() {
+        s.drop_height()
+    } else {
+        superbounce::speed::fall()
+    };
+    let over = [t[0], t[1], t[2] + height];
     m.nav
         .nearest(over, LEDGE_REACH, LEDGE_OVER, LEDGE_UNDER)
         .map(|(_, p)| p)
@@ -476,6 +485,8 @@ pub fn plan_with(ask: &Ask, known: &Known, walk: Walk, ledge: Ledge) -> Plan {
         .sites
         .iter()
         .copied()
+        // A candidate crease is the training's until it is proved.
+        .filter(Site::plays)
         .filter(|s| dist_xy(ask.from, s.bounce.from()) <= limit)
         .filter(|s| flight(s, flight_z(ask, s)).is_some())
         .map(|s| (s, None))
@@ -1273,13 +1284,14 @@ impl Touchdown {
 
     /// What it came to, by its first failed test, as the game's landing
     /// classifier names it: `bounce`, `not_primed`, `missed` (more than
-    /// `width / 2` off the target), `too_slow` (under `need`), `no_bounce`.
-    pub fn result(&self, width: f32, need: f32) -> &'static str {
+    /// the one catch, `superbounce::CATCH`, off the target), `too_slow`
+    /// (under `need`), `no_bounce`.
+    pub fn result(&self, need: f32) -> &'static str {
         if self.bounced() {
             "bounce"
         } else if self.word.is_some_and(|w| !is_primed(w)) {
             "not_primed"
-        } else if self.miss > width / 2.0 {
+        } else if self.miss > superbounce::CATCH {
             "missed"
         } else if need > 0.0 && self.speed_in < need {
             "too_slow"
@@ -1755,12 +1767,7 @@ impl OrderRun {
             && let Some(t) = self.watch.step(at, v[2], pair, tick, site.target())
         {
             self.landing = Some(t);
-            let width = if site.width > 0.0 {
-                site.width
-            } else {
-                crate::spots::SLOT_WIDTH
-            };
-            let result = t.result(width, site.need);
+            let result = t.result(site.need);
             self.note(tick, result, t.at);
             if let Some(f) = self.flight.as_mut().filter(|f| f.landing.is_none()) {
                 f.landing = Some(t);

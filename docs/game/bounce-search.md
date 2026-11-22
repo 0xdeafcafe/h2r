@@ -36,7 +36,7 @@ to the aim, "side" its left.
 
 | Key | Unit | Range searched | Default (the route's own) | Used by |
 |---|---|---|---|---|
-| `how` | `runoff`, `jump`, `stand` | every one the site allows | `bounce_route::drop_takeoff`'s choice; `stand` for `Site::standing` | all |
+| `how` | `runoff`, `jump`, `stand` | every one the site allows: a site with no measured drop (`Site::drop_known`, every scanned one) allows the stand and both drops | `bounce_route::drop_takeoff`'s choice; `stand` for `Site::standing` | all |
 | `fx` `fy` `fz` | point | ±0.5 to the side of the default | the launch point: `bounce_route::launch_from` | drop |
 | `ax` `ay` | point | ±0.4 along, ±0.3 to the side of the default | `Site::target` | all |
 | `yaw` | degrees | ±20 | 0: the run heads along the launch-to-aim line | drop |
@@ -75,7 +75,9 @@ moving the aim moves the miss (`learn::Try::from_leap`):
 | no touchdown by the strip (`no_drop`, `no_landing`, `timeout`) | 0 |
 | the bot died before it stood again (a Bounced fall, a fall out of the map) | the above, minus 1 |
 
-`need` is the site's (`Site::need`; unknown: the speed term is 0.2). Any
+`need` is the site's (`Site::need`): a measured one, else the one
+threshold every seam shares, 5.4 units/s
+([superbounce.md, "Speed"](superbounce.md#speed)). Any
 bounce outscores any landing that did not bounce, a deadly bounce scores
 under a clean miss, and among misses the score rises as the miss shrinks
 and the landing speeds up: that slope is what the search climbs before a
@@ -170,7 +172,13 @@ A match with `superbounce = true` and a `[train]` table is a training run
 (`sim::train::TrainConfig`, refused without `superbounce`, as a `[drill]`
 is). Its bots share one board, `learn::Board` (process-wide, as
 `practice::CLAIMS` is), built from the map's bounce sites and its
-`.learned` at the first pick:
+`.learned` at the first pick. Every known site is on it, the scan's
+candidates (single creases, Vs and busy points, `Site::candidate`)
+too: the training is what proves them. A site with no measured drop
+(`mind::practice::site_in`) allows the stand first, then a run-off and a
+running jump from its launch floor: the nav floor nearest over the
+target at the speed model's 2.43 drop (`bounce_route::launch_floor`),
+when there is one.
 
 - **Shards.** A run owns the sites whose spot id modulo `shards` is its
   `shard`. Runs of one batch never fly the same site, so their files merge
@@ -235,9 +243,13 @@ same command again continues; nothing else is kept between batches.
   is a scored try, not a dropped one), hand it to the board. Each try
   still logs its `bots: bounce try:` line, with the knobs appended.
 - **Practice and play.** The practice's pick weighs a `learned` site +1
-  (`practice::weight`). Nothing else changes: `.verified` and `.ghosts`
+  (`practice::weight`). A route or a show-off never takes a candidate
+  until a game run proved it (`Site::plays`). `.verified` and `.ghosts`
   still say what a real primed run did, and a `learned` site becomes
-  proven only by one.
+  proven only by one. The game's spot list takes a `learned` or
+  `partial` line's aim over the scan's (`superbounce::learned::apply`,
+  [superbounce.md, "Bounce"](superbounce.md#bounce)), and leaves its
+  status alone.
 
 ## Interfaces
 

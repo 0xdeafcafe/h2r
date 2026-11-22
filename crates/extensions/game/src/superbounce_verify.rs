@@ -289,15 +289,10 @@ impl RouteRun {
                 (s, None) => format!("{s} at {step}/{}", o.phase),
             });
             if let (Some(t), Some(site)) = (o.landing, o.site) {
-                let width = if site.width > 0.0 {
-                    site.width
-                } else {
-                    bots::spots::SLOT_WIDTH
-                };
                 v.speed_in = Some(t.speed_in);
                 v.vz_out = Some(t.vz_out);
                 v.landed_at = Some(t.at);
-                v.landing = Some(t.result(width, site.need).into());
+                v.landing = Some(t.result(site.need).into());
             }
             v.steps = o
                 .log

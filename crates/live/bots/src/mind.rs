@@ -1776,7 +1776,8 @@ impl Mind {
                 .sites
                 .iter()
                 .filter(|s| {
-                    dist_xy(s.bounce.stand, at) < BOUNCE_REACH
+                    s.plays()
+                        && dist_xy(s.bounce.stand, at) < BOUNCE_REACH
                         && !self.stuck.blocked(s.bounce.stand, tick)
                 })
                 .min_by(|a, b| {
