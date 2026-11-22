@@ -293,6 +293,9 @@ max_ticks = 9000            # stop after this many game ticks (5 min at 30 Hz)
 max_wall_s = 600            # and after this long on the clock
 render_every = 0
 pace = "unpaced"
+components = true           # false: no state_components_v1 in the report (timing arms)
+bot_threads = 3             # bot think workers: a count, "auto" or "off"; unset: see below
+bot_pipeline = false        # true: thinks overlap the guest's tick (a different match)
 
 [settings]                  # any variant setting by id (variants::record)
 83 = 1                      # weapons on map
@@ -377,7 +380,7 @@ ticks; and the final score. The report is one JSON file per match:
   "result": { "end": "game_over", "winner": {"player": 2}, "teams": [] },
   "ticks": 9000, "game_seconds": 300.0,
   "wall": { "setup_s": 21.8, "match_s": 41.2, "process_s": 63.0, "speedup": 7.28,
-            "process_speedup": 4.76, "ms_per_tick": 4.58,
+            "process_speedup": 4.76, "ms_per_tick": 4.58, "bots_ms_per_tick": 0.45,
             "peak_rss_mib": 981, "footprint_mib": 143,
             "guest_written_pages": 2100, "guest_pages": 16384 },
   "players": [
@@ -388,10 +391,20 @@ ticks; and the final score. The report is one JSON file per match:
       "doing": { "fight": 2100, "roam": 3900 } }
   ],
   "kills": [ { "tick": 412, "killer": 0, "victim": 3, "kind": "kill" } ],
+  "flat": { "fixups_per_tick": 0.0 },
   "nav": "loaded",
   "notes": []
 }
 ```
+
+`wall.bots_ms_per_tick` is the game-thread time the bot brains cost per
+tick: every phantom's read, think and conclude phases, and the wait for
+workers, in any think mode (`bots::think::game_thread_ns`). A think that
+runs on a worker is not in it, so batched against serial shows the
+game-thread saving. `flat.fixups_per_tick` is the flat RAM window's
+fixups over the match, per tick (`runtime::window_process_stats`); the
+report has no `flat` without a window. Both count from the tick the
+match begins.
 
 With `H2_DISPATCH_STATS=1`, the report includes `dispatch_per_tick`
 for the observed match interval. It records the CALLs, JUMPs, RESUMEs,
@@ -830,8 +843,11 @@ that a digest does. Each report also carries `state_components_v1`: the
 same ticks as `state_hashes_v1`, broken into named components with their
 values as text. The first row lists every component; each later row lists
 only those that changed (a component that goes away reads `-`). It is on in
-every `h2 sim run` and is bounded at 250,000 recorded values; a longer match
-keeps its first ticks and sets `truncated_after`.
+every `h2 sim run` unless the match file sets `components = false`, and is
+bounded at 250,000 recorded values; a longer match keeps its first ticks and
+sets `truncated_after`. A timing arm that leaves it out still has
+`state_hashes_v1`, and `h2 sim diff` against it compares those digests
+and says that one report has no component breakdown.
 
 Components: `time.tick`, `rng.seed`, `world.bsp`, `world.flags`,
 `team.NN.score`, and for each player slot `player.NN.{id, stats, pos,
@@ -915,8 +931,14 @@ and some conditional tactical or route outputs can still allocate.
 
 The brains can think off the game thread ([bots.md §5.5](../game/bots.md)):
 `H2_BOT_THREADS=auto` batches every phantom's think across workers, and
-`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. The
-default is serial. To measure, run the same match file (Waterworks and
+`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. A
+single `h2 sim run` thinks batched on `min(phantoms, cores - 1)` workers
+unless told otherwise; `h2 sim batch` children stay serial, because the
+children already fill the cores. Per variable, an `H2_BOT_THREADS` or
+`H2_BOT_PIPELINE` already in the environment wins, then the match file's
+`bot_threads` and `bot_pipeline`, then that default
+(`crates/apps/cli/src/sim_cmd.rs`, `think_env`). The run's first log line
+names the values it ended with. To measure, run the same match file (Waterworks and
 Lockout, phantoms, seed 7) serial, batched and pipelined. Compare
 `state_hashes_v1`: batched must match serial at every tick, and pipelined
 must match itself across thread counts. Then compare ms/tick and the
