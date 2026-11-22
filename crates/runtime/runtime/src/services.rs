@@ -20,7 +20,9 @@ pub struct Runtime {
     /// Shared with the memory, which sets [`crate::preempt::PARK`] on the
     /// running context's word.
     pub(crate) words: Arc<crate::preempt::Words>,
-    pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
+    /// Shared with every [`SecondExecutor`](crate::executor::SecondExecutor) forked
+    /// from this runtime, so what they run is recorded too.
+    pub(crate) coverage: OnceLock<Arc<crate::coverage::Coverage>>,
     pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
     fault_census: crate::fault_census::FaultCensus,
     /// The registered modules' features, OR-ed
@@ -220,11 +222,21 @@ impl Runtime {
 
     /// Install the generated registry before any execution contexts are built.
     pub fn enable_guest_coverage(&self, entries: &[crate::H2GenEntry], resumes: &[crate::H2GenResume]) {
-        let _ = self.coverage.set(crate::coverage::Coverage::new(entries, resumes));
+        let _ = self.coverage.set(Arc::new(crate::coverage::Coverage::new(entries, resumes)));
+    }
+
+    /// Record into `main`'s coverage, if it has one: for a runtime forked
+    /// from it ([`crate::executor::SecondExecutor`]), which runs the same generated
+    /// handlers. Call it before any execution context of this runtime is
+    /// built, as [`enable_guest_coverage`](Self::enable_guest_coverage).
+    pub(crate) fn share_coverage(&self, main: &Runtime) {
+        if let Some(coverage) = main.coverage.get() {
+            let _ = self.coverage.set(Arc::clone(coverage));
+        }
     }
 
     pub fn guest_coverage(&self) -> Option<crate::GuestCoverage> {
-        self.coverage.get().map(crate::coverage::Coverage::snapshot)
+        self.coverage.get().map(|c| c.snapshot())
     }
 
     /// Install (or with `None` remove) the guest-time source the
