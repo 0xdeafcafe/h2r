@@ -24,9 +24,12 @@
 //! order with the same results, only with fewer frames drawn between them:
 //! the copied bytes, the checksum and the slot header are the same. The
 //! game itself steps the machine back to back with nothing drawn in its
-//! flush loop `0x213fa0`. Only the loading-screen loop's call is boosted
-//! (its return address [`LOADING_LOOP_RETURN`]); the main loop's
-//! background copy keeps its pace. `H2_FEATURES=-map-copy` turns it off.
+//! flush loop `0x213fa0`. The loading-screen loop's call is boosted (its
+//! return address [`LOADING_LOOP_RETURN`]). On a light host (a sim or a
+//! dedicated host) the main loop's background copy is boosted the same way
+//! ([`MAIN_LOOP_RETURN`], the sub-feature [`LOBBY`]): it is what the System
+//! Link lobby waits on while the match's map copies into its slot. Elsewhere
+//! the main loop keeps its pace. `H2_FEATURES=-map-copy` turns it all off.
 
 use engine::entry::{Cx, EntryFuture, EntryResult, GuestCall, Ret};
 use hooks::{BuildError, Builder, Flow, Manifest};
@@ -36,6 +39,14 @@ pub const FEATURE: &str = "map-copy";
 /// Where the loading-screen loop's call to the copy machine returns
 /// (`0x1639bd` calls it).
 pub const LOADING_LOOP_RETURN: u32 = 0x0016_39c2;
+/// Where the main loop's call to the copy machine returns. The main loop
+/// calls it at `0x12b56c` when the job-done byte is set (`0x12b564`) and
+/// ignores what it returns.
+pub const MAIN_LOOP_RETURN: u32 = 0x0012_b571;
+/// The sub-feature boosting the main loop's call: on by default on a light
+/// host (`profile_switches` in crates/apps/boot/src/registration.rs), off
+/// elsewhere; `-map-copy.lobby` is its A/B arm.
+pub const LOBBY: &str = "map-copy.lobby";
 /// The copy job's done byte: cleared when a job is submitted (`0x1a1286`),
 /// set by the worker when it finishes. Callers step the machine only while
 /// it is set.
@@ -52,18 +63,40 @@ const BOOT_STEPS: u32 = 128;
 /// Yields to wait for one job before leaving the rest to the next frame.
 pub const YIELDS: u32 = 8;
 
-fn step_budget(fast_boot: bool, state: Option<u32>, slot: Option<u32>) -> u32 {
-    if fast_boot && matches!(state, Some(11 | 12)) && matches!(slot, Some(0..=2)) {
+fn step_budget(ret: u32, fast_boot: bool, state: Option<u32>, slot: Option<u32>) -> u32 {
+    if ret == LOADING_LOOP_RETURN
+        && fast_boot
+        && matches!(state, Some(11 | 12))
+        && matches!(slot, Some(0..=2))
+    {
         BOOT_STEPS
     } else {
         STEPS
     }
 }
 
-/// Whether a call to the copy machine returning to `ret` is the loading
-/// screen's.
-pub fn boosted(ret: u32) -> bool {
-    ret == LOADING_LOOP_RETURN
+/// Whether a call to the copy machine returning to `ret` is boosted: the
+/// loading screen's always, the main loop's with `lobby` ([`LOBBY`]).
+pub fn boosted(ret: u32, lobby: bool) -> bool {
+    ret == LOADING_LOOP_RETURN || (lobby && ret == MAIN_LOOP_RETURN)
+}
+
+/// How a call to the copy machine returning to `ret` runs: `None` as the
+/// game makes it, else the boosted body with this many steps. The main
+/// loop calls the machine every frame, idle too (the job-done byte stays
+/// set), so an idle machine gets the original call there and no body: a
+/// copy that call starts is boosted from the next frame.
+fn plan_call(
+    ret: u32,
+    lobby: bool,
+    fast_boot: bool,
+    state: Option<u32>,
+    slot: Option<u32>,
+) -> Option<u32> {
+    if !boosted(ret, lobby) || (ret == MAIN_LOOP_RETURN && state == Some(0)) {
+        return None;
+    }
+    Some(step_budget(ret, fast_boot, state, slot))
 }
 
 /// The boosted call: the step the loop asked for, then up to `steps - 1`
@@ -105,20 +138,25 @@ impl hooks::Feature for MapCopy {
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let fast_boot = b.switches().feature("map-copy.boot", true);
+        let lobby = b.switches().feature(LOBBY, false);
         b.raw().before(
             &engine::points::CACHE_COPY_STEP,
             "several copy steps a loading frame",
             move |c| {
                 let mem = c.ctx.runtime().memory();
                 let ret = mem.u32(c.cpu.esp)?;
-                if !boosted(ret) {
+                if !boosted(ret, lobby) {
                     return Ok(Flow::Continue);
                 }
-                let budget = step_budget(
+                let Some(budget) = plan_call(
+                    ret,
+                    lobby,
                     fast_boot,
                     mem.u32(crate::map_slots::STATE).ok(),
                     mem.u32(COPY_SLOT).ok(),
-                );
+                ) else {
+                    return Ok(Flow::Continue);
+                };
                 drop(mem);
                 // The steps it calls return to the body, not to the loop,
                 // so they run the machine itself.
@@ -300,7 +338,15 @@ mod tests {
     fn menu_and_shared_payloads_need_fewer_presents_for_the_same_jobs() {
         for state in [11, 12] {
             for slot in 0..=2 {
-                assert_eq!(step_budget(true, Some(state), Some(slot)), BOOT_STEPS);
+                assert_eq!(
+                    step_budget(LOADING_LOOP_RETURN, true, Some(state), Some(slot)),
+                    BOOT_STEPS
+                );
+                // The main loop's call keeps the 16-step budget.
+                assert_eq!(
+                    step_budget(MAIN_LOOP_RETURN, true, Some(state), Some(slot)),
+                    STEPS
+                );
             }
         }
         for (enabled, state, slot) in [
@@ -309,11 +355,14 @@ mod tests {
             (true, Some(7), Some(2)),
             (true, None, None),
         ] {
-            assert_eq!(step_budget(enabled, state, slot), STEPS);
+            assert_eq!(
+                step_budget(LOADING_LOOP_RETURN, enabled, state, slot),
+                STEPS
+            );
         }
         let source = Machine::new(128 * 1024 + 7, 1024);
         let (previous, old_frames) = load(source.clone(), Some((STEPS, YIELDS)));
-        let budget = step_budget(true, Some(12), Some(2));
+        let budget = step_budget(LOADING_LOOP_RETURN, true, Some(12), Some(2));
         let (fast, frames) = load(source, Some((budget, YIELDS)));
         assert_eq!(fast, previous);
         assert_eq!((old_frames, frames), (17, 3));
@@ -419,10 +468,94 @@ mod tests {
     }
 
     #[test]
-    fn only_the_loading_screen_loop_is_boosted() {
-        assert!(boosted(LOADING_LOOP_RETURN));
-        // The main loop's call (0x12b56c) and the flush loop's (0x213fc0).
-        assert!(!boosted(0x0012_b571));
-        assert!(!boosted(0x0021_3fc5));
+    fn the_main_loop_is_boosted_only_with_the_lobby_switch() {
+        assert!(boosted(LOADING_LOOP_RETURN, false));
+        assert!(boosted(LOADING_LOOP_RETURN, true));
+        // The main loop's call (0x12b56c) on a light host only.
+        assert_eq!(MAIN_LOOP_RETURN, 0x0012_b571);
+        assert!(!boosted(MAIN_LOOP_RETURN, false));
+        assert!(boosted(MAIN_LOOP_RETURN, true));
+        // The flush loop's (0x213fc0) never.
+        assert!(!boosted(0x0021_3fc5, false));
+        assert!(!boosted(0x0021_3fc5, true));
+    }
+
+    #[test]
+    fn an_idle_machine_gets_the_main_loop_call_as_it_is() {
+        // Idle: the original call, every frame of a match.
+        assert_eq!(
+            plan_call(MAIN_LOOP_RETURN, true, true, Some(0), Some(3)),
+            None
+        );
+        // Copying: the 16-step budget, whatever the slot.
+        for slot in 0..=5 {
+            assert_eq!(
+                plan_call(MAIN_LOOP_RETURN, true, true, Some(12), Some(slot)),
+                Some(STEPS)
+            );
+        }
+        assert_eq!(
+            plan_call(MAIN_LOOP_RETURN, false, true, Some(12), Some(3)),
+            None
+        );
+        // The loading screen's call is boosted as before, idle or not.
+        assert_eq!(
+            plan_call(LOADING_LOOP_RETURN, false, true, Some(0), None),
+            Some(STEPS)
+        );
+        assert_eq!(
+            plan_call(LOADING_LOOP_RETURN, false, true, Some(12), Some(2)),
+            Some(BOOT_STEPS)
+        );
+        assert_eq!(plan_call(0x0021_3fc5, true, true, Some(12), Some(3)), None);
+    }
+
+    /// The System Link lobby's wait: the main loop steps the machine once a
+    /// frame while the job-done byte is set (`0x12b564`), the worker
+    /// finishing a job between frames. Boosted from the main loop's return
+    /// address, the slot 3 copy makes the same steps in the same order with
+    /// the same bytes and checksum, in fewer frames.
+    #[test]
+    fn a_boosted_lobby_copy_makes_the_same_steps_and_bytes_in_fewer_frames() {
+        // Lockout-sized payload in the multiplayer slot, a copy in state 12.
+        let budget = step_budget(MAIN_LOOP_RETURN, true, Some(12), Some(3));
+        assert_eq!(budget, STEPS);
+        let len = 40 * MIB + 777;
+        let (plain, plain_frames) = load(Machine::new(len, MIB), None);
+        let (boosted, boosted_frames) = load(Machine::new(len, MIB), Some((budget, YIELDS)));
+        assert_eq!(boosted.slot, boosted.source);
+        assert_eq!(boosted.slot, plain.slot);
+        assert_eq!(boosted.checksum, plain.checksum);
+        assert_eq!(boosted.trace, plain.trace);
+        // 41 chunks, two steps each: a frame a step before, 16 a frame now.
+        assert_eq!(plain_frames, 82);
+        assert_eq!(boosted_frames, 82u32.div_ceil(STEPS));
+        // A worker slower than a frame still copies the same.
+        let mut slow = Machine::new(3 * MIB, MIB);
+        slow.slices = 2;
+        let (plain, plain_frames) = load(slow.clone(), None);
+        let (boosted, boosted_frames) = load(slow, Some((budget, YIELDS)));
+        assert_eq!(
+            (&boosted.slot, &boosted.trace, boosted.checksum),
+            (&plain.slot, &plain.trace, plain.checksum)
+        );
+        assert!(
+            boosted_frames < plain_frames,
+            "{boosted_frames} vs {plain_frames}"
+        );
+    }
+
+    #[test]
+    fn the_lobby_switch_keeps_the_hook_on_the_copy_machine() {
+        for spec in ["map-copy.lobby", "-map-copy.lobby"] {
+            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
+            r.add(&MapCopy).unwrap();
+            let plan = r.build(&hooks::Base).unwrap_or_else(|e| panic!("{e:?}"));
+            let text = plan.text();
+            assert!(
+                text.contains("several copy steps a loading frame"),
+                "{spec}: {text}"
+            );
+        }
     }
 }

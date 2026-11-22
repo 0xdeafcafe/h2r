@@ -33,6 +33,7 @@ mod geometry;
 mod hud;
 mod mirror;
 mod nav;
+mod nav_mesh;
 mod pair;
 mod params;
 mod playlists;
@@ -560,7 +561,7 @@ pub const METHODS: &[MethodDef] = &[
     def(
         m::VIEW_LAYERS,
         "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
-        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|everything","xray?":"boolean"}"#,
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|everything","xray?":"boolean"}"#,
         r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
         r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),
@@ -838,6 +839,7 @@ impl Api {
             Err(RecvTimeoutError::Disconnected) => return false,
         }
         play.update(app);
+        app.poll_bot_nav();
         true
     }
 

@@ -10,6 +10,9 @@
 //!   replaces an existing link of the same letter.
 //! - "Format" is `Vfs::format_device`: the partition's host directories are
 //!   emptied, and it fails while any file is open on that volume.
+//! - N:'s mount formats it, then clones in `vfs::Config::cache_seed`'s
+//!   files (`Vfs::seed_device`): a sim batch's warm cache slots. With no
+//!   seed, N: is left empty as retail leaves it.
 //! - Neither letter can be put on, or format, the volume the other one
 //!   resolves to (through any alias, including links into a subdirectory),
 //!   so N:'s format can never empty Z:'s cache (or the reverse).
@@ -174,7 +177,17 @@ impl Storage for VfsStorage {
     }
 
     fn mount_cache(&mut self, partition: u8) -> Result<()> {
-        self.mount(CACHE_LINK, UTILITY_LINK, partition, true)
+        self.mount(CACHE_LINK, UTILITY_LINK, partition, true)?;
+        // A sim batch's warm N: (docs/runtime/cache-slots.md, "Sim batches:
+        // a warm N:"): the template's slots go into the volume the format
+        // just emptied, before the title opens anything on it. A seed that
+        // fails leaves the volume empty, and the title copies as it would.
+        match self.lock().seed_device(&partition_device(partition)) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("vfs: N: seeded with {n} files after its format"),
+            Err(e) => eprintln!("vfs: N: not seeded ({e:?}); the title copies its maps"),
+        }
+        Ok(())
     }
 
     fn saves(&mut self) -> Option<&mut dyn crate::SaveStore> {

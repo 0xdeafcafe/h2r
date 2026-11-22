@@ -65,6 +65,11 @@ xbe.workspace = true
 # The UI Screens tool: our game screens' pages, preview and checks
 # (boot::ui_kit; docs/game/ui-builder.md).
 boot.workspace = true
+# The Navigation layers (src/app/bot_nav.rs): the bots' nav cache files,
+# their builder, their spot files and the superbounce formats. `boot`
+# already depends on both, so they add no crate to the build.
+bots = { path = "../../live/bots" }
+superbounce = { path = "../../live/superbounce" }
 # The Map Pack's content directory (`T:\$c`) on the host.
 vfs.workspace = true
 serde_json.workspace = true

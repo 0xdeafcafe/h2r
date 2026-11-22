@@ -270,7 +270,9 @@ async fn ide_answers_each_op_in_lsp_shapes() {
     assert_eq!(lines, [2, 4]);
 
     // The place is required where an op reads one; an unknown op and an
-    // unknown field are refused.
+    // unknown field are refused. A fresh server: the calls above spent
+    // most of the route's rate.
+    let h = harness().await;
     for bad in [
         json!({"source": src, "op": "hover"}),
         json!({"source": src, "op": "rename", "line": 2, "character": 8}),

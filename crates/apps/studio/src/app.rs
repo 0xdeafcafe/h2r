@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub mod audition;
+pub mod bot_nav;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
@@ -208,6 +209,10 @@ pub enum Action {
     /// Select a level collision surface by index (clearing the placements
     /// and the volume), or none. Read only.
     SelectSurface(Option<usize>),
+    /// Select a pathfinding sector, bot polygon, bot link or spot
+    /// (clearing the placements, the volume and the surface), or none.
+    /// Read only.
+    SelectNav(Option<scenario_edit::nav_view::NavPick>),
     /// The viewport gizmo's drag on the selected volume: its new box.
     /// Every one until [`Action::EndGesture`] is one undo step.
     VolumeGesture(scenario_edit::volumes::Frame),
@@ -457,6 +462,9 @@ pub struct App {
     variants_for: Option<Option<PathBuf>>,
     /// The runtime data root (`--data`); `None` is the default one.
     data_root: Option<PathBuf>,
+    /// The bots' nav mesh and spots loading for the open map
+    /// ([`bot_nav`]).
+    bot_nav: bot_nav::BotNavLoad,
     /// The playlist editor.
     pub hoppers: HopperSession,
     /// The playlist shown (0..16).
@@ -568,6 +576,7 @@ impl App {
             variants: None,
             variants_for: None,
             data_root: None,
+            bot_nav: Default::default(),
             hoppers: HopperSession::new(),
             hopper_selected: 0,
             hopper_preset: None,
@@ -1003,6 +1012,14 @@ impl App {
                 }
                 let before = self.nav_location();
                 self.session.select_surface(index);
+                self.record_placement_selection(before);
+            }
+            Action::SelectNav(pick) => {
+                if let Some(p) = pick.filter(|&p| !self.session.has_nav(p)) {
+                    return self.error(format!("no {} {} on this map", p.kind(), p.index()));
+                }
+                let before = self.nav_location();
+                self.session.select_nav(pick);
                 self.record_placement_selection(before);
             }
             Action::VolumeGesture(frame) => {

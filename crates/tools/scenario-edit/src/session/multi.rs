@@ -390,6 +390,9 @@ impl Session {
     /// bounds placed and scaled) or, without one, their glyphs; or round
     /// the selected trigger volume's box or collision surface.
     pub fn selection_sphere(&self) -> Option<(Vec3, f32)> {
+        if let Some(sphere) = self.selected_nav_sphere() {
+            return Some(sphere);
+        }
         if let Some(surface) = self.selected_surface_data() {
             return Some((surface.center(), surface.radius().max(0.5)));
         }

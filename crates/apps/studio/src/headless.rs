@@ -874,6 +874,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The game type script editor shows its text: opening a script picks
+    /// the window's tab and fills the widget's buffer, the text area has a
+    /// size, and its first lines hold glyph pixels, not only the frame's
+    /// colour. The text widget is a child window whose background is
+    /// `FrameBg`, rendered after the panel's draw list: with an opaque
+    /// `FrameBg` it covered the coloured text drawn under it, and the
+    /// editor showed an empty box. Skipped without a wgpu adapter.
+    #[test]
+    fn the_script_editor_shows_its_text() {
+        use crate::ToolKind;
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("script-editor");
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::SetTool(ToolKind::Variants));
+        app.rules.open_starter("slayer").unwrap();
+        let (rgba, [w, hgt]) = h.capture(&mut app, 6).unwrap();
+        assert_eq!(app.rules.text, ::rules::builtin::SLAYER, "the buffer holds the script");
+        let [x, y, rw, rh] = app.rules.drawn.expect("the text area was drawn");
+        assert!(rw > 100.0 && rh > 100.0, "the text area is {rw} by {rh}");
+        // The first lines, inside the frame: light glyph pixels (plain
+        // text, keywords, strings), far more than a caret's.
+        let (x0, y0) = ((x + 4.0).max(0.0) as u32, (y + 2.0).max(0.0) as u32);
+        let (x1, y1) = (((x + rw.min(420.0)) as u32).min(w), ((y + rh.min(90.0)) as u32).min(hgt));
+        let mut lit = 0;
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let i = ((py * w + px) * 4) as usize;
+                let sum = rgba[i] as u32 + rgba[i + 1] as u32 + rgba[i + 2] as u32;
+                if sum > 400 {
+                    lit += 1;
+                }
+            }
+        }
+        assert!(lit > 200, "only {lit} light pixels where the script's first lines are");
+    }
+
     /// The UI Screens tool through its widgets, as a user would: filter the
     /// tree to the sign-in prompt and pick its code page, press Up and A on the pad,
     /// hover the picture. The page steps, the picture is on screen, and the

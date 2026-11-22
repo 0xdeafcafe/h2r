@@ -140,6 +140,7 @@ impl Studio {
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
         app.poll_cards();
+        app.poll_bot_nav();
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
@@ -643,6 +644,13 @@ impl Studio {
         ui.window(&self.keys.rules)
             .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
             .build(|| game_script::window(ui, app, fonts, self.dialogs));
+        // Opening a script (from its toolbar or `rules.open`) picks its tab,
+        // asked each frame until the window's body has drawn: a request
+        // made before the dock layout exists is lost.
+        if app.rules.show {
+            let name = format!("###{}", self.keys.rules.stable_id());
+            ui.set_window_focus(Some(name.as_str()));
+        }
     }
 
     fn playlist_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
@@ -1310,6 +1318,7 @@ pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
                     | Action::ToggleSelect(_)
                     | Action::SelectVolume(_)
                     | Action::SelectSurface(_)
+                    | Action::SelectNav(_)
             )
         {
             app.dispatch(Action::SetTool(ToolKind::Scenario));

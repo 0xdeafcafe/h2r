@@ -126,6 +126,13 @@ pub trait Backend: Send {
     fn format(&mut self) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }
+    /// Clones a seed directory's root files (`<seed>/disk/*`) and their
+    /// records (`<seed>/metadata`) into this volume, straight after a
+    /// format; returns how many files. Only [`crate::Vfs::seed_device`]
+    /// calls this, with no file object open on the volume.
+    fn seed(&mut self, _seed: &std::path::Path) -> Result<usize> {
+        Err(Error::NotSupported)
+    }
     /// Final file-object cleanup. Read-only opens need no data sync by default;
     /// backends with deferred timestamps or dirty data can override this hook.
     fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {

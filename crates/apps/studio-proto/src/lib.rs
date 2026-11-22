@@ -124,6 +124,9 @@ pub mod method {
     pub const NAV_BACK: &str = "nav.back";
     pub const NAV_FORWARD: &str = "nav.forward";
     pub const NAV_GO: &str = "nav.go";
+    pub const NAV_PATHFINDING: &str = "nav.pathfinding";
+    pub const NAV_BOTS: &str = "nav.bots";
+    pub const NAV_PICK: &str = "nav.pick";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";
