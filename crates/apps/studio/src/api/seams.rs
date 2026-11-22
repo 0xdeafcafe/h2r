@@ -59,6 +59,9 @@ pub fn register(api: &mut Api) {
     // studio-tags: every field of any tag through the Tags tool's commands.
     api.register(Box::new(super::tag_fields::TagFields));
     api.register(Box::new(super::nav::Navigation));
+    // The Navigation layers' data: the game's pathfinding, the bots' mesh
+    // and spots, and a pick.
+    api.register(Box::new(super::nav_mesh::NavMesh));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
     api.register(Box::new(super::tag_io::TagIo));
     // Sound audition: decode, play and the waveform of a snd! tag.

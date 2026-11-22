@@ -7,6 +7,7 @@
 //! scale gizmo on the selection with grid and angle snapping, and placing
 //! a new entry where the cursor meets the level.
 pub(crate) mod mirror;
+pub(crate) mod nav;
 
 use std::collections::BTreeSet;
 use dear_imgui_rs::{Key, MouseButton, TextureId, Ui};
@@ -456,6 +457,9 @@ impl ViewportView {
                     if let Some(volume) = app.session.pick_volume(&ray, &app.layers) {
                         actions.push(Action::SelectVolume(Some(volume)));
                         actions.push(Action::FocusSelected);
+                    } else if let Some(pick) = app.session.pick_nav(&ray, &app.layers) {
+                        actions.push(Action::SelectNav(Some(pick)));
+                        actions.push(Action::FocusSelected);
                     } else if let Some(surface) = app.session.pick_surface(&ray, &app.layers) {
                         actions.push(Action::SelectSurface(Some(surface)));
                         actions.push(Action::FocusSelected);
@@ -689,6 +693,13 @@ pub(crate) fn pick_action(
     {
         return Some(Action::SelectVolume(Some(volume)));
     }
+    // A shown navigation layer's spot, link, polygon or sector lies over
+    // the collision it was made from, so it is picked first.
+    if hit.is_none()
+        && let Some(pick) = session.pick_nav(ray, layers)
+    {
+        return Some(Action::SelectNav(Some(pick)));
+    }
     // A shown collision surface is picked when nothing else is.
     if hit.is_none()
         && let Some(surface) = session.pick_surface(ray, layers)
@@ -705,6 +716,9 @@ fn selection_label(app: &App) -> String {
     }
     if let Some(s) = app.session.selected_surface_data() {
         return surface_label(s);
+    }
+    if let Some(pick) = app.session.selected_nav() {
+        return nav::label(app, pick);
     }
     match (app.session.selected(), app.session.scenario()) {
         _ if n > 1 => format!("{n} placements"),
@@ -764,6 +778,7 @@ pub(crate) fn upload_placements(
     vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
     upload_volumes(vp, device, app);
     upload_collision(vp, device, app);
+    nav::upload(vp, device, app);
 }
 
 /// A collision surface as the status line and inspector name it.
