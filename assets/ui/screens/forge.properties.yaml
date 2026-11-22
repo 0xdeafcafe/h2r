@@ -1,0 +1,15 @@
+screen: forge.properties
+kind: list
+layout: controls
+backing: shell
+states:
+  beacon:
+    focus: 0
+  gate:
+    focus: 0
+widgets:
+  title:
+    component: title
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

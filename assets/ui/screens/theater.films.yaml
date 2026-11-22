@@ -1,0 +1,77 @@
+screen: theater.films
+kind: list
+layout: moved
+backing: shell
+scrolls: true
+states:
+  list:
+    focus: 3
+  saved:
+    focus: 3
+  clips:
+    focus: 3
+  empty:
+    focus: 0
+  empty-saved:
+    focus: 0
+  empty-clips:
+    focus: 0
+  no-matches:
+    focus: 0
+  loading:
+    focus: 0
+  full-library:
+    focus: 27
+  unplayable:
+    focus: 4
+widgets:
+  title:
+    component: title
+    text: "THEATER"
+  description:
+    component: description
+    at: [-20, -62]
+    size: [288, 122]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"], [[Left, Right], "LIBRARY"]]
+  theater.panel.0:
+    component: text.emphasis
+    text: "{theater_panel_0}"
+    at: [-242, 174]
+    size: [74, 22]
+  theater.panel.1:
+    component: text.label
+    text: "{theater_panel_1}"
+    at: [-242, 174]
+    size: [74, 22]
+  theater.panel.2:
+    component: text.emphasis
+    text: "{theater_panel_2}"
+    at: [-162, 174]
+    size: [74, 22]
+  theater.panel.3:
+    component: text.label
+    text: "{theater_panel_3}"
+    at: [-162, 174]
+    size: [74, 22]
+  theater.panel.4:
+    component: text.emphasis
+    text: "{theater_panel_4}"
+    at: [-82, 174]
+    size: [74, 22]
+  theater.panel.5:
+    component: text.label
+    text: "{theater_panel_5}"
+    at: [-82, 174]
+    size: [74, 22]
+  theater.panel.6:
+    component: text.mods.detail.31
+    text: "{theater_panel_6}"
+    at: [22, 174]
+    size: [246, 22]
+  theater.panel.7:
+    component: text.label
+    text: "{theater_panel_7}"
+    at: [-20, 140]
+    size: [288, 120]

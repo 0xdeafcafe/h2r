@@ -1,0 +1,40 @@
+screen: clanker_player_options
+kind: dialog
+layout: large
+backing: over
+opener: xbox-live-menu
+states:
+  focus-0:
+    focus: 0
+  focus-2:
+    focus: 2
+  focus-3:
+    focus: 3
+widgets:
+  title:
+    component: title
+    text: "Clanker (bot)"
+  description:
+    component: description.clanker_player_options.30
+    text: "{help}"
+    at: [-15, 68]
+    size: [264, 26]
+  legend:
+    component: legend
+    prompts: [[B, "BACK"]]
+rows:
+  row.0:
+    kind: info
+    text: "Gamertag"
+    value: "Rusty Bolt"
+  row.1:
+    kind: info
+    text: "Difficulty"
+    value: "Heroic"
+  row.2:
+    kind: info
+    text: "Style"
+    value: "Composed"
+  row.3:
+    kind: action
+    text: "Back"

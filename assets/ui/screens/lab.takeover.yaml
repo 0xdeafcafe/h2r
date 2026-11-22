@@ -1,0 +1,27 @@
+screen: lab.takeover
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+widgets:
+  title:
+    component: title
+    text: "Lab request"
+  body:
+    component: body
+    text: "Lab driver requests a lab run.\ncb9b315e1, about 4 min\nAllow, then quit when ready."
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: action
+    text: "Not now"
+  row.1:
+    kind: action
+    text: "Allow"

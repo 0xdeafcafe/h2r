@@ -1,0 +1,327 @@
+screen: theater.playback
+kind: list
+layout: moved
+backing: none
+states:
+  playing:
+    focus: 0
+  paused:
+    focus: 0
+  opening:
+    focus: 0
+  jumping:
+    focus: 0
+  divergence:
+    focus: 0
+  unavailable:
+    focus: 0
+  hidden:
+    focus: 0
+  preparing:
+    focus: 1
+  pause-menu:
+    focus: 0
+widgets:
+  title:
+    component: title
+  legend:
+    component: legend.panel
+  transport.time:
+    component: text.theater.playback.32
+    text: "{transport_time}"
+    at: [-252, -111]
+    size: [189, 23]
+  transport.speed:
+    component: text.theater.playback.33
+    text: "1x / 0.98x"
+    at: [-54, -111]
+    size: [114, 23]
+  transport.camera:
+    component: text.theater.playback.34
+    text: "Fly / Chief"
+    at: [68, -111]
+    size: [166, 23]
+  transport.detail:
+    text: "{transport_detail}"
+    at: [-252, -159]
+    size: [327, 24]
+  transport.clip:
+    component: text.theater.playback.34
+    text: "Clip 2:26 - 2:34"
+    at: [83, -159]
+    size: [169, 24]
+  transport.legend:
+    component: text.theater.playback.34
+    text: "{transport_legend}"
+    at: [-252, -184]
+    size: [504, 23]
+  theater.panel.0:
+    component: text.emphasis
+    text: "Team Slayer"
+    at: [-28, 177]
+    size: [300, 20]
+  theater.panel.1:
+    component: text.label
+    text: "Custom Game / Slayer"
+    at: [-28, 155]
+    size: [300, 20]
+  theater.panel.2:
+    component: text.label
+    text: "19 Nov 26 / 8:26"
+    at: [-28, 133]
+    size: [300, 20]
+  theater.panel.3:
+    component: text.label
+    text: "Result: Won"
+    at: [-28, 111]
+    size: [300, 20]
+  theater.panel.4:
+    component: text.label
+    text: ""
+    at: [-28, 89]
+    size: [300, 20]
+  theater.panel.5:
+    component: text.label
+    text: "Playable"
+    at: [-28, 67]
+    size: [300, 20]
+  theater.panel.6:
+    component: text.emphasis
+    text: "Players"
+    at: [-28, 45]
+    size: [109, 20]
+  theater.panel.7:
+    component: text.emphasis
+    text: "Team"
+    at: [87, 45]
+    size: [56, 20]
+  theater.panel.8:
+    component: text.value
+    text: "Score"
+    at: [149, 45]
+    size: [46, 20]
+  theater.panel.9:
+    component: text.value
+    text: "K / D"
+    at: [201, 45]
+    size: [71, 20]
+  theater.panel.10:
+    component: text.label
+    text: "Chief"
+    at: [-28, 23]
+    size: [109, 20]
+  theater.panel.11:
+    component: text.label
+    text: "Red"
+    at: [87, 23]
+    size: [56, 20]
+  theater.panel.12:
+    component: text.mods.detail.31
+    text: "21"
+    at: [149, 23]
+    size: [46, 20]
+  theater.panel.13:
+    component: text.mods.detail.31
+    text: "17 / 8"
+    at: [201, 23]
+    size: [71, 20]
+  theater.panel.14:
+    component: text.label
+    text: "Marathon"
+    at: [-28, 1]
+    size: [109, 20]
+  theater.panel.15:
+    component: text.label
+    text: "Blue"
+    at: [87, 1]
+    size: [56, 20]
+  theater.panel.16:
+    component: text.mods.detail.31
+    text: "18"
+    at: [149, 1]
+    size: [46, 20]
+  theater.panel.17:
+    component: text.mods.detail.31
+    text: "15 / 10"
+    at: [201, 1]
+    size: [71, 20]
+  theater.panel.18:
+    component: text.label
+    text: "Echo"
+    at: [-28, -21]
+    size: [109, 20]
+  theater.panel.19:
+    component: text.label
+    text: "Red"
+    at: [87, -21]
+    size: [56, 20]
+  theater.panel.20:
+    component: text.mods.detail.31
+    text: "13"
+    at: [149, -21]
+    size: [46, 20]
+  theater.panel.21:
+    component: text.mods.detail.31
+    text: "12 / 9"
+    at: [201, -21]
+    size: [71, 20]
+  theater.panel.22:
+    component: text.label
+    text: "Haven"
+    at: [-28, -43]
+    size: [109, 20]
+  theater.panel.23:
+    component: text.label
+    text: "Blue"
+    at: [87, -43]
+    size: [56, 20]
+  theater.panel.24:
+    component: text.mods.detail.31
+    text: "11"
+    at: [149, -43]
+    size: [46, 20]
+  theater.panel.25:
+    component: text.mods.detail.31
+    text: "9 / 12"
+    at: [201, -43]
+    size: [71, 20]
+  theater.panel.26:
+    component: text.label
+    text: ""
+    at: [-28, -65]
+    size: [109, 20]
+  theater.panel.27:
+    component: text.label
+    text: ""
+    at: [87, -65]
+    size: [56, 20]
+  theater.panel.28:
+    component: text.mods.detail.31
+    text: ""
+    at: [149, -65]
+    size: [46, 20]
+  theater.panel.29:
+    component: text.mods.detail.31
+    text: ""
+    at: [201, -65]
+    size: [71, 20]
+  theater.panel.30:
+    component: text.label
+    text: ""
+    at: [-28, -87]
+    size: [109, 20]
+  theater.panel.31:
+    component: text.label
+    text: ""
+    at: [87, -87]
+    size: [56, 20]
+  theater.panel.32:
+    component: text.mods.detail.31
+    text: ""
+    at: [149, -87]
+    size: [46, 20]
+  theater.panel.33:
+    component: text.mods.detail.31
+    text: ""
+    at: [201, -87]
+    size: [71, 20]
+  theater.panel.34:
+    component: text.label
+    text: ""
+    at: [-28, -109]
+    size: [109, 20]
+  theater.panel.35:
+    component: text.label
+    text: ""
+    at: [87, -109]
+    size: [56, 20]
+  theater.panel.36:
+    component: text.mods.detail.31
+    text: ""
+    at: [149, -109]
+    size: [46, 20]
+  theater.panel.37:
+    component: text.mods.detail.31
+    text: ""
+    at: [201, -109]
+    size: [71, 20]
+  theater.panel.38:
+    component: text.label
+    text: ""
+    at: [-28, 23]
+    size: [300, 20]
+  scoreboard.title:
+    component: text.theater.playback.32
+    text: "Scoreboard"
+    at: [19, 170]
+    size: [145, 21]
+  scoreboard.score:
+    component: text.theater.playback.35
+    text: "Sc..."
+    at: [168, 170]
+    size: [42, 21]
+  scoreboard.kd:
+    component: text.theater.playback.35
+    text: "K..."
+    at: [215, 170]
+    size: [43, 21]
+  scoreboard.0.name:
+    component: text.theater.playback.32
+    text: "Chief"
+    at: [19, 148]
+    size: [145, 20]
+  scoreboard.0.score:
+    component: text.theater.playback.34
+    text: "21"
+    at: [168, 148]
+    size: [42, 20]
+  scoreboard.0.kd:
+    component: text.theater.playback.34
+    text: "17..."
+    at: [215, 148]
+    size: [43, 20]
+  scoreboard.1.name:
+    component: text.theater.playback.32
+    text: "Marathon"
+    at: [19, 128]
+    size: [145, 20]
+  scoreboard.1.score:
+    component: text.theater.playback.34
+    text: "18"
+    at: [168, 128]
+    size: [42, 20]
+  scoreboard.1.kd:
+    component: text.theater.playback.34
+    text: "15..."
+    at: [215, 128]
+    size: [43, 20]
+  scoreboard.2.name:
+    component: text.theater.playback.32
+    text: "Echo"
+    at: [19, 108]
+    size: [145, 20]
+  scoreboard.2.score:
+    component: text.theater.playback.34
+    text: "13"
+    at: [168, 108]
+    size: [42, 20]
+  scoreboard.2.kd:
+    component: text.theater.playback.34
+    text: "12..."
+    at: [215, 108]
+    size: [43, 20]
+  scoreboard.3.name:
+    component: text.theater.playback.32
+    text: "Haven"
+    at: [19, 88]
+    size: [145, 20]
+  scoreboard.3.score:
+    component: text.theater.playback.34
+    text: "11"
+    at: [168, 88]
+    size: [42, 20]
+  scoreboard.3.kd:
+    component: text.theater.playback.34
+    text: "9 /..."
+    at: [215, 88]
+    size: [43, 20]

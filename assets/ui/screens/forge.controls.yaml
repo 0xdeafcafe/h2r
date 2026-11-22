@@ -1,0 +1,17 @@
+screen: forge.controls
+kind: list
+layout: controls
+backing: shell
+scrolls: true
+states:
+  open:
+    focus: 0
+  last:
+    focus: 15
+widgets:
+  title:
+    component: title
+    text: "CONTROLS"
+  legend:
+    component: legend
+    prompts: [[B, "BACK"]]

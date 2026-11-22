@@ -1,0 +1,28 @@
+screen: kit.dialog.large
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+widgets:
+  title:
+    component: title
+    text: "Choices"
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: value
+    text: "Count"
+    values: ["0", "1", "2", "3", "4", "5", "6", "7", "8"]
+    current: 4
+  row.1:
+    kind: value
+    text: "Difficulty"
+    values: ["Easy", "Normal", "Heroic", "Legendary"]
+    current: 1

@@ -1,0 +1,23 @@
+screen: clankers
+kind: dialog
+layout: settings
+backing: over
+opener: game-setup.clankers
+states:
+  focus-0:
+    focus: 0
+  focus-4:
+    focus: 4
+  focus-7:
+    focus: 7
+widgets:
+  title:
+    component: title
+    text: "CLANKERS"
+  description:
+    component: description
+    at: [-224, 143]
+    size: [494, 20]
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]

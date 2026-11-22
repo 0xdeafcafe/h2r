@@ -1,0 +1,23 @@
+screen: browser.filters
+kind: dialog
+layout: settings
+backing: over
+opener: xbox-live-menu
+states:
+  focus-0:
+    focus: 0
+  focus-4:
+    focus: 4
+  focus-7:
+    focus: 7
+widgets:
+  title:
+    component: title
+    text: "Game Filters"
+  description:
+    component: description
+    at: [-224, 143]
+    size: [494, 20]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"], [X, "CLEAR FILTERS"]]

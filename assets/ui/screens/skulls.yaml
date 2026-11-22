@@ -1,0 +1,33 @@
+screen: skulls
+kind: list
+layout: level_select
+backing: shell
+scrolls: true
+states:
+  focus-0:
+    focus: 0
+  focus-11:
+    focus: 11
+  focus-21:
+    focus: 21
+widgets:
+  title:
+    component: title
+    text: "Game Options"
+  description:
+    component: description
+    at: [39, -30]
+    size: [221, 103]
+  legend:
+    component: legend
+    prompts: [[A, "START"], [B, "BACK"]]
+  art.0:
+    component: art
+    at: [-259, 177]
+    size: [128, 256]
+    art: { screen: 11, pane: 0, index: 1, image: 0 }
+  art.1:
+    component: art
+    at: [36, 180]
+    size: [256, 256]
+    art: { screen: 12, pane: 3, index: 0, image: 3 }

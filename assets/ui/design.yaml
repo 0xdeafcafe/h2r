@@ -1,22 +1,12 @@
-# The design system's tokens (docs/game/ui-builder.md "The design system").
-# Every screen of ours takes its colours, fonts, spacing and component
-# presets from here; assets/ui/screens/<name>.yaml names them. The values
-# are retail's: the Controls tag's header and item colours, the default
-# skin's item colour, the header layouts' font. ui_kit::components tests
-# hold the ones the list and dialog geometry also draw to these.
-
 palette:
-  # Titles, legends, status lines: the header layouts' text colour.
   hint_blue: [0.678431, 0.764706, 0.847059]
-  # Body text, descriptions, help lines, panel labels.
   pale_blue: [0.388235, 0.580392, 0.756863]
-  # The default list skin's item colour.
   item_blue: [0.560784, 0.694118, 0.811765]
-  # Row text (focused or not), panel values, emphasis.
-  white: [1.0, 1.0, 1.0]
-  # A warning line (a film that diverged).
-  alert: [1.0, 0.62, 0.56]
-
+  white: [1, 1, 1]
+  alert: [1, 0.62, 0.56]
+  forge.hud.5: [0.9235294, 0.95490193, 0.99019605]
+  theater.playback.6: [0.86, 0.91, 0.96]
+  theater.playback.7: [0.65, 0.76, 0.87]
 fonts:
   title: 2
   legend: 2
@@ -24,30 +14,20 @@ fonts:
   body: 1
   row_controls: 4
   row_default: 1
-
 spacing:
-  # Each row this much below the one before, by skin.
   row_controls: 26
   row_default: 22
-  # A dialog's body starts here (retail's dialog texts at 72 and 74).
   body_top: 72
-  # Code cells: their top, the gap between two, the extra gap mid-code.
   cell_top: 6
   cell_gap: 4
   cell_half_gap: 12
-
 alpha:
-  # An unfocused row's text, and its frame.
   unfocused: 100
   frame_dim: 110
-
 legend:
-  # Glyphs of one prompt two spaces apart, one space, the words, prompts
-  # two spaces apart: "(A) SELECT  (B) BACK" (mainmenu.map's a_select_b_back).
   glyph_gap: 2
   prompt_gap: 2
   words: upper
-
 components:
   title:
     role: "the screen's name in its header layout's first rectangle"
@@ -189,3 +169,53 @@ components:
     font: body
     colour: hint_blue
     justify: left
+  hud.forge.hud.26:
+    role: "hud of forge.hud, as the converter found it"
+    font: body
+    colour: forge.hud.5
+    justify: left
+  hud.forge.hud.27:
+    role: "hud of forge.hud, as the converter found it"
+    font: body
+    colour: forge.hud.5
+    justify: right
+  hud.forge.hud.28:
+    role: "hud of forge.hud, as the converter found it"
+    font: body
+    colour: forge.hud.5
+    justify: centre
+  description.kit.example.29:
+    role: "description of kit.example, as the converter found it"
+    font: body
+    colour: hint_blue
+    justify: left
+  description.clanker_player_options.30:
+    role: "description of clanker_player_options, as the converter found it"
+    font: body
+    colour: item_blue
+    justify: left
+  text.mods.detail.31:
+    role: "text of mods.detail, as the converter found it"
+    font: body
+    colour: pale_blue
+    justify: right
+  text.theater.playback.32:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: theater.playback.6
+    justify: left
+  text.theater.playback.33:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: theater.playback.7
+    justify: left
+  text.theater.playback.34:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: theater.playback.6
+    justify: right
+  text.theater.playback.35:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: theater.playback.7
+    justify: right
