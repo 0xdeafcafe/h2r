@@ -54,7 +54,7 @@ fn the_real_tokens_of_a_builtin_colour_its_keywords() {
 
 #[test]
 fn problems_list_errors_first_at_the_place_they_point_to() {
-    let text = "rules \"x\" 1\ncarrier slayer\n\non kill(victim, killer) {\n    score(killer, nope)\n}\n";
+    let text = "rules \"x\" 1\ncarrier slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
     let rows = problems(text, &ide::diagnostics(text));
     let first = rows.first().expect("a problem");
     assert_eq!(first.severity, "error");

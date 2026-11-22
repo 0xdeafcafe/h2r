@@ -24,7 +24,8 @@ pub struct Sig {
 }
 
 /// The front-end signature of `e`, or `None` for an entry the language
-/// does not call by name (`label_of`, which `x is <label>` lowers to).
+/// does not call by name (`label_of`: `x is <label>` walks the label's
+/// members instead, `lower::member_test`).
 /// The rows that differ from "the IR type, never `none`" are those of the
 /// design's table.
 pub fn of(e: &Entry) -> Option<Sig> {

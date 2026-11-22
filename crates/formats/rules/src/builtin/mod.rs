@@ -30,12 +30,12 @@ pub const GUN_GAME: &str = include_str!("gun_game.rules");
 pub const VIP: &str = include_str!("vip.rules");
 /// Siege: the phased attack-and-defend mode.
 pub const SIEGE: &str = include_str!("siege.rules");
-/// Race: labelled checkpoints, a point a lap.
+/// Race: numbered checkpoints, a point a lap.
 pub const RACE: &str = include_str!("race.rules");
 /// Bounce Practice: points for superbounces.
 pub const BOUNCE_PRACTICE: &str = include_str!("bounce_practice.rules");
-/// Superbounce: Slayer's rules, the superbounce mode's guide and optional
-/// points for a bounce.
+/// Superbounce: the superbounce mode's guide, and points for bounces only:
+/// a kill scores nothing.
 pub const SUPERBOUNCE: &str = include_str!("superbounce.rules");
 
 /// A built-in script: its name, the retail engine index it rides and its

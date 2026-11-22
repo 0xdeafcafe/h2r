@@ -586,10 +586,14 @@ The IR header carries it as one byte, `ir::List`, which a blob with
 any other value fails to decode by ("the header's list").
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
-distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (a global variable that
-counts ticks down, then fires `on timer`), and `enum` types a script declares.
-`player`, `team` and `object` values may be `none`. A `table` is constant
-rows of typed columns, indexed by `int`. There are no floats and no
+distances), `bool`, `player`, `team`, `object`, `zone` (an object with a
+volume: a Forge trigger volume, or a netgame flag with its capture
+volume), `squad`, `tag` (a tag path), `weapon` (a tag path that must be a
+weapon's), `timer` (a global variable that counts ticks down, then fires
+`on timer`), and `enum` types a script declares. A zone is an object and
+a weapon is a tag; nothing else converts. A handle that may be `none` is
+`T?` (`player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`); a `T`
+never is. A `table` is constant rows of typed columns, indexed by `int`. There are no floats and no
 strings at run time: text is a string-table index with typed arguments.
 An `int` indexes a table's rows; a value of the first column's type
 finds the first row holding it (`points[class]`), and a key no row holds
@@ -598,14 +602,62 @@ reads the columns' zero values. A row out of range is a script error.
 **Expressions and control.** Ordinary expressions with precedence and
 parentheses (`a = b + c * 2`), `if` / `else if` / `else`, `and` binding
 tighter than `or`; both short-circuit. A statement ends at a line break,
-`;` or `}`. A `let` or a parameter is not assigned again. These are the
-things the ReachVariantTool dialect lacks ("Prior art").
+`;` or `}`. A `let` or a parameter is not assigned again; a `let` may
+state its type (`let heir: player? = none`), and `let x = none` with no
+type is refused. These are the things the ReachVariantTool dialect lacks
+("Prior art").
+
+**`T?` and narrowing.** A value that may be `none` is a `T?`: the killer
+of `on kill`, `first(...)`, `o.carrier`, `o.team`, `player_of(o)`, a
+label's member by number or team, and a handle column read by key. A
+variable of a handle type that starts as `none` is declared `T?`
+(`global var juggernaut: player? = none`). A `T?` goes where a `T` is
+wanted only where a check proves it is not `none`: inside
+`if killer != none { ... }`, in the `else` of `killer == none`, through
+`and`, `or` and `not` (`killer == none or killer == victim` leaves
+`killer` a `player` in the `else`), and as the name `if let` binds
+(`if let k = killer and k != victim { score(k, 1) }`, the name holding
+in the condition after `and` and in the block). A check narrows a `let`,
+a parameter, a loop member and a handler argument; a global is never
+narrowed, as another handler may change it.
+
+**Checking.** The checker (`crates/formats/rules/src/lang/check.rs`)
+reads the whole script before anything is lowered and reports every
+error it finds, up to 50, in source order, each with a code
+(`null.arg`, `label.unknown`), and the warnings (`label.unused`,
+`zone.delete`). Lowering (`lang/lower.rs`) runs on a script with no
+error and makes no type decision. The codes are those of
+[rules-language-types.md](rules-language-types.md#diagnostics-and-the-editor).
 
 **Variables** are declared, named and scoped:
 `global|player|team|object var name: type = init`. The compiler assigns
 slots and enforces the budget (256 global, 64 per player, 32 per team, 32
-per labelled object, at most 256 labelled objects). A scoped variable is
-read through its owner: `p.infected`, `t.captures`.
+per object, at most 256 objects of a label). A scoped variable is read
+through its owner: `p.infected`, `t.captures`.
+
+**Labels.** A script declares the Forge labels it reads, and the map
+supplies them: `label <name>: <kind> [requirements] [= "map text"]`. The
+kind is `object` or `zone` (one value; `object?` or `zone?` when the map
+may have none), or `objects`, `zones` or `spawns` (a set; `spawns` are
+starting locations, passed to `spawn_areas` and never visited). A set
+may require `at least n`, `at most n`, `exactly n` or `n..m` members,
+`numbered` (every member has a number) or `numbered a..b` (each number
+in the range has a member and no other number appears), and `per team`
+(each team in play has a member of its own). The map text is the
+label's name unless `= "..."` gives it
+(`label capture: zones numbered 0..1 = "zone"`). The declarations fill
+the IR's label table in declaration order, which the start gate checks
+a map against ([rules-language-types.md](rules-language-types.md#labels)).
+
+A label is a typed name. `core` (declared `object`) is an `object`;
+`for each barrier b` visits a set; `capture[n]` is the member numbered
+`n` and `flag_spawn[t]` the member of team `t`, each a `zone?`, or a
+`zone` when `n` is a constant inside the declared `numbered a..b`;
+`count(checkpoint)` counts one; `x is goal` tests that `x` is a member,
+and makes `x` a `zone` where it holds. A set label is passed where a set
+is taken (`spawn_areas(team 0, attack, n)`, a `fn` parameter declared
+`zones`). There is no string label: a label is declared or it is an
+error, with the nearest declared name offered.
 
 **Handlers.** `on init`, `on round_start`, `on tick`,
 `on kill(victim, killer)`, `on spawn(p)`, `on death(p)`,
@@ -617,21 +669,31 @@ read through its owner: `p.infected`, `t.captures`.
 chain, 1 for a single bounce; `monster` a Monster Bounce),
 `on bounced(p)` (a fall out of the map during a bounce),
 `on edit(p, o)` (a granted power was used),
-`on join(p)`, `on quit(p)`, `on round_end`. A handler names every
-argument of its event, in order: `on bounce(p, spot)` is refused with
-the arguments it takes. A handler runs to completion.
+`on join(p)`, `on quit(p)`, `on round_end`. A handler names its event's
+arguments in order and may leave out trailing ones (`on bounce(p, spot)`);
+naming more is refused with what the event gives. The killer of
+`on kill`, `on actor_kill` and `on actor_assist`, and the assist, are
+`player?`; the zone of `on enter`, `on leave` and `on bounce` is a
+`zone`. A label in the zone's place (or the object's place of
+`on pickup`, `on drop`, `on press` and `on edit`) picks the handler's
+things: `on enter(goal, o)` runs for the goal only, and
+`on enter(capture z, o)` for a capture zone, which it names `z`. The
+handlers of one event, by label or not, are one IR handler and run in
+source order. A handler runs to completion.
 
 **Loops** are `for each` over a finite set only: `players`, `teams`,
 `objectives` (the objective registry's objects, at most 8, by object
-handle) and `objects labelled "x"`, each with an optional `where`. A set
+handle) and a declared label's set (`for each barrier b`), each with an
+optional `where`. A set
 passed to `count`, `first` or `pick` may name its member for the `where`
 (`count(players p where p.team == t)`). There is no
 `while`, no recursion, and functions are inlined, so every handler has a
 static worst-case op count, which the compiler prints.
 
 **Names, not datums.** Engine things are named by tag path
-(`"objects/weapons/..."`, checked against the map at load) or by Forge
-label. A script never sees a datum index or an address.
+(`"objects/weapons/..."`, checked against the map at load, a path used
+as a `weapon` against the weapon group) or by a Forge label the script
+declares. A script never sees a datum index or an address.
 
 **Options** a script declares are the rows a variant editor shows for
 it: `option name: type range = default`, with a label and a description
@@ -720,6 +782,7 @@ requires ai.squads
 
 table waves: (class: Class, per_player: int, min: int, max: int, gap: int) = [ ... ]
 table points: (class: Class, score: int) = [ ... ]
+label ff_drop: objects
 global var wave: int = 0
 global var lives: int = 7
 global var next: timer = 150
@@ -727,14 +790,14 @@ global var next: timer = 150
 on timer(next) {
     let w = waves[wave]
     let s = squad(wave % 16)
-    place_squad(s, w.class, clamp(count(players) * w.per_player, w.min, w.max), labelled "ff_drop")
+    place_squad(s, w.class, clamp(count(players) * w.per_player, w.min, w.max), ff_drop)
     hunt(s)
 }
 on squad_dead(s) {
     wave = wave + 1
     if wave == len(waves) { end_round(team 0) } else { next = waves[wave - 1].gap }
 }
-on actor_kill(killer, class) { score(killer, points[class].score) }
+on actor_kill(killer, class) { if killer != none { score(killer, points[class].score) } }
 on death(p) {
     if lives > 0 { lives = lives - 1; respawn(p) }
     else if count(players where alive) == 0 { end_round(none) }
@@ -744,6 +807,13 @@ on death(p) {
 ### Phases: attack and defend
 
 ```text
+label barrier: objects numbered
+label attack: spawns numbered 0..2
+label defend: spawns numbered 0..2
+label capture: zones numbered 0..1 = "zone"
+label core: object
+label goal: zone
+
 option phase_time: int 60..600 = 180
 option capture_time: int 5..60 = 20
 
@@ -753,19 +823,20 @@ global var clock: timer
 fn open(n: int) {
     phase = n
     clock = seconds(phase_time)
-    for each objects labelled "barrier" b where b.number < n { delete(b) }
-    spawn_areas(team 0, "attack", n)
-    spawn_areas(team 1, "defend", n)
-    if n == 2 { create("<core tag path>", first(objects labelled "core")) }
+    for each barrier b where b.number < n { delete(b) }
+    spawn_areas(team 0, attack, n)
+    spawn_areas(team 1, defend, n)
+    if n == 2 { create("<core tag path>", core) }
 }
 on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
-    let zone = first(objects labelled "zone" z where z.number == phase)
-    if phase < 2 and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    if phase < 2 {
+        if let zone = capture[phase] and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    }
 }
-on enter(zone, o) {
-    if phase == 2 and zone.label == "goal" and is_objective(o) { end_round(team 0) }
+on enter(goal, o) {
+    if phase == 2 and is_objective(o) { end_round(team 0) }
 }
 on timer(clock) { end_round(team 1) }
 ```
@@ -1217,9 +1288,9 @@ Tooling:
     capabilities on a `requires` line and as the second argument of
     `grant`, `revoke` and `granted`; types after `:`; after a `.`, the
     `variant` fields, an enum's variants, a table row's columns, or a
-    player's, team's or object's variables and built-in fields; labels
-    after `labelled`, palettes after `palette`, and sets after `each`
-    and in `count`, `first` and `pick`. In a body it offers the locals
+    player's, team's or object's variables and built-in fields;
+    palettes after `palette`, and sets, the declared labels among them,
+    after `each` and in `count`, `first` and `pick`. In a body it offers the locals
     in scope, the script's globals, options, tables, enums and
     functions, every API entry and language built-in as a snippet, and
     the statements. Each item's documentation is the hover text.
@@ -1290,7 +1361,7 @@ Tooling:
   that is the player's unit), `teams`, `variant` (record fields by name;
   each one left out reads the stock record of the script's carrier,
   `fake::stock_variant`), `labelled` (`label`, `object`, `number`,
-  `placement`: what `objects labelled` visits and `o.number` reads),
+  `placement`: what a declared label's set visits and `o.number` reads),
   `round_time_left`, and `ticks`, each with `events` of `kill`
   (`victim`, `killer`), `spawn`, `death`, `join`, `quit`, `enter` and
   `leave` (`zone`, `object`), `press`, `pickup`, `drop` and
@@ -1606,8 +1677,9 @@ scores bounces is not yet a parity game.
 **The Superbounce game type is a script**,
 `crates/formats/rules/src/builtin/superbounce.rules`, an example
 (`builtin::examples`): `carrier slayer`, `list tweakers`,
-`requires hud.superbounce`, Slayer's kill rule with its two options, and
-three bounce options: `bounce_points` (0 to 5, default 1), times the
+`requires hud.superbounce`, no kill rule (a kill scores nothing), and
+four options: `suicide_costs` (default on), a point off for a death with
+no killer or by the player's own hand; `bounce_points` (0 to 5, default 1), times the
 bounce's place in its chain up to 6; `bounced_costs` (default on), a
 point off for a Bounced; and `monster_double` (default on), a Monster
 Bounce's points doubled after the cap
@@ -1685,7 +1757,7 @@ The phased mode is the check that the API is wide enough:
 A prerequisite. `crates/formats/forge-doc` has teleporter and device
 links (`links.rs`) and labels (`labels.rs`) to tell a script which
 placement is which. Status: the document side is built; the `RulesExt`
-table and `objects labelled` are not.
+table a script's declared labels read is not.
 
 **Design.** A label is a string of at most 32 bytes plus an optional
 number (`"checkpoint" 3`, `"hill" 0`). It is a field of a placement in
@@ -1693,9 +1765,10 @@ the Forge document, set through the same edit log as any other field, so
 it has no scenario bytes and costs nothing in a session that runs no
 script. At map load the labels become a table in `RulesExt`: label,
 number, placement id, and the object's datum once it exists. Scripts
-read it through `objects labelled`. Retail maps with no Forge document
-get labels from a built-in table per netgame flag type, so
-`objects labelled "ctf_flag_spawn"` works on every map.
+read it through the labels they declare ("The language"). Retail maps
+with no Forge document get labels from a built-in table per netgame flag
+type, so `label flag_spawn: zones = "ctf_flag_spawn"` works on every
+map.
 
 **Built.** `Forge::Label { target, label }` sets or clears a label on
 a placement named as a link names one (`Endpoint`: a base entry by

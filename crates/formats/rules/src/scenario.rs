@@ -549,8 +549,8 @@ on kill(victim, killer) {
 
     #[test]
     fn ticks_held_counts_a_zone_held_alone() {
-        let src = "rules \"Z\" 1\ncarrier slayer\nglobal var held: int = 0\n\
-                   on tick { held = ticks_held(first(objects labelled \"zone\"), team 0) }\n";
+        let src = "rules \"Z\" 1\ncarrier slayer\nlabel zone: zone\nglobal var held: int = 0\n\
+                   on tick { held = ticks_held(zone, team 0) }\n";
         let mut s = Scenario {
             players: vec![seat(0, 0), seat(1, 1)],
             labelled: vec![ScenarioLabel {
