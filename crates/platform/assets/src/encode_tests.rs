@@ -365,7 +365,8 @@ fn a_painted_texel_of_a_swizzled_image_changes_only_its_texels() {
 fn tiles_outside_the_image_or_a_bad_plane_count_are_errors() {
     let img = image(PixelFormat::Argb8888, TagKind::Cube, [4, 4, 1], 0, SWZ, 1);
     let face = gradient(4, 4);
-    let pl = planes(&img, &[&face]);
+    let one: [&[u8]; 1] = [face.as_slice()];
+    let pl = planes(&img, &one);
     assert!(
         encode_tiles(&img, &pl, &[]).is_err(),
         "a cube needs six planes"

@@ -542,19 +542,19 @@ fn a_reshaped_image_is_appended_and_reads_back_through_the_decoder() {
         json!({"doc": "bitmaps", "path": out.display().to_string()}),
     );
     let bytes = std::fs::read(&out).unwrap();
-    let mut m = map::Map::from_reader(std::io::Cursor::new(bytes.clone())).unwrap();
-    let tag = tags::DecodedTag::read(&mut m, fixture::id(7)).unwrap();
-    let tags::TagData::Bitmap(b) = tag.data else {
+    let mut m = ::map::Map::from_reader(std::io::Cursor::new(bytes.clone())).unwrap();
+    let tag = ::tags::DecodedTag::read(&mut m, fixture::id(7)).unwrap();
+    let ::tags::TagData::Bitmap(b) = tag.data else {
         panic!("a bitmap")
     };
     let img = &b.images[0];
     assert_eq!(
         (img.dimensions[0], img.dimensions[1], img.format),
-        (8, 8, tags::PixelFormat::Dxt1)
+        (8, 8, ::tags::PixelFormat::Dxt1)
     );
-    let mut files = assets::ResourceFiles::new();
-    files.set_bytes(map::ResourceFile::Local, std::sync::Arc::from(bytes));
-    let d = assets::decode_image(img, &mut files).unwrap();
+    let mut files = ::assets::ResourceFiles::new();
+    files.set_bytes(::map::ResourceFile::Local, std::sync::Arc::from(bytes));
+    let d = ::assets::decode_image(img, &mut files).unwrap();
     assert!(d.size_matches());
     // 8x8 down to one block; the base is the floor's one colour within DXT1's
     // 5:6:5 error.
