@@ -256,7 +256,7 @@ impl MapGate {
         // this gate's own (a symlinked path, like macOS's /var temp dirs).
         let maps_dir = maps_dir.canonicalize().unwrap_or(maps_dir);
         MapGate {
-            maps_dir: maps_dir.into(),
+            maps_dir,
             bases,
             has_map_pack,
             installed: Mutex::new(None),

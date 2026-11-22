@@ -43,6 +43,8 @@ enum UserEvent {
     /// `host.pause` asked for the window's pause
     /// ([`agent_proto::host_pause`]).
     HostPause,
+    /// `host.quit` asked to close the window ([`agent_proto::host_quit`]).
+    Quit,
 }
 
 struct Gpu {
@@ -254,6 +256,19 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         host_shot(&parts, &dir, path)
     }));
     let _host_shot = HostShotAttached;
+    // host.quit closes the window as its close button does (the lab's
+    // takeover, docs/runtime/lab.md).
+    struct HostQuitAttached;
+    impl Drop for HostQuitAttached {
+        fn drop(&mut self) {
+            agent_proto::host_quit::hub().detach();
+        }
+    }
+    let proxy = shell.proxy.clone();
+    agent_proto::host_quit::hub().attach(Box::new(move || {
+        let _ = proxy.send_event(UserEvent::Quit);
+    }));
+    let _host_quit = HostQuitAttached;
     event_loop.run_app(&mut shell)?;
     if let Some(e) = shell.init_error.take() {
         return Err(e);
@@ -909,6 +924,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             UserEvent::Close => self.close(event_loop, "close requested"),
             UserEvent::HostPause => self.take_host_pause(),
+            UserEvent::Quit => self.close(event_loop, "host.quit"),
             UserEvent::GuestExited => {
                 if let Some(e) = self.worker.as_mut().and_then(|w| w.try_finish()).cloned() {
                     eprintln!("app: guest thread exited: {e:?}");

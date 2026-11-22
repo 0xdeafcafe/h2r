@@ -1,7 +1,8 @@
-//! The lab's questions to the player. Only a player choosing Allow can
-//! grant consent to start a job. While a job runs, a game the player opens
-//! asks what the job should do (`Ask::Running`, docs/runtime/lab.md "When
-//! the player opens a game").
+//! The lab's questions to the player. Only a player choosing Close and
+//! start (`Decision::Allowed`) can grant consent to start a job; the lab
+//! then closes this game with `host.quit`. While a job runs, a game the
+//! player opens asks what the job should do (`Ask::Running`,
+//! docs/runtime/lab.md "When the player opens a game").
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -75,7 +76,7 @@ const START: Form = Form {
     ask: Ask::Start,
     screen: SCREEN,
     class: "lab-takeover-dialog",
-    labels: &["Not now", "Allow"],
+    labels: &["Not now", "Close and start"],
     first_id: 2,
     answers: &[Decision::Declined, Decision::Allowed],
     dismissed: Decision::Declined,

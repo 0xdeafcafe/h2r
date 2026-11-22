@@ -1058,10 +1058,15 @@ struct Image {
 enum JobOutcome {
     Finished(Option<std::process::ExitStatus>),
     Skipped(&'static str),
+    /// The player allowed the job but the lab couldn't close their game:
+    /// the job goes back to the front of the queue, held until the game
+    /// closes. The note says why.
+    Held(String),
 }
 
 /// Runs the active job `pending` and records how it ended. A job the
-/// player paused goes back to the front of the queue instead.
+/// player paused, or allowed while the lab couldn't close their game, goes
+/// back to the front of the queue instead.
 fn execute(sh: &Arc<Shared>, pending: Pending) {
     let Pending {
         id,
@@ -1096,6 +1101,7 @@ fn execute(sh: &Arc<Shared>, pending: Pending) {
         ),
         Ok(JobOutcome::Finished(None)) => ("done", None),
         Ok(JobOutcome::Skipped(_)) => ("skipped", None),
+        Ok(JobOutcome::Held(_)) => ("queued", None),
         Err(e) if e.is::<Stopped>() => ("stopped", None),
         Err(e) => ("failed", Some(format!("{e:#}"))),
     };
@@ -1110,9 +1116,14 @@ fn execute(sh: &Arc<Shared>, pending: Pending) {
             .and_then(|log| summarize(BufReader::new(log)))
             .unwrap_or_default()
     };
+    let mut held = None;
     let (status, skip_reason) = match outcome {
         Ok(JobOutcome::Finished(status)) => (status, None),
         Ok(JobOutcome::Skipped(reason)) => (None, Some(reason.to_owned())),
+        Ok(JobOutcome::Held(note)) => {
+            held = Some(note);
+            (None, None)
+        }
         Err(_) => (None, None),
     };
     // A stopped game exits through its SIGTERM handler or the signal.
@@ -1129,8 +1140,9 @@ fn execute(sh: &Arc<Shared>, pending: Pending) {
     let paused = state == "stopped"
         && memory_error.is_none()
         && inner.active.as_ref().is_some_and(|a| a.id == id && a.pause);
-    if paused {
+    if paused || held.is_some() {
         if let Some(m) = inner.jobs.get_mut(id) {
+            m.player.extend(held);
             *m = requeued(m);
             let _ = write_meta(&sh.cfg, m);
         }
@@ -1263,6 +1275,7 @@ fn request_takeover(
     id: &str,
     request: TakeoverRequest,
 ) -> Result<Option<JobOutcome>> {
+    let name = request.name.clone();
     let outcome = sh.takeover.admit(
         request,
         |phase| sh.update(id, |m| m.state = phase.into()),
@@ -1274,6 +1287,18 @@ fn request_takeover(
         takeover::Outcome::Proceed => Ok(None),
         takeover::Outcome::Skipped(reason) => Ok(Some(JobOutcome::Skipped(reason))),
         takeover::Outcome::Stopped => Err(Stopped.into()),
+        takeover::Outcome::Held { reason, game } => {
+            // The queue waits for that game to close (host/player.rs).
+            sh.player.lock().unwrap().hold(game);
+            let note = format!("player: {reason}");
+            eprintln!("lab: job {id}: {note}");
+            // The installed host tells the player on the Mac; a host run
+            // by hand (and the tests') has only its log.
+            if sh.cfg.managed {
+                player::tell(&name, &reason);
+            }
+            Ok(Some(JobOutcome::Held(note)))
+        }
     }
 }
 

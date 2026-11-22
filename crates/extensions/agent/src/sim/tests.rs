@@ -1893,6 +1893,34 @@ fn host_pause_needs_a_window_and_host_step_counts_the_agents_ticks() {
 }
 
 #[test]
+fn host_quit_needs_a_window_and_asks_it_to_close() {
+    use agent_proto::host_quit::{self, Hub};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let hub: &'static Hub = Box::leak(Box::new(Hub::new()));
+    let (h, mut game) = (Harness::new(), game());
+    super::quit::install(&h.agent, hub);
+    // Answered on the connection's thread: no tick needed.
+    h.send(host_quit::method::QUIT, json!({}));
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+    h.send(host_quit::method::QUIT, json!({"save": true}));
+    assert_eq!(h.reply()["error"]["code"], code::INVALID_PARAMS);
+    let closes: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
+    hub.attach(Box::new(move || {
+        closes.fetch_add(1, Ordering::SeqCst);
+    }));
+    h.send(host_quit::method::QUIT, Value::Null);
+    let r = h.reply();
+    assert_eq!(r["result"]["closing"], json!(true), "{r}");
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert!(hub.requested());
+    let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
+    for name in host_quit::method::ALL {
+        assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
+    }
+}
+
+#[test]
 fn host_screenshot_needs_a_window_and_answers_what_it_wrote() {
     use agent_proto::host_shot::{self, Hub, Shot};
     let hub: &'static Hub = Box::leak(Box::new(Hub::new()));

@@ -10,11 +10,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use agent_proto::host_quit;
 use agent_proto::takeover::{self, Decision, Operation, Source};
 use serde_json::{Value, json};
 
@@ -360,6 +361,11 @@ struct FakeGame {
     window: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<takeover::Request>>>,
+    /// `host.quit` calls taken.
+    quits: Arc<AtomicUsize>,
+    /// `host.quit` answers `closing`; off, it refuses as a game without
+    /// a window shell does.
+    quit_ok: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -375,8 +381,11 @@ impl FakeGame {
         let window = Arc::new(AtomicBool::new(window));
         let shutdown = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let quits = Arc::new(AtomicUsize::new(0));
+        let quit_ok = Arc::new(AtomicBool::new(true));
         let worker = {
             let (window, shutdown, requests) = (window.clone(), shutdown.clone(), requests.clone());
+            let (quits, quit_ok) = (quits.clone(), quit_ok.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     if shutdown.load(Ordering::Acquire) {
@@ -407,6 +416,24 @@ impl FakeGame {
                             assert_eq!(params.id, 1);
                             json!(takeover::Status { decision })
                         }
+                        // The window stays open until the test closes it,
+                        // as a game still stopping its guest does.
+                        host_quit::method::QUIT => {
+                            quits.fetch_add(1, Ordering::AcqRel);
+                            if !quit_ok.load(Ordering::Acquire) {
+                                let _ = writeln!(
+                                    stream,
+                                    "{}",
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request.id,
+                                        "error": {"code": 4, "message": "no window here"},
+                                    })
+                                );
+                                continue;
+                            }
+                            json!(host_quit::QuitReply { closing: true })
+                        }
                         method => panic!("unexpected game API method {method}"),
                     };
                     let _ = writeln!(
@@ -422,6 +449,8 @@ impl FakeGame {
             window,
             shutdown,
             requests,
+            quits,
+            quit_ok,
             worker: Some(worker),
         }
     }
@@ -514,8 +543,42 @@ fn takeover_allow_waits_for_the_game_window_to_close() {
     assert!(requests[0].estimate_seconds > 0);
     drop(requests);
 
+    // Allow asked the game to close.
+    assert_eq!(game.quits.load(Ordering::Acquire), 1);
     game.close_window();
     assert_eq!(wait_fake_job(&lab, &id)["job"]["state"], "done");
+}
+
+#[test]
+fn takeover_allow_holds_the_job_when_the_game_cannot_be_closed() {
+    let lab = Lab::named("allow-held");
+    let game = FakeGame::listen(&lab, true, Decision::Allowed);
+    game.quit_ok.store(false, Ordering::Release);
+    let id = start_fake_run(&lab);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let state = loop {
+        let state = json(&ok(&lab.local(&["status"])));
+        if state["held_for_player"] == true && state["queued"] == json!([id]) {
+            break state;
+        }
+        assert!(Instant::now() < deadline, "not held: {state}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(state["active"].is_null(), "{state}");
+    assert_eq!(game.quits.load(Ordering::Acquire), 1);
+    // Not skipped: still waiting, and its note says why.
+    let waiting = lab.local(&["wait", &id, "--timeout", "0"]);
+    assert_eq!(waiting.status.code(), Some(3));
+    let job = &json(&String::from_utf8_lossy(&waiting.stdout))["job"];
+    assert_eq!(job["state"], "queued", "{job}");
+    let note = job["player"][0].as_str().unwrap();
+    assert!(note.starts_with("player: allowed the job, but the lab could not close"), "{note}");
+    assert!(note.contains("close its window"), "{note}");
+
+    // The player closes it: the job starts with no second prompt.
+    game.close_window();
+    assert_eq!(wait_fake_job(&lab, &id)["job"]["state"], "done");
+    assert_eq!(game.requests.lock().unwrap().len(), 1);
 }
 
 #[test]

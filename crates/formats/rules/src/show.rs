@@ -402,7 +402,7 @@ mod tests {
         );
         // A payload over the record's bound.
         assert_eq!(
-            Cue::decode(MESSAGE, &vec![0; MAX_CUE_BYTES + 1], &strings),
+            Cue::decode(MESSAGE, &[0; MAX_CUE_BYTES + 1], &strings),
             Err(CueError::TooLong(MAX_CUE_BYTES + 1))
         );
         // Every truncation.
