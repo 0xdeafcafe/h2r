@@ -18,6 +18,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+mod cache_template;
 mod cloud;
 
 const USAGE: &str = "usage:
@@ -802,6 +803,10 @@ fn batch(args: Vec<String>) -> Result<()> {
     }
     let batch = batch_id.as_deref().map(|id| (id, locks.as_path()));
     prepare_output(&b, &file, &arms, batch_id.as_deref())?;
+    // Z:'s map cache from the image's template (docs/runtime/cache-slots.md,
+    // "Sim batches: a warm Z:").
+    let template = cache_template::Template::for_batch(&common.out(), &plan.dylib, &disc);
+    let gate = cache_template::Gate::default();
     common.disc = Some(disc);
     let next = AtomicUsize::new(0);
     let lines = Mutex::new(Vec::new());
@@ -814,10 +819,22 @@ fn batch(args: Vec<String>) -> Result<()> {
                     let n = next.fetch_add(1, Ordering::Relaxed);
                     let Some(r) = b.runs.get(n) else { break };
                     let rd = RunDir::new(&b.out, &r.id);
+                    let mut cache = String::new();
                     let result = make_data(&rd, &shared)
                         .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
                         .and_then(|()| {
+                            let start = cache_template::start(template.as_ref(), &gate, &rd.data());
+                            cache = start.label();
                             let status = spawn(&common, &rd, batch, audit)?.wait()?;
+                            if let (cache_template::Start::Producer(_), Some(t)) =
+                                (&start, &template)
+                                && status.success()
+                            {
+                                save_template(t, &rd.data());
+                            }
+                            // Dropping the start lets runs waiting for the
+                            // template go.
+                            drop(start);
                             if !status.success() {
                                 bail!("sim child exited {status}. See {}", rd.log().display());
                             }
@@ -838,7 +855,7 @@ fn batch(args: Vec<String>) -> Result<()> {
                     } else {
                         "NO REPORT"
                     };
-                    let line = format!("{:<28} {got}  {how}", r.id);
+                    let line = format!("{:<28} {got}  {how}{cache}", r.id);
                     println!("[{}/{}] {line}", n + 1, b.runs.len());
                     lines.lock().unwrap_or_else(|e| e.into_inner()).push(line);
                 }
@@ -877,6 +894,23 @@ fn batch(args: Vec<String>) -> Result<()> {
         println!("audit: {} runs, {} missing reports", merged.runs, missing.len());
     }
     finish_batch(&b, failed.load(Ordering::Relaxed), t)
+}
+
+/// Saves a finished cold run's Z: slots as the batch's template.
+fn save_template(t: &cache_template::Template, data: &Path) {
+    use cache_template::Saved;
+    match t.save(data) {
+        Ok(Saved::Saved { slots, cloned }) => println!(
+            "map cache: saved {slots} Z: slots as template {} ({})",
+            t.key(),
+            if cloned { "cloned" } else { "copied, no clone" }
+        ),
+        Ok(Saved::Exists) => {}
+        Ok(Saved::NoSlots) => {
+            println!("map cache: the run left no finished Z: slot; every run copies Z:'s maps")
+        }
+        Err(e) => println!("map cache: template {} not saved: {e}", t.key()),
+    }
 }
 
 fn prepare_output(

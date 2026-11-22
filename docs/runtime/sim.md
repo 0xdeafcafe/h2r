@@ -594,6 +594,14 @@ params = "tuning/aggressive.toml"
   `<map>[-<gametype>][-<skill>]-s<seed>`, with the game type and skill
   segments included when those axes are set. Separate mode appends the
   arm name. In either swap mode the second leg appends `-swapped`.
+- **Z:'s map cache.** A run's data directory starts with Z:'s cache slots
+  (`shared`, `single_player_shared`) cloned from the image's template in
+  `<image out>/sim-cache/utility/`, so its boot skips their copy. The
+  first run of a batch with no template makes it while the other workers
+  wait. N:'s slots (the main menu and the match's map) are copied on
+  every run, since every boot formats N:. Each run's status line says
+  `warm Z:` or `cold Z:`; `H2_SIM_CACHE_TEMPLATE=0` turns the template
+  off ([cache-slots.md](cache-slots.md#sim-batches-a-warm-z)).
 - **Arms.** By default each run plays config A against config B in the
   same match: half the bots A, half B (2 v 2 with teams A and B in a team
   game; in free-for-all, alternating). That is the fairest comparison: the
@@ -1110,8 +1118,9 @@ headers and blocks while those dependencies are being traced.
 - Sim mode never builds nav meshes: run `h2 bots nav <map>`
   (`crates/apps/cli/src/bots_nav.rs`) once per map first.
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
-  `bots/` linked to `--data`'s). For supported Map Pack runs the batch
-  stages the selected offer from the shared data directory.
+  `bots/` linked to `--data`'s, Z:'s cache slots cloned from the image's
+  template). For supported Map Pack runs the batch stages the selected
+  offer from the shared data directory.
 - The match's pace replaces `H2_BOOT_REALTIME` (unpaced unless the match
   says otherwise).
 - Example match and batch files are in [sim-examples/](sim-examples/).
@@ -1139,4 +1148,5 @@ here), `cargo test -p bots tuning` and `cargo test -p bots
 a_tuned_brain` (the overrides), `cargo test -p sim-bridge sim_frame` (the skip's decision
 and stubs over a fake guest), `cargo test -p boot sim_glue` (snapshots to
 samples, limits and phantom tuning), and `cargo test -p cli
-sim_cmd` (child arguments, per-run data, the results directory).
+sim_cmd` (child arguments, per-run data, the results directory, the Z:
+template's key, saving, populating, gate and cleanup).

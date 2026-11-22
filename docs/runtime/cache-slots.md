@@ -1,8 +1,8 @@
 # Campaign cache integration gate
 
 Status: Built.
-Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`, `crates/rewrites/engine/src/map_status.rs`, `crates/rewrites/sim-bridge/src/sim_status_poll.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc), `crates/rewrites/engine/tests/map_status_differential.rs` (needs `H2_XBE`).
-Switch: `impl.sim.status-poll` ([The status poll](#the-status-poll), on by default).
+Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`, `crates/rewrites/engine/src/map_status.rs`, `crates/rewrites/sim-bridge/src/sim_status_poll.rs`, `crates/apps/cli/src/sim_cmd/cache_template.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc), `crates/rewrites/engine/tests/map_status_differential.rs` (needs `H2_XBE`), `sim_cmd::cache_template::tests`.
+Switches: `impl.sim.status-poll` ([The status poll](#the-status-poll), on by default), `H2_SIM_CACHE_TEMPLATE` ([Sim batches: a warm Z:](#sim-batches-a-warm-z), on by default).
 
 `crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
@@ -312,3 +312,96 @@ against the lifted original over seeded slots, requests and queues, each
 case run seeded (a miss), with fresh dead-stack garbage (a hit) and after
 one changed byte, comparing every register and every store outside the
 dead stack.
+
+## Sim batches: a warm Z:
+
+Each `h2 sim batch` run has a data directory of its own
+(`<out>/runs/<id>/data`, [sim.md](sim.md)), so every boot copies maps from
+the disc into the cache slots. What survives a boot decides what can be
+kept warm.
+
+**What makes a map cached.** All of it is in files under the data root,
+and the boot reads it back:
+
+- **The slot files.** Slot *n* is `cache%03d.map`: slots 0-1 on Z:
+  (`disk/Partition5`), slots 2-5 on N: (`disk/Partition4`)
+  ([xapi.md](xapi.md#the-second-cache-volume-n)). Each starts with the
+  map's 0x800-byte header (`head` at 0, `foot` at 0x7fc). The copier
+  writes a zero header first and the map's header only after the payload
+  is flushed, so a valid header means a finished copy
+  ([the integration gate](#campaign-cache-integration-gate)). The resident
+  record at `0x557c90` is loaded from that header; reopening a slot and
+  reloading its header causes no disc read or payload write
+  (`crates/runtime/kernel/tests/cache_slots.rs`).
+- **The FATX metadata.** Each file's times and attributes are a record
+  under `metadata/PartitionN/<name in hex>/record`
+  (`crates/runtime/vfs/src/host.rs`, `record_path`). A missing record
+  reads as the host file's times.
+- **The cache database** (which partition is whose, raw-disk byte
+  0x800) is not on disk: the kernel seeds it in memory on every boot
+  (`crates/runtime/kernel/src/rawdisk.rs`).
+
+**What survives a boot.** XapiInitProcess mounts Z: without a format
+(`fFormatClean = FALSE`, [xapi.md](xapi.md#launch-utility-and-startup)),
+so slots 0 (`shared`) and 1 (`single_player_shared`) persist. N: is
+formatted by `XMountCacheDrive` on every boot
+(`crates/platform/xapi/src/cache.rs`, `VfsStorage::mount_cache`), so the
+main menu (slot 2), the multiplayer map (slot 3) and campaign levels
+(slots 4-5) are copied again on every boot, from any data directory.
+The map the System Link lobby waits for is in slot 3, on N:.
+
+**What a slot depends on.** The payload is the disc map's bytes. The
+header is the map's header with two edits: the path (copy state 4,
+`0x214343`) and a FILETIME at `+0x14c`, the guest's clock at the copy.
+The FILETIME orders eviction between campaign slots 4-5 and nothing
+else reads it. Nothing in Z:'s slots names the run, its seed, its
+session or its match. The boot checks slot 1 against the DVD (`+0x144`),
+and `0x2136c0` invalidates on language or build, so a template made by
+the same image from the same disc passes both.
+
+**What a warm Z: changes.** Only work before the match: a boot that
+finds slots 0-1 valid skips their copy, so the loading screen draws
+fewer frames before the main menu. The sim writes the shared random seed
+(`RANDOM_SEED_PTR`) and the spawn words at the match's first tick
+(`crates/extensions/game/src/sim_glue.rs`), and its tick 0 is the match
+start. Lobby length and frame counts can already differ between cold
+runs (a copy job still running is left to the next frame, `map-copy`),
+and repeated runs give identical `state_hashes_v1`
+([notes/sim.md](notes/sim.md)). That a warm Z: leaves every tick hash
+unchanged is inferred from this, not yet measured: an A/A `h2 sim diff`
+of a warm run against a cold one on the same seed checks it.
+
+**The template.** `h2 sim batch` keeps Z:'s finished slots per image in
+`<out>/sim-cache/utility/<key>/` (`disk/` the slot files, `metadata/`
+their records). The key hashes the image's build stamp
+(`<dylib>.stamp`), the disc's path, length and mtime, and the running
+`h2`'s, so a new build, disc or `h2` starts a new template; saving one
+removes the other keys'. It does not depend on the match's map: Z:
+holds the shared maps only.
+
+- **Populating a run.** Before a run boots, the batch puts the
+  template's slots with a valid header, and their records, into the run's
+  `disk/Partition5` with `fclonefileat` (copy-on-write on APFS, so the
+  runs share one copy's blocks). Where cloning fails it copies
+  (`std::fs::copy`, which shares extents through `copy_file_range` on
+  Linux filesystems that can) and the run's status line says
+  `copied, no clone`. A Z: that already has a slot file is left alone.
+  The run's other Z: files never enter the template.
+- **Making it.** The first run of a batch that finds no template claims
+  it; the batch's other workers wait for that run to finish rather than
+  copy Z: at once. If the run exits 0, its finished slots are staged in
+  `.staging-<key>-<pid>-<nanos>` and renamed to `<key>`, so concurrent
+  savers (two batches on one image) leave one whole template. A batch
+  claims once: if that run saves nothing, its other runs start cold.
+- **Cleanup.** The batch removes `<out>/runs/<id>/data` after each run
+  and `h2 lab` removes every `runs/*/data`
+  (`crates/apps/cli/src/lab/simbench.rs`, `remove_run_data`). The
+  template is under the image's `--out`, not the batch's, and the run's
+  copies are clones, so neither touches it.
+- **The switch.** `H2_SIM_CACHE_TEMPLATE=0` (or `off`, `false`, `no`)
+  makes every run copy Z: from the disc, the cold reference.
+
+N: stays cold: the main menu and the match's map are copied on every
+run, and the lobby still waits for slot 3. Keeping N: would mean not
+formatting it at boot, which retail always does.
+
