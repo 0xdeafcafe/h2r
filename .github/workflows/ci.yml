@@ -29,10 +29,10 @@ jobs:
         run: python3 scripts/crate-graph.py layers --check
       - name: Crate table
         run: python3 scripts/crate-table.py --check
-      # Links, the docs index and the docs cited in code fail the run; names,
-      # paths, style and cited sections are findings it prints.
+      # --strict: every finding fails the run (links, index, cited docs and
+      # sections, names, paths, style, undocumented H2_* switches).
       - name: Docs
-        run: python3 scripts/docs-check.py
+        run: python3 scripts/docs-check.py --strict
 
   test:
     name: ${{ matrix.os }}
