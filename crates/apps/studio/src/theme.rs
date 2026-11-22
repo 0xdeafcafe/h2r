@@ -146,8 +146,61 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         LayerId::CollisionOnly => [1.0, 0.15, 0.25],
         LayerId::InstanceCollision => [0.55, 0.8, 1.0],
         LayerId::ObjectCollision => [1.0, 0.85, 0.3],
+        // Teal for the game's AI, blue for the bots, pink for the spots.
+        LayerId::Pathfinding => [0.3, 0.85, 0.7],
+        LayerId::BotNav => [0.5, 0.6, 1.0],
+        LayerId::BotSpots => [1.0, 0.5, 0.85],
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
+    }
+}
+
+/// A pathfinding sector's tint: one of a few teal and green shades,
+/// picked by its flags, so sectors with the same flags share a shade.
+/// A sector that is not a floor (a wall, a ceiling) is dimmer.
+pub fn sector_color(flags: u16, floor: bool) -> [f32; 3] {
+    const SHADES: [[f32; 3]; 8] = [
+        [0.3, 0.85, 0.7],
+        [0.2, 0.7, 0.95],
+        [0.45, 0.95, 0.45],
+        [0.75, 0.95, 0.35],
+        [0.25, 0.55, 0.75],
+        [0.55, 0.85, 0.95],
+        [0.2, 0.95, 0.85],
+        [0.6, 0.75, 0.5],
+    ];
+    let shade = SHADES[(u32::from(flags).wrapping_mul(0x9e37_79b9) >> 29) as usize];
+    if floor {
+        shade
+    } else {
+        shade.map(|c| c * 0.55)
+    }
+}
+
+/// A bot link's colour by how it is crossed.
+pub fn bot_link_color(kind: scenario_edit::nav_view::BotLinkKind) -> [f32; 3] {
+    use scenario_edit::nav_view::BotLinkKind;
+    match kind {
+        BotLinkKind::Walk => [0.5, 0.6, 1.0],
+        BotLinkKind::Drop => [1.0, 0.55, 0.15],
+        BotLinkKind::Jump => [1.0, 0.9, 0.25],
+        BotLinkKind::CrouchJump => [0.85, 0.35, 1.0],
+        BotLinkKind::Teleporter => [0.25, 0.95, 1.0],
+        BotLinkKind::Lift => [0.35, 1.0, 0.4],
+        BotLinkKind::Elevator => [0.65, 1.0, 0.65],
+    }
+}
+
+/// A superbounce or crouch spot's colour by what the files say of it.
+pub fn spot_color(state: scenario_edit::nav_view::SpotState) -> [f32; 3] {
+    use scenario_edit::nav_view::SpotState;
+    match state {
+        SpotState::Proven => [0.3, 1.0, 0.4],
+        SpotState::Failed => [0.55, 0.3, 0.3],
+        SpotState::Dead => [1.0, 0.15, 0.15],
+        SpotState::Learned => [0.8, 1.0, 0.3],
+        SpotState::Training => [1.0, 0.75, 0.2],
+        SpotState::Likely => [1.0, 0.5, 0.85],
     }
 }
 

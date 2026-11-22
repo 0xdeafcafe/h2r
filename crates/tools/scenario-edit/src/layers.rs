@@ -29,6 +29,15 @@ pub enum LayerId {
     /// Each placed object's `coll` BSPs and `phmo` shapes as wire shapes
     /// ([`crate::object_collision`]).
     ObjectCollision,
+    /// Each structure BSP's own pathfinding sectors and links, Halo 2's AI
+    /// navigation ([`crate::nav_view::LevelPathfinding`]).
+    Pathfinding,
+    /// The bots' nav mesh: polygons and links by kind
+    /// ([`crate::nav_view::BotNav`]).
+    BotNav,
+    /// The superbounce and crouch spots the bots use, by state
+    /// ([`crate::nav_view::BotSpot`]).
+    BotSpots,
     Halo1,
     Live,
 }
@@ -41,6 +50,9 @@ impl LayerId {
         Self::InstanceCollision,
         Self::ObjectCollision,
     ];
+
+    /// The navigation layers, hidden until shown ([`Layers::default`]).
+    pub const NAVIGATION: [Self; 3] = [Self::Pathfinding, Self::BotNav, Self::BotSpots];
 
     /// Legend order. Every placement block has a row, even on an empty map.
     pub fn all() -> impl Iterator<Item = Self> {
@@ -56,6 +68,7 @@ impl LayerId {
         .chain([Self::SpawnPoints, Self::Flags, Self::NetgameItems])
         .chain(VolumeKind::ALL.map(Self::Volume))
         .chain(Self::COLLISION)
+        .chain(Self::NAVIGATION)
         .chain([Self::Halo1, Self::Live])
     }
 
@@ -92,6 +105,9 @@ impl LayerId {
             Self::CollisionOnly => "collision_only",
             Self::InstanceCollision => "instance_collision",
             Self::ObjectCollision => "object_collision",
+            Self::Pathfinding => "pathfinding",
+            Self::BotNav => "bot_nav",
+            Self::BotSpots => "bot_spots",
             Self::Halo1 => "halo1",
             Self::Live => "live",
         }
@@ -115,6 +131,9 @@ impl LayerId {
             Self::CollisionOnly => "Collision only",
             Self::InstanceCollision => "Instance collision",
             Self::ObjectCollision => "Object collision",
+            Self::Pathfinding => "AI pathfinding",
+            Self::BotNav => "Bot nav mesh",
+            Self::BotSpots => "Bot superbounce spots",
             Self::Halo1 => "Halo 1 overlay",
             Self::Live => "Live objects",
         }
@@ -139,6 +158,7 @@ impl LayerId {
             | Self::CollisionOnly
             | Self::InstanceCollision
             | Self::ObjectCollision => "Collision",
+            Self::Pathfinding | Self::BotNav | Self::BotSpots => "Navigation",
             Self::Halo1 => "Reference",
             Self::Live => "Live",
         }
@@ -150,17 +170,25 @@ pub enum Preset {
     Art,
     Gameplay,
     Collision,
+    Navigation,
     Everything,
 }
 
 impl Preset {
-    pub const ALL: [Self; 4] = [Self::Art, Self::Gameplay, Self::Collision, Self::Everything];
+    pub const ALL: [Self; 5] = [
+        Self::Art,
+        Self::Gameplay,
+        Self::Collision,
+        Self::Navigation,
+        Self::Everything,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::Art => "art",
             Self::Gameplay => "gameplay",
             Self::Collision => "collision",
+            Self::Navigation => "navigation",
             Self::Everything => "everything",
         }
     }
@@ -170,6 +198,7 @@ impl Preset {
             Self::Art => "Art",
             Self::Gameplay => "Gameplay",
             Self::Collision => "Collision",
+            Self::Navigation => "Navigation",
             Self::Everything => "Everything",
         }
     }
@@ -203,14 +232,20 @@ impl Preset {
                     | InstanceCollision
                     | ObjectCollision
             ),
+            // Where the AI and the bots walk, over the level and the
+            // collision only walls they walk beside.
+            Self::Navigation => matches!(
+                id,
+                Structure | CollisionOnly | Pathfinding | BotNav | BotSpots
+            ),
             Self::Everything => true,
         }
     }
 }
 
 /// The viewport's shown layers. Everything starts shown except the
-/// collision layers, which cover the picture: the Collision and
-/// Everything presets show them.
+/// collision and navigation layers, which cover the picture: the
+/// Collision, Navigation and Everything presets show them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layers {
     hidden: BTreeSet<LayerId>,
@@ -220,7 +255,10 @@ pub struct Layers {
 impl Default for Layers {
     fn default() -> Self {
         Self {
-            hidden: LayerId::COLLISION.into(),
+            hidden: LayerId::COLLISION
+                .into_iter()
+                .chain(LayerId::NAVIGATION)
+                .collect(),
             xray: false,
         }
     }
@@ -277,9 +315,19 @@ mod tests {
         assert!(!layers.visible(LayerId::Objects));
         layers.apply(Preset::Everything);
         assert!(LayerId::all().all(|id| layers.visible(id)));
-        // The default hides only the collision layers.
+        layers.apply(Preset::Navigation);
+        assert!(LayerId::NAVIGATION.iter().all(|&id| layers.visible(id)));
+        assert!(layers.visible(LayerId::Structure));
+        assert!(layers.visible(LayerId::CollisionOnly));
+        assert!(!layers.visible(LayerId::LevelCollision));
+        assert!(!layers.visible(LayerId::Objects));
+        // The default hides only the collision and navigation layers.
         let default = Layers::default();
         let hidden: Vec<_> = LayerId::all().filter(|&id| !default.visible(id)).collect();
-        assert_eq!(hidden, LayerId::COLLISION);
+        let want: Vec<_> = LayerId::COLLISION
+            .into_iter()
+            .chain(LayerId::NAVIGATION)
+            .collect();
+        assert_eq!(hidden, want);
     }
 }
