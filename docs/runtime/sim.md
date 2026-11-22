@@ -316,7 +316,9 @@ reaction = 5
 for the match: the bots practise bounces instead of fighting
 ([Bounce practice](#bounce-practice)). A `[drill]` table (with
 `superbounce = true`) makes them try one site only
-([The bounce drill](#the-bounce-drill)).
+([The bounce drill](#the-bounce-drill)). A `[train]` table (with
+`superbounce = true`, and no `[drill]`) makes the run one shard of a
+bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)).
 
 ### Bot parameters from a file
 
@@ -923,6 +925,62 @@ The winning numbers go into the game at one place,
 The commands and the tables to fill are in
 [notes/2026-11-21-bot-bounce-sim.md](../game/notes/2026-11-21-bot-bounce-sim.md).
 
+### Training the bounce sites
+
+`h2 sim train <train file>` searches each bounce site's knobs
+([bounce-search.md](../game/bounce-search.md)) by playing the practice match
+as parallel runs, and reports what the sites learned. `sim::train` (pure and
+tested) plans the runs and builds the report; the CLI runs the processes.
+
+```toml
+out = "results/bounce-train"            # relative to this file
+match = "superbounce-train-match.toml"  # superbounce = true and the bots
+maps = ["ascension"]
+seed = 1        # the match's seed and the search's draws
+shards = 4      # runs a map; fixed here, not by --parallel
+budget = 120    # scored tries a site
+```
+
+- **Runs.** One run a map and shard, `<map>-shard<i>`, each the match
+  file's match with its own `[train] shard = i, shards = n, budget = b,
+  seed = s` (`sim::config::MatchConfig::train`, `sim::train::TrainConfig`).
+  A run owns the sites whose spot id modulo `shards` is its `shard`
+  (`sim::train::owns`), so the runs of a batch never fly the same site and
+  the result does not depend on `--parallel`. `[train]` is refused without
+  `superbounce = true`, with a `[drill]`, with `shard` not under `shards`
+  and with a budget of 0.
+- **The game side.** `Sim::add_bots` hands the table to the bots
+  (`bots::learn::set`). The word hook the drill uses (`sim: drill word`) runs
+  in a training match too, and the match ends as soon as every site of the
+  run's shard is closed (`bots::learn::done`, read each tick; the report's
+  end is `stopped`), or at `max_ticks`.
+- **Data.** Each run plays on its own copy of the map's `.learned`,
+  `.verified` and `.ghosts` (`make_bounce_data`), kept in
+  `runs/<id>/harvest/{start,end}`. Unless `--no-merge`, the runs' files are
+  merged into `--data`'s `bots/` at the end, as `h2 sim harvest` does it;
+  with it, `h2 sim harvest <out>` merges them later.
+- **Flags.** `--map NAME` (repeatable) and `--budget N` go over the file's
+  values. `--dry-run` lists the runs and, from the map's `.spots` file, each
+  shard's sites. `--reopen` first turns the `dead` and `blocked` lines of
+  `--data`'s `.learned` back to `open`, their search restarted. `--status`
+  prints the report table from the runs' `.learned` copies (the running
+  run's own data, else what it kept, else the shared file), so it can run
+  while a batch plays. `--parallel`, `--disc`, `--out`, `--data`, `--tier`,
+  `--pace` and `--keep-data` are a batch's.
+- **Resuming.** Run the same command again: closed sites are skipped and
+  open ones carry on from their line.
+- **Report.** `<out>/train.json` (`h2-sim-train/1`: each map's sites,
+  states and tries, and a row a site with its state, `how`, tries, hits, the
+  centre's `n` and `ok`, `score`, `best`, `deaths`, `why`, the knobs set and
+  the search's cursor) and `train.md` (a heading a map, `map ascension: 166
+  sites: learned 41, ...; 9480 tries`, and a table a site with `rate` =
+  `ok / n`). Each run's lines are read from its own files and only the sites
+  of its shard are taken.
+
+`docs/runtime/sim-examples/superbounce-train.toml` and its match
+`superbounce-train-match.toml` are the example (eight bots, thirty minutes
+of game time a run).
+
 ## 8. Determinism
 
 What a sim run's result depends on, and what breaks reproducibility:
@@ -1285,4 +1343,6 @@ candidates and ranking), `cargo test -p bots tuning`,
 `the_practice_reports_each_route_it_starts` and `harvest`, `cargo test
 -p game sim_glue` (the `[bounce]` mapping and the events) and
 `superbounce_mode`, and `cargo test -p cli sim_cmd` (the run's own
-proofs).
+proofs). Training: `cargo test -p sim-bench train` (the `[train]` table, the
+plan and shard rule, the report from `.learned` lines) and `cargo test -p cli
+sim_cmd` (the arguments, `--reopen`).

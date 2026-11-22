@@ -698,6 +698,10 @@ pub struct MatchConfig {
     /// (docs/runtime/sim.md, "The bounce drill").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drill: Option<DrillConfig>,
+    /// Bounce site training: this run is one shard of a batch
+    /// (docs/runtime/sim.md, "Training the bounce sites").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train: Option<crate::train::TrainConfig>,
     #[serde(default, rename = "bot")]
     pub bots: Vec<BotSpec>,
 }
@@ -925,6 +929,12 @@ pub fn resolve(
         if !finite(&d.site) || d.start.is_some_and(|s| !finite(&s)) {
             problems.push("drill: site and start are world coordinates".into());
         }
+        if !problems.is_empty() {
+            return Err(problems.join("\n"));
+        }
+    }
+    if let Some(t) = &config.train {
+        problems.extend(t.problems(superbounce, config.drill.is_some()));
         if !problems.is_empty() {
             return Err(problems.join("\n"));
         }

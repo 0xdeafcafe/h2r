@@ -567,6 +567,15 @@ impl Sim {
                 site: d.site,
                 start: d.start,
             }));
+            // Bounce site training (docs/runtime/sim.md, "Training the
+            // bounce sites"): the bots fly the board's sites, this run's
+            // shard, with the same word hook as the drill's.
+            bots::learn::set(self.0.matched.config.train.map(|t| bots::learn::Train {
+                shard: t.shard,
+                shards: t.shards,
+                budget: t.budget,
+                seed: t.seed,
+            }));
         }
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed)
@@ -1191,6 +1200,10 @@ impl hooks::Feature for SimMetrics {
                 .is_some_and(|m| s.tally.ticks() >= m)
             {
                 me.end(&mut s, End::TickLimit);
+            } else if me.matched.config.train.is_some() && bots::learn::done() {
+                // Every site of this run's shard is closed: nothing left
+                // to train (the report's end is `stopped`).
+                me.end(&mut s, End::Stopped);
             }
         });
         let me = Arc::clone(&self.sim);
@@ -1322,12 +1335,14 @@ impl hooks::Feature for SimMetrics {
                 Ok(Flow::Continue)
             })
             .last();
-        if self.sim.matched.superbounce && self.sim.matched.config.drill.is_some() {
-            // The bounce drill's word: each bot at the drill's start asks
-            // (bots::drill::request_arm), and before the next tick its
-            // unit's level pair word is set to -3, as `havok.pair.set`
-            // writes it. A unit with no single level pair (asleep, or
-            // airborne away from the level) is asked for again.
+        if self.sim.matched.superbounce
+            && (self.sim.matched.config.drill.is_some() || self.sim.matched.config.train.is_some())
+        {
+            // The bounce drill's and the training's word: each bot at a
+            // try's start asks (bots::drill::request_arm), and before the
+            // next tick its unit's level pair word is set to -3, as
+            // `havok.pair.set` writes it. A unit with no single level pair
+            // (asleep, or airborne away from the level) is asked for again.
             let me = Arc::clone(&self.sim);
             b.raw()
                 .before(&points::GAME_TICK, "sim: drill word", move |c| {
