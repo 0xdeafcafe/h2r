@@ -12,7 +12,7 @@ use crate::ui_kit::spec::{PaneText, ScreenSpec};
 use crate::ui_kit::view::{Justify, Kind, Layer, Opener, Widget};
 
 /// Every specimen and layout page, as `NAMES` lists them.
-pub const PAGES: [&str; 35] = [
+pub const PAGES: [&str; 29] = [
     "design.title",
     "design.body",
     "design.panel-text",
