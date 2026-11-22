@@ -808,6 +808,26 @@ pub fn run_c(g: &emit::host::Generated, entry: u32, cpu: &mut CpuAbi, ctx: &mut 
     }
 }
 
+/// Whether any of `owners` was planned with imprecise memory faults (the
+/// default passes, `opt::Passes::DEFAULT`).
+pub fn imprecise(owners: &[emit::Owner]) -> bool {
+    owners.iter().any(|o| o.opt.imprecise_faults)
+}
+
+/// `got`, a generated run's CPU, as it is compared with the interpreter's
+/// `want` after a run that ended `end`. With imprecise faults a memory
+/// fault leaves EFLAGS and their defined mask as they happen to be
+/// (docs/runtime/block-clock-imprecise-faults.md), so at a `Memory` end
+/// those two are taken from `want`; every register, EIP and memory must
+/// still match. Every other end is compared whole.
+pub fn comparable(got: Cpu, end: &End, want: &Cpu, imprecise: bool) -> Cpu {
+    if imprecise && matches!(end, End::Memory { .. }) {
+        Cpu { eflags: want.eflags, flags_valid: want.flags_valid, ..got }
+    } else {
+        got
+    }
+}
+
 /// xorshift64*: deterministic, so failures reproduce.
 pub struct Rng(pub u64);
 

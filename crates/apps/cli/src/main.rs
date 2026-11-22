@@ -367,7 +367,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (objects: H2_OBJ_CACHE or <out>/obj; H2_OBJ_CACHE_MAX
                           caps it, dropping least recently used; H2_OPT, H2_DEBUG);
                           --passes picks the IR passes (default H2_PASSES, else
-                          all): all, none, names, -name, comma-separated
+                          default): default, all (precise faults), none,
+                          names, -name, comma-separated
 
   live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST] [--private]
              [--invite-only] [--tls-cert PEM --tls-key PEM | --insecure-http]

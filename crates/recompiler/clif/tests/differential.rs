@@ -43,7 +43,11 @@ fn three_way(name: &str, fixtures: &[(&'static str, Asm)]) -> Option<BTreeMap<&'
         .enumerate()
         .map(|(i, (n, body))| (*n, function(CODE_BASE + 0x1000 * i as u32, *body)))
         .collect();
+    // The image's passes: with imprecise faults a memory fault's flags are
+    // not compared with the interpreter's (`comparable`), only between the
+    // two backends.
     let owners = emit::plan(funcs.iter().map(|(_, f)| f.clone()).collect());
+    let imprecise = imprecise(&owners);
     let c = common::build(&owners, &header, &format!("{name}-c"));
     let cl = build_clif(&owners, &header, &format!("{name}-clif"));
 
@@ -71,7 +75,7 @@ fn three_way(name: &str, fixtures: &[(&'static str, Asm)]) -> Option<BTreeMap<&'
                 why.push(format!("end: clif {got:x?}, C {c_got:x?}"));
             }
             let kc = ir::interp::Cpu { tsc: k_ctx.tsc, ..k_abi.to_interp() };
-            if kc != cpu {
+            if comparable(kc.clone(), &want, &cpu, imprecise) != cpu {
                 why.push(format!("cpu:\n  clif   {kc:x?}\n  interp {cpu:x?}"));
             }
             let cc = ir::interp::Cpu { tsc: c_ctx.tsc, ..c_abi.to_interp() };
