@@ -53,8 +53,9 @@ to the browser. The browser header shows how many filters are active.
 | Difficulty | Easy, Normal, Heroic, Legendary |
 
 Game type is the game type the session advertises, so a variant listed
-under [Tweakers](../game/community-gametypes.md#tweakers), such as
-Superbounce, is a Slayer game here; the Variant row finds it by name.
+under one of our rows ([Tweakers](../game/community-gametypes.md#tweakers)),
+such as Superbounce or Zombies, is a Slayer game here; the Variant row
+finds it by name.
 
 Filters apply together. Game type and variant apply to multiplayer.
 Campaign and difficulty apply to co-op. **Has space** looks for an open

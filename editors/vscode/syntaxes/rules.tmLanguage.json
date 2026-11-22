@@ -137,7 +137,7 @@
           }
         },
         {
-          "comment": "list tweakers",
+          "comment": "list research",
           "match": "\\b(list)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {

@@ -80,30 +80,37 @@ pub struct Header {
 
 /// Where the game type list files a variant of a script: under its
 /// carrier's game type (no `list` line), or under a row the header names
-/// (`list tweakers`). See `docs/game/rules-engine.md`, "The language".
+/// (`list research`, `list party`). See `docs/game/rules-engine.md`,
+/// "The language".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum List {
     #[default]
     GameType,
-    /// The Tweakers row, after Territories.
-    Tweakers,
+    /// Research and Devolution, after Territories: practice and technical
+    /// guides (Superbounce, Bounce Practice, Glitch Hunt).
+    Research,
+    /// Party Games, after Research and Devolution: Zombies, Jousting and
+    /// the other party modes.
+    PartyGames,
 }
 
 impl List {
     /// The names a `list` line takes.
-    pub const NAMED: &'static [List] = &[List::Tweakers];
+    pub const NAMED: &'static [List] = &[List::Research, List::PartyGames];
 
     fn code(self) -> u8 {
         match self {
             List::GameType => 0,
-            List::Tweakers => 1,
+            List::Research => 1,
+            List::PartyGames => 2,
         }
     }
 
     fn from_code(c: u8) -> Option<List> {
         Some(match c {
             0 => List::GameType,
-            1 => List::Tweakers,
+            1 => List::Research,
+            2 => List::PartyGames,
             _ => return None,
         })
     }
@@ -113,7 +120,8 @@ impl List {
     pub fn name(self) -> Option<&'static str> {
         match self {
             List::GameType => None,
-            List::Tweakers => Some("tweakers"),
+            List::Research => Some("research"),
+            List::PartyGames => Some("party"),
         }
     }
 
@@ -1571,7 +1579,7 @@ pub(crate) mod tests {
                 version: 1,
                 carrier: 2,
                 teams: 0,
-                list: List::Tweakers,
+                list: List::Research,
                 requires: vec!["forge.move".into()],
             },
             strings: vec!["kill_points".into(), "elite".into()],
@@ -1667,7 +1675,7 @@ pub(crate) mod tests {
     #[test]
     fn the_list_round_trips_and_an_unknown_one_is_refused() {
         let mut ir = sample();
-        for list in [List::GameType, List::Tweakers] {
+        for list in [List::GameType, List::Research, List::PartyGames] {
             ir.header.list = list;
             let bytes = ir.encode();
             assert_eq!(Ir::decode(&bytes).unwrap().header.list, list);
@@ -1687,7 +1695,9 @@ pub(crate) mod tests {
                 value: 7
             })
         );
-        assert_eq!(List::named("tweakers"), Some(List::Tweakers));
+        assert_eq!(List::named("research"), Some(List::Research));
+        assert_eq!(List::named("party"), Some(List::PartyGames));
+        assert_eq!(List::named("tweakers"), None);
         assert_eq!(List::named("slayer"), None);
         assert_eq!(List::GameType.name(), None);
     }

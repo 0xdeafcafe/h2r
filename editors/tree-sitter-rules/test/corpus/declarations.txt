@@ -5,7 +5,7 @@ Header lines
 rules "Slayer" 1
 carrier slayer
 teams 2
-list tweakers
+list research
 requires hud.message, player.weapons
 
 --------------------------------------------------------------------------------

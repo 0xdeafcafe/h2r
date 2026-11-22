@@ -622,14 +622,15 @@ The header names the script, its version, its carrier, its teams, the
 game type list row its variants are filed under and the capabilities it
 requires: `requires player.weapons, hud.message`.
 
-**The list row.** `list tweakers` files a variant naming the script
-under Tweakers, our row after Territories
-([community-gametypes.md](community-gametypes.md#tweakers)); with no
-`list` line it is under its carrier's game type. `tweakers` is the only
-name (`ir::List::NAMED`); any other is refused by name ("unknown list
-slayer: a list is tweakers"), and a second `list` line is refused too.
-The IR header carries it as one byte, `ir::List`, which a blob with
-any other value fails to decode by ("the header's list").
+**The list row.** `list research` files a variant naming the script
+under Research and Devolution and `list party` under Party Games, our rows
+after Territories ([community-gametypes.md](community-gametypes.md#tweakers));
+with no `list` line it is under its carrier's game type. These are the
+only names (`ir::List::NAMED`); any other is refused by name ("unknown
+list slayer: a list is research, party"), and a second `list` line is
+refused too. The IR header carries it as one byte, `ir::List` (0 none, 1
+`research`, 2 `party`), which a blob with any other value fails to decode
+by ("the header's list").
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
 distances), `bool`, `player`, `team`, `object`, `zone` (an object with a
@@ -1815,7 +1816,7 @@ scores bounces is not yet a parity game.
 
 **The Superbounce game type is a script**,
 `crates/formats/rules/src/builtin/superbounce.rules`, an example
-(`builtin::examples`): `carrier slayer`, `list tweakers`,
+(`builtin::examples`): `carrier slayer`, `list research`,
 `requires hud.superbounce`, no kill rule (a kill scores nothing), and
 four options: `suicide_costs` (default on), a point off for a death with
 no killer or by the player's own hand; `bounce_points` (0 to 5, default 1), times the
@@ -1832,7 +1833,7 @@ through `rules::header`:
 | Header | What it turns on | Game side |
 |---|---|---|
 | `requires hud.superbounce`, a capability that gates no entry | the superbounce mode: HUD, marks, priming, medals | `header::script_asks_superbounce` over the block's script reference, in `variant_ext::Decision::superbounce`, so a guest that applies its host's block turns the mode on too, and the mode needs no running script |
-| `list tweakers` | a place under Tweakers ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::lists_tweakers`; `community_variants::is_tweaker` asks it of a mode 2 block's script through `header::block_is_tweaker` |
+| `list research`, `list party` | a place under Research and Devolution or Party Games ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::list_row`; `community_variants::row_of` asks it of a mode 2 block's script through `header::block_row` |
 
 Both find the script by the record's prefix among the compiled-in
 scripts (`runtime::compiled_in`) and in the game-variant store. With the

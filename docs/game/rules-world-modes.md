@@ -140,7 +140,7 @@ the script has matched it on every scenario of
 ```text
 rules "Superbounce" 1
 carrier slayer
-list tweakers
+list research
 requires hud.widgets, hud.waypoints
 
 label strip: zones = "sb_strip"

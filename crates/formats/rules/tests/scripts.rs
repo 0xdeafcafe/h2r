@@ -713,15 +713,17 @@ fn a_list_line_files_the_script_under_a_named_row() {
     use rules::ir::List;
     let plain = compile("rules \"X\" 1\ncarrier slayer\n").unwrap();
     assert_eq!(plain.header.list, List::GameType);
-    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist tweakers\n").unwrap();
-    assert_eq!(listed.header.list, List::Tweakers);
+    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist research\n").unwrap();
+    assert_eq!(listed.header.list, List::Research);
+    let party = compile("rules \"X\" 1\ncarrier slayer\nlist party\n").unwrap();
+    assert_eq!(party.header.list, List::PartyGames);
     assert_ne!(plain.id(), listed.id());
     assert!(
         compile_error("rules \"X\" 1\ncarrier slayer\nlist slayer\n")
-            .contains("unknown list slayer: a list is tweakers")
+            .contains("unknown list slayer: a list is research, party")
     );
     assert!(
-        compile_error("rules \"X\" 1\ncarrier slayer\nlist tweakers\nlist tweakers\n")
+        compile_error("rules \"X\" 1\ncarrier slayer\nlist research\nlist party\n")
             .contains("the list is named twice")
     );
 }

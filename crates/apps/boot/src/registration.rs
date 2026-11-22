@@ -251,8 +251,8 @@ pub(crate) fn register_core_film(
             .add(&variant_page::MoreRow)
             .map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
-    // The game type list's Tweakers row, after Territories, and its variant
-    // lists: Superbounce and the other tweaked-rules variants
+    // The game type list's rows of ours after Territories, Research and
+    // Devolution and Party Games, and their variant lists
     // (docs/game/community-gametypes.md "Tweakers").
     features
         .add(&crate::tweakers::Tweakers)

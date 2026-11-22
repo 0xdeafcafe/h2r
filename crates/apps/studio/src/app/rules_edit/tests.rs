@@ -204,7 +204,7 @@ fn snippets_expand_to_their_defaults_with_the_first_selected() {
     assert_eq!((e.text.as_str(), e.cursor, e.select), ("a b", 2, None));
 
     // Choices give their first; nesting and escapes read through.
-    assert_eq!(expand_snippet("list ${1|tweakers|}", "").text, "list tweakers");
+    assert_eq!(expand_snippet("list ${1|research,party|}", "").text, "list research");
     assert_eq!(expand_snippet("carrier ${1|slayer,ctf|}", "").text, "carrier slayer");
     let e = expand_snippet("${1:outer ${2:inner}}", "");
     assert_eq!((e.text.as_str(), e.select), ("outer inner", Some((0, 11))));

@@ -454,10 +454,11 @@ in another owner's files, named in its row.
   the squad session's mode (`+0x49a4` equal to 2 in states 3 to 8, as
   `0x64160` reads it), and the co-op lobby from the session's campaign
   difficulty (`lobby_tabs::header::retail_mode`).
-- That the Tweakers row shows on SELECT GAME (screen 207): its hooks
-  are on and the list has room, but the user's play found no row. The
-  next check is the log line "tweakers: row added to screen 207" and
-  `ui.audit` on SELECT GAME scrolled past its seventh row
+- That our rows (Research and Devolution, Party Games) show on SELECT
+  GAME (screen 207): their hooks are on and the list has room, but a
+  play of the single-row version found no row. The next check is
+  the log line "tweakers: rows added to screen 207" and `ui.audit` on
+  SELECT GAME scrolled past its seventh row
   ([community-gametypes.md](community-gametypes.md)).
 
 ## Related

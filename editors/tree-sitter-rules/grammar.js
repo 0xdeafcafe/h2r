@@ -114,7 +114,7 @@ module.exports = grammar({
 
     teams_declaration: $ => seq('teams', field('count', $.integer)),
 
-    // `list tweakers`.
+    // `list research`.
     list_declaration: $ => seq('list', field('name', $.identifier)),
 
     // `requires player.weapons, hud.message`.

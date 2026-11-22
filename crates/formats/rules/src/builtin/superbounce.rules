@@ -1,7 +1,7 @@
 // Superbounce: the superbounce mode's guide (the HUD, the marks over the
 // map, priming and the medals), which the host turns on for `requires
-// hud.superbounce`, and scoring by bounces alone. `list tweakers` files
-// its variants under Tweakers. Its record settings (no score or time
+// hud.superbounce`, and scoring by bounces alone. `list research` files
+// its variants under Research and Devolution. Its record settings (no score or time
 // limit, 3 s respawn, overshields, a magnum, nothing on the map) are the
 // variant record's, not the script's. A kill scores nothing. A bounce
 // scores `bounce_points` times its place in its chain, capped at 6
@@ -15,7 +15,7 @@
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Superbounce" 1
 carrier slayer
-list tweakers
+list research
 requires hud.superbounce
 
 option suicide_costs: bool = true "Suicide penalty" "A death with no killer, or by your own hand, costs a point"

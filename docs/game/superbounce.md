@@ -864,17 +864,17 @@ for tuning these rules against a real map.
 A built-in variant, Superbounce, for practising: Bounce Practice's
 rules (no score or time limit, 3 s respawn,
 overshields, damage resistance, a magnum, nothing on the map) plus a HUD
-and lines over the map. It is listed under **Tweakers**, the last row of
-the game type list (after Territories), and not under Slayer; underneath
+and lines over the map. It is listed under **Research and Devolution**, one of our rows at
+the bottom of the game type list (after Territories), and not under Slayer; underneath
 it is a Slayer variant ([community-gametypes.md](community-gametypes.md#tweakers)).
 Its entry in `crates/extensions/game/src/community_variants.rs` is
-`Category::Tweakers(Tweak::Superbounce)`: its record's extension block
+`Category::Row(Row::Research, Some(Tweak::Superbounce))`: its record's extension block
 names the Superbounce rules script (mode 2, the script's hash prefix and
 default options, `community_variants::superbounce_ext`), and
 `crate::tweakers` writes that block into its built-in record, so a game
 on it and a saved copy of it name the script. The script is
 `crates/formats/rules/src/builtin/superbounce.rules`, compiled into the
-game: `list tweakers` files the variant under Tweakers and
+game: `list research` files the variant under Research and Devolution and
 `requires hud.superbounce` turns the mode on
 ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). It scores
 bounces alone, which the script works out from what the medal chain

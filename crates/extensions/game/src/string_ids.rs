@@ -83,7 +83,7 @@ fn families() -> Vec<Family> {
                 community_variants::description_id(i),
             ]
         })
-        .chain(community_variants::TWEAKERS_IDS)
+        .chain(community_variants::row_ids())
         .collect();
     vec![
         Family {
@@ -236,7 +236,7 @@ fn every_served_id_is_in_its_registered_family() {
                         community_variants::description_id(i),
                     ]
                 })
-                .chain(community_variants::TWEAKERS_IDS)
+                .chain(community_variants::row_ids())
                 .collect(),
         ),
         ("game variants", game_variant_ids()),

@@ -267,15 +267,108 @@ fn score_setting(ty: GameType) -> u32 {
 pub enum Category {
     /// Under its game type ([`Variant::ty`]).
     GameType,
-    /// Under Tweakers, our row after Territories (`crate::tweakers`).
-    /// The game still plays it as its game type; the built-in's record
-    /// carries the tweak's extension block, which names a rules script
-    /// whose header says `list tweakers`, so a copy carries it too and is
-    /// listed under Tweakers as well.
-    Tweakers(Tweak),
+    /// Under one of our rows after Territories (`crate::tweakers`). The
+    /// game still plays it as its game type. A built-in with a tweak has
+    /// the tweak's extension block in its record, which names a rules
+    /// script whose header names the row (`list research`), so a copy
+    /// carries it too and is listed there as well; one without is listed
+    /// there by its name.
+    Row(Row, Option<Tweak>),
 }
 
-/// What a Tweakers built-in's record carries.
+/// Our game type rows after Territories, in list order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Row {
+    /// Research and Devolution: practice and the maps' tricks.
+    Research,
+    /// Party Games: the community's party modes.
+    PartyGames,
+}
+
+impl Row {
+    pub const ALL: [Row; 2] = [Row::Research, Row::PartyGames];
+
+    /// The row a rules script's `list` line names.
+    pub fn of_list(list: ::rules::ir::List) -> Option<Row> {
+        match list {
+            ::rules::ir::List::GameType => None,
+            ::rules::ir::List::Research => Some(Row::Research),
+            ::rules::ir::List::PartyGames => Some(Row::PartyGames),
+        }
+    }
+
+    /// The row's number in a variant list screen's mark (0 is none).
+    pub fn mark(self) -> u8 {
+        match self {
+            Row::Research => 1,
+            Row::PartyGames => 2,
+        }
+    }
+
+    pub fn from_mark(mark: u8) -> Option<Row> {
+        Row::ALL.into_iter().find(|r| r.mark() == mark)
+    }
+
+    /// The label on the game type list.
+    pub fn label(self) -> &'static str {
+        match self {
+            Row::Research => "Research and Devolution",
+            Row::PartyGames => "Party Games",
+        }
+    }
+
+    /// The title over its pane and its variant list, the label in capitals
+    /// as SLAYER is Slayer's.
+    pub fn title(self) -> &'static str {
+        match self {
+            Row::Research => "RESEARCH AND DEVOLUTION",
+            Row::PartyGames => "PARTY GAMES",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Row::Research => {
+                "Practice the tricks and find the glitches: superbounces, crouch jumps and the maps' secrets."
+            }
+            Row::PartyGames => {
+                "Zombies, jousting, cops and robbers: the party games the community made up for custom games."
+            }
+        }
+    }
+
+    fn ids_at(self) -> u32 {
+        match self {
+            Row::Research => 0x7a,
+            Row::PartyGames => 0x7d,
+        }
+    }
+    pub fn label_id(self) -> u32 {
+        ID_BASE | self.ids_at()
+    }
+    pub fn title_id(self) -> u32 {
+        ID_BASE | (self.ids_at() + 1)
+    }
+    pub fn description_id(self) -> u32 {
+        ID_BASE | (self.ids_at() + 2)
+    }
+    /// The text of one of the rows' ids.
+    fn text(id: u32) -> Option<&'static str> {
+        Row::ALL.into_iter().find_map(|r| {
+            if id == r.label_id() {
+                Some(r.label())
+            } else if id == r.title_id() {
+                Some(r.title())
+            } else if id == r.description_id() {
+                Some(r.description())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// What a row's built-in record carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tweak {
     /// The superbounce game type ([`superbounce_ext`]).
@@ -294,7 +387,7 @@ impl Tweak {
 /// Superbounce's extension block: a reference to the Superbounce rules
 /// script (`rules::builtin::SUPERBOUNCE`, compiled in) with its default
 /// options. The script's `requires hud.superbounce` turns the mode on and
-/// its `list tweakers` files the variant under Tweakers
+/// its `list research` files the variant under Research and Devolution
 /// (docs/game/superbounce.md "The superbounce game type").
 pub fn superbounce_ext() -> Ext {
     static EXT: std::sync::OnceLock<Ext> = std::sync::OnceLock::new();
@@ -334,32 +427,40 @@ impl Variant {
     pub fn display_name(&self) -> String {
         format!("{} {ICON}", self.name)
     }
-    /// The extension block of a Tweakers variant.
+    /// The extension block of a variant with a tweak.
     pub fn tweak(&self) -> Option<Ext> {
         match self.category {
-            Category::Tweakers(t) => Some(t.ext()),
+            Category::Row(_, t) => t.map(Tweak::ext),
+            Category::GameType => None,
+        }
+    }
+    /// The row it is listed under, if one of ours.
+    pub fn row(&self) -> Option<Row> {
+        match self.category {
+            Category::Row(r, _) => Some(r),
             Category::GameType => None,
         }
     }
 }
 
-/// The Tweakers built-in named `name`, as a record or the list holds it
-/// (the list's icon and trailing spaces ignored).
-pub fn tweaker_builtin(name: &str) -> Option<&'static Variant> {
+/// The built-in of one of our rows named `name`, as a record or the list
+/// holds it (the list's icon and trailing spaces ignored).
+pub fn row_builtin(name: &str) -> Option<&'static Variant> {
     let bare = name
         .trim_end_matches(|c: char| c.is_whitespace() || ('\u{e000}'..='\u{f8ff}').contains(&c));
     VARIANTS
         .iter()
-        .find(|v| v.tweak().is_some() && v.name == bare)
+        .find(|v| v.row().is_some() && v.name == bare)
 }
 
-/// Whether a variant record with this name and extension block is listed
-/// under Tweakers: it names a rules script whose header files it there
-/// (`crate::rules::header::block_is_tweaker`), or it has a Tweakers
-/// built-in's name (a built-in record before `crate::tweakers` wrote its
-/// block, as `crate::superbounce_mode` turns the mode on by name too).
-pub fn is_tweaker(name: &str, block: &[u8; variants::ext::LEN]) -> bool {
-    crate::rules::header::block_is_tweaker(block) || tweaker_builtin(name).is_some()
+/// The row of ours a variant record with this name and extension block is
+/// listed under: the one the rules script it names files it under
+/// (`crate::rules::header::block_row`), or the one of the built-in with
+/// its name (a built-in record before `crate::tweakers` wrote its block,
+/// or one with no tweak, as `crate::superbounce_mode` turns the mode on by
+/// name too).
+pub fn row_of(name: &str, block: &[u8; variants::ext::LEN]) -> Option<Row> {
+    crate::rules::header::block_row(block).or_else(|| row_builtin(name).and_then(Variant::row))
 }
 
 use Setting::*;
@@ -370,7 +471,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Zombies",
         ty: GameType::Slayer,
-        category: Category::GameType,
+        category: Category::Row(Row::PartyGames, None),
         settings: &[
             TeamPlay(true),
             StartingWeapon(Some(Weapon::Shotgun)),
@@ -412,7 +513,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Jousting",
         ty: GameType::Slayer,
-        category: Category::GameType,
+        category: Category::Row(Row::PartyGames, None),
         settings: &[
             LightVehicle(LightVehicle::Warthog),
             SecondLightVehicle(LightVehicle::None),
@@ -530,7 +631,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Cops and Robbers",
         ty: GameType::Slayer,
-        category: Category::GameType,
+        category: Category::Row(Row::PartyGames, None),
         settings: &[
             TeamPlay(true),
             Lives(3),
@@ -546,7 +647,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Bounce Practice",
         ty: GameType::Slayer,
-        category: Category::GameType,
+        category: Category::Row(Row::Research, None),
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -564,7 +665,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Glitch Hunt",
         ty: GameType::Slayer,
-        category: Category::GameType,
+        category: Category::Row(Row::Research, None),
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -581,7 +682,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Bumper Cars",
         ty: GameType::Slayer,
-        category: Category::GameType,
+        category: Category::Row(Row::PartyGames, None),
         settings: &[
             StartingWeapon(None),
             SecondaryWeapon(None),
@@ -603,7 +704,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Superbounce",
         ty: GameType::Slayer,
-        category: Category::Tweakers(Tweak::Superbounce),
+        category: Category::Row(Row::Research, Some(Tweak::Superbounce)),
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -661,32 +762,23 @@ pub fn name_id(i: usize) -> u32 {
 pub fn description_id(i: usize) -> u32 {
     ID_BASE | 0x80 | i as u32
 }
-/// The Tweakers row's texts (`crate::tweakers`): the row's label, the
+/// Our rows' texts (`crate::tweakers`, [`Row`]): each row's label, the
 /// title of its pane and of its variant list, and their description. At
-/// the top of the name range, past every variant's.
-pub const TWEAKERS_LABEL_ID: u32 = ID_BASE | 0x7d;
-pub const TWEAKERS_TITLE_ID: u32 = ID_BASE | 0x7e;
-pub const TWEAKERS_DESCRIPTION_ID: u32 = ID_BASE | 0x7f;
-pub const TWEAKERS_LABEL: &str = "Tweakers";
-pub const TWEAKERS_TITLE: &str = "TWEAKERS";
-pub const TWEAKERS_DESCRIPTION: &str = "Play familiar game types with tweaked rules, from bounce practice to new twists on the classics.";
-pub const TWEAKERS_IDS: [u32; 3] = [
-    TWEAKERS_LABEL_ID,
-    TWEAKERS_TITLE_ID,
-    TWEAKERS_DESCRIPTION_ID,
-];
-const _: () = assert!(VARIANTS.len() < 0x7d);
+/// the top of the name range (`0x7a` to `0x7f`), past every variant's.
+pub fn row_ids() -> impl Iterator<Item = u32> {
+    Row::ALL
+        .into_iter()
+        .flat_map(|r| [r.label_id(), r.title_id(), r.description_id()])
+}
+const _: () = assert!(VARIANTS.len() < 0x7a);
 
 /// The text for one of our ids.
 pub fn text(id: u32) -> Option<String> {
     if !is_ours(id) {
         return None;
     }
-    match id {
-        TWEAKERS_LABEL_ID => return Some(TWEAKERS_LABEL.into()),
-        TWEAKERS_TITLE_ID => return Some(TWEAKERS_TITLE.into()),
-        TWEAKERS_DESCRIPTION_ID => return Some(TWEAKERS_DESCRIPTION.into()),
-        _ => {}
+    if let Some(t) = Row::text(id) {
+        return Some(t.into());
     }
     let i = (id & 0x7f) as usize;
     let v = VARIANTS.get(i)?;
@@ -1298,10 +1390,10 @@ mod tests {
     }
 
     #[test]
-    fn superbounce_is_filed_under_tweakers_by_its_script() {
+    fn superbounce_is_filed_under_research_by_its_script() {
         let sb = VARIANTS.iter().find(|v| v.name == "Superbounce").unwrap();
         assert_eq!(sb.ty, GameType::Slayer, "played as Slayer underneath");
-        assert_eq!(sb.category, Category::Tweakers(Tweak::Superbounce));
+        assert_eq!(sb.category, Category::Row(Row::Research, Some(Tweak::Superbounce)));
         let ext = superbounce_ext();
         assert_eq!(sb.tweak(), Some(ext));
         assert!(!ext.superbounce, "the script turns the mode on, not the flag");
@@ -1318,47 +1410,72 @@ mod tests {
         assert_eq!(ext.script.options, ir.default_options());
         let found = crate::rules::runtime::compiled_in(ext.script.prefix).unwrap();
         assert_eq!(found.id, ir.id());
-        // Its block files a renamed copy under Tweakers through the
+        // Its block files a renamed copy under Research through the
         // script's header, and its name alone files the built-in.
-        assert!(is_tweaker("My Bounce", &ext.encode()));
-        assert!(is_tweaker(&sb.display_name(), &[0; variants::ext::LEN]));
-        assert!(!is_tweaker("My Bounce", &[0; variants::ext::LEN]));
+        let none = [0; variants::ext::LEN];
+        assert_eq!(row_of("My Bounce", &ext.encode()), Some(Row::Research));
+        assert_eq!(row_of(&sb.display_name(), &none), Some(Row::Research));
+        assert_eq!(row_of("My Bounce", &none), None);
         let flag_only = Ext {
             superbounce: true,
             ..Ext::RETAIL
         };
-        assert!(!is_tweaker("My Bounce", &flag_only.encode()), "the flag files nothing");
-        // Every other variant stays under its game type.
+        assert_eq!(row_of("My Bounce", &flag_only.encode()), None, "the flag files nothing");
+        // No other variant carries a tweak.
         for v in VARIANTS.iter().filter(|v| v.name != "Superbounce") {
-            assert_eq!(v.category, Category::GameType, "{}", v.name);
-            assert!(v.tweak().is_none());
+            assert!(v.tweak().is_none(), "{}", v.name);
         }
         // As the list and a record hold its name.
         assert_eq!(
-            tweaker_builtin(&sb.display_name()).map(|v| v.name),
+            row_builtin(&sb.display_name()).map(|v| v.name),
             Some("Superbounce")
         );
         assert_eq!(
-            tweaker_builtin("Superbounce").map(|v| v.name),
+            row_builtin("Superbounce").map(|v| v.name),
             Some("Superbounce")
         );
-        assert!(tweaker_builtin("Zombies \u{e006}").is_none());
-        assert!(tweaker_builtin("Superbounce 2").is_none());
+        assert!(row_builtin("SWAT \u{e006}").is_none());
+        assert!(row_builtin("Superbounce 2").is_none());
     }
 
     #[test]
-    fn the_tweakers_texts_are_ours_and_apart_from_the_variants() {
-        assert_eq!(text(TWEAKERS_LABEL_ID).as_deref(), Some(TWEAKERS_LABEL));
-        assert_eq!(text(TWEAKERS_TITLE_ID).as_deref(), Some(TWEAKERS_TITLE));
-        assert_eq!(
-            text(TWEAKERS_DESCRIPTION_ID).as_deref(),
-            Some(TWEAKERS_DESCRIPTION)
-        );
-        for id in TWEAKERS_IDS {
-            assert!(is_ours(id));
-            assert!((0..VARIANTS.len()).all(|i| id != name_id(i) && id != description_id(i)));
+    fn the_rows_texts_are_ours_and_apart_from_the_variants() {
+        for r in Row::ALL {
+            assert_eq!(text(r.label_id()).as_deref(), Some(r.label()));
+            assert_eq!(text(r.title_id()).as_deref(), Some(r.title()));
+            assert_eq!(text(r.description_id()).as_deref(), Some(r.description()));
+            assert_eq!(r.title(), r.label().to_uppercase(), "as SLAYER is Slayer's");
+            assert!(r.description().ends_with('.') && r.description().len() < 120);
+            assert_eq!(Row::from_mark(r.mark()), Some(r));
         }
-        assert!(TWEAKERS_DESCRIPTION.encode_utf16().count() < 0xff);
+        assert_eq!(Row::from_mark(0), None);
+        let ids: Vec<u32> = row_ids().collect();
+        assert_eq!(ids.len(), 6);
+        for (k, id) in ids.iter().enumerate() {
+            assert!(is_ours(*id));
+            assert!(!ids[..k].contains(id), "{id:#x} twice");
+            assert!((0..VARIANTS.len()).all(|i| *id != name_id(i) && *id != description_id(i)));
+        }
+    }
+
+    #[test]
+    fn the_party_and_research_rows_hold_their_variants() {
+        let under = |r: Row| -> Vec<&str> {
+            VARIANTS.iter().filter(|v| v.row() == Some(r)).map(|v| v.name).collect()
+        };
+        assert_eq!(
+            under(Row::PartyGames),
+            ["Zombies", "Jousting", "Cops and Robbers", "Bumper Cars"]
+        );
+        assert_eq!(
+            under(Row::Research),
+            ["Bounce Practice", "Glitch Hunt", "Superbounce"]
+        );
+        let none = [0; variants::ext::LEN];
+        assert_eq!(row_of("Zombies \u{e006}", &none), Some(Row::PartyGames));
+        assert_eq!(row_of("Glitch Hunt \u{e006}", &none), Some(Row::Research));
+        assert_eq!(row_of("SWAT \u{e006}", &none), None, "stays under Slayer");
+        assert_eq!(row_of("Hide and Seek \u{e006}", &none), None, "Juggernaut's");
     }
 
     #[test]

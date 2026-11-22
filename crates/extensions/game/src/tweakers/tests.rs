@@ -49,14 +49,18 @@ fn put_record(m: &mut dyn GuestMemory, at: u32, name: &str, block: [u8; ext::LEN
 }
 
 #[test]
-fn tweakers_is_the_last_row_after_territories() {
+fn our_rows_are_last_after_territories() {
     let words = with_row(&GAME_TYPE_WORDS);
-    assert_eq!(words, [0, 1, 3, 4, 6, 7, 8, TWEAKERS_WORD]);
-    assert_eq!(words[words.len() - 2], 8, "Territories just above it");
+    assert_eq!(words, [0, 1, 3, 4, 6, 7, 8, RESEARCH_WORD, PARTY_WORD]);
+    assert_eq!(words[words.len() - 3], 8, "Territories just above them");
     assert_eq!(with_row(&words), words, "added once");
-    // Two retail rows are left out of some lists; ours is still last.
-    assert_eq!(with_row(&[0, 1, 3, 6, 7]), [0, 1, 3, 6, 7, TWEAKERS_WORD]);
-    assert!(!GAME_TYPE_WORDS.contains(&TWEAKERS_WORD));
+    // Two retail rows are left out of some lists; ours are still last.
+    assert_eq!(with_row(&[0, 1, 3, 6, 7]), [0, 1, 3, 6, 7, RESEARCH_WORD, PARTY_WORD]);
+    for r in Row::ALL {
+        assert!(!GAME_TYPE_WORDS.contains(&word_of_row(r)));
+        assert_eq!(row_of_word(word_of_row(r)), Some(r));
+    }
+    assert_eq!(row_of_word(SLAYER_WORD), None);
 }
 
 #[test]
@@ -68,59 +72,61 @@ fn both_game_type_screens_get_the_row_but_not_the_create_mode() {
 }
 
 #[test]
-fn superbounce_is_under_tweakers_and_no_longer_under_slayer() {
-    let tweakers: Vec<_> = tweakers_variants().map(|v| v.name).collect();
-    assert_eq!(tweakers, ["Superbounce"]);
+fn each_row_keeps_its_own_and_slayer_the_rest() {
+    let under: Vec<_> = row_variants().map(|v| v.name).collect();
+    assert!(under.contains(&"Superbounce") && under.contains(&"Zombies"), "{under:?}");
     let slayer: Vec<_> = VARIANTS
         .iter()
-        .filter(|v| v.ty == community::GameType::Slayer && !is_tweakers_variant(v))
+        .filter(|v| v.ty == community::GameType::Slayer && v.row().is_none())
         .map(|v| v.name)
         .collect();
-    assert!(!slayer.contains(&"Superbounce"), "{slayer:?}");
-    assert!(slayer.contains(&"Zombies"), "the rest stay: {slayer:?}");
+    assert!(!slayer.contains(&"Superbounce") && !slayer.contains(&"Zombies"), "{slayer:?}");
+    assert!(slayer.contains(&"SWAT"), "the rest stay: {slayer:?}");
 
-    let builtin = community::is_tweaker("Superbounce \u{e006}", &[0; ext::LEN]);
-    let zombies = community::is_tweaker("Zombies \u{e006}", &[0; ext::LEN]);
-    // Slayer's list drops it, Tweakers' keeps it; the other way for the rest.
-    assert!(!keeps(false, true, builtin) && keeps(true, true, builtin));
-    assert!(keeps(false, true, zombies) && !keeps(true, true, zombies));
+    let none = [0; ext::LEN];
+    let sb = community::row_of("Superbounce \u{e006}", &none);
+    let zombies = community::row_of("Zombies \u{e006}", &none);
+    let swat = community::row_of("SWAT \u{e006}", &none);
+    let (research, party) = (Some(Row::Research), Some(Row::PartyGames));
+    assert!(keeps(research, true, sb) && !keeps(party, true, sb) && !keeps(None, true, sb));
+    assert!(keeps(party, true, zombies) && !keeps(research, true, zombies));
+    assert!(keeps(None, true, swat) && !keeps(research, true, swat) && !keeps(party, true, swat));
     // A record that did not load stays retail's.
-    assert!(keeps(false, false, true) && !keeps(true, false, true));
+    assert!(keeps(None, false, research) && !keeps(research, false, research));
 }
 
 #[test]
-fn every_tweaker_is_a_slayer_variant() {
-    // The Tweakers list is Slayer's list filtered: its new variants, copies
-    // and defaults are Slayer's.
-    for v in tweakers_variants() {
+fn every_row_variant_is_a_slayer_variant() {
+    // A row's list is Slayer's list filtered: its new variants, copies and
+    // defaults are Slayer's.
+    for v in row_variants() {
         assert_eq!(v.ty, community::GameType::Slayer, "{}", v.name);
-        assert!(v.tweak().is_some_and(|e| !e.is_default()), "{}", v.name);
+        assert!(v.tweak().is_none_or(|e| !e.is_default()), "{}", v.name);
     }
     assert!(filtered(SLAYER_CATEGORY));
     assert!(!filtered(2), "King of the Hill's list is retail's");
 }
 
 #[test]
-fn a_saved_copy_with_the_block_stays_under_tweakers() {
+fn a_saved_copy_with_the_block_stays_under_research() {
     let flag = community::superbounce_ext().encode();
-    assert!(community::is_tweaker("My Bounce", &flag), "renamed copy");
-    assert!(
-        community::is_tweaker("Superbounce", &[0; ext::LEN]),
-        "by name"
-    );
-    assert!(!community::is_tweaker("Slayer", &[0; ext::LEN]));
+    let research = Some(Row::Research);
+    assert_eq!(community::row_of("My Bounce", &flag), research, "renamed copy");
+    assert_eq!(community::row_of("Superbounce", &[0; ext::LEN]), research, "by name");
+    assert_eq!(community::row_of("Slayer", &[0; ext::LEN]), None);
     let gravity = Ext {
         gravity: 50,
         ..Ext::RETAIL
     };
-    assert!(
-        !community::is_tweaker("Moon Slayer", &gravity.encode()),
+    assert_eq!(
+        community::row_of("Moon Slayer", &gravity.encode()),
+        None,
         "More Options alone is not a tweak"
     );
     // A block the game would ignore names no script.
     let mut bad = flag;
     bad[ext::LEN - 1] ^= 1;
-    assert!(!community::is_tweaker("My Bounce", &bad));
+    assert_eq!(community::row_of("My Bounce", &bad), None);
 }
 
 #[test]
@@ -136,28 +142,30 @@ fn the_builtin_records_get_their_extension_block_once() {
         Ext::decode(&record_block(&g, rec(1)).unwrap()),
         Block::Ext(community::superbounce_ext())
     );
-    assert_eq!(record_block(&g, rec(0)), Some([0; ext::LEN]), "untouched");
-    assert!(record_is_tweaker(&g, rec(1)) && !record_is_tweaker(&g, rec(0)));
+    assert_eq!(record_block(&g, rec(0)), Some([0; ext::LEN]), "no tweak: untouched");
+    assert_eq!(record_row(&g, rec(1)), Some(Row::Research));
+    assert_eq!(record_row(&g, rec(0)), Some(Row::PartyGames), "by its name");
     assert_eq!(patch_builtins(&mut g), Ok(0), "already there");
     // No list yet: nothing to do.
     g.put_u32(BUILTIN_LIST, 0);
     assert_eq!(patch_builtins(&mut g), Ok(0));
 }
 
-/// The variant list's fill, as `0x2ca0d9` calls `0x215900`: three handles
-/// come back, a Slayer variant, the built-in Superbounce and a saved copy
-/// of it under another name.
-fn run_fill(tweakers_list: bool, create: bool) -> (entry::testing::Run, Vec<DatumHandle>) {
+/// The variant list's fill, as `0x2ca0d9` calls `0x215900`: four handles
+/// come back, a Slayer variant, the built-in Superbounce, a saved copy of
+/// it under another name and the built-in Zombies.
+fn run_fill(list: Option<Row>, create: bool) -> (entry::testing::Run, Vec<DatumHandle>) {
     const A: u32 = 0xe000_0001;
     const B: u32 = 0xe020_0002;
     const C: u32 = 0xe000_0003;
+    const D: u32 = 0xe020_0004;
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000)
         .map(STACK, 0x100)
         .map(COUNT, 4)
         .map(HANDLES, 0x100);
     g.map(SCRATCH, 0x200).map(BUILTIN_LIST & !0xfff, 0x1000);
-    g.put_u8(SCREEN + SCREEN_MARK, u8::from(tweakers_list));
+    g.put_u8(SCREEN + SCREEN_MARK, list.map_or(0, Row::mark));
     g.put_u8(HANDLER + HANDLER_CREATE, u8::from(create));
     let rows = rows_with(&mut g, HANDLER, &[0], 0xc);
     if create {
@@ -181,8 +189,8 @@ fn run_fill(tweakers_list: bool, create: bool) -> (entry::testing::Run, Vec<Datu
     let run = entry::testing::run(&f, g, regs, |call, m| match call.target {
         t if t == points::VARIANTS_ENUMERATE.base => {
             assert_eq!(call.args, [0, SLAYER_CATEGORY, COUNT, HANDLES, 1]);
-            m.set_u16(COUNT, 3).unwrap();
-            for (i, h) in [A, B, C].into_iter().enumerate() {
+            m.set_u16(COUNT, 4).unwrap();
+            for (i, h) in [A, B, C, D].into_iter().enumerate() {
                 m.set_u32(HANDLES + 4 * i as u32, h).unwrap();
             }
             Regs::default()
@@ -192,6 +200,7 @@ fn run_fill(tweakers_list: bool, create: bool) -> (entry::testing::Run, Vec<Datu
             let (name, block) = match call.edx {
                 Some(A) => ("Rockets", [0; ext::LEN]),
                 Some(B) => ("Superbounce \u{e006}", community::superbounce_ext().encode()),
+                Some(D) => ("Zombies \u{e006}", [0; ext::LEN]),
                 _ => ("My Bounce", community::superbounce_ext().encode()),
             };
             m.fill(SCRATCH, 0x130, 0).unwrap();
@@ -208,8 +217,8 @@ fn run_fill(tweakers_list: bool, create: bool) -> (entry::testing::Run, Vec<Datu
 }
 
 #[test]
-fn slayers_list_keeps_everything_but_the_tweakers() {
-    let (run, rows) = run_fill(false, true);
+fn slayers_list_keeps_everything_but_our_rows() {
+    let (run, rows) = run_fill(None, true);
     let g = &run.guest;
     assert_eq!(read_handles(g, COUNT, HANDLES), Ok(vec![0xe000_0001]));
     let create = DatumArray::at(ARRAY).try_get(g, rows[0]).unwrap();
@@ -217,8 +226,8 @@ fn slayers_list_keeps_everything_but_the_tweakers() {
 }
 
 #[test]
-fn the_tweakers_list_keeps_the_tweakers_and_drops_create_new() {
-    let (run, rows) = run_fill(true, true);
+fn a_rows_list_keeps_its_own_and_drops_create_new() {
+    let (run, rows) = run_fill(Some(Row::Research), true);
     let g = &run.guest;
     assert_eq!(
         read_handles(g, COUNT, HANDLES),
@@ -230,8 +239,10 @@ fn the_tweakers_list_keeps_the_tweakers_and_drops_create_new() {
         create.is_none(),
         "a new variant here would be a plain Slayer"
     );
+    let (run, _) = run_fill(Some(Row::PartyGames), true);
+    assert_eq!(read_handles(&run.guest, COUNT, HANDLES), Ok(vec![0xe020_0004]), "Zombies");
     // The lobby's list has no Create New and keeps its rows.
-    let (run, rows) = run_fill(true, false);
+    let (run, rows) = run_fill(Some(Row::Research), false);
     assert!(
         DatumArray::at(ARRAY)
             .try_get(&run.guest, rows[0])
@@ -288,14 +299,12 @@ fn our_pane_is_the_row_with_our_word() {
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000);
     rows_with(&mut g, HANDLER, &with_row(&GAME_TYPE_WORDS), 4);
-    assert!(is_our_pane(&g, SCREEN, 0xcf, 7));
-    assert!(is_our_pane(&g, SCREEN, 0x3c, 7));
-    assert!(
-        !is_our_pane(&g, SCREEN, 0xcf, 6),
-        "Territories has its pane"
-    );
-    assert!(!is_our_pane(&g, SCREEN, 0xd0, 7), "another screen");
-    assert!(!is_our_pane(&g, SCREEN, 0xcf, 8), "no row there");
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 7), Some(Row::Research));
+    assert_eq!(our_pane(&g, SCREEN, 0x3c, 7), Some(Row::Research));
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 8), Some(Row::PartyGames));
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 6), None, "Territories has its pane");
+    assert_eq!(our_pane(&g, SCREEN, 0xd0, 7), None, "another screen");
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 9), None, "no row there");
 }
 
 #[test]
@@ -333,7 +342,7 @@ fn our_pane_is_slayers_with_our_texts() {
     let (desc, title) = (0x0020_0000, 0x0020_0100);
     const WORD: u32 = 0x0020_0800;
     const ORIGINAL: u32 = 0x00a0_0000;
-    let f = |cx: Cx| -> EntryFuture { Box::pin(pane(cx, ORIGINAL, SCREEN, 0, WORD)) };
+    let f = |cx: Cx| -> EntryFuture { Box::pin(pane(cx, Row::PartyGames, ORIGINAL, SCREEN, 0, WORD)) };
     let regs = Regs {
         esp: STACK,
         ecx: SCREEN,
@@ -363,14 +372,14 @@ fn our_pane_is_slayers_with_our_texts() {
     assert_eq!(
         set,
         [
-            (desc, community::TWEAKERS_DESCRIPTION_ID),
-            (title, community::TWEAKERS_TITLE_ID)
+            (desc, Row::PartyGames.description_id()),
+            (title, Row::PartyGames.title_id())
         ]
     );
 }
 
 #[test]
-fn a_tweakers_list_reopens_through_slayers_loader_for_its_mode() {
+fn a_rows_list_reopens_through_slayers_loader_for_its_mode() {
     assert_eq!(slayer_loader(true, false), SLAYER_SETTINGS_LOADER);
     assert_eq!(slayer_loader(false, true), SLAYER_PICK_LOADER);
     assert_eq!(slayer_loader(false, false), SLAYER_LOBBY_LOADER);
@@ -387,35 +396,23 @@ fn the_mark_is_the_screens_spare_byte() {
     );
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000);
-    assert!(!is_tweakers_screen(&g, SCREEN));
-    g.put_u8(SCREEN + SCREEN_MARK, 1);
-    assert!(is_tweakers_screen(&g, SCREEN));
+    assert_eq!(screen_row(&g, SCREEN), None);
+    for r in Row::ALL {
+        g.put_u8(SCREEN + SCREEN_MARK, r.mark());
+        assert_eq!(screen_row(&g, SCREEN), Some(r));
+    }
 }
 
 #[test]
-fn the_row_reads_in_the_games_words() {
-    use crate::community_variants::{TWEAKERS_DESCRIPTION, TWEAKERS_LABEL, TWEAKERS_TITLE};
+fn the_rows_read_in_the_games_words() {
     assert_eq!(
-        community::text(community::TWEAKERS_LABEL_ID).as_deref(),
-        Some("Tweakers")
+        community::text(Row::Research.label_id()).as_deref(),
+        Some("Research and Devolution")
     );
     assert_eq!(
-        TWEAKERS_TITLE,
-        TWEAKERS_LABEL.to_uppercase(),
-        "as SLAYER is Slayer's"
+        community::text(Row::PartyGames.label_id()).as_deref(),
+        Some("Party Games")
     );
-    assert!(TWEAKERS_DESCRIPTION.ends_with('.') && TWEAKERS_DESCRIPTION.len() < 120);
-    for id in [
-        community::TWEAKERS_LABEL_ID,
-        community::TWEAKERS_TITLE_ID,
-        community::TWEAKERS_DESCRIPTION_ID,
-    ] {
-        assert!(community::is_ours(id));
-        for i in 0..VARIANTS.len() {
-            assert_ne!(id, community::name_id(i));
-            assert_ne!(id, community::description_id(i));
-        }
-    }
 }
 
 #[test]
@@ -426,31 +423,31 @@ fn the_hooks_are_on_the_plan() {
     for (point, label) in [
         (
             "VARIANT_CATEGORY_SCREEN_CTOR",
-            "after [tweakers:add the Tweakers row]",
+            "after [tweakers:add our game type rows]",
         ),
         (
             "VARIANT_CATEGORY_ROW_TEXT",
-            "before [tweakers:the Tweakers row's text]",
+            "before [tweakers:our rows' text]",
         ),
         (
             "VARIANT_CATEGORY_ROW_CHOSEN",
-            "before [tweakers:the Tweakers row's press]",
+            "before [tweakers:our rows' press]",
         ),
         (
             "VARIANT_LIST_SCREEN_CTOR",
-            "after [tweakers:mark a Tweakers list]",
+            "after [tweakers:mark a row's list]",
         ),
         (
             "VARIANTS_ENUMERATE",
-            "before [tweakers:keep a list's tweakers apart]",
+            "before [tweakers:keep each row's variants apart]",
         ),
         (
             "VARIANT_LIST_UPDATE",
-            "before [tweakers:a Tweakers list's title and description]",
+            "before [tweakers:a row's list's title and description]",
         ),
         (
             "VARIANT_LIST_LOADER",
-            "before [tweakers:a Tweakers list reopens as one]",
+            "before [tweakers:a row's list reopens as one]",
         ),
     ] {
         let line = text

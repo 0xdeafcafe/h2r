@@ -1,12 +1,13 @@
 //! What a script's header asks of the game outside its rules: the
-//! superbounce mode, and a place under Tweakers in the game type list
+//! superbounce mode, and a row of ours in the game type list
 //! (docs/game/rules-engine.md, "Firefight, AI and bounces";
 //! docs/game/community-gametypes.md, "Tweakers").
 
-use ::rules::ir::{Header, Ir, List};
+use ::rules::ir::{Header, Ir};
 use variants::ext::{Ext, LEN, Mode, Script};
 
 use super::runtime;
+use crate::community_variants::Row;
 
 /// The capability a script requires for the superbounce mode: its HUD,
 /// its marks over the map and its medals.
@@ -18,9 +19,10 @@ pub fn asks_superbounce(ir: &Ir) -> bool {
     ir.header.requires.iter().any(|c| c == SUPERBOUNCE)
 }
 
-/// Whether a script's header files it under Tweakers: `list tweakers`.
-pub fn lists_tweakers(header: &Header) -> bool {
-    header.list == List::Tweakers
+/// The row of ours a script's header files it under: `list research`
+/// or `list party`.
+pub fn list_row(header: &Header) -> Option<Row> {
+    Row::of_list(header.list)
 }
 
 /// The script a record's prefix names, when this machine has it: a
@@ -44,12 +46,12 @@ fn header_of(script: Script) -> Option<Ir> {
     (script.mode == Mode::Rules).then(|| named(script.prefix)).flatten()
 }
 
-/// Whether a block naming a rules script (mode 2) is listed under
-/// Tweakers: the script it names is on this machine and its header says
-/// so ([`lists_tweakers`]). A script this machine lacks is listed under
-/// its carrier's game type.
-pub fn block_is_tweaker(block: &[u8; LEN]) -> bool {
-    header_of(Ext::in_effect(block).script).is_some_and(|ir| lists_tweakers(&ir.header))
+/// The row of ours a block naming a rules script (mode 2) is listed
+/// under: the script it names is on this machine and its header names one
+/// ([`list_row`]). A script this machine lacks is listed under its
+/// carrier's game type.
+pub fn block_row(block: &[u8; LEN]) -> Option<Row> {
+    header_of(Ext::in_effect(block).script).and_then(|ir| list_row(&ir.header))
 }
 
 /// Whether a record's script reference names a script that asks for the
@@ -82,24 +84,25 @@ mod tests {
         p
     }
 
-    /// The superbounce script asks for the mode and lists under Tweakers;
-    /// no port and no other example does either.
+    /// The superbounce script asks for the mode and lists under Research
+    /// and Devolution; no port and no other example does either.
     #[test]
-    fn only_the_superbounce_script_asks_for_the_mode_and_tweakers() {
+    fn only_the_superbounce_script_asks_for_the_mode_and_a_row() {
         let sb = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
         assert!(asks_superbounce(&sb));
-        assert!(lists_tweakers(&sb.header));
+        assert_eq!(list_row(&sb.header), Some(Row::Research));
         for b in runtime::builtins().iter().chain(runtime::examples()) {
             let (ir, _) = ::rules::verify::load(&b.blob).unwrap();
             let is_sb = ir.id() == sb.id();
             assert_eq!(asks_superbounce(&ir), is_sb, "{}", ir.header.name);
-            assert_eq!(lists_tweakers(&ir.header), is_sb, "{}", ir.header.name);
-            assert_eq!(block_is_tweaker(&rules_block(prefix(b))), is_sb, "{}", ir.header.name);
+            let row = is_sb.then_some(Row::Research);
+            assert_eq!(list_row(&ir.header), row, "{}", ir.header.name);
+            assert_eq!(block_row(&rules_block(prefix(b))), row, "{}", ir.header.name);
         }
         assert!(runtime::examples().iter().any(|b| b.id == sb.id()));
         // A block with no script, and one naming a script not here.
-        assert!(!block_is_tweaker(&[0; LEN]));
-        assert!(!block_is_tweaker(&rules_block([9; 8])));
+        assert_eq!(block_row(&[0; LEN]), None);
+        assert_eq!(block_row(&rules_block([9; 8])), None);
     }
 
     /// The built-in Superbounce variant's block turns the mode on through

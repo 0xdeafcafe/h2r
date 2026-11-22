@@ -942,14 +942,15 @@ pub fn install(
                 if with_settings && video_screen::skip_settings_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
-                // The game type list's Tweakers row has no pane of its own:
-                // Slayer's, with our title and description over its texts.
-                if crate::tweakers::is_our_pane(&*mem, screen, id, row) {
+                // The game type list's rows of ours have no pane of their
+                // own: Slayer's, with the row's title and description over
+                // its texts.
+                if let Some(ours) = crate::tweakers::our_pane(&*mem, screen, id, row) {
                     let base = mem.u8(screen + 0x5f3)? as i8;
                     drop(mem);
                     let word = live.2 + 8;
                     return hooks::entry::start_with(cpu, ctx, PANE_SET, move |cx| {
-                        Box::pin(crate::tweakers::pane(cx, sh, screen, base, word))
+                        Box::pin(crate::tweakers::pane(cx, ours, sh, screen, base, word))
                     });
                 }
                 // The Xbox Live menu: each row of ours shows its pane, Mods

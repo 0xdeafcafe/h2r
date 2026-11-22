@@ -5,9 +5,12 @@ Switch: none.
 
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
-hand in custom games, and a practice mode (Superbounce), as extra built-ins. The classics are listed under
-their game types; Superbounce is listed under [Tweakers](#tweakers), a row
-of ours at the bottom of the game type list. In the variant list they carry a
+hand in custom games, and a practice mode (Superbounce), as extra built-ins.
+Two rows of ours at the bottom of the game type list ([Tweakers](#tweakers))
+hold some of them: **Research and Devolution** has Bounce Practice, Glitch
+Hunt and Superbounce, and **Party Games** has Zombies, Jousting, Cops and
+Robbers and Bumper Cars. The rest are listed under their game types. In the
+variant list they carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
 built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
@@ -141,7 +144,7 @@ Settings not listed stay at the game type's default.
 | Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
-| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under [Tweakers](#tweakers), not Slayer; its built-in record names the Superbounce rules script, whose header lists it under Tweakers and turns the mode on, and the mode also matches the variant's name |
+| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under Research and Devolution ([Tweakers](#tweakers)), not Slayer; its built-in record names the Superbounce rules script, whose header lists it there (`list research`) and turns the mode on, and the mode also matches the variant's name |
 
 Why these, and the sources:
 
@@ -283,72 +286,83 @@ being left out, and a failed read leaving the tag alone.
 
 ## Tweakers
 
-Tweakers is a game type row of ours, last in the game type list (after
-Territories), for familiar game types with tweaked rules. Its label is
-"Tweakers", its pane title "TWEAKERS", and its description "Play familiar
-game types with tweaked rules, from bounce practice to new twists on the
-classics." Superbounce is the only tweaker. Choosing the row opens a
-variant list of the tweakers, built-in and saved; Slayer's list no longer
-shows them. The row is an ordinary list row, chosen with A like the game
-types above it.
+Two game type rows of ours come last in the game type list, after
+Territories, in this order (`community_variants::Row`):
+
+| Row | Pane title | Description | Built-ins |
+|---|---|---|---|
+| Research and Devolution | RESEARCH AND DEVOLUTION | "Practice the tricks and find the glitches: superbounces, crouch jumps and the maps' secrets." | Bounce Practice, Glitch Hunt, Superbounce |
+| Party Games | PARTY GAMES | "Zombies, jousting, cops and robbers: the party games the community made up for custom games." | Zombies, Jousting, Cops and Robbers, Bumper Cars |
+
+Choosing a row opens a variant list of its variants, built-in and saved;
+Slayer's list no longer shows them. Each row is an ordinary list row,
+chosen with A like the game types above it.
 
 Code: `crates/extensions/game/src/tweakers.rs` (feature `tweakers`, on by
-default, [switches](../runtime/switches.md)). A variant is a tweaker when
-its block names a rules script (mode 2) whose header says
-`list tweakers` ([rules-engine.md](rules-engine.md#the-language)), or
-when its name is a Tweakers built-in's, for a built-in record before its
-block is written (`community_variants::is_tweaker`). The script is found
-by the record's prefix among the scripts compiled into the game (the
-ports and the examples) and in the game-variant store
-(`rules::header::block_is_tweaker`); one this machine lacks lists under
-its carrier's game type. The superbounce flag files nothing. Every
-tweaker is a Slayer variant underneath (`Category::Tweakers`, checked by
-a test), so the Tweakers list is Slayer's variant list filtered: its
-defaults, copies and saves are Slayer's. A Tweakers built-in's record
-carries its tweak's block (`Tweak::ext`; Superbounce's names the
-Superbounce script), and saving or editing a tweaker keeps the block, so
-the copy stays under Tweakers.
+default, [switches](../runtime/switches.md)). A variant is under a row
+when its block names a rules script (mode 2) whose header names the row
+(`list research` or `list party`,
+[rules-engine.md](rules-engine.md#the-language)), or when its name is
+one of the row's built-ins (`community_variants::row_of`). The name
+covers the built-ins with no block, and a built-in record before its
+block is written. The script is found by the record's prefix among the
+scripts compiled into the game (the ports and the examples) and in the
+game-variant store (`rules::header::block_row`); one this machine lacks
+lists under its carrier's game type. The superbounce flag files nothing.
+Every row's variant is a Slayer variant underneath (`Category::Row`,
+checked by a test), so a row's list is Slayer's variant list filtered: its
+defaults, copies and saves are Slayer's. A built-in with a tweak
+(`Tweak::ext`; Superbounce's names the Superbounce script) carries the
+tweak's block in its record, and saving or editing it keeps the block, so
+the copy stays under its row. A copy of a built-in with no tweak is listed
+under Slayer unless it keeps the built-in's name. Hide and Seek is a
+Juggernaut variant, so it stays under Juggernaut.
 
 Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 
 | Address | What it is | Ours |
 |---|---|---|
-| `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: add a datum with word 9 last, except in the create mode (`+0xb39`) |
-| `0x2c5823` | a row's text, by word | `before`: word 9 draws "Tweakers" |
-| `0x2c5897` | a row chosen | `before`: word 9 runs retail's press with Slayer's word, with a flag set that marks the variant list it opens |
-| `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): 1 while the Tweakers press runs, else 0 |
-| `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for Slayer's category: run the original, then keep the tweakers and drop Create New in a marked list, or drop the tweakers in an unmarked one. Each handle is read with `0x212bc0`, as the fill does. The first fill writes the ext block into the built-in Superbounce record (`[0x51ea14]`, records of `0x1e4`) |
-| `0x2cad45` | the variant list's per-frame update | `before` on a marked list: our title and description in the texts retail sets for Slayer's |
-| `0x2cac1a` | the loader a screen stack reopens the variant list with | `before` on a marked list: an entry of ours wrapping Slayer's loader for the same mode, which opens it marked |
-| pane set (`layout_glue`) | the row's pane | the Tweakers row shows Slayer's pane with our title and description over its texts |
+| `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: add a datum with word 9 (Research and Devolution) and one with word 10 (Party Games) last, except in the create mode (`+0xb39`) |
+| `0x2c5823` | a row's text, by word | `before`: words 9 and 10 draw their row's label |
+| `0x2c5897` | a row chosen | `before`: words 9 and 10 run retail's press with Slayer's word, with the row set to mark the variant list it opens |
+| `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): the row's number (`Row::mark`, 1 Research and Devolution, 2 Party Games) while its press runs, else 0 |
+| `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for Slayer's category: run the original, then keep the row's variants and drop Create New in a marked list, or drop every row's in an unmarked one. Each handle is read with `0x212bc0`, as the fill does. The first fill writes the ext block into the built-in Superbounce record (`[0x51ea14]`, records of `0x1e4`) |
+| `0x2cad45` | the variant list's per-frame update | `before` on a marked list: the row's title and description in the texts retail sets for Slayer's |
+| `0x2cac1a` | the loader a screen stack reopens the variant list with | `before` on a marked list: an entry of ours wrapping Slayer's loader for the same mode and row, which opens it marked |
+| pane set (`layout_glue`) | the row's pane | each row shows Slayer's pane with its title and description over its texts |
 
-Live browser filters have no Tweakers choice: a session advertises its
-base game type, so a Superbounce game is a Slayer game there, and the
-Variant filter finds it by name ([live-custom-games.md](../live/live-custom-games.md#filter-games)).
+Live browser filters have no choice for our rows: a session advertises its
+base game type, so a Superbounce or Zombies game is a Slayer game there,
+and the Variant filter finds it by name ([live-custom-games.md](../live/live-custom-games.md#filter-games)).
 
 Tests (`cargo test -p game --lib tweakers`) run on synthetic memory: the
-row is last, after Territories, added once, on both screens and not in the
-create mode; Superbounce is under Tweakers and no longer under Slayer;
-every tweaker is a Slayer variant; a renamed copy with the block stays
-under Tweakers, a block with only other changes or a bad check does not;
-the built-in records are patched once; a whole fill through the hook for
-Slayer's list and the Tweakers list, and another category's left alone;
-the pane and its texts; the reopen loader per mode; the hooks on the plan.
+rows are last, after Territories, in order, added once, on both screens
+and not in the create mode; each row keeps its own variants and Slayer's
+list the rest; every row's variant is a Slayer variant; a renamed copy
+with the block stays under Research and Devolution, a block with only
+other changes or a bad check does not; the built-in records are patched
+once; a whole fill through the hook for Slayer's list and each row's list,
+and another category's left alone; the pane and its texts; the reopen
+loader per mode; the hooks on the plan.
 
 Not verified in a game run:
 
-- the row and its label on both screens, and its pane with our texts;
-- the variant lists: Slayer's without Superbounce, Tweakers' with it and no
-  Create New, and our title and description;
-- a game started from Tweakers having the mode on through its script (the
-  ext block surviving from the built-in record into the active variant);
-- Edit on Superbounce saving a copy that lists under Tweakers;
-- Back from a game or a nested screen reopening the Tweakers list;
+- both rows and their labels on both screens, and their panes with their
+  texts. "Research and Devolution" is the longest label on the list and
+  may not fit the row;
+- the variant lists: Slayer's without the rows' variants, each row's with
+  its own and no Create New, and the row's title and description;
+- a game started from Research and Devolution having the mode on through
+  its script (the ext block surviving from the built-in record into the
+  active variant);
+- Edit on Superbounce saving a copy that lists under Research and
+  Devolution;
+- Back from a game or a nested screen reopening the row's list;
 - that the lifter exposes the seven new points as hookable entries.
 
-Change Rules opens with Slayer focused when the lobby's variant is a
-tweaker: retail's `0x2c5782` focuses the row by game type, and ours is not
-mapped.
+Change Rules opens with Slayer focused when the lobby's variant is under
+one of our rows: retail's `0x2c5782` focuses the row by game type, and
+ours are not mapped.
 
 ## Not done and risks
 

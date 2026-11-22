@@ -695,7 +695,7 @@ fn top_level(m: &Model) -> Vec<CompletionItem> {
         ("rules", "rules \"${1:Name}\" ${2:1}".to_string(), "rules"),
         ("carrier", carrier, "carrier"),
         ("teams", "teams ${1:2}".to_string(), "teams"),
-        ("list", "list ${1|tweakers|}".to_string(), "list"),
+        ("list", "list ${1|research,party|}".to_string(), "list"),
         ("requires", "requires ${1:capability}".to_string(), "requires"),
         (
             "label",
