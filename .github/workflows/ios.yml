@@ -1,0 +1,69 @@
+name: iOS
+
+# What of the iPhone and iPad app (platform/ios, docs/runtime/ios.md) builds
+# without the owner's disc:
+#
+#   - h2host, the Rust runtime, as libh2host.a for aarch64-apple-ios, built
+#     as platform/apple/build.sh builds it (-Zbuild-std on the pinned
+#     compiler);
+#   - the app's Swift sources, type-checked against the iOS SDK and the C
+#     header the Rust library exports.
+#
+# The rest of the app does not build here: build/h2game.framework (the game
+# module lifted and compiled from the disc), build/disc and build/bootcache
+# all come from the disc, which never enters CI, and H2iOS.xcodeproj embeds
+# them. No signing: nothing is installed or archived.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: ""
+  # Keep in step with platform/apple/build.sh and platform/ios/project.yml.
+  IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          lfs: true # images, the app icon among them
+      # The pinned compiler with rust-src for -Zbuild-std, and the job
+      # pinned to it, so rustup never installs rust-toolchain.toml's clippy
+      # and rustfmt on top.
+      - name: Install Rust
+        run: |
+          channel=$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component rust-src
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+        with:
+          shared-key: ios
+          cache-on-failure: true
+      - name: Build the runtime for iOS
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: >-
+          cargo build --locked -Zbuild-std=std,panic_abort
+          --target aarch64-apple-ios --release -p h2host
+      - name: Check the library exists
+        run: ls -l target/aarch64-apple-ios/release/libh2host.a
+      - name: Type-check the Swift host
+        run: >-
+          xcrun --sdk iphoneos swiftc -typecheck
+          -target arm64-apple-ios17.0 -swift-version 5
+          -import-objc-header platform/ios/H2iOS/H2iOS-Bridging-Header.h
+          platform/ios/H2iOS/*.swift platform/apple/GameKeyInput.swift
