@@ -13,6 +13,7 @@ import { HOME_CRUMB } from "./modes";
 import { Crumbs, Panel, Title, playerHref } from "./Layout";
 import { shortHash } from "../admin/content";
 import { longDate } from "./fmt";
+import { fetchScriptView } from "../lib/rules";
 import { bundleHref, deleteVariant, fetchVariant, notFound, scriptHref, variantFileName, type Variant } from "../lib/variants";
 import "../styles/rules.css";
 
@@ -24,6 +25,13 @@ function VariantDetail(props: { variant: Variant }) {
   const [busy, setBusy] = createSignal(false);
   const [msg, setMsg] = createSignal<string | null>(null);
   const mine = () => identity.me()?.xuid === v().author.xuid;
+  // The script's own view: who scores and its Quick Options marks. A
+  // server that can't show the script leaves the panel at its facts.
+  const [script] = createResource(
+    () => ({ hash: v().script_hash, api: live.server().api }),
+    ({ hash, api }) => (hash ? fetchScriptView(api, hash).catch(() => null) : null),
+  );
+  const view = () => (script.loading ? null : script() ?? null);
 
   async function remove() {
     const me = identity.me(), wk = live.wellKnown();
@@ -49,6 +57,12 @@ function VariantDetail(props: { variant: Variant }) {
               <dl class="s-facts s-pad">
                 <div><dt>Name</dt><dd>{v().script_name ?? "unnamed"}</dd></div>
                 <div><dt>Hash</dt><dd><code title={hash()}>{shortHash(hash())}</code></dd></div>
+                <Show when={view()?.scoring}>
+                  {(s) => <div><dt>Scored by</dt><dd>{s() === "carrier" ? v().game_type : "The script"}</dd></div>}
+                </Show>
+                <Show when={view()?.quick.length}>
+                  <div><dt>Quick Options</dt><dd>{view()!.quick.map((q) => q.label).join(", ")}</dd></div>
+                </Show>
                 <div><dt>[ <A href={scriptHref(hash())}>open in the workbench</A> ]</dt><dd /></div>
               </dl>
             )}

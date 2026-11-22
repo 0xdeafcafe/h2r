@@ -532,3 +532,37 @@ async fn simulate_shares_the_workbench_bucket_and_a_batch_costs_more() {
     // A batch takes two of the bucket's 20.
     assert!(batches <= live_server::rule_scripts::RATE.1 / 2 + 1, "{batches}");
 }
+
+#[tokio::test]
+async fn the_script_view_lists_settings_and_quick() {
+    let h = harness().await;
+    let r = post(&h, "/v1/rules/check", json!({"source": rules::builtin::DUEL}), &[]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let v = r.json();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["scoring"], "carrier");
+    let ir = rules::compile(rules::builtin::DUEL).unwrap();
+    assert_eq!(v["about"], ir.header.about);
+    let settings = v["settings"].as_array().unwrap();
+    assert_eq!(settings.len(), ir.settings.len());
+    let score = settings.iter().find(|s| s["name"] == "score_limit").unwrap();
+    assert_eq!(score["value"], "15");
+    assert!(!score["label"].as_str().unwrap().is_empty());
+    // Value text is words: a choice is its label, not its number.
+    let weapon = settings.iter().find(|s| s["name"] == "starting_weapon").unwrap();
+    assert!(weapon["value"].as_str().unwrap().parse::<i32>().is_err());
+    let quick = v["quick"].as_array().unwrap();
+    assert_eq!(quick.len(), ir.quick.len());
+    assert_eq!(quick[0], json!({"kind": "setting", "name": "score_limit", "label": score["label"]}));
+
+    // A script that scores itself and declares no settings.
+    let v = post(&h, "/v1/rules/check", json!({"source": rules::builtin::SLAYER}), &[]).await.json();
+    assert_eq!(v["scoring"], "script");
+    assert!(v.get("settings").is_none());
+    assert!(v.get("quick").is_none());
+    // A script that does not build has none of it.
+    let v = post(&h, "/v1/rules/check", json!({"source": BROKEN}), &[]).await.json();
+    for k in ["scoring", "about", "settings", "quick"] {
+        assert!(v.get(k).is_none(), "{k}");
+    }
+}

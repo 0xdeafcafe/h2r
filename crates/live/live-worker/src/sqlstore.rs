@@ -646,6 +646,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// The script view and a variant made from a script, on the Worker's
+    /// own composition (the parity suite's variant cases).
+    #[tokio::test]
+    async fn worker_variant_scripts() {
+        use live_server::{
+            Live, Policy, ServerIdentity,
+            app::Timers,
+            blobs::{BlobStore, Blobs},
+            titleblobs::BlobsElsewhere,
+        };
+        let path = temp_db("variant-scripts");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let private = BlobStore::memory();
+        let store = BlobsElsewhere::new(Arc::new(store), private.clone());
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let policy = Policy {
+            write_rate: (1000., 1000),
+            ..Policy::default()
+        };
+        let live = Live::start_with(Arc::new(store), identity, policy, Timers::Driven)
+            .await
+            .unwrap();
+        live.set_blobs(Blobs {
+            private,
+            public: None,
+        });
+        crate::variant_scripts_parity::exercise(live).await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[tokio::test]
     async fn worker_film_library() {
         use live_server::{

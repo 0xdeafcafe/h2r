@@ -214,6 +214,18 @@ pub struct CheckView {
     /// ([`crate::game_variants::option_views`]).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<crate::game_variants::OptionView>,
+    /// Who scores the game, `script` or `carrier`, when it checks clean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scoring: Option<&'static str>,
+    /// The script's `about` text, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    about: Option<String>,
+    /// The `settings` block in words: name, label, value text.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    settings: Vec<crate::game_variants::ScriptSetting>,
+    /// The Quick Options marks, in the script's order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    quick: Vec<crate::game_variants::QuickView>,
 }
 
 fn check_view(c: workbench::Check) -> CheckView {
@@ -225,6 +237,10 @@ fn check_view(c: workbench::Check) -> CheckView {
         errors: c.errors.into_iter().map(Into::into).collect(),
         warnings: c.warnings.into_iter().map(Into::into).collect(),
         options: Vec::new(),
+        scoring: None,
+        about: None,
+        settings: Vec::new(),
+        quick: Vec::new(),
         report: c.report.map(|r| WireReport {
             worst_tick_ops: r.worst_tick_ops,
             budget: r.budget,
@@ -1017,6 +1033,10 @@ async fn post_check(
         && let Ok(ir) = rules::compile(&b.source)
     {
         view.options = crate::game_variants::option_views(&ir);
+        view.scoring = Some(crate::game_variants::scoring_word(&ir));
+        view.about = Some(ir.header.about.clone()).filter(|a| !a.is_empty());
+        view.settings = crate::game_variants::script_settings(&ir);
+        view.quick = crate::game_variants::quick_views(&ir);
     }
     Ok(crate::http::json(StatusCode::OK, &view))
 }

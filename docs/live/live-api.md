@@ -1939,6 +1939,16 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   label, description, kind, lo, hi, default, values?}]`, omitted when it
   declares none), for the game variant form ([Game
   variants](#game-variants)).
+- A check that is `ok` also says what a variant of the script starts
+  from: `scoring` (`script`, or `carrier` when the carrier's engine
+  scores the game), `about` (the script's description; omitted when it
+  has none), `settings` (`[{name, label, value}]`, the `settings` block
+  in table order, `value` as text: `15`, `Magnum`, `On`, `5 minutes`;
+  omitted when empty) and `quick` (`[{kind, name, label}]`, the Quick
+  Options marks in the script's order, `kind` `setting` or `option`;
+  omitted when empty). Both homes serve the same fields from the same
+  code (`game_variants::script_settings`, `quick_views`), and the parity
+  suite runs the check on each (`tests/support/variant_scripts.rs`).
 - `report` holds `worst_tick_ops` and `budget`, `fits`, `costliest`,
   `handlers: [{event, worst_ops}]`, `slots: [{scope, used, limit}]` (global,
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
@@ -2114,10 +2124,12 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   variant, and the file from `/bundle` (which has no author) gets another
   id once published.
 - `from-script` and `bundle` take `{script_hash | source, name,
-  description, visibility, options}`. The record is the stock record of
-  the script's carrier engine (`hopper::variant::VariantRecord::stock`),
-  named, with mode 2, the IR's prefix and `options` packed into the 32
-  option bits in declaration order. `options` maps an option's name to a
+  description, visibility, options}`. The record is the script's own
+  (`variants::portable::record_for`): the stock record of its carrier
+  engine with the script's `settings` written, named, with mode 2, the
+  IR's prefix and `options` packed into the 32 option bits in
+  declaration order. A `description` left out or blank is the script's
+  `about`. `options` maps an option's name to a
   number, a bool or an enum value's name; one left out takes its default;
   an unknown name or a value out of range is 400. A `script_hash` is a
   saved script or a built-in; a `source` must verify. `POST
