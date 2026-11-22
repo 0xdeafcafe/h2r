@@ -234,6 +234,7 @@ pub mod superbounce_prompts;
 pub mod superbounce_reload;
 pub mod superbounce_reticle;
 pub mod superbounce_steps;
+pub mod superbounce_targets;
 pub mod superbounce_world;
 pub mod superbounce_mode;
 pub mod superbounce_verify;
