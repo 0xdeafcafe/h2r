@@ -619,7 +619,7 @@ fn a_drill_walks_to_its_start_asks_for_the_word_and_tries_from_there_primed() {
 
 #[test]
 fn a_tries_line_says_the_site_the_result_and_its_last_jump() {
-    use crate::bounce_route::{Flight, Touchdown};
+    use crate::bounce_route::{Leap, Touchdown};
     let s = site([10.0, 0.0, 0.0], Status::Likely);
     let landing = Touchdown {
         tick: 40,
@@ -629,7 +629,7 @@ fn a_tries_line_says_the_site_the_result_and_its_last_jump() {
         miss: 0.32,
         word: None,
     };
-    let jump = |end| Flight {
+    let jump = |end| Leap {
         tick: 10,
         takeoff: [9.0, 0.0, 2.4],
         speed: 1.25,

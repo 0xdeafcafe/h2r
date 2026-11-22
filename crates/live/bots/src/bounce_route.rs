@@ -900,14 +900,14 @@ impl Touchdown {
 /// The vertical speed off the floor is the best of this many ticks
 /// (ticks) from the takeoff: the press is on the ground.
 pub const TAKEOFF_TICKS: u32 = 6;
-/// The most [`Flight`]s a run keeps.
+/// The most [`Leap`]s a run keeps.
 pub const FLIGHTS: usize = 8;
 
 /// One jump or drop of a bounce step, from the takeoff to the landing:
 /// what the practice's line for the try says
 /// (docs/game/bots.md, "Practising bounces").
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Flight {
+pub struct Leap {
     /// The tick it left: the jump pressed, or, a walk-off, the floor left.
     pub tick: u32,
     /// Where it left from.
@@ -933,9 +933,9 @@ pub struct Flight {
     pub end: Option<&'static str>,
 }
 
-impl Flight {
-    fn new(tick: u32, at: Vec3, v: Vec3, word: Option<u32>) -> Flight {
-        Flight {
+impl Leap {
+    fn new(tick: u32, at: Vec3, v: Vec3, word: Option<u32>) -> Leap {
+        Leap {
             tick,
             takeoff: at,
             speed: v[0].hypot(v[1]),
@@ -1104,8 +1104,8 @@ pub struct OrderRun {
     log: Vec<Logged>,
     /// The jump or drop in the air now, those over (at most
     /// [`FLIGHTS`]), and whether the last tick was in the air.
-    flight: Option<Flight>,
-    flights: Vec<Flight>,
+    flight: Option<Leap>,
+    flights: Vec<Leap>,
     was_air: bool,
     /// A show-off: the bot gives it up when it sees an enemy.
     pub show_off: bool,
@@ -1162,7 +1162,7 @@ impl OrderRun {
 
     /// The jumps and drops so far, oldest first (at most [`FLIGHTS`]),
     /// the one in the air last.
-    pub fn flights(&self) -> Vec<Flight> {
+    pub fn flights(&self) -> Vec<Leap> {
         self.flights
             .iter()
             .chain(self.flight.as_ref())
@@ -1199,7 +1199,7 @@ impl OrderRun {
         let v = vel.unwrap_or([0.0; 3]);
         if air && !self.was_air {
             self.end_flight("no_landing");
-            self.flight = Some(Flight::new(tick, at, v, pair));
+            self.flight = Some(Leap::new(tick, at, v, pair));
         }
         self.was_air = air;
         let Some(f) = self.flight.as_mut().filter(|_| air) else {

@@ -12,7 +12,7 @@ use input::host::HostPadState;
 
 use super::{Mind, Vec3};
 use crate::bounce_route::{
-    self, Ask, Flight, Logged, Mode, OrderRun, Touchdown, Why, launch_floor, path_length,
+    self, Ask, Leap, Logged, Mode, OrderRun, Touchdown, Why, launch_floor, path_length,
 };
 use crate::brain::{Me, Perception, Seen};
 use crate::cache::MapData;
@@ -57,7 +57,7 @@ pub(super) struct Ended {
     landing: Option<Touchdown>,
     log: Vec<Logged>,
     site: Option<crate::spots::Site>,
-    flights: Vec<Flight>,
+    flights: Vec<Leap>,
 }
 
 /// Where a bot's bounce route stands, for the agent.
@@ -90,7 +90,7 @@ pub struct OrderView {
     /// What the route did, oldest first.
     pub log: Vec<Logged>,
     /// Its jumps and drops, oldest first ([`OrderRun::flights`]).
-    pub flights: Vec<Flight>,
+    pub flights: Vec<Leap>,
     /// The bounce the plan uses.
     pub site: Option<crate::spots::Site>,
     /// The practice loop's tally while the superbounce mode is on

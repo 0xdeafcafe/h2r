@@ -254,7 +254,7 @@ impl std::fmt::Display for NothingWhy {
 /// The log's line for a try (docs/game/bots.md, "Practising bounces"):
 /// `bots: bounce try:`, the bot, drill or practice, the site and the aim,
 /// what it came to, then how many jumps or drops it made and the last
-/// ([`crate::bounce_route::Flight::describe`]: the takeoff, the ground
+/// ([`crate::bounce_route::Leap::describe`]: the takeoff, the ground
 /// and vertical speed, the word, the air stick, the touchdown and its
 /// result) and the results of those before it; or, with none, the step
 /// it ended on.
