@@ -1123,7 +1123,7 @@ mod tests {
 
     #[test]
     fn timers_end_round_and_variables_show() {
-        let src = "rules \"T\" 1\ncarrier slayer\nglobal var left: timer = 5\nglobal var n: int = 0\non timer(left) { n = n + 1; end_round(none) }\n";
+        let src = "rules \"T\" 1\ncarrier slayer\nglobal var left: timer = 5t\nglobal var n: int = 0\non timer(left) { n = n + 1; end_round(none) }\n";
         let t = run(src, &Scenario { ticks: 100, ..Scenario::default() }).unwrap();
         let last = t.ticks.last().unwrap();
         assert_eq!(t.round_ended, Some(last.tick));
