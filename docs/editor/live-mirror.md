@@ -32,6 +32,7 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | The game's cameras in the editor | Built: the `camera` layer from the last sealed `FrameScene`, a frustum per game view, Follow, Through its eyes and Game camera | `scene_glue::install_cameras`, `play/presence/camera.rs`, `viewport/mirror.rs`, `geometry::Exact` |
 | A paired editor with no window | Built: `h2-editor --serve` runs the game link between requests | `Api::serve_once` (`crates/apps/studio/src/api/mod.rs`) |
 | Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, one conditional `edit.batch` with the tag document’s fields and raw placement paths on the game’s `scnr`; shows when the object is next made | `play/sync.rs` |
+| Geometry and painted pixels sent live | Built: a diff of the Modeling tool's patches and the Textures tool's encoded tiles against `raw_sync::RawBaseline`, sent as `edit.batch` `raw` entries with the bounds as `writes`; a grown section as `edit.raw.append`, then the batch with `evict`; shows on the next frame ([realtime-edits.md](realtime-edits.md)) | `play/raw_sync.rs` |
 | Move, delete and remake live objects | In Edit the streamed placement object follows a move or delete. Respawn reads the loaded scenario entry and returns an unlinked preview. | `crates/apps/studio/src/play/objects.rs`, [Object edits](../runtime/agent-api.md#object-edits) |
 | Reload the running map | The editor writes a play copy and the host queues the active campaign or multiplayer options. The editor checks the returned activation and checksum. | `crates/extensions/agent/src/sim/edits.rs`, [Test maps](../runtime/agent-api.md#test-maps) |
 | Tag field writes in the game | Built: View/Edit, field effects, the Pending tab, `edit.map`, conditional `edit.batch`, journal adoption and `edit.revert` | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
@@ -288,15 +289,24 @@ heads its group in the Pending tab.
 
 | Effect (chip) | Sentence | Edits | Reaches the game by |
 |---|---|---|---|
-| `now` (**Now**) | Applies now. | values the draw path reads every draw: shader colours, vectors and bitmaps, effect and light colours where the draw reads the tag | `edit.batch`; shows on the next frame |
+| `now` (**Now**) | Applies now. | values the draw path reads every draw: shader colours, vectors and bitmaps, effect and light colours where the draw reads the tag; moved and grown render geometry (clusters, instanced definitions, `mode` sections) and painted pixels of the same size and format | `edit.batch`; shows on the next frame. A grown section's row says the level rebuilds for a moment |
 | `next_use` (**Next use**) | Applies the next time the game uses it. | values read when used: damage, rates of fire, machine speeds and delays, a projectile's drag | `edit.batch`; shows on the next shot, hit or cycle |
 | `next_spawn` (**Next spawn**) | Applies when the object next spawns. | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn. **Respawn now** remakes supported, unattached occupants of unnamed palette entries with default creation fields. Other placements take the edit on their next creation or a reload |
 | `not_known` (**Not known**) | Not known; reload to be sure. | any field with no recorded `applies` | `edit.batch`; written at once, when the game reads it is not known |
-| `reload` (**After reload**) | Applies after reload. | placement slots added, duplicated or removed, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap edits, bitmap pixels of another size | saving the play copy and loading the map again |
+| `reload` (**After reload**) | Applies after reload. | placement slots added, duplicated or removed, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap fields edited in the Tags tool, a geometry edit the save refuses or whose tag the game has not loaded, a grown section a play copy already holds, a bitmap resized or reformatted | saving the play copy and loading the map again |
 
 Moving, turning or deleting a thing that exists, and previewing a new
 placement, reach the game by `world.object.set`, `.delete` and
 `.respawn` on the next tick; their Pending rows have `doc` `object`.
+
+**Geometry and pixels.** In Edit, a Modeling edit and a Textures stroke
+go as raw entries (`play/raw_sync.rs`, [realtime-edits.md](realtime-edits.md),
+"The editor"): one Pending row per edited section (`doc` `geometry`,
+`path` the target id) and per painted image (`doc` `bitmaps`), each
+**Now** until the game acknowledges it. Every entry carries the bytes the
+editor takes the game to hold as `was`; when the game holds others the
+row is marked as a conflict and waits until the edit changes or **Send**
+is pressed again. Undo sends the old bytes. View mode sends nothing.
 
 The effect of a field is data, not a guess made in the UI: `tags::defs`
 has an `applies` attribute (`frame`, `use`, `creation`) with its

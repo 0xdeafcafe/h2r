@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh) and R3 (placement transactions, `world.placement.edit`) are built; R4 to R7 are design, and what they build on is cited as **Code**.
-Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs` and `crates/extensions/agent-proto/src/sim/edits.rs`; planned in `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`) and R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`) are built; R4, R6 and R7 are design, and what they build on is cited as **Code**.
+Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` and `crates/apps/studio/src/play/raw_sync.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -335,8 +335,11 @@ that contains the level, a `raw` entry with owner `pixels`.
   world and objects.
 - During a stroke the editor sends mip 0's changed bytes at the push
   interval, and the rebuilt mips at the stroke's end. A request line is at
-  most 1 MiB (`MAX_LINE`, `crates/extensions/agent/src/server.rs`); a
-  level larger than that goes through `edit.stage.put`.
+  most 1 MiB (`MAX_LINE`, `crates/extensions/agent/src/server.rs`), so
+  the editor splits a larger plan into batches of at most 256 KiB of raw
+  bytes (`raw_sync::BATCH_RAW_BYTES`); each raw entry stands alone, so a
+  split level shows in parts over a few frames. `edit.stage.put` is not
+  used by the editor.
 - A `P8` lightmap page is the same path with palette-quantised bytes.
 
 **Shows: next frame, same size and format.** A new size, format or mip
@@ -431,11 +434,39 @@ Plain integers keep `render-bridge` free of the agent's types.
 - `play/sync.rs` sends a block whose layout revision differs from the
   loaded one as a `world.placement.edit` instead of putting its fields
   behind reload, and advances the loaded revision on the receipt.
-- A new `play/raw_sync.rs` diffs `GeometryChanges` and the bitmap
-  document against a baseline of acknowledged raw entries, as
-  `sync::Baseline` does for fields, so undo sends the old bytes.
+- `play/raw_sync.rs` (built) diffs the Modeling tool's patches
+  (`GeometrySession::changes`, each `RawWrite` naming its section and
+  each patch carrying the file's bytes as `was`) and the Textures tool's
+  painted layers, encoded by `assets::encode::encode_tiles` into every
+  LOD chain and mip the image stores, against `raw_sync::RawBaseline`:
+  each raw and tag byte the game acknowledged, beside the file's byte,
+  and each grown section's appended block and pointer. A byte the
+  baseline holds and the documents no longer change wants its file byte
+  back, so undo sends the old bytes. Every entry carries `was`, inline up
+  to 64 bytes and as `{hash}` beyond; the bounds go as `writes` in the
+  same batch.
+- A grown section is two requests: `edit.raw.append` with the encoded
+  block (aligned to `geometry_edit::RAW_ALIGN`), then one batch with the
+  pointer word the append returned, the record and bounds writes, and
+  `evict` naming the section. A block appended this map is reused while
+  the same block is wanted; undoing the growth writes the file's pointer
+  word back and evicts again.
+- Raw requests go when no field batch is waiting, one at a time, at the
+  push interval. During a stroke only mip 0's bytes go; the other levels
+  go at the stroke's end. A plan larger than 256 KiB of raw bytes goes as
+  several batches, the tag writes and evictions with the last.
+- A refusal or `MISMATCH` holds every geometry and pixel row in Pending
+  (a mismatch marked `conflict`, a refusal **After reload** with the
+  game's reason) until the documents change or the user sends again. A
+  geometry edit the save refuses, one whose tag the game has not loaded,
+  and a grown section a play copy holds (its pointer is not known) are
+  **After reload** rows and are not sent. Shared-cache pixels go to the
+  owner the image's pointer names, which the overlay serves.
+- A play copy's baseline (`RawBaseline::of_copy`) holds the geometry the
+  save wrote; pixel edits are not in the copy.
 - `mirror.pending` and `mirror.apply` ([agent-api.md](agent-api.md)) list
-  and send these with `doc` `geometry`, `bitmaps` and `collision`.
+  and send these with `doc` `geometry` and `bitmaps` (and `collision`
+  when R7 is built).
 
 ## What is live and what is not
 
@@ -516,7 +547,7 @@ methods in its own section of the runtime agent API page.
 | **R2** Native refresh (built) | `native_edits`; section bounds recompute; world reload request; model replace; image rewrite | `crates/rewrites/native-render`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_objects_glue.rs` | `GpuWorld` after a `Section` edit equals a world loaded from the edited bytes (vertices and bounds), beside `crates/rewrites/native-render/tests/gpu.rs`; a replaced model draws its new vertices (`tests/models_gpu.rs`); an image rewrite changes the sampled texel; a size change is refused | with R1: the frame columns `native_world_opaque_prereserved_draws` and `native_world_opaque_guest_indexed_draws` name which path drew the edited part, and both pictures change | nothing |
 | **R3** Placement transactions | `world.placement.edit`; linked creation; relink; name repoints; capacity from the loaded count; the count-change refusal with peers | `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/calls/placement.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` | fake game: add into a dead tail slot, remove with swap, and the undo of each leave the block byte-equal to the editor's save of the same edit; an occupant's index follows a relink; a refused shape writes the record and reports `created: false`; a `was` mismatch changes nothing | `world.placement.edit` adding a scenery entry after a removal, then `world.object` shows the new object with its placement; a BSP switch or `map.reload {}` keeps one object per entry | nothing |
 | **R4** Edit arena and block moves | the arena, its allocator, `moves`, `edit.arena`; arena capacity for R3's growth | `crates/extensions/hot-tags/src/arena.rs` (new) and the batch, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, the capacity call in `calls/placement.rs` | allocator: first fit, free, coalesce, full; a move then a path read resolves through the new address; revert puts the pair back and frees; an `at` write inside a moved block is admitted | `edit.arena` on a loaded multiplayer map records the free size (a note in `docs/editor/notes/`); a ninth scenery entry on a block of eight appears and survives a BSP switch | R1, R3 |
-| **R5** Editor: geometry and pixels live | `play/raw_sync.rs`; the effect chips; Pending rows; dirty spans from `GeometrySession`; the stroke push | `crates/apps/studio/src/play/raw_sync.rs` (new), `crates/apps/studio/src/play/tag_sync.rs`, `crates/apps/studio/src/play.rs`, `crates/tools/geometry-edit` | fake game: a `mesh.transform` is one batch with `raw` and bounds; undo sends the old bytes; View mode sends nothing; a mismatch leaves the batch pending; a grown edit sends append, `writes`, `evict` in that order | `mesh.transform` through the editor's API on a paired game, `render.frame` with `snap` shows the moved faces; `mirror.pending` is empty after | R1; R2 for the native picture; modeling slices 5 to 7 for pixels and grown sections |
+| **R5** Editor: geometry and pixels live (built) | `play/raw_sync.rs`; the effect chips; Pending rows; dirty spans from `GeometrySession`; the stroke push | `crates/apps/studio/src/play/raw_sync.rs` (new), `crates/apps/studio/src/play/tag_sync.rs`, `crates/apps/studio/src/play.rs`, `crates/tools/geometry-edit` | fake game: a `mesh.transform` is one batch with `raw` and bounds; undo sends the old bytes; View mode sends nothing; a mismatch leaves the batch pending; a grown edit sends append, `writes`, `evict` in that order; a stroke sends its tiles (`crates/apps/studio/src/play/raw_sync/tests.rs`; each patch's owner and `was` in `crates/tools/geometry-edit/src/session_tests.rs`) | `mesh.transform` through the editor's API on a paired game, `render.frame` with `snap` shows the moved faces; `mirror.pending` is empty after | R1; R2 for the native picture; modeling slices 5 to 7 for pixels and grown sections |
 | **R6** Editor: placements live | add, remove and their undo as `world.placement.edit`; the layout-revision rule; Pending text | `crates/apps/studio/src/play/objects.rs`, `crates/apps/studio/src/play/objects`, `crates/apps/studio/src/play/sync.rs` | fake game: add, remove, undo and redo each send one transaction and leave `mirror.pending` empty; a refused shape lands under Reload with the game's reason; a lost reply does not send twice | add and delete a crate in the editor and watch `mirror.objects` follow within a second | R3 |
 | **R7** Collision live | `edit.collision.stage` and `.commit`, both modes; overlay cache drop; the editor's send | `crates/extensions/agent/src/hot/collision.rs` (new), `crates/extensions/agent-proto/src/hot.rs`, `crates/apps/studio/src/play/collision_sync.rs` (new) | fake game: a commit repoints all pairs at one boundary or none; `sim_collision` over synthetic memory answers from the new blocks after it; freed extents return to the arena; `rebuild` is refused on a map with pathfinding the stage did not replace | `debug.view collision_geometry` shows the new solid after an `append` commit; after `activate: true`, `sim.state.set` puts a player above it and `sim.expect` finds the player resting on its top | R4; modeling slices 8 and 11 |
 
@@ -574,6 +605,13 @@ which is why R4 follows R1.
 - **S**: evicting a section through the guest's unload callback and
   letting the lookup re-read it is safe mid-map. R5's grown check
   verifies it.
+- **S**: a structure BSP's tag writes (cluster bounds, records) are sent
+  as `{at}` writes at the BSP region's virtual addresses, which are the
+  guest's addresses only while that BSP is the loaded one. The editor
+  sends geometry only for targets whose tag is in `edit.map`'s `loaded`
+  list and always with `was`; whether a BSP the game has not activated is
+  absent from that list is not checked. R5's live check on a map with two
+  BSPs verifies it.
 - **S**: a BSP switch to the active BSP runs the whole switch rather than
   returning early, and Havok's structure shape reads the collision blocks
   through the pairs and not through addresses it kept. Reading
