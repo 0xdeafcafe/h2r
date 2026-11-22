@@ -542,8 +542,10 @@ within a repeat cancels (`simbench::schedule`). Each run is a step in
 | `report.json` | a match's report; a batch's are `in/<out>/runs/<id>/report.json` |
 | `sim.log` | the sim's stdout and stderr |
 
-The per-run data directories (`<out>/runs/<id>/data`, about 1.3 GB each)
-are removed when the step ends, including after a crash or `h2 lab stop`;
+The per-run data directories (`<out>/runs/<id>/data`: N:'s map copies of
+their own, Z:'s cloned from the image's
+[template](cache-slots.md#sim-batches-a-warm-z), which stays) are removed
+when the step ends, including after a crash or `h2 lab stop`;
 reports and logs stay. A step that exits non-zero, leaves no report or
 leaves an unreadable one is a failed run: the job finishes `failed` after
 the remaining steps, with the failures in its notes and the summary. A step
