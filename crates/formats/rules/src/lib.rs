@@ -15,6 +15,7 @@ pub mod ide;
 pub mod ir;
 pub mod lang;
 pub mod policy;
+pub mod reload;
 pub mod scenario;
 pub mod sim;
 pub mod ty;

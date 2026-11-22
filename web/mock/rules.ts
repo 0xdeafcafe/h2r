@@ -298,7 +298,7 @@ export function mockSimulate(source: string, body: Record<string, unknown>) {
       max_score: Math.max(...rows.map((r) => r.top_score)),
       avg_ticks: Math.floor(rows.reduce((n, r) => n + r.ticks, 0) / matches),
       max_ticks: Math.max(...rows.map((r) => r.ticks)),
-      worst_tick_ops: worst.worst_tick_ops, worst_tick_seed: worst.seed, budget: 20_000,
+      worst_tick_ops: worst.worst_tick_ops, worst_tick_seed: worst.seed, budget: 100_000,
       errors: [], flags, stopped: null,
     },
     rows,

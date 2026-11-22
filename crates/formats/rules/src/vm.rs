@@ -665,6 +665,24 @@ impl Vm {
         })
     }
 
+    /// Swaps in a new program between ticks, keeping every slot value, the
+    /// generator, grants and queued calls (`crate::reload`). `ir` must
+    /// verify and keep the state shape ([`crate::reload::compatible`]);
+    /// otherwise nothing changes. A stopped script runs again.
+    pub fn swap_program(&mut self, ir: Ir) -> Result<(), crate::reload::SwapError> {
+        use crate::reload::{SwapError, carry, compatible};
+        let report = verify::verify(&ir)?;
+        compatible(&self.ir, &ir).map_err(SwapError::Incompatible)?;
+        carry(&self.ir, &ir, &mut self.ext);
+        let (pos, inits) = layout(&ir);
+        self.ext.stopped = None;
+        self.ir = ir;
+        self.pos = pos;
+        self.inits = inits;
+        self.report = report;
+        Ok(())
+    }
+
     pub fn ir(&self) -> &Ir {
         &self.ir
     }

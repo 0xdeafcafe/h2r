@@ -1,6 +1,6 @@
 ---
 name: h2-rules
-description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, and Live's /v1/rules and /v1/variants routes.
+description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
 ---
 
 # Write, test and ship a game type script
@@ -287,6 +287,46 @@ of game its script may play in. A variant name is 1 to 31 characters with no
 leading or trailing space and no `|`; a description is at most 150; an
 account publishes at most 200. Full reference:
 [docs/live/live-api.md](../../../docs/live/live-api.md#rules-scripts).
+
+## Edit it in Studio, reload it into a game
+
+Studio's **Game type script** window (a tab beside the Variants tool's
+settings) edits one `.rules` file with colouring, problems, completion,
+hover and the check report. Agents drive the same state over the editor
+socket (`h2 studio`, [docs/editor/agent-api.md](../../../docs/editor/agent-api.md)):
+
+```sh
+h2 studio rules.open '{"starter":"slayer"}'      # or {"path":...} / {"source":...}
+h2 studio rules.set '{"source":"..."}'
+h2 studio rules.get                               # problems, check, reload state
+h2 studio rules.save '{"path":"/tmp/mine.rules"}' # reloads too while reload on save is on
+h2 studio rules.reload '{"mode":"auto"}'          # answers {queued}; rules.get's reload has the game's answer
+```
+
+Studio sends the verified blob to the paired game's `rules.reload`. A
+running game can also take one straight from the game's agent API:
+
+```sh
+h2 agent rules.reload '{"source":"<the script text>"}'
+h2 agent rules.state     # last_reload: mode, hash, tick, reasons
+```
+
+- **In place** when the new script keeps the old one's state shape: the
+  same carrier, teams, capabilities, options (kind, range, default),
+  enums, variables per scope (names, types, order), labels and palettes.
+  New handler code and new starting values are fine; every value and
+  score carries on.
+- **Restart** otherwise (with `mode` `auto`): the same map and variant
+  start again with the new script; `reasons` says what changed, one
+  sentence each ("the script has 1 player variables, not 0").
+- `mode: in_place` refuses rather than restart; `restart` always
+  restarts.
+- Refused: Theater, a matchmade Live game, a guest, no multiplayer game,
+  and a script this host cannot run. A Live custom game reloads in place
+  only. In place leaves the record naming the old script, so the next
+  game start runs the old one; save it as a variant to keep it.
+
+Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules-engine.md#reloading-a-running-script).
 
 ## Pitfalls
 

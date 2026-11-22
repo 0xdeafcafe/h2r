@@ -17,6 +17,7 @@ mod navigation;
 pub mod map_cards;
 pub mod map_pack;
 pub mod modeling;
+pub mod rules_edit;
 pub mod scripts;
 pub mod shared_refs;
 pub mod tag_api;
@@ -530,6 +531,8 @@ pub struct App {
     pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
     /// Sound audition: the decoded sound, the audio output and what plays.
     pub audition: audition::Audition,
+    /// The game type script editor (`rules_edit`).
+    pub rules: rules_edit::RulesEditor,
 }
 
 impl Default for App {
@@ -598,6 +601,7 @@ impl App {
             last_tag_export: None,
             last_tag_import: None,
             audition: Default::default(),
+            rules: Default::default(),
         }
     }
 

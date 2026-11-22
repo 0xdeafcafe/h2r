@@ -36,6 +36,9 @@ geometry-edit = { path = "../../tools/geometry-edit" }
 # The HUD tool's logic (docs/editor/hud-editor.md).
 hud-edit = { path = "../../tools/hud-edit" }
 variants = { path = "../../formats/variants" }
+# The game type script editor: the language intelligence (`rules::ide`),
+# the check report and the compiler (src/app/rules_edit.rs).
+rules.workspace = true
 hopper-edit = { path = "../../tools/hopper-edit" }
 live-proto.workspace = true
 # Convert to Halo 2: the Halo 1 converter, over Halo 1 and Halo 2 maps.

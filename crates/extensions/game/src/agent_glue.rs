@@ -190,12 +190,18 @@ impl AgentGlue {
             &agent,
             std::sync::Arc::new(crate::firefight::feature::AgentSource::installed()),
         );
-        // rules.state: the game's rules script, or why there is none
-        // (docs/game/rules-engine.md, "The host runtime").
+        // rules.state and rules.reload: the game's rules script, or why
+        // there is none, and putting a new one in (docs/game/rules-engine.md,
+        // "The host runtime", "Reloading a running script"). A restart
+        // queues the game through the agent's guest calls; a film's
+        // playback takes no reload.
         #[cfg(feature = "rules")]
         agent::rules::install(
             &agent,
-            std::sync::Arc::new(crate::rules::feature::AgentSource::installed()),
+            std::sync::Arc::new(
+                crate::rules::feature::AgentSource::installed().playback(replaying),
+            ),
+            sim.calls(),
         );
         let probes = agent::probe::Probes::default();
         if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {

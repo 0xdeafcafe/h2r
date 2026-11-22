@@ -41,6 +41,16 @@ pub struct Shared {
     runtime: Mutex<Runtime>,
     /// Set while the async body runs the tick it answered for.
     pub reentry: AtomicBool,
+    /// The last `rules.reload`, for `rules.state`.
+    last_reload: Mutex<Option<wire::LastReload>>,
+    /// What a reload reaches beyond the runtime, set at install.
+    links: OnceLock<Links>,
+}
+
+/// The Live client and the game-variant store, for `rules.reload`.
+pub struct Links {
+    pub hle: Option<Arc<live_hle::Hle>>,
+    pub scripts: Arc<crate::game_variants::GameScripts>,
 }
 
 impl Shared {
@@ -48,11 +58,37 @@ impl Shared {
         Self {
             runtime: Mutex::new(runtime),
             reentry: AtomicBool::new(false),
+            last_reload: Mutex::new(None),
+            links: OnceLock::new(),
         }
     }
 
     pub fn lock(&self) -> MutexGuard<'_, Runtime> {
         self.runtime.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Sets the links once; later calls keep the first.
+    pub fn set_links(&self, links: Links) {
+        let _ = self.links.set(links);
+    }
+
+    pub fn links(&self) -> Option<&Links> {
+        self.links.get()
+    }
+
+    pub fn set_last_reload(&self, r: wire::LastReload) {
+        *self.last_reload.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    }
+
+    pub fn last_reload(&self) -> Option<wire::LastReload> {
+        self.last_reload.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// `rules.state`: the runtime's, with the last reload.
+    pub fn state(&self) -> wire::State {
+        let mut s = self.lock().state();
+        s.last_reload = self.last_reload();
+        s
     }
 }
 
@@ -261,6 +297,10 @@ pub fn install(
 ) -> anyhow::Result<bool> {
     let scripts = Arc::new(crate::game_variants::GameScripts::in_game(hle.clone()));
     let shared = Arc::new(Shared::new(Runtime::in_game(Arc::clone(&scripts))));
+    shared.set_links(Links {
+        hle: hle.clone(),
+        scripts: Arc::clone(&scripts),
+    });
     let added = registry
         .add(&Rules {
             shared: Arc::clone(&shared),
@@ -280,23 +320,54 @@ pub const OFF: &str = "the rules feature is off (H2_FEATURES=rules turns it on)"
 
 /// The agent API's view of the runtime ([`agent::rules::Source`]). Without
 /// the feature it answers that it is off.
-pub struct AgentSource(pub Option<Arc<Shared>>);
+pub struct AgentSource {
+    pub shared: Option<Arc<Shared>>,
+    /// This run plays a film back (Theater): no reload.
+    pub playback: bool,
+}
 
 impl AgentSource {
     /// The run's runtime, once installed.
     pub fn installed() -> Self {
-        Self(SHARED.get().cloned())
+        Self {
+            shared: SHARED.get().cloned(),
+            playback: false,
+        }
+    }
+
+    /// The same source for a run that plays a film back, or not.
+    pub fn playback(mut self, playback: bool) -> Self {
+        self.playback = playback;
+        self
     }
 }
 
 impl agent::rules::Source for AgentSource {
     fn state(&self) -> wire::State {
-        match &self.0 {
-            Some(s) => s.lock().state(),
+        match &self.shared {
+            Some(s) => s.state(),
             None => wire::State {
                 refused: Some(OFF.into()),
                 ..Default::default()
             },
+        }
+    }
+
+    fn reload(
+        &self,
+        m: &mut dyn GuestMemory,
+        params: wire::ReloadParams,
+        restart: Option<&'static str>,
+    ) -> Result<agent::rules::Reload, agent_proto::RpcError> {
+        let Some(s) = &self.shared else {
+            return Err(agent_proto::RpcError::new(agent_proto::code::UNAVAILABLE, OFF));
+        };
+        super::reload::reload(s, m, params, restart, self.playback)
+    }
+
+    fn restart_outcome(&self, outcome: Result<&wire::ReloadResult, &str>) {
+        if let Some(s) = &self.shared {
+            super::reload::restart_outcome(s, outcome);
         }
     }
 }

@@ -196,6 +196,15 @@ pub mod method {
     pub const SCRIPT_BUILTINS: &str = "script.builtins";
     pub const SCRIPT_DOC: &str = "script.doc";
 
+    // The game type script editor (docs/editor/editor-guide.md, "Game
+    // type scripts").
+    pub const RULES_OPEN: &str = "rules.open";
+    pub const RULES_GET: &str = "rules.get";
+    pub const RULES_SET: &str = "rules.set";
+    pub const RULES_SAVE: &str = "rules.save";
+    pub const RULES_FORMAT: &str = "rules.format";
+    pub const RULES_RELOAD: &str = "rules.reload";
+
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.
     pub const HUD_LIST: &str = "hud.list";

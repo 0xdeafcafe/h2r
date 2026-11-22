@@ -31,6 +31,9 @@
 //! - **Scripts** (the open map's scripts, read): `script.list`,
 //!   `script.source`, `script.follow`, `script.uses`, `script.builtins` and
 //!   `script.doc` through `Action::Script` ([`super::scripts`]).
+//! - **game type scripts** (`app::rules_edit`): `rules.open`, `rules.get`,
+//!   `rules.set`, `rules.save`, `rules.format` and `rules.reload`
+//!   ([`super::game_script`]).
 //! - **player models** and **customisation**: `model.*` and `custom.*`
 //!   are planned the same way (docs/editor/agent-api.md).
 //!
@@ -70,4 +73,7 @@ pub fn register(api: &mut Api) {
     // pair.*: the window's pairing with a running game (play::pair).
     api.register(Box::new(super::pair::Pair));
     api.register(Box::new(super::mirror::Mirror));
+    // The game type script editor: open, check, save and reload a .rules
+    // script (app::rules_edit).
+    api.register(Box::new(super::game_script::GameScript));
 }

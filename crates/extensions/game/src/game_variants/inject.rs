@@ -259,6 +259,21 @@ pub fn apply_block<M: Mem>(m: &mut M, options: u32) -> Option<String> {
     ))
 }
 
+/// A script reload's restart names a new script for the running variant
+/// (`crate::rules::reload`): the listed entry the record was built from
+/// (its name field and engine) takes `block`, so [`apply_block`] at the
+/// restart's `GAME_ACTIVATE` writes the new block, not the file's. Until
+/// the next list load. Returns whether an entry matched.
+pub fn retarget(name_field: &[u8], engine: i32, block: [u8; variants::ext::LEN]) -> bool {
+    let mut l = listed();
+    let mut hit = false;
+    for e in l.iter_mut().filter(|e| e.engine == engine && e.name_field[..] == *name_field) {
+        e.block = block;
+        hit = true;
+    }
+    hit
+}
+
 /// Sets the listing directly (tests).
 #[cfg(test)]
 pub fn set_listed(l: Vec<Listed>) {

@@ -20,6 +20,8 @@ pub mod tags;
 mod ui_screens;
 mod hud;
 mod variants;
+/// The game type script window (`app::rules_edit`).
+mod game_script;
 
 use std::path::PathBuf;
 
@@ -631,6 +633,8 @@ impl Studio {
             .build(|| variants::settings(ui, app, st, fonts, actions));
         ui.window(&keys.inspector)
             .build(|| variants::inspector(ui, app, st, fonts, self.dialogs, actions));
+        ui.window(&self.keys.rules)
+            .build(|| game_script::window(ui, app, fonts, self.dialogs));
     }
 
     fn playlist_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
