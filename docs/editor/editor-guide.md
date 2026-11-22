@@ -1041,13 +1041,24 @@ skulls, the co-op screens, the Xbox Live sign-in and account screens)
 the way the game draws them, without starting the game. Use it to see a
 screen in each of its states, try its buttons, and check its layout.
 
-- **Screens** (left): one filter at the top narrows both lists. **Our
-  screens** lists each of our screens with its named states (a list's
-  first, middle and last row focused; the sign-in prompt's pages, such
-  as `code-wrong` or `checking`). Click a state to show it. **Retail
-  screens** lists the game's own screens from your disc. Those are drawn
-  for comparison only. Both lists fold, and the panel scrolls as a whole,
-  so neither list is squeezed on a short window.
+- **Screens** (left): one filter at the top narrows both trees. **Our
+  screens** groups our screens into folders by the start of their names
+  (`forge.*`, `skulls*`, ...; the design system and the layouts first),
+  each screen with its named states (a list's first, middle and last row
+  focused; the sign-in prompt's pages, such as `code-wrong` or
+  `checking`). Click a state to show it. **Retail screens** lists the
+  game's own screens from your disc, in folders by their tag path. Those
+  are drawn for comparison only. The arrows fold; a click on a folder or
+  on **Our screens** / **Retail screens** shows all of it (see the grid
+  below). The panel scrolls as a whole, so neither tree is squeezed on a
+  short window.
+- **Grid** (centre, after clicking a folder or a root): a preview of every
+  screen in it and under it, by folder. Each tile has the screen's name
+  and a red count when the layout checks found something (a tick when
+  they found nothing; retail screens are not checked). **Size** scales
+  the tiles; **All states** shows every state of our screens instead of
+  the first. Pictures draw as they scroll into view. Click a tile to open
+  that screen; the names above its picture take you back to the grid.
 - **Preview** (centre): the screen at the game's 640 by 480. **Zoom**
   makes it bigger. **Rects** outlines every widget, **Title safe** the
   area a TV always shows (green), and **Reserved** the areas a screen

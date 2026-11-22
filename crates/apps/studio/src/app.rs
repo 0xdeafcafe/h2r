@@ -281,6 +281,8 @@ pub enum Action {
     // UI Screens.
     /// Show a screen of ours in a state, or a retail screen.
     UiPick(Pick),
+    /// Show the grid of previews of a root or folder (none: the picture).
+    UiBrowse(Option<ui_screens::Browse>),
     /// A pad press on the screen shown.
     UiPress(boot::ui_kit::input::Input),
     /// Write the screen's PNG and JSON and the sheet into a folder (never
@@ -1080,6 +1082,10 @@ impl App {
                 if let Err(e) = self.ui_screens.select(pick) {
                     self.error(format!("{e:#}"));
                 }
+            }
+            Action::UiBrowse(at) => {
+                self.sync_ui_disc();
+                self.ui_screens.browse_to(at);
             }
             Action::UiPress(input) => {
                 if let Some(line) = self.ui_screens.press(input) {

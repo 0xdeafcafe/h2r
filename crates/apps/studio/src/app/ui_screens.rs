@@ -17,8 +17,14 @@ use boot::ui_kit::screens;
 use boot::ui_kit::spec::ScreenSpec;
 use boot::ui_kit::view::View;
 
+pub mod browse;
+pub mod gallery;
+
+pub use browse::{Browse, Root};
+pub use gallery::Gallery;
+
 /// What the tool shows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Pick {
     /// One of our screens ([`screens::NAMES`]) in a named state.
     Native { screen: String, state: String },
@@ -68,6 +74,9 @@ pub struct UiScreens {
     pub show_rects: bool,
     pub show_safe: bool,
     pub show_reserved: bool,
+    /// The grid of previews shown in place of the picture, and its
+    /// thumbnails.
+    pub gallery: Gallery,
 }
 
 impl Default for UiScreens {
@@ -86,6 +95,7 @@ impl Default for UiScreens {
             show_rects: true,
             show_safe: true,
             show_reserved: true,
+            gallery: Gallery::default(),
         }
     }
 }
@@ -112,6 +122,7 @@ impl UiScreens {
             return;
         }
         self.disc_path = path;
+        self.gallery.new_disc();
         self.redraw();
     }
 
@@ -162,6 +173,7 @@ impl UiScreens {
             Pick::Retail(_) => self.live = None,
         }
         self.pick = Some(pick);
+        self.gallery.at = None;
         self.animation = Phase::Rest;
         self.last = None;
         self.redraw();
