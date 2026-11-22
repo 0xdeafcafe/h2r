@@ -11,8 +11,7 @@
 //! to either function is in the plan the tests build, so an unordered clash
 //! fails `cargo test` instead of the game.
 //!
-//! Host-only pieces (the Live HLE, the window's pipelined render, the input
-//! and the agent's socket) come in through the inputs and are `None` in a
+//! Host-only pieces (the Live HLE, the input and the agent's socket) come in through the inputs and are `None` in a
 //! test unless a test supplies a stand-in.
 
 use std::path::{Path, PathBuf};
@@ -512,8 +511,6 @@ pub struct LateInputs<'a> {
     pub agent: AgentSource,
     pub allow_bot_add: bool,
     pub xa: Option<&'a xapi_glue::Shared>,
-    /// From [`pipeline_for`].
-    pub pipeline: render_bridge::pipeline_render::PipelineRender,
     pub coop_probe: Option<coop_probe::Config>,
     pub live: Option<Arc<live_hle::Hle>>,
     pub settings: Option<Arc<settings::Store>>,
@@ -521,22 +518,6 @@ pub struct LateInputs<'a> {
     pub map_gate: Option<Arc<live_hle::maps::MapGate>>,
     pub disc: &'a Path,
     pub data_root: &'a Path,
-}
-
-/// Light hosts replace the frame entry with the skip implementation.
-/// Full headless simulations keep the entry and can opt in for hash comparisons.
-pub fn pipeline_for(
-    pipeline: render_bridge::pipeline_render::PipelineRender,
-    lockstep_on: bool,
-    host_light: bool,
-) -> render_bridge::pipeline_render::PipelineRender {
-    if lockstep_on {
-        pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs")
-    } else if host_light {
-        pipeline.disabled("the world render is skipped (sim-frame)")
-    } else {
-        pipeline
-    }
 }
 
 /// What [`register_late`] made, for the run.
@@ -626,15 +607,11 @@ pub(crate) fn register_late_for_profile(
         .map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
     // Which pages the render front-end writes and the sim reads, when
     // H2_FEATURES has render-census (off by default;
-    // docs/graphics/pipelined-render.md).
+    // docs/graphics/notes/pipelined-render.md).
     let census = render_bridge::render_census::RenderCensus::new()
         .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
-    // impl.render.pipelined_frame: the render front-end one frame behind the
-    // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
-    // prototype"). Pipelined and serial runs are not lockstep-compatible.
-    features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
         use render_bridge::native_scene_lists::NativeSceneLists;
@@ -662,8 +639,7 @@ pub(crate) fn register_late_for_profile(
             .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         // The static world on the native GPU renderer
         // (on by default, H2_FEATURES=impl.render.native=off turns it
-        // off; docs/graphics/native-renderer.md). Its layer-draw observer is
-        // context-only, so the pipelined render runs it on its own thread. It
+        // off; docs/graphics/native-renderer.md). Its layer-draw observer
         // runs after render-timing's. The world reads its map and resources
         // through the VFS (native_map).
         features

@@ -105,7 +105,7 @@ impl DebugViews {
             }
             (state.options, state.frame.clone())
         };
-        // The pipelined render owner can have an older map or BSP than the
+        // The render owner can have an older map or BSP than the
         // simulation thread which decoded these tags.
         let bsp = GameGlobals::current(guest)
             .ok()??

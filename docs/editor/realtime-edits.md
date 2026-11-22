@@ -491,10 +491,6 @@ Plain integers keep `render-bridge` free of the agent's types.
 - **Identity.** Raw offsets and block addresses are the loaded file's, so
   every primitive but `writes` requires the editor's baseline checksum to
   equal `edit.map.checksum`, as field writes do.
-- **The render thread.** With `impl.render.pipelined_frame` on, the frame
-  end overlaps the next tick. The applier joins the worker before the
-  first write, as a game-thread device call does
-  ([pipelined-render.md](../graphics/pipelined-render.md)).
 - **Limits.** The save's limits hold live (65,535 vertices a section, the
   per-type placement maximums, the compiler's packed-field limits). The
   arena's size bounds grown blocks and collision; a refusal names the
@@ -595,7 +591,6 @@ which is why R4 follows R1.
 - Bots after a collision change, with stale `los::Walls`.
 - A System Link host with clients after local geometry, pixel and
   collision edits.
-- Pipelined render on, with a batch landing while the worker draws.
 
 ## Related
 

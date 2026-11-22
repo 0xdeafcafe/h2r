@@ -759,9 +759,8 @@ Runtime only. Old images keep running on the paged path.
   (`crates/runtime/runtime/src/window/tests.rs`);
   `executor_view_runs_native_in_its_window`
   (`crates/recompiler/emit/tests/flat_runtime.rs`, a flat module run by a
-  second executor with no fixups); the pipelined-render hash parity
-  tests.
-- Exit: pipelined frame time not worse (M5); resident memory per
+  second executor with no fixups).
+- Exit: frame time not worse (M5); resident memory per
   dedicated host reported for Q1.
 
 ### F6. Default on macOS and Linux x86-64
@@ -859,7 +858,7 @@ Fixups per tick are `profile.memory`'s `fixups` on the agent API
 
 **M5. Frames.** `h2 lab bench --name "Transfer benchmark" --host laptop --branch <slice> --level
 03a_oldmombasa --scale 4` as in lab.md "`--serve` and `bench`", against
-the same command on master, serial and pipelined.
+the same command on master.
 
 ## 8. Order against the `sim-tier` lane
 

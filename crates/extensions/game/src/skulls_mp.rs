@@ -732,7 +732,7 @@ impl hooks::Feature for SkullsMp {
             })
             // Both Blind hooks read the set fixed at the game's start and
             // answer through the registers and stack of the context they run
-            // on: the pipelined render thread runs them too.
+            // on.
             .context_only();
         let s = Arc::clone(&self.0);
         b.raw()

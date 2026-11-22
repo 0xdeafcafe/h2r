@@ -33,7 +33,7 @@
 //!
 //! Off unless `frame-scene.census` is set with the native renderer on: its
 //! exit observers give the layer draw and the light, shadow and post entries
-//! an after part, which keeps their chains off the pipelined render thread.
+//! an after part.
 //! `render.scene` reports it under `entries` (docs/runtime/agent-api.md).
 
 use std::collections::BTreeMap;
@@ -224,8 +224,8 @@ impl Census {
         c.animation_gets += o.animation_gets;
         c.particle_updates += o.particle_updates;
         let steps = match (o.at.seeds, at.seeds) {
-            (Some((p, from)), Some((q, to))) if p == q => crate::pipeline_render::random_steps(from[0], to[0])
-                .zip(crate::pipeline_render::random_steps(from[1], to[1])),
+            (Some((p, from)), Some((q, to))) if p == q => crate::game_random::random_steps(from[0], to[0])
+                .zip(crate::game_random::random_steps(from[1], to[1])),
             _ => None,
         };
         match steps {
@@ -368,7 +368,7 @@ pub fn install(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline_render::{RANDOM_A, RANDOM_C};
+    use crate::game_random::{RANDOM_A, RANDOM_C};
 
     fn step(x: u32, n: u32) -> u32 {
         (0..n).fold(x, |x, _| x.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C))

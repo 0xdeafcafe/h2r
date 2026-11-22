@@ -403,7 +403,7 @@ fn gfx_backend_registration_type_checks() {
     };
 }
 
-/// A D3D entry run by a second executor (docs/graphics/pipelined-render.md,
+/// A D3D entry run by a second executor (docs/graphics/notes/pipelined-render.md,
 /// "The prototype") reads its arguments from the executor's snapshot and
 /// writes the executor's view, not the live RAM the main side keeps
 /// changing; the hand-back brings its writes over.
