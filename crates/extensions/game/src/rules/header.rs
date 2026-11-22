@@ -26,7 +26,8 @@ pub fn list_row(header: &Header) -> Option<Row> {
 }
 
 /// The script a record's prefix names, when this machine has it: a
-/// compiled-in one ([`runtime::compiled_in`], ports and examples) or the
+/// compiled-in one ([`runtime::compiled_in`]: ports, examples and the
+/// listed scripts) or the
 /// game-variant store's.
 fn named(prefix: [u8; 8]) -> Option<Ir> {
     let blob = match runtime::compiled_in(prefix) {
@@ -119,7 +120,7 @@ mod tests {
     /// feature on or off.
     #[test]
     fn the_superbounce_block_asks_for_the_mode_through_its_script() {
-        let ext = crate::community_variants::superbounce_ext();
+        let ext = crate::community_variants::listed_named("Superbounce").unwrap().ext();
         assert!(!ext.superbounce);
         assert!(script_asks_superbounce(ext.script));
         assert!(!script_asks_superbounce(Script::default()));
@@ -142,7 +143,7 @@ mod tests {
     #[test]
     fn the_superbounce_blocks_options_reach_the_hud() {
         use crate::superbounce_options::{Options, TargetMode};
-        let ext = crate::community_variants::superbounce_ext();
+        let ext = crate::community_variants::listed_named("Superbounce").unwrap().ext();
         assert_eq!(superbounce_options(ext.script), Options::DEFAULT);
         let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
         let bits = ir
@@ -159,6 +160,26 @@ mod tests {
         assert_eq!(superbounce_options(Script::default()), Options::DEFAULT);
         assert_eq!(crate::variant_ext::decide(ext, None, false).script(), Some(ext.script));
         assert_eq!(crate::variant_ext::Decision::Retail.script(), None);
+    }
+
+    /// Every listed script's block names a script this machine has, so a
+    /// built-in record, and a copy of it, lists under its header's row;
+    /// only Superbounce's asks for the mode.
+    #[test]
+    fn each_listed_block_names_its_script_and_its_row() {
+        for b in ::rules::builtin::LISTED {
+            let ir = ::rules::compile(b.source).unwrap();
+            let l = crate::community_variants::listed_named(b.name).unwrap();
+            let block = l.block();
+            assert_eq!(Ext::in_effect(&block).script.prefix[..], ir.id().0[..8], "{}", b.name);
+            assert_eq!(block_row(&block), list_row(&ir.header), "{}", b.name);
+            assert_eq!(
+                script_asks_superbounce(Ext::in_effect(&block).script),
+                b.source == ::rules::builtin::SUPERBOUNCE,
+                "{}",
+                b.name
+            );
+        }
     }
 
     #[test]

@@ -5,12 +5,13 @@
 //!
 //! **When it is on.** The active variant carries the extension block's
 //! superbounce flag ([`variants::ext::Ext::superbounce`], through
-//! [`crate::variant_ext::Decision::superbounce`]), or is the built-in
-//! "Superbounce" variant ([`crate::community_variants`], which has no field
-//! for the flag, so it is told by name), or the rules script the block
-//! names requires `hud.superbounce` (through the same decision,
+//! [`crate::variant_ext::Decision::superbounce`]), or the rules script the
+//! block names requires `hud.superbounce` (through the same decision,
 //! [`crate::rules::header::script_asks_superbounce`]), or
-//! `H2_SUPERBOUNCE=1` forces it.
+//! `H2_SUPERBOUNCE=1` forces it. The built-in "Superbounce" variant's
+//! record names the Superbounce script from the list's load
+//! (`crate::community_variants::write_blocks`), so a game on it, or on a
+//! copy of it, turns the mode on through the script.
 //!
 //! **Each tick** (a tick observer, only while on) it reads the first local
 //! player's unit, its position, whether it is airborne, its vertical
@@ -61,8 +62,6 @@ use crate::superbounce_targets::Marks;
 pub const FEATURE: &str = "superbounce";
 /// `H2_SUPERBOUNCE=1` forces the mode on in any game.
 pub const ENV: &str = "H2_SUPERBOUNCE";
-/// The built-in variant's name ([`crate::community_variants::VARIANTS`]).
-pub const VARIANT_NAME: &str = "Superbounce";
 /// The pair word of a primed player, as a signed number.
 pub const PRIMED_WORD: i32 = -3;
 /// Metres in a world unit (10 feet).
@@ -85,13 +84,6 @@ pub const FADE_FAR: f32 = 45.0;
 /// Whether a level pair word is the primed one (-3).
 pub fn primed(word: u32) -> bool {
     word as i32 == PRIMED_WORD
-}
-
-/// A variant name (as the record or the list holds it, with the list's
-/// trailing icon) that is the built-in Superbounce.
-pub fn is_superbounce_name(name: &str) -> bool {
-    name.trim_end_matches(|c: char| c.is_whitespace() || ('\u{e000}'..='\u{f8ff}').contains(&c))
-        == VARIANT_NAME
 }
 
 // ---- the published state ----
@@ -809,27 +801,6 @@ fn forced() -> bool {
     *F.get_or_init(|| std::env::var(ENV).is_ok_and(|v| v == "1"))
 }
 
-/// The active variant's name in the game globals, in a multiplayer game.
-fn variant_name(m: &dyn GuestMemory) -> Option<String> {
-    use crate::skulls_custom::{GAME_GLOBALS, GLOBALS_MODE};
-    let g = m.u32(GAME_GLOBALS).ok().filter(|&g| g != 0)?;
-    if m.u32(g.wrapping_add(GLOBALS_MODE)).ok()? != crate::skulls_mp::MODE_MULTIPLAYER {
-        return None;
-    }
-    let mut b = [0u8; 2 * variants::record::NAME_UNITS];
-    m.read(
-        g.wrapping_add(crate::variant_ext::ACTIVE_VARIANT + variants::record::NAME_AT as u32),
-        &mut b,
-    )
-    .ok()?;
-    let units: Vec<u16> = b
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .take_while(|&u| u != 0)
-        .collect();
-    Some(String::from_utf16_lossy(&units))
-}
-
 /// The agent's override (`superbounce.set`): [`FOLLOW`], [`FORCE_ON`] or
 /// [`FORCE_OFF`].
 static OVERRIDE: AtomicU8 = AtomicU8::new(FOLLOW);
@@ -857,9 +828,7 @@ fn on_now(m: &dyn GuestMemory) -> bool {
         FORCE_OFF => return false,
         _ => {}
     }
-    forced()
-        || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
-        || variant_name(m).is_some_and(|n| is_superbounce_name(&n))
+    forced() || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
 }
 
 /// The local player's word, position and motion.
@@ -1626,16 +1595,6 @@ mod tests {
         assert!(no_params(&json!({})).is_ok());
         assert!(no_params(&json!({"x": 1})).is_err());
         assert!(no_params(&json!([1])).is_err());
-    }
-
-    #[test]
-    fn the_variant_is_told_by_its_name_with_or_without_the_icon() {
-        assert!(is_superbounce_name("Superbounce"));
-        assert!(is_superbounce_name("Superbounce \u{e006}"));
-        assert!(is_superbounce_name("Superbounce \u{e008}"));
-        assert!(!is_superbounce_name("Bounce Practice \u{e006}"));
-        assert!(!is_superbounce_name("Superbounce 2"));
-        assert!(!is_superbounce_name(""));
     }
 
     #[test]

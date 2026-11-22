@@ -50,7 +50,7 @@ pub const MULTIPLAYER: u32 = 2;
 pub const OPTIONS_VARIANT: u32 = 0x134;
 pub const STARTING_WEAPON: u32 = 0xd6;
 /// Starting weapons that make a variant a precision one: battle rifle,
-/// sniper rifle, carbine (`community_variants::Weapon`).
+/// sniper rifle, carbine (the weapon values of `rules::settings`).
 pub const PRECISION_WEAPONS: [u8; 3] = [3, 10, 13];
 
 /// Swaps by map name (the cache header's, lower case).

@@ -867,12 +867,13 @@ overshields, damage resistance, a magnum, nothing on the map) plus a HUD
 and lines over the map. It is listed under **Research and Devolution**, one of our rows at
 the bottom of the game type list (after Territories), and not under Slayer; underneath
 it is a Slayer variant ([community-gametypes.md](community-gametypes.md#tweakers)).
-Its entry in `crates/extensions/game/src/community_variants.rs` is
-`Category::Row(Row::Research, Some(Tweak::Superbounce))`: its record's extension block
-names the Superbounce rules script (mode 2, the script's hash prefix and
-default options, `community_variants::superbounce_ext`), and
-`crate::tweakers` writes that block into its built-in record, so a game
-on it and a saved copy of it name the script. The script is
+Its entry is built from its script, one of `rules::builtin::LISTED`
+(`crates/extensions/game/src/community_variants.rs`,
+[rules-variants.md](rules-variants.md#built-in-list-entries)): the
+script's record names it (mode 2, the script's hash prefix and default
+options), and `community_variants::write_blocks` writes that block into
+its built-in record when the list loads, so a game on it and a saved
+copy of it name the script. The script is
 `crates/formats/rules/src/builtin/superbounce.rules`, compiled into the
 game: `list research` files the variant under Research and Devolution and
 `requires hud.superbounce` turns the mode on

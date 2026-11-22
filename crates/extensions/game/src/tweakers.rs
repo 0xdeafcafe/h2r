@@ -35,12 +35,12 @@
 //!   Slayer's; its own loader, which a screen stack reopens it with, is an
 //!   entry of ours that opens it marked again.
 //!
-//! Every row's variant is a Slayer variant underneath (the test
-//! `every_row_variant_is_a_slayer_variant`), so Slayer's list, its
-//! new-variant defaults and its copies are the right ones for the rows.
-//! The built-ins with a tweak get its extension block in their records
-//! ([`patch_builtins`]) so a game on one, and a copy of one, names the
-//! tweak's rules script.
+//! Our rows hold Slayer variants only ([`record_row`]), so Slayer's list,
+//! its new-variant defaults and its copies are the right ones for the
+//! rows. Hide and Seek's script names Party Games but is a Juggernaut
+//! variant, so it stays under Juggernaut. Each built-in's record names its
+//! script from the list's load (`community::write_blocks`), so a game on
+//! one, and a copy of one, names it too.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -51,9 +51,9 @@ use engine::points;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
-use variants::ext::{self, Block, Ext};
+use variants::ext;
 
-use crate::community_variants::{self as community, Row, VARIANTS};
+use crate::community_variants::{self as community, Row};
 use crate::h1_options_row;
 use crate::list_class;
 
@@ -266,36 +266,22 @@ pub fn record_block(m: &dyn GuestMemory, record: u32) -> Option<[u8; ext::LEN]> 
     Some(b)
 }
 
-/// The row of ours the variant record at `record` is listed under.
-pub fn record_row(m: &dyn GuestMemory, record: u32) -> Option<Row> {
-    community::row_of(&record_name(m, record)?, &record_block(m, record)?)
+/// A variant record's engine (`+0x44`).
+pub fn record_engine(m: &dyn GuestMemory, record: u32) -> Option<i32> {
+    m.u32(record.wrapping_add(variants::record::ENGINE_AT as u32))
+        .ok()
+        .map(|e| e as i32)
 }
 
-/// Writes each row built-in's tweak block into its record in the
-/// built-in list (`[0x51ea14]`), where it is not there yet: a game on it,
-/// and a copy made from it, then name its script. How many changed.
-pub fn patch_builtins(m: &mut dyn GuestMemory) -> Result<usize, MemFault> {
-    let list = m.u32(BUILTIN_LIST)?;
-    if list == 0 {
-        return Ok(0);
+/// The row of ours the variant record at `record` is listed under
+/// ([`community::row_of`]). Our rows hold Slayer variants only
+/// (docs/game/rules-variants.md, "Rules and limits"): a record of another
+/// type is listed under its game type, whatever its script's `list`.
+pub fn record_row(m: &dyn GuestMemory, record: u32) -> Option<Row> {
+    if record_engine(m, record)? != variants::record::GameType::Slayer.engine() {
+        return None;
     }
-    let n = m.u32(list)?.min(MAX_BUILTINS);
-    let mut changed = 0;
-    for i in 0..n {
-        let record = list + 4 + i * BUILTIN_RECORD + BUILTIN_VARIANT;
-        let Some(want) = record_name(m, record)
-            .and_then(|name| community::row_builtin(&name))
-            .and_then(|v| v.tweak())
-        else {
-            continue;
-        };
-        let block = record_block(m, record).unwrap_or([0; ext::LEN]);
-        if Ext::decode(&block) != Block::Ext(want) {
-            m.write(record + ext::AT as u32, &want.encode())?;
-            changed += 1;
-        }
-    }
-    Ok(changed)
+    community::row_of(&record_name(m, record)?, &record_block(m, record)?)
 }
 
 /// The handles the fill got: `*count` (a `u16`) of them at `handles`.
@@ -393,10 +379,6 @@ async fn fill(cx: Cx, scratch: u32) -> Result<Ret, EntryError> {
     let args = [cx.arg(0)?, cx.arg(1)?, cx.arg(2)?, cx.arg(3)?, cx.arg(4)?];
     let handler = cx.entry().ebx;
     let list = cx.read(|m| screen_row(m, handler.wrapping_sub(SCREEN_LIST)));
-    let patched = cx.write(|m| patch_builtins(m)).unwrap_or(0);
-    if patched > 0 {
-        eprintln!("tweakers: {patched} built-in records given their extension block");
-    }
     let r = cx
         .call(GuestCall::new(points::VARIANTS_ENUMERATE.base).args(args))
         .await?;
@@ -696,9 +678,12 @@ pub fn live() -> Option<String> {
     (UPDATING.load(Ordering::SeqCst) != 0).then(|| "one of our rows' lists is updating".into())
 }
 
-/// The built-ins listed under one of our rows, in list order.
-pub fn row_variants() -> impl Iterator<Item = &'static community::Variant> {
-    VARIANTS.iter().filter(|v| v.row().is_some())
+/// The listed scripts whose built-ins are under one of our rows, in list
+/// order: the Slayer ones whose header names a row.
+pub fn row_variants() -> impl Iterator<Item = &'static community::Listed> {
+    community::listed().iter().flatten().filter(|l| {
+        l.row.is_some() && l.record.game_type() == variants::record::GameType::Slayer
+    })
 }
 
 #[cfg(test)]

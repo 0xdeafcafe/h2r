@@ -4,7 +4,8 @@
 //! icon (U+E006) where the retail ones carry the padlock (U+E008).
 //!
 //! The design, the addresses and the sources are in
-//! docs/game/community-gametypes.md. In short: the built-in variants are a block
+//! docs/game/community-gametypes.md and docs/game/rules-variants.md
+//! ("Built-in list entries"). In short: the built-in variants are a block
 //! in the `goof` tag of `mainmenu.map`, each a name, a game type, a list of
 //! `(setting, value)` pairs (the choices a player makes in the editor) and a
 //! description number. `0x149f88` turns every entry into a variant at load,
@@ -12,22 +13,29 @@
 //! the game shows read-only and copies on edit. So this module only:
 //!
 //! 1. appends our entries to that block before `0x149f88` reads it,
-//! 2. serves our names and descriptions through the localized-string lookup
+//! 2. writes each listed script's `hx` block into its built-in record once
+//!    `0x149f88` returns ([`write_blocks`]),
+//! 3. serves our names and descriptions through the localized-string lookup
 //!    `0x1a0180` (ids in a private range), and
-//! 3. maps our description numbers to those ids where the variant list asks
+//! 4. maps our description numbers to those ids where the variant list asks
 //!    `0x19fd00` for a description.
 //!
-//! Variants are defined symbolically ([`Setting`]); every pair is checked at
-//! run time against the setting definitions (`sily` tags) the game itself
-//! offers in the editor, and a variant with a pair the game would not offer
-//! is left out. Retail entries are copied unchanged and saved variants are
-//! never touched.
+//! Each entry is built from a script in `rules::builtin::LISTED`
+//! ([`Listed`]): its name, game type, `about` and `list` row, and the
+//! record `variants::portable::record_for` makes of it. The entry carries
+//! the record's value of every setting the editor offers
+//! (`crate::game_variants::inject::pairs`, the store's rule); a script
+//! with a value the editor does not offer is left out by name. Retail
+//! entries are copied unchanged and saved variants are never touched.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use runtime::Guest;
 use runtime::guest::Permissions;
-use variants::ext::Ext;
+use runtime::{Guest, TransferAbi, abi};
+use variants::ext::{self, Ext};
+use variants::record::{GameType, GameVariant};
 
 // ---- guest addresses (hook points; see docs/game/community-gametypes.md) ----
 
@@ -47,6 +55,9 @@ const NUMBER_STRING_ID: u32 = 0x0019_fd00;
 // is not marked: it prints, and runs only when the variant list loads.
 const STRINGS_HOOK: &str = "community:strings";
 const DESCRIPTIONS_HOOK: &str = "community:descriptions";
+/// The continuation that writes the listed records' blocks when
+/// `0x149f88` returns.
+const LOAD_RETURN: &str = "community: the listed records' blocks";
 
 /// The return address of the variant list's description lookup, the one
 /// `NUMBER_STRING_ID` call we answer for.
@@ -76,205 +87,6 @@ const _: () = assert!(MAX_ENTRIES > 64);
 
 /// The icon after every community name, where retail names carry U+E008.
 pub const ICON: char = '\u{e006}';
-
-// ---- the symbolic model ----
-
-/// The game type of a built-in entry, as the list stores it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GameType {
-    Slayer = 0,
-    Oddball = 1,
-    Juggernaut = 2,
-    King = 3,
-    Ctf = 4,
-    Assault = 5,
-    Territories = 6,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Weapon {
-    Random = 2,
-    BattleRifle = 3,
-    Magnum = 4,
-    Smg = 5,
-    PlasmaPistol = 6,
-    PlasmaRifle = 7,
-    RocketLauncher = 8,
-    Shotgun = 9,
-    SniperRifle = 10,
-    BruteShot = 11,
-    Needler = 12,
-    Carbine = 13,
-    BeamRifle = 14,
-    EnergySword = 17,
-    BrutePlasmaRifle = 18,
-    SentinelBeam = 19,
-}
-
-/// "Weapons on Map".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WeaponSet {
-    None = 1,
-    Rockets = 2,
-    Shotguns = 3,
-    Swords = 4,
-    BruteShots = 5,
-    Rifles = 11,
-    Sniping = 12,
-    Pistols = 14,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Shields {
-    Normal = 0,
-    None = 1,
-    Overshields = 2,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LightVehicle {
-    Warthog = 1,
-    GaussWarthog = 2,
-    Ghost = 3,
-    Spectre = 5,
-    None = 7,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Turret {
-    MachineGun = 1,
-    Plasma = 4,
-    None = 6,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Speed {
-    Slow = 0,
-    Normal = 1,
-    Fast = 2,
-}
-
-/// One choice in the variant editor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Setting {
-    /// Points, or seconds for Oddball, King and Territories; 0 is none.
-    ScoreToWin(u32),
-    /// Seconds; 0 is none.
-    TimeLimit(u32),
-    /// 0 is unlimited.
-    Lives(u32),
-    RespawnSeconds(u32),
-    SuicidePenaltySeconds(u32),
-    Shields(Shields),
-    MotionSensor(bool),
-    ActiveCamo(bool),
-    ExtraDamage(bool),
-    DamageResistance(bool),
-    TeamPlay(bool),
-    FriendlyFire(bool),
-    MaxPlayers(u32),
-    /// `None` is no starting weapon: a value the game plays but its editor
-    /// offers only with `crate::variant_options` (docs/game/game-options.md).
-    StartingWeapon(Option<Weapon>),
-    /// `None` is no secondary weapon.
-    SecondaryWeapon(Option<Weapon>),
-    StartingGrenades(bool),
-    WeaponsOnMap(WeaponSet),
-    GrenadesOnMap(bool),
-    /// Weapon respawn "Double Time".
-    WeaponsRespawnFast,
-    OvershieldPickups(bool),
-    CamoPickups(bool),
-    LightVehicle(LightVehicle),
-    SecondLightVehicle(LightVehicle),
-    /// The heavy vehicles off.
-    NoHeavyVehicle,
-    Banshee(bool),
-    PrimaryTurret(Turret),
-    SecondaryTurret(Turret),
-    JuggernautActiveCamo(bool),
-    JuggernautOvershield(bool),
-    JuggernautMotionSensor(bool),
-    JuggernautDamageResistance(bool),
-    JuggernautMovement(Speed),
-    BallSpeed(Speed),
-    BallToughness(bool),
-    /// Seconds between moves; 0 is off.
-    MovingHill(u32),
-}
-
-impl Setting {
-    /// The `(setting, value)` pair the game's list stores for this choice.
-    /// The numbers are the ones the editor's own definitions use.
-    pub fn encode(self, ty: GameType) -> (u32, i32) {
-        let b = |v: bool| i32::from(v);
-        match self {
-            Setting::ScoreToWin(v) => (score_setting(ty), v as i32),
-            Setting::TimeLimit(v) => (10, v as i32),
-            Setting::Lives(v) => (16, v as i32),
-            Setting::RespawnSeconds(v) => (17, v as i32),
-            Setting::SuicidePenaltySeconds(v) => (18, v as i32),
-            Setting::Shields(s) => (19, s as i32),
-            Setting::MotionSensor(v) => (20, b(v)),
-            Setting::ActiveCamo(v) => (21, b(v)),
-            Setting::FriendlyFire(v) => (24, b(v)),
-            Setting::JuggernautOvershield(v) => (71, b(v)),
-            Setting::JuggernautActiveCamo(v) => (72, b(v)),
-            Setting::JuggernautMotionSensor(v) => (73, b(v)),
-            Setting::LightVehicle(v) => (76, v as i32),
-            Setting::SecondLightVehicle(v) => (77, v as i32),
-            Setting::NoHeavyVehicle => (78, 4),
-            Setting::Banshee(v) => (79, if v { 1 } else { 4 }),
-            Setting::PrimaryTurret(t) => (81, t as i32),
-            Setting::SecondaryTurret(t) => (82, t as i32),
-            Setting::WeaponsOnMap(s) => (83, s as i32),
-            Setting::OvershieldPickups(v) => (84, b(v)),
-            Setting::CamoPickups(v) => (85, b(v)),
-            Setting::GrenadesOnMap(v) => (86, b(v)),
-            Setting::WeaponsRespawnFast => (87, 3),
-            Setting::StartingGrenades(v) => (88, b(v)),
-            Setting::StartingWeapon(w) => (89, w.map_or(1, |w| w as i32)),
-            Setting::MaxPlayers(v) => (90, v as i32),
-            Setting::TeamPlay(v) => (91, b(v)),
-            Setting::SecondaryWeapon(w) => (94, w.map_or(1, |w| w as i32)),
-            Setting::JuggernautMovement(s) => (96, s as i32),
-            Setting::BallToughness(v) => (102, b(v)),
-            Setting::ExtraDamage(v) => (104, b(v)),
-            Setting::DamageResistance(v) => (105, b(v)),
-            Setting::JuggernautDamageResistance(v) => (108, b(v)),
-            Setting::BallSpeed(s) => (45, s as i32),
-            Setting::MovingHill(v) => (40, v as i32),
-        }
-    }
-}
-
-/// Each game type keeps its score to win in its own setting.
-fn score_setting(ty: GameType) -> u32 {
-    match ty {
-        GameType::Ctf => 1,
-        GameType::Slayer => 2,
-        GameType::Oddball => 3,
-        GameType::King => 4,
-        GameType::Juggernaut => 7,
-        GameType::Territories => 8,
-        GameType::Assault => 9,
-    }
-}
-
-/// Where the custom game's game type list files a variant
-/// (docs/game/community-gametypes.md "Tweakers").
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Category {
-    /// Under its game type ([`Variant::ty`]).
-    GameType,
-    /// Under one of our rows after Territories (`crate::tweakers`). The
-    /// game still plays it as its game type. A built-in with a tweak has
-    /// the tweak's extension block in its record, which names a rules
-    /// script whose header names the row (`list research`), so a copy
-    /// carries it too and is listed there as well; one without is listed
-    /// there by its name.
-    Row(Row, Option<Tweak>),
-}
 
 /// Our game type rows after Territories, in list order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -368,358 +180,95 @@ impl Row {
     }
 }
 
-/// What a row's built-in record carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tweak {
-    /// The superbounce game type ([`superbounce_ext`]).
-    Superbounce,
+// ---- the listed scripts ----
+
+/// One listed script (`rules::builtin::LISTED`), compiled once: what its
+/// list entry and its record's block come from
+/// (docs/game/rules-variants.md, "Built-in list entries").
+#[derive(Clone, Debug)]
+pub struct Listed {
+    /// `header.name`.
+    pub name: String,
+    /// `header.about`: the entry's description.
+    pub about: String,
+    /// `header.carrier` as a list type (its place in `GameType::ALL`).
+    pub list_type: u32,
+    /// `header.list`: the row of ours its variants are filed under.
+    pub row: Option<Row>,
+    /// The record of the script (`variants::portable::record_for`, the
+    /// default options): its settings, and the `hx` block that names it.
+    pub record: GameVariant,
 }
 
-impl Tweak {
-    /// The extension block the built-in's record carries.
-    pub fn ext(self) -> Ext {
-        match self {
-            Tweak::Superbounce => superbounce_ext(),
-        }
+impl Listed {
+    fn of(source: &str) -> Result<Listed, String> {
+        let ir = ::rules::compile(source).map_err(|e| format!("its script does not compile: {e}"))?;
+        let record = variants::portable::record_for(&ir, &[])
+            .map_err(|e| format!("its script makes no record: {e}"))?;
+        let ty = record.game_type();
+        let list_type = GameType::ALL
+            .iter()
+            .position(|t| *t == ty)
+            .ok_or_else(|| format!("engine {} has no list type", ty.engine()))?;
+        Ok(Listed {
+            name: ir.header.name.clone(),
+            about: ir.header.about.clone(),
+            list_type: list_type as u32,
+            row: crate::rules::header::list_row(&ir.header),
+            record,
+        })
     }
-}
 
-/// Superbounce's extension block: a reference to the Superbounce rules
-/// script (`rules::builtin::SUPERBOUNCE`, compiled in) with its default
-/// options. The script's `requires hud.superbounce` turns the mode on and
-/// its `list research` files the variant under Research and Devolution
-/// (docs/game/superbounce.md "The superbounce game type").
-pub fn superbounce_ext() -> Ext {
-    static EXT: std::sync::OnceLock<Ext> = std::sync::OnceLock::new();
-    *EXT.get_or_init(|| match ::rules::compile(::rules::builtin::SUPERBOUNCE) {
-        Ok(ir) => {
-            let mut prefix = [0; 8];
-            prefix.copy_from_slice(&ir.id().0[..8]);
-            Ext {
-                script: variants::ext::Script {
-                    mode: variants::ext::Mode::Rules,
-                    prefix,
-                    options: ir.default_options(),
-                },
-                ..Ext::RETAIL
-            }
-        }
-        Err(e) => {
-            eprintln!("community variants: the Superbounce script does not compile: {e}");
-            Ext::RETAIL
-        }
-    })
-}
-
-pub struct Variant {
-    pub name: &'static str,
-    pub ty: GameType,
-    pub category: Category,
-    pub settings: &'static [Setting],
-    pub description: &'static str,
-}
-
-impl Variant {
-    pub fn pairs(&self) -> Vec<(u32, i32)> {
-        self.settings.iter().map(|s| s.encode(self.ty)).collect()
-    }
     /// The name as the list shows it: the name, a space and the icon.
     pub fn display_name(&self) -> String {
         format!("{} {ICON}", self.name)
     }
-    /// The extension block of a variant with a tweak.
-    pub fn tweak(&self) -> Option<Ext> {
-        match self.category {
-            Category::Row(_, t) => t.map(Tweak::ext),
-            Category::GameType => None,
-        }
+
+    /// The `hx` block its built-in record gets ([`write_blocks`]).
+    pub fn block(&self) -> [u8; ext::LEN] {
+        *self.record.ext_block()
     }
-    /// The row it is listed under, if one of ours.
-    pub fn row(&self) -> Option<Row> {
-        match self.category {
-            Category::Row(r, _) => Some(r),
-            Category::GameType => None,
-        }
+
+    pub fn ext(&self) -> Ext {
+        self.record.ext()
     }
 }
 
-/// The built-in of one of our rows named `name`, as a record or the list
-/// holds it (the list's icon and trailing spaces ignored).
-pub fn row_builtin(name: &str) -> Option<&'static Variant> {
-    let bare = name
-        .trim_end_matches(|c: char| c.is_whitespace() || ('\u{e000}'..='\u{f8ff}').contains(&c));
-    VARIANTS
-        .iter()
-        .find(|v| v.row().is_some() && v.name == bare)
+/// Every listed script, by its index in `rules::builtin::LISTED`: the
+/// entry's parts, or why it has none (named in the log at each load).
+pub fn listed() -> &'static [Result<Listed, String>] {
+    static LISTED: OnceLock<Vec<Result<Listed, String>>> = OnceLock::new();
+    LISTED.get_or_init(|| {
+        ::rules::builtin::LISTED
+            .iter()
+            .map(|b| Listed::of(b.source))
+            .collect()
+    })
+}
+
+/// The listed script named `name` (its `header.name`).
+pub fn listed_named(name: &str) -> Option<&'static Listed> {
+    listed().iter().flatten().find(|l| l.name == name)
+}
+
+/// The listed script whose built-in this list name is (the name as the
+/// list holds it, with our icon).
+fn listed_by_display(name: &str) -> Option<&'static Listed> {
+    listed().iter().flatten().find(|l| l.display_name() == name)
 }
 
 /// The row of ours a variant record with this name and extension block is
-/// listed under: the one the rules script it names files it under
-/// (`crate::rules::header::block_row`), or the one of the built-in with
-/// its name (a built-in record before `crate::tweakers` wrote its block,
-/// or one with no tweak, as `crate::superbounce_mode` turns the mode on by
-/// name too).
-pub fn row_of(name: &str, block: &[u8; variants::ext::LEN]) -> Option<Row> {
-    crate::rules::header::block_row(block).or_else(|| row_builtin(name).and_then(Variant::row))
+/// listed under. A block naming a rules script (mode 2) decides it: the
+/// row the script's header names, when this machine has the script
+/// (`crate::rules::header::block_row`). A record with no script is filed
+/// by its name only when it is a listed built-in's as the list holds it:
+/// a built-in before [`write_blocks`] has given it its block.
+pub fn row_of(name: &str, block: &[u8; ext::LEN]) -> Option<Row> {
+    if Ext::in_effect(block).script.mode == ext::Mode::Rules {
+        return crate::rules::header::block_row(block);
+    }
+    listed_by_display(name).and_then(|l| l.row)
 }
-
-use Setting::*;
-
-/// The community variants, in list order. Sources and the reasoning for each
-/// choice are in docs/game/community-gametypes.md.
-pub const VARIANTS: &[Variant] = &[
-    Variant {
-        name: "Zombies",
-        ty: GameType::Slayer,
-        category: Category::Row(Row::PartyGames, None),
-        settings: &[
-            TeamPlay(true),
-            StartingWeapon(Some(Weapon::Shotgun)),
-            SecondaryWeapon(Some(Weapon::EnergySword)),
-            StartingGrenades(false),
-            GrenadesOnMap(false),
-            WeaponsOnMap(WeaponSet::Shotguns),
-            MotionSensor(false),
-            OvershieldPickups(false),
-            CamoPickups(false),
-            LightVehicle(LightVehicle::None),
-            SecondLightVehicle(LightVehicle::None),
-            NoHeavyVehicle,
-            Banshee(false),
-            ScoreToWin(0),
-        ],
-        description: "Humans on red with shotguns, zombies on green with swords. When a zombie gets you, switch to green. Last human standing wins.",
-    },
-    Variant {
-        name: "Hide and Seek",
-        ty: GameType::Juggernaut,
-        category: Category::GameType,
-        settings: &[
-            StartingWeapon(Some(Weapon::EnergySword)),
-            SecondaryWeapon(None),
-            StartingGrenades(false),
-            WeaponsOnMap(WeaponSet::None),
-            GrenadesOnMap(false),
-            ActiveCamo(true),
-            MotionSensor(false),
-            JuggernautActiveCamo(false),
-            JuggernautMotionSensor(true),
-            JuggernautMovement(Speed::Fast),
-            Lives(1),
-            TimeLimit(300),
-        ],
-        description: "Everyone hides with active camo and no motion sensor. The Juggernaut seeks with a sword, a motion sensor and extra speed. One life each.",
-    },
-    Variant {
-        name: "Jousting",
-        ty: GameType::Slayer,
-        category: Category::Row(Row::PartyGames, None),
-        settings: &[
-            LightVehicle(LightVehicle::Warthog),
-            SecondLightVehicle(LightVehicle::None),
-            NoHeavyVehicle,
-            Banshee(false),
-            StartingWeapon(Some(Weapon::Shotgun)),
-            SecondaryWeapon(None),
-            StartingGrenades(false),
-            WeaponsOnMap(WeaponSet::None),
-            GrenadesOnMap(false),
-        ],
-        description: "Pairs in Warthogs charge each other: one drives, one rides with a shotgun. Best on Coagulation.",
-    },
-    Variant {
-        name: "SWAT",
-        ty: GameType::Slayer,
-        category: Category::GameType,
-        settings: &[
-            TeamPlay(true),
-            Shields(Shields::None),
-            MotionSensor(false),
-            StartingWeapon(Some(Weapon::BattleRifle)),
-            SecondaryWeapon(Some(Weapon::Magnum)),
-            WeaponsOnMap(WeaponSet::None),
-            GrenadesOnMap(false),
-            StartingGrenades(false),
-            OvershieldPickups(false),
-            CamoPickups(false),
-            ScoreToWin(50),
-        ],
-        description: "No shields, no motion sensor, battle rifles and magnums. One headshot kills. 50 points to win.",
-    },
-    Variant {
-        name: "Duel",
-        ty: GameType::Slayer,
-        category: Category::GameType,
-        settings: &[
-            MaxPlayers(2),
-            StartingWeapon(Some(Weapon::Magnum)),
-            SecondaryWeapon(Some(Weapon::Random)),
-            WeaponsOnMap(WeaponSet::None),
-            ScoreToWin(15),
-        ],
-        description: "One on one, magnum and a random weapon, nothing on the map. Winner stays on. Try Lockout or Ascension.",
-    },
-    Variant {
-        name: "Clint Eastwood",
-        ty: GameType::Juggernaut,
-        category: Category::GameType,
-        settings: &[
-            Shields(Shields::None),
-            StartingWeapon(Some(Weapon::Shotgun)),
-            SecondaryWeapon(Some(Weapon::Magnum)),
-            WeaponsOnMap(WeaponSet::None),
-            JuggernautDamageResistance(true),
-            JuggernautMovement(Speed::Fast),
-        ],
-        description: "No shields, a shotgun and a magnum. The Juggernaut is tough and fast. Best on Ascension.",
-    },
-    Variant {
-        name: "Sun King",
-        ty: GameType::King,
-        category: Category::GameType,
-        settings: &[
-            TeamPlay(true),
-            Shields(Shields::None),
-            RespawnSeconds(3),
-            SuicidePenaltySeconds(0),
-            StartingWeapon(Some(Weapon::RocketLauncher)),
-            SecondaryWeapon(None),
-            WeaponsOnMap(WeaponSet::Rockets),
-            ScoreToWin(180),
-            TimeLimit(720),
-        ],
-        description: "Team King of the Hill with rockets and no shields. You'll spend the whole game on fire.",
-    },
-    Variant {
-        name: "Tower of Power",
-        ty: GameType::Slayer,
-        category: Category::GameType,
-        settings: &[
-            TeamPlay(true),
-            Shields(Shields::None),
-            RespawnSeconds(3),
-            LightVehicle(LightVehicle::None),
-            PrimaryTurret(Turret::MachineGun),
-            StartingWeapon(Some(Weapon::Shotgun)),
-            SecondaryWeapon(None),
-            WeaponsOnMap(WeaponSet::Shotguns),
-            StartingGrenades(false),
-            GrenadesOnMap(false),
-            OvershieldPickups(false),
-            CamoPickups(false),
-            ScoreToWin(100),
-        ],
-        description: "Teams fight for the tower with shotguns and no shields. Made for Ascension.",
-    },
-    Variant {
-        name: "Wheeeeee!",
-        ty: GameType::Oddball,
-        category: Category::GameType,
-        settings: &[
-            TeamPlay(true),
-            Shields(Shields::None),
-            ExtraDamage(true),
-            BallSpeed(Speed::Fast),
-            BallToughness(true),
-            StartingWeapon(Some(Weapon::RocketLauncher)),
-            WeaponsOnMap(WeaponSet::Rockets),
-            WeaponsRespawnFast,
-            ScoreToWin(30),
-        ],
-        description: "Rockets, extra damage and a fast, tough ball carrier. How high can you fly?",
-    },
-    Variant {
-        name: "Cops and Robbers",
-        ty: GameType::Slayer,
-        category: Category::Row(Row::PartyGames, None),
-        settings: &[
-            TeamPlay(true),
-            Lives(3),
-            Shields(Shields::None),
-            OvershieldPickups(false),
-            CamoPickups(false),
-            StartingWeapon(Some(Weapon::Shotgun)),
-            SecondaryWeapon(Some(Weapon::PlasmaPistol)),
-            WeaponsOnMap(WeaponSet::None),
-        ],
-        description: "Blue cops use only shotguns, red robbers only plasma pistols. Robbers who give up walk to jail. Three lives.",
-    },
-    Variant {
-        name: "Bounce Practice",
-        ty: GameType::Slayer,
-        category: Category::Row(Row::Research, None),
-        settings: &[
-            ScoreToWin(0),
-            TimeLimit(0),
-            RespawnSeconds(3),
-            SuicidePenaltySeconds(0),
-            Shields(Shields::Overshields),
-            DamageResistance(true),
-            StartingWeapon(Some(Weapon::Magnum)),
-            SecondaryWeapon(None),
-            WeaponsOnMap(WeaponSet::None),
-            GrenadesOnMap(false),
-        ],
-        description: "Practice super bounces and crouch jumps with a magnum: no score, no time limit, tough players, quick respawns and nothing to pick up.",
-    },
-    Variant {
-        name: "Glitch Hunt",
-        ty: GameType::Slayer,
-        category: Category::Row(Row::Research, None),
-        settings: &[
-            ScoreToWin(0),
-            TimeLimit(0),
-            RespawnSeconds(3),
-            SuicidePenaltySeconds(0),
-            Shields(Shields::Overshields),
-            DamageResistance(true),
-            StartingWeapon(Some(Weapon::EnergySword)),
-            SecondaryWeapon(Some(Weapon::RocketLauncher)),
-            FriendlyFire(false),
-        ],
-        description: "Explore the maps and find their secrets: sword flying, rocket and grenade jumps, tough players, no score and no clock.",
-    },
-    Variant {
-        name: "Bumper Cars",
-        ty: GameType::Slayer,
-        category: Category::Row(Row::PartyGames, None),
-        settings: &[
-            StartingWeapon(None),
-            SecondaryWeapon(None),
-            StartingGrenades(false),
-            WeaponsOnMap(WeaponSet::None),
-            GrenadesOnMap(false),
-            OvershieldPickups(false),
-            CamoPickups(false),
-            LightVehicle(LightVehicle::Warthog),
-            SecondLightVehicle(LightVehicle::Ghost),
-            NoHeavyVehicle,
-            Banshee(false),
-            PrimaryTurret(Turret::None),
-            SecondaryTurret(Turret::None),
-            ScoreToWin(25),
-        ],
-        description: "No weapons at all, only Warthogs and Ghosts. Splatter everyone else. Try Coagulation or Burial Mounds.",
-    },
-    Variant {
-        name: "Superbounce",
-        ty: GameType::Slayer,
-        category: Category::Row(Row::Research, Some(Tweak::Superbounce)),
-        settings: &[
-            ScoreToWin(0),
-            TimeLimit(0),
-            RespawnSeconds(3),
-            SuicidePenaltySeconds(0),
-            Shields(Shields::Overshields),
-            DamageResistance(true),
-            StartingWeapon(Some(Weapon::Magnum)),
-            SecondaryWeapon(None),
-            WeaponsOnMap(WeaponSet::None),
-            GrenadesOnMap(false),
-        ],
-        description: "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you.",
-    },
-];
 
 // ---- guest memory seen by the logic ----
 
@@ -756,6 +305,7 @@ const ID_BASE: u32 = crate::ui_kit::ids::family("community variants").base;
 pub fn is_ours(id: u32) -> bool {
     id & 0xffff_ff00 == ID_BASE
 }
+/// The name id of listed script `i` (its index in `rules::builtin::LISTED`).
 pub fn name_id(i: usize) -> u32 {
     ID_BASE | i as u32
 }
@@ -764,15 +314,17 @@ pub fn description_id(i: usize) -> u32 {
 }
 /// Our rows' texts (`crate::tweakers`, [`Row`]): each row's label, the
 /// title of its pane and of its variant list, and their description. At
-/// the top of the name range (`0x7a` to `0x7f`), past every variant's.
+/// the top of the name range (`0x7a` to `0x7f`), past every listed
+/// script's.
 pub fn row_ids() -> impl Iterator<Item = u32> {
     Row::ALL
         .into_iter()
         .flat_map(|r| [r.label_id(), r.title_id(), r.description_id()])
 }
-const _: () = assert!(VARIANTS.len() < 0x7a);
+const _: () = assert!(::rules::builtin::LISTED.len() < 0x7a);
 
-/// The text for one of our ids.
+/// The text for one of our ids: a listed script's name and icon, or its
+/// `about`.
 pub fn text(id: u32) -> Option<String> {
     if !is_ours(id) {
         return None;
@@ -780,23 +332,28 @@ pub fn text(id: u32) -> Option<String> {
     if let Some(t) = Row::text(id) {
         return Some(t.into());
     }
-    let i = (id & 0x7f) as usize;
-    let v = VARIANTS.get(i)?;
+    let l = listed().get((id & 0x7f) as usize)?.as_ref().ok()?;
     Some(if id & 0x80 == 0 {
-        v.display_name()
+        l.display_name()
     } else {
-        v.description.to_owned()
+        l.about.clone()
     })
 }
 
 /// Description numbers: retail uses 0 to 38 of the 0 to 100 the game
-/// accepts; ours start here.
-pub const DESCRIPTION_BASE: u32 = 80;
+/// accepts, the game-variant store 94 to 100
+/// ([`crate::game_variants::inject::DESCRIPTION_BASE`]); listed script `i`
+/// has `DESCRIPTION_BASE + i`, 40 to 93 at most.
+pub const DESCRIPTION_BASE: u32 = 40;
+const _: () = assert!(
+    DESCRIPTION_BASE as usize + ::rules::builtin::LISTED.len()
+        <= crate::game_variants::inject::DESCRIPTION_BASE as usize
+);
 /// The id the variant list should show for description number `n`, if it
 /// is one of ours.
 pub fn description_for(n: u32) -> Option<u32> {
     let i = n.checked_sub(DESCRIPTION_BASE)? as usize;
-    (i < VARIANTS.len()).then(|| description_id(i))
+    (i < ::rules::builtin::LISTED.len()).then(|| description_id(i))
 }
 
 /// What `0x19fd00` returns instead of the original, given its return
@@ -823,7 +380,8 @@ static FOCUSED_DESCRIPTION: std::sync::atomic::AtomicU32 =
 
 /// Where a built-in with description number `n` comes from: the store's
 /// (94 to 100, [`crate::game_variants::inject::DESCRIPTION_BASE`]), ours
-/// (80 to 93) or retail's (0 to 38, and anything else).
+/// (from 40, [`DESCRIPTION_BASE`], one a listed script) or retail's (0 to
+/// 38, and anything else).
 pub fn origin_text(n: u32) -> &'static str {
     use crate::game_variants::inject;
     if (inject::DESCRIPTION_BASE..=inject::SHARED_DESCRIPTION).contains(&n) {
@@ -856,12 +414,8 @@ pub fn utf16_buffer(s: &str) -> Vec<u8> {
 
 /// Every `(setting, value)` the editor offers, read from the `sily` tags
 /// the `goof` tag's pages name.
-pub fn offered<M: Mem>(
-    m: &M,
-    goof: u32,
-    tags: u32,
-) -> Option<std::collections::HashMap<u32, Vec<i32>>> {
-    let mut out = std::collections::HashMap::<u32, Vec<i32>>::new();
+pub fn offered<M: Mem>(m: &M, goof: u32, tags: u32) -> Option<HashMap<u32, Vec<i32>>> {
+    let mut out = HashMap::<u32, Vec<i32>>::new();
     let (pages, at) = (m.u32(goof + GOOF_PAGES)?, m.u32(goof + GOOF_PAGES + 4)?);
     for p in 0..pages.min(0x100) {
         let page = at + p * PAGE_SIZE;
@@ -886,31 +440,43 @@ pub fn offered<M: Mem>(
 /// What the editor offered at the last load of the built-ins, kept for
 /// screens that offer a setting's values where the `sily` tags are not
 /// loaded (the pause menu's Quick Options, `crate::pause_change_map`).
-static LAST_OFFERED: std::sync::Mutex<Option<std::collections::HashMap<u32, Vec<i32>>>> =
+static LAST_OFFERED: std::sync::Mutex<Option<HashMap<u32, Vec<i32>>>> =
     std::sync::Mutex::new(None);
 
 /// Keeps `offer` as [`last_offered`]'s answer.
-pub fn remember_offered(offer: &std::collections::HashMap<u32, Vec<i32>>) {
+pub fn remember_offered(offer: &HashMap<u32, Vec<i32>>) {
     *LAST_OFFERED.lock().unwrap_or_else(|e| e.into_inner()) = Some(offer.clone());
 }
 
 /// Every `(setting, values)` the editor offered at the last load of the
 /// built-ins; `None` before the first.
-pub fn last_offered() -> Option<std::collections::HashMap<u32, Vec<i32>>> {
+pub fn last_offered() -> Option<HashMap<u32, Vec<i32>>> {
     LAST_OFFERED.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The variants whose every pair is offered, by index.
-pub fn usable(offered: &std::collections::HashMap<u32, Vec<i32>>) -> Vec<usize> {
-    let ok = |(s, v): (u32, i32)| offered.get(&s).is_some_and(|vs| vs.contains(&v));
-    (0..VARIANTS.len())
-        .filter(|i| VARIANTS[*i].pairs().into_iter().all(ok))
-        .collect()
-}
-
-/// One list entry: name id, game type, settings block, description number.
-pub fn entry(i: usize, pairs_at: u32) -> [u8; ENTRY_SIZE as usize] {
-    NewEntry::community(i).encode(pairs_at)
+/// The listed scripts' entries, in `rules::builtin::LISTED`'s order: each
+/// its script's list type, its record's value of every setting of its
+/// type the editor offers (`crate::game_variants::inject::pairs`) and its
+/// description number. A script with a value the editor does not offer,
+/// or with no record, is left out, named in the lines.
+pub fn entries(offered: &HashMap<u32, Vec<i32>>) -> (Vec<NewEntry>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut lines = Vec::new();
+    for (i, (l, b)) in listed().iter().zip(::rules::builtin::LISTED).enumerate() {
+        let entry = l.as_ref().map_err(String::clone).and_then(|l| {
+            Ok(NewEntry {
+                name_id: name_id(i),
+                list_type: l.list_type,
+                pairs: crate::game_variants::inject::pairs(&l.record, offered)?,
+                description: DESCRIPTION_BASE + i as u32,
+            })
+        });
+        match entry {
+            Ok(e) => out.push(e),
+            Err(why) => lines.push(format!("community variants: {} left out: {why}", b.name)),
+        }
+    }
+    (out, lines)
 }
 
 /// The most built-ins the content list takes (`0x217080`).
@@ -927,17 +493,6 @@ pub struct NewEntry {
 }
 
 impl NewEntry {
-    /// Community variant `i`.
-    pub fn community(i: usize) -> Self {
-        let v = &VARIANTS[i];
-        NewEntry {
-            name_id: name_id(i),
-            list_type: v.ty as u32,
-            pairs: v.pairs(),
-            description: DESCRIPTION_BASE + i as u32,
-        }
-    }
-
     fn encode(&self, pairs_at: u32) -> [u8; ENTRY_SIZE as usize] {
         let mut e = [0; ENTRY_SIZE as usize];
         e[0..4].copy_from_slice(&self.name_id.to_le_bytes());
@@ -965,21 +520,20 @@ pub struct Merged {
     pub over: usize,
 }
 
-/// Append the variants in `which` to the `goof` tag's built-in list. The
-/// retail entries are copied unchanged in front, into `base` (settings
-/// pairs) and `entries` (the merged block); the tag then points at the
-/// merged block. Does nothing (`Some(false)`) if the tag already points
-/// there. `None` is a read or write failure, with the tag unchanged.
+/// Append `ours` to the `goof` tag's built-in list. The retail entries
+/// are copied unchanged in front, into `base` (settings pairs) and
+/// `entries` (the merged block); the tag then points at the merged block.
+/// Does nothing (`Some(false)`) if the tag already points there. `None`
+/// is a read or write failure, with the tag unchanged.
 pub fn extend_builtins<M: Mem>(
     m: &mut M,
     goof: u32,
-    which: &[usize],
+    ours: &[NewEntry],
     base: u32,
     entries: u32,
 ) -> Option<bool> {
-    let ours: Vec<NewEntry> = which.iter().map(|&i| NewEntry::community(i)).collect();
     let groups = [Group {
-        entries: &ours,
+        entries: ours,
         start: base,
         end: entries,
     }];
@@ -1045,7 +599,56 @@ pub fn extend_with<M: Mem>(
         .then_some(merged)
 }
 
+// ---- the listed records' blocks ----
+
+/// The block of the listed script whose built-in record is at `record`:
+/// the record's name is the script's as the list shows it, and its engine
+/// the script's carrier.
+fn listed_block(m: &dyn engine::memory::GuestMemory, record: u32) -> Option<[u8; ext::LEN]> {
+    let name = crate::tweakers::record_name(m, record)?;
+    let engine = m
+        .u32(record.wrapping_add(variants::record::ENGINE_AT as u32))
+        .ok()? as i32;
+    listed()
+        .iter()
+        .flatten()
+        .find(|l| l.display_name() == name && l.record.game_type().engine() == engine)
+        .map(Listed::block)
+}
+
+/// Writes each listed script's `hx` block into its built-in record in the
+/// content list (`[0x51ea14]`, `crate::tweakers::BUILTIN_LIST`), where it
+/// is not there yet. The pairs cannot carry the block, so `0x149f88`
+/// files the record without it; from then a game on the built-in, and a
+/// copy Edit makes of it, name its script. How many changed.
+pub fn write_blocks(
+    m: &mut dyn engine::memory::GuestMemory,
+) -> Result<usize, engine::memory::MemFault> {
+    use crate::tweakers::{BUILTIN_LIST, BUILTIN_RECORD, BUILTIN_VARIANT};
+    let list = m.u32(BUILTIN_LIST)?;
+    if list == 0 {
+        return Ok(0);
+    }
+    let n = m.u32(list)?.min(MAX_BUILTINS);
+    let mut changed = 0;
+    for i in 0..n {
+        let record = list + 4 + i * BUILTIN_RECORD + BUILTIN_VARIANT;
+        let Some(want) = listed_block(&*m, record) else {
+            continue;
+        };
+        if crate::tweakers::record_block(&*m, record) != Some(want) {
+            m.write(record + ext::AT as u32, &want)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 // ---- hooks ----
+
+/// Set while the wrapper's own call of `0x149f88` is on its way: that
+/// call goes straight to the original.
+static IN_ORIGINAL: AtomicBool = AtomicBool::new(false);
 
 /// The string lookup's hook: our ids' text into the caller's buffer, any
 /// other id to the original, on the context it runs on (the render
@@ -1125,6 +728,10 @@ pub fn install_with_live(
     rt.edit_dispatch(|d| {
         if let Some(o) = load {
             d.register_override(BUILTINS_LOAD, "community:builtins", move |cpu, ctx, _| {
+                // The wrapper's own call below: the original's.
+                if IN_ORIGINAL.swap(false, Ordering::SeqCst) {
+                    return Ok(o.invoke(cpu, ctx, BUILTINS_LOAD));
+                }
                 {
                     let mut mem = ctx.runtime().memory();
                     let goof = mem.u32(cpu.esp + 4)?;
@@ -1151,17 +758,21 @@ pub fn install_with_live(
                     let mut mem = ctx.runtime().memory();
                     let goof = mem.u32(cpu.esp + 4)?;
                     let tags = mem.u32(TAG_INSTANCES)?;
-                    let which = offered(&*mem, goof, tags).map(|o| usable(&o)).unwrap_or_default();
-                    if which.len() < VARIANTS.len() {
-                        let left: Vec<_> =
-                            (0..VARIANTS.len()).filter(|i| !which.contains(i)).map(|i| VARIANTS[i].name).collect();
-                        eprintln!("community variants: left out (a setting the game does not offer): {left:?}");
+                    let offer = offered(&*mem, goof, tags);
+                    let (ours, left) = match &offer {
+                        Some(o) => entries(o),
+                        None => (
+                            Vec::new(),
+                            vec!["community variants: none added: the editor's setting definitions could not be read".to_owned()],
+                        ),
+                    };
+                    for line in left {
+                        eprintln!("{line}");
                     }
                     // The game-variant store's after ours, in its own pairs
                     // page (docs/game/community-gametypes.md, "The merged block").
-                    let offer = offered(&*mem, goof, tags).unwrap_or_default();
+                    let offer = offer.unwrap_or_default();
                     remember_offered(&offer);
-                    let ours: Vec<NewEntry> = which.iter().map(|&i| NewEntry::community(i)).collect();
                     let retail = mem.u32(goof + GOOF_BUILTINS).unwrap_or(0);
                     let room = (MAX_BUILTINS.saturating_sub(retail) as usize).saturating_sub(ours.len());
                     let (stored, lines) = {
@@ -1201,7 +812,39 @@ pub fn install_with_live(
                 }
                 // The Live variants for the next load, off the game thread.
                 crate::game_variants::refresh_live();
-                Ok(o.invoke(cpu, ctx, BUILTINS_LOAD))
+                // The original, through the dispatch (the flag above sends
+                // it there), then the listed records' blocks once it has
+                // filed them, then back to our caller. The return address
+                // is ours to restore, the stack as the original left it.
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let Ok(return_pc) = mem.u32(cpu.esp) else {
+                    drop(mem);
+                    return Ok(o.invoke(cpu, ctx, BUILTINS_LOAD));
+                };
+                cpu.esp = cpu.esp.wrapping_add(4);
+                IN_ORIGINAL.store(true, Ordering::SeqCst);
+                let transfer = ctx.call_guest_named(cpu, &mut mem, BUILTINS_LOAD, LOAD_RETURN, move |_, ctx| {
+                    IN_ORIGINAL.store(false, Ordering::SeqCst);
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    match write_blocks(&mut *mem) {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("community variants: {n} built-in records given their script's block"),
+                        Err(_) => eprintln!("community variants: the built-in records could not be given their scripts' blocks"),
+                    }
+                    Ok(TransferAbi::ret(return_pc))
+                });
+                drop(mem);
+                match transfer {
+                    Ok(t) if t.kind != abi::FAULT => Ok(t),
+                    _ => {
+                        eprintln!("community variants: could not wrap the built-ins' load; their records name no script");
+                        IN_ORIGINAL.store(false, Ordering::SeqCst);
+                        cpu.esp = cpu.esp.wrapping_sub(4);
+                        Ok(o.invoke(cpu, ctx, BUILTINS_LOAD))
+                    }
+                }
             });
         }
         if let Some(o) = strings {
@@ -1230,451 +873,4 @@ pub fn install_with_live(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    #[test]
-    fn the_built_in_line_names_the_focused_entrys_origin() {
-        for n in [0, 38] {
-            assert_eq!(origin_text(n), "Bungie Original");
-        }
-        for n in [DESCRIPTION_BASE, DESCRIPTION_BASE + VARIANTS.len() as u32 - 1] {
-            assert_eq!(origin_text(n), "Community Classic");
-        }
-        for n in [94, 99, 100] {
-            assert_eq!(origin_text(n), "Downloaded Content");
-        }
-        assert_eq!(built_in_line(name_id(0)), None);
-    }
-
-    #[test]
-    fn dedicated_host_status_uses_the_retail_matchmaking_status_strings() {
-        for id in [0x0e00_0761, 0x1100_0762] {
-            assert_eq!(
-                matchmaking_status_text(id, || Some("Joining dedicated host (lhr)".into()))
-                    .as_deref(),
-                Some("Joining dedicated host (lhr)"),
-            );
-            assert_eq!(matchmaking_status_text(id, || None), None);
-        }
-        for id in [0x1400_043a, 0x0007_f8a0, name_id(0)] {
-            assert_eq!(
-                matchmaking_status_text(id, || panic!("unrelated string")),
-                None,
-            );
-        }
-    }
-
-    /// Sparse little-endian memory; unwritten bytes read as missing.
-    #[derive(Default)]
-    struct Fake(HashMap<u32, u8>);
-    impl Mem for Fake {
-        fn rd(&self, addr: u32, out: &mut [u8]) -> bool {
-            for (i, b) in out.iter_mut().enumerate() {
-                match self.0.get(&(addr + i as u32)) {
-                    Some(v) => *b = *v,
-                    None => return false,
-                }
-            }
-            true
-        }
-        fn wr(&mut self, addr: u32, data: &[u8]) -> bool {
-            for (i, b) in data.iter().enumerate() {
-                self.0.insert(addr + i as u32, *b);
-            }
-            true
-        }
-    }
-
-    const GOOF: u32 = 0x8000_0000;
-    const OLD: u32 = 0x8000_1000;
-    const TAGS: u32 = 0x8001_0000;
-
-    /// A goof tag with `n` invented retail entries and setting pages that
-    /// offer `offer`.
-    fn world(n: u32, offer: &[(u32, &[i32])]) -> Fake {
-        let mut m = Fake::default();
-        m.wr(GOOF, &[0; 0x100]);
-        for i in 0..n {
-            let e: Vec<u8> = [0x0100_0000 + i, i % 7, 0, 0, i]
-                .iter()
-                .flat_map(|w: &u32| w.to_le_bytes())
-                .collect();
-            m.wr(OLD + i * ENTRY_SIZE, &e);
-        }
-        m.set_u32(GOOF + GOOF_BUILTINS, n);
-        m.set_u32(GOOF + GOOF_BUILTINS + 4, OLD);
-        // One page naming every sily, plus a null reference.
-        let (page, refs) = (0x8000_2000, 0x8000_3000);
-        m.set_u32(GOOF + GOOF_PAGES, 1);
-        m.set_u32(GOOF + GOOF_PAGES + 4, page);
-        m.wr(page, &[0; PAGE_SIZE as usize]);
-        m.set_u32(page + 8, offer.len() as u32 + 1);
-        m.set_u32(page + 0xc, refs);
-        m.set_u32(refs, 0);
-        m.set_u32(refs + 4, u32::MAX);
-        for (k, (setting, values)) in offer.iter().enumerate() {
-            let k = k as u32;
-            let sily = 0x8010_0000 + k * 0x1000;
-            m.set_u32(refs + (k + 1) * 8 + 4, 0xe000_0000 | (k + 5));
-            m.set_u32(TAGS + (k + 5) * 16 + 8, sily);
-            m.wr(sily, &[0; 0x24]);
-            m.set_u32(sily, *setting);
-            m.set_u32(sily + SILY_OPTIONS, values.len() as u32);
-            m.set_u32(sily + SILY_OPTIONS + 4, sily + 0x100);
-            for (j, v) in values.iter().enumerate() {
-                let o = sily + 0x100 + j as u32 * OPTION_SIZE;
-                m.set_u32(o, 0);
-                m.set_u32(o + 4, *v as u32);
-                m.set_u32(o + 8, 0x0700_0000);
-            }
-        }
-        m
-    }
-
-    /// Every pair our variants use, offered.
-    fn all_offered() -> Vec<(u32, Vec<i32>)> {
-        let mut by: HashMap<u32, Vec<i32>> = HashMap::new();
-        for v in VARIANTS {
-            for (s, x) in v.pairs() {
-                by.entry(s).or_default().push(x);
-            }
-        }
-        by.into_iter().collect()
-    }
-
-    #[test]
-    fn settings_encode_as_the_editor_stores_them() {
-        assert_eq!(
-            StartingWeapon(Some(Weapon::Shotgun)).encode(GameType::Slayer),
-            (89, 9)
-        );
-        assert_eq!(SecondaryWeapon(None).encode(GameType::Slayer), (94, 1));
-        assert_eq!(
-            SecondaryWeapon(Some(Weapon::EnergySword)).encode(GameType::Slayer),
-            (94, 17)
-        );
-        assert_eq!(Shields(Shields::None).encode(GameType::Slayer), (19, 1));
-        assert_eq!(Banshee(false).encode(GameType::Slayer), (79, 4));
-        assert_eq!(Banshee(true).encode(GameType::Slayer), (79, 1));
-        assert_eq!(MotionSensor(false).encode(GameType::Slayer), (20, 0));
-        // Score to win follows the game type.
-        let score: Vec<_> = [
-            GameType::Slayer,
-            GameType::Oddball,
-            GameType::Juggernaut,
-            GameType::King,
-            GameType::Ctf,
-            GameType::Assault,
-            GameType::Territories,
-        ]
-        .into_iter()
-        .map(|t| ScoreToWin(5).encode(t).0)
-        .collect();
-        assert_eq!(score, [2, 3, 7, 4, 1, 9, 8]);
-    }
-
-    #[test]
-    fn variants_are_well_formed() {
-        assert!((8..=16).contains(&VARIANTS.len()));
-        let mut names = std::collections::HashSet::new();
-        for v in VARIANTS {
-            // The keyboard allows 16 characters; the copy starts from this.
-            assert!(v.name.chars().count() <= 16, "{}", v.name);
-            assert!(names.insert(v.name), "duplicate {}", v.name);
-            // No setting twice: the game applies them in order and the
-            // later would win silently.
-            let mut seen = std::collections::HashSet::new();
-            for (s, _) in v.pairs() {
-                assert!(seen.insert(s), "{} sets {s} twice", v.name);
-            }
-            assert!(!v.description.is_empty() && v.description.encode_utf16().count() < 0xff);
-            assert!(v.display_name().ends_with(ICON));
-            assert!(!v.display_name().contains('\u{e008}'), "never the padlock");
-        }
-        // Retail names to avoid (docs/game/community-gametypes.md).
-        for clash in [
-            "Rockets",
-            "Swords",
-            "Snipers",
-            "Fiesta",
-            "Dodgeball",
-            "Juggernaut",
-            "Ninjanaut",
-        ] {
-            assert!(!names.contains(clash));
-        }
-    }
-
-    #[test]
-    fn superbounce_is_filed_under_research_by_its_script() {
-        let sb = VARIANTS.iter().find(|v| v.name == "Superbounce").unwrap();
-        assert_eq!(sb.ty, GameType::Slayer, "played as Slayer underneath");
-        assert_eq!(sb.category, Category::Row(Row::Research, Some(Tweak::Superbounce)));
-        let ext = superbounce_ext();
-        assert_eq!(sb.tweak(), Some(ext));
-        assert!(!ext.superbounce, "the script turns the mode on, not the flag");
-        assert!(ext.out_of_range().is_none());
-        assert_eq!(
-            Ext::decode(&ext.encode()),
-            variants::ext::Block::Ext(ext)
-        );
-        // Mode 2, naming the compiled-in Superbounce script with its
-        // default options.
-        let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
-        assert_eq!(ext.script.mode, variants::ext::Mode::Rules);
-        assert_eq!(ext.script.prefix[..], ir.id().0[..8]);
-        assert_eq!(ext.script.options, ir.default_options());
-        let found = crate::rules::runtime::compiled_in(ext.script.prefix).unwrap();
-        assert_eq!(found.id, ir.id());
-        // Its block files a renamed copy under Research through the
-        // script's header, and its name alone files the built-in.
-        let none = [0; variants::ext::LEN];
-        assert_eq!(row_of("My Bounce", &ext.encode()), Some(Row::Research));
-        assert_eq!(row_of(&sb.display_name(), &none), Some(Row::Research));
-        assert_eq!(row_of("My Bounce", &none), None);
-        let flag_only = Ext {
-            superbounce: true,
-            ..Ext::RETAIL
-        };
-        assert_eq!(row_of("My Bounce", &flag_only.encode()), None, "the flag files nothing");
-        // No other variant carries a tweak.
-        for v in VARIANTS.iter().filter(|v| v.name != "Superbounce") {
-            assert!(v.tweak().is_none(), "{}", v.name);
-        }
-        // As the list and a record hold its name.
-        assert_eq!(
-            row_builtin(&sb.display_name()).map(|v| v.name),
-            Some("Superbounce")
-        );
-        assert_eq!(
-            row_builtin("Superbounce").map(|v| v.name),
-            Some("Superbounce")
-        );
-        assert!(row_builtin("SWAT \u{e006}").is_none());
-        assert!(row_builtin("Superbounce 2").is_none());
-    }
-
-    #[test]
-    fn the_rows_texts_are_ours_and_apart_from_the_variants() {
-        for r in Row::ALL {
-            assert_eq!(text(r.label_id()).as_deref(), Some(r.label()));
-            assert_eq!(text(r.title_id()).as_deref(), Some(r.title()));
-            assert_eq!(text(r.description_id()).as_deref(), Some(r.description()));
-            assert_eq!(r.title(), r.label().to_uppercase(), "as SLAYER is Slayer's");
-            assert!(r.description().ends_with('.') && r.description().len() < 120);
-            assert_eq!(Row::from_mark(r.mark()), Some(r));
-        }
-        assert_eq!(Row::from_mark(0), None);
-        let ids: Vec<u32> = row_ids().collect();
-        assert_eq!(ids.len(), 6);
-        for (k, id) in ids.iter().enumerate() {
-            assert!(is_ours(*id));
-            assert!(!ids[..k].contains(id), "{id:#x} twice");
-            assert!((0..VARIANTS.len()).all(|i| *id != name_id(i) && *id != description_id(i)));
-        }
-    }
-
-    #[test]
-    fn the_party_and_research_rows_hold_their_variants() {
-        let under = |r: Row| -> Vec<&str> {
-            VARIANTS.iter().filter(|v| v.row() == Some(r)).map(|v| v.name).collect()
-        };
-        assert_eq!(
-            under(Row::PartyGames),
-            ["Zombies", "Jousting", "Cops and Robbers", "Bumper Cars"]
-        );
-        assert_eq!(
-            under(Row::Research),
-            ["Bounce Practice", "Glitch Hunt", "Superbounce"]
-        );
-        let none = [0; variants::ext::LEN];
-        assert_eq!(row_of("Zombies \u{e006}", &none), Some(Row::PartyGames));
-        assert_eq!(row_of("Glitch Hunt \u{e006}", &none), Some(Row::Research));
-        assert_eq!(row_of("SWAT \u{e006}", &none), None, "stays under Slayer");
-        assert_eq!(row_of("Hide and Seek \u{e006}", &none), None, "Juggernaut's");
-    }
-
-    #[test]
-    fn string_ids_are_private_and_round_trip() {
-        for (i, v) in VARIANTS.iter().enumerate() {
-            assert!(is_ours(name_id(i)) && is_ours(description_id(i)));
-            assert_eq!(text(name_id(i)).unwrap(), v.display_name());
-            assert_eq!(text(description_id(i)).unwrap(), v.description);
-            assert_eq!(
-                description_for(DESCRIPTION_BASE + i as u32),
-                Some(description_id(i))
-            );
-        }
-        // Retail-shaped ids (length byte, small index) are never ours.
-        for id in [
-            0x0700_0406,
-            0x0100_030c,
-            0x0200_031d,
-            0x1c00_164d,
-            0,
-            u32::MAX,
-        ] {
-            assert!(!is_ours(id) && text(id).is_none());
-        }
-        // Retail description numbers and numbers past ours pass through.
-        for n in [0, 2, 38, 79, DESCRIPTION_BASE + VARIANTS.len() as u32, 100] {
-            assert_eq!(description_for(n), None);
-        }
-        assert!(
-            DESCRIPTION_BASE + VARIANTS.len() as u32 <= 100,
-            "the game clamps to 100"
-        );
-    }
-
-    #[test]
-    fn utf16_buffer_is_nul_terminated_and_bounded() {
-        let b = utf16_buffer("Zombies \u{e006}");
-        assert_eq!(b.len(), 10 * 2);
-        assert_eq!(&b[16..20], &[0x06, 0xe0, 0, 0]);
-        let long = "x".repeat(400);
-        assert_eq!(utf16_buffer(&long).len(), 0x100 * 2);
-    }
-
-    #[test]
-    fn extend_appends_after_retail_entries_unchanged() {
-        let offer = all_offered();
-        let offer: Vec<(u32, &[i32])> = offer.iter().map(|(s, v)| (*s, v.as_slice())).collect();
-        let mut m = world(39, &offer);
-        let retail_before: Vec<u8> = {
-            let mut b = vec![0; 39 * ENTRY_SIZE as usize];
-            assert!(m.rd(OLD, &mut b));
-            b
-        };
-        let which = usable(&offered(&m, GOOF, TAGS).unwrap());
-        assert_eq!(which, (0..VARIANTS.len()).collect::<Vec<_>>());
-        assert_eq!(
-            extend_builtins(&mut m, GOOF, &which, DATA_BASE, ENTRIES_AT),
-            Some(true)
-        );
-
-        let n = m.u32(GOOF + GOOF_BUILTINS).unwrap();
-        assert_eq!(n as usize, 39 + VARIANTS.len());
-        assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(ENTRIES_AT));
-        // Retail entries: byte for byte, in place; the old block untouched.
-        let mut b = vec![0; retail_before.len()];
-        assert!(m.rd(ENTRIES_AT, &mut b));
-        assert_eq!(b, retail_before);
-        assert!(m.rd(OLD, &mut b));
-        assert_eq!(b, retail_before);
-        // Ours decode back to the symbolic settings.
-        for (k, v) in VARIANTS.iter().enumerate() {
-            let e = ENTRIES_AT + (39 + k as u32) * ENTRY_SIZE;
-            assert_eq!(m.u32(e), Some(name_id(k)));
-            assert_eq!(m.u32(e + 4), Some(v.ty as u32));
-            let (count, at) = (m.u32(e + 8).unwrap(), m.u32(e + 12).unwrap());
-            let got: Vec<(u32, i32)> = (0..count)
-                .map(|j| {
-                    (
-                        m.u32(at + j * 8).unwrap(),
-                        m.u32(at + j * 8 + 4).unwrap() as i32,
-                    )
-                })
-                .collect();
-            assert_eq!(got, v.pairs());
-            assert_eq!(m.u32(e + 16), Some(DESCRIPTION_BASE + k as u32));
-        }
-        // Again: already ours, nothing changes.
-        assert_eq!(
-            extend_builtins(&mut m, GOOF, &which, DATA_BASE, ENTRIES_AT),
-            Some(false)
-        );
-        assert_eq!(m.u32(GOOF + GOOF_BUILTINS), Some(n));
-    }
-
-    #[test]
-    fn a_variant_with_an_unoffered_value_is_left_out() {
-        // Offer everything except a shotgun start.
-        let mut offer = all_offered();
-        for (s, v) in &mut offer {
-            if *s == 89 {
-                v.retain(|x| *x != Weapon::Shotgun as i32);
-            }
-        }
-        let offer: Vec<(u32, &[i32])> = offer.iter().map(|(s, v)| (*s, v.as_slice())).collect();
-        let m = world(3, &offer);
-        let which = usable(&offered(&m, GOOF, TAGS).unwrap());
-        for (i, v) in VARIANTS.iter().enumerate() {
-            let shotgun = v.settings.contains(&StartingWeapon(Some(Weapon::Shotgun)));
-            assert_eq!(which.contains(&i), !shotgun, "{}", v.name);
-        }
-        // With nothing offered nothing is added and the tag is unchanged.
-        let mut m = world(3, &[]);
-        let which = usable(&offered(&m, GOOF, TAGS).unwrap());
-        assert!(which.is_empty());
-        assert_eq!(
-            extend_builtins(&mut m, GOOF, &which, DATA_BASE, ENTRIES_AT),
-            Some(false)
-        );
-        assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(OLD));
-        assert_eq!(m.u32(GOOF + GOOF_BUILTINS), Some(3));
-    }
-
-    /// Bumper Cars starts unarmed, which only our choices offer
-    /// (`variant_options`): without them it is left out, with them it is
-    /// kept. Bounce Practice's magnum is a retail choice either way.
-    #[test]
-    fn bumper_cars_needs_our_none_and_bounce_practice_has_a_magnum() {
-        let bumper = VARIANTS
-            .iter()
-            .position(|v| v.name == "Bumper Cars")
-            .unwrap();
-        let bounce = VARIANTS
-            .iter()
-            .position(|v| v.name == "Bounce Practice")
-            .unwrap();
-        assert!(VARIANTS[bumper].pairs().contains(&(89, 1)));
-        assert!(VARIANTS[bumper].pairs().contains(&(94, 1)));
-        assert!(
-            VARIANTS[bounce]
-                .pairs()
-                .contains(&(89, Weapon::Magnum as i32))
-        );
-        assert!(VARIANTS[bounce].pairs().contains(&(94, 1)));
-
-        // Retail's lists: every pair our variants use except primary None.
-        let mut retail = all_offered();
-        for (s, v) in &mut retail {
-            if *s == 89 {
-                v.retain(|x| *x != 1);
-            }
-        }
-        let offer: Vec<(u32, &[i32])> = retail.iter().map(|(s, v)| (*s, v.as_slice())).collect();
-        let mut m = world(3, &offer);
-        let which = usable(&offered(&m, GOOF, TAGS).unwrap());
-        assert!(!which.contains(&bumper) && which.contains(&bounce));
-
-        // With our choices merged into the same lists, it is kept.
-        use crate::variant_options as vo;
-        let done = vo::extend(&mut m, GOOF, TAGS, vo::BASE, vo::SIZE).unwrap();
-        assert!(done.lists >= 1);
-        let which = usable(&offered(&m, GOOF, TAGS).unwrap());
-        assert_eq!(which, (0..VARIANTS.len()).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn a_failed_read_leaves_the_tag_alone() {
-        let mut m = world(5, &[]);
-        // The retail block claims more entries than exist.
-        m.set_u32(GOOF + GOOF_BUILTINS, 6);
-        assert_eq!(
-            extend_builtins(&mut m, GOOF, &[0, 1], DATA_BASE, ENTRIES_AT),
-            None
-        );
-        assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(OLD));
-        assert_eq!(m.u32(GOOF + GOOF_BUILTINS), Some(6));
-        // A list that would not fit our page is refused the same way.
-        m.set_u32(GOOF + GOOF_BUILTINS, MAX_ENTRIES);
-        assert_eq!(
-            extend_builtins(&mut m, GOOF, &[0], DATA_BASE, ENTRIES_AT),
-            None
-        );
-        assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(OLD));
-    }
-}
+mod tests;

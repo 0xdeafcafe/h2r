@@ -3,6 +3,8 @@ use engine::DatumHandle;
 use engine::datum::DatumArray;
 use engine::entry::{self, Regs};
 use engine::testing::FakeGuest;
+use variants::ext::Ext;
+use variants::record::GameType;
 
 const NAME: u32 = 0x0001_0000;
 const ARRAY: u32 = 0x0002_0000;
@@ -41,11 +43,25 @@ fn utf16(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// A variant record at `at` named `name` with extension block `block`.
+/// A Slayer variant record at `at` named `name` with extension block
+/// `block`.
 fn put_record(m: &mut dyn GuestMemory, at: u32, name: &str, block: [u8; ext::LEN]) {
+    put_typed(m, at, name, block, GameType::Slayer);
+}
+
+/// A variant record at `at` of type `ty`, named `name`, with extension
+/// block `block`.
+fn put_typed(m: &mut dyn GuestMemory, at: u32, name: &str, block: [u8; ext::LEN], ty: GameType) {
     m.write(at + variants::record::NAME_AT as u32, &utf16(name))
         .unwrap();
     m.write(at + ext::AT as u32, &block).unwrap();
+    m.set_u32(at + variants::record::ENGINE_AT as u32, ty.engine() as u32)
+        .unwrap();
+}
+
+/// The block of the listed script named `name`.
+fn block_of(name: &str) -> [u8; ext::LEN] {
+    community::listed_named(name).unwrap().block()
 }
 
 #[test]
@@ -73,12 +89,13 @@ fn both_game_type_screens_get_the_row_but_not_the_create_mode() {
 
 #[test]
 fn each_row_keeps_its_own_and_slayer_the_rest() {
-    let under: Vec<_> = row_variants().map(|v| v.name).collect();
+    let under: Vec<_> = row_variants().map(|l| l.name.as_str()).collect();
     assert!(under.contains(&"Superbounce") && under.contains(&"Zombies"), "{under:?}");
-    let slayer: Vec<_> = VARIANTS
+    let slayer: Vec<_> = community::listed()
         .iter()
-        .filter(|v| v.ty == community::GameType::Slayer && v.row().is_none())
-        .map(|v| v.name)
+        .flatten()
+        .filter(|l| l.record.game_type() == GameType::Slayer && l.row.is_none())
+        .map(|l| l.name.as_str())
         .collect();
     assert!(!slayer.contains(&"Superbounce") && !slayer.contains(&"Zombies"), "{slayer:?}");
     assert!(slayer.contains(&"SWAT"), "the rest stay: {slayer:?}");
@@ -98,21 +115,47 @@ fn each_row_keeps_its_own_and_slayer_the_rest() {
 #[test]
 fn every_row_variant_is_a_slayer_variant() {
     // A row's list is Slayer's list filtered: its new variants, copies and
-    // defaults are Slayer's.
-    for v in row_variants() {
-        assert_eq!(v.ty, community::GameType::Slayer, "{}", v.name);
-        assert!(v.tweak().is_none_or(|e| !e.is_default()), "{}", v.name);
+    // defaults are Slayer's. Each built-in's record names its script.
+    for l in row_variants() {
+        assert_eq!(l.record.game_type(), GameType::Slayer, "{}", l.name);
+        assert!(!l.ext().is_default(), "{}", l.name);
     }
+    // Hide and Seek names Party Games but is Juggernaut's: it is no row's
+    // variant, and stays on Juggernaut's own list, which is not filtered.
+    let hide = community::listed_named("Hide and Seek").unwrap();
+    assert_eq!(hide.row, Some(Row::PartyGames));
+    assert_eq!(hide.record.game_type(), GameType::Juggernaut);
+    assert!(row_variants().all(|l| l.name != "Hide and Seek"));
     assert!(filtered(SLAYER_CATEGORY));
     assert!(!filtered(2), "King of the Hill's list is retail's");
 }
 
 #[test]
+fn a_record_of_another_type_is_on_no_row() {
+    let mut g = FakeGuest::new();
+    g.map(RECORDS, 0x1000);
+    let hide = community::listed_named("Hide and Seek").unwrap();
+    put_typed(&mut g, RECORDS, &hide.display_name(), hide.block(), GameType::Juggernaut);
+    assert_eq!(record_row(&g, RECORDS), None, "Juggernaut's");
+    put_typed(&mut g, RECORDS, "My Hide", hide.block(), GameType::Juggernaut);
+    assert_eq!(record_row(&g, RECORDS), None, "its copy too");
+    put_typed(&mut g, RECORDS, "My Zombies", block_of("Zombies"), GameType::Slayer);
+    assert_eq!(record_row(&g, RECORDS), Some(Row::PartyGames));
+    put_typed(&mut g, RECORDS, "My Zombies", block_of("Zombies"), GameType::King);
+    assert_eq!(record_row(&g, RECORDS), None, "a row is for Slayer records");
+}
+
+#[test]
 fn a_saved_copy_with_the_block_stays_under_research() {
-    let flag = community::superbounce_ext().encode();
+    let flag = block_of("Superbounce");
     let research = Some(Row::Research);
     assert_eq!(community::row_of("My Bounce", &flag), research, "renamed copy");
-    assert_eq!(community::row_of("Superbounce", &[0; ext::LEN]), research, "by name");
+    assert_eq!(
+        community::row_of("Superbounce \u{e006}", &[0; ext::LEN]),
+        research,
+        "the built-in before its block"
+    );
+    assert_eq!(community::row_of("Superbounce", &[0; ext::LEN]), None, "a player's own");
     assert_eq!(community::row_of("Slayer", &[0; ext::LEN]), None);
     let gravity = Ext {
         gravity: 50,
@@ -127,28 +170,6 @@ fn a_saved_copy_with_the_block_stays_under_research() {
     let mut bad = flag;
     bad[ext::LEN - 1] ^= 1;
     assert_eq!(community::row_of("My Bounce", &bad), None);
-}
-
-#[test]
-fn the_builtin_records_get_their_extension_block_once() {
-    let mut g = FakeGuest::new();
-    g.map(BUILTIN_LIST & !0xfff, 0x1000).map(RECORDS, 0x2000);
-    g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 2);
-    let rec = |i: u32| RECORDS + 4 + i * BUILTIN_RECORD + BUILTIN_VARIANT;
-    put_record(&mut g, rec(0), "Zombies \u{e006}", [0; ext::LEN]);
-    put_record(&mut g, rec(1), "Superbounce \u{e006}", [0; ext::LEN]);
-    assert_eq!(patch_builtins(&mut g), Ok(1));
-    assert_eq!(
-        Ext::decode(&record_block(&g, rec(1)).unwrap()),
-        Block::Ext(community::superbounce_ext())
-    );
-    assert_eq!(record_block(&g, rec(0)), Some([0; ext::LEN]), "no tweak: untouched");
-    assert_eq!(record_row(&g, rec(1)), Some(Row::Research));
-    assert_eq!(record_row(&g, rec(0)), Some(Row::PartyGames), "by its name");
-    assert_eq!(patch_builtins(&mut g), Ok(0), "already there");
-    // No list yet: nothing to do.
-    g.put_u32(BUILTIN_LIST, 0);
-    assert_eq!(patch_builtins(&mut g), Ok(0));
 }
 
 /// The variant list's fill, as `0x2ca0d9` calls `0x215900`: four handles
@@ -199,9 +220,9 @@ fn run_fill(list: Option<Row>, create: bool) -> (entry::testing::Run, Vec<DatumH
             assert_eq!(call.eax, Some(SCRATCH));
             let (name, block) = match call.edx {
                 Some(A) => ("Rockets", [0; ext::LEN]),
-                Some(B) => ("Superbounce \u{e006}", community::superbounce_ext().encode()),
+                Some(B) => ("Superbounce \u{e006}", block_of("Superbounce")),
                 Some(D) => ("Zombies \u{e006}", [0; ext::LEN]),
-                _ => ("My Bounce", community::superbounce_ext().encode()),
+                _ => ("My Bounce", block_of("Superbounce")),
             };
             m.fill(SCRATCH, 0x130, 0).unwrap();
             put_record(m, SCRATCH, name, block);
