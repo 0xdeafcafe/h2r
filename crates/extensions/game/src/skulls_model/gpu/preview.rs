@@ -1,9 +1,11 @@
 //! A preview of the model picture from your disc, for a look before
 //! landing, without the game: the skull in three states at the picture's
 //! in-game size and at four times it, the model from four sides with a
-//! glyph (where the forehead decal lands), a sheet of the model as
+//! glyph (where the forehead decal lands), sheets of the model as
 //! authored under each of the 24 axis-aligned orientations (to choose
-//! `MODEL_FORWARD` and `MODEL_UP`), and a sheet of every glyph.
+//! `MODEL_FORWARD` and `MODEL_UP`) and, from that choice, under a range
+//! of yaw, pitch and roll (to choose the fine-tune), the fine-tune found
+//! from the mesh's mirror symmetry, and a sheet of every glyph.
 //! Writes only to `H2_SKULLS_PREVIEW_DIR`, which must be outside the
 //! repository (disc-derived pixels are never committed); prints the map
 //! and tag it loaded and the model's bounds.
@@ -139,24 +141,33 @@ fn glyph_sheet(dir: &Path) {
     write(&sheet, dir, "glyphs.png");
 }
 
-/// The model as authored, turned by each of the 24 axis-aligned
-/// orientations, gold with no glyph, unturned by the sway: one cell each,
-/// labelled with its forward and up. The one whose face looks out of the
-/// picture, crown up, gives `MODEL_FORWARD` and `MODEL_UP`.
-fn orientation_sheet(
+/// One sheet cell: the model as authored turned by `orientation`, its
+/// label, and whether it is the orientation in use (labelled in gold).
+struct Cell {
+    orientation: Orientation,
+    label: String,
+    chosen: bool,
+}
+
+/// `cells` on a grid `columns` wide, each the picture's size with a label
+/// band under it, gold with no glyph and no sway; written as `name`. The
+/// showcase is left holding the picture's own mesh.
+#[allow(clippy::too_many_arguments)]
+fn sheet(
     ctx: &gfx::GfxContext,
     showcase: &mut Showcase,
     skull: &Skull,
     tint: [f32; 3],
     picture: (u32, u32),
+    columns: u32,
+    cells: &[Cell],
     dir: &Path,
+    name: &str,
 ) {
-    const COLUMNS: u32 = 6;
     const BAND: u32 = 22;
-    let all = Orientation::all();
-    let rows = (all.len() as u32).div_ceil(COLUMNS);
+    let rows = (cells.len() as u32).div_ceil(columns);
     let cell = (picture.0, picture.1 + BAND);
-    let mut sheet = Canvas::new(COLUMNS * cell.0, rows * cell.1, BACKGROUND);
+    let mut sheet = Canvas::new(columns * cell.0, rows * cell.1, BACKGROUND);
     showcase.set_glyph(&ctx.device, &ctx.queue, 0, &[]);
     let shown = showcase::Look {
         yaw: 0.0,
@@ -164,38 +175,145 @@ fn orientation_sheet(
         silhouette: false,
         glyph: false,
     };
-    println!("orientations.png, left to right, top to bottom:");
-    for (i, o) in all.iter().enumerate() {
-        let (cx, cy) = ((i as u32 % COLUMNS) * cell.0, (i as u32 / COLUMNS) * cell.1);
-        showcase.set_mesh(
-            &ctx.device,
-            &ctx.queue,
-            &skull.rest.oriented(o),
-            &skull.bases,
-        );
+    println!("{name}, left to right, top to bottom:");
+    for (i, c) in cells.iter().enumerate() {
+        let (cx, cy) = ((i as u32 % columns) * cell.0, (i as u32 / columns) * cell.1);
+        let mesh = skull.rest.oriented(&c.orientation);
+        showcase.set_mesh(&ctx.device, &ctx.queue, &mesh, &skull.bases);
         let canvas = draw(ctx, showcase, &shown, picture);
         sheet.blit(&canvas, cx, cy);
-        let chosen = o.forward == MODEL_FORWARD && o.up == MODEL_UP;
-        let label = format!("{i} {}", o.label());
-        let colour = if chosen {
+        let colour = if c.chosen {
             [250, 210, 110]
         } else {
             [200, 210, 230]
         };
-        sheet.label(&label, cx + 4, cy + picture.1 + 6, colour);
+        sheet.label(&label_text(&c.label), cx + 4, cy + picture.1 + 6, colour);
         println!(
             "  {i:2}: {}{}",
-            o.label(),
-            if chosen {
-                "  (MODEL_FORWARD, MODEL_UP now)"
-            } else {
-                ""
-            }
+            c.label,
+            if c.chosen { "  (in use)" } else { "" }
         );
     }
-    write(&sheet, dir, "orientations.png");
-    // Back to the picture's own orientation.
+    write(&sheet, dir, name);
     showcase.set_mesh(&ctx.device, &ctx.queue, &skull.mesh, &skull.bases);
+}
+
+/// The 24 axis-aligned orientations (`orientations.png`), to choose
+/// `MODEL_FORWARD` and `MODEL_UP`; then, from that pair, yaw by pitch
+/// (`orientations-fine.png`), roll (`orientations-roll.png`), and the
+/// fine-tune found from the mesh's mirror symmetry (`auto.png`).
+fn orientation_sheets(
+    ctx: &gfx::GfxContext,
+    showcase: &mut Showcase,
+    skull: &Skull,
+    tint: [f32; 3],
+    picture: (u32, u32),
+    dir: &Path,
+) {
+    let axes: Vec<Cell> = Orientation::all()
+        .into_iter()
+        .enumerate()
+        .map(|(i, o)| Cell {
+            label: format!("{i} {}", o.label()),
+            chosen: o.forward == MODEL_FORWARD && o.up == MODEL_UP,
+            orientation: o,
+        })
+        .collect();
+    sheet(
+        ctx,
+        showcase,
+        skull,
+        tint,
+        picture,
+        6,
+        &axes,
+        dir,
+        "orientations.png",
+    );
+
+    let base = Orientation::axes(MODEL_FORWARD, MODEL_UP);
+    let steps: Vec<f32> = (-3..=3).map(|k| 15.0 * k as f32).collect();
+    let in_use = |yaw: f32, pitch: f32, roll: f32| {
+        yaw == MODEL_YAW_DEGREES && pitch == MODEL_PITCH_DEGREES && roll == MODEL_ROLL_DEGREES
+    };
+    let mut fine = Vec::new();
+    for &pitch in &steps {
+        for &yaw in &steps {
+            fine.push(Cell {
+                orientation: Orientation { yaw, pitch, ..base },
+                label: format!("yaw {yaw} pitch {pitch}"),
+                chosen: in_use(yaw, pitch, 0.0),
+            });
+        }
+    }
+    sheet(
+        ctx,
+        showcase,
+        skull,
+        tint,
+        picture,
+        7,
+        &fine,
+        dir,
+        "orientations-fine.png",
+    );
+    let roll: Vec<Cell> = steps
+        .iter()
+        .map(|&roll| Cell {
+            orientation: Orientation { roll, ..base },
+            label: format!("roll {roll}"),
+            chosen: in_use(0.0, 0.0, roll),
+        })
+        .collect();
+    sheet(
+        ctx,
+        showcase,
+        skull,
+        tint,
+        picture,
+        7,
+        &roll,
+        dir,
+        "orientations-roll.png",
+    );
+
+    // The drawn vertices, once each.
+    let mut used = vec![false; skull.rest.vertices.len()];
+    let mut points = Vec::new();
+    for &i in &skull.rest.indices {
+        if let Some(seen) = used.get_mut(i as usize).filter(|seen| !**seen) {
+            *seen = true;
+            points.push(skull.rest.vertices[i as usize].position);
+        }
+    }
+    let Some(((yaw, pitch, roll), ratio)) = showcase::auto_fine(&points, &base) else {
+        println!("auto: too few points to find the mirror plane");
+        return;
+    };
+    println!(
+        "auto (mirror plane and long axis, from {}): yaw {yaw:.1} pitch {pitch:.1} roll {roll:.1} \
+         degrees; the long axis is {ratio:.2} times the one across it (near 1: the pitch is a \
+         guess). As constants: MODEL_YAW_DEGREES = {yaw:.1}, MODEL_PITCH_DEGREES = {pitch:.1}, \
+         MODEL_ROLL_DEGREES = {roll:.1}.",
+        base.label()
+    );
+    let auto = [Cell {
+        orientation: Orientation {
+            yaw,
+            pitch,
+            roll,
+            ..base
+        },
+        label: format!(
+            "auto yaw {} pitch {} roll {}",
+            yaw.round(),
+            pitch.round(),
+            roll.round()
+        ),
+        chosen: false,
+    }];
+    let big = (picture.0 * 2, picture.1 * 2);
+    sheet(ctx, showcase, skull, tint, big, 1, &auto, dir, "auto.png");
 }
 
 #[test]
@@ -245,13 +363,16 @@ fn preview() {
         r.min[0], r.max[0], r.min[1], r.max[1], r.min[2], r.max[2]
     );
     println!(
-        "  facing: {} pitch {} degrees (MODEL_FORWARD, MODEL_UP, MODEL_PITCH_DEGREES); turned, \
-         bounds x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}. The picture shows the turned \
-         model's +x to the camera, its +y on the picture's right, +z up. The glyph is centred \
-         at ({:.3}, {:.3}, {:.3}), radius {:.3}. facing-yaw-*.png show it turned 0, 90, 180 \
-         and 270 degrees with Iron's glyph: in facing-yaw-0.png it should sit on the forehead.",
+        "  facing: {} yaw {} pitch {} roll {} degrees (MODEL_FORWARD, MODEL_UP, \
+         MODEL_YAW_DEGREES, MODEL_PITCH_DEGREES, MODEL_ROLL_DEGREES); turned, bounds x \
+         {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}. The picture shows the turned model's +x \
+         to the camera, its +y on the picture's right, +z up. The glyph is centred at ({:.3}, \
+         {:.3}, {:.3}), radius {:.3}. facing-yaw-*.png show it turned 0, 90, 180 and 270 \
+         degrees with Iron's glyph: in facing-yaw-0.png it should sit on the forehead.",
         MODEL_ORIENTATION.label(),
+        MODEL_YAW_DEGREES,
         MODEL_PITCH_DEGREES,
+        MODEL_ROLL_DEGREES,
         b.min[0],
         b.max[0],
         b.min[1],
@@ -317,7 +438,7 @@ fn preview() {
         skull: iron,
         collected: true,
     };
-    orientation_sheet(&ctx, &mut showcase, &skull, gold.tint(), size, &dir);
+    orientation_sheets(&ctx, &mut showcase, &skull, gold.tint(), size, &dir);
     for degrees in [0u32, 90, 180, 270] {
         let yaw = (degrees as f32).to_radians();
         let canvas = render(&ctx, &mut showcase, &gold, yaw, (size.0 * 4, size.1 * 4));

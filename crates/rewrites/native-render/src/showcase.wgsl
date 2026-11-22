@@ -71,8 +71,12 @@ fn decal(p: vec3<f32>, n: vec3<f32>, shift: vec2<f32>) -> f32 {
 @fragment
 fn fs_main(v: V) -> @location(0) vec4<f32> {
     let len = length(v.normal);
-    let n = select(vec3<f32>(0.0, 0.0, 1.0), v.normal / len, len > 1e-6);
     let to_eye = normalize(frame.eye.xyz - v.world);
+    let outward = select(vec3<f32>(0.0, 0.0, 1.0), v.normal / len, len > 1e-6);
+    // Two-sided: a surface seen from behind its normal (the inside of the
+    // open cranium, its rim) is lit as its front. Lit one-sided it took
+    // only the ambient and a full rim, a flat blue-grey.
+    let n = select(outward, -outward, dot(outward, to_eye) < 0.0);
     let facing = max(dot(n, to_eye), 0.0);
     let rim = pow(1.0 - facing, 2.5);
 

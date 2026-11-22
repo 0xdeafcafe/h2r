@@ -2,7 +2,8 @@
 //! adapter), on an invented sphere: the glyph decal darkens the forehead
 //! and nothing else, a different glyph changes it, a silhouette is dark
 //! with no glyph, the tint colours the bone, each part takes its own
-//! material's base map (white, so the tint alone, without one), and the
+//! material's base map (white, so the tint alone, without one), a surface
+//! seen from behind its normal is lit as its front, and the
 //! composite lands in its rectangle only. No disc data.
 
 use native_render::gpu::Image;
@@ -438,6 +439,29 @@ fn the_composite_lands_in_its_rectangle_only() {
     assert!(changed > 50, "the picture was drawn: {changed}");
 }
 
+/// A 1 by 1 base map of one colour.
+fn flat(rgba: [u8; 4]) -> Image {
+    Image {
+        width: 1,
+        height: 1,
+        rgba: rgba.to_vec(),
+        mips: Vec::new(),
+        blocks: None,
+    }
+}
+
+/// The pixel where the sphere's front is at height `z` (upper part above
+/// 0, lower part below).
+fn front_at(rig: &Rig, z: f32) -> usize {
+    let p = rig.showcase.placement().unwrap();
+    let [x, y] = p
+        .project([(1.0 - z * z).sqrt(), 0.0, z], 0.0, SIZE, SIZE)
+        .unwrap();
+    (y as u32 * SIZE + x as u32) as usize
+}
+
+// The shader takes a base map's brightness, not its colour (the bone
+// colour is the tint), so the maps here are black and white.
 #[test]
 fn each_part_draws_its_own_base_map_and_one_without_takes_the_tint() {
     let Some(mut rig) = Rig::new() else { return };
@@ -447,39 +471,63 @@ fn each_part_draws_its_own_base_map_and_one_without_takes_the_tint() {
         ..look()
     };
     let plain = rig.draw(&white, &glyph(false));
-    let red = Image {
-        width: 1,
-        height: 1,
-        rgba: vec![255, 0, 0, 255],
-        mips: Vec::new(),
-        blocks: None,
-    };
-    let ctx = &rig.ctx;
-    rig.showcase
-        .set_mesh(&ctx.device, &ctx.queue, &sphere(), &[(1, red)]);
-    let mixed = rig.draw(&white, &glyph(false));
-    let p = rig.showcase.placement().unwrap();
-    let at = |z: f32| {
-        let [x, y] = p
-            .project([(1.0 - z * z).sqrt(), 0.0, z], 0.0, SIZE, SIZE)
-            .unwrap();
-        (y as u32 * SIZE + x as u32) as usize
-    };
-    let (upper, lower) = (at(0.4), at(-0.4));
-    assert_eq!(
-        mixed[upper], plain[upper],
-        "the part with no base map draws as white bone under the tint"
-    );
+    let (upper, lower) = (front_at(&rig, 0.4), front_at(&rig, -0.4));
     let [r, g, b, a] = plain[upper];
     assert!(
         a == 255 && r.max(g).max(b) - r.min(g).min(b) < 48 && r > 40,
         "white bone under the (slightly coloured) lights: {:?}",
         plain[upper]
     );
-    let [r, g, b, a] = mixed[lower];
-    assert!(
-        a == 255 && r > 40 && u16::from(r) > 3 * u16::from(g.max(b)),
-        "the lower part takes material 1's red map: {:?}",
-        mixed[lower]
+    let mut with = |bases: &[(u16, Image)]| {
+        let ctx = &rig.ctx;
+        rig.showcase
+            .set_mesh(&ctx.device, &ctx.queue, &sphere(), bases);
+        rig.draw(&white, &glyph(false))
+    };
+    let lower_dark = with(&[(1, flat([0, 0, 0, 255]))]);
+    let upper_dark = with(&[(0, flat([0, 0, 0, 255]))]);
+    assert_eq!(
+        lower_dark[upper], plain[upper],
+        "the part with no base map draws as white bone under the tint"
     );
+    assert!(
+        luma(lower_dark[lower]) < 0.7 * luma(plain[lower]),
+        "the lower part takes material 1's black map: {:?} vs {:?}",
+        lower_dark[lower],
+        plain[lower]
+    );
+    assert_eq!(
+        upper_dark[lower], plain[lower],
+        "material 0's map stays on its part"
+    );
+    assert!(
+        luma(upper_dark[upper]) < 0.7 * luma(plain[upper]),
+        "the upper part takes material 0's black map: {:?} vs {:?}",
+        upper_dark[upper],
+        plain[upper]
+    );
+}
+
+#[test]
+fn a_surface_seen_from_behind_its_normal_is_lit_as_its_front() {
+    let Some(mut rig) = Rig::new() else { return };
+    let unmarked = Look {
+        glyph: false,
+        ..look()
+    };
+    let plain = rig.draw(&unmarked, &glyph(false));
+    let mut inside_out = sphere();
+    for v in &mut inside_out.vertices {
+        v.normal = v.normal.map(|c| -c);
+    }
+    let ctx = &rig.ctx;
+    rig.showcase
+        .set_mesh(&ctx.device, &ctx.queue, &inside_out, &[]);
+    let flipped = rig.draw(&unmarked, &glyph(false));
+    for (i, (a, b)) in plain.iter().zip(&flipped).enumerate() {
+        assert!(
+            a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 2),
+            "pixel {i}: {a:?} lit from the front, {b:?} from behind"
+        );
+    }
 }

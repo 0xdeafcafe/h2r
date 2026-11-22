@@ -39,20 +39,28 @@ pub const MAPS: [&str; 14] = [
 
 /// Which way the skull model faces in its own space: the picture turns
 /// it so [`MODEL_FORWARD`] (the face) looks at the camera and
-/// [`MODEL_UP`] (the crown) points up, then tips the face up by
-/// [`MODEL_PITCH_DEGREES`]. The framing, the sway and the glyph's place
-/// all follow from the turned model. The preview's `orientations.png`
-/// shows the model under each of the 24 axis-aligned choices, labelled
-/// (docs/game/skulls.md, "The model picture").
-pub const MODEL_FORWARD: Axis = Axis::PosX;
-pub const MODEL_UP: Axis = Axis::PosZ;
+/// [`MODEL_UP`] (the crown) points up, then fine-tunes it by
+/// [`MODEL_ROLL_DEGREES`], [`MODEL_PITCH_DEGREES`] and
+/// [`MODEL_YAW_DEGREES`] (`showcase::Orientation` has their signs). The
+/// framing, the sway and the glyph's place all follow from the turned
+/// model. The model is authored off-axis: of the preview's 24 axis-aligned
+/// choices (`orientations.png`), face +z with crown +x is the nearest
+/// face-on and upright; `orientations-fine.png`, `orientations-roll.png`
+/// and `auto.png` show the fine-tune from there (docs/game/skulls.md, "The
+/// model picture").
+pub const MODEL_FORWARD: Axis = Axis::PosZ;
+pub const MODEL_UP: Axis = Axis::PosX;
+pub const MODEL_YAW_DEGREES: f32 = 0.0;
 pub const MODEL_PITCH_DEGREES: f32 = 0.0;
+pub const MODEL_ROLL_DEGREES: f32 = 0.0;
 
-/// [`MODEL_FORWARD`], [`MODEL_UP`] and [`MODEL_PITCH_DEGREES`] together.
+/// The model's axes and fine-tune together.
 pub const MODEL_ORIENTATION: Orientation = Orientation {
     forward: MODEL_FORWARD,
     up: MODEL_UP,
+    yaw: MODEL_YAW_DEGREES,
     pitch: MODEL_PITCH_DEGREES,
+    roll: MODEL_ROLL_DEGREES,
 };
 
 /// The skull as read from the disc.
