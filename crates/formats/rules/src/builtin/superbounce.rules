@@ -34,6 +34,7 @@ option velocity: bool = true "Velocity" "Speed and direction on the HUD while mo
 option alignment: bool = true "Fall alignment" "On a fall, the speed against what the seam needs and which way to steer"
 option miss_info: bool = true "Miss info" "Why a landing did not bounce, on the HUD for a few seconds"
 option medals: bool = true "Medals" "Bounce medals in the list, and their announcer"
+option second_bounce: bool = true "Second bounce" "After a bounce, the seams the flight can reach, the best first, and which way to steer"
 
 player var bounces: int = 0
 

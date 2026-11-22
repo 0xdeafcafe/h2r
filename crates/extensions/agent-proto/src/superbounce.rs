@@ -106,6 +106,9 @@ pub struct Options {
     pub miss_info: bool,
     /// The medal lines and their announcer.
     pub medals: bool,
+    /// The second bounce's ranked targets.
+    #[serde(default)]
+    pub second_bounce: bool,
 }
 
 /// `superbounce.state`'s `targets`.
@@ -1276,6 +1279,7 @@ mod tests {
                 alignment: true,
                 miss_info: false,
                 medals: true,
+                second_bounce: true,
             },
             targets: Targets {
                 count: 12,

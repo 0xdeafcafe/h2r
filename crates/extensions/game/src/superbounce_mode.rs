@@ -396,6 +396,7 @@ pub fn options_reply(o: crate::superbounce_options::Options) -> agent_proto::sup
         alignment: o.alignment,
         miss_info: o.miss_info,
         medals: o.medals,
+        second_bounce: o.second_bounce,
     }
 }
 

@@ -511,8 +511,8 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     // (bit 0), bounce points raw 1 (bits 1 to 3), the Bounced penalty
     // (bit 4), the Monster double (bit 5); then the HUD's, which the host
     // reads: the seam targets (bits 6 and 7, `likely` raw 1), velocity
-    // (bit 8), the fall alignment (bit 9), the miss info (bit 10) and the
-    // medals (bit 11), each on.
+    // (bit 8), the fall alignment (bit 9), the miss info (bit 10), the
+    // medals (bit 11) and the second bounce's targets (bit 12), each on.
     let names: Vec<&str> = (0..ir.options.len()).map(|i| ir.option_name(i)).collect();
     assert_eq!(
         names,
@@ -525,12 +525,13 @@ fn superbounce_scores_bounces_only_by_their_chain() {
             "velocity",
             "alignment",
             "miss_info",
-            "medals"
+            "medals",
+            "second_bounce"
         ]
     );
-    assert_eq!(ir.option_offsets(), [0, 1, 4, 5, 6, 8, 9, 10, 11]);
+    assert_eq!(ir.option_offsets(), [0, 1, 4, 5, 6, 8, 9, 10, 11, 12]);
     let scoring = 1 | (1 << 1) | (1 << 4) | (1 << 5);
-    let hud = (1 << 6) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11);
+    let hud = (1 << 6) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
     assert_eq!(ir.default_options(), scoring | hud);
     assert_eq!(ir.option_values(4), ["common", "likely", "all"]);
     assert_eq!(ir.option_value(ir.default_options(), "targets"), Some(1));

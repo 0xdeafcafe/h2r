@@ -23,6 +23,7 @@ pub const VELOCITY: &str = "velocity";
 pub const ALIGNMENT: &str = "alignment";
 pub const MISS_INFO: &str = "miss_info";
 pub const MEDALS: &str = "medals";
+pub const SECOND_BOUNCE: &str = "second_bounce";
 
 /// Which seams get a target navpoint, by what is known about them
 /// ([`crate::superbounce_targets::Class`]). The script's `Targets` enum,
@@ -71,6 +72,9 @@ pub struct Options {
     pub miss_info: bool,
     /// The medal lines and their announcer.
     pub medals: bool,
+    /// After a bounce, the seams the flight can reach, ranked
+    /// ([`crate::superbounce_second`]).
+    pub second_bounce: bool,
 }
 
 impl Default for Options {
@@ -87,6 +91,7 @@ impl Options {
         alignment: true,
         miss_info: true,
         medals: true,
+        second_bounce: true,
     };
 
     /// The options a record's option bits `bits` give for the script
@@ -102,6 +107,7 @@ impl Options {
             alignment: on(ALIGNMENT, d.alignment),
             miss_info: on(MISS_INFO, d.miss_info),
             medals: on(MEDALS, d.medals),
+            second_bounce: on(SECOND_BOUNCE, d.second_bounce),
         }
     }
 
@@ -115,6 +121,7 @@ impl Options {
             | (self.alignment as u8) << 3
             | (self.miss_info as u8) << 4
             | (self.medals as u8) << 5
+            | (self.second_bounce as u8) << 6
     }
 
     fn unpack(b: u8) -> Options {
@@ -124,6 +131,7 @@ impl Options {
             alignment: b & 1 << 3 != 0,
             miss_info: b & 1 << 4 != 0,
             medals: b & 1 << 5 != 0,
+            second_bounce: b & 1 << 6 != 0,
         }
     }
 }
@@ -181,6 +189,10 @@ mod tests {
         assert_eq!(with(ALIGNMENT, OptionValue::Bool(false)), Options { alignment: false, ..d });
         assert_eq!(with(MISS_INFO, OptionValue::Bool(false)), Options { miss_info: false, ..d });
         assert_eq!(with(MEDALS, OptionValue::Bool(false)), Options { medals: false, ..d });
+        assert_eq!(
+            with(SECOND_BOUNCE, OptionValue::Bool(false)),
+            Options { second_bounce: false, ..d }
+        );
         for mode in [TargetMode::Common, TargetMode::Likely, TargetMode::All] {
             assert_eq!(
                 with(TARGETS, OptionValue::Name(mode.name().into())),
@@ -203,13 +215,14 @@ mod tests {
     #[test]
     fn the_options_round_trip_through_the_current_slot() {
         for targets in [TargetMode::Common, TargetMode::Likely, TargetMode::All] {
-            for bits in 0..16u8 {
+            for bits in 0..32u8 {
                 let o = Options {
                     targets,
                     velocity: bits & 1 != 0,
                     alignment: bits & 2 != 0,
                     miss_info: bits & 4 != 0,
                     medals: bits & 8 != 0,
+                    second_bounce: bits & 16 != 0,
                 };
                 assert_eq!(Options::unpack(o.pack()), o);
             }
