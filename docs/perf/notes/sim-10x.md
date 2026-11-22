@@ -2,6 +2,41 @@
 
 Evidence for [../sim-10x.md](../sim-10x.md). Newest first.
 
+## 2026-11-22: eight at once with the warm Z:, and the phantom build's cost
+
+Lab job 0060 on the laptop, commit `e64535b4d` (warm Z: template and lane
+H0's report fields), `H2_OPT=2`: the same eight Lockout matches as jobs
+0055 to 0057, all at once. Job 0058 (four at once on the warm-Z: branch)
+ran while the game was open on the laptop, so its speeds are not used;
+its state hashes equal job 0056's for all eight seeds (`h2 sim diff`:
+"9000 ticks, every component agrees").
+
+- **Eight at once now fit.** One run makes the Z: template and seven clone
+  it. The job takes 139 s for 2,400 game seconds: a batch speed of 17.3×,
+  against 13.7× at four and 7.5× at one.
+- **Setup does not shrink:** 11.7 to 14.5 s a run. The lobby still waits
+  for the N: copies (`docs/runtime/cache-slots.md`, "Sim batches: a warm
+  Z:").
+- **The phantoms' action build is the largest single cost found so far.**
+  Per tick:
+
+| run | ms/tick | build | of which snapshots | brain |
+|---|---|---|---|---|
+| lockout-s1 | 5.19 | 1.15 | 0.12 (remap) | 0.25 |
+| the other seven (median) | 7.0 | 1.5 | 0.17 (remap) | 0.45 |
+
+  The build is 22% of the tick; the copy-on-write snapshots are only a
+  tenth of it, about one per tick, all remapped. The rest is the guest
+  calls, reverts and view writes in `Builder::sample`
+  (`crates/extensions/game/src/bot_glue/retail_input.rs`).
+- **The census confirms the title already skips the presentation work:**
+  local users 0 and the local visibility set empty on every tick; decals
+  and particles 0; effects mean 8 (peak 11); lights mean 30 (peak 37);
+  particle systems mean 0.03.
+
+Reproduce: the batch of the 2026-11-22 throughput entry with `--parallel 8`
+on a commit with lane H0.
+
 ## 2026-11-22: batch throughput at --parallel 1, 4 and 8 on the quiet laptop
 
 Lab jobs 0055 to 0057, commit `1c331062f`, `H2_OPT=2`: one batch of eight
