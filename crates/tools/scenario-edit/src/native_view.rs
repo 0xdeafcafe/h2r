@@ -1,5 +1,4 @@
-//! The viewport's world on the native renderer (docs/editor/polish-plan.md,
-//! "The viewport on the native renderer", step 1; slice P14): one BSP
+//! The viewport's world on the native renderer (docs/editor/editor.md, "Lighting"): one BSP
 //! loaded with `native_render::load::load_world`, its base maps and
 //! lightmap pages decoded by the renderer's own decodes, uploaded with
 //! `GpuWorld::new` and drawn with the editor's camera into the viewport's
@@ -518,6 +517,9 @@ impl std::fmt::Debug for NativeLayers {
 /// (the colour only when no sky is behind it); later ones load.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Clear {
+    /// In the target view's encoding: the viewport's native passes write
+    /// its plain view (`render::Shading::Gamma`), so an sRGB-encoded
+    /// colour.
     pub color: Option<[f64; 3]>,
     pub depth: bool,
 }

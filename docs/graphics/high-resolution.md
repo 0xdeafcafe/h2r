@@ -68,8 +68,16 @@ occlusion query to the projected display column, preserving the footprint used
 for the expected count, and applies the lens to the reflection billboards.
 The exact reference draws both at the retail coordinates. The vertical field of view, depth, simulation
 camera and guest visibility records keep their retail values. Orthographic
-menu widgets use a uniform fit inside each player's viewport. The
-menu backdrop uses the scene's full viewport through its blur and dim
+menu widgets use a uniform fit inside each player's viewport. A menu quad
+that reaches both edges of the viewport along the fitted axis is background
+art: a panel, a scrolling strip or a full-screen bitmap. It keeps the full
+viewport, as on a widescreen Xbox, so the menu covers the display. The
+choice is made per quad, before its Begin, at the shader quad
+(`HUD_QUAD_READY`) and screen quad (`UI_SCREEN_QUAD_READY`) sites. The next
+quad or widget (`UI_ITEM_CALL`) restores the fit. Tests:
+`menu_background_art_covers_the_display_and_widgets_keep_the_uniform_fit`
+and `background_fill_follows_the_fitted_axis_and_view_and_skips_the_hud`.
+The menu backdrop uses the scene's full viewport through its blur and dim
 passes. `crates/extensions/game/src/render_aspect.rs` restores the
 widget fit when the backdrop finishes. Corner HUD
 groups can use the fitted rectangle or the viewport edges. If the game already
@@ -332,9 +340,8 @@ Three details:
 Reported on Burial Mounds at about 4K: a thin see-through line along a seam
 in the terrain, over the clear colour, not seen at 640x480.
 
-**The geometry is closed.** `viewer`'s `bsp_cracks` (reads your disc,
-prints counts only) welds a BSP's drawn cluster triangles by their exact
-position bits and classifies every edge one triangle uses. Burial Mounds
+**The geometry is closed.** `bsp_cracks`, a tool since removed from `viewer`, welded a BSP's drawn cluster triangles by their exact
+position bits and classified every edge one triangle uses. Burial Mounds
 (9,666 triangles, 27 clusters): no T-junction and no near-coincident
 unwelded edge at a 0.001 or 0.05 world-unit tolerance; 58 open edges, all
 the level's border. 1,964 shared edges lie between triangles drawn by

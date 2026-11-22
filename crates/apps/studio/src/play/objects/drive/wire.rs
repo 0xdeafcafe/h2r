@@ -24,6 +24,7 @@ impl State {
     }
 
     pub(in crate::play) fn transport_lost(&mut self) {
+        self.placements.transport_lost();
         for (key, flight) in std::mem::take(&mut self.flight) {
             if flight.dispatch.withdraw() {
                 continue;

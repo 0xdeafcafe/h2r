@@ -312,26 +312,7 @@ static inline H2X87N_FAST uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t
 #define h2x87n_xch h2x87_v1_xch
 #endif
 
-#if H2_X87_NATIVE && H2_X87_TOP
-/* A constant TOP makes the register offset (10 * physical slot) and tag
- * masks constants in the inlined helper. Keep the dynamic instance out
- * of line so it is shared by all sites in the shard. */
-#define H2X87_DYNAMIC(name, params, args) \
-    static __attribute__((noinline, unused)) uint32_t h2x87d_##name params { return h2x87n_##name args; }
-H2X87_DYNAMIC(ld_f32, (X87Abi *s, uint32_t v), (s, v))
-H2X87_DYNAMIC(ld_f64, (X87Abi *s, uint64_t v), (s, v))
-H2X87_DYNAMIC(ld_i16, (X87Abi *s, int16_t v), (s, v))
-H2X87_DYNAMIC(ld_i32, (X87Abi *s, int32_t v), (s, v))
-H2X87_DYNAMIC(st_f32, (X87Abi *s, uint32_t i, uint32_t *v, uint16_t *sw), (s, i, v, sw))
-H2X87_DYNAMIC(st_f64, (X87Abi *s, uint32_t i, uint64_t *v, uint16_t *sw), (s, i, v, sw))
-H2X87_DYNAMIC(store_commit, (X87Abi *s, uint16_t sw, uint32_t pop), (s, sw, pop))
-H2X87_DYNAMIC(arith, (X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src),
-                    (s, op, dst, kind, src))
-#undef H2X87_DYNAMIC
-#define H2X87_AT(top, name, s, ...)                                             \
-    (__builtin_expect(h2x87n_phys(s, 0) == (top), 1)                            \
-        ? h2x87n_##name##_at(s, top, __VA_ARGS__) : h2x87d_##name(s, __VA_ARGS__))
-#else
+/* The emitter names the TOP it expects at a site; the helpers read the
+ * live one. */
 #define H2X87_AT(top, name, s, ...) h2x87n_##name(s, __VA_ARGS__)
-#endif
 #endif

@@ -69,6 +69,14 @@ pub trait Bots: Send {
         let _ = handle;
         None
     }
+
+    /// How many phantom peers have joined the session now. Each is a machine
+    /// with one player in the session's peer count, so the peers that are
+    /// people are the session's peers less the host and these. A backend that
+    /// cannot say reports none, which counts every peer as a person.
+    fn joined_phantoms(&self) -> u32 {
+        0
+    }
 }
 
 /// A game without a bots backend.
@@ -139,5 +147,9 @@ impl Bots for FakeBots {
 
     fn phantom_player(&self, handle: u32) -> Option<u32> {
         self.log().phantom_players.get(&handle).copied()
+    }
+
+    fn joined_phantoms(&self) -> u32 {
+        self.log().phantom_players.len() as u32
     }
 }

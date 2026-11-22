@@ -13,6 +13,9 @@ use live_telemetry::layout;
 
 use super::RespawnTarget;
 
+/// `world.placement.edit`'s block transaction.
+pub(super) mod edit;
+
 fn fault(e: engine::MemFault) -> RpcError {
     RpcError::new(
         code::UNAVAILABLE,
@@ -149,6 +152,24 @@ impl Previews {
 
     pub(super) fn is_empty(&self) -> bool {
         self.objects.is_empty()
+    }
+
+    /// A placement edit renumbered the block: the previews of deleted
+    /// placements are gone, and those of relinked ones (`(from, to)`, old and
+    /// new numbering) follow their entry.
+    pub(super) fn reindex(&mut self, kind: Kind, deleted: &[u16], relinked: &[(u16, u16)]) {
+        for index in deleted {
+            self.objects.remove(&(kind, *index));
+        }
+        let moved: Vec<(u16, Option<Preview>)> = relinked
+            .iter()
+            .map(|&(from, to)| (to, self.objects.remove(&(kind, from))))
+            .collect();
+        for (to, preview) in moved {
+            if let Some(preview) = preview {
+                self.objects.insert((kind, to), preview);
+            }
+        }
     }
 
     pub(super) fn deleted(&mut self, id: ObjectId, campaign: bool) {

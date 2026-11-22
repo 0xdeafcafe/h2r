@@ -650,7 +650,7 @@ on kill(victim, killer) {
 
     #[test]
     fn variant_fields_and_the_round_clock_read_the_scenario() {
-        let src = "rules \"V\" 1\ncarrier slayer\nglobal var limit: int = 0\nglobal var left: int = 0\n\
+        let src = "rules \"V\" 1\ncarrier slayer\nglobal var limit: int = 0\nglobal var left: time = 0t\n\
                    on tick { limit = variant.score_limit; left = round_time_left() }\n";
         let s = Scenario {
             round_time_left: 10,
@@ -677,7 +677,7 @@ on kill(victim, killer) {
 
     #[test]
     fn ticks_held_counts_a_zone_held_alone() {
-        let src = "rules \"Z\" 1\ncarrier slayer\nlabel zone: zone\nglobal var held: int = 0\n\
+        let src = "rules \"Z\" 1\ncarrier slayer\nlabel zone: zone\nglobal var held: time = 0t\n\
                    on tick { held = ticks_held(zone, team 0) }\n";
         let mut s = Scenario {
             players: vec![seat(0, 0), seat(1, 1)],

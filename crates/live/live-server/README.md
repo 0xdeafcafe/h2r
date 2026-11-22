@@ -29,8 +29,8 @@ h2 live serve --tunnel                          # public via cloudflared (docs/l
 ```
 
 `h2-live-server` (`src/bin`, flags in `standalone.rs`) is the same server
-without the rest of `h2`, for the Docker image in `deploy/live/`
-([live-hosting.md](../../../docs/live/live-hosting.md#docker-with-a-named-tunnel)):
+without the rest of `h2`, for a machine that only serves
+([live-hosting.md](../../../docs/live/live-hosting.md)):
 `--data` (or `H2_LIVE_DATA`), the web app from `H2_LIVE_WEB`, and no
 tunnel of its own; `--public-url https://HOST --behind-cloudflared` says a
 cloudflared beside it delivers the requests.

@@ -252,6 +252,56 @@ pub fn load_world<R: Read + Seek>(
     })
 }
 
+/// What a live edit names in BSP `bsp`: a cluster, or an instanced
+/// definition, whose every rigid placement takes its section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SectionOwner {
+    Cluster(u32),
+    InstanceDefinition(u32),
+}
+
+/// The sections `wanted` of BSP tag `bsp`, decoded again from the map as
+/// [`load_world`] decodes them, each with the owner its draws carry: a
+/// definition once per rigid placement of it (the placement's own
+/// lightmap coordinates are the world's to keep,
+/// `World::replace_section`). For a live edit's native refresh
+/// (docs/editor/realtime-edits.md, "The native refresh"). An owner that
+/// does not exist or does not decode is an error: the host reloads the
+/// world.
+pub fn load_sections<R: Read + Seek>(
+    map: &mut Map<R>,
+    raw: &mut dyn RawSource,
+    bsp: TagId,
+    wanted: &[SectionOwner],
+) -> Result<Vec<(Owner, SectionInput)>, Error> {
+    let structure = StructureRender::read(map, bsp)?;
+    let materials = Some(structure.material_count as usize);
+    let mut out = Vec::new();
+    for &owner in wanted {
+        let (geometry, owners) = match owner {
+            SectionOwner::Cluster(i) => {
+                let c = structure.clusters.get(i as usize).ok_or("no such cluster")?;
+                (&c.geometry, vec![Owner::Cluster(i)])
+            }
+            SectionOwner::InstanceDefinition(i) => {
+                let d = structure.instance_definitions.get(i as usize).ok_or("no such instanced definition")?;
+                let placed = structure
+                    .instances
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, inst)| usize::try_from(inst.definition).ok() == Some(i as usize) && inst.is_rigid())
+                    .map(|(ii, _)| Owner::Instance(ii as u32))
+                    .collect();
+                (&d.geometry, placed)
+            }
+        };
+        let section = geometry.load(raw, materials)?.ok_or("the section has no geometry")?;
+        let input = section_input(&section).ok_or("the section's vertices do not decode")?;
+        out.extend(owners.into_iter().map(|o| (o, input.clone())));
+    }
+    Ok(out)
+}
+
 /// One lightmap bucket's per-vertex streams.
 #[derive(Clone, Debug, Default)]
 pub struct BucketStreams {

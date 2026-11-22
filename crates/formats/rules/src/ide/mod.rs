@@ -1,6 +1,7 @@
-//! Language intelligence for the rules language: diagnostics, completion,
-//! hover, signature help, definitions and references, semantic tokens, the
-//! outline and a formatter.
+//! Language intelligence for the rules language: diagnostics with their
+//! fixes, code actions, completion, hover, signature help, definitions,
+//! references, highlights, rename, semantic tokens, the outline, folding
+//! ranges and a formatter (whole or by range).
 //!
 //! Pure over source text, like the rest of the crate: Live's
 //! `POST /v1/rules/ide`, `h2 rules lsp` and the web editor share it.
@@ -8,12 +9,17 @@
 //! UTF-16 `character`, and the result types serialize with LSP field names.
 //! Every feature tolerates broken source: the lexer and parser recover
 //! (`lex::lex_tolerant`, `parse::parse_recovering`) and the features work
-//! from what parsed. See `docs/game/rules-engine.md`, "Tooling".
+//! from what parsed. Types, labels and diagnostics are the checker's
+//! (`lang::check::Checked`), read once per request in `model`. See
+//! `docs/game/rules-engine.md`, "Tooling", and
+//! `docs/game/rules-language-types.md`, "Diagnostics and the editor".
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
 mod complete;
+mod fix;
+mod fold;
 mod format;
 mod info;
 mod model;
@@ -21,7 +27,7 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
-pub use format::format;
+pub use format::{format, format_range};
 
 /// A place in the source: a 0-based line and a UTF-16 column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -68,6 +74,24 @@ pub mod severity {
     pub const HINT: u8 = 4;
 }
 
+/// A text replacement: LSP's `TextEdit`. An insertion has an empty
+/// range.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextEdit {
+    pub range: Range,
+    pub new_text: String,
+}
+
+/// A fix of a diagnostic: the edits that remove it, and what they do.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Fix {
+    /// "Change to `barrier`", "Declare label `barier`".
+    pub title: String,
+    /// In source order; none overlaps another.
+    pub edits: Vec<TextEdit>,
+}
+
 /// A problem in the source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
@@ -75,12 +99,28 @@ pub struct Diagnostic {
     /// A [`severity`] number.
     pub severity: u8,
     pub message: String,
-    /// `syntax` (lexer or parser), `compile` (types and names), `verify`
+    /// The checker's stable code (`label.unknown`, `null.use`, `syntax`,
+    /// `limit`: `crate::Diagnostic::code`), or the editor's own: `verify`
     /// (a refusal, the tick budget or the IR size, about the whole
     /// script), `unused` or `unhostable`.
     pub code: &'static str,
     /// Always `"rules"`.
     pub source: &'static str,
+    /// The fixes the editor offers, the likeliest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<Fix>,
+}
+
+/// A fix offered at a range: LSP's `CodeAction` of kind `quickfix`,
+/// without the document's URI.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CodeAction {
+    pub title: String,
+    /// Always `"quickfix"`.
+    pub kind: &'static str,
+    /// The diagnostic it fixes, without its fixes.
+    pub diagnostic: Diagnostic,
+    pub edits: Vec<TextEdit>,
 }
 
 /// LSP's `CompletionItemKind` numbers this module uses.
@@ -117,6 +157,9 @@ pub struct CompletionItem {
     pub insert_text: String,
     /// [`PLAIN_TEXT`] or [`SNIPPET`].
     pub insert_text_format: u8,
+    /// The item's place in the list as text that sorts: the list is
+    /// ranked (what the place wants first), so a client keeps its order.
+    pub sort_text: String,
 }
 
 /// What hovering a place shows.
@@ -271,64 +314,149 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
+/// LSP's `DocumentHighlightKind` numbers this module uses.
+pub mod highlight_kind {
+    pub const READ: u8 = 2;
+    pub const WRITE: u8 = 3;
+}
+
+/// A use of the name at a place, in the same document: LSP's
+/// `DocumentHighlight`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Highlight {
+    pub range: Range,
+    /// A [`highlight_kind`] number: [`highlight_kind::WRITE`] for the
+    /// declaration and an assignment, [`highlight_kind::READ`] otherwise.
+    pub kind: u8,
+}
+
+/// What a rename at a place would rename: LSP's `prepareRename` answer
+/// `{range, placeholder}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PrepareRename {
+    /// The name under the place.
+    pub range: Range,
+    /// The name as declared.
+    pub placeholder: String,
+}
+
+/// LSP's `FoldingRangeKind` names.
+pub mod fold_kind {
+    pub const COMMENT: &str = "comment";
+    pub const REGION: &str = "region";
+}
+
+/// A span of whole lines an editor can fold: LSP's `FoldingRange`. The
+/// start line stays visible; the lines after it, through `end_line`,
+/// fold away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoldingRange {
+    pub start_line: u32,
+    pub end_line: u32,
+    /// A [`fold_kind`] name, or none for a bracketed block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<&'static str>,
+}
+
+/// The byte offset in `src` of an LSP position (UTF-16 columns); past
+/// the end of a line is its end, past the last line the end of `src`.
+/// The language server applies incremental changes with it.
+pub fn offset(src: &str, pos: Position) -> usize {
+    model::LineIndex::new(src).offset(pos)
+}
+
+/// Reads `src` once and hands the analysis to `f`.
+fn with<R>(src: &str, f: impl FnOnce(&model::Model) -> R) -> R {
+    let parsed = model::read(src);
+    let m = model::analyze(src, &parsed);
+    f(&m)
+}
+
 /// Every problem: syntax errors (all of them, from the recovering
-/// parser), then, when the source parses, the compiler's first error or
-/// the verifier's, budget and size problems; warnings for a `let`, a set
-/// member or a `fn` never used; and a note at each call of an entry no
-/// host can make yet.
+/// parser), or, when the source parses, every diagnostic of the checker
+/// (as `crate::diagnose` gives them: errors and warnings, each with its
+/// code), then the verifier's, budget and size problems; warnings for a
+/// `let`, a set member or a `fn` never used; and a note at each call of
+/// an entry no host can make yet. Each carries the fixes the editor
+/// offers.
 pub fn diagnostics(src: &str) -> Vec<Diagnostic> {
-    let m = model::analyze(src);
-    info::diagnostics(&m)
+    with(src, info::diagnostics)
 }
 
-/// The completions at `pos`, by context: declarations at the top level,
-/// event names after `on`, capabilities after `requires`, carriers after
-/// `carrier`, types after `:`, fields after `.`, and names, API entries
-/// and statements in a body.
+/// The fixes of every diagnostic whose range meets `range`, in the
+/// diagnostics' order (LSP's `textDocument/codeAction`).
+pub fn actions(src: &str, range: Range) -> Vec<CodeAction> {
+    with(src, |m| fix::actions(m, range))
+}
+
+/// The edits that rename the name at `pos` and every use of it. A label
+/// keeps its map text: renaming `goal` to `finish` writes `label finish:
+/// zone = "goal"`. An error says why the rename is refused: nothing to
+/// rename there, a name that is not an identifier or is a keyword, or a
+/// name the script declares already.
+pub fn rename(src: &str, pos: Position, new_name: &str) -> Result<Vec<TextEdit>, String> {
+    with(src, |m| fix::rename(m, m.li.offset(pos), new_name))
+}
+
+/// The completions at `pos`, by context, ranked: declarations at the top
+/// level, event names after `on`, capabilities after `requires`, carriers
+/// after `carrier`, types after `:`, label kinds and requirements on a
+/// `label` line, fields after `.`, labels after `is`, and in a body names,
+/// API entries and statements, those of the type the place wants first.
 pub fn complete(src: &str, pos: Position) -> Vec<CompletionItem> {
-    let m = model::analyze(src);
-    let off = m.li.offset(pos);
-    complete::complete(&m, off)
+    with(src, |m| complete::complete(m, m.li.offset(pos)))
 }
 
-/// What the token at `pos` is: a name's declaration and type, an API
-/// entry's signature, capability and status, an event, a keyword.
+/// What the token at `pos` is: a name's declaration and its type there,
+/// an API entry's signature, capability and status, an event, a label and
+/// what a map needs for it, a keyword.
 pub fn hover(src: &str, pos: Position) -> Option<Hover> {
-    let m = model::analyze(src);
-    let off = m.li.offset(pos);
-    info::hover(&m, off)
+    with(src, |m| info::hover(m, m.li.offset(pos)))
 }
 
 /// The signature of the call (or `on` handler) around `pos`.
 pub fn signature_help(src: &str, pos: Position) -> Option<SignatureHelp> {
-    let m = model::analyze(src);
-    let off = m.li.offset(pos);
-    info::signature_help(&m, off)
+    with(src, |m| info::signature_help(m, m.li.offset(pos)))
 }
 
-/// Where the name at `pos` is declared (a label's first use).
+/// Where the name at `pos` is declared (a label's `label` line).
 pub fn definition(src: &str, pos: Position) -> Vec<Location> {
-    let m = model::analyze(src);
-    let off = m.li.offset(pos);
-    info::definition(&m, off)
+    with(src, |m| info::definition(m, m.li.offset(pos)))
 }
 
 /// Every use of the name at `pos`, its declaration first.
 pub fn references(src: &str, pos: Position) -> Vec<Location> {
-    let m = model::analyze(src);
-    let off = m.li.offset(pos);
-    info::references(&m, off)
+    with(src, |m| info::references(m, m.li.offset(pos)))
+}
+
+/// Every use of the name at `pos`, in source order, each marked as a
+/// write (the declaration, an assignment) or a read.
+pub fn highlights(src: &str, pos: Position) -> Vec<Highlight> {
+    with(src, |m| info::highlights(m, m.li.offset(pos)))
+}
+
+/// The name a rename at `pos` would rename, or why there is none: no
+/// name there, or a palette (named by its string).
+pub fn prepare_rename(src: &str, pos: Position) -> Result<PrepareRename, String> {
+    with(src, |m| fix::prepare_rename(m, m.li.offset(pos)))
+}
+
+/// The foldable spans: each bracketed block, table or list over more
+/// than one line, each run of two or more comment lines, and each
+/// `// region` ... `// endregion` pair. Sorted by start line, one per
+/// start line (the longest).
+pub fn folding_ranges(src: &str) -> Vec<FoldingRange> {
+    with(src, fold::folding_ranges)
 }
 
 /// Every comment, literal, keyword, name and operator, classified, in
 /// source order.
 pub fn semantic_tokens(src: &str) -> Vec<Token> {
-    let m = model::analyze(src);
-    info::semantic_tokens(&m)
+    with(src, info::semantic_tokens)
 }
 
 /// The document outline: the header, then each declaration and handler.
 pub fn symbols(src: &str) -> Vec<Symbol> {
-    let m = model::analyze(src);
-    info::symbols(&m)
+    with(src, info::symbols)
 }

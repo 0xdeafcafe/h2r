@@ -39,6 +39,18 @@
 //! (it acts only on ready, `0x251050`), and the status line says
 //! [`REMOTE_REFUSAL`] (`crate::lobby_status`).
 //!
+//! **Start Game with no Firefight map.** The same `after` holds a
+//! Firefight lobby whose map does not carry the kit ([`start_refusal`]):
+//! the FIREFIGHT tab opens with no such map installed, and the status line
+//! and the panel ([`firefight_map_lines`]) say why it cannot start.
+//!
+//! **Start Game on a blocked pair.** The same `after` holds the start
+//! while the lobby's start gate (`crate::rules::gate`) finds the map lacks
+//! what the variant's script needs, outside Forge mode; the status line
+//! names the first problem ([`gate_text_id`]). The party lobby's `before`
+//! on the panel update refreshes the gate's verdict: a changed map, Forge
+//! map or variant runs the check once (docs/game/rules-start-gate.md).
+//!
 //! **Leaving.** The party's leave (`PARTY_LEAVE`) clears the mode
 //! ([`crate::lobby_start::clear`]), as does building the main menu or the
 //! Xbox Live menu again (`crate::layout_glue`).
@@ -57,7 +69,8 @@ use settings::Store;
 
 use crate::firefight::options as ff;
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
-use crate::lobby_start::{self, Mode, Offer};
+use crate::lobby_start::{self, KitMaps, Mode, Offer};
+use crate::lobby_tabs::Reason;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::screen::SlotTexts;
@@ -82,6 +95,9 @@ const FORGE_MAP_HELP_SLOT: u32 = 3;
 const PANEL_SLOTS: u32 = 5;
 /// The most panel lines a mode has (Firefight's three).
 pub const MAX_PANEL_LINES: usize = 3;
+/// The status line's text while the start gate holds Start Game, after
+/// the panel lines' slots.
+const GATE_SLOT: u32 = PANEL_SLOTS + MAX_PANEL_LINES as u32 + 1;
 
 pub const FORGE_MAP_LABEL: &str = "Forge Map...";
 /// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
@@ -242,6 +258,23 @@ pub fn panel_lines(
     }
 }
 
+/// The variant panel's lines in place of Firefight's options when the
+/// lobby's map cannot play Firefight (`kit`): no installed map carries the
+/// kit, or this one does not. `None` on a map that carries it.
+pub fn firefight_map_lines(kit: KitMaps) -> Option<Vec<String>> {
+    match (kit.lobby, kit.installed) {
+        (true, _) => None,
+        (false, false) => Some(vec![
+            "No installed map supports Firefight yet".into(),
+            "Make one with h2 firefight kit".into(),
+        ]),
+        (false, true) => Some(vec![
+            "This map does not support Firefight".into(),
+            "Change Map lists the Firefight maps".into(),
+        ]),
+    }
+}
+
 /// `difficulty`'s value in the setting ([`ff::Options::read`]'s order).
 fn difficulty_value(difficulty: ::firefight::Difficulty) -> i64 {
     use ::firefight::Difficulty as D;
@@ -264,11 +297,21 @@ fn choice_label(def: &settings::Def, value: i64) -> String {
 }
 
 /// The panel lines' string ids for the lobby now, their texts written to
-/// guest memory first; none in Multiplayer.
+/// guest memory first; none in Multiplayer. A Firefight lobby on a map
+/// without the kit says so in place of the options
+/// ([`firefight_map_lines`]).
 pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, MemFault> {
     let state = lobby_start::state();
-    let firefight = (state.mode == Mode::Firefight).then(|| ff::Options::read(store));
-    let lines = panel_lines(state.mode, state.forge_map.as_deref(), firefight);
+    let no_map = (state.mode == Mode::Firefight)
+        .then(|| firefight_map_lines(KitMaps::now(&*m)))
+        .flatten();
+    let lines = match no_map {
+        Some(lines) => lines,
+        None => {
+            let firefight = (state.mode == Mode::Firefight).then(|| ff::Options::read(store));
+            panel_lines(state.mode, state.forge_map.as_deref(), firefight)
+        }
+    };
     let ids = lines
         .iter()
         .take(MAX_PANEL_LINES)
@@ -305,16 +348,71 @@ pub fn remote_members(m: &dyn GuestMemory) -> Option<u32> {
     Some(n)
 }
 
-/// Whether the lobby's Start Game is refused: a Forge lobby with a member
-/// on another console (one that cannot be read counts as one).
-pub fn refused(mode: Mode, remote: Option<u32>) -> bool {
-    mode == Mode::Forge && remote != Some(0)
+/// Why the lobby's Start Game is refused, besides the start gate: a Forge
+/// lobby with a member on another console (one that cannot be read counts
+/// as one), or a Firefight lobby on a map without the kit (`kit`), named
+/// for whether any installed map has it.
+pub fn refusal(mode: Mode, remote: Option<u32>, kit: KitMaps) -> Option<Reason> {
+    match mode {
+        Mode::Forge if remote != Some(0) => Some(Reason::ForgeRemote),
+        Mode::Firefight if !kit.lobby && kit.installed => Some(Reason::NotKitMap),
+        Mode::Firefight if !kit.lobby => Some(Reason::NoKitMap),
+        Mode::Multiplayer | Mode::Forge | Mode::Firefight => None,
+    }
 }
 
-/// [`refused`] for the lobby now.
+/// The problems the lobby's start gate holds Start Game on
+/// (`crate::rules::gate::blocked`); none in Forge mode, and none without
+/// the rules runtime compiled in.
+pub fn gate_blocked() -> Option<Vec<String>> {
+    #[cfg(feature = "rules")]
+    {
+        crate::rules::gate::blocked()
+    }
+    #[cfg(not(feature = "rules"))]
+    {
+        None
+    }
+}
+
+/// Why the lobby now refuses Start Game besides the start gate
+/// ([`refusal`]); `None` outside a lobby (the level boot's game).
+pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
+    let state = lobby_start::state();
+    if !state.lobby {
+        return None;
+    }
+    match state.mode {
+        Mode::Multiplayer => None,
+        Mode::Forge => refusal(state.mode, remote_members(m), KitMaps::default()),
+        Mode::Firefight => refusal(state.mode, Some(0), KitMaps::now(m)),
+    }
+}
+
+/// Whether the lobby now refuses Start Game: [`start_refusal`], or the
+/// start gate holds it ([`gate_blocked`]).
 pub fn start_refused(m: &dyn GuestMemory) -> bool {
     let state = lobby_start::state();
-    state.lobby && refused(state.mode, remote_members(m))
+    state.lobby && (gate_blocked().is_some() || start_refusal(m).is_some())
+}
+
+/// The status line's text while the start gate holds Start Game: the
+/// first problem, with ` (and n more)` ([`gate_text`]), written to its
+/// slot. `None` while the gate does not hold.
+pub fn gate_text_id(m: &mut dyn GuestMemory) -> Option<u32> {
+    let text = gate_text(&gate_blocked()?)?;
+    let id = TEXTS.set(GATE_SLOT, &text);
+    TEXTS.write(m).ok()?;
+    Some(id)
+}
+
+/// The status line's text for `problems`: the first, with ` (and n more)`.
+pub fn gate_text(problems: &[String]) -> Option<String> {
+    let first = problems.first()?;
+    Some(match problems.len() {
+        1 => first.clone(),
+        n => format!("{first} (and {} more)", n - 1),
+    })
 }
 
 /// The start state the lobby answers: `retail`'s, unless it is ready and
@@ -330,7 +428,11 @@ pub fn start_state(retail: u32, refused: bool) -> u32 {
 // ---- the hooks ----
 
 /// A Game Setup hook of ours sits after every other row's on the plan, so
-/// the mode's arrangement sees the rows they add.
+/// the mode's arrangement sees the rows they add. That holds for `before`
+/// hooks; an `after` sitting inside another feature's runs *before* it
+/// (`after` hooks run in reverse, docs/engine/feature-engine.md, "Hook
+/// ordering"), so the list's arrangement is [`hooks::HookRef::first`]
+/// instead: the outermost `after`, which runs last.
 fn after_rows(h: hooks::HookRef<'_>) {
     h.after_feature(crate::clankers::ROW_FEATURE)
         .after_feature(crate::clankermatch::SWITCH_FEATURE)
@@ -346,6 +448,8 @@ pub struct LobbyMode {
     pub store: Option<Arc<Store>>,
     /// The data directory, whose `forge` folder holds the saved maps.
     pub data: PathBuf,
+    /// The mounted VFS, for the start gate's census of the lobby's map file.
+    pub vfs: Option<Arc<Mutex<vfs::Vfs>>>,
 }
 
 fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
@@ -462,6 +566,9 @@ fn load_state(bytes: &[u8]) -> Result<(), String> {
         forge_map: name,
     });
     TEXTS.rewrite_all();
+    // The start gate checks the restored lobby again at its next refresh.
+    #[cfg(feature = "rules")]
+    crate::rules::gate::clear();
     Ok(())
 }
 
@@ -504,31 +611,34 @@ impl hooks::Feature for LobbyMode {
                 .push(c.cpu.esi);
             Ok(Flow::Continue)
         }));
-        after_rows(
-            b.raw()
-                .after(&CTOR, "the rows of the lobby's mode", move |c| {
-                    let Some(list) = building.lock().unwrap_or_else(|e| e.into_inner()).pop()
-                    else {
-                        return Ok(());
-                    };
-                    let rt = Arc::clone(c.ctx.runtime());
-                    let mut mem = rt.memory();
-                    let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
-                    let mode = lobby_start::mode();
-                    let Some(rows) = arrange(mode, offer, &actions) else {
-                        return Ok(());
-                    };
-                    match h1row::rewrite_rows(&mut *mem, list, &rows) {
-                        Ok(n) => {
-                            eprintln!("lobby mode: Game Setup list in {} ({n} rows)", mode.label())
-                        }
-                        Err(why) => {
-                            eprintln!("lobby mode: Game Setup list: rows not arranged: {why}")
-                        }
+        // Outermost, so it runs after every other feature's `after` on the
+        // constructor has added its row (Clanker Options, Firefight
+        // Options, Halo 1 Options, Switch To: Clankermatch): the mode's
+        // arrangement sees the whole list and drops the Switch To rows.
+        b.raw()
+            .after(&CTOR, "the rows of the lobby's mode", move |c| {
+                let Some(list) = building.lock().unwrap_or_else(|e| e.into_inner()).pop()
+                else {
+                    return Ok(());
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
+                let mode = lobby_start::mode();
+                let Some(rows) = arrange(mode, offer, &actions) else {
+                    return Ok(());
+                };
+                match h1row::rewrite_rows(&mut *mem, list, &rows) {
+                    Ok(n) => {
+                        eprintln!("lobby mode: Game Setup list in {} ({n} rows)", mode.label())
                     }
-                    Ok(())
-                }),
-        );
+                    Err(why) => {
+                        eprintln!("lobby mode: Game Setup list: rows not arranged: {why}")
+                    }
+                }
+                Ok(())
+            })
+            .first();
         let seen = Arc::new(AtomicBool::new(false));
         after_rows(b.raw().before(
             &SQUAD_SETTINGS_ROW_TEXT,
@@ -539,6 +649,7 @@ impl hooks::Feature for LobbyMode {
             offer: self.offer,
             store: self.store.clone(),
             data: self.data.clone(),
+            vfs: self.vfs.clone(),
         });
         after_rows(b.raw().before(
             &SQUAD_SETTINGS_ROW_CHOSEN,
@@ -546,11 +657,12 @@ impl hooks::Feature for LobbyMode {
             move |c| row_chosen(c, &me, request_at),
         ));
 
-        // Start Game in a Forge lobby with a member on another console.
+        // Start Game in a Forge lobby with a member on another console, or
+        // on a pair the start gate blocks.
         b.raw()
             .after(
                 &points::LOBBY_START_STATE,
-                "refuse Forge across consoles",
+                "refuse Forge across consoles and blocked pairs",
                 |c| {
                     let refused = start_refused(&*c.ctx.runtime().memory());
                     let out = start_state(c.cpu.eax, refused);
@@ -571,17 +683,39 @@ impl hooks::Feature for LobbyMode {
                     lobby_start::clear();
                     crate::lobby_tabs::clear_notice();
                     crate::lobby_tabs::switch::forget_playlists();
+                    #[cfg(feature = "rules")]
+                    crate::rules::gate::clear();
                     Ok(Flow::Continue)
                 },
             )
             // The bots' own leave runs first; clearing the mode touches none of their state.
             .after_feature("bots")
             .optional();
-        // The mode strip's update after retail's panel update, inside
-        // `lobby-options`'s answer when that feature is on and alone when it
-        // is off (docs/game/party-lobby.md, "The strip").
+        // The start gate's sources: the lobby's map file through the VFS,
+        // and the saved Forge maps under the data directory.
+        #[cfg(feature = "rules")]
+        crate::rules::gate::install(Box::new(crate::rules::gate::InGame {
+            vfs: self.vfs.clone(),
+            data: self.data.clone(),
+        }));
+        // The start gate's verdict, then the mode strip's update after
+        // retail's panel update, inside `lobby-options`'s answer when that
+        // feature is on and alone when it is off (docs/game/party-lobby.md,
+        // "The strip"). The gate reads the lobby with guest memory held and
+        // checks without it, since its census reads the map file
+        // (docs/game/rules-start-gate.md, "Where it runs").
         b.raw()
-            .before(&points::LOBBY_VARIANT_PANEL, "the mode strip", |c| {
+            .before(&points::LOBBY_VARIANT_PANEL, "the mode strip and the start gate", |c| {
+                #[cfg(feature = "rules")]
+                {
+                    let variant = c.arg_u32("variant");
+                    let input = variant.and_then(|v| {
+                        let rt = Arc::clone(c.ctx.runtime());
+                        let mem = rt.memory();
+                        crate::rules::gate::read(&*mem, v)
+                    });
+                    crate::rules::gate::refresh(input);
+                }
                 crate::lobby_tabs::strip::panel(c)
             })
             .after_feature(crate::lobby_options::FEATURE);

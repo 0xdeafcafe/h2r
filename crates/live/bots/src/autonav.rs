@@ -326,6 +326,10 @@ fn build_map_with<R: Read + Seek>(
         let bsp = tags::collision::Bsp::decode_structure(&b, loc.address, at).map_err(|x| e(&x))?;
         let mut data = cache::build_with(&bsp, threads)?;
         placements.add_links(&mut data);
+        // In the map: what the player starts and weapon pads reach without
+        // a glitch (nav::NavMesh::mark_out_of_map), after the rides.
+        let seeds: Vec<_> = starts.iter().copied().chain(pads.iter().map(|p| p.at)).collect();
+        data.nav.mark_out_of_map(&seeds);
         data.places = crate::places::Places::build_with(&data.nav, &data.walls, &starts, threads);
         data.places.pads = pads
             .iter()
@@ -859,10 +863,11 @@ impl Worker {
             Ok(bsps) => {
                 let d = &bsps[0];
                 (self.log)(&format!(
-                    "bots: built the nav mesh for {} ({}): {} polygons, {} links, {} wall triangles{} in {:.1} s",
+                    "bots: built the nav mesh for {} ({}): {} polygons ({} out of the map), {} links, {} wall triangles{} in {:.1} s",
                     header.name,
                     status.why(),
                     d.nav.polys.len(),
+                    d.nav.out_of_map_count(),
                     d.nav.edges.len(),
                     d.walls.tris.len(),
                     if bsps.len() > 1 { format!(", {} BSPs", bsps.len()) } else { String::new() },

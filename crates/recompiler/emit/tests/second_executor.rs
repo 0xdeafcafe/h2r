@@ -2,13 +2,15 @@
 //! synthetic generated code, never retail bytes: lifted, emitted with the
 //! inline RAM path, compiled and run through the real runtime, with the
 //! main runtime mutating live RAM on one host thread while the executor
-//! runs against its copy-on-write snapshot on another.
+//! runs against its copy-on-write snapshot on another; and as an alias
+//! on live RAM itself, whose write journal puts every byte back.
 
 mod common;
 
 use iced_x86::code_asm::*;
 use runtime::executor::{ExecutorError, SecondExecutor};
-use runtime::guest::{PAGE_SIZE, Permissions, WrittenPage};
+use runtime::guest::{PAGE_SIZE, Permissions, RAM_SIZE, WrittenPage};
+use runtime::watch::CONTIGUOUS_BASE;
 use runtime::{CpuAbi, Dispatch, ExecCtx, Guest, Runner, Runtime, abi, exec::HARNESS_EXIT, kernel};
 use std::path::Path;
 use std::sync::Arc;
@@ -24,6 +26,9 @@ const KCALL: u32 = 0x0040_0200;
 /// Stores before and after a kernel call, the second through a register
 /// kept across it: a refused run carried on by the main context.
 const KRESUME: u32 = 0x0040_0300;
+/// Stores into DST (one store across its two pages) and into all four
+/// SRC pages, then calls the kernel import at IMPORT when EBX is set.
+const SCRIBBLE: u32 = 0x0040_0400;
 const SRC: u32 = 0x0010_0000;
 const WORDS: u32 = 4096;
 const PASSES: u32 = 32;
@@ -82,6 +87,28 @@ fn functions() -> Vec<ir::IrFunction> {
             a.call(eax)?;
             a.mov(dword_ptr(edi + 0x104), eax)?;
             a.add(dword_ptr(edi + 0x108), ebx)?;
+            a.ret()
+        }),
+        common::function(SCRIBBLE, |a| {
+            let mut l = a.create_label();
+            let mut done = a.create_label();
+            a.mov(edi, DST)?;
+            a.mov(dword_ptr(edi + 0x10), 0x1111_1111)?;
+            a.mov(dword_ptr(edi + 0xffe), 0x2222_2222)?;
+            a.mov(esi, SRC)?;
+            a.mov(ecx, 64)?;
+            a.set_label(&mut l)?;
+            a.mov(dword_ptr(esi), ecx)?;
+            a.add(dword_ptr(esi + 4), ecx)?;
+            a.add(esi, 0x100)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.test(ebx, ebx)?;
+            a.jz(done)?;
+            a.mov(eax, dword_ptr(IMPORT))?;
+            a.push(0x1234)?;
+            a.call(eax)?;
+            a.set_label(&mut done)?;
             a.ret()
         }),
     ]
@@ -338,5 +365,79 @@ fn a_refused_run_carries_on_on_the_main_context_from_the_refused_call() {
             (1..=round + 1).sum::<u32>(),
             "round {round}: EBX kept across the call, the sum accumulated live"
         );
+    }
+}
+
+fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
+    a.iter().zip(b).position(|(x, y)| x != y)
+}
+
+#[test]
+fn an_alias_runs_generated_stores_on_live_ram_and_undo_puts_every_byte_back() {
+    const NAME: &str = "an_alias_runs_generated_stores_on_live_ram_and_undo_puts_every_byte_back";
+    let Some((_lib, _host, dispatch)) = module(NAME) else {
+        common::skip(NAME, "needs h2abi.h (H2ABI_HEADER)");
+        return;
+    };
+    let main = main_runtime(dispatch);
+    let watch = {
+        let mut g = main.memory();
+        let id = g.subscribe_writes("live");
+        g.watch_writes(id, CONTIGUOUS_BASE, RAM_SIZE as u32).unwrap();
+        id
+    };
+    let (dst, src) = (physical(&main, DST), physical(&main, SRC));
+    let stack = physical(&main, EXEC_STACK - 4) & !(PAGE_SIZE - 1);
+    let mut want = vec![dst, dst + 0x1000, src, src + 0x1000, src + 0x2000, src + 0x3000, stack];
+    want.sort_unstable();
+    let before = main.memory().physical_ram().to_vec();
+    let p = physical(&main, SRC + 4) as usize;
+    let src_word = u32::from_le_bytes(before[p..p + 4].try_into().unwrap());
+    let mut exec = SecondExecutor::new(&main, |_, _| false);
+    for round in 0..4u32 {
+        let alias = exec.alias(&main).unwrap();
+        // The second run's stores find their pages opened: inline.
+        for _ in 0..2 {
+            let mut cpu = CpuAbi {
+                esp: EXEC_STACK,
+                ..CpuAbi::default()
+            };
+            exec.call(&mut cpu, SCRIBBLE, &[]).unwrap_or_else(|e| panic!("round {round}: {e}"));
+            assert_eq!(cpu.esp, EXEC_STACK);
+        }
+        {
+            let m = exec.runtime().memory();
+            assert_eq!(m.u32(DST + 0x10), Ok(0x1111_1111));
+            assert_eq!(m.u32(DST + 0xffe), Ok(0x2222_2222), "the store across two pages");
+            assert_eq!(m.u32(SRC), Ok(64));
+            assert_eq!(m.u32(SRC + 4), Ok(src_word.wrapping_add(128)), "both runs' adds, in place");
+        }
+        // Refused part way, after its stores.
+        let mut cpu = CpuAbi {
+            esp: EXEC_STACK,
+            ebx: 1,
+            ..CpuAbi::default()
+        };
+        let e = exec.call(&mut cpu, SCRIBBLE, &[]).unwrap_err();
+        assert!(matches!(e, ExecutorError::Refused(_)), "round {round}: {e:?}");
+        let mut pages = exec.journaled();
+        pages.sort_unstable();
+        assert_eq!(pages, want, "round {round}: every page written, once, the same pages each round");
+        if round % 2 == 1 {
+            assert_eq!(exec.undo(), want.len());
+            let m = exec.runtime().memory();
+            assert_eq!(first_difference(m.physical_ram(), &before), None, "round {round}: undone in the alias");
+            drop(m);
+            let mut cpu = CpuAbi {
+                esp: EXEC_STACK,
+                ..CpuAbi::default()
+            };
+            exec.call(&mut cpu, SCRIBBLE, &[]).unwrap();
+            assert_eq!(exec.runtime().memory().u32(SRC + 4), Ok(src_word.wrapping_add(64)), "a fresh round");
+        }
+        drop(alias);
+        let mut m = main.memory();
+        assert_eq!(first_difference(m.physical_ram(), &before), None, "round {round}: live RAM is as it was");
+        assert!(m.take_dirty(watch).unwrap().is_empty(), "round {round}: the live watch saw nothing");
     }
 }

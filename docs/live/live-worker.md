@@ -509,10 +509,12 @@ inactivity timeout on wake so bot-only matches can run while the room is
 quiet. The game supervisor and Live reaper measure match idle time.
 [Container lifecycle API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 
-Before deploying, stage the owner's Linux binary and module under
-`deploy/host/stage/`. Wrangler uses `deploy/host/` as the build context
-and uploads the resulting image to the account's private registry.
-[Preparing the host image](../../deploy/host/README.md)
+Before deploying, stage the Linux `h2` in `deploy/host/stage/h2`
+(`deploy/host/build.sh --h2`; CI does this on every run). Wrangler uses
+`deploy/host/` as the build context and uploads the resulting image to
+the account's registry. The image holds public code only; hosts take the
+game module from the private host-data bundle.
+[Preparing the host image](../../deploy/host/README.md) · [The game module](dedicated-host-build.md#the-game-module)
 
 In staging, exercise both sizes with a private bundle. Check
 that the host registers, a rostered client can exchange binary datagrams,
@@ -603,7 +605,7 @@ without the route (to copy the log into before the switch), `production`
 with it (the switch). Both need `--yes-production`.
 
 Every environment declares the dedicated host containers. They run the
-registry image `h2-live-host` at the tag in `deploy/host/image-tag`
+registry image `h2-live-host` at the content tag of the staged `h2`
 ([Dedicated host containers](#dedicated-host-containers)).
 `deploy.sh --no-hosts` (with the environment name) omits the container
 applications and sets the lease cap to zero. For a host
@@ -623,12 +625,12 @@ passes this config to Wrangler and removes its temporary copy on exit.
 3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build`.
 4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
    says to run `bunx wrangler@4 login`.
-5. **Host image.** With the binaries `deploy/host/build.sh` stages, the
-   tag is their hash: a tag the registry lacks is built and pushed (this
-   needs Docker; without it the script stops and says so) and written to
-   `deploy/host/image-tag`, which you commit. Without them, as in CI, it
-   deploys the committed tag and stops if the registry lacks it. Skipped
-   when the environment's lease cap is zero.
+5. **Host image.** The tag is a hash of the Dockerfile, the entrypoint
+   and the Linux `h2` that `deploy/host/build.sh --h2` stages in
+   `deploy/host/stage/h2`. A tag the registry lacks is built and pushed
+   (this needs Docker; without it the script stops and says so). Without
+   a staged `h2` the script stops and says to stage one or pass
+   `--no-hosts`. Skipped when the environment's lease cap is zero.
 6. **Bucket.** It creates the environment's R2 bucket if it is missing.
 7. **Key.** It asks for the key only if the Worker has no
    `H2_LIVE_SERVER_KEY` secret:
@@ -649,10 +651,14 @@ passes this config to Wrangler and removes its temporary copy on exit.
 ### Deploy from CI
 
 `.github/workflows/live-deploy.yml` runs `deploy.sh production
---yes-production` on each push to master, and on demand. It never builds
-the host image, which holds the disc-compiled module; it deploys the tag
-in `deploy/host/image-tag`, so a deploy that pushed a new image locally is
-followed by committing that file. The job reads two repository secrets:
+--yes-production` on each push to master, and on demand. Before it, the
+job installs Rust from `rust-toolchain.toml`, Zig and cargo-zigbuild and
+runs `deploy/host/build.sh --h2`, so the deploy builds and pushes the
+host image for that commit's `h2` when the registry lacks its tag. The
+image holds public code only. The game module stays in the private
+host-data bundle; when a commit changes the generator, the owner
+refreshes it there
+([The game module](dedicated-host-build.md#the-game-module)). The job reads two repository secrets:
 `CLOUDFLARE_API_TOKEN` (a token with Workers Scripts, Workers Routes,
 Containers and R2 edit, and Account Settings read) and
 `CLOUDFLARE_ACCOUNT_ID`. Without the token it skips and deploys nothing.

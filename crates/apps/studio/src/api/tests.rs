@@ -12,6 +12,8 @@ use studio_proto::{code, method as m};
 use super::*;
 use crate::app::{Action, PlaylistEdit, Selection};
 
+mod bitmaps_tests;
+
 struct Temp(PathBuf);
 impl Temp {
     fn new(tag: &str) -> Self {
@@ -217,6 +219,27 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             }
             if name == m::MESH_TRANSFORM {
                 c(m::MESH_SELECT, json!({"all": true}));
+            }
+        }
+        m::BITMAP_LIST
+        | m::BITMAP_READ
+        | m::BITMAP_EXPORT
+        | m::BITMAP_IMPORT
+        | m::BITMAP_PAINT
+        | m::BITMAP_FILL
+        | m::BITMAP_ADJUST
+        | m::BITMAP_PIXELS
+        | m::BITMAP_RESHAPE
+        | m::BITMAP_SPANS => {
+            // The invented textured map: its floor bitmap is 4 by 4,
+            // one `A8R8G8B8` colour.
+            let map = t.path("textured.map");
+            std::fs::write(&map, fixture::fixture_with_textured_bsp()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            if name == m::BITMAP_IMPORT {
+                let png = bitmap_edit::encode_png(2, 2, &[10, 20, 30, 255].repeat(4)).unwrap();
+                std::fs::create_dir_all(t.path("out")).unwrap();
+                std::fs::write(t.path("out/in.png"), png).unwrap();
             }
         }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
@@ -4136,4 +4159,426 @@ fn ui_edits_need_a_screen_and_retail_needs_the_disc() {
     );
     let undo = call(&mut api, &mut app, m::UI_UNDO, json!({}));
     assert_eq!(undo["done"], false);
+}
+
+/// The layers' rows in `view.layers`, by name.
+fn layer_row(api: &mut Api, app: &mut App, name: &str) -> Value {
+    let layers = call(api, app, m::VIEW_LAYERS, Value::Null);
+    layers["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == name)
+        .unwrap()
+        .clone()
+}
+
+/// Open `bytes` as the source, at `name` under `t`.
+fn open_map(api: &mut Api, app: &mut App, t: &Temp, name: &str, bytes: Vec<u8>) -> PathBuf {
+    let map = t.path(name);
+    std::fs::write(&map, bytes).unwrap();
+    call(
+        api,
+        app,
+        m::SOURCE_OPEN,
+        json!({"path": map.display().to_string()}),
+    );
+    map
+}
+
+/// The invented BSP's two pathfinding sectors through `nav.pathfinding`;
+/// `nav.pick` finds each by point and by ray whatever layers are shown,
+/// and selects one. The Navigation layers start hidden, count what they
+/// draw, and the Navigation preset shows them.
+#[test]
+fn nav_pathfinding_and_pick_read_the_invented_sectors() {
+    let t = Temp::new("nav-pathfinding");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let none = call(&mut api, &mut app, m::NAV_PATHFINDING, Value::Null);
+    assert_eq!(none["counts"], json!({"sectors": 0, "links": 0}));
+    assert_eq!(none["note"], "the map has no structure BSP");
+    open_map(
+        &mut api,
+        &mut app,
+        &t,
+        "pathfinding.map",
+        fixture::fixture_with_pathfinding(),
+    );
+    let all = call(&mut api, &mut app, m::NAV_PATHFINDING, Value::Null);
+    assert_eq!(all["counts"], json!({"sectors": 2, "links": 7}));
+    assert_eq!(all["note"], Value::Null);
+    assert_eq!(all["errors"], json!([]));
+    let bsp = &all["bsps"][0];
+    assert_eq!(bsp["present"], true);
+    assert_eq!(
+        (bsp["sectors"].clone(), bsp["nodes"].clone()),
+        (json!(2), json!(1))
+    );
+    assert_eq!(bsp["orphan_links"], 1);
+    let rows = all["sectors"].as_array().unwrap();
+    assert_eq!(rows[0]["flags"], fixture::SECTOR_FLAGS[0]);
+    assert_eq!(rows[1]["links"], json!([4, 5, 6, 1]));
+    assert_eq!(rows[1]["floor"], true);
+    assert_eq!(rows[0]["ring"].as_array().unwrap().len(), 4);
+    let paged = call(
+        &mut api,
+        &mut app,
+        m::NAV_PATHFINDING,
+        json!({"offset": 1, "limit": 1}),
+    );
+    assert_eq!(paged["matching"], 2);
+    assert_eq!(paged["sectors"][0]["index"], 1);
+
+    let [x, y, _] = fixture::ROOM_AT;
+    let point = call(
+        &mut api,
+        &mut app,
+        m::NAV_PICK,
+        json!({"point": [x + 2.0, y + 2.0, 0.0]}),
+    );
+    assert_eq!(point["hit"]["kind"], "sector");
+    assert_eq!(point["hit"]["index"], 0);
+    let ray = call(
+        &mut api,
+        &mut app,
+        m::NAV_PICK,
+        json!({"origin": [x + 7.5, y + 5.0, 10.0], "dir": [0, 0, -2], "select": true}),
+    );
+    assert_eq!(ray["hit"]["index"], 1);
+    assert!(
+        (ray["distance"].as_f64().unwrap() - (10.0 - 0.01)).abs() < 1e-3,
+        "{ray}"
+    );
+    assert_eq!(ray["selected"], json!({"kind": "sector", "index": 1}));
+    assert_eq!(app.session.selected(), None);
+    // Hidden layers pick nothing when asked to honour them.
+    let shown = call(
+        &mut api,
+        &mut app,
+        m::NAV_PICK,
+        json!({"point": [x + 2.0, y + 2.0, 0.0], "shown": true}),
+    );
+    assert_eq!(shown["hit"], Value::Null);
+    let other = call(
+        &mut api,
+        &mut app,
+        m::NAV_PICK,
+        json!({"point": [x + 2.0, y + 2.0, 0.0], "layer": "bot_nav"}),
+    );
+    assert_eq!(other["hit"], Value::Null);
+    let direct = call(
+        &mut api,
+        &mut app,
+        m::NAV_PICK,
+        json!({"kind": "sector", "index": 0, "focus": true}),
+    );
+    assert_eq!(direct["selected"], json!({"kind": "sector", "index": 0}));
+    let target = app.session.camera().target;
+    assert!((target[0] - (x + 2.5)).abs() < 1e-3, "{target:?}");
+    for bad in [
+        json!({"point": [0, 0, 0], "origin": [0, 0, 0], "dir": [1, 0, 0]}),
+        json!({"origin": [0, 0, 0]}),
+        json!({"origin": [0, 0, 0], "dir": [0, 0, 0]}),
+        json!({"point": [0, 0, 0], "layer": "collision"}),
+        json!({"kind": "sector", "index": 9}),
+        json!({"kind": "wall", "index": 0}),
+        json!({"kind": "sector"}),
+        json!({"kind": "sector", "index": 0, "point": [0, 0, 0]}),
+    ] {
+        assert_eq!(
+            code_of(api.call(&mut app, m::NAV_PICK, bad.clone())),
+            code::INVALID_PARAMS,
+            "{bad}"
+        );
+    }
+
+    for (name, count) in [("pathfinding", 2), ("bot_nav", 0), ("bot_spots", 0)] {
+        let row = layer_row(&mut api, &mut app, name);
+        assert_eq!(row["group"], "Navigation", "{name}");
+        assert_eq!(row["on"], false, "{name}");
+        assert_eq!(row["count"], count, "{name}");
+    }
+    let shown = call(
+        &mut api,
+        &mut app,
+        m::VIEW_LAYERS,
+        json!({"preset": "navigation"}),
+    );
+    assert!(
+        shown["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["group"] == "Navigation")
+            .all(|r| r["on"] == true)
+    );
+
+    // The sectors draw in the snapshot, over a level with nothing else.
+    let out = t.path("pathfinding.png");
+    let params = json!({
+        "out": out, "size": [96, 96],
+        "camera": {"target": [x + 5.0, y + 5.0, 0], "distance": 25, "yaw": 0, "pitch": 80}
+    });
+    match api.call(&mut app, m::VIEW_SNAPSHOT, params.clone()) {
+        Err(e) if e.code == code::NO_GPU => return,
+        Ok(_) => {}
+        Err(e) => panic!("view.snapshot: {e}"),
+    }
+    let drawn = png_pixels(&out);
+    call(
+        &mut api,
+        &mut app,
+        m::VIEW_LAYERS,
+        json!({"set": {"pathfinding": false}}),
+    );
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
+    assert!(
+        png_pixels(&out) != drawn,
+        "hiding the layer must remove the sectors"
+    );
+}
+
+/// An invented bot cache, spots file and the three state files beside
+/// it, for the fixture map (its header's name is `fixture`).
+fn invented_bot_files(data: &Path, map_bytes: &[u8]) {
+    use bots::nav::{Edge, Kind, NavMesh, Poly};
+    let dir = bots::cache::dir(data);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fingerprint = bots::autonav::fingerprint(&map_bytes[..bots::autonav::MAP_HEADER_LEN]);
+    let [x, y, _] = fixture::ROOM_AT;
+    let quad = |x0: f32, z: f32| {
+        Poly::new(vec![
+            [x + x0, y, z],
+            [x + x0 + 5.0, y, z],
+            [x + x0 + 5.0, y + 10.0, z],
+            [x + x0, y + 10.0, z],
+        ])
+    };
+    let edge = |from, to, kind| Edge {
+        from,
+        to,
+        a: [x + 5.0, y, 0.0],
+        b: [x + 5.0, y + 10.0, 0.0],
+        kind,
+    };
+    let mut nav = NavMesh::new(
+        vec![quad(0.0, 0.0), quad(5.0, 0.0), quad(10.0, -1.0)],
+        vec![
+            edge(0, 1, Kind::Walk),
+            edge(1, 0, Kind::Walk),
+            edge(1, 2, Kind::Drop),
+        ],
+    );
+    // The one start is on the low floor: the two floors that drop into it
+    // are out of the map.
+    assert_eq!(nav.mark_out_of_map(&[[x + 12.5, y + 5.0, -1.0]]), 2);
+    let data_file = bots::cache::MapData {
+        nav,
+        walls: bots::los::Walls::new(vec![[[x, y, 0.0], [x, y + 1.0, 0.0], [x, y, 1.0]]]),
+        places: Default::default(),
+    };
+    std::fs::write(
+        dir.join(bots::cache::file_name("fixture", 0)),
+        data_file.to_bytes(bots::cache::Stamp::now(fingerprint)),
+    )
+    .unwrap();
+    let spot = |kind, shape, at: [f32; 3]| superbounce::Spot {
+        kind,
+        shape,
+        stand: at,
+        edge: [at, [at[0] + 1.0, at[1], at[2]]],
+        score: 0.8,
+        launch: 10.0,
+        ..superbounce::Spot::default()
+    };
+    use superbounce::{Kind as SpotKind, Shape, Status};
+    let (bounce, strip, crouch) = (
+        [x + 1.0, y + 1.0, 0.0],
+        [x + 3.0, y + 8.0, 0.0],
+        [x + 8.0, y + 2.0, 0.0],
+    );
+    let found = [
+        spot(SpotKind::Bounce, Shape::Slot, bounce),
+        spot(SpotKind::Bounce, Shape::Crease, strip),
+        spot(SpotKind::Crouch, Shape::Slot, crouch),
+    ];
+    bots::spots::write(&dir, "fixture", bots::spots::stamp(fingerprint), &found).unwrap();
+    let verified = [superbounce::verified::Entry {
+        kind: SpotKind::Crouch,
+        status: Status::Proven,
+        at: crouch,
+        trials: 3,
+        ok: 2,
+        ..Default::default()
+    }];
+    std::fs::write(
+        dir.join(bots::spots::verified_file_name("fixture")),
+        superbounce::verified::to_text(&verified),
+    )
+    .unwrap();
+    let learned = [superbounce::learned::Entry {
+        state: superbounce::learned::State::Dead,
+        at: bounce,
+        tries: 12,
+        why: Some("nobounce".into()),
+        ..Default::default()
+    }];
+    std::fs::write(
+        dir.join(bots::spots::learned_file_name("fixture")),
+        superbounce::learned::to_text(&learned),
+    )
+    .unwrap();
+    let ghost = superbounce::ghost::Ghost {
+        spot: strip,
+        launch: 11.0,
+        touchdown: 1,
+        frames: vec![
+            superbounce::ghost::Frame {
+                at: strip,
+                ..Default::default()
+            };
+            2
+        ],
+        ..Default::default()
+    };
+    std::fs::write(
+        dir.join(bots::harvest::ghosts_file_name("fixture")),
+        superbounce::ghost::to_text(&[ghost]),
+    )
+    .unwrap();
+}
+
+/// The invented bot cache through `nav.bots`: its polygons and links by
+/// kind (the drop one way), its spots by kind and by what the verified,
+/// learned and ghosts files say; `nav.pick` finds a spot and a polygon.
+/// Showing a bot layer starts the load the same way.
+#[test]
+fn nav_bots_reads_an_invented_cache_and_its_spot_files() {
+    let t = Temp::new("nav-bots");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let bytes = fixture::fixture_with_pathfinding();
+    invented_bot_files(&t.path("data"), &bytes);
+    open_map(&mut api, &mut app, &t, "bots.map", bytes);
+    assert_eq!(app.bot_nav_state().name(), "idle", "nothing asked yet");
+    let r = call(
+        &mut api,
+        &mut app,
+        m::NAV_BOTS,
+        json!({"wait": true, "polys": true, "links": true, "spots": true}),
+    );
+    assert_eq!(r["state"], "ready", "{r}");
+    assert_eq!(r["error"], Value::Null);
+    assert_eq!(r["map"], "fixture");
+    assert_eq!(r["notes"], json!([]), "{r}");
+    assert!(
+        r["origins"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("fixture.0.bots")
+    );
+    assert_eq!(
+        r["counts"],
+        json!({"polys": 3, "out_of_map": 2, "links": 3, "walls": 1, "spots": 3})
+    );
+    let polys = r["polys"].as_array().unwrap();
+    let out: Vec<_> = polys.iter().map(|p| p["out_of_map"].clone()).collect();
+    assert_eq!(out, [json!(true), json!(true), json!(false)]);
+    assert_eq!(r["links_by_kind"]["walk"], 2);
+    assert_eq!(r["links_by_kind"]["drop"], 1);
+    assert_eq!(r["links_by_kind"]["jump"], 0);
+    let links = r["links"].as_array().unwrap();
+    assert_eq!(links[2]["kind"], "drop");
+    assert_eq!(links[2]["one_way"], true);
+    assert_eq!(links[0]["one_way"], false);
+    assert_eq!(
+        r["spots_by_kind"],
+        json!({"bounce": 1, "strip": 1, "crouch": 1})
+    );
+    assert_eq!(
+        r["spots_by_state"],
+        json!({"proven": 1, "failed": 0, "dead": 1, "learned": 0, "training": 0, "likely": 1})
+    );
+    let spots = r["spots"].as_array().unwrap();
+    let of = |kind: &str| spots.iter().find(|s| s["kind"] == kind).unwrap().clone();
+    assert_eq!(of("bounce")["state"], "dead");
+    assert_eq!(of("bounce")["line"], "dead");
+    assert_eq!(of("bounce")["tries"], 12);
+    assert_eq!(of("crouch")["state"], "proven");
+    assert_eq!(of("crouch")["trials"], 3);
+    assert_eq!(of("strip")["state"], "likely");
+    assert_eq!(of("strip")["ghost"], true);
+    assert_eq!(of("bounce")["ghost"], false);
+
+    let [x, y, _] = fixture::ROOM_AT;
+    let spot = call(
+        &mut api,
+        &mut app,
+        m::NAV_PICK,
+        json!({"point": [x + 8.0, y + 2.0, 0.0], "select": true}),
+    );
+    assert_eq!(spot["hit"]["kind"], "spot");
+    assert_eq!(spot["hit"]["state"], "proven");
+    assert_eq!(spot["selected"]["kind"], "spot");
+    let poly = call(
+        &mut api,
+        &mut app,
+        m::NAV_PICK,
+        json!({"origin": [x + 12.0, y + 8.0, 5.0], "dir": [0, 0, -1], "layer": "bot_nav"}),
+    );
+    assert_eq!(poly["hit"]["kind"], "poly");
+    assert_eq!(poly["hit"]["index"], 2);
+    assert_eq!(poly["hit"]["out_of_map"], false);
+    for (name, count) in [("bot_nav", 3), ("bot_spots", 3)] {
+        assert_eq!(
+            layer_row(&mut api, &mut app, name)["count"],
+            count,
+            "{name}"
+        );
+    }
+
+    // Reopening the map drops its data; showing a bot layer loads it again.
+    open_map(
+        &mut api,
+        &mut app,
+        &t,
+        "bots.map",
+        fixture::fixture_with_pathfinding(),
+    );
+    assert!(app.session.bot_nav().is_none());
+    app.layers
+        .set(scenario_edit::layers::LayerId::BotSpots, true);
+    app.poll_bot_nav();
+    app.wait_bot_nav();
+    assert_eq!(app.session.bot_nav().map(|b| b.spots.len()), Some(3));
+}
+
+/// With no cache file the bots' own builder makes the mesh in memory from
+/// the invented room's collision, and says so.
+#[test]
+fn nav_bots_builds_the_mesh_when_there_is_no_cache() {
+    let t = Temp::new("nav-bots-build");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    open_map(
+        &mut api,
+        &mut app,
+        &t,
+        "room.map",
+        fixture::fixture_with_collision(),
+    );
+    let r = call(&mut api, &mut app, m::NAV_BOTS, json!({"wait": true}));
+    assert_eq!(r["state"], "ready", "{r}");
+    assert!(r["counts"]["polys"].as_u64().unwrap() >= 1, "{r}");
+    assert_eq!(r["origins"], json!(["built"]));
+    let notes = r["notes"].as_array().unwrap();
+    assert!(
+        notes[0].as_str().unwrap().contains("built in memory"),
+        "{r}"
+    );
+    assert!(
+        !t.path("data").join("bots").join("fixture.0.bots").exists(),
+        "the build is not written"
+    );
 }

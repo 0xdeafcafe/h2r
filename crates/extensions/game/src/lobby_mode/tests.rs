@@ -271,7 +271,12 @@ fn the_forge_map_picker_offers_new_and_the_saved_maps() {
 
 #[test]
 fn forge_with_a_remote_member_is_refused() {
-    assert!(refused(Mode::Forge, Some(1)));
+    let kit = KitMaps {
+        lobby: true,
+        installed: true,
+    };
+    let refused = |mode, remote| refusal(mode, remote, kit).is_some();
+    assert_eq!(refusal(Mode::Forge, Some(1), kit), Some(Reason::ForgeRemote));
     assert!(refused(Mode::Forge, None), "a session that cannot be read");
     assert!(
         !refused(Mode::Forge, Some(0)),
@@ -327,6 +332,52 @@ fn a_remote_member_is_a_peer_of_a_person_on_another_console() {
     let mut none = session(1, true);
     none.put_u32(bots::lobby::SESSION, 0);
     assert_eq!(remote_members(&none), None);
+}
+
+/// FIREFIGHT opens with no kit map installed; Start Game is what refuses,
+/// and the status line and the panel say why in one line each.
+#[test]
+fn firefight_without_a_kit_map_refuses_the_start_and_says_why() {
+    let none = KitMaps::default();
+    let elsewhere = KitMaps {
+        lobby: false,
+        installed: true,
+    };
+    let here = KitMaps {
+        lobby: true,
+        installed: true,
+    };
+    assert_eq!(refusal(Mode::Firefight, Some(0), none), Some(Reason::NoKitMap));
+    assert_eq!(
+        refusal(Mode::Firefight, Some(0), elsewhere),
+        Some(Reason::NotKitMap)
+    );
+    assert_eq!(refusal(Mode::Firefight, Some(0), here), None);
+    assert_eq!(refusal(Mode::Firefight, Some(2), here), None, "Firefight runs across consoles");
+    for mode in [Mode::Multiplayer, Mode::Forge] {
+        assert_eq!(refusal(mode, Some(0), none), None, "{mode:?} needs no kit");
+    }
+    assert_eq!(Reason::NoKitMap.text(), "No installed map supports Firefight yet.");
+    assert_eq!(Reason::NotKitMap.text(), "This map does not support Firefight.");
+    // The panel: one reason line and what to do, in place of the options.
+    assert_eq!(
+        firefight_map_lines(none).unwrap(),
+        ["No installed map supports Firefight yet", "Make one with h2 firefight kit"]
+    );
+    assert_eq!(
+        firefight_map_lines(elsewhere).unwrap()[0],
+        "This map does not support Firefight"
+    );
+    assert_eq!(firefight_map_lines(here), None);
+    for kit in [none, elsewhere] {
+        let lines = firefight_map_lines(kit).unwrap();
+        assert!(lines.len() <= MAX_PANEL_LINES);
+        for l in lines {
+            assert!(!l.contains("  ") && !l.ends_with('.') && !l.ends_with(' '), "{l:?}");
+        }
+    }
+    // The lobby's start state is held off ready while refused.
+    assert_eq!(start_state(READY_STATE, true), REFUSED_STATE);
 }
 
 #[test]
@@ -487,6 +538,7 @@ fn the_strip_has_its_own_panel_hook_inside_lobby_options() {
             offer: ALL,
             store: Some(store),
             data: std::env::temp_dir(),
+            vfs: None,
         })
         .unwrap();
         let text = r.build(&hooks::Base).unwrap().text();
@@ -524,6 +576,7 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
         offer: ALL,
         store: Some(ff_store),
         data: std::env::temp_dir(),
+        vfs: None,
     })
     .unwrap();
     let text = r.build(&hooks::Base).unwrap().text();
@@ -544,6 +597,61 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
     assert!(text.contains("PARTY_LEAVE"), "{text}");
 }
 
+/// The list's arrangement runs last of the constructor's `after` hooks
+/// (they run in reverse, so it is the outermost), after Clanker Options,
+/// Firefight Options, Halo 1 Options and Switch To: Clankermatch are
+/// added: a matchmaking lobby's Game Setup is Change Playlist... alone,
+/// with no Switch To: Clankermatch beside it.
+#[test]
+fn the_arrangement_runs_after_every_row_is_added() {
+    use crate::ui_kit::screen::KitTexts;
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
+    r.add(&h1row::SetupRow {
+        data_root: std::env::temp_dir(),
+    })
+    .unwrap();
+    let bots = Arc::new(crate::clankers::page(Arc::new(Store::defaults(
+        &crate::clankers::DEFS,
+    ))));
+    r.add(&KitTexts(Arc::clone(&bots))).unwrap();
+    r.add(&bots.class()).unwrap();
+    r.add(&crate::clankers::SetupRow { page: bots }).unwrap();
+    r.add(&crate::clankermatch::SwitchRow { hle: None }).unwrap();
+    let ff_store = Arc::new(Store::defaults(&ff::DEFS));
+    let page = Arc::new(ff::page(Arc::clone(&ff_store)));
+    r.add(&KitTexts(Arc::clone(&page))).unwrap();
+    r.add(&page.class()).unwrap();
+    r.add(&ff::SetupRow { page }).unwrap();
+    r.add(&LobbyMode {
+        offer: ALL,
+        store: Some(ff_store),
+        data: std::env::temp_dir(),
+        vfs: None,
+    })
+    .unwrap();
+    let text = r.build(&hooks::Base).unwrap().text();
+    let line = text
+        .lines()
+        .find(|l| l.contains("SQUAD_SETTINGS_LIST_CTOR"))
+        .unwrap();
+    // The plan's text lists the `after` hooks in the order they run.
+    let after = &line[line.find("after [").expect("after hooks")..];
+    let ours = after.find("party-lobby:").expect("the arrangement");
+    for theirs in [
+        "h1-options-row:",
+        "clankers-row:",
+        "clankermatch-switch:",
+        "firefight-row:",
+    ] {
+        let at = after.find(theirs).unwrap_or_else(|| panic!("{theirs} {line}"));
+        assert!(at < ours, "{theirs} runs before the arrangement: {line}");
+    }
+    // What the arrangement then makes of each list is
+    // `arrange_drops_the_switch_to_rows`'s: the matchmaking lobby's
+    // (retail's kind 6 with Switch To: Clankermatch added) keeps Change
+    // Playlist... alone.
+}
+
 /// Our actions are past retail's and every other row of ours.
 #[test]
 fn the_rows_actions_are_their_own() {
@@ -554,5 +662,321 @@ fn the_rows_actions_are_their_own() {
         FIREFIGHT,
     ] {
         assert!(FORGE_MAP_ACTION > theirs);
+    }
+}
+
+#[test]
+fn the_gate_text_names_the_first_problem_and_counts_the_rest() {
+    assert_eq!(gate_text(&[]), None);
+    assert_eq!(gate_text(&["a".into()]).as_deref(), Some("a"));
+    assert_eq!(
+        gate_text(&["a".into(), "b".into(), "c".into()]).as_deref(),
+        Some("a (and 2 more)")
+    );
+    assert!(GATE_SLOT >= PANEL_SLOTS + MAX_PANEL_LINES as u32);
+    assert!(GATE_SLOT < IDS.len);
+}
+
+/// The lobby's start gate (docs/game/rules-start-gate.md): over invented
+/// guest memory (the lobby's map and its variant record) and a map
+/// fixture (a census of netgame flags).
+#[cfg(feature = "rules")]
+mod gate {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use ::rules::ir::{Ir, LabelDef, LabelKind, label_flags};
+    use ::rules::labels::Census;
+    use agent_proto::rules as wire;
+    use forge_doc::{BlockKind, CensusOf, FlagRow, MapRows};
+    use variants::ext::{AT, Ext, Mode as ScriptMode, Script};
+
+    use super::*;
+    use crate::rules::gate::{self as g, Input, Sources, Verdict};
+
+    const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { if killer != none { score(killer, 2) } }\n";
+    const SLAYER: u32 = 2;
+    const VARIANT: u32 = 0x0070_0000;
+    const MAP: u32 = 0x10;
+    const OTHER_MAP: u32 = 0x11;
+    const GOAL: &str = "the map has no zone labelled \"goal\"; Double Points needs exactly 1";
+    const CORE: &str = "the map has no zone labelled \"core\"; Double Points needs exactly 1";
+
+    fn zone(text: &str) -> LabelDef {
+        LabelDef {
+            text: text.into(),
+            kind: LabelKind::Zone,
+            min: 1,
+            max: 1,
+            flags: label_flags::SINGLE,
+            lo: 0,
+            hi: 0,
+        }
+    }
+
+    /// Double Points with two zones a map must hold one each of.
+    fn script() -> Ir {
+        let mut ir = ::rules::compile(POINTS).unwrap();
+        ir.labels.push(zone("goal"));
+        ir.labels.push(zone("core"));
+        ir
+    }
+
+    fn prefix(ir: &Ir) -> [u8; 8] {
+        let mut p = [0; 8];
+        p.copy_from_slice(&ir.id().0[..8]);
+        p
+    }
+
+    /// The map fixture: one territory flag, and nothing labelled `goal` or
+    /// `core`.
+    fn territory_map() -> Census {
+        let rows = MapRows {
+            counts: [(BlockKind::NetgameFlags, 1)].into_iter().collect(),
+            flags: vec![FlagRow {
+                kind: engine::objectives::kind::TERRITORY,
+                team: 0,
+            }],
+            ..MapRows::default()
+        };
+        Census::of_game(&rows, None).unwrap()
+    }
+
+    /// Sources over one census and one blob, counting the census reads.
+    struct Fake {
+        census: Census,
+        blob: Vec<u8>,
+        prefix: [u8; 8],
+        reads: AtomicU32,
+        forge_maps: Mutex<Vec<Option<String>>>,
+    }
+
+    impl Fake {
+        fn new(census: Census, ir: &Ir) -> Self {
+            Fake {
+                census,
+                blob: ir.encode(),
+                prefix: prefix(ir),
+                reads: AtomicU32::new(0),
+                forge_maps: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn reads(&self) -> u32 {
+            self.reads.load(Ordering::SeqCst)
+        }
+
+        fn last_forge_map(&self) -> Option<Option<String>> {
+            self.forge_maps.lock().unwrap().last().cloned()
+        }
+    }
+
+    impl Sources for Fake {
+        fn census(&self, _map: u32, forge_map: Option<&str>) -> Result<Census, String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.forge_maps
+                .lock()
+                .unwrap()
+                .push(forge_map.map(str::to_owned));
+            Ok(self.census.clone())
+        }
+
+        fn blob(&self, prefix: [u8; 8]) -> Option<Vec<u8>> {
+            (prefix == self.prefix).then(|| self.blob.clone())
+        }
+    }
+
+    /// A Split Screen lobby on `map` whose variant record is a Slayer
+    /// variant naming the script with prefix `script`, team play or not.
+    fn lobby(map: u32, script: [u8; 8], team_play: bool) -> FakeGuest {
+        let mut m = FakeGuest::new();
+        m.put_u8(bots::lobby::NETWORKING, 0)
+            .put_u32(crate::h1_options_row::LOBBY_MAP, map);
+        let block = Ext {
+            script: Script {
+                mode: ScriptMode::Rules,
+                prefix: script,
+                options: 0,
+            },
+            ..Ext::default()
+        }
+        .encode();
+        m.map(VARIANT, 0x1000);
+        m.put(VARIANT + 4, b"Lobby gate test");
+        m.put_u32(VARIANT + 0x44, SLAYER)
+            .put_u32(VARIANT + 0x48, u32::from(team_play));
+        m.put(VARIANT + AT as u32, &block);
+        m
+    }
+
+    fn refresh(m: &FakeGuest, host: Option<Vec<String>>, sources: &Fake) {
+        let input = g::read(m, VARIANT);
+        assert!(input.as_ref().is_some_and(|i| i.leads), "a Split Screen lobby leads");
+        g::with_lobby(|gate| gate.refresh(input, host, sources));
+    }
+
+    fn fresh(mode: Option<Mode>) {
+        lobby_start::restore(lobby_start::State::default());
+        g::clear();
+        if let Some(mode) = mode {
+            lobby_start::set_mode(mode);
+        }
+    }
+
+    #[test]
+    fn a_changed_map_forge_map_or_variant_runs_the_check_once() {
+        fresh(Some(Mode::Multiplayer));
+        let ir = script();
+        let p = prefix(&ir);
+        let fake = Fake::new(territory_map(), &ir);
+        let m = lobby(MAP, p, false);
+        refresh(&m, None, &fake);
+        refresh(&m, None, &fake);
+        assert_eq!(fake.reads(), 1, "the same key keeps its verdict");
+        // Another map.
+        let m = lobby(OTHER_MAP, p, false);
+        refresh(&m, None, &fake);
+        refresh(&m, None, &fake);
+        assert_eq!(fake.reads(), 2);
+        // Forge mode with a new map: the census is the same, so no check.
+        lobby_start::set_mode(Mode::Forge);
+        refresh(&m, None, &fake);
+        assert_eq!(fake.reads(), 2);
+        // A saved Forge map: its document applies, so the check runs.
+        lobby_start::set_forge_map(Some("Castle".into()));
+        refresh(&m, None, &fake);
+        refresh(&m, None, &fake);
+        assert_eq!(fake.reads(), 3);
+        assert_eq!(fake.last_forge_map(), Some(Some(String::from("Castle"))));
+        // Back to Multiplayer: the Forge map no longer applies.
+        lobby_start::set_mode(Mode::Multiplayer);
+        refresh(&m, None, &fake);
+        assert_eq!(fake.reads(), 4);
+        assert_eq!(fake.last_forge_map(), Some(None));
+        // Another variant: team play on.
+        let m = lobby(OTHER_MAP, p, true);
+        refresh(&m, None, &fake);
+        refresh(&m, None, &fake);
+        assert_eq!(fake.reads(), 5);
+        // A script not on this machine is the host's to check.
+        let m = lobby(OTHER_MAP, [0; 8], true);
+        refresh(&m, None, &fake);
+        assert_eq!(fake.reads(), 5);
+        assert_eq!(g::with_lobby(|gate| gate.verdict().clone()), Verdict::Clear);
+    }
+
+    #[test]
+    fn a_blocked_pair_holds_start_game_and_says_why() {
+        fresh(Some(Mode::Multiplayer));
+        let ir = script();
+        let fake = Fake::new(territory_map(), &ir);
+        let mut m = lobby(MAP, prefix(&ir), false);
+        refresh(&m, None, &fake);
+        assert_eq!(g::blocked(), Some(vec![GOAL.to_string(), CORE.to_string()]));
+        assert!(start_refused(&m));
+        assert_eq!(start_state(READY_STATE, start_refused(&m)), REFUSED_STATE);
+        let text = gate_text(&g::blocked().unwrap()).unwrap();
+        assert_eq!(text, format!("{GOAL} (and 1 more)"));
+        assert_eq!(gate_text_id(&mut m), Some(IDS.id(GATE_SLOT)));
+        // A map that has what the script needs starts.
+        let fake = Fake::new(::rules::labels::minimal(&ir, &[]), &ir);
+        let mut m = lobby(OTHER_MAP, prefix(&ir), false);
+        refresh(&m, None, &fake);
+        assert_eq!(g::blocked(), None);
+        assert!(!start_refused(&m));
+        assert_eq!(start_state(READY_STATE, start_refused(&m)), READY_STATE);
+        assert_eq!(gate_text_id(&mut m), None);
+    }
+
+    #[test]
+    fn forge_mode_is_not_held() {
+        fresh(Some(Mode::Forge));
+        let ir = script();
+        let fake = Fake::new(territory_map(), &ir);
+        let m = lobby(MAP, prefix(&ir), false);
+        refresh(&m, None, &fake);
+        assert!(
+            matches!(g::with_lobby(|gate| gate.verdict().clone()), Verdict::Blocked(_)),
+            "the check still runs"
+        );
+        assert_eq!(g::blocked(), None);
+        assert!(!start_refused(&m), "Split Screen Forge starts");
+        // No lobby (the level boot's game) holds nothing either.
+        lobby_start::restore(lobby_start::State::default());
+        assert_eq!(g::blocked(), None);
+    }
+
+    #[test]
+    fn a_host_block_becomes_the_lobbys_verdict() {
+        fresh(Some(Mode::Multiplayer));
+        let ir = script();
+        let fake = Fake::new(::rules::labels::minimal(&ir, &[]), &ir);
+        let m = lobby(MAP, prefix(&ir), false);
+        refresh(&m, None, &fake);
+        assert_eq!(g::blocked(), None, "the file's census passes");
+        // The game's census differed: the host's block names the problem.
+        let host = vec![GOAL.to_string()];
+        refresh(&m, Some(host.clone()), &fake);
+        assert_eq!(g::blocked(), Some(host.clone()));
+        assert_eq!(fake.reads(), 1, "adopted, not checked");
+        refresh(&m, Some(host.clone()), &fake);
+        assert_eq!(g::blocked(), Some(host.clone()), "kept for the key");
+        // Another map checks again and replaces it.
+        let m = lobby(OTHER_MAP, prefix(&ir), false);
+        refresh(&m, Some(host), &fake);
+        assert_eq!(fake.reads(), 2);
+        assert_eq!(g::blocked(), None);
+    }
+
+    #[test]
+    fn a_guest_checks_nothing() {
+        fresh(Some(Mode::Multiplayer));
+        let ir = script();
+        let fake = Fake::new(territory_map(), &ir);
+        let m = lobby(MAP, prefix(&ir), false);
+        let input = g::read(&m, VARIANT).map(|i| Input { leads: false, ..i });
+        g::with_lobby(|gate| gate.refresh(input, Some(vec![GOAL.into()]), &fake));
+        assert_eq!(fake.reads(), 0);
+        assert_eq!(g::blocked(), None);
+    }
+
+    #[test]
+    fn rules_state_lists_the_problems_in_the_lobby() {
+        fresh(Some(Mode::Multiplayer));
+        let ir = script();
+        let fake = Fake::new(territory_map(), &ir);
+        let m = lobby(MAP, prefix(&ir), false);
+        refresh(&m, None, &fake);
+        let mut s = wire::State {
+            refused: Some("the game ended".into()),
+            ..wire::State::default()
+        };
+        g::annotate(&mut s);
+        assert_eq!(s.blocked, [GOAL, CORE]);
+        assert!(s.refused.unwrap().contains("Start Game is held"));
+        // In Forge mode the problems are listed, and nothing is held.
+        lobby_start::set_mode(Mode::Forge);
+        let mut s = wire::State::default();
+        g::annotate(&mut s);
+        assert_eq!(s.blocked, [GOAL, CORE]);
+        assert!(s.refused.unwrap().contains("Forge session"));
+        // A running script, or the host's own block, is left as it is.
+        let mut s = wire::State {
+            running: true,
+            ..wire::State::default()
+        };
+        g::annotate(&mut s);
+        assert!(s.blocked.is_empty());
+        let mut s = wire::State {
+            blocked: vec!["the host's".into()],
+            ..wire::State::default()
+        };
+        g::annotate(&mut s);
+        assert_eq!(s.blocked, ["the host's"]);
+        // Leaving the lobby clears the verdict.
+        g::clear();
+        let mut s = wire::State::default();
+        g::annotate(&mut s);
+        assert!(s.blocked.is_empty());
     }
 }

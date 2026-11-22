@@ -35,10 +35,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "tags" => ToolKind::Tags,
         "hud" => ToolKind::Hud,
         "scripts" => ToolKind::Scripts,
+        "bitmaps" | "textures" => ToolKind::Textures,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, tags, scripts, variant, playlists, ui, hud)"),
+                format!("no document {other:?} (map, tags, scripts, bitmaps, variant, playlists, ui, hud)"),
             ));
         }
     })
@@ -53,6 +54,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::Tags => "tags",
         ToolKind::Hud => "hud",
         ToolKind::Scripts => "scripts",
+        ToolKind::Textures => "bitmaps",
     }
 }
 
@@ -65,6 +67,7 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::Tags => app.session.is_open(),
         ToolKind::Hud => app.hud.session.is_some(),
         ToolKind::Scripts => app.scripts_loaded().is_ok(),
+        ToolKind::Textures => app.session.is_open(),
     }
 }
 
@@ -83,6 +86,7 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
         ToolKind::UiScreens | ToolKind::Scripts => (false, false),
         ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
+        ToolKind::Textures => (app.textures.can_undo(), app.textures.can_redo()),
         ToolKind::Hud => app
             .hud
             .session
@@ -112,6 +116,7 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
             None => s.name.clone(),
         }),
         ToolKind::Scripts => app.scripts_loaded().ok().map(|l| l.map.clone()),
+        ToolKind::Textures => app.loaded_map().map(str::to_owned),
     }
 }
 
@@ -387,7 +392,9 @@ fn need_open(app: &App, t: ToolKind) -> Result<(), RpcError> {
 fn save(app: &mut App, t: ToolKind) -> Reply {
     need_open(app, t)?;
     match t {
-        ToolKind::Scenario | ToolKind::Tags => {
+        // The bitmaps are the map's: its save encodes the edited images
+        // and writes them with the rest (`App::push_bitmap_changes`).
+        ToolKind::Scenario | ToolKind::Tags | ToolKind::Textures => {
             let target = app.save_target();
             let log = run(app, Action::Save, false)?;
             match target {
@@ -438,7 +445,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
     need_open(app, t)?;
     let action = match t {
         ToolKind::Hud => return super::hud::save_as(app, path),
-        ToolKind::Scenario | ToolKind::Tags => {
+        ToolKind::Scenario | ToolKind::Tags | ToolKind::Textures => {
             outside_git(&path)?;
             if let Some(src) = app.session.source()
                 && same_file(&src.path, &path)
@@ -583,6 +590,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
         }
         ToolKind::UiScreens => Ok(json!({ "doc": "ui", "dirty": false })),
         ToolKind::Scripts => Ok(json!({ "doc": "scripts", "dirty": false })),
+        ToolKind::Textures => Ok(super::bitmaps::diff(app)),
         ToolKind::Hud => super::hud::diff(app),
     }
 }

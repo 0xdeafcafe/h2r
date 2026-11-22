@@ -60,6 +60,110 @@ pub struct ObjectRespawnParams {
     pub confirm_peers: Option<u32>,
 }
 
+/// The bytes a record held before the edit: the bytes in hex, or their
+/// FNV-1a 64 hash as 16 hex digits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Was {
+    Bytes(String),
+    Hash { hash: String },
+}
+
+/// One record of a placement block to write: `bytes` is exactly one stride, in
+/// hex. `was` is checked against the slot's current bytes (a slot past the
+/// loaded count holds what the last removal left there, and may omit it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementRecord {
+    pub index: u16,
+    pub bytes: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<Was>,
+}
+
+/// Point scenario object name `name` at placement `placement` of the block's
+/// type (-1: nothing).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementName {
+    pub name: u16,
+    pub placement: i16,
+}
+
+/// Give the live objects of old placement `from` the new placement index `to`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementRelink {
+    pub from: u16,
+    pub to: u16,
+}
+
+/// One transaction on one scenario placement block (docs/editor/realtime-edits.md,
+/// "Placements"). Indices in `delete` and `relink.from` are the old numbering;
+/// `records`, `names`, `relink.to` and `create` are the new.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementEditParams {
+    /// A `placement::BLOCKS` name, or `starting_locations`, `netgame_equipment`,
+    /// `netgame_flags`, `starting_equipment` (any `map::scenario_layout` name).
+    pub block: String,
+    /// The root count the editor's edit started from.
+    pub was_count: u32,
+    /// The root count after the edit.
+    pub count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<PlacementRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<PlacementName>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delete: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relink: Vec<PlacementRelink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub create: Vec<u16>,
+    /// The map epoch the caller saw (`edit.map`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm_peers: Option<u32>,
+}
+
+/// Where a block grew to, when it had to move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementMoved {
+    pub address: u32,
+    pub capacity: u32,
+}
+
+/// What became of one index of `create`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementCreated {
+    pub index: u16,
+    /// The new object's id, when one was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
+    /// The object carries its placement index, as a loaded one does.
+    pub linked: bool,
+    pub created: bool,
+    /// Why no object was made: the record is written and shows after a reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlacementEditResult {
+    pub at: At,
+    /// The root count now.
+    pub count: u32,
+    /// How many records the block holds room for.
+    pub capacity: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved: Option<PlacementMoved>,
+    pub deleted: Vec<String>,
+    pub relinked: Vec<String>,
+    pub created: Vec<PlacementCreated>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapReloadParams {
@@ -132,6 +236,38 @@ mod tests {
             json!({"id":"crate.abcd0001", "epoch": 7})
         );
         assert_eq!(serde_json::to_value(MapReloadParams::default()).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn placement_edit_wire_shapes() {
+        let params = json!({
+            "block": "scenery", "was_count": 5, "count": 4,
+            "records": [{"index": 1, "bytes": "00ff", "was": {"hash": "cbf29ce484222325"}},
+                        {"index": 2, "bytes": "00", "was": "ab"}],
+            "names": [{"name": 0, "placement": -1}],
+            "delete": [1], "relink": [{"from": 4, "to": 1}],
+            "confirm_peers": 2
+        });
+        let parsed: PlacementEditParams = serde_json::from_value(params.clone()).unwrap();
+        assert_eq!(parsed.records[0].was, Some(Was::Hash { hash: "cbf29ce484222325".into() }));
+        assert_eq!(parsed.records[1].was, Some(Was::Bytes("ab".into())));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), params);
+        let minimal: PlacementEditParams =
+            serde_json::from_value(json!({"block": "crates", "was_count": 0, "count": 0})).unwrap();
+        assert_eq!(
+            serde_json::to_value(minimal).unwrap(),
+            json!({"block": "crates", "was_count": 0, "count": 0})
+        );
+        assert!(serde_json::from_value::<PlacementEditParams>(
+            json!({"block": "crates", "was_count": 0, "count": 0, "capacity": 3})
+        ).is_err());
+        let created = PlacementCreated {
+            index: 3, object: None, linked: false, created: false, why: Some("named".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(created).unwrap(),
+            json!({"index": 3, "linked": false, "created": false, "why": "named"})
+        );
     }
 
     #[test]

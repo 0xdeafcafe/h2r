@@ -1,0 +1,237 @@
+================================================================================
+Header lines
+================================================================================
+
+rules "Slayer" 1
+carrier slayer
+teams 2
+list tweakers
+requires hud.message, player.weapons
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (header
+    (string
+      (string_content))
+    (integer))
+  (carrier_declaration
+    (identifier))
+  (teams_declaration
+    (integer))
+  (list_declaration
+    (identifier))
+  (requires_declaration
+    (capability
+      (identifier)
+      (identifier))
+    (capability
+      (identifier)
+      (identifier))))
+
+================================================================================
+Options
+================================================================================
+
+option points: int 1..5 = 3 "Points" "Points for a kill"
+option fast: bool = true
+option wait: time 5s..60s = 20s
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (option_declaration
+    (identifier)
+    (type
+      (identifier))
+    (range
+      (integer)
+      (integer))
+    (integer)
+    (string
+      (string_content))
+    (string
+      (string_content)))
+  (option_declaration
+    (identifier)
+    (type
+      (identifier))
+    (true))
+  (option_declaration
+    (identifier)
+    (type
+      (identifier))
+    (range
+      (time)
+      (time))
+    (time)))
+
+================================================================================
+Palettes and enums
+================================================================================
+
+palette "vip" = ["a/b", "c/d"]
+enum Role { none, vip }
+enum Phase {
+    early
+    late
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (palette_declaration
+    (string
+      (string_content))
+    (string
+      (string_content))
+    (string
+      (string_content)))
+  (enum_declaration
+    (identifier)
+    (identifier)
+    (identifier))
+  (enum_declaration
+    (identifier)
+    (identifier)
+    (identifier)))
+
+================================================================================
+Constants and variables
+================================================================================
+
+const top = 8
+global var phase: int = 0
+player var heir: player? = none
+team var held: timer
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (identifier)
+    (integer))
+  (var_declaration
+    (identifier)
+    (type
+      (identifier))
+    (integer))
+  (var_declaration
+    (identifier)
+    (type
+      (identifier))
+    (none))
+  (var_declaration
+    (identifier)
+    (type
+      (identifier))))
+
+================================================================================
+Tables
+================================================================================
+
+table ladder: (weapon: weapon, points: int) = [
+    ("a", 1),
+    ("b", 2),
+]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (table_declaration
+    (identifier)
+    (table_column
+      (identifier)
+      (type
+        (identifier)))
+    (table_column
+      (identifier)
+      (type
+        (identifier)))
+    (table_row
+      (string
+        (string_content))
+      (integer))
+    (table_row
+      (string
+        (string_content))
+      (integer))))
+
+================================================================================
+Functions
+================================================================================
+
+fn crown(p: player, n: int) {
+    p.role = Role.vip
+}
+
+fn enemy(a: player, b: player) -> bool = a.team != b.team
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type
+          (identifier)))
+      (parameter
+        (identifier)
+        (type
+          (identifier))))
+    (block
+      (assignment_statement
+        (field_expression
+          (identifier)
+          (identifier))
+        (field_expression
+          (identifier)
+          (identifier)))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type
+          (identifier)))
+      (parameter
+        (identifier)
+        (type
+          (identifier))))
+    (type
+      (identifier))
+    (binary_expression
+      (field_expression
+        (identifier)
+        (identifier))
+      (field_expression
+        (identifier)
+        (identifier)))))
+
+================================================================================
+Handlers
+================================================================================
+
+on init {
+}
+
+on enter(capture z, o) {
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block))
+  (handler_declaration
+    (identifier)
+    (event_parameters
+      (event_parameter
+        (identifier)
+        (identifier))
+      (event_parameter
+        (identifier)))
+    (block)))

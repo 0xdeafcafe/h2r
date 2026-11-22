@@ -464,12 +464,6 @@ create, effects its scripts play on a loop, and its own or changed
 bitmaps and shaders. A game on a mod the server has no art for uses the
 base map's geometry, unless `[result] geometry` differs from the base's.
 
-The native viewer (`crates/tools/viewer`) opens an installed mod as
-`mod:<package dir>` (`viewer --list` lists them with their base and
-`MapId`), built in memory the same way: its layers over the disc's base
-(or the installed map pack map), the base checked against the package's
-SHA-256.
-
 ### Wire, store and joining
 
 - **Wire.** `NewSession.map_id`, `session::Update.map_id`,

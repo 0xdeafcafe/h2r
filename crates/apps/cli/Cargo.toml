@@ -27,10 +27,13 @@ xiso = { workspace = true, optional = true }
 h1map = { path = "../../tools/h1map", optional = true }
 # Halo 1 multiplayer maps converted (`h2 h1 convert`).
 h1convert = { path = "../../tools/h1convert", optional = true }
-viewer = { path = "../../tools/viewer", optional = true }
+# `h2 lighting split`: the solver's shadow mask uses the state tables (CPU only).
+gfx = { path = "../../platform/gfx", default-features = false, optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 firefight-kit = { path = "../../tools/firefight-kit", optional = true }
 forge = { workspace = true, optional = true }
+# `h2 live maps census`: the start gate's census of a map file.
+forge-doc = { workspace = true, optional = true }
 forge-build = { workspace = true, optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../../tools/h1campaign", optional = true }
@@ -166,8 +169,9 @@ desktop = [
     "dep:scenario-edit",
     "dep:firefight-kit",
     "dep:forge",
+    "dep:forge-doc",
     "dep:forge-build",
-    "dep:viewer",
+    "dep:gfx",
     "dep:h1campaign",
     "dep:h1-assets",
     "dep:h1objects",

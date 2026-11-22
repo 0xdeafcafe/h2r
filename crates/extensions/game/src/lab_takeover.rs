@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use agent::Access;
-use agent_proto::takeover::{self, Decision, Operation, Request};
+use agent_proto::takeover::{self, Decision, Operation, Request, Source};
 use agent_proto::{RpcError, code};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
@@ -42,7 +42,13 @@ fn prompts() -> [Prompt; 2] {
 
 fn layout() -> ListLayout {
     let mut l = ui_kit::dialog_tag::base_layout(DialogBase::Large, LABELS.len());
-    l.anchor[1] = -24;
+    // Four body lines need the list lower than the other question dialogs
+    // put it: row 0's frame art tops out 4 units below the anchor's row
+    // top plus 34 (`ui_kit::view` item art), and the body's ink ends 19
+    // units a line below `dialog::BODY_TOP`. At -34 the frame's top (-4)
+    // clears the fourth line (-4), and row 1's bottom (-66) stays above
+    // the footer (-83).
+    l.anchor[1] = -34;
     l
 }
 
@@ -66,19 +72,53 @@ fn display_field(value: &str, max: usize) -> String {
     }
 }
 
+fn source_line(source: &Source) -> String {
+    let short = |commit: &str| display_field(&commit.chars().take(7).collect::<String>(), 7);
+    match source {
+        Source::Branch { name, commit } => {
+            format!("lab/{} at {}", display_field(name, 12), short(commit))
+        }
+        Source::Rev { rev, commit } => {
+            format!("{} at {}", display_field(rev, 12), short(commit))
+        }
+        Source::Current { commit: Some(c) } => format!("installed image at {}", short(c)),
+        Source::Current { commit: None } => "installed image".into(),
+    }
+}
+
+/// The dialog's text, four lines: who asks and what it does, the job's
+/// name, its source, and the level, data and time. Each line stays one line
+/// at the widest letters (the fit test), since the body wraps only at spaces
+/// and four lines is all the room above the rows.
 fn body(request: &Request) -> String {
-    let who = display_field(&request.requester, 16);
-    let revision = display_field(&request.revision, 16);
-    let operation = match request.operation {
-        Operation::Build => "build",
-        Operation::Run => "run",
+    let who = display_field(&request.requester, 12);
+    let name = display_field(&request.name, 22);
+    let action = match (request.operation, request.builds_image) {
+        (Operation::Build, _) => "build",
+        (Operation::Run, false) => "run",
+        (Operation::Run, true) => "build, then run",
+        (Operation::Sim, false) => "run a sim",
+        (Operation::Sim, true) => "build, then sim",
     };
     let time = match request.estimate_seconds {
-        0 => "duration varies".into(),
+        0 => "time varies".into(),
         n @ 1..=59 => format!("about {n} sec"),
-        n => format!("about {} min", n.div_ceil(60)),
+        n @ 60..=5940 => format!("about {} min", n.div_ceil(60)),
+        _ => "over 99 min".into(),
     };
-    format!("{who} requests a lab {operation}.\n{revision}, {time}\nAllow, then quit when ready.")
+    let mut facts = Vec::new();
+    if let Some(level) = request.level.as_deref().filter(|l| !l.trim().is_empty()) {
+        facts.push(format!("level {}", display_field(level, 10)));
+    }
+    if request.own_data {
+        facts.push("own data".into());
+    }
+    facts.push(time);
+    format!(
+        "{who}: {action}\n\"{name}\"\n{}\n{}",
+        source_line(&request.source),
+        facts.join(", ")
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,13 +177,19 @@ impl Dialog {
     }
 
     fn submit(&self, request: Request, now: Instant) -> Result<u64, RpcError> {
+        let source_empty = match &request.source {
+            Source::Branch { name, commit } => name.trim().is_empty() || commit.trim().is_empty(),
+            Source::Rev { rev, commit } => rev.trim().is_empty() || commit.trim().is_empty(),
+            Source::Current { commit } => commit.as_deref().is_some_and(|c| c.trim().is_empty()),
+        };
         if request.requester.trim().is_empty()
-            || request.revision.trim().is_empty()
+            || request.name.trim().is_empty()
+            || source_empty
             || !(1..=takeover::MAX_TIMEOUT_SECONDS).contains(&request.timeout_seconds)
         {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
-                "expected a requester, a revision and a timeout from 1 to 3600 seconds",
+                "expected a requester, a job name, a source and a timeout from 1 to 3600 seconds",
             ));
         }
         let mut prompt = self.prompt();
@@ -518,8 +564,15 @@ pub(crate) fn sample_page() -> ListPage {
 fn sample_request() -> Request {
     Request {
         requester: "Lab driver".into(),
+        name: "Menu bands check".into(),
         operation: Operation::Run,
-        revision: "cb9b315e1".into(),
+        builds_image: true,
+        source: Source::Branch {
+            name: "menu-bands".into(),
+            commit: "cb9b315".into(),
+        },
+        level: Some("ascension".into()),
+        own_data: false,
         estimate_seconds: 240,
         timeout_seconds: 60,
     }

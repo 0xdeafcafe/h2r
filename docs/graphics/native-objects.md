@@ -1,7 +1,7 @@
 # Native renderer stage 2: objects and skinning
 
 Status: Built. Objects draw natively in the default configuration; the first-person lights are not native.
-Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/native_objects.rs`, `crates/extensions/game/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
+Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/{native_objects,native_edits}.rs`, `crates/extensions/game/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 2 of [native-renderer.md](native-renderer.md). Bipeds, vehicles, weapons,
@@ -82,6 +82,26 @@ committed holds its models until recording ends. The last reference sends
 their GPU resources to the shared map retirement worker for destruction.
 First-person models use the same worker.
 
+A paired editor's live edit changes the map file as the raw overlay
+serves it ([realtime-edits.md](../editor/realtime-edits.md), "The native
+refresh"). The hot-edit glue pushes each edited render model and bitmap
+image onto `render_bridge::native_edits`. When models are resident, the
+objects' glue drains its share at the next walk or preload, one refresh
+at a time, onto a worker (`native_objects_glue::refresh_models`). An
+edited model the load made native is loaded again from the file as the
+load does (`load_model`), uploaded into a staging set and moved into the
+draw set under its lock (`LitObjects::move_model_into`), with its new
+coverage and the load's residency. A model that no longer loads natively,
+or whose node count changed, leaves the native path
+(`LitObjects::remove_model`), so its parts keep their D3D draws from
+guest memory, and the log says why. An edited image is decoded again at
+each stage that samples it and every program texture made from it is
+rewritten in place (`LitObjects::rewrite_image`); another size, level
+count or format keeps the loaded pixels until the map reloads. The
+editor's and Theater's `GpuModels` replace a model under its index with
+`GpuModels::replace_model`. The sun's caster models
+(`native_render::sun_casters`) keep the geometry they loaded.
+
 The palette status (`scene_palette_*` in `render.scene`) distinguishes
 pending definitions, explicit null model references, failures, partial
 native coverage and resident definitions. A resident definition has a
@@ -137,7 +157,7 @@ The method for comparing the walk with `impl.render.native=off` is in
 | `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
 | `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
-| `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [pipelined-render.md](pipelined-render.md)). |
+| `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [notes/pipelined-render.md](notes/pipelined-render.md)). |
 
 ### Layer-3 masks
 
@@ -572,23 +592,16 @@ implementation samples engine texture 3.
   block in one buffer at dynamic offsets, as the lights do; the viewport
   is the whole target, as the programs' own fix-up expects.
 
-### Pipelined render
+### Memory and host state
 
-The observer reads the object array and bodies during the render. With
-`impl.render.pipelined_frame` the render runs one frame behind the
-simulation on its own thread, while the next tick moves the same bodies and
-may compact the pool. On the render thread the observer's memory is the
-render's copy-on-write snapshot of the frame
-(docs/runtime/second-executor.md; `Obs::guest` is the executor's own
-runtime), so the handles, bodies and node matrices it reads are frame `k`'s,
-and the tick's writes to live RAM never reach it. The node matrices are
-copied out of that snapshot at the hook into the pass (`ObjectFrame`), and
-nothing reads guest memory after it. The observer is one hook (context-only,
-nothing after the body, the restore at the next layer draw), so the pipelined
-render runs it on its own thread like the world's. The host's writes are its
-map state (a mutex only the observer takes, with the model loader on host
-threads) and a reservation on the device for the current view, which
-commits in render order at the hook.
+The observer reads the object array and bodies during the render. The node
+matrices are copied out of guest memory at the hook into the pass
+(`ObjectFrame`), and nothing reads guest memory after it. The observer is
+one hook (context-only, nothing after the body, the restore at the next
+layer draw). The host's writes are its map state (a mutex only the
+observer takes, with the model loader on host threads) and a reservation
+on the device for the current view, which commits in render order at the
+hook.
 
 ### Per frame on the CPU
 

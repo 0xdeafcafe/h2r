@@ -447,6 +447,120 @@ fn guest_alloc_hands_out_arena_pages() {
     assert_eq!(plan.allocs.len(), 2);
 }
 
+/// Small requests of several features, their entries and the return
+/// shadows pack into shared pages, one protection per page, each page
+/// mapped once.
+#[test]
+fn small_allocations_entries_and_shadows_share_pages() {
+    use hooks::arena::{ALIGN, ARENA_START, PAGE};
+    use runtime::guest::Permissions;
+    let mut r = Registry::new(Switches::defaults());
+    let got = std::sync::Mutex::new(Vec::new());
+    for id in ["a", "b"] {
+        r.add(&from_fn(id, |b| {
+            let mut got = got.lock().unwrap();
+            got.push(b.guest_alloc(8, Permissions::RW)?);
+            got.push(b.entry("e", |_| unreachable!())?);
+            got.push(b.entry("f", |_| unreachable!())?);
+            b.frame().on_tick("t", |_| {});
+            Ok(())
+        }))
+        .unwrap();
+    }
+    r.add(&from_fn("c", |b| {
+        b.game().on_end("e", |_| {});
+        Ok(())
+    }))
+    .unwrap();
+    let plan = r.build(&Base).unwrap();
+    let got = got.into_inner().unwrap();
+    let (rw, rx) = (ARENA_START, ARENA_START + PAGE);
+    assert_eq!(
+        got,
+        [
+            rw,
+            rx,
+            rx + hooks::ENTRY_STRIDE,
+            rw + ALIGN,
+            rx + 2 * hooks::ENTRY_STRIDE,
+            rx + 3 * hooks::ENTRY_STRIDE,
+        ]
+    );
+    // GAME_TICK and GAME_END: one shadow page, 4 bytes apart.
+    let shadow_page = ARENA_START + 2 * PAGE;
+    let tick = plan.chains[&points::GAME_TICK.base].shadow.unwrap();
+    let end = plan.chains[&points::GAME_END.base].shadow.unwrap();
+    assert_eq!((tick, end), (shadow_page, shadow_page + hooks::arena::SHADOW_STRIDE));
+    let pages: Vec<_> = plan
+        .mappings(|_| true)
+        .into_iter()
+        .map(|m| (m.addr, m.len, m.perms))
+        .collect();
+    assert_eq!(
+        pages,
+        [
+            (rw, PAGE, Permissions::RW),
+            (rx, PAGE, Permissions::RX),
+            (shadow_page, PAGE, Permissions::RX),
+        ]
+    );
+    assert_eq!(plan.arena_used(), 3 * PAGE);
+    // A page whose only user is left out is not mapped; a shared one is.
+    assert_eq!(plan.mappings(|a| a.feature != "a").len(), 3);
+    assert_eq!(plan.mappings(|a| a.feature == "(plan)").len(), 1);
+}
+
+/// No room for a return shadow refuses the plan, naming every point left
+/// without one in one conflict.
+#[test]
+fn a_full_arena_refuses_the_plan_naming_the_points() {
+    use hooks::arena::ARENA_SIZE;
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("big", |b| {
+        b.guest_alloc(ARENA_SIZE, runtime::guest::Permissions::RW)?;
+        b.frame().on_tick("t", |_| {});
+        b.game().on_end("e", |_| {});
+        Ok(())
+    }))
+    .unwrap();
+    let c = r.build(&Base).err().unwrap();
+    assert_eq!(
+        c,
+        [Conflict::ArenaFull {
+            points: vec!["GAME_TICK", "GAME_END"],
+            used: ARENA_SIZE,
+            size: ARENA_SIZE,
+        }]
+    );
+    assert_eq!(
+        c[0].to_string(),
+        "guest arena full (0x14f000 of 0x14f000 bytes used): no return shadow for 2 hooked points: GAME_TICK, GAME_END"
+    );
+}
+
+/// A feature's request that does not fit is its build error, naming it.
+#[test]
+fn a_request_past_the_arena_names_the_feature() {
+    use hooks::arena::ARENA_SIZE;
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("big", |b| {
+        b.guest_alloc(ARENA_SIZE - 0x1000, runtime::guest::Permissions::RW)?;
+        b.guest_alloc(8, runtime::guest::Permissions::RW)?;
+        Ok(())
+    }))
+    .unwrap();
+    let e = r
+        .add(&from_fn("late", |b| {
+            b.guest_alloc(8, runtime::guest::Permissions::RX)?;
+            Ok(())
+        }))
+        .unwrap_err();
+    assert_eq!(
+        e.0,
+        "guest arena full: late asked for 0x8 bytes with 0x0 of the arena's 0x14f000 left (hooks::arena)"
+    );
+}
+
 /// `render-timing` is off unless switched on, and on it observes each
 /// render stage on both sides with no conflict.
 #[test]

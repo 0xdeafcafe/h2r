@@ -1,5 +1,4 @@
-//! Each placed object's collision as wire shapes (docs/editor/polish-plan.md,
-//! slice P11): the `coll` BSPs and the `phmo` shapes its model names
+//! Each placed object's collision as wire shapes (docs/editor/editor.md): the `coll` BSPs and the `phmo` shapes its model names
 //! (object → `hlmt` `+0x8` and `+0x20`, `tags::object`).
 //!
 //! Shapes are read once per object tag, in the object's model space, and

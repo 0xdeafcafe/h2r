@@ -1,0 +1,12 @@
+# Tools and build output. src/ is committed: parser.c, grammar.json,
+# node-types.json and tree_sitter/ come from `tree-sitter generate`.
+node_modules/
+package-lock.json
+build/
+target/
+*.wasm
+*.so
+*.dylib
+*.dll
+*.o
+*.a

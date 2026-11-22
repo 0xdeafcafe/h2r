@@ -40,7 +40,7 @@ use agent_proto::{
 use live_proto::maps::{MapId, Sha256};
 use serde_json::{Map, Value, json};
 
-use crate::exec::{Access, Agent, DEFER_TICKS_MAX, GameCtx};
+use crate::exec::{Access, Agent, DEFER_TICKS_MAX};
 
 pub mod clip;
 pub mod private_graph;
@@ -610,54 +610,9 @@ pub fn debug_fields(text: &str) -> Value {
     Value::Object(out)
 }
 
-/// The pipelined render's totals (`render_bridge::pipeline_render::Stats`) as
-/// JSON: counts as they are, times in ms, the per-reason maps as objects.
-pub fn pipeline_json(s: &render_bridge::pipeline_render::Stats) -> Value {
-    let ms = |d: std::time::Duration| (d.as_secs_f64() * 1e5).round() / 100.0;
-    json!({
-        "pipelined": s.pipelined,
-        "completed": s.completed,
-        "serial": s.serial,
-        "fallbacks": s.fallbacks,
-        "serviced": s.serviced,
-        "d3d_joins": s.d3d_joins,
-        "cache_joins": s.cache_joins,
-        "sim_joins": s.sim_joins,
-        "d3d_other_thread": s.d3d_other_thread,
-        "lead_ms": ms(s.lead),
-        "overlap_ms": ms(s.overlap),
-        "new_snapshot_pages": s.new_snapshot_pages,
-        "snapshot_faults": s.snapshot_faults,
-        "animation_uses": s.animation_uses,
-        "animation_owner_calls": s.animation_owner_calls,
-        "scene_retries": s.scene_retries,
-        "join_wait_ms": ms(s.join_wait),
-        "hand_back_ms": ms(s.hand_back),
-        "snapshot_ms": ms(s.snapshot),
-        "render_ms": ms(s.render),
-        "pages": s.pages,
-        "bytes": s.bytes,
-        "conflicts": s.conflicts,
-        "owned_conflicts": s.owned_conflicts,
-        "mispredicts": s.mispredicts,
-        "accesses": s.accesses,
-        "io_stalls": s.io_stalls,
-        "io_stall_ms": ms(s.io_stall),
-        "io_stalls_render": s.io_stalls_render,
-        "io_stalls_join": s.io_stalls_join,
-        "io_deferred": s.io_deferred,
-        "io_refused": s.io_refused,
-        "io_joins": s.io_joins,
-        "io_sim_first": s.io_sim_first,
-        "io_mismatches": s.io_mismatches,
-        "io_other_thread": s.io_other_thread,
-    })
-}
-
 /// What `render.stats` reads, each `None` where that piece isn't running.
 pub struct RenderSources {
     pub interp: Box<dyn Fn() -> Option<Value> + Send>,
-    pub pipeline: Box<dyn Fn() -> Option<Value> + Send>,
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
@@ -709,7 +664,6 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
             display_frame: private_graph::display_stats(),
             private_frame: private_graph::last_stats(),
             interp: (sources.interp)().unwrap_or(Value::Null),
-            pipeline: (sources.pipeline)().unwrap_or(Value::Null),
             counters: (sources.counters)().unwrap_or(Value::Null),
         };
         serde_json::to_value(s).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
@@ -1680,35 +1634,6 @@ mod tests {
             json!({"frames": 9, "unsure_camera": 2, "ratio": 0.5, "on": true})
         );
         assert_eq!(debug_fields("no braces"), Value::Null);
-    }
-
-    #[test]
-    fn pipeline_stats_become_json() {
-        let mut s = render_bridge::pipeline_render::Stats {
-            pipelined: 4,
-            completed: 3,
-            join_wait: std::time::Duration::from_micros(1500),
-            overlap: std::time::Duration::from_micros(2250),
-            animation_uses: 5,
-            animation_owner_calls: 2,
-            scene_retries: 1,
-            new_snapshot_pages: 3,
-            snapshot_faults: 1,
-            ..Default::default()
-        };
-        s.serial.insert("loading", 2);
-        s.fallbacks.insert("D3DDevice_Swap".into(), 1);
-        let v = pipeline_json(&s);
-        assert_eq!(v["pipelined"], 4);
-        assert_eq!(v["serial"]["loading"], 2);
-        assert_eq!(v["fallbacks"]["D3DDevice_Swap"], 1);
-        assert_eq!(v["join_wait_ms"], 1.5);
-        assert_eq!(v["overlap_ms"], 2.25);
-        assert_eq!(v["animation_uses"], 5);
-        assert_eq!(v["animation_owner_calls"], 2);
-        assert_eq!(v["scene_retries"], 1);
-        assert_eq!(v["new_snapshot_pages"], 3);
-        assert_eq!(v["snapshot_faults"], 1);
     }
 }
 

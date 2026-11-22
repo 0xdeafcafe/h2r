@@ -589,6 +589,20 @@ stays on the main thread.
   process exits by itself (`close_on_guest_exit` in
   `crates/apps/cli/src/play_cmd.rs`).
 
+### When the game stops
+
+When the guest thread ends and the window stays up, the window draws a
+red notice over the last frame (`overlay::stopped_notice`, set in
+`shell.rs` on `GuestExited`): "The game crashed." with the first six
+lines of the error, wrapped to 88 columns ("The game stopped." when the
+guest returned), and "Press F5 to start the game again, or close the
+window to quit." The full message stays in the terminal. F6 hides the
+notice. F5 closes the window with `ExitReport::restart_requested` set. Under
+`h2 play --follow` the process then exits with `RESTART_EXIT` for the
+follower to start again; on its own, `h2 play` starts itself again in place
+(`restart_in_place`: the same executable and arguments by `exec`, with the
+pid-named agent socket freed and SIGINT/SIGTERM unblocked first).
+
 The title bar shows guest presents per second, frames shown per second
 (one decimal), and frames dropped, all over the last 5 seconds
 (`pacing::WindowedRate`), refreshed once a second. Lab game windows keep their

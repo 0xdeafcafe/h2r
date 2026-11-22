@@ -1,6 +1,6 @@
 //! `collision.*`: the open map's level collision surfaces, classified as
 //! drawn or collision only ([`scenario_edit::collision_view`];
-//! docs/editor/polish-plan.md, slice P10). Read only, and independent of
+//! docs/editor/editor.md). Read only, and independent of
 //! the layers shown: an agent can ask about a surface the viewport hides.
 //! `collision.objects` lists the placed objects' `coll` and `phmo` shapes
 //! ([`scenario_edit::object_collision`], slice P11).

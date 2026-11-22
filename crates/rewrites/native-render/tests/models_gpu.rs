@@ -200,3 +200,111 @@ fn a_posed_object_draws_skinned_and_lit_with_the_games_w_depth() {
     let want = w_depth(10.0, 1024.0, D24_SCALE);
     assert!((got - want).abs() <= 1.0 / D24_SCALE, "depth {got} want {want}");
 }
+
+/// `model()` with its square moved 6 along rest-space x (after node 1's
+/// turn, 6 to the side of the camera's centre).
+fn moved_model() -> Model {
+    Model::build(&ModelInput {
+        inverse_binds: vec![NodeMatrix::IDENTITY; 2],
+        sections: vec![ModelSectionInput {
+            positions: vec![[4.0, 0.0, -2.0], [8.0, 0.0, -2.0], [4.0, 0.0, 2.0], [8.0, 0.0, 2.0]],
+            uvs: vec![[0.5; 2]; 4],
+            normals: vec![[0.0, 1.0, 0.0]; 4],
+            node_indices: vec![[1, 0, 0, 0]; 4],
+            node_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
+            node_map: vec![],
+            parts: vec![ModelPartInput {
+                material: 0,
+                transparent: false,
+                triangles: vec![[0, 1, 2], [1, 3, 2]],
+            }],
+        }],
+    })
+}
+
+/// One posed object of model `m` drawn into a cleared target: its pixels.
+fn draw_posed(ctx: &gfx::GfxContext, gpu: &mut GpuModels, m: u32) -> Vec<u8> {
+    let target = |format| {
+        ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    };
+    let color = target(wgpu::TextureFormat::Rgba8Unorm);
+    let depth = target(wgpu::TextureFormat::Depth32Float);
+    let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &cv,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: &dv,
+            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    }));
+    let posed = [NodeMatrix::IDENTITY, turned([10.0, 0.0, 0.0])];
+    // A sphere around both squares, so the cull keeps either.
+    let objects = [ObjectInput { model: m, nodes: &posed, sphere: ([10.0, 0.0, 0.0], 12.0), highlight: [0; 4] }];
+    let arena = gfx::ring::UploadPool::default().begin();
+    let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, encoder: &mut enc, arena: &arena };
+    let f = gpu.prepare(&ctx.device, &mut uploads, &camera(), DepthRule::D24, &objects);
+    assert_eq!(f.draws.len(), 1);
+    gpu.encode(
+        &ctx.device,
+        &mut enc,
+        &cv,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &dv,
+        wgpu::TextureFormat::Depth32Float,
+        PassViewport { x: 0.0, y: 0.0, width: SIZE as f32, height: SIZE as f32 },
+    );
+    arena.flush(&ctx.queue);
+    ctx.queue.submit([enc.finish()]);
+    read(ctx, &color, wgpu::TextureAspect::All)
+}
+
+/// A live edit's model replaces the uploaded one under the same index
+/// (docs/editor/realtime-edits.md, "The native refresh"): the object draws
+/// the new vertices, exactly as a model uploaded from them, and the old
+/// square is gone.
+#[test]
+fn a_replaced_model_draws_its_new_vertices() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    fn base(_: u16) -> Option<Image> {
+        Some(Image::solid([200, 100, 50, 255]))
+    }
+    let mut live = GpuModels::new(&ctx.device, &ctx.queue);
+    let m = live.add_model(&ctx.device, &ctx.queue, model(), &mut base);
+    let before = draw_posed(&ctx, &mut live, m);
+    let centre = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+    assert_ne!(before[centre..centre + 3], [0, 0, 0], "before: the square covers the centre");
+
+    assert!(live.replace_model(&ctx.device, &ctx.queue, m, moved_model(), &mut base));
+    assert!(!live.replace_model(&ctx.device, &ctx.queue, m + 1, moved_model(), &mut base), "no such model");
+    assert_eq!(live.model_count(), 1);
+    let after = draw_posed(&ctx, &mut live, m);
+    assert_eq!(after[centre..centre + 4], [0, 0, 0, 255], "after: the centre is clear");
+    assert!(after.chunks(4).any(|p| p[..3] != [0, 0, 0]), "the moved square draws");
+
+    let mut loaded = GpuModels::new(&ctx.device, &ctx.queue);
+    let n = loaded.add_model(&ctx.device, &ctx.queue, moved_model(), &mut base);
+    assert!(after == draw_posed(&ctx, &mut loaded, n), "as a model uploaded from the edited bytes");
+}

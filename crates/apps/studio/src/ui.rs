@@ -19,6 +19,7 @@ pub mod scripts;
 pub mod tags;
 mod ui_screens;
 mod hud;
+mod textures;
 mod variants;
 /// The game type script window (`app::rules_edit`).
 mod game_script;
@@ -85,6 +86,7 @@ pub struct Studio {
     playlists: playlists::PlaylistsUi,
     pub ui_screens: ui_screens::UiScreensUi,
     pub hud: hud::HudUi,
+    pub textures: textures::TexturesUi,
     inspector: inspector::InspectorState,
     modeling: modeling::ModelingPanel,
     /// Play and pair (the Game panel; `crate::play`).
@@ -123,6 +125,7 @@ impl Studio {
             playlists: playlists::PlaylistsUi::default(),
             ui_screens: ui_screens::UiScreensUi::default(),
             hud: hud::HudUi::default(),
+            textures: textures::TexturesUi::default(),
             inspector: inspector::InspectorState::default(),
             modeling: modeling::ModelingPanel::default(),
             play: play::PlayUi::default(),
@@ -137,6 +140,10 @@ impl Studio {
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
         app.poll_cards();
+        app.poll_bot_nav();
+        // An outside editor's saves of the game type script, before the
+        // game link sends the reload they queue.
+        game_script::poll(app);
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
@@ -212,6 +219,7 @@ impl Studio {
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
             ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
             ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
+            ToolKind::Textures => self.textures_windows(ui, app, gpu, &mut actions),
         }
         self.play.window(ui, app, &self.keys.game);
         self.previous_tool = Some(app.tool);
@@ -287,7 +295,7 @@ impl Studio {
                         actions.push(Action::HudSaveAs(p));
                     }
                 }
-                ToolKind::Playlists | ToolKind::UiScreens => {}
+                ToolKind::Playlists | ToolKind::UiScreens | ToolKind::Textures => {}
             }
         }
         if cmd && ui.is_key_pressed(Key::Q) {
@@ -583,6 +591,7 @@ impl Studio {
                     actions.push(Action::HudSaveAs(p));
                 }
             }
+            ToolKind::Textures => textures::file_menu(ui, app, self.dialogs, actions),
             ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             ToolKind::Variants => {
                 menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
@@ -638,6 +647,13 @@ impl Studio {
         ui.window(&self.keys.rules)
             .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
             .build(|| game_script::window(ui, app, fonts, self.dialogs));
+        // Opening a script (from its toolbar or `rules.open`) picks its tab,
+        // asked each frame until the window's body has drawn: a request
+        // made before the dock layout exists is lost.
+        if app.rules.show {
+            let name = format!("###{}", self.keys.rules.stable_id());
+            ui.set_window_focus(Some(name.as_str()));
+        }
     }
 
     fn playlist_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
@@ -683,6 +699,19 @@ impl Studio {
             .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
         ui.window(&keys.inspector)
             .build(|| hud::inspector(ui, app, st, fonts, self.dialogs, actions));
+    }
+
+    fn textures_windows(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
+        let fonts = &self.fonts;
+        let st = &mut self.textures;
+        let keys = &self.keys.textures;
+        ui.window(&keys.list)
+            .build(|| textures::list(ui, app, st, actions));
+        ui.window(&keys.center)
+            .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
+            .build(|| textures::canvas(ui, app, st, fonts, gpu, actions));
+        ui.window(&keys.inspector)
+            .build(|| textures::inspector(ui, app, st, self.dialogs, actions));
     }
 
     fn tags_window(
@@ -835,7 +864,6 @@ impl Studio {
                 return;
             }
             if !app.session.is_open() {
-                layers::section(ui, app, actions);
                 theme::empty_card(ui, &self.fonts, "Open a map to see its scene", || {});
                 return;
             }
@@ -887,7 +915,6 @@ impl Studio {
             let (toggle, range) = (io.key_ctrl() || io.key_super(), io.key_shift());
             let mut place = None;
             theme::panel_body(ui, "##outliner-body", || {
-                layers::section(ui, app, actions);
                 for b in &scenario.blocks {
                     let kind = b.def.kind;
                     let shown: Vec<usize> = (0..b.len())
@@ -1133,6 +1160,7 @@ impl Studio {
                 ToolKind::Hud => "The HUD map".to_owned(),
                 ToolKind::Tags => "The map's tags".to_owned(),
                 ToolKind::Scripts => "The map's scripts".to_owned(),
+                ToolKind::Textures => "The map's bitmaps".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
@@ -1176,7 +1204,7 @@ impl Studio {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts | ToolKind::Textures => {}
             }
             ui.same_line();
             if ui.button("Discard") {
@@ -1291,6 +1319,7 @@ pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
                     | Action::ToggleSelect(_)
                     | Action::SelectVolume(_)
                     | Action::SelectSurface(_)
+                    | Action::SelectNav(_)
             )
         {
             app.dispatch(Action::SetTool(ToolKind::Scenario));
@@ -1516,7 +1545,6 @@ fn halo1_outliner(
     ui.separator();
     let sel = app.session.selected();
     theme::panel_body(ui, "##h1-outliner-body", || {
-        layers::section(ui, app, actions);
         for kind in editor_core::halo1::H1Kind::ALL {
             let block = block_of(kind);
             let n = view.of(kind).count();

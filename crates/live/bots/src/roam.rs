@@ -7,7 +7,7 @@
 //! - a weapon lying in the world worth taking;
 //! - the map's spawn points: on a large map with no sighting for a while,
 //!   the likeliest place to find anyone is where players come from;
-//! - a few polygons picked at random, so it still explores;
+//! - a few in-map polygons picked at random, so it still explores;
 //!
 //! less where it has been lately (fading over [`VISIT_TICKS`]) and less
 //! right next to it, plus a random wobble the skill sets ([`noise`]): Easy
@@ -161,11 +161,15 @@ impl Roam {
         for &s in starts {
             c.push((START_SCORE, s));
         }
-        let n = nav.polys.len();
+        // Random floors are in the map only: never the terrain past its
+        // boundary that a bounce alone reaches (nav::NavMesh::in_map).
+        let n = nav.in_map_count();
         if n > 0 {
             for _ in 0..RANDOM_PICKS {
-                let i = (self.next() % n as u64) as usize;
-                c.push((RANDOM_SCORE, nav.polys[i].center));
+                let k = (self.next() % n as u64) as usize;
+                if let Some(i) = nav.nth_in_map(k) {
+                    c.push((RANDOM_SCORE, nav.polys[i as usize].center));
+                }
             }
         }
         let wobble = noise(skill);

@@ -11,7 +11,7 @@
 //! * `rndint`, `scale`, `xtract`, `prem`, `prem1`, `compare` and every
 //!   conversion are exact (correctly rounded where they round).
 //! * The transcendentals compute in a 512-bit software float and round once
-//!   to 64 bits under round-to-nearest. The default `fast-trans` feature
+//!   to 64 bits under round-to-nearest. A fast path
 //!   first tries guarded 128-bit evaluation for FYL2X, F2XM1, FSIN, FCOS,
 //!   FSINCOS, FPTAN and FPATAN;
 //!   ambiguous cases retain 512 bits. See docs/lifter/x87-transcendentals.md and
@@ -47,7 +47,7 @@ pub use trans::{cos, patan, sin, sincos, tan, x2m1, yl2x, yl2xp1};
 /// Whether the transcendentals are *proven* correctly rounded.
 ///
 /// The reference computes with roughly 500 bits of working precision and
-/// rounds once. The default `fast-trans` path certifies unambiguous
+/// rounds once. The fast path certifies unambiguous
 /// rounding cells before accepting a lower working precision. Ambiguous
 /// cases fall back to the reference, whose 64-bit worst cases have not
 /// been exhaustively searched. Correct rounding of the total interface

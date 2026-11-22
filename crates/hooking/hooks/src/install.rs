@@ -165,13 +165,13 @@ impl Plan {
     /// Recreate the player's private pages after the saved RAM hash is checked.
     pub fn restore_presentation_pages(&self, rt: &Runtime, installed: &Installed) -> Result<(), InstallError> {
         let mut guest = rt.memory();
-        for a in self.allocs.iter().filter(|a| a.presentation_only && installed.off_reason(a.feature).is_none()) {
-            let len = (a.len + 0xfff) & !0xfff;
-            if guest.mappings().iter().any(|m| m.virtual_start == a.addr && m.len == len && m.permissions == a.perms) {
+        let pages = self.mappings(|a| a.presentation_only && installed.off_reason(a.feature).is_none());
+        for p in pages {
+            if guest.mappings().iter().any(|m| m.virtual_start == p.addr && m.len == p.len && m.permissions == p.perms) {
                 continue;
             }
-            guest.map_zeroed(a.addr, len, a.perms).map_err(|e| InstallError::Map {
-                addr: a.addr,
+            guest.map_zeroed(p.addr, p.len, p.perms).map_err(|e| InstallError::Map {
+                addr: p.addr,
                 error: format!("{e:?}"),
             })?;
         }
@@ -179,10 +179,13 @@ impl Plan {
     }
 
     /// Layer a host-only observer plan over the currently installed handlers.
-    /// The boot installer owns a page per return shadow and uses only its first
-    /// address. Late observations use free selectors in the existing page,
-    /// preserving both the boot dispatch and guest memory until adoption.
-    pub fn attach_observers(&self, rt: &Runtime, shadow_page: u32) -> Result<(), String> {
+    /// The boot plan packs return shadows [`crate::arena::SHADOW_STRIDE`]
+    /// apart on shadow pages of their own; `shadow` is one of them. Late
+    /// observations use free slots on its page, preserving both the boot
+    /// dispatch and guest memory until adoption.
+    pub fn attach_observers(&self, rt: &Runtime, shadow: u32) -> Result<(), String> {
+        use crate::arena::{PAGE, SHADOW_STRIDE};
+        let shadow_page = shadow & !(PAGE - 1);
         if !self.entries.is_empty() || self.allocs.iter().any(|a| a.feature != "(plan)")
             || self.chains.values().any(|c| c.implement.is_some())
         {
@@ -197,10 +200,10 @@ impl Plan {
                 .ok_or_else(|| format!("{} has no generated original", chain.point.name))
         }).collect::<Result<Vec<_>, _>>()?;
         rt.edit_dispatch(|dispatch| {
-            if dispatch.override_handler(shadow_page).is_none() {
+            if dispatch.override_handler(shadow).is_none() {
                 return Err("the boot return shadow is unavailable".into());
             }
-            let mut selectors = (4..0x1000).step_by(4).map(|off| shadow_page + off)
+            let mut selectors = (0..PAGE).step_by(SHADOW_STRIDE as usize).map(|off| shadow_page + off)
                 .filter(|addr| dispatch.override_name(*addr).is_none());
             // Validate the entire extension before publishing its first handler.
             let mut ready = Vec::with_capacity(originals.len());
@@ -338,14 +341,14 @@ impl Plan {
         }
         {
             let mut mem = rt.memory();
-            for a in &self.allocs {
-                if a.feature != "(plan)" && off_ids.contains(a.feature) {
-                    continue;
-                }
-                let len = (a.len + 0xfff) & !0xfff;
-                mem.map_zeroed(a.addr, len, a.perms)
+            // A shared page is mapped once, when any allocation on it is
+            // kept.
+            let pages =
+                self.mappings(|a| a.feature == "(plan)" || !off_ids.contains(a.feature));
+            for m in pages {
+                mem.map_zeroed(m.addr, m.len, m.perms)
                     .map_err(|e| InstallError::Map {
-                        addr: a.addr,
+                        addr: m.addr,
                         error: format!("{e:?}"),
                     })?;
             }

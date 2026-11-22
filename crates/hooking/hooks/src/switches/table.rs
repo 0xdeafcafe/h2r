@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 41;
+pub const BUDGET: usize = 43;
 
 use Initial::{Group, Off, On};
 
@@ -71,8 +71,6 @@ pub const TABLE: &[Switch] = &[
     // Rendering.
     sw("impl.render.native", On, "render", "2026-11-14",
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
-    sw("impl.render.pipelined_frame", Off, "render", "2026-11-18",
-        "the pipelined COW worker in its current form is a dead end (review 5): delete"),
     sw("impl.render.interpolate", On, "render", "2026-11-14",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     sw("impl.render.reproject", Off, "render", "2026-11-18",
@@ -100,11 +98,15 @@ pub const TABLE: &[Switch] = &[
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
+    sw("impl.sim.page-census", On, "sim", "2026-11-22",
+        "the guest page census in the report (docs/perf/sim-light.md, L1): a timing arm turns it off; deleted when the page figures are measured for good"),
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.status-poll", On, "sim", "2026-11-22",
         "the map status poll answered from its last result (docs/perf/sim-10x.md, B2): deleted with its off path once a release has run with it on"),
+    sw("impl.sim.phantom-alias", On, "sim", "2026-11-22",
+        "the phantoms' action build on live RAM with an undo journal (docs/perf/sim-phantom-build.md, P1): the view path stays as the check mode's reference and the flat-RAM path; the switch goes once a release has run with it on"),
     // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),

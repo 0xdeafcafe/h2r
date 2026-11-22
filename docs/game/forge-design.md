@@ -84,7 +84,7 @@ tags added at build time so that most edits in a session are Live.
 - Generated tags of our own, built from nothing on the disc: barrier
   boxes in a ladder of sizes, a block-out set (box, ramp, wedge,
   cylinder), marker objects for emitters and volumes. Each is a `bloc` or
-  `scen` with a `coll` and `phmo` from the planned collision-build crate
+  `scen` with a `coll` and `phmo` from the `collision-build` crate
   ([modeling.md](../editor/modeling.md) slice 8) and, for block-out
   pieces, a `mode` from the section encoder.
 - The tags a document's recipes ask for (monitor bodies, AI characters,

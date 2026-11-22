@@ -11,7 +11,10 @@
 //! bytes it rewrote. A resource the caller does not touch is carried as the
 //! source's bytes, whatever it holds. When a size changes, the resources are
 //! laid out again in table order, each marker four-aligned (**Design**: the
-//! engine's own alignment rule for the area is not located).
+//! engine's own alignment rule for the area is not located), and a data
+//! resource (the visibility MOPP code) starts 16-aligned in the block with
+//! its size in its struct field, as `h1convert::structure::raw_block` lays
+//! out the code object Havok reads.
 //!
 //! The packers ([`pack_normpacked3`], [`quantize`], [`snorm16`]) are the
 //! inverses of the decoder's expansions, for the streams an in-place edit
@@ -219,12 +222,23 @@ pub fn encode_section(layout: &SectionLayout, data: &SectionData) -> Result<Enco
     }
     let mut area: Vec<u8> = Vec::new();
     let mut resources = Vec::with_capacity(data.resources.len());
+    // Block offset of the resource area's first byte.
+    let base = 8 + section.len();
     for r in &data.resources {
         let Some(b) = &r.bytes else {
             resources.push(entry(r, None));
             continue;
         };
         area.resize(area.len().next_multiple_of(4), 0);
+        if r.kind == ResourceKind::Data {
+            let field = usize::from(r.field);
+            let size = u32::try_from(b.len())
+                .map_err(|_| Error::Invalid("data resource size overflow"))?;
+            section[field..field + 4].copy_from_slice(&size.to_le_bytes());
+            while !(base + area.len() + 4).is_multiple_of(16) {
+                area.push(0);
+            }
+        }
         area.extend_from_slice(&RSRC.as_u32().to_le_bytes());
         let offset = area.len() as u32;
         area.extend_from_slice(b);

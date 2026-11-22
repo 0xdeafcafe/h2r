@@ -1,8 +1,9 @@
 //! `h2 rules lsp`: a language server for `.rules` files on stdin and
-//! stdout (docs/game/rules-engine.md, "Security and usability"). Full document sync;
-//! every answer comes from `rules::ide`, as Live's `POST /v1/rules/ide`
-//! does. [`Server::handle`] is the whole protocol, so tests drive it
-//! without a process.
+//! stdout (docs/game/rules-engine.md, "Security and usability"; the editor extensions in
+//! docs/editor/rules-editors.md). Incremental document sync in UTF-16
+//! positions; every answer comes from `rules::ide`, as Live's
+//! `POST /v1/rules/ide` does. [`Server::handle`] is the whole protocol
+//! after `initialize`, so tests drive it without a process.
 
 use std::collections::HashMap;
 
@@ -12,21 +13,36 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, References, Request as _,
+    CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest, FoldingRangeRequest, Formatting,
+    GotoDefinition, HoverRequest, PrepareRenameRequest, RangeFormatting, References, Rename, Request as _,
     SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use rules::ide::{self, Position};
 use serde_json::{Value, json};
 
-/// JSON-RPC's error codes.
+/// JSON-RPC's and LSP's error codes.
 const METHOD_NOT_FOUND: i32 = -32601;
 const INVALID_PARAMS: i32 = -32602;
+const REQUEST_FAILED: i32 = -32803;
+
+/// Where a diagnostic's code is explained: each diagnostic's
+/// `codeDescription`.
+const CODES_DOC: &str =
+    "https://github.com/0xdeafcafe/h2recomp/blob/master/docs/game/rules-language-types.md#diagnostics-and-the-editor";
+
+/// The words after which a typed space asks for completions: what comes
+/// next is a label, an event, a carrier, a capability, a set, a palette or
+/// a game type list.
+const SPACE_TRIGGER_WORDS: &[&str] = &["is", "on", "carrier", "requires", "each", "palette", "list"];
 
 /// Serves until the client shuts the server down.
 pub fn run() -> Result<()> {
     let (connection, io) = Connection::stdio();
+    let (id, _params) = connection
+        .initialize_start()
+        .map_err(|e| anyhow!("initialize: {e:?}"))?;
     connection
-        .initialize(capabilities())
+        .initialize_finish(id, initialize_result())
         .map_err(|e| anyhow!("initialize: {e:?}"))?;
     let mut server = Server::default();
     for msg in &connection.receiver {
@@ -46,18 +62,38 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// The answer to `initialize`: the capabilities and the server's name.
+fn initialize_result() -> Value {
+    json!({
+        "capabilities": capabilities(),
+        "serverInfo": {"name": "h2 rules lsp", "version": env!("CARGO_PKG_VERSION")},
+    })
+}
+
 /// What the server offers.
 fn capabilities() -> Value {
     json!({
-        // Full sync: each change carries the whole text.
-        "textDocumentSync": 1,
-        "completionProvider": {"triggerCharacters": [".", ":", "\""]},
+        "positionEncoding": "utf-16",
+        "textDocumentSync": {
+            "openClose": true,
+            // Incremental: each change carries a range and its new text.
+            "change": 2,
+        },
+        "completionProvider": {
+            "triggerCharacters": [".", ":", "\"", "(", ",", " "],
+            "resolveProvider": false,
+        },
         "hoverProvider": true,
-        "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
+        "signatureHelpProvider": {"triggerCharacters": ["(", ","], "retriggerCharacters": [","]},
         "definitionProvider": true,
         "referencesProvider": true,
+        "documentHighlightProvider": true,
         "documentSymbolProvider": true,
         "documentFormattingProvider": true,
+        "documentRangeFormattingProvider": true,
+        "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+        "renameProvider": {"prepareProvider": true},
+        "foldingRangeProvider": true,
         "semanticTokensProvider": {
             "legend": {"tokenTypes": ide::LEGEND, "tokenModifiers": []},
             "full": true,
@@ -66,10 +102,16 @@ fn capabilities() -> Value {
     })
 }
 
+/// An open document.
+struct Doc {
+    text: String,
+    version: Option<i64>,
+}
+
 /// The open documents, by URI.
 #[derive(Default)]
 pub(crate) struct Server {
-    docs: HashMap<String, String>,
+    docs: HashMap<String, Doc>,
 }
 
 impl Server {
@@ -91,6 +133,7 @@ impl Server {
         else {
             return Vec::new();
         };
+        let version = n.params.pointer("/textDocument/version").and_then(Value::as_i64);
         let method = n.method.as_str();
         if method == DidOpenTextDocument::METHOD {
             let text = n
@@ -98,31 +141,41 @@ impl Server {
                 .pointer("/textDocument/text")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            self.docs.insert(uri.clone(), text.to_string());
+            self.docs.insert(
+                uri.clone(),
+                Doc {
+                    text: text.to_string(),
+                    version,
+                },
+            );
             vec![self.publish(&uri)]
         } else if method == DidChangeTextDocument::METHOD {
-            let text = n
-                .params
-                .get("contentChanges")
-                .and_then(Value::as_array)
-                .and_then(|changes| changes.last())
-                .and_then(|c| c.get("text"))
-                .and_then(Value::as_str);
-            if let Some(text) = text {
-                self.docs.insert(uri.clone(), text.to_string());
+            let doc = self.docs.entry(uri.clone()).or_insert(Doc {
+                text: String::new(),
+                version: None,
+            });
+            // In order: each change's range is in the text the one before
+            // left.
+            for change in n.params.get("contentChanges").and_then(Value::as_array).into_iter().flatten() {
+                apply_change(&mut doc.text, change);
             }
+            doc.version = version.or(doc.version);
             vec![self.publish(&uri)]
         } else if method == DidCloseTextDocument::METHOD {
             self.docs.remove(&uri);
-            vec![diagnostics_note(&uri, json!([]))]
+            vec![diagnostics_note(&uri, None, json!([]))]
         } else {
             Vec::new()
         }
     }
 
     fn publish(&self, uri: &str) -> Message {
-        let src = self.docs.get(uri).map_or("", String::as_str);
-        diagnostics_note(uri, json!(ide::diagnostics(src)))
+        let (src, version) = self
+            .docs
+            .get(uri)
+            .map_or(("", None), |d| (d.text.as_str(), d.version));
+        let list: Vec<Value> = ide::diagnostics(src).iter().map(diagnostic_json).collect();
+        diagnostics_note(uri, version, Value::Array(list))
     }
 
     fn request(&self, req: Request) -> Response {
@@ -140,9 +193,15 @@ impl Server {
             SignatureHelpRequest::METHOD,
             GotoDefinition::METHOD,
             References::METHOD,
+            DocumentHighlightRequest::METHOD,
             SemanticTokensFullRequest::METHOD,
             DocumentSymbolRequest::METHOD,
             Formatting::METHOD,
+            RangeFormatting::METHOD,
+            CodeActionRequest::METHOD,
+            PrepareRenameRequest::METHOD,
+            Rename::METHOD,
+            FoldingRangeRequest::METHOD,
         ];
         if !known.contains(&method) {
             return Err((METHOD_NOT_FOUND, format!("unsupported method {method}")));
@@ -155,11 +214,15 @@ impl Server {
         let src = self
             .docs
             .get(uri)
-            .map(String::as_str)
+            .map(|d| d.text.as_str())
             .ok_or_else(|| (INVALID_PARAMS, format!("{uri} is not open")))?;
         let pos = || -> Result<Position, (i32, String)> {
             let p = req.params.get("position").cloned().unwrap_or(Value::Null);
             serde_json::from_value(p).map_err(|e| (INVALID_PARAMS, format!("position: {e}")))
+        };
+        let range = || -> Result<ide::Range, (i32, String)> {
+            let r = req.params.get("range").cloned().unwrap_or(Value::Null);
+            serde_json::from_value(r).map_err(|e| (INVALID_PARAMS, format!("range: {e}")))
         };
         let locations = |list: Vec<ide::Location>| -> Value {
             Value::Array(
@@ -169,7 +232,12 @@ impl Server {
             )
         };
         Ok(if method == Completion::METHOD {
-            json!(ide::complete(src, pos()?))
+            let pos = pos()?;
+            if space_typed(&req.params) && !space_wants_completion(src, pos) {
+                json!([])
+            } else {
+                json!(ide::complete(src, pos))
+            }
         } else if method == HoverRequest::METHOD {
             json!(ide::hover(src, pos()?))
         } else if method == SignatureHelpRequest::METHOD {
@@ -188,10 +256,46 @@ impl Server {
                 list.remove(0);
             }
             locations(list)
+        } else if method == DocumentHighlightRequest::METHOD {
+            json!(ide::highlights(src, pos()?))
         } else if method == SemanticTokensFullRequest::METHOD {
             json!({ "data": encode_tokens(&ide::semantic_tokens(src)) })
         } else if method == DocumentSymbolRequest::METHOD {
             json!(ide::symbols(src))
+        } else if method == FoldingRangeRequest::METHOD {
+            json!(ide::folding_ranges(src))
+        } else if method == CodeActionRequest::METHOD {
+            Value::Array(
+                ide::actions(src, range()?)
+                    .into_iter()
+                    .map(|a| {
+                        json!({
+                            "title": a.title,
+                            "kind": a.kind,
+                            "diagnostics": [diagnostic_json(&a.diagnostic)],
+                            "edit": {"changes": {uri: a.edits}},
+                        })
+                    })
+                    .collect(),
+            )
+        } else if method == PrepareRenameRequest::METHOD {
+            let p = ide::prepare_rename(src, pos()?).map_err(|e| (REQUEST_FAILED, e))?;
+            json!(p)
+        } else if method == Rename::METHOD {
+            let name = req
+                .params
+                .get("newName")
+                .and_then(Value::as_str)
+                .ok_or((INVALID_PARAMS, "no newName".to_string()))?;
+            let edits = ide::rename(src, pos()?, name).map_err(|e| (INVALID_PARAMS, e))?;
+            json!({"changes": {uri: edits}})
+        } else if method == RangeFormatting::METHOD {
+            match ide::format_range(src, range()?) {
+                Ok(edits) => json!(edits),
+                // Source that does not parse is left alone; its errors are
+                // in the diagnostics.
+                Err(_) => Value::Null,
+            }
         } else {
             match ide::format(src) {
                 Ok(text) if text == src => json!([]),
@@ -199,19 +303,77 @@ impl Server {
                     "range": {"start": Position::new(0, 0), "end": end_of(src)},
                     "newText": text,
                 }]),
-                // Source that does not parse is left alone; its errors are
-                // in the diagnostics.
                 Err(_) => Value::Null,
             }
         })
     }
 }
 
-fn diagnostics_note(uri: &str, diagnostics: Value) -> Message {
-    Message::Notification(Notification::new(
-        PublishDiagnostics::METHOD.to_string(),
-        json!({"uri": uri, "diagnostics": diagnostics}),
-    ))
+/// Makes one `contentChanges` entry: a range and its new text, or the
+/// whole text when it has no range. Positions are UTF-16, as declared.
+fn apply_change(text: &mut String, change: &Value) {
+    let Some(new) = change.get("text").and_then(Value::as_str) else {
+        return;
+    };
+    let range = change
+        .get("range")
+        .and_then(|r| serde_json::from_value::<ide::Range>(r.clone()).ok());
+    match range {
+        Some(r) => {
+            let s = ide::offset(text, r.start);
+            let e = ide::offset(text, r.end).max(s);
+            text.replace_range(s..e, new);
+        }
+        None => *text = new.to_string(),
+    }
+}
+
+/// Whether a completion request comes from typing a space (LSP's
+/// `CompletionTriggerKind.TriggerCharacter` with `" "`).
+fn space_typed(params: &Value) -> bool {
+    params.pointer("/context/triggerKind").and_then(Value::as_u64) == Some(2)
+        && params.pointer("/context/triggerCharacter").and_then(Value::as_str) == Some(" ")
+}
+
+/// Whether the space before `pos` follows a word of
+/// [`SPACE_TRIGGER_WORDS`], a `:` (a type comes next) or a `,` (the next
+/// argument or capability). Anywhere else a space asks for nothing, so
+/// typing does not open the list at every word.
+fn space_wants_completion(src: &str, pos: Position) -> bool {
+    let off = ide::offset(src, pos);
+    let line_start = src[..off].rfind('\n').map_or(0, |i| i + 1);
+    let before = src[line_start..off].trim_end();
+    if before.ends_with(':') || before.ends_with(',') {
+        return true;
+    }
+    let word_start = before
+        .char_indices()
+        .rev()
+        .take_while(|&(_, c)| c.is_ascii_alphanumeric() || c == '_')
+        .last()
+        .map_or(before.len(), |(i, _)| i);
+    SPACE_TRIGGER_WORDS.contains(&&before[word_start..])
+}
+
+/// A diagnostic as LSP's: `ide::Diagnostic`'s fields, with the page that
+/// explains its code. The fixes stay out; `codeAction` answers them.
+fn diagnostic_json(d: &ide::Diagnostic) -> Value {
+    json!({
+        "range": d.range,
+        "severity": d.severity,
+        "message": d.message,
+        "code": d.code,
+        "codeDescription": {"href": CODES_DOC},
+        "source": d.source,
+    })
+}
+
+fn diagnostics_note(uri: &str, version: Option<i64>, diagnostics: Value) -> Message {
+    let mut params = json!({"uri": uri, "diagnostics": diagnostics});
+    if let Some(v) = version {
+        params["version"] = json!(v);
+    }
+    Message::Notification(Notification::new(PublishDiagnostics::METHOD.to_string(), params))
 }
 
 /// Signature help with each parameter's label as offsets into the
@@ -278,6 +440,15 @@ mod tests {
         json!({"textDocument": {"uri": URI}, "position": {"line": line, "character": character}})
     }
 
+    fn doc() -> Value {
+        json!({"textDocument": {"uri": URI}})
+    }
+
+    fn open(s: &mut Server, text: &str) -> Value {
+        let open = json!({"textDocument": {"uri": URI, "languageId": "rules", "version": 1, "text": text}});
+        published(s.handle(note("textDocument/didOpen", open)))
+    }
+
     fn response(out: Vec<Message>) -> Response {
         match out.into_iter().next() {
             Some(Message::Response(r)) => r,
@@ -305,8 +476,7 @@ mod tests {
     #[test]
     fn the_handler_publishes_diagnostics_and_answers_from_the_ide_module() {
         let mut s = Server::default();
-        let open = json!({"textDocument": {"uri": URI, "languageId": "rules", "version": 1, "text": SRC}});
-        assert_eq!(published(s.handle(note("textDocument/didOpen", open))), json!([]));
+        assert_eq!(open(&mut s, SRC), json!([]));
 
         let v = result(s.handle(req(1, "textDocument/hover", at(3, 5))));
         assert!(v["contents"]["value"].as_str().unwrap().contains("score(player, int)"));
@@ -323,14 +493,14 @@ mod tests {
         assert_eq!(v["signatures"][0]["parameters"][1]["label"], json!([14, 17]));
         let v = result(s.handle(req(5, "textDocument/completion", at(3, 4))));
         assert!(v.as_array().unwrap().iter().any(|i| i["label"] == "score"));
-        let v = result(s.handle(req(6, "textDocument/documentSymbol", json!({"textDocument": {"uri": URI}}))));
+        let v = result(s.handle(req(6, "textDocument/documentSymbol", doc())));
         assert_eq!(v[1]["name"], "on kill");
-        let v = result(s.handle(req(7, "textDocument/semanticTokens/full", json!({"textDocument": {"uri": URI}}))));
+        let v = result(s.handle(req(7, "textDocument/semanticTokens/full", doc())));
         let data: Vec<u64> = v["data"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
         assert_eq!(data.len() % 5, 0);
         // `rules`, then `"T"` four columns on, as a keyword and a string.
         assert_eq!(&data[..10], &[0, 0, 5, 0, 0, 0, 6, 3, 10, 0]);
-        let v = result(s.handle(req(8, "textDocument/formatting", json!({"textDocument": {"uri": URI}}))));
+        let v = result(s.handle(req(8, "textDocument/formatting", doc())));
         assert_eq!(v, json!([]));
 
         // A change replaces the text and publishes again.
@@ -338,18 +508,171 @@ mod tests {
         let change = json!({"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": messy}]});
         let d = published(s.handle(note("textDocument/didChange", change)));
         assert_eq!(d[0]["severity"], 1);
-        let v = result(s.handle(req(9, "textDocument/formatting", json!({"textDocument": {"uri": URI}}))));
+        assert_eq!(d[0]["codeDescription"]["href"], CODES_DOC);
+        assert!(d[0].get("fixes").is_none(), "{d}");
+        let v = result(s.handle(req(9, "textDocument/formatting", doc())));
         assert_eq!(v[0]["newText"], "rules \"T\" 1\ncarrier slayer\non kill(v, k) {\n    score(k,)\n}\n");
         assert_eq!(v[0]["range"]["end"], json!({"line": 3, "character": 0}));
 
         // An unknown method; a closed document clears its diagnostics and
         // is no longer answered.
-        let r = response(s.handle(req(10, "textDocument/rename", at(0, 0))));
+        let r = response(s.handle(req(10, "textDocument/inlayHint", at(0, 0))));
         assert_eq!(r.error.unwrap().code, METHOD_NOT_FOUND);
         let close = json!({"textDocument": {"uri": URI}});
         assert_eq!(published(s.handle(note("textDocument/didClose", close))), json!([]));
         let r = response(s.handle(req(11, "textDocument/hover", at(3, 5))));
         assert_eq!(r.error.unwrap().code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn code_actions_and_rename_answer_with_workspace_edits() {
+        let mut s = Server::default();
+        let src = "rules \"T\" 1\ncarrier slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
+        let d = open(&mut s, src);
+        assert!(d.as_array().unwrap().iter().any(|x| x["code"] == "label.unknown"), "{d}");
+
+        let mut params = json!({"textDocument": {"uri": URI}, "context": {"diagnostics": []}});
+        params["range"] = json!({"start": {"line": 3, "character": 21}, "end": {"line": 3, "character": 21}});
+        let v = result(s.handle(req(1, "textDocument/codeAction", params)));
+        assert_eq!(v[0]["title"], "Change to `barrier`");
+        assert_eq!(v[0]["kind"], "quickfix");
+        assert_eq!(v[0]["diagnostics"][0]["code"], "label.unknown");
+        let edit = &v[0]["edit"]["changes"][URI][0];
+        assert_eq!(edit["newText"], "barrier");
+        assert_eq!(edit["range"]["start"], json!({"line": 3, "character": 19}));
+        let r = response(s.handle(req(2, "textDocument/codeAction", doc())));
+        assert_eq!(r.error.unwrap().code, INVALID_PARAMS);
+
+        let change = json!({"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": SRC}]});
+        published(s.handle(note("textDocument/didChange", change)));
+        let mut params = at(3, 10);
+        params["newName"] = json!("killer");
+        let v = result(s.handle(req(3, "textDocument/rename", params)));
+        let edits = v["changes"][URI].as_array().unwrap();
+        assert_eq!(edits.len(), 2, "{v}");
+        assert!(edits.iter().all(|e| e["newText"] == "killer"));
+        let mut params = at(3, 10);
+        params["newName"] = json!("on");
+        let r = response(s.handle(req(4, "textDocument/rename", params)));
+        assert_eq!(r.error.unwrap().code, INVALID_PARAMS);
+
+        // prepareRename names the range and the name, or fails with why.
+        let v = result(s.handle(req(5, "textDocument/prepareRename", at(3, 10))));
+        assert_eq!(v["placeholder"], "k");
+        assert_eq!(v["range"]["start"], json!({"line": 3, "character": 10}));
+        assert_eq!(v["range"]["end"], json!({"line": 3, "character": 11}));
+        let r = response(s.handle(req(6, "textDocument/prepareRename", at(0, 1))));
+        let e = r.error.unwrap();
+        assert_eq!(e.code, REQUEST_FAILED);
+        assert!(e.message.contains("no name"), "{}", e.message);
+    }
+
+    #[test]
+    fn incremental_changes_apply_utf16_ranges_in_order() {
+        let mut s = Server::default();
+        open(&mut s, "rules \"T\" 1\n// \u{1F600} x\n");
+        // The emoji is two UTF-16 units: `x` is at character 6.
+        let change = json!({
+            "textDocument": {"uri": URI, "version": 2},
+            "contentChanges": [
+                {"range": {"start": {"line": 1, "character": 6}, "end": {"line": 1, "character": 7}}, "text": "y"},
+                {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 0}}, "text": "carrier slayer\n"},
+                {"range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 8}}, "text": "Tag"},
+            ],
+        });
+        let out = s.handle(note("textDocument/didChange", change));
+        match &out[..] {
+            [Message::Notification(n)] => assert_eq!(n.params["version"], 2),
+            other => panic!("not one notification: {other:?}"),
+        }
+        assert_eq!(s.docs[URI].text, "rules \"Tag\" 1\n// \u{1F600} y\ncarrier slayer\n");
+        // A change with no range is the whole text.
+        let change = json!({"textDocument": {"uri": URI, "version": 3}, "contentChanges": [{"text": SRC}]});
+        published(s.handle(note("textDocument/didChange", change)));
+        assert_eq!(s.docs[URI].text, SRC);
+        assert_eq!(s.docs[URI].version, Some(3));
+    }
+
+    #[test]
+    fn highlights_folding_and_range_formatting_answer() {
+        let mut s = Server::default();
+        let src = "rules \"T\" 1\ncarrier slayer\n// one\n// two\non kill(k, v) {\n    score(k, 1)\n    score(v,  1)\n}\n";
+        open(&mut s, src);
+
+        let v = result(s.handle(req(1, "textDocument/documentHighlight", at(5, 10))));
+        let marks: Vec<(u64, u64)> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| (h["range"]["start"]["line"].as_u64().unwrap(), h["kind"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(marks, [(4, ide::highlight_kind::WRITE as u64), (5, ide::highlight_kind::READ as u64)]);
+
+        let v = result(s.handle(req(2, "textDocument/foldingRange", doc())));
+        assert_eq!(
+            v,
+            json!([
+                {"startLine": 2, "endLine": 3, "kind": "comment"},
+                {"startLine": 4, "endLine": 6},
+            ])
+        );
+
+        let mut params = doc();
+        params["range"] = json!({"start": {"line": 6, "character": 0}, "end": {"line": 6, "character": 4}});
+        params["options"] = json!({"tabSize": 4, "insertSpaces": true});
+        let v = result(s.handle(req(3, "textDocument/rangeFormatting", params)));
+        assert_eq!(v.as_array().unwrap().len(), 1, "{v}");
+        assert_eq!(v[0]["newText"], "    score(v, 1)\n");
+        assert_eq!(v[0]["range"]["start"], json!({"line": 6, "character": 0}));
+        assert_eq!(v[0]["range"]["end"], json!({"line": 7, "character": 0}));
+    }
+
+    #[test]
+    fn a_typed_space_completes_only_where_a_word_wants_one() {
+        let mut s = Server::default();
+        let src = "rules \"T\" 1\ncarrier \nlabel goal: zone\nlabel ball: objects\non enter(goal, o) {\n    if o is \n    \n}\n";
+        open(&mut s, src);
+        let typed = |line: u32, character: u32| {
+            let mut p = at(line, character);
+            p["context"] = json!({"triggerKind": 2, "triggerCharacter": " "});
+            p
+        };
+        let v = result(s.handle(req(1, "textDocument/completion", typed(1, 8))));
+        assert!(v.as_array().unwrap().iter().any(|i| i["label"] == "slayer"), "{v}");
+        // `o` is an object: the object label fits, the zone label does not.
+        let v = result(s.handle(req(2, "textDocument/completion", typed(5, 12))));
+        assert!(v.as_array().unwrap().iter().any(|i| i["label"] == "ball"), "{v}");
+        // A space at the start of a statement asks for nothing; asked for
+        // (Ctrl+Space), the same place completes.
+        let v = result(s.handle(req(3, "textDocument/completion", typed(6, 4))));
+        assert_eq!(v, json!([]));
+        let v = result(s.handle(req(4, "textDocument/completion", at(6, 4))));
+        assert!(!v.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn initialize_declares_incremental_sync_and_every_provider() {
+        let r = initialize_result();
+        let c = &r["capabilities"];
+        assert_eq!(c["textDocumentSync"]["change"], 2);
+        assert_eq!(c["positionEncoding"], "utf-16");
+        assert_eq!(c["renameProvider"]["prepareProvider"], true);
+        for p in [
+            "hoverProvider",
+            "definitionProvider",
+            "referencesProvider",
+            "documentHighlightProvider",
+            "documentSymbolProvider",
+            "documentFormattingProvider",
+            "documentRangeFormattingProvider",
+            "foldingRangeProvider",
+        ] {
+            assert_eq!(c[p], true, "{p}");
+        }
+        let triggers = c["completionProvider"]["triggerCharacters"].as_array().unwrap();
+        assert!(triggers.contains(&json!(".")) && triggers.contains(&json!(" ")));
+        assert_eq!(c["semanticTokensProvider"]["legend"]["tokenTypes"].as_array().unwrap().len(), ide::LEGEND.len());
+        assert_eq!(r["serverInfo"]["name"], "h2 rules lsp");
     }
 
     #[test]

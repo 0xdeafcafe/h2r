@@ -10,10 +10,13 @@
 //! `rules.state`; `reload` answers `rules.reload`, in place or by a
 //! restart; `header` answers what a script's header asks of the game
 //! outside its rules (the superbounce mode, Tweakers); `census` reads the
-//! map's labelled things, for the start gate and the script's label reads.
+//! map's labelled things, for the start gate and the script's label reads;
+//! `gate` is the lobby's start gate, which holds Start Game on a map that
+//! lacks what the variant's script needs.
 
 pub mod census;
 pub mod feature;
+pub mod gate;
 pub mod guest;
 pub mod header;
 pub mod objectives;

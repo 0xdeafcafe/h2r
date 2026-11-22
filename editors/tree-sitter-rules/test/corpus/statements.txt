@@ -1,0 +1,160 @@
+================================================================================
+Let, assignment and calls
+================================================================================
+
+on tick {
+    let n = 1
+    let heir: player? = none
+    n = n + 1; score(p, 1)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (let_statement
+        (identifier)
+        (integer))
+      (let_statement
+        (identifier)
+        (type
+          (identifier))
+        (none))
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (identifier)
+          (integer)))
+      (expression_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier)
+            (integer)))))))
+
+================================================================================
+If, else if and else
+================================================================================
+
+on tick {
+    if a { } else if b { } else { }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (if_statement
+        (identifier)
+        (block)
+        (else_clause
+          (if_statement
+            (identifier)
+            (block)
+            (else_clause
+              (block))))))))
+
+================================================================================
+If let with a guard
+================================================================================
+
+on kill(victim, killer) {
+    if let k = killer and k != victim { score(k, 1) }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (event_parameters
+      (event_parameter
+        (identifier))
+      (event_parameter
+        (identifier)))
+    (block
+      (if_statement
+        (let_condition
+          (identifier)
+          (identifier))
+        (binary_expression
+          (identifier)
+          (identifier))
+        (block
+          (expression_statement
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)
+                (integer)))))))))
+
+================================================================================
+For each
+================================================================================
+
+on tick {
+    for each players p where p.alive { }
+    for each pick(players, 2) p { }
+    for each goal g { }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (for_statement
+        (builtin_set)
+        (identifier)
+        (field_expression
+          (identifier)
+          (identifier))
+        (block))
+      (for_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (set_expression
+              (builtin_set))
+            (integer)))
+        (identifier)
+        (block))
+      (for_statement
+        (identifier)
+        (identifier)
+        (block)))))
+
+================================================================================
+Match
+================================================================================
+
+on tick {
+    match r {
+        Role.vip, Role.guard { }
+        else { }
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (match_statement
+        (identifier)
+        (match_arm
+          (field_expression
+            (identifier)
+            (identifier))
+          (field_expression
+            (identifier)
+            (identifier))
+          (block))
+        (match_arm
+          (block))))))

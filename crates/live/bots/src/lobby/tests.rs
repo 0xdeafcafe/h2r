@@ -287,3 +287,30 @@ fn the_lobbys_players_are_the_game_sessions() {
     let f = facts(&g).unwrap();
     assert_eq!(lobby_players(&g, &f), Ok(None));
 }
+
+#[test]
+fn the_party_is_the_squad_sessions_players_in_a_match_this_console_hosts() {
+    // A party of two (two consoles, or a console and its guest) and two
+    // phantoms in the target: the party's count is the squad's.
+    let mut g = matchmaking_host_lobby();
+    g.put_u32(S + PLAYER_COUNT, 2).put_u32(T + PLAYER_COUNT, 4);
+    let f = membership(&g).unwrap();
+    assert_eq!(party_players(&g, &f), Ok(Some(2)));
+    // Alone.
+    g.put_u32(S + PLAYER_COUNT, 1);
+    assert_eq!(party_players(&g, &f), Ok(Some(1)));
+    // An unread or nonsense count is none, so the caller keeps one human.
+    g.put_u32(S + PLAYER_COUNT, 0);
+    assert_eq!(party_players(&g, &f), Ok(None));
+    g.put_u32(S + PLAYER_COUNT, 40);
+    assert_eq!(party_players(&g, &f), Ok(None));
+    // A match another console hosts, and a custom game's lobby: none.
+    let mut g = matchmaking_host_lobby();
+    g.put_u32(S + PLAYER_COUNT, 2).put_u32(T + HOST_PEER, 1);
+    let f = membership(&g).unwrap();
+    assert_eq!(party_players(&g, &f), Ok(None));
+    let mut g = lobby(&[4]);
+    g.put_u32(S + PLAYER_COUNT, 2);
+    let f = membership(&g).unwrap();
+    assert_eq!(party_players(&g, &f), Ok(None));
+}

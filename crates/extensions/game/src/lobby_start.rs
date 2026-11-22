@@ -45,6 +45,39 @@ pub fn kit_maps(catalogue: &Catalogue) -> Vec<Map> {
     catalogue.all().filter(|m| is_kit_map(m)).cloned().collect()
 }
 
+/// What the maps say about a Firefight lobby: whether the lobby's map
+/// carries the kit, and whether any installed map does. Without the map
+/// list (not read yet) neither is known, and both are false.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KitMaps {
+    /// The lobby's map carries the kit.
+    pub lobby: bool,
+    /// An installed map carries the kit.
+    pub installed: bool,
+}
+
+impl KitMaps {
+    /// For the lobby on map `map` (its list id), with `catalogue` the map
+    /// list.
+    pub fn of(catalogue: Option<&Catalogue>, map: Option<u32>) -> KitMaps {
+        let Some(c) = catalogue else {
+            return KitMaps::default();
+        };
+        KitMaps {
+            lobby: map.is_some_and(|id| c.all().any(|m| m.id == id && is_kit_map(m))),
+            installed: c.all().any(|m| is_kit_map(m)),
+        }
+    }
+
+    /// For the lobby as it stands: the map list read so far
+    /// (`map_select::current`) and the lobby's map (`LOBBY_MAP`).
+    pub fn now(m: &dyn engine::memory::GuestMemory) -> KitMaps {
+        let catalogue = crate::map_select::current();
+        let map = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
+        KitMaps::of(catalogue.as_deref(), map)
+    }
+}
+
 // ---- the mode ----
 
 /// What a lobby plays.
@@ -295,6 +328,26 @@ mod tests {
         assert_eq!(kit, [12]);
         let firefight: Vec<_> = cat.maps(Category::Firefight).iter().map(|m| m.id).collect();
         assert_eq!(firefight, [12], "the kit maps are the Firefight category");
+    }
+
+    #[test]
+    fn kit_maps_say_whether_the_lobby_and_the_install_can_play_firefight() {
+        let cat = Catalogue::new([
+            map(10, "Lockout", r"d:\maps\lockout"),
+            map(12, "Firefight \u{2013} Lockout", r"t:\$C\12345678\lockout"),
+        ]);
+        let bare = Catalogue::new([map(10, "Lockout", r"d:\maps\lockout")]);
+        assert_eq!(
+            KitMaps::of(Some(&cat), Some(12)),
+            KitMaps { lobby: true, installed: true }
+        );
+        assert_eq!(
+            KitMaps::of(Some(&cat), Some(10)),
+            KitMaps { lobby: false, installed: true }
+        );
+        assert_eq!(KitMaps::of(Some(&bare), Some(10)), KitMaps::default());
+        assert!(!KitMaps::of(Some(&cat), None).lobby);
+        assert_eq!(KitMaps::of(None, Some(12)), KitMaps::default(), "no map list");
     }
 
     #[test]

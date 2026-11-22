@@ -278,6 +278,19 @@ impl Source {
         Ok(true)
     }
 
+    /// Sets the request's rev, and the branch it came from for the player's
+    /// consent prompt (none for --rev and --current).
+    fn apply(&self, r: &Remote, build: &mut BuildSpec) -> Result<()> {
+        build.rev = self.resolve(r)?;
+        build.branch = (build.rev.is_some() && self.rev.is_none())
+            .then(|| match &self.branch {
+                Some(b) => Ok(b.clone()),
+                None => current_branch(),
+            })
+            .transpose()?;
+        Ok(())
+    }
+
     /// The rev for the request: none for --current; --rev as given (it must
     /// be on the host already); else the branch, synced first and named by
     /// its commit, or `lab/<branch>` as last synced with --no-sync.
@@ -444,7 +457,7 @@ fn launch(r: &Remote, mut req: RunReq, src: &Source) -> Result<(Conn, Value)> {
         },
         ..req.clone()
     })?;
-    req.build.rev = src.resolve(r)?;
+    src.apply(r, &mut req.build)?;
     proto::validate_run(&req)?;
     let mut c = r.connect()?;
     let mut body = serde_json::to_value(&req)?;
@@ -482,7 +495,7 @@ fn sim_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         },
         ..req.clone()
     })?;
-    req.build.rev = src.resolve(r)?;
+    src.apply(r, &mut req.build)?;
     proto::validate_sim(&req)?;
     let mut c = r.connect()?;
     let mut body = serde_json::to_value(&req)?;
@@ -528,7 +541,7 @@ fn build_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         !src.current,
         "build needs a branch or commit; --current is the host's own image"
     );
-    spec.rev = src.resolve(r)?;
+    src.apply(r, &mut spec)?;
     proto::validate_build(&spec)?;
     let mut c = r.connect()?;
     let mut body = serde_json::to_value(&spec)?;

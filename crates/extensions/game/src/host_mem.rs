@@ -28,6 +28,35 @@ pub fn usage() -> MemoryUsage {
     }
 }
 
+/// The bytes of the regular files under `root`, for the report's
+/// `wall.data_dir_bytes`. Symbolic links are not followed (a linked map is
+/// not the run's own data); a hard link counts at each name. `None` when
+/// `root` cannot be read.
+pub fn dir_bytes(root: &std::path::Path) -> Option<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    let mut first = true;
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) if !first => continue,
+            Err(_) => return None,
+        };
+        first = false;
+        for entry in entries.flatten() {
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    Some(total)
+}
+
 /// `getrusage`'s `ru_maxrss`: KiB on Linux and bytes on macOS, by host;
 /// MiB out.
 fn peak_rss_mib() -> u64 {
@@ -80,6 +109,24 @@ mod tests {
     fn a_running_process_has_a_peak_rss() {
         let m = usage();
         assert!(m.peak_rss_mib > 0, "{m:?}");
+    }
+
+    #[test]
+    fn a_directory_totals_its_files_and_ignores_links() {
+        let dir = std::env::temp_dir().join(format!(
+            "h2-dir-bytes-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("one"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("a/two"), [0u8; 5]).unwrap();
+        std::fs::write(dir.join("a/b/three"), [0u8; 1]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("one"), dir.join("link")).unwrap();
+        assert_eq!(dir_bytes(&dir), Some(16));
+        assert_eq!(dir_bytes(&dir.join("missing")), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -11,10 +11,7 @@ serde_json.workspace = true
 # `cache_dir`: the socket, input logs and captures.
 host-dirs.workspace = true
 # The host.memory handlers both socket servers share (src/memory_serve.rs).
-mem-watch = { workspace = true, optional = true }
-
-[features]
-serve-memory = ["dep:mem-watch"]
+mem-watch.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 socket2 = "0.6"

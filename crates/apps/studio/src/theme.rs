@@ -1,6 +1,7 @@
 //! The look: a dark game-tool theme (neutral greys, one blue accent,
 //! small rounding, roomy spacing) and the bundled fonts, Inter for text
-//! and a Lucide subset for icons (`assets/fonts`, OFL and ISC licensed).
+//! and a Lucide subset for icons (`assets/fonts`, OFL and ISC licensed),
+//! and Dear ImGui's own ProggyVector for code.
 use dear_imgui_rs::{
     ChildFlags, Context, FontConfig, FontId, FontSource, StbTrueTypeFontData, Style, StyleColor,
     StyleVar, Ui,
@@ -31,6 +32,9 @@ pub struct Fonts {
     pub bold: FontId,
     pub caption: FontId,
     pub title: FontId,
+    /// Dear ImGui's own monospace font (ProggyVector), for code in the
+    /// script editor's hovers and lists.
+    pub code: FontId,
 }
 
 fn source(bytes: &[u8], size: f32) -> FontSource<'static> {
@@ -56,7 +60,14 @@ pub fn load_fonts(ctx: &mut Context) -> Fonts {
     let bold = atlas.add_font(&[source(INTER_SEMIBOLD, FONT_SIZE), icons(FONT_SIZE)]);
     let caption = atlas.add_font(&[source(INTER_REGULAR, CAPTION_SIZE), icons(CAPTION_SIZE)]);
     let title = atlas.add_font(&[source(INTER_SEMIBOLD, TITLE_SIZE), icons(TITLE_SIZE)]);
-    Fonts { regular, bold, caption, title }
+    let code = atlas.add_font(&[FontSource::default_vector_with_size(FONT_SIZE)]);
+    Fonts {
+        regular,
+        bold,
+        caption,
+        title,
+        code,
+    }
 }
 
 /// RGBA from 0..255 components.
@@ -148,8 +159,65 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         LayerId::CollisionOnly => [1.0, 0.15, 0.25],
         LayerId::InstanceCollision => [0.55, 0.8, 1.0],
         LayerId::ObjectCollision => [1.0, 0.85, 0.3],
+        // Teal for the game's AI, blue for the bots, pink for the spots.
+        LayerId::Pathfinding => [0.3, 0.85, 0.7],
+        LayerId::BotNav => [0.5, 0.6, 1.0],
+        LayerId::BotSpots => [1.0, 0.5, 0.85],
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
+    }
+}
+
+/// A pathfinding sector's tint: one of a few teal and green shades,
+/// picked by its flags, so sectors with the same flags share a shade.
+/// A sector that is not a floor (a wall, a ceiling) is dimmer.
+pub fn sector_color(flags: u16, floor: bool) -> [f32; 3] {
+    const SHADES: [[f32; 3]; 8] = [
+        [0.3, 0.85, 0.7],
+        [0.2, 0.7, 0.95],
+        [0.45, 0.95, 0.45],
+        [0.75, 0.95, 0.35],
+        [0.25, 0.55, 0.75],
+        [0.55, 0.85, 0.95],
+        [0.2, 0.95, 0.85],
+        [0.6, 0.75, 0.5],
+    ];
+    let shade = SHADES[(u32::from(flags).wrapping_mul(0x9e37_79b9) >> 29) as usize];
+    if floor {
+        shade
+    } else {
+        shade.map(|c| c * 0.55)
+    }
+}
+
+/// A bot nav polygon out of the map (only a glitch reaches it): a dim
+/// grey-blue beside the layer's blue.
+pub const BOT_OUT_OF_MAP: [f32; 3] = [0.3, 0.32, 0.42];
+
+/// A bot link's colour by how it is crossed.
+pub fn bot_link_color(kind: scenario_edit::nav_view::BotLinkKind) -> [f32; 3] {
+    use scenario_edit::nav_view::BotLinkKind;
+    match kind {
+        BotLinkKind::Walk => [0.5, 0.6, 1.0],
+        BotLinkKind::Drop => [1.0, 0.55, 0.15],
+        BotLinkKind::Jump => [1.0, 0.9, 0.25],
+        BotLinkKind::CrouchJump => [0.85, 0.35, 1.0],
+        BotLinkKind::Teleporter => [0.25, 0.95, 1.0],
+        BotLinkKind::Lift => [0.35, 1.0, 0.4],
+        BotLinkKind::Elevator => [0.65, 1.0, 0.65],
+    }
+}
+
+/// A superbounce or crouch spot's colour by what the files say of it.
+pub fn spot_color(state: scenario_edit::nav_view::SpotState) -> [f32; 3] {
+    use scenario_edit::nav_view::SpotState;
+    match state {
+        SpotState::Proven => [0.3, 1.0, 0.4],
+        SpotState::Failed => [0.55, 0.3, 0.3],
+        SpotState::Dead => [1.0, 0.15, 0.15],
+        SpotState::Learned => [0.8, 1.0, 0.3],
+        SpotState::Training => [1.0, 0.75, 0.2],
+        SpotState::Likely => [1.0, 0.5, 0.85],
     }
 }
 
@@ -196,9 +264,16 @@ pub fn link_colour(tone: LinkTone) -> [f32; 4] {
     }
 }
 
-/// The script editor's text widget draws its glyphs in this (none), and
-/// the colouring draws them over it (`ui::rules`).
+/// The script editor's text widget draws its glyphs and its frame in this
+/// (nothing): the window draws the frame and the coloured text under the
+/// widget's own child window (`ui::game_script`).
 pub const HIDDEN_TEXT: [f32; 4] = rgba(0, 0, 0, 0.0);
+
+/// The script editor's frame, drawn under the text widget.
+pub const SCRIPT_FRAME: [f32; 4] = RAISED;
+
+/// The script editor's highlight on each use of the name at the cursor.
+pub const SCRIPT_MARK: [f32; 4] = rgba(255, 255, 255, 0.08);
 
 /// A semantic token's colour in the script editor.
 pub fn token_colour(kind: rules::ide::TokenKind) -> [f32; 4] {

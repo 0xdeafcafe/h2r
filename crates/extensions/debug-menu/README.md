@@ -9,7 +9,7 @@ The game's in-game debug menu: a tree of rows over the agent API's registries, i
 ## Layout
 
 - `src/model.rs`: rows, sections and the navigation state machine.
-- `src/sources.rs`: the sections (Render, Shader overrides, Tag edits, Cheats, Perf, Features), each over agent methods.
+- `src/sources/`: the sections, one file each (`player.rs`, `world.rs`, `game.rs`, `time.rs`, `view.rs`, `perf.rs`, `settings.rs`, `dev.rs`) over agent methods, the status `header.rs`, the shared cheat rows (`cheats.rs`) and a fake game for their tests (`fake.rs`).
 - `src/gate.rs`: the touchpad and Options chord, gestures, and hiding pads from the game while the menu is open.
 - `src/layout.rs`: the lines the overlay draws.
 

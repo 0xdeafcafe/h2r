@@ -1268,8 +1268,8 @@ at any frame rate. Nothing is drawn with the mode off.
 
 The game's own reticle is not turned red and no guest hook is involved:
 turning it red through its widget inputs needs a hook after the HUD's
-widget input call (`HUD_WIDGET_INPUTS`, `0x0013ad48`), which takes the
-HUD off the pipelined render thread (`render_thread.rs`). The tested
+widget input call (`HUD_WIDGET_INPUTS`, `0x0013ad48`), which puts a
+guest hook on the HUD. The tested
 pieces of that route stay (`superbounce_hud::autoaim_entry`,
 `autoaim_exit`; input 18 is the unit's "autoaimed" input by Assembly's
 `nhdt` list). The player's aim-assist target (`touch_glue::on_target`)

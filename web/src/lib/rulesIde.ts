@@ -3,9 +3,13 @@
 // answers (`POST /v1/rules/ide`, LSP field names) read defensively, the
 // position and range conversions between LSP (0-based, UTF-16) and Monaco
 // (1-based), check errors (1-based, byte columns) as marker ranges, the
-// semantic token delta encoding, the request client with its debounce,
-// cancellation and per-version cache, and the Insert menus. Nothing here
-// imports Monaco: stats/rulesMonaco.ts is the thin half that does.
+// semantic token delta encoding, quick fixes (the `actions` op) and rename
+// (the `rename` op) with their edits applied to a text, the request client
+// with its debounce, cancellation and per-version cache, and the Insert
+// menus with their Labels and "In the test map" groups
+// (docs/game/rules-language-types.md, "Diagnostics and the editor" and
+// "The workbench"). Nothing here imports Monaco: stats/rulesMonaco.ts is
+// the thin half that does.
 
 import type { Problem } from "./rules";
 
@@ -18,18 +22,32 @@ export const LANGUAGE_ID = "h2rules";
 
 // ---------- the language's words (crates/formats/rules: lang/parse.rs, lang/lower.rs, caps.rs) ----------
 
-/** Declaration and statement words the parser reserves. */
+/** Declaration and statement words the parser reserves (with CONTROL,
+ *  WORD_OPS and CONSTANTS, lang/parse.rs `KEYWORDS`). `carrier` is the
+ *  header's word and, before a dot, the built-in enum (`carrier.assault`). */
 export const KEYWORDS = [
   "rules", "carrier", "teams", "list", "requires", "option", "palette", "enum", "global", "var", "table", "fn", "on",
-  "label", "is", "text", "budget",
+  "label", "is", "text", "budget", "const",
 ] as const;
-export const CONTROL = ["if", "else", "for", "each", "where", "let"] as const;
+export const CONTROL = ["if", "else", "for", "each", "where", "let", "match"] as const;
 export const WORD_OPS = ["and", "or", "not"] as const;
 export const CONSTANTS = ["true", "false", "none"] as const;
-/** Type names (lang/lower.rs). `player`, `team` and `object` are also scopes. */
-export const TYPES = ["int", "fixed", "bool", "player", "team", "object", "squad", "timer", "class", "tag", "label", "text"] as const;
+/** Type names (lang/types.rs). `player`, `team` and `object` are also
+ *  scopes; `time`, `zone`, `weapon` and `carrier` are read by place and
+ *  stay names elsewhere. */
+export const TYPES = [
+  "int", "fixed", "bool", "time", "player", "team", "object", "zone", "squad", "timer", "class", "tag", "weapon", "label", "text", "carrier",
+] as const;
 /** The finite sets `for each` walks. */
 export const SETS = ["players", "teams", "objects", "objectives"] as const;
+/** A label's set kinds besides `objects` (a set word already). */
+export const LABEL_KINDS = ["zones", "spawns"] as const;
+/** The words that start a label's requirement (`numbered 0..1`,
+ *  `exactly 3`, `at least 2`, `per team`). */
+export const REQUIREMENTS = ["numbered", "exactly"] as const;
+/** A time literal: whole or fractional seconds (`30s`, `1.5s`) or ticks
+ *  (`300t`), as lang/lex.rs reads it. */
+export const TIME_LITERAL = /\d+(?:\.\d+)?[st]\b/;
 /** Carrier engine names (`caps::CARRIERS`). */
 export const CARRIERS = ["ctf", "slayer", "oddball", "king", "juggernaut", "territories", "assault"] as const;
 /** `variant.<field>` names (`caps::VARIANT_FIELDS`). */
@@ -170,8 +188,10 @@ export const BUILTIN_NAMES: readonly string[] = API_ENTRIES.map((e) => e.name);
 
 /** The `h2rules` Monarch tokenizer, as plain data (rulesMonaco.ts casts it
  *  to Monaco's type). Mirrors lang/lex.rs: `//` comments, identifiers,
- *  integers, 16.16 fixed literals, strings with \" \\ \n escapes and the
- *  23 punctuators. */
+ *  integers, 16.16 fixed literals, time literals (`30s`, `1.5s`, `300t`),
+ *  strings with \" \\ \n escapes and the 23 punctuators; and the parser's
+ *  places: `const name`, `carrier.<engine>`, a label's kind and
+ *  requirement words. */
 export const MONARCH = {
   defaultToken: "invalid",
   tokenPostfix: ".h2rules",
@@ -179,8 +199,9 @@ export const MONARCH = {
   control: [...CONTROL],
   wordOps: [...WORD_OPS],
   constants: [...CONSTANTS],
-  types: [...TYPES],
+  types: [...TYPES, ...LABEL_KINDS],
   sets: [...SETS],
+  requirements: [...REQUIREMENTS],
   builtins: [...BUILTIN_NAMES],
   brackets: [
     { open: "{", close: "}", token: "delimiter.curly" },
@@ -194,6 +215,10 @@ export const MONARCH = {
       [/(fn)(\s+)([A-Za-z_]\w*)/, ["keyword", "", "entity.name.function"]],
       [/(global|player|team|object)(\s+)(var)\b/, ["keyword", "", "keyword"]],
       [/(for)(\s+)(each)\b/, ["keyword.control", "", "keyword.control"]],
+      [/(const)(\s+)([A-Za-z_]\w*)/, ["keyword", "", "constant"]],
+      [/(carrier)(\.)([A-Za-z_]\w*)/, ["type", "delimiter", "constant"]],
+      [/(at)(\s+)(least|most)\b/, ["keyword", "", "keyword"]],
+      [/(per)(\s+)(team)\b/, ["keyword", "", "keyword"]],
       [/(team|text)(\s+)(\d+)/, ["keyword", "", "number"]],
       [/(variant)(\.)([A-Za-z_]\w*)/, ["variable.predefined", "delimiter", "variable.predefined"]],
       [/[A-Za-z_]\w*/, {
@@ -204,10 +229,12 @@ export const MONARCH = {
           "@constants": "constant",
           "@types": "type",
           "@sets": "variable.predefined",
+          "@requirements": "keyword",
           "@builtins": "predefined",
           "@default": "identifier",
         },
       }],
+      [TIME_LITERAL, "number.time"],
       [/\d+\.\d+/, "number.float"],
       [/\d+/, "number"],
       [/"/, "string", "@string"],
@@ -315,7 +342,7 @@ export function problemMarker(src: string, p: Problem): Marker | null {
 
 // ---------- the route's answers ----------
 
-export type IdeOp = "complete" | "hover" | "signature" | "definition" | "references" | "tokens" | "symbols" | "format";
+export type IdeOp = "complete" | "hover" | "signature" | "definition" | "references" | "tokens" | "symbols" | "format" | "actions" | "rename";
 
 /** LSP's CompletionItemKind, 1 to 25, by name; every name is also a key of
  *  Monaco's `languages.CompletionItemKind`. */
@@ -473,14 +500,97 @@ export function parseFormat(body: unknown): IdeFormat | null {
   return null;
 }
 
+/** LSP's `TextEdit`: replace `range` with `newText`. */
+export interface IdeEdit { range: LspRange; newText: string }
+
+export function parseEdits(v: unknown): IdeEdit[] {
+  return arr(v).map(obj).flatMap((e): IdeEdit[] => {
+    const range = parseRange(e.range);
+    return range && typeof e.newText === "string" ? [{ range, newText: e.newText }] : [];
+  });
+}
+
+/** A quick fix the `actions` op offers at a range: its title, the
+ *  diagnostic it fixes and its edits. */
+export interface IdeAction { title: string; code: string; message: string; range: LspRange | null; edits: IdeEdit[] }
+
+/** `actions`: `[{title, kind: "quickfix", diagnostic, edits}]`. An action
+ *  without edits is dropped. */
+export function parseActions(body: unknown): IdeAction[] {
+  return arr(body).map(obj).flatMap((a): IdeAction[] => {
+    const edits = parseEdits(a.edits), d = obj(a.diagnostic);
+    if (typeof a.title !== "string" || !edits.length) return [];
+    return [{ title: a.title, code: str(d.code), message: str(d.message), range: parseRange(d.range), edits }];
+  });
+}
+
+/** `rename`: `{edits}`, or the reason the server refused (a 400's
+ *  message: not an identifier, a keyword, declared already, no name). */
+export type IdeRename = { edits: IdeEdit[] } | { error: string };
+
+/** A rename's answer as the client gives it: `{edits}`, `{error}` (the
+ *  client's reading of a 400), or null for no answer. */
+export function parseRename(body: unknown): IdeRename | null {
+  const b = obj(body);
+  if (typeof b.error === "string") return { error: b.error };
+  return Array.isArray(b.edits) ? { edits: parseEdits(b.edits) } : null;
+}
+
+/** The offset in `src` of an LSP position (0-based line, UTF-16
+ *  character), clamped to the line's end and the text's. */
+export function offsetAt(src: string, p: LspPosition): number {
+  let at = 0;
+  for (let l = 0; l < p.line; l++) {
+    const nl = src.indexOf("\n", at);
+    if (nl < 0) return src.length;
+    at = nl + 1;
+  }
+  const end = src.indexOf("\n", at);
+  return Math.min(at + p.character, end < 0 ? src.length : end);
+}
+
+/** The text with the edits applied, as an editor applies a code action or
+ *  a rename: each range is of the text before any edit, and the edits do
+ *  not overlap. */
+export function applyEdits(src: string, edits: readonly IdeEdit[]): string {
+  const at = edits.map((e) => ({ start: offsetAt(src, e.range.start), end: offsetAt(src, e.range.end), text: e.newText }))
+    .sort((a, b) => b.start - a.start || b.end - a.end);
+  let out = src;
+  for (const e of at) out = out.slice(0, e.start) + e.text + out.slice(Math.max(e.start, e.end));
+  return out;
+}
+
 // ---------- the client ----------
 
-export interface IdeRequest { source: string; op: IdeOp; line: number; character: number }
+export interface IdeRequest {
+  source: string;
+  op: IdeOp;
+  line: number;
+  character: number;
+  /** `actions`: where the range ends. */
+  end_line?: number;
+  end_character?: number;
+  /** `rename`: the new name. */
+  new_name?: string;
+}
+
+/** What some ops take beyond the place: the end of the range of
+ *  `actions`, the new name of `rename`. */
+export interface IdeExtra { end?: LspPosition; newName?: string }
 
 /** How long each op waits for typing to pause before it asks. */
 export const IDE_DELAY_MS: Readonly<Record<IdeOp, number>> = {
-  complete: 40, hover: 60, signature: 40, definition: 0, references: 0, tokens: 200, symbols: 250, format: 0,
+  complete: 40, hover: 60, signature: 40, definition: 0, references: 0, tokens: 200, symbols: 250, format: 0, actions: 120, rename: 0,
 };
+
+/** The request body of an op at a place. */
+export function ideBody(op: IdeOp, source: string, pos: LspPosition, extra: IdeExtra = {}): IdeRequest {
+  return {
+    source, op, line: pos.line, character: pos.character,
+    ...(extra.end ? { end_line: extra.end.line, end_character: extra.end.character } : {}),
+    ...(extra.newName !== undefined ? { new_name: extra.newName } : {}),
+  };
+}
 
 const DOCUMENT_OPS: ReadonlySet<IdeOp> = new Set(["tokens", "symbols", "format"]);
 
@@ -495,8 +605,10 @@ function sleep(ms: number, signal: AbortSignal): Promise<boolean> {
 
 /** Asks `POST /v1/rules/ide`. A newer request of an op cancels the older
  *  one, each waits its op's delay first, and answers are kept per model
- *  version (document ops by version alone, the rest by position too). An
- *  abandoned, failed or refused request answers null. */
+ *  version (document ops by version alone, the rest by position too, and
+ *  `actions` by its range's end; a rename is never kept). An abandoned,
+ *  failed or refused request answers null, except a rename the server
+ *  refuses (400), which answers `{error}` with its reason. */
 export class IdeClient {
   private cache = new Map<string, unknown>();
   private version = Number.NaN;
@@ -508,10 +620,12 @@ export class IdeClient {
     private delays: Readonly<Record<IdeOp, number>> = IDE_DELAY_MS,
   ) {}
 
-  async request(op: IdeOp, source: string, version: number, pos: LspPosition, signal?: AbortSignal): Promise<unknown> {
+  async request(op: IdeOp, source: string, version: number, pos: LspPosition, signal?: AbortSignal, extra: IdeExtra = {}): Promise<unknown> {
     if (version !== this.version) { this.cache.clear(); this.version = version; }
-    const key = DOCUMENT_OPS.has(op) ? op : `${op}:${pos.line}:${pos.character}`;
-    if (this.cache.has(key)) return this.cache.get(key);
+    const end = extra.end ? `:${extra.end.line}:${extra.end.character}` : "";
+    const key = DOCUMENT_OPS.has(op) ? op : `${op}:${pos.line}:${pos.character}${end}`;
+    // A rename is asked once and never kept: the name is new each time.
+    if (op !== "rename" && this.cache.has(key)) return this.cache.get(key);
     this.inflight.get(op)?.abort();
     const ctl = new AbortController();
     this.inflight.set(op, ctl);
@@ -521,15 +635,20 @@ export class IdeClient {
     }
     try {
       if (!(await sleep(this.delays[op], ctl.signal))) return null;
-      const body: IdeRequest = { source, op, line: pos.line, character: pos.character };
+      const body = ideBody(op, source, pos, extra);
       const f = this.fetchFn; // called unbound: fetch refuses another `this`
       const r = await f(`${this.api()}/rules/ide`, {
         method: "POST", signal: ctl.signal, headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(body),
       });
-      if (!r.ok) return null;
+      if (!r.ok) {
+        // A refused rename says why; every other refusal is no answer.
+        if (op !== "rename" || r.status !== 400) return null;
+        const b = obj(await r.json().catch(() => null));
+        return { error: str(b.message) || "The server refused the new name." };
+      }
       const answer: unknown = await r.json();
       if (ctl.signal.aborted) return null;
-      if (version === this.version) this.cache.set(key, answer);
+      if (version === this.version && op !== "rename") this.cache.set(key, answer);
       return answer;
     } catch {
       return null;
@@ -586,6 +705,8 @@ export const DECLARATIONS: readonly InsertItem[] = [
   { label: "player var", detail: "player var name: type = init", words: "a value each player carries (16 slots)", snippet: `player var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },
   { label: "team var", detail: "team var name: type = init", words: "a value each team carries (8 slots)", snippet: `team var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },
   { label: "object var", detail: "object var name: type = init", words: "a value each object carries (8 slots)", snippet: `object var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },
+  { label: "const", detail: "const name = value", words: "a named constant, usable wherever a literal is", snippet: `const ${ph(1, "name")} = ${ph(2, "30s")}` },
+  { label: "option (a time)", detail: "option name: time lo..hi = default \"Label\" \"Description\"", words: "a time the variant editor shows in seconds", snippet: `option ${ph(1, "hold")}: time ${ph(2, "5s..60s")} = ${ph(3, "30s")} "${ph(4, "Label")}" "${ph(5, "Description")}"` },
   { label: "enum", detail: "enum Name { a, b }", words: "a type with named values", snippet: `enum ${ph(1, "Name")} { ${ph(2, "first")}, ${ph(3, "second")} }` },
   { label: "table", detail: "table name: (col: type) = [ (value) ]", words: "constant rows, indexed by int or by the first column", snippet: `table ${ph(1, "name")}: (${ph(2, "weapon")}: ${ph(3, "tag")}) = [\n\t(${ph(4, "\"objects/weapons/rifle/smg/smg\"")}),\n]` },
   { label: "palette", detail: "palette \"name\" = [\"tag\", ...]", words: "what a granted Forge power may place", snippet: `palette "${ph(1, "name")}" = [${ph(2, "\"objects/forge/block_wall/block_wall\"")}]` },
@@ -601,7 +722,81 @@ export const CONTROL_ITEMS: readonly InsertItem[] = [
   { label: "for each label member", detail: "for each <label> o { ... }", words: "every placement of a declared Forge label", snippet: `for each ${ph(1, "label")} ${ph(2, "o")} {\n\t$0\n}` },
   { label: "for each objective", detail: "for each objectives o { ... }", words: "the game's objectives (flags, balls, bombs)", snippet: `for each objectives ${ph(1, "o")} {\n\t$0\n}` },
   { label: "let", detail: "let name = value", words: "a name for a value, not assigned again", snippet: `let ${ph(1, "name")} = ${ph(2, "value")}` },
+  { label: "match", detail: "match value { Enum.a { ... } else { ... } }", words: "one arm per value of an enum; every value needs an arm", snippet: `match ${ph(1, "value")} {\n\t${ph(2, "Enum.first")} {\n\t\t$0\n\t}\n\telse {\n\t}\n}` },
 ];
+
+/** The Labels group: a declaration of each kind a map can supply. */
+export const LABEL_ITEMS: readonly InsertItem[] = [
+  { label: "one zone", detail: "label name: zone", words: "a trigger volume or a flag the map has exactly one of", snippet: `label ${ph(1, "goal")}: zone` },
+  { label: "one object", detail: "label name: object", words: "an object the map has exactly one of", snippet: `label ${ph(1, "core")}: object` },
+  { label: "a set of objects", detail: "label name: objects", words: "any number of objects", snippet: `label ${ph(1, "barrier")}: objects` },
+  { label: "a numbered set of zones", detail: "label name: zones numbered lo..hi", words: "one zone of each number, read as name[n]", snippet: `label ${ph(1, "capture")}: zones numbered ${ph(2, "0")}..${ph(3, "1")}` },
+  { label: "spawn areas", detail: "label name: spawns", words: "starting locations, passed to spawn_areas", snippet: `label ${ph(1, "attack")}: spawns` },
+];
+
+/** The netgame flags' built-in labels with the kind the built-ins declare
+ *  them with (ide/complete.rs `FLAG_LABELS`), until the completion route
+ *  gives its own. */
+export const FLAG_LABELS: ReadonlyArray<readonly [text: string, decl: string]> = [
+  ["ctf_flag_spawn", "zones at most 16"],
+  ["ctf_flag_return", "zones at most 16"],
+  ["assault_bomb_spawn", "zones at most 16"],
+  ["assault_bomb_return", "zones at most 16"],
+  ["oddball_spawn", "objects"],
+  ["teleporter_sender", "zones"],
+  ["teleporter_receiver", "zones"],
+  ["territory", "zones 1..8"],
+  ["hill_corner", "zones numbered"],
+];
+
+const flagItem = (decl: string, words: string): InsertItem => ({ label: `label ${decl}`, detail: `label ${decl}`, words, snippet: `label ${decl}` });
+
+/** The built-in flag labels as whole declarations: the completion route's
+ *  at the name of a new `label` line (`label <text>: <decl>`, inserting
+ *  `<text>: <decl>`), else the page's list. */
+export function flagLabelItems(items: readonly IdeCompletion[] | null): InsertItem[] {
+  const route = (items ?? []).filter((c) => /^label\s+[A-Za-z_]\w*\s*:/.test(c.label))
+    .map((c) => flagItem(c.insertText.replace(/^label\s+/, ""), c.documentation.split("\n")[0] || c.detail));
+  return route.length ? route : FLAG_LABELS.map(([text, decl]) => flagItem(`${text}: ${decl}`, "a netgame flag's built-in label"));
+}
+
+const RESERVED_WORDS: ReadonlySet<string> = new Set<string>([...KEYWORDS, ...CONTROL, ...WORD_OPS, ...CONSTANTS]);
+
+/** A label's name for a map text: the text when it is a name the script
+ *  may use, else the text made into one. */
+export function labelName(text: string): string {
+  let n = text.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "label";
+  if (/^\d/.test(n)) n = `_${n}`;
+  return RESERVED_WORDS.has(n) ? `${n}_label` : n;
+}
+
+/** The declaration of a label for the things of a test map that carry its
+ *  text: the kind their class suggests (a zone for flags and volumes,
+ *  spawns for starting locations, else an object), a set when there are
+ *  several, numbered when they all have numbers, and the map text when
+ *  the name is not the text. */
+export function labelDeclaration(text: string, things: ReadonlyArray<{ number: number | null; class?: string | null }>): string {
+  const classes = new Set(things.map((t) => t.class ?? "object"));
+  const zone = [...classes].every((c) => c === "flag" || c === "volume");
+  const spawn = [...classes].every((c) => c === "spawn");
+  const set = spawn || things.length > 1;
+  const kind = spawn ? "spawns" : zone ? (set ? "zones" : "zone") : set ? "objects" : "object";
+  const numbered = set && !spawn && things.length > 0 && things.every((t) => t.number !== null) ? " numbered" : "";
+  const name = labelName(text);
+  return `label ${name}: ${kind}${numbered}${name === text ? "" : ` = "${text.replace(/["\\]/g, "\\$&")}"`}`;
+}
+
+/** The "In the test map" group: a declaration for each label of the test
+ *  map the script does not declare (`declared`: the map texts of the
+ *  check's labels). */
+export function mapLabelItems(things: ReadonlyArray<{ label: string; number: number | null; class?: string | null }>, declared: readonly string[]): InsertItem[] {
+  const texts = [...new Set(things.map((t) => t.label))].filter((t) => t && !declared.includes(t));
+  return texts.map((text) => {
+    const mine = things.filter((t) => t.label === text);
+    const decl = labelDeclaration(text, mine);
+    return { label: decl, detail: decl, words: `${mine.length} ${mine.length === 1 ? "thing" : "things"} in the test map`, snippet: decl };
+  });
+}
 
 export function apiGroups(entries: readonly ApiEntry[]): InsertGroup[] {
   const item = (e: ApiEntry): InsertItem => ({
@@ -665,27 +860,42 @@ export function mergeEvents(items: readonly IdeCompletion[] | null): InsertItem[
 }
 
 /** The four Insert menus, from the route's completions when it gave any
- *  (`top` at a top-level position, `body` inside a handler). */
-export function insertMenus(top: readonly IdeCompletion[] | null, body: readonly IdeCompletion[] | null): InsertMenu[] {
+ *  (`top` at a top-level position, `body` inside a handler, `label` at the
+ *  name of a new `label` line). `map` is the "In the test map" group's
+ *  items (`mapLabelItems`); the group is left out when there are none. */
+export function insertMenus(
+  top: readonly IdeCompletion[] | null,
+  body: readonly IdeCompletion[] | null,
+  label: readonly IdeCompletion[] | null = null,
+  map: readonly InsertItem[] = [],
+): InsertMenu[] {
   const { entries, extra } = mergeApi(body);
   const api = apiGroups(entries);
   if (extra.length) api.push({ title: "More", words: "named by the server, not in this page's list", items: extra });
+  const declarations: InsertGroup[] = [
+    { title: "Declarations", words: "the header, options, constants, variables, types and functions", items: [...DECLARATIONS] },
+    { title: "Labels", words: "what the map must supply, checked before the game starts", items: [...LABEL_ITEMS, ...flagLabelItems(label)] },
+  ];
+  if (map.length) declarations.push({ title: "In the test map", words: "labels the test map has and the script does not declare", items: [...map] });
   return [
-    { id: "declarations", label: "Declarations", groups: [{ title: "Declarations", words: "the header, options, variables, types and functions", items: [...DECLARATIONS] }] },
+    { id: "declarations", label: "Declarations", groups: declarations },
     { id: "events", label: "Events", groups: [{ title: "Handlers", words: "what runs when something happens; each runs to completion", items: mergeEvents(top) }] },
     { id: "api", label: "Actions and reads", groups: api },
     { id: "control", label: "Control", groups: [{ title: "Control", words: "tests, loops over finite sets, and names", items: [...CONTROL_ITEMS] }] },
   ];
 }
 
-/** Where the menus ask the completion route: a blank top-level line, and a
- *  blank statement inside a handler. */
-export const MENU_PROBES: ReadonlyArray<{ which: "top" | "body"; source: string; line: number; character: number }> = [
+/** Where the menus ask the completion route: a blank top-level line, a
+ *  blank statement inside a handler, and the name of a new `label` line. */
+export const MENU_PROBES: ReadonlyArray<{ which: "top" | "body" | "label"; source: string; line: number; character: number }> = [
   { which: "top", source: "rules \"Menu\" 1\ncarrier slayer\n\n", line: 2, character: 0 },
   { which: "body", source: "rules \"Menu\" 1\ncarrier slayer\n\non tick {\n    \n}\n", line: 4, character: 4 },
+  { which: "label", source: "rules \"Menu\" 1\ncarrier slayer\n\nlabel \n", line: 3, character: 6 },
 ];
 
-export async function fetchMenuCompletions(api: string, fetchFn: typeof fetch = fetch): Promise<{ top: IdeCompletion[] | null; body: IdeCompletion[] | null }> {
+export interface MenuCompletions { top: IdeCompletion[] | null; body: IdeCompletion[] | null; label: IdeCompletion[] | null }
+
+export async function fetchMenuCompletions(api: string, fetchFn: typeof fetch = fetch): Promise<MenuCompletions> {
   const ask = async (p: (typeof MENU_PROBES)[number]): Promise<IdeCompletion[] | null> => {
     try {
       const req: IdeRequest = { source: p.source, op: "complete", line: p.line, character: p.character };
@@ -697,6 +907,6 @@ export async function fetchMenuCompletions(api: string, fetchFn: typeof fetch = 
       return null;
     }
   };
-  const [top, body] = await Promise.all(MENU_PROBES.map(ask));
-  return { top: top ?? null, body: body ?? null };
+  const [top, body, label] = await Promise.all(MENU_PROBES.map(ask));
+  return { top: top ?? null, body: body ?? null, label: label ?? null };
 }

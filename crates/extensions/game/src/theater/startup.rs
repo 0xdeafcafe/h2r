@@ -4,7 +4,6 @@
 use super::{Mode, Session};
 use crate::{Host, RunOpts, level_boot, setting_defs, sim_glue};
 use anyhow::{Context, Result, ensure};
-use render_bridge::pipeline_render::{self, HandbackOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, Write};
@@ -56,100 +55,12 @@ struct StartLevel {
 #[derive(Serialize, Deserialize, PartialEq)]
 struct Execution {
     coop: crate::coop_live::film::Options,
-    old_glue: bool,
-    trampoline: bool,
-    /// Old films: the retired H2_PIPELINE_RENDER alias. New films carry the
-    /// pipelined frame in H2_FEATURES and always write false here.
-    #[serde(default)]
-    pipeline_render: bool,
-    #[serde(default, with = "HandbackWire")]
-    pipeline_handback: HandbackOptions,
-}
-
-/// A bounded list of raw guest addresses. Only the four declared options
-/// are translated into child environment variables.
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "HandbackOptions", deny_unknown_fields)]
-struct HandbackWire {
-    predict_frames: bool,
-    replay_seeds: bool,
-    defer_io: bool,
-    #[serde(deserialize_with = "refusal_addresses")]
-    refuse: Vec<u32>,
-}
-
-const MAX_PIPELINE_REFUSALS: usize = 1024;
-
-fn refusal_addresses<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Vec<u32>, D::Error> {
-    struct Addresses;
-
-    impl<'de> serde::de::Visitor<'de> for Addresses {
-        type Value = Vec<u32>;
-
-        fn expecting(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                fmt,
-                "up to {MAX_PIPELINE_REFUSALS} guest function addresses"
-            )
-        }
-
-        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u32>, A::Error> {
-            let mut addresses = Vec::new();
-            while let Some(address) = seq.next_element()? {
-                if addresses.len() == MAX_PIPELINE_REFUSALS {
-                    return Err(serde::de::Error::custom(
-                        "too many film pipeline refusal addresses",
-                    ));
-                }
-                addresses.push(address);
-            }
-            Ok(addresses)
-        }
-    }
-
-    reader.deserialize_seq(Addresses)
-}
-
-fn validate_handback(options: &HandbackOptions) -> Result<()> {
-    ensure!(
-        options.refuse.len() <= MAX_PIPELINE_REFUSALS,
-        "too many film pipeline refusal addresses"
-    );
-    Ok(())
-}
-
-fn configure_handback(options: &HandbackOptions, child: &mut std::process::Command) -> Result<()> {
-    validate_handback(options)?;
-    for (name, enabled) in [
-        (pipeline_render::PREDICT_FRAMES_ENV, options.predict_frames),
-        (pipeline_render::SEED_REPLAY_ENV, options.replay_seeds),
-        (pipeline_render::DEFER_IO_ENV, options.defer_io),
-    ] {
-        child.env(name, if enabled { "1" } else { "0" });
-    }
-    if options.refuse.is_empty() {
-        child.env_remove(pipeline_render::REFUSE_ENV);
-    } else {
-        let addresses = options
-            .refuse
-            .iter()
-            .map(|a| format!("{a:x}"))
-            .collect::<Vec<_>>();
-        child.env(pipeline_render::REFUSE_ENV, addresses.join(","));
-    }
-    Ok(())
 }
 
 impl Execution {
     fn capture() -> Result<Self> {
-        let pipeline_handback = HandbackOptions::from_env();
-        validate_handback(&pipeline_handback)?;
         Ok(Self {
-            pipeline_handback,
             coop: crate::coop_live::film::Options::capture(),
-            old_glue: std::env::var_os("H2_BOOT_OLD_GLUE").is_some(),
-            trampoline: std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1"),
-            pipeline_render: false,
         })
     }
 }
@@ -163,23 +74,9 @@ pub fn configure_replay_child<R: Read + Seek>(
     let switches = hooks::Switches::parse(&film.header.features).map_err(anyhow::Error::msg)?;
     child.env("H2_FEATURES", switches.spec());
     let Some(start) = Startup::read(film)? else {
-        return configure_handback(&HandbackOptions::default(), child);
+        return Ok(());
     };
     let e = start.execution;
-    if e.pipeline_render {
-        child.env("H2_FEATURES", switches.with(pipeline_render::SWITCH, true).spec());
-    }
-    configure_handback(&e.pipeline_handback, child)?;
-    for (name, enabled) in [
-        ("H2_BOOT_OLD_GLUE", e.old_glue),
-        ("H2_BOOT_TRAMPOLINE", e.trampoline),
-    ] {
-        if enabled {
-            child.env(name, "1");
-        } else {
-            child.env_remove(name);
-        }
-    }
     for def in setting_defs::defs() {
         if def.scope != settings::Scope::Host
             && let Some(name) = def.env
@@ -648,7 +545,7 @@ mod tests {
         let mut wire = serde_json::json!({
             "dedicated": false, "theater_menu": false, "keyboard": false, "render_thread": false,
             "execution": {
-                "coop": crate::coop_live::film::Options::capture(), "old_glue": false, "trampoline": false,
+                "coop": crate::coop_live::film::Options::capture(),
             },
             "xapi": true, "stopgaps": true, "d3d": true, "dsound": true, "bink": false,
             "data_settings": data.clone(),
@@ -667,41 +564,6 @@ mod tests {
         assert!(gpu(&wire, Some(Gpu)), "offscreen GPU recording");
         wire["d3d"] = false.into();
         assert!(!gpu(&wire, Some(Gpu)));
-    }
-
-    #[test]
-    fn pipeline_execution_options_restore_the_recorded_handback_and_legacy_defaults() {
-        let mut wire = serde_json::json!({
-            "coop": crate::coop_live::film::Options::capture(),
-            "old_glue": false,
-            "trampoline": false,
-            "pipeline_render": true,
-        });
-        let legacy: Execution = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(legacy.pipeline_handback, HandbackOptions::default());
-        wire["pipeline_handback"] = serde_json::json!({
-            "predict_frames": false, "replay_seeds": true, "defer_io": false,
-            "refuse": [0x00111222u32, 0x00333444u32]
-        });
-        let restored: Execution = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(&restored).unwrap(), wire);
-        let mut cmd = std::process::Command::new("film-child");
-        configure_handback(&restored.pipeline_handback, &mut cmd).unwrap();
-        let vars: BTreeMap<_, _> = cmd
-            .get_envs()
-            .map(|(k, v)| (k.to_str().unwrap(), v.unwrap().to_str().unwrap()))
-            .collect();
-        assert_eq!(
-            vars,
-            BTreeMap::from([
-                (pipeline_render::PREDICT_FRAMES_ENV, "0"),
-                (pipeline_render::SEED_REPLAY_ENV, "1"),
-                (pipeline_render::DEFER_IO_ENV, "0"),
-                (pipeline_render::REFUSE_ENV, "111222,333444"),
-            ])
-        );
-        wire["pipeline_handback"]["refuse"] = serde_json::json!(vec![0; MAX_PIPELINE_REFUSALS + 1]);
-        assert!(serde_json::from_value::<Execution>(wire).is_err());
     }
 
     #[test]

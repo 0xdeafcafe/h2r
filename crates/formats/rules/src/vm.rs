@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::policy;
-use crate::ty::{MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
+use crate::ty::{
+    MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed, object_id, object_value,
+};
 use crate::verify::{self, Refusal};
 
 /// Ops one tick may execute across all its handlers.
@@ -926,7 +928,7 @@ impl Vm {
     fn args(&self, input: &Input) -> Vec<i32> {
         let p = |s: u8| if (s as usize) < MAX_PLAYERS { s as i32 } else { NONE };
         let op = |s: Option<u8>| s.map_or(NONE, p);
-        let o = |id: u32| i32::try_from(id).unwrap_or(NONE);
+        let o = object_value;
         match input {
             Input::Init | Input::RoundStart | Input::RoundEnd => vec![],
             Input::Kill { victim, killer } => vec![p(*victim), op(*killer)],
@@ -982,6 +984,7 @@ impl Vm {
                 options: self.options,
                 warnings: &mut self.warnings,
                 handler: handler as u16,
+                holes: Vec::new(),
             };
             run.exec(game, args)
         };
@@ -1024,7 +1027,7 @@ fn to_arg(ir: &Ir, ty: Ty, v: i32) -> Arg {
         Ty::Bool => Arg::Bool(v != 0),
         Ty::Player => Arg::Player(opt_u8(v)),
         Ty::Team => Arg::Team(opt_u8(v)),
-        Ty::Object => Arg::Object(u32::try_from(v).ok()),
+        Ty::Object => Arg::Object(object_id(v)),
         Ty::Squad => Arg::Squad(opt_u8(v).unwrap_or(0)),
         Ty::Class => Arg::Class(string(&ir.strings, v)),
         Ty::Tag => Arg::Tag(usize::try_from(v).ok().and_then(|i| ir.tags.get(i)).map(|t| t.path.clone())),
@@ -1057,6 +1060,9 @@ struct Run<'a> {
     options: u32,
     warnings: &'a mut Vec<Warning>,
     handler: u16,
+    /// The values `fmt_*` calls queued for the next `message`, at most
+    /// [`caps::MAX_HOLES`] (the verifier's message rule).
+    holes: Vec<Arg>,
 }
 
 type Fault = (u16, ErrorKind);
@@ -1215,6 +1221,11 @@ impl<'a> Run<'a> {
                     dst,
                 } => {
                     let e = &caps::ENTRIES[entry as usize];
+                    if let Some(hole) = caps::Hole::of_entry(entry) {
+                        let r = args[0];
+                        self.hole(hole, hd.regs[r as usize], regs[r as usize]);
+                        continue;
+                    }
                     let raw: Vec<i32> = args.iter().map(|&r| regs[r as usize]).collect();
                     let result = self.call(game, e, raw).map_err(|k| (here, k))?;
                     if let (Some(dst), Some(v)) = (dst, result) {
@@ -1269,7 +1280,7 @@ impl<'a> Run<'a> {
                 let row = match s.scope {
                     Scope::Player => usize::try_from(o).ok().and_then(|i| self.ext.players.get(i)),
                     Scope::Team => usize::try_from(o).ok().and_then(|i| self.ext.teams.get(i)),
-                    Scope::Object => u32::try_from(o).ok().and_then(|i| self.ext.objects.get(&i)),
+                    Scope::Object => object_id(o).and_then(|i| self.ext.objects.get(&i)),
                     Scope::Global => None,
                 };
                 row.map_or(s.init, |r| r[at])
@@ -1294,7 +1305,7 @@ impl<'a> Run<'a> {
                 }
             }
             (Scope::Object, Some(o)) => {
-                if let Ok(id) = u32::try_from(o) {
+                if let Some(id) = object_id(o) {
                     if !self.ext.objects.contains_key(&id) {
                         if self.ext.objects.len() >= MAX_OBJECT_RECORDS {
                             return Err(ErrorKind::Objects);
@@ -1325,7 +1336,7 @@ impl<'a> Run<'a> {
                 placed.dedup_by_key(|p| p.object);
                 placed
                     .into_iter()
-                    .filter_map(|p| i32::try_from(p.object).ok())
+                    .map(|p| object_value(p.object))
                     .take(max)
                     .collect()
             }
@@ -1334,7 +1345,7 @@ impl<'a> Run<'a> {
                 list.sort_unstable();
                 list.dedup();
                 list.into_iter()
-                    .filter_map(|o| i32::try_from(o).ok())
+                    .map(object_value)
                     .take(MAX_OBJECTIVES)
                     .collect()
             }
@@ -1366,7 +1377,7 @@ impl<'a> Run<'a> {
                     // A zone named for the first time is counted from the
                     // next update; `none` and a team out of range read 0.
                     caps::id::TICKS_HELD => {
-                        let (Ok(zone), Ok(team)) = (u32::try_from(raw[0]), usize::try_from(raw[1])) else {
+                        let (Some(zone), Ok(team)) = (object_id(raw[0]), usize::try_from(raw[1])) else {
                             return Ok(Some(0));
                         };
                         if team >= MAX_TEAMS {
@@ -1395,7 +1406,12 @@ impl<'a> Run<'a> {
             Kind::Action => {
                 match e.order {
                     Order::Now => {
-                        let call = self.resolve(e, &raw);
+                        let mut call = self.resolve(e, &raw);
+                        if caps::is_message(e.id) {
+                            // The holes' values follow the entry's own
+                            // arguments, in hole order.
+                            call.args.append(&mut self.holes);
+                        }
                         game.act(&call);
                     }
                     Order::Queued => {
@@ -1410,6 +1426,32 @@ impl<'a> Run<'a> {
                 }
                 Ok(None)
             }
+        }
+    }
+
+    /// A `fmt_*` call: queues the value of register type `ty` for the next
+    /// `message`. A player or team shows as itself, an int or a time as
+    /// its number (the template's hole says which), and an enum as its
+    /// variant's name.
+    fn hole(&mut self, hole: caps::Hole, ty: Ty, v: i32) {
+        let arg = match (hole, ty) {
+            (caps::Hole::Enum, Ty::Enum(e)) => {
+                let name = self
+                    .ir
+                    .enums
+                    .get(e as usize)
+                    .and_then(|d| usize::try_from(v).ok().and_then(|i| d.variants.get(i)))
+                    .and_then(|&s| self.ir.strings.get(s as usize))
+                    .cloned()
+                    .unwrap_or_default();
+                Arg::Text(name)
+            }
+            _ => to_arg(self.ir, ty, v),
+        };
+        // The verifier bounds a run at MAX_HOLES; the cap keeps the VM's
+        // own promise.
+        if self.holes.len() < caps::MAX_HOLES {
+            self.holes.push(arg);
         }
     }
 

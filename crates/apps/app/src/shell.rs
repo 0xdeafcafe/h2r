@@ -39,6 +39,9 @@ enum UserEvent {
     EditorChanged,
     /// A [`crate::Closer`] asked to close.
     Close,
+    /// `host.pause` asked for the window's pause
+    /// ([`agent_proto::host_pause`]).
+    HostPause,
 }
 
 struct Gpu {
@@ -217,6 +220,18 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
             }),
         );
     }
+    // host.pause reaches this window's pause (Cmd+P's) through the hub.
+    struct HostPauseAttached;
+    impl Drop for HostPauseAttached {
+        fn drop(&mut self) {
+            agent_proto::host_pause::hub().detach();
+        }
+    }
+    let proxy = shell.proxy.clone();
+    agent_proto::host_pause::hub().attach(Box::new(move || {
+        let _ = proxy.send_event(UserEvent::HostPause);
+    }));
+    let _host_pause = HostPauseAttached;
     event_loop.run_app(&mut shell)?;
     if let Some(e) = shell.init_error.take() {
         return Err(e);
@@ -475,6 +490,13 @@ impl Shell {
                 now,
             );
         }
+        // The cheat line is the watermark's, but it stays while the perf
+        // overlay is off, and goes while the debug menu covers the corner.
+        let menu_open = self
+            .config
+            .debug_menu
+            .as_ref()
+            .is_some_and(debug_menu::Shared::is_open);
         if frame.as_ref().is_some_and(|f| f.loading) {
             self.watermark_text = None;
         } else if let Some(wm) = &self.config.watermark
@@ -502,11 +524,34 @@ impl Shell {
                 });
             }
             if let Some(t) = &self.watermark_text {
+                let mut panels = t.panels.clone();
+                if menu_open {
+                    panels.cheats.clear();
+                }
                 g.watermark.draw(
                     &g.ctx.device,
                     &g.ctx.queue,
                     &mut enc,
-                    &t.panels,
+                    &panels,
+                    &view,
+                    g.surface.config.format,
+                    size,
+                    viewport,
+                );
+            }
+        } else if let Some(wm) = &self.config.watermark
+            && !menu_open
+        {
+            let panels = Panels {
+                cheats: wm.cheat_panel(),
+                ..Panels::default()
+            };
+            if !panels.cheats.is_empty() {
+                g.watermark.draw(
+                    &g.ctx.device,
+                    &g.ctx.queue,
+                    &mut enc,
+                    &panels,
                     &view,
                     g.surface.config.format,
                     size,
@@ -669,11 +714,21 @@ impl Shell {
 
     fn apply_pause(&mut self) {
         let paused = self.user_paused || self.focus_paused;
-        if paused != self.life.is_paused() {
+        if paused != self.life.pause_requested() {
             self.life.set_paused(paused);
             if let Some(a) = &self.audio {
                 if paused { a.pause() } else { a.resume() }
             }
+        }
+        // host.pause and host.step see Cmd+P's pause, whoever set it.
+        agent_proto::host_pause::hub().report(self.user_paused);
+    }
+
+    /// `host.pause`'s request, applied as Cmd+P applies its own.
+    fn take_host_pause(&mut self) {
+        if let Some(on) = agent_proto::host_pause::hub().take_request() {
+            self.user_paused = on;
+            self.apply_pause();
         }
     }
 
@@ -764,14 +819,24 @@ impl ApplicationHandler<UserEvent> for Shell {
                 }
             }
             UserEvent::Close => self.close(event_loop, "close requested"),
+            UserEvent::HostPause => self.take_host_pause(),
             UserEvent::GuestExited => {
                 if let Some(e) = self.worker.as_mut().and_then(|w| w.try_finish()).cloned() {
                     eprintln!("app: guest thread exited: {e:?}");
                     self.exit = Some(e);
                 }
                 if self.config.keep_open_on_guest_exit {
+                    // Say what happened over the last frame, and offer F5
+                    // to start again (docs/runtime/app.md "When the game
+                    // stops").
+                    if let Some(notice) = self.exit.as_ref().and_then(crate::overlay::stopped_notice) {
+                        self.config.banner.get_or_insert_with(crate::Banner::new).set(Some(notice));
+                    }
                     self.status.last = Instant::now() - Duration::from_secs(2);
                     self.update_status();
+                    if let Some(g) = &self.gpu {
+                        g.window.request_redraw();
+                    }
                 } else {
                     self.close(event_loop, "the guest exited");
                 }
@@ -886,7 +951,12 @@ impl ApplicationHandler<UserEvent> for Shell {
                 if let Some(menu) = self.config.debug_menu.clone() {
                     match keymap::menu_key(code, menu.is_open()) {
                         keymap::MenuKey::Take(k) => {
-                            if down && let Some(k) = k {
+                            // The OS repeats a held arrow, page key or
+                            // Backspace; the other keys act once a press.
+                            if down
+                                && let Some(k) = k
+                                && (!event.repeat || k.repeats())
+                            {
                                 menu.key(k);
                                 if let Some(g) = &self.gpu {
                                     g.window.request_redraw();
@@ -929,7 +999,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                             }
                         } else if banner.restart_offered() {
                             self.restart_requested = true;
-                            self.close(event_loop, "F5: restart for update");
+                            self.close(event_loop, "F5: restart");
                         }
                     }
                     return;

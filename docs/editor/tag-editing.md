@@ -378,7 +378,7 @@ lists them):
 |---|---|---|---|
 | UI Screens outliner, `ui_screens::tree` | `##ui-retail` takes what is left under the Our screens tree; its filter sits between the two lists | 2, 3 | one filter at the top, both lists under folding headers, no child |
 | HUD outliner, `hud::tree` | `##hud-list` is a third of what is left, clamped to 48 to 220 points; `##hud-widgets` takes the rest | 2 | HUDs and Widgets as folding headers in the body; a filter over both |
-| Scene outliner, `Studio::outliner_window` | `scene-layers` (`layers::section`) is half of what is left; `##outliner-tree` takes the rest; the filter sits under Layers | 2, 3 | filter and the Duplicate and Delete row pinned; Layers a folding header in the body, drawn at its content height; no tree child |
+| Scene outliner, `Studio::outliner_window` | `##outliner-tree` takes what is left | 2, 3 | filter and the Duplicate and Delete row pinned; no tree child |
 | Tags fields, `tags::fields` | fixed: no child; the header scrolls with the rows in the window | | when the filter row lands (T7), it is the only pinned row, over a `theme::panel_body` |
 | Tags tree, `tags::tree` | no child, but the tag filter is inside All tags, under the scenario tree, and Not reachable from the scenario is last | 3 | the filter at the top over all three sections; each section a folding header |
 | Data and bytes, `tags::hex` | fixed: Field details, then Bytes, then Data and resources, each a folding header | | |
@@ -570,8 +570,8 @@ is independent of the tag slices except for `tags::fields`.
   and conflicts.
 - [click-to-edit.md](click-to-edit.md): the inspector that shares this
   panel.
-- [polish-plan.md](polish-plan.md): P12, P13 and P18, the slices this
-  design builds on.
+- [editor.md](editor.md): the editor shell and live editing this design
+  builds on.
 - [agent-api.md](agent-api.md): the socket API.
 - [tag-definitions.md](../formats/tag-definitions.md): the definition
   file format and its evidence rules.

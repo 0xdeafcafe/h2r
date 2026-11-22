@@ -265,6 +265,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "anyhow",
  "app-icon",
  "audio",
@@ -599,6 +600,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "bitmap-edit"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1004,6 +1014,8 @@ dependencies = [
  "font",
  "forge",
  "forge-build",
+ "forge-doc",
+ "gfx",
  "gltf",
  "h1-assets",
  "h1campaign",
@@ -1058,7 +1070,6 @@ dependencies = [
  "ureq",
  "variants",
  "vfs",
- "viewer",
  "voice",
  "windows-sys 0.61.2",
  "wma",
@@ -1122,6 +1133,16 @@ dependencies = [
  "serde",
  "termcolor",
  "unicode-width",
+]
+
+[[package]]
+name = "collision-build"
+version = "0.1.0"
+dependencies = [
+ "mesh-edit",
+ "mopp",
+ "tags",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2455,9 +2476,12 @@ dependencies = [
 name = "geometry-edit"
 version = "0.1.0"
 dependencies = [
+ "collision-build",
  "editor-core",
+ "h1convert",
  "map",
  "mesh-edit",
+ "mopp",
  "scenario-edit",
  "tags",
 ]
@@ -3834,6 +3858,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hkdf",
  "hmac 0.12.1",
+ "rules",
  "serde",
  "serde_json",
  "sha1 0.10.7",
@@ -6858,7 +6883,9 @@ dependencies = [
  "app-icon",
  "assets",
  "audio",
+ "bitmap-edit",
  "boot",
+ "bots",
  "content",
  "dear-imgui-rs",
  "dear-imgui-wgpu",
@@ -6886,6 +6913,7 @@ dependencies = [
  "scenario-edit",
  "serde_json",
  "studio-proto",
+ "superbounce",
  "tags",
  "variants",
  "vfs",
@@ -7714,26 +7742,6 @@ dependencies = [
  "memmap2",
  "rustix 1.1.6",
  "thiserror 2.0.21",
- "xiso",
-]
-
-[[package]]
-name = "viewer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assets",
- "bytemuck",
- "content",
- "gfx",
- "h1-assets",
- "map",
- "pollster",
- "scenario-edit",
- "shaders",
- "tags",
- "wgpu",
- "winit",
  "xiso",
 ]
 
