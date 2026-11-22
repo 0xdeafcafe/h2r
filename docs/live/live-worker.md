@@ -188,7 +188,7 @@ same receipt.
 
 These are wall times from a single local run with Durable Object storage and
 emulated R2. The full-match size and browser CPU measurements use the seeded
-multiplayer and campaign recordings. [Telemetry measurements](../engine/live-telemetry.md#finished-replay-archives)
+multiplayer and campaign recordings. [Telemetry measurements](notes/2026-11-19-telemetry-precision.md#finished-replay-archives)
 
 ## Slice 2 results
 

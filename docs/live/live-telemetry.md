@@ -723,7 +723,7 @@ in order. An existing stream has a key at least every 150 samples.
 
 The seeded 16-player match used about 81 bytes per player per second on
 v8 and about 145 on v7, including keys and record lengths.
-[Measurement workload](../engine/live-telemetry.md#match-and-measurement)
+[Measurement workload](notes/2026-11-19-telemetry-precision.md#match-and-measurement)
 
 After the usual ULEB record length, the first byte is
 `8 | (key << 4) | (min(sid, 7) << 5)`. Slot 7 adds ULEB `sid - 7`.
@@ -738,7 +738,7 @@ server to readers (`/v1/stream?frames=packed`), recorded frames at rest
 `GameFrame.data.packed`) and the replay fetch (`/v1/games/{id}/chunks`,
 and `/frames` for older games). JSON readers can request `?format=json`
 on an individual chunk or the legacy frame page. Live JSON readers use
-`/v1/stream?frames=json`. See the [precision and transfer measurements](../engine/live-telemetry.md).
+`/v1/stream?frames=json`. See the [precision and transfer measurements](notes/2026-11-19-telemetry-precision.md).
 `crates/live/live-proto/src/pack.rs` writes and reads it;
 `web/src/api/pack.ts` reads it; the golden vectors in
 `web/test/fixtures/pack` (written by the Rust tests from invented frames,
@@ -989,7 +989,7 @@ distant segments after a seek.
 Local servers run the offline codec on the blocking pool. The Worker runs
 one bounded segment on its single-threaded Durable Object per alarm or admin
 step. The raw originals and their signed index remain available after
-publication and rollback. [Archive format, limits and measurements](../engine/live-telemetry.md#finished-replay-archives)
+publication and rollback. [Archive format, limits and measurements](notes/2026-11-19-telemetry-precision.md#finished-replay-archives)
 and [migration procedure](replay-migration.md).
 
 ## Telemetry cost
