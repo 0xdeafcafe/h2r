@@ -43,7 +43,8 @@ pub const SCATTER_TRIES: usize = 16;
 pub const LEARNED_N: u32 = 10;
 /// ...and bounces at least this share of them.
 pub const LEARNED_RATE: f64 = 0.6;
-/// `blocked`: this many rounds running were all void.
+/// `blocked`: this many rounds running were all void, at a site never
+/// flown (one flown before starts the count again).
 pub const VOID_ROUNDS: u32 = 3;
 /// A void try's slot is asked this many times in all (again twice at
 /// most), then given up for the round.
@@ -437,6 +438,12 @@ impl Search {
                 let mut e = e.clone();
                 if e.state == State::Partial && e.tries < setup.budget {
                     e.state = State::Open;
+                }
+                // Only a site never flown is blocked: one with tries is
+                // flown again.
+                if e.state == State::Blocked && e.tries > 0 {
+                    e.state = State::Open;
+                    e.why = None;
                 }
                 e
             }
@@ -860,8 +867,16 @@ impl Search {
             }
             self.void_why.extend(w.voids);
             if self.voids >= VOID_ROUNDS {
-                self.line.state = State::Blocked;
-                self.line.why = Some(commonest(&self.void_why).to_string());
+                if self.line.tries == 0 {
+                    self.line.state = State::Blocked;
+                    self.line.why = Some(commonest(&self.void_why).to_string());
+                } else {
+                    // Flown before: the bot that couldn't get there is
+                    // where its last try left it (a launch lands far off),
+                    // not the site's fault. The count starts again.
+                    self.voids = 0;
+                    self.void_why.clear();
+                }
             }
             return report(&*self, true, None);
         }

@@ -1,7 +1,7 @@
 # Native renderer stage 2: objects and skinning
 
 Status: Built. Objects draw natively in the default configuration; the first-person lights are not native.
-Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/native_objects.rs`, `crates/extensions/game/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
+Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/{native_objects,native_edits}.rs`, `crates/extensions/game/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 2 of [native-renderer.md](native-renderer.md). Bipeds, vehicles, weapons,
@@ -81,6 +81,26 @@ snapshot reload invalidate the previous load's work. A pass that already
 committed holds its models until recording ends. The last reference sends
 their GPU resources to the shared map retirement worker for destruction.
 First-person models use the same worker.
+
+A paired editor's live edit changes the map file as the raw overlay
+serves it ([realtime-edits.md](../editor/realtime-edits.md), "The native
+refresh"). The hot-edit glue pushes each edited render model and bitmap
+image onto `render_bridge::native_edits`. When models are resident, the
+objects' glue drains its share at the next walk or preload, one refresh
+at a time, onto a worker (`native_objects_glue::refresh_models`). An
+edited model the load made native is loaded again from the file as the
+load does (`load_model`), uploaded into a staging set and moved into the
+draw set under its lock (`LitObjects::move_model_into`), with its new
+coverage and the load's residency. A model that no longer loads natively,
+or whose node count changed, leaves the native path
+(`LitObjects::remove_model`), so its parts keep their D3D draws from
+guest memory, and the log says why. An edited image is decoded again at
+each stage that samples it and every program texture made from it is
+rewritten in place (`LitObjects::rewrite_image`); another size, level
+count or format keeps the loaded pixels until the map reloads. The
+editor's and Theater's `GpuModels` replace a model under its index with
+`GpuModels::replace_model`. The sun's caster models
+(`native_render::sun_casters`) keep the geometry they loaded.
 
 The palette status (`scene_palette_*` in `render.scene`) distinguishes
 pending definitions, explicit null model references, failures, partial

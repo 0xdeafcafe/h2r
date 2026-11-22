@@ -140,11 +140,12 @@ After every round the stop rules are read, the first that holds:
 | `learned` | the centre has `n` ≥ 10 and `ok` / `n` ≥ 0.6 |
 | `dead` | `compass` has ended after the scatter and no try ever bounced (`why=no_bounce`), or the budget is spent and none did (`why=budget`) |
 | `partial` | the budget is spent and some try bounced |
-| `blocked` | three rounds running were all void (`why=` the commonest reason: `no_launch_floor`, `no_path`, `not_armed`, ...; the first by name among equals). The count of void rounds is kept in memory, not on the line |
+| `blocked` | three rounds running were all void at a site with no scored try (`why=` the commonest reason: `no_launch_floor`, `no_path`, `not_armed`, ...; the first by name among equals). At a site with tries the count starts again: a bot that can't walk back is where its last try left it (a launch lands far off), not the site's fault. The count of void rounds is kept in memory, not on the line |
 | `open` | none of the above: the next round |
 
 A `learned`, `dead` or `blocked` site is closed: a batch flies it no more.
-`partial` reopens when a batch's budget is higher than its `tries`.
+`partial` reopens when a batch's budget is higher than its `tries`, and a
+`blocked` line with tries reopens as it is read.
 `blocked` costs no budget and says the site was never flown, so a nav fix
 followed by `--reopen` tries it again.
 
