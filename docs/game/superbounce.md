@@ -1563,13 +1563,11 @@ read `playing` until `done`; the figure itself needs a windowed run.
 
 ## Medals
 
-Eight medals. A bounce earns one chain medal, as a kill earns one
-multi-kill medal: **Superbounce** for the first bounce of a chain;
-**Double Bounce**, **Triple Bounce**, **Quad Bounce**, **Chain Bounce**
-and **Bouncetacular** for the second to the sixth bounce with no ground
-between them, and Bouncetacular again for each bounce after the sixth.
-**Monster Bounce**, for a bounce that launches well above a normal one,
-comes on top of the chain medal, and **Bounced**, for a fall out of the map during a
+Eight medals: **Superbounce** for every bounce; **Double Bounce**,
+**Triple Bounce**, **Quad Bounce**, **Chain Bounce** and
+**Bouncetacular** for the second to the sixth bounce with no ground
+between them; **Monster Bounce**, for a bounce that launches well above
+a normal one; and **Bounced**, for a fall out of the map during a
 bounce. They are awarded to every player in the game, bots included,
 while the mode is on. The player sees a medal as Halo 2 shows its own, a
 line of the notification list with a medal glyph ([hud-kit.md](hud-kit.md),
@@ -1646,33 +1644,29 @@ launch is 6 s back to the same floor and 18 units high (gravity 4.15),
 longer than a multi-kill's 4 s, and a flight cannot be stretched, so
 the ground is the better test.
 
-Each bounce gives one chain medal for its place in the chain, as the
-game gives one multi-kill medal for a kill's place in its run (Double
-Kill to Killimanjaro, which is "seven or more kills" and repeats for each
-kill past the sixth, `killimanjaro` in
-[live-gamestate.md](../live/live-gamestate.md)):
+Medals are given as the count is reached, as the game gives its
+multi-kills:
 
-| Chain count | Medal | Id |
+| Chain count | Medals | Id |
 |---|---|---|
 | 1 | Superbounce | `superbounce` |
-| 2 | Double Bounce | `double-bounce` |
-| 3 | Triple Bounce | `triple-bounce` |
-| 4 | Quad Bounce | `quad-bounce` |
-| 5 | Chain Bounce | `chain-bounce` |
-| 6 and over | Bouncetacular | `bouncetacular` |
+| 2 | Superbounce, Double Bounce | `double-bounce` |
+| 3 | Superbounce, Triple Bounce | `triple-bounce` |
+| 4 | Superbounce, Quad Bounce | `quad-bounce` |
+| 5 | Superbounce, Chain Bounce | `chain-bounce` |
+| 6 | Superbounce, Bouncetacular | `bouncetacular` |
+| 7 and over | Superbounce | |
 | any, launched over 16 units/s | the above, and Monster Bounce | `monster-bounce` |
 
-A bounce is not a Superbounce medal: Superbounce is the first bounce of
-a chain, so its count is the number of chains, and a player's bounces
-are counted from the bounce events (`Superbounce` events, the totals'
-`bounces`, `superbounce.medals`' `bounces`). A chain of eight is one
-Superbounce, one each of Double to Chain Bounce and three Bouncetacular.
+Superbounce is every bounce, so its count is the player's bounces. A
+chain gives each of the other five once, as the count passes it: a
+chain of eight is eight Superbounces and one each of the five tiers.
 The table is one function, `bounce_medals(chain)`. Its canonical home is
 `crates/live/live-proto/src/film/events/medals.rs`, used by the film and
-Live. The game, which does not depend on Live, has its own copy
+Live; the site has a copy in `web/src/state/derive.ts`, as it has of the
+kill medals. The game, which does not depend on Live, has its own copy
 in `superbounce_chain::bounce_medals`, kept to the same ids
-(`medals_by_id`), for the HUD and the agent API; the site takes the
-medals Live works out and has no copy of the table. Monster Bounce is not
+(`medals_by_id`), for the HUD and the agent API. Monster Bounce is not
 in the count: `bounce_medals_with(chain, monster)` adds it last, so it is
 the line a Monster shows, and the bounce's event carries the flag. The
 live and site lists of the eight ids are `BOUNCE_MEDALS` (`medals.rs`,

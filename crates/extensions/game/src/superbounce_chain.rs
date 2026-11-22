@@ -46,23 +46,23 @@ pub const RECENT: usize = 8;
 /// fifth. Reasoned from those, not measured: no Monster has been traced.
 pub const MONSTER_VZ: f32 = 16.0;
 
-/// The medal a bounce earns at chain count `chain`, a list of one: the
-/// first bounce is a Superbounce, the second to the sixth earn their tier,
-/// and the sixth on earn Bouncetacular again, as Halo 2 repeats
-/// Killimanjaro from the seventh kill. The canonical table, which the film
-/// and Live use, is `live_proto::film::events::medals`'s; this copy is the
+/// The medals a bounce earns at chain count `chain`, lowest first: every
+/// bounce is a Superbounce, and the second to the sixth of a chain earn
+/// its tier as well, once each (the count passes each once). Seven and
+/// over earn Superbounce alone. The canonical table, which the film and
+/// Live use, is `live_proto::film::events::medals`'s; this copy is the
 /// game's, which does not depend on Live, and the two are kept the same
 /// by id (`medals_by_id`).
 pub fn bounce_medals(chain: u32) -> &'static [Medal] {
     use Medal::*;
     match chain {
         0 => &[],
-        1 => &[Superbounce],
-        2 => &[DoubleBounce],
-        3 => &[TripleBounce],
-        4 => &[QuadBounce],
-        5 => &[ChainBounce],
-        _ => &[Bouncetacular],
+        2 => &[Superbounce, DoubleBounce],
+        3 => &[Superbounce, TripleBounce],
+        4 => &[Superbounce, QuadBounce],
+        5 => &[Superbounce, ChainBounce],
+        6 => &[Superbounce, Bouncetacular],
+        _ => &[Superbounce],
     }
 }
 
@@ -318,9 +318,6 @@ pub struct Record {
     /// The count of its last chain.
     pub chain: u32,
     pub live: bool,
-    /// Bounces this game: every award but a Bounced. The medals do not
-    /// count them (a bounce files one chain medal), so this does.
-    pub bounces: u32,
     pub counts: BTreeMap<Medal, u32>,
 }
 
@@ -434,9 +431,6 @@ impl Medals {
         let rec = self.records.entry(slot).or_default();
         for m in &medals {
             *rec.counts.entry(*m).or_default() += 1;
-        }
-        if !medals.is_empty() && !medals.contains(&Medal::Bounced) {
-            rec.bounces += 1;
         }
         let a = Award {
             seq: self.seq,

@@ -1513,7 +1513,7 @@ mod tests {
         assert_eq!(status, 201, "{body}");
 
         let mine = serde_json::json!({
-            "bonecracker": 1, "superbounce": 1, "double-bounce": 1, "incel": 1
+            "bonecracker": 1, "superbounce": 2, "double-bounce": 1, "incel": 1
         });
         let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
         assert_eq!(
@@ -1533,7 +1533,7 @@ mod tests {
         assert_eq!(
             v["totals"]["medals"],
             serde_json::json!({
-                "bonecracker": 1, "superbounce": 1, "double-bounce": 1, "incel": 2
+                "bonecracker": 1, "superbounce": 2, "double-bounce": 1, "incel": 2
             })
         );
         let rows = v["players"].as_array().unwrap();

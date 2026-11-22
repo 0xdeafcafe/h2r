@@ -65,7 +65,7 @@ export const MEDALS: MedalDef[] = [
   { id: "triple-bounce", name: "Triple Bounce", blurb: "3 bounces with no ground between", tier: 1 },
   { id: "quad-bounce", name: "Quad Bounce", blurb: "4 bounces with no ground between", tier: 2 },
   { id: "chain-bounce", name: "Chain Bounce", blurb: "5 bounces with no ground between", tier: 2 },
-  { id: "bouncetacular", name: "Bouncetacular", blurb: "6 or more bounces with no ground between", tier: 3 },
+  { id: "bouncetacular", name: "Bouncetacular", blurb: "6 bounces with no ground between", tier: 3 },
   { id: "bounced", name: "Bounced", blurb: "Fell out of the map trying a bounce", tier: 0 },
   { id: "monster-bounce", name: "Monster Bounce", blurb: "A bounce that launches well above a normal one", tier: 2 },
   { id: "incel", name: "Incel", blurb: "Completed a game without teabagging or getting teabagged", tier: 1 },
