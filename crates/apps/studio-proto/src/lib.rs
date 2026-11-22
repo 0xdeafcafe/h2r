@@ -149,6 +149,7 @@ pub mod method {
     pub const UI_PALETTE: &str = "ui.palette";
     pub const UI_SCREENS: &str = "ui.screens";
     pub const UI_PICK: &str = "ui.pick";
+    pub const UI_EXPORT_EDITS: &str = "ui.export_edits";
     pub const UI_PRESS: &str = "ui.press";
     pub const UI_WIDGETS: &str = "ui.widgets";
     pub const UI_RENDER: &str = "ui.render";

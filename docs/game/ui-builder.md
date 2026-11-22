@@ -106,10 +106,12 @@ Everything in it must still sit inside the panel and inside the safe
 area. The preview draws a modal over the screen that opened it (its
 `Opener`, below), so the sheet shows it in place.
 
-**The runtime tag recipe.** Our screens are still made by the Controls
-constructor and adopted by `list_class`. The screen-tag function
-(`0x22f871`) already serves them a tag copy (`list_class::copy_tag`); the
-builder writes that copy from the `View` instead: the root flags pick the
+**The runtime tag recipe.** Our screens are made by the Controls
+constructor and adopted by `list_class`. List screens open on their own
+`wgit` tag, generated into the maps ([ui-in-maps.md](ui-in-maps.md));
+dialogs, and list screens in a map that was not rewritten, are served a
+tag copy by the screen-tag function (`0x22f871`, `list_class::copy_tag`).
+Either tag is written from the `View`: the root flags pick the
 header layout (bits 4, 3, 0 select layouts 1, 2, 3), the pane gets our
 text blocks and the copied `Art` blocks in draw order, and the list block
 is moved, reskinned and given the visible count. Tints go to `+0x28` of
@@ -1536,6 +1538,13 @@ polls that folder (once a second) and reloads a file that changed on disk
 when its screen has no unsaved edits. A screen with unsaved edits keeps
 them, and the tool says the file changed. Retail edits save with the map
 (`doc.save`, File > Save).
+
+**Shipping a retail edit.** A retail edit saved with the map is the
+user's alone, since the map is disc-derived. `ui.export_edits {path,
+screen?}` writes the open map's retail edits as retail edit files, one
+per edited screen pane, and a file in `assets/ui/retail-edits/` is applied
+to every user's map at boot ([ui-in-maps.md](ui-in-maps.md), "Retail
+edits as data").
 
 **Checks on the edited view.** `UiScreens::draw_native` makes the view
 inside `with_screens`, so `layout::check` and `content::check` run on the

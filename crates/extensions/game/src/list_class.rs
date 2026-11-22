@@ -1056,6 +1056,9 @@ pub fn copy_tag(
     Ok(Some(at))
 }
 
+/// A screen widget's screen id (`0x22f871` reads it).
+const SCREEN_ID_OFFSET: u32 = 0x70;
+
 /// The screen vtable is also the base of the class's table page.
 struct RegisteredLayout {
     screen: &'static str,
@@ -1110,6 +1113,13 @@ pub fn served_tag(
         return Ok(Some(tag));
     }
     if retail == 0 {
+        return Ok(None);
+    }
+    // A screen opened on its own tag in the map (docs/game/ui-in-maps.md):
+    // what the lookup found is the tag, already placed and skinned.
+    if m.u16(screen + SCREEN_ID_OFFSET)
+        .is_ok_and(|id| crate::ui_kit::inject::is_injected_id(id as i16))
+    {
         return Ok(None);
     }
     let Some((layout, style)) = LAYOUTS
@@ -1832,6 +1842,37 @@ pub async fn load(
     name: &'static str,
     style: TransitionStyle,
 ) -> Result<Ret, EntryError> {
+    load_with(cx, e, rows, name, style, None).await
+}
+
+/// The injected screen id class `screen` opens on, when the interface the
+/// game is in holds its tag: the id's lookup (`SCREEN_TAG_BY_ID`) finds
+/// one. `None` for a screen that is not a `list` screen, or whose map was
+/// served without our screens (the copy path builds it, then).
+async fn injected_id(cx: &Cx, screen: &str) -> Result<Option<u32>, EntryError> {
+    let Some(id) = crate::ui_kit::inject::list_id(screen) else {
+        return Ok(None);
+    };
+    let id = u32::from(id as u16);
+    let handle = cx
+        .call(GuestCall::new(points::SCREEN_TAG_BY_ID.base).args([id]))
+        .await?
+        .eax;
+    Ok((handle != u32::MAX).then_some(id))
+}
+
+/// [`load`] for class `screen` (its screen name, [`ListClass::screen`]): a
+/// list screen whose tag is in the interface's map is built on that tag
+/// (`construct_on` with its id), the rest on the base screen's
+/// ([`base_screen_id`]).
+pub async fn load_with(
+    cx: Cx,
+    e: Entries,
+    rows: Arc<dyn Rows>,
+    name: &'static str,
+    style: TransitionStyle,
+    screen_name: Option<&'static str>,
+) -> Result<Ret, EntryError> {
     // The rows are counted with no guest memory held.
     let count = rows.count();
     let described = rows.describe(count);
@@ -1841,7 +1882,12 @@ pub async fn load(
     let request = cx.arg(0)?;
     // Unreadable (no game kind byte): the main menu's.
     let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
-    if let Some(d) = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable) {
+    let dialog = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable);
+    let injected = match (screen_name, &dialog) {
+        (Some(screen), None) => injected_id(&cx, screen).await?,
+        _ => None,
+    };
+    if let Some(d) = dialog {
         dialog_tag::prepare(&cx, &d, base, name, style).await?;
     }
     let screen = cx
@@ -1861,7 +1907,10 @@ pub async fn load(
     })?;
     {
         let _building = Building::start(capacity);
-        if base == CONTROLS_SCREEN_ID {
+        if let Some(id) = injected {
+            eprintln!("{name}: built on its own tag (screen {id:#x})");
+            construct_on(&cx, screen, id, a, b, player).await?;
+        } else if base == CONTROLS_SCREEN_ID {
             cx.call(
                 GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
                     .edi(screen)
@@ -2778,6 +2827,7 @@ impl hooks::Feature for ListClass {
         // and left other plans pointing at memory they never allocated.
         set_push_request(tables + PUSH_BLOCK);
         let name = self.id;
+        let screen_name = self.screen;
         let animation = self.animation;
         let description_block = self.description_block();
         let shown = description_block.map(|_| Arc::new(Shown::default()));
@@ -2789,7 +2839,14 @@ impl hooks::Feature for ListClass {
             let rows = Arc::clone(&rows);
             b.entry("loader", move |cx| -> EntryFuture {
                 let e = *cell.get().expect("entries are set at build");
-                Box::pin(load(cx, e, Arc::clone(&rows), name, animation))
+                Box::pin(load_with(
+                    cx,
+                    e,
+                    Arc::clone(&rows),
+                    name,
+                    animation,
+                    Some(screen_name),
+                ))
             })?
         };
         let lines = match self.lines.then(|| Lines::of(self.id)).flatten() {
@@ -3500,6 +3557,143 @@ mod tests {
         // after, as asked.
         assert_eq!(*during.lock().unwrap(), Some((video_rows().count() as u32, 7)));
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
+    }
+
+    /// A list screen whose tag is in the interface's map (the id's lookup
+    /// finds it) is built on that tag, with our class adopting it as it
+    /// adopts a Controls-built one; with no tag in the map (the map was
+    /// served without our screens) it is built on Controls as before.
+    #[test]
+    fn a_list_screen_with_its_own_tag_in_the_map_is_built_on_it() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        let id = u32::from(crate::ui_kit::inject::id_of("coop").unwrap() as u16);
+        assert_eq!(crate::ui_kit::inject::list_id("coop"), Some(id as i16));
+        for found in [0x1234_0005, u32::MAX] {
+            let mut g = guest();
+            g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+                .map(ROWS - 0x20, 0x200);
+            g.put_u16(REQUEST + 2, 0x4)
+                .put_u32(REQUEST + 4, 5)
+                .put_u32(REQUEST + 8, 4);
+            g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+            let e = entries();
+            let f = move |cx| -> EntryFuture {
+                Box::pin(load_with(
+                    cx,
+                    e,
+                    video_rows(),
+                    "test",
+                    TransitionStyle::Default,
+                    Some("coop"),
+                ))
+            };
+            let regs = Regs {
+                esp: STACK,
+                ..Default::default()
+            };
+            let run = testing::run(&f, g, regs, |c, m| {
+                if c.target == points::CONTROLS_SCREEN_CTOR.base || c.target == CONTROLS_LIST_CTOR {
+                    construct(m, 7);
+                }
+                Regs {
+                    eax: if c.target == points::UI_ALLOC.base {
+                        SCREEN
+                    } else if c.target == points::SCREEN_TAG_BY_ID.base {
+                        found
+                    } else {
+                        0
+                    },
+                    ..Default::default()
+                }
+            });
+            let list = SCREEN + ui::LIST;
+            let push = Gc::new(points::SCREEN_PUSH.base).edi(SCREEN).ebx(REQUEST);
+            assert_eq!(
+                run.calls[0],
+                Gc::new(points::SCREEN_TAG_BY_ID.base).args([id])
+            );
+            assert_eq!(run.calls[1].target, points::UI_ALLOC.base);
+            if found != u32::MAX {
+                assert_eq!(run.calls.len(), 5, "{:?}", run.calls);
+                assert_eq!(
+                    run.calls[2],
+                    Gc::new(GENERIC_SCREEN_CTOR)
+                        .eax(SCREEN)
+                        .edi(SCREEN)
+                        .esi(list)
+                        .args([id, 5, 4, 4, list]),
+                    "the generic constructor, on our screen's id"
+                );
+                assert_eq!(
+                    run.calls[3],
+                    Gc::new(CONTROLS_LIST_CTOR).esi(list).edi(SCREEN).args([4])
+                );
+                assert_eq!(run.calls[4], push);
+            } else {
+                assert_eq!(run.calls.len(), 4, "{:?}", run.calls);
+                assert_eq!(
+                    run.calls[2],
+                    Gc::new(points::CONTROLS_SCREEN_CTOR.base)
+                        .edi(SCREEN)
+                        .args([5, 4, 4]),
+                    "no tag in this map: built on Controls"
+                );
+                assert_eq!(run.calls[3], push);
+            }
+            assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+            assert_eq!(
+                Screen::at(SCREEN).vtable(&run.guest),
+                Ok(TABLES),
+                "adopted as ours either way"
+            );
+        }
+    }
+
+    /// A dialog class, or a class asked for with no screen name, never
+    /// looks for an injected tag.
+    #[test]
+    fn only_a_list_class_with_a_screen_name_looks_for_its_tag() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(crate::ui_kit::inject::list_id("kit.dialog"), None, "a dialog doc");
+        assert_eq!(crate::ui_kit::inject::list_id("no such screen"), None);
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x200);
+        g.put_u16(REQUEST + 2, 0x4)
+            .put_u32(REQUEST + 4, 5)
+            .put_u32(REQUEST + 8, 4);
+        g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+        let e = entries();
+        let f = move |cx| -> EntryFuture {
+            Box::pin(load_with(
+                cx,
+                e,
+                video_rows(),
+                "test",
+                TransitionStyle::Default,
+                Some("kit.dialog"),
+            ))
+        };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                construct(m, 7);
+            }
+            Regs {
+                eax: if c.target == points::UI_ALLOC.base { SCREEN } else { 0 },
+                ..Default::default()
+            }
+        });
+        assert!(
+            run.calls
+                .iter()
+                .all(|c| c.target != points::SCREEN_TAG_BY_ID.base),
+            "{:?}",
+            run.calls
+        );
     }
 
     /// The Controls tag (screen 39) is available in the main menu. In a
@@ -5118,6 +5312,20 @@ mod tests {
             .lock()
             .unwrap()
             .retain(|layout| layout.screen_vtable != TABLES);
+    }
+
+    #[test]
+    fn a_screen_built_on_its_own_tag_is_served_what_the_lookup_found() {
+        let mut g = guest();
+        let retail = controls_tag(&mut g);
+        const OURS: u32 = 0x00a2_0000;
+        g.map(OURS, 0x100);
+        g.put_u32(OURS, TABLES).put_u16(
+            OURS + SCREEN_ID_OFFSET,
+            crate::ui_kit::inject::id_of("coop").unwrap() as u16,
+        );
+        assert_eq!(served_tag(&mut g, OURS, retail), Ok(None), "no copy of it");
+        assert_eq!(g.u32(TABLES + TAG_SOURCE), Ok(0), "none was made");
     }
 
     /// Slot 10 of a class with an action: Start runs it and is handled;

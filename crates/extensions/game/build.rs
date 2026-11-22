@@ -50,11 +50,11 @@ fn main() {
     ui_docs();
 }
 
-/// `$OUT_DIR/ui_baked.rs`: `assets/ui/design.yaml` and every
-/// `assets/ui/screens/*.yaml`, each `include_str!`d, so the game carries
-/// our screens' presentation with no file read (ui_kit::data::baked), and
-/// every `assets/ui/retail-samples/*.yaml` for the previews of the retail
-/// screens.
+/// `$OUT_DIR/ui_baked.rs`: `assets/ui/design.yaml`, every
+/// `assets/ui/screens/*.yaml`, every `assets/ui/retail-edits/*.yaml` and
+/// every `assets/ui/retail-samples/*.yaml`, each `include_str!`d, so the
+/// game carries our screens' presentation, the retail screens' edits and
+/// their preview samples with no file read (ui_kit::data::baked).
 fn ui_docs() {
     let root = Path::new("../../../assets/ui");
     let screens = root.join("screens");
@@ -85,25 +85,28 @@ fn ui_docs() {
         out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
     }
     out.push_str("];\n");
-    // The retail screens' sample states (ui_kit::preview::retail_sample).
-    let samples = root.join("retail-samples");
-    println!("cargo:rerun-if-changed={}", samples.display());
-    let mut names: Vec<String> = std::fs::read_dir(&samples)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
-        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
-        .collect();
-    names.sort();
-    out.push_str("pub const RETAIL_SAMPLES: &[(&str, &str)] = &[\n");
-    for n in &names {
-        let p = abs(&samples.join(format!("{n}.yaml")));
-        println!("cargo:rerun-if-changed={p}");
-        out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
+    // Retail screen tag edits (ui_kit::retail_edits) and the retail
+    // screens' sample states (ui_kit::preview::retail_sample), by stem.
+    for (folder, name) in [("retail-edits", "RETAIL_EDITS"), ("retail-samples", "RETAIL_SAMPLES")] {
+        let dir = root.join(folder);
+        println!("cargo:rerun-if-changed={}", dir.display());
+        let mut stems: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
+            .collect();
+        stems.sort();
+        out.push_str(&format!("pub const {name}: &[(&str, &str)] = &[\n"));
+        for n in &stems {
+            let p = abs(&dir.join(format!("{n}.yaml")));
+            println!("cargo:rerun-if-changed={p}");
+            out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
+        }
+        out.push_str("];\n");
     }
-    out.push_str("];\n");
     let dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(dir.join("ui_baked.rs"), out).expect("ui_baked.rs");
 }
