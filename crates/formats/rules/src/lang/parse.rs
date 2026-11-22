@@ -724,6 +724,7 @@ impl<'a> Parser<'a> {
         }
         if self.eat_word("for") {
             self.expect_word("each")?;
+            let set_pos = self.pos();
             let base = self.set_base()?;
             let binder = self.name()?;
             let filter = if self.eat_word("where") {
@@ -737,7 +738,7 @@ impl<'a> Parser<'a> {
                     base,
                     binder: None,
                     filter,
-                    pos,
+                    pos: set_pos,
                 },
                 binder,
                 body,
