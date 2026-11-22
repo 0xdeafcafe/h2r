@@ -4,14 +4,14 @@ use Avail::{Off, On};
 
 const NONE: Facts = Facts {
     playlists: false,
-    kit_maps: false,
+    live_co_op: false,
     remote_members: false,
 };
-/// A lobby where every tab can run: playlists listed, a kit map, no
-/// member on another console.
+/// A lobby where every tab can run: playlists listed, co-op over Xbox Live
+/// installed, no member on another console.
 const ALL_FACTS: Facts = Facts {
     playlists: true,
-    kit_maps: true,
+    live_co_op: true,
     remote_members: false,
 };
 
@@ -102,9 +102,14 @@ fn availability_by_place() {
         available(Tab::Multiplayer, XboxLive, NONE),
         Off(NoPlaylists)
     );
-    // The two reasons in every place.
+    // Xbox Live without co-op over Live installed.
+    assert_eq!(available(Tab::CoOp, XboxLive, NONE), Off(CoOpLiveOff));
+    assert_eq!(available(Tab::CoOp, SplitScreen, NONE), On, "retail's own");
+    // FIREFIGHT is on whatever maps are installed: Start Game says what is
+    // missing (`lobby_mode::start_refusal`). FORGE's reason applies in
+    // every place.
     for place in [SplitScreen, SystemLink, XboxLive] {
-        assert_eq!(available(Tab::Firefight, place, NONE), Off(NoKitMap));
+        assert_eq!(available(Tab::Firefight, place, NONE), On);
         let remote = Facts {
             remote_members: true,
             ..ALL_FACTS
@@ -145,8 +150,8 @@ fn a_feature_that_is_off_removes_its_tab() {
     assert_eq!(Present::ALL.tabs(), Tab::ALL);
     assert_eq!(
         Present::default().tabs(),
-        [Tab::Multiplayer, Tab::CustomGames],
-        "retail's two are always there"
+        [Tab::Multiplayer, Tab::CustomGames, Tab::CoOp],
+        "retail's three are always there"
     );
     let no_forge = Present {
         forge: false,
@@ -160,24 +165,70 @@ fn a_feature_that_is_off_removes_its_tab() {
     assert_eq!(r[0], (Tab::Multiplayer, Off(Reason::MatchmakingNeedsLive)));
 }
 
+/// The user's lobby: Split Screen, no map that carries the Firefight kit,
+/// no Live. Every tab but MULTIPLAYER is reached, FIREFIGHT and CO-OP
+/// included.
+#[test]
+fn firefight_and_co_op_are_reached_with_no_kit_map_and_no_live() {
+    let r = row(Present::ALL, Place::SplitScreen, NONE);
+    assert_eq!(r.len(), 5, "every tab drawn");
+    let mut at = Tab::CustomGames;
+    let mut seen = vec![at];
+    while let Step::Move { to, skipped } = step(&r, at, Dir::Next) {
+        assert_eq!(skipped, None, "nothing passed over on the way to {to:?}");
+        seen.push(to);
+        at = to;
+    }
+    assert_eq!(
+        seen,
+        [Tab::CustomGames, Tab::Forge, Tab::Firefight, Tab::CoOp]
+    );
+    // And back.
+    let mut back = vec![at];
+    while let Step::Move { to, .. } = step(&r, at, Dir::Prev) {
+        back.push(to);
+        at = to;
+    }
+    assert_eq!(
+        back,
+        [Tab::CoOp, Tab::Firefight, Tab::Forge, Tab::CustomGames]
+    );
+    // With a kit map or without, in every place, FIREFIGHT is on.
+    for place in [Place::SplitScreen, Place::SystemLink, Place::XboxLive] {
+        for facts in [NONE, ALL_FACTS] {
+            assert!(
+                available(Tab::Firefight, place, facts).is_on(),
+                "{place:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn step_skips_tabs_that_are_off_and_names_the_first() {
-    // Split Screen with no kit map: MULTIPLAYER and FIREFIGHT off.
-    let r = row(Present::ALL, Place::SplitScreen, NONE);
+    // Split Screen with a remote member: MULTIPLAYER and FORGE off.
+    let r = row(
+        Present::ALL,
+        Place::SplitScreen,
+        Facts {
+            remote_members: true,
+            ..NONE
+        },
+    );
     assert_eq!(
         step(&r, Tab::CustomGames, Dir::Next),
         Step::Move {
-            to: Tab::Forge,
-            skipped: None
-        }
+            to: Tab::Firefight,
+            skipped: Some(Reason::ForgeRemote)
+        },
+        "FORGE skipped, its reason shown"
     );
     assert_eq!(
-        step(&r, Tab::Forge, Dir::Next),
+        step(&r, Tab::Firefight, Dir::Next),
         Step::Move {
             to: Tab::CoOp,
-            skipped: Some(Reason::NoKitMap)
-        },
-        "FIREFIGHT skipped, its reason shown"
+            skipped: None
+        }
     );
     assert_eq!(
         step(&r, Tab::CoOp, Dir::Next),
@@ -190,11 +241,17 @@ fn step_skips_tabs_that_are_off_and_names_the_first() {
         "only an off tab that way: stay, and say why"
     );
     assert_eq!(
-        step(&r, Tab::CoOp, Dir::Prev),
+        step(&r, Tab::Firefight, Dir::Prev),
         Step::Move {
-            to: Tab::Forge,
-            skipped: Some(Reason::NoKitMap)
+            to: Tab::CustomGames,
+            skipped: Some(Reason::ForgeRemote)
         }
+    );
+    // On System Link CO-OP is off: FIREFIGHT is the end that way.
+    let link = row(Present::ALL, Place::SystemLink, NONE);
+    assert_eq!(
+        step(&link, Tab::Firefight, Dir::Next),
+        Step::Stay(Some(Reason::CoOpNotOnSystemLink))
     );
     assert!(glyph_on(&r, Tab::CustomGames, Dir::Next));
     assert!(!glyph_on(&r, Tab::CustomGames, Dir::Prev), "White dimmed");
@@ -223,6 +280,14 @@ fn the_ends_do_not_wrap() {
     // A tab that is not on the strip goes nowhere.
     let short = row(Present::default(), Place::XboxLive, ALL_FACTS);
     assert_eq!(step(&short, Tab::Forge, Dir::Next), Step::Stay(None));
+    // Without FORGE and FIREFIGHT, CUSTOM GAMES steps straight to CO-OP.
+    assert_eq!(
+        step(&short, Tab::CustomGames, Dir::Next),
+        Step::Move {
+            to: Tab::CoOp,
+            skipped: None
+        }
+    );
 }
 
 #[test]

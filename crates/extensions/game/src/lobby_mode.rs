@@ -39,6 +39,11 @@
 //! (it acts only on ready, `0x251050`), and the status line says
 //! [`REMOTE_REFUSAL`] (`crate::lobby_status`).
 //!
+//! **Start Game with no Firefight map.** The same `after` holds a
+//! Firefight lobby whose map does not carry the kit ([`start_refusal`]):
+//! the FIREFIGHT tab opens with no such map installed, and the status line
+//! and the panel ([`firefight_map_lines`]) say why it cannot start.
+//!
 //! **Start Game on a blocked pair.** The same `after` holds the start
 //! while the lobby's start gate (`crate::rules::gate`) finds the map lacks
 //! what the variant's script needs, outside Forge mode; the status line
@@ -64,7 +69,8 @@ use settings::Store;
 
 use crate::firefight::options as ff;
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
-use crate::lobby_start::{self, Mode, Offer};
+use crate::lobby_start::{self, KitMaps, Mode, Offer};
+use crate::lobby_tabs::Reason;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::screen::SlotTexts;
@@ -252,6 +258,23 @@ pub fn panel_lines(
     }
 }
 
+/// The variant panel's lines in place of Firefight's options when the
+/// lobby's map cannot play Firefight (`kit`): no installed map carries the
+/// kit, or this one does not. `None` on a map that carries it.
+pub fn firefight_map_lines(kit: KitMaps) -> Option<Vec<String>> {
+    match (kit.lobby, kit.installed) {
+        (true, _) => None,
+        (false, false) => Some(vec![
+            "No installed map supports Firefight yet".into(),
+            "Make one with h2 firefight kit".into(),
+        ]),
+        (false, true) => Some(vec![
+            "This map does not support Firefight".into(),
+            "Change Map lists the Firefight maps".into(),
+        ]),
+    }
+}
+
 /// `difficulty`'s value in the setting ([`ff::Options::read`]'s order).
 fn difficulty_value(difficulty: ::firefight::Difficulty) -> i64 {
     use ::firefight::Difficulty as D;
@@ -274,11 +297,21 @@ fn choice_label(def: &settings::Def, value: i64) -> String {
 }
 
 /// The panel lines' string ids for the lobby now, their texts written to
-/// guest memory first; none in Multiplayer.
+/// guest memory first; none in Multiplayer. A Firefight lobby on a map
+/// without the kit says so in place of the options
+/// ([`firefight_map_lines`]).
 pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, MemFault> {
     let state = lobby_start::state();
-    let firefight = (state.mode == Mode::Firefight).then(|| ff::Options::read(store));
-    let lines = panel_lines(state.mode, state.forge_map.as_deref(), firefight);
+    let no_map = (state.mode == Mode::Firefight)
+        .then(|| firefight_map_lines(KitMaps::now(&*m)))
+        .flatten();
+    let lines = match no_map {
+        Some(lines) => lines,
+        None => {
+            let firefight = (state.mode == Mode::Firefight).then(|| ff::Options::read(store));
+            panel_lines(state.mode, state.forge_map.as_deref(), firefight)
+        }
+    };
     let ids = lines
         .iter()
         .take(MAX_PANEL_LINES)
@@ -315,10 +348,17 @@ pub fn remote_members(m: &dyn GuestMemory) -> Option<u32> {
     Some(n)
 }
 
-/// Whether the lobby's Start Game is refused: a Forge lobby with a member
-/// on another console (one that cannot be read counts as one).
-pub fn refused(mode: Mode, remote: Option<u32>) -> bool {
-    mode == Mode::Forge && remote != Some(0)
+/// Why the lobby's Start Game is refused, besides the start gate: a Forge
+/// lobby with a member on another console (one that cannot be read counts
+/// as one), or a Firefight lobby on a map without the kit (`kit`), named
+/// for whether any installed map has it.
+pub fn refusal(mode: Mode, remote: Option<u32>, kit: KitMaps) -> Option<Reason> {
+    match mode {
+        Mode::Forge if remote != Some(0) => Some(Reason::ForgeRemote),
+        Mode::Firefight if !kit.lobby && kit.installed => Some(Reason::NotKitMap),
+        Mode::Firefight if !kit.lobby => Some(Reason::NoKitMap),
+        Mode::Multiplayer | Mode::Forge | Mode::Firefight => None,
+    }
 }
 
 /// The problems the lobby's start gate holds Start Game on
@@ -335,11 +375,25 @@ pub fn gate_blocked() -> Option<Vec<String>> {
     }
 }
 
-/// Whether the lobby now refuses Start Game: [`refused`], or the start
-/// gate holds it ([`gate_blocked`]).
+/// Why the lobby now refuses Start Game besides the start gate
+/// ([`refusal`]); `None` outside a lobby (the level boot's game).
+pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
+    let state = lobby_start::state();
+    if !state.lobby {
+        return None;
+    }
+    match state.mode {
+        Mode::Multiplayer => None,
+        Mode::Forge => refusal(state.mode, remote_members(m), KitMaps::default()),
+        Mode::Firefight => refusal(state.mode, Some(0), KitMaps::now(m)),
+    }
+}
+
+/// Whether the lobby now refuses Start Game: [`start_refusal`], or the
+/// start gate holds it ([`gate_blocked`]).
 pub fn start_refused(m: &dyn GuestMemory) -> bool {
     let state = lobby_start::state();
-    state.lobby && (gate_blocked().is_some() || refused(state.mode, remote_members(m)))
+    state.lobby && (gate_blocked().is_some() || start_refusal(m).is_some())
 }
 
 /// The status line's text while the start gate holds Start Game: the

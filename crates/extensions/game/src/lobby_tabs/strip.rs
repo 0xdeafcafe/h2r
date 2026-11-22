@@ -407,15 +407,7 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let session_type = m.u32(lobby::SESSION_TYPE).ok()?;
     let campaign = crate::coop_probe::read_session(&ReadGm(m)).is_some_and(|s| s.is_campaign());
     let retail = retail_mode(networking, session_type, squad_mode(m), campaign);
-    let catalogue = crate::map_select::current();
-    let map = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
-    let kit_map = catalogue.as_ref().zip(map).is_some_and(|(c, id)| {
-        c.all()
-            .any(|x| x.id == id && crate::lobby_start::is_kit_map(x))
-    });
-    let kit_maps = catalogue
-        .as_ref()
-        .is_some_and(|c| !crate::lobby_start::kit_maps(c).is_empty());
+    let kit_map = crate::lobby_start::KitMaps::now(m).lobby;
     let clanker = (retail == RetailMode::Matchmaking)
         .then(|| held_hopper(m))
         .flatten()
@@ -436,7 +428,7 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
             // (`switch::listed_hoppers`); until one finds none, a Live
             // lobby's are taken as there.
             playlists: place == Place::XboxLive && !super::switch::no_playlists_seen(),
-            kit_maps,
+            live_co_op: crate::coop_live::lobby().is_some(),
             remote_members: crate::lobby_mode::remote_members(m) != Some(0),
         },
     })
