@@ -144,13 +144,13 @@ pub fn overlay_name(file: ResourceFile, map: &str) -> String {
 /// "The slot files"): shared 0, single-player shared 1, main menu 2, the
 /// loaded map the current slot.
 fn slot_of(g: &runtime::Guest, file: ResourceFile) -> Result<u32, String> {
-    use crate::layout_glue::Gm;
     Ok(match file {
         ResourceFile::Shared => 0,
         ResourceFile::SinglePlayerShared => 1,
         ResourceFile::MainMenu => 2,
         ResourceFile::Local => g
             .u32(crate::map_slots::CURRENT)
+            .ok()
             .filter(|s| (2..=5).contains(s))
             .ok_or("the loaded map's cache slot is unknown")?,
     })

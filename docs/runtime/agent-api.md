@@ -2774,6 +2774,82 @@ h2 agent render toggle <name> off
 
 Tag names come from the map file the game loaded ([`world`](#world-what-is-in-the-level)).
 
+### Raw edits
+
+Section vertices and indices and bitmap pixels live in the map files' raw
+blocks, not in the tags. These methods write them live, through the raw
+overlay that both the guest's page-ins and the native loaders read. The
+design is [realtime-edits.md](../editor/realtime-edits.md). The methods
+are in `crates/extensions/agent/src/hot.rs`, the editor half in
+`crates/extensions/hot-tags/src/raw.rs`, the overlay in
+`crates/runtime/vfs/src/map_override/overlay.rs` and the game's glue in
+`crates/extensions/game/src/hot_glue.rs`.
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `edit.batch` | act | adds `raw: [{owner, offset, bytes, was?}]` and `evict: [owner]`; `writes` may be left out when either is given | adds `raw: [{owner, offset, resident, refresh}]` and `evicted: [owner]` |
+| `edit.raw.append` | act | `{file?, bytes, align?, epoch?, confirm_peers?}` | `{id, pointer, len}` |
+| `edit.stage.put` | act | `{stage?, bytes}` | `{stage, len}` |
+| `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, files, owners}` |
+
+`owner` is `{section: {tag, kind, index}}`, with `kind` one of `cluster`,
+`instance_def` and `mode`, or `{pixels: {tag, image, lod}}`, with `lod`
+0 to 2. `tag` is a datum or a name. `offset` counts from the start of the
+owner's raw block or LOD chain, and the bytes must fit inside it. `bytes`
+is base64, or `{stage, at?, len?}` naming bytes `edit.stage.put` holds.
+`was` is base64 bytes or `{hash}`, their FNV-1a 64 as a number or a hex
+string.
+
+A batch checks every field and raw `was` before its first write. A raw
+write is checked against the file view (the map file through the overlay)
+and, when the owner's section is paged in, against the resident copy. With
+no `was`, the resident copy must equal the file view. A write the game
+already holds succeeds. Otherwise error 8 (`MISMATCH`) returns
+`data.fields` and `data.raw`, the second with `owner`, `offset`,
+`holds_hash`, `resident_holds_hash` and `why`, and nothing is written.
+
+At the boundary the batch writes the tag bytes, then each raw entry into
+the overlay and into the resident copy when there is one, then the
+evictions. `resident` says whether a resident copy was written; pixels and
+sections not paged in take the overlay alone, which their next page-in
+reads. An eviction clears the section's loaded flag, cache handle and
+runtime section block, so the guest's next lookup pages it in from the
+file view. `refresh` names the native refresh queued on
+`render_bridge::native_edits`: `section` (with `grown` when the batch
+evicts it), `model` or `image`.
+
+`edit.raw.append` reserves an extent past the end of `file` (`local`,
+`mainmenu`, `shared` or `single_player_shared`; `local` by default),
+aligned to `align` (a power of two, 16 by default). It is invisible until
+a tag points at it: `pointer` is the raw pointer to write into a block
+info, with the file selector in its top two bits.
+
+`edit.changes` lists raw acts under `raw`, by journal id. `edit.revert`
+undoes them newest first: the overlay runs as they were before the write,
+the resident bytes where they still hold the written ones, a second
+eviction of an evicted section so the guest pages in the restored block,
+and appended extents dropped. Reverted raw entries appear in `reverted[]`
+with `raw`, `evict` or `append`.
+
+A stage belongs to the connection that made it. `stage` in
+`edit.stage.put` appends to an existing one. A request that names a stage
+uses it up when it applies. At most 256 MiB is staged at once.
+
+The overlay lives for one map. A map change drops it, the raw journal and
+every stage at the first tick of the new map, and a play-copy reload drops
+the overlay when it binds. The guest reads a map's raw data from the cache
+slot file the map was copied into, so the overlay is served on those slot
+files and never on the copy's source. A slot copy, a cache template and a
+play copy never hold an overlay byte. Raw writes refuse with `UNAVAILABLE`
+when the loaded map's cache slot is unknown or no VFS is mounted. The
+session rules are those of the other edit writes.
+
+```sh
+h2 agent edit.batch '{"epoch":E,"raw":[{"owner":{"section":{"tag":"<sbsp>","kind":"cluster","index":0}},"offset":4096,"bytes":"AACAPw=="}]}'
+h2 agent edit.overlay
+h2 agent edit.revert '{"id":N}'
+```
+
 ## Menu methods: settings, perf overlay, cheats
 
 The in-game debug menu is a client of this API ([debug-menu.md](debug-menu.md));
