@@ -708,12 +708,14 @@ Notes on some:
   (a mesh built in memory on a large map takes a while). `state` is
   `no_map`, `idle`, `loading`, `ready` or `failed` (with `error`);
   `origins` names each BSP's cache file, or `built`; `counts` has the
-  polygons, links, wall triangles and spots; `links_by_kind`,
+  polygons, those out of the map (`out_of_map`), links, wall triangles
+  and spots; `links_by_kind`,
   `spots_by_kind` (bounce, strip, crouch) and `spots_by_state` (proven,
   failed, dead, learned, training, likely) count them; `notes` says what
   was built or scanned instead of read, and which file did not read.
   `polys`, `links` and `spots` list them, each paged by `offset` and
-  `limit`. `nav.pick {origin, dir}` or `{point, within}` (0.3 units)
+  `limit`; a polygon row's `out_of_map` is true for one only a glitch
+  reaches ([bots.md](../game/bots.md) §3.2, "In the map"). `nav.pick {origin, dir}` or `{point, within}` (0.3 units)
   returns what a ray meets or a point names: a bot spot or link first,
   else the nearer bot polygon or pathfinding sector, whatever layers are
   shown unless `shown`; `layer` keeps one layer's. `select` selects it;

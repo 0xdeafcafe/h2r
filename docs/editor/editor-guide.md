@@ -360,6 +360,9 @@ Each row turns one layer on or off. These layers start off:
   between patches coloured by move: walks blue, drops orange, jumps
   yellow, crouch-jumps purple, teleporters cyan and lifts green. An
   arrowhead marks a one-way link, such as a drop you can't climb back up.
+  Patches in a dim grey-blue are out of the map: no spawn reaches them
+  without a glitch, like the snow past Coagulation's cliffs. Bots never
+  head there, but one a superbounce lands there walks back in over them.
 - **Bot superbounce spots**: the superbounce and crouch spots the bots
   know, each a post coloured by what is known about it: green proven,
   red dead, dull red failed, yellow-green learned, amber still training,

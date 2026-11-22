@@ -439,6 +439,10 @@ pub struct BotPoly {
     /// Its outline, counter-clockwise seen from above.
     pub verts: Vec<Vec3>,
     pub normal: Vec3,
+    /// Out of the map: no player start reaches it without a glitch (the
+    /// terrain past the boundary walls a superbounce reaches). Bots never
+    /// plan into it from in the map (`bots::nav::NavMesh::in_map`).
+    pub out_of_map: bool,
 }
 
 impl BotPoly {
@@ -618,6 +622,11 @@ impl BotNav {
         for l in &mut self.links {
             l.one_way = !back.contains(&(l.to, l.from));
         }
+    }
+
+    /// How many polygons are out of the map ([`BotPoly::out_of_map`]).
+    pub fn out_of_map_count(&self) -> usize {
+        self.polys.iter().filter(|p| p.out_of_map).count()
     }
 
     pub fn link_count(&self, kind: BotLinkKind) -> usize {
@@ -828,6 +837,7 @@ mod tests {
                 poly: i,
                 normal: ring_normal(&verts),
                 verts,
+                out_of_map: false,
             })
             .collect();
         let link = |link, from, to, a, b, kind| BotLink {

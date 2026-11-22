@@ -549,7 +549,7 @@ fn generator_output_is_pinned() {
     let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
     assert_eq!(
         got,
-        (6, 0x8603e7037fa1cfc0),
+        (7, 0x8603e7037fa1cfc0),
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }
@@ -1293,4 +1293,130 @@ fn a_route_jump_requires_standing_clearance_along_its_arc() {
     };
     assert!(standing_clear(&map.walls, [0.0, 1.0, 0.0]));
     assert!(plan_route_jump(&map, [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]).is_none());
+}
+
+/// A walled arena (four floors at 0) and, past its east side, a plateau
+/// 1.5 up (two floors): too high to jump onto, low enough to drop off
+/// into the arena. Only a superbounce gets a player up there, and no
+/// bounce is a mesh link. One player start, in the arena.
+fn arena_and_plateau() -> (NavMesh, V3) {
+    let mut m = floors(&[
+        (0.0, 0.0, 4.0, 4.0, 0.0),
+        (4.0, 0.0, 8.0, 4.0, 0.0),
+        (0.0, 4.0, 4.0, 8.0, 0.0),
+        (4.0, 4.0, 8.0, 8.0, 0.0),
+        (8.0, 0.0, 12.0, 4.0, 1.5),
+        (8.0, 4.0, 12.0, 8.0, 1.5),
+    ]);
+    let start = [2.0, 2.0, 0.0];
+    assert_eq!(m.mark_out_of_map(&[start]), 2);
+    (m, start)
+}
+
+#[test]
+fn floors_only_a_bounce_reaches_are_out_of_the_map() {
+    let (m, _) = arena_and_plateau();
+    let arena = m.locate([6.0, 6.0, 0.0], 1.0).unwrap();
+    let plateau = m.locate([10.0, 6.0, 1.5], 1.0).unwrap();
+    assert!(m.in_map(arena));
+    assert!(!m.in_map(plateau));
+    assert_eq!((m.in_map_count(), m.out_of_map_count()), (4, 2));
+    // The plateau drops back into the arena; the arena never climbs it.
+    let east = m.locate([6.0, 2.0, 0.0], 1.0).unwrap();
+    let ledge = m.locate([10.0, 2.0, 1.5], 1.0).unwrap();
+    assert_eq!(kinds(&m, ledge, east), vec![Kind::Drop]);
+    assert!(kinds(&m, east, ledge).is_empty());
+    assert!(m.out(arena).all(|e| m.in_map(e.to)));
+}
+
+#[test]
+fn a_path_from_the_map_never_ends_or_passes_out_of_it() {
+    let (m, start) = arena_and_plateau();
+    let plateau = m.locate([10.0, 6.0, 1.5], 1.0).unwrap();
+    let here = m.locate(start, 1.0).unwrap();
+    assert_eq!(m.corridor(here, plateau), None);
+    assert_eq!(m.path(start, [10.0, 2.0, 1.5]), None);
+    // In the map, paths still go everywhere in it.
+    assert!(m.path(start, [6.0, 6.0, 0.0]).is_some());
+}
+
+#[test]
+fn a_bot_already_out_of_the_map_plans_over_it_and_back_in() {
+    let (m, start) = arena_and_plateau();
+    // Launched onto the plateau by a bounce: back into the arena by the drop.
+    let home = m.path([10.0, 2.0, 1.5], start).unwrap();
+    assert!(home.iter().any(|w| w.kind == Kind::Drop), "{home:?}");
+    assert_eq!(home.last().map(|w| w.at), Some(start));
+    // And across the plateau itself, as a bounce route's walk from its
+    // landing does.
+    assert!(m.path([10.0, 2.0, 1.5], [10.0, 6.0, 1.5]).is_some());
+}
+
+#[test]
+fn goal_picking_and_places_stay_in_the_map() {
+    let (m, start) = arena_and_plateau();
+    for k in 0..20 {
+        let i = m.nth_in_map(k).unwrap();
+        assert!(m.in_map(i), "pick {k}: polygon {i}");
+    }
+    let mut roam = crate::roam::Roam::new(7);
+    for tick in 0..50 {
+        let picks = roam.candidates(start, tick, &m, &[], &[], crate::mind::Skill::Normal);
+        assert!(picks.iter().all(|&(_, p)| p[0] < 8.0), "{picks:?}");
+    }
+    let places = crate::places::Places::build(&m, &Walls::default(), &[]);
+    assert!(!places.lanes.is_empty());
+    assert!(places.lanes.iter().all(|p| p[0] < 8.0), "{:?}", places.lanes);
+    assert!(places.vantages.iter().all(|v| v.at[0] < 8.0));
+}
+
+#[test]
+fn with_no_seed_on_the_mesh_nothing_is_out_of_the_map() {
+    let (mut m, _) = arena_and_plateau();
+    assert_eq!(m.mark_out_of_map(&[[100.0, 100.0, 0.0]]), 0);
+    assert_eq!(m.out_of_map_count(), 0);
+    assert!((0..m.polys.len() as u32).all(|i| m.in_map(i)));
+    assert_eq!(m.nth_in_map(5), Some(5));
+}
+
+#[test]
+fn the_out_of_map_flags_round_trip_in_the_file() {
+    let (m, _) = arena_and_plateau();
+    let back = NavMesh::from_bytes(&m.to_bytes()).unwrap();
+    assert_eq!(back.out_of_map_count(), 2);
+    assert_eq!(back, m);
+    // An unknown flag bit is refused. The first polygon's flag byte comes
+    // after the header (magic, version, count: 12 bytes), its vertex
+    // count and its vertices.
+    let mut b = m.to_bytes();
+    let at = 12 + 4 + 12 * m.polys[0].verts.len();
+    assert_eq!(b[at], 0);
+    b[at] = 2;
+    assert_eq!(NavMesh::from_bytes(&b), None);
+}
+
+#[test]
+fn a_wall_standing_on_a_seam_or_a_ledge_is_not_walked_or_dropped_through() {
+    let one = Threads { count: 1, background: false };
+    // Two floors sharing the side x = 2, then ground 1 lower past x = 4.
+    let bsp = floors_bsp(&[
+        (0.0, 0.0, 2.0, 2.0, 0.0),
+        (2.0, 0.0, 4.0, 2.0, 0.0),
+        (4.0, 0.0, 6.0, 2.0, -1.0),
+    ]);
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    let open = NavMesh::from_collision(&pf, &Build::default(), &Walls::default(), one);
+    assert_eq!(kinds(&open, 0, 1), vec![Kind::Walk]);
+    assert_eq!(kinds(&open, 1, 2), vec![Kind::Drop]);
+    // An (invisible) wall planted on each: neither is crossed.
+    let wall = |x: f32| [[x, 0.0, -1.0], [x, 2.0, -1.0], [x, 2.0, 2.0], [x, 0.0, 2.0]];
+    let (seam, ledge) = (wall(2.0), wall(4.0));
+    let walls = Walls::from_polygons([seam.as_slice(), ledge.as_slice()]);
+    let side = ([2.0, 0.0, 0.0], [2.0, 2.0, 0.0]);
+    assert!(crossing_clear(&Walls::default(), side.0, side.1, 0.0));
+    assert!(!crossing_clear(&walls, side.0, side.1, 0.0));
+    let walled = NavMesh::from_collision(&pf, &Build::default(), &walls, one);
+    assert!(kinds(&walled, 0, 1).is_empty());
+    assert!(kinds(&walled, 1, 0).is_empty());
+    assert!(kinds(&walled, 1, 2).is_empty());
 }

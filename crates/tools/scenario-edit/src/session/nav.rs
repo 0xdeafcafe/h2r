@@ -241,6 +241,7 @@ mod tests {
                 poly: 0,
                 normal: nav_view::ring_normal(&verts),
                 verts,
+                out_of_map: false,
             }
         };
         let mut nav = BotNav {

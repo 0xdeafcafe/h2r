@@ -158,9 +158,10 @@ impl App {
         match result {
             Ok(nav) => {
                 self.info(format!(
-                    "bots: {}: {} polygons, {} links, {} spots",
+                    "bots: {}: {} polygons ({} out of the map), {} links, {} spots",
                     nav.map,
                     nav.polys.len(),
+                    nav.out_of_map_count(),
                     nav.links.len(),
                     nav.spots.len()
                 ));
@@ -267,6 +268,7 @@ pub fn add_mesh(nav: &mut BotNav, bsp: usize, origin: String, d: &bots::cache::M
             poly: i,
             verts: p.verts.clone(),
             normal: p.normal,
+            out_of_map: !d.nav.in_map(i as u32),
         }));
     nav.links
         .extend(d.nav.edges.iter().enumerate().map(|(i, e)| BotLink {
