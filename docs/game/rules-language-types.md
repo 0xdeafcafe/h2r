@@ -1,7 +1,7 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slices 1 to 7 and 9 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders, the host's gate and the lobby's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); Live's hopper gate, a map census and `admin::check_pairs` ([rules-start-gate.md](rules-start-gate.md#hoppers-system-link-offline-and-theater)); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"); `time`, constants, `match`, the `carrier` enum and value functions ("Stronger typing"). "The built language" below is the language before slice 2, which the gap table describes.
-Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
+Status: Design, with slices 1 to 9 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders, the host's gate and the lobby's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); Live's hopper gate, a map census and `admin::check_pairs` ([rules-start-gate.md](rules-start-gate.md#hoppers-system-link-offline-and-theater)); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"); `time`, constants, `match`, the `carrier` enum and value functions ("Stronger typing"); the web workbench: the test map, its problems and "Add what the script needs", "What a map needs", quick fixes, rename and the Insert menu's label groups ("The workbench", "Diagnostics and the editor"). "The built language" below is the language before slice 2, which the gap table describes.
+Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`; the workbench's web half in `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts` and `web/src/stats/RulesTest.tsx`. Tests: `cargo test -p rules`; `bun test test/rules.test.ts test/rulesIde.test.ts` in `web/`.
 Switch: none.
 
 A Forge label is a declared, typed name, and the checker catches the
@@ -438,6 +438,12 @@ returns the fixes at a range (LSP `textDocument/codeAction`), and
 `ide::rename` renames a declaration and its uses. `h2 rules lsp`
 (`crates/apps/cli/src/rules_lsp.rs`) answers both, and Live's
 `POST /v1/rules/ide` has them as the `actions` and `rename` operations.
+The web workbench's editor (**Code**, `web/src/stats/rulesMonaco.ts`)
+asks `actions` over the selection for Monaco's quick fixes (Ctrl/Cmd+.,
+the first preferred) and `rename` for F2, which shows a refused name's
+reason; the edits are the route's (`applyEdits` in
+`web/src/lib/rulesIde.ts` applies them the same way). The check's
+warnings are markers beside its errors and are listed under them.
 
 The editor, the workbench's check and `h2 rules check` list every
 diagnostic `rules::diagnose` gives, errors and warnings, not only the
@@ -536,25 +542,47 @@ with the start gate's check.
   one and an Oddball match has its ball; its players walk into every thing but a starting
   location. The match's scenario carries the map, so a saved match runs
   again.
-- **The page** (`web/src/stats/RulesTest.tsx`) lists the map's things
-  under the players, grouped by label, and shows each missing
-  requirement as a problem with a button: **Add what the script needs**
-  merges the report's `minimal` list into the map. An event's zone or
-  object is picked by label and number ("capture 0"), not by id.
+- **The page.** **Code**, `web/src/stats/RulesTest.tsx` (`MapEditor`
+  in the hand editor) over `web/src/lib/rules.ts`. A hand-edited match
+  with no map of its own plays on the script's minimal map, and **Make
+  it my map** copies that map in to edit. The map's things are listed
+  under the players, grouped by label (`mapGroups`), each with its
+  number, team and class (blank: the one its label suggests,
+  `suggestedClass`); **Add thing** adds one under a label with the next
+  free number (`newThing`), and **Use the smallest map** drops the map
+  again. Each requirement the map misses is a problem: the run's `map`
+  texts once it answers, and before that the page's own reading of the
+  same check (`mapShort`, for teams 0 and 1, the fake game's). **Add
+  what the script needs** merges the report's `minimal` things into the
+  map (`withNeeds`): a minimal thing the map has already (same label,
+  number and team, of a class the label takes) is kept, the rest are
+  added with handles past the map's own, and a per-team label gets a
+  thing for each team in play. A run the map fails shows the problems
+  in the match's results and nothing ran. An event's zone or object is
+  picked by label and number ("capture 0", "base (team 1)", "barrier
+  #2"; `thingName`, `thingChoices`), with the seated players' own
+  objects for an `enter` or `leave`; with no map of its own the names
+  are the minimal map's. The draft keeps the map, an empty one too.
 - **The check report** (`workbench::CheckReport`, **Code**) has `labels`
   (`workbench::LabelLine`): each declared label's text, kind, `min`,
   `max` (absent when unbounded), `single`, `numbered`, number range,
   `per_team` and `needs`, its sentence in Forge's words
   (`labels::describe`), read from the IR's label table; and `minimal`,
   the smallest passing map as scenario things. The CLI's `h2 rules
-  check` prints the sentences under "a map needs". The page and the
-  variant page show it as "What a map needs" (slice 8).
-- **Insert.** The Declarations menu (`web/src/lib/rulesIde.ts`,
-  `DECLARATIONS`) has a Labels group: one zone, one object, a set of
-  objects, a numbered set of zones, spawn areas, and the built-in flag
-  labels from the completion route. A second group, "In the test map",
-  offers a declaration for each scenario label the script has not
-  declared, with the kind its class suggests.
+  check` prints the sentences under "a map needs". The workbench page
+  shows it as "What a map needs" beside the problems (**Code**,
+  `MapNeeds`): each label's text, its kind in words and its sentence.
+  The variant page is to show it too (**Design**).
+- **Insert.** **Code**, `web/src/lib/rulesIde.ts`. The Declarations
+  menu has a Labels group (`LABEL_ITEMS`): one zone, one object, a set
+  of objects, a numbered set of zones, spawn areas, and the built-in
+  flag labels as whole declarations, from the completion route at the
+  name of a new `label` line (`MENU_PROBES`, `flagLabelItems`) or the
+  page's copy of them (`FLAG_LABELS`). A third group, "In the test
+  map", offers a declaration for each label of the test map the script
+  has not declared (`mapLabelItems`): the kind the things' class
+  suggests, a set when there are several, `numbered` when they all have
+  numbers, and the map text when it is not a name.
 
 ## The IR
 
@@ -681,7 +709,7 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | 5 (built) | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
 | 6 (built) | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
 | 7 (built) | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
-| 8 | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
+| 8 (built) | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
 | 9 (built) | The hopper gate | `crates/live/live-server/src/admin.rs` (`check_pairs`), `crates/live/live-proto/src/map_census.rs` (new), the census route in `crates/live/live-server/src/content.rs` and `http.rs`, `crates/apps/cli/src/live_maps.rs` (`census`), `docs/live/live-api.md` | an edit with a blocked pair, an unknown script or a map with no census is refused by name, and one with good pairs publishes; a new census lists the entries it blocks; the census event applies in both homes | no published hopper holds a blocked pair | 1, 3 (`Census`); the context-policy lane |
 | 10 | Message templates | `lang/check.rs`, `lang/lower.rs` (the template), `caps.rs` (the `fmt_*` entries), `verify.rs` (the run rule), `vm.rs`, `fake.rs` | each `text.hole` error; a `fmt_*` run without its `message`, or with the wrong types, is refused; the fake logs a message with its arguments | `message(to, "{p} scored")` reaches the fake with the player | 5; the message lane |
 

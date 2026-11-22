@@ -4,17 +4,20 @@
 // worst tick, warnings with the seed that shows each), one match's
 // results (final standings, then a timeline of what happened, what the
 // script did about it and who scored), and the hand editor for a match
-// (seated players, events read as sentences, times typed as times),
-// folded away until asked for. The pure half is ../lib/rules.ts.
+// (seated players, the test map's things by label with what it lacks and
+// "Add what the script needs", events read as sentences that name things
+// by label, times typed as times), folded away until asked for, and
+// "What a map needs". The pure half is ../lib/rules.ts.
 
 import { For, Index, Show, createMemo, createSignal } from "solid-js";
 import { teamName } from "../lib/game";
 import {
-  EVENT_TYPES, MAX_SEED, MAX_TICKS, SIM_PLAYERS, TICKS_PER_SECOND, defaultScenario, describeEvent, endLabel, faultLabel, meter,
-  moveEvent, neighbourSeed, newEvent, nextEventTick, nextSlot, ofMatches, parseTickTime, playerName, problemPlace, rerolled,
-  shortTime, signed, simWarnings, standings, teamStandings, tickTime, timeline, traceLines, winnerName, withEvent,
-  type EventType, type Problem, type ScenarioDraft, type ScenarioEvent, type ScenarioPlayer, type SimResult, type SimRow,
-  type SimSetup, type Trace, type Trouble,
+  EVENT_TYPES, MAP_CLASSES, MAX_SEED, MAX_TICKS, SIM_PLAYERS, TICKS_PER_SECOND, classLabel, defaultScenario, describeEvent, endLabel,
+  faultLabel, kindWords, mapGroups, mapInPlay, mapShort, meter, moveEvent, neighbourSeed, newEvent, newThing, nextEventTick, nextSlot,
+  objectName, ofMatches, parseTickTime, playerName, problemPlace, rerolled, shortTime, signed, simWarnings, standings, suggestedClass,
+  teamStandings, thingChoices, thingName, thingsOfMinimal, tickTime, timeline, traceLines, unitOf, winnerName, withEvent, withNeeds,
+  type EventType, type LabelLine, type MapThing, type Problem, type ScenarioDraft, type ScenarioEvent, type ScenarioObject,
+  type ScenarioPlayer, type SimResult, type SimRow, type SimSetup, type Trace, type Trouble,
 } from "../lib/rules";
 
 const int = (v: string, dflt = 0): number => {
@@ -76,17 +79,40 @@ function CountInput(props: { value: number; label: string; onCount: (n: number) 
   return <input class="s-rules-num" type="number" min={0} step={1} value={props.value} aria-label={props.label} onChange={(e) => props.onCount(Math.max(0, int(e.currentTarget.value)))} />;
 }
 
+/** A select of the things an event's field may name, by label and number
+ *  ("capture 0"), with the seated players' own objects for an object. A
+ *  handle the map no longer has stays listed, marked. With nothing to
+ *  list, the handle is typed. */
+function ThingPick(props: { value: number | undefined; want: "zone" | "object"; units?: boolean; things: ScenarioObject[]; labels: LabelLine[]; players: ScenarioPlayer[]; label: string; onPick: (id: number) => void }) {
+  const choices = createMemo(() => [
+    ...(props.units ? props.players.map((p) => ({ id: unitOf(p), name: playerName(p.slot) })) : []),
+    ...thingChoices(props.things, props.want, props.labels),
+  ]);
+  const value = () => props.value ?? 0;
+  const stray = () => (choices().some((c) => c.id === value()) ? null : value());
+  return (
+    <Show when={choices().length} fallback={<CountInput label={props.label} value={value()} onCount={props.onPick} />}>
+      <select aria-label={props.label} value={String(value())} onChange={(e) => props.onPick(int(e.currentTarget.value))}>
+        <For each={choices()}>{(c) => <option value={String(c.id)}>{c.name}</option>}</For>
+        <Show when={stray() !== null}><option value={String(stray())}>{objectName(stray() ?? 0, props.things)} (not on the map)</option></Show>
+      </select>
+    </Show>
+  );
+}
+
 function EventRow(props: {
   e: ScenarioEvent;
   slots: number[];
   players: ScenarioPlayer[];
+  things: ScenarioObject[];
+  labels: LabelLine[];
   onChange: (patch: Partial<ScenarioEvent>) => void;
   onReplace: (e: ScenarioEvent) => void;
   onTick: (tick: number) => void;
   onRemove: () => void;
 }) {
   const player = () => <PlayerPick label="Player" value={props.e.player} slots={props.slots} onPick={(v) => props.onChange({ player: v ?? 0 })} />;
-  const object = () => <><span>object</span><CountInput label="Object" value={props.e.object ?? 0} onCount={(n) => props.onChange({ object: n })} /></>;
+  const object = () => <><span>object</span><ThingPick label="Object" want="object" value={props.e.object} things={props.things} labels={props.labels} players={props.players} onPick={(n) => props.onChange({ object: n })} /></>;
   const details = () => {
     switch (props.e.type) {
       case "kill":
@@ -114,7 +140,13 @@ function EventRow(props: {
           </>
         );
       case "enter": case "leave":
-        return <>{object()}<span>zone</span><CountInput label="Zone" value={props.e.zone ?? 0} onCount={(n) => props.onChange({ zone: n })} /></>;
+        return (
+          <>
+            <ThingPick label="Object" want="object" units value={props.e.object} things={props.things} labels={props.labels} players={props.players} onPick={(n) => props.onChange({ object: n })} />
+            <span>{props.e.type === "enter" ? "entered" : "left"}</span>
+            <ThingPick label="Zone" want="zone" value={props.e.zone} things={props.things} labels={props.labels} players={props.players} onPick={(n) => props.onChange({ zone: n })} />
+          </>
+        );
       case "round_start": case "round_end":
         return <span class="s-rules-muted">nothing to set</span>;
       default:
@@ -124,17 +156,141 @@ function EventRow(props: {
   return (
     <li class="s-rules-ev">
       <TimeInput label="When" tick={props.e.tick} onTick={(t) => props.onTick(t)} />
-      <select aria-label="Event" value={props.e.type} onChange={(e) => props.onReplace(newEvent(e.currentTarget.value as EventType, props.e.tick, props.players))}>
+      <select aria-label="Event" value={props.e.type} onChange={(e) => props.onReplace(newEvent(e.currentTarget.value as EventType, props.e.tick, props.players, props.things, props.labels))}>
         <For each={EVENT_TYPES}>{(t) => <option value={t.type}>{t.label}</option>}</For>
       </select>
       <span class="s-rules-ev-what">{details()}</span>
-      <button class="s-btn" onClick={() => props.onRemove()} aria-label={`Remove: ${describeEvent(props.e)}`}>Remove</button>
+      <button class="s-btn" onClick={() => props.onRemove()} aria-label={`Remove: ${describeEvent(props.e, props.things)}`}>Remove</button>
     </li>
   );
 }
 
-export function ScenarioEditor(props: { scenario: ScenarioDraft; set: (f: (d: ScenarioDraft) => ScenarioDraft) => void; problems: string[] }) {
+/** "What a map needs": each label the script declares, its kind and its
+ *  requirement in Forge's words. */
+export function MapNeeds(props: { labels: LabelLine[] }) {
+  return (
+    <ul class="s-rules-needs" aria-label="What a map needs">
+      <For each={props.labels}>
+        {(l) => (
+          <li>
+            <b><code>{l.text}</code></b>
+            <small>{kindWords(l)}{l.per_team ? ", per team" : ""}</small>
+            <span>{l.needs}</span>
+          </li>
+        )}
+      </For>
+    </ul>
+  );
+}
+
+/** The test map: its things under their labels, what it lacks for the
+ *  script's labels with "Add what the script needs", and a thing added by
+ *  label. With no map of its own the match plays the script's smallest. */
+function MapEditor(props: {
+  scenario: ScenarioDraft;
+  set: (f: (d: ScenarioDraft) => ScenarioDraft) => void;
+  labels: LabelLine[];
+  minimal: MapThing[];
+  /** What the map lacks, as the run (else the page) found it. */
+  problems: string[];
+}) {
+  const own = () => props.scenario.objects;
+  const groups = createMemo(() => mapGroups(own() ?? [], props.labels));
+  const setThings = (f: (things: ScenarioObject[]) => ScenarioObject[]) => props.set((d) => ({ ...d, objects: f(d.objects ?? thingsOfMinimal(props.minimal)) }));
+  const setThing = (id: number, patch: Partial<ScenarioObject>) => setThings((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  const [adding, setAdding] = createSignal<string | null>(null);
+  /** The labels a thing may be added under: the script's, then the map's
+   *  own; any other text is a label too. */
+  const names = createMemo(() => [...new Set([...props.labels.map((l) => l.text), ...(own() ?? []).map((o) => o.label)])]);
+  const addLabel = () => (adding() ?? names()[0] ?? "").trim();
+  const add = () => {
+    const label = addLabel();
+    if (!label) return;
+    setThings((ts) => [...ts, newThing(ts, label, props.labels.find((l) => l.text === label) ?? null)]);
+  };
+  const count = () => own()?.length ?? 0;
+  return (
+    <section class="s-rules-part">
+      <h4>Map <small>{own() ? `${count()} ${count() === 1 ? "thing" : "things"} labelled` : "the script's smallest map"}</small></h4>
+      <Show when={own()} fallback={
+        <p class="s-rules-muted s-rules-none">
+          The match plays on the smallest map the script's labels accept{props.minimal.length ? ` (${props.minimal.length} ${props.minimal.length === 1 ? "thing" : "things"})` : ""}.{" "}
+          <button class="s-btn" onClick={() => props.set((d) => ({ ...d, objects: thingsOfMinimal(props.minimal) }))}>Make it my map</button>
+        </p>
+      }>
+        <Show when={props.problems.length}>
+          <div class="s-rules-mapfix">
+            <ul class="s-rules-issues" aria-label="Map problems">
+              <For each={props.problems}>{(p) => <li>{capitalised(p)}.</li>}</For>
+            </ul>
+            <button class="s-btn" disabled={!props.minimal.length && !props.labels.some((l) => l.per_team)} title="Merges the script's smallest map into this one" onClick={() => setThings((ts) => withNeeds(ts, props.minimal, props.labels))}>Add what the script needs</button>
+          </div>
+        </Show>
+        <Show when={groups().length} fallback={<p class="s-rules-muted s-rules-none">Nothing on this map is labelled.</p>}>
+          <table class="s-grid s-rules-table s-rules-map">
+            <thead><tr><th>Thing</th><th>Number</th><th>Team</th><th>Is a</th><th /></tr></thead>
+            <For each={groups()}>
+              {(g) => (
+                <tbody>
+                  <tr class="s-rules-map-label">
+                    <th colspan="5"><code>{g.label}</code> <small>{g.line ? g.line.needs : "the script doesn't declare this label"}</small></th>
+                  </tr>
+                  <For each={g.things}>
+                    {(t) => (
+                      <tr>
+                        <td>{thingName(t, own() ?? [])}</td>
+                        <td>
+                          <input class="s-rules-num" type="number" step={1} value={t.number ?? ""} placeholder="none" aria-label="Number"
+                            onChange={(e) => { const v = e.currentTarget.value.trim(); setThing(t.id, { number: v === "" ? null : int(v) }); }} />
+                        </td>
+                        <td>
+                          <select value={t.team === null ? "" : String(t.team)} aria-label="Team" onChange={(e) => setThing(t.id, { team: e.currentTarget.value === "" ? null : int(e.currentTarget.value) })}>
+                            <option value="">none</option>
+                            <For each={Array.from({ length: 8 }, (_, n) => n)}>{(n) => <option value={String(n)}>{teamName(n)} (team {n})</option>}</For>
+                          </select>
+                        </td>
+                        <td>
+                          <select value={t.class ?? ""} aria-label="Is a" onChange={(e) => { const c = MAP_CLASSES.find((x) => x.class === e.currentTarget.value)?.class; setThing(t.id, { class: c }); }}>
+                            <option value="">{classLabel(suggestedClass(g.line?.kind ?? null))} (from the label)</option>
+                            <For each={MAP_CLASSES}>{(c) => <option value={c.class}>{c.label}</option>}</For>
+                          </select>
+                        </td>
+                        <td class="s-rules-end"><button class="s-btn" aria-label={`Remove ${thingName(t, own() ?? [])}`} onClick={() => setThings((ts) => ts.filter((x) => x.id !== t.id))}>Remove</button></td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              )}
+            </For>
+          </table>
+        </Show>
+        <div class="s-rules-add">
+          <input class="s-rules-class" type="text" spellcheck={false} list="s-rules-map-labels" placeholder="label" aria-label="Label of the thing to add" value={addLabel()} onInput={(e) => setAdding(e.currentTarget.value)} />
+          <datalist id="s-rules-map-labels"><For each={names()}>{(n) => <option value={n} />}</For></datalist>
+          <button class="s-btn" disabled={!addLabel()} onClick={add}>Add thing</button>
+          <button class="s-btn" title="Play on the script's smallest map again" onClick={() => props.set((d) => ({ ...d, objects: undefined }))}>Use the smallest map</button>
+        </div>
+      </Show>
+    </section>
+  );
+}
+
+const capitalised = (s: string): string => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
+
+export function ScenarioEditor(props: {
+  scenario: ScenarioDraft;
+  set: (f: (d: ScenarioDraft) => ScenarioDraft) => void;
+  problems: string[];
+  /** The script's labels and smallest map, from its check. */
+  labels: LabelLine[];
+  minimal: MapThing[];
+  /** What the map lacks, from the last run of this match; empty when the
+   *  run found nothing or has not answered. */
+  mapProblems: string[];
+}) {
   const slots = () => props.scenario.players.map((p) => p.slot);
+  const things = createMemo(() => mapInPlay(props.scenario, props.minimal));
+  const mapIssues = createMemo(() => (props.mapProblems.length ? props.mapProblems : props.scenario.objects ? mapShort(props.labels, props.scenario.objects) : []));
   const setPlayer = (i: number, patch: Partial<ScenarioPlayer>) =>
     props.set((d) => ({ ...d, players: d.players.map((p, j) => (j === i ? { ...p, ...patch } : p)) }));
   const setEvent = (i: number, f: (e: ScenarioEvent) => ScenarioEvent) =>
@@ -159,7 +315,7 @@ export function ScenarioEditor(props: { scenario: ScenarioDraft; set: (f: (d: Sc
     const k = killer();
     props.set((d) => withEvent(d, { tick: nextEventTick(d), type: "kill", victim: v, killer: k }));
   };
-  const addOther = (type: EventType) => props.set((d) => withEvent(d, newEvent(type, nextEventTick(d), d.players)));
+  const addOther = (type: EventType) => props.set((d) => withEvent(d, newEvent(type, nextEventTick(d), d.players, mapInPlay(d, props.minimal), props.labels)));
 
   return (
     <div class="s-rules-scenario">
@@ -227,6 +383,8 @@ export function ScenarioEditor(props: { scenario: ScenarioDraft; set: (f: (d: Sc
         </div>
       </section>
 
+      <MapEditor scenario={props.scenario} set={props.set} labels={props.labels} minimal={props.minimal} problems={mapIssues()} />
+
       <section class="s-rules-part">
         <h4>Events <small>{props.scenario.events.length} in time order</small></h4>
         <div class="s-rules-quick" role="group" aria-label="Add an event">
@@ -250,6 +408,8 @@ export function ScenarioEditor(props: { scenario: ScenarioDraft; set: (f: (d: Sc
                   e={e()}
                   slots={slots()}
                   players={props.scenario.players}
+                  things={things()}
+                  labels={props.labels}
                   onChange={(patch) => setEvent(i, (old) => ({ ...old, ...patch }))}
                   onReplace={(next) => setEvent(i, () => next)}
                   onTick={(t) => props.set((d) => moveEvent(d, i, t))}
@@ -461,6 +621,9 @@ export function ResultsView(props: {
   trouble: Trouble | null;
   /** The run's own build errors, when the check passed but the run didn't build. */
   errors: Problem[];
+  /** What the match's map lacks for the script's labels, when the run
+   *  refused it and nothing ran. */
+  map?: string[];
   /** The run button's label and the line beside it. */
   again?: string;
   hint?: string;
@@ -490,6 +653,14 @@ export function ResultsView(props: {
         <ul class="s-rules-errors" aria-label="Run errors">
           <For each={props.errors}>{(p) => <li><button class="s-rules-errlink" onClick={() => props.onJump(p)} disabled={p.line === 0}>{problemPlace(p)}</button><span>{p.message}</span></li>}</For>
         </ul>
+      </Show>
+      <Show when={props.map?.length}>
+        <div class="s-rules-hold">
+          <p>{props.ran ? "These results are from the last run. " : ""}Nothing ran: the map doesn't pass the script's labels. Fix it under Map, or choose Add what the script needs.</p>
+          <ul class="s-rules-issues" aria-label="Map problems">
+            <For each={props.map ?? []}>{(p) => <li>{capitalised(p)}.</li>}</For>
+          </ul>
+        </div>
       </Show>
       <Show when={props.blocked}>
         {(why) => <p class="s-rules-hold">{props.ran ? "These results are from the last run." : "No results yet."} {why()}</p>}

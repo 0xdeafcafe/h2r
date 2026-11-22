@@ -108,6 +108,19 @@
 .s-rules-caps li small { font-size: 9px; color: #7e8ea6; }
 .s-rules-caps li.bad b { color: #ff8c7a; }
 
+/* What a map needs: a label a row, as the capabilities list is. */
+.s-rules-needs { margin: 0; padding: 4px 0; list-style: none; }
+.s-rules-needs li { display: flex; flex-direction: column; padding: 3px 8px; font-size: 11px; color: #e6e6e6; border-top: 1px solid #1e1e1e; }
+.s-rules-needs li:first-child { border-top: 0; }
+.s-rules-needs li small { font-size: 9px; color: #7e8ea6; }
+.s-rules-warnings { border-top: 1px solid #1e1e1e; }
+
+/* The test map: its things under their labels, its problems above. */
+.s-rules-mapfix { display: grid; gap: 4px; justify-items: start; margin-bottom: 4px; }
+.s-rules-mapfix .s-rules-issues { justify-self: stretch; }
+.s-rules-map-label th { text-align: left; font-weight: normal; color: #fff; }
+.s-rules-map-label small { margin-left: 4px; font-size: 10px; color: #8d9aab; }
+
 /* The test: the generated matches' summary beside one match's results. */
 .s-rules-test { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: start; margin-top: 8px; }
 .s-rules-testbox { margin-bottom: 0; }

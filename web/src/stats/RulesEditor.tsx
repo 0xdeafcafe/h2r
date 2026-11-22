@@ -1,8 +1,9 @@
 // The workbench's script editor (docs/game/rules-engine.md, "Workbench"):
 // Monaco with the `h2rules` language, loaded by a dynamic import on first
 // mount so neither Monaco nor its worker is in the main bundle. The value
-// is the page's; edits come back through onChange. Check errors show as
-// markers, the editor is read-only while the page says so, and Monaco's
+// is the page's; edits come back through onChange. Check errors and
+// warnings show as markers, with their quick fixes (Ctrl/Cmd+.) and
+// rename (F2) from the IDE route; the editor is read-only while the page says so, and Monaco's
 // own layout follows the box's size. When Monaco can't load, a plain
 // textarea stands in.
 
@@ -22,6 +23,8 @@ export default function RulesEditor(props: {
   onChange: (v: string) => void;
   readOnly: boolean;
   problems: readonly Problem[];
+  /** The check's warnings, marked apart from its errors. */
+  warnings?: readonly Problem[];
   /** The Live API base the IDE providers ask. */
   api: string;
   onReady?: (api: RulesEditorApi) => void;
@@ -68,7 +71,7 @@ export default function RulesEditor(props: {
 
   createEffect(() => { const e = ed(); if (e) e.setValue(props.value); });
   createEffect(() => { const e = ed(); if (e) e.setReadOnly(props.readOnly); });
-  createEffect(() => { const e = ed(); if (e) e.setProblems(props.problems); });
+  createEffect(() => { const e = ed(); if (e) e.setProblems(props.problems, props.warnings ?? []); });
   createEffect(() => { const api = props.api; mod?.setApi(api); });
 
   onCleanup(() => {
