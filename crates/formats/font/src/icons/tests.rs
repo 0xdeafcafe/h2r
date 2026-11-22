@@ -304,15 +304,52 @@ fn heights_outside_the_supported_range_are_clamped() {
 }
 
 #[test]
-fn each_bumper_is_its_own_monochrome_picture_with_its_name_cut_out() {
+fn bumpers_are_a_monochrome_pair_with_the_pressed_one_lit() {
     let keys = KeyLabels::new();
     let right = icon(IconSet::Xbox360, Button::Black, 18, &keys).unwrap();
     let left = icon(IconSet::Xbox360, Button::White, 18, &keys).unwrap();
+    assert_eq!((right.width, right.height), (45, 18));
     for icon in [&right, &left] {
-        // One bumper wide: a prompt names the one bumper, not the pair.
-        assert_eq!((icon.width, icon.height), (BUMPER_WIDTH, 18));
         // White at run levels only, like the retail trigger and stick pairs,
         // so the game tints it with the text and the stream needs no literals.
+        for p in &icon.pixels {
+            assert_eq!(p & 0xfff, 0xfff);
+            assert!(alpha3_code(p >> 12).is_some(), "alpha {}", p >> 12);
+        }
+        assert!(encode_pixels(&icon.pixels).len() < icon.pixels.len() / 3);
+    }
+    // Total opacity of each half: the lit bumper outweighs the idle one.
+    let weight = |icon: &Icon, half: std::ops::Range<usize>| -> u32 {
+        icon.pixels
+            .chunks(usize::from(icon.width))
+            .flat_map(|row| row[half.clone()].iter())
+            .map(|p| u32::from(p >> 12))
+            .sum()
+    };
+    assert!(weight(&right, 24..45) > 2 * weight(&right, 0..21));
+    assert!(weight(&left, 0..21) > 2 * weight(&left, 24..45));
+    // Both bumpers are drawn. Labels stay readable when the lit side changes;
+    // they are not mirrored, and PlayStation uses its own L1/R1 names.
+    assert!(weight(&right, 0..21) > 0 && weight(&left, 24..45) > 0);
+    assert_ne!(
+        icon(IconSet::PlayStation, Button::Black, 18, &keys).unwrap(),
+        right
+    );
+    assert_ne!(
+        icon(IconSet::PlayStation, Button::White, 18, &keys).unwrap(),
+        left
+    );
+}
+
+/// The lobby's mode control alone shows one bumper a picture
+/// ([`strip_bumper`]); every other prompt keeps the pair.
+#[test]
+fn the_lobby_strip_bumper_is_one_bar_with_its_name_cut_out() {
+    let keys = KeyLabels::new();
+    let right = strip_bumper(IconSet::Xbox360, Button::Black, 18, &keys).unwrap();
+    let left = strip_bumper(IconSet::Xbox360, Button::White, 18, &keys).unwrap();
+    for icon in [&right, &left] {
+        assert_eq!((icon.width, icon.height), (BUMPER_WIDTH, 18));
         for p in &icon.pixels {
             assert_eq!(p & 0xfff, 0xfff);
             assert!(alpha3_code(p >> 12).is_some(), "alpha {}", p >> 12);
@@ -339,12 +376,18 @@ fn each_bumper_is_its_own_monochrome_picture_with_its_name_cut_out() {
     assert_ne!(left, right);
     assert!(alpha(&left, 0, 3) < alpha(&left, w - 1, 3));
     assert!(alpha(&right, w - 1, 3) < alpha(&right, 0, 3));
-    // PlayStation uses its own L1/R1 names on the same bar.
+    // PlayStation uses its own L1/R1 names on the same bar; Steam the 360's.
     for (b, xbox) in [(Button::Black, &right), (Button::White, &left)] {
-        let ps = icon(IconSet::PlayStation, b, 18, &keys).unwrap();
+        let ps = strip_bumper(IconSet::PlayStation, b, 18, &keys).unwrap();
         assert_eq!((ps.width, ps.height), (xbox.width, xbox.height));
         assert_ne!(&ps, xbox);
+        assert_eq!(&strip_bumper(IconSet::Steam, b, 18, &keys).unwrap(), xbox);
     }
+    // Only the bumpers, and only on a set that replaces them; an ordinary
+    // prompt for the same button is still the pair.
+    assert!(strip_bumper(IconSet::Xbox360, Button::A, 18, &keys).is_none());
+    assert!(strip_bumper(IconSet::Remote, Button::Black, 18, &keys).is_none());
+    assert_eq!(icon(IconSet::Xbox360, Button::Black, 18, &keys).unwrap().width, 45);
 }
 
 /// The strongest channel of the opaque pixel seen most often: the body colour.

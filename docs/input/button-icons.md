@@ -98,17 +98,22 @@ Style rules, taken from the retail glyphs:
   red, pink, green), 16 pixels wide, with the symbol in a light tint as the
   retail letters are. Options and Share are dark balls with a white mark, as
   the retail Start and Back are.
-- **Bumpers** (360, PlayStation and Steam): each bumper is its own picture,
-  21 pixels wide (`font::icons::BUMPER_WIDTH`): a solid white bar whose
-  outer shoulder is rounder than its other corners, with its name (LB, RB,
-  L1, R1) cut out of it. It is white only, so it takes the text colour,
-  and the cut-out name reads at any colour. A prompt for one bumper shows
-  that bumper alone, so two prompts side by side (the lobby's mode strip,
-  [party-lobby.md](../game/party-lobby.md)) tell left from right.
-- **PlayStation triggers**: both triggers side by side with the one meant
-  lit and the other faint, as the retail glyphs show triggers and sticks,
-  in white at the same alpha levels, labelled L2 and R2. The pair is 45
-  pixels wide. Labels keep their orientation when the lit side changes.
+- **Bumpers** (360, PlayStation and Steam): both bumpers side by side with
+  the one meant lit, as the retail glyphs show triggers and sticks, in white
+  at the same alpha levels, so they take the text colour. The pair is 45
+  pixels wide and carries LB/RB or L1/R1 labels; PlayStation triggers carry
+  L2/R2. The inactive side stays faint. Labels keep their orientation when
+  the active side changes.
+- **One bumper alone** (`font::icons::strip_bumper`): the pregame lobby's
+  mode control has the two bumpers at its two ends, each naming a
+  direction, where two pairs read as the same two boxes
+  ([party-lobby.md](../game/party-lobby.md)). For that control only, each
+  bumper has a picture of its own, 21 pixels wide
+  (`font::icons::BUMPER_WIDTH`): a solid white bar whose outer shoulder is
+  rounder than its other corners, with its name (LB, RB, L1, R1) cut out
+  of it, so it takes the text colour and reads at any colour. No code
+  point carries it and no font is patched with it: every prompt, the
+  lobby's included, draws the pair.
 - **Keys**: a light cap shaded like the retail White button, with a dark rim,
   a lip along the bottom and the key's name in a 5 x 7 letter set drawn for
   this project. **Mouse buttons**: a mouse from above in the same shading with
@@ -143,7 +148,7 @@ rest:
 
 | Xbox control | Steam picture |
 |---|---|
-| Black, White | the LB and RB bumpers, as the Xbox 360 set draws them |
+| Black, White | the LB/RB bumper pair, as the Xbox 360 set draws it |
 | Start | a ">" chevron in a faint ring |
 | Back | a "<" chevron in a faint ring |
 | D-pad up, down, left, right | the clickpad ring with that quarter lit (a click on the left trackpad) |
@@ -286,8 +291,9 @@ All use synthetic fonts and in-memory files.
 - `font::icons`: the rasteriser (coverage, symmetry, area of a disc, outline
   width, blending, pixel conversion); the label set covers every key name
   `crates/platform/input` accepts; every icon at heights 9 to 24 fits the glyph limits
-  and survives the compressor; each bumper is one bar, white at run levels,
-  with its name cut out; face balls have the right colours; key caps are light with
+  and survives the compressor; the bumper pair is white at run levels with the
+  right side lit, and the lobby's one bumper alone is one bar with its name
+  cut out; face balls have the right colours; key caps are light with
   dark letters and follow the labels; each set's code points are distinct; a
   patched font validates and still draws the retail glyphs.
 - `vfs::rewrite`: rewritten size in `stat` and listings, reads at and past the
