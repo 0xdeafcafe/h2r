@@ -213,7 +213,7 @@ fn a_face_in_a_new_material_or_a_sky_strip_is_refused() {
     let (s, info) = floor();
     let (src, mut e) = edited(&s, &info, STRUCTURE_SECTION, None, true, &extrude_all());
     e.materials[0] = 7;
-    let why = grow(&src, &e, &structure_options()).unwrap_err();
+    let why = grow(&src, &e, &structure_options()).err().expect("grow refuses");
     assert!(why.contains("material"), "{why}");
 
     // A model's strip part, in a sky's model.
