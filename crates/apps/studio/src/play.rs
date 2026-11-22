@@ -839,6 +839,7 @@ impl Play {
         }
         // Revalidate queued controls against the newest map, session and local unit.
         self.take_requests(app);
+        self.send_rules_reload(app);
         self.auto_pair(app);
         self.remember_place(app);
         self.maybe_spawn(app);
@@ -1230,10 +1231,53 @@ impl Play {
                 }
                 app.info(format!("game: {what}"));
             }
+            (Purpose::Rules, result) => self.rules_answer(app, result),
             (Purpose::Other, _) if method == agent_proto::editor::method::MARKS => {}
             (_, Err(e)) => self.feedback.problem(app, format!("{method}: {e}")),
             (Purpose::Other, Ok(v)) => app.info(format!("{method}: {v}")),
         }
+    }
+
+    /// Sends the script editor's queued reload (`app.rules.outbox`) as
+    /// `rules.reload`, or says why it can't go.
+    fn send_rules_reload(&mut self, app: &mut App) {
+        let Some(params) = app.rules.outbox.take() else {
+            return;
+        };
+        use crate::app::rules_edit::ReloadState;
+        let why = if !self.is_paired() {
+            Some("pair with a running game first".to_string())
+        } else if !self.has_method(agent_proto::rules::method::RELOAD) {
+            Some(
+                "the paired game has no rules.reload (a build without the rules feature, or H2_FEATURES leaves it out)"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        match why {
+            Some(why) => app.rules.reload = ReloadState::Refused(why),
+            None => self.call(agent_proto::rules::method::RELOAD, params, Purpose::Rules),
+        }
+    }
+
+    fn rules_answer(&mut self, app: &mut App, result: Result<Value, agent_proto::RpcError>) {
+        use crate::app::rules_edit::ReloadState;
+        let state = match result {
+            Ok(v) => match serde_json::from_value::<agent_proto::rules::ReloadResult>(v) {
+                Ok(r) => ReloadState::Done(r),
+                Err(e) => ReloadState::Refused(format!("the game's answer did not read: {e}")),
+            },
+            Err(e) => ReloadState::Refused(e.message),
+        };
+        if let Some((_, line)) = crate::app::rules_edit::reload_line(&state) {
+            if matches!(state, ReloadState::Refused(_)) {
+                app.error(line);
+            } else {
+                app.info(line);
+            }
+        }
+        app.rules.reload = state;
     }
 
     /// Why edits aren't being sent to the game now, if they aren't.

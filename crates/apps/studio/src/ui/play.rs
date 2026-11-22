@@ -340,6 +340,10 @@ impl PlayUi {
                 ui.text_colored(theme::WARN, format!("Needs Play again: {:?}", p.reload));
             }
         }
+        // The script editor's last reload into this game (ui::rules).
+        if let Some((tone, line)) = app.rules.reload_line() {
+            ui.text_colored(theme::reload_colour(tone), line);
+        }
     }
 
     fn player(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
