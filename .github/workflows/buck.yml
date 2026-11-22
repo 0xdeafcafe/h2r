@@ -55,6 +55,21 @@ jobs:
       # and exits 1 when any is stale.
       - name: Regenerate the rules and compare
         run: devenv shell -- python3 scripts/update-buck.py --check
+      # On a stale tree, write this runner's own Reindeer output as a patch,
+      # so it can be applied as is (a local Reindeer of another version
+      # lays the rules out differently).
+      - name: Keep the regenerated rules as a patch
+        if: failure()
+        run: |
+          devenv shell -- python3 scripts/update-buck.py
+          git diff > buck-rules.patch
+          git diff --stat
+      - name: Upload the patch
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buck-rules-patch
+          path: buck-rules.patch
       - name: Fail on any change to the tree
         run: git diff --exit-code
 
