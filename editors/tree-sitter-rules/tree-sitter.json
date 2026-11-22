@@ -1,0 +1,27 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "rules",
+      "camelcase": "Rules",
+      "scope": "source.rules",
+      "path": ".",
+      "file-types": ["rules"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^rules$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "WTFPL",
+    "description": "Game type scripts (.rules) for h2recomp",
+    "authors": [
+      {
+        "name": "Alexander Forbes-Reed"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/0xdeafcafe/h2recomp"
+    }
+  }
+}

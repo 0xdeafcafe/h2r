@@ -1,0 +1,198 @@
+================================================================================
+Multiplication binds tighter than addition
+================================================================================
+
+on tick {
+    a = 1 + 2 * 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (integer)
+          (binary_expression
+            (integer)
+            (integer)))))))
+
+================================================================================
+Unary minus takes a field
+================================================================================
+
+on tick {
+    a = -x.y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (unary_expression
+          (field_expression
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+Not is below comparisons, and above or
+================================================================================
+
+on tick {
+    a = not b == c and d or e
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (binary_expression
+            (unary_expression
+              (binary_expression
+                (identifier)
+                (identifier)))
+            (identifier))
+          (identifier))))))
+
+================================================================================
+Is, parentheses, index and team
+================================================================================
+
+on tick {
+    a = x is goal
+    a = (1 + 2) % 3
+    a = t[i].gap
+    a = p.team == team 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (is_expression
+          (identifier)
+          (identifier)))
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (parenthesized_expression
+            (binary_expression
+              (integer)
+              (integer)))
+          (integer)))
+      (assignment_statement
+        (identifier)
+        (field_expression
+          (index_expression
+            (identifier)
+            (identifier))
+          (identifier)))
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (team_expression
+            (integer)))))))
+
+================================================================================
+Set arguments
+================================================================================
+
+on tick {
+    n = count(players p where p.team == t)
+    n = count(goal)
+    n = count(goal g where g.number > 0)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (call_expression
+          (identifier)
+          (arguments
+            (set_expression
+              (builtin_set)
+              (identifier)
+              (binary_expression
+                (field_expression
+                  (identifier)
+                  (identifier))
+                (identifier))))))
+      (assignment_statement
+        (identifier)
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier))))
+      (assignment_statement
+        (identifier)
+        (call_expression
+          (identifier)
+          (arguments
+            (set_expression
+              (identifier)
+              (identifier)
+              (binary_expression
+                (field_expression
+                  (identifier)
+                  (identifier))
+                (integer)))))))))
+
+================================================================================
+Grant, budget, palette and text arguments
+================================================================================
+
+on tick {
+    grant(p, forge.place, budget 20, palette "vip")
+    message(p, text 3)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (expression_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier)
+            (field_expression
+              (identifier)
+              (identifier))
+            (budget_expression
+              (integer))
+            (palette_expression
+              (string
+                (string_content))))))
+      (expression_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier)
+            (text_expression
+              (integer))))))))

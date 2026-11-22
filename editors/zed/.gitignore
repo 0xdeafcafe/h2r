@@ -1,0 +1,5 @@
+# Written by Zed's dev install and by cargo.
+target/
+grammars/
+extension.wasm
+Cargo.lock

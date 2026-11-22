@@ -98,13 +98,25 @@ On their own:
   `tree-sitter-rules` grammar (`languages/rules/*.scm`), and a WebAssembly
   extension (`src/lib.rs`, over `zed_extension_api`) whose
   `language_server_command` runs the `lsp.h2-rules-lsp.binary.path`
-  setting if set, else `h2` from the worktree's `PATH`, else
-  `~/.cargo/bin/h2`, with `rules lsp`.
+  setting if set (with its `arguments` and `env`), else `h2` from the
+  worktree's `PATH`, else `~/.cargo/bin/h2`, with `rules lsp`. The
+  extension API has no hook for semantic tokens: the server sends them,
+  and whether Zed paints them over the tree-sitter highlights is Zed's
+  setting.
 - **tree-sitter-rules** (`editors/tree-sitter-rules/`): a grammar of the
   whole language as `crates/formats/rules/src/lang/lex.rs` and
   `parse.rs` define it, with corpus tests. `src/parser.c` is generated
   (`tree-sitter generate`) and committed; CI checks it matches
-  `grammar.js`.
+  `grammar.js`. Whitespace, line breaks included, is an extra: no
+  statement goes on with a token that starts the next one, except a line
+  that starts with `(`, `[` or `-`, which precedence reads as a call, an
+  index or a subtraction (`parse.rs` reads the first two as a new
+  statement). It is looser than `parse.rs` in a few places (two
+  statements on a line without `;`, any expression as a label count or
+  match pattern); `grammar.js`'s header lists them. Highlighting needs
+  no more. `editors/zed/extension.toml` pins the grammar to a commit of
+  this repository (`rev`), so a grammar change lands in Zed after that
+  commit is pushed and `rev` moves to it.
 
 A change to the language (a keyword, a token, a statement) changes
 `lex.rs` or `parse.rs`, and with them `grammar.js`, the TextMate grammar
@@ -161,6 +173,8 @@ requests that touch `editors/**`, `crates/formats/rules/src/ide/**`,
   a `file://` grammar repository.
 - The `editors-latest` release download from a machine without GitHub
   credentials, which needs the repository to be public.
+- Whether Zed takes a project's own `.rules` file (its agent rules file)
+  for a Rules script.
 
 ## Related
 

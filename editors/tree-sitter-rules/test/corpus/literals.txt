@@ -1,0 +1,114 @@
+================================================================================
+Numbers and time literals
+================================================================================
+
+on tick {
+    a = 5s
+    a = 300t
+    a = 1.5s
+    a = 1.5
+    a = 42
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (time))
+      (assignment_statement
+        (identifier)
+        (time))
+      (assignment_statement
+        (identifier)
+        (time))
+      (assignment_statement
+        (identifier)
+        (fixed))
+      (assignment_statement
+        (identifier)
+        (integer)))))
+
+================================================================================
+Booleans and none
+================================================================================
+
+on tick {
+    a = true
+    a = false
+    a = none
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (true))
+      (assignment_statement
+        (identifier)
+        (false))
+      (assignment_statement
+        (identifier)
+        (none)))))
+
+================================================================================
+String escapes
+================================================================================
+
+on tick {
+    a = "say \"hi\"\n"
+    a = ""
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (string
+          (string_content)
+          (escape_sequence)
+          (string_content)
+          (escape_sequence)
+          (escape_sequence)))
+      (assignment_statement
+        (identifier)
+        (string)))))
+
+================================================================================
+String holes and brace escapes
+================================================================================
+
+on tick {
+    message(p, "{k} scored, {left} to go {{ok}}")
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (expression_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier)
+            (string
+              (interpolation)
+              (string_content)
+              (interpolation)
+              (string_content)
+              (escape_sequence)
+              (string_content)
+              (escape_sequence))))))))

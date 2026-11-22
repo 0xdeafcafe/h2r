@@ -1,0 +1,79 @@
+================================================================================
+Labels without requirements
+================================================================================
+
+label core: object
+label goal: zone?
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_declaration
+    (identifier)
+    (type
+      (identifier)))
+  (label_declaration
+    (identifier)
+    (type
+      (identifier))))
+
+================================================================================
+Numbered labels and map text
+================================================================================
+
+label capture: zones numbered 0..1 = "zone"
+label barrier: objects numbered
+label territory: zones 1..most
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_declaration
+    (identifier)
+    (type
+      (identifier))
+    (requirement
+      (range
+        (integer)
+        (integer)))
+    (string
+      (string_content)))
+  (label_declaration
+    (identifier)
+    (type
+      (identifier))
+    (requirement))
+  (label_declaration
+    (identifier)
+    (type
+      (identifier))
+    (requirement
+      (range
+        (integer)
+        (identifier)))))
+
+================================================================================
+Counted labels
+================================================================================
+
+label flag_spawn: zones at most 16 per team
+label pads: spawns at least 2 exactly 4
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_declaration
+    (identifier)
+    (type
+      (identifier))
+    (requirement
+      (integer))
+    (requirement))
+  (label_declaration
+    (identifier)
+    (type
+      (identifier))
+    (requirement
+      (integer))
+    (requirement
+      (integer))))
