@@ -18,6 +18,10 @@
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
+//! - `SLAYER_KILL`, `JUGGERNAUT_KILL`, `JUGGERNAUT_TICK` and `SCORE_ADD`,
+//!   `before`s in the default class: while a script runs on the authority,
+//!   the carrier's own scoring and role-making return at once
+//!   ([`super::scoring`]).
 //!
 //! The superbounce mode's tick observer feeds it each bounce its medal
 //! chain files ([`bounces`]).
@@ -281,6 +285,7 @@ impl hooks::Feature for Rules {
             let m: &dyn GuestMemory = &*mem;
             s.lock().post_tick(m);
         });
+        super::scoring::register(b, &self.shared);
         let s = Arc::clone(&self.shared);
         b.game().on_end("end the rules script", move |_| {
             s.lock().ended();

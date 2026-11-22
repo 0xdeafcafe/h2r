@@ -19,8 +19,10 @@
 //   object_team      traced (record `+4`; a placement's designator)
 //   inside           not built (the return point and plate volumes)
 //   spawn_objective  traced (the flag spawn 0x2422d0)
-//   reset_objective  untraced
-//   role_traits      untraced
+//   reset_objective  made only on oddball (CTF's flag return, which calls
+//                    the shared objective return at 0x242b41, is not named)
+//   role_traits      made only on juggernaut (the engine gives the carrier
+//                    traits to whoever holds the flag)
 // Not reproduced: sudden death (holding the time limit is not in the API);
 // the CTF and Assault globals (`[0x51ec80]`: per-team state bits `+0x170`,
 // timers `+0x1a0`, the defending team `+0x1f4`) are not written; a team's

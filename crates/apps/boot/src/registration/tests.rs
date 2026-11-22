@@ -525,6 +525,35 @@ fn the_rules_runtime_is_planned_only_when_named() {
     assert!(has(ALL_ON));
 }
 
+/// With the rules runtime on, the carrier engine's scoring and role-making
+/// routines each have the runtime's `before`, which answers them only
+/// while a script runs (`rules::scoring`); off, none of them is hooked.
+#[cfg(feature = "rules")]
+#[test]
+fn the_rules_runtime_answers_the_carriers_scoring_only_when_named() {
+    const SCORING: [&str; 4] = ["JUGGERNAUT_KILL", "JUGGERNAUT_TICK", "SCORE_ADD", "SLAYER_KILL"];
+    let befores = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut at: Vec<_> = plan
+            .chains
+            .values()
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .filter(|hook| hook.feature == crate::rules::feature::FEATURE)
+                    .filter(move |_| SCORING.contains(&chain.point.name))
+                    .map(move |hook| (chain.point.name, hook.kind().as_str()))
+            })
+            .collect();
+        at.sort_unstable();
+        at
+    };
+    let want: Vec<_> = SCORING.iter().map(|&p| (p, "before")).collect();
+    assert_eq!(befores("rules"), want);
+    assert_eq!(befores(ALL_ON), want);
+    assert!(befores("").is_empty());
+}
+
 /// The features `run_hosted_with_live` adds around `register_core` and
 /// `register_late`, present in the full case's plan.
 #[test]

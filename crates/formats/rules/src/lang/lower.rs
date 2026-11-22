@@ -325,8 +325,11 @@ impl<'s> Cx<'s> {
             options: self.options.drain(..).map(|(_, o)| o).collect(),
             enums: enum_defs,
             slots: std::mem::take(&mut self.slots),
-            labels: std::mem::take(&mut self.labels),
-            tags: std::mem::take(&mut self.tags),
+            // Until labels are declared, a string label is a set of objects
+            // that requires nothing of the map, and a tag path is of any
+            // object definition.
+            labels: self.labels.drain(..).map(LabelDef::objects).collect(),
+            tags: self.tags.drain(..).map(TagDef::any).collect(),
             palettes: self.palettes.drain(..).map(|(_, p)| p).collect(),
             tables: std::mem::take(&mut self.table_defs),
             handlers: std::mem::take(&mut self.handlers),
@@ -363,6 +366,12 @@ impl<'s> Cx<'s> {
     fn label(&mut self, s: &str, pos: Pos) -> R<u16> {
         if s.is_empty() || s.len() > MAX_LABEL_BYTES {
             return err(pos, "a label is 1 to 32 bytes");
+        }
+        if !s.chars().all(label_char) {
+            return err(pos, "a label is lowercase letters, digits, _, - and .");
+        }
+        if !self.label_ix.contains_key(s) && self.labels.len() >= MAX_LABELS {
+            return err(pos, "a script names at most 64 labels");
         }
         Self::intern(&mut self.labels, &mut self.label_ix, s, pos)
     }

@@ -129,6 +129,7 @@ are under [Reviews](#reviews).
 - [sim-10x.md](perf/sim-10x.md): one sim match at 10 to 20 times real time: the Lockout budget, every lever ranked, the lanes, the ceiling of each step and the measurements that confirm or kill each
 - [sim-10x-tier.md](perf/sim-10x-tier.md): spec for the sim tier in the image: roots, journaled segments, the exact clock, call-outs and the fallback to the reference image
 - [sim-10x-callouts.md](perf/sim-10x-callouts.md): spec for `ExecCtx::call_inline`: a Rust body calls lifted code in place and leaves to the runner only when the runner has work
+- [sim-headless-skips.md](perf/sim-headless-skips.md): what a headless sim still computes for a screen, a speaker or a local player, what the title already skips for a phantom roster, and each candidate skip classed for game state, films and the viewer
 - Notes: [device-cost.md](perf/notes/device-cost.md) (D3D device CPU cost), [fastmem-proto.md](perf/notes/fastmem-proto.md) (the Mach write-watch prototype), [gameplay-budget.md](perf/notes/gameplay-budget.md) (where an in-level frame goes), [guest-memory.md](perf/notes/guest-memory.md) (guest memory and runner measurements), [menu-budget.md](perf/notes/menu-budget.md) (the main-menu frame budget), [steammachine-perf.md](perf/notes/steammachine-perf.md) (the Steam Machine profile and the music hangs), [sim-10x.md](perf/notes/sim-10x.md) (phantom-roster sim speeds and the Lockout budget arithmetic), [not-adopted.md](perf/notes/not-adopted.md) (performance experiments that lost)
 
 ## Data formats and tags (`formats/`)
@@ -170,7 +171,7 @@ are under [Reviews](#reviews).
 - [collision-queries.md](engine/collision-queries.md): the native collision world behind `impl.sim.native.collision`: entries, contract and bail reasons
 - [sim-rewrite.md](engine/sim-rewrite.md): plan for rewriting the simulation as Rust subsystems (not built), with the phase specs [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) (phase 2), [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) (phase 3) and [sim-rewrite-havok.md](engine/sim-rewrite-havok.md) (phase 4)
 - [live-telemetry.md](engine/live-telemetry.md): telemetry precision and replay size measurements for the Live v8 stream (the codec is in [live/live-telemetry.md](live/live-telemetry.md))
-- Notes: [2026-11-21-engine-vtables.md](engine/notes/2026-11-21-engine-vtables.md) (the retail game engines' vtables and the slots that make rules), [feature-engine.md](engine/notes/feature-engine.md) (feature engine and engine contracts evidence)
+- Notes: [2026-11-21-engine-vtables.md](engine/notes/2026-11-21-engine-vtables.md) (the retail game engines' vtables and the slots that make rules), [2026-11-22-script-scoring-and-roles.md](engine/notes/2026-11-22-script-scoring-and-roles.md) (the carriers' scoring sites, Juggernaut's role and Oddball's ball return, for script games), [feature-engine.md](engine/notes/feature-engine.md) (feature engine and engine contracts evidence)
 
 ## Game features and enhancements (`game/`)
 

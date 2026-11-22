@@ -115,14 +115,15 @@ pub fn handler_name(ir: &Ir, h: &Handler) -> String {
     }
 }
 
-/// Every entry the blob calls whose status no host can make, each once.
+/// Every entry the blob calls that no host can make on the blob's carrier,
+/// each once.
 pub fn unhostable_all(ir: &Ir) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for hd in &ir.handlers {
         for op in &hd.code {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
-                && !e.status.hostable()
+                && !e.hostable_on(ir.header.carrier)
                 && !out.contains(&caps::spelled(e))
             {
                 out.push(caps::spelled(e));
@@ -493,11 +494,11 @@ pub fn value_text(ir: &Ir, ty: Ty, v: i32) -> String {
         Ty::Tag => ir
             .tags
             .get(v as usize)
-            .map_or_else(|| "none".into(), |s| format!("{s:?}")),
+            .map_or_else(|| "none".into(), |t| format!("{:?}", t.path)),
         Ty::Label => ir
             .labels
             .get(v as usize)
-            .map_or_else(|| "?".into(), |s| format!("labelled {s:?}")),
+            .map_or_else(|| "?".into(), |l| format!("labelled {:?}", l.text)),
         Ty::Enum(e) => ir
             .enums
             .get(e as usize)

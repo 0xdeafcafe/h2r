@@ -1,7 +1,7 @@
 # Rules language: declared labels and stronger types
 
-Status: Design. Nothing here is built; the code compiles the language of [rules-engine.md](rules-engine.md#the-language), called "the built language" below.
-Code: `crates/formats/rules/src/lang` (lexer, parser, `lower.rs`, which type checks and lowers in one pass), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`. Tests: `cargo test -p rules`.
+Status: Design, with slice 1 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"). The rest is not built; the code compiles the language of [rules-engine.md](rules-engine.md#the-language), called "the built language" below.
+Code: `crates/formats/rules/src/lang` (lexer, parser, `lower.rs`, which type checks and lowers in one pass), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
 Switch: none.
 
 A Forge label is a declared, typed name, and the checker catches the
@@ -192,9 +192,10 @@ grammar, and `labelled` is not a word.
 
 A map that lacks or breaks a label requirement blocks the game: it does
 not start, and it does not fall back to the carrier engine's rules.
-`rules::labels::check(ir, census, teams)` (`labels.rs`, new, pure)
-compares the IR's label and tag tables with a census of the map and
-returns every problem with its text. The lobby runs it when the map or
+`rules::labels::check(ir, census, teams)` (**Code**, `labels.rs`, pure)
+compares the IR's label and tag tables with a census of the map
+(`labels::Census`) and returns every problem with its text; no caller
+runs it yet. The lobby runs it when the map or
 the variant changes and holds Start Game, the host runs it at the game's
 start as the final authority, and Live runs it on each hopper entry when
 a hopper is edited. [rules-start-gate.md](rules-start-gate.md) has the
@@ -504,22 +505,36 @@ with the start gate's check.
 
 ## The IR
 
+**Code**, `crates/formats/rules/src/ir.rs`, `verify.rs`, `vm.rs`.
 Types are erased. The IR's ops, register types and type codes do not
 change. Two tables change in place, and `ir::IR_VERSION` and
 `caps::API_VERSION` stay as they are: a blob is the current form or it
 does not verify.
 
-| Table | Holds |
+| Table | Holds, in encoding order |
 |---|---|
-| label | text; kind (1 object, 2 zone, 3 spawn); `min` and `max` members, `max` at most 256; flags (optional single, numbered, number range, per team); the number range |
-| tag | path; group (0 any object, 1 weapon) |
+| label (`LabelDef`) | text (a string); kind, a byte (`LabelKind`: 1 object, 2 zone, 3 spawn); `min` and `max` members, two `u16`s, `max` at most 256 (`ty::MAX_LABELLED`, which states no limit); flags, a byte (`ir::label_flags`: 1 single, 2 numbered, 4 number range, 8 per team); the number range `lo` and `hi`, two `i32`s, inclusive, both 0 without the range flag |
+| tag (`TagDef`) | path (a string); group, a byte (`TagGroup`: 0 any object, 1 weapon) |
 
-- `Ir.labels` is a list of `LabelDef`. The verifier checks a known kind
-  and flags, `min <= max <= 256`, an ordered number range of at most
-  256, label text in `forge_doc::label_char`, no text twice, and no
-  `ForEach` over a `spawn` label. `SetBase::Labelled(l)` is bounded by
-  the label's `max` in the worst-tick estimate, and `Vm::members` takes
-  at most `max`, so the bound holds on any map, checked or not.
+A single label is `max` 1 with the single flag and no other, and `min` 0
+when it is optional (`object?`). Decoding refuses an unknown kind or
+group.
+
+- `Ir.labels` is a list of `LabelDef`, at most 64 (`ir::MAX_LABELS`).
+  The verifier (`verify::labels`) refuses unknown flags,
+  `min > max` or `max > 256`, a single label with another requirement,
+  a spawn label that is single or per team, a number range without
+  numbered, unordered, of more than 256 numbers or of more numbers than
+  `max`, a range without its flag, label text outside `ir::label_char`
+  (`forge_doc::label_char`'s set), and one text twice; and
+  `Fault::SpawnSet` for a `ForEach` over a `spawn` label.
+  `SetBase::bound` is the label's `max`, which `verify::cost` charges
+  in the worst-tick estimate, and `Vm::members` takes at most `max`, so
+  the bound holds on any map, checked or not.
+- Until the checker declares labels (slice 2), `lower.rs` writes every
+  string label as `LabelDef::objects`: kind object, `min` 0, `max` 256,
+  no flags, which every map satisfies. Every tag path is `TagDef::any`.
+  It refuses a label outside `label_char` and a 65th label.
 - A front end that writes IR directly declares its labels the same way:
   Firefight's `ZONE_LABEL` (`crates/formats/firefight/src/script.rs`) is
   kind object.
@@ -603,9 +618,9 @@ Every slice leaves the tree green and lands by itself. Paths are under
 
 | # | Slice | Owns | Tests | Done when | After |
 |---|---|---|---|---|---|
-| 1 | The IR's tables and the check | `ir.rs`, `verify.rs`, `vm.rs`, `ty.rs`, `labels.rs` (new: `check`, `minimal`), `crates/formats/firefight/src/script.rs`; in `lang/lower.rs` only the label and tag writers (a string label is an unbounded `objects` set) | each verifier refusal; `members` stops at `max`; `check` gives each text of the gate's "The check" from a hand-built census; `check(ir, minimal(ir))` passes for every built-in; the IR fuzz seeds are remade | every existing test passes on the changed tables | the scenario-events lane |
+| 1 (built) | The IR's tables and the check | `ir.rs`, `verify.rs`, `vm.rs`, `ty.rs`, `labels.rs` (new: `check`, `minimal`), `crates/formats/firefight/src/script.rs`; in `lang/lower.rs` only the label and tag writers (a string label is an unbounded `objects` set) | each verifier refusal; `members` stops at `max`; `check` gives each text of the gate's "The check" from a hand-built census; `check(ir, minimal(ir))` passes for every built-in; the IR fuzz seeds are remade | every existing test passes on the changed tables | the scenario-events lane |
 | 2 | The checker and labels | `lang/check.rs`, `lang/sig.rs`, `lang/types.rs` (new); `lang/ast.rs`, `lang/parse.rs`, `lang/lex.rs`, `lang/lower.rs`, `lang/mod.rs`; `builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/*`; the scripts in `docs/game/rules-engine.md` and `.claude/skills/h2-rules/*` | one test per diagnostic code for labels, `T?` and narrowing, `zone`, `weapon`, `is` and handlers by label; `sig` erases to `caps::ENTRIES`; a script with five errors reports five; every built-in compiles, verifies, fits the budget and passes its scenario tests | the string label forms are gone from the grammar and the tree; a built-in's label table carries its declarations; `lower.rs` makes no type decision | 1 |
-| 3 | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`Census`, `of_file`, `of_game`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
+| 3 | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
 | 4 | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `gen.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
 | 5 | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
 | 6 | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
