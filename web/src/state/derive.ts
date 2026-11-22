@@ -79,7 +79,8 @@ export const isBounceMedal = (id: string): id is BounceMedalId => (BOUNCE_MEDALS
 export const MEDAL_BY_ID = Object.fromEntries(MEDALS.map((m) => [m.id, m])) as Record<MedalId, MedalDef>;
 
 /** The site's entry for a medal id, or undefined for one it doesn't know. */
-export const medalDef = (id: string): MedalDef | undefined => (MEDAL_BY_ID as Record<string, MedalDef | undefined>)[id];
+export const medalDef = (id: string): MedalDef | undefined =>
+  Object.hasOwn(MEDAL_BY_ID, id) ? (MEDAL_BY_ID as Record<string, MedalDef>)[id] : undefined;
 /** A medal's name, or its id when the site doesn't know it. */
 export const medalName = (id: string): string => medalDef(id)?.name ?? id;
 
