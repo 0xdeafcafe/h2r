@@ -17,6 +17,7 @@ use super::types::{Handle, SetKind, Type};
 use super::{Diagnostic, MAX_ERRORS, Pos, Severity};
 use crate::caps::{self, CARRIERS, ENTRIES, TICKS_PER_SECOND, VARIANT_FIELDS, id};
 use crate::ir::{self, Event, LabelDef, LabelKind, List, Scope, label_flags};
+use crate::settings;
 use crate::ty::{MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_LABELLED, MAX_SQUADS, MAX_TEAMS};
 
 /// What the compiler ends a `time` option's label with: the IR stores no
@@ -75,7 +76,18 @@ pub struct Checked<'s> {
     handler_labels: HashMap<usize, (u16, usize)>,
     /// Each message text with holes, by its expression.
     templates: HashMap<*const Expr, Template>,
+    /// The `settings` block's values, by table index ascending: the IR's
+    /// settings.
+    pub settings: Vec<ir::Setting>,
+    /// The Quick Options marks, in the script's order.
+    pub quick: Vec<ir::Quick>,
+    /// Who scores the game: `scoring carrier`, or the script.
+    pub scoring: ir::Scoring,
 }
+
+/// The carriers a `list` line may file a variant of: our rows hold Slayer
+/// and Juggernaut variants (`docs/game/rules-variants.md`, "Slices").
+const LIST_CARRIERS: &[&str] = &["slayer", "juggernaut"];
 
 /// A message's text as the IR stores it, and its holes ("Messages" in
 /// `docs/game/rules-language-types.md`).
@@ -329,6 +341,12 @@ struct Cx<'s> {
     /// The function whose argument is being checked, for messages.
     arg_of: Option<&'s str>,
     templates: HashMap<*const Expr, Template>,
+    /// The carrier's engine index; `None` when the carrier is missing or
+    /// unknown.
+    carrier: Option<u8>,
+    settings: Vec<ir::Setting>,
+    quick: Vec<ir::Quick>,
+    scoring: ir::Scoring,
 }
 
 fn is_none_lit(e: &Expr) -> bool {
@@ -429,6 +447,10 @@ impl<'s> Cx<'s> {
             implicit: Vec::new(),
             arg_of: None,
             templates: HashMap::new(),
+            carrier: None,
+            settings: Vec::new(),
+            quick: Vec::new(),
+            scoring: ir::Scoring::Script,
         }
     }
 
@@ -482,6 +504,9 @@ impl<'s> Cx<'s> {
             consts,
             handler_labels: self.handler_labels,
             templates: self.templates,
+            settings: self.settings,
+            quick: self.quick,
+            scoring: self.scoring,
         }
     }
 
@@ -516,6 +541,7 @@ impl<'s> Cx<'s> {
                 self.eval_const(i);
             }
         }
+        self.settings_block();
         for item in &script.items {
             if let Item::Label(l) = item {
                 self.label_decl(l);
@@ -546,6 +572,7 @@ impl<'s> Cx<'s> {
                 Item::Enum { .. } | Item::Label(_) | Item::Const { .. } | Item::On { .. } => {}
             }
         }
+        self.quick_marks();
         self.label_clashes();
         self.const_clashes();
         for item in &script.items {
@@ -572,6 +599,7 @@ impl<'s> Cx<'s> {
         }
         self.recursion();
         self.unused();
+        self.scorer();
     }
 
     fn header(&mut self) {
@@ -603,6 +631,41 @@ impl<'s> Cx<'s> {
             let names = names.join(", ");
             self.err("name.unknown", *lpos, format!("unknown list {name}: a list is {names}"));
         }
+        self.carrier = s
+            .carrier
+            .as_ref()
+            .and_then(|(c, _)| CARRIERS.iter().find(|(n, _)| n == c).map(|&(_, e)| e));
+        if let Some((name, lpos)) = &s.list
+            && List::named(name).is_some()
+            && let Some((c, _)) = &s.carrier
+            && self.carrier.is_some()
+            && !LIST_CARRIERS.contains(&c.as_str())
+        {
+            let m = format!(
+                "list {name} files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is {c}"
+            );
+            self.err("list.carrier", *lpos, m);
+        }
+        if let Some((word, spos)) = &s.scoring {
+            if word == "carrier" {
+                self.scoring = ir::Scoring::Carrier;
+            } else {
+                let m = format!(
+                    "unknown scoring {word}: write scoring carrier for the carrier's rules, or no scoring line for a script that scores"
+                );
+                self.err("name.unknown", *spos, m);
+            }
+        }
+        if let Some((text, apos)) = &s.about {
+            let units = text.encode_utf16().count();
+            if units > ir::MAX_ABOUT_UNITS {
+                let m = format!(
+                    "about is {units} UTF-16 units; a variant's description is at most {}",
+                    ir::MAX_ABOUT_UNITS
+                );
+                self.err("limit", *apos, m);
+            }
+        }
         for (name, rpos) in &s.requires {
             if caps::capability(name, caps::API_VERSION).is_none() {
                 self.err("name.unknown", *rpos, format!("unknown capability {name}"));
@@ -618,6 +681,211 @@ impl<'s> Cx<'s> {
 
     fn required(&self, cap: &str) -> bool {
         self.requires.iter().any(|(r, _)| r == cap)
+    }
+
+    // ---- the settings block, the quick line and the scorer ----
+
+    /// The `settings` block: each name in [`settings::TABLE`], applying to
+    /// the carrier, named once, with a value of the row's kind in its
+    /// range. See `docs/game/rules-variants.md`, "The settings block".
+    fn settings_block(&mut self) {
+        let s = self.script;
+        let Some(block) = &s.settings else { return };
+        let carrier_name = s.carrier.as_ref().map_or("", |(c, _)| c.as_str());
+        let mut seen: Vec<(u16, Pos)> = Vec::new();
+        for line in &block.lines {
+            let Some((index, row)) = settings::named(&line.name) else {
+                let m = match settings::nearest(&line.name) {
+                    Some(near) => format!("no setting named {}. Did you mean {near}?", line.name),
+                    None => format!("no setting named {}", line.name),
+                };
+                self.err("setting.unknown", line.pos, m);
+                continue;
+            };
+            if let Some(&(_, first)) = seen.iter().find(|(i, _)| *i == index) {
+                let m = format!("{} is set twice; it is first set on line {}", line.name, first.line);
+                self.err("setting.twice", line.pos, m);
+                continue;
+            }
+            seen.push((index, line.pos));
+            if let Some(c) = self.carrier
+                && !row.applies(c)
+            {
+                let m = format!(
+                    "{} is a {} setting; this script's carrier is {carrier_name}",
+                    row.name,
+                    row.carrier_words()
+                );
+                self.err("setting.carrier", line.pos, m);
+                continue;
+            }
+            if let Some(value) = self.setting_value(row, &line.value) {
+                self.settings.push(ir::Setting { index, value });
+            }
+        }
+        self.settings.sort_by_key(|s| s.index);
+    }
+
+    /// The value a settings line gives its row, or `None` after reporting
+    /// `setting.value`.
+    fn setting_value(&mut self, row: &settings::Row, e: &Expr) -> Option<i32> {
+        use settings::Kind;
+        let name = row.name;
+        let (lo, hi) = row.kind.range();
+        let seconds = matches!(row.kind, Kind::Seconds { .. });
+        let value: Result<i64, String> = match &e.kind {
+            ExprKind::None => row.none_value().map(i64::from).ok_or_else(|| format!("{name} takes no none")),
+            ExprKind::Bool(b) if row.kind == Kind::Bool => Ok(i64::from(*b)),
+            ExprKind::Name(n) if matches!(row.kind, Kind::Choice { .. }) && self.const_ix(n).is_none() => {
+                row.choice(n).map(i64::from).ok_or_else(|| format!("{name} has no value {n}"))
+            }
+            _ if row.kind == Kind::Bool => Err(format!("{name} is on or off")),
+            _ => match self.fold(e, true) {
+                Ok(Folded { ty: Type::Time, v }) if seconds => {
+                    let t = i64::from(TICKS_PER_SECOND);
+                    if v % t == 0 {
+                        Ok(v / t)
+                    } else {
+                        Err(format!("{} is not a whole number of seconds", describe(e)))
+                    }
+                }
+                Ok(Folded { ty: Type::Time, .. }) => Err(format!("{name} takes a number, not a time")),
+                Ok(Folded { ty: Type::Int, v }) if seconds => {
+                    Err(format!("{name} is a time: write {v}s for {v} seconds"))
+                }
+                Ok(Folded { v, .. }) => Ok(v),
+                Err(NoFold::NotConstant) => Err(format!("{name} takes a constant value, not {}", describe(e))),
+                Err(NoFold::Reported) => return None,
+            },
+        };
+        let value = value.and_then(|v| {
+            if (i64::from(lo)..=i64::from(hi)).contains(&v) {
+                Ok(v as i32)
+            } else if seconds {
+                Err(format!("{name} is {lo}s to {hi}s, and {v}s is outside"))
+            } else {
+                Err(format!("{name} is {lo} to {hi}, and {v} is outside"))
+            }
+        });
+        match value {
+            Ok(v) => Some(v),
+            Err(m) => {
+                let takes = match row.kind {
+                    Kind::Bool => "true or false".to_string(),
+                    Kind::Int { .. } => format!("a number, {lo} to {hi}"),
+                    Kind::Seconds { .. } => format!("a time in whole seconds, {lo}s to {hi}s"),
+                    Kind::Choice { names, .. } => {
+                        let list: Vec<&str> = names.iter().map(|c| c.name).collect();
+                        format!("{}, or a number {lo} to {hi}", list.join(", "))
+                    }
+                    Kind::Percent { .. } => format!("a percent, {lo} to {hi}"),
+                };
+                let none = if row.zero_is_none { ", or none" } else { "" };
+                self.err("setting.value", e.pos, format!("{m}. {name} takes {takes}{none}."));
+                None
+            }
+        }
+    }
+
+    /// The `quick` line: at most [`ir::MAX_QUICK`] names, each a record
+    /// setting of the table that applies to the carrier or one of the
+    /// script's options, named once. An option is named apart from every
+    /// setting.
+    fn quick_marks(&mut self) {
+        let s = self.script;
+        for item in &s.items {
+            if let Item::Option(o) = item
+                && settings::named(&o.name).is_some()
+            {
+                let m = format!("option {} has a setting's name; an option needs a name of its own", o.name);
+                self.err("option.setting", o.pos, m);
+            }
+        }
+        let Some((names, _)) = &s.quick else { return };
+        if let Some((_, at)) = names.get(ir::MAX_QUICK) {
+            // Five: `ir::MAX_QUICK`, the pregame panel's rows.
+            let m = format!("Quick Options has five rows; this line names {}", names.len());
+            self.err("quick.many", *at, m);
+        }
+        let carrier_name = s.carrier.as_ref().map_or("", |(c, _)| c.as_str());
+        let mut seen: Vec<&str> = Vec::new();
+        for (name, pos) in names {
+            if seen.contains(&name.as_str()) {
+                self.err("quick.twice", *pos, format!("{name} is marked twice"));
+                continue;
+            }
+            seen.push(name.as_str());
+            if let Some(i) = self.options.iter().position(|o| o.name == *name) {
+                self.quick.push(ir::Quick::Option(i as u16));
+                continue;
+            }
+            match settings::named(name) {
+                Some((index, row)) if row.is_record() => {
+                    if let Some(c) = self.carrier
+                        && !row.applies(c)
+                    {
+                        let m = format!(
+                            "{name} is a {} setting; this script's carrier is {carrier_name}",
+                            row.carrier_words()
+                        );
+                        self.err("setting.carrier", *pos, m);
+                        continue;
+                    }
+                    self.quick.push(ir::Quick::Setting(index));
+                }
+                Some(_) => {
+                    let m = format!(
+                        "{name} is an extra of More Options; Quick Options shows record settings and the script's options"
+                    );
+                    self.err("quick.unknown", *pos, m);
+                }
+                None => {
+                    let m = match settings::nearest(name) {
+                        Some(near) => format!("{name} is no setting and no option of this script. Did you mean {near}?"),
+                        None => format!("{name} is no setting and no option of this script"),
+                    };
+                    self.err("quick.unknown", *pos, m);
+                }
+            }
+        }
+    }
+
+    /// Who scores: a `scoring carrier` script holds `requires`, `list`,
+    /// `settings`, `quick` and `about` only (`scoring.handlers`); a script
+    /// with no handlers and no `scoring carrier` scores nothing
+    /// (`scoring.none`), reported once the script has no other error.
+    fn scorer(&mut self) {
+        let s = self.script;
+        if self.scoring == ir::Scoring::Carrier {
+            for item in &s.items {
+                let (what, pos) = match item {
+                    Item::On { event, pos, .. } => (format!("on {event}"), *pos),
+                    Item::Option(o) => (format!("option {}", o.name), o.pos),
+                    Item::Var { name, pos, .. } => (format!("variable {name}"), *pos),
+                    Item::Fn(f) => (format!("fn {}", f.name), f.pos),
+                    Item::Table { name, pos, .. } => (format!("table {name}"), *pos),
+                    Item::Enum { name, pos, .. } => (format!("enum {name}"), *pos),
+                    Item::Label(l) => (format!("label {}", l.name), l.pos),
+                    Item::Palette { name, pos, .. } => (format!("palette {name:?}"), *pos),
+                    Item::Const { name, pos, .. } => (format!("const {name}"), *pos),
+                };
+                let m = format!(
+                    "{what} has no place here: with scoring carrier the carrier's engine scores the game, and the script holds requires, list, settings, quick and about only"
+                );
+                self.err("scoring.handlers", pos, m);
+            }
+            return;
+        }
+        let scores = s.items.iter().any(|i| matches!(i, Item::On { .. }));
+        if scores || self.out.iter().any(Diagnostic::is_error) {
+            return;
+        }
+        let rules = match self.carrier {
+            Some(c) => settings::carrier_label(c),
+            None => "the carrier",
+        };
+        let m = format!("this script scores nothing. Write `scoring carrier` to play {rules}'s rules.");
+        self.err("scoring.none", s.pos, m);
     }
 
     // ---- declarations ----

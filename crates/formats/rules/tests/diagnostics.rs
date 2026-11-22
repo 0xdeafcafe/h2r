@@ -1,12 +1,13 @@
 //! The checker: one case per diagnostic code, every error reported (up to
 //! fifty), declared labels in the label table, handlers by label, `is`
 //! and `T?` narrowing, the weapon tag group, and time, constants, `match`
-//! and value functions. See `docs/game/rules-language-types.md`,
-//! "Stronger typing" and "Diagnostics".
+//! and value functions, and the settings block, the quick line and the
+//! scorer. See `docs/game/rules-language-types.md`, "Stronger typing" and
+//! "Diagnostics", and `docs/game/rules-variants.md`.
 
 use rules::fake::FakeGame;
-use rules::ir::{LabelKind, TagGroup, label_flags};
-use rules::{Event, Input, Severity, Vm, builtin, compile, diagnose};
+use rules::ir::{LabelKind, Quick, Scoring, Setting, TagGroup, label_flags};
+use rules::{Event, Input, Severity, Vm, builtin, compile, diagnose, settings};
 
 /// Runs one tick of `src` with its default options and gives the global
 /// `name`.
@@ -87,7 +88,7 @@ fn label_codes() {
         "label.same-text",
     );
     assert!(m.contains("both name the map label \"x\""), "{m}");
-    warning(&script("", "label a: zones\n"), "label.unused");
+    warning(&script("", "label a: zones\non tick { }\n"), "label.unused");
 }
 
 #[test]
@@ -451,15 +452,15 @@ on tick {
 
 #[test]
 fn a_time_option_is_held_as_an_int_option_and_labelled_in_seconds() {
-    let int = compile(&script("", "option hold: int 5..60 = 20 \"Capture time\"\n")).unwrap();
-    let time = compile(&script("", "option hold: time 5s..60s = 20s \"Capture time\"\n")).unwrap();
+    let int = compile(&script("", "option hold: int 5..60 = 20 \"Capture time\"\non tick { }\n")).unwrap();
+    let time = compile(&script("", "option hold: time 5s..60s = 20s \"Capture time\"\non tick { }\n")).unwrap();
     let (a, b) = (&int.options[0], &time.options[0]);
     assert_eq!((a.ty, a.lo, a.hi, a.default, a.bits()), (b.ty, b.lo, b.hi, b.default, b.bits()));
     assert_eq!(int.default_options(), time.default_options());
     assert_eq!(int.strings[a.label as usize], "Capture time");
     assert_eq!(time.strings[b.label as usize], "Capture time (seconds)");
     // With no label, the name carries the unit.
-    let bare = compile(&script("", "option hold: time 5s..60s = 20s\n")).unwrap();
+    let bare = compile(&script("", "option hold: time 5s..60s = 20s\non tick { }\n")).unwrap();
     assert_eq!(bare.strings[bare.options[0].label as usize], "hold (seconds)");
     // The record holds seconds; the script reads ticks.
     let src = script("", "option hold: time 5s..60s = 20s\nglobal var t: time = 0t\non tick { t = hold }\n");
@@ -639,4 +640,262 @@ fn the_builtins_use_time_constants_and_match() {
     let siege = compile(builtin::SIEGE).unwrap();
     let labels: Vec<&str> = siege.options.iter().map(|o| siege.strings[o.label as usize].as_str()).collect();
     assert_eq!(labels, ["Phase time (seconds)", "Capture time (seconds)", "Respawn wave (seconds)"]);
+}
+
+// ---- settings, quick marks and the scorer ----
+
+/// A script named V riding `carrier`, with `lines` after its header.
+fn riding(carrier: &str, lines: &str) -> String {
+    format!("rules \"V\" 1\ncarrier {carrier}\n{lines}")
+}
+
+/// A settings-only script of `carrier` with a `settings` block of `lines`.
+fn carried(carrier: &str, lines: &str) -> String {
+    riding(carrier, &format!("scoring carrier\nsettings {{\n{lines}}}\n"))
+}
+
+/// The table index of a setting.
+fn at(name: &str) -> u16 {
+    settings::named(name).unwrap().0
+}
+
+const SWAT: &str = "rules \"SWAT\" 1
+carrier slayer
+scoring carrier
+about \"No shields, no motion sensor, battle rifles and magnums. One headshot kills. 50 points to win.\"
+quick score_limit, starting_weapon, secondary_weapon
+
+settings {
+    team_play = true
+    score_limit = 50
+    shields = none
+    motion_sensor = false
+    starting_weapon = battle_rifle
+    secondary_weapon = magnum
+    weapons_on_map = none
+    grenades_on_map = false
+    starting_grenades = false
+    overshield_pickups = false
+    camo_pickups = false
+}
+";
+
+#[test]
+fn the_settings_block_lowers_to_settings_in_table_order() {
+    let c = diagnose(SWAT);
+    assert!(c.diagnostics.is_empty(), "{:#?}", c.diagnostics);
+    let ir = c.ir.unwrap();
+    assert_eq!(ir.header.scoring, Scoring::Carrier);
+    assert!(ir.header.about.starts_with("No shields, no motion sensor"));
+    assert!(ir.handlers.is_empty() && ir.slots.is_empty() && ir.options.is_empty());
+    let mut want = vec![
+        ("team_play", 1),
+        ("score_limit", 50),
+        ("shields", 1),
+        ("motion_sensor", 0),
+        ("starting_weapon", 3),
+        ("secondary_weapon", 4),
+        ("weapons_on_map", 1),
+        ("grenades_on_map", 0),
+        ("starting_grenades", 0),
+        ("overshield_pickups", 0),
+        ("camo_pickups", 0),
+    ];
+    want.sort_by_key(|(n, _)| at(n));
+    let got: Vec<(&str, i32)> = ir
+        .settings
+        .iter()
+        .map(|s| (settings::TABLE[s.index as usize].name, s.value))
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(
+        ir.quick,
+        [at("score_limit"), at("starting_weapon"), at("secondary_weapon")].map(Quick::Setting)
+    );
+    assert!(rules::load(&ir.encode()).is_ok());
+}
+
+#[test]
+fn each_kind_takes_its_values() {
+    let src = carried(
+        "slayer",
+        "    time_limit = 300s\n    respawn_time = 90t\n    score_limit = none\n    light_vehicle = none\n    \
+         weapons_on_map = 12\n    gravity = 50\n    unlimited_grenades = true\n    shields = overshields\n",
+    );
+    let ir = compile(&src).unwrap();
+    let mut want = vec![
+        Setting { index: at("time_limit"), value: 300 },
+        Setting { index: at("respawn_time"), value: 3 },
+        Setting { index: at("score_limit"), value: 0 },
+        Setting { index: at("light_vehicle"), value: 7 },
+        Setting { index: at("weapons_on_map"), value: 12 },
+        Setting { index: at("gravity"), value: 50 },
+        Setting { index: at("unlimited_grenades"), value: 1 },
+        Setting { index: at("shields"), value: 2 },
+    ];
+    want.sort_by_key(|s| s.index);
+    assert_eq!(ir.settings, want);
+    // A constant stands where a literal does, in a script that scores.
+    let src = riding("slayer", "const hold = 60s\nsettings { time_limit = hold * 2 }\non tick { }\n");
+    assert_eq!(compile(&src).unwrap().settings, [Setting { index: at("time_limit"), value: 120 }]);
+}
+
+#[test]
+fn setting_codes() {
+    let m = error(&carried("slayer", "    score_limt = 5\n"), "setting.unknown");
+    assert_eq!(m, "no setting named score_limt. Did you mean score_limit?");
+    let m = error(&carried("slayer", "    lives = 1\n    lives = 2\n"), "setting.twice");
+    assert_eq!(m, "lives is set twice; it is first set on line 5");
+    let value = |line: &str| error(&carried("slayer", &format!("    {line}\n")), "setting.value");
+    let m = value("time_limit = 300");
+    assert!(m.starts_with("time_limit is a time: write 300s"), "{m}");
+    assert!(value("motion_sensor = 1").starts_with("motion_sensor is on or off"));
+    let m = value("starting_weapon = laser");
+    assert!(m.starts_with("starting_weapon has no value laser."), "{m}");
+    assert!(m.contains("battle_rifle"), "{m}");
+    assert!(value("rounds = 9").starts_with("rounds is 0 to 6, and 9 is outside"));
+    assert!(value("lives = none").starts_with("lives takes no none"));
+    assert!(value("respawn_time = 1.5s").contains("not a whole number of seconds"));
+    assert!(value("gravity = 5").starts_with("gravity is 10 to 400"));
+}
+
+#[test]
+fn a_setting_on_the_wrong_carrier_is_refused() {
+    let m = error(&carried("slayer", "    juggernaut_movement = fast\n"), "setting.carrier");
+    assert_eq!(m, "juggernaut_movement is a Juggernaut setting; this script's carrier is slayer");
+    let ir = compile(&carried("juggernaut", "    juggernaut_movement = fast\n")).unwrap();
+    assert_eq!(ir.settings, [Setting { index: at("juggernaut_movement"), value: 2 }]);
+    let m = error(&carried("king", "    ctf_flag_type = 1\n"), "setting.carrier");
+    assert!(m.contains("a Capture the Flag and Assault setting"), "{m}");
+    assert!(compile(&carried("assault", "    ctf_flag_type = 1\n")).is_ok());
+    // The blob of a wrong-carrier setting is refused by the verifier too.
+    let mut ir = ir;
+    ir.header.carrier = 2;
+    assert!(matches!(rules::load(&ir.encode()), Err(rules::Refusal::Setting { .. })));
+}
+
+#[test]
+fn score_limit_is_one_name_on_every_carrier() {
+    let row = &settings::TABLE[at("score_limit") as usize];
+    for &(name, engine) in rules::caps::CARRIERS {
+        let ir = compile(&carried(name, "    score_limit = 3\n")).unwrap();
+        assert_eq!(ir.settings, [Setting { index: at("score_limit"), value: 3 }], "{name}");
+        assert_eq!(ir.header.carrier, engine, "{name}");
+        assert_eq!(row.setting(engine), settings::score_setting(engine), "{name}");
+        assert!(row.setting(engine).is_some(), "{name}");
+    }
+}
+
+#[test]
+fn a_sixth_quick_mark_is_refused() {
+    let five = "score_limit, time_limit, lives, respawn_time, rounds";
+    let ir = compile(&riding("slayer", &format!("scoring carrier\nquick {five}\n"))).unwrap();
+    assert_eq!(ir.quick.len(), 5);
+    let m = error(&riding("slayer", &format!("scoring carrier\nquick {five}, shields\n")), "quick.many");
+    assert_eq!(m, "Quick Options has five rows; this line names 6");
+}
+
+#[test]
+fn a_quick_mark_names_a_setting_or_an_option() {
+    // A setting need not be in the block to be marked.
+    let src = riding(
+        "slayer",
+        "quick time_limit, bounce_points\noption bounce_points: int 1..5 = 1\non kill(v, k) { }\n",
+    );
+    let ir = compile(&src).unwrap();
+    assert_eq!(ir.quick, [Quick::Setting(at("time_limit")), Quick::Option(0)]);
+    let m = error(&riding("slayer", "scoring carrier\nquick bounce_points\n"), "quick.unknown");
+    assert_eq!(m, "bounce_points is no setting and no option of this script");
+    let m = error(&riding("slayer", "scoring carrier\nquick live\n"), "quick.unknown");
+    assert!(m.ends_with("Did you mean lives?"), "{m}");
+    let m = error(&riding("slayer", "scoring carrier\nquick gravity\n"), "quick.unknown");
+    assert!(m.contains("More Options"), "{m}");
+    let m = error(&riding("slayer", "scoring carrier\nquick lives, lives\n"), "quick.twice");
+    assert_eq!(m, "lives is marked twice");
+    let m = error(&riding("slayer", "scoring carrier\nquick juggernaut_movement\n"), "setting.carrier");
+    assert!(m.starts_with("juggernaut_movement is a Juggernaut setting"), "{m}");
+    // A setting and an option share one namespace.
+    let m = error(&riding("slayer", "option lives: int 1..5 = 1\non kill(v, k) { }\n"), "option.setting");
+    assert!(m.contains("option lives has a setting's name"), "{m}");
+}
+
+#[test]
+fn scoring_carrier_takes_no_handlers() {
+    for item in [
+        "on kill(v, k) { }",
+        "option points: int 1..5 = 1",
+        "global var n: int = 0",
+        "fn f() { }",
+    ] {
+        let src = riding("slayer", &format!("scoring carrier\n{item}\n"));
+        let m = error(&src, "scoring.handlers");
+        assert!(m.contains("with scoring carrier the carrier's engine scores the game"), "{item}: {m}");
+    }
+    // requires, list, settings, quick and about are its whole script.
+    let src = riding(
+        "slayer",
+        "scoring carrier\nrequires hud.superbounce\nlist research\nabout \"Bounce.\"\nquick lives\nsettings { lives = 3 }\n",
+    );
+    let c = diagnose(&src);
+    assert!(c.diagnostics.is_empty(), "{:#?}", c.diagnostics);
+    let ir = c.ir.unwrap();
+    assert_eq!((ir.header.scoring, ir.header.about.as_str()), (Scoring::Carrier, "Bounce."));
+    let m = error(&riding("slayer", "scoring script\non tick { }\n"), "name.unknown");
+    assert!(m.starts_with("unknown scoring script"), "{m}");
+}
+
+#[test]
+fn a_script_with_no_handlers_needs_scoring_carrier() {
+    let m = error(&riding("slayer", "settings { lives = 3 }\n"), "scoring.none");
+    assert_eq!(m, "this script scores nothing. Write `scoring carrier` to play Slayer's rules.");
+    let m = error(&riding("oddball", "global var n: int = 0\n"), "scoring.none");
+    assert!(m.ends_with("to play Oddball's rules."), "{m}");
+    // Reported once the rest is clean: another error comes alone.
+    let c = diagnose(&riding("slayer", "global var j: player = none\n"));
+    let codes: Vec<&str> = c.errors().map(|d| d.code).collect();
+    assert_eq!(codes, ["null.var"]);
+    // With a handler, or with `scoring carrier`, it compiles.
+    assert_eq!(compile(&riding("slayer", "on tick { }\n")).unwrap().header.scoring, Scoring::Script);
+    assert!(compile(&riding("slayer", "scoring carrier\n")).is_ok());
+}
+
+#[test]
+fn list_and_about_codes() {
+    let m = error(&riding("king", "scoring carrier\nlist party\n"), "list.carrier");
+    assert_eq!(
+        m,
+        "list party files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is king"
+    );
+    assert!(compile(&riding("juggernaut", "scoring carrier\nlist party\n")).is_ok());
+    assert!(compile(&riding("slayer", "scoring carrier\nlist research\n")).is_ok());
+    let long = "x".repeat(151);
+    let m = error(&riding("slayer", &format!("scoring carrier\nabout \"{long}\"\n")), "limit");
+    assert!(m.starts_with("about is 151 UTF-16 units"), "{m}");
+    let fits = "x".repeat(150);
+    assert!(compile(&riding("slayer", &format!("scoring carrier\nabout \"{fits}\"\n"))).is_ok());
+}
+
+#[test]
+fn the_hash_covers_settings_marks_and_about() {
+    let base = compile(SWAT).unwrap().id();
+    for (from, to) in [
+        ("score_limit = 50", "score_limit = 25"),
+        ("    camo_pickups = false\n", ""),
+        (
+            "quick score_limit, starting_weapon, secondary_weapon",
+            "quick starting_weapon, score_limit, secondary_weapon",
+        ),
+        ("50 points to win.", "Fifty points to win."),
+    ] {
+        let other = SWAT.replace(from, to);
+        assert_ne!(other, SWAT, "{from}");
+        assert_ne!(compile(&other).unwrap().id(), base, "{from}");
+    }
+    // The order of the block's lines is not: the IR holds them sorted.
+    let swapped = SWAT.replace(
+        "    team_play = true\n    score_limit = 50\n",
+        "    score_limit = 50\n    team_play = true\n",
+    );
+    assert_ne!(swapped, SWAT);
+    assert_eq!(compile(&swapped).unwrap().id(), base);
 }

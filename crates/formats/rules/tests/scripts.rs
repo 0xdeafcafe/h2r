@@ -711,11 +711,11 @@ on tick {
 #[test]
 fn a_list_line_files_the_script_under_a_named_row() {
     use rules::ir::List;
-    let plain = compile("rules \"X\" 1\ncarrier slayer\n").unwrap();
+    let plain = compile("rules \"X\" 1\ncarrier slayer\non tick { }\n").unwrap();
     assert_eq!(plain.header.list, List::GameType);
-    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist research\n").unwrap();
+    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist research\non tick { }\n").unwrap();
     assert_eq!(listed.header.list, List::Research);
-    let party = compile("rules \"X\" 1\ncarrier slayer\nlist party\n").unwrap();
+    let party = compile("rules \"X\" 1\ncarrier slayer\nlist party\non tick { }\n").unwrap();
     assert_eq!(party.header.list, List::PartyGames);
     assert_ne!(plain.id(), listed.id());
     assert!(
