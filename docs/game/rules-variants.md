@@ -426,7 +426,7 @@ writes the `.h2variant` of `from_script`.
   stock value; naming it is adding a row.
 - A `scoring carrier` script cannot add handlers on top of its carrier's
   scoring. A mode that needs both is a full script.
-- Our rows hold Slayer variants only.
+- Our rows hold Slayer and Juggernaut variants.
 - Names: a listed script's name is at most 16 characters, the game's
   keyboard limit (the test the table has today).
 - Text is English in every language.

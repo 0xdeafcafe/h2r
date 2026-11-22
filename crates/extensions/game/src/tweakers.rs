@@ -35,10 +35,12 @@
 //!   Slayer's; its own loader, which a screen stack reopens it with, is an
 //!   entry of ours that opens it marked again.
 //!
-//! Our rows hold Slayer variants only ([`record_row`]), so Slayer's list,
-//! its new-variant defaults and its copies are the right ones for the
-//! rows. Hide and Seek's script names Party Games but is a Juggernaut
-//! variant, so it stays under Juggernaut. Each built-in's record names its
+//! Our rows hold Slayer and Juggernaut variants ([`record_row`]). A row's
+//! list is Slayer's variant list (the press runs Slayer's), and its fill
+//! adds Juggernaut's handles to Slayer's ([`JUGGERNAUT_CATEGORY`]) before
+//! the filter, so Hide and Seek, a Juggernaut script that says `list
+//! party`, is under Party Games and off Juggernaut's own list. Each
+//! built-in's record names its
 //! script from the list's load (`community::write_blocks`), so a game on
 //! one, and a copy of one, names it too.
 
@@ -52,6 +54,7 @@ use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 use variants::ext;
+use variants::record::GameType;
 
 use crate::community_variants::{self as community, Row};
 use crate::h1_options_row;
@@ -105,6 +108,9 @@ pub const SCREEN_SETTINGS: u32 = 0x4fdc;
 pub const SCREEN_PICK: u32 = 0x4fdd;
 /// Slayer's content category.
 pub const SLAYER_CATEGORY: u32 = 1;
+/// Juggernaut's content category: the save-content type of its variants
+/// (`0x216b60`, [`variants::record::GameType::content_type`]).
+pub const JUGGERNAUT_CATEGORY: u32 = 5;
 /// Slayer's variant list loaders: Settings (screen 15, editing), the
 /// lobby (screen 208) and picking (screen 15).
 pub const SLAYER_SETTINGS_LOADER: u32 = 0x002c_a4cd;
@@ -174,9 +180,23 @@ pub fn keeps(list: Option<Row>, loaded: bool, record: Option<Row>) -> bool {
 }
 
 /// Whether the fill of a list of `category` is ours to filter: Slayer's
-/// (every row's variant is a Slayer variant).
+/// and Juggernaut's (a row's variant is either's). Slayer's own list and a
+/// row's list are Slayer's category; Juggernaut's own list is the other,
+/// which drops what a row holds.
 pub fn filtered(category: u32) -> bool {
-    category == SLAYER_CATEGORY
+    category == SLAYER_CATEGORY || category == JUGGERNAUT_CATEGORY
+}
+
+/// Whether the fill of a row's list also takes the handles of Juggernaut's
+/// category: it is Slayer's category fill of a marked list.
+pub fn takes_juggernauts(list: Option<Row>, category: u32) -> bool {
+    list.is_some() && category == SLAYER_CATEGORY
+}
+
+/// Whether a variant record of `engine` can be under one of our rows:
+/// Slayer's and Juggernaut's.
+pub fn row_engine(engine: i32) -> bool {
+    [GameType::Slayer, GameType::Juggernaut].map(GameType::engine).contains(&engine)
 }
 
 /// The retail loader a row's list reopens with, by its mode bytes.
@@ -274,11 +294,11 @@ pub fn record_engine(m: &dyn GuestMemory, record: u32) -> Option<i32> {
 }
 
 /// The row of ours the variant record at `record` is listed under
-/// ([`community::row_of`]). Our rows hold Slayer variants only
+/// ([`community::row_of`]). Our rows hold Slayer and Juggernaut variants
 /// (docs/game/rules-variants.md, "Rules and limits"): a record of another
 /// type is listed under its game type, whatever its script's `list`.
 pub fn record_row(m: &dyn GuestMemory, record: u32) -> Option<Row> {
-    if record_engine(m, record)? != variants::record::GameType::Slayer.engine() {
+    if !row_engine(record_engine(m, record)?) {
         return None;
     }
     community::row_of(&record_name(m, record)?, &record_block(m, record)?)
@@ -386,7 +406,15 @@ async fn fill(cx: Cx, scratch: u32) -> Result<Ret, EntryError> {
         return Ok(Ret::new(r.eax, 20));
     }
     let (count, handles) = (args[2], args[3]);
-    let got = cx.read(|m| read_handles(m, count, handles))?;
+    let mut got = cx.read(|m| read_handles(m, count, handles))?;
+    if takes_juggernauts(list, args[1]) {
+        let mut more = args;
+        more[1] = JUGGERNAUT_CATEGORY;
+        cx.call(GuestCall::new(points::VARIANTS_ENUMERATE.base).args(more))
+            .await?;
+        got.extend(cx.read(|m| read_handles(m, count, handles))?);
+        got.truncate(MAX_HANDLES as usize);
+    }
     let mut keep = Vec::with_capacity(got.len());
     for h in &got {
         let loaded = cx
@@ -679,10 +707,10 @@ pub fn live() -> Option<String> {
 }
 
 /// The listed scripts whose built-ins are under one of our rows, in list
-/// order: the Slayer ones whose header names a row.
+/// order: the Slayer and Juggernaut ones whose header names a row.
 pub fn row_variants() -> impl Iterator<Item = &'static community::Listed> {
     community::listed().iter().flatten().filter(|l| {
-        l.row.is_some() && l.record.game_type() == variants::record::GameType::Slayer
+        l.row.is_some() && row_engine(l.record.game_type().engine())
     })
 }
 

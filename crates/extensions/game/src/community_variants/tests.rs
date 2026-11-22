@@ -455,9 +455,9 @@ fn every_listed_record_gets_its_block_at_load() {
         assert_eq!(script.mode, variants::ext::Mode::Rules, "{}", l.name);
         let found = crate::rules::runtime::compiled_in(script.prefix).expect("compiled in");
         assert_eq!(found.id.0[..8], script.prefix, "{}", l.name);
-        // Our rows hold Slayer variants only, so Hide and Seek stays
-        // under Juggernaut.
-        let row = if l.record.game_type() == GameType::Slayer {
+        // Our rows hold Slayer and Juggernaut variants, so Hide and Seek
+        // is under Party Games.
+        let row = if matches!(l.record.game_type(), GameType::Slayer | GameType::Juggernaut) {
             l.row
         } else {
             None
@@ -466,7 +466,7 @@ fn every_listed_record_gets_its_block_at_load() {
     }
     assert_eq!(
         record_row(&g, rec(1 + position("Hide and Seek") as u32)),
-        None
+        Some(Row::PartyGames)
     );
     assert_eq!(write_blocks(&mut g), Ok(0), "already there");
 }

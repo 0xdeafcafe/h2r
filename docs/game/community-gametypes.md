@@ -341,7 +341,7 @@ Territories, in this order (`community_variants::Row`):
 | Row | Pane title | Description | Built-ins |
 |---|---|---|---|
 | Research and Devolution | RESEARCH AND DEVOLUTION | "Practice the tricks and find the glitches: superbounces, crouch jumps and the maps' secrets." | Bounce Practice, Glitch Hunt, Superbounce |
-| Party Games | PARTY GAMES | "Zombies, jousting, cops and robbers: the party games the community made up for custom games." | Zombies, Jousting, Cops and Robbers, Bumper Cars |
+| Party Games | PARTY GAMES | "Zombies, jousting, cops and robbers: the party games the community made up for custom games." | Zombies, Jousting, Cops and Robbers, Bumper Cars, Hide and Seek |
 
 Choosing a row opens a variant list of its variants, built-in and saved;
 Slayer's list no longer shows them. Each row is an ordinary list row,
@@ -359,13 +359,17 @@ among the scripts compiled into the game (the ports, the examples and
 the listed scripts) and in the game-variant store
 (`rules::header::block_row`); one this machine lacks lists under its
 carrier's game type. The superbounce flag files nothing. Our rows hold
-Slayer variants only (`tweakers::record_row` checks the record's
-engine), so a row's list is Slayer's variant list filtered: its
-defaults, copies and saves are Slayer's. Every built-in's record names
-its script ("The merged block"), and saving or editing it keeps the
-block, so the copy stays under its row. Hide and Seek's script says
-`list party`, but it is a Juggernaut variant, so it stays under
-Juggernaut, on the lobby's list and the pause menu's.
+Slayer and Juggernaut variants (`tweakers::record_row` checks the
+record's engine), so a row's list is Slayer's and Juggernaut's variant
+lists filtered: its defaults, copies and saves are Slayer's. Every
+built-in's record names its script ("The merged block"), and saving or
+editing it keeps the block, so the copy stays under its row. Hide and
+Seek's script says `list party` and it is a Juggernaut variant, so it
+and its copies are under Party Games, on the lobby's list and the pause
+menu's, and off Juggernaut's own list. A row's list asks Slayer's content
+category and then Juggernaut's (`tweakers::JUGGERNAUT_CATEGORY`, 5) and
+filters both; Create New stays dropped on it. Clint Eastwood's script has
+no `list` line, so it stays under Juggernaut.
 
 Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 
@@ -375,7 +379,7 @@ Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 | `0x2c5823` | a row's text, by word | `before`: words 9 and 10 draw their row's label |
 | `0x2c5897` | a row chosen | `before`: words 9 and 10 run retail's press with Slayer's word, with the row set to mark the variant list it opens |
 | `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): the row's number (`Row::mark`, 1 Research and Devolution, 2 Party Games) while its press runs, else 0 |
-| `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for Slayer's category: run the original, then keep the row's variants and drop Create New in a marked list, or drop every row's in an unmarked one. Each handle is read with `0x212bc0`, as the fill does. |
+| `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for Slayer's and Juggernaut's categories: run the original (in a marked list, Slayer's category's call is followed by Juggernaut's), then keep the row's variants and drop Create New in a marked list, or drop every row's in an unmarked one. Each handle is read with `0x212bc0`, as the fill does. |
 | `0x2cad45` | the variant list's per-frame update | `before` on a marked list: the row's title and description in the texts retail sets for Slayer's |
 | `0x2cac1a` | the loader a screen stack reopens the variant list with | `before` on a marked list: an entry of ours wrapping Slayer's loader for the same mode and row, which opens it marked |
 | pane set (`layout_glue`) | the row's pane | each row shows Slayer's pane with its title and description over its texts |
@@ -387,9 +391,10 @@ and the Variant filter finds it by name ([live-custom-games.md](../live/live-cus
 Tests (`cargo test -p game --lib tweakers`) run on synthetic memory: the
 rows are last, after Territories, in order, added once, on both screens
 and not in the create mode; each row keeps its own variants and Slayer's
-list the rest; every row's variant is a Slayer variant, and Hide and
-Seek, a Juggernaut variant, is on no row; a record of another type is on
-no row whatever its block; a renamed copy with the block stays under
+list the rest; every row's variant is a Slayer or Juggernaut variant, and Hide and
+Seek lists under Party Games (a row's fill takes both categories'
+handles) and off Juggernaut's own list, where Clint Eastwood stays; a
+record of another type is on no row whatever its block; a renamed copy with the block stays under
 Research and Devolution, a block with only other changes or a bad check
 does not; a whole fill through the hook for Slayer's list and each row's list,
 and another category's left alone; the pane and its texts; the reopen
