@@ -147,12 +147,12 @@ impl Hub {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn wait_until(
-        &self,
-        mut s: MutexGuard<'_, State>,
+    fn wait_until<'a>(
+        &'a self,
+        mut s: MutexGuard<'a, State>,
         deadline: Instant,
         mut done: impl FnMut(&State) -> bool,
-    ) -> (MutexGuard<'_, State>, bool) {
+    ) -> (MutexGuard<'a, State>, bool) {
         loop {
             if done(&s) {
                 return (s, true);
