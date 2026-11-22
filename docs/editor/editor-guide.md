@@ -346,6 +346,36 @@ ancestor. **Back** and **Forward** restore the tag and field you were
 viewing. Alt+Left, Alt+Right and the mouse's back and forward buttons
 step through the same history.
 
+### See invisible walls and where bots walk
+
+Click **Show** above the viewport (or open **Layers** in the Scene tab).
+Each row turns one layer on or off. These layers start off:
+
+- **Collision only** (under Collision): the invisible walls, in red. The
+  other Collision rows show all of the level's collision.
+- **AI pathfinding** (under Navigation): the floor Halo 2's own AI walks
+  on, as tinted patches with their edges. Campaign levels have it;
+  multiplayer maps from the disc don't, so the row counts 0.
+- **Bot nav mesh**: where the Clankers walk, in blue, with their links
+  between patches coloured by move: walks blue, drops orange, jumps
+  yellow, crouch-jumps purple, teleporters cyan and lifts green. An
+  arrowhead marks a one-way link, such as a drop you can't climb back up.
+- **Bot superbounce spots**: the superbounce and crouch spots the bots
+  know, each a post coloured by what is known about it: green proven,
+  red dead, dull red failed, yellow-green learned, amber still training,
+  pink a guess. A diamond round a spot means a ghost run of it is kept.
+
+**Navigation** turns on the level, the invisible walls and all three
+navigation layers in one click. The first time a bot layer shows for a
+map, the editor reads the bots' saved mesh; if the map has none yet it
+builds one, which can take a moment on a big map (the Log says when it
+is ready).
+
+Click a patch, link or spot to select it. The inspector shows what it
+is: a pathfinding patch's number, flags and neighbours, a bot link's
+move and ends, or a spot's state and how its training and test runs
+went. **F** frames it.
+
 ### Move a weapon spawn and play it
 
 1. Click the map in the **Maps** list.
@@ -868,13 +898,30 @@ type script** window is a tab beside the variant's settings
 
 - **New** starts a blank script, or one of the built-in game types or
   examples to change. **Open**, **Save** and **Save as** read and write
-  `.rules` files. **Format** lays the script out the standard way.
-- The text is coloured as the language reads it. Hover a name for what
-  it is. **Ctrl+Space** lists what can go at the cursor; click one to
-  put it in. Inside a call, the line under the text shows the call's
-  parameters.
+  `.rules` files. Opening a script picks the window's tab. **Format**
+  (**Shift+Alt+F**) lays the script out the standard way; it refuses a
+  script that does not parse.
+- The text is coloured as the language reads it (its semantic tokens),
+  and every use of the name at the cursor is highlighted.
+- **Completion as you type.** Typing a name, or a `.`, opens the list of
+  what can go at the cursor, narrowed to what the word typed starts
+  with, then what holds it, each in the language's order (what the
+  place wants first). **Ctrl+Space** opens it with nothing typed.
+  **Up** and **Down** pick, **Enter** or **Tab** (or a click) puts the
+  pick in, **Escape** closes the list. A snippet goes in with its
+  defaults written out and the first one selected, so typing replaces
+  it. The list shows the pick's documentation under it.
+- Hover a name for what it is, and a problem's text for the problem.
+  Inside a call, the line under the text shows the call's parameters.
 - **Problems** lists every error and warning, errors first; each is
-  underlined in the text, and clicking one puts the cursor on it.
+  underlined in the text, and clicking one puts the cursor on it. Each
+  fix the language offers is a button on its row, and **Cmd+.** lists
+  the fixes at the cursor.
+- **Rename** (**F2**) renames the name at the cursor and every use of
+  it; the language refuses a keyword or a name the script has already.
+  **F12** or **Cmd+click** goes to where a name is declared.
+- **Escape** never throws typing away: with the list open it closes the
+  list, otherwise it leaves the text as it is.
 - **Check** is the [workbench](../game/rules-engine.md#workbench)
   report: the worst tick against the op budget and each handler's cost,
   the variables used against their limits, the size, and the

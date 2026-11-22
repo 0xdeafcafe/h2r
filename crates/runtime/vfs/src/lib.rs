@@ -5,6 +5,7 @@
 
 mod backend;
 mod campaign_maps;
+mod clone;
 mod content_maps;
 mod dir_disc;
 mod disc;
@@ -16,6 +17,7 @@ pub use film_map::{FilmMap, FilmMapSource, ImmutableRead};
 mod map_override;
 mod packages;
 mod path;
+mod reads;
 mod rewrite;
 pub mod save_meta;
 pub mod sim_store;
@@ -27,6 +29,7 @@ mod write_behind;
 
 pub use backend::Backend;
 pub use campaign_maps::CampaignMapsBackend;
+pub use clone::clone_or_copy;
 pub use content_maps::{ContentMap, ContentMaps};
 pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc, open_disc_with_mapping};
 pub use disc::DiscBackend;
@@ -35,6 +38,7 @@ pub use map_override::{
     MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, PreparedMapRebind, ReservedMapRebind,
 };
 pub use packages::{PackageBackend, Scope as PackageScope};
+pub use reads::PathReads;
 pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use sim_store::SimStoreBackend;
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
@@ -95,7 +99,18 @@ pub struct Config {
     /// directory's `<map>.h2store` files instead of the disc. Maps with no
     /// store come from the disc as usual.
     pub sim_store: Option<PathBuf>,
+    /// Seed directories for the cache volume N: ([`Vfs::seed_device`]).
+    /// Each holds `disk/` (root files) and `metadata/` (their records, laid
+    /// out as [`HostBackend`] stores them). Straight after the boot formats
+    /// N:, their files are cloned in. Empty seeds nothing.
+    pub cache_seed: Vec<PathBuf>,
 }
+
+/// The environment variable `h2 sim batch` names its runs' N: seed
+/// directories in ([`Config::cache_seed`]), joined as `PATH` is
+/// (docs/runtime/cache-slots.md, "Sim batches: a warm N:").
+pub const CACHE_SEED_ENV: &str = "H2_SIM_CACHE_SEED";
+
 impl Config {
     pub fn new(data_root: impl Into<PathBuf>, title_id: u32) -> Self {
         Self {
@@ -110,6 +125,7 @@ impl Config {
             map_guest_reads: false,
             server_maps: None,
             sim_store: None,
+            cache_seed: Vec::new(),
         }
     }
     /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
@@ -180,6 +196,7 @@ pub struct Vfs {
     map_guest_reads: bool,
     read_copy_reasons: HashSet<&'static str>,
     guest_reads: GuestReadBytes,
+    read_log: reads::ReadLog,
     extra_cache_bytes: u32,
     pub namespace: Namespace,
     mounts: Vec<Mount>,
@@ -191,6 +208,8 @@ pub struct Vfs {
     next_handle: u64,
     observer: Option<OpenObserver>,
     change_observer: Option<ChangeObserver>,
+    /// [`Config::cache_seed`].
+    cache_seed: Vec<PathBuf>,
 }
 impl Vfs {
     /// Additional logical bytes across the three host-backed cache partitions.
@@ -231,6 +250,7 @@ impl Vfs {
         vfs.map_guest_reads = config.map_guest_reads;
         vfs.extra_cache_bytes = config.extra_cache_bytes;
         vfs.content_maps = config.content_maps.clone();
+        vfs.cache_seed = config.cache_seed.clone();
         for partition in 1..=5 {
             let name = format!("Partition{partition}");
             let mut backend = HostBackend::new(
@@ -372,6 +392,45 @@ impl Vfs {
             return Err(Error::SharingViolation);
         }
         self.mounts[index].backend.format()
+    }
+    /// Replaces the seed directories [`Config::cache_seed`] gave (for a VFS
+    /// built without [`Vfs::with_storage`]).
+    pub fn set_cache_seed(&mut self, seed: Vec<PathBuf>) {
+        self.cache_seed = seed;
+    }
+    /// Clones [`Config::cache_seed`]'s files and records into `device`, a
+    /// volume just formatted (XAPI's mount of N:, `VfsStorage::mount_cache`).
+    /// Returns how many files it placed; 0 with no seed. Fails, like a
+    /// format, while a file is open on the volume. On any other failure it
+    /// formats the volume again, so it is left empty as the boot's format
+    /// left it, and returns the error.
+    pub fn seed_device(&mut self, device: &str) -> Result<usize> {
+        if self.cache_seed.is_empty() {
+            return Ok(0);
+        }
+        let device = path::object_name(device)?;
+        let index = self
+            .mounts
+            .iter()
+            .position(|m| m.device.eq_ignore_ascii_case(&device))
+            .ok_or(Error::ObjectPathNotFound)?;
+        if self.objects.values().any(|f| f.mount == index)
+            || self.pending.iter().any(|(m, _)| *m == index)
+        {
+            return Err(Error::SharingViolation);
+        }
+        let backend = &mut self.mounts[index].backend;
+        let mut placed = 0;
+        for seed in &self.cache_seed {
+            match backend.seed(seed) {
+                Ok(n) => placed += n,
+                Err(e) => {
+                    let _ = backend.format();
+                    return Err(e);
+                }
+            }
+        }
+        Ok(placed)
     }
     /// The mounted device `name` resolves into, after every symbolic link (including links into
     /// a subdirectory of a volume). Identifies the volume a drive letter really names.
@@ -848,6 +907,11 @@ impl Vfs {
         self.guest_reads
     }
 
+    /// What the guest read, by path (`wall.reads`).
+    pub fn guest_path_reads(&self) -> BTreeMap<String, PathReads> {
+        self.read_log.snapshot()
+    }
+
     pub fn note_guest_copy(&mut self, bytes: usize) {
         self.guest_reads.copied += bytes as u64;
     }
@@ -895,10 +959,12 @@ impl Vfs {
                     sim_store::record::note(&self.mounts[mount].device, &path, at, len as u64);
                 }
                 self.guest_reads.mapped += mapped as u64;
+                self.read_log.mapped(&path, len, mapped);
                 self.note_guest_copy(len - mapped);
                 Some(len)
             }
             Err(reason) => {
+                self.read_log.refused(&path, reason);
                 if self.read_copy_reasons.insert(reason) {
                     eprintln!("guest mapped read: copying {path} at {at} ({length} bytes): {reason}");
                 }
@@ -929,6 +995,7 @@ impl Vfs {
         if sim_store::record::enabled() {
             sim_store::record::note(&self.mounts[mount].device, &path, at, len as u64);
         }
+        self.read_log.copied(&path, len);
         self.object_mut(handle)?.position = at + len as u64;
         Ok(len)
     }

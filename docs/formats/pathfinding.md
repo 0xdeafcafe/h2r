@@ -20,6 +20,9 @@ Code:
   word).
 - `crates/formats/pathfind`: generator (`generate`), comparison metrics
   (`compare`), and the `map::build` block tree (`build::element`).
+- `crates/tools/scenario-edit/src/nav_view.rs`: the editor's AI
+  pathfinding layer, sectors and links drawn over the level
+  ([editor.md](../editor/editor.md), "Navigation").
 
 Evidence labels as in [map-format.md](map-format.md): **V** checked on the
 owner's disc (all 64 campaign BSPs that carry pathfinding, unless a level
