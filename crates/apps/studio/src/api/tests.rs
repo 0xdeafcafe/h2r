@@ -12,6 +12,8 @@ use studio_proto::{code, method as m};
 use super::*;
 use crate::app::{Action, PlaylistEdit, Selection};
 
+mod bitmaps_tests;
+
 struct Temp(PathBuf);
 impl Temp {
     fn new(tag: &str) -> Self {
@@ -217,6 +219,25 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             }
             if name == m::MESH_TRANSFORM {
                 c(m::MESH_SELECT, json!({"all": true}));
+            }
+        }
+        m::BITMAP_LIST
+        | m::BITMAP_READ
+        | m::BITMAP_EXPORT
+        | m::BITMAP_IMPORT
+        | m::BITMAP_PAINT
+        | m::BITMAP_FILL
+        | m::BITMAP_ADJUST
+        | m::BITMAP_PIXELS => {
+            // The invented textured map: its floor bitmap is 4 by 4,
+            // one `A8R8G8B8` colour.
+            let map = t.path("textured.map");
+            std::fs::write(&map, fixture::fixture_with_textured_bsp()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            if name == m::BITMAP_IMPORT {
+                let png = bitmap_edit::encode_png(2, 2, &[10, 20, 30, 255].repeat(4)).unwrap();
+                std::fs::create_dir_all(t.path("out")).unwrap();
+                std::fs::write(t.path("out/in.png"), png).unwrap();
             }
         }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {

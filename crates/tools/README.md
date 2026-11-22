@@ -15,6 +15,7 @@ The tools domain is offline work on game data: the Halo 1 readers and converters
 | [geometry-edit](geometry-edit/README.md) | The Modeling tool's targets, undo and in-place geometry writes. |
 | [hopper-edit](hopper-edit/README.md) | The playlist editor's UI-free logic. |
 | [hud-edit](hud-edit/README.md) | The HUD editor's UI-free logic. |
+| [bitmap-edit](bitmap-edit/README.md) | The Textures tool's canvas: tiled RGBA8 layers, brush, fill, adjust, resample, PNG and undo. |
 | [mesh-edit](mesh-edit/README.md) | The modeling kernel: an editable radial-edge mesh, its operations and stable export. |
 | [perf](perf/README.md) | Sampling profiler, timeline capture and the benchmark harness. |
 | [viewer](viewer/README.md) | Render-model viewer and the offline BSP tools. |
