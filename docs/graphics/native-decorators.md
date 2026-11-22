@@ -191,11 +191,16 @@ same reads, in the same order.
   whose material is not ready stay the guest's while the rest draw
   natively.
 - A pass stays on the D3D path when it has engine-driven render or
-  stage states, samples a lightmap, computes anything per draw, reads a
-  constant the stage does not set (it sets `c[0..18]`, `c[53]` and the
-  pass's own), or its set's stream supplies one of `v11..v15`. What the
-  lightmap and engine-driven states would need is in
-  [notes/decorator-stages.md](notes/decorator-stages.md).
+  stage states, computes anything per draw, reads a constant the stage
+  does not set (it sets `c[0..18]`, `c[53]` and the pass's own), or its
+  set's stream supplies one of `v11..v15`. What engine-driven states
+  would need is in [notes/decorator-stages.md](notes/decorator-stages.md).
+- A stage sampling the lightmap binds the globals' rasterizer bitmap at
+  `+0x64`, as an object's does: the draw sets the current page to -1
+  (`0x0004e277`) and adds no lightmap coordinates. The load reads it once
+  (`native_objects_glue::engine_lightmap`) and takes it only when it is
+  uniform (`decorators_load::stage_images`); otherwise the passes that
+  sample it stay on the D3D path with the reason.
 - A palettized stage bitmap is expanded at load through the palette its
   stage holds then, as the world's are; a view whose stage palettes
   differ stays on the D3D path.
