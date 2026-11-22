@@ -67,6 +67,7 @@ connection to hold `session.claim`.
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.set`, `edit.batch`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `edit.arena` | read | [Block moves](#block-moves) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `game.menu` | act | [Returning to the main menu](#returning-to-the-main-menu) |
 | `game.load`, `game.levels` | act, read | [Loading a level](#loading-a-level) |
@@ -2902,7 +2903,8 @@ Live.” This applies even after switching maps.
 
 Each batch write takes either `{tag,group?,path,value,was?}` with typed values,
 or `{at,value,was?}` with hex bytes. An address is a u32 or a `0x` string.
-The entire address range must fit one loaded tag. Overlapping writes are
+The entire address range must fit one loaded tag, or one block moved into
+the edit arena ([Block moves](#block-moves)). Overlapping writes are
 refused. If the game already holds the requested value the write succeeds.
 If it holds neither value, error 8 (`MISMATCH`) returns `data.fields` with
 `at`, `tag`, `path`, `was`, `holds` and `holds_bytes`. The entire batch and
@@ -2990,6 +2992,67 @@ session rules are those of the other edit writes.
 h2 agent edit.batch '{"epoch":E,"raw":[{"owner":{"section":{"tag":"<sbsp>","kind":"cluster","index":0}},"offset":4096,"bytes":"AACAPw=="}]}'
 h2 agent edit.overlay
 h2 agent edit.revert '{"id":N}'
+```
+
+### Block moves
+
+A tag block is a `(count, address)` pair and a run of elements with
+nothing reserved after it. A block that must hold more elements than the
+map gave it moves into the **edit arena**: guest memory the host maps in
+the HLE reservation as the arena grows. The design is
+[realtime-edits.md](../editor/realtime-edits.md), "Four write primitives". The
+allocator is `crates/extensions/hot-tags/src/arena.rs`, the batch half
+`crates/extensions/hot-tags/src/batch.rs`, the methods
+`crates/extensions/agent/src/hot.rs` and the pages
+`crates/extensions/game/src/hot_glue.rs`.
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `edit.batch` | act | adds `moves: [{root, stride, count, capacity?, bytes, was}]`; `writes` may be left out when it is given | adds `moves: [{root, tag, path, count, address, capacity}]` |
+| `edit.arena` | read | none | `{base, len, mapped, used, largest_free, physical_free, physical_floor, moves: [{tag, name, root, address, capacity, stride, len}]}` |
+
+`root` names the pair: `{tag, group?, path}` with a path that ends at a
+block field (`postprocess[0].colors`) or at an 8-byte raw field
+(`+0x20:u32[2]`), or `{at}`, the pair's address, inside a loaded tag or
+inside a block an earlier move put in the arena. `stride` is the bytes of
+one element and must equal a defined block's element size. `bytes` holds
+the `count` new elements (base64 or `{stage, at?, len?}`), `capacity`
+(default `count`) the elements of room. `was` is `{count, address}`, the
+pair before the move; `address` is a number or a `0x` string.
+
+The batch checks each move with its fields and raw entries: a root that
+holds another pair than `was` answers error 8 (`MISMATCH`) with
+`data.moves: [{root, tag, path, was, holds}]`. A write over a move's root
+in the same batch is refused. Then it allocates every move's extent
+before the first write. An arena without room answers `REFUSED` (11) with
+`data.why`, `data.root`, `data.need` (bytes) and `data.largest_free`, and
+nothing is written: the edit falls back to a reload. At the boundary the
+block's bytes go into the extent, the room past `count` is zeroed, and
+the root takes the new count and address, after the batch's field writes
+and before its raw entries. Paths and addresses resolve against the
+blocks as they are before the batch, so an edit inside a moved block goes
+in its `bytes` or in a later batch.
+
+A moved block belongs to its tag: an `{at}` write and `edit.read` inside
+it are admitted as inside the tag, and a path through the pair reads and
+writes it. `edit.changes` lists moves under `moves`. `edit.revert` puts
+the old pair back and frees the extent, after reverting the batch's field
+writes; a root pointed elsewhere since is left alone and its extent kept.
+A field write inside a block that has moved back appears in `dropped`.
+
+`edit.arena` reports the window (`base`, `len`, 4080 KiB), the bytes
+mapped and held by extents, the largest extent a move could have now, the
+free physical memory, and the floor the arena leaves free for the game
+(`physical_floor`, 2 MiB). `world.placement.edit` grows placement blocks
+into the same arena ([Placement edits](#placement-edits)), and its extents
+are listed too, booked to the scenario. The arena lives for one map: the
+first tick of a new map frees every extent and unmaps its pages; a BSP
+switch keeps it. While it holds an extent, machine snapshots, rewind and
+film keyframes are refused, as for an unlinked placement preview.
+
+```sh
+h2 agent edit.arena
+h2 agent edit.batch '{"epoch":E,"moves":[{"root":{"tag":"<shad>","path":"postprocess[0].colors"},"stride":S,"count":3,"capacity":8,"bytes":"<base64>","was":{"count":2,"address":"0x..."}}]}'
 ```
 
 ## Menu methods: settings, perf overlay, cheats
@@ -3791,10 +3854,10 @@ session, epoch, identity and `confirm_peers` checks of
 | `relink` | `[{from, to}]`: give the live objects of old entry `from` the placement index `to` |
 | `create` | `[index]` in the new numbering: make an object for the entry; object blocks only |
 
-The result is `{at, count, capacity, deleted, relinked, created}`, where
-`deleted` and `relinked` are object ids and `created` is
-`[{index, object?, linked, created, why?}]`. `moved` is reserved for a block
-that grew into the edit arena; it is absent until the arena exists.
+The result is `{at, count, capacity, moved?, deleted, relinked, created}`,
+where `deleted` and `relinked` are object ids and `created` is
+`[{index, object?, linked, created, why?}]`. `moved` is `{address,
+capacity}` when the block grew into the edit arena.
 
 - **Order.** The host checks everything first: the block's root count
   equals `was_count`, each record's `was` equals the slot's bytes, each name
@@ -3806,11 +3869,18 @@ that grew into the edit arena; it is absent until the arena exists.
   repoints and the count, and creates the objects of `create`. A respawn
   preview of a deleted entry is deleted with it, and one of a relinked entry
   follows it.
-- **Room.** A block holds as many records as the map loaded it with. The
-  host records that count at the block's first edit of a map activation.
-  A removed entry's slot stays in the block, so an add after a remove reuses
-  it. A `count` past the room answers `REFUSED` with `data.need` and
-  `data.capacity`; the edit arena that would move the block is not built.
+- **Room.** A block holds as many records as the map loaded it with, or
+  the capacity of the edit arena extent it moved to
+  ([Block moves](#block-moves)). The host records the loaded count at the
+  block's first edit of a map activation. A removed entry's slot stays in
+  the block, so an add after a remove reuses it. A `count` past the room
+  moves the block into the arena with twice the room (at least `count`,
+  at most the per-type limit): the extent is allocated before anything is
+  written, the records and the dead tail are copied into it, and the root
+  is repointed with the records and the count. An extent the block left
+  is freed. A full arena, or a game without one, answers `REFUSED` with
+  `data.need` (entries) and `data.capacity`, and from a full arena also
+  `data.need_bytes` and `data.largest_free`; nothing is written.
   `count` past the block's per-type limit (`map::scenario_layout`)
   answers `REFUSED` with `data.limit`.
 - **Linked creation.** An object is made by the placement-data and

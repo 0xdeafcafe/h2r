@@ -15,6 +15,8 @@ it.
 
 - `src/bitmap.rs`: `texture_desc`, `decode_image`, `decode_image_blocks`,
   `d3d_format`.
+- `src/encode.rs`: `encode_lod`, `encode_tiles`: RGBA8 back to stored bytes, whole or by tile.
+- `src/write.rs`: `plan_image`, `reshaped`: what saving an edited image writes to a map.
 - `src/resource.rs`: `ResourceFiles` and `Region`, the raw-pointer fetch.
 - `src/xpr.rs`: XPR resource headers.
 - `src/png.rs`: PNG output.

@@ -519,8 +519,15 @@ Notes on some:
   `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
-  appears as one `Reload` row. Its fields stay out of the batch until undo,
-  redo, or loading a Play copy brings the revisions into agreement.
+  goes to a game that offers `world.placement.edit` as one transaction in
+  Edit; its row is a `now` row while the transaction is out and leaves on
+  the receipt. Otherwise, or when the game refuses or its answer is lost,
+  the block appears as one `Reload` row with the reason (`refused`, and
+  `unknown` for a lost answer), and its fields stay out of the batch until
+  a transaction, undo, redo, or loading a Play copy brings the revisions
+  into agreement. An entry the game wrote without making its object is a
+  `Reload` row of its own (`path` `block[index]`). Rows of this path carry
+  `placement_edit: true`.
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.
@@ -846,7 +853,7 @@ the window and the API stay one path.
   `save_refusal`, why a save would be refused (Allow unverified geometry
   writes off, `allow_unverified`, or an edit that changes a count);
   docs/editor/modeling.md, "Interfaces".
-- **Textures (studio-modeling slice 5).** `api/bitmaps.rs`:
+- **Textures (studio-modeling slices 5 and 6).** `api/bitmaps.rs`:
   `bitmap.list {name?}` gives the map's bitmap tags and their images;
   `bitmap.read` one bitmap's images (size, format, mips, write class);
   `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
@@ -855,10 +862,25 @@ the window and the API stay one path.
   rectangle) are `Action::Bitmap`, one undo step each; `bitmap.export
   {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
   checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
-  unique substring. Edits are kept in the editor only: the write class is
-  `memory`, or `none` for P8, P8Bump, V8U8 and G8B8, and `doc.save` with
-  `"doc": "bitmaps"` (alias `textures`) is `REFUSED`. `doc.undo`, `doc.redo`
-  and `doc.diff` work on that doc. docs/editor/modeling.md, "Interfaces".
+  unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
+  format?}` asks for a new size and/or format (`dxt1`, `argb8888`, ...)
+  for an image, refused at once when a save would refuse it;
+  `bitmap.spans {bitmap, image?, face?, slice?, rect?}` gives the stored
+  bytes the edits change (per LOD: offset, length, hex) without writing
+  anything: the spans a save patches in place and a live push sends. Edits
+  stay in the editor until a save. `doc.save_as` (and `doc.save`, for a map
+  with a save target) with `"doc": "bitmaps"` (alias `textures`) is the
+  map's save: it encodes every edited image and writes it with the rest,
+  by the write class `bitmap.read` names for the image: `in_place`
+  (bytes patched in the map's own raw blocks), `appended` (a LOD in a
+  shared cache is copied into the map as a new raw block, or the image has
+  a reshape), or `none` for P8, P8Bump, V8U8 and G8B8, which are read only.
+  A save the map cannot take (a new raw block where the metadata does not
+  end the file) is `REFUSED` with the reason. `doc.diff` lists the edited
+  layers by tile and the pending reshapes; `doc.list` says the doc is
+  `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
+  that doc (a reshape is not an undo step; `doc.close` with `discard`
+  drops it). docs/editor/modeling.md, "Texture editing" and "Interfaces".
 - **Player models (planned, not started).** See "Planned: player
   models and customisation" below.
 - **Customisation (later).** Same section.
