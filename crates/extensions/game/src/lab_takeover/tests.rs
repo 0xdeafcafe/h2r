@@ -85,8 +85,8 @@ fn dialog_content_fits_at_either_focus_and_neutralizes_remote_text() {
             let report = layout::check(&v, preview.source(), &Rules::for_spec(&spec));
             assert!(report.issues.is_empty(), "{:?}", report.issues);
             let body = v.widget("body").unwrap().text().unwrap();
-            assert_eq!(body.lines().count(), 4, "{body}");
-            assert!(body.contains(": build, then sim\n"));
+            assert_eq!(body.lines().count(), 3, "{body}");
+            assert!(body.contains(": build, then sim ("));
             assert!(body.contains("own data"));
             assert!(!body.contains(['|', '\r']));
         }
@@ -182,8 +182,8 @@ fn the_body_names_the_job_its_source_and_what_it_will_do() {
     let mut request = sample_request();
     assert_eq!(
         body(&request),
-        "Lab driver: build, then run\n\"Menu bands check\"\n\
-         lab/menu-bands at cb9b315\nlevel ascension, about 4 min"
+        "Lab driver: build, then run (about 4 min)\n\"Menu bands check\"\n\
+         lab/menu-bands at cb9b315, level ascension"
     );
     request.builds_image = false;
     request.level = None;
@@ -196,15 +196,15 @@ fn the_body_names_the_job_its_source_and_what_it_will_do() {
     request.estimate_seconds = 0;
     assert_eq!(
         body(&request),
-        "Lab driver: run a sim\n\"Menu bands check\"\n\
-         master at 0123456\nown data, time varies"
+        "Lab driver: run a sim (time varies)\n\"Menu bands check\"\n\
+         master at 0123456, own data"
     );
     request.source = Source::Current {
         commit: Some("b8eff97".into()),
     };
-    assert!(body(&request).contains("\ninstalled image at b8eff97\n"));
+    assert!(body(&request).ends_with("\ninstalled image at b8eff97, own data"));
     request.source = Source::Current { commit: None };
-    assert!(body(&request).contains("\ninstalled image\n"));
+    assert!(body(&request).ends_with("\ninstalled image, own data"));
 }
 
 #[test]
