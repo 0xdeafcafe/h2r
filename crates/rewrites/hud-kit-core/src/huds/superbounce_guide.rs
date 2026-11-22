@@ -107,8 +107,9 @@ pub struct Layout {
 /// from the ring's edge and [`TICKS_GAP`] toward the box, at most
 /// [`TICKS_RUN`]; `None` under [`TICKS_MIN`].
 pub fn ticks_run(distance: f32) -> Option<f32> {
+    // `min` drops a NaN, so the distance is checked before it.
     let run = (distance - PIPPER_RADIUS - TICKS_GAP).min(TICKS_RUN);
-    (run.is_finite() && run >= TICKS_MIN).then_some(run)
+    (distance.is_finite() && run >= TICKS_MIN).then_some(run)
 }
 
 /// Each mark's pose for `l`; a mark with nothing to lie on (no landing,
