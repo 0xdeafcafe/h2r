@@ -206,6 +206,9 @@ pub struct CheckView {
     name: Option<String>,
     version: Option<u16>,
     errors: Vec<WireProblem>,
+    /// The compile's warnings; the script still checks `ok`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<WireProblem>,
     report: Option<WireReport>,
     /// The options the script declares, when it checks clean
     /// ([`crate::game_variants::option_views`]).
@@ -220,6 +223,7 @@ fn check_view(c: workbench::Check) -> CheckView {
         name: c.name,
         version: c.version,
         errors: c.errors.into_iter().map(Into::into).collect(),
+        warnings: c.warnings.into_iter().map(Into::into).collect(),
         options: Vec::new(),
         report: c.report.map(|r| WireReport {
             worst_tick_ops: r.worst_tick_ops,
@@ -787,6 +791,8 @@ fn simulate(b: &SimBody) -> Result<SimView, RunError> {
 
 /// `POST /v1/rules/ide`'s body: the source, the operation, and the place
 /// (0-based line, UTF-16 character) for the operations that take one.
+/// `actions` takes a range: the place, to `end_line` and `end_character`
+/// (the place itself when absent). `rename` takes `new_name`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdeBody {
@@ -796,6 +802,12 @@ struct IdeBody {
     line: Option<u32>,
     #[serde(default)]
     character: Option<u32>,
+    #[serde(default)]
+    end_line: Option<u32>,
+    #[serde(default)]
+    end_character: Option<u32>,
+    #[serde(default)]
+    new_name: Option<String>,
 }
 
 /// One editor operation over `rules::ide`, answered in LSP's shapes.
@@ -815,13 +827,27 @@ fn ide_answer(b: &IdeBody) -> ApiResult<serde_json::Value> {
         "tokens" => json!({"legend": ide::LEGEND, "data": ide::semantic_tokens(src)}),
         "symbols" => json!(ide::symbols(src)),
         "diagnostics" => json!(ide::diagnostics(src)),
+        "actions" => {
+            let start = at()?;
+            let end = match (b.end_line, b.end_character) {
+                (Some(line), Some(character)) => ide::Position::new(line, character),
+                (None, None) => start,
+                _ => return Err(invalid("op actions needs both end_line and end_character, or neither")),
+            };
+            json!(ide::actions(src, ide::Range { start, end }))
+        }
+        "rename" => {
+            let name = b.new_name.as_deref().ok_or_else(|| invalid("op rename needs new_name"))?;
+            let edits = ide::rename(src, at()?, name).map_err(invalid)?;
+            json!({ "edits": edits })
+        }
         "format" => match ide::format(src) {
             Ok(text) => json!({ "text": text }),
             Err(e) => json!({"error": e.to_string(), "line": e.line, "col": e.col}),
         },
         other => {
             return Err(invalid(format!(
-                "unknown op {other:?}: complete, hover, signature, definition, references, tokens, symbols, format or diagnostics"
+                "unknown op {other:?}: complete, hover, signature, definition, references, tokens, symbols, format, diagnostics, actions or rename"
             )));
         }
     })

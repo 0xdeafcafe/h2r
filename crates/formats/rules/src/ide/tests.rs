@@ -88,7 +88,7 @@ fn diagnostics_report_every_syntax_error_unused_names_and_compile_errors() {
     let src = "rules \"T\" 1\ncarrier slayer\non tick { score(nobody, 1) }\n";
     let d = diagnostics(src);
     assert_eq!(d.len(), 1, "{d:?}");
-    assert_eq!(d[0].code, "compile");
+    assert_eq!(d[0].code, "name.unknown");
     assert_eq!(d[0].range.start, p(2, 16));
     assert_eq!(d[0].range.end, p(2, 22));
 
@@ -107,12 +107,16 @@ fn hover_names_types_entries_events_and_fields() {
     assert!(set_team.contains("requires player.team"), "{set_team}");
     assert!(set_team.contains("moves players between teams"), "{set_team}");
     assert!(set_team.contains("untraced"), "{set_team}");
-    assert!(hover_text(SRC, 18, 15).contains("let k: player"));
+    // `k` is `player?`, and `player` where `k != none` is in force.
+    let k = hover_text(SRC, 18, 15);
+    assert!(k.contains("let k: player?"), "{k}");
+    assert!(k.contains("Here `k: player` (not none here: checked on line 18)"), "{k}");
+    assert!(!hover_text(SRC, 16, 8).contains("Here"));
     assert!(hover_text(SRC, 20, 40).contains("(argument) victim: player"));
     let vip = hover_text(SRC, 17, 37);
     assert!(vip.contains("Role.vip") && vip.contains("enum `Role`"), "{vip}");
     assert!(hover_text(SRC, 17, 24).contains("A variable of each player"));
-    assert!(hover_text(SRC, 15, 4).contains("on kill(victim: player, killer: player)"));
+    assert!(hover_text(SRC, 15, 4).contains("on kill(victim: player, killer: player?)"));
     assert!(hover_text(SRC, 20, 32).contains("team_of"));
     assert!(hover_text(SRC, 3, 12).contains("moves players between teams"));
     assert!(hover_text(SRC, 1, 9).contains("engine index 2"));
@@ -155,7 +159,7 @@ fn signature_help_tracks_the_argument() {
     assert_eq!(s.signatures[0].label, "reward(p: player)");
     assert_eq!(s.active_parameter, 0);
     let s = signature_help(SRC, p(15, 9)).unwrap();
-    assert_eq!(s.signatures[0].label, "kill(victim: player, killer: player)");
+    assert_eq!(s.signatures[0].label, "kill(victim: player, killer: player?)");
     assert!(signature_help(SRC, p(16, 10)).is_none());
 }
 
@@ -318,7 +322,7 @@ fn every_builtin_is_clean_formats_idempotently_and_is_covered_by_tokens() {
 fn results_serialize_with_lsp_field_names() {
     let item = complete("rules \"T\" 1\non ", p(1, 3)).remove(0);
     let v = serde_json::to_value(&item).unwrap();
-    for key in ["label", "kind", "detail", "documentation", "insertText", "insertTextFormat"] {
+    for key in ["label", "kind", "detail", "documentation", "insertText", "insertTextFormat", "sortText"] {
         assert!(v.get(key).is_some(), "{key}: {v}");
     }
     assert_eq!(v["documentation"]["kind"], "markdown");
@@ -339,4 +343,358 @@ fn results_serialize_with_lsp_field_names() {
     let v = serde_json::to_value(&diagnostics(SRC)[0]).unwrap();
     assert_eq!(v["severity"], 3);
     assert_eq!(v["source"], "rules");
+    // A fix's edits are LSP's `TextEdit`s.
+    let d = diagnostics("rules \"T\" 1\ncarrier slayer\nglobal var j: player = none\n");
+    let v = serde_json::to_value(&d[0]).unwrap();
+    assert_eq!(v["code"], "null.var");
+    assert_eq!(v["fixes"][0]["edits"][0]["newText"], "?");
+    assert_eq!(v["fixes"][0]["edits"][0]["range"]["start"], serde_json::json!({"line": 2, "character": 20}));
+}
+
+// ---------- the checker's reading: labels, narrowing, fixes ----------
+
+const HEAD: &str = "rules \"T\" 1\ncarrier slayer\n";
+
+fn script(requires: &str, body: &str) -> String {
+    if requires.is_empty() {
+        format!("{HEAD}{body}")
+    } else {
+        format!("{HEAD}requires {requires}\n{body}")
+    }
+}
+
+/// `src` with `edits` made.
+fn apply(src: &str, edits: &[TextEdit]) -> String {
+    let li = LineIndex::new(src);
+    let mut spans: Vec<(usize, usize, &str)> = edits
+        .iter()
+        .map(|e| (li.offset(e.range.start), li.offset(e.range.end), e.new_text.as_str()))
+        .collect();
+    spans.sort_by_key(|s| std::cmp::Reverse(s.0));
+    let mut out = src.to_string();
+    for (s, e, text) in spans {
+        out.replace_range(s..e, text);
+    }
+    out
+}
+
+const LABELS: &str = "rules \"T\" 1
+carrier slayer
+label goal: zone
+global var n: int = 0
+on enter(goal, o) {
+    n = n + 1
+}
+on drop(p, o) {
+    if o is goal and inside(p, o) { n = n + 1 }
+}
+";
+
+#[test]
+fn a_labels_hover_says_what_a_map_needs() {
+    let h = hover_text(LABELS, 2, 7);
+    assert!(h.contains("label goal: zone"), "{h}");
+    assert!(h.contains("One zone."), "{h}");
+    assert!(h.contains("A map needs: exactly 1 zone labelled \"goal\"."), "{h}");
+    assert!(h.contains("Used 2 times."), "{h}");
+    // A use shows the declaration too.
+    assert_eq!(hover_text(LABELS, 8, 13), h);
+    // An API entry's hover is its front-end signature.
+    assert!(hover_text(LABELS, 8, 25).contains("inside(player, zone) -> bool"));
+    // A set label lists what its members have.
+    let siege = crate::builtin::SIEGE;
+    let line = siege.lines().position(|l| l.starts_with("label capture:")).unwrap() as u32;
+    let h = hover_text(siege, line, 7);
+    assert!(h.contains("A set of zones. Members have"), "{h}");
+    assert!(h.contains("numbered 0..1"), "{h}");
+}
+
+#[test]
+fn definition_references_and_rename_follow_a_label() {
+    let at = |l: &[Location]| -> Vec<(u32, u32)> {
+        l.iter().map(|x| (x.range.start.line, x.range.start.character)).collect()
+    };
+    // `goal` in `on enter(goal, o)` and in `o is goal` are the label's.
+    assert_eq!(at(&definition(LABELS, p(8, 13))), vec![(2, 6)]);
+    assert_eq!(at(&definition(LABELS, p(4, 10))), vec![(2, 6)]);
+    assert_eq!(at(&references(LABELS, p(4, 10))), vec![(2, 6), (4, 9), (8, 12)]);
+
+    // Renaming keeps the map's text.
+    let edits = rename(LABELS, p(2, 7), "finish").unwrap();
+    let renamed = apply(LABELS, &edits);
+    assert!(renamed.contains("label finish: zone = \"goal\"\n"), "{renamed}");
+    assert!(renamed.contains("on enter(finish, o)"), "{renamed}");
+    assert!(renamed.contains("if o is finish and"), "{renamed}");
+    let c = crate::diagnose(&renamed);
+    assert!(c.ir.is_some(), "{:#?}", c.diagnostics);
+    assert_eq!(c.ir.unwrap().labels[0].text, "goal");
+    // Renaming back to the map's text drops the `= "goal"`.
+    let back = apply(&renamed, &rename(&renamed, p(2, 7), "goal").unwrap());
+    assert_eq!(back, LABELS);
+
+    assert!(rename(LABELS, p(2, 7), "n").is_err(), "a global is named n");
+    assert!(rename(LABELS, p(2, 7), "if").is_err(), "a keyword");
+    assert!(rename(LABELS, p(2, 7), "9lives").is_err(), "not a name");
+    assert!(rename(LABELS, p(0, 1), "x").is_err(), "nothing to rename");
+    // A local renames at its declaration and its uses only.
+    let edits = rename(SRC, p(18, 15), "lead").unwrap();
+    let ranges: Vec<(u32, u32)> = edits.iter().map(|e| (e.range.start.line, e.range.start.character)).collect();
+    assert_eq!(ranges, [(16, 8), (17, 7), (17, 21), (18, 15)]);
+}
+
+#[test]
+fn semantic_tokens_mark_labels_and_type_words() {
+    let tokens = semantic_tokens(LABELS);
+    let at = |line: u32, start: u32| -> TokenKind {
+        tokens
+            .iter()
+            .find(|t| t.line == line && t.start == start)
+            .unwrap_or_else(|| panic!("no token at {line}:{start}"))
+            .kind
+    };
+    assert_eq!(at(2, 0), TokenKind::Keyword);
+    assert_eq!(at(2, 6), TokenKind::Label);
+    assert_eq!(at(2, 12), TokenKind::Type);
+    assert_eq!(at(4, 9), TokenKind::Label);
+    assert_eq!(at(8, 9), TokenKind::Keyword);
+    assert_eq!(at(8, 12), TokenKind::Label);
+    assert_eq!(TokenKind::Label.index(), 13);
+    let numbered = semantic_tokens("rules \"T\" 1\ncarrier slayer\nlabel cap: zones numbered 0..1 = \"zone\"\n");
+    let kind = |start: u32| numbered.iter().find(|t| t.line == 2 && t.start == start).map(|t| t.kind);
+    assert_eq!(kind(11), Some(TokenKind::Type));
+    assert_eq!(kind(17), Some(TokenKind::Keyword));
+}
+
+const WANT: &str = "rules \"T\" 1
+carrier slayer
+label goal: zone
+label pad: object
+label bonus: zone?
+label capture: zones numbered 0..1
+on spawn(p) {
+    let z = goal
+    if inside(p, goal) { }
+}
+on drop(q, o) {
+    if o is pad { }
+}
+";
+
+#[test]
+fn completion_puts_what_the_place_wants_first() {
+    // `inside(p, |)` wants a zone: zone labels, zone values, values that
+    // may be none, set labels to index, then the rest.
+    let items = complete(WANT, p(8, 17));
+    let l = labels(&items);
+    assert_eq!(&l[..4], ["goal", "z", "bonus", "capture"], "{l:?}");
+    assert!(items[2].detail.contains("may be none"), "{:?}", items[2]);
+    assert_eq!(items[3].insert_text, "capture[");
+    assert!(l.contains(&"score") && l.contains(&"p"), "nothing is hidden: {l:?}");
+    assert_eq!(l.last(), Some(&"pad"));
+    assert_eq!(items[0].sort_text, "0000");
+    assert_eq!(items[1].sort_text, "0001");
+
+    // After `is`: the labels.
+    assert_eq!(labels(&complete(WANT, p(11, 12))), ["goal", "pad", "bonus", "capture"]);
+    // A handler's label place: zone labels.
+    let on = "rules \"T\" 1\nlabel goal: zone\nlabel pad: object\non enter(";
+    assert_eq!(labels(&complete(on, p(3, 9))), ["goal"]);
+    // A `label` line: whole flag labels, then kinds, then requirements.
+    let flags = complete("rules \"T\" 1\nlabel ", p(1, 6));
+    let hill = flags.iter().find(|i| i.label == "label hill_corner: zones numbered").unwrap();
+    assert_eq!(hill.insert_text, "hill_corner: zones numbered");
+    assert!(labels(&complete("rules \"T\" 1\nlabel cap: ", p(1, 11))).contains(&"zones"));
+    let reqs = complete("rules \"T\" 1\nlabel cap: zones ", p(1, 17));
+    assert!(labels(&reqs).contains(&"numbered") && labels(&reqs).contains(&"per team"));
+}
+
+/// One script per fix: the diagnostic it answers, and each of its fixes
+/// applied gives a script without it.
+#[test]
+fn each_fix_applied_removes_its_diagnostic() {
+    let cases: &[(&str, &str, &str, usize)] = &[
+        ("", "label barrier: objects\non tick { for each barier b { } }\n", "label.unknown", 2),
+        ("objects.delete", "label barrier: objects\non tick {\n    delete(barrier)\n}\n", "label.set-as-one", 1),
+        ("", "label core: object\non tick { for each core c { } }\n", "label.one-as-set", 1),
+        ("", "label pad: object\non tick { for each players p where inside(p, pad) { } }\n", "label.kind", 1),
+        ("", "label hill: zones\non tick { if let z = hill[0] { } }\n", "label.index", 1),
+        ("", "label a: zones\n", "label.unused", 1),
+        ("", "global var n: int = 0\non kill(victim, killer) {\n    n = killer.kills\n}\n", "null.use", 1),
+        (
+            "",
+            "global var n: int = 0\non kill(victim, killer) {\n    if killer.kills > 2 or n > 3 {\n        n = 1\n    }\n}\n",
+            "null.use",
+            1,
+        ),
+        ("", "on kill(victim, killer) {\n    score(killer, 1)\n}\n", "null.arg", 1),
+        ("", "on spawn(p) {\n    score(first(players q where q.alive), 1)\n}\n", "null.arg", 1),
+        ("", "global var j: player = none\n", "null.var", 1),
+        ("", "on spawn(p) {\n    if p != none and p.alive {\n        score(p, 1)\n    }\n}\n", "null.never", 1),
+        (
+            "player.weapons",
+            "table t: (w: tag) = [(\"a/b\")]\non spawn(p) { give(p, t[0].w) }\n",
+            "tag.group",
+            1,
+        ),
+        ("", "on spawn(p) { set_team(p, team 1) }\n", "cap.missing", 1),
+        ("player.weapons", "on spawn(p) { set_team(p, team 1) }\n", "cap.missing", 1),
+        ("player.team", "on spawn(p) { }\n", "cap.unused", 1),
+        ("player.team, player.weapons", "on spawn(p) { give(p, \"objects/w\") }\n", "cap.unused", 1),
+    ];
+    for &(requires, body, code, count) in cases {
+        let src = script(requires, body);
+        let d = diagnostics(&src);
+        let found = d
+            .iter()
+            .find(|x| x.code == code)
+            .unwrap_or_else(|| panic!("no {code} in {d:#?}\nfor\n{src}"));
+        assert_eq!(found.fixes.len(), count, "{code}: {:#?}", found.fixes);
+        for f in &found.fixes {
+            let fixed = apply(&src, &f.edits);
+            let after = crate::diagnose(&fixed);
+            assert!(
+                !after.diagnostics.iter().any(|x| x.code == code),
+                "{code}: \"{}\" leaves it in\n{fixed}\n{:#?}",
+                f.title,
+                after.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn code_actions_are_the_fixes_at_a_range() {
+    let src = script("", "label barrier: objects\non tick { for each barier b { } }\n");
+    let at = Range { start: p(3, 21), end: p(3, 21) };
+    let actions = actions(&src, at);
+    let titles: Vec<&str> = actions.iter().map(|a| a.title.as_str()).collect();
+    assert_eq!(titles, ["Change to `barrier`", "Declare label `barier`"]);
+    assert!(actions.iter().all(|a| a.kind == "quickfix" && a.diagnostic.code == "label.unknown"));
+    assert!(actions[0].diagnostic.fixes.is_empty());
+    let fixed = apply(&src, &actions[0].edits);
+    assert!(fixed.contains("for each barrier b"), "{fixed}");
+    // Nothing to fix elsewhere.
+    assert!(super::actions(&src, Range { start: p(0, 0), end: p(0, 1) }).is_empty());
+}
+
+#[test]
+fn every_diagnostic_is_reported_with_its_code() {
+    let src = script(
+        "",
+        "global var j: player = none
+on kill(victim, killer) {
+    score(killer, 1)
+    score(nobody, 1)
+}
+",
+    );
+    let codes: Vec<&str> = diagnostics(&src).iter().map(|d| d.code).collect();
+    assert_eq!(codes, ["null.var", "null.arg", "name.unknown"]);
+}
+
+#[test]
+fn else_if_let_is_read_like_else_if() {
+    let src = "rules \"T\" 1
+carrier slayer
+on kill(victim, killer) {
+    if killer == none {
+        score(victim, 1)
+    } else if let mate = first(players p where p.team == killer.team) {
+        score(mate, 1)
+    }
+}
+";
+    assert!(crate::diagnose(src).ir.is_some());
+    let at = |l: &[Location]| -> Vec<(u32, u32)> {
+        l.iter().map(|x| (x.range.start.line, x.range.start.character)).collect()
+    };
+    assert_eq!(at(&definition(src, p(6, 14))), vec![(5, 18)]);
+    // The `else` holds what `killer == none` false proves.
+    let h = hover_text(src, 5, 58);
+    assert!(h.contains("(argument) killer: player?"), "{h}");
+    assert!(h.contains("not none here: checked on line 4"), "{h}");
+}
+
+/// The model reads every type from the checker: it walks expressions to
+/// resolve names, and no walk gives a type of its own.
+#[test]
+fn the_model_holds_no_type_inference() {
+    let model = include_str!("model.rs");
+    for banned in [
+        "BinOp::Add",
+        "BinOp::Sub",
+        "BinOp::Mul",
+        "BinOp::Div",
+        "BinOp::Rem",
+        "crate::ty::Ty",
+        "fn literal",
+    ] {
+        assert!(!model.contains(banned), "ide/model.rs works out a type: {banned}");
+    }
+    assert!(model.contains("fn expr(&mut self, e: &Expr, env: &mut Env) {"), "expr gives no type");
+    assert!(model.contains("self.checked.ty(e)"));
+}
+
+const SLICE5: &str = "rules \"T\" 1
+carrier slayer
+const hold = 30s
+enum Role { none, vip }
+player var role: Role = Role.none
+fn leads(p: player) -> bool = p.score > 2
+on spawn(p) {
+    match p.role {
+        Role.vip { score(p, whole_seconds(hold)) }
+        else { }
+    }
+    if variant.engine == carrier.slayer and leads(p) { score(p, ticks(5s)) }
+}
+";
+
+/// Time literals, constants, `match`, value functions and the `carrier`
+/// enum: read, hovered, completed and kept whole by the formatter.
+#[test]
+fn time_const_match_and_carrier_are_read() {
+    let errors: Vec<String> = diagnostics(SLICE5)
+        .iter()
+        .filter(|d| d.severity == severity::ERROR)
+        .map(|d| format!("{}: {}", d.code, d.message))
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+
+    // A time literal is one token.
+    let nums: Vec<&str> = scan::scan(SLICE5)
+        .into_iter()
+        .filter(|t| t.k == K::Num)
+        .map(|t| &SLICE5[t.s..t.e])
+        .collect();
+    assert!(nums.contains(&"30s") && nums.contains(&"5s"), "{nums:?}");
+    let tokens = semantic_tokens(SLICE5);
+    assert!(tokens.iter().any(|t| t.line == 2 && t.start == 13 && t.len == 3), "{tokens:?}");
+    let formatted = format(SLICE5).unwrap();
+    assert!(formatted.contains("const hold = 30s") && formatted.contains("ticks(5s)"), "{formatted}");
+
+    let h = hover_text(SLICE5, 2, 7);
+    assert!(h.contains("A constant of type time") && h.contains("900 ticks"), "{h}");
+    let h = hover_text(SLICE5, 2, 14);
+    assert!(h.contains("900 ticks"), "{h}");
+    let h = hover_text(SLICE5, 8, 30);
+    assert!(h.contains("whole seconds"), "{h}");
+    let h = hover_text(SLICE5, 11, 35);
+    assert!(h.contains("engine index"), "{h}");
+    let h = hover_text(SLICE5, 11, 45);
+    assert!(h.contains("fn leads(p: player) -> bool"), "{h}");
+
+    // The const's use and the arm's enum go to their declarations.
+    let d = definition(SLICE5, p(8, 43));
+    assert_eq!(d[0].range.start, p(2, 6));
+    let d = definition(SLICE5, p(8, 9));
+    assert_eq!(d[0].range.start, p(3, 5));
+
+    let carriers = complete(SLICE5, p(11, 33));
+    let names = labels(&carriers);
+    assert!(names.contains(&"slayer") && names.contains(&"assault"), "{names:?}");
+    let names: Vec<String> = symbols(SLICE5).into_iter().map(|s| s.name).collect();
+    assert!(names.contains(&"hold".to_string()), "{names:?}");
+    let top = complete("rules \"T\" 1\ncarrier slayer\n\n", p(2, 0));
+    assert!(labels(&top).contains(&"const"));
 }

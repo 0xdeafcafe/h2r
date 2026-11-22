@@ -54,6 +54,13 @@ pub(crate) fn scan(src: &str) -> Vec<Tk> {
                     i += 1;
                 }
             }
+            // A time literal (`5s`, `300t`, `1.5s`) is one token, as the
+            // lexer reads it: a unit with nothing of a name after it.
+            if matches!(b.get(i), Some(b's' | b't'))
+                && !b.get(i + 1).is_some_and(|x| x.is_ascii_alphanumeric() || *x == b'_')
+            {
+                i += 1;
+            }
             K::Num
         } else if c == b'"' {
             i += 1;

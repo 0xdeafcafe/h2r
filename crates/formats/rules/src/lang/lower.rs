@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use super::ast::*;
-use super::check::Checked;
+use super::check::{Checked, SECONDS_SUFFIX};
 use super::types::{Handle, Type};
 use super::{CompileError, Pos};
 use crate::caps::{self, CARRIERS, Kind, TICKS_PER_SECOND, VARIANT_FIELDS};
@@ -205,7 +205,9 @@ struct Cx<'s> {
     string_ix: BTreeMap<String, u16>,
     tags: Vec<TagDef>,
     tag_ix: BTreeMap<String, u16>,
-    options: Vec<(String, OptionDef)>,
+    /// Each option, and whether it is a `time`, held in whole seconds and
+    /// read in ticks.
+    options: Vec<(String, OptionDef, bool)>,
     enums: Vec<(String, Vec<String>)>,
     enum_names: Vec<String>,
     vars: Vec<VarInfo>,
@@ -287,7 +289,7 @@ impl<'s> Cx<'s> {
                 Item::Fn(f) => {
                     self.fns.insert(f.name.as_str(), f);
                 }
-                Item::Enum { .. } | Item::Label(_) | Item::On { .. } => {}
+                Item::Enum { .. } | Item::Label(_) | Item::Const { .. } | Item::On { .. } => {}
             }
         }
         for (index, item) in script.items.iter().enumerate() {
@@ -330,7 +332,7 @@ impl<'s> Cx<'s> {
                 requires: self.requires.clone(),
             },
             strings: std::mem::take(&mut self.strings),
-            options: self.options.drain(..).map(|(_, o)| o).collect(),
+            options: self.options.drain(..).map(|(_, o, _)| o).collect(),
             enums: enum_defs,
             slots: std::mem::take(&mut self.slots),
             labels: self.c.labels.iter().map(|l| l.def.clone()).collect(),
@@ -420,22 +422,31 @@ impl<'s> Cx<'s> {
     fn option(&mut self, o: &OptionDecl) -> R<()> {
         let pos = o.pos;
         let ty = self.declared(&o.ty)?;
+        let time = ty == Type::Time;
+        // A time option is held in whole seconds, as an int option of the
+        // same range is; the checker has made each value whole.
+        let unit = if time { TICKS_PER_SECOND } else { 1 };
         let (lo, hi) = match ty {
-            Type::Int => {
+            Type::Int | Type::Time => {
                 let Some((lo, hi)) = &o.range else {
                     return internal(pos, "an int option with no range");
                 };
-                (self.const_val(lo, Type::Int)?, self.const_val(hi, Type::Int)?)
+                (self.const_val(lo, ty)? / unit, self.const_val(hi, ty)? / unit)
             }
             Type::Bool => (0, 1),
             Type::Enum(e) => (0, self.enums[e as usize].1.len() as i32 - 1),
             _ => return internal(pos, "an option of no option type"),
         };
-        let default = self.const_val(&o.default, ty)?;
+        let default = self.const_val(&o.default, ty)? / unit;
         let name = self.string(&o.name, pos)?;
-        let label = match &o.label {
-            Some(l) => self.string(l, pos)?,
-            None => name,
+        let label = match (&o.label, time) {
+            (Some(l), false) => self.string(l, pos)?,
+            (None, false) => name,
+            // The IR stores no unit: the label says it.
+            (l, true) => {
+                let text = format!("{}{SECONDS_SUFFIX}", l.as_deref().unwrap_or(&o.name));
+                self.string(&text, pos)?
+            }
         };
         let description = match &o.description {
             Some(d) => Some(self.string(d, pos)?),
@@ -450,7 +461,7 @@ impl<'s> Cx<'s> {
             hi,
             default,
         };
-        self.options.push((o.name.clone(), def));
+        self.options.push((o.name.clone(), def, time));
         Ok(())
     }
 
@@ -466,7 +477,7 @@ impl<'s> Cx<'s> {
 
     fn var(&mut self, scope: Scope, name: &str, ty: &TypeName, init: Option<&Expr>, pos: Pos) -> R<()> {
         let (t, front) = if ty.name == "timer" && !ty.optional {
-            (Ty::Timer, Type::Int)
+            (Ty::Timer, Type::Time)
         } else {
             let front = self.declared(ty)?;
             (front.ir(), front)
@@ -536,11 +547,15 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// A constant of type `ty`: an initial value, a default or a cell.
+    /// A constant of type `ty`: an initial value, a default or a cell. An
+    /// `int` or a `time` is the value the checker folded.
     fn const_val(&mut self, e: &Expr, ty: Type) -> R<i32> {
         let pos = e.pos;
         let v = match (&e.kind, ty) {
-            (ExprKind::Int(_) | ExprKind::Unary(UnOp::Neg, _), Type::Int) => self.const_int(e)?,
+            (_, Type::Int | Type::Time) => match self.c.value(e) {
+                Some(v) => v,
+                None => return internal(pos, "a constant the checker did not fold"),
+            },
             (ExprKind::Int(_), Type::Fixed) => fixed::from_int(self.const_int(e)?),
             (ExprKind::Fixed(v), Type::Fixed) => *v,
             (ExprKind::Unary(UnOp::Neg, inner), Type::Fixed) => match inner.kind {
@@ -743,6 +758,41 @@ impl<'s> Cx<'s> {
             } => {
                 let source = self.set_source(f, set)?;
                 self.foreach(f, source, set.filter.as_ref(), Some(binder.as_str()), Body::Stmts(body), *pos)?;
+            }
+            Stmt::Match { value, arms, els, pos } => {
+                // Compares and forward jumps: each arm tests its variants
+                // and jumps to its block, or on to the next arm.
+                let (v, _) = self.expr(f, value)?;
+                let mut ends = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    let inner = f.live.len();
+                    let mut to_body = Vec::with_capacity(arm.patterns.len());
+                    for p in &arm.patterns {
+                        let (pr, _) = self.expr(f, p)?;
+                        let c = f.alloc(Ty::Bool, p.pos)?;
+                        f.emit(Op::Cmp {
+                            op: CmpOp::Eq,
+                            dst: c,
+                            a: v,
+                            b: pr,
+                        });
+                        to_body.push(f.emit(Op::JumpIf { cond: c, to: 0 }));
+                    }
+                    f.release(inner);
+                    let next = f.emit(Op::Jump { to: 0 });
+                    for j in to_body {
+                        f.patch(j, arm.pos)?;
+                    }
+                    self.block(f, &arm.body)?;
+                    ends.push(f.emit(Op::Jump { to: 0 }));
+                    f.patch(next, arm.pos)?;
+                }
+                if let Some(els) = els {
+                    self.block(f, els)?;
+                }
+                for j in ends {
+                    f.patch(j, *pos)?;
+                }
             }
         }
         f.release(mark);
@@ -974,6 +1024,10 @@ impl<'s> Cx<'s> {
                 }
             }
             ExprKind::Fixed(v) => Ok((f.konst(Ty::Fixed, *v, pos)?, Ty::Fixed)),
+            ExprKind::Time(ticks, _) => match ticks {
+                Some(t) => Ok((f.konst(Ty::Int, int32(*t, pos)?, pos)?, Ty::Int)),
+                None => internal(pos, "a time of no whole tick"),
+            },
             ExprKind::Bool(b) => Ok((f.konst(Ty::Bool, *b as i32, pos)?, Ty::Bool)),
             ExprKind::None => {
                 let t = self.ty_of(e)?.ir();
@@ -1068,14 +1122,28 @@ impl<'s> Cx<'s> {
             });
             return Ok((dst, ty.register()));
         }
-        if let Some(i) = self.options.iter().position(|(o, _)| o == n) {
-            let ty = self.options[i].1.ty;
+        if let Some(i) = self.options.iter().position(|(o, _, _)| o == n) {
+            let (ty, time) = (self.options[i].1.ty, self.options[i].2);
             let dst = f.alloc(ty, pos)?;
             f.emit(Op::Opt {
                 dst,
                 index: i as u8,
             });
+            if time {
+                // Whole seconds in the record, ticks in the script.
+                let rate = f.konst(Ty::Int, TICKS_PER_SECOND, pos)?;
+                f.emit(Op::Arith {
+                    op: ArithOp::Mul,
+                    ty: NumTy::Int,
+                    dst,
+                    a: dst,
+                    b: rate,
+                });
+            }
             return Ok((dst, ty));
+        }
+        if let Some((_, v)) = self.c.constant(n) {
+            return Ok((f.konst(Ty::Int, v, pos)?, Ty::Int));
         }
         if let Some((ix, label)) = self.c.label(n) {
             // One value names its member; a set is a set argument.
@@ -1144,6 +1212,13 @@ impl<'s> Cx<'s> {
                         };
                         let ty = Ty::Enum(i as u8);
                         return Ok((f.konst(ty, k as i32, pos)?, ty));
+                    }
+                    // `carrier.assault`: the engine index, an int.
+                    if b == "carrier" {
+                        let Some(&(_, index)) = CARRIERS.iter().find(|(n, _)| *n == field) else {
+                            return internal(pos, "an unknown carrier");
+                        };
+                        return Ok((f.konst(Ty::Int, index as i32, pos)?, Ty::Int));
                     }
                 }
             },
@@ -1330,6 +1405,25 @@ impl<'s> Cx<'s> {
                 });
                 return Ok(Some((dst, Ty::Int)));
             }
+            // A time is ticks: `ticks(t)` is the same number as an int,
+            // `whole_seconds(t)` the whole seconds in it.
+            "ticks" => {
+                let (t, _) = self.expr(f, &args[0])?;
+                return Ok(Some((t, Ty::Int)));
+            }
+            "whole_seconds" => {
+                let (t, _) = self.expr(f, &args[0])?;
+                let rate = f.konst(Ty::Int, TICKS_PER_SECOND, pos)?;
+                let dst = f.alloc(Ty::Int, pos)?;
+                f.emit(Op::Arith {
+                    op: ArithOp::Div,
+                    ty: NumTy::Int,
+                    dst,
+                    a: t,
+                    b: rate,
+                });
+                return Ok(Some((dst, Ty::Int)));
+            }
             "grant" => {
                 let (player, _) = self.expr(f, &args[0])?;
                 let cap = self.cap_arg(&args[1])?;
@@ -1367,8 +1461,7 @@ impl<'s> Cx<'s> {
             _ => {}
         }
         if let Some(&decl) = self.fns.get(name) {
-            self.inline(f, decl, args, pos)?;
-            return Ok(None);
+            return self.inline(f, decl, args, pos);
         }
         if name == "message" {
             return self.message(f, args, pos);
@@ -1424,7 +1517,32 @@ impl<'s> Cx<'s> {
                 }
             }
         };
-        regs.push(self.expr(f, text)?.0);
+        let c: &'s Checked<'s> = self.c;
+        let Some(template) = c.template(text) else {
+            regs.push(self.expr(f, text)?.0);
+            f.emit(Op::Call {
+                entry,
+                args: regs,
+                dst: None,
+            });
+            return Ok(None);
+        };
+        // The holes' values first, then the stored template, the `fmt_*`
+        // run and the message, with nothing between them (the verifier's
+        // message rule).
+        let mut values = Vec::with_capacity(template.holes.len());
+        for (name, hole) in &template.holes {
+            values.push((self.name(f, name, text.pos)?.0, *hole));
+        }
+        let index = self.string(&template.text, text.pos)?;
+        regs.push(f.konst(Ty::Text, index as i32, text.pos)?);
+        for (r, hole) in values {
+            f.emit(Op::Call {
+                entry: hole.entry(),
+                args: vec![r],
+                dst: None,
+            });
+        }
         f.emit(Op::Call {
             entry,
             args: regs,
@@ -1448,7 +1566,10 @@ impl<'s> Cx<'s> {
         }
     }
 
-    fn inline(&mut self, f: &mut Fun, decl: &'s FnDecl, args: &'s [Expr], pos: Pos) -> R<()> {
+    /// A function's body at its call, with its parameters bound to the
+    /// arguments: a block function's statements, or a value function's
+    /// expression, whose register it gives.
+    fn inline(&mut self, f: &mut Fun, decl: &'s FnDecl, args: &'s [Expr], pos: Pos) -> R<Option<(Reg, Ty)>> {
         if f.inlining.iter().any(|n| *n == decl.name) {
             return err(pos, format!("fn {} calls itself; recursion is not allowed", decl.name));
         }
@@ -1475,7 +1596,10 @@ impl<'s> Cx<'s> {
         let scopes = std::mem::replace(&mut f.scopes, vec![bound]);
         let implicit = std::mem::take(&mut f.implicit);
         f.inlining.push(decl.name.clone());
-        let result = self.block(f, &decl.body);
+        let result = match &decl.value {
+            Some(v) => self.expr(f, v).map(Some),
+            None => self.block(f, &decl.body).map(|()| None),
+        };
         f.inlining.pop();
         f.implicit = implicit;
         f.scopes = scopes;

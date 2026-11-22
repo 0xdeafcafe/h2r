@@ -23,6 +23,7 @@ pub mod join_link;
 pub mod theater_link;
 pub use join_link::JoinLink;
 pub mod mailbox;
+pub mod map_census;
 pub mod map_details;
 pub mod maps;
 mod mod_packs;

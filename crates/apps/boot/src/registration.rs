@@ -304,7 +304,7 @@ pub(crate) fn register_core_film(
     // Our own skulls (from 15): hidden in campaign levels, their effects
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.
-    let custom_maps: Option<skulls_custom::MapLocator> = i.vfs.map(|vfs| -> skulls_custom::MapLocator {
+    let custom_maps: Option<skulls_custom::MapLocator> = i.vfs.clone().map(|vfs| -> skulls_custom::MapLocator {
         Box::new(move |name, path| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
             crate::map_override::map_file_at(&mut v, name, path)
@@ -359,6 +359,7 @@ pub(crate) fn register_core_film(
                 offer,
                 store: Some(Arc::clone(store)),
                 data: i.data_root.to_path_buf(),
+                vfs: i.vfs.clone(),
             },
         )
         .context("installing the party lobby")?;

@@ -12,8 +12,8 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, References, Request as _,
-    SemanticTokensFullRequest, SignatureHelpRequest,
+    CodeActionRequest, Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, References,
+    Rename, Request as _, SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use rules::ide::{self, Position};
 use serde_json::{Value, json};
@@ -58,6 +58,8 @@ fn capabilities() -> Value {
         "referencesProvider": true,
         "documentSymbolProvider": true,
         "documentFormattingProvider": true,
+        "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+        "renameProvider": true,
         "semanticTokensProvider": {
             "legend": {"tokenTypes": ide::LEGEND, "tokenModifiers": []},
             "full": true,
@@ -143,6 +145,8 @@ impl Server {
             SemanticTokensFullRequest::METHOD,
             DocumentSymbolRequest::METHOD,
             Formatting::METHOD,
+            CodeActionRequest::METHOD,
+            Rename::METHOD,
         ];
         if !known.contains(&method) {
             return Err((METHOD_NOT_FOUND, format!("unsupported method {method}")));
@@ -192,6 +196,31 @@ impl Server {
             json!({ "data": encode_tokens(&ide::semantic_tokens(src)) })
         } else if method == DocumentSymbolRequest::METHOD {
             json!(ide::symbols(src))
+        } else if method == CodeActionRequest::METHOD {
+            let range = req.params.get("range").cloned().unwrap_or(Value::Null);
+            let range: ide::Range =
+                serde_json::from_value(range).map_err(|e| (INVALID_PARAMS, format!("range: {e}")))?;
+            Value::Array(
+                ide::actions(src, range)
+                    .into_iter()
+                    .map(|a| {
+                        json!({
+                            "title": a.title,
+                            "kind": a.kind,
+                            "diagnostics": [a.diagnostic],
+                            "edit": {"changes": {uri: a.edits}},
+                        })
+                    })
+                    .collect(),
+            )
+        } else if method == Rename::METHOD {
+            let name = req
+                .params
+                .get("newName")
+                .and_then(Value::as_str)
+                .ok_or((INVALID_PARAMS, "no newName".to_string()))?;
+            let edits = ide::rename(src, pos()?, name).map_err(|e| (INVALID_PARAMS, e))?;
+            json!({"changes": {uri: edits}})
         } else {
             match ide::format(src) {
                 Ok(text) if text == src => json!([]),
@@ -344,11 +373,45 @@ mod tests {
 
         // An unknown method; a closed document clears its diagnostics and
         // is no longer answered.
-        let r = response(s.handle(req(10, "textDocument/rename", at(0, 0))));
+        let r = response(s.handle(req(10, "textDocument/inlayHint", at(0, 0))));
         assert_eq!(r.error.unwrap().code, METHOD_NOT_FOUND);
         let close = json!({"textDocument": {"uri": URI}});
         assert_eq!(published(s.handle(note("textDocument/didClose", close))), json!([]));
         let r = response(s.handle(req(11, "textDocument/hover", at(3, 5))));
+        assert_eq!(r.error.unwrap().code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn code_actions_and_rename_answer_with_workspace_edits() {
+        let mut s = Server::default();
+        let src = "rules \"T\" 1\ncarrier slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
+        let open = json!({"textDocument": {"uri": URI, "languageId": "rules", "version": 1, "text": src}});
+        let d = published(s.handle(note("textDocument/didOpen", open)));
+        assert_eq!(d[0]["code"], "label.unknown");
+
+        let mut params = json!({"textDocument": {"uri": URI}, "context": {"diagnostics": []}});
+        params["range"] = json!({"start": {"line": 3, "character": 21}, "end": {"line": 3, "character": 21}});
+        let v = result(s.handle(req(1, "textDocument/codeAction", params)));
+        assert_eq!(v[0]["title"], "Change to `barrier`");
+        assert_eq!(v[0]["kind"], "quickfix");
+        assert_eq!(v[0]["diagnostics"][0]["code"], "label.unknown");
+        let edit = &v[0]["edit"]["changes"][URI][0];
+        assert_eq!(edit["newText"], "barrier");
+        assert_eq!(edit["range"]["start"], json!({"line": 3, "character": 19}));
+        let r = response(s.handle(req(2, "textDocument/codeAction", json!({"textDocument": {"uri": URI}}))));
+        assert_eq!(r.error.unwrap().code, INVALID_PARAMS);
+
+        let change = json!({"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": SRC}]});
+        published(s.handle(note("textDocument/didChange", change)));
+        let mut params = at(3, 10);
+        params["newName"] = json!("killer");
+        let v = result(s.handle(req(3, "textDocument/rename", params)));
+        let edits = v["changes"][URI].as_array().unwrap();
+        assert_eq!(edits.len(), 2, "{v}");
+        assert!(edits.iter().all(|e| e["newText"] == "killer"));
+        let mut params = at(3, 10);
+        params["newName"] = json!("on");
+        let r = response(s.handle(req(4, "textDocument/rename", params)));
         assert_eq!(r.error.unwrap().code, INVALID_PARAMS);
     }
 

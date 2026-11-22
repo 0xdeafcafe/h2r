@@ -635,11 +635,26 @@ any other value fails to decode by ("the header's list").
 distances), `bool`, `player`, `team`, `object`, `zone` (an object with a
 volume: a Forge trigger volume, or a netgame flag with its capture
 volume), `squad`, `tag` (a tag path), `weapon` (a tag path that must be a
-weapon's), `timer` (a global variable that counts ticks down, then fires
-`on timer`), and `enum` types a script declares. A zone is an object and
-a weapon is a tag; nothing else converts. A handle that may be `none` is
+weapon's), `time` (a duration in ticks: `5s`, `300t`, `1.5s`), `timer`
+(a global variable that counts ticks down, then fires `on timer`; it
+reads and writes as `time`), `enum` types a script declares, and the
+built-in enum `carrier` (`variant.engine == carrier.assault`). A zone is
+an object and a weapon is a tag; nothing else converts. `time` adds,
+subtracts and compares with `time`, multiplies and divides by `int`,
+and `time / time` is an `int`; `seconds(n)` makes one from an `int`, and
+`whole_seconds(t)` and `ticks(t)` make an `int` of one. Mixing `time`
+and `int` is an error that gives the fix
+(`can't compare time with int in "p.held >= 1". Write 1s for a second or 30t for ticks.`).
+A `time` option is declared in whole seconds (`option capture_time: time
+5s..60s = 20s`), takes the bits of an `int` option of the same range,
+and its label ends ` (seconds)`. `variant` fields stay `int`. A handle that may be `none` is
 `T?` (`player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`); a `T`
-never is. A `table` is constant rows of typed columns, indexed by `int`. There are no floats and no
+never is. An `object` value is the engine's whole 32-bit datum: a real
+object is a salted handle (salt in the high 16 bits, bit 15 set), so it is
+at or above 2^31 and reads negative as an `int` register; `none` is
+`0xFFFFFFFF` (`ty::NONE`, -1), and a labelled thing without an object uses
+`0x4000_0000` plus its placement id (`ty::object_id`/`object_value` convert).
+A `table` is constant rows of typed columns, indexed by `int`. There are no floats and no
 strings at run time: text is a string-table index with typed arguments.
 An `int` indexes a table's rows; a value of the first column's type
 finds the first row holding it (`points[class]`), and a key no row holds
@@ -650,8 +665,19 @@ parentheses (`a = b + c * 2`), `if` / `else if` / `else`, `and` binding
 tighter than `or`; both short-circuit. A statement ends at a line break,
 `;` or `}`. A `let` or a parameter is not assigned again; a `let` may
 state its type (`let heir: player? = none`), and `let x = none` with no
-type is refused. These are the things the ReachVariantTool dialect lacks
-("Prior art").
+type is refused. `match` takes an enum or `carrier` value and runs the
+arm of its variant; an arm may name several (`Role.a, Role.b { }`), and
+a variant with no arm and no `else` arm is an error. These are the
+things the ReachVariantTool dialect lacks ("Prior art").
+
+**Constants and value functions.** `const last_phase = 2` and
+`const hold = 20s` are folded by the checker from literals, other
+constants, `len(table)` and `+ - * / %`, and stand wherever a literal
+does: option ranges and defaults, initial values, table cells and label
+requirements. A constant index out of a table's rows or a label's
+`numbered` range is a compile error. A value function,
+`fn rival(a: player, b: player) -> bool = <expression>`, is one
+expression inlined at each call; a block `fn` has no value.
 
 **`T?` and narrowing.** A value that may be `none` is a `T?`: the killer
 of `on kill`, `first(...)`, `o.carrier`, `o.team`, `player_of(o)`, a
@@ -811,7 +837,7 @@ on kill(victim, killer) {
 
 on tick {
     if count(players where not infected) == 0 { end_round(team 1) }
-    else if round_time_left() == 0 { end_round(team 0) }
+    else if round_time_left() == 0t { end_round(team 0) }
 }
 ```
 
@@ -826,12 +852,12 @@ carrier slayer
 teams 1
 requires ai.squads
 
-table waves: (class: Class, per_player: int, min: int, max: int, gap: int) = [ ... ]
+table waves: (class: Class, per_player: int, min: int, max: int, gap: time) = [ ... ]
 table points: (class: Class, score: int) = [ ... ]
 label ff_drop: objects
 global var wave: int = 0
 global var lives: int = 7
-global var next: timer = 150
+global var next: timer = 5s
 
 on timer(next) {
     let w = waves[wave]
@@ -853,36 +879,38 @@ on death(p) {
 ### Phases: attack and defend
 
 ```text
+const last_phase = 2
+
 label barrier: objects numbered
-label attack: spawns numbered 0..2
-label defend: spawns numbered 0..2
+label attack: spawns numbered 0..last_phase
+label defend: spawns numbered 0..last_phase
 label capture: zones numbered 0..1 = "zone"
 label core: object
 label goal: zone
 
-option phase_time: int 60..600 = 180
-option capture_time: int 5..60 = 20
+option phase_time: time 60s..600s = 180s
+option capture_time: time 5s..60s = 20s
 
 global var phase: int = 0
 global var clock: timer
 
 fn open(n: int) {
     phase = n
-    clock = seconds(phase_time)
+    clock = phase_time
     for each barrier b where b.number < n { delete(b) }
     spawn_areas(team 0, attack, n)
     spawn_areas(team 1, defend, n)
-    if n == 2 { create("<core tag path>", core) }
+    if n == last_phase { create("<core tag path>", core) }
 }
-on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
+on pickup(p, o) { if phase == last_phase and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
-    if phase < 2 {
-        if let zone = capture[phase] and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    if phase < last_phase {
+        if let zone = capture[phase] and ticks_held(zone, team 0) >= capture_time { open(phase + 1) }
     }
 }
 on enter(goal, o) {
-    if phase == 2 and is_objective(o) { end_round(team 0) }
+    if phase == last_phase and is_objective(o) { end_round(team 0) }
 }
 on timer(clock) { end_round(team 1) }
 ```
@@ -1079,7 +1107,7 @@ Actions:
 | `attach(o, to)`: an object follows another | no entry known; the object datum has a parent field (`guest-layout` `object.rs`) | untraced | `objects.move` |
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | teleport, device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
-| `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. Scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced | `hud.message` |
+| `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). Scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced | `hud.message` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
 | `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish` | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
 | `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
@@ -1088,12 +1116,13 @@ VM built-ins reach no engine entry (status **VM-only**):
 
 | Built-in | What it is |
 |---|---|
-| `count(set)`, `first(set)`, `len(table)`, `clamp(v, lo, hi)` | over a finite set or a constant table; `first` follows the `for each` order and gives `none` for an empty set |
+| `count(set)`, `first(set)`, `len(table)`, `min(a, b)`, `max(a, b)`, `clamp(v, lo, hi)` | over a finite set or a constant table; `first` follows the `for each` order and gives `none` for an empty set; `min`, `max` and `clamp` take all `int`s or all `time`s |
 | `pick(set, n)` | `n` members drawn with the VM's generator |
-| `seconds(n)` | `n` times the tick rate, in ticks |
+| `seconds(n)`, `whole_seconds(t)`, `ticks(t)` | `n` times the tick rate, as `time`; `t` divided by the tick rate (rounded toward zero), and `t` itself, as `int` |
 | `ticks_held(zone, team)` | a counter the VM keeps in `RulesExt` per zone and team: each tick from the first one a script names the zone, the team the game reports holding it alone (`Game::zone_holder`) gains a tick. Counts clear at the round's end; at most 32 zones are counted, and a 33rd is a script error. `none` or a team out of range reads 0. A host refuses a script that calls it (`caps` status not built) until the host has a zone test to answer `zone_holder` |
 | `squad(n)`, `team n`, `text n` | constants: a kit squad slot, a team index, a string-table index |
-| `now()` | the tick the host began (`Vm::begin_tick`) |
+| `fmt_player`, `fmt_team`, `fmt_int`, `fmt_time`, `fmt_enum` | a message's hole values, which the compiler emits before a `message` call and a script cannot name; the VM queues at most four for that message, and the verifier refuses a run not shown at once by a message whose holes it matches ([rules-language-types.md](rules-language-types.md#messages)) |
+| `now()` | the tick the host began (`Vm::begin_tick`), as `time` |
 | `random(n)` | the VM generator's next draw modulo `n`; 0, with no draw, when `n` is at most 0 |
 | `grant(p, cap, budget n, palette "x")`, `revoke(p, cap)`, `granted(p, cap)` | a player's powers, records in `RulesExt` ("Roles, powers and capabilities") |
 
@@ -1280,8 +1309,10 @@ Tooling:
   carries an optional line table for messages; the VM ignores it.
 - **Command line**: `h2 rules` is pure over its inputs and needs no
   disc (`crates/apps/cli/src/rules_cmd.rs`).
-  - `h2 rules check <file.rules>` compiles and verifies. Errors print as
-    `file:line:col: message` and the exit status is 1. The report gives
+  - `h2 rules check <file.rules>` compiles and verifies. Every error
+    `rules::diagnose` finds prints as `file:line:col: message [code]`,
+    and the exit status is 1; warnings print the same way with
+    `warning: ` before the message, after the report. The report gives
     the worst-tick estimate against the budget, the costliest handler,
     the IR bytes, the slots by scope, the blob's id, what the script can
     do in the words of `caps::CAPABILITIES`, and the entries a host
@@ -1312,8 +1343,8 @@ Tooling:
     (`crates/apps/cli/src/rules_lsp.rs`, over `lsp-server`). It keeps
     each open document whole (full sync), publishes diagnostics on open
     and change, and answers completion, hover, signature help,
-    definition, references, `semanticTokens/full`, document symbols and
-    formatting from `rules::ide`.
+    definition, references, `semanticTokens/full`, document symbols,
+    formatting, quick fix code actions and rename from `rules::ide`.
 - **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
   is pure over source text, and the language server, Live's
   `POST /v1/rules/ide`, the web editor and Studio share it. Positions are LSP's:
@@ -1323,11 +1354,17 @@ Tooling:
   line, a bad declaration to the next line that starts one, and a block
   left open ends at the next declaration. Every feature works from what
   parsed.
-  - `diagnostics`: every syntax error; when the source parses, the
-    compiler's first error, a verifier refusal, the tick budget and the
-    IR size (the last three on the first line); a warning for a `let`, a
-    set member or a `fn` never used; and a note at each call of an
-    entry no host can make yet, naming its status.
+  - `diagnostics`: every syntax error; when the source parses, every
+    error and warning of the checker (`lang/check.rs`), each with its
+    code and its fixes ([rules-language-types.md, "Diagnostics and the
+    editor"](rules-language-types.md#diagnostics-and-the-editor)); with
+    no error, a verifier refusal, the tick budget and the IR size (on
+    the first line); a warning for a `let`, a set member or a `fn` never
+    used; and a note at each call of an entry no host can make yet,
+    naming its status.
+  - `actions` gives the fixes of the diagnostics at a range, and
+    `rename` the edits that rename a name and every use of it
+    (`ide/fix.rs`).
   - `complete` reads the tokens before the place: declarations and
     their snippets at the start of a top-level line; event names, with
     their arguments as a snippet, after `on`; carriers after `carrier`;
@@ -1443,7 +1480,7 @@ no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
 routes call `rules::workbench` in both homes.
 
 The **Workbench** tab is one screen. The editor is on the left with the
-check beside it (Problems, Budget, Capabilities); under them the test
+check beside it (Problems, What a map needs, Budget, Capabilities); under them the test
 (generated matches and their summary) sits beside one match's results.
 Under 1100 px the parts stack in that order. The page's other tabs are **My Scripts** and **My
 Game Types**. The layout, its states and its copy are described in
@@ -1456,8 +1493,9 @@ Game Types**. The layout, its states and its copy are described in
   against 256 KiB, the declared capabilities in the lobby's words, and
   every entry the script calls that no host can make on its carrier. The
   page checks 450 ms after typing stops and has no Check button; each
-  error with a place is a marker in the editor, and its place in the
-  Problems list selects it. A
+  error and warning with a place is a marker in the editor, and its place in the
+  Problems list selects it. The check's `labels` show as **What a map
+  needs** ([rules-language-types.md, "The workbench"](rules-language-types.md#the-workbench)). A
   check the server refuses (a source over 256 KiB) is listed as a problem
   of the whole script.
 - **Editor.** The script box is Monaco (`web/src/stats/RulesEditor.tsx`),
@@ -1465,22 +1503,30 @@ Game Types**. The layout, its states and its copy are described in
   own: the core editor (`monaco-editor/esm/vs/editor/edcore.main`, no
   bundled languages) and its one editor worker. `stats/rulesMonaco.ts`
   registers the `h2rules` language: a Monarch grammar from the lexer's
-  tokens and the parser's words (comments, keywords, `on` and its event,
-  scoped `var`, `for each`, `team n`, `text n`, literals), brackets,
+  tokens and the parser's words (comments, keywords, `const` and its
+  name, `match`, `on` and its event, scoped `var`, `for each`, `team n`,
+  `text n`, `carrier.<engine>`, the type words, a label's kinds and
+  requirement words, time literals such as `30s`, `1.5s` and `300t`, and
+  the other literals), brackets,
   auto-closing pairs, indentation and folding, and a dark theme from the
   stats site's colours. Completion, hover, signature help, go to
   definition (F12), find references (Shift+F12), the outline
-  (Ctrl/Cmd+Shift+O), semantic tokens and Format Document (Shift+Alt+F)
+  (Ctrl/Cmd+Shift+O), semantic tokens, Format Document (Shift+Alt+F),
+  quick fixes (Ctrl/Cmd+., the `actions` op over the selection) and
+  rename (F2, the `rename` op; a refused name shows the server's reason)
   ask Live's `POST /v1/rules/ide` (`{source, op, line, character}`,
-  0-based line, UTF-16 character; LSP field names back) and
+  0-based line, UTF-16 character, with `end_line` and `end_character`
+  for `actions` and `new_name` for `rename`; LSP field names back) and
   `GET /v1/rules/ide/legend`; each op waits for typing to pause, a newer
   request cancels the older one, and answers are kept per model version
-  (`web/src/lib/rulesIde.ts`, the pure half). A built-in opens read-only
+  (a rename is never kept; `web/src/lib/rulesIde.ts`, the pure half). A built-in opens read-only
   until **Use as start**. The **Insert** buttons above the editor open a
-  picker each (Declarations, Events, Actions and reads by capability in
-  the lobby's words, Control) whose rows insert a snippet at the caret;
-  the events and the API come from the completion route at a blank
-  top-level line and a blank statement, over a list the page keeps.
+  picker each (Declarations, with its Labels and "In the test map"
+  groups; Events; Actions and reads by capability in
+  the lobby's words; Control) whose rows insert a snippet at the caret;
+  the events, the API and the built-in flag labels come from the
+  completion route at a blank top-level line, a blank statement and the
+  name of a new `label` line, over a list the page keeps.
 - **The map.** A scenario's `map` (`scenario::ScenarioLabel`) lists
   things: `label` (text), `object` (the handle), `number?`, `placement?`,
   `team?` and `class?`, one of `object`, `flag`, `volume` or `spawn`.
@@ -1495,6 +1541,9 @@ Game Types**. The layout, its states and its copy are described in
   `RunError::Map` with the check's text, and nothing runs. An empty `map`
   is a map with nothing on it, not an absent one. See
   [rules-start-gate.md](rules-start-gate.md#the-check) for the texts.
+  The page edits a hand match's map under its players and offers **Add
+  what the script needs** ([rules-language-types.md, "The
+  workbench"](rules-language-types.md#the-workbench)).
 - **Run.** `workbench::run` steps a scenario (seated players with their
   units, variant fields, the map, options, seed, round time,
   and a list of events by tick) over `fake::FakeGame`, through the same

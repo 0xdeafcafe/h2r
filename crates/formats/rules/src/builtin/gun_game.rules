@@ -30,6 +30,9 @@ table ladder: (weapon: weapon) = [
     ("objects/weapons/melee/energy_blade/energy_blade"),
 ]
 
+// The top rung; a kill past it wins.
+const top = len(ladder) - 1
+
 player var level: int = 0
 
 on round_start {
@@ -37,7 +40,7 @@ on round_start {
 }
 
 on spawn(p) {
-    set_loadout(p, ladder[min(p.level, len(ladder) - 1)].weapon, none)
+    set_loadout(p, ladder[min(p.level, top)].weapon, none)
 }
 
 on kill(victim, killer) {
@@ -46,6 +49,6 @@ on kill(victim, killer) {
     } else if not (variant.team_play and killer.team == victim.team) {
         killer.level = killer.level + 1
         score(killer, 1)
-        if killer.level >= len(ladder) { end_round(killer.team) }
+        if killer.level > top { end_round(killer.team) }
     }
 }

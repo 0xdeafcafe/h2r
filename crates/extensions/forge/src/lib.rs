@@ -11,7 +11,7 @@ mod scene;
 mod session;
 pub mod tool;
 
-pub use files::saved_names;
+pub use files::{load_saved, saved_names};
 pub use forge_doc::{BlockKind, OpId, TagKey};
 pub use links::{Linkable, Teleporter};
 pub use session::Session;

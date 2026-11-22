@@ -16,6 +16,8 @@ import {
   saveBlocked, saveDraft, saveRules, scenarioProblems, shortTime, signed, simFailed, simRequest, simWarnings, simulateRules,
   sortEvents, standings, tabKey, teamStandings, tickTime, timeline, toolsAfter, traceLines, variantBlocked, whyOff, winnerName,
   wireEvent, withEvent, type CheckResult, type Gate, type ScenarioDraft, type SimResult, type Trace,
+  mapGroups, mapInPlay, mapShort, newThing, parseScenario, thingChoices, thingName, thingsOfMinimal, withNeeds,
+  type LabelLine, type MapThing, type RunFailed, type ScenarioObject,
 } from "../src/lib/rules";
 import { ApiError } from "../src/api/http";
 import type { LocalAccount } from "../src/state/account";
@@ -56,6 +58,26 @@ describe("reading a check", () => {
     expect(c.errors).toEqual([{ line: 0, col: 0, message: "error" }, { line: 4, col: 2, message: "expected )" }]);
     expect(c.report).toBeNull();
     expect(parseCheck(null).errors).toEqual([]);
+  });
+
+  test("labels, the minimal map and warnings", () => {
+    const c = parseCheck({
+      ok: true, errors: [], warnings: [{ line: 3, col: 7, message: "label core is declared but never used" }],
+      report: {
+        labels: [
+          { text: "goal", kind: "zone", min: 1, max: 1, single: true, numbered: false, per_team: false, needs: "x" },
+          { text: "capture", kind: "zone", min: 2, single: false, numbered: true, range: [0, 1], per_team: false, needs: "y" },
+        ],
+        minimal: [{ label: "goal", object: 256, class: "volume" }, { label: "capture", object: 257, number: 0, class: "bogus" }],
+      },
+    });
+    expect(c.warnings).toEqual([{ line: 3, col: 7, message: "label core is declared but never used" }]);
+    expect(c.report!.labels[1]).toMatchObject({ max: null, range: [0, 1] });
+    expect(c.report!.minimal).toEqual([
+      { label: "goal", object: 256, number: null, team: null, class: "volume" },
+      { label: "capture", object: 257, number: 0, team: null, class: null },
+    ]);
+    expect(parseCheck({ ok: true }).warnings).toEqual([]);
   });
 
   test("places and meters", () => {
@@ -328,7 +350,7 @@ describe("failures in words", () => {
 });
 
 describe("why a button is off", () => {
-  const ok: CheckResult = { ok: true, hash: "ab".repeat(32), name: "Test", version: 1, errors: [], report: null, options: [], carrier: null };
+  const ok: CheckResult = { ok: true, hash: "ab".repeat(32), name: "Test", version: 1, errors: [], warnings: [], report: null, options: [], carrier: null };
   const bad: CheckResult = { ...ok, ok: false, hash: null, errors: [{ line: 1, col: 1, message: "x" }, { line: 2, col: 1, message: "y" }] };
   const gate = (over: Partial<Gate> = {}): Gate => ({ tools: "ok", check: ok, locked: false, ...over });
 
@@ -524,7 +546,9 @@ describe("generated matches", () => {
     const built = buildScenario(d);
     expect(built.variant).toEqual(wire.variant);
     expect(built.players).toEqual(wire.players);
-    expect(built.labelled).toEqual([{ label: "hill_corner", object: 256, number: 0 }, { label: "ctf_flag_return", object: 257, number: 1, team: 1 }]);
+    expect(built.map).toEqual([{ label: "hill_corner", object: 256, number: 0 }, { label: "ctf_flag_return", object: 257, number: 1, team: 1 }]);
+    // A draft with no map of its own sends none: the run plays the minimal map.
+    expect("map" in buildScenario(defaultScenario())).toBe(false);
     // A hand-seated player has no unit, and none is sent.
     expect(buildScenario(defaultScenario()).players).toEqual([{ slot: 0, team: 0, lives: 0 }, { slot: 1, team: 1, lives: 0 }]);
     expect(built.timeline).toEqual([
@@ -684,5 +708,122 @@ describe("the mock's generated matches", async () => {
       expect((await call({ source: SRC, ...bad }))!.status).toBe(400);
     }
     expect((await call({ players: 4 }))!.status).toBe(400);
+  });
+});
+
+describe("the test map", () => {
+  const labels: LabelLine[] = [
+    { text: "goal", kind: "zone", min: 1, max: 1, single: true, numbered: false, range: null, per_team: false, needs: 'exactly 1 zone labelled "goal"' },
+    { text: "capture", kind: "zone", min: 2, max: null, single: false, numbered: true, range: [0, 1], per_team: false, needs: 'zones labelled "capture", numbered 0 to 1' },
+    { text: "base", kind: "object", min: 0, max: null, single: false, numbered: false, range: null, per_team: true, needs: 'objects labelled "base", for each team' },
+    { text: "attack", kind: "spawn", min: 1, max: null, single: false, numbered: false, range: null, per_team: false, needs: 'at least 1 spawn area labelled "attack"' },
+  ];
+  const minimal: MapThing[] = [
+    { label: "goal", object: 256, number: null, team: null, class: "volume" },
+    { label: "capture", object: 257, number: 0, team: null, class: "volume" },
+    { label: "capture", object: 258, number: 1, team: null, class: "volume" },
+    { label: "base", object: 259, number: null, team: 0, class: "object" },
+    { label: "base", object: 260, number: null, team: 1, class: "object" },
+    { label: "attack", object: 261, number: null, team: null, class: "spawn" },
+  ];
+
+  test("the scenario map round-trips through the run's scenario and the draft", () => {
+    const objects: ScenarioObject[] = [
+      { id: 300, label: "goal", number: null, team: null, class: "flag" },
+      { id: 301, label: "capture", number: 0, team: null },
+      { id: 302, label: "base", number: null, team: 1, class: "object", placement: 7 },
+    ];
+    const d: ScenarioDraft = { ...defaultScenario(), objects };
+    const wire = buildScenario(d);
+    expect(wire.map).toEqual([
+      { label: "goal", object: 300, class: "flag" },
+      { label: "capture", object: 301, number: 0 },
+      { label: "base", object: 302, placement: 7, team: 1, class: "object" },
+    ]);
+    const back = draftOfWire(JSON.parse(JSON.stringify(wire)));
+    expect(back.objects).toEqual(objects);
+    expect(buildScenario(back).map).toEqual(wire.map);
+    // A kept draft keeps it too, an empty map (nothing labelled) included.
+    expect(parseScenario(JSON.parse(JSON.stringify(d))).objects).toEqual(objects);
+    expect(parseScenario({ ...d, objects: [] }).objects).toEqual([]);
+    expect(buildScenario({ ...d, objects: [] }).map).toEqual([]);
+    // The older name reads as the map.
+    expect(draftOfWire({ labelled: [{ label: "goal", object: 9 }] }).objects).toEqual([{ id: 9, label: "goal", number: null, team: null }]);
+  });
+
+  test("a map that lacks what the labels need says so, a line a requirement", () => {
+    expect(mapShort(labels, thingsOfMinimal(minimal))).toEqual([]);
+    expect(mapShort(labels, [
+      { id: 300, label: "goal", number: null, team: null, class: "object" },
+      { id: 301, label: "capture", number: 0, team: null },
+      { id: 302, label: "capture", number: 5, team: null },
+    ])).toEqual([
+      '"goal" on this map is an object; it needs a zone',
+      'a zone labelled "capture" has the number 5; it needs only 0 to 1',
+      'no zone labelled "capture" has the number 1',
+      'team 0 has no object labelled "base"',
+      'team 1 has no object labelled "base"',
+      'the map has no spawn area labelled "attack"; it needs at least 1 spawn area labelled "attack"',
+    ]);
+  });
+
+  test("Add what the script needs satisfies the report's labels", () => {
+    const mine: ScenarioObject[] = [
+      { id: 256, label: "capture", number: 1, team: null, class: "flag" },
+      { id: 400, label: "decor", number: null, team: null },
+    ];
+    expect(mapShort(labels, mine).length).toBeGreaterThan(0);
+    const merged = withNeeds(mine, minimal, labels);
+    expect(mapShort(labels, merged)).toEqual([]);
+    // What the map had stays as it was; the rest get handles of the map's own.
+    expect(merged.slice(0, 2)).toEqual(mine);
+    const added = merged.slice(2);
+    expect(added.map((t) => [t.label, t.number, t.team])).toEqual([["goal", null, null], ["capture", 0, null], ["base", null, 0], ["base", null, 1], ["attack", null, null]]);
+    expect(new Set(merged.map((t) => t.id)).size).toBe(merged.length);
+    expect(Math.min(...added.map((t) => t.id))).toBe(401);
+    // Merging again adds nothing.
+    expect(withNeeds(merged, minimal, labels)).toEqual(merged);
+    // A per-team label gets a thing for every team in play.
+    const four = withNeeds([], minimal, labels, [0, 1, 2, 3]);
+    expect(four.filter((t) => t.label === "base").map((t) => t.team)).toEqual([0, 1, 2, 3]);
+    expect(mapShort(labels, four, [0, 1, 2, 3])).toEqual([]);
+  });
+
+  test("events name things by label", () => {
+    const things = thingsOfMinimal(minimal);
+    expect(thingChoices(things, "zone", labels).map((c) => c.name)).toEqual(["goal", "capture 0", "capture 1"]);
+    expect(thingChoices(things, "object", labels).map((c) => c.name)).toEqual(["goal", "capture 0", "capture 1", "base (team 0)", "base (team 1)"]);
+    const players = defaultScenario().players;
+    const e = newEvent("enter", 30, players, things, labels);
+    expect(e).toEqual({ tick: 30, type: "enter", zone: 256, object: UNIT_BASE });
+    expect(describeEvent({ ...e, zone: 258 }, things)).toBe("Player 0 entered capture 1");
+    expect(newEvent("pickup", 30, players, things, labels)).toEqual({ tick: 30, type: "pickup", player: 0, object: 256 });
+    // Several unnumbered things of one label are counted.
+    const barriers: ScenarioObject[] = [300, 301].map((id) => ({ id, label: "barrier", number: null, team: null }));
+    expect(barriers.map((b) => thingName(b, barriers))).toEqual(["barrier #1", "barrier #2"]);
+    // With no map of its own the run's things are the minimal map's.
+    expect(mapInPlay(defaultScenario(), minimal)).toEqual(things);
+    expect(mapGroups(things, labels).map((g) => [g.label, g.things.length])).toEqual([["goal", 1], ["capture", 2], ["base", 2], ["attack", 1]]);
+    // A thing added by hand takes its label's class and next number.
+    expect(newThing([], "capture", labels[1]!)).toEqual({ id: 256, label: "capture", number: 0, team: null, class: "volume" });
+    expect(newThing(things, "decor", null)).toEqual({ id: 262, label: "decor", number: null, team: null, class: "object" });
+  });
+
+  test("the mock's check lists labels, and its run refuses a map that lacks them", async () => {
+    const { mockCheck, mockRun } = await import("../mock/rules");
+    const src = 'rules "Siege" 1\ncarrier assault\nlabel goal: zone\nlabel capture: zones numbered 0..1\non enter(z, o) {\n    if z is goal { score(none, 1) }\n    if z is capture { }\n}\n';
+    const c = parseCheck(mockCheck(src));
+    expect(c.report!.labels.map((l) => [l.text, l.kind, l.single, l.range])).toEqual([["goal", "zone", true, null], ["capture", "zone", false, [0, 1]]]);
+    expect(mapShort(c.report!.labels, thingsOfMinimal(c.report!.minimal))).toEqual([]);
+    const d: ScenarioDraft = { ...defaultScenario(), objects: [{ id: 300, label: "capture", number: 0, team: null }] };
+    const r = parseTrace(mockRun(src, buildScenario(d)));
+    expect(runFailed(r)).toBe(true);
+    expect((r as RunFailed).map).toEqual([
+      'the map has no zone labelled "goal"; Siege needs exactly 1 zone labelled "goal"',
+      'the map has 1 zone labelled "capture"; Siege needs at least 2 zones labelled "capture", numbered 0 to 1',
+      'no zone labelled "capture" has the number 1',
+    ]);
+    const fixed: ScenarioDraft = { ...d, objects: withNeeds(d.objects!, c.report!.minimal, c.report!.labels) };
+    expect(runFailed(parseTrace(mockRun(src, buildScenario(fixed))))).toBe(false);
   });
 });

@@ -12,13 +12,17 @@ use crate::ir::Scope;
 /// Nesting deeper than this is refused, so no source can exhaust the stack.
 const MAX_DEPTH: u32 = 64;
 
-/// Words that are never names. Type and kind words (`zone`, `weapon`,
-/// `objects`, `numbered`, `per`) are read by place and stay names.
+/// Words that are never names. Type and kind words (`zone`, `time`,
+/// `weapon`, `objects`, `numbered`, `per`) are read by place and stay
+/// names.
 pub(crate) const KEYWORDS: &[&str] = &[
     "rules", "carrier", "teams", "list", "requires", "option", "palette", "enum", "global", "var",
     "table", "fn", "on", "if", "else", "for", "each", "where", "let", "and", "or", "not", "true",
-    "false", "none", "label", "is", "text", "budget",
+    "false", "none", "label", "is", "text", "budget", "const", "match",
 ];
+
+/// The words that start a label requirement.
+const REQUIREMENT_WORDS: &[&str] = &["at", "exactly", "numbered", "per"];
 
 pub fn parse(tokens: &[Token]) -> Result<Script, CompileError> {
     let mut p = Parser::new(tokens, false);
@@ -84,8 +88,12 @@ impl<'a> Parser<'a> {
         if self.scope_word().is_some() {
             return true;
         }
+        // `carrier.assault` is a value, not the header line.
+        if self.is_word("carrier") && matches!(self.peek2().tok, Tok::Punct(".")) {
+            return false;
+        }
         matches!(&self.peek().tok, Tok::Ident(s) if matches!(s.as_str(),
-            "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "label" | "on"))
+            "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "label" | "const" | "on"))
     }
 
     /// Recovery from a bad declaration: on to the next line that starts
@@ -189,6 +197,7 @@ impl<'a> Parser<'a> {
             Tok::Ident(s) => format!("`{s}`"),
             Tok::Int(n) => format!("{n}"),
             Tok::Fixed(_) => "a fixed number".to_string(),
+            Tok::Time(_, text) => text.clone(),
             Tok::Str(s) => format!("{s:?}"),
             Tok::Punct(p) => format!("`{p}`"),
             Tok::Eof => "the end of the file".to_string(),
@@ -252,11 +261,25 @@ impl<'a> Parser<'a> {
         Ok(TypeName { name, optional, pos })
     }
 
-    /// An int, with an optional leading `-`.
-    fn signed_int(&mut self) -> R<i64> {
-        let neg = self.eat_punct("-");
-        let n = self.int()?;
-        Ok(if neg { -n } else { n })
+    /// A label requirement's count: a constant expression the checker
+    /// folds (`16`, `-1`, `last_phase`, `(n + 1)`).
+    fn count(&mut self) -> R<Expr> {
+        self.enter()?;
+        let e = self.unary();
+        self.leave();
+        e
+    }
+
+    /// Whether a count starts here, on the line.
+    fn starts_count(&self) -> bool {
+        if self.peek().nl {
+            return false;
+        }
+        match &self.peek().tok {
+            Tok::Int(_) | Tok::Punct("-") | Tok::Punct("(") => true,
+            Tok::Ident(s) => !REQUIREMENT_WORDS.contains(&s.as_str()) && !KEYWORDS.contains(&s.as_str()),
+            _ => false,
+        }
     }
 
     /// Whether the line goes on: the next token is on it and is not `;`.
@@ -274,20 +297,19 @@ impl<'a> Parser<'a> {
             let at = self.pos();
             let req = if self.eat_word("at") {
                 if self.eat_word("least") {
-                    Requirement::AtLeast(self.int()?)
+                    Requirement::AtLeast(self.count()?)
                 } else if self.eat_word("most") {
-                    Requirement::AtMost(self.int()?)
+                    Requirement::AtMost(self.count()?)
                 } else {
                     return Err(self.unexpected("`least` or `most`"));
                 }
             } else if self.eat_word("exactly") {
-                Requirement::Exactly(self.int()?)
+                Requirement::Exactly(self.count()?)
             } else if self.eat_word("numbered") {
-                let ranged = !self.peek().nl && (matches!(self.peek().tok, Tok::Int(_)) || self.is_punct("-"));
-                if ranged {
-                    let lo = self.signed_int()?;
+                if self.starts_count() {
+                    let lo = self.count()?;
                     self.expect_punct("..")?;
-                    let hi = self.signed_int()?;
+                    let hi = self.count()?;
                     Requirement::Numbered(Some((lo, hi)))
                 } else {
                     Requirement::Numbered(None)
@@ -295,10 +317,10 @@ impl<'a> Parser<'a> {
             } else if self.eat_word("per") {
                 self.expect_word("team")?;
                 Requirement::PerTeam
-            } else if matches!(self.peek().tok, Tok::Int(_)) {
-                let lo = self.int()?;
+            } else if self.starts_count() {
+                let lo = self.count()?;
                 self.expect_punct("..")?;
-                let hi = self.int()?;
+                let hi = self.count()?;
                 Requirement::Between(lo, hi)
             } else {
                 return Err(self.unexpected(
@@ -486,15 +508,28 @@ impl<'a> Parser<'a> {
                 }
             }
             self.expect_punct(")")?;
-            let body = self.block()?;
+            // `-> bool = <expression>`: a value function.
+            let result = if self.eat_punct("->") { Some(self.ty()?) } else { None };
+            let (value, body) = if self.eat_punct("=") {
+                (Some(self.expr()?), Vec::new())
+            } else {
+                (None, self.block()?)
+            };
             script.items.push(Item::Fn(FnDecl {
                 name,
                 params,
+                result,
+                value,
                 body,
                 pos,
             }));
         } else if self.eat_word("label") {
             script.items.push(Item::Label(self.label(pos)?));
+        } else if self.eat_word("const") {
+            let name = self.name()?;
+            self.expect_punct("=")?;
+            let value = self.expr()?;
+            script.items.push(Item::Const { name, value, pos });
         } else if self.eat_word("on") {
             let event = self.word()?;
             let mut args = Vec::new();
@@ -684,8 +719,12 @@ impl<'a> Parser<'a> {
         if self.is_word("if") {
             return self.if_stmt();
         }
+        if self.eat_word("match") {
+            return self.match_stmt(pos);
+        }
         if self.eat_word("for") {
             self.expect_word("each")?;
+            let set_pos = self.pos();
             let base = self.set_base()?;
             let binder = self.name()?;
             let filter = if self.eat_word("where") {
@@ -699,7 +738,7 @@ impl<'a> Parser<'a> {
                     base,
                     binder: None,
                     filter,
-                    pos,
+                    pos: set_pos,
                 },
                 binder,
                 body,
@@ -744,6 +783,44 @@ impl<'a> Parser<'a> {
         let els = self.else_part()?;
         self.leave();
         Ok(Stmt::If { cond, then, els })
+    }
+
+    /// `match <value> { <arms> }`, past `match`. An arm is one or more
+    /// variants (`Role.vip, Role.guard`) and a block, or `else` and a block.
+    fn match_stmt(&mut self, pos: Pos) -> R<Stmt> {
+        self.enter()?;
+        let value = self.expr()?;
+        self.expect_punct("{")?;
+        let mut arms = Vec::new();
+        let mut els = None;
+        loop {
+            while self.eat_punct(";") {}
+            if self.eat_punct("}") {
+                break;
+            }
+            if self.peek().tok == Tok::Eof {
+                return Err(self.unexpected("`}`"));
+            }
+            let at = self.pos();
+            if self.eat_word("else") {
+                if els.is_some() {
+                    return Err(CompileError::at(at, "a match has one else arm"));
+                }
+                els = Some(self.block()?);
+                continue;
+            }
+            if els.is_some() {
+                return Err(CompileError::at(at, "the else arm comes last"));
+            }
+            let mut patterns = vec![self.postfix()?];
+            while self.eat_punct(",") {
+                patterns.push(self.postfix()?);
+            }
+            let body = self.block()?;
+            arms.push(MatchArm { patterns, body, pos: at });
+        }
+        self.leave();
+        Ok(Stmt::Match { value, arms, els, pos })
     }
 
     /// `else if ...`, `else { }` or nothing.
@@ -974,6 +1051,10 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(at(ExprKind::Fixed(v)))
             }
+            Tok::Time(ticks, text) => {
+                self.bump();
+                Ok(at(ExprKind::Time(ticks, text)))
+            }
             Tok::Str(s) => {
                 self.bump();
                 Ok(at(ExprKind::Str(s)))
@@ -1019,6 +1100,11 @@ impl<'a> Parser<'a> {
                             pos,
                             "a set is only allowed in for each, count, first and pick",
                         ));
+                    }
+                    // The built-in enum of carriers: `carrier.assault`.
+                    "carrier" if matches!(self.peek2().tok, Tok::Punct(".")) => {
+                        self.bump();
+                        return Ok(at(ExprKind::Name("carrier".into())));
                     }
                     _ => {}
                 }

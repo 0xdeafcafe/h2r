@@ -279,10 +279,15 @@ The Workbench tab, top to bottom:
   script first."); the reasons are `saveBlocked`, `variantBlocked` and
   `whyOff` in `rules.ts`.
 - **The script.** The Insert menus, the Monaco editor
-  (`stats/RulesEditor.tsx`) and its shortcut line. A read-only script
+  (`stats/RulesEditor.tsx`) and its shortcut line (quick fixes,
+  rename, format, definition, references, outline). A read-only script
   has a bar with **Use as start** above them.
-- **The check**, beside the script. **Problems** lists each error with
-  its place; choosing one selects it in the editor. **Budget** has the
+- **The check**, beside the script. **Problems** lists each error, then
+  each warning, with its place; choosing one selects it in the editor,
+  where Ctrl (Cmd)+. offers its fixes. **What a map needs** lists each
+  label the script declares: its map text, its kind in words ("a set of
+  zones, numbered") and the requirement in Forge's words, or "The script
+  declares no labels: any map will do." **Budget** has the
   meters and each handler's worst case, and **Capabilities** the
   lobby's words. The page checks as you type.
 - **Test.** No form: the server makes the matches up
@@ -299,11 +304,17 @@ The Workbench tab, top to bottom:
 - **Edit this match**, folded at the foot of Test. Opening it puts the
   shown match in the hand editor (`ScenarioEditor`) and uses it instead
   of the generated ones: how long to run, the round clock, the seed and
-  team play; the seated players (slot, team by colour name, lives); and
+  team play; the seated players (slot, team by colour name, lives); the
+  **Map** (its labelled things grouped by label, each with its number,
+  team and class, **Add thing** and **Use the smallest map**; a match
+  with no map of its own says it plays on the script's smallest map and
+  offers **Make it my map**), with what the map lacks for the script's
+  labels as problems above it and **Add what the script needs**; and
   the events in time order. "Player 0 kills Player 1, Add kill" adds a
   kill in one click and a menu adds any other event; a new event lands
   a second after the last and lengthens the run when it is past its
-  end. Each event is a row that reads as a sentence, and its time is
+  end. Each event is a row that reads as a sentence, a zone or object
+  picked by label and number ("capture 0"), and its time is
   typed as `0:02.50`, as seconds (`2.5`) or as ticks (`75t`)
   (`parseTickTime`). Every field is black on white, as the site's other
   fields are. Folding it goes back to the generated matches.
@@ -317,7 +328,8 @@ The Workbench tab, top to bottom:
   handlers that ran and their calls, who scored and their new score,
   and any team, lives or variable change. A long timeline shows its
   first 150 moments and **Show all**. An event no handler answered says
-  so. While the script has problems the last results stay, dimmed, with
+  so. An edited match whose map fails the script's labels runs nothing,
+  and the results list the map's problems. While the script has problems the last results stay, dimmed, with
   the reason. **Copy as text** copies the trace, a line a tick.
 
 A request that fails is put in words with whose fault it is
@@ -333,7 +345,11 @@ variant and the test are off.
 Signed out, everything but Save, Publish and the two list tabs works.
 `?script=<hash>` opens a saved or built-in script read-only. The mock
 (`mock/rules.ts`) answers every route from a few text checks, and makes
-its matches from seeded random kills to ten points or two minutes.
+its matches from seeded random kills to ten points or two minutes. It
+reads a script's `label` lines for the check's `labels` and `minimal`,
+refuses a run whose map lacks them, and offers two quick fixes (a word
+one letter off a label's name, an unused label) and a rename that
+keeps a label's map text.
 
 ### Server stats
 
