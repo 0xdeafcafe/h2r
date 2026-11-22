@@ -2,6 +2,16 @@
 
 Evidence for [native-decorators.md](../native-decorators.md) ("Rules and limits": the lightmap and engine-driven states). Nothing here states what the code does today. Entries are newest first.
 
+## 2026-11-22: where the engine-state slots come from, and how they convert
+
+Commit: `d157afdad`. Method: `h2 disasm` of `0x0001ae70`, `0x00131ed0`, and of `0x0001a170` (`0x0001a1cd`..`0x0001a1f8`, `0x0001a509`, `0x0001a801`..`0x0001a8c7`) and `0x0001ab50` (`0x0001abad`..`0x0001abd8`, `0x0001ad2d`..`0x0001adb9`).
+
+- `0x0001ae70` fills the slots before the draw: `ctx + 0x5c + 4·i` with scalar input `i` (`0x000336f0`), `ctx + 0x108 + 12·i` with vector input `i` (`0x00033980`), `ctx + 0x300 + 4·i` with integer input `i` (`0x00034060`). So a binding's scalar slot is `EngineInputs::scalars[slot]` and its colour slot `EngineInputs::vectors[slot]`.
+- Both appliers convert alike. Kind 2: `fld; fistp`. Kind 1: the float's bits. Kind 0 from a scalar: `fld; fmul [0x0045dc38]; fistp; shl 24`, then `((held ^ v) & 0xffffff) ^ v`, the top byte over the held low 24 bits.
+- `0x00131ed0` multiplies the three channels by `[0x0045dc38]` (255), and stores the third at bit 0, the second at 8, the first at 16, each `and 0xff`: no clamp. The applier keeps the held top byte (`((held ^ c) & 0xffffff) ^ held`).
+
+`tags::material::EngineState::value` follows this under round-to-nearest-even. Not verified: the x87 control word in force at these draws (the engine port in `crates/rewrites/engine/src/render_loop/states.rs` reads it from the guest).
+
 ## 2026-11-22: the engine-state bindings' byte layout, read
 
 Commit: `a6ff6f83c`. Method: `h2 disasm` of `0x0001ab50` (to `0x0001ac58`) and of `0x0001a170`'s other-source branch `0x0001a89c`.

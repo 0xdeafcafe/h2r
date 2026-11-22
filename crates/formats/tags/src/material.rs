@@ -1287,6 +1287,63 @@ impl EngineState {
             Some(_) => stage_state_name(u16::from(self.state)),
         }
     }
+
+    /// The state's value for a draw whose engine inputs are `inputs`,
+    /// over `current`, the value the state holds (the D3D shadow the guest
+    /// reads, `0x00407498` or `0x00404dd0`): `0x0001ae70` fills the
+    /// context's scalar slots from `inputs.scalars` and its colour slots
+    /// from `inputs.vectors`, and `0x0001a170` and `0x0001ab50` convert
+    /// them alike:
+    ///
+    /// - a scalar of kind [`EngineStateKind::Integer`] is rounded
+    ///   (`fistp`, `0x0001a1f8`), of kind [`EngineStateKind::Float`] its
+    ///   bits, of kind [`EngineStateKind::Colour`] times [`BYTE_SCALE`],
+    ///   rounded, into the top byte over `current`'s low 24 bits
+    ///   (`0x0001a801`);
+    /// - a colour is packed by `0x00131ed0`, each channel times
+    ///   [`BYTE_SCALE`], rounded and masked to a byte, red at bit 16, green
+    ///   at 8, blue at 0, into `current`'s low 24 bits, its top byte kept
+    ///   (`0x0001a89c`), whatever the kind.
+    ///
+    /// Rounding is to nearest, ties to even (the x87 default; the
+    /// products are exact at 53 bits). `None` when the slot is past the
+    /// inputs (the guest would read the next field of its context).
+    pub fn value(self, inputs: &EngineInputs, current: u32) -> Option<u32> {
+        match self.source {
+            EngineStateSource::Scalar(slot) => {
+                let x = f64::from(*inputs.scalars.get(usize::from(slot))?);
+                Some(match self.kind {
+                    EngineStateKind::Integer => fistp(x),
+                    EngineStateKind::Float => (x as f32).to_bits(),
+                    EngineStateKind::Colour => (current & 0x00ff_ffff) | (fistp(x * f64::from(BYTE_SCALE)) << 24),
+                })
+            }
+            EngineStateSource::Colour(slot) => {
+                let v = inputs.vectors.get(usize::from(slot))?;
+                Some((current & 0xff00_0000) | pack_colour(*v))
+            }
+        }
+    }
+}
+
+/// The fraction-to-byte scale at `0x0045dc38`, 255.
+pub const BYTE_SCALE: f32 = 255.0;
+
+/// `fistp m32` under round-to-nearest-even: out of range or NaN gives the
+/// integer indefinite, `0x80000000`.
+fn fistp(x: f64) -> u32 {
+    let r = x.round_ties_even();
+    if r.is_nan() || !(-2_147_483_648.0..=2_147_483_647.0).contains(&r) {
+        return 0x8000_0000;
+    }
+    r as i32 as u32
+}
+
+/// `0x00131ed0`: a colour as a D3D word's low 24 bits, each channel times
+/// [`BYTE_SCALE`], rounded and masked to a byte (no clamp: 1.5 wraps).
+fn pack_colour([r, g, b]: [f32; 3]) -> u32 {
+    let byte = |c: f32| fistp(f64::from(c) * f64::from(BYTE_SCALE)) & 0xff;
+    (byte(r) << 16) | (byte(g) << 8) | byte(b)
 }
 
 /// `imp`'s engine-driven render and texture-stage states, in the order

@@ -364,8 +364,13 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
   (`shader::ANIMATED_RENDER_STATES`, `ANIMATED_STAGE_STATES`: state,
   component, kind). Source 1 reads the scalar at `ctx + 0x5c + 4·slot`;
   any other the colour at `ctx + 0x108 + 12·slot`, packed by `0x00131ed0`
-  into the state's low 24 bits with its alpha byte kept. Their values
-  are not evaluated.
+  into the state's low 24 bits with its alpha byte kept.
+  `EngineState::value` evaluates one from `EngineInputs` (`0x0001ae70`
+  fills the scalar slots from the scalar inputs and the colour slots from
+  the vector inputs): an integer state rounds the scalar, a float state
+  takes its bits, a colour state from a scalar puts it times 255 in the
+  top byte; a colour packs each channel times 255, rounded and wrapped
+  to a byte, red at bit 16. No draw applies them.
 - **Engine input semantics** (which scalar or vector is time, camera, light
   colour and so on) are not named, apart from the root-fed ones.
 - **Persistent state.** The engine keeps texture slots, constant banks and the
