@@ -1354,7 +1354,8 @@ mod tests {
         assert_eq!(helps, ["First.", "Second."]);
         assert_eq!(s.spec().content.required_icons, ["art.0"]);
         // The legend: no value row, so no CHANGE.
-        let words: Vec<&str> = s.spec().prompts.iter().map(|p| p.text.as_str()).collect();
+        let spec = s.spec();
+        let words: Vec<&str> = spec.prompts.iter().map(|p| p.text.as_str()).collect();
         assert_eq!(words, ["SELECT", "BACK"]);
     }
 
