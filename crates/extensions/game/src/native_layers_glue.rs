@@ -102,22 +102,37 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let read = ReadMemory(mem);
-        // The passes draw without the stencil and with the palettes the
-        // load expanded through: a view that holds anything else stays on
-        // the D3D path (layers 1 and 3 begin in stencil mode 1).
-        if !d.stencil_state(&read).is_some_and(|s| !s.enable) {
+        // The passes draw under the device's stencil (`fog_gpu::layer_stencil`:
+        // the scene's layer 1 begins in stencil mode 1, the others in mode
+        // 0) and with the palettes the load expanded through: a stencil
+        // that does not read, or one the bound depth cannot hold, and other
+        // palettes stay on the D3D path.
+        let Some(stencil) = d.stencil_state(&read) else {
             *outcomes.entry("stencil").or_default() += taken.len() as u64;
             report(&outcomes, 0);
             return None;
-        }
+        };
         if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
             *outcomes.entry("palettes").or_default() += taken.len() as u64;
             report(&outcomes, 0);
             return None;
         }
-        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
-            gpu.prewarm_layer(l, device, color, depth).then_some(())
-        })?;
+        // `Err`: the bound depth has no stencil the state needs.
+        let warm = ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+            if native_render::fog_gpu::layer_stencil(&stencil, depth).is_none() {
+                return Some(Err(()));
+            }
+            Some(Ok(gpu.prewarm_layer(l, device, color, depth, &stencil)))
+        });
+        match warm {
+            Some(Ok(true)) => {}
+            Some(Err(())) => {
+                *outcomes.entry("stencil").or_default() += taken.len() as u64;
+                report(&outcomes, 0);
+                return None;
+            }
+            _ => return None,
+        }
         let device_words = device_fog_words(&d, mem);
         let mut fogs = HashMap::new();
         for (&material, words) in &data.words {
@@ -154,6 +169,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             view: None,
             w_clip: None,
             writes_depth: data.writes_depth,
+            stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
         });
         let reservation = d
@@ -188,6 +204,9 @@ struct LayerViewPass {
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: Option<([f32; 2], bool)>,
     writes_depth: bool,
+    /// The device's stencil at the ask, which every draw of the pass
+    /// takes (`fog_gpu::layer_stencil`).
+    stencil: gfx::state::StencilState,
     run: u64,
 }
 
@@ -218,7 +237,10 @@ impl d3d::ExternalPass for LayerViewPass {
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites { color: true, depth_stencil: self.writes_depth }
+        d3d::ExternalWrites {
+            color: true,
+            depth_stencil: self.writes_depth || native_render::fog_gpu::stencil_writes(&self.stencil),
+        }
     }
 
     /// The layer's draws join the D3D render pass already open on these
@@ -233,6 +255,6 @@ impl d3d::ExternalPass for LayerViewPass {
         let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         let view = ViewInputs { constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip };
-        Some(gpu.layer_draws(self.layer, &t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))
+        Some(gpu.layer_draws(self.layer, &t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs, &self.stencil))
     }
 }

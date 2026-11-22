@@ -1,6 +1,6 @@
 # Retiring the guest D3D path
 
-Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built; nothing after it is. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
+Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built. Of R1, the structure's static items of layers 1, 5, 7, 8 and 20 draw from the scene's plan by default and under the device's stencil (framescene.md slice 4, "The stage"); the rest of R1 is not built. Nothing after R1 is. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. No slice adds a switch.
 
@@ -55,7 +55,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Caller (guest function) | Draw kind | Claimed | Left on D3D, and why | Count |
 |---|---|---|---|---|
 | Layer draw `0x00044550`, layer 3, from `0x0002bed0` | indexed lists and strips, world and objects | world parts, object parts, model decorators | parts whose material pass does not translate; objects the walk returns (`walk_unsupported`: stencil marking, conditional stream ranges, the auxiliary state toggle); decorators with engine-driven state, a lightmap or a palettized stage; any view where one copy refuses. Setup (kind 2) for the resolved-draw remainder | 8.26 ms, 1,882 D3D entries a frame on the D3D path [a]; about 14 objects a frame returned [b] |
-| Layer draw, layers 1, 5, 7, 8, 20 | indexed | static items from the scene's plan only with `frame-scene.layers`; otherwise recorded at the resolved draw | object items, and every item when the option is off (kind 2 setup for all of it) | layer 1: 0.32 ms, 56 entries [a]; others under 0.3 ms |
+| Layer draw, layers 1, 5, 7, 8, 20 | indexed | the structure's static items from the scene's plan (`frame-scene.layers`), under the stencil the device holds | object items, animated and per-draw items, every item after the first the plan cannot take, and every item with `frame-scene.layers=off` (kind 2 setup for all of it) | layer 1: 0.32 ms, 56 entries [a]; others under 0.3 ms |
 | Layer 2 (`0x0002c05b`) and the sky `0x0003ede0` (strip at `0x0004c976`) | indexed | the sky strip and standard layer-2 geometry, packet only | other layer-2 handlers, unknown callers; transforms, shader inputs and the stencil bracket | 0.29 ms, 120 entries [a] |
 | Object shadows `0x000335e0`, `0x00032350` | indexed into shadow targets, then receivers | sorted BSP and model draws of layers 10, 11, 14, at 1x on one backend | scaled and E3 display copies, interpolated replay, a missing freeze or resource, a pending callback; the gather and all setup | 1.24 ms, 182 entries [a] |
 | Dynamic lights `0x00031c80`, per light `0x00031170` | indexed, layers 10 to 14; gel quads into target 13 | layers 12 and 13 over structure, whole groups from the scene, gel quads | lights that sample a shadow map, an animated input or an engine-driven state; object-model lights on the resolved path; the visible-light gather | 1.88 ms without the per-light passes [a]; per-light time not broken out |
@@ -343,7 +343,7 @@ classified readers, 73 read run state and 30 start from it.
 |---|---|---|---|
 | Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | read today, not built |
 | Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built, traversal not |
-| World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; the rest behind `frame-scene.layers` |
+| World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items |
 | Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; a part the walk cannot read is a named drop, not a guest draw | built, with a remainder |
 | Decorators | builds `0x0004de20`, draw `0x0004e260` | `native_render::decorators` ([native-decorators.md](native-decorators.md)) | built, not verified |
 | Sky, layer 2 | `0x0003ede0`, the layer-2 handlers | a sky stage from the scenario's sky and its model | packet only |
