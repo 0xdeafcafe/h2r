@@ -47,6 +47,12 @@ fn header_of(script: Script) -> Option<Ir> {
     (script.mode == Mode::Rules).then(|| named(script.prefix)).flatten()
 }
 
+/// The script a block names (mode 2), when this machine has it: what the
+/// lobby's Quick Options rows come from (`crate::variant_quick`).
+pub fn block_script(block: &[u8; LEN]) -> Option<Ir> {
+    header_of(Ext::in_effect(block).script)
+}
+
 /// The row of ours a block naming a rules script (mode 2) is listed
 /// under: the script it names is on this machine and its header names one
 /// ([`list_row`]). A script this machine lacks is listed under its

@@ -103,6 +103,7 @@ connection to hold `session.claim`.
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
 | `rules.state`, `rules.reload` | read, act | [Rules scripts](#rules-scripts) |
+| `variants.quick` | read | [Game variants](#game-variants) |
 | `match.status`, `match.report`, `match.stop`, `sim.guest_census` | read, read, act, read | [Sim matches](#sim-matches) |
 | `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -4333,6 +4334,40 @@ that this host cannot run; a Live custom game reloads in place only.
 h2 agent rules.state
 h2 agent rules.reload '{"source":"rules \"Mine\" 1\ncarrier slayer\n..."}'
 h2 agent rules.reload '{"ir_b64":"...","mode":"in_place"}'
+```
+
+## Game variants
+
+The lobby variant's Quick Options as its rules script marks them
+([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)),
+read at a tick boundary. `crates/extensions/agent/src/variants.rs` checks
+the params, holds the wire types and calls the game's rows
+(`game::variant_quick::AgentSource`, over
+`crates/extensions/game/src/variant_quick.rs`).
+
+| Method and access | Parameters | Result |
+|---|---|---|
+| `variants.quick` (read) | `{}` or omitted | `{variant, engine, script?: {name, hash}, shown, rows: [{slot, kind: setting \| option, name, label, value, text, line, help?, values: [{value, text}]}]}` |
+
+The variant is the lobby's (the squad session's record, else the game's
+own copy); with neither it is `UNAVAILABLE`. `script` is the script the
+record's block names, when this machine has it (a store variant's
+bundle block counts, as at the start gate), and `hash` its SHA-256 in
+hex; absent for a variant with no script, whose panel keeps retail's
+rows. `shown` is true when the panel shows these rows: the
+`variant-quick` switch is on ([switches.md](switches.md)) and the script
+was found. `rows` are the script's `quick` marks in its order, at most
+five, empty for a script with no marks: `slot` is the row's place, `kind`
+a record setting of `rules::settings::TABLE` or one of the script's
+options, `value` the record's value (an option's from the block's option
+bits), `text` its text and `line` the panel's "Label: value". `help` is
+an option's description. `values` are what the row may take: for a
+setting, the values the editor offered at the last variant list load
+(none before one); for an option, its range. The panel's lines
+themselves are in [`ui.lobby_options`](#ui-what-the-menus-show).
+
+```sh
+h2 agent variants.quick
 ```
 
 ## Sim matches

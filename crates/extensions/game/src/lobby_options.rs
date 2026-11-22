@@ -6,6 +6,12 @@
 //! option. Keep all lines in those five slots. The next text widget
 //! sits below the Quick Options box, next to the footer.
 //!
+//! For a variant whose record names a rules script, the script's Quick
+//! Options marks (`crate::variant_quick`, switch `variant-quick`) take the
+//! rows in place of the formatter's, "Label: value" in the script's order
+//! (docs/game/rules-variants.md, "Quick Options in the lobby"). A record
+//! with no script keeps the formatter's rows.
+//!
 //! The lobby's mode (`crate::lobby_mode`) puts its lines first (the Forge
 //! map; Firefight's wave set, difficulty and starting lives). The party
 //! lobby's header (`crate::lobby_tabs::header::panel`) has its own hook on
@@ -118,6 +124,45 @@ fn panel(mode: Vec<u32>, options: Vec<u32>) -> Vec<u32> {
 /// visible one when they fit, and otherwise take the bottom slots.
 fn first_extra(retail_end: usize, extra: usize) -> usize {
     retail_end.min(PANEL_ROWS - extra)
+}
+
+/// What one of the panel's five slots shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    /// The formatter's text, as it left it.
+    Retail,
+    /// Nothing: the slot is hidden.
+    Hidden,
+    /// One of our lines.
+    Ours(u32),
+}
+
+/// The panel's five slots. `retail`: which slots the formatter left
+/// visible. `quick`: a script variant's lines (`variant_quick::panel_ids`),
+/// which replace every formatter row, in order; `None` for a variant with
+/// no script, whose formatter rows stay. `extra`: the lobby mode's and the
+/// options' lines ([`panel`]), which then take the bottom by
+/// [`first_extra`].
+fn plan(retail: [bool; PANEL_ROWS], quick: Option<&[u32]>, extra: &[u32]) -> [Slot; PANEL_ROWS] {
+    let mut slots = match quick {
+        Some(lines) => {
+            let mut slots = [Slot::Hidden; PANEL_ROWS];
+            for (slot, &id) in slots.iter_mut().zip(lines) {
+                *slot = Slot::Ours(id);
+            }
+            slots
+        }
+        None => retail.map(|shown| if shown { Slot::Retail } else { Slot::Hidden }),
+    };
+    let end = slots
+        .iter()
+        .rposition(|s| *s != Slot::Hidden)
+        .map_or(0, |last| last + 1);
+    let extra = &extra[..extra.len().min(PANEL_ROWS)];
+    for (slot, &id) in slots[first_extra(end, extra.len())..].iter_mut().zip(extra) {
+        *slot = Slot::Ours(id);
+    }
+    slots
 }
 
 fn halo1_active(map: Option<Category>, store: &Store) -> bool {
@@ -283,20 +328,23 @@ impl LobbyOptions {
             return Ok(Ret::new(retail.eax, 4));
         }
 
+        let quick = cx.write(|m| crate::variant_quick::panel_ids(m, variant))?;
         let mode = cx.write(|m| crate::lobby_mode::panel_ids(m, &self.store))?;
         let ids = panel(mode, self.extra_options(&cx));
-        if ids.is_empty() {
+        if ids.is_empty() && quick.is_none() {
             return Ok(Ret::new(retail.eax, 4));
         }
-        let retail_end = cx.read(|m| {
-            slots.iter()
-                .rposition(|&widget| visible(m, widget))
-                .map_or(0, |last| last + 1)
-        });
-        for (&widget, id) in slots[first_extra(retail_end, ids.len())..].iter().zip(ids) {
-            cx.call(GuestCall::new(points::TEXT_SET.base).edi(widget).args([id]))
-                .await?;
-            cx.write(|m| m.set_u8(widget + WIDGET_VISIBLE, 1))?;
+        let shown = cx.read(|m| slots.map(|widget| visible(m, widget)));
+        for (&widget, slot) in slots.iter().zip(plan(shown, quick.as_deref(), &ids)) {
+            match slot {
+                Slot::Retail => {}
+                Slot::Hidden => cx.write(|m| m.set_u8(widget + WIDGET_VISIBLE, 0))?,
+                Slot::Ours(id) => {
+                    cx.call(GuestCall::new(points::TEXT_SET.base).edi(widget).args([id]))
+                        .await?;
+                    cx.write(|m| m.set_u8(widget + WIDGET_VISIBLE, 1))?;
+                }
+            }
         }
         Ok(Ret::new(retail.eax, 4))
     }
@@ -315,6 +363,11 @@ impl hooks::Feature for LobbyOptions {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         if !b.switches().feature("ui-strings", true) {
             return Ok(());
+        }
+        // A script variant's own rows (docs/game/rules-variants.md,
+        // "Quick Options in the lobby"); off, its formatter rows stay.
+        if b.switches().feature(crate::variant_quick::FEATURE, true) {
+            crate::variant_quick::build(b)?;
         }
         let this = Arc::new(self.clone());
         b.raw().before(&points::LOBBY_VARIANT_PANEL, "lobby option lines", move |c| {
@@ -453,6 +506,114 @@ mod tests {
                 assert_eq!(retail - start, (retail + extra).saturating_sub(PANEL_ROWS));
             }
         }
+    }
+
+    /// The formatter left its first `n` rows visible.
+    fn retail(n: usize) -> [bool; PANEL_ROWS] {
+        std::array::from_fn(|i| i < n)
+    }
+
+    /// A script variant's marked rows take the slots from the top, in the
+    /// script's order, however many rows the formatter wrote; slots past
+    /// the last mark are hidden. The lines are the record's own.
+    #[test]
+    fn marked_rows_replace_the_formatters_in_order() {
+        use Slot::{Hidden, Ours};
+        let quick = [0x10, 0x11, 0x12];
+        for n in 0..=PANEL_ROWS {
+            assert_eq!(
+                plan(retail(n), Some(&quick), &[]),
+                [Ours(0x10), Ours(0x11), Ours(0x12), Hidden, Hidden],
+                "{n} retail rows"
+            );
+        }
+        let five = [1, 2, 3, 4, 5];
+        assert_eq!(plan(retail(2), Some(&five), &[]), five.map(Ours));
+
+        let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+        let record = variants::portable::record_for(&ir, &[]).unwrap();
+        let lines = crate::variant_quick::lines(&record).unwrap();
+        assert_eq!(lines.len(), ir.quick.len());
+        assert_eq!(lines[0], "Respawn Time: 3 seconds");
+        assert_eq!(lines[3], "Bounce points: 1");
+    }
+
+    /// The lobby mode's and the options' lines take the bottom of a script
+    /// variant's rows by the same rule as of the formatter's.
+    #[test]
+    fn mode_and_option_lines_still_take_the_bottom() {
+        use Slot::{Hidden, Ours};
+        let all = retail(PANEL_ROWS);
+        assert_eq!(
+            plan(all, Some(&[1, 2, 3]), &[9]),
+            [Ours(1), Ours(2), Ours(3), Ours(9), Hidden]
+        );
+        assert_eq!(
+            plan(all, Some(&[1, 2, 3, 4, 5]), &[8, 9]),
+            [Ours(1), Ours(2), Ours(3), Ours(8), Ours(9)]
+        );
+        assert_eq!(
+            plan(all, Some(&[1, 2, 3, 4]), &[7, 8, 9]),
+            [Ours(1), Ours(2), Ours(7), Ours(8), Ours(9)]
+        );
+        assert_eq!(plan(all, Some(&[]), &[8, 9]), [Ours(8), Ours(9), Hidden, Hidden, Hidden]);
+        // The same rule over the formatter's rows.
+        for n in 0..=PANEL_ROWS {
+            for extra in 0..=3 {
+                let ids: Vec<u32> = (0..extra).map(|i| 0x20 + i).collect();
+                let from_retail = plan(retail(n), None, &ids);
+                let from_quick: Vec<u32> = (0..n as u32).collect();
+                let from_marks = plan(retail(0), Some(&from_quick), &ids);
+                let start = first_extra(n, ids.len());
+                for (i, (r, q)) in from_retail.iter().zip(from_marks).enumerate() {
+                    let ours = (start..start + ids.len())
+                        .contains(&i)
+                        .then(|| Ours(ids[i - start]));
+                    assert_eq!(*r, ours.unwrap_or(if i < n { Slot::Retail } else { Hidden }));
+                    assert_eq!(q, ours.unwrap_or(if i < n { Ours(i as u32) } else { Hidden }));
+                }
+            }
+        }
+    }
+
+    /// A record that names no script, or a script this machine lacks, has
+    /// no lines of `variant_quick`; the formatter's rows stay as before.
+    #[test]
+    fn a_variant_with_no_script_keeps_retails_rows() {
+        use Slot::{Hidden, Ours, Retail};
+        use variants::ext::{Ext, Mode, Script};
+        use variants::record::{GameType, GameVariant};
+
+        let mut record = GameVariant::stock(GameType::Slayer).unwrap();
+        assert_eq!(crate::variant_quick::lines(&record), None);
+        record
+            .set_ext(&Ext {
+                script: Script { mode: Mode::Rules, prefix: [9; 8], options: 0 },
+                ..Ext::default()
+            })
+            .unwrap();
+        assert_eq!(crate::variant_quick::lines(&record), None);
+
+        assert_eq!(plan(retail(4), None, &[]), [Retail, Retail, Retail, Retail, Hidden]);
+        assert_eq!(plan(retail(4), None, &[9]), [Retail, Retail, Retail, Retail, Ours(9)]);
+        assert_eq!(plan(retail(5), None, &[9]), [Retail, Retail, Retail, Retail, Ours(9)]);
+    }
+
+    /// A script with no `quick` line has no rows: the formatter's are
+    /// hidden and none take their place; nothing is picked for it.
+    #[test]
+    fn a_script_with_no_marks_shows_none() {
+        use Slot::{Hidden, Ours};
+        let ir = ::rules::compile(::rules::builtin::SLAYER).unwrap();
+        assert!(ir.quick.is_empty());
+        let record = variants::portable::record_for(&ir, &[]).unwrap();
+        assert_eq!(crate::variant_quick::lines(&record), Some(Vec::new()));
+        assert!(crate::variant_quick::rows(&record, &ir).is_empty());
+        assert_eq!(plan(retail(PANEL_ROWS), Some(&[]), &[]), [Hidden; PANEL_ROWS]);
+        assert_eq!(
+            plan(retail(PANEL_ROWS), Some(&[]), &[9]),
+            [Ours(9), Hidden, Hidden, Hidden, Hidden]
+        );
     }
 
     #[test]

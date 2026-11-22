@@ -32,6 +32,9 @@
 //!   runtime, which the game registers as a [`firefight::Source`].
 //! * [`rules`] answers `rules.state` over the game's rules runtime, which
 //!   the game registers as a [`rules::Source`].
+//! * [`variants`] answers `variants.quick`: the lobby variant's Quick
+//!   Options rows as its rules script marks them, which the game
+//!   registers as a [`variants::Source`].
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
 //!   Havok entity, motion and shape as raw bytes. `world.poke` writes
 //!   bounded byte ranges within those parts.
@@ -85,6 +88,7 @@ pub mod shadow;
 pub mod sim;
 mod tap;
 mod trace;
+pub mod variants;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{

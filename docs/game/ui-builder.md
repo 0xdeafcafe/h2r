@@ -1100,8 +1100,21 @@ Halo 1 on a converted map, and the multiplayer skull count. Hosted games
 use the signed-in profiles' skull choices. Xbox Live guests read the last
 cached host advertisement for skulls.
 
-The enabled lines follow the retail options that fit. When all five
-rows are filled, each enabled line replaces a bottom retail option. The hook sets each extra
+For a variant whose record names a rules script this machine has, the
+formatter's rows give way to the script's Quick Options marks
+(`crate::variant_quick`, switch `variant-quick`;
+[rules-variants.md](rules-variants.md#quick-options-in-the-lobby)): one
+"Label: value" line a mark, in the script's order, from the top, and the
+slots past the last mark hidden. A script with no `quick` line shows no
+rows. A variant with no script, or naming one this machine lacks, keeps
+the formatter's rows. The labels and value texts are ours, from
+`rules::settings::TABLE` and the script's options. The lines are five
+ids of the `variant quick` family (`ui_kit::ids`), written to their
+slots at each panel update (`variant_quick::panel_ids`).
+
+The enabled lines follow the retail options, or the marked rows, that
+fit. When all five rows are filled, each enabled line replaces a bottom
+row (`lobby_options::plan`). The hook sets each extra
 text widget through `TEXT_SET` and the shared locale table
 (`layout_glue::StringsFeature`, IDs from `ui_kit::ids`). The read-only
 [`ui.lobby_options` agent method](../runtime/agent-api.md#ui-what-the-menus-show)
