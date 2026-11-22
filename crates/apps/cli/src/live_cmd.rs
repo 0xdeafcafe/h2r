@@ -174,6 +174,10 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           server's provider, or with --no-launch print
                           H2_LEASE, H2_HOST_LEASE_JSON, H2_TOKEN and H2_LIVE
                           lines to eval before a manual docker run
+  hosts list [--live URL] [--data DIR | --as GAMERTAG]
+                          running and recent dedicated hosts with costs (JSON)
+  hosts stop LEASE [--live URL] [--data DIR | --as GAMERTAG]
+                          stop one dedicated host
   q <what> [--server URL] [--json|--jsonl]
                           query the service; `h2 live q --help` lists what
 
@@ -209,6 +213,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("mods", _) => bail!("{USAGE}"),
         ("maps", _) => crate::live_maps::run(rest),
         ("hosts", Some("start")) => crate::live_hosts::start(rest.shift()),
+        ("hosts", Some("list")) => crate::live_hosts::list(rest.shift()),
+        ("hosts", Some("stop")) => crate::live_hosts::stop(rest.shift()),
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("assets", Some("check")) => assets_check(rest.shift()),

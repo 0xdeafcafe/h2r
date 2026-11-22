@@ -1,5 +1,6 @@
-//! `h2 live hosts start` (docs/live/dedicated-host.md): an admin starts a
-//! custom dedicated host by hand. Dispatched from `live_cmd.rs`.
+//! `h2 live hosts start|list|stop` (docs/live/dedicated-host.md): an admin
+//! starts a custom dedicated host by hand, lists running and recent hosts,
+//! or stops one. Dispatched from `live_cmd.rs`.
 //!
 //! The default asks the server to launch its configured provider. With
 //! `--no-launch` the server only reserves the lease and answers its host
@@ -116,6 +117,51 @@ pub fn start(mut args: Args) -> Result<()> {
     } else {
         println!("{}", serde_json::to_string_pretty(lease)?);
     }
+    Ok(())
+}
+
+const LIST_USAGE: &str = "usage: h2 live hosts list [--live URL] [--data DIR | --as GAMERTAG]";
+const STOP_USAGE: &str =
+    "usage: h2 live hosts stop LEASE [--live URL] [--data DIR | --as GAMERTAG]";
+
+/// `GET /v1/admin/hosts`: running and recent hosts with their costs, printed
+/// as the server's JSON.
+pub fn list(mut args: Args) -> Result<()> {
+    let live = args.take("--live")?;
+    let client = Client::connect(live)?;
+    let signer = Signer::from_args(&mut args, &client)?;
+    ensure!(args.positional_for(LIST_USAGE)?.is_empty(), "{LIST_USAGE}");
+    let token = signer.token(&client, live_server::invites::LXM_ADMIN_READ)?;
+    let req = client.agent.get(&client.url("/admin/hosts"));
+    let text = live_cmd::call(client.authorized(req, token)?, None)?;
+    let reply: Value =
+        serde_json::from_str(&text).context("the server's reply is not a host list")?;
+    println!("{}", serde_json::to_string_pretty(&reply)?);
+    Ok(())
+}
+
+/// `POST /v1/admin/hosts/{lease}/stop`: stop one host with reason `stopped`.
+pub fn stop(mut args: Args) -> Result<()> {
+    let live = args.take("--live")?;
+    let client = Client::connect(live)?;
+    let signer = Signer::from_args(&mut args, &client)?;
+    let [lease]: [String; 1] = args
+        .positional_for(STOP_USAGE)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{STOP_USAGE}"))?;
+    ensure!(
+        !lease.is_empty()
+            && lease
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "LEASE must be a lease id\n\n{STOP_USAGE}"
+    );
+    let token = signer.token(&client, live_server::admin::LXM_ADMIN_WRITE)?;
+    let req = client
+        .agent
+        .post(&client.url(&format!("/admin/hosts/{lease}/stop")));
+    live_cmd::call(client.authorized(req, token)?, None)?;
+    eprintln!("lease {lease} stopped");
     Ok(())
 }
 
