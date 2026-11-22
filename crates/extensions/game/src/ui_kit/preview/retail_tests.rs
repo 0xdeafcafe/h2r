@@ -399,7 +399,8 @@ fn a_named_sample_variant_draws_its_own_rows() {
             sample: Some("no-such"),
             ..pick(SETUP, 0)
         })
-        .unwrap_err()
+        .err()
+        .expect("an unknown variant is refused")
         .to_string();
     assert!(e.contains("no-such") && e.contains("switch-to"), "{e}");
 }
