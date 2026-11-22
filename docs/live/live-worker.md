@@ -77,16 +77,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 `h2-live-server`'s environment names where it has them
 (`crates/live/live-worker/src/settings.rs`).
 
-| Name | Kind | Meaning |
-|---|---|---|
-| `H2_LIVE_ID` | variable | The server id: the host in every author id. It must stay what the machine's server had. |
-| `H2_LIVE_SERVER_KEY` | secret | The server's key, base64 as in `server.key`. |
-| `H2_LIVE_PUBLIC_URL` | variable | The URL clients use, shown in discovery. Default `https://<id>`. |
-| `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
-| `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
-| `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
-| `H2_LIVE_BUILD` | variable | The deployed commit, set by `deploy.sh` with `--var`. `/healthz` sends it as the `x-h2-build` header; the deploy check compares it. Unset on a deploy that bypasses the script. |
-| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there and `/art/emblem/*` reads its manifest and masks. With it unset, both paths return 404 and the web app uses its own art pack. |
+The variables and secrets are listed under Live Worker settings in [switches.md](../runtime/switches.md#live-worker-settings).
 
 A missing id or key, or a bad value, fails the hub's start. The request then
 answers 500 with the reason; the hub never runs as some other server.
@@ -197,7 +188,7 @@ same receipt.
 
 These are wall times from a single local run with Durable Object storage and
 emulated R2. The full-match size and browser CPU measurements use the seeded
-multiplayer and campaign recordings. [Telemetry measurements](../engine/live-telemetry.md#finished-replay-archives)
+multiplayer and campaign recordings. [Telemetry measurements](notes/2026-11-19-telemetry-precision.md#finished-replay-archives)
 
 ## Slice 2 results
 
@@ -586,7 +577,7 @@ large share of the day's requests.
    - The operator log endpoints, with writes held while a copy goes in ([Migrating the current data](#migrating-the-current-data)).
    - `store copy` takes `https://HOST` as a source or a destination, signing with the server key.
    - Blobs go to R2 through the `s3://` path.
-   - Rehearsed against `wrangler dev` with a read-only copy of the real log ([Rehearsal](#rehearsal-2026-11-18)).
+   - Rehearsed against `wrangler dev` with a read-only copy of the real log ([Rehearsal](#rehearsal)).
 8. **Staging, then cutover.** [Deploy](#deploy), then the [Cutover runbook](#cutover-runbook).
 
 ## Deploy
@@ -623,15 +614,13 @@ passes this config to Wrangler and removes its temporary copy on exit.
    `~/.cargo` are not touched. The first run installs it.
 2. **Web.** `bun install --frozen-lockfile` and `bun run build` into
    `web/dist`, the Worker's static assets.
-3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build`.
+3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build` (build output).
 4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
    says to run `bunx wrangler@4 login`.
 5. **Host image.** The tag is a hash of the Dockerfile, the entrypoint
    and the Linux `h2` that `deploy/host/build.sh --h2` stages in
    `deploy/host/stage/h2`. A tag the registry lacks is built and pushed
-   with a second tag, `git-<sha>` (the deployed commit's 12-digit sha),
-   and the script prints both tags. (Building needs Docker; without it
-   the script stops and says so.) Without
+   (this needs Docker; without it the script stops and says so). Without
    a staged `h2` the script stops and says to stage one or pass
    `--no-hosts`. Skipped when the environment's lease cap is zero.
 6. **Bucket.** It creates the environment's R2 bucket if it is missing.
@@ -645,33 +634,8 @@ passes this config to Wrangler and removes its temporary copy on exit.
 
    The key goes to `wrangler secret put` on stdin, after the deploy (the
    Worker has to exist to hold it). It is never printed.
-8. **Deploy.** It first records the id of the Worker version that is live
-   (`wrangler versions deployments list --json`), the rollback target.
-   It is that exact id, never "the previous version": `renew.sh`'s secret
-   puts create Worker versions of their own, and an older version would
-   carry an old host-data bundle sha. It then compares the host image tag
-   with the one the container apps run (`wrangler containers list
-   --json`). The same tag adds `--containers-rollout none`, so the
-   Worker is uploaded and neither container app is re-provisioned
-   (Cloudflare refuses new instances, 503 `max_instances`, while they
-   show `provisioning`); `H2_LIVE_FORCE_CONTAINERS=1` rolls them out
-   anyway, for a new instance cap or class. A different tag is a rollout,
-   and the script prints `HOST IMAGE CHANGED: <old> -> <new> (host-data
-   bundle rebuild needed)`: the private bundle is due a rebuild. If the
-   apps' tags cannot be read, the containers roll out. Then it runs `wrangler deploy --env
-   <env>` with `--var H2_LIVE_BUILD:<commit>` (the commit's full sha, with
-   `-dirty` when the tree has changes); its failure stops the script.
-9. **Health.** `/healthz` is polled for up to 60 seconds until it answers
-   200 with an `x-h2-build` header equal to the deployed commit
-   (`entry.rs` adds the header from `H2_LIVE_BUILD`). Then the discovery
-   document's id is printed. If the check never passes, the script runs
-   `wrangler rollback <previous version> --env <env>` and exits non-zero,
-   so the job fails. A rollback restores the Worker's code and variables
-   by creating a deployment of the recorded version; secrets, R2
-   contents, Durable Object migrations and the container apps stay as
-   the deploy left them. When the host containers were deployed the log
-   says `Worker rolled back; container image left at <tag>`. A first deploy has no earlier version, so it cannot roll
-   back.
+8. **Deploy.** `wrangler deploy --env <env>`; its failure stops the script.
+9. **Health.** `/healthz` and the discovery document's id.
 
 `--dry-run` builds and bundles without signing in or uploading.
 `--skip-build` deploys what `build/` and `web/dist` already hold.
@@ -679,12 +643,7 @@ passes this config to Wrangler and removes its temporary copy on exit.
 ### Deploy from CI
 
 `.github/workflows/live-deploy.yml` runs `deploy.sh production
---yes-production` after the CI workflow completes successfully for a push
-to master in this repository, and on demand. It checks out the commit CI
-tested (`workflow_run.head_sha`), not the branch tip, so a failed CI run
-deploys nothing and a newer push cannot slip in untested. The job runs in
-the `production` environment and in the `live-deploy` concurrency group,
-so two deploys never interleave (a queued one waits). Before the script, the
+--yes-production` on each push to master, and on demand. Before it, the
 job installs Rust from `rust-toolchain.toml`, Zig and cargo-zigbuild and
 runs `deploy/host/build.sh --h2`, so the deploy builds and pushes the
 host image for that commit's `h2` when the registry lacks its tag. The
@@ -836,25 +795,11 @@ h2 live store copy --from postgres://localhost/h2live \
 - **Back out:** `--from https://… --to postgres://…`, for a rollback.
 - **Blobs** (content, cloud saves) go straight to R2 over its S3 API: `--from-blobs DIR --to-blobs s3://BUCKET`, with `H2_LIVE_S3_ENDPOINT`, `H2_LIVE_S3_ACCESS_KEY_ID` and `H2_LIVE_S3_SECRET_ACCESS_KEY`. A blob already there at the same size is skipped.
 
-### Rehearsal (2026-11-18)
+### Rehearsal
 
-The source was a read-only copy of the real log: Postgres to a SQLite file
-in scratch, 6264 events (92 MB, the largest JWS 18 KB, well under a
-Durable Object row's 2 MB), copied in 22.5 s. The destination was the
-Worker under `wrangler dev`, with id `live.forbes.red` and a dev key.
-
-| Step | Result |
-|---|---|
-| Copy, killed after 1500 events | the hub at 1500, nothing of its own written (held) |
-| Run again | carried on at 1501: 4764 events in 4 s; verified at 6264 |
-| Public reads against live.forbes.red (also at 6264) | `/v1/accounts`, `/v1/games?state=ended`, `/v1/teams`, `/v1/maps`, `/v1/sessions`: identical. `/v1/stats/summary`: identical except the order of tied map variants. That order was not deterministic; the map id now breaks the tie (`stats.rs`). |
-| Back out to a fresh SQLite file | 6264 events in 16 s; every position and hash the same as the source |
-| `--release` | the hub writes again |
-| Blobs, the Mac's data dir to a directory | 10 files, 4.2 MB; a second run copied nothing |
-| Cold start on that log, hub restarted | 1.38 s to replay 6264 events (`server-timing: start;dur=1376`) |
-
-The first attempt, without the hold, failed exactly as described above.
-That is why the hold exists.
+The copy, resume, back-out and hold behaviour above was rehearsed on a
+read-only copy of the real log; the steps and timings are in
+[the Worker rehearsal note](notes/2026-11-18-worker-rehearsal.md).
 
 ### Staging rehearsal (the user's step)
 

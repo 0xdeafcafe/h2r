@@ -3,6 +3,7 @@ name = "tag-names"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+description = "Developer comparison of retail plugin layouts against the checked-in tag definitions"
 
 [dependencies]
 tags.workspace = true

@@ -10,10 +10,15 @@ Checks:
   links   relative markdown links and #anchors resolve (always fails the run)
   index   every docs/**/*.md is linked from docs/README.md (always fails)
   names   H2_* variables and impl.* switches a doc names exist in the code
+  switches  every H2_* variable the code reads has a row in
+          docs/runtime/switches.md (a `H2_FOO_*` row covers the family)
   paths   backticked crates/, platform/, scripts/, deploy/ and web/ paths exist
   style   headings that record history instead of the design
   code    docs/*.md paths cited in code comments exist (always fails), and
           the section they cite (`§ 5.2` or "Title") is still a heading
+
+names and paths also skip pages whose status line says Design or plan: they
+name things that do not exist yet.
 
 names, paths and style skip dated records (docs/**/notes/, docs/reviews/)
 and docs/meta/, which describe the tree as it was or quote what is wrong. They are findings to clear or to justify,
@@ -61,6 +66,19 @@ def is_record(path):
         or path.startswith("docs/reviews/")
         or path.startswith("docs/meta/")
     )
+
+
+DESIGN_STATUS = re.compile(r"^Status:\s*(?:Design|plan)\b", re.I | re.M)
+_design = {}
+
+
+def is_design(path):
+    """A page whose status line says Design (or plan) names things that do
+    not exist yet; names and paths on it are not checked."""
+    if path not in _design:
+        with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+            _design[path] = bool(DESIGN_STATUS.search(f.read(2000)))
+    return _design[path]
 
 
 def slug(heading):
@@ -143,6 +161,57 @@ def check_index(all_docs):
     ]
 
 
+# C ABI constants and macros in generated code and its tests: H2_ names that
+# are not environment variables.
+ENV_ABI = {
+    "H2_ABI_VERSION", "H2_CALL", "H2_JUMP", "H2_RETURN", "H2_FAULT", "H2_STOP",
+    "H2_ENTRY", "H2_RESUME", "H2_RETURN_TARGET", "H2_HARNESS_EXIT", "H2_PART",
+    "H2_CLOCK", "H2_LOOP_POLL", "H2_PREEMPT", "H2_ACC_SETTLE",
+    "H2_ACC_SETTLE_POLLED", "H2_LD", "H2_LDR", "H2_ST", "H2_STR", "H2_X",
+    "H2_ACCOUNTING", "H2_ACC_REFRESH", "H2_ATOMIC", "H2_DCALL", "H2_DJUMP",
+    "H2_DIRECT_VIEW", "H2_EPILOGUE", "H2_EPILOGUE_BODY", "H2_EXIT_CALL",
+    "H2_EXPORT", "H2_FIX_ABS", "H2_FLAT_NOTE", "H2_FLAT_OWNER", "H2_GATE_DROP",
+    "H2_H", "H2_HALT", "H2_ICALL", "H2_IJUMP", "H2_LOCALS_HOMED", "H2_PART_GOTO",
+    "H2_PART_LENT", "H2_PART_RELEND", "H2_PREEMPT_LOCALS", "H2_RAISE", "H2_SETF",
+    "H2_SPAN", "H2_SPAN_LD", "H2_SPAN_ST", "H2_SSE_RUN", "H2_UNDEFF",
+    "H2_WRITE_XMM", "H2_XFER",
+    # A -D macro that only keys the compiler cache (emit/src/compile/pgo.rs).
+    "H2_PGO_PROFILE",
+    # A placeholder in a usage message (`H2_NAME=VALUE`).
+    "H2_NAME",
+}
+SWITCHES_DOC = "docs/runtime/switches.md"
+
+
+def read_env_names():
+    """H2_* names the code reads or sets: quoted literals, shell `$H2_X`
+    expansions and `H2_X=` assignments, outside C sources and markdown."""
+    pattern = r"([\"'$]|[$][{])H2_[A-Z0-9_]+|H2_[A-Z0-9_]+="
+    lines = git_lines(
+        "grep", "-ohE", pattern, "--", "crates", "web", "platform", "scripts",
+        "deploy", "justfile", ".github",
+        ":!*.md", ":!*.c", ":!*.h", ":!scripts/docs-check.py",
+    )
+    names = {ENV.search(line).group(0) for line in lines}
+    return {n for n in names if n not in ENV_ABI and not n.endswith("_")}
+
+
+def check_switches():
+    """Every H2_* variable the code reads has a row in switches.md."""
+    with open(os.path.join(ROOT, SWITCHES_DOC), encoding="utf-8") as f:
+        text = f.read()
+    listed = set(ENV.findall(text))
+    # `H2_FOO_*`, `H2_FOO*` and `H2_FOO_` cover every name with that prefix.
+    prefixes = set(re.findall(r"(H2_[A-Z0-9_]*)\*", text)) | {
+        n for n in listed if n.endswith("_")
+    }
+    return [
+        f"{SWITCHES_DOC}: {name}: read in the code, not listed"
+        for name in sorted(read_env_names())
+        if name not in listed and not any(name.startswith(p) for p in prefixes)
+    ]
+
+
 def code_names():
     spec = ["--", ".", ":!docs", ":!*.md"]
     envs = set(git_lines("grep", "-ohE", "H2_[A-Z0-9_]+", *spec))
@@ -163,7 +232,7 @@ def check_names(files):
     envs, switches = code_names()
     bad = []
     for path in files:
-        if is_record(path):
+        if is_record(path) or is_design(path):
             continue
         for number, line in prose_lines(path):
             for name in set(ENV.findall(line)):
@@ -195,14 +264,19 @@ def ignored(path):
     )
 
 
+NOT_YET = re.compile(r"\s*\((?:new|planned|proposed|build output)\)")
+
+
 def check_paths(files):
     bad = []
     for path in files:
-        if is_record(path):
+        if is_record(path) or is_design(path):
             continue
         for number, line in prose_lines(path):
             for m in CODE_PATH.finditer(line):
                 cited = m.group(1).rstrip(".,;")
+                if NOT_YET.match(line, m.end()):
+                    continue  # marked as a file the page proposes or a build output
                 if any(ch in cited for ch in "*<>") or "..." in cited:
                     continue
                 full = os.path.join(ROOT, cited)
@@ -221,12 +295,18 @@ CODE_REF = re.compile(
 CODE_REF_EXAMPLES = {"docs/x.md", "docs/a.md"}
 
 
+# A bold lead-in (`**Sky.**`, `- **Sky.**`) names its paragraph or list item:
+# code may cite it as a section.
+RUN_IN = re.compile(r"^\s*(?:[-*]\s+|\d+\.\s+)?\*\*([^*]{3,80}?)[.:]?\*\*")
+
+
 def headings(path):
-    return [
-        HEADING.match(line).group(2).replace("`", "").lower()
-        for _, line in prose_lines(path)
-        if HEADING.match(line)
-    ]
+    found = []
+    for _, line in prose_lines(path):
+        m = HEADING.match(line) or RUN_IN.match(line)
+        if m:
+            found.append(m.group(m.lastindex).replace("`", "").lower())
+    return found
 
 
 def check_code_refs():
@@ -298,6 +378,7 @@ def main(argv):
         ("code", missing, True),
         ("code-sections", sections, False),
         ("names", check_names(files), False),
+        ("switches", check_switches(), False),
         ("paths", check_paths(files), False),
         ("style", check_style(files), False),
     ]

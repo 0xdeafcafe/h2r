@@ -89,13 +89,13 @@ the workspace checks are in
 | `rules` | formats | Scripted game types: the rules language, verified IR, capabilities and VM |  |  |
 | `settings` | formats | Our host settings as a schema: definitions, one store, atomic handles, one writer for settings.toml | [feature-engine.md](engine/feature-engine.md) | done |
 | `shaders` | formats | Xbox (NV2A) vertex microcode and register-combiner translation to WGSL | [shaders.md](graphics/shaders.md) | done |
-| `tag-names` | formats | *(no description)* † |  |  |
+| `tag-names` | formats | Developer comparison of retail plugin layouts against the checked-in tag definitions |  |  |
 | `tags` | formats | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](formats/sound.md)), localized text ([localization.md](formats/localization.md)) and the effects family ([effects.md](formats/effects.md)) † | [sound.md](formats/sound.md), [localization.md](formats/localization.md), [effects.md](formats/effects.md) | done |
 | `variants` | formats | Halo 2 game variants: the 0x130-byte record, the settings schema, saved-variant files and the editor panel (docs/editor/variants.md) | [variants.md](editor/variants.md) | in progress |
 | `xbe` | formats | Parses the XBE: header, certificate, sections, libraries, kernel thunks † |  | done |
 | `xiso` | formats | Reads the XDVDFS game partition (plain XISO or full Redump image) † |  | done |
 | `analyze` | recompiler | Disassembly (iced-x86), function discovery, coverage report, per-function CFG export † |  | done |
-| `clif` | recompiler | *(no description)* † |  |  |
+| `clif` | recompiler | The Cranelift fast tier: planned IR straight to host objects (docs/lifter/cranelift-tier.md) | [cranelift-tier.md](lifter/cranelift-tier.md) |  |
 | `emit` | recompiler | IR to C11 against the runtime ABI (`h2abi.h`), sharded; clang build glue (output under `target/`, never committed) † |  | done |
 | `hostfault` | recompiler | The process-wide host fault handler: regions with in-handler callbacks, and fixup tables that send a faulting access to its slow path |  |  |
 | `ir` | recompiler | Backend-independent semantic IR for lifted code, with a reference interpreter † |  | done for integer, x87, SSE1 and MMX |
@@ -111,7 +111,7 @@ the workspace checks are in
 | `lifted` | runtime | The lifted original on the IR interpreter: the oracle for port differential tests and for runtime shadow checks (docs/engine/shadow-exec.md) | [shadow-exec.md](engine/shadow-exec.md) |  |
 | `recomp` | runtime | Build and load: the XBE lifted, emitted and compiled into one host module, its build stamp, the module loaded with the boot bridge, and the interpreter for what the module leaves out (docs/runtime/BOOT.md) | [BOOT.md](runtime/BOOT.md) |  |
 | `runtime` | runtime | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/runtime/README.md)) † | [runtime README](../crates/runtime/runtime/README.md) | done |
-| `runtime-test-probe` | runtime | *(no description)* † |  |  |
+| `runtime-test-probe` | runtime | Native C fixtures and declarations for runtime's integration tests |  |  |
 | `snapshot` | runtime | Machine snapshots: the versioned container, compressed guest RAM pages and the snapshot store (docs/runtime/snapshots.md) | [snapshots.md](runtime/snapshots.md) |  |
 | `timeline` | runtime | Near-zero-cost timeline events (Chrome/Perfetto trace JSON) and a frame counter | [profiling.md](perf/profiling.md) | done |
 | `vfs` | runtime | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) † | [storage.md](runtime/storage.md) | done |
@@ -170,10 +170,10 @@ the workspace checks are in
 | `forge-build` | tools | Deterministic local Forge map materialisation over the user's Halo 2 maps |  |  |
 | `geometry-edit` | tools | The Modeling tool's targets and save: structure clusters, instanced geometry definitions and render-model sections opened as mesh-edit meshes, with undo, the op log, in-place and grown writes (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
 | `h1-assets` | tools | Halo 1 assets as Halo 2 tags: bitmaps, models, sounds, skies and text, read from Xbox cache files (docs/halo1/README.md) | [README.md](halo1/README.md) |  |
-| `h1campaign` | tools | *(no description)* † |  |  |
+| `h1campaign` | tools | Halo 1 campaign levels converted to Halo 2 v8 maps (docs/halo1/campaign.md) | [campaign.md](halo1/campaign.md) |  |
 | `h1convert` | tools | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([multiplayer.md](halo1/multiplayer.md)) † | [multiplayer.md](halo1/multiplayer.md) | in progress: all 13 disc maps convert |
 | `h1map` | tools | Halo 1 Xbox cache (v5) reader ([map-format.md](halo1/map-format.md)) † | [map-format.md](halo1/map-format.md) | done |
-| `h1objects` | tools | *(no description)* † |  |  |
+| `h1objects` | tools | Halo 1 sandbox objects converted to Halo 2 tags |  |  |
 | `hopper-edit` | tools | The playlist (multiplayer_hopper.dat) editor's UI-free logic: the working copy, validation, presets, the variant picker's sources, undo and file handling | [editor.md](editor/editor.md) | in progress |
 | `hud-edit` | tools | The HUD editor's UI-free logic: a map's nhdt HUDs and their widgets, the engine's placement, a preview canvas, layout checks, edits with undo and the patched-map save (docs/editor/hud-editor.md) | [hud-editor.md](editor/hud-editor.md) |  |
 | `hud-kit` | tools | HUD elements of ours drawn by Halo 2's own HUD: the element model, the compiler to nhdt widget records, the offline preview over the retail player HUD and its checks (docs/game/hud-kit.md) | [hud-kit.md](game/hud-kit.md) | in progress |

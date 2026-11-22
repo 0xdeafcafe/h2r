@@ -3,6 +3,7 @@ name = "clif"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+description = "The Cranelift fast tier: planned IR straight to host objects (docs/lifter/cranelift-tier.md)"
 
 # The Cranelift fast tier (docs/lifter/cranelift-tier.md). Every cranelift
 # crate stays pinned to the one version below.

@@ -18,7 +18,7 @@ export interface MapGeometry {
 }
 
 // Every file carries the art's version stamp, so the server can let the
-// browser keep it (docs/live/live-art.md, "Caching").
+// browser keep it (docs/live/live-art.md, "Loading").
 const url = (root: string, file: string, stamp?: string) => modelUrl(root, file, stamp);
 
 /** The 3D address is available as soon as the manifest is known. */

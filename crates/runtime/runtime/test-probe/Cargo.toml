@@ -3,6 +3,7 @@ name = "runtime-test-probe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Native C fixtures and declarations for runtime's integration tests"
 publish = false
 
 [dependencies]
