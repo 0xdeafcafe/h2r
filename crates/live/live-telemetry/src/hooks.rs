@@ -1243,6 +1243,8 @@ mod tests {
             // Not an entry of the fixture module: the optional damage point
             // is dropped with a note.
             (&points::DAMAGE_REPORT, 0x40_6000),
+            // Nor is the optional medal point.
+            (&points::GAME_MEDAL, 0x40_7000),
         ];
         let (done, wait) = std::sync::mpsc::channel();
         let rt = Arc::clone(&runtime);
@@ -1278,6 +1280,7 @@ mod tests {
                 Some("plan:GAME_END[live-telemetry]".into()),
                 Some("plan:PLAYER_KILLED[live-telemetry]".into()),
                 Some("plan:WEAPON_FIRE[live-telemetry]".into()),
+                None,
                 None,
             ]
         );
