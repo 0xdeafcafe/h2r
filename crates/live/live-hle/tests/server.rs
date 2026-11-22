@@ -1782,10 +1782,10 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
     let session = host.hle.hosted_session().expect("the advertised session");
     assert!(live_proto::session::valid_id(&session), "{session}");
 
+    let hle = Arc::clone(&host.hle);
     let ask = |session: &str| {
         let (tx, rx) = std::sync::mpsc::channel();
-        host.hle
-            .roster_bots(
+        hle.roster_bots(
                 bots::RosterRequest {
                     session_id: session.to_owned(),
                     playlist: None,

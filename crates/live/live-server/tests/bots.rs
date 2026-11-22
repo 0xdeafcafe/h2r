@@ -971,7 +971,7 @@ async fn a_roster_asked_straight_after_the_advertise_finds_the_session() {
     let route = h
         .call(
             Method::POST,
-            "/v1/games/robots",
+            "/v1/no-such-route",
             &[h.bearer(&a, lxm::GAMES_WRITE)],
             json!({}).to_string(),
         )
