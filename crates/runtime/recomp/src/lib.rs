@@ -705,7 +705,7 @@ mod tests {
             std::fs::remove_dir_all(&dir).unwrap();
         }
         let image = synthetic_xbe(&[0xc3]); // ret
-        for (choice, expected) in [(tier::Choice::Auto, tier::Tier::Fast), (tier::Choice::Clang, tier::Tier::Clang)] {
+        for (choice, expected) in [(tier::Choice::Bridge, tier::Tier::Fast), (tier::Choice::Clang, tier::Tier::Clang)] {
             // The desktop starts from the fast module, and uses the clang
             // module once it is ready. Build it here in the foreground.
             let plan = tier::prepare(&image, Path::new("synthetic.xbe"), &dir, choice, 1, false).unwrap();

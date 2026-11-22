@@ -1,6 +1,6 @@
 # A Cranelift fast tier for the first build
 
-Status: Partly built. `crates/recompiler/clif` lowers all integer, control-flow, memory, transfer, flag, atomic and REP constructs, and x87 and SSE through helper calls; its module is Cranelift objects only, linked by the platform's linker, so a fast build needs no C compiler. `boot::tier` starts on it and builds clang's module in the background. Not built: inline fast memory, direct calls, native floating point and hot swap (section 8).
+Status: Partly built. `crates/recompiler/clif` lowers all integer, control-flow, memory, transfer, flag, atomic and REP constructs, and x87 and SSE through helper calls; its module is Cranelift objects only, linked by the platform's linker, so a fast build needs no C compiler. `boot::tier` runs it when asked (`fast`, or `bridge` with clang's module building in the background). Not built: inline fast memory, direct calls, native floating point and hot swap (section 8).
 Code: `crates/recompiler/clif/src/lib.rs` (`compile_shard`, `build_dylib`), `crates/recompiler/clif/src/lower.rs`, `crates/recompiler/clif/src/module.rs`, `crates/recompiler/emit/src/compile.rs` (`link_objects`), `crates/runtime/recomp/src/tier.rs`. Tests: `crates/recompiler/clif/tests/differential.rs`, `crates/runtime/recomp/tests/fast_tier.rs`.
 Switch: `H2_TIER` and `--tier` (`fast`, `clang`, `auto`), `H2_CLIF_OPT`, listed in [switches.md](../runtime/switches.md).
 
@@ -8,9 +8,9 @@ The cold `h2 build` spends about eleven minutes in clang on 1,001 shards of
 generated C ([notes/build-perf.md](notes/build-perf.md)); everything before clang takes
 under two seconds when cached. The fast tier is a second backend that lowers
 the same planned IR (`emit::Owner`) straight to machine code with
-Cranelift, so a first build is ready in seconds. Clang's optimised build
-still happens, in the background, and replaces the fast one when it is
-done.
+Cranelift, so a first build is ready in seconds. A start runs clang's
+optimised build unless asked for the fast tier; with `bridge` it starts on
+the fast tier and clang's build runs in the background for the next start.
 
 ## 1. What the fast tier is
 
@@ -250,8 +250,9 @@ to the authority the same way.
 
 ## 4. Tiering
 
-**The game starts on the fast tier; clang's build runs in the background;
-the next start uses clang's module.** No hot swap.
+**A start runs clang's module, building it first; the fast tier runs
+only when asked for, and the two never build at once unless `bridge`
+asks.** No hot swap.
 
 - `h2 build --tier fast` writes `<out>/fast/libh2game.dylib` and its own
   stamp (`crates/runtime/recomp/src/tier.rs`): it starts `tier fast` and names the
@@ -261,8 +262,14 @@ the next start uses clang's module.** No hot swap.
   tier's stamp passes for the other's. Plain `h2 build` builds clang's
   module in `<out>/libh2game.dylib`.
 - `h2 run` and `h2 play` (`--tier auto`, the default, or `H2_TIER`) run
-  clang's module when it is current; else the fast tier's, building it
-  first if need be, and start clang's build as a separate process:
+  clang's module, building it in the foreground when it is not current. A
+  background build of it already running holds `<out>/clang-build.lock`:
+  the start waits for it (`tier::wait_background`), then builds only if it
+  did not finish. The fast tier competes with clang for the CPU and runs
+  slowly, so a start on it beside clang's build is opt-in.
+- `--tier bridge` (`H2_TIER=bridge`) runs clang's module when it is
+  current; else the fast tier's, building it first if need be, and starts
+  clang's build as a separate process:
   `h2 build <disc> --out <out> --tier clang --background`, at nice 19
   (clang inherits it), logging to `<out>/clang-build.log`, and leaving at
   once when another background build holds `<out>/clang-build.lock`. It
@@ -277,7 +284,7 @@ the next start uses clang's module.** No hot swap.
   page and `game.code` show the same state, and `game.code.restart`
   starts `h2 play` again in place (same executable and arguments) once the
   full-speed module is built ([agent-api.md](../runtime/agent-api.md#game-code-full-speed-or-the-slower-start)). `--tier fast` runs the fast
-  tier only; `--tier clang` is the foreground clang build. `h2 serve` never
+  tier only; `--tier clang` is `auto` by name. `h2 serve` never
   builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack
   (direct calls), resumes recorded as `(owner handler, start)`, and the
@@ -354,7 +361,7 @@ A function the backend cannot lower (an unsupported construct, a Cranelift verif
 1. **Built**: `crates/recompiler/clif/src/lower.rs`: integer, control flow, memory, transfers, flags, atomics and REP; `crates/recompiler/clif/src/x87.rs` and `ir::interp::sse_helper`: x87 and SSE through helper calls; `crates/recompiler/clif/src/module.rs`: the registry and the bridge as Cranelift objects, so the module needs no C compiler.
 2. **Built**: the differential harness, `crates/recompiler/clif/tests/differential.rs`, against the interpreter and the C tier.
 3. **Not recorded**: the timed whole-image fast build against the 30 s cold target. No test in the tree times it.
-4. **Built**: `boot::tier` (`Tier`, `Choice`, `build_fast`, `background_build`) loads either tier and starts clang's build in the background; `crates/runtime/recomp/tests/fast_tier.rs` covers the link.
+4. **Built**: `boot::tier` (`Tier`, `Choice`, `build_fast`, `background_build`) loads either tier, builds clang's in the foreground by default and in the background for `bridge`; `crates/runtime/recomp/tests/fast_tier.rs` covers the link.
 5. **Not built**: inline fast memory, direct calls, native Cranelift floating point and hot swap.
 
 ## Not verified
