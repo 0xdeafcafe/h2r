@@ -1,0 +1,25 @@
+screen: forge.palette
+kind: picker
+layout: large
+backing: screen
+opener: forge.hud
+states:
+  open:
+    focus: 0
+  objects:
+    focus: 1
+  scrolled:
+    focus: 6
+  empty:
+    focus: 0
+widgets:
+  title:
+    component: title
+  body:
+    component: body
+  description:
+    component: description
+    at: [15, 74]
+    size: [235, 154]
+  legend:
+    component: legend

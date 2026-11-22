@@ -85,6 +85,9 @@ fn enter(
         }
         // The virtual call consumes its already-pushed argument.
         let stack = cpu.esp.checked_add(4)?;
+        if draw.is_some() && let Some(transfer) = replaced(c, &mut *mem, stack) {
+            return Some(transfer);
+        }
         if eligible && draw == Some(MODEL_WIDGET_DRAW) {
             if let Some(transfer) = super::model::try_idle(c, &*mem, stack) {
                 return Some(transfer);
@@ -100,6 +103,21 @@ fn enter(
         host.enter_ui(&mut *mem, scope, stack, eligible);
     }
     None
+}
+
+/// A widget the host draws itself ([`super::Host::replace_widget`]): the
+/// virtual draw is skipped as an idle model widget's is, resuming after the
+/// call with its argument consumed.
+fn replaced(c: &mut Call<'_>, mem: &mut dyn GuestMemory, stack: u32) -> Option<TransferAbi> {
+    if !c.ctx.runtime().read_dispatch(|d| d.has_resume(ITEM_CONTINUATION)) {
+        return None;
+    }
+    if !host()?.replace_widget(mem, c.cpu.ecx) {
+        return None;
+    }
+    Stage::Ui.count(Metric::BuildsSkipped, 1);
+    c.cpu.esp = stack;
+    Some(TransferAbi::resume(ITEM_CONTINUATION))
 }
 
 fn leave(c: &mut Call<'_>, mut scope: UiScope) {

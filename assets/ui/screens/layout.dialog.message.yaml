@@ -1,0 +1,18 @@
+screen: layout.dialog.message
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  rest:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "TITLE"
+  body:
+    component: body
+    text: "Body text."
+  legend:
+    component: legend
+    prompts: [[A, "DONE"], [B, "CANCEL"]]

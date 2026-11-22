@@ -363,14 +363,14 @@ fn list_page(name: &str) -> ListPage {
     crate::ui_kit::screens::list_page(name).unwrap_or_else(|| panic!("{name} is not a list"))
 }
 
-/// The Game Options page: Start Level first and A on it goes on through the
-/// action; left, right and A step a skull; locked skulls stay locked; X and
-/// Start are not the page's; the focus stops at either end.
+/// The campaign skulls page: Start Level first and A on it goes on through
+/// the action; A on a collected skull opens the value picker, A on a locked
+/// one does nothing; left and right do nothing anywhere; X and Start are
+/// not the page's; the focus stops at either end.
 #[test]
 fn game_options_page() {
     use ListEffect as E;
-    let locked = "skulls menu: Thunderstorm is locked for Chief: not collected yet \
-                  (found on Cairo Station, Legendary only)";
+    let picker = crate::ui_kit::picker::NAME;
     let p = list_page("skulls");
     let last = p.count() - 1;
     let make = || list_page("skulls");
@@ -378,35 +378,28 @@ fn game_options_page() {
         list_case("focus-0", &[A], vec![E::Action], "focus 0 Start Level"),
         list_case(
             "focus-0",
-            &[X, Start, Y, Left],
-            vec![E::None; 4],
+            &[X, Start, Y, Left, Right],
+            vec![E::None; 5],
             "focus 0 Start Level",
         ),
         list_case("focus-0", &[Up], vec![E::None], "focus 0 Start Level"),
         list_case(
             "focus-0",
-            &[Down, Right],
-            vec![
-                E::Focus(1),
-                E::Stepped("skulls page: right on row 1: skulls: Assassins off for Chief".into()),
-            ],
-            "focus 1 Assassins = Off",
-        ),
-        list_case(
-            "focus-0",
-            &[Down, A, A],
-            vec![
-                E::Focus(1),
-                E::Stepped("skulls: Assassins off for Chief".into()),
-                E::Stepped("skulls: Assassins on for Chief".into()),
-            ],
+            &[Down, Left, Right],
+            vec![E::Focus(1), E::None, E::None],
             "focus 1 Assassins = On",
         ),
         list_case(
             "focus-0",
-            &[Down, Down, A],
-            vec![E::Focus(1), E::Focus(2), E::Stepped(locked.into())],
-            "focus 2 Thunderstorm = Locked",
+            &[Down, A],
+            vec![E::Focus(1), E::Open(picker)],
+            "focus 1 Assassins = On",
+        ),
+        list_case(
+            "focus-0",
+            &[Down, Down, A, Left, Right],
+            vec![E::Focus(1), E::Focus(2), E::None, E::None, E::None],
+            "focus 2 Thunderstorm",
         ),
         list_case("focus-0", &[B], vec![E::Close], "focus 0 Start Level"),
         list_case("focus-0", &[Back], vec![E::Close], "focus 0 Start Level"),
@@ -418,28 +411,39 @@ fn game_options_page() {
     assert_eq!(s, Focus(last));
 }
 
-/// The Halo 1 campaign's page: its Assets and HUD rows step both ways.
+/// The Halo 1 campaign's page: its Assets and HUD rows open the value
+/// picker on A and take no left or right; its locked skulls do nothing.
 #[test]
 fn halo1_game_options_rows() {
     use ListEffect as E;
     check(
         || list_page("skulls.h1"),
-        vec![list_case(
-            "focus-0",
-            &[Down, Down, Left, Right, A],
-            vec![
-                E::Focus(1),
-                E::Focus(2),
-                E::Stepped("skulls page: left on row 2: h1 options: halo1.hud -> Halo 2".into()),
-                E::Stepped("skulls page: right on row 2: h1 options: halo1.hud -> Halo 1".into()),
-                E::Open(crate::ui_kit::picker::NAME),
-            ],
-            "focus 2 HUD = Halo 1",
-        )],
+        vec![
+            list_case(
+                "focus-0",
+                &[Down, Down, Left, Right, A],
+                vec![
+                    E::Focus(1),
+                    E::Focus(2),
+                    E::None,
+                    E::None,
+                    E::Open(crate::ui_kit::picker::NAME),
+                ],
+                "focus 2 HUD = Halo 1",
+            ),
+            list_case(
+                "focus-0",
+                &[Down, Down, Down, Down, A],
+                vec![E::Focus(1), E::Focus(2), E::Focus(3), E::Focus(4), E::None],
+                "focus 4 Thunderstorm",
+            ),
+        ],
     );
 }
 
-/// The multiplayer skulls screen: A toggles, no sideways steps, no action.
+/// The multiplayer skulls screen, as the campaign page: A on a collected
+/// skull opens the value picker, A on a locked one does nothing, no
+/// sideways steps, no action.
 #[test]
 fn multiplayer_skulls_page() {
     use ListEffect as E;
@@ -450,19 +454,96 @@ fn multiplayer_skulls_page() {
                 "focus-0",
                 &[Left, Right, X, Start],
                 vec![E::None; 4],
-                "focus 0 Famine: Off",
+                "focus 0 Famine = Off",
             ),
             list_case(
                 "focus-0",
                 &[A],
-                vec![E::Stepped(
-                    "skulls: Famine on in multiplayer for Chief".into(),
-                )],
-                "focus 0 Famine: On",
+                vec![E::Open(crate::ui_kit::picker::NAME)],
+                "focus 0 Famine = Off",
             ),
-            list_case("focus-0", &[B], vec![E::Close], "focus 0 Famine: Off"),
+            list_case(
+                "focus-0",
+                &[Down, A, Left, Right],
+                vec![E::Focus(1), E::None, E::None, E::None],
+                "focus 1 Blind",
+            ),
+            list_case("focus-0", &[B], vec![E::Close], "focus 0 Famine = Off"),
         ],
     );
+}
+
+/// What a skulls page's row is, by what A does on it.
+fn skull_row_kind(r: &crate::ui_kit::spec::RowSpec) -> &'static str {
+    use crate::ui_kit::spec::Press;
+    match &r.press {
+        Press::Act => "start",
+        Press::Open(n) if n == crate::ui_kit::picker::NAME => "setting",
+        Press::Nothing => "locked",
+        p => panic!("{}: a skulls page row presses {p:?}", r.label),
+    }
+}
+
+/// Both skulls pages, campaign (Halo 2's and Halo 1's) and multiplayer, are
+/// one design: each row kind has the same legend on every page (`A START
+/// B BACK`, `A CHANGE  B BACK`, `B BACK`), no legend offers left and
+/// right and no page takes them, a locked skull is its name alone with no
+/// value, and every page has the same title.
+#[test]
+fn skulls_pages_share_a_legend_per_row_kind() {
+    use crate::ui_kit::input::{Glyph, footer_legend};
+    use std::collections::BTreeMap;
+    let mut legends: BTreeMap<&str, String> = BTreeMap::new();
+    let mut titles = Vec::new();
+    for name in ["skulls", "skulls.h1", "skulls.mp"] {
+        let s = crate::ui_kit::screens::sample(name).unwrap();
+        titles.push(s.title.clone());
+        assert!(s.footer, "{name}: the legend is in the footer");
+        assert!(
+            !s.inputs.contains(&Left) && !s.inputs.contains(&Right),
+            "{name}: takes no left or right: {:?}",
+            s.inputs
+        );
+        for (i, r) in s.rows.iter().enumerate() {
+            let kind = skull_row_kind(r);
+            let prompts = r.prompts.clone().unwrap_or_else(|| panic!("{name} row {i}: its own legend"));
+            assert!(
+                prompts
+                    .iter()
+                    .all(|p| !p.glyphs.iter().any(|g| matches!(g, Glyph::DpadLeft | Glyph::DpadRight))),
+                "{name} row {i}: no arrows"
+            );
+            let legend = footer_legend(&prompts);
+            let held = legends.entry(kind).or_insert_with(|| legend.clone());
+            assert_eq!(*held, legend, "{name} row {i} ({kind})");
+            if kind == "locked" {
+                assert_eq!(r.shown_value(), None, "{name} row {i}: Locked is not a value");
+            }
+        }
+    }
+    assert_eq!(
+        legends.into_iter().collect::<Vec<_>>(),
+        [
+            ("locked", crate::skulls_menu::LOCKED_PROMPT.to_string()),
+            ("setting", crate::skulls_menu::SETTING_PROMPT.to_string()),
+            ("start", crate::skulls_menu::PROMPT.to_string()),
+        ]
+    );
+    assert!(titles.iter().all(|t| t == crate::skulls_menu::PAGE_TITLE), "{titles:?}");
+}
+
+/// The skulls pages and the inline pick row's specimen keep to the design
+/// system: no consistency finding.
+#[test]
+fn skulls_pages_keep_to_the_design_system() {
+    let names = ["skulls", "skulls.h1", "skulls.mp", "design.row.pick-inline"];
+    let r = crate::ui_kit::consistency::check(None);
+    let ours: Vec<_> = r
+        .findings
+        .iter()
+        .filter(|f| names.contains(&f.screen.as_str()))
+        .collect();
+    assert!(ours.is_empty(), "{ours:#?}");
 }
 
 /// The Halo 1 options screen: two rows, both step; A opens the value

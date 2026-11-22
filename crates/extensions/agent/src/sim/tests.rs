@@ -1863,12 +1863,16 @@ fn host_pause_needs_a_window_and_host_step_counts_the_agents_ticks() {
     assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
     h.send(host_pause::method::STEP, json!({"ticks": 0}));
     assert_eq!(h.reply()["error"]["code"], code::INVALID_PARAMS);
+    // `{}` reads the state: refused too while there is no window.
     h.send(host_pause::method::PAUSE, json!({}));
-    assert_eq!(h.reply()["error"]["code"], code::INVALID_PARAMS);
+    assert_eq!(h.reply()["error"]["code"], code::UNAVAILABLE);
     // A window, paused, the guest held: two ticks run under the step.
     std::thread::spawn(move || hub.attach(Box::new(|| {}))).join().unwrap();
     hub.report(true);
     hub.set_held(true);
+    h.send(host_pause::method::PAUSE, json!({}));
+    let r = h.reply();
+    assert_eq!(r["result"]["paused"], json!(true), "{r}");
     let t = std::thread::spawn(move || hub.step(2, Duration::from_secs(10)));
     while !hub.gate_open() {
         std::thread::yield_now();
@@ -1884,6 +1888,41 @@ fn host_pause_needs_a_window_and_host_step_counts_the_agents_ticks() {
     assert_eq!(r.tick, Some(100));
     let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
     for name in host_pause::method::ALL {
+        assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
+    }
+}
+
+#[test]
+fn host_screenshot_needs_a_window_and_answers_what_it_wrote() {
+    use agent_proto::host_shot::{self, Hub, Shot};
+    let hub: &'static Hub = Box::leak(Box::new(Hub::new()));
+    let (h, mut game) = (Harness::new(), game());
+    super::shot::install(&h.agent, hub);
+    // Answered on the connection's thread: no tick needed.
+    h.send(host_shot::method::SHOT, json!({}));
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+    hub.attach(Box::new(|path| {
+        Ok(Shot {
+            path: path.unwrap_or_else(|| "/shots/h2-1.png".into()),
+            width: 1280,
+            height: 960,
+        })
+    }));
+    h.send(host_shot::method::SHOT, json!({}));
+    let r = h.reply();
+    assert_eq!(
+        r["result"],
+        json!({"path": "/shots/h2-1.png", "width": 1280, "height": 960, "at": r["result"]["at"]}),
+        "{r}"
+    );
+    h.send(host_shot::method::SHOT, json!({"path": "/tmp/menu.png"}));
+    assert_eq!(h.reply()["result"]["path"], json!("/tmp/menu.png"));
+    hub.detach();
+    h.send(host_shot::method::SHOT, json!({}));
+    assert_eq!(h.reply()["error"]["code"], code::UNAVAILABLE);
+    let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
+    for name in host_shot::method::ALL {
         assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
     }
 }

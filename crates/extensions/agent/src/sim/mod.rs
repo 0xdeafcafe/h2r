@@ -37,6 +37,7 @@ pub mod events;
 pub mod hashes;
 pub mod objects;
 pub mod pause;
+pub mod shot;
 pub mod state;
 
 use std::collections::BTreeMap;
@@ -225,6 +226,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
     add(method::PLAYER_RECALL, Access::Act, Sim::player_recall);
     pause::install(agent, agent_proto::host_pause::hub());
+    shot::install(agent, agent_proto::host_shot::hub());
     h
 }
 

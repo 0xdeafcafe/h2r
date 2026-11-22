@@ -761,3 +761,96 @@ fn an_in_place_swap_keeps_the_state_and_the_next_kill_runs_the_new_handler() {
     assert!(why.contains("global variables"), "{why}");
     assert_eq!(s.lock().state().hash, Some(id.to_string()));
 }
+
+/// A script whose kill handler orders the killer to follow the victim
+/// (docs/game/rules-world-api.md, "Bots").
+const BOT_ORDERS: &str = "rules \"Bot Orders\" 1\ncarrier slayer\nrequires bots.orders\n\non kill(victim, killer) { if killer != none { bot_follow(killer, victim) } }\n";
+
+/// A runtime over the record of a game playing `src`, with the script
+/// served by the fetch.
+fn playing(store: &Local, src: &str) -> (Arc<Shared>, FakeGuest) {
+    let ir = ::rules::compile(src).unwrap();
+    let blob = ir.encode();
+    let id = ir.id();
+    let s = shared(store, Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())));
+    let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+    (s, m)
+}
+
+#[test]
+fn a_bot_order_is_made_at_the_next_tick_boundary() {
+    let store = Local::default();
+    let (s, m) = playing(&store, BOT_ORDERS);
+    let line = s.lock().start(&m, false);
+    assert!(s.lock().state().running, "{line}");
+    s.lock().kill(&m, 0, Some(1));
+    // Queued: the order waits in the VM's queue for the boundary.
+    assert_eq!(s.lock().running().unwrap().pending(), []);
+    let work = s.lock().pre_tick(&m).unwrap();
+    assert_eq!(
+        work.calls,
+        [Call::BotOrder {
+            player: 1,
+            order: Some(bots::brain::Order::Follow(0)),
+        }]
+    );
+    let calls = drive(&s, m, work, true);
+    // The order reaches no engine entry: it delivers to the phantom
+    // registry, which has no phantom in this game, so it is refused.
+    assert_eq!(
+        calls,
+        [
+            GuestCall::new(points::GAME_ENGINE_AUTHORITATIVE.base),
+            GuestCall::new(points::GAME_TICK.base),
+        ]
+    );
+    let state = s.lock().state();
+    assert!(state.running);
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].call, "bot_follow");
+    assert!(state.errors[0].error.contains("player 1 is no bot"), "{:?}", state.errors);
+}
+
+#[test]
+fn a_bot_order_changes_no_rulesext_byte() {
+    // One script: the kill makes the order with a killer, none without.
+    // The runs share one IR, so the record's rng seed (`vm::seed`, from
+    // the IR's hash) matches; only the order differs.
+    let run = |killer: Option<u8>| {
+        let store = Local::default();
+        let (s, m) = playing(&store, BOT_ORDERS);
+        s.lock().start(&m, false);
+        s.lock().kill(&m, 0, killer);
+        let work = s.lock().pre_tick(&m).unwrap();
+        drive(&s, m, work, true);
+        store.bytes().unwrap()
+    };
+    assert_eq!(
+        run(Some(1)),
+        run(None),
+        "an order changes no RULES record byte"
+    );
+}
+
+#[test]
+fn a_film_makes_no_bot_order() {
+    let store = Local::default();
+    let ir = ::rules::compile(BOT_ORDERS).unwrap();
+    let blob = ir.encode();
+    let s = Arc::new(Shared::new(
+        Runtime::new(
+            Box::new(store.clone()),
+            Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())),
+        )
+        .with_film(true),
+    ));
+    let (m, _) = guest(block(prefix(&ir.id()), 0), SLAYER);
+    let line = s.lock().start(&m, false);
+    assert!(s.lock().state().running, "{line}");
+    // The re-run VM makes the call; the playback runtime ignores it
+    // (docs/game/rules-world-api.md, "Films and Theater").
+    s.lock().kill(&m, 0, Some(1));
+    assert_eq!(s.lock().running().unwrap().pending(), []);
+    let work = s.lock().pre_tick(&m).unwrap();
+    assert_eq!(work.calls, []);
+}

@@ -1,0 +1,21 @@
+screen: design.title
+kind: list
+layout: controls
+backing: shell
+states:
+  rest:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "Title"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: action
+    text: "Row 1"
+  row.1:
+    kind: action
+    text: "Row 2"

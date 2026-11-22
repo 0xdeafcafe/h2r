@@ -14,8 +14,8 @@
 //!
 //! ```ignore
 //! static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
-//! let page = KitScreen::new(FEATURE, SCREEN, IDS, "Clankers")
-//!     .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
+//! // Its title, layout and legend: assets/ui/screens/<SCREEN>.yaml.
+//! let page = KitScreen::new(FEATURE, SCREEN, IDS)
 //!     .row(COUNT.row(Arc::clone(&store)))
 //!     .row(DIFFICULTY.row(store));
 //! ```

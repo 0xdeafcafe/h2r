@@ -132,7 +132,7 @@ fn either_native_list_labels_and_opens_video_and_voice_after_its_own_rows() {
                     assert_eq!(page.screen(), [VIDEO, VOICE][i]);
                     assert_eq!(
                         label(&m, m.title_id(page.screen()).unwrap()),
-                        ["Video Settings", "Voice"][i]
+                        ["Video", "Voice"][i]
                     );
                 }
                 None => assert_eq!(pressed, None),

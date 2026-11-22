@@ -1,5 +1,5 @@
-//! Game: save and load the machine, restart the map, load a test map and
-//! leave for the main menu.
+//! Game: save and load the machine, restart the map, load a level or a
+//! test map and leave for the main menu.
 //!
 //! Quick save and load use one snapshot named `quick` (`state.save`,
 //! `state.load`); Snapshots lists every one of this build (`state.list`).
@@ -9,6 +9,10 @@
 //! the failure. A load, a restart and a quit are destructive, so each
 //! asks twice.
 //!
+//! Load level lists the disc's campaign missions and multiplayer maps
+//! (`game.levels`) and queues the pick as the next game (`game.load`), a
+//! mission on Normal, a map as Slayer; it works from the main menu too.
+//!
 //! Game code (`game.code`) says which game code this start runs: clang's
 //! full-speed module, or the slower fast tier while clang builds the
 //! full-speed one in the background, how that build is going, and offers
@@ -17,10 +21,10 @@
 use serde_json::{Value, json};
 
 use super::method::{
-    GAME_CODE, GAME_CODE_RESTART, GAME_MENU, MAP_RELOAD, MAPS_TEST_LIST, MAPS_TEST_LOAD, SIM_SESSION, STATE_LIST, STATE_LOAD,
+    GAME_CODE, GAME_CODE_RESTART, GAME_LEVELS, GAME_LOAD, GAME_MENU, MAP_RELOAD, MAPS_TEST_LIST, MAPS_TEST_LOAD, SIM_SESSION, STATE_LIST, STATE_LOAD,
     STATE_SAVE, STATUS,
 };
-use super::{at_menu, get, list, nothing, problem, str_of, writes_blocked};
+use super::{at_menu, get, list, nothing, problem, str_of, tag_label, writes_blocked};
 use crate::model::{Answer, Call, Row, Section, text};
 
 /// The snapshot Quick save and Quick load use.
@@ -30,7 +34,7 @@ pub fn section() -> Section {
     Section {
         id: "game".into(),
         title: "Game".into(),
-        about: "quick save and load, restart, test maps, quit to the main menu".into(),
+        about: "quick save and load, restart, maps, quit to the main menu".into(),
         calls: vec![
             Call::bare(STATE_LIST),
             Call::bare(SIM_SESSION),
@@ -48,6 +52,13 @@ pub fn pages() -> Vec<Section> {
             about: "every saved snapshot of this build; select one to load it".into(),
             calls: vec![Call::bare(STATE_LIST), Call::bare(SIM_SESSION)],
             rows: snapshot_rows,
+        },
+        Section {
+            id: "game/levels".into(),
+            title: "Load level".into(),
+            about: "the disc's campaign missions and multiplayer maps".into(),
+            calls: vec![Call::bare(GAME_LEVELS), Call::bare(SIM_SESSION)],
+            rows: level_rows,
         },
         Section {
             id: "game/code".into(),
@@ -127,6 +138,7 @@ fn game_rows(a: &[Answer]) -> Vec<Row> {
         load,
         grey(Row::open("Snapshots", "game/snapshots"), snaps.as_ref().err()),
         restart,
+        grey(Row::open("Load level", "game/levels"), off.as_ref()),
         Row::open("Test maps", "game/test-maps"),
         quit,
         Row::open("Game code", "game/code")
@@ -181,6 +193,53 @@ fn snapshot_rows(a: &[Answer]) -> Vec<Row> {
             }
         })
         .collect()
+}
+
+fn level_rows(a: &[Answer]) -> Vec<Row> {
+    let v = match get(a, 0) {
+        Ok(v) => v,
+        Err(e) => return vec![problem("Levels", e)],
+    };
+    // A load is a host write (the game's options change): refused in a
+    // co-op session, as game.load refuses it.
+    let off = writes_blocked(a, 1);
+    let kinds = [
+        ("Campaign", "campaign", "starts the mission on Normal; select twice to load"),
+        ("Multiplayer", "multiplayer", "a Slayer game on the map; select twice to load"),
+    ];
+    let mut out = Vec::new();
+    for (title, key, note) in kinds {
+        let levels = list(&v, key);
+        if levels.is_empty() {
+            continue;
+        }
+        out.push(Row::heading(title));
+        out.extend(levels.iter().map(|l| {
+            let name = str_of(l, "name");
+            let row = Row::action(
+                tag_label(&name),
+                Call::new(GAME_LOAD, json!({"scenario": name})),
+            )
+            .confirm()
+            .on_ok(level_toast)
+            .about(note);
+            match &off {
+                Some(w) => row.disabled(w.clone()),
+                None => row,
+            }
+        }));
+    }
+    if out.is_empty() {
+        return nothing("No levels", "game.levels listed nothing");
+    }
+    out
+}
+
+fn level_toast(v: &Value) -> String {
+    match v["name"].as_str() {
+        Some(n) => format!("loading {}", tag_label(n)),
+        None => "loading".into(),
+    }
 }
 
 fn test_map_rows(a: &[Answer]) -> Vec<Row> {
@@ -301,6 +360,7 @@ mod tests {
                 "Quick load",
                 "Snapshots",
                 "Restart map",
+                "Load level",
                 "Test maps",
                 "Quit to main menu",
                 "Game code"
@@ -382,6 +442,37 @@ mod tests {
         );
         assert_eq!(row(&rows, "half-built").disabled.as_deref(), Some("still being built"));
         assert_eq!(row(&rows, "broken").disabled.as_deref(), Some("no BSP"));
+    }
+
+    #[test]
+    fn load_level_lists_the_discs_maps_and_loads_on_confirm() {
+        let mut g = Game::default();
+        let rows = page(&mut g, "game/levels");
+        let labels: Vec<_> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Campaign", "03a Oldmombasa", "Multiplayer", "Coagulation", "Lockout"]
+        );
+        let r = row(&rows, "Lockout");
+        assert_eq!(
+            call_of(&r),
+            Call::new("game.load", json!({"scenario": "lockout"}))
+        );
+        assert!(r.confirm, "a load is destructive");
+        assert_eq!(level_toast(&json!({"name": "lockout"})), "loading Lockout");
+        // In a co-op session the load would desync the guests: greyed with
+        // the session's reason.
+        let mut g = Game {
+            kind: "coop_host",
+            ..Game::default()
+        };
+        let rows = page(&mut g, "game/levels");
+        assert!(
+            rows.iter()
+                .filter(|r| !r.heading)
+                .all(|r| r.disabled.as_deref().is_some_and(|d| d.contains("co-op"))),
+            "{rows:?}"
+        );
     }
 
     #[test]

@@ -341,6 +341,55 @@ fn bumpers_are_a_monochrome_pair_with_the_pressed_one_lit() {
     );
 }
 
+/// The lobby's mode control alone shows one bumper a picture
+/// ([`strip_bumper`]); every other prompt keeps the pair.
+#[test]
+fn the_lobby_strip_bumper_is_one_bar_with_its_name_cut_out() {
+    let keys = KeyLabels::new();
+    let right = strip_bumper(IconSet::Xbox360, Button::Black, 18, &keys).unwrap();
+    let left = strip_bumper(IconSet::Xbox360, Button::White, 18, &keys).unwrap();
+    for icon in [&right, &left] {
+        assert_eq!((icon.width, icon.height), (BUMPER_WIDTH, 18));
+        for p in &icon.pixels {
+            assert_eq!(p & 0xfff, 0xfff);
+            assert!(alpha3_code(p >> 12).is_some(), "alpha {}", p >> 12);
+        }
+        assert!(encode_pixels(&icon.pixels).len() < icon.pixels.len() / 3);
+    }
+    let w = usize::from(BUMPER_WIDTH);
+    let alpha = |icon: &Icon, x: usize, y: usize| icon.pixels[y * w + x] >> 12;
+    // The bar is solid and its name is cut out of it: on the row through
+    // the letters' middle, opaque pixels on both sides of clear ones.
+    for icon in [&right, &left] {
+        let row: Vec<u16> = (0..w).map(|x| alpha(icon, x, 8)).collect();
+        let first = row.iter().position(|a| *a == 15).unwrap();
+        let last = row.iter().rposition(|a| *a == 15).unwrap();
+        assert!(
+            row[first..last].contains(&0),
+            "no letter is cut out of {row:?}"
+        );
+        let solid = icon.pixels.iter().filter(|p| *p >> 12 == 15).count();
+        assert!(solid * 2 > w * 12, "the bar is solid: {solid} pixels");
+    }
+    // The two differ in more than their names: the rounder shoulder is the
+    // outer one, left on the left bumper and right on the right.
+    assert_ne!(left, right);
+    assert!(alpha(&left, 0, 3) < alpha(&left, w - 1, 3));
+    assert!(alpha(&right, w - 1, 3) < alpha(&right, 0, 3));
+    // PlayStation uses its own L1/R1 names on the same bar; Steam the 360's.
+    for (b, xbox) in [(Button::Black, &right), (Button::White, &left)] {
+        let ps = strip_bumper(IconSet::PlayStation, b, 18, &keys).unwrap();
+        assert_eq!((ps.width, ps.height), (xbox.width, xbox.height));
+        assert_ne!(&ps, xbox);
+        assert_eq!(&strip_bumper(IconSet::Steam, b, 18, &keys).unwrap(), xbox);
+    }
+    // Only the bumpers, and only on a set that replaces them; an ordinary
+    // prompt for the same button is still the pair.
+    assert!(strip_bumper(IconSet::Xbox360, Button::A, 18, &keys).is_none());
+    assert!(strip_bumper(IconSet::Remote, Button::Black, 18, &keys).is_none());
+    assert_eq!(icon(IconSet::Xbox360, Button::Black, 18, &keys).unwrap().width, 45);
+}
+
 /// The strongest channel of the opaque pixel seen most often: the body colour.
 fn body_rgb(icon: &Icon) -> (u16, u16, u16) {
     let mut sum = (0u32, 0u32, 0u32, 0u32);

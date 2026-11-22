@@ -1,0 +1,56 @@
+screen: design.panel-text
+kind: list
+layout: controls
+backing: shell
+states:
+  rest:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "Panel Text"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+  text.heading:
+    component: text.heading
+    text: "Heading"
+    at: [-242, -12]
+    size: [362, 26]
+  text.label.0:
+    component: text.label
+    text: "Label 1"
+    at: [-242, -42]
+    size: [202, 20]
+  text.value.0:
+    component: text.value
+    text: "Value 1"
+    at: [-40, -42]
+    size: [160, 20]
+  text.label.1:
+    component: text.label
+    text: "Label 2"
+    at: [-242, -64]
+    size: [202, 20]
+  text.value.1:
+    component: text.value
+    text: "Value 2"
+    at: [-40, -64]
+    size: [160, 20]
+  text.label.2:
+    component: text.label
+    text: "Label 3"
+    at: [-242, -86]
+    size: [202, 20]
+  text.value.2:
+    component: text.value
+    text: "Value 3"
+    at: [-40, -86]
+    size: [160, 20]
+rows:
+  row.0:
+    kind: action
+    text: "Row 1"
+  row.1:
+    kind: action
+    text: "Row 2"

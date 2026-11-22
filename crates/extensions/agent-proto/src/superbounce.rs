@@ -505,11 +505,23 @@ pub struct Assist {
     pub test_hold: bool,
     /// The assist steered the player at its last pad read.
     pub engaged: bool,
-    /// The strip's stand point, world units; absent when not engaged.
+    /// Why: engaged, how the strip was chosen (`kept` from the read
+    /// before, `marked` by the HUD, or `nearest` to the coasting landing);
+    /// held and not engaged, `not_falling`, `no_strip`, `refused` or
+    /// `no_body`; else `not_held`, `off` (the setting) or `inactive` (the
+    /// mode).
+    #[serde(default)]
+    pub reason: String,
+    /// The chosen strip's stand point, world units; absent when not
+    /// engaged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<[f64; 3]>,
-    /// The point being aimed at: the stand point a little before along the
-    /// drift (X and Y).
+    /// The point of that strip being landed on: its stand point moved
+    /// along the strip to where the fall comes down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<[f64; 3]>,
+    /// The point being aimed at: `point`, a little before along the drift
+    /// (X and Y).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aim: Option<[f64; 2]>,
     /// Where the player lands if the stick is let go (X and Y).
@@ -521,6 +533,64 @@ pub struct Assist {
     /// The left stick sent to the guest, `[x (right), y (forward)]`, -1..1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stick: Option<[f64; 2]>,
+    /// The player's origin and velocity at the read; absent while the
+    /// button is up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<[f64; 3]>,
+    /// The strips judged at the read, while the button is held: the chosen
+    /// one, the others in reach, then the refused, nearest first; at most
+    /// 12.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<AssistCandidate>,
+    /// The read the assist last engaged on: the choice at the press. Kept
+    /// after the button is let go, until the next engagement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chose: Option<AssistChoice>,
+}
+
+/// One strip the fall assist judged ([`Assist::candidates`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AssistCandidate {
+    /// The strip's stand point, world units.
+    pub stand: [f64; 3],
+    /// `chosen`; `passed` (in reach, another was chosen); or why it was
+    /// refused: `above` (not below the player), `long` (a fall over 3 s),
+    /// `far` (over 3 units sideways), `out_of_reach` (the stick cannot
+    /// bring the landing onto it in the time left), `covered` (a floor is
+    /// between) or `walled` (something solid is between).
+    pub verdict: String,
+    /// From the player to the strip's edge, sideways, world units.
+    pub distance: f64,
+    /// The touchdown speed the fall to it gives, and the speed it needs
+    /// (units/s, positive).
+    pub speed: f64,
+    pub need: f64,
+    /// In reach: the point of the strip to land on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<[f64; 3]>,
+    /// In reach: seconds until touchdown at its height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fall_time: Option<f64>,
+    /// In reach: how far the coasting landing misses the aim, world units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub miss: Option<f64>,
+}
+
+/// The choice at the read the fall assist engaged on ([`Assist::chose`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AssistChoice {
+    /// The chosen strip's stand point and the point of it landed on.
+    pub target: [f64; 3],
+    pub point: [f64; 3],
+    /// `kept`, `marked` or `nearest` ([`Assist::reason`]).
+    pub reason: String,
+    /// The player's origin and velocity then.
+    pub from: [f64; 3],
+    pub velocity: [f64; 3],
+    /// The strips judged then ([`Assist::candidates`]).
+    pub candidates: Vec<AssistCandidate>,
 }
 
 /// `superbounce.assist_test`'s params.
@@ -1149,6 +1219,32 @@ mod tests {
         };
         let v = serde_json::to_value(&a).unwrap();
         assert!(v.get("target").is_none() && v["stick"][1] == -1.0);
+        assert!(v.get("candidates").is_none() && v.get("chose").is_none());
+        assert_eq!(serde_json::from_value::<Assist>(v).unwrap(), a);
+        // The choice: each strip judged, and the read it engaged on.
+        let judged = AssistCandidate {
+            stand: [1.0, 2.0, 3.0],
+            verdict: "covered".into(),
+            distance: 0.5,
+            speed: 4.0,
+            need: 4.28,
+            ..AssistCandidate::default()
+        };
+        let a = Assist {
+            reason: "marked".into(),
+            candidates: vec![judged.clone()],
+            chose: Some(AssistChoice {
+                reason: "marked".into(),
+                candidates: vec![judged],
+                ..AssistChoice::default()
+            }),
+            ..a
+        };
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["reason"], "marked");
+        assert_eq!(v["candidates"][0]["verdict"], "covered");
+        assert!(v["candidates"][0].get("point").is_none());
+        assert_eq!(v["chose"]["candidates"][0]["need"], 4.28);
         assert_eq!(serde_json::from_value::<Assist>(v).unwrap(), a);
         // A reply without the field reads as off.
         let old = serde_json::json!({"active": true, "test_hold": false, "engaged": false});

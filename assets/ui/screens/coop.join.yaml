@@ -1,0 +1,19 @@
+screen: coop.join
+kind: list
+layout: controls
+backing: shell
+scrolls: true
+states:
+  focus-0:
+    focus: 0
+  focus-3:
+    focus: 3
+  focus-5:
+    focus: 5
+widgets:
+  title:
+    component: title
+    text: "Join Co-op Campaign"
+  legend:
+    component: legend
+    prompts: [[Start, "READY"], [B, "BACK"]]

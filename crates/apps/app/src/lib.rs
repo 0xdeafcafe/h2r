@@ -142,6 +142,9 @@ pub struct AppConfig {
     pub debug_menu: Option<debug_menu::Shared>,
     pub theater: Option<theater_overlay::Overlay>,
     pub forge: Option<forge_overlay::Overlay>,
+    /// Where `host.screenshot` ([`agent_proto::host_shot`]) writes when it
+    /// is asked for a shot without a path; `None` refuses those.
+    pub screenshots: Option<std::path::PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -178,6 +181,7 @@ impl Default for AppConfig {
             debug_menu: None,
             theater: None,
             forge: None,
+            screenshots: None,
         }
     }
 }

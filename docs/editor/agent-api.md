@@ -97,7 +97,8 @@ What goes through actions, from both sides:
 | Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
-| UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
+| UI screens | `UiPick`, `UiPress`, `UiBrowse` | the UI Screens tool | `ui.pick`, `ui.press`, `ui.select_folder` |
+| UI screen edits | `UiEdit(EditAction)`, `UndoIn(UiScreens)`, `RedoIn(UiScreens)` | the UI Screens tool's canvas drags, handles, nudges, inline text, Selected section and Save | `ui.select`, `ui.move`, `ui.set_rect`, `ui.set_text`, `ui.revert`, `ui.undo`, `ui.redo`, `ui.save` |
 | Playtest | `play::playtest::decide` | F5, Play button, Game menu and confirmation dialog | `pair.playtest {confirm?, prompt?}` |
 | Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
 | Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
@@ -167,6 +168,61 @@ Pass `run` with a zero-based index into the displayed entries to run the
 action and return its index as `ran`. An out-of-range index returns
 `INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`.
 
+## The design system
+
+`ui.components` returns the catalogue of `assets/ui/design.yaml`
+(`ui_kit::components::catalogue_json`): `components` (each with `name`,
+`role`, `font`, `colour`, `justify`, `variants` and its `specimen` page),
+`layouts` (each `layout.<name>` page with its `kind` and `states`),
+`palette` (`{name, rgb}`) and `fonts` (role to font index).
+
+`ui.consistency {screen?}` checks our screens, or one, in every state
+against the design system (`ui_kit::consistency::check`;
+docs/game/ui-builder.md "Consistency") and returns
+`{findings: [{screen, state, ids, rule, text}], checked}`: the findings
+`consistency::ALLOWED` doesn't excuse, and how many screen states were
+checked. A screen not in `NAMES` is `INVALID_PARAMS`. Both read the kit
+alone: no disc and no window state. The rules include the pattern rules
+(`button`, `handled`, `arrows`).
+
+`ui.widgets` answers `{widgets, findings: [{text, ids}], from_disc}` for
+the picked screen in its state. The findings are
+`ui_kit::findings::of_state`'s, the list `h2 ui preview` prints: each
+line starts with its check (`check`, `content`, `layout`, `consistency`)
+and covers the checks on what was drawn (`on_drawn`, `panel_shared`,
+`covers_under`, `drawn_outside`; docs/game/ui-builder.md "The checks").
+
+## UI Screens folders
+
+`ui.screens` also returns `folders`: `ours` and `retail` are trees of
+`{id, label, count, items: [{name, label}], folders: [...]}` (the
+outliner's folders, from `app::ui_screens::browse`), and `browse` is the
+grid the centre panel shows (`{root, folder, path}`, else `null`). Ours
+group by the first dotted segment of the screen name (`design` and
+`layout` are labelled "Design system" and "Layouts" and list first);
+retail groups by tag path with the folders every tag shares stripped
+(`retail.stripped`), and is `null` without a disc. A folder's text form is
+`<root>/<id>`: `ours/forge`, `retail/game_shell/settings`.
+
+`ui.select_folder {folder | root}` shows that folder's (or `ours` /
+`retail`'s) grid of previews in the editor, as clicking it in the outliner
+does, so `view.snapshot` of the window shows it. `folder` is the text form,
+or an id under `root` when both are given. It answers `{browse, tiles,
+states}`; an unknown folder is `INVALID_PARAMS`, retail without a disc
+`FAILED`. `ui.pick` shows the picture again.
+
+`ui.sheet {folder?, root?, states?, columns?, out?}` writes that grid to
+one labelled contact-sheet PNG (default: the grid shown; `states` draws
+every state of our screens, not only each one's first; `columns` defaults
+to 4; `out` defaults to `studio/ui/sheet-<path>.png` and is refused in a
+Git checkout). It answers `{path, width, height, tiles: [{pick, name, x,
+y, w, h, findings, found, checked, error?}]}`: each tile's picture
+rectangle in the PNG, its finding count and `found`, one line per finding
+as `ui.widgets` gives them (`checked` is false for retail screens, which
+are drawn but not checked), and why it did not draw. Cells are drawn on
+the CPU like `ui.render`, with the same checks, and never disturb the page
+shown.
+
 ## Methods
 
 `h2 studio methods` is the full list with shapes and an example per
@@ -190,7 +246,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
-| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
+| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)) |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
@@ -828,6 +884,14 @@ the window and the API stay one path.
   `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
   window draws; `rules.reload` leaves the blob in its outbox and
   `play.rs` sends it on the game link.
+- **UI screen edits.** `api/ui_edit.rs` registers `UiEdit` for the
+  `ui.*` edit methods over `Action::UiEdit` (`app/ui_screens/edit.rs`),
+  the same edits the canvas makes. Our screens' edits change their YAML
+  docs and `ui.save` writes them into the checkout; a retail screen's
+  are tag writes on the open `mainmenu` map, undone with it and saved by
+  `doc.save`. Each edit answers with the widget and the checks' findings
+  on the edited view; `ui.animate` writes a transition's filmstrip PNG
+  (docs/game/ui-builder.md "Editing in the editor").
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -982,10 +1046,11 @@ identical profiles.
 - `crates/apps/studio/src/api/mod.rs`: `METHODS` (every method's shape and
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
-- `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
+- `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,ui_browse,view}.rs`:
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs`, `api/sound.rs`, `api/hud.rs` and `api/scripts.rs` the Tags,
-  sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's.
+  sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's,
+  `api/ui_edit.rs` the UI Screens tool's edits.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

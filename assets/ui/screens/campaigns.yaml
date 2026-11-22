@@ -1,0 +1,29 @@
+screen: campaigns
+kind: list
+layout: level_select
+backing: shell
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+  focus-2:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Campaign"
+  description:
+    component: description
+    at: [39, -30]
+    size: [221, 103]
+  art.0:
+    component: art
+    at: [-259, 177]
+    size: [128, 256]
+    art: { screen: 11, pane: 0, index: 1, image: 0 }
+  art.1:
+    component: art
+    at: [39, 177]
+    size: [220, 207]
+    art: { screen: 11, pane: 0, index: 0, image: 0 }

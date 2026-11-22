@@ -1,0 +1,227 @@
+screen: theater.film
+kind: list
+layout: moved
+backing: shell
+scrolls: true
+states:
+  list:
+    focus: 0
+  unplayable:
+    focus: 0
+  summary:
+    focus: 0
+  players:
+    focus: 0
+  preparing:
+    focus: 1
+  prepared:
+    focus: 1
+  prepare-failed:
+    focus: 1
+  confirm-delete:
+    focus: 3
+widgets:
+  title:
+    component: title
+  description:
+    component: description.kit.example.29
+    text: "{help}"
+    at: [-258, -148]
+    size: [222, 39]
+  legend:
+    component: legend
+  theater.panel.0:
+    component: text.emphasis
+    text: "{theater_panel_0}"
+    at: [-28, 177]
+    size: [300, 20]
+  theater.panel.1:
+    component: text.label
+    text: "{theater_panel_1}"
+    at: [-28, 155]
+    size: [300, 20]
+  theater.panel.2:
+    component: text.label
+    text: "19 Nov 26 / 8:26"
+    at: [-28, 133]
+    size: [300, 20]
+  theater.panel.3:
+    component: text.label
+    text: "{theater_panel_3}"
+    at: [-28, 111]
+    size: [300, 20]
+  theater.panel.4:
+    component: text.label
+    text: ""
+    at: [-28, 89]
+    size: [300, 20]
+  theater.panel.5:
+    component: text.label
+    text: "{theater_panel_5}"
+    at: [-28, 67]
+    size: [300, 20]
+  theater.panel.6:
+    component: text.emphasis
+    text: "{theater_panel_6}"
+    at: [-28, 45]
+    size: [109, 20]
+  theater.panel.7:
+    component: text.emphasis
+    text: "{theater_panel_7}"
+    at: [87, 45]
+    size: [56, 20]
+  theater.panel.8:
+    component: text.value
+    text: "{theater_panel_8}"
+    at: [149, 45]
+    size: [46, 20]
+  theater.panel.9:
+    component: text.value
+    text: "{theater_panel_9}"
+    at: [201, 45]
+    size: [71, 20]
+  theater.panel.10:
+    component: text.label
+    text: "{theater_panel_10}"
+    at: [-28, 23]
+    size: [109, 20]
+  theater.panel.11:
+    component: text.label
+    text: "{theater_panel_11}"
+    at: [87, 23]
+    size: [56, 20]
+  theater.panel.12:
+    component: text.mods.detail.31
+    text: "{theater_panel_12}"
+    at: [149, 23]
+    size: [46, 20]
+  theater.panel.13:
+    component: text.mods.detail.31
+    text: "{theater_panel_13}"
+    at: [201, 23]
+    size: [71, 20]
+  theater.panel.14:
+    component: text.label
+    text: "{theater_panel_14}"
+    at: [-28, 1]
+    size: [109, 20]
+  theater.panel.15:
+    component: text.label
+    text: "{theater_panel_15}"
+    at: [87, 1]
+    size: [56, 20]
+  theater.panel.16:
+    component: text.mods.detail.31
+    text: "{theater_panel_16}"
+    at: [149, 1]
+    size: [46, 20]
+  theater.panel.17:
+    component: text.mods.detail.31
+    text: "{theater_panel_17}"
+    at: [201, 1]
+    size: [71, 20]
+  theater.panel.18:
+    component: text.label
+    text: "{theater_panel_18}"
+    at: [-28, -21]
+    size: [109, 20]
+  theater.panel.19:
+    component: text.label
+    text: "{theater_panel_19}"
+    at: [87, -21]
+    size: [56, 20]
+  theater.panel.20:
+    component: text.mods.detail.31
+    text: "{theater_panel_20}"
+    at: [149, -21]
+    size: [46, 20]
+  theater.panel.21:
+    component: text.mods.detail.31
+    text: "{theater_panel_21}"
+    at: [201, -21]
+    size: [71, 20]
+  theater.panel.22:
+    component: text.label
+    text: "{theater_panel_22}"
+    at: [-28, -43]
+    size: [109, 20]
+  theater.panel.23:
+    component: text.label
+    text: "{theater_panel_23}"
+    at: [87, -43]
+    size: [56, 20]
+  theater.panel.24:
+    component: text.mods.detail.31
+    text: "{theater_panel_24}"
+    at: [149, -43]
+    size: [46, 20]
+  theater.panel.25:
+    component: text.mods.detail.31
+    text: "{theater_panel_25}"
+    at: [201, -43]
+    size: [71, 20]
+  theater.panel.26:
+    component: text.label
+    text: "{theater_panel_26}"
+    at: [-28, -65]
+    size: [109, 20]
+  theater.panel.27:
+    component: text.label
+    text: ""
+    at: [87, -65]
+    size: [56, 20]
+  theater.panel.28:
+    component: text.mods.detail.31
+    text: ""
+    at: [149, -65]
+    size: [46, 20]
+  theater.panel.29:
+    component: text.mods.detail.31
+    text: ""
+    at: [201, -65]
+    size: [71, 20]
+  theater.panel.30:
+    component: text.label
+    text: "{theater_panel_30}"
+    at: [-28, -87]
+    size: [109, 20]
+  theater.panel.31:
+    component: text.label
+    text: ""
+    at: [87, -87]
+    size: [56, 20]
+  theater.panel.32:
+    component: text.mods.detail.31
+    text: ""
+    at: [149, -87]
+    size: [46, 20]
+  theater.panel.33:
+    component: text.mods.detail.31
+    text: ""
+    at: [201, -87]
+    size: [71, 20]
+  theater.panel.34:
+    component: text.label
+    text: "{theater_panel_34}"
+    at: [-28, -109]
+    size: [109, 20]
+  theater.panel.35:
+    component: text.label
+    text: ""
+    at: [87, -109]
+    size: [56, 20]
+  theater.panel.36:
+    component: text.mods.detail.31
+    text: ""
+    at: [149, -109]
+    size: [46, 20]
+  theater.panel.37:
+    component: text.mods.detail.31
+    text: ""
+    at: [201, -109]
+    size: [71, 20]
+  theater.panel.38:
+    component: text.label
+    text: "{theater_panel_38}"
+    at: [-28, 23]
+    size: [300, 20]

@@ -1,0 +1,21 @@
+screen: forge.tools
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  objects:
+    focus: 0
+  links:
+    focus: 1
+widgets:
+  title:
+    component: title
+    text: "TOOLS"
+  description:
+    component: description
+    at: [15, 74]
+    size: [235, 154]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

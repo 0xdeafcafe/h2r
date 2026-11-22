@@ -66,6 +66,9 @@ native-render = { path = "../../rewrites/native-render", optional = true }
 frame-scene = { path = "../../rewrites/frame-scene" }
 shaders = { path = "../../formats/shaders", optional = true }
 serde.workspace = true
+# Screens' presentation in YAML (ui_kit::data).
+serde_yaml_ng.workspace = true
+indexmap.workspace = true
 dsound = { path = "../../platform/dsound", default-features = false }
 # Voice chat's media objects (voice_glue); devices come from the host.
 voice = { workspace = true, optional = true }

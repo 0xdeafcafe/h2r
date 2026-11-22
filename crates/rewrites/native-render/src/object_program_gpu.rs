@@ -29,7 +29,7 @@ use crate::object_program::{
 use crate::object_program::{LIGHTMAP_STREAM, object_layer_pass, object_layer_passes, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
-use crate::objects::{ItemKey, ObjectFrame};
+use crate::objects::{ItemDraw, ItemKey, ObjectFrame};
 use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, LayerItem, LayerOwner, LayerPass, Lighting, PartDraw, PartFlags, Subparts};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
@@ -708,6 +708,13 @@ impl LitObjects {
         self.plan_with_scene_state(index, frame, key, rows, entry, false)
     }
 
+    /// [`Self::plan`] for a first-person item: the topology and subparts
+    /// its record draws ([`ItemDraw::flags`], [`ItemDraw::subparts`]), as
+    /// the scene's parts draw theirs ([`plan_item_part`]).
+    pub fn plan_item(&self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates) -> Result<PlannedDraw, String> {
+        self.plan_inputs(index, item_inputs(frame, item)?, &item.key, &item.rows, entry, false)
+    }
+
     pub fn plan_scene(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
         self.plan_with_scene_state(index, frame, key, rows, entry, true)
     }
@@ -1076,6 +1083,35 @@ pub fn plan_part<'a>(
 ) -> Result<PlannedDraw, String> {
     let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
     plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), PartInputs::of(frame), key, rows, entry, false)
+}
+
+/// [`LitObjects::plan_item`] over a model's `parts` and its programs'
+/// passes (`pass_of`).
+pub fn plan_item_part<'a>(
+    parts: &[LitPart],
+    pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    frame: &ObjectFrame,
+    item: &ItemDraw,
+    entry: &EntryStates,
+) -> Result<PlannedDraw, String> {
+    let key = &item.key;
+    let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
+    let inputs = item_inputs(frame, item)?;
+    plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), inputs, key, &item.rows, entry, false)
+}
+
+/// A first-person item's inputs: its frame's, and the topology and
+/// subparts its record draws. A record marking the stencil or toggling
+/// the auxiliary state refuses: the first-person draw keeps the device's
+/// stencil and reads no auxiliary depth.
+fn item_inputs<'a>(frame: &'a ObjectFrame, item: &ItemDraw) -> Result<PartInputs<'a>, String> {
+    if item.flags.contains(PartFlags::STENCIL_MARK) {
+        return Err("the record marks the stencil, which the first-person draw does not".into());
+    }
+    if item.flags.contains(PartFlags::AUX_DEPTH) {
+        return Err("the auxiliary state toggle, which the first-person draw does not read".into());
+    }
+    Ok(PartInputs { subparts: item.subparts, strip: Some(item.flags.contains(PartFlags::STRIP)), ..PartInputs::of(frame) })
 }
 
 /// [`LitObjects::plan_layer_item`] over a model's world-layer parts
@@ -2244,6 +2280,29 @@ mod tests {
         assert!(refused(key(4, 2, 0)).contains("not a native part"));
         assert!(refused(key(5, 0, 0)).contains("not a native part"));
         assert!(refused(ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }).contains("shader"));
+    }
+
+    /// A first-person item draws the topology and subparts its record
+    /// picks, as a scene part does; a marked or aux-depth record refuses.
+    #[test]
+    fn a_first_person_item_draws_the_topology_and_subparts_its_record_picks() {
+        let passes = [equal_pass(0)];
+        let pass_of = |i: usize| passes.get(i);
+        let mut strip = part(4, 0, [Some((0, 0)), None, None, None, None]);
+        strip.indices = 0..9;
+        strip.listed = Some(9..12);
+        strip.subparts = Some(SubpartRanges { first: 0, ranges: vec![12..15, 15..18] });
+        let parts = [strip];
+        let f = frame();
+        let item = |flags, subparts| ItemDraw { index: 0, object: 0, key: key(4, 0, 0), rows: vec![[1.0f32; 4]; 3], flags, subparts };
+        let plan = |item: &ItemDraw| plan_item_part(&parts, &pass_of, &f, item, &entry());
+        assert_eq!(plan(&item(PartFlags::STRIP, None)).unwrap().ranges, [0..9], "a strip");
+        assert_eq!(plan(&item(PartFlags::NONE, None)).unwrap().ranges, [9..12], "without bit 9, a list");
+        let chosen = Subparts { first: 0, count: 2, visible: 0b10 };
+        let flagged = PartFlags::STRIP | PartFlags::SUBPARTS;
+        assert_eq!(plan(&item(flagged, Some(chosen))).unwrap().ranges, [15..18], "its chosen subpart");
+        assert!(plan(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).unwrap_err().contains("stencil"));
+        assert!(plan(&item(PartFlags::STRIP | PartFlags::AUX_DEPTH, None)).unwrap_err().contains("auxiliary"));
     }
 
     #[test]

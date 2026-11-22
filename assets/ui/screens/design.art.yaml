@@ -1,0 +1,31 @@
+screen: design.art
+kind: list
+layout: level_select
+backing: shell
+states:
+  rest:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "Art"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+  art.0:
+    component: art
+    at: [-259, 177]
+    size: [128, 256]
+    art: { screen: 11, pane: 0, index: 1, image: 0 }
+  art.1:
+    component: art
+    at: [36, 180]
+    size: [256, 256]
+    art: { screen: 12, pane: 3, index: 0, image: 3 }
+rows:
+  row.0:
+    kind: action
+    text: "Row 1"
+  row.1:
+    kind: action
+    text: "Row 2"

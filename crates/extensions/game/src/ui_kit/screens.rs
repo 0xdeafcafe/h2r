@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::coop_live::{self, FriendRows, HostRows, JoinRows, Lobby};
 use crate::list_class::Rows;
-use crate::skulls::{self, SKULLS, State, TOTAL};
+use crate::skulls::{self, SKULLS, State};
 use crate::skulls_menu::{self, Mode, SkullsScreen};
 use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::page::{AccountPage, Driven, ListPage, Live, described};
@@ -49,7 +49,14 @@ fn skull_text(id: u32) -> Option<String> {
 }
 
 impl Describe for SkullsScreen {
+    /// Both pages, one design (docs/game/skulls.md "The page"): Start
+    /// Level (campaign), the options, then the skulls; a row A changes is
+    /// `components::row::pick` on the one-text skin ("Mythic: On"), a
+    /// locked skull `components::row::disabled` (its name alone), each
+    /// with its own legend ([`skulls_menu::RowLegend`]) and its help.
     fn spec(&self) -> ScreenSpec {
+        use crate::skulls_menu::PageRow;
+        use crate::ui_kit::components::row as kit_row;
         let title = skull_text(self.title()).unwrap_or_else(|| "?".into());
         let campaign = self.mode() == Mode::Campaign;
         let mut s = ScreenSpec::new(
@@ -60,7 +67,6 @@ impl Describe for SkullsScreen {
             },
             &title,
         );
-        s.ids = vec![self.title()];
         s.list = ListPlace::from(Some(skulls_menu::LIST_LAYOUT));
         s.style = ValueStyle::Inline;
         s.description = Some(skulls_menu::DESCRIPTION_TEXT.into());
@@ -68,75 +74,58 @@ impl Describe for SkullsScreen {
         s.art = skulls_art();
         s.content.row_help = true;
         s.content.required_icons.push("art.1".into());
-        if campaign {
-            s.prompts = self.campaign_prompts(0);
-            s.footer = true;
-            s.ids.push(skulls_menu::FOOTER_ID);
-            s.inputs = vec![
-                Input::Up,
-                Input::Down,
-                Input::Left,
-                Input::Right,
-                Input::A,
-                Input::B,
-            ];
-            let ids = |row: i16| -> Vec<u32> {
-                let mut ids: Vec<u32> = self.texts(row).into_iter().map(|(_, id)| id).collect();
-                ids.extend(Rows::description(self, row));
-                ids
-            };
-            s.rows.push(
-                RowSpec::action(skulls_menu::START)
-                    .press(Press::Act)
-                    .describe(skulls_menu::START_DESCRIPTION)
-                    .ids(&ids(0)),
-            );
-            for (n, o) in self.options().iter().enumerate() {
-                let row = 1 + n as i16;
-                let halo1 = crate::h1_options::is_halo1(&self.store(), o);
-                let mut spec = RowSpec::value(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
-                    .press(Press::Open(crate::ui_kit::picker::NAME.into()))
-                    .describe(&crate::h1_options::description(o))
-                    .ids(&ids(row));
-                spec.prompts = Some(self.campaign_prompts(row));
-                s.rows.push(spec);
-            }
-            let mut order: Vec<(i16, usize)> = (0..TOTAL)
-                .filter_map(|i| Some((self.row_of_skull(i)?, i)))
-                .collect();
-            order.sort();
-            for (row, i) in order {
-                let label = SKULLS[i].label;
-                let mut spec = match self.state(i) {
-                    State::On => RowSpec::value(label, &["On", "Off"], 0).press(Press::Step),
-                    State::Off => RowSpec::value(label, &["On", "Off"], 1).press(Press::Step),
-                    State::Locked => RowSpec::info(label, skulls_menu::LOCKED),
-                }
-                .describe(&skulls_menu::description(i))
-                .ids(&ids(row));
-                spec.prompts = Some(self.campaign_prompts(row));
-                s.rows.push(spec);
-            }
+        s.footer = true;
+        // The screen's legend is its first row kind's: Start Level's on
+        // the campaign page, a skull's on the multiplayer one. Each row
+        // carries its own.
+        let first = if campaign {
+            skulls_menu::RowLegend::Start
         } else {
-            s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
-            for row in 0..self.count() as i16 {
-                let ids: Vec<u32> = self
-                    .texts(row)
-                    .into_iter()
-                    .map(|(_, id)| id)
-                    .chain(Rows::description(self, row))
-                    .collect();
-                let label = ids
-                    .first()
-                    .and_then(|id| skull_text(*id))
-                    .unwrap_or_else(|| "?".into());
-                s.rows.push(
-                    RowSpec::action(&label)
-                        .press(Press::Step)
-                        .describe(&skulls_menu::mp_description(row as usize))
-                        .ids(&ids),
-                );
-            }
+            skulls_menu::RowLegend::Setting
+        };
+        s.prompts = first.prompts();
+        s.ids = vec![self.title(), first.id()];
+        s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
+        let on_off = skulls_menu::VALUES;
+        for row in 0..self.count() as i16 {
+            let ids: Vec<u32> = self
+                .texts(row)
+                .into_iter()
+                .map(|(_, id)| id)
+                .chain(Rows::description(self, row))
+                .collect();
+            let skull = |i: usize, state: State, help: String| {
+                let label = SKULLS[i].label;
+                match state {
+                    State::On => kit_row::pick(label, &on_off, 0),
+                    State::Off => kit_row::pick(label, &on_off, 1),
+                    State::Locked => kit_row::disabled(label),
+                }
+                .describe(&help)
+            };
+            let spec = if campaign {
+                match self.page_row(row) {
+                    Some(PageRow::Start) => RowSpec::action(skulls_menu::START)
+                        .press(Press::Act)
+                        .describe(skulls_menu::START_DESCRIPTION),
+                    Some(PageRow::Option(o)) => {
+                        let halo1 = crate::h1_options::is_halo1(&self.store(), o);
+                        kit_row::pick(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
+                            .describe(&crate::h1_options::description(o))
+                    }
+                    Some(PageRow::Skull(i)) => {
+                        let state = self.state(i);
+                        skull(i, state, skulls_menu::help(i, state))
+                    }
+                    None => continue,
+                }
+            } else {
+                let (r, state) = (row as usize, self.mp_state(row as usize));
+                skull(crate::skulls_mp::MP[r].index, state, skulls_menu::mp_help(r, state))
+            };
+            let mut spec = spec.ids(&ids);
+            spec.prompts = Some(self.row_prompts(row));
+            s.rows.push(spec);
         }
         s
     }
@@ -275,8 +264,10 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
     s
 }
 
-/// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 43] = [
+/// The screens `h2 ui preview` knows, by name: ours, then the design
+/// system's specimens (`design.<component>`) and the layout gallery
+/// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
+pub const NAMES: [&str; 73] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -320,6 +311,36 @@ pub const NAMES: [&str; 43] = [
     FORGE_MAP_PICKER,
     crate::custom_games::browser_filters::SCREEN,
     crate::lobby_tabs::preview::NAME,
+    "design.title",
+    "design.body",
+    "design.panel-text",
+    "design.description",
+    "design.row.action",
+    "design.row.value-inline",
+    "design.row.value-column",
+    "design.row.pick-inline",
+    "design.row.setting",
+    "design.row.info",
+    "design.row.text",
+    "design.row.disabled",
+    "design.legend",
+    "design.picker",
+    "design.cells",
+    "design.art",
+    "design.focus",
+    "layout.list",
+    "layout.list.description",
+    "layout.list.panel-edge",
+    "layout.list.level-select",
+    "layout.list.texts",
+    "layout.dialog.settings",
+    "layout.dialog.settings.header",
+    "layout.dialog.large",
+    "layout.dialog.message",
+    "layout.dialog.over-screen",
+    "layout.code-entry",
+    "layout.picker",
+    "layout.hud",
 ];
 
 /// The value picker as the Forge Map row opens it, with two saved maps
@@ -330,6 +351,12 @@ pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
 /// first, middle and last row focused; the sign-in prompt's pages
 /// ([`crate::ui_kit::page::Page::states`]).
 pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
+    Some(live(name)?.specs())
+}
+
+/// Screen `name`'s named states as its Rust builds them: what the
+/// converter reads (`crate::ui_kit::data::export`).
+pub fn raw_states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
     Some(live(name)?.specs())
 }
 
@@ -367,6 +394,9 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         | crate::theater_ui::PAUSE_MENU => {
             crate::theater_ui::preview::live(name)
         }
+        _ if name.starts_with("design.") || name.starts_with("layout.") => {
+            crate::ui_kit::components::live(name)
+        }
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
 }
@@ -386,19 +416,9 @@ pub fn dialog_example(
         DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
         DialogBase::Large | DialogBase::ValuePicker => ("kit-dialog-large", "kit.dialog.large"),
     };
-    crate::ui_kit::screen::KitScreen::new(
-        feature,
-        name,
-        crate::ui_kit::ids::family(name),
-        "Choices",
-    )
-    .dialog(base, crate::ui_kit::view::Opener::MAIN_MENU)
-    .row(COUNT.row(Arc::clone(&store)))
-    .row(LEVEL.row(store))
-    .prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
+    crate::ui_kit::screen::KitScreen::new(feature, name, crate::ui_kit::ids::family(name))
+        .row(COUNT.row(Arc::clone(&store)))
+        .row(LEVEL.row(store))
 }
 
 /// The value picker's sample: the kit's Count (nine values, so the list
@@ -440,16 +460,9 @@ pub fn choices_example(store: Arc<settings::Store>) -> crate::ui_kit::screen::Ki
         "kit-choices",
         "kit.choices",
         crate::ui_kit::ids::family("kit.choices"),
-        "Choices",
     )
-    .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-    .description(skulls_menu::DESCRIPTION_TEXT)
     .row(COUNT.row(Arc::clone(&store)))
     .row(LEVEL.row(store))
-    .prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
 }
 
 /// The campaign picker with Halo 1 installed beside the test campaign,
@@ -834,6 +847,55 @@ mod tests {
         }
     }
 
+    /// Quick Options' white name line beside the icon names the focused
+    /// row on each of our settings dialogs, in every state each page
+    /// offers and as the focus moves through its rows: the row's label
+    /// (a value row's label, its value staying in the row), white, in
+    /// Quick Options' name block above the help line.
+    #[test]
+    fn the_name_line_follows_focus_in_every_state_of_each_options_page() {
+        use crate::ui_kit::dialog::QUICK_NAME_TEXT;
+        use crate::ui_kit::view::{Kind, Widget};
+        let from = crate::ui_kit::preview::From::Synthetic;
+        for name in QUICK_PAGES {
+            let states = live(name).unwrap_or_else(|| panic!("{name}: live")).specs();
+            assert!(!states.is_empty(), "{name}: its states");
+            for (state, s) in states {
+                assert_eq!(
+                    s.name_line,
+                    Some(QUICK_NAME_TEXT.into()),
+                    "{name} [{state}]: Quick Options' name line"
+                );
+                assert!(!s.rows.is_empty(), "{name} [{state}]");
+                for (row, r) in s.rows.iter().enumerate() {
+                    let focused = ScreenSpec {
+                        focus: row,
+                        ..s.clone()
+                    };
+                    let (v, _) = from.draw(&focused, &state).unwrap();
+                    let w = v
+                        .widget("name")
+                        .unwrap_or_else(|| panic!("{name} [{state}] row {row}: no name line"));
+                    assert_eq!(
+                        w.text(),
+                        Some(r.label.trim()),
+                        "{name} [{state}] row {row}: the focused row's label"
+                    );
+                    let (label, _) = r.cells(s.style);
+                    assert_eq!(label.trim(), r.label.trim(), "{name}: the label alone");
+                    let Kind::Text { font, .. } = &w.kind else {
+                        panic!("{name}: the name line is text");
+                    };
+                    assert_eq!(*font, QUICK_NAME_TEXT.font, "{name}");
+                    let help = v.widget("description").map(|d: &Widget| d.rect);
+                    if let Some(help) = help {
+                        assert!(w.rect[2] >= help[0], "{name}: above the help line");
+                    }
+                }
+            }
+        }
+    }
+
     /// A mod's page is the pregame lobby's layout, drawn from `from`: its
     /// one row (the action) where the lobby's buttons are, the lobby's
     /// panels under it, the body and status on them, the map's picture
@@ -993,6 +1055,10 @@ mod tests {
         ) || matches!(
             (screen, issue),
             ("theater.pause-menu", Issue::Contrast { id, .. }) if id == "title"
+        ) || (
+            // The specimens and layouts on a dialog's rows: kit.dialog's.
+            (screen.starts_with("design.") || screen.starts_with("layout."))
+                && matches!(issue, Issue::Contrast { id, .. } if id.starts_with("row."))
         )
     }
 
@@ -1132,6 +1198,18 @@ mod tests {
                 help.flags & 3,
                 1,
                 "left-justified, as TextBlock::bytes writes"
+            );
+            // The variant-name line, where a page of ours names its
+            // focused row.
+            let name = &pane.text_blocks[1];
+            let r = name.rect;
+            let q = crate::ui_kit::dialog::QUICK_NAME_TEXT;
+            assert_eq!([r.top, r.left, r.bottom, r.right], q.rect);
+            assert_eq!((name.font, name.animation.0), (q.font, q.animation));
+            assert!(
+                name.text_color.iter().all(|c| (c - 1.0).abs() < 0.02),
+                "white: {:?}",
+                name.text_color
             );
             let list = &pane.lists[0];
             assert_eq!(list.skin, QUICK_LIST.skin);

@@ -1034,8 +1034,12 @@ to the guest's draws (**Code**):
     list without comparing (`0x0001a170`), and a pass switch and the
     next layer's setup (`0x00016b10`) restore the cached
     implementation's restore list, so a structure or object item is
-    taken only when every state of both lists already holds at the call
-    and its pass has no engine-driven render state. The first shader
+    taken only when every state of both lists already holds at the call.
+    A structure item's engine-driven render values must hold too,
+    evaluated from the item's inputs (`layer_pass::skip_holds_with`;
+    refused when a source slot is outside the implementation's input
+    masks or its inputs change per draw); an object item with any
+    refuses. The first shader
     begin's fixed states and cleared texture caches (`0x0001bbf0`) are
     redone by the first one the guest keeps, or by the next layer's.
     `layer_pass::clear_layer_prefix` clears the layer's bit on the run of

@@ -334,10 +334,11 @@ fn read_part(
     Ok(Part { flags, subparts, ..part })
 }
 
-/// What an object item of a world layer draw other than 3 (`layer`, one
-/// of 1, 5, 7, 8 and 20; `item` its list entry, `record` its render
-/// record, `key` its key) makes the geometry draw `0x0004d0b0` do beyond
-/// its material, or why the scene cannot reproduce it (**Code**):
+/// What an object item of a layer draw (`layer`: one of the world layers
+/// 1, 5, 7, 8 and 20, or 3 for the first person's items, which the sorted
+/// walk does not read; `item` its list entry, `record` its render record,
+/// `key` its key) makes the geometry draw `0x0004d0b0` do beyond its
+/// material, or why the scene cannot reproduce it (**Code**):
 ///
 /// - Outside layer 3 the draw takes no lightmap (`0x0004d28b`: the page
 ///   and its coordinate stream only for layer 3), and in layer 5 it adds

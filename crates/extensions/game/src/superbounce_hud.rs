@@ -457,6 +457,9 @@ pub fn install(
     let show = superbounce_tutorial_shows(seen, env.as_deref());
     let handle = hud_kit::register(Arc::new(Superbounce));
     handle.publish(hidden());
+    // The step chain beside it is the window's (superbounce_steps.rs), with
+    // its own switch.
+    crate::superbounce_steps::install(registry)?;
     let hud = Hud {
         handle,
         tutorial: Tutorial::new(show),

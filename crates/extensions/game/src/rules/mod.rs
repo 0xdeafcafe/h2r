@@ -24,3 +24,5 @@ pub mod reload;
 pub mod roles;
 pub mod runtime;
 pub mod scoring;
+/// The world API (docs/game/rules-world-api.md): bot orders so far.
+pub mod world;
