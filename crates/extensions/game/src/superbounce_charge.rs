@@ -179,6 +179,14 @@ pub enum Course {
 pub struct Predicted {
     /// Where the player lands coasting, at the strip's floor height.
     pub at: Vec3,
+    /// The point to come down on, X and Y: the strip's landing point
+    /// nearest `at` (`superbounce_assist::aim_at`), what the line-up
+    /// points at.
+    pub aim: [f32; 2],
+    /// The strip's drift, a unit vector (zero for none), and the speed
+    /// along it the coasting landing has (units/s).
+    pub drift: [f32; 2],
+    pub across: f32,
     pub verdict: Course,
     /// The vertical speed the player will touch down at (units/s,
     /// positive): `√(vz² + 2 × 4.15 × height)`.
@@ -203,6 +211,12 @@ impl Predicted {
     /// the slot and fast enough to sink onto it.
     pub fn locked(&self) -> bool {
         self.verdict == Course::OnSlot && self.speed >= self.need
+    }
+
+    /// Caught, and still wanting a push along the strip's drift
+    /// (`superbounce_assist::wants_drift`).
+    pub fn wants_drift(&self) -> bool {
+        self.miss() <= 0.0 && crate::superbounce_assist::wants_drift(self.drift, self.across)
     }
 
     /// The point of the crease nearest the landing.
@@ -1128,6 +1142,9 @@ mod tests {
     fn predicted(at: Vec3, verdict: Course, speed: f32) -> Predicted {
         Predicted {
             at,
+            aim: [0.0, at[1].clamp(-1.0, 1.0)],
+            drift: [0.0; 2],
+            across: 0.0,
             verdict,
             speed,
             need: 5.0,

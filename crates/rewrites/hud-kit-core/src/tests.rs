@@ -56,6 +56,43 @@ fn templates(art_list: Vec<(Art, Result<ArtTemplate, String>)>) -> Templates {
     }
 }
 
+/// A place from its own anchor fullscreen and from the grenade row in
+/// split screen (`Place::split_origin`): the fullscreen offset as given,
+/// the split ones added to the row's point in each mode, in the row's
+/// anchor; with another anchor it is an error, since a widget has one.
+#[test]
+fn a_place_can_be_from_the_grenade_row_in_split_screen_alone() {
+    let t = templates(Vec::new());
+    let at = Place::new(Anchor::TopLeft, (90, 340))
+        .split((20, 0), (20, 0))
+        .split_from(Origin::NextGrenadePill);
+    assert_eq!(
+        records::placed(&at, &t).unwrap(),
+        (1, [(90, 340), (80 + 20, 1), (60 + 20, 2)])
+    );
+    let count = Place::new(Anchor::TopLeft, (102, 339))
+        .split((0, 0), (0, 0))
+        .split_from(Origin::NextGrenadeCount);
+    assert_eq!(
+        records::placed(&count, &t).unwrap(),
+        (1, [(102, 339), (90, -2), (70, -3)])
+    );
+    // The row in every mode, as before.
+    let row = Place::in_grenade_row(Origin::NextGrenadePill);
+    assert_eq!(
+        records::placed(&row, &t).unwrap(),
+        (1, [(106, 0), (80, 1), (60, 2)])
+    );
+    // Its own anchor in every mode: no row needed.
+    let own = Place::new(Anchor::BottomLeft, (1, 2)).split((3, 4), (5, 6));
+    assert_eq!(records::placed(&own, &t).unwrap(), (2, [(1, 2), (3, 4), (5, 6)]));
+    let wrong = Place::new(Anchor::BottomLeft, (90, -68))
+        .split((0, 0), (0, 0))
+        .split_from(Origin::NextGrenadePill);
+    let e = records::placed(&wrong, &t).unwrap_err();
+    assert!(e.to_string().contains("one anchor"), "{e}");
+}
+
 /// A bitmap record: the anchor and an offset per mode, both tag
 /// references (group then datum), the sequences and registrations, and
 /// nothing for the retail gate or inputs to act on.
@@ -324,15 +361,32 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
             u16_at(b, bf::OFFSETS[0] + 2) as i16,
         )
     };
-    assert_eq!(off(superbounce::PILL), (106, 0));
-    assert_eq!(off(superbounce::PILL_END), (106 + PILL_BODY, 0));
-    assert_eq!(off(CHARGE), (106, CHARGE_DOWN));
-    // The arming bar: the scoreboard's bomb_defusal, uncropped, bottom
-    // left with the readout.
+    // Fullscreen, one block from the top-left anchor (the grenade row's,
+    // which split screen places them from): the pill, its end against
+    // it, the strip under it, the arming bar over it.
+    let (px, py) = superbounce::PILL_FULL;
+    assert_eq!(off(superbounce::PILL), (px, py));
+    assert_eq!(off(superbounce::PILL_END), (px + PILL_BODY, py));
+    assert_eq!(off(CHARGE), (px, py + CHARGE_DOWN));
+    for id in [superbounce::PILL, superbounce::PILL_END, CHARGE, superbounce::ARM] {
+        let b = &c.widget(id).unwrap().bytes;
+        assert_eq!(u16_at(b, bf::ANCHOR), Anchor::TopLeft as u16, "{id}");
+    }
+    // In half and quarter screen the pill is the grenade row's next.
+    let pill = &c.widget(superbounce::PILL).unwrap().bytes;
+    for m in 1..3 {
+        assert_eq!(
+            (
+                u16_at(pill, bf::OFFSETS[m]) as i16,
+                u16_at(pill, bf::OFFSETS[m] + 2) as i16
+            ),
+            row.pill[m]
+        );
+    }
+    // The arming bar: the scoreboard's bomb_defusal, uncropped.
     assert_eq!(off(superbounce::ARM), superbounce::ARM_FULL);
     let arm = c.widget(superbounce::ARM).unwrap();
     assert_eq!(u32_at(&arm.bytes, bf::BITMAP + 4), BOMB);
-    assert_eq!(u16_at(&arm.bytes, bf::ANCHOR), Anchor::Centre as u16);
     assert_eq!((arm.crop, arm.ramp, arm.input(0.5)), (None, None, 0.5));
     let charge = c.widget(CHARGE).unwrap();
     assert_eq!(u32_at(&charge.bytes, bf::BITMAP + 4), STRIP);

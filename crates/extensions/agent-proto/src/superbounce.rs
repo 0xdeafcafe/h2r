@@ -114,7 +114,10 @@ pub struct Options {
 /// `superbounce.state`'s `targets`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Targets {
-    /// Seams the `targets` option shows on this map.
+    /// Which seams are targets now: `options.targets`, or the kinds the
+    /// player switched to in the game (a double tap of the flashlight).
+    pub mode: String,
+    /// Seams `mode` shows on this map.
     pub count: usize,
     /// The tagged seam's point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1308,6 +1311,7 @@ mod tests {
                 second_bounce: true,
             },
             targets: Targets {
+                mode: "all".into(),
                 count: 12,
                 tag: None,
                 marked: vec![[4.0, 5.0, 6.0]],
@@ -1392,6 +1396,7 @@ mod tests {
         assert_eq!(v["velocity"][2], -4.5);
         assert_eq!(v["options"]["targets"], "likely");
         assert_eq!(v["options"]["miss_info"], false);
+        assert_eq!(v["targets"]["mode"], "all");
         assert_eq!(v["targets"]["count"], 12);
         assert_eq!(v["targets"]["marked"][0][1], 5.0);
         assert!(v["targets"].get("tag").is_none());

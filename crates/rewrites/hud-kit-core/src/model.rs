@@ -69,7 +69,9 @@ impl Hud {
     /// Whether any element is placed in the grenade row (and needs the
     /// row's template).
     pub fn uses_grenade_row(&self) -> bool {
-        self.elements.iter().any(|e| e.at.origin != Origin::Anchor)
+        self.elements.iter().any(|e| {
+            e.at.origin != Origin::Anchor || e.at.split_origin.is_some_and(|o| o != Origin::Anchor)
+        })
     }
 }
 
@@ -295,6 +297,12 @@ pub struct Place {
     pub registration: [f32; 2],
     /// What the offsets are from.
     pub origin: Origin,
+    /// What the half and quarter offsets are from, when it is not
+    /// `origin`: an element beside the motion tracker fullscreen that
+    /// sits in the grenade row in split screen. A widget has one anchor,
+    /// so with a row origin in split screen `anchor` is the row's
+    /// (`records::placed` refuses another).
+    pub split_origin: Option<Origin>,
 }
 
 /// What a [`Place`]'s offsets are from.
@@ -325,6 +333,7 @@ impl Place {
             quarter: None,
             registration: [0.0, 0.0],
             origin: Origin::Anchor,
+            split_origin: None,
         }
     }
     /// Offsets from `origin` in the grenade row, in every screen mode the
@@ -337,6 +346,19 @@ impl Place {
     pub const fn from(mut self, origin: Origin) -> Self {
         self.origin = origin;
         self
+    }
+    /// The half and quarter offsets from `origin`, the fullscreen one
+    /// as it was ([`Place::split_origin`]).
+    pub const fn split_from(mut self, origin: Origin) -> Self {
+        self.split_origin = Some(origin);
+        self
+    }
+    /// What `mode`'s offset is from.
+    pub fn origin_in(&self, mode: Mode) -> Origin {
+        match (mode, self.split_origin) {
+            (Mode::Half | Mode::Quarter, Some(o)) => o,
+            _ => self.origin,
+        }
     }
     pub const fn registered(mut self, registration: [f32; 2]) -> Self {
         self.registration = registration;

@@ -13,7 +13,7 @@ use super::superbounce_readout::Readout;
 pub const NAME: &str = "superbounce-all";
 
 /// The moments: a name, the superbounce HUD's state, the readout's.
-pub const MOMENTS: [(&str, &str, &str); 14] = [
+pub const MOMENTS: [(&str, &str, &str); 15] = [
     ("1-walking", "not-primed", "moving"),
     ("2-arming", "under", "idle"),
     ("3-primed-targets", "primed-full", "targets"),
@@ -28,15 +28,25 @@ pub const MOMENTS: [(&str, &str, &str); 14] = [
     ("12-miss-not-primed", "not-primed", "miss-not-primed"),
     ("13-second-bounce-targets", "bounced", "second-bounce"),
     ("14-second-bounce-lined-up", "bounced", "second-bounce-lined-up"),
+    ("15-targets-switched", "primed-full", "targets-switched"),
 ];
 
 /// Both HUDs at once.
 pub struct All;
 
 impl Describe for All {
+    /// Both HUDs' elements, fullscreen only: the readout has no half or
+    /// quarter place, so a split frame of both is the superbounce HUD's
+    /// own (`h2 hud preview superbounce --mode all`), and one HUD's
+    /// widgets show in the same screen modes (the `modes` check).
     fn hud(&self) -> Hud {
         let mut elements = Superbounce.hud().elements;
         elements.extend(Readout.hud().elements);
+        for e in &mut elements {
+            e.at.half = None;
+            e.at.quarter = None;
+            e.at.split_origin = None;
+        }
         Hud { name: NAME, elements }
     }
 
@@ -78,5 +88,27 @@ mod tests {
         for (name, v) in states {
             assert!(v.layout_problems(&hud).is_empty(), "{name}: {:?}", v.layout_problems(&hud));
         }
+    }
+
+    /// The combined HUD is fullscreen only, as the readout is: no element
+    /// has a half or quarter place, so none of the block is drawn without
+    /// the rest in a split frame; fullscreen each is where its own HUD
+    /// puts it.
+    #[test]
+    fn the_combined_hud_is_fullscreen_only() {
+        let own: Vec<_> = Superbounce
+            .hud()
+            .elements
+            .into_iter()
+            .chain(Readout.hud().elements)
+            .collect();
+        let all = All.hud();
+        assert_eq!(all.elements.len(), own.len());
+        for (e, o) in all.elements.iter().zip(&own) {
+            assert_eq!((e.id, e.at.full, e.at.anchor), (o.id, o.at.full, o.at.anchor));
+            assert_eq!((e.at.half, e.at.quarter, e.at.split_origin), (None, None, None), "{}", e.id);
+        }
+        assert!(own.iter().any(|o| o.at.half.is_some()));
+        assert!(!all.uses_grenade_row());
     }
 }

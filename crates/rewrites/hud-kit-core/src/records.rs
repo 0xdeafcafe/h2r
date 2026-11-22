@@ -173,22 +173,37 @@ fn err<T>(why: impl Into<String>) -> Result<T, Error> {
 
 /// The anchor and the offset per mode `at` gives on `t` (a hidden mode
 /// keeps the fullscreen offset; the gate hides it). An offset from the
-/// grenade row is added to the row's point, in the row's anchor.
+/// grenade row is added to the row's point, in the row's anchor. A place
+/// from the row in some modes and from its own anchor in the others
+/// (`Place::split_origin`) has the row's anchor, the one a widget has;
+/// another is an error.
 pub fn placed(at: &Place, t: &Templates) -> Result<(u16, [(i16, i16); 3]), Error> {
     let own = Mode::ALL.map(|m| at.offset(m).unwrap_or(at.full));
-    if at.origin == Origin::Anchor {
+    if Mode::ALL.iter().all(|m| at.origin_in(*m) == Origin::Anchor) {
         return Ok((at.anchor as u16, own));
     }
     let row = match t.row.as_ref() {
         Ok(r) => r,
         Err(why) => return err(format!("the grenade row: {why}")),
     };
-    let mut anchor = 0;
+    let mut anchor = None;
+    let mut mixed = false;
     let mut out = own;
     for (i, m) in Mode::ALL.iter().enumerate() {
-        let (a, (x, y)) = row.at(at.origin, *m).expect("a row origin");
-        anchor = a;
-        out[i] = (x + own[i].0, y + own[i].1);
+        match row.at(at.origin_in(*m), *m) {
+            Some((a, (x, y))) => {
+                anchor = Some(a);
+                out[i] = (x + own[i].0, y + own[i].1);
+            }
+            None => mixed = true,
+        }
+    }
+    let anchor = anchor.expect("a row origin in some mode");
+    if mixed && anchor != at.anchor as u16 {
+        return err(format!(
+            "a place from anchor {} in some modes and the grenade row (anchor {anchor}) in others: a widget has one anchor",
+            at.anchor as u16
+        ));
     }
     Ok((anchor, out))
 }

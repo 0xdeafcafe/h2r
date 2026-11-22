@@ -147,6 +147,9 @@ pub struct State {
     /// The seam targets' navpoints and the tag
     /// ([`crate::superbounce_targets`]).
     pub marks: Marks,
+    /// The kinds of seam the player has just switched the targets to, for
+    /// the readout's line (`superbounce_targets::Switch::switched`).
+    pub switched: Option<crate::superbounce_options::TargetMode>,
     /// In the flight after a bounce, the seams it can reach, the best
     /// first ([`crate::superbounce_second`]); none otherwise, and with
     /// the variant's `second_bounce` option off.
@@ -206,6 +209,7 @@ impl State {
         aim: None,
         tick: None,
         marks: Marks::NONE,
+        switched: None,
         second: [None; RANKED],
         charge: None,
         verb: None,
@@ -319,6 +323,10 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         velocity: s.velocity.map(v3),
         options: options_reply(crate::superbounce_options::current()),
         targets: wire::Targets {
+            mode: crate::superbounce_targets::mode()
+                .unwrap_or(crate::superbounce_options::current().targets)
+                .name()
+                .into(),
             count: crate::superbounce_targets::current().len(),
             tag: s.marks.tagged.map(v3),
             marked: s.marks.targets.iter().flatten().map(|m| v3(m.at)).collect(),
@@ -571,14 +579,23 @@ struct ScanView {
 /// and the speed model filled in: every spot, and the ones [`marked`]. A
 /// `learned` or `partial` line of the sim's training moves its spot's aim
 /// (`stand`) onto the line's (`superbounce::learned::apply`): the sim's
-/// measured answer outranks the scan's aim. The edge stays the collision
+/// measured answer outranks the scan's aim. A proven seam's `stand` is
+/// then the landing the game run measured, the verified entry's working
+/// point (`superbounce::verified::landings`, `land`): a game run's
+/// landing outranks both. Everything that points at a seam reads
+/// `stand`: the navpoints, the tag, the line-up, the second bounce and
+/// the assist. The edge stays the collision
 /// edge, and a line proves nothing. Each strip with no
 /// measured `need` or `fall` takes the one threshold every seam shares and
 /// the drop that reaches it (`superbounce::speed::apply`).
 fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
     let mut all = raw.to_vec();
-    superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
+    let verified = bots::spots::verified_for(map);
+    superbounce::verified::apply(&mut all, &verified);
+    // Worked out on the scan's stands, as the entries are matched.
+    let landings = superbounce::verified::landings(&all, &verified);
     superbounce::learned::apply(&mut all, &bots::spots::learned_for(map));
+    superbounce::verified::land(&mut all, &landings);
     superbounce::speed::apply(&mut all);
     let shown = marked(&all);
     (Arc::new(all), Arc::new(shown))
@@ -1306,6 +1323,7 @@ fn on_tick(o: &hooks::Obs) {
         aim: live.aim,
         tick: live.tick,
         marks,
+        switched: crate::superbounce_targets::switched(),
         second,
         charge: step.charge,
         verb: step.verb,
@@ -1694,6 +1712,9 @@ mod tests {
             takeoff: Some([1.0, 0.5, 4.0]),
             landing: Some(Predicted {
                 at: [1.0, 2.0, -3.0],
+                aim: [1.0, 2.0],
+                drift: [0.0; 2],
+                across: 0.0,
                 verdict: Course::Fixable,
                 speed: 5.5,
                 need: 4.0,

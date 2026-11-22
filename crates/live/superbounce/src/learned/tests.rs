@@ -335,6 +335,7 @@ fn a_learned_line_s_aim_overrides_the_scan_s_aim() {
     apply(&mut spots, &[learned_line()]);
     let s = spots[0];
     assert_eq!(s.stand, [-10.54, 4.09, -3.19]);
+    assert!(s.landed, "a learned aim is a measured landing");
     // The edge is the collision edge: the aim moves, the edge does not.
     assert_eq!(s.edge, scanned_slot().edge);
     // A line proves nothing: the status and score are the scan's.

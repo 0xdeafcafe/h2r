@@ -41,6 +41,11 @@ fn predicted(at: Vec3, speed: f32) -> Predicted {
     let s = seam();
     Predicted {
         at,
+        // The seam has no drift and its stand is on the edge: the point
+        // to come down on is the edge's nearest.
+        aim: [10.0, at[1].clamp(-1.0, 1.0)],
+        drift: [0.0; 2],
+        across: 0.0,
         verdict: Course::Fixable,
         speed,
         need: s.need,
@@ -336,6 +341,8 @@ fn ranked(at: Vec3, steer: [f32; 2], caught: bool) -> Ranked {
         time: 2.0,
         steer,
         caught,
+        drift: [0.0; 2],
+        across: 0.0,
         reach: 6.0,
         speed: 8.1,
         need: 5.4,
@@ -408,4 +415,79 @@ fn the_second_bounce_takes_the_fall_row_and_the_line() {
         view(&s, Options::DEFAULT, None).fall.unwrap().steer,
         Steer::OnSeam
     );
+}
+
+/// The kinds the player has just switched the targets to are the line's
+/// while the mode's state carries them, with every option off too: the
+/// line answers the player's own press.
+#[test]
+fn the_switch_of_the_kinds_takes_the_line() {
+    let mut s = on();
+    assert_eq!(view(&s, Options::DEFAULT, None).kinds, None);
+    s.switched = Some(TargetMode::Common);
+    let off = Options {
+        miss_info: false,
+        velocity: false,
+        alignment: false,
+        ..Options::DEFAULT
+    };
+    for o in [Options::DEFAULT, off] {
+        let v = view(&s, o, Some(Miss::NotPrimed));
+        assert_eq!(v.kinds, Some(rd::Kinds::Common));
+        assert_eq!(rd::values(&v).get(INFO).unwrap().text, "Targets: common");
+    }
+    assert_eq!(
+        [TargetMode::Common, TargetMode::Likely, TargetMode::All].map(kinds),
+        rd::Kinds::EVERY
+    );
+}
+
+/// The line-up points at the seam's landing point, not the edge's nearest
+/// point: off the seam the steer is to `Predicted::aim`; caught, a
+/// landing coming down still or against the seam's drift is told the way
+/// to drift, and one drifting with it is on the seam.
+#[test]
+fn the_line_up_is_to_the_landing_point_and_wants_the_seams_drift() {
+    let mut s = on();
+    s.airborne = true;
+    // The seam runs along Y at x 10 and bounces drifting +X; its measured
+    // landing is 0.02 before it. Coasting down 0.5 short.
+    let mut p = predicted([9.5, 0.0, 2.0], 6.0);
+    p.aim = [9.98, 0.4];
+    p.drift = [1.0, 0.0];
+    s.landing = Some(p);
+    let Steer::Off { heading, metres } = fall(&s).unwrap().steer else {
+        panic!("off the seam");
+    };
+    assert!(close(metres, 0.48f32.hypot(0.4) * M));
+    assert!(close(heading, against_aim(0.48, 0.4, 0.0)));
+    // Caught (within the catch of the edge), coming straight down: drift
+    // +X, which is ahead; aiming along +Y it is to the right.
+    p.at = [9.98, 0.0, 2.0];
+    s.landing = Some(p);
+    assert_eq!(fall(&s).unwrap().steer, Steer::Drift { heading: 0.0 });
+    s.yaw = Some(FRAC_PI_2);
+    let Steer::Drift { heading } = fall(&s).unwrap().steer else {
+        panic!("caught, no drift");
+    };
+    assert!(close(heading, FRAC_PI_2));
+    // Drifting against it is no better; with it, the landing is on.
+    p.across = -0.5;
+    s.landing = Some(p);
+    assert!(matches!(fall(&s).unwrap().steer, Steer::Drift { .. }));
+    p.across = 0.5;
+    s.landing = Some(p);
+    assert_eq!(fall(&s).unwrap().steer, Steer::OnSeam);
+    // The second bounce's line-up reads the same.
+    let mut r = ranked([10.0, 0.0, 0.0], [0.0; 2], true);
+    assert_eq!(line_up(&r, 0.0).steer, Steer::OnSeam);
+    r.drift = [0.0, 1.0];
+    let Steer::Drift { heading } = line_up(&r, 0.0).steer else {
+        panic!("caught, no drift");
+    };
+    assert!(close(heading, -FRAC_PI_2));
+    r.across = 0.8;
+    assert_eq!(line_up(&r, 0.0).steer, Steer::OnSeam);
+    r.caught = false;
+    assert!(matches!(line_up(&r, 0.0).steer, Steer::Off { .. }));
 }
