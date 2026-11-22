@@ -1848,8 +1848,8 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 - Bodies are JSON with `source`, at most 256 KiB (413 over it). Check and
   run share a bucket of 20 requests per client address, refilled at 2 a
   second (`rule_scripts::RATE`); an empty bucket is 429.
-- `ok` on a check means the script compiled, verified, fits the 20,000-op
-  tick budget and the 64 KiB IR cap. `hash` is the IR's SHA-256, present
+- `ok` on a check means the script compiled, verified, fits the 100,000-op
+  tick budget and the 256 KiB IR cap. `hash` is the IR's SHA-256, present
   whenever it compiled. An error with line and column 0 is about the whole
   script: a verifier refusal, the budget or the IR size.
 - A check that is `ok` also lists the script's `options` (`[{name,

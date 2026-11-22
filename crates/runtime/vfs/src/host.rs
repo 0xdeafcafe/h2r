@@ -173,18 +173,47 @@ fn spawn_flusher(written: &Arc<Written>) {
     }
 }
 
+/// Where `path`'s record lives: one directory per component, named by the
+/// lowercase component's bytes in hex, then `record`.
 fn record_path(metadata_root: &Path, path: &str) -> PathBuf {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut result = metadata_root.to_owned();
+    let mut name = String::new();
     for part in path.split('\\').filter(|p| !p.is_empty()) {
-        result.push(
-            part.to_ascii_lowercase()
-                .bytes()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>(),
-        );
+        name.clear();
+        for b in part.bytes().map(|b| b.to_ascii_lowercase()) {
+            name.push(HEX[usize::from(b >> 4)] as char);
+            name.push(HEX[usize::from(b & 0xf)] as char);
+        }
+        result.push(&name);
     }
     result.push("record");
     result
+}
+
+/// [`record_path`]s already built, by guest path. Every read asks for its
+/// file's record ([`HostBackend::load_basic`]); the path is built once.
+/// The metadata root never changes, so an entry never goes stale.
+#[derive(Default)]
+struct RecordPaths(RefCell<std::collections::HashMap<String, PathBuf>>);
+
+impl RecordPaths {
+    /// Paths kept before the map starts again: guest paths are few, so this
+    /// bounds a game that walks many files without costing a hit.
+    const MAX: usize = 4096;
+
+    fn get(&self, metadata_root: &Path, path: &str) -> PathBuf {
+        let mut paths = self.0.borrow_mut();
+        if let Some(p) = paths.get(path) {
+            return p.clone();
+        }
+        if paths.len() >= Self::MAX {
+            paths.clear();
+        }
+        let p = record_path(metadata_root, path);
+        paths.insert(path.to_owned(), p.clone());
+        p
+    }
 }
 
 /// Write the 40-byte record durably: a staged file, synced, renamed over
@@ -220,6 +249,7 @@ fn write_record(target: &Path, info: BasicInfo) -> Result<()> {
 pub struct HostBackend {
     root: PathBuf,
     metadata_root: PathBuf,
+    record_paths: RecordPaths,
     format_roots: [format::FormatRoot; 2],
     capacity: u64,
     label: String,
@@ -352,6 +382,7 @@ impl HostBackend {
             written,
             root,
             metadata_root,
+            record_paths: RecordPaths::default(),
             format_roots,
             capacity: 5 * 1024 * 1024 * 1024,
             label: "Xbox Data".into(),
@@ -539,7 +570,7 @@ impl HostBackend {
         Ok(host)
     }
     fn metadata_path(&self, path: &str) -> PathBuf {
-        record_path(&self.metadata_root, path)
+        self.record_paths.get(&self.metadata_root, path)
     }
     fn retire_metadata(&self, path: &str) -> Result<()> {
         #[cfg(test)]
@@ -1300,6 +1331,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Records sit at the same paths as ever: lowercase components in hex,
+    /// empty components skipped. A path asked for again, in any case of
+    /// the map's key, is the one built the first time.
+    #[test]
+    fn record_paths_are_hex_components_built_once() {
+        let root = Path::new("/meta");
+        assert_eq!(
+            record_path(root, "\\Saves\\\\Ab\u{e9}"),
+            Path::new("/meta/7361766573/6162c3a9/record")
+        );
+        assert_eq!(record_path(root, ""), Path::new("/meta/record"));
+        let paths = RecordPaths::default();
+        for path in ["maps\\X.map", "MAPS\\x.map", "maps\\X.map"] {
+            assert_eq!(paths.get(root, path), record_path(root, path));
+        }
+        assert_eq!(paths.0.borrow().len(), 2);
+        for i in 0..RecordPaths::MAX + 1 {
+            paths.get(root, &format!("f{i}"));
+        }
+        assert!(paths.0.borrow().len() <= RecordPaths::MAX);
+        assert_eq!(paths.get(root, "maps\\X.map"), record_path(root, "maps\\x.map"));
     }
 
     /// A formatted volume's old tree is deleted without following links:

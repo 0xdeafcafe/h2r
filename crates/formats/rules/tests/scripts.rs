@@ -648,3 +648,18 @@ fn a_list_line_files_the_script_under_a_named_row() {
             .contains("the list is named twice")
     );
 }
+
+/// What one op costs, for choosing [`TICK_BUDGET`]: run with
+/// `cargo test --release -p rules --test scripts op_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn op_cost() {
+    let mut best = f64::MAX;
+    for _ in 0..20 {
+        let start = std::time::Instant::now();
+        let (vm, _) = spin();
+        let ns = start.elapsed().as_nanos() as f64 / f64::from(vm.ext().ops);
+        best = best.min(ns);
+    }
+    println!("{best:.2} ns per op; a full {TICK_BUDGET}-op tick is {:.3} ms", best * f64::from(TICK_BUDGET) / 1e6);
+}

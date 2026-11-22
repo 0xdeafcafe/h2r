@@ -174,7 +174,11 @@ function CapabilityPanel(props: { check: CheckResult | null; tools: Tools }) {
               </ul>
             </Show>
             <Show when={r().unhostable.length}>
-              <p class="s-pad s-rules-warn">No host can run this yet: it calls <For each={r().unhostable}>{(u, i) => <>{i() > 0 ? ", " : ""}<code>{u}</code></>}</For>.</p>
+              <p class="s-pad s-rules-warn">
+                <strong>Plays here, not in the game yet.</strong> It calls{" "}
+                <For each={r().unhostable}>{(u, i) => <>{i() > 0 ? (i() === r().unhostable.length - 1 ? " and " : ", ") : ""}<code>{u}</code></>}</For>
+                , which the game doesn't do yet. Until it does, a game with this script plays its carrier's own rules.
+              </p>
             </Show>
           </>
         )}

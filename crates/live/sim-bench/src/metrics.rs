@@ -348,6 +348,12 @@ pub struct Wall {
     /// The base's guest RAM pages, `guest_written_pages`'s denominator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_pages: Option<u64>,
+    /// Game-thread milliseconds per tick the bot brains cost: the read,
+    /// think and conclude phases of every phantom's pad, serial or
+    /// batched (a think on a worker is not counted; the wait for it is).
+    /// `None` when the run did not measure it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bots_ms_per_tick: Option<f64>,
 }
 
 /// The process's memory, sampled while a report is built: [`Wall`]'s
@@ -364,6 +370,14 @@ pub struct MemoryUsage {
 }
 
 pub use live_proto::game::WeaponAccuracy;
+
+/// Flat RAM window counters over the match (`runtime::WindowStats`), per
+/// game tick.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FlatReport {
+    /// Faulting guest accesses a fixup sent to the slow path, per tick.
+    pub fixups_per_tick: f64,
+}
 
 /// One player's line in the report.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -456,11 +470,29 @@ pub struct Report {
     /// Runner dispatch and preemption census when enabled for this match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_per_tick: Option<BTreeMap<String, f64>>,
+    /// The flat RAM window's fixups per tick; `None` without a window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flat: Option<FlatReport>,
     #[serde(default)]
     pub notes: Vec<String>,
 }
 
 impl Report {
+    /// Fills the per-tick costs the run measured outside the tally:
+    /// `bots_ns` nanoseconds of game-thread bot work and `fixups` flat
+    /// window fixups over the match's [`Report::ticks`]. Nothing is set
+    /// for a match with no ticks.
+    pub fn set_costs(&mut self, bots_ns: u64, fixups: Option<u64>) {
+        if self.ticks == 0 {
+            return;
+        }
+        let ticks = self.ticks as f64;
+        self.wall.bots_ms_per_tick = Some(bots_ns as f64 / 1e6 / ticks);
+        self.flat = fixups.map(|f| FlatReport {
+            fixups_per_tick: f as f64 / ticks,
+        });
+    }
+
     pub fn player(&self, index: u8) -> Option<&PlayerReport> {
         self.players.iter().find(|p| p.index == index)
     }
@@ -951,11 +983,13 @@ impl Tally {
                 footprint_mib: memory.footprint_mib,
                 guest_written_pages: memory.guest_written_pages,
                 guest_pages: memory.guest_pages,
+                bots_ms_per_tick: None,
             },
             players,
             kills: self.kills.clone(),
             nav: nav.into(),
             dispatch_per_tick: None,
+            flat: None,
             notes,
         }
     }
@@ -964,6 +998,41 @@ impl Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn costs_are_per_tick_in_the_json() {
+        let mut tally = Tally::new();
+        for tick in 1..=4 {
+            tally.tick_hashed(
+                TickSample {
+                    tick,
+                    ..Default::default()
+                },
+                u64::from(tick),
+                None,
+            );
+        }
+        let mut report = tally.report(Finish::bare(End::TickLimit));
+        let plain = serde_json::to_value(&report).unwrap();
+        assert!(plain["wall"].get("bots_ms_per_tick").is_none());
+        assert!(plain.get("flat").is_none());
+        report.set_costs(8_000_000, Some(6));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["wall"]["bots_ms_per_tick"], 2.0);
+        assert_eq!(json["flat"]["fixups_per_tick"], 1.5);
+        let back: Report = serde_json::from_value(json).unwrap();
+        assert_eq!(back.wall.bots_ms_per_tick, Some(2.0));
+        report.set_costs(1, None);
+        assert!(report.flat.is_none());
+    }
+
+    #[test]
+    fn costs_need_ticks() {
+        let mut report = Tally::new().report(Finish::bare(End::Aborted));
+        report.set_costs(5, Some(5));
+        assert_eq!(report.wall.bots_ms_per_tick, None);
+        assert!(report.flat.is_none());
+    }
 
     fn p(index: u8, score: i32) -> PlayerSample {
         PlayerSample {

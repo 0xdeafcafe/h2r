@@ -515,6 +515,12 @@ mod tests {
     }
 
     #[test]
+    fn a_report_without_components_is_named_in_the_text() {
+        let v = Verdict::AggregateIdentical { ticks: 3 };
+        assert!(v.render().contains("no component breakdown"));
+    }
+
+    #[test]
     fn recorder_stores_deltas_and_replaces_a_repeated_tick() {
         let c = |v: &[(&str, &str)]| {
             v.iter()

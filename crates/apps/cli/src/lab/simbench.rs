@@ -30,6 +30,9 @@ pub struct Parsed {
     /// Everything but `files`, `file`, `batch` and `build.rev`.
     pub req: SimReq,
     pub path: PathBuf,
+    /// `--data`: the driving Mac's data root, whose `bots/` is uploaded.
+    /// Absent: `content::store::default_data_root()`.
+    pub data: Option<PathBuf>,
     pub wait: bool,
     pub to: Option<PathBuf>,
 }
@@ -52,6 +55,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Parsed> {
     let mut path = None;
     let mut wait = false;
     let mut to = None;
+    let mut data = None;
     let mut name = None;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -85,6 +89,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Parsed> {
             "--note" => req.note = Some(val()?),
             "--wait" => wait = true,
             "--to" => to = Some(PathBuf::from(val()?)),
+            "--data" => data = Some(PathBuf::from(val()?)),
             _ if path.is_none() && !a.starts_with('-') => path = Some(PathBuf::from(a)),
             _ => bail!("unexpected {a}\n\n{}", super::USAGE),
         }
@@ -103,7 +108,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Parsed> {
             format!("sim {stem}").chars().take(60).collect()
         }
     };
-    Ok(Parsed { req, path, wait, to })
+    Ok(Parsed { req, path, data, wait, to })
 }
 
 // ---- the files a match or batch names ----
@@ -114,6 +119,8 @@ pub struct Loaded {
     pub file: String,
     pub batch: bool,
     pub files: BTreeMap<String, String>,
+    /// The maps the run plays: a batch's `maps`, else the match's `map`.
+    pub maps: Vec<String>,
 }
 
 fn is_json(path: &Path) -> bool {
@@ -141,6 +148,15 @@ fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
         cur = cur.get(key)?;
     }
     cur.as_str()
+}
+
+fn strings_at(v: &Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str().map(str::to_owned))
+        .collect()
 }
 
 /// The files `v` (a match or a batch file) names, relative to its own
@@ -191,6 +207,8 @@ pub fn load_files(path: &Path) -> Result<Loaded> {
     let entry = fs::canonicalize(path).with_context(|| format!("{}", path.display()))?;
     let mut todo = vec![entry.clone()];
     let mut batch = false;
+    let mut batch_maps: Vec<String> = Vec::new();
+    let mut file_maps: Vec<String> = Vec::new();
     while let Some(file) = todo.pop() {
         if texts.contains_key(&file) {
             continue;
@@ -205,8 +223,10 @@ pub fn load_files(path: &Path) -> Result<Loaded> {
             if batch {
                 let out = str_at(&v, &["out"]).context("a batch file needs `out`")?;
                 check_batch_out(out)?;
+                batch_maps = strings_at(&v, "maps");
             }
         }
+        file_maps.extend(str_at(&v, &["map"]).map(str::to_owned));
         // Tuning files name nothing further; match files name tunings.
         for r in references(&v) {
             let target = base.join(r);
@@ -248,6 +268,104 @@ pub fn load_files(path: &Path) -> Result<Loaded> {
         file: key(&entry)?,
         batch,
         files,
+        maps: if batch_maps.is_empty() { file_maps } else { batch_maps }
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    })
+}
+
+// ---- the bots' data ----
+
+/// The bots' data for `maps` from `root` (a data root), keyed `bots/<file>`
+/// with hex contents, ready for [`SimReq::data`]: each map's `.bots` mesh
+/// for every structure BSP it has (the first is required), and the `.vis`
+/// grid beside each when there is one. A sim never builds meshes, so a map
+/// without one is refused here, before anything syncs: the bots would
+/// stand still and the benchmark would measure an empty match.
+pub fn bot_data(maps: &[String], root: &Path) -> Result<BTreeMap<String, String>> {
+    let dir = bots::cache::dir(root);
+    let mut out = BTreeMap::new();
+    let mut total = 0usize;
+    for map in maps {
+        ensure!(
+            dir.join(bots::cache::file_name(map, 0)).is_file(),
+            "no bot nav mesh for {map} in {}: run `h2 bots nav {map}` first (a lab sim never builds one, and bots without it stand still)",
+            dir.display()
+        );
+        for bsp in 0.. {
+            let names = [bots::cache::file_name(map, bsp), bots::vis::file_name(map, bsp)];
+            if !dir.join(&names[0]).is_file() {
+                break;
+            }
+            for name in names {
+                let path = dir.join(&name);
+                if !path.is_file() {
+                    continue;
+                }
+                let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                total += bytes.len();
+                ensure!(
+                    total <= proto::SIM_DATA_MAX,
+                    "bot data for {} is over {} MiB",
+                    maps.join(", "),
+                    proto::SIM_DATA_MAX >> 20
+                );
+                out.insert(format!("bots/{name}"), proto::to_hex(&bytes));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Makes the job's data root at `dir`: every entry of the host's own data
+/// root `shared` linked in (but its `bots/`), and the uploaded `bots/` files
+/// written. `h2 sim --data <dir>` then finds the driver's meshes, and
+/// everything else it needs, where it always looked.
+pub fn stage_data(dir: &Path, shared: &Path, data: &BTreeMap<String, String>) -> Result<()> {
+    let _ = fs::remove_dir_all(dir);
+    fs::create_dir_all(dir.join("bots"))?;
+    if let Ok(entries) = fs::read_dir(shared) {
+        for e in entries.flatten() {
+            if e.file_name() == "bots" {
+                continue;
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(e.path(), dir.join(e.file_name()))
+                .with_context(|| format!("linking {}", e.path().display()))?;
+            #[cfg(not(unix))]
+            bail!("a sim job's data needs a unix host");
+        }
+    }
+    for (key, hex) in data {
+        proto::check_sim_data_key(key)?;
+        let path = dir.join(key);
+        fs::write(&path, proto::from_hex(hex)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Why a finished step's runs didn't have the bots' nav mesh, if they
+/// didn't: a report's `nav` that isn't `loaded`, or the sim's log line
+/// "nav mesh none yet" (`bots::autonav`). Those bots walked straight and
+/// the speed is not a bot match's.
+pub fn nav_problem(reports: &BTreeMap<String, Report>, log: &str) -> Option<String> {
+    let missing: Vec<&str> = reports
+        .iter()
+        .filter(|(_, r)| r.nav != "loaded")
+        .map(|(k, _)| k.as_str())
+        .collect();
+    if !missing.is_empty() {
+        return Some(format!(
+            "nav mesh missing on the host (report nav is not loaded: {}); the bots stood still. Run `h2 bots nav <map>` on the driver and rerun",
+            missing.join(", ")
+        ));
+    }
+    log.contains("nav mesh none yet").then(|| {
+        "nav mesh missing on the host (the log says \"nav mesh none yet\"); the bots stood still. Run `h2 bots nav <map>` on the driver and rerun"
+            .to_owned()
     })
 }
 
@@ -989,5 +1107,96 @@ mod tests {
         let (_, bad) = collect_reports(&d);
         assert_eq!(bad.len(), 1);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_maps_a_run_names_come_with_the_files() {
+        let d = scratch("maps");
+        fs::write(d.join("m.toml"), "map = \"lockout\"\n").unwrap();
+        let l = load_files(&d.join("m.toml")).unwrap();
+        assert_eq!(l.maps, ["lockout"]);
+        // A batch's `maps` replace its match file's `map`.
+        fs::write(
+            d.join("b.toml"),
+            "out = \"r\"\nmatch = \"m.toml\"\nmaps = [\"midship\", \"ascension\", \"midship\"]\n[a]\n",
+        )
+        .unwrap();
+        assert_eq!(load_files(&d.join("b.toml")).unwrap().maps, ["ascension", "midship"]);
+        // Without `maps`, the match's own map is the one.
+        fs::write(d.join("b2.toml"), "out = \"r\"\nmatch = \"m.toml\"\n[a]\n").unwrap();
+        assert_eq!(load_files(&d.join("b2.toml")).unwrap().maps, ["lockout"]);
+        let p = parse_args(args(&["m.toml", "--data", "/x/data"])).unwrap();
+        assert_eq!(p.data.as_deref(), Some(Path::new("/x/data")));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    fn mesh(root: &Path, map: &str, bsp: usize, vis: bool, bytes: &[u8]) {
+        let dir = bots::cache::dir(root);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(bots::cache::file_name(map, bsp)), bytes).unwrap();
+        if vis {
+            fs::write(dir.join(bots::vis::file_name(map, bsp)), b"vis").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_map_without_a_nav_mesh_is_refused_naming_the_command() {
+        let d = scratch("nomesh");
+        mesh(&d, "lockout", 0, true, b"abc");
+        let maps = |m: &[&str]| m.iter().map(|m| (*m).to_owned()).collect::<Vec<_>>();
+        let e = format!("{:#}", bot_data(&maps(&["lockout", "midship"]), &d).unwrap_err());
+        assert!(e.contains("h2 bots nav midship"), "{e}");
+        // A grid without its mesh is no mesh.
+        fs::write(bots::cache::dir(&d).join(bots::vis::file_name("midship", 0)), b"v").unwrap();
+        assert!(bot_data(&maps(&["midship"]), &d).is_err());
+        let e = format!("{:#}", bot_data(&maps(&["lockout"]), &d.join("none")).unwrap_err());
+        assert!(e.contains("h2 bots nav lockout"), "{e}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_maps_meshes_and_grids_are_uploaded_and_staged_beside_the_hosts_data() {
+        let d = scratch("stage");
+        mesh(&d, "lockout", 0, true, b"abc");
+        mesh(&d, "lockout", 1, false, b"de");
+        mesh(&d, "midship", 0, false, b"f");
+        let data = bot_data(&["lockout".to_owned()], &d).unwrap();
+        let keys: Vec<_> = data.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["bots/lockout.0.bots", "bots/lockout.0.vis", "bots/lockout.1.bots"]);
+        assert_eq!(data["bots/lockout.0.bots"], "616263");
+        for k in data.keys() {
+            proto::check_sim_data_key(k).unwrap();
+        }
+        // The host's data root has its own files and an older mesh.
+        let shared = d.join("host");
+        mesh(&shared, "midship", 0, false, b"old");
+        fs::write(shared.join("settings.bin"), "s").unwrap();
+        let job = d.join("job");
+        stage_data(&job, &shared, &data).unwrap();
+        assert_eq!(fs::read(job.join("bots/lockout.0.bots")).unwrap(), b"abc");
+        assert_eq!(fs::read(job.join("bots/lockout.1.bots")).unwrap(), b"de");
+        assert!(!job.join("bots/midship.0.bots").exists());
+        assert_eq!(fs::read_to_string(job.join("settings.bin")).unwrap(), "s");
+        // Removing the job's data leaves the host's.
+        fs::remove_dir_all(&job).unwrap();
+        assert!(shared.join("settings.bin").is_file());
+        let bad = BTreeMap::from([("bots/../x.bots".to_owned(), String::new())]);
+        assert!(stage_data(&job, &shared, &bad).is_err());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_run_without_the_nav_mesh_is_named_from_its_report_or_its_log() {
+        let good = report(1.0, 2.0, &[(1, "aa")]);
+        let reports = BTreeMap::from([("report.json".to_owned(), good.clone())]);
+        assert_eq!(nav_problem(&reports, "bots: lockout: nav mesh loaded\n"), None);
+        let mut bad = good;
+        bad.nav = "missing".into();
+        let reports = BTreeMap::from([("in/r/runs/m1/report.json".to_owned(), bad)]);
+        let e = nav_problem(&reports, "").unwrap();
+        assert!(e.contains("nav mesh missing") && e.contains("m1/report.json"), "{e}");
+        let ok = BTreeMap::from([("report.json".to_owned(), report(1.0, 2.0, &[]))]);
+        let log = "bots: lockout: nav mesh none yet (bots walk straight until built with `h2 bots nav lockout`)\n";
+        assert!(nav_problem(&ok, log).unwrap().contains("none yet"));
     }
 }

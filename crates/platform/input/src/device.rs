@@ -238,6 +238,13 @@ impl InputManager {
     /// Pull host state and update the ports: removals, insertions, auto-poll
     /// publishing and rumble forwarding.
     pub fn sync(&mut self) {
+        // No source and no pad: nothing can arrive, leave, publish or
+        // complete, so only the report's count moves. A playerless host
+        // (a sim, whose bots are network peers) syncs after every slice.
+        if self.is_idle() {
+            self.report.set(Vec::new(), Vec::new());
+            return;
+        }
         // Tell backends which states the guest has read, before they report
         // new ones: a consumable input (mouse motion) is spent only once seen.
         for port in &self.ports {
@@ -371,6 +378,14 @@ impl InputManager {
         }
         let devices = self.backends.iter().flat_map(|b| b.devices()).collect();
         self.report.set(devices, infos);
+    }
+
+    /// No backend, no gate and no device on any port: a [`sync`](Self::sync)
+    /// would change nothing but the report's count.
+    pub fn is_idle(&self) -> bool {
+        self.backends.is_empty()
+            && self.gates.is_empty()
+            && self.ports.iter().all(|p| p.device.is_none())
     }
 
     /// Return each pad to its original colour before ending the game.
@@ -628,6 +643,33 @@ mod tests {
                 g.pad.state.buttons.set(HostButton::South, false);
             }
         }
+    }
+
+    /// A manager with no source stays idle: each sync only counts, and the
+    /// ports, changes and report read as a full sync leaves them. A source
+    /// added later is pulled at the next sync.
+    #[test]
+    fn a_manager_with_no_source_only_counts_its_syncs() {
+        let mut m = InputManager::new(ConvertConfig::default()).unwrap();
+        for n in 1..=3 {
+            assert!(m.is_idle());
+            m.sync();
+            let r = m.host_report().get();
+            assert_eq!((r.syncs, r.devices.len(), r.pads.len()), (n, 0, 0));
+        }
+        assert_eq!(m.connected_mask(), 0);
+        assert_eq!(m.device_changes(), (0, 0));
+        assert!(m.take_completions().is_empty());
+
+        let sh = Arc::new(Mutex::new(Shared::default()));
+        sh.lock().unwrap().pads = vec![pad(10, false)];
+        m.add_backend(Box::new(Mock(sh.clone())));
+        assert!(!m.is_idle());
+        m.sync();
+        assert_eq!(m.connected_mask(), 1);
+        assert_eq!(m.device_changes(), (1, 0));
+        let r = m.host_report().get();
+        assert_eq!((r.syncs, r.pads.len()), (4, 1));
     }
 
     #[test]

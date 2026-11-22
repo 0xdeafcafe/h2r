@@ -127,6 +127,9 @@ struct State {
     last_tick: Option<Instant>,
     dispatch_start: Option<runtime::DispatchCounts>,
     dispatch_end: Option<runtime::DispatchCounts>,
+    /// Bot game-thread nanoseconds and flat window fixups when counting
+    /// began, for `wall.bots_ms_per_tick` and `flat.fixups_per_tick`.
+    costs_start: Option<(u64, Option<u64>)>,
     /// The initial RNG seed has been written for this match.
     set_up: bool,
     /// The game options' spawn words have been written for this game.
@@ -406,6 +409,7 @@ impl Sim {
                 last_tick: None,
                 dispatch_start: None,
                 dispatch_end: None,
+                costs_start: None,
                 set_up: false,
                 spawn_seeded: false,
                 fired: Vec::new(),
@@ -792,7 +796,21 @@ fn build_report(inner: &Inner, s: &State) -> Report {
                 .collect(),
         );
     }
+    if let Some((bots, fixups)) = s.costs_start {
+        let (bots_now, fixups_now) = costs_now();
+        report.set_costs(
+            bots_now.saturating_sub(bots),
+            fixups.zip(fixups_now).map(|(a, b)| b.saturating_sub(a)),
+        );
+    }
     report
+}
+
+/// The process's bot game-thread nanoseconds ([`bots::think::game_thread_ns`])
+/// and flat window fixups (`None` with no window), for the report's costs.
+fn costs_now() -> (u64, Option<u64>) {
+    let w = runtime::window_process_stats();
+    (bots::think::game_thread_ns(), (w.windows > 0).then_some(w.fixups))
 }
 
 /// A bot's brain, counting per game tick what only it knows: stuck, its
@@ -942,6 +960,7 @@ impl hooks::Feature for SimMetrics {
             s.first_tick = None;
             s.dispatch_start = None;
             s.dispatch_end = None;
+            s.costs_start = None;
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.sim);
@@ -1011,16 +1030,21 @@ impl hooks::Feature for SimMetrics {
                         s.first_tick = Some(Instant::now());
                         s.tally.start(sample.tick);
                         s.dispatch_start = o.runtime.dispatch_counts();
+                        s.costs_start = Some(costs_now());
                     }
                     let resets = s.tally.resets();
                     let tick = sample.tick;
                     s.tally
                         .tick_hashed(sample, state_hash::gameplay(&snap, rng), arena);
-                    let mut components = state_hash::components(&snap, rng);
-                    components.extend(arena_blocks.iter().enumerate().map(|(i, h)| {
-                        (format!("{}{i:02}", sim_bench::diff::ARENA_PREFIX), format!("{h:016x}"))
-                    }));
-                    s.tally.tick_components(tick, arena_base, components);
+                    // `components = false` in the match file leaves the
+                    // breakdown out (a timing arm); the digests above stay.
+                    if me.matched.config.components != Some(false) {
+                        let mut components = state_hash::components(&snap, rng);
+                        components.extend(arena_blocks.iter().enumerate().map(|(i, h)| {
+                            (format!("{}{i:02}", sim_bench::diff::ARENA_PREFIX), format!("{h:016x}"))
+                        }));
+                        s.tally.tick_components(tick, arena_base, components);
+                    }
                     if arena_buffer.is_some() && arena.is_none() {
                         const NOTE: &str = "arena hash unavailable on one or more sampled ticks";
                         if !s.notes.iter().any(|n| n == NOTE) {
@@ -1033,6 +1057,7 @@ impl hooks::Feature for SimMetrics {
                         crate::bot_accuracy::reset();
                         s.first_tick = Some(Instant::now());
                         s.dispatch_start = s.dispatch_end;
+                        s.costs_start = Some(costs_now());
                         s.set_up = false;
                         eprintln!(
                             "sim: the tick jumped to {tick} (a snapshot load); counting from here"

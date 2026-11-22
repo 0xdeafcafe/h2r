@@ -27,7 +27,7 @@ as the `SimExt` blob's `RULES` record.
   gives all three the one name.
 - `Ir::encode` and `Ir::decode` are the canonical codec: decode accepts
   only the bytes encode writes, and refuses trailing bytes and blobs over
-  64 KiB. `Ir::id` is the SHA-256 of the encoding.
+  256 KiB. `Ir::id` is the SHA-256 of the encoding.
 - `verify` checks every op, including dead branches: register and slot
   types, forward jumps inside their loop body, set and table indices,
   labels, tags, strings, option bits (at most 32), slot budgets, and API
@@ -39,7 +39,7 @@ as the `SimExt` blob's `RULES` record.
   `Named` or `VmOnly`; a host refuses the script by that name.
 - `Vm` runs handlers: `fire` for an event, `update` for timers (in slot
   order) and then `on tick`, and `flush_queue` for queued calls at the
-  next tick boundary. A tick runs at most 20,000 ops and 64 zone events.
+  next tick boundary. A tick runs at most 100,000 ops and 64 zone events.
   An overflow is a script error: the VM stops at that op, clears its
   queue and calls `Game::script_error`. Division by zero gives 0 and a
   `Warning`. Players are visited by slot, teams by index and labelled
@@ -49,7 +49,7 @@ as the `SimExt` blob's `RULES` record.
   the queue and the `ticks_held` counts (per zone and team, at most 32
   zones, cleared at the round's end; `update` adds a tick for the team
   `Game::zone_holder` names). `RulesExt::encode` writes it canonically in at most
-  16 KiB, and `Vm::resume` continues from it.
+  64 KiB, and `Vm::resume` continues from it.
 - Grants are `(player, capability, uses, palette)` records, sorted by
   player and then capability. They end at `revoke`, at the player's quit
   and at the round's end. `Vm::check_proposal` is the host's check
