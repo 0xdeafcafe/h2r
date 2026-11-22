@@ -48,7 +48,7 @@ Paths without a crate are under `crates/extensions/game/src/`.
 |---|---|---|
 | Main menu row Theater | the retail main menu list, grown from 5 rows to 6 with one added item widget | `theater_ui.rs` (`menu::Rows::count`), `layout_glue.rs` |
 | Forge and Firefight lobbies | the retail pregame lobby and its Game Setup, in the mode the lobby's strip selects | `lobby_mode.rs`, `lobby_start.rs` (`Mode`), [party-lobby.md](party-lobby.md) |
-| Firefight Options | a kit dialog on Quick Options over Game Setup, drawn by the game | `firefight/options.rs:209` |
+| Firefight Options | the shared settings dialog on Quick Options over Game Setup, drawn by the game | `firefight/options.rs`, `assets/ui/screens/firefight.yaml` |
 | Forge HUD strip | the play window's compositor: the preview renderer paints a `ScreenSpec::hud` page into a 640 by 480 RGBA image with the disc's fonts, blended over the frame | `ui_kit/forge.rs:45`, `crates/apps/cli/src/play_cmd/forge.rs:126` |
 | Forge dialogs (palette, properties, link, menu, load) | the same compositor path; the spec is a kit dialog spec, but no game widget exists | `ui_kit/forge/dialogs.rs:232`, `forge_glue.rs:55` |
 | Gizmo | pixels the compositor writes into that image | `forge_glue/gizmo.rs:75` |
@@ -57,11 +57,14 @@ Paths without a crate are under `crates/extensions/game/src/`.
 
 ### Why each reads as fake
 
-**Firefight Options.** The nearest to retail: Quick Options' panel, skin,
-help line and picture, held to the tag by
+**Firefight Options.** The nearest to retail: the shared settings dialog
+([ui-builder.md](ui-builder.md) "The settings dialog") on Quick Options'
+panel, skin and picture, the skull icon and the window's lines at the
+top, the focused row's help under the rows, held to the tag by
 `our_settings_dialogs_are_quick_options_inside`. Two gaps: its legend
-advertises D-pad left and right as "Change" (`firefight/options.rs:219`),
-and its spec's opener is Game Setup (`firefight/options.rs:213`).
+advertises D-pad left and right as "Change" (`settings::legend`, as every
+page with value rows does), and its opener is Game Setup
+(`opener: game-setup.firefight` in its doc).
 
 **The Forge HUD strip.**
 
@@ -127,10 +130,10 @@ Each piece copies one retail screen or HUD element, by tag.
 |---|---|---|
 | Main menu | `main_menu` (screen 6): six rows, no scroll | the retail list with one added row, Theater ("The main menu") |
 | Forge and Firefight lobbies | `pregame_lobby` (screen 14) itself, with `squad_settings_dialog` (screen 23) as its Game Setup | the retail screens on the FORGE and FIREFIGHT tabs of the lobby's strip ("The lobbies") |
-| Firefight Options, Forge map | `quick_options` (screen 222) and `low_level_settings` (screen 223) | `DialogBase::QuickOptions`, the value picker; built |
+| Firefight Options, Forge map | `quick_options` (screen 222) and `low_level_settings` (screen 223) | the shared settings dialog (`DialogBase::QuickOptions`), the value picker; built |
 | Forge menu | the multiplayer pause screen, GAME MENU ([settings-menu.md](settings-menu.md), "Pause menu") | five rows added to the retail list, as `pause_menu.rs` adds Video and Voice |
 | Object menu, Tools, pickers in a game | `low_level_settings`' list on `error_dialog_large` (screen 240) | `kit.picker.game` (`picker::offer_list`) |
-| Properties, Tool settings, Forge options, Controls, Coordinates | the in-game Controller Settings list (screen 200) | a kit `List` screen on that host, value rows opening `kit.picker.game` |
+| Properties, Tool settings, Forge options, Controls, Coordinates | the in-game Controller Settings list (screen 200) | a Forge `List` screen on that host (`forge_screens::screen::ForgeScreen`), value rows opening `kit.picker.game`; the shared settings dialog has no in-game host, so these keep their own class (`settings::NOT_SHARED`). They have no icon: `mp_games2` is in `mainmenu.map` only, and one arrives with map injection |
 | Link, delete, overwrite, leave | `error_dialog_ok_cancel`: body text and two rows | `DialogBase::Large` with a body |
 | Save as, a typed coordinate | the game's keyboard | `Effect::Keyboard` |
 | Contextual prompt | the pickup prompt line, top left | HUD kit `Prompt` |
@@ -392,8 +395,10 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   cannot rebuild yet. Leave Game is retail's, behind the unsaved
   question. These are the rows Halo 3's Start has (**C**); everything
   else is one screen down so that GAME MENU never scrolls.
-- **Forge options.** Tool settings... and Controls
-  (`sheet::OPTIONS`), each opening above it so B comes back; Monitor
+- **Forge options.** Tool settings... ("Rotation snap and the other
+  tool settings.") and Controls ("Every Forge control, with its
+  button."), `sheet::OPTIONS`, each with its help and each opening
+  above it so B comes back; Monitor
   look... joins when it is built, and the rows later slices bring:
   Placed objects, Map limits (P4), Generate nav (F9), Players (F5), Map
   settings and Publish (F14).

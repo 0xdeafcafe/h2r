@@ -302,8 +302,9 @@ it occupies row 4, after System Link, and Settings moves to row 5.
 
 **Game Setup** (`squad_settings_dialog`, screen 23, window 3; row chosen
 `0x2bb801`, jump table `0x2bb884`) already carries our **Halo 1 Options**
-row. That row opens an `OptionsScreen` of `OptionRow`s (Sandbox, Assets,
-HUD) whose values are kept in the settings store (`crates/extensions/game/src/h1_options.rs`).
+row. That row opens the shared settings dialog `h1-options` (Sandbox and
+HUD; docs/game/ui-builder.md "The settings dialog"), whose values are
+kept in the settings store (`crates/extensions/game/src/h1_options.rs`).
 
 ## 3. The brain
 
@@ -5248,19 +5249,18 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
 
      The custom-game driver applies Aggression, Aim style and Taunts to
      existing seats as described in §7.
-   - **The page** is a kit screen, `clankers`: eight `ChoiceRow`s on the
-     lobby's own settings dialog, Quick Options, inside and out
-     (`KitScreen::dialog(DialogBase::QuickOptions, ..)`, as the Halo 1
-     Options page is; docs/game/ui-builder.md "The Dialog kind"): Quick
-     Options' panel, header ("CLANKERS"), list (its `setting_lists` skin,
-     the name left and the value alone in the value column), the focused
-     row's description in its one-line help line and its icon in Quick
-     Options' game type picture (`ChoiceRow::icon`), and the legend in
-     its footer. A on a row opens the value picker, which explains the
-     option and its choices (`ChoiceRow::explain`). The rows' icons, lines
-     and picker copy are in docs/game/ui-builder.md "A page's header". Its
-     texts are the `clankers` id family. In the preview it is
-     `h2 ui preview clankers`.
+   - **The page** is the shared settings dialog, `clankers`
+     (`assets/ui/screens/clankers.yaml`; docs/game/ui-builder.md "The
+     settings dialog"): eight `setting:` rows over the settings above, on
+     the lobby's own settings dialog, Quick Options, inside and out:
+     Quick Options' panel, header ("CLANKERS"), list (its `setting_lists`
+     skin, the name left and the value alone in the value column), and
+     the legend in its footer. Its top is the same at every focus: the
+     Spartan icon in Quick Options' game type picture, "Bots in this
+     game", and the Game Setup row's help. The focused row's help is
+     under the rows. A on a row opens the value picker, which explains
+     the option and its choices (the row's `explain`). Its texts are the
+     `clankers` id family. In the preview it is `h2 ui preview clankers`.
    - **The row.** A custom game's Game Setup dialog (any list with Change
      Map) gets a "Clanker Options..." row with action 11, under Quick Options and
      the Halo 1 Options row's 10, above the "Switch To:" rows (retail

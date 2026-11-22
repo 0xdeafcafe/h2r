@@ -67,9 +67,12 @@ Choices are saved in `<data>/live-browser-filters.toml`. The agent can
 read them with
 [`ui.browser.filters`](../runtime/agent-api.md#ui-what-the-menus-show).
 
-The filter page and browser text live in
-`crates/extensions/game/src/custom_games/browser_filters.rs` and its
-`guest` module. The Live HLE sends the choices with its custom browser
+The filter page is the shared settings dialog, `browser.filters`
+(`assets/ui/screens/browser.filters.yaml`; [ui-builder.md](../game/ui-builder.md)
+"The settings dialog"): its rows' labels, helps and the X button are
+the doc's, each row's values a binding in
+`crates/extensions/game/src/custom_games/browser_filters.rs`. The
+browser's own text lives in its `guest` module. The Live HLE sends the choices with its custom browser
 search. The [session API](live-api.md#sessions) serves them through the
 shared router in native Live and the Cloudflare Worker.
 

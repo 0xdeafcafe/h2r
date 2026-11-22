@@ -183,7 +183,11 @@ docs/game/ui-builder.md "Consistency") and returns
 `consistency::ALLOWED` doesn't excuse, and how many screen states were
 checked. A screen not in `NAMES` is `INVALID_PARAMS`. Both read the kit
 alone: no disc and no window state. The rules include the pattern rules
-(`button`, `handled`, `arrows`).
+(`button`, `handled`, `arrows`) and the settings dialog's (`settings`,
+drawn at every focus, and `help`; docs/game/ui-builder.md "The settings
+dialog"). The `settings` component in `components` is the shared
+settings dialog, its parts `settings.name`, `settings.about` and
+`settings.help`.
 
 `ui.widgets` answers `{widgets, findings: [{text, ids}], from_disc}` for
 the picked screen in its state. The findings are

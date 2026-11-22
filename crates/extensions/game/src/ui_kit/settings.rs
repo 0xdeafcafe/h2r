@@ -46,7 +46,8 @@ pub const EXPLAIN_UNITS: usize = 200;
 
 /// Screens with settings rows that are not the shared dialog, and why.
 /// `settings::tests::every_settings_list_is_the_shared_dialog_or_says_why`
-/// holds every other such screen to a `settings:` doc.
+/// holds every other such screen to a `settings:` doc, but for the
+/// `design.*` and `layout.*` pages: each is another component's specimen.
 pub const NOT_SHARED: &[(&str, &str)] = &[
     (
         "variant-more-options",
@@ -60,9 +61,6 @@ pub const NOT_SHARED: &[(&str, &str)] = &[
     ("kit.choices", "the kit's list example on the level select's layout"),
     ("kit.example", "the kit's first example, every row kind on the Controls list"),
     ("kit.dialog.large", "the kit's rows on the large dialog, which has no help block"),
-    ("design.row.value-inline", "the inline value row's specimen"),
-    ("design.row.value-column", "the value column row's specimen"),
-    ("design.row.pick-inline", "the inline pick row's specimen"),
 ];
 
 type Get<T> = Arc<dyn Fn() -> T + Send + Sync>;

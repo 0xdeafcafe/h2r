@@ -9,8 +9,10 @@ use crate::ui::Chosen;
 use crate::ui_kit::choice::example;
 use crate::ui_kit::data::design;
 use crate::ui_kit::ids;
+use crate::ui_kit::page::{Focus, ListEffect, Page};
 use crate::ui_kit::picker;
-use crate::ui_kit::spec::Describe;
+use crate::ui_kit::screens::{self, NAMES};
+use crate::ui_kit::spec::{Describe, RowKind, ScreenSpec};
 
 /// A settings doc's head, on the kit's example settings, before its rows.
 fn head(extra: &str) -> String {
@@ -140,8 +142,8 @@ fn bound_rows_and_buttons_run_their_bindings() {
     assert_eq!(pick.description, "More about two.");
     assert_eq!(Rows::press(&p, 2), Chosen::Stepped("went".into()));
     assert_eq!(Rows::press(&p, 3), Chosen::Open("kit.dialog.large"));
-    assert_eq!(p.press_extra(crate::ui_kit::input::Input::X).as_deref(), Some("cleared"));
-    assert_eq!(p.press_extra(crate::ui_kit::input::Input::Y), None);
+    assert_eq!(p.press_extra(Input::X).as_deref(), Some("cleared"));
+    assert_eq!(p.press_extra(Input::Y), None);
 }
 
 /// Whatever doesn't attach is a named error at its field: an unknown
@@ -200,4 +202,169 @@ fn every_rows_picker_copy_fits() {
         }
     }
     assert!(seen >= 5, "clankers, firefight, h1-options, browser.filters, kit.dialog at least");
+}
+
+/// The settings dialogs that are screens of the game; every other
+/// settings doc is a component's specimen (`design.*`, `layout.*`).
+const PAGES: [&str; 5] = ["clankers", "firefight", "h1-options", "browser.filters", "kit.dialog"];
+
+/// Every screen's doc with a `settings:` block.
+fn settings_docs() -> Vec<(&'static str, Arc<ScreenDoc>)> {
+    NAMES
+        .iter()
+        .filter_map(|n| data::require(n).ok().filter(|d| d.settings.is_some()).map(|d| (*n, d)))
+        .collect()
+}
+
+/// A doc's rows in order.
+fn rows_of(d: &ScreenDoc) -> Vec<&RowDoc> {
+    (0..d.rows.len()).map_while(|i| d.rows.get(&format!("row.{i}"))).collect()
+}
+
+/// A screen's first state.
+fn first_spec(name: &str) -> ScreenSpec {
+    screens::live(name)
+        .and_then(|l| l.specs().into_iter().next())
+        .map(|(_, s)| s)
+        .unwrap_or_else(|| panic!("{name}: no state"))
+}
+
+/// A screen whose rows are mostly settings (two value rows, or half its
+/// rows) is the shared dialog, or is in [`NOT_SHARED`] with why.
+#[test]
+fn every_settings_list_is_the_shared_dialog_or_says_why() {
+    for (name, why) in NOT_SHARED {
+        assert!(NAMES.contains(name), "{name} is no screen");
+        assert!(!why.trim().is_empty(), "{name}");
+        assert!(
+            data::require(name).map_or(true, |d| d.settings.is_none()),
+            "{name} is the shared dialog: drop it from NOT_SHARED"
+        );
+    }
+    let docs = settings_docs();
+    for (name, _) in &docs {
+        assert!(
+            PAGES.contains(name) || name.starts_with("design.") || name.starts_with("layout."),
+            "{name}: a settings dialog not in PAGES"
+        );
+    }
+    let mut lists = 0;
+    for name in NAMES {
+        if name.starts_with("design.") || name.starts_with("layout.") {
+            continue;
+        }
+        let Some((_, s)) = screens::live(name).and_then(|l| l.specs().into_iter().next()) else {
+            continue;
+        };
+        let values = s.rows.iter().filter(|r| matches!(r.kind, RowKind::Value { .. })).count();
+        if values >= 2 || (values > 0 && values * 2 >= s.rows.len()) {
+            lists += 1;
+            let shared = docs.iter().any(|(n, _)| *n == name);
+            assert!(
+                shared || NOT_SHARED.iter().any(|(n, _)| *n == name),
+                "{name}: {values} of {} rows are settings: give it a settings: doc \
+                 (docs/game/ui-builder.md \"The settings dialog\") or list it in NOT_SHARED with why",
+                s.rows.len()
+            );
+        }
+    }
+    assert!(lists >= PAGES.len(), "{lists} settings lists");
+}
+
+/// The top of every settings dialog is its doc's header, the same at
+/// every focus, in the spec and as drawn.
+#[test]
+fn the_top_is_the_same_under_every_focus() {
+    let docs = settings_docs();
+    assert!(docs.len() >= PAGES.len(), "{} settings docs", docs.len());
+    for (name, d) in &docs {
+        let st = d.settings.as_ref().unwrap();
+        let s = first_spec(name);
+        let texts: Vec<(&str, &str)> = s.texts.iter().map(|t| (t.id.as_str(), t.text.as_str())).collect();
+        let name_line = st.name.as_deref().unwrap_or_default();
+        assert_eq!(texts, [("header.name", name_line), ("header.about", st.about())], "{name}");
+        assert_eq!(s.art.len(), 1, "{name}: the header's icon");
+        for i in 0..rows_of(d).len() {
+            let f = ScreenSpec {
+                focus: i,
+                ..s.clone()
+            };
+            assert_eq!((&f.title, &f.art, &f.texts), (&s.title, &s.art, &s.texts), "{name} focus {i}");
+        }
+        let moved: Vec<_> = crate::ui_kit::consistency::settings_check(name)
+            .into_iter()
+            .filter(|f| f.ids.iter().any(|id| id == "title" || id.starts_with("art.") || id.starts_with("header.")))
+            .collect();
+        assert!(moved.is_empty(), "{name}: {moved:?}");
+    }
+}
+
+/// The block under the rows is the focused row's help, at every focus,
+/// two lines at most, between the last row and the legend.
+#[test]
+fn the_bottom_is_the_focused_rows_help() {
+    for (name, d) in settings_docs() {
+        let s = first_spec(name);
+        for (i, r) in rows_of(&d).iter().enumerate() {
+            let f = ScreenSpec {
+                focus: i,
+                ..s.clone()
+            };
+            assert_eq!(f.description_text(), r.help.clone(), "{name} focus {i}");
+        }
+        let bottom: Vec<_> = crate::ui_kit::consistency::settings_check(name)
+            .into_iter()
+            .filter(|f| f.ids.iter().any(|id| id == "description"))
+            .collect();
+        assert!(bottom.is_empty(), "{name}: {bottom:?}");
+    }
+    for name in PAGES {
+        let page = screens::list_page(name).unwrap_or_else(|| panic!("{name}: no page"));
+        let d = data::require(name).unwrap();
+        for (i, r) in rows_of(&d).iter().enumerate() {
+            assert_eq!(page.spec(&Focus(i)).description_text(), r.help.clone(), "{name} row {i}");
+        }
+    }
+}
+
+/// A on every value and pick row opens the value picker, titled by the
+/// row, saying the row's explain, else its help.
+#[test]
+fn a_rows_picker_carries_its_help() {
+    for name in PAGES {
+        let page = screens::list_page(name).unwrap_or_else(|| panic!("{name}: no page"));
+        let d = data::require(name).unwrap();
+        let mut pickers = 0;
+        for (i, r) in rows_of(&d).iter().enumerate() {
+            if !matches!(r.kind.as_str(), "value" | "pick") {
+                continue;
+            }
+            pickers += 1;
+            let mut focus = Focus(i);
+            assert_eq!(page.step(&mut focus, Input::A), ListEffect::Open(picker::NAME), "{name} row {i}");
+            let pick = picker::current().expect("a pick");
+            assert_eq!(pick.title, picker::title(&r.text), "{name} row {i}");
+            let says = r.explain.as_deref().or(r.help.as_deref()).unwrap_or_default();
+            assert_eq!(pick.description, says, "{name} row {i}");
+            assert!(!pick.values.is_empty(), "{name} row {i}");
+        }
+        assert!(pickers > 0, "{name}: no picker rows");
+    }
+}
+
+/// No settings dialog draws a value between arrows: a value is chosen in
+/// the picker A opens.
+#[test]
+fn no_settings_value_is_drawn_between_arrows() {
+    for (name, _) in settings_docs() {
+        let s = first_spec(name);
+        for r in &s.rows {
+            if let RowKind::Value { values, .. } = &r.kind {
+                for v in values {
+                    let t = v.trim();
+                    assert!(!(t.starts_with('<') || t.ends_with('>')), "{name} {}: {v:?}", r.label);
+                }
+            }
+        }
+    }
 }

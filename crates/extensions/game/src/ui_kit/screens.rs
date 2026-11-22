@@ -1182,6 +1182,16 @@ mod tests {
                 "white: {:?}",
                 name.text_color
             );
+            // A settings dialog's about block starts where the help line
+            // does, in its font, colour and animation, two lines deep.
+            {
+                use crate::ui_kit::dialog::SETTINGS_ABOUT_TEXT as ABOUT;
+                assert_eq!([ABOUT.rect[0], ABOUT.rect[1]], [help.rect.top, help.rect.left]);
+                assert_eq!(
+                    (ABOUT.font, ABOUT.colour, ABOUT.animation),
+                    (help.font, help.text_color, help.animation.0)
+                );
+            }
             let list = &pane.lists[0];
             assert_eq!(list.skin, QUICK_LIST.skin);
             assert_eq!([list.anchor.x, list.anchor.y], QUICK_LIST.anchor);
