@@ -74,7 +74,7 @@ const USAGE: &str = "usage:
     sim <match.toml|batch.toml> [--repeat N] [--arm NAME=H2_FEATURES]... [--parallel N]
         [--env KEY=VALUE]... [--name TEXT] [--branch NAME | --rev REV | --current] [--no-sync]
         [--feature F]... [--build-env KEY=VALUE]... [--mem-limit SIZE] [--note TEXT]
-        [--wait [--to DIR]]
+        [--data DIR] [--wait [--to DIR]]
                           benchmark `h2 sim run|batch` on the host's image: the file and
                           the tuning files it names are uploaded, every arm runs N times
                           (interleaved, one at a time), reports and logs stay in runs/<id>;

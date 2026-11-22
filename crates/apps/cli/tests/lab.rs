@@ -68,14 +68,16 @@ if [ "$cmd" = sim ]; then
   # copies the report the test staged for H2_FEATURES under <root>/sim-fixtures.
   # The step directory is <root>/runs/<id>/sim/<step>.
   mode=$1; entry=$2; shift 2
-  report=; parallel=
+  report=; parallel=; data=
   while [ $# -gt 0 ]; do
-    case "$1" in --report) report=$2; shift;; --parallel) parallel=$2; shift;; --disc|--out|--data) shift;; esac
+    case "$1" in --report) report=$2; shift;; --parallel) parallel=$2; shift;; --data) data=$2; shift;; --disc|--out) shift;; esac
     shift
   done
   root=$(cd "$PWD/../../../.." && pwd)
   fix="$root/sim-fixtures/${H2_FEATURES:-none}.json"
   echo "fake sim $mode entry=$entry features=$H2_FEATURES opt=$H2_OPT parallel=$parallel leaked=$H2_LEAK"
+  echo "fake sim data=$data bots=$(ls "$data/bots" 2>/dev/null | tr '\n' ' ')"
+  [ "$H2_FEATURES" = navlog ] && echo "bots: lockout: nav mesh none yet (bots walk straight until built with h2 bots nav lockout)"
   [ -f "$fix" ] || { echo "no fixture $fix" >&2; exit 4; }
   if [ "$mode" = batch ]; then
     out=$(sed -n 's/^out = "\(.*\)"$/\1/p' "$entry")
@@ -314,6 +316,7 @@ cp '{}' "$CARGO_TARGET_DIR/release/h2"
             .args(&args[1..])
             .current_dir(&self.dev);
         c.env("HOME", self.dir.join("driver-home"))
+            .env("H2_DATA", self.dir.join("driver-data"))
             .env_remove("H2_LAB_HOST")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("RUSH_KEEP");
@@ -1564,6 +1567,11 @@ fn write_sim_files(lab: &Lab) {
     let m = lab.dev.join("m");
     fs::create_dir_all(m.join("tuning")).unwrap();
     fs::write(m.join("tuning/base.toml"), "skill = \"legendary\"\n").unwrap();
+    // The driver's nav mesh for the map (`h2 bots nav lockout`).
+    let bots = lab.dir.join("driver-data/bots");
+    fs::create_dir_all(&bots).unwrap();
+    fs::write(bots.join("lockout.0.bots"), b"mesh").unwrap();
+    fs::write(bots.join("lockout.0.vis"), b"grid").unwrap();
     fs::write(
         m.join("lockout.toml"),
         "map = \"lockout\"\n[[bot]]\nparams = \"tuning/base.toml\"\n",
@@ -1771,4 +1779,81 @@ fn lab_sim_refuses_bad_requests_before_the_host_sees_them() {
     // Nothing reached the host: no job exists.
     let runs = json(&ok(&lab.local(&["runs", "--json"])));
     assert!(runs["runs"].as_array().unwrap().is_empty(), "{runs}");
+}
+
+#[test]
+fn lab_sim_uploads_the_drivers_nav_meshes_and_runs_on_them() {
+    let lab = Lab::with_setup("simnav", &[], |root, _| {
+        sim_fixture(root, "none", 2.0, 20.0, &[(1, "aa")]);
+    });
+    write_sim_files(&lab);
+    let to = lab.dir.join("fetched");
+    let out = ok(&lab.local(&[
+        "sim",
+        "m/lockout.toml",
+        "--current",
+        "--wait",
+        "--to",
+        to.to_str().unwrap(),
+    ]));
+    let v = json(&out);
+    let id = v["job"]["id"].as_str().unwrap();
+    let step = to.join(id).join("sim/default-r1");
+    let log = fs::read_to_string(step.join("sim.log")).unwrap();
+    let line = log.lines().find(|l| l.starts_with("fake sim data=")).unwrap();
+    // The job's own data root holds the driver's mesh and grid; it is
+    // gone with the job.
+    assert!(
+        line.contains(&format!("/runs/{id}/sim-data bots=lockout.0.bots lockout.0.vis ")),
+        "{line}"
+    );
+    assert!(!to.join(id).join("sim-data").exists());
+}
+
+#[test]
+fn lab_sim_refuses_a_map_the_driver_has_no_nav_mesh_for() {
+    let lab = Lab::start();
+    write_sim_files(&lab);
+    fs::remove_file(lab.dir.join("driver-data/bots/lockout.0.bots")).unwrap();
+    let e = err(&lab.local(&["sim", "m/lockout.toml", "--current"]));
+    assert!(e.contains("h2 bots nav lockout"), "{e}");
+    // A batch names its maps.
+    fs::write(
+        lab.dev.join("m/maps.toml"),
+        "out = \"r\"\nmatch = \"lockout.toml\"\nmaps = [\"ascension\"]\n[a]\n",
+    )
+    .unwrap();
+    let e = err(&lab.local(&["sim", "m/maps.toml", "--current"]));
+    assert!(e.contains("h2 bots nav ascension"), "{e}");
+    // Nothing reached the host: no job exists.
+    let runs = json(&ok(&lab.local(&["runs", "--json"])));
+    assert!(runs["runs"].as_array().unwrap().is_empty(), "{runs}");
+}
+
+#[test]
+fn lab_sim_fails_a_run_whose_bots_had_no_nav_mesh() {
+    let lab = Lab::with_setup("simnonav", &[], |root, _| {
+        use sim_bench::metrics::{End, Finish, Tally};
+        let mut r = Tally::new().report(Finish::bare(End::TickLimit));
+        r.nav = "missing".into();
+        let dir = root.join("sim-fixtures");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("none.json"), serde_json::to_vec(&r).unwrap()).unwrap();
+        r.nav = "loaded".into();
+        fs::write(dir.join("navlog.json"), serde_json::to_vec(&r).unwrap()).unwrap();
+    });
+    write_sim_files(&lab);
+    // The report says the mesh was missing.
+    let o = lab.local(&["sim", "m/lockout.toml", "--current", "--wait"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert_eq!(json(&out)["job"]["state"], "failed", "{out}");
+    assert!(out.contains("1 runs, 1 failed"), "{out}");
+    assert!(out.contains("nav mesh missing"), "{out}");
+    // Or the log says so, with a report that claims to have loaded it.
+    let o = lab.local(&["sim", "m/lockout.toml", "--current", "--wait", "--arm", "x=navlog"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert_eq!(json(&out)["job"]["state"], "failed", "{out}");
+    assert!(out.contains("nav mesh none yet"), "{out}");
 }

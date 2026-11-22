@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version, in `status`.
@@ -168,6 +168,12 @@ pub struct SimReq {
     /// The entry file and the tuning files it names, by path relative to
     /// their common directory.
     pub files: BTreeMap<String, String>,
+    /// The bots' data for the maps the match or batch names, as hex under
+    /// `bots/<file>` (`.bots` and `.vis`, from the driving Mac's data root).
+    /// The host puts them in the job's data root. Empty (an older client)
+    /// runs on the host's own data.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub data: BTreeMap<String, String>,
     pub arms: Vec<SimArm>,
     /// Runs of each arm, interleaved (`simbench::schedule`).
     pub repeat: u32,
@@ -193,6 +199,10 @@ pub const SIM_REPEAT_MAX: u32 = 100;
 /// Most files, and most bytes of them, one sim request carries.
 pub const SIM_FILES_MAX: usize = 64;
 pub const SIM_BYTES_MAX: usize = 2 << 20;
+/// Most files, and most bytes (before hex) of bot data one sim request
+/// carries. Hex-encoded with the files it stays under `REQUEST_MAX`.
+pub const SIM_DATA_FILES_MAX: usize = 64;
+pub const SIM_DATA_MAX: usize = 60 << 20;
 
 /// A recording's manifest (`recordings/<name>/manifest.json`). A recording
 /// is a directory so a machine snapshot can join the input later
@@ -570,6 +580,19 @@ pub fn check_sim_path(key: &str) -> Result<()> {
     Ok(())
 }
 
+/// One uploaded bot data file's key: `bots/<name>.bots` or `.vis`, `name`
+/// a plain component (`bots::cache::file_name` makes them).
+pub fn check_sim_data_key(key: &str) -> Result<()> {
+    let name = key
+        .strip_prefix("bots/")
+        .with_context(|| format!("sim data {key:?} must be bots/<file>"))?;
+    ensure!(
+        name.ends_with(".bots") || name.ends_with(".vis"),
+        "sim data {key:?} must be a .bots or .vis file"
+    );
+    check_name("sim data file name", name)
+}
+
 pub fn validate_sim(s: &SimReq) -> Result<()> {
     job_name(&s.name)?;
     check_sim_path(&s.file)?;
@@ -589,6 +612,19 @@ pub fn validate_sim(s: &SimReq) -> Result<()> {
         s.files.values().map(String::len).sum::<usize>() <= SIM_BYTES_MAX,
         "sim files over {} MiB",
         SIM_BYTES_MAX >> 20
+    );
+    ensure!(
+        s.data.len() <= SIM_DATA_FILES_MAX,
+        "more than {SIM_DATA_FILES_MAX} sim data files"
+    );
+    for (key, hex) in &s.data {
+        check_sim_data_key(key)?;
+        ensure!(hex.len() % 2 == 0, "sim data {key:?} is not hex");
+    }
+    ensure!(
+        s.data.values().map(|h| h.len() / 2).sum::<usize>() <= SIM_DATA_MAX,
+        "sim data over {} MiB",
+        SIM_DATA_MAX >> 20
     );
     ensure!(
         (1..=SIM_ARMS_MAX).contains(&s.arms.len()),
@@ -1152,5 +1188,37 @@ mod tests {
             v["env"] = json!({"H2_FEATURES": "x"});
         })
         .unwrap();
+    }
+
+    #[test]
+    fn a_sim_requests_bot_data_is_plain_bots_files_under_a_cap() {
+        use serde_json::json;
+        let Request::Sim(s) = sim_with(|v| {
+            v["data"] = json!({"bots/lockout.0.bots": "00ff", "bots/lockout.0.vis": "ab"});
+        })
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(s.data.len(), 2);
+        for bad in [
+            "lockout.0.bots",
+            "bots/../x.bots",
+            "bots/a/b.bots",
+            "bots/lockout.0.exe",
+            "/bots/x.bots",
+            "bots/.hidden.bots",
+        ] {
+            let e = sim_error(|v| v["data"] = json!({ bad: "00" }));
+            assert!(e.contains("sim data"), "{bad}: {e}");
+        }
+        assert!(sim_error(|v| v["data"] = json!({"bots/a.0.bots": "abc"})).contains("not hex"));
+        let many: serde_json::Map<String, serde_json::Value> = (0..=SIM_DATA_FILES_MAX)
+            .map(|i| (format!("bots/m{i}.0.bots"), json!("00")))
+            .collect();
+        assert!(sim_error(|v| v["data"] = many.into()).contains("sim data files"));
+        let Request::Sim(mut s) = sim_with(|_| {}).unwrap() else { panic!() };
+        s.data.insert("bots/a.0.bots".into(), "00".repeat(SIM_DATA_MAX + 1));
+        let e = validate_sim(&s).unwrap_err().to_string();
+        assert!(e.contains("sim data over 60 MiB"), "{e}");
     }
 }
