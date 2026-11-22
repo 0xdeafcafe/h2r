@@ -25,6 +25,7 @@ use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod bitmaps;
 mod collision;
 mod docs;
 mod game_script;
@@ -32,6 +33,7 @@ mod geometry;
 mod hud;
 mod mirror;
 mod nav;
+mod nav_mesh;
 mod pair;
 mod params;
 mod playlists;
@@ -559,7 +561,7 @@ pub const METHODS: &[MethodDef] = &[
     def(
         m::VIEW_LAYERS,
         "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
-        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|everything","xray?":"boolean"}"#,
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|navigation|everything","xray?":"boolean"}"#,
         r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
         r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),
@@ -837,6 +839,7 @@ impl Api {
             Err(RecvTimeoutError::Disconnected) => return false,
         }
         play.update(app);
+        app.poll_bot_nav();
         true
     }
 
@@ -923,5 +926,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::Tags => "tags",
         crate::ToolKind::Hud => "hud",
         crate::ToolKind::Scripts => "scripts",
+        crate::ToolKind::Textures => "textures",
     }
 }

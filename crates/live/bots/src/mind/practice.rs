@@ -326,6 +326,11 @@ impl std::fmt::Display for NothingWhy {
     }
 }
 
+/// A point as the log shows it.
+fn v3(v: Vec3) -> String {
+    format!("({:.2}, {:.2}, {:.2})", v[0], v[1], v[2])
+}
+
 /// The log's line for a try (docs/game/bots.md, "Practising bounces"):
 /// `bots: bounce try:`, the bot, drill or practice, the site and the aim,
 /// what it came to, then how many jumps or drops it made and the last
@@ -793,7 +798,9 @@ impl Mind {
             self.practice.drill_said = false;
             self.practice.drill_found = false;
         }
-        if d.is_none() {
+        // A training run asks for the word too: only with neither is the
+        // ask dropped.
+        if d.is_none() && self.practice.training.run.is_none() {
             self.practice.arm = false;
         }
     }
@@ -1658,6 +1665,14 @@ impl Mind {
             {
                 return Some(pad);
             }
+            eprintln!(
+                "bots: train: bot {:#x} site {} void no_path: at {} start {}, walk ended {:?}",
+                self.practice.owner,
+                v3(site.bounce.stand),
+                v3(me.position),
+                v3(start),
+                self.order_view().error,
+            );
             self.train_try(Try::void("no_path"));
             self.practice_idle(me, tick, 1);
             return None;
@@ -1672,6 +1687,14 @@ impl Mind {
                 self.practice.training.wakes += 1;
                 if self.practice.training.wakes > TRAIN_WAKES {
                     self.practice.armed_since = None;
+                    eprintln!(
+                        "bots: train: bot {:#x} site {} void not_armed: at {} start {}, word {:?}",
+                        self.practice.owner,
+                        v3(site.bounce.stand),
+                        v3(me.position),
+                        v3(start),
+                        self.pair_word,
+                    );
                     self.train_try(Try::void("not_armed"));
                     self.practice_idle(me, tick, 1);
                     return None;

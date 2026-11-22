@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub mod audition;
+pub mod bot_nav;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
@@ -25,6 +26,7 @@ pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
 pub mod tag_tree;
+pub mod textures;
 pub mod ui_screens;
 pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
@@ -67,10 +69,13 @@ pub enum ToolKind {
     /// The open map's scripts as source, read only
     /// (docs/editor/rich-editors.md, "Scripts").
     Scripts,
+    /// The open map's bitmaps: paint, import and export PNGs
+    /// (docs/editor/modeling.md, "Texture editing").
+    Textures,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 7] = [
+    pub const ALL: [ToolKind; 8] = [
         ToolKind::Scenario,
         ToolKind::Tags,
         ToolKind::Scripts,
@@ -78,6 +83,7 @@ impl ToolKind {
         ToolKind::Playlists,
         ToolKind::UiScreens,
         ToolKind::Hud,
+        ToolKind::Textures,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -88,6 +94,7 @@ impl ToolKind {
             ToolKind::Hud => "HUD",
             ToolKind::Tags => "Tags",
             ToolKind::Scripts => "Scripts",
+            ToolKind::Textures => "Textures",
         }
     }
 }
@@ -202,6 +209,10 @@ pub enum Action {
     /// Select a level collision surface by index (clearing the placements
     /// and the volume), or none. Read only.
     SelectSurface(Option<usize>),
+    /// Select a pathfinding sector, bot polygon, bot link or spot
+    /// (clearing the placements, the volume and the surface), or none.
+    /// Read only.
+    SelectNav(Option<scenario_edit::nav_view::NavPick>),
     /// The viewport gizmo's drag on the selected volume: its new box.
     /// Every one until [`Action::EndGesture`] is one undo step.
     VolumeGesture(scenario_edit::volumes::Frame),
@@ -251,6 +262,8 @@ pub enum Action {
     SetAllowUnverifiedGeometry(bool),
     /// A Modeling command: open, edit, undo a structure or model section.
     Model(modeling::ModelAction),
+    /// A Textures command: select, paint, fill, import, export, undo.
+    Bitmap(textures::BitmapAction),
     /// Show another tool.
     SetTool(ToolKind),
 
@@ -372,25 +385,27 @@ impl Action {
     /// The tool whose unsaved edits the action would drop, if any.
     fn discards(&self, app: &App) -> Option<ToolKind> {
         let dirty = |t: ToolKind| app.tool_dirty(t).then_some(t);
+        // Another map drops the open map's edits and its bitmaps' alike.
+        let dirty_map = || dirty(ToolKind::Scenario).or_else(|| dirty(ToolKind::Textures));
         match self {
             Action::Quit => ToolKind::ALL.into_iter().find(|t| app.tool_dirty(*t)),
-            Action::OpenSource(_) => dirty(ToolKind::Scenario),
+            Action::OpenSource(_) => dirty_map(),
             // A shared cache opens in the Tags tool, beside the open map.
             Action::SelectMap(name) if tag_browse::opens_as_tags(name) => None,
             Action::SelectMap(name)
                 if app.loaded.as_deref() != Some(name.as_str()) || app.opened_package.is_some() =>
             {
-                dirty(ToolKind::Scenario)
+                dirty_map()
             }
             Action::OpenPackageEntry(key) if app.opened_package.as_deref() != Some(key) => {
-                dirty(ToolKind::Scenario)
+                dirty_map()
             }
             Action::OpenMapPack(key)
                 if app.pack_entry(key).is_some_and(|m| app.opened_pack_map() != Some(m.map.as_str())) =>
             {
-                dirty(ToolKind::Scenario)
+                dirty_map()
             }
-            Action::SelectHalo1Map(_) => dirty(ToolKind::Scenario),
+            Action::SelectHalo1Map(_) => dirty_map(),
             Action::OpenVariant(o) if app.variant_origin() != Some(o) => dirty(ToolKind::Variants),
             Action::NewVariant(_)
             | Action::ImportVariantFile(_)
@@ -447,6 +462,9 @@ pub struct App {
     variants_for: Option<Option<PathBuf>>,
     /// The runtime data root (`--data`); `None` is the default one.
     data_root: Option<PathBuf>,
+    /// The bots' nav mesh and spots loading for the open map
+    /// ([`bot_nav`]).
+    bot_nav: bot_nav::BotNavLoad,
     /// The playlist editor.
     pub hoppers: HopperSession,
     /// The playlist shown (0..16).
@@ -514,6 +532,8 @@ pub struct App {
     pub tags: TagDoc,
     /// The Modeling tool: the open map's geometry session.
     pub modeling: modeling::Modeling,
+    /// The Textures tool: the open map's bitmaps and their edits.
+    pub textures: textures::Textures,
     /// How the field panel shows unnamed fields, saved with the layout
     /// (`fields::Settings`).
     pub tag_fields: crate::fields::Settings,
@@ -556,6 +576,7 @@ impl App {
             variants: None,
             variants_for: None,
             data_root: None,
+            bot_nav: Default::default(),
             hoppers: HopperSession::new(),
             hopper_selected: 0,
             hopper_preset: None,
@@ -593,6 +614,7 @@ impl App {
             pairing: Default::default(),
             tags: TagDoc::default(),
             modeling: Default::default(),
+            textures: Default::default(),
             tag_fields: Default::default(),
             tag_homes: Default::default(),
             tag_browse: None,
@@ -675,6 +697,9 @@ impl App {
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
             ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => false,
+            // Bitmap edits stay in the editor until the encoder writes
+            // them: the mark is theirs alone.
+            ToolKind::Textures => self.textures.is_edited(),
         }
     }
     /// The action waiting on the unsaved-changes prompt, if any.
@@ -702,6 +727,7 @@ impl App {
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
             ToolKind::Scripts => false,
+            ToolKind::Textures => self.textures.can_undo(),
         }
     }
     pub fn can_redo(&self) -> bool {
@@ -716,6 +742,7 @@ impl App {
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
             ToolKind::Scripts => false,
+            ToolKind::Textures => self.textures.can_redo(),
         }
     }
     pub fn fly_speed(&self) -> f32 {
@@ -765,6 +792,7 @@ impl App {
             }),
             ToolKind::Tags => self.shown_map_name().map(str::to_owned),
             ToolKind::Scripts => self.loaded.clone(),
+            ToolKind::Textures => self.loaded.clone(),
         };
         // A browsed map is never dirty: the open map's mark is its own.
         let dirty = self.tool_dirty(self.tool)
@@ -840,6 +868,9 @@ impl App {
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
+                ToolKind::Textures => self.error(
+                    "texture edits are not written to the map yet: export a PNG, or discard them",
+                ),
                 ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
             Answer::SaveAs(path) => match tool {
@@ -847,6 +878,9 @@ impl App {
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Hud => self.run(Action::HudSaveAs(path)),
+                ToolKind::Textures => self.error(
+                    "texture edits are not written to the map yet: export a PNG, or discard them",
+                ),
                 ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
         }
@@ -874,6 +908,7 @@ impl App {
             }
             ToolKind::Playlists => self.hoppers.close(),
             ToolKind::Hud => self.hud = HudTool::default(),
+            ToolKind::Textures => self.textures.discard_edits(),
             ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
         }
     }
@@ -979,6 +1014,14 @@ impl App {
                 self.session.select_surface(index);
                 self.record_placement_selection(before);
             }
+            Action::SelectNav(pick) => {
+                if let Some(p) = pick.filter(|&p| !self.session.has_nav(p)) {
+                    return self.error(format!("no {} {} on this map", p.kind(), p.index()));
+                }
+                let before = self.nav_location();
+                self.session.select_nav(pick);
+                self.record_placement_selection(before);
+            }
             Action::VolumeGesture(frame) => {
                 if let Err(e) = self.session.volume_gesture(&frame) {
                     self.error(e.to_string());
@@ -1073,6 +1116,7 @@ impl App {
             }
             Action::SetAllowUnverifiedGeometry(allow) => self.set_allow_unverified_geometry(allow),
             Action::Model(a) => self.run_model(a),
+            Action::Bitmap(a) => self.run_bitmap(a),
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
@@ -1235,6 +1279,7 @@ impl App {
                 }
             }
             ToolKind::UiScreens | ToolKind::Scripts => false,
+            ToolKind::Textures => self.textures_undo(undo),
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
@@ -1271,6 +1316,7 @@ impl App {
             ToolKind::Hud => {}
             ToolKind::Tags => self.sync_tags(),
             ToolKind::Scripts => self.sync_scripts(),
+            ToolKind::Textures => self.sync_textures(),
         }
     }
 
@@ -1610,6 +1656,7 @@ impl App {
                     ToolKind::Scenario | ToolKind::Hud => {}
                     ToolKind::Tags => self.sync_tags(),
                     ToolKind::Scripts => self.sync_scripts(),
+                    ToolKind::Textures => self.sync_textures(),
                 }
             }
             Err(e) => self.error(format!("{}: {e:#}", path.display())),

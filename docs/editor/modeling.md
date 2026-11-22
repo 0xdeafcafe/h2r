@@ -1,18 +1,23 @@
 # Modeling: mesh, BSP and texture editing in h2-editor
 
-Status: Partly built. The mesh kernel (slice 1) and the in-place
+Status: Partly built. The mesh kernel (slice 1), the in-place
 geometry path (slices 2 and 3, for clusters, instanced definitions and
-`mode` sections) are implemented; the Modeling window is a section of the
-map inspector with buttons, not yet the gizmo, overlays and keymap below.
-Grown writes, collision, markers, the Textures tool and the collision
-compiler are designs.
+`mode` sections), the collision compiler with `coll` BSPs as meshes
+(slice 8, the crate only) and the Textures tool (slice 5, painting and
+exporting in memory without writing the tag) are implemented; the
+Modeling window is a section of the map inspector with buttons, not yet
+the gizmo, overlays and keymap below. A `coll` BSP is not yet a
+`geometry-edit` target, so the window, `geometry.*` and the map's save do
+not reach it. Grown writes, structure collision and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
+`crates/tools/collision-build`,
 `crates/formats/tags/src/geometry_write.rs`,
 `crates/apps/studio/src/app/modeling.rs`,
 `crates/apps/studio/src/api/geometry.rs`,
 `crates/apps/studio/src/ui/modeling.rs`.
 Tests: `crates/tools/mesh-edit/tests`,
 `crates/tools/geometry-edit/src/{session,write}_tests.rs`,
+`crates/tools/collision-build/src/{build,coll}_tests.rs`,
 `crates/formats/tags/src/geometry_write_tests.rs`, the `geometry_*` and
 `doc_undo_on_the_map_*` tests in `crates/apps/studio/src/api/tests.rs`.
 Switch: none in the environment. Two session switches in the Edit menu: **Allow growing full blocks** (the existing one) and **Allow unverified geometry writes** (off by default).
@@ -39,8 +44,8 @@ evidence.
 | Section decoder (parts, subparts, indices, vertex streams) for `sbsp`, `ltmp` and `mode` | `crates/formats/tags/src/geometry.rs` (`decode_section`, `Section::vertices`), [structure-bsp.md](../formats/structure-bsp.md) | read only (**Code**) |
 | Section writers | `h1convert::structure::raw_block` (structure, `0x44` struct), `crates/tools/h1-assets/src/models/mode.rs` (`build_section`, `0x70` struct) | each writes its own layout from Halo 1 data (**Code**) |
 | Collision BSP codec and validator | `tags::collision::Bsp` (`decode_blocks`, `decode_structure`, `encode_blocks`, `validate`), [collision.md](../formats/collision.md) | reads and writes the eight blocks (**Code**) |
-| Collision BSP from polygons | nowhere | `h1convert` re-encodes Halo 1's compiled tree and unites trees (`h1convert::scenery_collision::{transformed, merge}`); nothing compiles a tree from faces (**Code**) |
-| Engine's collision walks, modelled | `h1convert::surface_query` (`vector`, `locate`, `surface_at`) | the oracle a compiled tree is tested against (**Code**) |
+| Collision BSP from polygons | `collision_build::build` (below, "The collision compiler") | compiles a tree from convex polygons; `h1convert` also re-encodes Halo 1's compiled tree and unites trees (`h1convert::scenery_collision::{transformed, merge}`) (**Code**) |
+| Engine's collision walks, modelled | `collision_build::query` (`vector`, `locate`, `surface_at`), and the same model over both games' encodings in `h1convert::surface_query` | the oracle a compiled tree is tested against (**Code**) |
 | Havok MOPP, pathfinding | `mopp::build_structure`, `mopp::build`, `pathfind::generate` | regenerate from a `Bsp` (**Code**) |
 | Clusters, portals, visibility MOPP per section | `h1convert::clusters`, `h1convert::structure::visibility_mopp`, `h1convert::flood` | written from Halo 1's data; the flood model checks portals (**Code**) |
 | In-place map patches, metadata growth | `map::MapEditor` (`patch_tag`, `patch_metadata`, `append_metadata`), [map-format.md](../formats/map-format.md) "Growing the metadata" | no raw-data patch or append (**Code**) |
@@ -176,6 +181,70 @@ mesh; `geometry-edit` tests that after every op in its fixtures. The log
 is what `doc.diff` prints, what an agent sends, and what a converted
 Halo 1 map stores (below).
 
+## The collision compiler (`crates/tools/collision-build`)
+
+`collision_build::build(&[Polygon]) -> Result<Compiled>` (**Code**). A
+`Polygon` is convex and planar, wound counter-clockwise seen from its
+open side, with a material, surface flags (bit 0 two-sided) and a
+breakable-surface byte. `Compiled` holds the `tags::collision::Bsp` and,
+per surface, the input polygon it came from. The steps are
+modeling-targets.md's ("Structure collision", step 1):
+
+- **Prepare** (`prep.rs`): weld within 0.001 world units; drop a polygon
+  left with under three corners or no area; triangulate one that is not
+  planar within 0.001 or not convex; split a ring over eight into fans
+  of at most eight. `Report` names each polygon so treated.
+- **Planes**: one per distinct plane (normals within 1e-6 of cosine,
+  distances within 0.001); a surface facing the plane's back sets bit 15.
+- **Edges** (`edges.rs`): the surface that runs an edge from start to
+  end is its left surface and names its next edge as the forward edge;
+  one running it the other way is the right surface and names its next
+  edge as the reverse edge. So `Bsp::surface_ring` gives every ring in
+  its input winding. An edge with no right surface names itself as its
+  reverse edge.
+- **3D tree** (`tree.rs`): partition on a fragment's plane, fewest
+  splits, then best balance, then lowest plane index (48 candidate
+  planes per node, sampled evenly past that). Fragments on the plane stay
+  at the node. An empty side is solid when a one-sided fragment there
+  faces away from it and none faces it, else an open leaf.
+- **References and 2D trees** (`tree.rs`, `tree2d.rs`): an open leaf
+  takes one reference per plane of its path where a fragment kept at that
+  node, seen from its side, still has area clipped to the leaf; the flip
+  bit is set on the back. The 2D tree over those surfaces splits on their
+  edge lines; a surface reaching both sides goes to both, unsplit.
+  Overlapping coplanar surfaces have no separating line and are refused.
+  Leaf flag bit 0 is set where a reference reaches a two-sided surface.
+
+`Limits::HALO2` refuses what the packed fields cannot hold: 32,767
+surfaces, 65,535 edges and vertices, 32,768 planes and 2D nodes, 65,535
+references, 2^23 3D nodes, 2^23 - 1 leaves (leaf `0x7fffff` would encode
+as the "none" child), 255 references a leaf. `verify::check` is the
+acceptance and the check an edited BSP gets: `Bsp::validate`, rings of
+at most eight, every centroid walking its reference's 2D tree back to
+its surface, every reference on its leaf's path on its flip bit's side,
+and the leaf flag rule.
+
+**`coll`** (`coll.rs`). `mesh_from_bsp` opens a BSP as a mesh: a vert per
+BSP vertex, a face per surface wound about its open side, the material
+as the face material, and the surface flags and breakable byte as the
+face group (`group_of`: flags low, breakable high), so kernel ops carry
+them. `polygons_from_mesh` turns it back. `rebuild` compiles polygons
+into a permutation's BSP, keeps its leading word, refuses a material
+past the tag's list, and gives a BSP physics slot its box
+(`bsp_box`) and a MOPP code object keyed by plain surface index
+(`bsp_mopp`), keeping the slot's `+0x30` datum. `encode_collision`
+writes a whole `coll` payload, every block 16-aligned after the root,
+with retail's slot words (`0x81`, `0x80`, `0x81`). `stage_blocks` gives
+one BSP's eight blocks by name (`BLOCK_NAMES`, the fields of
+`tags::collision::Bsp`) for `edit.collision.stage`
+([realtime-edits.md](realtime-edits.md), "Collision").
+
+**From render** (`from_render.rs`): weld, drop degenerate and repeated
+triangles (one drawn both ways becomes two-sided), then join neighbours
+across shared edges, of one material and flags, within 0.5 degrees and
+0.001 of each other's plane, while the result is convex with at most
+eight vertices.
+
 ## Targets and the save
 
 [modeling-targets.md](modeling-targets.md) has the round trip for each
@@ -203,7 +272,12 @@ new raw block; behind Allow unverified geometry writes until a game run
 has loaded one) and **grown blocks** (a tag block with more elements;
 behind Allow growing full blocks as well).
 
-## Texture editing (proposed `bitmap-edit`)
+## Texture editing (`bitmap-edit`)
+
+Status: built in memory (`crates/tools/bitmap-edit`, `app/textures.rs`,
+`ui/textures.rs`, `api/bitmaps.rs`). Edits are not written to the tag
+until the encoders of slice 6. The live preview is the canvas; the 3D
+viewport does not show them yet. P8 pages open read-only.
 
 - **Decode.** `assets::bitmap::decode_image` gives every level, face and
   slice of an image as RGBA8. The canvas keeps the source's stored bytes
@@ -356,7 +430,7 @@ namespace (player models and looks) is separate and unchanged.
 | `mesh.set_material {material}`, `mesh.uv {matrix \| project}` | |
 | `mesh.ops {target}` | the op log |
 | `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed |
-| `bitmap.list {name?, used_by?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class |
+| `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class |
 | `bitmap.export {bitmap, image?, mip?, out}`, `bitmap.import {bitmap, image?, path, rect?}` | PNG out and in |
 | `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, erase?}` | one stroke through pixel points, one undo step |
 | `bitmap.fill {bitmap, image?, at \| rect, color, tolerance?}` | |
@@ -471,6 +545,15 @@ Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
   round up to 128 bytes; linear rows pad to 64.
 - **Design**: radial-edge mesh, snapshot undo with an op log, stable
   export, the write classes, converted maps edited at the source.
+- **Design**: the collision compiler's splitter choice, its solid rule
+  for an empty side and its 2D trees over unsplit surfaces; they are
+  accepted by the engine's walks as `collision_build::query` models them
+  (E, [collision.md](../formats/collision.md), "What the engine does with
+  a BSP") on invented shapes.
+- **S**: surface flag bit 0 is "two-sided". It is Halo 1's bit, which
+  `h1convert::collision` copies unchanged, and retail sets leaf flag bit
+  0 exactly where a reference reaches a surface so flagged
+  (collision.md); no engine read of the surface bit is cited.
 - The evidence for each target's layout and write is in
   [modeling-targets.md](modeling-targets.md), "Evidence".
 
@@ -481,6 +564,10 @@ Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
   plays each class of geometry write.
 - How a re-encoded DXT texture looks beside its neighbours in game, and
   the texture cache's behaviour with a resized image.
+- That a compiled collision BSP plays as retail's does (modeling-targets.md,
+  "Not verified"), and that Havok's surface shape, which copies a ring as
+  one polygon, takes rings in the compiler's winding (counter-clockwise
+  about the open side, as the converted Halo 1 rings run).
 - That the Blender preset's keys do not collide with Dear ImGui's own
   on every platform's keyboard.
 
