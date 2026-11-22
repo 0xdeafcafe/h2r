@@ -1264,6 +1264,14 @@ fn run_configured(
     // guest calls (game_menu.rs, docs/runtime/agent-api.md).
     if let Some(a) = &agent {
         game::game_menu::install(&a.agent, a.sim.as_ref().and_then(|s| s.calls()));
+        // game.load / game.levels: any disc level queued the same way
+        // (game_load.rs).
+        game::game_load::install(
+            &a.agent,
+            a.sim.as_ref().and_then(|s| s.calls()),
+            &opts.disc,
+            &opts.data_root,
+        );
     }
     // Paired editor presentation and the debug menu's host methods.
     if let Some(a) = &agent {
@@ -1278,7 +1286,11 @@ fn run_configured(
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),
+            host.cheat_line.clone(),
         );
+        if let Some(code) = &host.game_code {
+            game::game_code::install(&a.agent, Arc::clone(code));
+        }
         if let Some(lights) = &controller_lights {
             lights.install(&a.agent);
         }

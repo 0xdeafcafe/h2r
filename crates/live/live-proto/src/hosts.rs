@@ -81,7 +81,8 @@ pub struct HostLease {
     pub max_players: u8,
     /// The reserved accounts. Open custom games have an empty roster.
     pub roster: Vec<Xuid>,
-    /// Bot seat names for sim matches and bot fill.
+    /// Bot seat names for sim matches, bot fill and an admin's custom host
+    /// (`--bots`), which a light host adds as phantoms.
     pub bots: Vec<String>,
     pub transport: Transport,
     #[serde(default = "default_idle_timeout_s")]

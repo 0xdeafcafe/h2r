@@ -24,11 +24,13 @@ pub mod expect;
 pub mod firefight;
 pub mod forge;
 pub mod frame_graph;
+pub mod game_load;
 pub mod goto;
 pub mod havok;
 pub mod superbounce;
 pub mod superbounce_view;
 pub mod host_lobby;
+pub mod host_pause;
 pub mod host_memory;
 pub mod memory_forensics;
 pub mod memory_serve;
@@ -1276,13 +1278,48 @@ pub enum InputMode {
 
 // ---- features ----
 
+/// One feature of the plan, as `features.list`'s `features` lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureState {
     pub id: String,
     pub on: bool,
     /// Why it is off, when the plan turned it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
+    pub reason: Option<String>,
+}
+
+impl FeatureState {
+    /// The plan text's line for it (`hooks::Plan::text`'s form):
+    /// `feature <id>: on` or `feature <id>: off (<reason>)`.
+    pub fn plan_line(&self) -> String {
+        match (&self.reason, self.on) {
+            (_, true) => format!("feature {}: on", self.id),
+            (Some(r), false) => format!("feature {}: off ({r})", self.id),
+            (None, false) => format!("feature {}: off", self.id),
+        }
+    }
+
+    /// [`plan_line`](Self::plan_line) read back; `None` for any other line
+    /// of the plan (a chain, an entry, a note).
+    pub fn from_plan_line(line: &str) -> Option<FeatureState> {
+        let (id, state) = line.strip_prefix("feature ")?.split_once(": ")?;
+        if id.is_empty() || id.contains(char::is_whitespace) {
+            return None;
+        }
+        let (on, reason) = match state {
+            "on" => (true, None),
+            "off" => (false, None),
+            s => {
+                let r = s.strip_prefix("off (")?.strip_suffix(')')?;
+                (false, Some(r.to_owned()))
+            }
+        };
+        Some(FeatureState {
+            id: id.to_owned(),
+            on,
+            reason,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1290,6 +1327,24 @@ pub struct Features {
     pub at: At,
     /// The feature plan as the game printed it at start.
     pub plan: Vec<String>,
+    /// Each feature, on or off and why: the plan's feature lines, read.
+    #[serde(default)]
+    pub features: Vec<FeatureState>,
+}
+
+impl Features {
+    /// The answer for `plan`, its features read from its lines.
+    pub fn new(at: At, plan: Vec<String>) -> Features {
+        let features = features_of(&plan);
+        Features { at, plan, features }
+    }
+}
+
+/// The features a plan's lines name ([`FeatureState::from_plan_line`]).
+pub fn features_of(plan: &[String]) -> Vec<FeatureState> {
+    plan.iter()
+        .filter_map(|l| FeatureState::from_plan_line(l))
+        .collect()
 }
 
 /// `world.breakable`'s params: the structure BSP (default 0, the one the
@@ -1320,6 +1375,34 @@ pub struct Breakable {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn features_list_reads_the_plans_feature_lines_and_nothing_else() {
+        let states = [
+            FeatureState { id: "cheats".into(), on: true, reason: None },
+            FeatureState {
+                id: "lockstep".into(),
+                on: false,
+                reason: Some("switched off (H2_FEATURES)".into()),
+            },
+            FeatureState { id: "x".into(), on: false, reason: None },
+        ];
+        let mut plan: Vec<String> = states.iter().map(FeatureState::plan_line).collect();
+        assert_eq!(plan[0], "feature cheats: on");
+        assert_eq!(plan[1], "feature lockstep: off (switched off (H2_FEATURES))");
+        plan.push("0x00137fe0 game_tick: before [cheats:our cheats] -> original".into());
+        plan.push("0x00400000 entry agent:probe".into());
+        plan.push("featured note: not a feature line".into());
+        plan.push("feature two words: on".into());
+        let features = features_of(&plan);
+        assert_eq!(features, states);
+        let v = serde_json::to_value(&features).unwrap();
+        assert_eq!(v[1], json!({"id": "lockstep", "on": false, "reason": "switched off (H2_FEATURES)"}));
+        assert_eq!(v[0], json!({"id": "cheats", "on": true}));
+        for bad in ["feature : on", "feature a: maybe", "feature a: off (unclosed"] {
+            assert_eq!(FeatureState::from_plan_line(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn breakable_params_default_to_bsp_0_and_refuse_strays() {

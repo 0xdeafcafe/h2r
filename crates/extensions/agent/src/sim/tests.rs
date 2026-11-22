@@ -1744,3 +1744,146 @@ fn shutdown_answers_deferred_edits_and_cancels_their_tickets() {
     assert_eq!(h.reply()["error"]["code"], code::SHUTDOWN);
     assert!(super::calls::lock(&q).live().is_none());
 }
+
+/// Player 0 standing at a point, aiming along +y.
+fn standing_game() -> Game {
+    let mut g = game();
+    g.objects[0].pos = Some([5.0, 6.0, 7.0]);
+    g.objects[0].forward = Some([0.0, 1.0, 0.0]);
+    g.objects[0].yaw = Some(90.0);
+    g.objects[0].pitch = Some(0.0);
+    g
+}
+
+#[test]
+fn a_mark_keeps_the_local_players_place_and_a_recall_teleports_back() {
+    let (h, q) = with_calls();
+    let mut game = standing_game();
+    let m = h.ok(&mut game, method::PLAYER_MARK, json!({}));
+    assert_eq!(m["slot"], agent_proto::sim::DEFAULT_MARK_SLOT);
+    assert_eq!(m["player"], "player.0");
+    assert_eq!(m["pos"], json!([5.0, 6.0, 7.0]));
+    assert_eq!(m["forward"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(m["map"], "lockout");
+    assert_eq!(m["slots"], json!(["quick"]));
+    let m = h.ok(&mut game, method::PLAYER_MARK, json!({"slot": 2}));
+    assert_eq!(m["slots"], json!(["2", "quick"]));
+    // Moved away; the recall goes through the game's teleport.
+    game.objects[0].pos = Some([0.0; 3]);
+    let handle = super::state::player_handle(&game.g, 0).unwrap();
+    h.deferred(&mut game, method::PLAYER_RECALL, json!({}));
+    let calls = the_game_makes(&q, |_| Ok(json!({"pos": [5.0, 6.0, 7.1]})));
+    let super::calls::Call::Teleport {
+        player,
+        pos,
+        facing,
+    } = calls[0].clone()
+    else {
+        panic!("{calls:?}");
+    };
+    assert_eq!((player, pos), (handle, Some([5.0, 6.0, 7.0])));
+    assert_eq!(facing, Some([0.0, 1.0, 0.0]));
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    let r = &r["result"];
+    assert_eq!(r["slot"], "quick");
+    assert_eq!(r["mark"]["pos"], json!([5.0, 6.0, 7.0]));
+    assert_eq!(r["wrote"], json!(["pos", "facing"]));
+    assert_eq!(r["teleport"]["pos"], json!([5.0, 6.0, 7.1]));
+}
+
+#[test]
+fn marks_refuse_what_they_cannot_keep_or_put_back() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    // Player 0 has no position here.
+    let e = h.err(&mut game, method::PLAYER_MARK, json!({}));
+    assert_eq!(e["code"], code::GONE, "{e}");
+    let e = h.err(&mut game, method::PLAYER_MARK, json!({"slot": ""}));
+    assert_eq!(e["code"], code::INVALID_PARAMS, "{e}");
+    let e = h.err(&mut game, method::PLAYER_MARK, json!({"player": "actor.e1230045"}));
+    assert_eq!(e["code"], code::INVALID_PARAMS, "{e}");
+    let e = h.err(&mut game, method::PLAYER_RECALL, json!({"slot": "nowhere"}));
+    assert_eq!(e["code"], code::GONE, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("player.mark"), "{e}");
+    // Too many slots.
+    let mut game = standing_game();
+    for i in 0..agent_proto::sim::MAX_MARKS {
+        h.ok(&mut game, method::PLAYER_MARK, json!({"slot": i}));
+    }
+    let e = h.err(&mut game, method::PLAYER_MARK, json!({"slot": "one more"}));
+    assert_eq!(e["code"], code::INVALID_PARAMS, "{e}");
+    h.ok(&mut game, method::PLAYER_MARK, json!({"slot": 0}));
+    // A co-op session refuses the recall's teleport, as sim.state.set does.
+    *h.kind.lock().unwrap() = SessionKind::CoopHost;
+    let e = h.err(&mut game, method::PLAYER_RECALL, json!({"slot": 0}));
+    assert_eq!(e["code"], code::INVALID_REQUEST, "{e}");
+    assert!(!super::calls::lock(&q).has_pending(), "nothing queued");
+}
+
+#[test]
+fn a_mark_on_another_map_is_not_recalled() {
+    struct Elsewhere(Game);
+    impl Reader for Elsewhere {
+        fn status(&mut self) -> GameStatus {
+            GameStatus {
+                map: Some("zanzibar".into()),
+                ..self.0.status()
+            }
+        }
+        fn objects(&mut self) -> Result<Vec<Object>, String> {
+            self.0.objects()
+        }
+        fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn GuestMemory)) -> bool {
+            self.0.with_guest(f)
+        }
+    }
+    let (h, q) = with_calls();
+    let mut game = standing_game();
+    h.ok(&mut game, method::PLAYER_MARK, json!({"slot": "ledge"}));
+    let mut other = Elsewhere(standing_game());
+    h.send(method::PLAYER_RECALL, json!({"slot": "ledge"}));
+    h.agent.on_tick(&mut other);
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::INVALID_REQUEST, "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("lockout"), "{r}");
+    assert!(!super::calls::lock(&q).has_pending());
+}
+
+#[test]
+fn host_pause_needs_a_window_and_host_step_counts_the_agents_ticks() {
+    use agent_proto::host_pause::{self, Hub};
+    let hub: &'static Hub = Box::leak(Box::new(Hub::new()));
+    let (h, mut game) = (Harness::new(), game());
+    super::pause::install(&h.agent, hub);
+    // Answered on the connection's thread: no tick needed.
+    h.send(host_pause::method::PAUSE, json!({"on": true}));
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+    h.send(host_pause::method::STEP, json!({"ticks": 0}));
+    assert_eq!(h.reply()["error"]["code"], code::INVALID_PARAMS);
+    h.send(host_pause::method::PAUSE, json!({}));
+    assert_eq!(h.reply()["error"]["code"], code::INVALID_PARAMS);
+    // A window, paused, the guest held: two ticks run under the step.
+    std::thread::spawn(move || hub.attach(Box::new(|| {}))).join().unwrap();
+    hub.report(true);
+    hub.set_held(true);
+    let t = std::thread::spawn(move || hub.step(2, Duration::from_secs(10)));
+    while !hub.gate_open() {
+        std::thread::yield_now();
+    }
+    hub.set_held(false);
+    h.agent.on_tick(&mut game);
+    assert!(hub.gate_open());
+    h.agent.on_tick(&mut game);
+    assert!(!hub.gate_open());
+    hub.set_held(true);
+    let r = t.join().unwrap().unwrap();
+    assert_eq!(r.stepped, Some(2));
+    assert_eq!(r.tick, Some(100));
+    let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
+    for name in host_pause::method::ALL {
+        assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
+    }
+}

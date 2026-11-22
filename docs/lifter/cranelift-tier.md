@@ -247,9 +247,14 @@ the next start uses clang's module.** No hot swap.
   builds in place: `boot::build` removes the old stamp first and writes the
   new one last, so a half-built module is never current. The next start
   finds clang's module current and uses it. While that build runs, `h2
-  play`'s window shows a notice that this start is slow, then that the
-  full-speed module is built and the next start uses it (or that the build
-  failed), from the log (`play_cmd.rs`, `tier_banner`). `--tier fast` runs the fast
+  play`'s window says "Running slower while the full-speed version builds
+  (about N min). Restart when this says ready.", counting down from a
+  typical 15-minute cold build, then that the full-speed version is ready
+  (or that the build failed), from the log (`play_cmd.rs`, `tier_banner`;
+  the text is `game_code::banner_text`). The debug menu's Game > Game code
+  page and `game.code` show the same state, and `game.code.restart`
+  starts `h2 play` again in place (same executable and arguments) once the
+  full-speed module is built ([agent-api.md](../runtime/agent-api.md#game-code-full-speed-or-the-slower-start)). `--tier fast` runs the fast
   tier only; `--tier clang` is the foreground clang build. `h2 serve` never
   builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack
