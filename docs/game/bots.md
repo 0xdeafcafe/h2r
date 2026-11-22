@@ -3140,9 +3140,8 @@ from the environment for the process's phantoms:
 `auto` takes one worker fewer than the cores, at most 8. The game thread
 also runs queued thinks while it waits for them.
 
-Serial is the default of a process that sets nothing. `h2 sim run` sets
-the variables itself, batched on `min(phantoms, cores - 1)` workers, from
-the match file or that default; see
+Serial is the default. `h2 sim run` sets the variables only from the
+match file, so a match with no `bot_threads` thinks serially; see
 [sim.md](../runtime/sim.md#bot-thinking-across-cores).
 
 A batched sample has three phases (`PadSource::observe`, `think`,

@@ -1687,6 +1687,9 @@ mod tests {
         assert_eq!(back.wall.phantom_build_mismatches, Some(2));
         report.set_phantom_costs(PhantomCosts::default());
         assert_eq!(report.wall.phantom_build_mismatches, None);
+    }
+
+    #[test]
     fn the_phantom_split_is_per_tick_by_call_role() {
         let mut report = four_ticks().report(Finish::bare(End::TickLimit));
         let plain = serde_json::to_value(&report).unwrap();

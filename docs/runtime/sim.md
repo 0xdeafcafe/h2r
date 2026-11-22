@@ -1083,10 +1083,10 @@ and some conditional tactical or route outputs can still allocate.
 
 The brains can think off the game thread ([bots.md §5.5](../game/bots.md)):
 `H2_BOT_THREADS=auto` batches every phantom's think across workers, and
-`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. A
-single `h2 sim run` thinks batched on `min(phantoms, cores - 1)` workers
-unless told otherwise; `h2 sim batch` children stay serial, because the
-children already fill the cores. Per variable, an `H2_BOT_THREADS` or
+`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. Sims
+think serially unless told otherwise: on the quiet laptop four phantoms
+think 9% slower batched than serial in one Lockout match, with equal
+hashes ([notes](../perf/notes/sim-10x.md)). Per variable, an `H2_BOT_THREADS` or
 `H2_BOT_PIPELINE` already in the environment wins, then the match file's
 `bot_threads` and `bot_pipeline`, then that default
 (`crates/apps/cli/src/sim_cmd.rs`, `think_env`). The run's first log line

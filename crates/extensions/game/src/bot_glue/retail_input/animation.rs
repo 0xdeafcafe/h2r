@@ -352,7 +352,7 @@ mod tests {
                             ..Default::default()
                         };
                         assert_eq!(
-                            gather(&input, &main, WORK, cpu, seat, &cx, None).await,
+                            gather(&input, &main, WORK, Path::Alias, cpu, seat, &cx, None).await,
                             fill.then_some([42; ACTION_SIZE])
                         );
                         Ok(Ret::new(1, 8))
