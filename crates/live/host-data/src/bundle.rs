@@ -1,8 +1,10 @@
 //! Build the owner's bundle from the DVD filesystem. The light host boots
 //! the original XBE and retail menu, including its packed fonts, and uses
 //! the shared caches and multiplayer maps for matches, and the bots play
-//! them with the nav meshes and visibility grids it carries.
+//! them with the nav meshes and visibility grids it carries. A dedicated
+//! host also runs the Linux game module the owner bundles with them.
 
+mod image;
 mod nav;
 mod stores;
 
@@ -45,6 +47,10 @@ pub struct BundleSpec {
     /// The bots' nav meshes and visibility grids for every multiplayer
     /// map, as `bots/<map>.<bsp>.bots` and `.vis`; `None` leaves them out.
     pub bots: Option<BotData>,
+    /// Directory holding the Linux game module and its stamp
+    /// ([`crate::IMAGE_FILES`]), carried as `image/`; `None` leaves the
+    /// module out.
+    pub image: Option<PathBuf>,
     /// Replace existing bundle files.
     pub force: bool,
     /// zstd compression level, 1..=21.
@@ -70,6 +76,8 @@ pub struct BundleOut {
     pub stores_used: usize,
     /// Multiplayer maps whose bot nav data the bundle carries.
     pub nav_maps: usize,
+    /// Whether the bundle carries the game module (`image/`).
+    pub image: bool,
     /// Payload bytes before compression.
     pub raw_bytes: u64,
     /// Bytes of the written archive.
@@ -205,6 +213,9 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
             Some(bots) => nav::stage(bots, &nav_maps, &staging, &mut payload)?,
             None => 0,
         };
+        if let Some(dir) = &spec.image {
+            image::stage(dir, &mut payload)?;
+        }
         let archive = staging.join(ARCHIVE_NAME);
         let metadata = staging.join(MANIFEST_NAME);
         let manifest = write_archive(&archive, spec.zstd_level, &mut payload)?;
@@ -242,6 +253,7 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
         stripped_used,
         stores_used,
         nav_maps: nav_count,
+        image: spec.image.is_some(),
         raw_bytes,
         archive_bytes,
     })
@@ -553,6 +565,7 @@ mod tests {
             stripped: None,
             sim_stores: None,
             bots: None,
+            image: None,
             force: false,
             zstd_level: 3,
         }
