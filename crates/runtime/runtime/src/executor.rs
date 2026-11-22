@@ -10,6 +10,11 @@
 //! No kernel scheduler runs it: no slices, no interrupts, no waits. The
 //! main runtime's guest coverage, when it has one, is shared: entries the
 //! executor runs are recorded with the main runtime's.
+//!
+//! An executor can also run on the main runtime's live RAM itself, as an
+//! alias ([`SecondExecutor::alias`]): no snapshot, a write journal instead,
+//! and every byte put back when the alias ends (docs/runtime/second-executor.md,
+//! "The alias and its journal").
 
 use crate::dispatch::Handler;
 use crate::guest::{FrozenRam, HandBack, PAGE_SIZE, RAM_SIZE, WrittenPage};
@@ -17,6 +22,7 @@ use crate::watch::{CONTIGUOUS_BASE, WatchId};
 use crate::{
     CopyKind, CpuAbi, Event, ExecCtx, Guest, GuestFault, Runner, Runtime, TransferAbi, abi, kernel,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The `ExecCtx::thread_id` of an executor's context: no kernel thread has
@@ -60,6 +66,20 @@ pub enum ExecutorError {
     NoSnapshot,
 }
 
+/// Why [`SecondExecutor::alias`] did not alias live RAM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AliasError {
+    /// A flat-RAM module stores through its window with host instructions,
+    /// which the journal cannot see: such an image keeps the snapshot path.
+    #[error(
+        "a flat-RAM image's generated code stores through its window, which a write journal cannot see"
+    )]
+    FlatRam,
+    /// This executor has an alias open already.
+    #[error("the executor already runs on live RAM")]
+    Open,
+}
+
 /// A call that returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallOutcome {
@@ -89,6 +109,9 @@ pub struct SecondExecutor {
     /// The CPU at the refused call of the last run, if it was refused.
     refused_cpu: Option<CpuAbi>,
     last_accesses: u64,
+    /// An [`Alias`] is open: calls run on the main runtime's live RAM.
+    /// Shared with the alias, which clears it as it closes.
+    aliased: Arc<AtomicBool>,
     pub max_transfers: u64,
 }
 
@@ -206,6 +229,7 @@ impl SecondExecutor {
             shared_watches: Vec::new(),
             refused_cpu: None,
             last_accesses: 0,
+            aliased: Arc::new(AtomicBool::new(false)),
             max_transfers: Runner::default().max_transfers,
         }
     }
@@ -271,6 +295,7 @@ impl SecondExecutor {
     /// The executor's time-stamp counter continues from `main`'s and its
     /// clock stands at `main`'s guest time now.
     pub fn snapshot(&mut self, main: &Runtime) -> CopyKind {
+        debug_assert!(!self.aliased(), "a snapshot waits for the open alias");
         let time = main.guest_time();
         self.runtime
             .set_guest_clock(time.map(|t| Arc::new(move || Some(t)) as crate::tsc::GuestClock));
@@ -285,6 +310,94 @@ impl SecondExecutor {
         kind
     }
 
+    /// A snapshot or an open alias to run against.
+    fn ready(&self) -> bool {
+        self.base.is_some() || self.aliased()
+    }
+
+    /// An [`Alias`] is open.
+    pub fn aliased(&self) -> bool {
+        self.aliased.load(Ordering::Acquire)
+    }
+
+    /// Run on `main`'s live RAM, in place, until the returned [`Alias`]
+    /// drops: the executor's Guest takes `main`'s RAM block (no mapping
+    /// call, no copy) and journals every store ([`Guest::begin_journal`]);
+    /// [`undo`](Self::undo) puts back every byte, and so does the alias
+    /// as it drops, on every path out, a panic's unwinding included. The
+    /// alias holds `main`'s memory guard throughout, so no other host
+    /// thread reads the bound state and no guest code runs there. The alias
+    /// does not borrow the executor: [`call`](Self::call) and the
+    /// executor's memory are used as with a snapshot while it is open, and
+    /// [`snapshot`](Self::snapshot), which takes `main`'s guard, must wait
+    /// until it closes.
+    ///
+    /// The time-stamp counter and guest clock start as
+    /// [`snapshot`](Self::snapshot) starts them: the counter from
+    /// `main`'s, the clock at `main`'s guest time now (read first, under
+    /// the kernel lock: call it with no runtime lock held).
+    /// [`alias_continued`](Self::alias_continued) keeps them running on
+    /// from the last run instead. A flat-RAM image cannot be journaled:
+    /// [`AliasError::FlatRam`], and nothing changes.
+    pub fn alias<'m>(&mut self, main: &'m Runtime) -> Result<Alias<'m>, AliasError> {
+        self.open_alias(main, true)
+    }
+
+    /// [`alias`](Self::alias), with the time-stamp counter and guest clock
+    /// running on from this executor's last run, as later calls on one
+    /// snapshot run on.
+    pub fn alias_continued<'m>(&mut self, main: &'m Runtime) -> Result<Alias<'m>, AliasError> {
+        self.open_alias(main, false)
+    }
+
+    fn open_alias<'m>(&mut self, main: &'m Runtime, fresh: bool) -> Result<Alias<'m>, AliasError> {
+        if main.flat_ram() || self.runtime.flat_ram() {
+            return Err(AliasError::FlatRam);
+        }
+        if self.aliased() {
+            return Err(AliasError::Open);
+        }
+        if fresh {
+            let time = main.guest_time();
+            self.runtime.set_guest_clock(
+                time.map(|t| Arc::new(move || Some(t)) as crate::tsc::GuestClock),
+            );
+        }
+        // Live, then the executor's: the alias keeps live's guard and takes
+        // the executor's many times over. The executor is one thread's.
+        let mut live = main.memory();
+        {
+            let mut own = self.runtime.memory();
+            if fresh {
+                self.runtime.restore_tsc_last(main.tsc_last());
+            }
+            own.alias_ram(&mut live);
+        }
+        self.aliased.store(true, Ordering::Release);
+        Ok(Alias {
+            runtime: self.runtime.clone(),
+            aliased: self.aliased.clone(),
+            live: Some(live),
+        })
+    }
+
+    /// Put back every byte the open alias's runs stored to, and journal
+    /// the next store to each page afresh. Returns the pages restored. A
+    /// no-op with no alias open.
+    pub fn undo(&mut self) -> usize {
+        if !self.aliased() {
+            return 0;
+        }
+        self.runtime.memory().journal_undo()
+    }
+
+    /// The physical pages the open alias's runs stored to since it opened
+    /// or since the last [`undo`](Self::undo), page-aligned, in the order
+    /// they were first stored to.
+    pub fn journaled(&self) -> Vec<u32> {
+        self.runtime.memory().journaled_pages()
+    }
+
     /// Call guest `entry` with `args` (pushed right to left, then a return
     /// to [`crate::exec::HARNESS_EXIT`]) on `cpu`'s stack in the view, and
     /// run it on this thread until it returns. `cpu.esp` must be in the
@@ -295,7 +408,7 @@ impl SecondExecutor {
         entry: u32,
         args: &[u32],
     ) -> Result<CallOutcome, ExecutorError> {
-        if self.base.is_none() {
+        if !self.ready() {
             return Err(ExecutorError::NoSnapshot);
         }
         // A new call from the host's own state: a fault an earlier run
@@ -315,7 +428,7 @@ impl SecondExecutor {
     /// Enter a callee whose caller and return address are already in the
     /// COW stack. The outer frame returns to `HARNESS_EXIT` as in `call`.
     pub fn enter(&mut self, cpu: &mut CpuAbi) -> Result<CallOutcome, ExecutorError> {
-        if self.base.is_none() {
+        if !self.ready() {
             return Err(ExecutorError::NoSnapshot);
         }
         let entry = cpu.eip;
@@ -331,7 +444,7 @@ impl SecondExecutor {
     /// would have: at its return to [`crate::exec::HARNESS_EXIT`]. The view
     /// and the context's continuations are as the refusal left them.
     pub fn resume(&mut self, cpu: &mut CpuAbi) -> Result<CallOutcome, ExecutorError> {
-        if self.base.is_none() {
+        if !self.ready() {
             return Err(ExecutorError::NoSnapshot);
         }
         self.run_from(cpu, TransferAbi::ret(cpu.eip))
@@ -362,7 +475,7 @@ impl SecondExecutor {
         transfer: TransferAbi,
         scope: Option<(u32, u32)>,
     ) -> Result<CallOutcome, ExecutorError> {
-        if self.base.is_none() {
+        if !self.ready() {
             return Err(ExecutorError::NoSnapshot);
         }
         *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -540,6 +653,43 @@ impl SecondExecutor {
         let view = self.runtime.memory();
         let mut live = main.memory();
         live.hand_back_owned(&view, base, written, owned)
+    }
+}
+
+/// An executor running on the main runtime's live RAM
+/// ([`SecondExecutor::alias`]). The executor runs calls and
+/// [`undo`](SecondExecutor::undo)es between rounds while it is open.
+/// Dropping it undoes the last round, gives the main Guest its RAM back,
+/// then lets go of the main runtime's memory guard, so live RAM is byte for
+/// byte as it was when the alias opened, and the main Guest's write watch
+/// has seen nothing. Drop the executor's own memory guards first.
+pub struct Alias<'m> {
+    runtime: Arc<Runtime>,
+    aliased: Arc<AtomicBool>,
+    live: Option<crate::ffi::MemoryGuard<'m>>,
+}
+
+impl Alias<'_> {
+    /// Undo, give the RAM back and release the main guard now. Returns the
+    /// pages the undo restored.
+    pub fn close(mut self) -> usize {
+        self.finish()
+    }
+
+    fn finish(&mut self) -> usize {
+        let Some(mut live) = self.live.take() else {
+            return 0;
+        };
+        let restored = self.runtime.memory().end_alias(&mut live);
+        self.aliased.store(false, Ordering::Release);
+        drop(live);
+        restored
+    }
+}
+
+impl Drop for Alias<'_> {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -812,6 +962,191 @@ mod tests {
             exec.call(&mut cpu, HOOK, &[]),
             Err(ExecutorError::Cancelled)
         ));
+    }
+
+    /// Four RW pages, and a second virtual mapping of the first one's
+    /// physical page.
+    const WIDE: u32 = 0x40000;
+    const MIRROR: u32 = 0x50000;
+    /// A Rust "guest function": `count` pseudo-random stores from `seed`
+    /// into WIDE and MIRROR, one 8-byte store across WIDE's first two
+    /// pages, then, when `refuse` is set, a call to a kernel import, which
+    /// the executor refuses (stdcall, three arguments).
+    const SCRIBBLE: u32 = CODE + 0x200;
+
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    fn alias_runtime() -> Arc<Runtime> {
+        let main = main_runtime();
+        main.edit_dispatch(|d| {
+            d.register_override(SCRIBBLE, "scribble", |cpu, ctx, _| {
+                let mut m = ctx.memory();
+                let count = m.u32(cpu.esp + 4)?;
+                let mut state = u64::from(m.u32(cpu.esp + 8)?) | 1 << 40;
+                let refuse = m.u32(cpu.esp + 12)? != 0;
+                for _ in 0..count {
+                    let r = next(&mut state);
+                    let at = if r & 7 == 0 {
+                        MIRROR + (r >> 8) as u32 % 0xffc
+                    } else {
+                        WIDE + (r >> 8) as u32 % 0x3ffc
+                    };
+                    m.set_u32(at, (r >> 32) as u32)?;
+                }
+                m.write(WIDE + 0xffc, [0xab; 8])?;
+                if refuse {
+                    let ret = m.u32(cpu.esp)?;
+                    return m.call(cpu, kernel::function_token(128), ret);
+                }
+                m.ret(cpu, 12)
+            });
+        });
+        {
+            let mut g = main.memory();
+            g.map_zeroed(WIDE, 0x4000, Permissions::RW).unwrap();
+            let physical = g.fold_address(WIDE).unwrap() & !CONTIGUOUS_BASE;
+            g.map(MIRROR, 0x1000, physical, Permissions::RW).unwrap();
+            let mut state = 0x9e37_79b9_7f4a_7c15;
+            for at in (WIDE..WIDE + 0x4000).step_by(4) {
+                g.set_u32(at, next(&mut state) as u32).unwrap();
+            }
+        }
+        main
+    }
+
+    fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
+        a.iter().zip(b).position(|(x, y)| x != y)
+    }
+
+    #[test]
+    fn an_alias_stores_to_live_ram_in_place_and_undo_puts_every_byte_back() {
+        for fast in [false, true] {
+            let main = alias_runtime();
+            let watch = {
+                let mut g = main.memory();
+                let id = g.subscribe_writes("live");
+                g.watch_writes(id, CONTIGUOUS_BASE, RAM_SIZE as u32).unwrap();
+                id
+            };
+            let wide = main.memory().fold_address(WIDE).unwrap() & !CONTIGUOUS_BASE;
+            let stack = (main.memory().fold_address(STACK - 4).unwrap() & !CONTIGUOUS_BASE)
+                & !(PAGE_SIZE - 1);
+            let before = main.memory().physical_ram().to_vec();
+            let mut exec = SecondExecutor::new(&main, |addr, _| addr == SCRIBBLE);
+            if fast {
+                // The page table generated code would build; Rust stores use it too.
+                exec.runtime().memory().prepare_fast_pages();
+            }
+            let mut rounds = Vec::new();
+            for round in 0..3 {
+                let alias = exec.alias(&main).unwrap();
+                let mut state = 0x2545_f491_4f6c_dd1d;
+                {
+                    let mut m = exec.runtime().memory();
+                    for _ in 0..300 {
+                        let r = next(&mut state);
+                        let len = 1 + (r & 15) as usize;
+                        let at = WIDE + (r >> 8) as u32 % (0x4000 - len as u32);
+                        m.write_bytes(at, &r.to_le_bytes().repeat(2)[..len], 1).unwrap();
+                    }
+                    // Across a page boundary, and through the second mapping.
+                    m.write_bytes(WIDE + 0x1ffe, &[1, 2, 3, 4], 1).unwrap();
+                    m.set_u32(MIRROR + 8, 0x5a5a_5a5a).unwrap();
+                    assert_eq!(m.u32(WIDE + 8), Ok(0x5a5a_5a5a), "one physical page");
+                }
+                let mut cpu = CpuAbi {
+                    esp: STACK,
+                    ..CpuAbi::default()
+                };
+                exec.call(&mut cpu, SCRIBBLE, &[200, 7, 0]).unwrap();
+                assert_eq!(cpu.esp, STACK);
+                assert_eq!(exec.runtime().memory().read::<8>(WIDE + 0xffc), Ok([0xab; 8]));
+                // A call refused part way, after its stores.
+                let mut cpu = CpuAbi {
+                    esp: STACK,
+                    ..CpuAbi::default()
+                };
+                let e = exec.call(&mut cpu, SCRIBBLE, &[50, 9, 1]).unwrap_err();
+                assert!(matches!(e, ExecutorError::Refused(_)), "{e:?}");
+                let mut pages = exec.journaled();
+                let listed = pages.len();
+                pages.sort_unstable();
+                pages.dedup();
+                assert_eq!(pages.len(), listed, "round {round}: each page saved once");
+                if round == 1 {
+                    // An undo in the middle of an alias, then stores again.
+                    assert_eq!(exec.undo(), listed);
+                    assert!(exec.journaled().is_empty());
+                    let m = exec.runtime().memory();
+                    assert_eq!(first_difference(m.physical_ram(), &before), None);
+                    drop(m);
+                    exec.runtime().memory().set_u32(WIDE, 1).unwrap();
+                    assert_eq!(exec.journaled(), vec![wide]);
+                }
+                drop(alias);
+                let mut m = main.memory();
+                assert_eq!(
+                    first_difference(m.physical_ram(), &before),
+                    None,
+                    "fast {fast}, round {round}: live RAM is as it was"
+                );
+                assert!(m.take_dirty(watch).unwrap().is_empty(), "the live watch saw nothing");
+                drop(m);
+                rounds.push(pages);
+            }
+            let mut want = vec![wide, wide + 0x1000, wide + 0x2000, wide + 0x3000, stack];
+            want.sort_unstable();
+            for (round, pages) in rounds.iter().enumerate() {
+                assert_eq!(pages, &want, "fast {fast}, round {round}: the same pages again");
+            }
+            assert!(
+                matches!(
+                    exec.call(&mut CpuAbi::default(), SCRIBBLE, &[]),
+                    Err(ExecutorError::NoSnapshot)
+                ),
+                "no alias open, no snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn an_alias_undoes_on_a_panic() {
+        let main = alias_runtime();
+        let before = main.memory().physical_ram().to_vec();
+        let mut exec = SecondExecutor::new(&main, |_, _| false);
+        exec.runtime().memory().prepare_fast_pages();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _alias = exec.alias(&main).unwrap();
+            exec.runtime().memory().set_u32(WIDE + 0x100, 7).unwrap();
+            exec.runtime().memory().set_u32(DATA, 7).unwrap();
+            panic!("a build bug");
+        }));
+        assert!(caught.is_err());
+        assert_eq!(first_difference(main.memory().physical_ram(), &before), None);
+        // The journal is armed again: the next alias saves the page afresh.
+        let alias = exec.alias(&main).unwrap();
+        exec.runtime().memory().set_u32(WIDE + 0x100, 8).unwrap();
+        assert_eq!(exec.journaled().len(), 1);
+        assert_eq!(alias.close(), 1);
+        assert_eq!(first_difference(main.memory().physical_ram(), &before), None);
+    }
+
+    #[test]
+    fn a_snapshot_after_an_alias_does_not_journal() {
+        let main = alias_runtime();
+        let mut exec = SecondExecutor::new(&main, |_, _| false);
+        exec.runtime().memory().prepare_fast_pages();
+        exec.alias(&main).unwrap().close();
+        exec.snapshot(&main);
+        exec.runtime().memory().set_u32(WIDE, 3).unwrap();
+        assert!(!exec.runtime().memory().journaling());
+        assert_eq!(exec.runtime().memory().u32(WIDE), Ok(3), "the view keeps its store");
+        assert_ne!(main.memory().u32(WIDE), Ok(3), "in its own copy");
     }
 
     /// Generated code that returns to its caller, as a native fixture.

@@ -148,7 +148,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 r.open_starter(name).map_err(refused)?;
             } else if let Some(src) = p.opt_str("source")? {
                 r.new_blank();
-                r.text = src.to_string();
+                r.set_text(src.to_string());
             } else {
                 r.new_blank();
             }
@@ -156,11 +156,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::RULES_GET => Ok(state(r, p.bool("text")?)),
         m::RULES_SET => {
-            r.text = p.str("source")?.to_string();
-            r.cursor = r.cursor.min(r.text.len());
-            while !r.text.is_char_boundary(r.cursor) {
-                r.cursor -= 1;
-            }
+            r.set_text(p.str("source")?.to_string());
             Ok(state(r, false))
         }
         m::RULES_SAVE => {

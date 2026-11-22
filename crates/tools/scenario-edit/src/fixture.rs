@@ -377,6 +377,94 @@ pub fn fixture_with_collision() -> Vec<u8> {
     b
 }
 
+/// Where [`fixture_with_pathfinding`]'s pathfinding element and its
+/// blocks are in the structure BSP payload, after the collision.
+pub const PATHFINDING_AT: usize = 0x400;
+/// The two invented sectors' flags: different, so they tint differently.
+pub const SECTOR_FLAGS: [u16; 2] = [0x0019, 0x0008];
+
+/// [`fixture_with_collision`] with invented pathfinding data
+/// (`sbsp+0xc4`, docs/formats/pathfinding.md) over [`collision_room`]'s
+/// floor: sector 0 its low-x half, sector 1 its high-x half, both
+/// counter-clockwise from above, sharing link 1. Links 0 to 6 ring the two
+/// sectors; link 7 is an orphan (no sector either side). The floor's ref
+/// names a 2D BSP node splitting the room at x 5; the walls' name nothing.
+pub fn fixture_with_pathfinding() -> Vec<u8> {
+    let mut b = fixture_with_collision();
+    let root = META_FILE + SBSP;
+    let addr = |at: usize| META + (SBSP + at) as u32;
+    let element = PATHFINDING_AT;
+    let size = tags::pathfinding::PathfindingData::SIZE;
+    // Every block after the element, in order: (field, count, bytes).
+    let [x, y, z] = ROOM_AT;
+    let vertices: [[f32; 3]; 6] = [
+        [x, y, z],
+        [x + 5.0, y, z],
+        [x + 5.0, y + 10.0, z],
+        [x, y + 10.0, z],
+        [x + 10.0, y, z],
+        [x + 10.0, y + 10.0, z],
+    ];
+    const NONE: u16 = 0xffff;
+    // vertex1, vertex2, flags, hint, forward, reverse, left, right.
+    let links: [[u16; 8]; 8] = [
+        [0, 1, 0, NONE, 1, NONE, 0, NONE],
+        [1, 2, 0x40, NONE, 2, 4, 0, 1],
+        [2, 3, 0, NONE, 3, NONE, 0, NONE],
+        [3, 0, 0, NONE, 0, NONE, 0, NONE],
+        [1, 4, 0, NONE, 5, NONE, 1, NONE],
+        [4, 5, 0, NONE, 6, NONE, 1, NONE],
+        [5, 2, 0, NONE, 1, NONE, 1, NONE],
+        [0, 4, 0, NONE, NONE, NONE, NONE, NONE],
+    ];
+    let mut sectors = Vec::new();
+    for (flags, first) in [(SECTOR_FLAGS[0], 0u32), (SECTOR_FLAGS[1], 4)] {
+        sectors.extend(flags.to_le_bytes());
+        sectors.extend(NONE.to_le_bytes());
+        sectors.extend(first.to_le_bytes());
+    }
+    let links: Vec<u8> = links
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let refs: Vec<u8> = [0x8000_0000u32, u32::MAX, u32::MAX]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    // The line x = 205: positive (x >= 205) sector 1, negative sector 0.
+    let mut nodes = Vec::new();
+    for v in [1.0f32, 0.0, x + 5.0] {
+        nodes.extend(v.to_le_bytes());
+    }
+    nodes.extend(1u32.to_le_bytes());
+    nodes.extend(0u32.to_le_bytes());
+    let vertices: Vec<u8> = vertices
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let blocks: [(usize, u32, Vec<u8>); 5] = [
+        (0x00, 2, sectors),
+        (0x08, 8, links),
+        (0x10, 3, refs),
+        (0x18, 1, nodes),
+        (0x28, 6, vertices),
+    ];
+    let mut at = element + size;
+    for (field, count, bytes) in blocks {
+        put(&mut b, root + element + field, count);
+        put(&mut b, root + element + field + 4, addr(at));
+        b[root + at..root + at + bytes.len()].copy_from_slice(&bytes);
+        at += bytes.len();
+    }
+    assert!(at <= SBSP_SIZE, "the pathfinding blocks fit the payload");
+    let field = tags::pathfinding::SBSP_PATHFINDING_FIELD;
+    put(&mut b, root + field, 1);
+    put(&mut b, root + field + 4, addr(element));
+    b
+}
+
 /// Where [`fixture_with_instance_collision`]'s instanced geometry
 /// definition and its placement are in the structure BSP payload.
 pub const INSTANCE_DEF_AT: usize = 0x400;

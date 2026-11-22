@@ -34,6 +34,13 @@ use crate::{
 /// default through the ordinary implementation hierarchy so a group or leaf
 /// override wins, and a new subsystem only joins after its own parity gate.
 pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> hooks::Switches {
+    if light {
+        // The lobby's background map copy, several steps a frame
+        // (docs/runtime/cache-slots.md, "Copy speed on the loading screen");
+        // `-map-copy.lobby` is its A/B arm.
+        let lobby = switches.feature(map_copy::LOBBY, true);
+        switches = switches.with(map_copy::LOBBY, lobby);
+    }
     if light && switches.feature("host-light-native", false) {
         for subsystem in [
             sim_bridge::sim_native::ANIM,

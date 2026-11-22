@@ -2,6 +2,27 @@
 
 Evidence for [../sim-10x.md](../sim-10x.md). Newest first.
 
+## 2026-11-22: the phantom alias against the view on the laptop
+
+Lab job 0065, commit b925c10dd (integ-sim7), `H2_OPT=2`, Lockout 2v2
+(`docs/runtime/sim-examples/lockout-2v2.toml`), arms
+`alias=impl.sim.phantom-alias` and `view=-impl.sim.phantom-alias`, three
+repeats each. Reproduce: `h2 lab sim --host laptop --branch <b> --repeat 3
+--arm alias=impl.sim.phantom-alias --arm view=-impl.sim.phantom-alias
+--build-env H2_OPT=2 docs/runtime/sim-examples/lockout-2v2.toml`.
+
+| Run | Speed | ms/tick | Wall |
+|---|---|---|---|
+| alias-r1 | 10.90× | 3.06 | 37.1 s |
+| view-r1 | 8.94× | 3.73 | 38.3 s |
+| view-r2 | 1.78× | 18.73 | 173.2 s (laptop under memory pressure) |
+
+The host stopped the job during alias-r2 for machine memory pressure, so
+one clean pair stands: the alias is 22% faster per match than the view
+(3.06 against 3.73 ms a tick). `state_hashes_v1` are identical across all
+three finished runs and both arms. A repeat on a quiet laptop is still
+needed for a median.
+
 ## 2026-11-22: eight at once with the warm Z:, and the phantom build's cost
 
 Lab job 0060 on the laptop, commit `e64535b4d` (warm Z: template and lane
