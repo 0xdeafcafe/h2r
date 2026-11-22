@@ -65,8 +65,7 @@ fn of_kind<'a>(issues: &'a [Issue], kind: &str) -> Vec<&'a Issue> {
     issues.iter().filter(|i| i.kind() == kind).collect()
 }
 
-/// `design.lobby.f`'s forge state as `lobby_tabs::concepts` lays it out:
-/// the lobby's `lobby_display` (`panel.1`), the mode list's five rows on
+/// A lobby screen with a mode list on the status panel: the lobby's `lobby_display` (`panel.1`), the mode list's five rows on
 /// the `default` skin from `[-262, 114]`, and the game's lines right of
 /// them at `[135, -40, 61, 105]`. The rects never meet; the panel holds
 /// both.
@@ -111,8 +110,7 @@ fn a_row_list_in_the_status_panel_beside_its_text_is_found() {
     assert!(of_kind(&r.issues, "panel_shared").is_empty());
 }
 
-/// `design.lobby.d`'s picker: the value picker's panel over the lobby's
-/// map picture.
+/// A value picker's panel over a lobby's map picture.
 fn picker_over_lobby(screen: &str) -> View {
     let under = View {
         backing: Backing::GameShell,
@@ -229,32 +227,12 @@ fn groups_come_from_ids() {
     assert_eq!(group("game"), "game");
 }
 
-/// The concepts the user caught by eye: F's mode list on the status
-/// panel beside the game's lines, and D's picker over the map picture.
 #[test]
-fn the_lobby_concepts_report_their_findings() {
-    use crate::ui_kit::preview::From;
-    let found = |name: &str, state: &str| {
-        let (_, spec) = crate::ui_kit::screens::states(name)
-            .unwrap()
-            .into_iter()
-            .find(|(s, _)| s == state)
-            .unwrap();
-        let v = From::Synthetic.view(&spec, state).unwrap();
-        check(&v, &SyntheticSource, &Rules::for_spec(&spec)).issues
-    };
-    let f = found("design.lobby.f", "forge");
-    assert!(
-        f.iter().any(|i| matches!(i, Issue::PanelShared { panel, with, .. }
-            if panel == "panel.1" && with.iter().any(|w| w == "game"))),
-        "{f:?}"
-    );
-    let d = found("design.lobby.d", "picker");
-    assert!(
-        d.iter()
-            .any(|i| matches!(i, Issue::CoversUnder { under, .. } if under == "panel.2")),
-        "{d:?}"
-    );
+fn each_shared_panel_allowance_names_a_screen_and_its_precedent() {
+    for (screen, why) in SHARED_PANELS {
+        assert!(crate::ui_kit::screens::NAMES.contains(screen), "{screen}");
+        assert!(why.contains("retail"), "{screen}: {why}");
+    }
 }
 
 #[test]

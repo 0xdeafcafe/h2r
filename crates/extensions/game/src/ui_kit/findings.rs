@@ -93,20 +93,12 @@ pub fn of_state(from: &preview::From<'_>, spec: &ScreenSpec, view: &View) -> Res
 mod tests {
     use super::*;
 
-    /// A clean screen has nothing; F's forge state has its panel finding
-    /// and its bare buttons, each named by check and kind.
+    /// A clean screen has nothing; the Quick Options dialogs, whose rows
+    /// the synthetic source (no `fs_dialog` art) leaves with too little
+    /// contrast, have layout findings named by check and kind.
     #[test]
     fn a_states_findings_come_in_one_list() {
         let from = preview::From::Synthetic;
-        let state = |name: &str, state: &str| {
-            let (_, spec) = crate::ui_kit::screens::states(name)
-                .unwrap()
-                .into_iter()
-                .find(|(s, _)| s == state)
-                .unwrap();
-            let v = from.view(&spec, state).unwrap();
-            of_state(&from, &spec, &v).unwrap()
-        };
         let clean = crate::ui_kit::screens::states("kit.example").unwrap();
         let (name, spec) = &clean[0];
         let v = from.view(spec, name).unwrap();
@@ -114,11 +106,12 @@ mod tests {
         assert!(r.findings.is_empty(), "{:?}", r.findings);
         assert_eq!(r.skipped, ["covered", "off screen"]);
 
-        let f = state("design.lobby.f", "forge");
-        let has = |check: &str, kind: &str| f.findings.iter().any(|x| x.check == check && x.kind == kind);
-        assert!(has("layout", "panel_shared"), "{:?}", f.findings);
-        assert!(has("consistency", "button"), "{:?}", f.findings);
-        assert!(has("consistency", "handled"), "{:?}", f.findings);
-        assert!(f.findings.iter().all(|x| x.to_string().starts_with(x.check)));
+        let mut found = Vec::new();
+        for (state, spec) in crate::ui_kit::screens::states("clankers").unwrap() {
+            let v = from.view(&spec, &state).unwrap();
+            found.extend(of_state(&from, &spec, &v).unwrap().findings);
+        }
+        assert!(found.iter().any(|x| x.check == "layout" && !x.kind.is_empty()), "{found:?}");
+        assert!(found.iter().all(|x| x.to_string().starts_with(x.check)));
     }
 }

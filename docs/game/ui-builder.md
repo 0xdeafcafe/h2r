@@ -80,7 +80,7 @@ them.
 A `Hud` whose spec is not `transparent` is drawn over the game shell
 instead of a live picture (`preview::From::view`): widgets that sit on
 the shell's header and footer bands, such as the pregame lobby's mode
-strip (`design.lobby-tabs.*`, [party-lobby.md](party-lobby.md)). Its doc
+strip (`lobby.tabs`, [party-lobby.md](party-lobby.md)). Its doc
 says `backing: shell`.
 
 The Forge screens are the game's: list classes of ours on the large
@@ -246,8 +246,8 @@ state.
 | glyphs | every character exists in its font (the kit's `Finding::Glyph`) |
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
 | on drawn | a text's glyphs meet another group's drawn row or cell art, picture (`Art::Level`) or text over more than 24 pixels (`Issue::OnDrawn`); the pairs `overlap` already names are left out |
-| panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`) |
-| covers under | a modal over a kit screen (`View::underlay`) covers more than 24 drawn pixels of that screen's content: its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal may cover is listed in `layout::drawn::COVERS` with its retail precedent |
+| panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`). A screen that draws the lobby's panel as retail's lobby does, the list and its status lines in one pane, is listed in `layout::drawn::SHARED_PANELS` with its retail precedent |
+| covers under | a modal over a kit screen (`View::underlay`) covers more than 24 drawn pixels of that screen's content: its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal may cover is listed in `layout::drawn::COVERS` with its retail precedent |
 | drawn outside | art drew more than `Rules::max_outside` (2) units past its declared rectangle (`Issue::DrawnOutside`): fix the rectangle |
 
 The last four read what the preview really drew. `preview::render_traced`

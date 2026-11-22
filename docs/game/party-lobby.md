@@ -354,41 +354,6 @@ The reason line's timer is not saved.
   in each place and on each tab it can be on, and a member's
   (`lobby_tabs::preview`): the widgets the update shows, at their cells,
   in the lobby's font and colours, without the retail pane under them.
-- **Designs**: `h2 ui preview design.lobby-tabs.a --state all` (and
-  `.b`, `.c`) draws a design for the strip over the game shell, so the
-  header band shows (`lobby_tabs::designs`): a window of three tabs with
-  the bumpers at the band's ends; the selected tab as the lobby's header
-  with a legend naming the tab each bumper moves to; all five tabs in
-  the lobby's text case with the bumpers beside the player count. Each
-  page's states are every tab selected in turn, the widest (`longest`),
-  a Split Screen lobby (`unavailable`), a member's console (`member`)
-  and a run with only retail's three modes (`retail-tabs`). The band has
-  338 units for a line of text (x -270 to +68);
-  `lobby_tabs::designs::tests` hold every design to it for every set of
-  tabs.
-- **Concepts of the whole lobby**: `h2 ui preview design.lobby.d --state
-  all` (and `.e`, `.f`) draws the pregame lobby with a mode control, as a
-  kit list screen over the game shell (`lobby_tabs::concepts`): the
-  header, `name_field` and `lobby_display` from the lobby's tag at their
-  own points, the map's picture, Start Game and Game Setup, the game's
-  lines, the player count, the party and the footer legend.
-  - `design.lobby.d`: the header names the mode (FORGE LOBBY) and a
-    third button, MODE: FORGE, sits beside the lobby's two; A on it
-    opens the kit's value picker on the modes, whose help line says why
-    a mode can't run here. States: each mode, `mode-focused`, `picker`,
-    `picker-unavailable`.
-  - `design.lobby.e`: the header is the mode, with a mark for each mode
-    beside it on the band (the current one white, one that can't run
-    faint) and the bumpers at the marks' ends. States: each mode, and
-    `member` (no bumpers, no buttons).
-  - `design.lobby.f`: the modes are a list on the lobby's panel, on the
-    `default` list skin, the lobby's mode lit. States: each mode with the
-    list focused, and `buttons` with Start Game focused.
-
-  The second button's rectangle, the look of a focused button and the
-  player rows' cell art are not read from the lobby's tag: the pages
-  place the first two and leave the third out
-  (`lobby_tabs::concepts`, module comment).
 
 ## Slices
 

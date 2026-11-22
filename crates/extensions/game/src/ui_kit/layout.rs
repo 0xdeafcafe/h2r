@@ -38,7 +38,7 @@
 //! - **on drawn**: a text's glyphs over another group's drawn row or cell
 //!   art, picture or text.
 //! - **panel shared**: a panel that holds a list's rows holds another
-//!   group's texts too.
+//!   group's texts too, unless [`drawn::SHARED_PANELS`] says why it may.
 //! - **covers under**: a modal over a kit screen covers that screen's
 //!   content (its pictures, status, roster), unless [`drawn::COVERS`]
 //!   says why it may.

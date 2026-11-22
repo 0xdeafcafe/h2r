@@ -14,7 +14,7 @@ widgets:
     text: "LAB REQUEST"
   body:
     component: body
-    text: "Lab driver requests a lab run.\ncb9b315e1, about 4 min\nAllow, then quit when ready."
+    text: "Lab driver: build, then run\n\"Menu bands check\"\nlab/menu-bands at cb9b315\nlevel ascension, about 4 min"
   legend:
     component: legend
     prompts: [[A, "SELECT"], [B, "BACK"]]

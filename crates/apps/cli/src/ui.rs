@@ -771,26 +771,22 @@ mod tests {
             v.extend(extra.iter().map(|s| s.to_string()));
             v
         };
-        run(args("design.lobby.f", &["--state", "forge"])).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(out.join("design.lobby.f-forge.json")).unwrap(),
-        )
-        .unwrap();
-        let findings = json["findings"].as_array().unwrap();
-        assert!(
-            findings
-                .iter()
-                .any(|f| f["check"] == "layout" && f["kind"] == "panel_shared"),
-            "{findings:?}"
-        );
-        assert!(
-            json["drawn"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|d| d["id"] == "panel.1" && d["bbox"].is_array())
-        );
-        assert!(run(args("design.lobby.f", &["--state", "forge", "--strict"])).is_err());
+        // The Quick Options dialogs have layout findings without the disc's
+        // art (the synthetic source has no `fs_dialog` under their rows).
+        run(args("clankers", &[])).unwrap();
+        let mut findings = Vec::new();
+        let mut drawn = Vec::new();
+        for (state, _) in boot::ui_kit::screens::states("clankers").unwrap() {
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(out.join(format!("clankers-{state}.json"))).unwrap(),
+            )
+            .unwrap();
+            findings.extend(json["findings"].as_array().unwrap().clone());
+            drawn.extend(json["drawn"].as_array().unwrap().clone());
+        }
+        assert!(findings.iter().any(|f| f["check"] == "layout"), "{findings:?}");
+        assert!(drawn.iter().any(|d| d["bbox"].is_array()));
+        assert!(run(args("clankers", &["--strict"])).is_err());
         assert!(run(args("kit.example", &["--strict"])).is_ok());
         assert!(run(vec!["sheet".into(), "--strict".into()]).is_err());
         let _ = std::fs::remove_dir_all(&out);

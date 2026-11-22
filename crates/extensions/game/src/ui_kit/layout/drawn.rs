@@ -28,14 +28,34 @@ pub const COVERS: &[(&str, &str)] = &[(
      over the pregame lobby and its player list",
 )];
 
+/// Kit screens that draw the lobby's panel with the list in it and a table
+/// of their own texts, each with the retail precedent: `(screen, why)`. A
+/// panel holding the list's rows and another group's texts on a screen not
+/// here is a [`Issue::PanelShared`].
+pub const SHARED_PANELS: &[(&str, &str)] = &[
+    (
+        crate::theater_ui::DETAIL,
+        "the film's actions and its details table share the lobby's panel \
+         as retail's pregame lobby holds Start Game, Game Setup and its \
+         status lines in one pane",
+    ),
+    (
+        crate::theater_ui::OVERLAY,
+        "the playback panel's rows and its table share the lobby's panel \
+         as retail's pregame lobby holds its list and status lines in one pane",
+    ),
+];
+
 /// Groups never held to another group: the header and the legend sit on
 /// every screen's chrome.
 const CHROME: [&str; 2] = ["title", "legend"];
 
 /// The list's own texts and the chrome, which a modal opened from the list
 /// covers as retail's do: the rows, the help line about the focused row,
-/// the dialog's body and status.
-const NOT_CONTENT: [&str; 7] = [
+/// the dialog's body and status, and the HUD's reticle, which the pause
+/// menu and every dialog in retail cover when they open over the world.
+const NOT_CONTENT: [&str; 8] = [
+    "reticle",
     "list",
     "title",
     "legend",
@@ -77,7 +97,7 @@ pub(super) fn check(v: &View, src: &dyn Source, rules: &Rules, already: &[Issue]
     let mut out = Vec::new();
     outside(&shown, rules, &mut out);
     on_drawn(&shown, rules, already, &mut out);
-    if rules.panel.is_none() {
+    if rules.panel.is_none() && !SHARED_PANELS.iter().any(|(s, _)| *s == v.screen) {
         panel_shared(&shown, rules, &mut out);
     }
     if let Some(under) = &v.underlay
