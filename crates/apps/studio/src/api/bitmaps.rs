@@ -5,8 +5,10 @@
 //! the window's undo step; docs/editor/modeling.md ("Texture editing"),
 //! docs/editor/agent-api.md.
 //!
-//! No method writes to the map: edits stay in the editor (the `bitmaps`
-//! document is dirty while any bitmap is edited) until the encoder slice.
+//! Edits stay in the editor until a save: `doc.save` and `doc.save_as` on
+//! the `bitmaps` document are the map's, and encode every edited image
+//! (`assets::write`) into the file. `bitmap.reshape` asks for a new size
+//! or format, `bitmap.spans` shows the stored bytes an edit changes.
 
 use std::path::PathBuf;
 
@@ -21,7 +23,8 @@ use super::scenario::refused;
 use super::{MethodDef, P, Provider, Reply, err};
 use crate::App;
 use crate::app::Action;
-use crate::app::textures::{BitmapAction, MEMORY_ONLY};
+use crate::app::textures::BitmapAction;
+use tags::PixelFormat;
 
 /// The Textures tool's provider.
 #[derive(Default)]
@@ -60,9 +63,9 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::BITMAP_READ,
-        "One bitmap's images (opening it decodes them): size, depth, format, kind (D2, D3, Cube), mips stored, where LOD 0's pixels are, the layers each has, why one is read only, and the write class (`memory`: edits stay in the editor until the encoder writes them)",
+        "One bitmap's images (opening it decodes them): size, depth, format, kind (D2, D3, Cube), mips stored, where LOD 0's pixels are, the layers each has, why one is read only, the write class (`in_place`: every stored LOD is in this map and a save patches the touched bytes; `appended`: a LOD is in a shared cache and a save copies it into the map; `none`: read only) and any `reshape` asked for",
         r#"{"bitmap":"string","image?":"integer"}"#,
-        r#"{"bitmap":"string","name":"string","edited":"boolean","images":"[{image,width,height,depth,format,kind,mips,pixels,layers,write,locked,error,edited}]"}"#,
+        r#"{"bitmap":"string","name":"string","edited":"boolean","images":"[{image,width,height,depth,format,kind,mips,pixels,layers,write,reshape,locked,error,edited}]"}"#,
         r#"{"bitmap":"floor"}"#,
     ),
     def(
@@ -99,6 +102,20 @@ const METHODS: &[MethodDef] = &[
         r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","invert?":"boolean","levels?":"{black?,white?,gamma?}","hsv?":"{hue?,saturation?,value?}","rect?":"{x,y,w,h}","channels?":"string"}"#,
         r#"{"bitmap":"string","layer":"string","dirty":"{x,y,w,h}|null","tiles":"integer","edited":"boolean"}"#,
         r#"{"bitmap":"floor","invert":true,"channels":"rgb"}"#,
+    ),
+    def(
+        m::BITMAP_RESHAPE,
+        "Ask for a new size and/or format for an image (`format`: a8, y8, ay8, a8y8, rgb565, argb1555, argb4444, xrgb8888, argb8888, dxt1, dxt3 or dxt5; what is left out keeps its value). A save writes the image whole at that size: every layer resampled, every LOD it stores re-encoded and appended to the map, the record's size, format, flags and mips patched. A cube stays square, DXT needs power of two sides, a side that is not a power of two is linear without mips. Refused now when the save would refuse. Not an undo step; `doc.close` with `discard` drops it. Giving the image's own size and format clears it",
+        r#"{"bitmap":"string","image?":"integer","width?":"integer","height?":"integer","format?":"string"}"#,
+        r#"{"bitmap":"string","image":"integer","reshape":"{width,height,format}|null","edited":"boolean"}"#,
+        r#"{"bitmap":"floor","width":8,"height":8,"format":"dxt1"}"#,
+    ),
+    def(
+        m::BITMAP_SPANS,
+        "The stored bytes the edits change, as the encoder writes them (nothing is written): per LOD, `offset` into the LOD's bytes and `len`, with the bytes as hex up to 65,536 in all. `rect` (with `face` and `slice`) asks for that region of mip 0 instead of the edited tiles. The unit a live push sends",
+        r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","rect?":"{x,y,w,h}"}"#,
+        r#"{"bitmap":"string","image":"integer","write":"string","spans":"[{lod,offset,len,bytes}]","bytes":"integer"}"#,
+        r#"{"bitmap":"floor"}"#,
     ),
     def(
         m::BITMAP_PIXELS,
@@ -163,8 +180,16 @@ fn rect_of(v: &Value) -> Result<Rect, RpcError> {
         };
         return Ok(Rect::new(n(x)?, n(y)?, n(w)?, n(h)?));
     }
-    let f = |k: &str| v.get(k).ok_or_else(|| bad(format!("rect: {k} is required")));
-    Ok(Rect::new(n(f("x")?)?, n(f("y")?)?, n(f("w")?)?, n(f("h")?)?))
+    let f = |k: &str| {
+        v.get(k)
+            .ok_or_else(|| bad(format!("rect: {k} is required")))
+    };
+    Ok(Rect::new(
+        n(f("x")?)?,
+        n(f("y")?)?,
+        n(f("w")?)?,
+        n(f("h")?)?,
+    ))
 }
 
 fn opt_rect(p: &P) -> Result<Option<Rect>, RpcError> {
@@ -197,10 +222,7 @@ fn color_of(v: &Value) -> Result<[u8; 4], RpcError> {
     }
     let mut out = [0, 0, 0, 255];
     for (o, x) in out.iter_mut().zip(a) {
-        *o = x
-            .as_u64()
-            .filter(|n| *n <= 255)
-            .ok_or_else(want)? as u8;
+        *o = x.as_u64().filter(|n| *n <= 255).ok_or_else(want)? as u8;
     }
     Ok(out)
 }
@@ -208,8 +230,11 @@ fn color_of(v: &Value) -> Result<[u8; 4], RpcError> {
 fn channels(p: &P) -> Result<Channels, RpcError> {
     match p.opt_str("channels")? {
         None => Ok(Channels::ALL),
-        Some(s) => Channels::parse(s)
-            .ok_or_else(|| bad(format!("channels: {s:?} is not letters of rgba (\"rgb\", \"a\")"))),
+        Some(s) => Channels::parse(s).ok_or_else(|| {
+            bad(format!(
+                "channels: {s:?} is not letters of rgba (\"rgb\", \"a\")"
+            ))
+        }),
     }
 }
 
@@ -221,7 +246,10 @@ fn num(v: &Value, k: &str) -> Result<f32, RpcError> {
 }
 
 fn opt_num(obj: &Value, k: &str) -> Result<Option<f32>, RpcError> {
-    obj.get(k).filter(|v| !v.is_null()).map(|v| num(v, k)).transpose()
+    obj.get(k)
+        .filter(|v| !v.is_null())
+        .map(|v| num(v, k))
+        .transpose()
 }
 
 fn layer_name(l: LayerId) -> String {
@@ -258,6 +286,35 @@ fn edit(app: &mut App, tag: TagId, l: LayerId, op: BitmapOp) -> Reply {
     Ok(edit_result(app, tag, l))
 }
 
+/// A pixel format by the name its tag gives it, case blind (`dxt5`).
+fn format_of(s: &str) -> Result<PixelFormat, RpcError> {
+    use PixelFormat as F;
+    const ALL: [F; 12] = [
+        F::A8,
+        F::Y8,
+        F::Ay8,
+        F::A8Y8,
+        F::Rgb565,
+        F::Argb1555,
+        F::Argb4444,
+        F::Xrgb8888,
+        F::Argb8888,
+        F::Dxt1,
+        F::Dxt3,
+        F::Dxt5,
+    ];
+    let key = s.to_ascii_lowercase().replace(['_', '-'], "");
+    ALL.into_iter()
+        .find(|f| format!("{f:?}").to_ascii_lowercase() == key)
+        .ok_or_else(|| {
+            bad(format!(
+                "format: {s:?} is not one of {}",
+                ALL.map(|f| format!("{f:?}").to_ascii_lowercase())
+                    .join(", ")
+            ))
+        })
+}
+
 fn images_json(app: &App, tag: TagId, only: Option<usize>) -> Value {
     let Some(open) = app.textures.open.get(&tag) else {
         return Value::Null;
@@ -267,9 +324,10 @@ fn images_json(app: &App, tag: TagId, only: Option<usize>) -> Value {
             .iter()
             .filter(|i| only.is_none_or(|n| n == i.index))
             .map(|i| {
-                let edited = i.layers.iter().any(|id| {
-                    open.bitmap.layer(*id).is_some_and(|l| l.is_edited())
-                });
+                let edited = i
+                    .layers
+                    .iter()
+                    .any(|id| open.bitmap.layer(*id).is_some_and(|l| l.is_edited()));
                 json!({
                     "image": i.index,
                     "width": i.width,
@@ -280,7 +338,12 @@ fn images_json(app: &App, tag: TagId, only: Option<usize>) -> Value {
                     "mips": i.mips,
                     "pixels": i.pixels,
                     "layers": i.layers.iter().map(|l| layer_name(*l)).collect::<Vec<_>>(),
-                    "write": if i.locked.is_some() || i.error.is_some() { "none" } else { MEMORY_ONLY },
+                    "write": i.write_class(),
+                    "reshape": app.textures.reshape.get(&(tag, i.index)).map(|r| json!({
+                        "width": r.width,
+                        "height": r.height,
+                        "format": format!("{:?}", r.format),
+                    })),
                     "locked": i.locked,
                     "error": i.error,
                     "edited": edited,
@@ -313,7 +376,27 @@ pub fn diff(app: &App) -> Value {
             }));
         }
     }
-    json!({ "doc": "bitmaps", "dirty": app.textures.is_edited(), "edited": edited })
+    let reshaped: Vec<Value> = {
+        let mut keys: Vec<_> = app.textures.reshape.iter().collect();
+        keys.sort_by_key(|((t, i), _)| (t.0, *i));
+        keys.into_iter()
+            .map(|((t, i), r)| {
+                json!({
+                    "bitmap": super::scenario::tag_id(*t),
+                    "image": i,
+                    "width": r.width,
+                    "height": r.height,
+                    "format": format!("{:?}", r.format),
+                })
+            })
+            .collect()
+    };
+    json!({
+        "doc": "bitmaps",
+        "dirty": app.tool_dirty(crate::ToolKind::Textures),
+        "edited": edited,
+        "reshape": reshaped,
+    })
 }
 
 fn call(app: &mut App, method: &str, p: &P) -> Reply {
@@ -340,7 +423,13 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::BITMAP_READ => {
             let tag = bitmap(app, p)?;
             let only = p.opt_usize("image")?;
-            run(app, BitmapAction::Select { tag, image: only.unwrap_or(0) })?;
+            run(
+                app,
+                BitmapAction::Select {
+                    tag,
+                    image: only.unwrap_or(0),
+                },
+            )?;
             let open = &app.textures.open[&tag];
             if let Some(n) = only
                 && n >= open.images.len()
@@ -421,9 +510,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 None if erase => [0, 0, 0, 255],
                 None => return Err(bad("color is required (unless erase is true)")),
             };
-            let size = p
-                .opt_f32("size")?
-                .ok_or_else(|| bad("size is required"))?;
+            let size = p.opt_f32("size")?.ok_or_else(|| bad("size is required"))?;
             let d = Brush::default();
             let brush = Brush {
                 size,
@@ -435,7 +522,16 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 channels: channels(p)?,
             };
             brush.validate().map_err(|e| bad(e.to_string()))?;
-            edit(app, tag, l, BitmapOp::Paint { layer: l, points, brush })
+            edit(
+                app,
+                tag,
+                l,
+                BitmapOp::Paint {
+                    layer: l,
+                    points,
+                    brush,
+                },
+            )
         }
         m::BITMAP_FILL => {
             let tag = bitmap(app, p)?;
@@ -444,7 +540,9 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 None => None,
                 Some(v) => match v.as_array().map(Vec::as_slice) {
                     Some([x, y]) => match (x.as_u64(), y.as_u64()) {
-                        (Some(x), Some(y)) if x <= u64::from(u32::MAX) && y <= u64::from(u32::MAX) => {
+                        (Some(x), Some(y))
+                            if x <= u64::from(u32::MAX) && y <= u64::from(u32::MAX) =>
+                        {
                             Some([x as u32, y as u32])
                         }
                         _ => return Err(bad("at: [x, y] whole numbers of 0 or more")),
@@ -505,6 +603,91 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 },
             )
         }
+        m::BITMAP_RESHAPE => {
+            let tag = bitmap(app, p)?;
+            let image = p.opt_usize("image")?.unwrap_or(0);
+            let dim = |k: &str| -> Result<Option<u32>, RpcError> {
+                p.opt_u64(k)?
+                    .map(|n| u32::try_from(n).map_err(|_| bad(format!("{k}: too large"))))
+                    .transpose()
+            };
+            let (width, height) = (dim("width")?, dim("height")?);
+            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            if width.is_none() && height.is_none() && format.is_none() {
+                return Err(bad("give width, height and/or format"));
+            }
+            run(
+                app,
+                BitmapAction::Reshape {
+                    tag,
+                    image,
+                    width,
+                    height,
+                    format,
+                },
+            )?;
+            Ok(json!({
+                "bitmap": super::scenario::tag_id(tag),
+                "image": image,
+                "reshape": app.textures.reshape.get(&(tag, image)).map(|r| json!({
+                    "width": r.width,
+                    "height": r.height,
+                    "format": format!("{:?}", r.format),
+                })),
+                "edited": app.textures.open.get(&tag).is_some_and(|o| app.textures.edited(o)),
+            }))
+        }
+        m::BITMAP_SPANS => {
+            let tag = bitmap(app, p)?;
+            let l = layer(p)?;
+            run(
+                app,
+                BitmapAction::Select {
+                    tag,
+                    image: l.image as usize,
+                },
+            )?;
+            let rects: Vec<(LayerId, Rect)> = match opt_rect(p)? {
+                Some(r) => vec![(l, r)],
+                None => app.textures.open[&tag]
+                    .bitmap
+                    .layers()
+                    .iter()
+                    .filter(|x| x.id.image == l.image)
+                    .flat_map(|x| {
+                        x.changed_tiles()
+                            .into_iter()
+                            .map(move |(tx, ty)| (x.id, x.canvas.tile_rect(tx, ty)))
+                    })
+                    .collect(),
+            };
+            let spans = app
+                .bitmap_tile_spans(tag, l.image as usize, &rects)
+                .map_err(bad)?;
+            let total: usize = spans.iter().map(|s| s.bytes.len()).sum();
+            let mut left = 65_536usize;
+            let list: Vec<Value> = spans
+                .iter()
+                .map(|s| {
+                    let bytes = (s.bytes.len() <= left).then(|| {
+                        left -= s.bytes.len();
+                        hex(&s.bytes)
+                    });
+                    json!({ "lod": s.lod, "offset": s.offset, "len": s.bytes.len(), "bytes": bytes })
+                })
+                .collect();
+            let write = app.textures.open[&tag]
+                .images
+                .get(l.image as usize)
+                .map_or("none", |i| i.write_class());
+            Ok(json!({
+                "bitmap": super::scenario::tag_id(tag),
+                "image": l.image,
+                "write": write,
+                "spans": list,
+                "bytes": total,
+            }))
+        }
         m::BITMAP_PIXELS => {
             let tag = bitmap(app, p)?;
             let l = layer(p)?;
@@ -512,15 +695,21 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             if u64::from(r.w) * u64::from(r.h) > MAX_PIXELS {
                 return Err(err(
                     code::REFUSED,
-                    format!("refused: {}x{} is over {MAX_PIXELS} pixels: read less", r.w, r.h),
+                    format!(
+                        "refused: {}x{} is over {MAX_PIXELS} pixels: read less",
+                        r.w, r.h
+                    ),
                 ));
             }
-            run(app, BitmapAction::Select { tag, image: l.image as usize })?;
+            run(
+                app,
+                BitmapAction::Select {
+                    tag,
+                    image: l.image as usize,
+                },
+            )?;
             let open = &app.textures.open[&tag];
-            let (got, rgba) = open
-                .bitmap
-                .pixels(l, r)
-                .map_err(|e| bad(e.to_string()))?;
+            let (got, rgba) = open.bitmap.pixels(l, r).map_err(|e| bad(e.to_string()))?;
             Ok(json!({
                 "bitmap": super::scenario::tag_id(tag),
                 "layer": layer_name(l),
