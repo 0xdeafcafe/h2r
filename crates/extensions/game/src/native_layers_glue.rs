@@ -109,7 +109,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let data = world.and_then(|(view, _)| view.layers.get(&l));
         let mut outcomes: BTreeMap<&'static str, u64> = BTreeMap::new();
         let object_items: Vec<&LayerItem> =
-            scene.items_of(pass).filter(|i| matches!(i.owner, LayerOwner::Object(_))).collect();
+            scene.items_of(pass).iter().filter(|i| matches!(i.owner, LayerOwner::Object(_))).collect();
         let is_object = |slot: u32| object_items.iter().any(|i| i.slot == slot);
         // The plan of the structure's items, from the scene alone.
         let mut taken: HashMap<u32, u32> = HashMap::new();
@@ -133,7 +133,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 }
             }
             None => {
-                let structure = scene.items_of(pass).filter(|i| !matches!(i.owner, LayerOwner::Object(_))).count();
+                let structure = scene.items_of(pass).iter().filter(|i| !matches!(i.owner, LayerOwner::Object(_))).count();
                 let why = if caller == LayerCaller::FirstPerson { "first_person_structure" } else { "program" };
                 *outcomes.entry(why).or_default() += structure as u64;
             }
