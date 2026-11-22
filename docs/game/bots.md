@@ -3551,7 +3551,13 @@ human playlists, whatever the Live menu chose last. The log says
 `clankermatch: Game Setup list: Switch To: Clankermatch row added (N
 rows)` at each Game Setup, then `clankermatch: Switch To: Clankermatch:
 opening the clanker playlists` and `clankermatch: the playlists are the
-clanker hoppers` at the press.
+clanker hoppers` at the press. The party lobby's Game Setup then drops
+every Switch To row, this one with retail's (`lobby_mode::arrange`):
+the mode strip changes mode, and its MULTIPLAYER tab is the one
+matchmaking lobby. There, action 9 reads Change Playlist... and lists
+the clanker and the human hoppers on one page (`clankermatch::Scope::All`),
+so the playlist picked is the Clanker or non-Clanker choice
+([party-lobby.md](party-lobby.md#the-tabs)).
 
 ### 8.4 Search and lobby (built: the empty search)
 
@@ -4800,7 +4806,11 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      The match host creates the peers as the hosted game starts
      (`crates/extensions/game/src/clankers.rs`,
      `crates/extensions/game/src/bot_glue.rs`). See §5 for peer admission
-     and §9.1 for the Live roster.
+     and §9.1 for the Live roster. The page's bots sit only in a custom
+     game's lobby (retail mode 2: the party lobby's CUSTOM GAMES, FORGE
+     and FIREFIGHT tabs, `clankers::admits_page`). In the co-op and the
+     matchmaking lobby they stand down and come back on a custom tab
+     (`Driver::set_lobby`, [party-lobby.md](party-lobby.md#clankers-by-tab)).
    - **Nav meshes early.** A map picked in the lobby's map list with
      Clankers on, or Clankers coming on after a map was picked, asks
      `bots::autonav::build_soon` for its mesh (`clankers::map_picked`).

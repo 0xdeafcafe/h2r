@@ -9,10 +9,12 @@
 //! builds its rows in `0x002b1ff4`, which asks
 //! [`HOPPER_LISTED`](engine::points::HOPPER_LISTED) (`0x00192db0`, ECX the
 //! descriptor index, AL the answer) once per hopper and stores the index in
-//! each row. A `before` on it answers "not listed" for a hopper of the
-//! other kind: with [`active`] only the server's clanker hoppers
-//! (`live_hle::Hle::clanker_hoppers`), without it only the others. A
-//! hopper it lets through still goes to the game's own check.
+//! each row. A `before` on it answers "not listed" for a hopper outside
+//! the [`Scope`] the opening press set: Clankermatch only the server's
+//! clanker hoppers (`live_hle::Hle::clanker_hoppers`), OptiMatch only the
+//! others, and the party lobby's MULTIPLAYER tab both on one page
+//! (docs/game/party-lobby.md, "The tabs"). A hopper it lets through
+//! still goes to the game's own check.
 //!
 //! **Quickmatch** searches the playlist the player last picked in
 //! OptiMatch, which the playlist list's press saves (`0x001902fc`, from
@@ -34,8 +36,12 @@
 //! `0x002bbf06` and closes the dialog. [`SwitchRow`] adds "Switch To:
 //! Clankermatch" ([`SWITCH_ACTION`]) right under it while the server has
 //! clanker hoppers; its press sets [`active`] and runs that same press, so
-//! the party goes to the clanker playlists. Retail's row clears
-//! [`active`] first, so it always lists the human ones.
+//! the party goes to the clanker playlists. Retail's row sets
+//! [`Scope::Players`] first, so it always lists the human ones. In a
+//! matchmaking lobby (the party lobby's MULTIPLAYER tab) action 9 is
+//! Change Playlist... ([`CHANGE_PLAYLIST`]), and its press lists every
+//! hopper ([`Scope::All`]). The party lobby's Game Setup drops both
+//! Switch To rows (`crate::lobby_mode::arrange`): the strip changes mode.
 //!
 //! **The fill.** While this console hosts a clanker hopper's lobby, the
 //! Clankers driver (`crate::clankers`) asks Live for the playlist's roster
@@ -44,7 +50,7 @@
 //! [`balance`] picks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
@@ -59,33 +65,85 @@ pub const FEATURE: &str = "clankermatch";
 /// The lobby's "Switch To: Clankermatch" row (`features.clankermatch-switch`).
 pub const SWITCH_FEATURE: &str = "clankermatch-switch";
 
-/// The Clankermatch row's press set it; any other Live menu row's press
-/// clears it.
-static ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Whether the playlist screen is Clankermatch's.
-pub fn active() -> bool {
-    ACTIVE.load(Ordering::Relaxed)
+/// Which hoppers the playlist screen lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The ordinary ones: the Xbox Live menu's OptiMatch row, and retail's
+    /// "Switch To: Matchmaking".
+    Players,
+    /// The clanker ones: the Xbox Live menu's Clankermatch row and "Switch
+    /// To: Clankermatch".
+    Clankers,
+    /// Both, on one page: the party lobby's MULTIPLAYER tab and its Change
+    /// Playlist... row (docs/game/party-lobby.md, "The tabs").
+    All,
 }
 
-/// From the Live menu's press: `on` for the Clankermatch row.
-pub fn set_active(on: bool) {
-    if ACTIVE.swap(on, Ordering::Relaxed) != on {
+impl Scope {
+    const fn byte(self) -> u8 {
+        match self {
+            Scope::Players => 0,
+            Scope::Clankers => 1,
+            Scope::All => 2,
+        }
+    }
+    const fn of_byte(b: u8) -> Scope {
+        match b {
+            1 => Scope::Clankers,
+            2 => Scope::All,
+            _ => Scope::Players,
+        }
+    }
+}
+
+/// The scope the next playlist screen lists: set by the press that opens
+/// it.
+static SCOPE: AtomicU8 = AtomicU8::new(0);
+
+/// Which hoppers the playlist screen lists now.
+pub fn scope() -> Scope {
+    Scope::of_byte(SCOPE.load(Ordering::Relaxed))
+}
+
+/// From the press that opens the playlist screen.
+pub fn set_scope(scope: Scope) {
+    let was = Scope::of_byte(SCOPE.swap(scope.byte(), Ordering::Relaxed));
+    if was != scope {
         eprintln!(
             "clankermatch: {}",
-            if on {
-                "the playlists are the clanker hoppers"
-            } else {
-                "off: the playlists are the human hoppers"
+            match scope {
+                Scope::Players => "the playlists are the human hoppers",
+                Scope::Clankers => "the playlists are the clanker hoppers",
+                Scope::All => "the playlists are every hopper, human and clanker",
             }
         );
     }
 }
 
-/// Whether the playlist list shows hopper `index`: a clanker hopper only
-/// for Clankermatch, any other only for OptiMatch.
-pub fn listed(index: u32, marks: &ClankerHoppers, clankermatch: bool) -> bool {
-    marks.contains(index) == clankermatch
+/// Whether the playlist screen is Clankermatch's alone.
+pub fn active() -> bool {
+    scope() == Scope::Clankers
+}
+
+/// From the Live menu's press: `on` for the Clankermatch row.
+pub fn set_active(on: bool) {
+    set_scope(if on { Scope::Clankers } else { Scope::Players });
+}
+
+/// Whether the playlist list shows hopper `index` in `scope`: a clanker
+/// hopper only for Clankermatch, any other only for OptiMatch, and every
+/// hopper on the party lobby's one page.
+pub fn listed(index: u32, marks: &ClankerHoppers, scope: Scope) -> bool {
+    match scope {
+        Scope::All => true,
+        Scope::Clankers => marks.contains(index),
+        Scope::Players => !marks.contains(index),
+    }
+}
+
+/// Whether the lobby's playlist `hopper` is a Clanker one.
+pub fn is_clanker(hopper: u32, marks: &ClankerHoppers) -> bool {
+    marks.contains(hopper)
 }
 
 /// No hopper: what Quickmatch's getter answers for a player with no saved
@@ -93,9 +151,10 @@ pub fn listed(index: u32, marks: &ClankerHoppers, clankermatch: bool) -> bool {
 pub const NO_HOPPER: u32 = u32::MAX;
 
 /// Whether the OptiMatch press saves `hopper` for Quickmatch: not in
-/// Clankermatch, and never a clanker hopper.
-pub fn remembered(hopper: u32, marks: &ClankerHoppers, clankermatch: bool) -> bool {
-    !clankermatch && !marks.contains(hopper)
+/// Clankermatch, and never a clanker hopper (on the one page too, where
+/// only an ordinary hopper is saved).
+pub fn remembered(hopper: u32, marks: &ClankerHoppers, scope: Scope) -> bool {
+    scope != Scope::Clankers && !marks.contains(hopper)
 }
 
 /// The hopper Quickmatch searches, from the one saved: a clanker hopper
@@ -148,14 +207,22 @@ pub fn switch_placed(actions: &[i16]) -> Vec<i16> {
     out
 }
 
-/// What a Game Setup press of `action` means for Clankermatch: `Some(true)`
-/// ours (the clanker playlists), `Some(false)` retail's "Switch To:
-/// Matchmaking" (the human ones), `None` any other row.
-pub fn switch_press(action: i16) -> Option<bool> {
+/// Retail's action 9: in a matchmaking lobby, Change Playlist...
+/// (`crate::lobby_mode::CHANGE_PLAYLIST`), the same press as "Switch To:
+/// Matchmaking".
+pub const CHANGE_PLAYLIST: i16 = 9;
+
+/// What a Game Setup press of `action` means for the playlists: ours lists
+/// the clanker ones, retail's "Switch To: Matchmaking" the human ones, and
+/// a matchmaking lobby's Change Playlist... both on one page; `None` any
+/// other row.
+pub fn switch_press(action: i16) -> Option<Scope> {
     if action == SWITCH_ACTION {
-        Some(true)
+        Some(Scope::Clankers)
+    } else if action == CHANGE_PLAYLIST {
+        Some(Scope::All)
     } else if MATCHMAKING_SWITCHES.contains(&action) {
-        Some(false)
+        Some(Scope::Players)
     } else {
         None
     }
@@ -202,12 +269,13 @@ fn switch_chosen(c: &mut Call) -> Result<Flow, GuestFault> {
             row.and_then(|row| h1row::row_action(&*mem, list, row)),
         )
     };
-    let Some(ours) = action.and_then(switch_press) else {
+    let Some(scope) = action.and_then(switch_press) else {
         return Ok(Flow::Continue);
     };
-    set_active(ours);
-    if !ours {
-        // Retail's Switch To: Matchmaking: the human playlists, as retail.
+    set_scope(scope);
+    if scope != Scope::Clankers {
+        // Retail's press: Switch To: Matchmaking's human playlists, or a
+        // matchmaking lobby's Change Playlist... with every playlist.
         return Ok(Flow::Continue);
     }
     let Some(chain) = chain else {
@@ -403,13 +471,16 @@ impl hooks::Feature for PlaylistFilter {
                 };
                 let index = c.cpu.ecx;
                 let marks = hle.clanker_hoppers();
-                let on = active();
-                if on && marks.hoppers.is_empty() && !told.swap(true, Ordering::Relaxed) {
+                let scope = scope();
+                if scope == Scope::Clankers
+                    && marks.hoppers.is_empty()
+                    && !told.swap(true, Ordering::Relaxed)
+                {
                     eprintln!(
                         "clankermatch: the server named no clanker hoppers: the list is empty"
                     );
                 }
-                if listed(index, &marks, on) {
+                if listed(index, &marks, scope) {
                     return Ok(Flow::Continue);
                 }
                 c.cpu.eax &= !0xff;
@@ -428,7 +499,7 @@ impl hooks::Feature for PlaylistFilter {
                 let Some(hopper) = c.arg_u32("hopper") else {
                     return Ok(Flow::Continue);
                 };
-                if remembered(hopper, &hle.clanker_hoppers(), active()) {
+                if remembered(hopper, &hle.clanker_hoppers(), scope()) {
                     return Ok(Flow::Continue);
                 }
                 eprintln!("clankermatch: hopper {hopper} not saved for Quickmatch");
@@ -500,15 +571,19 @@ mod tests {
     #[test]
     fn each_row_lists_its_own_hoppers() {
         let m = marks(&[8, 9, 10]);
-        let human: Vec<u32> = (0..16).filter(|i| listed(*i, &m, false)).collect();
-        let clanker: Vec<u32> = (0..16).filter(|i| listed(*i, &m, true)).collect();
+        let human: Vec<u32> = (0..16).filter(|i| listed(*i, &m, Scope::Players)).collect();
+        let clanker: Vec<u32> = (0..16).filter(|i| listed(*i, &m, Scope::Clankers)).collect();
         assert_eq!(clanker, vec![8, 9, 10]);
         assert_eq!(human, vec![0, 1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15]);
+        // The party lobby's one page: every hopper, each still told apart.
+        assert!((0..16).all(|i| listed(i, &m, Scope::All)));
+        assert!(is_clanker(9, &m) && !is_clanker(2, &m));
         // No marks (an older server): OptiMatch as retail, Clankermatch
         // nothing.
         let none = ClankerHoppers::default();
-        assert!((0..16).all(|i| listed(i, &none, false)));
-        assert!((0..16).all(|i| !listed(i, &none, true)));
+        assert!((0..16).all(|i| listed(i, &none, Scope::Players)));
+        assert!((0..16).all(|i| !listed(i, &none, Scope::Clankers)));
+        assert!((0..16).all(|i| listed(i, &none, Scope::All)));
     }
 
     #[test]
@@ -516,10 +591,13 @@ mod tests {
         let m = marks(&[8, 9, 10]);
         // OptiMatch saves a human hopper; Clankermatch saves nothing, and
         // a clanker hopper is never saved.
-        assert!(remembered(2, &m, false));
-        assert!(!remembered(2, &m, true));
-        assert!(!remembered(9, &m, false));
-        assert!(!remembered(9, &m, true));
+        assert!(remembered(2, &m, Scope::Players));
+        assert!(!remembered(2, &m, Scope::Clankers));
+        assert!(!remembered(9, &m, Scope::Players));
+        assert!(!remembered(9, &m, Scope::Clankers));
+        // On the one page an ordinary hopper is saved, a clanker one never.
+        assert!(remembered(2, &m, Scope::All));
+        assert!(!remembered(9, &m, Scope::All));
         // Quickmatch reads a saved clanker hopper as none; a human one, or
         // none, as saved.
         assert_eq!(quickmatch_hopper(9, &m), NO_HOPPER);
@@ -527,7 +605,7 @@ mod tests {
         assert_eq!(quickmatch_hopper(NO_HOPPER, &m), NO_HOPPER);
         // No marks (an older server): retail.
         let none = ClankerHoppers::default();
-        assert!(remembered(9, &none, false));
+        assert!(remembered(9, &none, Scope::Players));
         assert_eq!(quickmatch_hopper(9, &none), 9);
     }
 
@@ -563,9 +641,13 @@ mod tests {
 
     #[test]
     fn the_switch_rows_pick_the_playlists() {
-        assert_eq!(switch_press(SWITCH_ACTION), Some(true));
-        assert_eq!(switch_press(8), Some(false), "Switch To: Matchmaking");
-        assert_eq!(switch_press(9), Some(false), "the same press in kind 6");
+        assert_eq!(switch_press(SWITCH_ACTION), Some(Scope::Clankers));
+        assert_eq!(switch_press(8), Some(Scope::Players), "Switch To: Matchmaking");
+        assert_eq!(
+            switch_press(CHANGE_PLAYLIST),
+            Some(Scope::All),
+            "a matchmaking lobby's Change Playlist...: one page of both"
+        );
         for other in [0, 1, 2, 3, 4, 6, 7, 10, 11] {
             assert_eq!(switch_press(other), None, "{other}");
         }

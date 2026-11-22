@@ -1054,6 +1054,14 @@ impl Lobby {
     /// The Co-op Campaign row in the retail lobby mode: host. The lobby
     /// sets the level and difficulty itself, so the hooks arm with none.
     pub fn open_retail(&self) {
+        self.host_retail();
+        want_coop_mode();
+    }
+    /// Hosting a co-op campaign in the retail lobby, armed as the Co-op
+    /// Campaign row arms it, for a lobby already open: the party lobby's
+    /// CO-OP tab (`crate::lobby_tabs::switch`), which sets the lobby mode
+    /// itself, so no mode is asked for.
+    pub fn host_retail(&self) {
         {
             let mut i = self.lock();
             if i.role != Role::Host {
@@ -1066,7 +1074,6 @@ impl Lobby {
         if let Some(arm) = &self.arm {
             arm.arm(None);
         }
-        want_coop_mode();
     }
     /// The retail lobby as the host's session holds it (the pinger, no
     /// guest memory held): the level and difficulty the lobby's own screens

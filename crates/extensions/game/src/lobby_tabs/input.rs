@@ -87,14 +87,8 @@ pub fn press(c: &mut Call, store: Option<Arc<Store>>) -> Result<Flow, GuestFault
         let Some(dir) = word(0).zip(word(8)).and_then(|(k, b)| bumper(k, b)) else {
             return Ok(Flow::Continue);
         };
-        let shown = strip::read(&*mem).map(|r| {
-            strip::shown(
-                &r,
-                super::present(),
-                crate::lobby_start::mode(),
-                crate::clankermatch::active(),
-            )
-        });
+        let shown = strip::read(&*mem)
+            .map(|r| strip::shown(&r, super::present(), crate::lobby_start::mode()));
         (dir, shown)
     };
     let Some(shown) = shown else {
@@ -103,6 +97,7 @@ pub fn press(c: &mut Call, store: Option<Arc<Store>>) -> Result<Flow, GuestFault
         }
         return Ok(Flow::Continue);
     };
+    let place = shown.place;
     match decide(dir, &shown) {
         Act::Nothing => handled(c),
         Act::Notice(r) => {
@@ -119,7 +114,7 @@ pub fn press(c: &mut Call, store: Option<Arc<Store>>) -> Result<Flow, GuestFault
             }
             c.answer_async(move |cx| -> EntryFuture {
                 Box::pin(async move {
-                    super::switch::run(&cx, from, to, store).await?;
+                    super::switch::run(&cx, from, to, place, store).await?;
                     Ok(Ret::new(1, 4))
                 })
             })
@@ -140,6 +135,7 @@ mod tests {
             leader,
             selected,
             row: row(Present::ALL, Place::SplitScreen, Facts::default()),
+            clanker: None,
         }
     }
 
@@ -212,18 +208,67 @@ mod tests {
 
     #[test]
     fn the_ends_of_the_strip_do_nothing() {
-        let mut s = lobby(true, Tab::Clankers);
+        let mut s = lobby(true, Tab::CoOp);
         s.place = Place::XboxLive;
         s.row = row(
             Present::ALL,
             Place::XboxLive,
             Facts {
                 playlists: true,
-                clanker_playlists: true,
                 kit_maps: true,
                 remote_members: false,
             },
         );
         assert_eq!(decide(Dir::Next, &s), Act::Nothing);
+        s.selected = Tab::Multiplayer;
+        assert_eq!(decide(Dir::Prev, &s), Act::Nothing);
+    }
+
+    /// Every tab the availability table has on is reached by the bumpers,
+    /// in each place: Xbox Live from CUSTOM GAMES to MULTIPLAYER and CO-OP,
+    /// Split Screen to CO-OP. None is silently dead: a tab passed by is
+    /// named on the status line.
+    #[test]
+    fn every_tab_that_is_on_is_reached_by_the_bumpers() {
+        let facts = Facts {
+            playlists: true,
+            kit_maps: true,
+            remote_members: false,
+        };
+        for place in [Place::SplitScreen, Place::SystemLink, Place::XboxLive] {
+            let r = row(Present::ALL, place, facts);
+            let on: Vec<Tab> = r
+                .iter()
+                .filter(|(_, a)| a.is_on())
+                .map(|(t, _)| *t)
+                .collect();
+            let mut s = Shown {
+                place,
+                leader: true,
+                selected: Tab::CustomGames,
+                row: r.clone(),
+                clanker: None,
+            };
+            let mut seen = vec![Tab::CustomGames];
+            for dir in [Dir::Prev, Dir::Next] {
+                s.selected = Tab::CustomGames;
+                while let Act::Switch { to, .. } = decide(dir, &s) {
+                    seen.push(to);
+                    s.selected = to;
+                }
+            }
+            seen.sort_by_key(|t| *t as u8);
+            assert_eq!(seen, on, "{place:?}");
+        }
+        // Split Screen with no kit map: FORGE to CO-OP passes FIREFIGHT and
+        // names it.
+        assert_eq!(
+            decide(Dir::Next, &lobby(true, Tab::Forge)),
+            Act::Switch {
+                from: Tab::Forge,
+                to: Tab::CoOp,
+                notice: Some(Reason::NoKitMap)
+            }
+        );
     }
 }

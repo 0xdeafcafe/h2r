@@ -4,44 +4,49 @@ use Avail::{Off, On};
 
 const NONE: Facts = Facts {
     playlists: false,
-    clanker_playlists: false,
     kit_maps: false,
     remote_members: false,
 };
-/// A lobby where every tab can run: playlists of both kinds, a kit map,
-/// no member on another console.
+/// A lobby where every tab can run: playlists listed, a kit map, no
+/// member on another console.
 const ALL_FACTS: Facts = Facts {
     playlists: true,
-    clanker_playlists: true,
     kit_maps: true,
     remote_members: false,
 };
 
+/// Each tab's parts, the table of docs/game/party-lobby.md, "The tabs".
 #[test]
 fn every_tab_round_trips_through_its_parts() {
-    for tab in Tab::ALL {
-        let p = tab.parts();
-        assert_eq!(Tab::of(p.retail, p.mode, p.clanker), tab, "{tab:?}");
+    let table: [(Tab, RetailMode, Mode); 5] = [
+        (Tab::Multiplayer, RetailMode::Matchmaking, Mode::Multiplayer),
+        (Tab::CustomGames, RetailMode::Custom, Mode::Multiplayer),
+        (Tab::Forge, RetailMode::Custom, Mode::Forge),
+        (Tab::Firefight, RetailMode::Custom, Mode::Firefight),
+        (Tab::CoOp, RetailMode::CoOp, Mode::Multiplayer),
+    ];
+    assert_eq!(table.map(|(t, ..)| t), Tab::ALL, "the strip's order");
+    for (tab, retail, mode) in table {
+        assert_eq!(tab.parts(), Parts { retail, mode }, "{tab:?}");
+        assert_eq!(Tab::of(retail, mode), tab, "{tab:?}");
     }
     // Every lobby state has a tab: our mode counts only in the custom
-    // lobby, the Clanker flag only in the matchmaking one.
+    // lobby.
     for retail in [
         RetailMode::CoOp,
         RetailMode::Custom,
         RetailMode::Matchmaking,
     ] {
         for mode in Mode::ALL {
-            for clanker in [false, true] {
-                let tab = Tab::of(retail, mode, clanker);
-                assert_eq!(tab.parts().retail, retail, "{retail:?} {mode:?} {clanker}");
-            }
+            let tab = Tab::of(retail, mode);
+            assert_eq!(tab.parts().retail, retail, "{retail:?} {mode:?}");
         }
     }
-    assert_eq!(Tab::of(RetailMode::Custom, Mode::Forge, true), Tab::Forge);
     assert_eq!(
-        Tab::of(RetailMode::Matchmaking, Mode::Forge, false),
-        Tab::Matchmaking
+        Tab::of(RetailMode::Matchmaking, Mode::Forge),
+        Tab::Multiplayer
     );
+    assert_eq!(Tab::of(RetailMode::CoOp, Mode::Firefight), Tab::CoOp);
     for retail in [
         RetailMode::CoOp,
         RetailMode::Custom,
@@ -52,25 +57,33 @@ fn every_tab_round_trips_through_its_parts() {
     assert_eq!(RetailMode::from_value(1), None);
 }
 
+/// The strip has no CLANKERS tab: the Clanker playlists are MULTIPLAYER's,
+/// on its one playlist page.
+#[test]
+fn there_is_no_clankers_tab() {
+    let labels: Vec<&str> = Tab::ALL.iter().map(|t| t.label()).collect();
+    assert_eq!(
+        labels,
+        ["MULTIPLAYER", "CUSTOM GAMES", "FORGE", "FIREFIGHT", "CO-OP"]
+    );
+    assert!(Tab::ALL.iter().all(|t| !t.name().contains("clanker")));
+}
+
 /// The table of docs/game/party-lobby.md, "Where each tab runs", cell by
 /// cell.
 #[test]
 fn availability_by_place() {
     use Place::{SplitScreen, SystemLink, XboxLive};
     use Reason::*;
-    let table: [(Tab, [Avail; 3]); 6] = [
+    let table: [(Tab, [Avail; 3]); 5] = [
         (
-            Tab::Matchmaking,
+            Tab::Multiplayer,
             [Off(MatchmakingNeedsLive), Off(MatchmakingNeedsLive), On],
         ),
         (Tab::CustomGames, [On, On, On]),
         (Tab::Forge, [On, On, On]),
         (Tab::Firefight, [On, On, On]),
         (Tab::CoOp, [On, Off(CoOpNotOnSystemLink), On]),
-        (
-            Tab::Clankers,
-            [Off(ClankermatchNeedsLive), Off(ClankermatchNeedsLive), On],
-        ),
     ];
     for (tab, by_place) in table {
         for (place, want) in [SplitScreen, SystemLink, XboxLive]
@@ -84,14 +97,10 @@ fn availability_by_place() {
             );
         }
     }
-    // Xbox Live with no playlist listed of a kind.
+    // Xbox Live with no playlist listed.
     assert_eq!(
-        available(Tab::Matchmaking, XboxLive, NONE),
+        available(Tab::Multiplayer, XboxLive, NONE),
         Off(NoPlaylists)
-    );
-    assert_eq!(
-        available(Tab::Clankers, XboxLive, NONE),
-        Off(NoClankerPlaylists)
     );
     // The two reasons in every place.
     for place in [SplitScreen, SystemLink, XboxLive] {
@@ -122,9 +131,13 @@ fn a_tab_that_is_off_has_a_reason() {
         crate::lobby_mode::REMOTE_REFUSAL
     );
     assert_eq!(
-        Reason::ClankermatchNeedsLive.text(),
-        "Clankermatch needs Xbox Live."
+        Reason::MatchmakingNeedsLive.text(),
+        "Matchmaking needs Xbox Live."
     );
+    // No reason says a switch is not built: every tab that is on switches.
+    for r in Reason::ALL {
+        assert!(!r.text().contains("not available yet"), "{r:?}");
+    }
 }
 
 #[test]
@@ -132,7 +145,7 @@ fn a_feature_that_is_off_removes_its_tab() {
     assert_eq!(Present::ALL.tabs(), Tab::ALL);
     assert_eq!(
         Present::default().tabs(),
-        [Tab::Matchmaking, Tab::CustomGames],
+        [Tab::Multiplayer, Tab::CustomGames],
         "retail's two are always there"
     );
     let no_forge = Present {
@@ -140,16 +153,16 @@ fn a_feature_that_is_off_removes_its_tab() {
         ..Present::ALL
     };
     assert!(!no_forge.tabs().contains(&Tab::Forge));
-    assert_eq!(no_forge.tabs().len(), 5);
+    assert_eq!(no_forge.tabs().len(), 4);
     // Off in a place is dimmed, never removed.
     let r = row(Present::ALL, Place::SplitScreen, NONE);
-    assert_eq!(r.len(), 6);
-    assert_eq!(r[0], (Tab::Matchmaking, Off(Reason::MatchmakingNeedsLive)));
+    assert_eq!(r.len(), 5);
+    assert_eq!(r[0], (Tab::Multiplayer, Off(Reason::MatchmakingNeedsLive)));
 }
 
 #[test]
 fn step_skips_tabs_that_are_off_and_names_the_first() {
-    // Split Screen with no kit map: MATCHMAKING, FIREFIGHT and CLANKERS off.
+    // Split Screen with no kit map: MULTIPLAYER and FIREFIGHT off.
     let r = row(Present::ALL, Place::SplitScreen, NONE);
     assert_eq!(
         step(&r, Tab::CustomGames, Dir::Next),
@@ -168,12 +181,13 @@ fn step_skips_tabs_that_are_off_and_names_the_first() {
     );
     assert_eq!(
         step(&r, Tab::CoOp, Dir::Next),
-        Step::Stay(Some(Reason::ClankermatchNeedsLive)),
-        "only an off tab that way: stay, and say why"
+        Step::Stay(None),
+        "the end of the strip"
     );
     assert_eq!(
         step(&r, Tab::CustomGames, Dir::Prev),
-        Step::Stay(Some(Reason::MatchmakingNeedsLive))
+        Step::Stay(Some(Reason::MatchmakingNeedsLive)),
+        "only an off tab that way: stay, and say why"
     );
     assert_eq!(
         step(&r, Tab::CoOp, Dir::Prev),
@@ -190,12 +204,19 @@ fn step_skips_tabs_that_are_off_and_names_the_first() {
 #[test]
 fn the_ends_do_not_wrap() {
     let r = row(Present::ALL, Place::XboxLive, ALL_FACTS);
-    assert_eq!(step(&r, Tab::Matchmaking, Dir::Prev), Step::Stay(None));
-    assert_eq!(step(&r, Tab::Clankers, Dir::Next), Step::Stay(None));
+    assert_eq!(step(&r, Tab::Multiplayer, Dir::Prev), Step::Stay(None));
+    assert_eq!(step(&r, Tab::CoOp, Dir::Next), Step::Stay(None));
     assert_eq!(
-        step(&r, Tab::Clankers, Dir::Prev),
+        step(&r, Tab::CoOp, Dir::Prev),
         Step::Move {
-            to: Tab::CoOp,
+            to: Tab::Firefight,
+            skipped: None
+        }
+    );
+    assert_eq!(
+        step(&r, Tab::CustomGames, Dir::Prev),
+        Step::Move {
+            to: Tab::Multiplayer,
             skipped: None
         }
     );
@@ -210,7 +231,7 @@ fn cells_stay_in_the_band_and_do_not_overlap() {
     let all = cells(&Tab::ALL);
     let mut pieces: Vec<[i16; 4]> = vec![PREV];
     pieces.extend(all.iter().map(|(_, c)| *c));
-    pieces.push(NEXT);
+    pieces.push(next_glyph(&Tab::ALL));
     for c in &pieces {
         let [top, left, bottom, right] = *c;
         assert!(
@@ -228,20 +249,19 @@ fn cells_stay_in_the_band_and_do_not_overlap() {
     }
     // The design's table, cell by cell.
     let want = [
-        (Tab::Matchmaking, -244, -160),
+        (Tab::Multiplayer, -244, -160),
         (Tab::CustomGames, -155, -63),
         (Tab::Forge, -58, -18),
         (Tab::Firefight, -13, 57),
         (Tab::CoOp, 62, 102),
-        (Tab::Clankers, 107, 169),
     ];
     for ((tab, cell), (t, l, r)) in all.iter().zip(want) {
         assert_eq!((*tab, cell[1], cell[3]), (t, l, r));
     }
-    assert_eq!(all.last().unwrap().1[3] + GAP, NEXT[1]);
+    assert_eq!(next_glyph(&Tab::ALL), [TOP, 107, BOTTOM, 129]);
     // The player count's narrowed rectangle (`[199 200 179 280]`) starts
     // past Black's cell.
-    assert!(NEXT[3] < 200);
+    assert!(next_glyph(&Tab::ALL)[3] < 200);
 }
 
 #[test]
@@ -252,7 +272,7 @@ fn cells_close_up_without_a_tab() {
     }
     .tabs();
     let c = cells(&tabs);
-    assert_eq!(c.len(), 5);
+    assert_eq!(c.len(), 4);
     assert_eq!(c[0].1[1], RUN_LEFT, "the run stays left-aligned");
     assert_eq!(c[1].0, Tab::CustomGames);
     assert_eq!(
@@ -263,6 +283,8 @@ fn cells_close_up_without_a_tab() {
     for w in c.windows(2) {
         assert_eq!(w[1].1[1] - w[0].1[3], GAP);
     }
+    // Black's glyph follows the last cell.
+    assert_eq!(next_glyph(&tabs)[1], c.last().unwrap().1[3] + GAP);
 }
 
 #[test]
