@@ -1,9 +1,9 @@
 // Superbounce: the superbounce mode's guide (the HUD, the marks over the
 // map, priming and the medals), which the host turns on for `requires
 // hud.superbounce`, and scoring by bounces alone. `list research` files
-// its variants under Research and Devolution. Its record settings (no score or time
-// limit, 3 s respawn, overshields, a magnum, nothing on the map) are the
-// variant record's, not the script's. A kill scores nothing. A bounce
+// its variants under Research and Devolution. Its settings block (no score
+// or time limit, 3 s respawn, overshields, a magnum, nothing on the map)
+// is what a new variant of the script starts with. A kill scores nothing. A bounce
 // scores `bounce_points` times its place in its chain, capped at 6
 // (Bouncetacular), and twice that for a Monster Bounce; a Bounced (a fall
 // out of the map during a bounce) costs a point, and so does a death by
@@ -17,6 +17,21 @@ rules "Superbounce" 1
 carrier slayer
 list research
 requires hud.superbounce
+about "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you."
+quick respawn_time, starting_weapon, shields, bounce_points, suicide_costs
+
+settings {
+    score_limit = none
+    time_limit = none
+    respawn_time = 3s
+    suicide_penalty = 0s
+    shields = overshields
+    damage_resistance = true
+    starting_weapon = magnum
+    secondary_weapon = none
+    weapons_on_map = none
+    grenades_on_map = false
+}
 
 option suicide_costs: bool = true "Suicide penalty" "A death with no killer, or by your own hand, costs a point"
 option bounce_points: int 0..5 = 1 "Bounce points" "Points for each superbounce, times its place in the chain"

@@ -32,11 +32,40 @@ pub const VIP: &str = include_str!("vip.rules");
 pub const SIEGE: &str = include_str!("siege.rules");
 /// Race: numbered checkpoints, a point a lap.
 pub const RACE: &str = include_str!("race.rules");
-/// Bounce Practice: points for superbounces.
-pub const BOUNCE_PRACTICE: &str = include_str!("bounce_practice.rules");
+/// Bounce Hunt: points for superbounces.
+pub const BOUNCE_HUNT: &str = include_str!("bounce_hunt.rules");
 /// Superbounce: the superbounce mode's guide, and points for bounces only:
-/// a kill scores nothing.
+/// a kill scores nothing. Its settings block is the listed variant's.
 pub const SUPERBOUNCE: &str = include_str!("superbounce.rules");
+
+// The listed variants, the community's classics: each a settings script
+// (`scoring carrier`) except Superbounce. See `LISTED`.
+/// Zombies: honour rules, in `about`.
+pub const ZOMBIES: &str = include_str!("zombies.rules");
+/// Hide and Seek.
+pub const HIDE_AND_SEEK: &str = include_str!("hide_and_seek.rules");
+/// Jousting.
+pub const JOUSTING: &str = include_str!("jousting.rules");
+/// SWAT.
+pub const SWAT: &str = include_str!("swat.rules");
+/// Duel.
+pub const DUEL: &str = include_str!("duel.rules");
+/// Clint Eastwood.
+pub const CLINT_EASTWOOD: &str = include_str!("clint_eastwood.rules");
+/// Sun King.
+pub const SUN_KING: &str = include_str!("sun_king.rules");
+/// Tower of Power.
+pub const TOWER_OF_POWER: &str = include_str!("tower_of_power.rules");
+/// Wheeeeee!
+pub const WHEEEEEE: &str = include_str!("wheeeeee.rules");
+/// Cops and Robbers.
+pub const COPS_AND_ROBBERS: &str = include_str!("cops_and_robbers.rules");
+/// Bounce Practice: settings only, no score.
+pub const BOUNCE_PRACTICE: &str = include_str!("bounce_practice.rules");
+/// Glitch Hunt.
+pub const GLITCH_HUNT: &str = include_str!("glitch_hunt.rules");
+/// Bumper Cars.
+pub const BUMPER_CARS: &str = include_str!("bumper_cars.rules");
 
 /// A built-in script: its name, the retail engine index it rides and its
 /// source.
@@ -56,6 +85,27 @@ pub const ALL: &[Builtin] = &[
     Builtin { name: "Juggernaut", engine: 7, source: JUGGERNAUT },
     Builtin { name: "Territories", engine: 8, source: TERRITORIES },
     Builtin { name: "Assault", engine: 9, source: ASSAULT },
+];
+
+/// The scripts that are built-in variants, in list order: the entries the
+/// game's variant list gets at load (`docs/game/rules-variants.md`,
+/// "Built-in list entries"). `engine` is the carrier's engine index. Gun
+/// Game, VIP, Race and Siege stay examples and are not listed.
+pub const LISTED: &[Builtin] = &[
+    Builtin { name: "Zombies", engine: 2, source: ZOMBIES },
+    Builtin { name: "Hide and Seek", engine: 7, source: HIDE_AND_SEEK },
+    Builtin { name: "Jousting", engine: 2, source: JOUSTING },
+    Builtin { name: "SWAT", engine: 2, source: SWAT },
+    Builtin { name: "Duel", engine: 2, source: DUEL },
+    Builtin { name: "Clint Eastwood", engine: 7, source: CLINT_EASTWOOD },
+    Builtin { name: "Sun King", engine: 4, source: SUN_KING },
+    Builtin { name: "Tower of Power", engine: 2, source: TOWER_OF_POWER },
+    Builtin { name: "Wheeeeee!", engine: 3, source: WHEEEEEE },
+    Builtin { name: "Cops and Robbers", engine: 2, source: COPS_AND_ROBBERS },
+    Builtin { name: "Bounce Practice", engine: 2, source: BOUNCE_PRACTICE },
+    Builtin { name: "Glitch Hunt", engine: 2, source: GLITCH_HUNT },
+    Builtin { name: "Bumper Cars", engine: 2, source: BUMPER_CARS },
+    Builtin { name: "Superbounce", engine: 2, source: SUPERBOUNCE },
 ];
 
 /// The built-in script source for a retail engine index, for the engines
@@ -82,7 +132,7 @@ pub fn examples() -> &'static [(&'static str, &'static str)] {
         ("vip", VIP),
         ("siege", SIEGE),
         ("race", RACE),
-        ("bounce_practice", BOUNCE_PRACTICE),
+        ("bounce_hunt", BOUNCE_HUNT),
         ("superbounce", SUPERBOUNCE),
     ]
 }

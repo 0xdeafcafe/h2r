@@ -794,3 +794,146 @@ fn op_cost() {
     }
     println!("{best:.2} ns per op; a full {TICK_BUDGET}-op tick is {:.3} ms", best * f64::from(TICK_BUDGET) / 1e6);
 }
+
+// ---- the listed built-in variants (docs/game/rules-variants.md, "Built-in list entries") ----
+
+/// What one listed script is: its name, the carrier's engine index, its
+/// list, whether the carrier scores it, and the `(setting number, value)`
+/// pairs the old `community_variants::VARIANTS` table set for it
+/// (`Setting::encode`). Written out so the table can go.
+struct Expected {
+    name: &'static str,
+    engine: u8,
+    list: rules::ir::List,
+    scoring: rules::ir::Scoring,
+    pairs: &'static [(u32, i32)],
+}
+
+const BOUNCE_PAIRS: &[(u32, i32)] = &[
+    (2, 0),
+    (10, 0),
+    (17, 3),
+    (18, 0),
+    (19, 2),
+    (105, 1),
+    (89, 4),
+    (94, 1),
+    (83, 1),
+    (86, 0),
+];
+
+fn expected() -> Vec<Expected> {
+    use rules::ir::List::{GameType, PartyGames, Research};
+    use rules::ir::Scoring::{Carrier, Script};
+    let e = |name, engine, list, scoring, pairs| Expected { name, engine, list, scoring, pairs };
+    vec![
+        e("Zombies", 2, PartyGames, Carrier, &[
+            (91, 1), (89, 9), (94, 17), (88, 0), (86, 0), (83, 3), (20, 0), (84, 0), (85, 0),
+            (76, 7), (77, 7), (78, 4), (79, 4), (2, 0),
+        ]),
+        e("Hide and Seek", 7, PartyGames, Carrier, &[
+            (89, 17), (94, 1), (88, 0), (83, 1), (86, 0), (21, 1), (20, 0), (72, 0), (73, 1),
+            (96, 2), (16, 1), (10, 300),
+        ]),
+        e("Jousting", 2, PartyGames, Carrier, &[
+            (76, 1), (77, 7), (78, 4), (79, 4), (89, 9), (94, 1), (88, 0), (83, 1), (86, 0),
+        ]),
+        e("SWAT", 2, GameType, Carrier, &[
+            (91, 1), (19, 1), (20, 0), (89, 3), (94, 4), (83, 1), (86, 0), (88, 0), (84, 0),
+            (85, 0), (2, 50),
+        ]),
+        e("Duel", 2, GameType, Carrier, &[(90, 2), (89, 4), (94, 2), (83, 1), (2, 15)]),
+        e("Clint Eastwood", 7, GameType, Carrier, &[
+            (19, 1), (89, 9), (94, 4), (83, 1), (108, 1), (96, 2),
+        ]),
+        e("Sun King", 4, GameType, Carrier, &[
+            (91, 1), (19, 1), (17, 3), (18, 0), (89, 8), (94, 1), (83, 2), (4, 180), (10, 720),
+        ]),
+        e("Tower of Power", 2, GameType, Carrier, &[
+            (91, 1), (19, 1), (17, 3), (76, 7), (81, 1), (89, 9), (94, 1), (83, 3), (88, 0),
+            (86, 0), (84, 0), (85, 0), (2, 100),
+        ]),
+        e("Wheeeeee!", 3, GameType, Carrier, &[
+            (91, 1), (19, 1), (104, 1), (45, 2), (102, 1), (89, 8), (83, 2), (87, 3), (3, 30),
+        ]),
+        e("Cops and Robbers", 2, PartyGames, Carrier, &[
+            (91, 1), (16, 3), (19, 1), (84, 0), (85, 0), (89, 9), (94, 6), (83, 1),
+        ]),
+        e("Bounce Practice", 2, Research, Carrier, BOUNCE_PAIRS),
+        e("Glitch Hunt", 2, Research, Carrier, &[
+            (2, 0), (10, 0), (17, 3), (18, 0), (19, 2), (105, 1), (89, 17), (94, 8), (24, 0),
+        ]),
+        e("Bumper Cars", 2, PartyGames, Carrier, &[
+            (89, 1), (94, 1), (88, 0), (83, 1), (86, 0), (84, 0), (85, 0), (76, 1), (77, 3),
+            (78, 4), (79, 4), (81, 6), (82, 6), (2, 25),
+        ]),
+        e("Superbounce", 2, Research, Script, BOUNCE_PAIRS),
+    ]
+}
+
+#[test]
+fn every_listed_script_compiles_and_verifies() {
+    assert_eq!(builtin::LISTED.len(), 14);
+    for b in builtin::LISTED {
+        let ir = compile(b.source).unwrap_or_else(|e| panic!("{}: {e:?}", b.name));
+        assert_eq!(ir.header.name, b.name);
+        assert_eq!(ir.header.carrier, b.engine, "{}", b.name);
+        let report = verify::verify(&ir).unwrap_or_else(|e| panic!("{}: {e:?}", b.name));
+        assert!(report.fits(), "{}: worst tick {}", b.name, report.worst_tick);
+        assert!(!ir.header.about.is_empty(), "{} has no about", b.name);
+        assert!(ir.quick.len() <= rules::ir::MAX_QUICK, "{}", b.name);
+        assert!(!ir.quick.is_empty(), "{} marks nothing for Quick Options", b.name);
+        // A settings script has no handlers; the listed ones that do not
+        // score are checked against the expected table below.
+        if ir.header.scoring == rules::ir::Scoring::Carrier {
+            assert!(ir.handlers.is_empty(), "{}", b.name);
+        }
+    }
+}
+
+#[test]
+fn listed_names_are_unique_and_fit_the_keyboard() {
+    let mut seen = std::collections::HashSet::new();
+    for b in builtin::LISTED {
+        // The keyboard allows 16 characters; a copy starts from the name.
+        assert!(b.name.chars().count() <= 16, "{}", b.name);
+        assert!(seen.insert(b.name), "{} is listed twice", b.name);
+        // The description is at most 150 UTF-16 units.
+        let ir = compile(b.source).unwrap();
+        assert!(ir.header.about.encode_utf16().count() <= rules::ir::MAX_ABOUT_UNITS, "{}", b.name);
+    }
+    // The examples are not listed.
+    for (name, _) in builtin::examples() {
+        assert!(!seen.contains(name), "{name}");
+    }
+}
+
+#[test]
+fn each_listed_script_sets_what_the_table_set() {
+    let table = expected();
+    assert_eq!(table.len(), builtin::LISTED.len());
+    for (want, b) in table.iter().zip(builtin::LISTED) {
+        assert_eq!(want.name, b.name, "list order");
+        let ir = compile(b.source).unwrap();
+        assert_eq!(ir.header.carrier, want.engine, "{}", want.name);
+        assert_eq!(ir.header.list, want.list, "{}", want.name);
+        assert_eq!(ir.header.scoring, want.scoring, "{}", want.name);
+        let mut got: Vec<(u32, i32)> = ir
+            .settings
+            .iter()
+            .map(|s| {
+                let row = rules::settings::row_at(s.index).unwrap();
+                let number = row
+                    .setting(ir.header.carrier)
+                    .unwrap_or_else(|| panic!("{}: {} is not a record setting", want.name, row.name));
+                (number, s.value)
+            })
+            .collect();
+        let mut pairs = want.pairs.to_vec();
+        got.sort_unstable();
+        pairs.sort_unstable();
+        assert_eq!(got, pairs, "{}", want.name);
+        // Every quick mark is a record setting or an option, at most five.
+        assert!(ir.quick.len() <= 5, "{}", want.name);
+    }
+}

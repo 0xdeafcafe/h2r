@@ -1,0 +1,20 @@
+// Sun King: team King of the Hill with rockets and no shields. The score
+// to win is seconds on the hill.
+// docs/game/community-gametypes.md.
+rules "Sun King" 1
+carrier king
+scoring carrier
+about "Team King of the Hill with rockets and no shields. You'll spend the whole game on fire."
+quick score_limit, time_limit, king_moving_hill, starting_weapon, team_play
+
+settings {
+    team_play = true
+    shields = none
+    respawn_time = 3s
+    suicide_penalty = 0s
+    starting_weapon = rocket_launcher
+    secondary_weapon = none
+    weapons_on_map = rockets
+    score_limit = 180
+    time_limit = 720s
+}
