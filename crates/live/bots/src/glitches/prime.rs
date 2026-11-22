@@ -24,6 +24,7 @@
 //! Pure and deterministic; time in game ticks (30 a second).
 
 use crate::brain::Vec3;
+use crate::tuning::BounceTuning;
 
 /// The pair word that primes a landing: -3, as the game stores it.
 pub const PRIMED_WORD: u32 = (-3i32) as u32;
@@ -140,6 +141,9 @@ pub struct PrimeRun {
     tries: u32,
     geo: Option<Geo>,
     walking: Walking,
+    /// The numbers it plays by, taken when it starts
+    /// ([`crate::tuning::bounce`]).
+    tune: BounceTuning,
 }
 
 fn turn(d: [f32; 2], deg: f32) -> [f32; 2] {
@@ -158,29 +162,43 @@ fn toward(from: Vec3, to: [f32; 2], speed: f32) -> ([f32; 2], f32) {
 }
 
 impl Geo {
-    /// The way in for try `n` (from 1): the direction walked in, unit.
+    /// The way in for try `n` (from 1): the direction walked in, unit,
+    /// under the thinking brain's bounce tuning ([`crate::tuning::bounce`]).
     pub fn way_in(&self, n: u32) -> [f32; 2] {
+        self.way_in_by(n, &crate::tuning::bounce())
+    }
+
+    /// [`Geo::way_in`] under `t`: the second and third tries turn by
+    /// `t.approach_turn_deg` ([`APPROACH_TURNS`] by default).
+    pub fn way_in_by(&self, n: u32, t: &BounceTuning) -> [f32; 2] {
         if n == 1
             && let Some((_, Some(yaw))) = self.start
         {
             let (s, c) = yaw.to_radians().sin_cos();
             return [c, s];
         }
-        let i = (n.saturating_sub(1) as usize) % APPROACH_TURNS.len();
-        turn([-self.out[0], -self.out[1]], APPROACH_TURNS[i])
+        let turns = [0.0, t.approach_turn_deg, -t.approach_turn_deg];
+        let i = (n.saturating_sub(1) as usize) % turns.len();
+        turn([-self.out[0], -self.out[1]], turns[i])
     }
 
     /// Where try `n` (from 1) starts.
     pub fn start(&self, n: u32) -> [f32; 2] {
+        self.start_by(n, &crate::tuning::bounce())
+    }
+
+    /// [`Geo::start`] under `t`: `t.start_out` out ([`START_OUT`] by
+    /// default).
+    pub fn start_by(&self, n: u32, t: &BounceTuning) -> [f32; 2] {
         if n == 1
             && let Some((off, _)) = self.start
         {
             return [self.stand[0] + off[0], self.stand[1] + off[1]];
         }
-        let w = self.way_in(n);
+        let w = self.way_in_by(n, t);
         [
-            self.stand[0] - w[0] * START_OUT,
-            self.stand[1] - w[1] * START_OUT,
+            self.stand[0] - w[0] * t.start_out,
+            self.stand[1] - w[1] * t.start_out,
         ]
     }
 }
@@ -194,6 +212,7 @@ impl PrimeRun {
             tries: 1,
             geo: None,
             walking: Walking::Done(Primed::Failed),
+            tune: crate::tuning::bounce().sane(),
         }
     }
 
@@ -205,6 +224,7 @@ impl PrimeRun {
             tries: 1,
             geo: Some(geo),
             walking: Walking::Back(tick),
+            tune: crate::tuning::bounce().sane(),
         }
     }
 
@@ -244,13 +264,17 @@ impl PrimeRun {
 
     fn step_walking(&mut self, g: Geo, tick: u32, at: Vec3, word: Option<u32>) -> PrimeOut {
         let mut out = PrimeOut::default();
+        let t = self.tune;
         let n = self.tries;
-        let way = g.way_in(n);
-        let push = [g.stand[0] + way[0] * PUSH_IN, g.stand[1] + way[1] * PUSH_IN];
+        let way = g.way_in_by(n, &t);
+        let push = [
+            g.stand[0] + way[0] * t.push_in,
+            g.stand[1] + way[1] * t.push_in,
+        ];
         // At most one phase change a tick, then the pad for the phase.
         match self.walking {
             Walking::Back(from) => {
-                let (dir, far) = toward(at, g.start(n), 1.0);
+                let (dir, far) = toward(at, g.start_by(n, &t), 1.0);
                 if far <= BACK_NEAR || tick.wrapping_sub(from) > MOVE_TICKS {
                     // Crouch first, standing still.
                     self.walking = Walking::In(tick, None);
@@ -264,34 +288,35 @@ impl PrimeRun {
                 out.crouch = true;
                 let near = (g.stand[0] - at[0]).hypot(g.stand[1] - at[1]) <= IN_NEAR;
                 let reached = reached.or(near.then_some(tick));
-                let held = reached.is_some_and(|r| tick.wrapping_sub(r) >= CROUCH_TICKS);
-                if held || tick.wrapping_sub(from) > CROUCH_FIRST + MOVE_TICKS + CROUCH_TICKS {
+                let held = reached.is_some_and(|r| tick.wrapping_sub(r) >= t.crouch_ticks);
+                if held || tick.wrapping_sub(from) > t.crouch_first + MOVE_TICKS + t.crouch_ticks {
                     self.walking = Walking::Release(tick);
                     out.crouch = false;
                 } else {
                     self.walking = Walking::In(from, reached);
                 }
-                if tick.wrapping_sub(from) >= CROUCH_FIRST {
-                    let (dir, _) = toward(at, push, IN_SPEED);
+                if tick.wrapping_sub(from) >= t.crouch_first {
+                    let (dir, _) = toward(at, push, t.in_speed);
                     out.walk = Some(dir);
                 }
             }
             Walking::Release(from) => {
-                if tick.wrapping_sub(from) >= RELEASE_TICKS {
+                let out_walk = [g.out[0] * t.out_speed, g.out[1] * t.out_speed];
+                if tick.wrapping_sub(from) >= t.release_ticks {
                     self.walking = Walking::Out(tick, at);
-                    out.walk = Some(g.out);
+                    out.walk = Some(out_walk);
                 } else {
-                    let (dir, _) = toward(at, push, IN_SPEED);
+                    let (dir, _) = toward(at, push, t.in_speed);
                     out.walk = Some(dir);
                 }
             }
             Walking::Out(from, let_go) => {
-                let t = tick.wrapping_sub(from);
+                let since = tick.wrapping_sub(from);
                 let gone = (at[0] - let_go[0]).hypot(at[1] - let_go[1]);
-                out.walk = Some(g.out);
+                out.walk = Some([g.out[0] * t.out_speed, g.out[1] * t.out_speed]);
                 match word {
                     Some(w) if is_primed(w) => self.walking = Walking::Done(Primed::Read),
-                    Some(_) if t >= READ_TICKS => {
+                    Some(_) if since >= READ_TICKS => {
                         if n >= WALK_TRIES {
                             self.walking = Walking::Done(Primed::Failed);
                         } else {
@@ -299,10 +324,12 @@ impl PrimeRun {
                             self.walking = Walking::Back(tick);
                         }
                     }
-                    None if t >= FORCE_TICKS && gone >= OUT_DIST => {
+                    None if since >= FORCE_TICKS && gone >= OUT_DIST => {
                         self.walking = Walking::Done(Primed::Assumed)
                     }
-                    None if t >= READ_TICKS * 2 => self.walking = Walking::Done(Primed::Assumed),
+                    None if since >= READ_TICKS * 2 => {
+                        self.walking = Walking::Done(Primed::Assumed)
+                    }
                     _ => {}
                 }
             }
@@ -324,7 +351,7 @@ impl PrimeRun {
         match self.phase {
             Phase::Crouch(from) => {
                 out.crouch = true;
-                if tick.wrapping_sub(from) >= CROUCH_TICKS {
+                if tick.wrapping_sub(from) >= self.tune.crouch_ticks {
                     self.phase = Phase::Stand(tick, self.tries);
                     out.crouch = false;
                 }

@@ -1,0 +1,73 @@
+# The match a training batch plays (docs/runtime/sim.md, "Training the
+# bounce sites"): `superbounce-train.toml` names it. Eight bots practise
+# bounces on the batch's map for thirty minutes of game time, unpaced and
+# unrendered; each trains the sites of its run's shard. The batch writes
+# the `[train]` table of each run, so it is not here. The run ends early
+# when every site of its shard is closed.
+map = "ascension"
+game_type = "slayer"
+time_limit_s = 3600   # longer than max_ticks: the tick limit ends it
+score_limit = 50      # nobody scores: practising bots never fight
+team_play = true      # free-for-all sims end at tick 0 (a sim bug)
+seed = 1
+max_ticks = 54000     # 30 minutes at 30 ticks a second
+max_wall_s = 3600
+render_every = 0
+pace = "unpaced"
+superbounce = true
+
+[[bot]]
+name = "Bouncer 1"
+team = 0
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 2"
+team = 1
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 3"
+team = 0
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 4"
+team = 1
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 5"
+team = 0
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 6"
+team = 1
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 7"
+team = 0
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 8"
+team = 1
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"

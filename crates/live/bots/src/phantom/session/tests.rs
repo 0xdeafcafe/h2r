@@ -8,6 +8,8 @@ const S: u32 = 0x0070_0000;
 const SIM: u32 = 0x0071_0000;
 const GAME: u32 = 0x0072_0000;
 const TIME: u32 = 0x0072_1000;
+const ENGINE: u32 = 0x0078_3000;
+const LOCALS: u32 = 0x0078_4000;
 const PLAYERS_HEADER: u32 = 0x0073_0000;
 const PLAYERS_DATA: u32 = 0x0073_1000;
 const OBJECTS_HEADER: u32 = 0x0074_0000;
@@ -81,6 +83,7 @@ fn hosted() -> FakeGuest {
         .put_u32(OBJECTS_HEADER + dl::DATA, OBJECTS_DATA)
         .map(OBJECTS_DATA, 0xc * 16)
         .map(BODY, 0x400 * 16);
+    guest::round::tests::live_round(&mut g, ENGINE, LOCALS);
     g
 }
 

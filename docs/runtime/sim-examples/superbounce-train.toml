@@ -1,0 +1,12 @@
+# Training the bounce sites (docs/runtime/sim.md, "Training the bounce
+# sites"; docs/game/bounce-search.md): `h2 sim train` this file. Each map
+# is played as `shards` runs of the practice match, each run owning the
+# sites whose id falls to its shard; the runs search the knobs of their
+# sites and write `<map>.learned`, merged at the end into --data's bots/.
+# Run the same command again to carry on from the file.
+out = "results/bounce-train"        # relative to this file
+match = "superbounce-train-match.toml" # superbounce = true and the bots
+maps = ["ascension"]
+seed = 1        # the match's seed and the search's draws
+shards = 4      # runs a map; fixed here, not by --parallel
+budget = 120    # scored tries a site, at most

@@ -250,9 +250,8 @@ fn match_opening_waits_for_host_opacity_and_uses_the_first_open_sample() {
             jitter_ms: 0.0,
         },
     );
-    g.put_u32(points::PLAYER_GLOBALS.base, PLAYER_GLOBALS)
-        .put_u32(points::GAME_ENGINE.base, GAME_ENGINE)
-        .put_u32(
+    guest::round::tests::live_round(&mut g, GAME_ENGINE, PLAYER_GLOBALS);
+    g.put_u32(
             PLAYER_GLOBALS + guest::LOCAL_MAP,
             DatumHandle::new(0xe000, 0).raw(),
         );
@@ -733,4 +732,54 @@ fn aim_view_separates_intended_arrived_and_observed_aim() {
     assert_eq!(ph.aim_view(&g, bot).unwrap().action_deg, None);
     g.put_u32(PLAYERS_DATA + 0x21c + 0x2c, u32::MAX);
     assert!(ph.aim_view(&g, bot).is_none());
+}
+
+#[test]
+fn a_phantom_cannot_sample_or_replay_an_action_while_the_round_is_closed() {
+    use guest::round::tests::{close, open};
+
+    let (ph, mut g, slot) = game_with_latency(
+        |f| {
+            assert!(matches!(f.tick, 101 | 104), "sampled while closed");
+            HostPadState {
+                right_trigger: 1.0,
+                ..Default::default()
+            }
+        },
+        PhantomLatency {
+            ping_ms: Some(40.0),
+            jitter_ms: 0.0,
+        },
+    );
+    close(&mut g, ENGINE);
+    let run = call_with_builder(
+        &ph,
+        g,
+        slot,
+        |_| panic!("built an action while closed"),
+        guest_query,
+    );
+    assert_eq!(run.result, Ok(Ret::new(0, 8)));
+    let mut g = run.guest;
+
+    open(&mut g, ENGINE);
+    at_tick(&mut g, 101);
+    g = gather(&ph, g, slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 0.0, "the shot is in flight");
+
+    close(&mut g, ENGINE);
+    at_tick(&mut g, 102);
+    let run = call_with_builder(
+        &ph,
+        g,
+        slot,
+        |_| panic!("replayed an action while closed"),
+        guest_query,
+    );
+    assert_eq!(run.result, Ok(Ret::new(0, 8)));
+    let mut g = run.guest;
+    open(&mut g, ENGINE);
+    at_tick(&mut g, 104);
+    g = gather(&ph, g, slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 0.0, "old round's shot was flushed");
 }

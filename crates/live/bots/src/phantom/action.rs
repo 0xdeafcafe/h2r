@@ -353,6 +353,12 @@ impl Phantoms {
                 return Ok(None);
             };
             let unit = seat.unit;
+            if !guest::round::playing(m).unwrap_or(false) {
+                // Drop queued input and any repeat of this seat's previous
+                // action while retail holds the round closed.
+                books.list[i].invalidate_input();
+                return Ok(None);
+            }
             let mut state = books.list[i].buttons;
             if state.sample == Some((unit, tick)) {
                 return Ok((m.u32(slot + SLOT_STAMP)? == tick
