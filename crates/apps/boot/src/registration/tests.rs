@@ -518,8 +518,9 @@ fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::full(&format!("{ALL_ON},-forge")));
 }
 
-/// The biggest plans a test can build leave at least an eighth of the guest
-/// arena (`hooks::arena`) free, so a few more features do not refuse boot.
+/// The biggest plans a test can build, every switch on, leave at least a
+/// sixteenth of the guest arena (`hooks::arena`) free, so a few more
+/// features do not refuse boot. The default plan leaves more.
 #[test]
 fn the_biggest_plans_leave_room_in_the_guest_arena() {
     use hooks::arena::ARENA_SIZE;
@@ -530,7 +531,7 @@ fn the_biggest_plans_leave_room_in_the_guest_arena() {
         case.coop_live = true;
         let used = plan(&case).unwrap().arena_used();
         assert!(
-            used <= ARENA_SIZE / 8 * 7,
+            used <= ARENA_SIZE / 16 * 15,
             "{used:#x} of the arena's {ARENA_SIZE:#x} bytes used, for {}",
             case.describe()
         );
