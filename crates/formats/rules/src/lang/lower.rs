@@ -231,6 +231,14 @@ impl<'s> Cx<'s> {
                 n as u8
             }
         };
+        let list = match &script.list {
+            None => List::GameType,
+            Some((name, lpos)) => List::named(name).ok_or_else(|| {
+                let names: Vec<&str> = List::NAMED.iter().filter_map(|l| l.name()).collect();
+                let names = names.join(", ");
+                CompileError::at(*lpos, format!("unknown list {name}: a list is {names}"))
+            })?,
+        };
         for (name, rpos) in &script.requires {
             if caps::capability(name, caps::API_VERSION).is_none() {
                 return err(*rpos, format!("unknown capability {name}"));
@@ -310,6 +318,7 @@ impl<'s> Cx<'s> {
                 version,
                 carrier,
                 teams,
+                list,
                 requires: self.requires.clone(),
             },
             strings: std::mem::take(&mut self.strings),
@@ -680,7 +689,12 @@ impl<'s> Cx<'s> {
         } else {
             let tys = ev.args();
             if args.len() != tys.len() {
-                return err(pos, format!("on {event} takes {} arguments", tys.len()));
+                let names: Vec<&str> = tys.iter().map(|t| t.name()).collect();
+                let s = if tys.len() == 1 { "" } else { "s" };
+                return err(
+                    pos,
+                    format!("on {event} takes {} argument{s} ({})", tys.len(), names.join(", ")),
+                );
             }
             for (name, &ty) in args.iter().zip(tys) {
                 let r = f.alloc(ty, pos)?;

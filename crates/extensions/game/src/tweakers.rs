@@ -37,7 +37,7 @@
 //! `every_tweaker_is_a_slayer_variant`), so Slayer's list, its new-variant
 //! defaults and its copies are the right ones for Tweakers. The built-ins'
 //! records get their extension block ([`patch_builtins`]) so a game on one,
-//! and a copy of one, carries the flag.
+//! and a copy of one, names the tweak's rules script.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -255,7 +255,7 @@ pub fn record_is_tweaker(m: &dyn GuestMemory, record: u32) -> bool {
 
 /// Writes each Tweakers built-in's extension block into its record in the
 /// built-in list (`[0x51ea14]`), where it is not there yet: a game on it,
-/// and a copy made from it, then carry the flag. How many changed.
+/// and a copy made from it, then name its script. How many changed.
 pub fn patch_builtins(m: &mut dyn GuestMemory) -> Result<usize, MemFault> {
     let list = m.u32(BUILTIN_LIST)?;
     if list == 0 {

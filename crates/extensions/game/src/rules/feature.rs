@@ -18,6 +18,9 @@
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
+//!
+//! The superbounce mode's tick observer feeds it each bounce its medal
+//! chain files ([`bounces`]).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -111,7 +114,7 @@ pub fn to_fetch(m: &dyn GuestMemory, scripts: &crate::game_variants::GameScripts
         return None;
     }
     let p = script.prefix;
-    let built = runtime::builtins().iter().any(|b| b.id.0[..8] == p);
+    let built = runtime::compiled_in(p).is_some();
     (!built && scripts.local(p).is_none()).then_some(p)
 }
 
@@ -313,6 +316,18 @@ pub fn install(
     }
     let _ = SHARED.set(shared);
     Ok(true)
+}
+
+/// One tick's superbounce awards (`superbounce_chain::Medals::step`), as
+/// the running script's `on bounce` and `on bounced`
+/// ([`Runtime::bounces`]). Nothing without the feature.
+pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) {
+    if awards.is_empty() {
+        return;
+    }
+    if let Some(s) = SHARED.get() {
+        s.lock().bounces(m, awards);
+    }
 }
 
 /// Why `rules.state` has no runtime to answer from.

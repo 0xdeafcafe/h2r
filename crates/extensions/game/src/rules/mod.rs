@@ -5,9 +5,11 @@
 //! entries; `runtime` is the `rules::Game` over them and one game's script
 //! and state; `feature` puts the runtime on the feature plan and answers
 //! the agent API's `rules.state`; `reload` answers `rules.reload`, in
-//! place or by a restart.
+//! place or by a restart; `header` answers what a script's header asks of
+//! the game outside its rules (the superbounce mode, Tweakers).
 
 pub mod feature;
 pub mod guest;
+pub mod header;
 pub mod reload;
 pub mod runtime;

@@ -921,7 +921,7 @@ art at the same place.
 | Field | Value |
 |---|---|
 | element | `Element::meter("sb.arm", Art::Widget { hud: HudRef::Named("ui\\hud\\scoreboard"), name: "bomb_defusal" }, ..)`, `hidden_on_d(0x400)` |
-| place | anchor centre, (0, 110) fullscreen, the retail widget's (V); (0, −35) half and quarter, ours (below); registration (0.5, 0.5) |
+| place | anchor centre, (0, 110) fullscreen, the retail widget's (V); (0, −35) half and (−7, −35) quarter, ours (below); registration (0.5, 0.5) |
 | art | the scoreboard `nhdt`'s bitmap widget `bomb_defusal`: `ui\hud\bitmaps\new_hud\bomb_meter`, a capsule 140 by 13 (sequence 0) and 86 by 9 (sequence 1, split screen), its blue rising 4 to 253 left to right; the shader `ui\hud\shaders\bomb_defusal_meter` on `widget_legacy_meter`, red `6d2323` to `cf6767` where the texel's blue is below `hud_input1`, white for the outline (V) |
 | input | uncropped, so `hud_input1` is the fill itself |
 | crop, ramp | none |
@@ -933,8 +933,12 @@ carrier our player has a verb on the prompt line the whole time the bar
 is up. Below the box the training box and the reticle take the rest of
 the 204-high frame, so ours sits 35 above the centre (`ARM_SPLIT`):
 under the prompt's first line (the frame's top plus 35) and clear of
-the navpoint's stack at its sample, right of and above the centre.
-Fullscreen stays retail's (0, 110).
+the navpoint's stack at its sample, right of and above the centre. A
+quarter frame has no row free between the navpoint's arrow at its sample
+and the prompt's first line, and at the centre the bar's right end meets
+the arrow (the `overlap` check, x 198 to 203), so in a quarter view the
+bar sits 7 to the left (`ARM_QUARTER`, (−7, −35)). Fullscreen stays
+retail's (0, 110).
 
 The retail widget's input is `0x43`, the bomb arming amount, and it is
 shown on word D `0x400` alone (V: `zanzibar.map`; `0x40` and `0x41` are
@@ -987,8 +991,9 @@ its own line. Each award is sent once, by its number
 | Chain Bounce | the 5th | `Chain bounce!` | U+E2A4, a lavender disc, a chevron over two pairs |
 | Bouncetacular | the 6th | `Bouncetacular!` | U+E2A5, a pale gold disc in a spiked rim, three pairs |
 | Bounced | a fall out of the map during a bounce | `Bounced!` | U+E2A6, a maroon disc, a chevron falling through a broken strip |
+| Monster Bounce | a bounce that launches well above a normal one, beside its other medals; its line wins | `Monster bounce!` | U+E2A8, a hot orange disc in a spiked crimson rim, one tall chevron out past the top over a V of seams |
 
-**The picture.** The disc has no superbounce medal, so the seven glyphs
+**The picture.** The disc has no superbounce medal, so the eight glyphs
 are new art, drawn for this project in the retail medals' manner: 24 by
 24, a shaded disc with a dark rim and the light from the upper left, in
 their own 12-bit colours, and the tier told as a multi-kill tells it,
@@ -997,10 +1002,10 @@ for the top tier as the sprees have. The art is data,
 `crates/formats/font/src/medals/art.rs` (ARGB 4444 rows, written by
 `scripts/superbounce-medals.py` from its drawing, which also draws a
 preview sheet beside the retail medals with `--preview DIR --h2 BIN`), and
-`font::medals::replacements` adds the seven glyphs to `conduit-13` and
+`font::medals::replacements` adds the eight glyphs to `conduit-13` and
 `conduit-12` through the font rewrite ([button-icons.md](../input/button-icons.md),
 `font::patch`) at spare code points of the icon range, U+E2A0 to
-U+E2A6, and an eighth at U+E2A7 for the Incel medal
+U+E2A6 and U+E2A8 (Monster Bounce), and one at U+E2A7 for the Incel medal
 ([teabag.md](teabag.md)), a teabag under a red no sign drawn by
 `scripts/live-medals.py`, which no HUD line shows; each placed as the font's own Double Kill (U+E038: its advance
 and offsets; a font without a 24 by 24 one gets none). Every other font
@@ -1103,13 +1108,14 @@ target.
 | `medal-chain` | lit | 1 | hidden | (medal) Chain bounce! | strip, "3" | |
 | `medal-bouncetacular` | lit | 1 | hidden | (medal) Bouncetacular! | strip, "3" | |
 | `medal-bounced` | inactive | hidden | hidden | (medal) Bounced! | crouch spot, "12" | |
+| `medal-monster` | lit | 1 | hidden | (medal) Monster bounce! | strip, "3" | |
 | `missed` | lit | 0.8 | hidden | Missed the strip. | strip, "3" | |
 | `scanning` | dim | hidden | hidden | | hidden | |
 | `no-strips` | hidden | hidden | hidden | | hidden | |
 | `tutorial-1` | inactive | hidden | hidden | | crouch spot | step 1 |
 | `tutorial-2`, `-3`, `-4` | lit | 1 | hidden | Primed! | strip | steps 2 to 4 |
 
-`bounced` and the six `medal-` states are the seven medals, one line
+`bounced` and the seven `medal-` states are the eight medals, one line
 each, with the glyph in its own colours as the game's font draw leaves
 a coloured glyph (the tutorial's (X) is drawn the same way). The
 preview draws them in font 6, and in font 5 in the half and quarter
@@ -1120,7 +1126,7 @@ h2 hud preview superbounce --state bounced --mode all --out DIR
 h2 hud preview superbounce --state medal-chain --mode all --out DIR
 ```
 
-The `glyphs` check covers the seven code points in both fonts (the disc
+The `glyphs` check covers the eight code points in both fonts (the disc
 test also reads them from the patched `conduit-13` and `conduit-12`:
 `the_glyphs_are_in_the_fonts`), `prompt` the line's width and its 63
 units, and `drawn` that the line puts pixels down.

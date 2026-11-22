@@ -7,7 +7,10 @@
 //! superbounce flag ([`variants::ext::Ext::superbounce`], through
 //! [`crate::variant_ext::Decision::superbounce`]), or is the built-in
 //! "Superbounce" variant ([`crate::community_variants`], which has no field
-//! for the flag, so it is told by name), or `H2_SUPERBOUNCE=1` forces it.
+//! for the flag, so it is told by name), or the rules script the block
+//! names requires `hud.superbounce` (through the same decision,
+//! [`crate::rules::header::script_asks_superbounce`]), or
+//! `H2_SUPERBOUNCE=1` forces it.
 //!
 //! **Each tick** (a tick observer, only while on) it reads the first local
 //! player's unit, its position, whether it is airborne, its vertical
@@ -32,7 +35,8 @@
 //! **The medals** (docs/game/superbounce.md, "Medals") are on it too:
 //! every player's chain of bounces ([`crate::superbounce_chain`]), stepped
 //! each tick for every listed player, bots included, published as
-//! [`State::medals`].
+//! [`State::medals`]. Each bounce they file goes to the running rules
+//! script as `on bounce` ([`crate::rules::feature::bounces`]).
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -376,6 +380,7 @@ pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
                 tick: a.tick,
                 chain: a.chain,
                 medals: ids(&a.medals),
+                strips: a.strips,
             })
             .collect(),
     }
@@ -820,9 +825,9 @@ fn reset() {
     crate::superbounce_ghost::reset();
 }
 
-/// `superbounce.medal_test`: files a bounce at chain count `chain` (or a
-/// Bounced with `bounced`) for the first local player, as the chain's rule
-/// gives it. The HUD line and `medals` show it as a real one's; nothing
+/// `superbounce.medal_test`: files a bounce at chain count `chain` (a
+/// Monster with `monster`, or a Bounced with `bounced`) for the first
+/// local player, as the chain's rule gives it. The HUD line and `medals` show it as a real one's; nothing
 /// is sent or recorded. Refused while the mode is off or there is no
 /// local player.
 pub fn medal_test(
@@ -834,6 +839,7 @@ pub fn medal_test(
     let chain = match (p.chain, p.bounced) {
         (Some(0), _) => return Err("chain is 1 or more".into()),
         (Some(n), false) => n,
+        (None, true) if p.monster => return Err("monster goes with chain, not bounced".into()),
         (None, true) => 0,
         (Some(_), true) => return Err("give chain or bounced, not both".into()),
         (None, false) => return Err("give chain (1 and up) or bounced".into()),
@@ -842,7 +848,7 @@ pub fn medal_test(
         return Err("no local player with a unit".into());
     };
     let tick = TICKS.load(Ordering::Relaxed);
-    let a = lock(&MEDALS).test(slot, Some(user), tick, chain, p.bounced);
+    let a = lock(&MEDALS).test(slot, Some(user), tick, chain, p.bounced, p.monster);
     let view = lock(&MEDALS).view();
     lock(&STATE).medals = view;
     Ok(agent_proto::superbounce::MedalTest {
@@ -966,6 +972,8 @@ fn on_tick(o: &hooks::Obs) {
         let guest = o.guest();
         let m: &dyn GuestMemory = &*guest;
         crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots);
+        // A rules script hears each bounce on the tick it is filed.
+        crate::rules::feature::bounces(m, &awards);
     }
     // The film and Live get each bounce and Bounced, as the kills.
     if !awards.is_empty()

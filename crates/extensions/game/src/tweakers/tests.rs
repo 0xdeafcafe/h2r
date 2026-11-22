@@ -101,8 +101,8 @@ fn every_tweaker_is_a_slayer_variant() {
 }
 
 #[test]
-fn a_saved_copy_with_the_flag_stays_under_tweakers() {
-    let flag = community::SUPERBOUNCE_EXT.encode();
+fn a_saved_copy_with_the_block_stays_under_tweakers() {
+    let flag = community::superbounce_ext().encode();
     assert!(community::is_tweaker("My Bounce", &flag), "renamed copy");
     assert!(
         community::is_tweaker("Superbounce", &[0; ext::LEN]),
@@ -117,7 +117,7 @@ fn a_saved_copy_with_the_flag_stays_under_tweakers() {
         !community::is_tweaker("Moon Slayer", &gravity.encode()),
         "More Options alone is not a tweak"
     );
-    // A block the game would ignore is no flag.
+    // A block the game would ignore names no script.
     let mut bad = flag;
     bad[ext::LEN - 1] ^= 1;
     assert!(!community::is_tweaker("My Bounce", &bad));
@@ -134,7 +134,7 @@ fn the_builtin_records_get_their_extension_block_once() {
     assert_eq!(patch_builtins(&mut g), Ok(1));
     assert_eq!(
         Ext::decode(&record_block(&g, rec(1)).unwrap()),
-        Block::Ext(community::SUPERBOUNCE_EXT)
+        Block::Ext(community::superbounce_ext())
     );
     assert_eq!(record_block(&g, rec(0)), Some([0; ext::LEN]), "untouched");
     assert!(record_is_tweaker(&g, rec(1)) && !record_is_tweaker(&g, rec(0)));
@@ -191,8 +191,8 @@ fn run_fill(tweakers_list: bool, create: bool) -> (entry::testing::Run, Vec<Datu
             assert_eq!(call.eax, Some(SCRATCH));
             let (name, block) = match call.edx {
                 Some(A) => ("Rockets", [0; ext::LEN]),
-                Some(B) => ("Superbounce \u{e006}", community::SUPERBOUNCE_EXT.encode()),
-                _ => ("My Bounce", community::SUPERBOUNCE_EXT.encode()),
+                Some(B) => ("Superbounce \u{e006}", community::superbounce_ext().encode()),
+                _ => ("My Bounce", community::superbounce_ext().encode()),
             };
             m.fill(SCRATCH, 0x130, 0).unwrap();
             put_record(m, SCRATCH, name, block);

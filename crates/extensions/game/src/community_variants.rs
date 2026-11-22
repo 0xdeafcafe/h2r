@@ -271,17 +271,54 @@ pub enum Category {
     GameType,
     /// Under Tweakers, our row after Territories (`crate::tweakers`).
     /// The game still plays it as its game type; the built-in's record
-    /// carries this extension block, so a copy carries it too and is
+    /// carries the tweak's extension block, which names a rules script
+    /// whose header says `list tweakers`, so a copy carries it too and is
     /// listed under Tweakers as well.
-    Tweakers(Ext),
+    Tweakers(Tweak),
 }
 
-/// Superbounce's extension block: the game's rules plus the superbounce
-/// flag (docs/game/superbounce.md "The superbounce game type").
-pub const SUPERBOUNCE_EXT: Ext = Ext {
-    superbounce: true,
-    ..Ext::RETAIL
-};
+/// What a Tweakers built-in's record carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tweak {
+    /// The superbounce game type ([`superbounce_ext`]).
+    Superbounce,
+}
+
+impl Tweak {
+    /// The extension block the built-in's record carries.
+    pub fn ext(self) -> Ext {
+        match self {
+            Tweak::Superbounce => superbounce_ext(),
+        }
+    }
+}
+
+/// Superbounce's extension block: a reference to the Superbounce rules
+/// script (`rules::builtin::SUPERBOUNCE`, compiled in) with its default
+/// options. The script's `requires hud.superbounce` turns the mode on and
+/// its `list tweakers` files the variant under Tweakers
+/// (docs/game/superbounce.md "The superbounce game type").
+pub fn superbounce_ext() -> Ext {
+    static EXT: std::sync::OnceLock<Ext> = std::sync::OnceLock::new();
+    *EXT.get_or_init(|| match ::rules::compile(::rules::builtin::SUPERBOUNCE) {
+        Ok(ir) => {
+            let mut prefix = [0; 8];
+            prefix.copy_from_slice(&ir.id().0[..8]);
+            Ext {
+                script: variants::ext::Script {
+                    mode: variants::ext::Mode::Rules,
+                    prefix,
+                    options: ir.default_options(),
+                },
+                ..Ext::RETAIL
+            }
+        }
+        Err(e) => {
+            eprintln!("community variants: the Superbounce script does not compile: {e}");
+            Ext::RETAIL
+        }
+    })
+}
 
 pub struct Variant {
     pub name: &'static str,
@@ -302,7 +339,7 @@ impl Variant {
     /// The extension block of a Tweakers variant.
     pub fn tweak(&self) -> Option<Ext> {
         match self.category {
-            Category::Tweakers(ext) => Some(ext),
+            Category::Tweakers(t) => Some(t.ext()),
             Category::GameType => None,
         }
     }
@@ -319,11 +356,12 @@ pub fn tweaker_builtin(name: &str) -> Option<&'static Variant> {
 }
 
 /// Whether a variant record with this name and extension block is listed
-/// under Tweakers: its block turns on a mode Tweakers owns (the
-/// superbounce flag), or it has a Tweakers built-in's name (as
-/// `crate::superbounce_mode` turns the mode on by name too).
+/// under Tweakers: it names a rules script whose header files it there
+/// (`crate::rules::header::block_is_tweaker`), or it has a Tweakers
+/// built-in's name (a built-in record before `crate::tweakers` wrote its
+/// block, as `crate::superbounce_mode` turns the mode on by name too).
 pub fn is_tweaker(name: &str, block: &[u8; variants::ext::LEN]) -> bool {
-    Ext::in_effect(block).superbounce || tweaker_builtin(name).is_some()
+    crate::rules::header::block_is_tweaker(block) || tweaker_builtin(name).is_some()
 }
 
 use Setting::*;
@@ -567,7 +605,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Superbounce",
         ty: GameType::Slayer,
-        category: Category::Tweakers(SUPERBOUNCE_EXT),
+        category: Category::Tweakers(Tweak::Superbounce),
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -1278,15 +1316,36 @@ mod tests {
     }
 
     #[test]
-    fn superbounce_is_filed_under_tweakers_with_its_flag() {
+    fn superbounce_is_filed_under_tweakers_by_its_script() {
         let sb = VARIANTS.iter().find(|v| v.name == "Superbounce").unwrap();
         assert_eq!(sb.ty, GameType::Slayer, "played as Slayer underneath");
-        assert_eq!(sb.category, Category::Tweakers(SUPERBOUNCE_EXT));
-        assert!(SUPERBOUNCE_EXT.superbounce && SUPERBOUNCE_EXT.out_of_range().is_none());
+        assert_eq!(sb.category, Category::Tweakers(Tweak::Superbounce));
+        let ext = superbounce_ext();
+        assert_eq!(sb.tweak(), Some(ext));
+        assert!(!ext.superbounce, "the script turns the mode on, not the flag");
+        assert!(ext.out_of_range().is_none());
         assert_eq!(
-            Ext::decode(&SUPERBOUNCE_EXT.encode()),
-            variants::ext::Block::Ext(SUPERBOUNCE_EXT)
+            Ext::decode(&ext.encode()),
+            variants::ext::Block::Ext(ext)
         );
+        // Mode 2, naming the compiled-in Superbounce script with its
+        // default options.
+        let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+        assert_eq!(ext.script.mode, variants::ext::Mode::Rules);
+        assert_eq!(ext.script.prefix[..], ir.id().0[..8]);
+        assert_eq!(ext.script.options, ir.default_options());
+        let found = crate::rules::runtime::compiled_in(ext.script.prefix).unwrap();
+        assert_eq!(found.id, ir.id());
+        // Its block files a renamed copy under Tweakers through the
+        // script's header, and its name alone files the built-in.
+        assert!(is_tweaker("My Bounce", &ext.encode()));
+        assert!(is_tweaker(&sb.display_name(), &[0; variants::ext::LEN]));
+        assert!(!is_tweaker("My Bounce", &[0; variants::ext::LEN]));
+        let flag_only = Ext {
+            superbounce: true,
+            ..Ext::RETAIL
+        };
+        assert!(!is_tweaker("My Bounce", &flag_only.encode()), "the flag files nothing");
         // Every other variant stays under its game type.
         for v in VARIANTS.iter().filter(|v| v.name != "Superbounce") {
             assert_eq!(v.category, Category::GameType, "{}", v.name);

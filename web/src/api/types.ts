@@ -342,8 +342,9 @@ export interface PlayerKilled {
   kind: KillKind;
 }
 /** A bounce off a superbounce crease; `chain` is its place in the chain,
- *  1 for a first bounce (docs/game/superbounce.md, "Recording"). */
-export interface Superbounce { tick: number; player: number; chain: number }
+ *  1 for a first bounce, and `monster` is true for a Monster bounce, absent
+ *  otherwise (docs/game/superbounce.md, "Recording"). */
+export interface Superbounce { tick: number; player: number; chain: number; monster?: boolean }
 /** A death falling out of or through the map while trying a bounce. */
 export interface Bounced { tick: number; player: number; chain?: number }
 /** A teabag: `player` crouched over the body of `victim`

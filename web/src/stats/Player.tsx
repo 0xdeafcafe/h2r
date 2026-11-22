@@ -490,7 +490,7 @@ const CHEST: MedalId[][] = [
   ["opening-act", "last-word", "payback"],
   ["twofer", "hat-trick", "full-house", "encore"],
   ["hot-streak", "wildfire", "untouchable"],
-  ["superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced"],
+  ["superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced", "monster-bounce"],
 ];
 const MEDAL = Object.fromEntries(MEDALS.map((m) => [m.id, m]));
 const hasBounceMedals = (rec: ServiceRecord) => [...rec.medals.keys()].some(isBounceMedal);
