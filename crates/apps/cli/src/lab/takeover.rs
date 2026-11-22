@@ -1,7 +1,7 @@
 //! Consent to use the playing Mac (docs/runtime/lab.md). A job holds the
 //! lab activity lock while waiting. The game stays under the player's
-//! control: only their Allow lets the lab close it, through the game's own
-//! `host.quit`.
+//! control: only their Close and start lets the lab close it, through the
+//! game's own `host.quit`; Start alongside leaves it open.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -38,6 +38,9 @@ impl Default for Config {
 
 pub(super) enum Outcome {
     Proceed,
+    /// The player chose Start alongside for these games: the job starts
+    /// with them open, and none of them is asked again.
+    Alongside(Vec<GameKey>),
     Skipped(&'static str),
     Stopped,
     /// The player allowed the job, but their game is still open: the lab
@@ -72,9 +75,12 @@ impl Gate {
         }
     }
 
+    /// `kept`: games the player already let this job run alongside; they
+    /// aren't asked again.
     pub(super) fn admit(
         &self,
         mut request: takeover::Request,
+        kept: &[GameKey],
         phase: impl Fn(&str),
         stopped: impl Fn() -> bool,
         owns_game: impl Fn(Option<&Path>, Option<u32>) -> bool,
@@ -94,19 +100,25 @@ impl Gate {
         // Multiple windows may need consent. Bound the whole handoff even
         // if the player opens a different window after agreeing.
         let deadline = Instant::now() + timeout + QUIT_TIMEOUT;
+        let mut alongside = kept.to_vec();
         loop {
             if stopped() {
                 return Outcome::Stopped;
             }
-            let games = match self.windows(&owns_game) {
+            let mut games = match self.windows(&owns_game) {
                 Ok(games) => games,
                 Err(error) => {
                     eprintln!("lab: checking for game windows: {error:#}");
                     return Outcome::Skipped("could not check for an active game window");
                 }
             };
+            games.retain(|game| !alongside.contains(&game.key()));
             let Some(game) = games.first() else {
-                return Outcome::Proceed;
+                return if alongside.is_empty() {
+                    Outcome::Proceed
+                } else {
+                    Outcome::Alongside(alongside)
+                };
             };
             if Instant::now() >= deadline || self.cooling_down() {
                 return Outcome::Skipped(DECLINED);
@@ -135,6 +147,11 @@ impl Gate {
             };
             match answer(path, reply.id, answer_by, &stopped) {
                 Some(takeover::Decision::Allowed) => {}
+                // Not a decline: no cool-down. The game stays open.
+                Some(takeover::Decision::Alongside) if request.alongside => {
+                    alongside.push(game.key());
+                    continue;
+                }
                 Some(takeover::Decision::Unavailable) => return Outcome::Skipped(UNAVAILABLE),
                 None => return Outcome::Stopped,
                 Some(_) => {
@@ -436,6 +453,12 @@ impl PlayerGames {
     /// but the lab couldn't close their game ([`Outcome::Held`]).
     pub(super) fn hold(&mut self, game: GameKey) {
         self.games.insert(game, Answer::Chosen(Choice::FinishThis));
+    }
+
+    /// The player started a job alongside `game`: it counts as asked, with
+    /// the answer Keep running.
+    pub(super) fn keep_running(&mut self, game: GameKey) {
+        self.games.insert(game, Answer::Chosen(Choice::KeepRunning));
     }
 
     /// Whether the queue waits: a game of the player's is open that hasn't
@@ -871,6 +894,26 @@ mod tests {
             assert!(look(&mut games, &[], now, None, &asks, &polls).is_empty());
             assert!(!games.holds());
         }
+    }
+
+    #[test]
+    fn a_game_the_job_started_alongside_is_already_asked_and_frees_the_queue() {
+        let (asks, polls) = (Cell::new(0), Cell::new(0));
+        let mut games = PlayerGames::default();
+        let now = Instant::now();
+        let seen = [game(42)];
+        games.keep_running(GameKey::Pid(42));
+        assert!(!games.holds());
+        // The job's monitor never asks it again.
+        for _ in 0..3 {
+            assert!(look(&mut games, &seen, now, Some(Decision::FinishThis), &asks, &polls)
+                .is_empty());
+        }
+        assert_eq!((asks.get(), polls.get()), (0, 0));
+        assert!(!games.holds());
+        // When it closes it is forgotten, like any other.
+        assert!(look(&mut games, &[], now, None, &asks, &polls).is_empty());
+        assert!(!games.holds());
     }
 
     #[test]

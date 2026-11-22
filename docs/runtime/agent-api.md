@@ -364,11 +364,21 @@ or a source. The game shortens the requester, name, level and source for
 display. A second request returns `BUSY`
 while a prompt is queued or open.
 
-The status result is `pending`, `allowed`, `declined`, `timed_out` or
-`unavailable` (the dialog failed to open). **Not now** and Back both
-decline. **Close and start** answers `allowed`: consent for that
+`alongside` (a boolean, true when left out) says whether the dialog offers
+**Start alongside**. The lab sends `false` for a job whose numbers need a
+quiet machine (a benchmark).
+
+The status result is `pending`, `allowed`, `alongside`, `declined`,
+`timed_out` or `unavailable` (the dialog failed to open). **Not now** and
+Back both decline. **Close and start** answers `allowed`: consent for that
 request, after which the lab closes the game with
-[`host.quit`](#close-the-window) and waits for it to exit. A request expires even if the UI is still loading. The game
+[`host.quit`](#close-the-window) and waits for it to exit. **Start
+alongside** answers `alongside`: consent to start the job at once with the
+game left open, so the lab doesn't call `host.quit`. The dialog's rows are
+**Not now**, **Start alongside** and **Close and start** (screen
+`lab.takeover.alongside`, class `lab-takeover-alongside-dialog`), or only
+**Not now** and **Close and start** (`lab.takeover`) when `alongside` is
+false; a game never answers `alongside` to a request that withheld it. A request expires even if the UI is still loading. The game
 dismisses the expired dialog at the next UI update. The status method is
 read-only and answers `GONE` for an unknown or superseded id.
 

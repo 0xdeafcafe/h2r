@@ -1267,17 +1267,37 @@ fn takeover_request(
         own_data,
         estimate_seconds,
         timeout_seconds,
+        alongside: offers_alongside(job),
     }
 }
 
+/// Whether the player may start `job` next to their open game. A job whose
+/// numbers need a quiet machine (a sim benchmark, `h2 lab bench`, a
+/// profiled run) may not.
+fn offers_alongside(job: &Job) -> bool {
+    match job {
+        Job::Sim(_) => false,
+        Job::Run(run) => !(run.bench || run.perf),
+        Job::Build(_) => true,
+    }
+}
+
+/// The note a job gets when the player starts it next to their game.
+const ALONGSIDE_NOTE: &str = "player: kept their game open; the job ran alongside it";
+
+/// `kept`: the games this job already runs alongside, so its second consent
+/// doesn't ask about them again.
 fn request_takeover(
     sh: &Shared,
     id: &str,
     request: TakeoverRequest,
+    kept: &Mutex<Vec<takeover::GameKey>>,
 ) -> Result<Option<JobOutcome>> {
     let name = request.name.clone();
+    let before = kept.lock().unwrap().clone();
     let outcome = sh.takeover.admit(
         request,
+        &before,
         |phase| sh.update(id, |m| m.state = phase.into()),
         || sh.stop_requested(id),
         |socket, pid| sh.owns_game(socket, pid),
@@ -1285,6 +1305,22 @@ fn request_takeover(
     match outcome {
         _ if sh.stop_requested(id) => Err(Stopped.into()),
         takeover::Outcome::Proceed => Ok(None),
+        takeover::Outcome::Alongside(games) => {
+            let fresh = games.iter().any(|g| !before.contains(g));
+            {
+                // The game counts as already asked: Keep running.
+                let mut player = sh.player.lock().unwrap();
+                for game in &games {
+                    player.keep_running(game.clone());
+                }
+            }
+            *kept.lock().unwrap() = games;
+            if fresh {
+                eprintln!("lab: job {id}: {ALONGSIDE_NOTE}");
+                sh.update(id, |m| m.player.push(ALONGSIDE_NOTE.into()));
+            }
+            Ok(None)
+        }
         takeover::Outcome::Skipped(reason) => Ok(Some(JobOutcome::Skipped(reason))),
         takeover::Outcome::Stopped => Err(Stopped.into()),
         takeover::Outcome::Held { reason, game } => {
@@ -1314,11 +1350,13 @@ fn run_job(
     let run_dir = cfg.dir("runs").join(id);
     let planned = commit.map(|c| plan_image(cfg, job.spec(), c)).transpose()?;
     let builds_image = planned.as_ref().is_some_and(|p| !p.cached);
+    let kept = Mutex::new(Vec::new());
     let consent = |builds_image| {
         request_takeover(
             sh,
             id,
             takeover_request(job, commit, requester, builds_image, cfg.takeover.timeout_seconds),
+            &kept,
         )
     };
     if (builds_image || !matches!(job, Job::Build(_))) && let Some(skipped) = consent(builds_image)? {
@@ -2430,6 +2468,14 @@ mod tests {
         assert_eq!(q.run_elapsed_s, None);
         assert_eq!(q.agent_socket, None);
         assert_eq!(q.system_link, None);
+    }
+
+    #[test]
+    fn only_jobs_that_need_a_quiet_machine_withhold_start_alongside() {
+        let ask = |run: RunReq| takeover_request(&Job::Run(run), None, "Lab", false, 60).alongside;
+        assert!(ask(RunReq { name: "Play".into(), ..RunReq::default() }));
+        assert!(!ask(RunReq { name: "Bench".into(), bench: true, ..RunReq::default() }));
+        assert!(!ask(RunReq { name: "Profile".into(), perf: true, ..RunReq::default() }));
     }
 
     #[test]

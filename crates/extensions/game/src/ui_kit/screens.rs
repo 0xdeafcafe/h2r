@@ -267,7 +267,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 73] = [
+pub const NAMES: [&str; 74] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -295,6 +295,7 @@ pub const NAMES: [&str; 73] = [
     "kit.dialog",
     "kit.dialog.large",
     crate::lab_takeover::SCREEN,
+    crate::lab_takeover::ALONGSIDE_SCREEN,
     crate::lab_takeover::RUNNING_SCREEN,
     "clankers",
     crate::firefight::options::SCREEN,
@@ -605,6 +606,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         crate::clanker_card::SCREEN => list(crate::clanker_card::page_sample()),
         crate::lab_takeover::SCREEN => list(crate::lab_takeover::sample_page()),
+        crate::lab_takeover::ALONGSIDE_SCREEN => list(crate::lab_takeover::sample_alongside_page()),
         crate::lab_takeover::RUNNING_SCREEN => list(crate::lab_takeover::sample_running_page()),
         crate::custom_games::browser_filters::SCREEN => {
             list(crate::custom_games::browser_filters::sample_page())

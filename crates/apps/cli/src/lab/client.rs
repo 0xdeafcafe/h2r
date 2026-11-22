@@ -966,6 +966,7 @@ fn agent_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
 fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
     let mut req = RunReq {
         serve: true,
+        bench: true,
         ..RunReq::default()
     };
     let mut src = Source::default();

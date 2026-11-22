@@ -168,6 +168,11 @@ pub struct RunReq {
     /// Driven through the agent API (`h2 lab agent`) until `stop`: the game
     /// never stops by itself, so `frames` can't be set (docs/runtime/lab.md).
     pub serve: bool,
+    /// A benchmark (`h2 lab bench`): its numbers need a quiet machine, so
+    /// the player's consent doesn't offer Start alongside. Absent when
+    /// false, so an older host still reads the request.
+    #[serde(skip_serializing_if = "is_false")]
+    pub bench: bool,
     /// A dedicated System Link host instead of a game window: headless
     /// `h2 serve --system-link --host-light` until `stop`, driven through
     /// `h2 lab agent` like a `serve` run (docs/runtime/lab.md, "Dedicated

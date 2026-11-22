@@ -1,6 +1,8 @@
 //! The lab's questions to the player. Only a player choosing Close and
-//! start (`Decision::Allowed`) can grant consent to start a job; the lab
-//! then closes this game with `host.quit`. While a job runs, a game the
+//! start (`Decision::Allowed`) or Start alongside (`Decision::Alongside`,
+//! offered unless the job needs a quiet machine) can grant consent to start
+//! a job; the lab then closes this game with `host.quit` for the first and
+//! leaves it open for the second. While a job runs, a game the
 //! player opens asks what the job should do (`Ask::Running`,
 //! docs/runtime/lab.md "When the player opens a game").
 
@@ -31,6 +33,8 @@ use crate::ui_kit::view::Opener;
 use crate::{coop_probe, level_boot, ui_kit, ui_watch};
 
 pub const SCREEN: &str = "lab.takeover";
+/// The start question with a Start alongside row.
+pub const ALONGSIDE_SCREEN: &str = "lab.takeover.alongside";
 /// The question a game asks while a lab job runs.
 pub const RUNNING_SCREEN: &str = "lab.running";
 const IDS: ui_kit::ids::Family = ui_kit::ids::family("lab takeover");
@@ -40,7 +44,7 @@ const TITLE_ID: u32 = 0;
 const BODY_ID: u32 = 1;
 const FOOTER_ID: u32 = 4;
 
-/// One of the two questions: its screen and class, its rows and what each
+/// One of the three dialogs: its screen and class, its rows and what each
 /// answers. The safe answer is row 0, the initial focus, including when a
 /// button is held.
 struct Form {
@@ -83,6 +87,19 @@ const START: Form = Form {
     anchor: -34,
 };
 
+// The start question with Start alongside has three rows under the same
+// three-line body, so it takes the running question's anchor, -35.
+const ALONGSIDE: Form = Form {
+    ask: Ask::Start,
+    screen: ALONGSIDE_SCREEN,
+    class: "lab-takeover-alongside-dialog",
+    labels: &["Not now", "Start alongside", "Close and start"],
+    first_id: 8,
+    answers: &[Decision::Declined, Decision::Alongside, Decision::Allowed],
+    dismissed: Decision::Declined,
+    anchor: -35,
+};
+
 // At -35 row 0's cap tops out at -2, 17 under the body, the labels keep
 // their contrast, and row 2's cap ends at -80, above the footer's -83.
 const RUNNING: Form = Form {
@@ -100,10 +117,13 @@ const RUNNING: Form = Form {
     anchor: -35,
 };
 
-fn form(ask: Ask) -> &'static Form {
-    match ask {
-        Ask::Start => &START,
-        Ask::Running => &RUNNING,
+/// The dialog that asks `request`: the start question has the Start
+/// alongside row only when the request offers it.
+fn form(request: &Request) -> &'static Form {
+    match (request.ask, request.alongside) {
+        (Ask::Start, false) => &START,
+        (Ask::Start, true) => &ALONGSIDE,
+        (Ask::Running, _) => &RUNNING,
     }
 }
 
@@ -199,7 +219,7 @@ enum Screen {
 
 struct PromptState {
     id: u64,
-    ask: Ask,
+    form: &'static Form,
     until: Instant,
     body: String,
     screen: Screen,
@@ -228,7 +248,7 @@ impl Default for Dialog {
     fn default() -> Self {
         let texts = SlotTexts::new(IDS);
         texts.set(TITLE_ID, TITLE);
-        for form in [&START, &RUNNING] {
+        for form in [&START, &ALONGSIDE, &RUNNING] {
             for (row, label) in form.labels.iter().enumerate() {
                 texts.set(form.first_id + row as u32, label);
             }
@@ -272,7 +292,7 @@ impl Dialog {
         let id = prompt.as_ref().map_or(1, |p| p.id + 1);
         *prompt = Some(PromptState {
             id,
-            ask: request.ask,
+            form: form(&request),
             until: now + Duration::from_secs(request.timeout_seconds.into()),
             body: body(&request),
             screen: Screen::Queued,
@@ -299,7 +319,7 @@ impl Dialog {
         )?;
         p.expire(Instant::now());
         if p.decision == Decision::Pending {
-            p.decision = form(p.ask).dismissed;
+            p.decision = p.form.dismissed;
         }
         p.screen = Screen::Gone;
         p.pause.take()
@@ -390,7 +410,7 @@ impl Dialog {
         };
         if let Some(p) = self.prompt().as_mut() {
             p.expire(Instant::now());
-            if p.ask == form.ask
+            if p.form.screen == form.screen
                 && p.decision == Decision::Pending
                 && matches!(p.screen, Screen::Open(_))
             {
@@ -529,7 +549,7 @@ impl Feature for Driver {
             .texts
             .base
             .store(b.guest_alloc(0x1000, Permissions::RW)?, Ordering::SeqCst);
-        for form in [&START, &RUNNING] {
+        for form in [&START, &ALONGSIDE, &RUNNING] {
             let dialog = Arc::clone(&self.0);
             b.locale()
                 .source(form.screen, move |id| dialog.texts.address(id));
@@ -576,7 +596,7 @@ impl Feature for Driver {
                             }
                             dialog.texts.set(BODY_ID, &p.body.replace('\n', "\r\n"));
                             p.screen = Screen::Opening;
-                            UiStep::Open(form(p.ask).screen)
+                            UiStep::Open(p.form.screen)
                         }
                         Screen::Open(at) if p.decision == Decision::TimedOut => {
                             p.screen = Screen::Closing(at);
@@ -644,6 +664,7 @@ pub fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> anyhow::
     if registry.add(&dialog.class(&START))? && registry.add(&Driver(Arc::clone(&dialog)))? {
         // With its class switched off, the running question can't open and
         // answers Unavailable; the lab then lets the job finish.
+        registry.add(&dialog.class(&ALONGSIDE))?;
         registry.add(&dialog.class(&RUNNING))?;
         add_consent(agent, &dialog);
     }
@@ -652,6 +673,17 @@ pub fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> anyhow::
 
 pub(crate) fn sample_page() -> ListPage {
     sample(sample_request(), &START)
+}
+
+/// The start question with Start alongside, for the screen audit.
+pub(crate) fn sample_alongside_page() -> ListPage {
+    sample(
+        Request {
+            alongside: true,
+            ..sample_request()
+        },
+        &ALONGSIDE,
+    )
 }
 
 /// The question a game asks while a lab job runs, for the screen audit.
@@ -688,6 +720,7 @@ fn sample_request() -> Request {
         own_data: false,
         estimate_seconds: 240,
         timeout_seconds: 60,
+        alongside: false,
     }
 }
 
