@@ -645,8 +645,20 @@ passes this config to Wrangler and removes its temporary copy on exit.
 
    The key goes to `wrangler secret put` on stdin, after the deploy (the
    Worker has to exist to hold it). It is never printed.
-8. **Deploy.** It first records the Worker version that is live
-   (`wrangler deployments list --json`), then runs `wrangler deploy --env
+8. **Deploy.** It first records the id of the Worker version that is live
+   (`wrangler versions deployments list --json`), the rollback target.
+   It is that exact id, never "the previous version": `renew.sh`'s secret
+   puts create Worker versions of their own, and an older version would
+   carry an old host-data bundle sha. It then compares the host image tag
+   with the one the container apps run (`wrangler containers list
+   --json`). The same tag adds `--containers-rollout none`, so the
+   Worker is uploaded and neither container app is re-provisioned
+   (Cloudflare refuses new instances, 503 `max_instances`, while they
+   show `provisioning`); `H2_LIVE_FORCE_CONTAINERS=1` rolls them out
+   anyway, for a new instance cap or class. A different tag is a rollout,
+   and the script prints `HOST IMAGE CHANGED: <old> -> <new> (host-data
+   bundle rebuild needed)`: the private bundle is due a rebuild. If the
+   apps' tags cannot be read, the containers roll out. Then it runs `wrangler deploy --env
    <env>` with `--var H2_LIVE_BUILD:<commit>` (the commit's full sha, with
    `-dirty` when the tree has changes); its failure stops the script.
 9. **Health.** `/healthz` is polled for up to 60 seconds until it answers
@@ -654,9 +666,11 @@ passes this config to Wrangler and removes its temporary copy on exit.
    (`entry.rs` adds the header from `H2_LIVE_BUILD`). Then the discovery
    document's id is printed. If the check never passes, the script runs
    `wrangler rollback <previous version> --env <env>` and exits non-zero,
-   so the job fails. A rollback restores the Worker's code and variables;
-   secrets, R2 contents and Durable Object migrations stay as the deploy
-   left them. A first deploy has no earlier version, so it cannot roll
+   so the job fails. A rollback restores the Worker's code and variables
+   by creating a deployment of the recorded version; secrets, R2
+   contents, Durable Object migrations and the container apps stay as
+   the deploy left them. When the host containers were deployed the log
+   says `Worker rolled back; container image left at <tag>`. A first deploy has no earlier version, so it cannot roll
    back.
 
 `--dry-run` builds and bundles without signing in or uploading.

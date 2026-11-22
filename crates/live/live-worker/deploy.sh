@@ -28,8 +28,15 @@
 # tree has changes) is set on the Worker as H2_LIVE_BUILD, and /healthz sends
 # it as x-h2-build. After the deploy the script waits up to 60 s for /healthz to
 # answer 200 with that build; if it does not, it runs `wrangler rollback` to the
-# version that was live before and exits non-zero. The Worker's code and vars go
-# back; secrets, R2 and Durable Object migrations do not.
+# exact version that was live before the deploy and exits non-zero. The
+# Worker's code and vars go back; secrets, R2, Durable Object migrations and
+# the container apps' image do not.
+#
+# Containers: a deploy whose host image tag matches what the container apps
+# already run passes --containers-rollout none (a rollout re-provisions both
+# apps, and Cloudflare refuses new instances meanwhile). A changed tag prints
+# "HOST IMAGE CHANGED: old -> new (host-data bundle rebuild needed)".
+# H2_LIVE_FORCE_CONTAINERS=1 rolls them out regardless (new cap or class).
 #
 # Host image: the containers run registry.cloudflare.com/<account>/h2-live-host
 # tagged with a hash of what the Dockerfile copies (the Dockerfile, the
@@ -58,7 +65,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 
 usage() {
-    sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,61p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -290,9 +297,42 @@ else
 fi
 
 # ---- deploy ----
-# The version live now, for the rollback. Empty on a first deploy (nothing to
-# go back to).
-prev_version=$(wrangler deployments list --env "$env_name" --json 2>/dev/null | python3 -c '
+# The container apps. A wrangler deploy re-rolls both applications even when
+# their image is the same, and while they show "provisioning" Cloudflare
+# refuses new instances (503 max_instances). So when the registry's apps
+# already run this tag, the deploy passes --containers-rollout none (the Worker
+# alone is uploaded). A changed tag is a rollout, and it means the private
+# host-data bundle is due a rebuild: that line is printed loud. A new
+# instance cap or class needs a rollout too: H2_LIVE_FORCE_CONTAINERS=1.
+rollout=""
+if [ "$hosts_on" = 1 ]; then
+    old_tags=$(wrangler containers list --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    apps = json.load(sys.stdin)
+    tags = sorted({a["image"].rsplit(":", 1)[-1] for a in apps if "h2-live-host" in (a.get("image") or "")})
+    print(" ".join(tags))
+except Exception:
+    pass
+' || true)
+    if [ -z "$old_tags" ]; then
+        echo "deploy.sh: could not read the container apps' image tags; rolling the containers out"
+    elif [ "$old_tags" = "$host_tag" ] && [ "${H2_LIVE_FORCE_CONTAINERS:-0}" != 1 ]; then
+        echo "HOST IMAGE UNCHANGED: $host_tag; the container apps are not rolled out"
+        rollout="--containers-rollout none"
+    elif [ "$old_tags" = "$host_tag" ]; then
+        echo "HOST IMAGE UNCHANGED: $host_tag; rolling the containers out anyway (H2_LIVE_FORCE_CONTAINERS=1)"
+    fi
+    if [ "$old_tags" != "$host_tag" ]; then
+        printf '\n!!!! HOST IMAGE CHANGED: %s -> %s (host-data bundle rebuild needed)\n\n' \
+            "${old_tags:-none}" "$host_tag"
+    fi
+fi
+# The version live now, for the rollback: its exact id, never "the previous
+# one" (renew.sh's secret puts make Worker versions of their own, and an older
+# version would carry an old host-data bundle sha). Empty on a first deploy
+# (nothing to go back to).
+prev_version=$(wrangler versions deployments list --env "$env_name" --json 2>/dev/null | python3 -c '
 import json, sys
 try:
     deployments = json.load(sys.stdin)
@@ -310,7 +350,7 @@ fi
 step "deploy: wrangler deploy --env $env_name"
 log=$(mktemp "${TMPDIR:-/tmp}/h2-live-deploy.XXXXXX")
 # shellcheck disable=SC2086
-{ wrangler deploy --env "$env_name" $vars 2>&1; echo "$?" > "$log.status"; } | tee "$log"
+{ wrangler deploy --env "$env_name" $vars $rollout 2>&1; echo "$?" > "$log.status"; } | tee "$log"
 status=$(cat "$log.status")
 url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' "$log" | head -1 || true)
 rm -f "$log" "$log.status"
@@ -333,6 +373,9 @@ rollback() {
         step "rollback: wrangler rollback $prev_version --env $env_name"
         if wrangler rollback "$prev_version" --env "$env_name" --yes \
             --message "deploy.sh: $build_id failed its health check"; then
+            # wrangler rollback makes a Worker deployment of that version and
+            # touches nothing else: the container apps keep the new image.
+            [ "$hosts_on" = 1 ] && echo "Worker rolled back; container image left at ${host_tag:-unknown}"
             die "rolled back to $prev_version; the deploy of $build_id failed"
         fi
         die "the rollback to $prev_version failed too: fix $env_name by hand (wrangler rollback)"
