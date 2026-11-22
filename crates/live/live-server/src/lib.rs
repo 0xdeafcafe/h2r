@@ -433,7 +433,7 @@ pub fn start_embedded_with(
     let identity = ServerIdentity::open(data_dir, None)?;
     let (live, store, listener) = runtime.block_on(async {
         let file_dir = file_store_dir(data_dir);
-        let (store, kind): (Arc<dyn store::EventStore>, _) = match db {
+        let (store, kind): (Arc<dyn store::Store>, _) = match db {
             MEMORY_DB => (Arc::new(store::MemoryStore::new()), "memory"),
             _ if sqlite::path_of(db).is_some() => (
                 Arc::new(

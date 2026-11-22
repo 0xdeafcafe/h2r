@@ -8,7 +8,7 @@ use axum::{http::Method, http::StatusCode};
 use common::*;
 use live_proto::lxm;
 use live_server::app::Timers;
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use variants::portable::{self, PortScript};
@@ -44,7 +44,7 @@ fn plain_king() -> GameVariant {
 }
 
 async fn flow(timers: Timers) {
-    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let h = start_with(store.clone(), live_server::Policy::default(), timers).await;
     let me = h.create("Maker").await;
     let other = h.create("Other").await;

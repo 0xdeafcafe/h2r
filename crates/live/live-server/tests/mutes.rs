@@ -9,7 +9,7 @@ use axum::{body::Body, http::Method, http::StatusCode};
 use common::*;
 use live_proto::{Gamertag, lxm, mutes};
 use live_server::app::Timers;
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -69,7 +69,7 @@ async fn logged(h: &Harness, reader: Option<&User>) -> usize {
 }
 
 async fn flow(timers: Timers) {
-    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let h = start_with(store.clone(), policy(), timers).await;
     let me = h.create("Muter").await;
     let loud = h.create("Loud").await;

@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use live_proto::sign::{self, AccountRequest, EventBody, KeyPair, issue_token};
 use live_proto::{Xuid, lxm, streams, types};
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use live_server::{Live, Policy, ServerIdentity, http};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -65,17 +65,17 @@ pub struct User {
     pub author: String,
 }
 
-pub async fn start(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
+pub async fn start(store: Arc<dyn Store>, policy: Policy) -> Harness {
     start_with(store, policy, live_server::app::Timers::Spawned).await
 }
 
 #[allow(dead_code)]
-pub async fn start_driven(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
+pub async fn start_driven(store: Arc<dyn Store>, policy: Policy) -> Harness {
     start_with(store, policy, live_server::app::Timers::Driven).await
 }
 
 pub async fn start_with(
-    store: Arc<dyn EventStore>,
+    store: Arc<dyn Store>,
     policy: Policy,
     timers: live_server::app::Timers,
 ) -> Harness {

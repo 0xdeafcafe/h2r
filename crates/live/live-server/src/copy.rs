@@ -3,7 +3,7 @@
 //! R2 (docs/live/live-hosting.md, "Free hosting").
 //!
 //! - **The log**, `--from DB --to DB`: every event with its position,
-//!   version and hash kept ([`EventStore::import`]), so cursors clients hold
+//!   version and hash kept ([`crate::store::EventStore::import`]), so cursors clients hold
 //!   and checkpoints stay valid; then the title-file blobs and the durable
 //!   subscribers' checkpoints. Each batch is checked (stream versions, the
 //!   hash chain) and written atomically.
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 
 use crate::blobs::{BlobStore, Location, Meta};
-use crate::store::{EventStore, Query, StoreError};
+use crate::store::{LogStore, Query, Store, StoreError};
 
 /// What the blob copy moves: the server's blobs (and recorded games' frame
 /// chunks), nothing else in the data directory (its key, its database).
@@ -53,8 +53,8 @@ pub struct LogReport {
 /// Copies `from`'s log into `to`, from `to`'s head on. `progress` hears
 /// (copied so far, source head) after each batch.
 pub async fn copy_log(
-    from: &dyn EventStore,
-    to: &dyn EventStore,
+    from: &dyn LogStore,
+    to: &dyn LogStore,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<LogReport, StoreError> {
     let source_head = from.head().await?;
@@ -251,7 +251,7 @@ destination's last event is the source's at that position.
 Idempotent and resumable: run it again to carry on. Stop the server first.";
 
 /// Opens the event store a `--db`-style URL names.
-pub async fn open_db(url: &str) -> Result<Arc<dyn EventStore>> {
+pub async fn open_db(url: &str) -> Result<Arc<dyn Store>> {
     if url.starts_with("postgres://") || url.starts_with("postgresql://") {
         let pg = crate::pg::PostgresStore::connect_creating(url)
             .await
@@ -281,7 +281,7 @@ pub async fn open_end(
     url: &str,
     operator: Option<&Path>,
     source: bool,
-) -> Result<Arc<dyn EventStore>> {
+) -> Result<Arc<dyn LogStore>> {
     if url.starts_with("https://") || url.starts_with("http://") {
         let dir = operator.with_context(|| {
             format!(
@@ -300,13 +300,13 @@ pub async fn open_end(
             .map_err(|e| crate::db_error(url, &e))?;
         return Ok(Arc::new(pg));
     }
-    open_db(url).await
+    Ok(open_db(url).await?)
 }
 
 /// After a copy: whether the destination's last event is the source's
 /// event at that position (the same JWS, the same hash), so the two logs
 /// agree up to the destination's head.
-pub async fn verify(from: &dyn EventStore, to: &dyn EventStore) -> Result<(u64, u64)> {
+pub async fn verify(from: &dyn LogStore, to: &dyn LogStore) -> Result<(u64, u64)> {
     let (head, source_head) = (to.head().await?, from.head().await?);
     if head == 0 {
         return Ok((0, source_head));
@@ -441,10 +441,10 @@ pub async fn run(args: Vec<String>, env: &dyn Fn(&str) -> Option<String>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{MemoryStore, conformance::event};
+    use crate::store::{EventStore, MemoryStore, TitleBlobStore, conformance::event};
     use live_proto::sign::KeyPair;
 
-    async fn fill(store: &dyn EventStore, key: &KeyPair, n: u64) {
+    async fn fill(store: &dyn LogStore, key: &KeyPair, n: u64) {
         for i in 0..n {
             let stream = format!("s{}", i % 3);
             store
@@ -454,7 +454,7 @@ mod tests {
         }
     }
 
-    async fn all(store: &dyn EventStore) -> Vec<crate::store::RecordedEvent> {
+    async fn all(store: &dyn LogStore) -> Vec<crate::store::RecordedEvent> {
         store.read(&Query::after(0, usize::MAX)).await.unwrap()
     }
 

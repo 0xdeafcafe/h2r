@@ -30,7 +30,7 @@ use sqlx::sqlite::{
 use tokio::sync::watch;
 
 use crate::store::{
-    BatchDecoder, BatchRows, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
+    BatchDecoder, BatchRows, EventStore, TitleBlobStore, UsageStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
     UsageRow, Wake,
 };
 
@@ -323,22 +323,6 @@ impl EventStore for SqliteStore {
         Ok(p as u64)
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        sqlx::query(sql::PUT_BLOB)
-            .bind(sha256)
-            .bind(bytes)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(sqlx::query_scalar(sql::BLOB)
-            .bind(sha256)
-            .fetch_optional(&self.pool)
-            .await?)
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         let p: Option<i64> = sqlx::query_scalar(sql::LOAD_CHECKPOINT)
             .bind(name)
@@ -402,19 +386,41 @@ impl EventStore for SqliteStore {
         Ok(())
     }
 
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        Ok(sqlx::query_scalar(sql::BLOB_NAMES)
-            .fetch_all(&self.pool)
-            .await?)
-    }
-
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(sql::CHECKPOINTS)
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(|(n, p)| (n, p as u64)).collect())
     }
+}
 
+#[async_trait]
+impl TitleBlobStore for SqliteStore {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        sqlx::query(sql::PUT_BLOB)
+            .bind(sha256)
+            .bind(bytes)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(sqlx::query_scalar(sql::BLOB)
+            .bind(sha256)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        Ok(sqlx::query_scalar(sql::BLOB_NAMES)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+}
+
+#[async_trait]
+impl UsageStore for SqliteStore {
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         let rows = rows.to_vec();
         let keep_from = keep_from.to_string();

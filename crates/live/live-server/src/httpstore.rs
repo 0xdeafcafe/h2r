@@ -18,7 +18,7 @@ use live_proto::{Discovery, lxm};
 
 use crate::identity::ServerIdentity;
 use crate::logio::{Checkpoint, LogMeta, LogPage, PAGE_MAX};
-use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, Wake};
+use crate::store::{EventStore, NewEvent, TitleBlobStore, Query, RecordedEvent, StoreError, Wake};
 
 /// Reads are retried this many times on a network error or a 5xx (a
 /// Worker's hub restarting); an import is not (it is checked against the
@@ -218,18 +218,6 @@ impl EventStore for HttpStore {
         Ok(self.meta().await?.head)
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        self.put(&format!("/v1/admin/log/blobs/{sha256}"), bytes.to_vec())
-            .await
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self
-            .get(&format!("/v1/admin/log/blobs/{sha256}"))
-            .await?
-            .map(|b| b.to_vec()))
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         Ok(self
             .meta()
@@ -285,11 +273,26 @@ impl EventStore for HttpStore {
         Ok(())
     }
 
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        Ok(self.meta().await?.blobs)
-    }
-
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
         Ok(self.meta().await?.checkpoints)
+    }
+}
+
+#[async_trait]
+impl TitleBlobStore for HttpStore {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        self.put(&format!("/v1/admin/log/blobs/{sha256}"), bytes.to_vec())
+            .await
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self
+            .get(&format!("/v1/admin/log/blobs/{sha256}"))
+            .await?
+            .map(|b| b.to_vec()))
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        Ok(self.meta().await?.blobs)
     }
 }

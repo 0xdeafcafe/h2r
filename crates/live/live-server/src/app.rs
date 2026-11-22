@@ -25,7 +25,7 @@ use crate::dispatch::Dispatcher;
 use crate::guard::{RateLimiter, ReplayGuard};
 use crate::identity::ServerIdentity;
 use crate::model::{Model, State, invite_key, nonce_key};
-use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError};
+use crate::store::{NewEvent, Query, RecordedEvent, Store, StoreError};
 
 /// Title files can be large: `multiplayer_hopper.dat` inflates to 1.4 MB.
 pub const MAX_TITLE_FILE: usize = 2 * 1024 * 1024;
@@ -157,7 +157,7 @@ impl Default for Policy {
 }
 
 pub struct Live {
-    pub(crate) store: Arc<dyn EventStore>,
+    pub(crate) store: Arc<dyn Store>,
     /// `store`, which holds writes while a log is copied in.
     pub(crate) held: Arc<crate::hold::HeldStore>,
     pub(crate) model: Arc<Model>,
@@ -511,7 +511,7 @@ impl Live {
     /// Starts the dispatcher and waits until the read model has replayed
     /// the whole log.
     pub async fn start(
-        store: Arc<dyn EventStore>,
+        store: Arc<dyn Store>,
         identity: ServerIdentity,
         policy: Policy,
     ) -> anyhow::Result<Arc<Self>> {
@@ -520,7 +520,7 @@ impl Live {
 
     /// [`Live::start`], with the timed work run as `timers` says.
     pub async fn start_with(
-        store: Arc<dyn EventStore>,
+        store: Arc<dyn Store>,
         identity: ServerIdentity,
         policy: Policy,
         timers: Timers,
@@ -533,14 +533,14 @@ impl Live {
     /// Starts Live with prices and budget from the deployment's bindings.
     /// The cost projection observes the complete log before the first allocation.
     pub async fn start_with_host_costs(
-        store: Arc<dyn EventStore>,
+        store: Arc<dyn Store>,
         identity: ServerIdentity,
         policy: Policy,
         timers: Timers,
         costs: crate::host_costs::HostCosts,
     ) -> anyhow::Result<Arc<Self>> {
         let held = Arc::new(crate::hold::HeldStore::open(store).await?);
-        let store: Arc<dyn EventStore> = held.clone();
+        let store: Arc<dyn Store> = held.clone();
         let model = Arc::new(Model::default());
         let admins = Arc::new(crate::admin::Admins::new(policy.admins.clone()));
         let mut dispatcher = Dispatcher::new(store.clone());
@@ -769,7 +769,7 @@ impl Live {
         self.feed.subscribe()
     }
 
-    pub fn store(&self) -> &dyn EventStore {
+    pub fn store(&self) -> &dyn Store {
         self.store.as_ref()
     }
 

@@ -13,7 +13,7 @@ use live_proto::recovery::{RecoverRequest, RecoveryInfo, TotpSecret, format_code
 use live_proto::sign::{AccountRequest, KeyPair};
 use live_proto::{Xuid, lxm};
 use live_server::{Policy, ServerIdentity};
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use serde_json::{Value, json};
 
 const CHROME_MAC: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
@@ -108,7 +108,7 @@ fn find<'a>(items: &'a [Value], key: &KeyPair) -> &'a Value {
 
 #[tokio::test]
 async fn an_account_sees_where_it_is_signed_in_and_signs_one_out() {
-    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let h = start(store.clone(), Policy::default()).await;
     let (laptop, secret) = create(&h, "Roamer").await;
     let t = now();

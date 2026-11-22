@@ -120,7 +120,7 @@ pub struct UsageRow {
 }
 
 /// Adds `rows` to a map of counters and drops the days before `keep_from`
-/// (never the dayless ones): the in-memory stores' [`EventStore::add_usage`].
+/// (never the dayless ones): the in-memory stores' [`UsageStore::add_usage`].
 pub(crate) fn add_usage_to(
     map: &mut std::collections::BTreeMap<(String, String, String), i64>,
     rows: &[UsageRow],
@@ -249,6 +249,11 @@ pub trait Wake: Send {
     async fn wait(&mut self);
 }
 
+/// The log and what a subscriber keeps beside it: events and checkpoints.
+/// Blobs and usage counters are [`TitleBlobStore`] and [`UsageStore`]; a
+/// backend implements each it supports, and what needs one asks for it
+/// by name ([`LogStore`], [`Store`]), so a backend without it does not
+/// compile there rather than dropping the data.
 #[async_trait]
 pub trait EventStore: Send + Sync + 'static {
     /// Appends `events` in order, each to its `body.stream`, atomically:
@@ -267,10 +272,6 @@ pub trait EventStore: Send + Sync + 'static {
     /// The highest position, 0 for an empty log.
     async fn head(&self) -> Result<u64, StoreError>;
 
-    /// Content-addressed bytes (title files), keyed by hex SHA-256.
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError>;
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError>;
-
     /// Where a durable subscriber resumes (the `subscriptions` table).
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError>;
     async fn save_checkpoint(&self, name: &str, position: u64) -> Result<(), StoreError>;
@@ -278,16 +279,17 @@ pub trait EventStore: Send + Sync + 'static {
     /// A wake source that fires after appends commit.
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError>;
 
-    /// `sqlite`, `postgres`, `file` or `memory`, for the admin status.
-    fn kind(&self) -> &'static str {
-        "unknown"
-    }
+    /// `sqlite`, `postgres`, `file`, `memory` or `https`, for the admin
+    /// status.
+    fn kind(&self) -> &'static str;
 
     /// Writes events exactly as another store recorded them, positions,
     /// versions and hashes kept, atomically (`h2 live store copy`). Each must
     /// come after this log's head and continue its stream's version and hash
     /// chain ([`ImportCheck`]); checked, not trusted. Stores that number
-    /// positions themselves cannot take them.
+    /// positions themselves cannot take them, and the default says so: it
+    /// refuses with [`StoreError::Import`] (an error, never a dropped
+    /// write), so only a store that can import overrides it.
     async fn import(&self, events: &[RecordedEvent]) -> Result<(), StoreError> {
         let position = events.first().map_or(0, |e| e.position);
         Err(StoreError::Import {
@@ -296,27 +298,42 @@ pub trait EventStore: Send + Sync + 'static {
         })
     }
 
-    /// Every title-file blob's SHA-256, for copying them.
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError>;
-
     /// Every durable subscriber's checkpoint, for copying them.
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError>;
+}
 
+/// Content-addressed bytes (title files), keyed by hex SHA-256.
+#[async_trait]
+pub trait TitleBlobStore: Send + Sync + 'static {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError>;
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError>;
+
+    /// Every title-file blob's SHA-256, for copying them.
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError>;
+}
+
+/// The usage counters ([`crate::usage`]) a server flushes and reloads.
+#[async_trait]
+pub trait UsageStore: Send + Sync + 'static {
     /// Adds each row's `n` to its usage counter (made at 0 if new), then
     /// drops every daily counter before `keep_from` if the cutoff is set,
-    /// in one go ([`crate::usage`]). A store that keeps no counters
-    /// takes them and forgets them: the server's own copy, in memory,
-    /// still counts until it restarts.
-    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
-        let _ = (rows, keep_from);
-        Ok(())
-    }
+    /// in one go.
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError>;
 
     /// Every usage counter, read once when the server starts.
-    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
-        Ok(Vec::new())
-    }
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError>;
 }
+
+/// A log with its title blobs: what a copy between stores reads and writes
+/// ([`crate::copy`]). Every store that is both is one.
+pub trait LogStore: EventStore + TitleBlobStore {}
+impl<T: EventStore + TitleBlobStore> LogStore for T {}
+
+/// A store a server runs on: the log, its title blobs and its usage
+/// counters. A backend that lacks any of the three does not implement
+/// this, so it cannot be handed to [`crate::Live`].
+pub trait Store: LogStore + UsageStore {}
+impl<T: LogStore + UsageStore> Store for T {}
 
 /// What [`EventStore::import`] checks of each event, given each stream's
 /// last version and hash in the log being written (looked up once per
@@ -483,19 +500,6 @@ impl EventStore for MemoryStore {
         Ok(self.inner.lock().unwrap().events.len() as u64)
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        self.inner
-            .lock()
-            .unwrap()
-            .blobs
-            .insert(sha256.into(), bytes.to_vec());
-        Ok(())
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.inner.lock().unwrap().blobs.get(sha256).cloned())
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         Ok(self.inner.lock().unwrap().checkpoints.get(name).copied())
     }
@@ -546,18 +550,37 @@ impl EventStore for MemoryStore {
         Ok(())
     }
 
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        let mut names: Vec<_> = self.inner.lock().unwrap().blobs.keys().cloned().collect();
-        names.sort();
-        Ok(names)
-    }
-
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
         let mut all: Vec<_> = self.checkpoint_map().into_iter().collect();
         all.sort();
         Ok(all)
     }
+}
 
+#[async_trait]
+impl TitleBlobStore for MemoryStore {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        self.inner
+            .lock()
+            .unwrap()
+            .blobs
+            .insert(sha256.into(), bytes.to_vec());
+        Ok(())
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.inner.lock().unwrap().blobs.get(sha256).cloned())
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        let mut names: Vec<_> = self.inner.lock().unwrap().blobs.keys().cloned().collect();
+        names.sort();
+        Ok(names)
+    }
+}
+
+#[async_trait]
+impl UsageStore for MemoryStore {
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         add_usage_to(&mut self.inner.lock().unwrap().usage, rows, keep_from);
         Ok(())
@@ -595,7 +618,7 @@ pub mod conformance {
     /// Usage counters add up, keep their dayless totals and lose the days
     /// before the cut. Rows are on this run's own account, on days no
     /// server writes (1970), so a shared store's other rows don't matter.
-    pub async fn usage(store: &dyn EventStore, prefix: &str) {
+    pub async fn usage(store: &dyn UsageStore, prefix: &str) {
         let acct = format!("{prefix}-usage");
         let row = |day: &str, metric: &str, n: i64| UsageRow {
             day: day.into(),
@@ -731,8 +754,44 @@ pub mod conformance {
         }
     }
 
+    /// Every backend that stores title blobs passes this: a blob is
+    /// written once and read back byte for byte, a write of the same
+    /// bytes again is harmless, an absent one reads as `None`, and each
+    /// written one is named. `prefix` keeps names unique so a reused
+    /// database still passes.
+    pub async fn blobs(store: &dyn TitleBlobStore, prefix: &str) {
+        let sha = format!("{prefix}-sha");
+        assert_eq!(store.blob(&sha).await.unwrap(), None);
+        assert!(!store.blob_names().await.unwrap().contains(&sha));
+        store.put_blob(&sha, b"bytes").await.unwrap();
+        store.put_blob(&sha, b"bytes").await.unwrap();
+        assert_eq!(
+            store.blob(&sha).await.unwrap().as_deref(),
+            Some(&b"bytes"[..])
+        );
+        assert_eq!(
+            store
+                .blob_names()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|n| **n == sha)
+                .count(),
+            1
+        );
+    }
+
+    /// Everything a backend that runs a server (a [`Store`]) must do: the
+    /// log, its blobs and its usage counters.
+    pub async fn run(store: &dyn Store, prefix: &str) {
+        events(store, prefix).await;
+        blobs(store, prefix).await;
+        usage(store, prefix).await;
+    }
+
+    /// The log and checkpoints: what every [`EventStore`] must do.
     /// `prefix` keeps streams unique so a reused database still passes.
-    pub async fn run(store: &dyn EventStore, prefix: &str) {
+    pub async fn events(store: &dyn EventStore, prefix: &str) {
         let key = KeyPair::generate();
         let a = format!("{prefix}-a");
         let b = format!("{prefix}-b");
@@ -870,22 +929,12 @@ pub mod conformance {
         assert_eq!(*read[0].jws, *batch.0);
         assert_eq!(*read[3].jws, *batch.0);
 
-        // Blobs and checkpoints.
-        let sha = format!("{prefix}-sha");
-        assert_eq!(store.blob(&sha).await.unwrap(), None);
-        store.put_blob(&sha, b"bytes").await.unwrap();
-        store.put_blob(&sha, b"bytes").await.unwrap();
-        assert_eq!(
-            store.blob(&sha).await.unwrap().as_deref(),
-            Some(&b"bytes"[..])
-        );
+        // Checkpoints.
         let cp = format!("{prefix}-cp");
         assert_eq!(store.load_checkpoint(&cp).await.unwrap(), None);
         store.save_checkpoint(&cp, 41).await.unwrap();
         store.save_checkpoint(&cp, 42).await.unwrap();
         assert_eq!(store.load_checkpoint(&cp).await.unwrap(), Some(42));
-
-        usage(store, prefix).await;
 
         // Appends wake a waiting tailer.
         let mut wake = store.wake().await.unwrap();

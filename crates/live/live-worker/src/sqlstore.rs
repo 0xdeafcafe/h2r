@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use live_proto::sign::chain_hash;
 use live_server::sql;
 use live_server::store::{
-    BatchDecoder, BatchRows, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
+    BatchDecoder, BatchRows, EventStore, TitleBlobStore, UsageStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
     UsageRow, Wake,
 };
 use serde_json::Value;
@@ -344,21 +344,6 @@ impl<S: Sql> EventStore for SqlStore<S> {
         Ok(scalar(&self.sql.all(sql::HEAD, vec![]).await?))
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        self.sql
-            .all(
-                sql::PUT_BLOB,
-                vec![sha256.into(), Param::Bytes(bytes.to_vec())],
-            )
-            .await?;
-        Ok(())
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        let rows = self.sql.all(sql::BLOB, vec![sha256.into()]).await?;
-        Ok(rows.first().and_then(|r| r.get("bytes")).and_then(bytes))
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         let rows = self
             .sql
@@ -407,14 +392,6 @@ impl<S: Sql> EventStore for SqlStore<S> {
         Ok(())
     }
 
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        let rows = self.sql.all(sql::BLOB_NAMES, vec![]).await?;
-        Ok(rows
-            .iter()
-            .filter_map(|r| text(r, "sha256").map(str::to_string))
-            .collect())
-    }
-
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
         let rows = self.sql.all(sql::CHECKPOINTS, vec![]).await?;
         Ok(rows
@@ -422,7 +399,36 @@ impl<S: Sql> EventStore for SqlStore<S> {
             .filter_map(|r| Some((text(r, "name")?.to_string(), int(r, "position")?)))
             .collect())
     }
+}
 
+#[async_trait]
+impl<S: Sql> TitleBlobStore for SqlStore<S> {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        self.sql
+            .all(
+                sql::PUT_BLOB,
+                vec![sha256.into(), Param::Bytes(bytes.to_vec())],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let rows = self.sql.all(sql::BLOB, vec![sha256.into()]).await?;
+        Ok(rows.first().and_then(|r| r.get("bytes")).and_then(bytes))
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        let rows = self.sql.all(sql::BLOB_NAMES, vec![]).await?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| text(r, "sha256").map(str::to_string))
+            .collect())
+    }
+}
+
+#[async_trait]
+impl<S: Sql> UsageStore for SqlStore<S> {
     /// One atomic write, adding increments and applying the cutoff if it changed.
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         let mut statements: Vec<Statement> = rows

@@ -10,18 +10,18 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::blobs::{BlobStore, Meta};
-use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow, Wake};
+use crate::store::{EventStore, Store, TitleBlobStore, UsageStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow, Wake};
 
 /// Where the blobs go in the blob store: `title/<sha256>`.
 pub const PREFIX: &str = "title/";
 
 pub struct BlobsElsewhere {
-    inner: Arc<dyn EventStore>,
+    inner: Arc<dyn Store>,
     blobs: BlobStore,
 }
 
 impl BlobsElsewhere {
-    pub fn new(inner: Arc<dyn EventStore>, blobs: BlobStore) -> Self {
+    pub fn new(inner: Arc<dyn Store>, blobs: BlobStore) -> Self {
         BlobsElsewhere { inner, blobs }
     }
 }
@@ -57,24 +57,6 @@ impl EventStore for BlobsElsewhere {
         self.inner.head().await
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        let meta = Meta {
-            content_type: Some("application/octet-stream".into()),
-            ..Meta::default()
-        };
-        self.blobs
-            .put(&key(sha256)?, Bytes::copy_from_slice(bytes), &meta)
-            .await
-            .map_err(failed)
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        match self.blobs.get(&key(sha256)?).await.map_err(failed)? {
-            Some(b) => Ok(Some(b.to_vec())),
-            None => self.inner.blob(sha256).await,
-        }
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         self.inner.load_checkpoint(name).await
     }
@@ -95,6 +77,31 @@ impl EventStore for BlobsElsewhere {
         self.inner.import(events).await
     }
 
+    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
+        self.inner.checkpoints().await
+    }
+}
+
+#[async_trait]
+impl TitleBlobStore for BlobsElsewhere {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        let meta = Meta {
+            content_type: Some("application/octet-stream".into()),
+            ..Meta::default()
+        };
+        self.blobs
+            .put(&key(sha256)?, Bytes::copy_from_slice(bytes), &meta)
+            .await
+            .map_err(failed)
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        match self.blobs.get(&key(sha256)?).await.map_err(failed)? {
+            Some(b) => Ok(Some(b.to_vec())),
+            None => self.inner.blob(sha256).await,
+        }
+    }
+
     async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
         let mut names = self.inner.blob_names().await?;
         for info in self.blobs.list(PREFIX).await.map_err(failed)? {
@@ -106,11 +113,10 @@ impl EventStore for BlobsElsewhere {
         names.dedup();
         Ok(names)
     }
+}
 
-    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
-        self.inner.checkpoints().await
-    }
-
+#[async_trait]
+impl UsageStore for BlobsElsewhere {
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         self.inner.add_usage(rows, keep_from).await
     }

@@ -9,7 +9,7 @@ use axum::{body::Body, http::Method, http::StatusCode};
 use common::*;
 use live_proto::{Gamertag, lxm, reports};
 use live_server::app::Timers;
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -93,7 +93,7 @@ async fn logged(h: &Harness, reader: Option<(&live_proto::sign::KeyPair, &str)>)
 }
 
 async fn flow(timers: Timers) {
-    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let h = start_with(store.clone(), policy(), timers).await;
     let reporter = h.create("Reporter").await;
     let target = h.create("Target").await;
