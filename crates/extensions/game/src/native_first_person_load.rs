@@ -445,7 +445,7 @@ fn lit_parts(
             .material
             .layers
             .iter()
-            .filter(|layer| layer.lod == 0 && layer.layer == look::LIGHTMAP_LAYER)
+            .filter(|layer| layer.lod == 0 && (layer.layer == look::LIGHTMAP_LAYER || crate::native_objects_glue::drawn_layer(layer.layer)))
             .flat_map(|layer| &layer.passes)
             .flat_map(|pass| &pass.implementations)
             .filter_map(|implementation| implementation.vertex_shader);

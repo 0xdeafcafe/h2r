@@ -135,6 +135,9 @@ pub struct ObjectPass {
     /// the same part binds.
     pub words: Vec<u32>,
     pub options: shaders::vsh::VertexOptions,
+    /// A layer-5 PRT variant: what its PRT stream feeds
+    /// (`object_program_gpu::compile_layer_sections`); `None` otherwise.
+    pub prt: Option<crate::object_program_gpu::PrtInput>,
 }
 
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
@@ -209,7 +212,7 @@ fn object_pass_with(
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     let options = shaders::vsh::VertexOptions { provided_inputs: provided, input_fetch: fetch, ..Default::default() };
-    Ok(ObjectPass { program, default_final, implementation: imp.clone(), normalization, texaccum, words, options })
+    Ok(ObjectPass { program, default_final, implementation: imp.clone(), normalization, texaccum, words, options, prt: None })
 }
 
 /// Why objects' parts with `material` stay on D3D, or `None` when an

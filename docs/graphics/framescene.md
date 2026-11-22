@@ -7,8 +7,8 @@ page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
 census and the layer draws of the structure's static items and the
-objects' items (layers 1, 7, 8 and 20, and layer 5's whose model has
-no PRT block; the first person's 1, 7 and 8) from the plan, on by
+objects' items (layers 1, 5, 7, 8 and 20, layer 5's with the model's
+PRT stream; the first person's 1, 7 and 8) from the plan, on by
 default, are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
@@ -989,7 +989,14 @@ to the guest's draws (**Code**):
     program that reads a constant from `c[68]` on, which only the PRT
     stream's draw sets); the scene's models
     (`native_objects_glue`) and the first person's
-    (`native_first_person_glue`) both build them.
+    (`native_first_person_glue`) both build them, reading each world
+    layer's vertex programs with layer 3's. Each layer-5 implementation
+    also compiles a PRT variant (`LitLayerPass::prt`): the declaration
+    has the PRT stream of type `0x39` after the section's streams, as
+    the stream setup `0x0001c8c0` adds it (its format record read with
+    the rest, `object_streams::STREAM_TYPES`), the buffer holds the
+    section's registers only, and the program carries what the stream
+    feeds (`PrtInput`).
     Before a scene view's layer draw (`layer_site` is `Site::Scene`), and
     before the first person's layers 1, 7 and 8 (`Site::FirstPerson`;
     its layer 3 is `native_first_person`'s), the bridge extracts the
@@ -999,9 +1006,8 @@ to the guest's draws (**Code**):
     placement's, its draw is static (no animation, no per-draw inputs:
     what the compiled programs hold) and the layer's set draws its part
     with its shader. An object item is drawn when extraction names no
-    cause, the draw adds no PRT stream for it (layer 5), its model is
-    resident in the caller's set, and each of its material's passes in
-    the layer
+    cause, its model is resident in the caller's set, and each of its
+    material's passes in the layer
     plans (`LitObjects::plan_layer_item`, `plan_layer_part`: per pass
     the implementation it draws for the item, the per-object constants
     from the item's lighting, the pass's defaults and the item's rows,
@@ -1009,7 +1015,16 @@ to the guest's draws (**Code**):
     `object_state::resolve_layer`, blending kept) with its fog, sampling
     no texture accumulation target; the device must draw W-buffered over
     the whole target, as layer 3's objects. An item toggling the
-    auxiliary state is refused (its values are read at layer 3).
+    auxiliary state is refused (its values are read at layer 3). An item
+    with a PRT stream draws each pass's PRT variant with the stream's
+    constants from `c[68]` on, written over the item's own as the draw
+    sets them after its rows (`0x0004d269`), and is refused when its
+    program reads a constant past them; at the hook its section's
+    vertices are read from the stream's address and gathered through the
+    declaration the stream's type gives (`LitObjects::fill_prt`), which
+    must feed the registers the variant was compiled for, fetched the
+    same way, and the encode binds them as a second vertex buffer from
+    the submission's uploads.
     Skipping an item's guest draw must leave the device as drawing it
     would, as layer 3's walk requires of the parts it skips
     (`layer_pass::skip_holds`): each draw sets its pass's render-state
@@ -1039,16 +1054,16 @@ to the guest's draws (**Code**):
     (`ALWAYS`, reference 0, `REPLACE` on pass), takes that state in its
     pipelines and its reference in its packets, and the pass reports a
     depth-stencil write when a draw writes. Everything else keeps its D3D
-    draws and so the indexed-draw admission: layer 5's object items with
-    a PRT stream, animated or per-draw items, and every item after the
-    first one the
+    draws and so the indexed-draw admission: animated or per-draw items,
+    and every item after the first one the
     stage cannot draw. Each ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
     `layer_plan_fp<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,
-    `object_fade` and the rest), `object_prt` (layer 5's PRT stream),
+    `object_fade` and the rest), `object_prt` (layer 5's PRT stream
+    does not read or is of a format the variant was not compiled for),
     `object_layer` (a layer outside `object_program_gpu::OBJECT_LAYERS`),
     `object_state` and `state` (an object or a structure item whose pass
     would change a render state the device holds: `skip_holds`),
@@ -1110,7 +1125,9 @@ to the guest's draws (**Code**):
     `a_world_layers_pass_keeps_its_blend_and_cannot_sample_the_lightmap`
     and `a_materials_world_layer_passes_are_its_first_level_of_details`
     (`native_render::object_program`),
-    `a_materials_world_layer_passes_compile_over_its_layer_3_buffers` and
+    `a_materials_world_layer_passes_compile_over_its_layer_3_buffers`,
+    `layer_5_compiles_a_prt_variant_whose_stream_feeds_its_registers`,
+    `a_prt_item_draws_its_passes_prt_variant_with_its_constants` and
     `a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks`
     (`native_render::object_program_gpu`);
     for the stage, `the_plans_outcomes_count_by_layer_and_cause`,

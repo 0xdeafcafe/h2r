@@ -1196,6 +1196,13 @@ fn lit_material(o: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
 /// scalar 21, `+0x48`).
 const SHADER_VALUES: u32 = 0x44;
 
+/// Whether `layer` is a world layer besides 3 whose passes the lit build
+/// compiles (`object_program_gpu::OBJECT_LAYERS`): their vertex programs
+/// are read with layer 3's.
+pub fn drawn_layer(layer: usize) -> bool {
+    native_render::object_program_gpu::OBJECT_LAYERS.iter().any(|&l| usize::from(l) == layer)
+}
+
 /// The lit parts of `loaded`'s drawn sections for `materials`
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
@@ -1248,7 +1255,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
             .material
             .layers
             .iter()
-            .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
+            .filter(|l| l.lod == 0 && (l.layer == look::LIGHTMAP_LAYER || drawn_layer(l.layer)))
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
             .filter_map(|i| i.vertex_shader);
