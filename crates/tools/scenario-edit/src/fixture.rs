@@ -1123,3 +1123,54 @@ pub fn fixture_with_layered_bsp() -> Vec<u8> {
     b[file(code_at)..file(code_at) + code.len()].copy_from_slice(&code);
     b
 }
+
+/// Where [`fixture_with_screen`]'s screen tag (`id(4)`, a `wgit`) is in
+/// the metadata, and its name.
+pub const SCREEN_AT: usize = 0x1400;
+pub const SCREEN_TAG: &str = "ui\\screens\\invented\\lobby";
+/// The screen's two text blocks' rects, `[top, left, bottom, right]`.
+pub const SCREEN_TEXTS: [[i16; 4]; 2] = [[75, -260, 55, 70], [95, -260, 75, 70]];
+/// The screen's invented string IDs (length in the top byte, index
+/// below): the header's, then each text block's.
+pub const SCREEN_STRINGS: [u32; 3] = [0x0f00_0001, 0x0f00_0002, 0x0f00_0003];
+
+/// [`fixture`] with an invented UI screen tag: a root, one pane and two
+/// text blocks naming [`SCREEN_STRINGS`], every array inside the tag's
+/// bytes.
+pub fn fixture_with_screen() -> Vec<u8> {
+    let mut b = fixture();
+    string_ids(
+        &mut b,
+        &["", "invented_header", "invented_text_0", "invented_text_1"],
+    );
+    let mut names = NAMES.to_vec();
+    names.extend(SCREEN_TAG.as_bytes());
+    names.push(0);
+    tag_names(&mut b, &names);
+    let (root, pane, texts) = (SCREEN_AT, SCREEN_AT + 0x68, SCREEN_AT + 0x68 + 0x4c);
+    let size = 0x68 + 0x4c + 0x2c * SCREEN_TEXTS.len();
+    let mut classes = CLASSES.to_vec();
+    classes.push(*b"wgit");
+    let mut payloads = PAYLOADS.to_vec();
+    payloads.push((SCREEN_AT, size));
+    tag_index(&mut b, &classes, &payloads);
+    let file = |at: usize| META_FILE + at;
+    b[file(root)..file(root) + size].fill(0);
+    b[file(root) + 4..file(root) + 6].copy_from_slice(&14i16.to_le_bytes());
+    // No strings tag.
+    put(&mut b, file(root) + 0x18, u32::MAX);
+    put(&mut b, file(root) + 0x1c, u32::MAX);
+    put(&mut b, file(root) + 0x20, 1);
+    put(&mut b, file(root) + 0x24, META + pane as u32);
+    put(&mut b, file(root) + 0x2c, SCREEN_STRINGS[0]);
+    put(&mut b, file(pane) + 0x1c, SCREEN_TEXTS.len() as u32);
+    put(&mut b, file(pane) + 0x20, META + texts as u32);
+    for (i, r) in SCREEN_TEXTS.into_iter().enumerate() {
+        let e = file(texts) + 0x2c * i + 0x1c;
+        for (k, v) in r.into_iter().enumerate() {
+            b[e + 2 * k..e + 2 * k + 2].copy_from_slice(&v.to_le_bytes());
+        }
+        put(&mut b, e + 8, SCREEN_STRINGS[1 + i]);
+    }
+    b
+}

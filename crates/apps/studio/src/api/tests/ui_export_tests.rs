@@ -1,44 +1,20 @@
 //! `ui.export_edits` over the invented scenario map with an invented
-//! screen tag added, saved as `mainmenu.map` (no game data): edits made
-//! in the map's tag document come back as a retail edit file.
+//! screen tag (`fixture::fixture_with_screen`), saved as `mainmenu.map`
+//! (no game data): edits made in the map's tag document come back as a
+//! retail edit file.
 
 use boot::ui_kit::retail_edits::{self, BlockName, Edit};
-use map::build::{Block, TagPayload, TagSet};
-use map::{FourCC, Map, TagId};
 
 use super::*;
 use crate::app::{TagAction, tag_api};
 
-const SCREEN: &str = r"ui\screens\invented\lobby";
+const SCREEN: &str = fixture::SCREEN_TAG;
 
-/// The invented map with one screen tag: a pane with two texts.
+/// The invented map with one screen tag (a pane with two texts), saved
+/// under the main menu's name.
 fn menu_map(t: &Temp) -> PathBuf {
-    let mut m = Map::from_reader(std::io::Cursor::new(fixture::fixture())).unwrap();
-    let mut set = TagSet::from_map(&mut m).unwrap();
-    // Room in the index for one more tag, as the screen injector makes it.
-    let pinned = set.pinned.as_mut().unwrap();
-    pinned.clear_index_tail();
-    pinned.index_entries_end = pinned.index.len() as u32;
-    set.check_tag_memory = false;
-    set.add_group(FourCC(*b"wgit"), None, None);
-    let mut root = Block::zeroed(0x68);
-    root.put_u16(4, 14);
-    root.tag_ref(0x18, TagId::NULL);
-    root.string_id(0x2c, "invented_header");
-    let mut pane = Block::zeroed(0x4c);
-    let mut texts = Block::zeroed(0x2c * 2);
-    for (i, r) in [[75i16, -260, 55, 70], [95, -260, 75, 70]].into_iter().enumerate() {
-        for (k, v) in r.into_iter().enumerate() {
-            texts.put_u16(0x2c * i + 0x1c + 2 * k, v as u16);
-        }
-        texts.string_id((0x2c * i + 0x24) as u32, &format!("invented_text_{i}"));
-    }
-    pane.block(0x1c, 2, texts);
-    root.block(0x20, 1, pane);
-    set.add_tag(FourCC(*b"wgit"), SCREEN, TagPayload::Built(root))
-        .unwrap();
     let path = t.path("mainmenu.map");
-    std::fs::write(&path, set.build().unwrap().0).unwrap();
+    std::fs::write(&path, fixture::fixture_with_screen()).unwrap();
     path
 }
 
