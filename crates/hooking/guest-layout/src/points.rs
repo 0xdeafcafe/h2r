@@ -1498,6 +1498,12 @@ points! { ALL;
     /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
     /// flush loop `0x213fa0` (back to back, nothing drawn).
     CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
+    /// A map's cache status by path (EAX, a C string): 3 resident in a
+    /// slot, 4 a copy request done, 2 queued, 1 the other queue, 0 none.
+    /// Reads only the slot paths, the copy requests, the two queued paths
+    /// and the CRT locale; writes only its own stack. The frame poll
+    /// `0x163680` asks it three to five times a frame.
+    MAP_STATUS @ 0x0021_3f10: [fn(path: eax) -> eax ret 0], Optional; "docs/runtime/cache-slots.md";
     // Slice 11 of docs/engine/sim-rewrite-objects.md: the small type updates.
     /// Item update: slot `+40` of `item` (weapons, equipment and garbage inherit it).
     ITEM_UPDATE @ 0x0010_b4d0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";

@@ -476,7 +476,9 @@ both to the host's rate (about 270 µs each).
 Persistent metadata lives under `metadata/PartitionN`, outside guest-visible
 mounts. Each lowercase path component is hex encoded as a metadata-directory
 component; a `record` contains `HVF1`, the little-endian u32 attributes and
-four little-endian u64 times, 40 bytes total. Missing/truncated/invalid records
+four little-endian u64 times, 40 bytes total. A backend builds each guest
+path's record path once and keeps it (`RecordPaths` in
+`crates/runtime/vfs/src/host.rs`): every read asks for its file's record. Missing/truncated/invalid records
 fall back to host defaults; a later successful metadata write repairs them.
 Updates write and fsync a staging file, rename it over the record, and fsync
 the containing directory. New metadata directories are synced through their
