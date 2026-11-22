@@ -403,6 +403,26 @@ mod tests {
     }
 
     #[test]
+    fn salted_datums_are_keys_like_any_other() {
+        let mut g = FakeGame::with_players(2);
+        let ball = 0xE1A3_0012u32;
+        g.objectives.insert(ball, None);
+        assert_eq!(g.objectives(), [ball]);
+        g.apply(&Input::Pickup(1, ball));
+        assert_eq!(g.objectives[&ball], Some(1));
+        let is = Call {
+            entry: crate::caps::entry_named("is_objective").unwrap(),
+            args: vec![Arg::Object(Some(ball))],
+        };
+        assert_eq!(g.read(&is), 1);
+        let carrier = Call {
+            entry: crate::caps::entry_named("carrier_of").unwrap(),
+            args: vec![Arg::Object(Some(ball))],
+        };
+        assert_eq!(g.read(&carrier), 1);
+    }
+
+    #[test]
     fn the_dead_leave_their_zones() {
         let mut g = FakeGame::with_players(1);
         g.units.insert(100, 0);
