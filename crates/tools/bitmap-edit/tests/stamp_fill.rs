@@ -120,11 +120,13 @@ fn channels_paint_apart() {
 fn a_stroke_stamps_at_the_spacing() {
     let mut c = Canvas::new(64, 8, BLACK).unwrap();
     let b = Brush {
-        spacing: 1.0,
+        spacing: 0.5,
         ..hard(4.0, WHITE)
     };
-    // A line of 40 pixels with stamps every 4: a continuous bar.
-    let dirty = paint(&mut c, &b, &[[4.0, 4.0], [44.0, 4.0]]);
+    // A line of 40 pixels with stamps every 2, along pixel centres: a
+    // continuous bar. (Stamps one diameter apart only touch, so the
+    // pixels between them are not fully covered.)
+    let dirty = paint(&mut c, &b, &[[4.5, 4.5], [44.5, 4.5]]);
     for x in 3..=45 {
         assert_eq!(c.pixel(x, 4)[0], 255, "x = {x}");
     }
