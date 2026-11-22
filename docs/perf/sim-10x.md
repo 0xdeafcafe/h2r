@@ -483,3 +483,4 @@ against M0's `aa1`, then `timed`, on Lockout and Waterworks.
 - [contract-thin-transfers-flat-ram.md](../runtime/contract-thin-transfers-flat-ram.md): levers 2 and 3.
 - [2026-11-20-sim.md](../reviews/2026-11-20-sim.md): the review that proposed the tier and the tick driver.
 - [host-halving.md](../live/host-halving.md): the same levers priced for a paced host.
+- [sim-light.md](sim-light.md): memory, disk and setup time per match in a batch.

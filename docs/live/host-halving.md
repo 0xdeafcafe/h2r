@@ -464,6 +464,7 @@ The table lists outstanding implementation work. Measurement results go in a dat
 - [dedicated-host.md](dedicated-host.md): the host, packs, cost and lifecycle this page changes.
 - [dedicated-host-build.md](dedicated-host-build.md): the slim host and the provider contracts.
 - [sim.md](../runtime/sim.md): the light profile, stores, snapshots and the report fields.
+- [sim-light.md](../perf/sim-light.md): the memory levers for sim batches, and why mapped reads and stores do not reach a sim's cache slots.
 - [sim-budget.md](../perf/sim-budget.md) and [sim-attribution.md](../perf/sim-attribution.md): where the tick goes, and the A/B method.
 - [sim-rewrite.md](../engine/sim-rewrite.md): the phases the CPU half depends on.
 - [live-matchmaking.md](live-matchmaking.md#ad-hoc-dedicated-hosts): region choice and the peer fallback.
