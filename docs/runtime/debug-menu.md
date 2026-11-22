@@ -105,20 +105,63 @@ swallowed.
 
 ## Sections
 
-Each section is a `debug_menu::Section`: the agent calls it makes, and a
-function from their answers to rows (`crates/extensions/debug-menu/src/sources.rs`).
-The menu re-asks every second while a page is open, and right after any
-change.
+The first page is organised by what you are doing, not by agent namespace:
+Player, World, Game, Time, View, Perf, Settings, Dev. Each is a
+`debug_menu::Section`: the agent calls it makes, and a function from their
+answers to rows (`crates/extensions/debug-menu/src/sources/`, one file a
+section). A page reached from another (a weapon picker, the Video settings)
+is a sub-page: its id has a `/` (`player/give`), a row of its parent opens
+it, and `sources::is_page` tells the two apart. The menu re-asks every
+second while a page is open, and right after any change.
+
+Rows read as a person would say them: a human label with its unit
+(`Range (world units)`, `Frame time p99 (ms)`), never a JSON key or a hex
+id. A tag is named by the last part of its path (`Battle Rifle`). A row
+that can't act is greyed with the reason, and a row that changes the game
+for good (load, restart, quit, revert all) asks twice. What a change did
+shows as a one-line result.
+
+A pinned line over every page (`sources::header`, from `session.status`,
+`sim.view` and `sim.session`) says where you are:
+`coagulation  tick 5412  30 fps  pos 36.7 -80.8 1.7  offline`.
+
+Writes to the simulation (give, spawn, teleport, load, restart) are host
+writes: `sim.session` refuses them in a co-op session and on a multiplayer
+client. Those rows are greyed with its reason, which the session gives in
+its own words.
 
 | Section | Calls | Rows |
 |---|---|---|
-| Render | `render.toggle`, `render.param`, `settings.list {prefix: "graphics."}`, `render.stats` | the renderer's switches and parameters (a parameter steps by a tenth of its default), the graphics settings, the last frame's stats (read-only). A setting that applies after a restart is greyed with that reason, and so is one locked for this run by a flag or env var. |
-| Shader overrides | `render.overrides`, `render.reload` | the all-overrides switch, reload, the overrides directory, each override and its state; a rejected override is greyed with its error |
-| Tag edits | `edit.changes`, `edit.revert` | each live tag edit (group, tag, field, old -> new). Select one to revert it, or revert all. |
-| Cheats | `cheat.list`, `cheat.set` | god mode, infinite ammo, bottomless clip, game speed, fly, noclip, hide HUD; a cheat refused on its own is greyed with its reason |
-| Perf | `perf.overlay`, `profile.counters` | the perf overlay switch (the same one F3 flips), fps and frame-time percentiles, per-phase ms and counts |
-| Features | `features.list` | every feature with its state (read-only) |
-| Debug views | `debug.views`, `debug.view` | world-space lines for the loaded map, live hitboxes and recent collision queries. Each view has its own switch. Controls set the draw range and trace lifetime. |
+| Player | `cheat.list`, `cheat.set`, `sim.session`, `session.status` | God mode, Infinite ammo, Bottomless clip, Fly, Noclip, Give weapon >, Teleport >, Hide HUD. At the main menu every cheat says no game is running instead of looking accepted. |
+| Player > Give weapon | `edit.tags {group: "weap"}`, `sim.view`, `sim.give` | the map's weapons by name; select one to put it in the local player's hands (it replaces what they hold). The result reads `gave <name>`. |
+| Player > Teleport | `sim.view`, `sim.state.set` | each other player by name; select one to move beside them, facing the way they do. |
+| World | `sim.session` | Spawn vehicle >, Spawn object > |
+| World > Spawn vehicle, Spawn object > (Weapons, Equipment, Scenery, Crates, Machines, Creatures) | `edit.tags {group}`, `sim.view`, `sim.spawn` | the map's tags of that kind by name; select one to make it 5 world units (vehicles) or 3 (objects) in front of the local player, half a unit up, facing the way the player does. |
+| Game | `state.list`, `sim.session`, `session.status`, `state.save`, `state.load`, `map.reload`, `game.menu` | Quick save (`state.save {name: "quick", replace: true}`), Quick load (confirm; greyed until a `quick` snapshot exists), Snapshots >, Restart map (confirm), Test maps >, Quit to main menu (confirm). A save or load that finds the machine busy fails with the agent's BUSY message, which names what is live. |
+| Game > Snapshots | `state.list`, `state.load` | each snapshot of this build, with its map, tick and size; select one twice to load it |
+| Game > Test maps | `maps.test.list`, `maps.test.load` | each test map; a ready one loads (confirm), one being built or that failed is greyed with why |
+| Time | `cheat.list`, `cheat.set` | Game speed, over the speeds the cheat lists. Pause and frame step join it when the agent has a method for them. |
+| View | `debug.views`, `debug.view` | the world debug views below, each with its own switch; Range (world units, steps of 8, default 48); Trace lifetime (ticks); Render passes >; Graphics settings > (the Video page of Settings) |
+| View > Render passes | `render.toggle`, `render.param` | the renderer's switches and parameters (a parameter steps by a tenth of its default; the all-overrides switch is under Dev) |
+| Perf | `perf.overlay`, `profile.counters`, `profile.capture` | Overlay (F3), FPS, frame time p50 and p99 (ms), slowest frame, the five biggest phases by name (frame pacing left out), and Capture 10 s (`profile.capture {ms: 10000}`, which says how many frames it saw and the p99) |
+| Settings | `settings.list {}` | every setting, grouped by prefix into Video, Controls, Co-op, Skulls, Theater, Superbounce, Halo 1, Game modes and Other (a key no group owns), each a sub-page `settings/<group>` that keeps its own keys. A setting that applies after a restart is greyed with "takes effect on restart"; one locked for this run by a flag or env var says what locked it. |
+| Dev | `edit.changes` | Shader overrides >, Tag edits >, Features >, Render stats > |
+| Dev > Shader overrides | `render.overrides`, `render.reload`, `render.toggle {name: "overrides"}` | the all-overrides switch, Reload, the directory, each override by file name and its state; a rejected one is greyed with its error |
+| Dev > Tag edits | `edit.changes`, `edit.revert` | each live tag edit (tag, field, old -> new); select one to revert it, or Revert all (confirm) |
+| Dev > Features | `features.list` | each feature, on or off with the reason it is off (read-only). The rows come from the answer's structured `features` array when it has one, else from the `feature <id>: on` and `feature <id>: off (<reason>)` lines of the plan text (`Plan::text`, `crates/hooking/hooks/src/plan.rs`); the plan's `warning:` lines show as greyed rows. |
+| Dev > Render stats | `render.stats` | every counter as a read-only row named by its path |
+
+The Player and Time pages are the cheats below; the same `cheat.list`
+answer also gives the cheat line in the watermark.
+
+### Cheat line
+
+While the menu is closed, a small line at the bottom left of the game image
+lists the cheats that are on and a game speed other than 1x
+(`cheats: God mode, Fly, 0.5x`). It shows with the perf overlay off, so a
+forgotten god mode is never invisible. `app::Watermark::set_cheats` takes
+the list; `debug_menu::sources::active_cheats` makes it from a `cheat.list`
+answer (`crates/apps/app/src/watermark.rs`, `shell.rs`).
 
 ### Debug views
 
@@ -218,8 +261,9 @@ vehicle moves you. The research points are in the module doc.
 | a networked game's guest (world mode 5) | all but `hide_hud`: the host's simulation decides | `hide_hud` |
 | a networked game's host (world mode 4) | `game_speed`: the guests' clocks would not follow | god, ammo, clip, fly and noclip on the host's own players; `hide_hud` |
 
-They act only in a campaign or multiplayer game, not on the main menu.
-When every cheat is refused, the menu shows "cheats are off" with the
+They act only in a campaign or multiplayer game, not on the main menu,
+where the menu says so on each row. When every cheat is refused, the menu
+shows "Cheats are off" with the
 reason and greys every row. A cheat refused on its own greys only its row,
 with its own reason. `cheat.set` answers `UNAVAILABLE` with the reason. If
 the session turns into one that refuses a cheat while it is on (someone
@@ -232,10 +276,12 @@ menu.
 Not built:
 
 - infinite plasma heat: the heat fields are not researched;
-- AI ignores the player, active camouflage, one-hit kills, kill all
-  enemies, give weapons, spawn vehicles, teleport to the crosshair, a free
-  camera: each needs more research, or calls into the game (object
-  creation, ray casts) that these cheats do not make yet;
+- AI ignores the player, active camouflage, one-hit kills, teleport to the
+  crosshair, a free camera: each needs more research, or calls into the
+  game (ray casts) that these cheats do not make yet;
+- kill all enemies: the only delete, `world.object.delete`, is an editor
+  edit that frees the object without telling the AI that owns it, so it is
+  not offered for an actor;
 - low gravity: our Low Gravity skull already owns the gravity constant, and
   two writers would fight over it.
 
@@ -245,24 +291,26 @@ Rows are not hand-coded. They come from a registry through an agent method,
 so an item belongs to one of these:
 
 1. **An entry in an existing registry.** A `hot_render::Hub` toggle or
-   parameter (`hub.declare_toggle` / `declare_param`), a `settings::Def`
-   under `graphics.`, a feature: it shows up in its section with no menu code.
+   parameter (`hub.declare_toggle` / `declare_param`) shows up under View >
+   Render passes, a `settings::Def` under Settings (a prefix no group owns
+   lands in Other), a cheat under Player or Time, a feature under Dev >
+   Features: all with no menu code.
 2. **A new row kind in an existing section.** Change that section's rows
-   function in `sources.rs`, using `Row::toggle`, `int`, `float`, `choice`,
-   `action` or `info`, with a `Setter` naming the agent method and parameter
-   that changes it. Mark it `.disabled(reason)` when it can't change, and
-   `.about(text)` for the footer.
+   function in `sources/<section>.rs`, using `Row::toggle`, `int`, `float`,
+   `choice`, `action`, `open` or `info`, with a `Setter` naming the agent
+   method and parameter that changes it. Mark it `.disabled(reason)` when it
+   can't change, `.about(text)` for the footer, `.confirm()` when it can't be
+   undone, and `.on_ok(fmt)` for the line that says what it did.
 3. **A new section.** Add the host methods to the agent
    (`agent.add_method`, on the game's thread), then a `Section { id, title,
-   about, calls, rows }`. Add it to `sources::all()` for every game, or with
+   about, calls, rows }` in a file of `sources/`, and list it in
+   `sources::all()`. A page reached from another takes an id with a `/` and
+   a `Row::open` on its parent. A section for one mode goes in with
    `Shared::add_section` at run time.
 
-The hook for a later Players section (`sim.*`) is
-`debug_menu::Shared::add_section`: give it the `sim.*` calls and a rows
-function, and it appears on the first page after the built-in sections.
-
-Test new rows in `crates/extensions/debug-menu/src/tests.rs`: the fake game there
-answers the calls the way the host methods do.
+Test new rows in the file's own `tests` module over `sources/fake.rs`, a
+fake game that answers each method in the format the host returns (read it
+from the method's implementation, not its doc).
 
 ## How it is wired
 
@@ -270,7 +318,7 @@ answers the calls the way the host methods do.
   (`HostPadState::touchpad`, read in `game_controller/apple.rs`, never mapped
   to the guest), gestures (`touchpad.rs`), and `InputManager::set_gate`. A
   `PadGate` sees each pad between polling and conversion.
-- `crates/extensions/debug-menu`: the model (`model.rs`), sections (`sources.rs`), layout
+- `crates/extensions/debug-menu`: the model (`model.rs`), sections (`sources/`), layout
   (`layout.rs`), the gate (`gate.rs`) and `Shared`, the handle the window,
   the input layer and the agent connection share.
 - `crates/extensions/agent/src/menu.rs`: the menu's in-process agent connection, plus
@@ -337,3 +385,9 @@ controller three ways. Run it while the buttons are held:
   but afr.
 - The perf overlay switch matches F3.
 - Shader overrides reload from the default directory.
+- Give weapon, Teleport and Spawn in a campaign and a multiplayer level: that
+  the weapon is held, the vehicle lands on the ground in front of the
+  player, and the player stands clear of the one they teleported to.
+- Quick save and Quick load in a level with something live that a snapshot
+  can't carry: the failure names it.
+- The cheat line at the bottom left, with the perf overlay off.

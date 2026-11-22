@@ -198,43 +198,43 @@ struct Info {
 
 const GOD: Info = Info {
     name: "god",
-    label: "god mode",
+    label: "God mode",
     about: "the local players take no damage",
     reach: Reach::Simulation,
 };
 const AMMO: Info = Info {
     name: "infinite_ammo",
-    label: "infinite ammo",
+    label: "Infinite ammo",
     about: "reserve ammo, battery and grenades kept full; still reloads",
     reach: Reach::Simulation,
 };
 const BOTTOMLESS: Info = Info {
     name: "bottomless_clip",
-    label: "bottomless clip",
+    label: "Bottomless clip",
     about: "the loaded magazine kept full: no reloads (not plasma heat)",
     reach: Reach::Simulation,
 };
 const SPEED: Info = Info {
     name: "game_speed",
-    label: "game speed",
+    label: "Game speed",
     about: "game time against real time; back to 1 on a new map",
     reach: Reach::Clock,
 };
 const FLY: Info = Info {
     name: "fly",
-    label: "fly",
+    label: "Fly",
     about: "crouch to take off; stick flies where you look, jump up, crouch down; land with crouch",
     reach: Reach::Simulation,
 };
 const NOCLIP: Info = Info {
     name: "noclip",
-    label: "noclip",
+    label: "Noclip",
     about: "fly through walls: stick where you look, jump up, crouch down; off drops you here",
     reach: Reach::Simulation,
 };
 const HUD: Info = Info {
     name: "hide_hud",
-    label: "hide HUD",
+    label: "Hide HUD",
     about: "the HUD hidden, as a script's HUD switch hides it",
     reach: Reach::Local,
 };
