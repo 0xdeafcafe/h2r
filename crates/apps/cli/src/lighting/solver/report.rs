@@ -370,7 +370,7 @@ figure{margin:0}img{width:100%;height:auto;image-rendering:pixelated}figcaption{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::split::solve::Split;
+    use crate::lighting::solver::solve::Split;
     use std::collections::BTreeMap;
 
     #[test]
