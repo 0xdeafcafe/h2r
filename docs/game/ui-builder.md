@@ -674,7 +674,7 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
    says `no dialog screen 222 in this interface`, the lobby's interface
    doesn't have Quick Options loaded; try `Large`.
 2. On screen: `fs_dialog` over the lobby, the header at the top left,
-   the rows on Quick Options' skin (label left, value right) from (-254, 68),
+   the rows as Quick Options' (label left, value right) from (-254, 87),
    the page's icon in the game type picture. Compare with `kit.dialog` in the sheet, and with
    the lobby's own Quick Options side by side: the same row bars and
    focus highlight, the same two blues, the value alone ("Normal", not
@@ -706,8 +706,8 @@ the doc's `settings:` block. It keeps one rule:
 | Title | `title` | layout 1 header `[190 -253 170 30]` | the doc |
 | Icon | `art.0` | Quick Options' picture `[166 -267 126 -227]`, `mp_games2` image N | `settings.icon` |
 | Name | `header.name` | `[163 -224 143 0]`, white, font 1, one line | `settings.name` |
-| About | `header.about` | `[143 -224 103 270]`, pale blue, font 1, two lines | `settings.about`, else `settings.caller.help` |
-| Rows | `row.N.*` | skin 2 at (-254, 68), 26 apart, at most 8 (`spacing.settings_rows`) | the doc's rows |
+| About | `header.about` | `[143 -224 123 270]`, pale blue, font 1, one line | `settings.about`, else `settings.caller.help` |
+| Rows | `row.N.*` | skin 2 at (-254, 87), 26 apart, at most 8 (`spacing.settings_rows`) | the doc's rows |
 | Help | `description` | `[-133 -244 -173 246]`, pale blue, font 1, two lines | the focused row's `help` |
 | Legend | `legend` | layout 1 footer `[-178 -200 -198 259]` | the rows and `settings.actions` |
 
@@ -715,18 +715,14 @@ the doc's `settings:` block. It keeps one rule:
 (`components.settings.name`, `settings.about`, `settings.help`); a
 settings doc gives no `description`, `legend`, `header.*` or `art.*`
 widget. The name is Quick Options' variant-name block
-(`dialog::QUICK_NAME_TEXT`). The about block starts on Quick Options'
-help line and runs two lines down to y 103 (`dialog::SETTINGS_ABOUT_TEXT`).
-A row's cap rises 33 above its item's anchor (34 high from 1 below
-it), so Quick Options' own list at (-254, 87) would put row 0's cap at
-y 120, under the about's second line; a settings dialog's list is
-Quick Options' skin moved down to (-254, 68) (`dialog::SETTINGS_LIST`,
-`KitScreen`'s list on a settings dialog), row 0's cap topping out at
-y 101. The help block sits between the last
+(`dialog::QUICK_NAME_TEXT`). The about block is Quick Options' help
+line, one line (`dialog::SETTINGS_ABOUT_TEXT`): a row's cap rises 33
+above its item's anchor, so row 0's reaches y 120, under the help
+line's bottom at 123, and a second line would sit on it. The list is
+Quick Options' own at (-254, 87). The help block sits between the last
 row and the legend, its left on the row labels' left
 (`dialog::SETTINGS_HELP_TEXT`). The disc test holds the name to the
-tag's text block 1 and the about's top, left, font and colour to its
-text block 0.
+tag's text block 1 and the about to its text block 0.
 
 **The doc.**
 
@@ -737,7 +733,7 @@ settings:
   name: "Bots in this game"
   caller:
     label: "Clanker Options..."
-    help: "Add bots to this game: how many, how well they play, and which team they join."
+    help: "Add bots: how many, how well they play and which team."
 rows:
   row.0:
     kind: value
@@ -944,9 +940,9 @@ sack, flag, bomb, four squares, banner of three stars, question mark.
 
 | Page | Icon | Name | About |
 |---|---|---|---|
-| Clankers | `spartan` | Bots in this game | Add bots to this game: how many, how well they play, and which team they join. |
-| Firefight | `skull` | Firefight rules | Fight waves of enemies on a Firefight map: the waves, the difficulty and the lives. |
-| Halo 1 Options | `helmet` | This Halo 1 map | Choose whether this Halo 1 map plays with Halo 1's weapons, vehicles and HUD, or Halo 2's. |
+| Clankers | `spartan` | Bots in this game | Add bots: how many, how well they play and which team. |
+| Firefight | `skull` | Firefight rules | Fight waves of enemies: set the waves, difficulty and lives. |
+| Halo 1 Options | `helmet` | This Halo 1 map | Play this Halo 1 map with Halo 1's weapons and HUD, or Halo 2's. |
 | Game filters | `squares` | Custom games list | Show only the games that match these filters. |
 
 The first three pages open from Game Setup, so their about line is the
@@ -979,15 +975,15 @@ The spec carries the icon as the screen's art (`ScreenSpec::art`,
 every focus; `RowSpec::art` is for pages whose art follows the focus
 (Theater's library). The disc test holds `QUICK_PICTURE` to the tag's
 block, checks `mp_games2`'s eleven icons are 40 high and 40 or 41 wide,
-and measures each page's name (one line), about and every row's help
-(two lines at most) in the disc's font 1.
+and measures each page's name and about (one line each) and every
+row's help (two lines at most) in the disc's font 1.
 
 ### Its game run
 
 From a custom game lobby (on a Halo 1 map for Halo 1 Options), Game
 Setup: open Clanker Options. At its top left, the Spartan icon where
 Quick Options shows its game type, "Bots in this game" in white beside
-the icon's upper half, and "Add bots to this game..." in pale blue
+the icon's upper half, and "Add bots: how many..." in pale blue
 beneath it, both over the panel. Move down: the icon, the name and the
 about stay as they are; the help under the rows changes with each row.
 A on a row: the value picker's title is the row's name and its right
@@ -1565,7 +1561,7 @@ A game run has to show:
 - the native animation timing and the panel, rows and selection in both directions on the game shell and paused game, and what holding a screen's delay and length to the kit's budgets does to its widgets (a quicker track, or the screen freed before its tracks end);
 - input timing: key repeat, the opener-press guard, the close guard and a closing dialog's presses reaching the screen beneath, and the keyboard's return;
 - a dialog's description drawn over its backing at `dialog_tag::description_bias`, and a settings dialog's header lines at that bias too;
-- a settings dialog's two-line about and help blocks in the game's font: the about clear of the first row's bar, the help clear of the eighth row and the legend;
+- a settings dialog's one-line about and two-line help in the game's font: the help clear of the eighth row and the legend;
 - that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
 - the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.
 

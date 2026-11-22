@@ -1014,8 +1014,8 @@ the doc for a multiplayer option, and a switch in `h1_options::switch`.
   each row's name left and its choice alone in the value column
   ("Sandbox  Halo 1"), and the legend in its footer. Its top is the same
   at every focus: the helmet in Quick Options' game type picture, "This
-  Halo 1 map", and the Game Setup row's help ("Choose whether this Halo 1
-  map plays with Halo 1's weapons, vehicles and HUD, or Halo 2's."). The
+  Halo 1 map", and the Game Setup row's help ("Play this Halo 1
+  map with Halo 1's weapons and HUD, or Halo 2's."). The
   focused row's help is under the rows. Left or right changes a row; A
   opens the value picker, which explains the option and both choices
   (the row's `explain`); B backs out.

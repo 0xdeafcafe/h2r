@@ -611,23 +611,12 @@ impl KitScreen {
         });
         self
     }
-    /// A dialog's list on `base`: the screen's own layout, else a
-    /// settings dialog's list ([`crate::ui_kit::dialog::SETTINGS_LIST`],
-    /// under its header), else the base's.
+    /// A dialog's list on `base`: the screen's own layout, else the
+    /// base's (a settings dialog's is Quick Options' own,
+    /// [`crate::ui_kit::dialog::QUICK_LIST`]).
     fn list_layout(&self, base: DialogBase) -> ListLayout {
-        if let Some(l) = self.layout {
-            return l;
-        }
-        if self.header.is_some() {
-            let list = crate::ui_kit::dialog::SETTINGS_LIST;
-            return ListLayout {
-                skin: list.skin,
-                anchor: list.anchor,
-                bitmaps_left_of: i16::MIN,
-                visible: self.rows.len().max(1) as i16,
-            };
-        }
-        crate::ui_kit::dialog_tag::base_layout(base, self.rows.len())
+        self.layout
+            .unwrap_or_else(|| crate::ui_kit::dialog_tag::base_layout(base, self.rows.len()))
     }
     /// The settings dialog's header, when it is one.
     pub fn header(&self) -> Option<&Header> {
@@ -1253,7 +1242,7 @@ mod tests {
             (
                 DialogBase::QuickOptions,
                 2,
-                crate::ui_kit::dialog::SETTINGS_LIST.anchor,
+                crate::ui_kit::dialog::QUICK_LIST.anchor,
                 ValueStyle::Setting,
                 Some(crate::ui_kit::dialog::SETTINGS_HELP_TEXT),
             ),
@@ -1271,9 +1260,8 @@ mod tests {
             assert!(d.body.is_empty(), "rows, no message");
             assert_eq!(d.opener, Opener::MAIN_MENU);
             assert_eq!(s.style, style, "{base:?}");
-            // Quick Options' sample is a settings dialog: its list under
-            // the header, its focused help under the rows. The large
-            // dialog has no help block.
+            // Quick Options' sample is a settings dialog: its focused
+            // help under the rows. The large dialog has no help block.
             assert_eq!(
                 s.description,
                 help.map(spec::DescriptionBlock::from),

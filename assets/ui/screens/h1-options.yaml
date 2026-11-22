@@ -14,7 +14,7 @@ settings:
   name: "This Halo 1 map"
   caller:
     label: "Halo 1 Options..."
-    help: "Choose whether this Halo 1 map plays with Halo 1's weapons, vehicles and HUD, or Halo 2's."
+    help: "Play this Halo 1 map with Halo 1's weapons and HUD, or Halo 2's."
 widgets:
   title:
     component: title

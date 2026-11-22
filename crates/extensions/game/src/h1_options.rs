@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(texts, ["This Halo 1 map", caller.help.as_str()]);
         assert_eq!(
             caller.help,
-            "Choose whether this Halo 1 map plays with Halo 1's weapons, vehicles and HUD, or Halo 2's."
+            "Play this Halo 1 map with Halo 1's weapons and HUD, or Halo 2's."
         );
         for (row, r) in d.rows.values().enumerate() {
             let focused = ScreenSpec {

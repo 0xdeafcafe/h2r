@@ -87,12 +87,12 @@ components:
     at: [-224, 163]
     size: [224, 20]
   settings.about:
-    role: "the header's lines under the name: what the window is for, two lines at most, the same in every state"
+    role: "the header's line under the name: what the window is for, one line, the same in every state"
     font: body
     colour: pale_blue
     justify: left
     at: [-224, 143]
-    size: [494, 40]
+    size: [494, 20]
   settings.help:
     role: "the focused row's help, under the rows and over the legend, two lines at most"
     font: body

@@ -473,7 +473,7 @@ fn every_row_has_a_help_and_real_picker_copy() {
     assert_eq!(texts, ["Firefight rules", caller().help.as_str()]);
     assert_eq!(
         caller().help,
-        "Fight waves of enemies on a Firefight map: the waves, the difficulty and the lives."
+        "Fight waves of enemies: set the waves, difficulty and lives."
     );
     for (row, r) in doc().rows.values().enumerate() {
         let h = r.help.as_deref().unwrap_or_default();

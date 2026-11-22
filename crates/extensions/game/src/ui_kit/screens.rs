@@ -784,10 +784,10 @@ mod tests {
             assert_eq!(s.style, ValueStyle::Setting, "{name}: the value alone");
             assert_eq!(
                 s.list,
-                DialogGeometry::list_place(crate::ui_kit::dialog::SETTINGS_LIST, s.rows.len()),
-                "{name}: Quick Options' skin, under the header"
+                DialogGeometry::list_place(crate::ui_kit::dialog::QUICK_LIST, s.rows.len()),
+                "{name}: Quick Options' own list"
             );
-            assert_eq!(crate::ui_kit::dialog::SETTINGS_LIST.skin, g.list.skin, "{name}");
+            assert_eq!(g.list, crate::ui_kit::dialog::QUICK_LIST, "{name}");
             assert!(
                 s.rows.len() <= g.list_items,
                 "{name}: fits without scrolling"
@@ -825,7 +825,7 @@ mod tests {
             assert_eq!(s.texts[0].rect, QUICK_NAME_TEXT.rect, "{name}");
             assert_eq!(s.texts[1].rect, SETTINGS_ABOUT_TEXT.rect, "{name}");
             assert_eq!(lines(&s.texts[0].text, QUICK_NAME_TEXT), 1, "{name}: one name line");
-            assert!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT) <= 2, "{name}: the about's two lines");
+            assert_eq!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT), 1, "{name}: one about line");
             assert_eq!(s.help, None, "{name}: the rows' help, no page line");
             for (row, r) in s.rows.iter().enumerate() {
                 let (label, value) = r.cells(s.style);
@@ -1183,11 +1183,11 @@ mod tests {
                 "white: {:?}",
                 name.text_color
             );
-            // A settings dialog's about block starts where the help line
-            // does, in its font, colour and animation, two lines deep.
+            // A settings dialog's about block is the help line's own
+            // block, in its font, colour and animation.
             {
                 use crate::ui_kit::dialog::SETTINGS_ABOUT_TEXT as ABOUT;
-                assert_eq!([ABOUT.rect[0], ABOUT.rect[1]], [help.rect.top, help.rect.left]);
+                assert_eq!(ABOUT.rect, [help.rect.top, help.rect.left, help.rect.bottom, help.rect.right]);
                 assert_eq!(
                     (ABOUT.font, ABOUT.colour, ABOUT.animation),
                     (help.font, help.text_color, help.animation.0)
@@ -1228,7 +1228,7 @@ mod tests {
                 }
                 assert!(disc.image(pic.bitmap, icon::COUNT as i16).is_none());
                 // Our settings dialogs' copy in the disc's font: the name
-                // one line, the about and each row's help two at most.
+                // and the about one line each, each row's help two at most.
                 use crate::ui_kit::dialog::{QUICK_NAME_TEXT, SETTINGS_ABOUT_TEXT, SETTINGS_HELP_TEXT};
                 let lines = |text: &str, b: crate::list_class::TextBlock| {
                     let width = i32::from(b.rect[3]) - i32::from(b.rect[1]);
@@ -1237,7 +1237,7 @@ mod tests {
                 for name in QUICK_PAGES {
                     let s = sample(name).unwrap();
                     assert_eq!(lines(&s.texts[0].text, QUICK_NAME_TEXT), 1, "{name}: the name");
-                    assert!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT) <= 2, "{name}: the about");
+                    assert_eq!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT), 1, "{name}: the about");
                     for r in s.rows {
                         let help = r.description.unwrap_or_default();
                         assert!(lines(&help, SETTINGS_HELP_TEXT) <= 2, "{name}: {help:?}");

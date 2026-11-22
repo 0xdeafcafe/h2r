@@ -1188,7 +1188,7 @@ fn the_header_stays_and_the_help_follows_the_focused_row() {
     assert_eq!(texts, ["Bots in this game", caller.help.as_str()]);
     assert_eq!(
         caller.help,
-        "Add bots to this game: how many, how well they play, and which team they join."
+        "Add bots: how many, how well they play and which team."
     );
     assert_eq!(s.description.map(|b| b.rect), Some(SETTINGS_HELP_TEXT.rect));
     let header = (Rows::panel_text(&p, 0), Rows::panel_text(&p, 1));

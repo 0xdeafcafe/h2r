@@ -279,11 +279,10 @@ pub const SETTINGS_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::
     colour: [0.388235, 0.580392, 0.756863],
     animation: QUICK_ANIMATION,
 };
-/// A settings dialog's about block: what the window is for, from the top
-/// of Quick Options' help line ([`QUICK_HELP`]) down two lines, clear of
-/// the first row's bar at y 87 (`design.yaml`
-/// `components.settings.about`).
-pub const SETTINGS_ABOUT: Rect = rect(143, -224, 103, 270);
+/// A settings dialog's about block: what the window is for, one line in
+/// Quick Options' own help block ([`QUICK_HELP`]), above the first row's
+/// cap (`design.yaml` `components.settings.about`).
+pub const SETTINGS_ABOUT: Rect = rect(143, -224, 123, 270);
 /// [`SETTINGS_ABOUT`]'s text block: Quick Options' help line's font,
 /// colour and animation.
 pub const SETTINGS_ABOUT_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
@@ -344,15 +343,6 @@ pub const QUICK_LIST: ListAt = ListAt {
     skin: 2,
 };
 pub const QUICK_LIST_ROWS: usize = 11;
-/// A settings dialog's list: Quick Options' skin, moved down from y 87 to
-/// 68 so the two-line about block (down to y 103, [`SETTINGS_ABOUT`])
-/// stays clear of row 0's art, which rises 33 above its anchor (the cap
-/// is 34 high from 1 below it). Eight rows 26 apart end at y -115, above
-/// the help block (y -133, [`SETTINGS_HELP`]).
-pub const SETTINGS_LIST: ListAt = ListAt {
-    anchor: [-254, 68],
-    skin: QUICK_LIST.skin,
-};
 
 /// Quick Options' game type picture: pane 0's bitmap block 1,
 /// `mp_games2.bitm` (eleven 40 x 40 icons, the variant's game type's

@@ -16,7 +16,7 @@ settings:
   name: "Firefight rules"
   caller:
     label: "Firefight Options..."
-    help: "Fight waves of enemies on a Firefight map: the waves, the difficulty and the lives."
+    help: "Fight waves of enemies: set the waves, difficulty and lives."
 widgets:
   title:
     component: title

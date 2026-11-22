@@ -16,7 +16,7 @@ settings:
   name: "Bots in this game"
   caller:
     label: "Clanker Options..."
-    help: "Add bots to this game: how many, how well they play, and which team they join."
+    help: "Add bots: how many, how well they play and which team."
 widgets:
   title:
     component: title
