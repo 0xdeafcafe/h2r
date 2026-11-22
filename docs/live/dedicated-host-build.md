@@ -117,6 +117,10 @@ and `H2_BIN` to a Mac `h2` from this checkout if it is already installed.
 H2_OPT=2 deploy/host/build.sh "$H2_DISC" --coverage "$H2_HOST_COVERAGE"
 ```
 
+Without `--coverage`, the script reads `H2_HOST_COVERAGE`, then
+`deploy/host/host-coverage.txt` (ignored by Git), and stages the full
+module only when neither is set.
+
 The Linux Rust binary uses the `host` Cargo feature without defaults.
 It leaves out the Cranelift compiler and module build commands, native
 render glue, headless draw recording and captures, local keyboard
