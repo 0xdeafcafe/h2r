@@ -1,6 +1,7 @@
 // Game type scripts: the rules workbench (docs/game/rules-engine.md,
-// "Workbench"). One screen: the script in the editor with its problems,
-// budget and capabilities beside it, and under them the test: generated
+// "Workbench"). One screen: the script in the editor with its problems
+// (and their quick fixes in the editor), what a map needs, its budget and
+// capabilities beside it, and under them the test: generated
 // matches on the fake game summed up, beside one of them in full. The
 // server checks the script as you type and plays the matches after each
 // check; "Edit this match" opens one in the hand editor, and that match
@@ -36,9 +37,9 @@ import {
   downloadBundle, fetchVariants, makeBundle, nameProblem, notFound, publishFromScript, publishVariant, variantHref,
   type OptionValue, type OptionValues, type ScriptRef, type Variant, type Visibility,
 } from "../lib/variants";
-import { fetchMenuCompletions, insertMenus, type InsertItem, type InsertMenu, type InsertMenuId } from "../lib/rulesIde";
+import { fetchMenuCompletions, insertMenus, mapLabelItems, type InsertItem, type InsertMenu, type InsertMenuId } from "../lib/rulesIde";
 import RulesEditor, { type RulesEditorApi } from "./RulesEditor";
-import { BatchView, MatchBar, ResultsView, ScenarioEditor, SimStrip, TroubleNote, type Ran } from "./RulesTest";
+import { BatchView, MapNeeds, MatchBar, ResultsView, ScenarioEditor, SimStrip, TroubleNote, type Ran } from "./RulesTest";
 import "../styles/rules.css";
 
 const CRUMB: [string, string] = ["Game Types", statsPath("/rules")];
@@ -74,8 +75,6 @@ const CHECK_DELAY_MS = 450;
 const RUN_DELAY_MS = 350;
 /** How long a rate-limited check waits before it asks again. */
 const LIMITED_RETRY_MS = 3000;
-/** The Insert menus before (or without) the completion route's lists. */
-const STATIC_MENUS = insertMenus(null, null);
 
 const storage = (): Storage | null => {
   try { return globalThis.localStorage ?? null; } catch { return null; }
@@ -100,11 +99,30 @@ function Waiting(props: { tools: Tools; children: string }) {
   return <p class="s-pad s-rules-muted">{props.tools === "missing" ? "Needs the server's script tools." : props.children}</p>;
 }
 
+/** A check's warnings, each with its place. */
+function WarningList(props: { warnings: Problem[]; onJump: (p: Problem) => void }) {
+  return (
+    <ul class="s-rules-errors s-rules-warnings" aria-label="Warnings">
+      <For each={props.warnings}>
+        {(p) => (
+          <li>
+            <Show when={p.line > 0} fallback={<span class="s-rules-errplace">Whole script</span>}>
+              <button class="s-rules-errlink" onClick={() => props.onJump(p)} title="Go to this place in the script">{problemPlace(p)}</button>
+            </Show>
+            <span><span class="s-rules-warn">Warning:</span> {p.message}</span>
+          </li>
+        )}
+      </For>
+    </ul>
+  );
+}
+
 function ProblemsPanel(props: { check: CheckResult | null; busy: boolean; tools: Tools; trouble: Trouble | null; onJump: (p: Problem) => void; onRetry: () => void }) {
   const errors = () => props.check?.errors ?? [];
+  const warnings = () => props.check?.warnings ?? [];
   const right = () => (props.busy ? "checking..." : !props.check ? "" : errors().length ? problemCount(errors().length) : props.check.ok ? "none" : "");
   return (
-    <Panel title="Problems" sub="pick one to go to its place in the script" right={right()} class="s-rules-problems">
+    <Panel title="Problems" sub="pick one to go to its place; Ctrl (Cmd)+. there offers its fixes" right={right()} class="s-rules-problems">
       <Show when={props.trouble && !props.trouble.missing ? props.trouble : null}>{(t) => <TroubleNote trouble={t()} onRetry={props.onRetry} />}</Show>
       <Show when={props.check} fallback={<Show when={!props.trouble || props.trouble.missing}><Waiting tools={props.tools}>Checking the script...</Waiting></Show>}>
         {(c) => (
@@ -128,6 +146,22 @@ function ProblemsPanel(props: { check: CheckResult | null; busy: boolean; tools:
                 )}
               </For>
             </ul>
+          </Show>
+        )}
+      </Show>
+      <Show when={warnings().length}><WarningList warnings={warnings()} onJump={props.onJump} /></Show>
+    </Panel>
+  );
+}
+
+/** "What a map needs": the check's labels in Forge's words. */
+function MapNeedsPanel(props: { check: CheckResult | null; tools: Tools }) {
+  return (
+    <Panel title="What a map needs" sub="the labels the script declares, checked before a game starts">
+      <Show when={props.check?.report} fallback={<Waiting tools={props.tools}>{props.check ? "A script with problems has none to show." : "Shows once the script is checked."}</Waiting>}>
+        {(r) => (
+          <Show when={r().labels.length} fallback={<p class="s-pad s-rules-muted">The script declares no labels: any map will do.</p>}>
+            <MapNeeds labels={r().labels} />
           </Show>
         )}
       </Show>
@@ -235,6 +269,9 @@ export default function RulesPage() {
   const [running, setRunning] = createSignal(false);
   const [runTrouble, setRunTrouble] = createSignal<Trouble | null>(null);
   const [runErrors, setRunErrors] = createSignal<Problem[]>([]);
+  /** What the match's map lacked when the run refused it, with the run's
+   *  key (shown only while it is the match's). */
+  const [runMap, setRunMap] = createSignal<{ key: string; texts: string[] } | null>(null);
   const [notice, setNotice] = createSignal<Notice | null>(null);
   const [saving, setSaving] = createSignal(false);
   /** The script shown read-only until "Use as start". */
@@ -275,7 +312,7 @@ export default function RulesPage() {
       if (t.fault === "script") {
         // The server answered and refused this script (too long, say):
         // that is a problem of the whole script, listed with the others.
-        setCheck({ ok: false, hash: null, name: null, version: null, errors: [{ line: 0, col: 0, message: t.text }], report: null, options: [], carrier: null });
+        setCheck({ ok: false, hash: null, name: null, version: null, errors: [{ line: 0, col: 0, message: t.text }], warnings: [], report: null, options: [], carrier: null });
         setCheckTrouble(null);
         setTools("ok");
         return;
@@ -320,13 +357,17 @@ export default function RulesPage() {
     return true;
   }
 
-  // The Insert menus: the completion route's events and API over the
-  // page's own lists.
-  const [routeMenus] = createResource(
-    () => live.server().api,
-    async (api) => { const r = await fetchMenuCompletions(api); return insertMenus(r.top, r.body); },
-  );
-  const menus = (): InsertMenu[] => routeMenus.latest ?? STATIC_MENUS;
+  // The Insert menus: the completion route's events, API and flag labels
+  // over the page's own lists, and a declaration for each label of the
+  // test map the script does not declare.
+  const [routeMenus] = createResource(() => live.server().api, (api) => fetchMenuCompletions(api));
+  // A function, not a memo: it reads the shown match, declared below.
+  const menus = (): InsertMenu[] => {
+    const r = routeMenus.latest;
+    const map = (custom() ? scenario() : shownMatch()?.scenario)?.objects ?? [];
+    const declared = check()?.report?.labels.map((l) => l.text) ?? [];
+    return insertMenus(r?.top ?? null, r?.body ?? null, r?.label ?? null, mapLabelItems(map, declared));
+  };
   const menu = (): InsertMenu | undefined => menus().find((m) => m.id === menuId());
   function openMenu(id: InsertMenuId) {
     setMenuId(id);
@@ -486,8 +527,9 @@ export default function RulesPage() {
       const t = await runRules(live.server().api, source(), d, fetch, ctl.signal);
       if (runFlight !== ctl) return;
       setRunTrouble(null);
-      if (runFailed(t)) { setRunErrors(t.errors); return; }
+      if (runFailed(t)) { setRunErrors(t.errors); setRunMap(t.map?.length ? { key, texts: t.map } : null); return; }
       setRunErrors([]);
+      setRunMap(null);
       setRan({ trace: t, scenario: d, key });
     } catch (e) {
       if (runFlight !== ctl || aborted(e)) return;
@@ -501,6 +543,8 @@ export default function RulesPage() {
     if (key && key !== ran()?.key) runTimer = setTimeout(() => void run(), RUN_DELAY_MS);
   }));
   const stale = () => !!ran() && ran()?.key !== runKey();
+  /** What the run found the match's map lacks, while it is of this match. */
+  const mapProblems = (): string[] => { const m = runMap(); return m && m.key === runKey() ? m.texts : []; };
   onCleanup(() => { clearTimeout(timer); clearTimeout(runTimer); clearTimeout(simTimer); inflight?.abort(); runFlight?.abort(); simFlight?.abort(); });
 
   async function save() {
@@ -685,13 +729,15 @@ export default function RulesPage() {
                   onChange={(v) => setSource(v)}
                   readOnly={!!locked()}
                   problems={errors()}
+                  warnings={check()?.warnings ?? []}
                   api={live.server().api}
                   onReady={(api) => { editor = api; }}
                 />
-                <p class="s-rules-keys">Shift+Alt+F formats · F12 goes to a definition · Shift+F12 finds references · Ctrl (Cmd)+Shift+O outlines</p>
+                <p class="s-rules-keys">Ctrl (Cmd)+. fixes a problem · F2 renames · Shift+Alt+F formats · F12 goes to a definition · Shift+F12 finds references · Ctrl (Cmd)+Shift+O outlines</p>
               </div>
               <aside class="s-rules-side" aria-label="The script's check">
                 <ProblemsPanel check={check()} busy={checking()} tools={tools()} trouble={checkTrouble()} onJump={jumpTo} onRetry={recheck} />
+                <MapNeedsPanel check={check()} tools={tools()} />
                 <BudgetPanel check={check()} tools={tools()} />
                 <CapabilityPanel check={check()} tools={tools()} />
               </aside>
@@ -717,7 +763,10 @@ export default function RulesPage() {
                   <details class="s-rules-hand" open={custom()} onToggle={(e) => { const open = e.currentTarget.open; if (open !== custom()) { if (open) editMatch(); else setCustom(false); } }}>
                     <summary>Edit this match <small>for an exact case, event by event</small></summary>
                     <Show when={custom()}>
-                      <ScenarioEditor scenario={scenario()} set={(f) => setScenario(f)} problems={issues()} />
+                      <ScenarioEditor
+                        scenario={scenario()} set={(f) => setScenario(f)} problems={issues()}
+                        labels={check()?.report?.labels ?? []} minimal={check()?.report?.minimal ?? []} mapProblems={mapProblems()}
+                      />
                     </Show>
                   </details>
                 </div>
@@ -746,7 +795,7 @@ export default function RulesPage() {
                     />
                   }
                 >
-                  <ResultsView ran={ran()} running={running()} blocked={runWhy()} stale={stale()} trouble={runTrouble()} errors={runErrors()} onRun={() => void run()} onJump={jumpTo} />
+                  <ResultsView ran={ran()} running={running()} blocked={runWhy()} stale={stale()} trouble={runTrouble()} errors={runErrors()} map={mapProblems()} onRun={() => void run()} onJump={jumpTo} />
                 </Show>
               </Panel>
             </div>

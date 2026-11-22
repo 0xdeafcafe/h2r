@@ -114,7 +114,7 @@ impl Ty {
             Ty::Bool => value == 0 || value == 1,
             Ty::Player => value == NONE || below(MAX_PLAYERS),
             Ty::Team => value == NONE || below(MAX_TEAMS),
-            Ty::Object => value >= NONE,
+            Ty::Object => true,
             Ty::Squad => below(MAX_SQUADS),
             Ty::Timer => value >= 0,
             Ty::Class => value == NONE || below(sizes.strings),
@@ -150,6 +150,19 @@ impl Ty {
 
 /// `none` for the nullable types.
 pub const NONE: i32 = -1;
+
+/// The object datum a register value holds: all 32 bits are the handle
+/// (a salted handle has bit 31 set, so it reads negative), and `NONE`
+/// (0xFFFF_FFFF) is no object.
+pub fn object_id(v: i32) -> Option<u32> {
+    if v == NONE { None } else { Some(v as u32) }
+}
+
+/// The register value for an object datum. The datum 0xFFFF_FFFF is
+/// `none`.
+pub fn object_value(id: u32) -> i32 {
+    id as i32
+}
 
 /// The table sizes a value's validity depends on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

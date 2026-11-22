@@ -259,6 +259,17 @@ pub fn apply_block<M: Mem>(m: &mut M, options: u32) -> Option<String> {
     ))
 }
 
+/// The bundle's block [`apply_block`] writes at activation into a record
+/// with this name field (`+4`, 0x40 bytes) and engine; `None` when the
+/// record is not built from one of our entries. The lobby's start gate
+/// reads the script the game will run from it (`crate::rules::gate`).
+pub fn bundle_block(name_field: &[u8], engine: i32) -> Option<[u8; variants::ext::LEN]> {
+    listed()
+        .iter()
+        .find(|l| l.engine == engine && l.name_field[..] == *name_field)
+        .map(|l| l.block)
+}
+
 /// A script reload's restart names a new script for the running variant
 /// (`crate::rules::reload`): the listed entry the record was built from
 /// (its name field and engine) takes `block`, so [`apply_block`] at the

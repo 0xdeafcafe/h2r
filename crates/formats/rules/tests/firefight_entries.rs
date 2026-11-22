@@ -9,7 +9,7 @@ const SRC: &str = r#"
 rules "Entries" 1
 carrier slayer
 requires firefight.director
-global var t: int = 0
+global var t: time = 0t
 global var r: int = 0
 global var z: int = 7
 on tick {

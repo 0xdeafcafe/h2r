@@ -38,5 +38,5 @@ on kill(victim, killer) {
 
 on tick {
     if count(players where not infected) == 0 { end_round(team 1) }
-    else if round_time_left() == 0 { end_round(team 0) }
+    else if round_time_left() == 0t { end_round(team 0) }
 }

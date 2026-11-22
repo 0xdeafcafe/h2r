@@ -1,5 +1,7 @@
 //! Completion by context: what the tokens before the place say may come
-//! next.
+//! next, ranked by the type the place wants (`lang::sig` for an API
+//! argument, a parameter's declared type for a `fn`'s). Nothing is
+//! hidden; what fits comes first.
 
 use super::info::{self, LANG};
 use super::model::{self, DefKind, FieldTarget, Model, T};
@@ -8,6 +10,23 @@ use super::{CompletionItem, Markup, PLAIN_TEXT, SNIPPET, kind};
 use crate::caps::{self, CAPABILITIES, CARRIERS, ENTRIES, VARIANT_FIELDS};
 use crate::ir::{Event, Scope};
 use crate::lang::lower::FIELDS;
+use crate::lang::sig;
+use crate::lang::types::{Handle, Type};
+
+/// The netgame flags' built-in labels (`forge_doc::labels::builtin_label`),
+/// each with the kind and requirements the built-in scripts declare it
+/// with, offered whole at the name of a new `label` line.
+const FLAG_LABELS: &[(&str, &str)] = &[
+    ("ctf_flag_spawn", "zones at most 16"),
+    ("ctf_flag_return", "zones at most 16"),
+    ("assault_bomb_spawn", "zones at most 16"),
+    ("assault_bomb_return", "zones at most 16"),
+    ("oddball_spawn", "objects"),
+    ("teleporter_sender", "zones"),
+    ("teleporter_receiver", "zones"),
+    ("territory", "zones 1..8"),
+    ("hill_corner", "zones numbered"),
+];
 
 fn item(
     label: impl Into<String>,
@@ -24,6 +43,7 @@ fn item(
         documentation: Markup::markdown(doc),
         insert_text: insert.into(),
         insert_text_format: format,
+        sort_text: String::new(),
     }
 }
 
@@ -31,7 +51,17 @@ fn plain(label: &str, kind: u8, detail: impl Into<String>, doc: impl Into<String
     item(label, kind, detail, doc, label, PLAIN_TEXT)
 }
 
+/// The completions at `off`, each with its place in the list as its
+/// `sort_text`.
 pub(crate) fn complete(m: &Model, off: usize) -> Vec<CompletionItem> {
+    let mut out = candidates(m, off);
+    for (n, c) in out.iter_mut().enumerate() {
+        c.sort_text = format!("{n:04}");
+    }
+    out
+}
+
+fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
     if m.all
         .iter()
         .any(|t| t.k == K::Comment && t.s < off && off <= t.e)
@@ -83,6 +113,45 @@ pub(crate) fn complete(m: &Model, off: usize) -> Vec<CompletionItem> {
     {
         return after_dot(m, dot, off, in_requires);
     }
+    // A `label` line: whole flag labels at the name, the kinds after `:`,
+    // then the requirements.
+    if depth == 0
+        && let Some(f) = first_on_line
+        && m.is_word(f, "label")
+    {
+        if prev == Some(f) {
+            return flag_labels();
+        }
+        if ptext == ":" {
+            return label_kinds();
+        }
+        if let Some(colon) = (f..i).find(|&j| m.is_punct(j, ":"))
+            && prev.is_some_and(|p| p > colon)
+            && !(colon..i).any(|j| m.is_punct(j, "="))
+        {
+            let set = m
+                .code
+                .get(colon + 1)
+                .is_some_and(|t| matches!(m.text(t), "objects" | "zones" | "spawns"));
+            return requirements(set);
+        }
+        return Vec::new();
+    }
+    // A label in its place among a handler's arguments: `on enter(`.
+    if depth == 0
+        && let Some((ni, commas)) = info::enclosing_call(m, i)
+        && ni > 0
+        && m.is_word(ni - 1, "on")
+    {
+        let slot = Event::named(m.text(&m.code[ni])).and_then(sig::label_arg);
+        return match slot {
+            Some((k, h)) if commas as usize == k => labels_fitting(m, |t| member_fits(t, h)),
+            _ => Vec::new(),
+        };
+    }
+    if depth > 0 && ptext == "is" {
+        return labels_fitting(m, |t| member_fits(t, Handle::Object));
+    }
     if depth == 0 && ptext == "on" {
         return events(m, "");
     }
@@ -131,7 +200,10 @@ pub(crate) fn complete(m: &Model, off: usize) -> Vec<CompletionItem> {
     {
         return capabilities("", true);
     }
-    let mut out = expression(m, off);
+    let mut out = match wanted(m, i) {
+        Some(want) => ranked(m, off, want),
+        None => expression(m, off),
+    };
     if line_start || matches!(ptext, "{" | ";") {
         out.extend(statements());
     }
@@ -184,6 +256,19 @@ fn after_dot(m: &Model, dot: usize, off: usize, in_requires: bool) -> Vec<Comple
         return capabilities(&format!("{path}."), false);
     }
     if parts.len() == 1 && m.visible_locals(off).iter().all(|&d| m.defs[d].name != head) {
+        if head == "carrier" {
+            return CARRIERS
+                .iter()
+                .map(|(n, index)| {
+                    plain(
+                        n,
+                        kind::ENUM_MEMBER,
+                        "carrier",
+                        format!("The retail {n} engine (engine index {index}): `carrier.{n}`."),
+                    )
+                })
+                .collect();
+        }
         if head == "variant" {
             return VARIANT_FIELDS
                 .iter()
@@ -226,8 +311,9 @@ fn after_dot(m: &Model, dot: usize, off: usize, in_requires: bool) -> Vec<Comple
 fn fields_of(m: &Model, t: T) -> Vec<CompletionItem> {
     let mut out = Vec::new();
     match t {
-        T::Ty(ty) => {
-            if let Some(scope) = model::scope_of(ty) {
+        T::V(Type::H(h, _)) => {
+            let ty = h.erase();
+            if let Some(scope) = model::scope_of(h) {
                 for (d, def) in m.defs.iter().enumerate() {
                     if def.kind == DefKind::Var(scope) {
                         out.push(plain(
@@ -287,7 +373,7 @@ fn events(m: &Model, prefix: &str) -> Vec<CompletionItem> {
     let timer = m
         .defs
         .iter()
-        .find(|d| d.kind == DefKind::Var(Scope::Global) && d.ty == T::Ty(crate::ty::Ty::Timer))
+        .find(|d| d.kind == DefKind::Var(Scope::Global) && d.ty == T::Timer)
         .map_or("t".to_string(), |d| d.name.clone());
     Event::ALL
         .iter()
@@ -364,12 +450,182 @@ fn types(m: &Model) -> Vec<CompletionItem> {
     out
 }
 
-fn labels(m: &Model) -> Vec<CompletionItem> {
+/// A declared label as a completion.
+fn label_item(m: &Model, d: usize) -> CompletionItem {
+    let def = &m.defs[d];
+    let detail = format!("label: {}", m.type_name(def.ty));
+    plain(&def.name, kind::VALUE, detail, info::def_markdown(m, d))
+}
+
+/// The declared labels whose type passes `fits`, in declaration order.
+fn labels_fitting(m: &Model, fits: impl Fn(Type) -> bool) -> Vec<CompletionItem> {
     m.defs
         .iter()
         .enumerate()
-        .filter(|(_, d)| d.kind == DefKind::Label)
-        .map(|(d, def)| item(&def.name, kind::VALUE, "label", info::def_markdown(m, d), def.name.clone(), PLAIN_TEXT))
+        .filter(|(_, d)| d.kind == DefKind::Label && matches!(d.ty, T::V(t) if fits(t)))
+        .map(|(d, _)| label_item(m, d))
+        .collect()
+}
+
+/// The set labels: what a loop, `count`, `first` and `pick` visit.
+fn labels(m: &Model) -> Vec<CompletionItem> {
+    labels_fitting(m, |t| matches!(t, Type::Set(k) if k.member().is_some()))
+}
+
+/// Whether a label of type `t` (one thing or a set) holds things of `h`.
+fn member_fits(t: Type, h: Handle) -> bool {
+    let member = match t {
+        Type::H(m, _) => Some(m),
+        Type::Set(k) => k.member(),
+        _ => None,
+    };
+    member.is_some_and(|m| m.fits(h))
+}
+
+/// The type the argument at code index `i` is wanted as: an API entry's
+/// front-end parameter, or a `fn`'s declared one.
+fn wanted(m: &Model, i: usize) -> Option<Type> {
+    let (ni, commas) = info::enclosing_call(m, i)?;
+    let name = m.text(&m.code[ni]);
+    if let Some(d) = m.top_kind(name, DefKind::Fn) {
+        let p = m.children(d, DefKind::Param).nth(commas as usize)?;
+        return match m.defs[p].ty {
+            T::V(t) => Some(t),
+            _ => None,
+        };
+    }
+    let e = caps::entry_named(name)?;
+    sig::of(e)?.args.get(commas as usize).copied()
+}
+
+/// Everything an expression may name, ranked by `want`: labels of that
+/// type, then locals, globals and options of it, then values that may be
+/// `none` (their detail says so), then set labels to index with `[`, then
+/// the rest.
+fn ranked(m: &Model, off: usize, want: Type) -> Vec<CompletionItem> {
+    let mut tiers: [Vec<CompletionItem>; 4] = Default::default();
+    let mut taken: Vec<String> = Vec::new();
+    let mut late: Vec<CompletionItem> = Vec::new();
+    let maybe = |mut c: CompletionItem| {
+        c.detail = format!("{}: may be none", c.detail);
+        c
+    };
+    for (d, def) in m.defs.iter().enumerate() {
+        if def.kind != DefKind::Label {
+            continue;
+        }
+        let T::V(t) = def.ty else { continue };
+        let tier = match t {
+            _ if t.fits(want) => Some(0),
+            Type::H(..) if t.fits(want.optional()) => Some(2),
+            Type::Set(k) if want.handle().is_some() => {
+                let indexed = m
+                    .checked
+                    .label(&def.name)
+                    .is_some_and(|(_, l)| l.def.numbered() || l.def.per_team());
+                let fits = k.member().is_some_and(|h| Type::H(h, false).fits(want.unwrapped()));
+                (indexed && fits).then_some(3)
+            }
+            _ => None,
+        };
+        let c = label_item(m, d);
+        match tier {
+            Some(2) => tiers[2].push(maybe(c)),
+            Some(3) => {
+                let mut c = c;
+                c.insert_text = format!("{}[", def.name);
+                tiers[3].push(c);
+            }
+            Some(k) => tiers[k].push(c),
+            None => late.push(c),
+        }
+        taken.push(def.name.clone());
+    }
+    let mut values: Vec<usize> = m.visible_locals(off);
+    values.extend(
+        m.defs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| matches!(d.kind, DefKind::Var(Scope::Global) | DefKind::Option | DefKind::Const))
+            .map(|(i, _)| i),
+    );
+    for d in values {
+        let def = &m.defs[d];
+        let T::V(t) = def.ty else { continue };
+        if taken.contains(&def.name) {
+            continue;
+        }
+        let c = plain(&def.name, kind::VARIABLE, m.type_name(def.ty), info::def_markdown(m, d));
+        if t.fits(want) {
+            tiers[1].push(c);
+        } else if t.fits(want.optional()) {
+            tiers[2].push(maybe(c));
+        } else {
+            continue;
+        }
+        taken.push(def.name.clone());
+    }
+    let mut out: Vec<CompletionItem> = tiers.into_iter().flatten().collect();
+    out.extend(expression(m, off).into_iter().filter(|c| !taken.contains(&c.label)));
+    out.extend(late);
+    out
+}
+
+/// The kinds a label declares, after `label <name>:`.
+fn label_kinds() -> Vec<CompletionItem> {
+    [
+        ("zone", "One zone: a trigger volume or a flag."),
+        ("zones", "A set of zones."),
+        ("object", "One object."),
+        ("objects", "A set of objects."),
+        ("zone?", "One zone, or none on a map that has none."),
+        ("object?", "One object, or none on a map that has none."),
+        ("spawns", "Spawn areas, passed to spawn_areas."),
+    ]
+    .iter()
+    .map(|(k, doc)| plain(k, kind::TYPE_PARAMETER, "label kind", *doc))
+    .collect()
+}
+
+/// What may follow a label's kind: requirements for a set, then its map
+/// text.
+fn requirements(set: bool) -> Vec<CompletionItem> {
+    let doc = |w: &str| info::keyword_doc(w).unwrap_or("").to_string();
+    let mut out = Vec::new();
+    if set {
+        out.push(plain("numbered", kind::KEYWORD, "requirement", doc("numbered")));
+        out.push(item("numbered a..b", kind::SNIPPET, "requirement", doc("numbered"), "numbered ${1:0}..${2:1}", SNIPPET));
+        out.push(item("at least", kind::SNIPPET, "requirement", doc("at"), "at least ${1:1}", SNIPPET));
+        out.push(item("at most", kind::SNIPPET, "requirement", doc("at"), "at most ${1:16}", SNIPPET));
+        out.push(item("exactly", kind::SNIPPET, "requirement", doc("exactly"), "exactly ${1:1}", SNIPPET));
+        out.push(plain("per team", kind::KEYWORD, "requirement", doc("per")));
+    }
+    out.push(item(
+        "= \"text\"",
+        kind::SNIPPET,
+        "map text",
+        "The map's label text, when it is not the name.",
+        "= \"${1:text}\"",
+        SNIPPET,
+    ));
+    out
+}
+
+/// The built-in flag labels as whole declarations, at the name of a new
+/// `label` line.
+fn flag_labels() -> Vec<CompletionItem> {
+    FLAG_LABELS
+        .iter()
+        .map(|(text, decl)| {
+            item(
+                format!("label {text}: {decl}"),
+                kind::SNIPPET,
+                "a netgame flag's label",
+                format!("The label every map gives its netgame flags of this type: `{text}`."),
+                format!("{text}: {decl}"),
+                PLAIN_TEXT,
+            )
+        })
         .collect()
 }
 
@@ -442,6 +698,11 @@ fn top_level(m: &Model) -> Vec<CompletionItem> {
         ("list", "list ${1|tweakers|}".to_string(), "list"),
         ("requires", "requires ${1:capability}".to_string(), "requires"),
         (
+            "label",
+            "label ${1:name}: ${2|zone,zones,object,objects,spawns|}".to_string(),
+            "label",
+        ),
+        (
             "option",
             "option ${1:name}: int ${2:1}..${3:5} = ${4:1} \"${5:Label}\" \"${6:Description}\"".to_string(),
             "option",
@@ -467,6 +728,12 @@ fn top_level(m: &Model) -> Vec<CompletionItem> {
             "table",
         ),
         ("fn", "fn ${1:name}(${2:p}: ${3:player}) {\n\t$0\n}".to_string(), "fn"),
+        (
+            "fn (value)",
+            "fn ${1:name}(${2:p}: ${3:player}) -> ${4:bool} = $0".to_string(),
+            "fn",
+        ),
+        ("const", "const ${1:name} = ${2:0}".to_string(), "const"),
     ];
     let mut out: Vec<CompletionItem> = snippets
         .into_iter()
@@ -498,6 +765,14 @@ fn statements() -> Vec<CompletionItem> {
             "for each ${1|players,teams,objectives|} ${2:x} {\n\t$0\n}",
             SNIPPET,
         ),
+        item(
+            "match",
+            kind::SNIPPET,
+            "statement",
+            doc("match"),
+            "match ${1:value} {\n\t${2:Enum.variant} {\n\t\t$0\n\t}\n\telse {\n\t}\n}",
+            SNIPPET,
+        ),
     ]
 }
 
@@ -512,6 +787,7 @@ fn expression(m: &Model, off: usize) -> Vec<CompletionItem> {
         let (k, detail) = match def.kind {
             DefKind::Var(Scope::Global) => (kind::VARIABLE, format!("global var: {}", m.type_name(def.ty))),
             DefKind::Option => (kind::CONSTANT, format!("option: {}", m.type_name(def.ty))),
+            DefKind::Const => (kind::CONSTANT, format!("const: {}", m.type_name(def.ty))),
             DefKind::Table => (kind::STRUCT, "table".to_string()),
             DefKind::Enum => (kind::ENUM, "enum".to_string()),
             DefKind::Fn => {
@@ -536,7 +812,7 @@ fn expression(m: &Model, off: usize) -> Vec<CompletionItem> {
         let params: Vec<String> = if e.id == caps::id::MESSAGE {
             vec!["to".into(), "text".into()]
         } else {
-            e.args.iter().map(|t| t.name().to_string()).collect()
+            info::entry_parts(e).0
         };
         out.push(item(
             e.name,

@@ -6,13 +6,14 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  API_ENTRIES, CAP_WORDS, EVENTS, IdeClient, LSP_COMPLETION_KINDS, MENU_PROBES, apiGroups, apiSnippet, byteColToUtf16,
-  completionKindName, encodeTokens, eventSnippet, fromLspRange, insertMenus, mergeApi, mergeEvents, parseCompletions,
-  parseFormat, parseHover, parseLegend, parseLocations, parseSignature, parseSymbols, parseTokens, problemMarker,
-  symbolKindName, toLsp, type IdeOp,
+  API_ENTRIES, CAP_WORDS, CONTROL, EVENTS, FLAG_LABELS, IdeClient, KEYWORDS, LABEL_ITEMS, LSP_COMPLETION_KINDS, MENU_PROBES, MONARCH,
+  TIME_LITERAL, TYPES, apiGroups, apiSnippet, applyEdits, byteColToUtf16, completionKindName, encodeTokens, eventSnippet,
+  flagLabelItems, fromLspRange, ideBody, insertMenus, labelDeclaration, labelName, mapLabelItems, mergeApi, mergeEvents, offsetAt,
+  parseActions, parseCompletions, parseFormat, parseHover, parseLegend, parseLocations, parseRename, parseSignature, parseSymbols,
+  parseTokens, problemMarker, symbolKindName, toLsp, type IdeOp,
 } from "../src/lib/rulesIde";
 
-const NO_DELAY: Record<IdeOp, number> = { complete: 0, hover: 0, signature: 0, definition: 0, references: 0, tokens: 0, symbols: 0, format: 0 };
+const NO_DELAY: Record<IdeOp, number> = { complete: 0, hover: 0, signature: 0, definition: 0, references: 0, tokens: 0, symbols: 0, format: 0, actions: 0, rename: 0 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("positions", () => {
@@ -253,12 +254,128 @@ describe("the Insert menus", () => {
     expect(events).toHaveLength(EVENTS.length);
   });
 
-  test("the probes ask at a blank top-level line and a blank statement", () => {
+  test("the probes ask at a blank top-level line, a blank statement and a new label's name", () => {
     for (const p of MENU_PROBES) {
       const line = p.source.split("\n")[p.line]!;
-      expect(line.trim()).toBe("");
+      expect(line.trim()).toBe(p.which === "label" ? "label" : "");
       expect(line.length).toBe(p.character);
     }
+  });
+
+  test("the Declarations menu has its Labels group, and an In the test map group for undeclared labels", () => {
+    const plain = insertMenus(null, null)[0]!;
+    expect(plain.groups.map((g) => g.title)).toEqual(["Declarations", "Labels"]);
+    expect(plain.groups[0]!.items.map((i) => i.label)).toContain("const");
+    const labels = plain.groups[1]!.items;
+    expect(labels.slice(0, LABEL_ITEMS.length).map((i) => i.label)).toEqual(["one zone", "one object", "a set of objects", "a numbered set of zones", "spawn areas"]);
+    expect(labels.find((i) => i.label === "a numbered set of zones")!.snippet).toBe("label ${1:capture}: zones numbered ${2:0}..${3:1}");
+    // The built-in flag labels, whole: the page's list until the route gives its own.
+    expect(labels.slice(LABEL_ITEMS.length).map((i) => i.snippet)).toEqual(FLAG_LABELS.map(([t, d]) => `label ${t}: ${d}`));
+    const route = flagLabelItems([
+      { label: "label territory: zones 1..8", kind: 15, detail: "a netgame flag's label", documentation: "The label every map gives...\nmore", insertText: "territory: zones 1..8", snippet: false },
+      { label: "if", kind: 14, detail: "", documentation: "", insertText: "if", snippet: false },
+    ]);
+    expect(route).toEqual([{ label: "label territory: zones 1..8", detail: "label territory: zones 1..8", words: "The label every map gives...", snippet: "label territory: zones 1..8" }]);
+    expect(flagLabelItems([])).toHaveLength(FLAG_LABELS.length);
+
+    // The test map's labels the script does not declare, each as a declaration.
+    const things = [
+      { label: "goal", number: null, class: "volume" },
+      { label: "capture", number: 0, class: "flag" },
+      { label: "capture", number: 1, class: "volume" },
+      { label: "barrier", number: null, class: "object" },
+      { label: "barrier", number: null },
+      { label: "attack", number: null, class: "spawn" },
+      { label: "red base", number: null, class: "object" },
+      { label: "if", number: null },
+    ];
+    const items = mapLabelItems(things, ["goal"]);
+    expect(items.map((i) => i.snippet)).toEqual([
+      "label capture: zones numbered",
+      "label barrier: objects",
+      "label attack: spawns",
+      'label red_base: object = "red base"',
+      'label if_label: object = "if"',
+    ]);
+    expect(items[0]!.words).toBe("2 things in the test map");
+    const menus = insertMenus(null, null, null, items);
+    expect(menus[0]!.groups.map((g) => g.title)).toEqual(["Declarations", "Labels", "In the test map"]);
+    expect(labelName("3rd zone")).toBe("_3rd_zone");
+    expect(labelDeclaration("hill", [{ number: 0, class: "flag" }])).toBe("label hill: zone");
+  });
+
+  test("the Control menu has match", () => {
+    const control = insertMenus(null, null)[3]!.groups[0]!.items;
+    expect(control.find((i) => i.label === "match")!.snippet.startsWith("match ${1:value} {")).toBe(true);
+  });
+});
+
+describe("the language's words", () => {
+  test("time literals, const, match and carrier", () => {
+    expect(KEYWORDS as readonly string[]).toContain("const");
+    expect(KEYWORDS as readonly string[]).toContain("carrier");
+    expect(CONTROL as readonly string[]).toContain("match");
+    for (const t of ["time", "zone", "weapon", "carrier"]) expect(TYPES as readonly string[]).toContain(t);
+    expect(MONARCH.types).toContain("zones");
+    for (const lit of ["30s", "1.5s", "300t"]) expect(TIME_LITERAL.exec(lit)?.[0]).toBe(lit);
+    expect(TIME_LITERAL.exec("30")).toBeNull();
+    expect(TIME_LITERAL.exec("3sec")).toBeNull();
+    // The grammar reads a time before a plain number, and `carrier.x` and `const x` by place.
+    const rules = MONARCH.tokenizer.root.map((r) => String(r[0]));
+    expect(rules.indexOf(String(TIME_LITERAL))).toBeLessThan(rules.indexOf(String(/\d+\.\d+/)));
+    expect(rules.some((r) => r.includes("carrier"))).toBe(true);
+    expect(rules.some((r) => r.includes("const"))).toBe(true);
+  });
+});
+
+describe("quick fixes and rename", () => {
+  const SRC = 'rules "T" 1\ncarrier slayer\nlabel barrier: objects\n\non tick {\n    for each barier b { delete(b) }\n}\n';
+  const at = (line: number, a: number, b: number) => ({ start: { line, character: a }, end: { line, character: b } });
+
+  test("a code action applies its edits", () => {
+    const actions = parseActions([
+      { title: "Change to `barrier`", kind: "quickfix", diagnostic: { range: at(5, 13, 19), severity: 1, message: "no label named barier. Did you mean barrier?", code: "label.unknown", source: "rules" }, edits: [{ range: at(5, 13, 19), newText: "barrier" }] },
+      { title: "Declare label `barier`", kind: "quickfix", diagnostic: { range: at(5, 13, 19), code: "label.unknown" }, edits: [{ range: at(3, 0, 0), newText: "label barier: objects\n" }] },
+      { title: "no edits", kind: "quickfix", diagnostic: {}, edits: [] },
+      { kind: "quickfix" },
+    ]);
+    expect(actions.map((a) => a.title)).toEqual(["Change to `barrier`", "Declare label `barier`"]);
+    expect(actions[0]!.code).toBe("label.unknown");
+    expect(actions[0]!.range).toEqual(at(5, 13, 19));
+    expect(applyEdits(SRC, actions[0]!.edits)).toBe(SRC.replace("barier b", "barrier b"));
+    expect(applyEdits(SRC, actions[1]!.edits)).toBe(SRC.replace("\n\non tick", "\nlabel barier: objects\n\non tick"));
+    // Several edits apply against the text before any of them.
+    const both = applyEdits("let a = a + a", [{ range: at(0, 4, 5), newText: "bb" }, { range: at(0, 8, 9), newText: "bb" }, { range: at(0, 12, 13), newText: "bb" }]);
+    expect(both).toBe("let bb = bb + bb");
+    expect(offsetAt("ab\ncd", { line: 1, character: 9 })).toBe(5);
+    expect(offsetAt("ab\ncd", { line: 7, character: 0 })).toBe(5);
+    expect(applyEdits("x", [])).toBe("x");
+  });
+
+  test("a rename's edits, and the reason a refused one gives", async () => {
+    expect(parseRename({ edits: [{ range: at(2, 6, 13), newText: "wall" }, { range: null, newText: "x" }] })).toEqual({ edits: [{ range: at(2, 6, 13), newText: "wall" }] });
+    expect(parseRename({ error: "if is a keyword" })).toEqual({ error: "if is a keyword" });
+    expect(parseRename(null)).toBeNull();
+    expect(ideBody("actions", "s", { line: 1, character: 2 }, { end: { line: 1, character: 5 } })).toEqual({ source: "s", op: "actions", line: 1, character: 2, end_line: 1, end_character: 5 });
+    expect(ideBody("rename", "s", { line: 1, character: 2 }, { newName: "wall" })).toEqual({ source: "s", op: "rename", line: 1, character: 2, new_name: "wall" });
+
+    const calls: Array<Record<string, unknown>> = [];
+    const refused = new IdeClient(() => "/v1", (async (_url: string, init: RequestInit = {}) => {
+      calls.push(JSON.parse(String(init.body)));
+      return json({ error: "invalid", message: "if is a keyword" }, 400);
+    }) as unknown as typeof fetch, NO_DELAY);
+    expect(await refused.request("rename", SRC, 1, { line: 2, character: 8 }, undefined, { newName: "if" })).toEqual({ error: "if is a keyword" });
+    expect(calls[0]).toMatchObject({ op: "rename", new_name: "if" });
+    // A rename is never kept: asking again asks the server again.
+    await refused.request("rename", SRC, 1, { line: 2, character: 8 }, undefined, { newName: "if" });
+    expect(calls).toHaveLength(2);
+    // An action at another range is another answer.
+    const ok = new IdeClient(() => "/v1", (async (_url: string, init: RequestInit = {}) => { calls.push(JSON.parse(String(init.body))); return json([]); }) as unknown as typeof fetch, NO_DELAY);
+    await ok.request("actions", SRC, 1, { line: 5, character: 13 }, undefined, { end: { line: 5, character: 19 } });
+    await ok.request("actions", SRC, 1, { line: 5, character: 13 }, undefined, { end: { line: 5, character: 19 } });
+    await ok.request("actions", SRC, 1, { line: 5, character: 13 }, undefined, { end: { line: 5, character: 14 } });
+    expect(calls).toHaveLength(4);
+    expect(calls[2]).toMatchObject({ op: "actions", end_line: 5, end_character: 19 });
   });
 });
 
@@ -295,7 +412,34 @@ describe("the mock's IDE route", async () => {
     const post = (body: unknown) => new Request("http://mock/v1/rules/ide", { method: "POST", body: JSON.stringify(body) });
     const ok = await r.handle(post({ source: SRC, op: "hover", line: 5, character: 6 }), u("/v1/rules/ide"));
     expect(ok!.status).toBe(200);
-    const bad = await r.handle(post({ source: SRC, op: "rename", line: 0, character: 0 }), u("/v1/rules/ide"));
+    const bad = await r.handle(post({ source: SRC, op: "fly", line: 0, character: 0 }), u("/v1/rules/ide"));
     expect(bad!.status).toBe(400);
+  });
+
+  test("quick fixes and rename", async () => {
+    const { mockRename } = await import("../mock/rules");
+    const src = 'rules "T" 1\ncarrier slayer\nlabel barrier: objects\nlabel core: object\n\non tick {\n    for each barier b { delete(b) }\n}\n';
+    const fixes = parseActions(mockIde(src, "actions", 6, 13));
+    expect(fixes.map((a) => a.title)).toEqual(["Change to `barrier`"]);
+    expect(applyEdits(src, fixes[0]!.edits)).toContain("for each barrier b");
+    const unused = parseActions(mockIde(src, "actions", 3, 6));
+    expect(unused.map((a) => [a.title, a.code])).toEqual([["Remove the declaration", "label.unused"]]);
+    expect(applyEdits(src, unused[0]!.edits)).not.toContain("label core");
+
+    const fixed = applyEdits(src, fixes[0]!.edits);
+    const renamed = mockRename(fixed, 2, 8, "wall");
+    if (typeof renamed === "string") throw new Error(renamed);
+    // The label keeps its map text.
+    expect(applyEdits(fixed, renamed.edits)).toContain('label wall: objects = "barrier"');
+    expect(applyEdits(fixed, renamed.edits)).toContain("for each wall b");
+    expect(mockRename(fixed, 2, 8, "if")).toBe("if is a keyword");
+    expect(mockRename(fixed, 2, 8, "core")).toBe("core is declared already");
+    const r = new MockRules(new World());
+    const post = (body: unknown) => new Request("http://mock/v1/rules/ide", { method: "POST", body: JSON.stringify(body) });
+    const u = new URL("http://mock/v1/rules/ide");
+    expect((await r.handle(post({ source: fixed, op: "rename", line: 2, character: 8, new_name: "wall" }), u))!.status).toBe(200);
+    const no = await r.handle(post({ source: fixed, op: "rename", line: 2, character: 8, new_name: "1x" }), u);
+    expect(no!.status).toBe(400);
+    expect((no!.body as { message: string }).message).toBe("1x is not a name");
   });
 });
