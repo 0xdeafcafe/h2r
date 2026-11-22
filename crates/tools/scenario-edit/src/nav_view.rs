@@ -219,7 +219,7 @@ pub struct PathLink {
 }
 
 /// What one structure BSP carries.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BspPathfinding {
     pub bsp: usize,
     pub tag: TagId,
@@ -271,7 +271,13 @@ impl LevelPathfinding {
             bsp,
             tag,
             present: data.is_some(),
-            ..BspPathfinding::default()
+            sectors: 0,
+            links: 0,
+            nodes: 0,
+            vertices: 0,
+            refs: 0,
+            orphan_links: 0,
+            broken: Vec::new(),
         };
         if let Some(pf) = data {
             row.sectors = pf.sectors.len();
