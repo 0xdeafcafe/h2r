@@ -147,6 +147,16 @@ accounts for the viewport and FOV, including split screen. Retail selects
 the original pixel size at every resolution. See the
 [Video settings](../game/settings-menu.md#video-screen).
 
+- **Menu model widgets.** A model widget's view (the Choose Profile and
+  Appearance previews; `0x002b0e12` calls `0x0002c560`) reaches the
+  record reset through `0x0002bcd0` and `0x00031c80`, the same caller
+  (`0x00031ef5`) as a world view. `lod_distance.rs` marks the span from
+  `UI_MODEL_VIEW_CALL` to `UI_MODEL_VIEW_RETURN` in its guest words, and
+  `reset_view` writes factor 1.0 there, so the widget's models, records
+  and structure keep retail detail at every resolution and LOD Distance.
+  A reset from any caller other than the three world callers also writes
+  1.0. Test:
+  `a_menu_model_view_keeps_retail_detail_and_the_world_still_scales`.
 - **BSP clusters and placements.** The record reset at `0x0002cb30` samples
   the LOD factor once per view. Guest and native record builders read that
   factor from the view's guest memory, including on a render worker. The

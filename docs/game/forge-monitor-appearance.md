@@ -224,6 +224,9 @@ value picker").
   at once. In a network session it is a proposal to the host, and the
   row keeps the old value until the host answers; a refusal shows its
   sentence in the dialog's description line and in the HUD strip.
+- **The game's Appearance page.** When the player's look is the Forge
+  monitor, the page's own model preview draws the monitor beside the
+  Spartan (ML4b, decision 8).
 - **Reset** (X) is the default look: the marker, the seat's colour, no
   tint, no light.
 
@@ -437,6 +440,7 @@ data.
 | **ML2** | The census and `h2 forge looks`: species rule, source hashes, variants, colour and light capability, the cache | M | ML1 | on invented maps: one entry a key, the `choose_bipeds` tie rules, a variant with a weighted region picks by the stated rule, an entry's identity is unchanged when tag indices move |
 | **ML3** | The marker and `forge.look`, `forge.look.set`, `forge.status.monitors` offline | S | ML1 | over a fake game: set, reset and each local refusal; the marker's projection matches the gizmo's for the same frame |
 | **ML4** | Disc models drawn: the host model list, a presentation instance at a pose, change colours, tint, the bob, hidden in the owner's view | L | ML2 | a scene built from an invented model holds one extra instance at the pose with the expected colour inputs; the owner's view has none; the sim hash of a run with and without a look is equal |
+| **ML4b** | The game's own Appearance page: when the player's look is the Forge monitor, the monitor is drawn beside the Spartan in the page's model preview | M | ML4 | in a widget view built from invented data, a monitor look adds one presentation instance beside the biped with the look's colours; any other look, or none, leaves the widget's draws as retail; the sim hash of a run with and without it is equal |
 | **ML5** | The host light | M | ML4 | a candidate with no datum is in the view's light list, last in budget order, with the palette colour; no shadow map is made for it |
 | **ML6** | The page: `forge.look`, locked rows, the `Scene3d` widget, `Pick::on_focus`, the Forge menu row, `forge.look.preview` | M | ML3; ML4 for a model in the preview | `Page` tables for every row and lock; the kit's checks pass in every state; focus changes the preview and B restores it |
 | **ML7** | The session channel: hello fields, the host's table, `look` and `pose`, the refusals, the join reset, interpolation and staleness | M | F5, ML3 | a fake host and two peers: a look one peer lacks is refused naming it; a joiner without a source resets the seat with the notice; reordered poses never move a body backwards |
@@ -445,7 +449,7 @@ data.
 | **ML10** | A real body's look: the Bodies heading, the `body` op's colours, locked rows | M | F10, ML6 | the op writes the unit's change colours over a fake game and folds through the log; two fake peers hash alike |
 
 ML1, ML2 and ML3 are built. ML4 is the first that needs the
-native renderer's object path. ML7 and ML8 wait for F5; ML9 for F14;
+native renderer's object path; ML4b follows it. ML7 and ML8 wait for F5; ML9 for F14;
 ML10 for F10.
 
 ## Decisions
@@ -473,6 +477,10 @@ The owner's choices, each with the alternative not taken.
 7. **Live.** Nothing is sent. A monitor in the web viewer from the art
    pack's per-species models (live-art.md, "Player and weapon models")
    is not taken.
+8. **The Appearance page.** On the game's own Appearance page, when the
+   player's look is the Forge monitor, the monitor is drawn beside the
+   Spartan in the preview (ML4b). Showing the look only on the Monitor
+   look page is not taken.
 
 ## Evidence
 
