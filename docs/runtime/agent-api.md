@@ -92,7 +92,7 @@ connection to hold `session.claim`.
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
-| `rules.state` | read | [Rules scripts](#rules-scripts) |
+| `rules.state`, `rules.reload` | read, act | [Rules scripts](#rules-scripts) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -3658,13 +3658,14 @@ running now, read at a tick boundary. `crates/extensions/agent/src/rules.rs`
 checks the params and calls the game's runtime
 (`game::rules::feature::AgentSource`, over
 `crates/extensions/game/src/rules/runtime.rs`); the wire types are in
-`crates/extensions/agent-proto/src/rules.rs`. The method is registered in
+`crates/extensions/agent-proto/src/rules.rs`. The methods are registered in
 builds with the `rules` cargo feature; with the `rules` switch off
 ([switches.md](switches.md)) it says so.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors}` |
+| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors, last_reload?}` |
+| `rules.reload` (act) | `{ir_b64 \| source, mode?: auto \| in_place \| restart}` | `{mode: in_place \| restarted, hash, reasons, tick}` |
 
 `running` is false with the switch off, outside a multiplayer game, for
 a record that names no script, on a machine that is not the game
@@ -3682,10 +3683,30 @@ stopped the VM. `budget` is the VM's tick (`tick`), the ops it has used
 (`ops`) against `limit` (20,000), and the verifier's `worst_tick`
 estimate. `pending` counts the calls waiting for the next tick boundary.
 `errors` holds the latest 16 calls the engine refused, each with its
-`tick`, `call` (the entry's name) and `error`.
+`tick`, `call` (the entry's name) and `error`. `last_reload` is the
+last `rules.reload` on this run: its `mode` (`in_place`, `restarted` or
+`refused`), `hash`, `tick` and `reasons` (for a refusal, why).
+
+`rules.reload` puts a new script into the running game
+([rules-engine.md](../game/rules-engine.md#reloading-a-running-script);
+`crates/extensions/game/src/rules/reload.rs`). Give the blob
+(`ir_b64`, the IR's bytes in base64, as Studio sends it) or the
+`source` to compile; exactly one. With `mode` `auto` (the default) a
+script that keeps the running one's state shape goes in place between
+ticks, and keeps every variable's value; any other restarts the game on
+the same map and variant with the new script, and `reasons` says why it
+could not go in place. `in_place` refuses rather than restart;
+`restart` always restarts. A restart answers once the game has taken
+the queued options (up to 30 ticks later), and needs the agent's guest
+calls (the `agent-calls` feature). It is refused (`REFUSED`, with
+`data.why`) for a Theater film, a matchmade Live game (ranked or not),
+a guest, outside a multiplayer game, for a blob that does not verify or
+that this host cannot run; a Live custom game reloads in place only.
 
 ```sh
 h2 agent rules.state
+h2 agent rules.reload '{"source":"rules \"Mine\" 1\ncarrier slayer\n..."}'
+h2 agent rules.reload '{"ir_b64":"...","mode":"in_place"}'
 ```
 
 ## Sim matches

@@ -193,6 +193,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `script` | `list {filter?}`, `source {name?}`, `follow {name?, link}`, `uses {kind, name}`, `builtins {filter?, unnamed?}`, `doc {path}` ([rich-editors.md](rich-editors.md#scripts)) |
+| `rules` | `open {path? \| starter? \| source?, discard?}`, `get {text?}`, `set {source}`, `save {path?, reload?}`, `format`, `reload {mode?}`: the game type script editor ([editor-guide.md](editor-guide.md#game-type-scripts)) |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
@@ -220,6 +221,23 @@ Notes on some:
   documentation listing, read from that path now and not stored
   (`null` drops it); its `doc` says how many entries read, agreed with
   the map's names, disagreed and named.
+- **Game type scripts.** `rules.*` drive the one script the Game type
+  script window shows (`app/rules_edit.rs`). Each answers its state:
+  `title`, `path`, `dirty`, `problems` (each `line`, `col` from 1,
+  `severity`, `message`, `code`; errors first), `check` (the
+  [workbench](../game/rules-engine.md#workbench) report: `ok`, `hash`,
+  `errors`, and `report` with the worst tick against the budget, the
+  handlers, slots, IR size and capabilities), `mode`, `reload_on_save`,
+  `reload` and the `starters` `rules.open {starter}` takes (a built-in's
+  or example's name, any case). `rules.get {text: true}` adds the text.
+  `rules.open` is `UNSAVED` over unsaved edits without `discard`.
+  `rules.save` with no `path` on a script that has no file is `REFUSED`.
+  `rules.reload` compiles and verifies the text here, queues the blob for
+  the game link and answers `{queued: hash}`; the game's answer arrives as
+  `rules.get`'s `reload`: `{state: sending}`, then `{state: done, mode:
+  in_place | restarted, hash, tick, reasons}` or `{state: refused, why}`
+  (not paired, a game without `rules.reload`, or the game's refusal;
+  [Rules scripts](../runtime/agent-api.md#rules-scripts)).
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
   (`"scnr"`, `"matg"`).
@@ -762,6 +780,10 @@ the window and the API stay one path.
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through
   `App::perform`.
+- **Game type scripts.** `api/game_script.rs` registers `GameScript` for
+  `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
+  window draws; `rules.reload` leaves the blob in its outbox and
+  `play.rs` sends it on the game link.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets

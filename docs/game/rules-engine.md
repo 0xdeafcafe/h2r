@@ -377,6 +377,57 @@ end, a reverted record resuming the VM, a stored script running with no
 Live client and on System Link, a Live variant's script fetched by its
 full hash and run, and each fetch failure refused by name.
 
+#### Reloading a running script
+
+The agent API's `rules.reload`
+([agent-api.md](../runtime/agent-api.md#rules-scripts)), and Studio's
+script editor through it
+([editor-guide.md](../editor/editor-guide.md#game-type-scripts)), put a
+new blob into the running game. `crates/extensions/game/src/rules/reload.rs`
+decides, purely (`reload::decide`):
+
+1. **Refused** in a Theater film's playback, in a matchmade Live game
+   (`Hle::matchmade`, ranked or not), on a guest (System Link or Live:
+   only the host runs the script), outside a multiplayer game, and for a
+   blob this host cannot run (`runtime::host_refusal`).
+2. **In place** when `rules::reload::compatible(old, new)` holds: the
+   same carrier, teams, API version and capabilities; the same options
+   in the same order with the same kind, range and default; the same
+   enums and members; the same variables in each scope with the same
+   names, types and order; the same labels and palettes. Handlers,
+   initial values, option labels and descriptions may change. Otherwise
+   it gives each difference as a sentence ("the script has 1 player
+   variables, not 0").
+3. **Restart** otherwise, unless the caller asked for in place only, or
+   the game cannot restart: a Live game (it restarts from its lobby),
+   another engine than the record's, or no agent guest calls.
+
+In place, `Runtime::swap` syncs the `RULES` record, then
+`Vm::swap_program` verifies the blob, checks it again, carries the
+state over (`rules::reload::carry`: text and tag values remapped to the
+new blob's tables, by value) and clears a stopped VM; the record is
+written again, and a Live host puts the new hash on its session
+(`Hle::set_session_rules`). The active record's script prefix still
+names the old blob, so the game's next start runs the old script.
+
+A restart saves the blob in the game-variant store, writes the new
+script prefix (and the option bits, kept when the options did not
+change) into a copy of the active options block, gives a listed store
+variant the same block (`game_variants::inject::retarget`, so
+`apply_block` does not undo it at `GAME_ACTIVATE`), and queues the block
+through the agent's guest calls (`OPTIONS_QUEUE`), as `map.reload {}`
+replays it. The game starts again on the same map, players and variant,
+and the start finds the blob in the store. A System Link guest's copy of
+the options carries no ext block, so it shows the carrier's own
+settings; its runtime is dropped at the authority check either way.
+
+`rules.state`'s `last_reload` keeps the last outcome. The tests:
+`crates/formats/rules/src/reload.rs` (each shape change, and a swap
+that keeps the kills and runs the new handler),
+`crates/extensions/game/src/rules/reload/tests.rs` (refusals, the
+decision by mode, the options block a restart writes) and
+`runtime/tests.rs` (an in-place swap over the fake game).
+
 ### Live game variants in the game
 
 A game variant is a self-contained bundle: a `.h2variant` version 2 file
@@ -986,10 +1037,15 @@ labels take ("Forge labels").
 
 Tooling:
 
-- **Studio**: a rules editor with errors as you type, the option table
-  as a form, and a budget meter (worst-tick estimate, slots, IR bytes)
-  that names the costliest handler. The blob carries an optional line
-  table for messages; the VM ignores it.
+- **Studio**: the Game type script window
+  ([editor-guide.md](../editor/editor-guide.md#game-type-scripts);
+  `crates/apps/studio/src/app/rules_edit.rs`) colours the text by
+  `rules::ide`'s semantic tokens, lists its diagnostics as you type, and
+  offers completion, hover, signature help and format; its check report
+  is `rules::workbench::check` (worst-tick estimate against the budget,
+  the costliest handler, slots, IR bytes, capabilities). It reloads the
+  script into the paired game ("Reloading a running script"). The blob
+  carries an optional line table for messages; the VM ignores it.
 - **Command line**: `h2 rules` is pure over its inputs and needs no
   disc (`crates/apps/cli/src/rules_cmd.rs`).
   - `h2 rules check <file.rules>` compiles and verifies. Errors print as
@@ -1015,7 +1071,7 @@ Tooling:
     formatting from `rules::ide`.
 - **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
   is pure over source text, and the language server, Live's
-  `POST /v1/rules/ide` and the web editor share it. Positions are LSP's:
+  `POST /v1/rules/ide`, the web editor and Studio share it. Positions are LSP's:
   a 0-based line and a UTF-16 `character`. The lexer and the parser
   recover (`lex::lex_tolerant`, `parse::parse_recovering`): a bad
   character is skipped, a bad statement is skipped to the end of its
@@ -1121,7 +1177,8 @@ Tooling:
 **Code.** The web app's Game Types page (`statsPath("/rules")`,
 `web/src/stats/Rules.tsx`, its test half in `web/src/stats/RulesTest.tsx`,
 its pure half in `web/src/lib/rules.ts`) is where a script is written,
-checked, tested and saved before Studio's editor exists. The browser runs
+checked, tested and saved on the web (Studio's Game type script window
+is the desktop editor, over the same `rules::ide` and workbench). The browser runs
 no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
 routes call `rules::workbench` in both homes.
 
