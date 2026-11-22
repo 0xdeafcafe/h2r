@@ -30,6 +30,11 @@ export const KEYWORDS = [
   "label", "is", "text", "budget", "const",
 ] as const;
 export const CONTROL = ["if", "else", "for", "each", "where", "let", "match"] as const;
+/** The header words after `carrier`: `scoring carrier`, `about "..."`,
+ *  `quick a, b` and `settings { name = value }`. They are not in KEYWORDS:
+ *  a word only at the start of a top-level line, and a name in a handler
+ *  (lang/parse.rs `header_word`). */
+export const HEADER_WORDS = ["scoring", "about", "quick", "settings"] as const;
 export const WORD_OPS = ["and", "or", "not"] as const;
 export const CONSTANTS = ["true", "false", "none"] as const;
 /** Type names (lang/types.rs). `player`, `team` and `object` are also
@@ -211,6 +216,11 @@ export const MONARCH = {
   tokenizer: {
     root: [
       [/\/\/.*$/, "comment"],
+      // The header words, by place: the start of a line and what follows.
+      [/^(scoring)(\s+)([A-Za-z_]\w*)/, ["keyword", "", "constant"]],
+      [/^about(?=\s*")/, "keyword"],
+      [/^(quick)(\s+)([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)/, ["keyword", "", "variable.predefined"]],
+      [/^settings(?=\s*\{)/, { token: "keyword", next: "@settingsOpen" }],
       [/(on)(\s+)([A-Za-z_]\w*)/, ["keyword", "", "type.event"]],
       [/(fn)(\s+)([A-Za-z_]\w*)/, ["keyword", "", "entity.name.function"]],
       [/(global|player|team|object)(\s+)(var)\b/, ["keyword", "", "keyword"]],
@@ -241,6 +251,28 @@ export const MONARCH = {
       [/[{}()[\]]/, "@brackets"],
       [/\.\.|==|!=|<=|>=|[=<>+\-*\/%]/, "operator"],
       [/[,:;.]/, "delimiter"],
+      [/\s+/, ""],
+    ],
+    // After `settings`: up to the block's `{`.
+    settingsOpen: [
+      [/\/\/.*$/, "comment"],
+      [/\{/, { token: "delimiter.curly", switchTo: "@settings" }],
+      [/\s+/, ""],
+    ],
+    // Inside `settings { }`: `name = value` lines; a bare name after `=` is a
+    // choice's value.
+    settings: [
+      [/\/\/.*$/, "comment"],
+      [/\}/, { token: "delimiter.curly", next: "@pop" }],
+      [/[A-Za-z_]\w*(?=\s*=(?!=))/, "variable.predefined"],
+      [/(=)(\s*)(?!(?:true|false|none)\b)([A-Za-z_]\w*)(?=\s*(?:;|\}|\/\/|$))/, ["operator", "", "constant"]],
+      [/\b(?:true|false|none)\b/, "constant"],
+      [TIME_LITERAL, "number.time"],
+      [/\d+\.\d+/, "number.float"],
+      [/\d+/, "number"],
+      [/\.\.|==|!=|<=|>=|[=<>+\-*\/%]/, "operator"],
+      [/[,:;.()]/, "delimiter"],
+      [/[A-Za-z_]\w*/, "identifier"],
       [/\s+/, ""],
     ],
     string: [
@@ -695,6 +727,10 @@ export function eventSnippet(e: EventDef): string {
 }
 
 export const DECLARATIONS: readonly InsertItem[] = [
+  { label: "scoring", detail: "scoring carrier", words: "the carrier's engine scores the game; the script holds settings only", snippet: "scoring carrier" },
+  { label: "about", detail: "about \"Description\"", words: "the variant's description, at most 150 characters", snippet: `about "${ph(1, "Description")}"` },
+  { label: "quick", detail: "quick a, b", words: "the settings and options the lobby's Quick Options shows, at most five", snippet: `quick ${ph(1, "score_limit")}` },
+  { label: "settings", detail: "settings { name = value }", words: "the record settings the script sets, one a line", snippet: `settings {\n\t${ph(1, "score_limit")} = ${ph(2, "50")}\n}` },
   { label: "requires", detail: "requires cap, cap", words: "the capabilities the script asks for", snippet: `requires ${ph(1, "player.weapons")}` },
   { label: "teams", detail: "teams n", words: "how many teams the game type has", snippet: `teams ${ph(1, "2")}` },
   { label: "list", detail: "list research | party", words: "the game type list row its variants are filed under", snippet: `list ${ph(1, "research")}` },

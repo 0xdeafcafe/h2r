@@ -14,6 +14,7 @@ use crate::lang::parse::KEYWORDS;
 use crate::lang::sig;
 use crate::lang::types::{Handle, Type};
 use crate::lang::{self, Pos};
+use crate::settings;
 
 fn edit(m: &Model, s: usize, e: usize, text: impl Into<String>) -> TextEdit {
     TextEdit {
@@ -75,6 +76,28 @@ pub(crate) fn fixes(m: &Model, d: &lang::Diagnostic) -> Vec<Fix> {
         "tag.group" if msg.contains("Declare the column as weapon") => column_weapon(m, msg, &mut out),
         "cap.missing" => add_requires(m, msg, &mut out),
         "cap.unused" => remove_requires(m, at, &mut out),
+        "setting.unknown" => change_name(m, msg, d.pos, &mut out),
+        "setting.twice" => remove_setting(m, d.pos, &mut out),
+        "setting.carrier" => {
+            if m.script.quick.as_ref().is_some_and(|(names, _)| names.iter().any(|(_, p)| *p == d.pos)) {
+                remove_mark(m, d.pos, &mut out);
+            } else {
+                remove_setting(m, d.pos, &mut out);
+            }
+        }
+        "quick.unknown" => {
+            change_name(m, msg, d.pos, &mut out);
+            remove_mark(m, d.pos, &mut out);
+        }
+        "quick.twice" => remove_mark(m, d.pos, &mut out),
+        "quick.many" => drop_extra_marks(m, d.pos, &mut out),
+        "scoring.none" => add_scoring(m, &mut out),
+        "scoring.handlers" => {
+            if let Some((_, p)) = &m.script.scoring {
+                remove_line(m, m.byte(*p), "Remove `scoring carrier` (the script scores)", &mut out);
+            }
+        }
+        "list.carrier" => remove_line(m, at, "Remove the `list` line", &mut out),
         _ => {}
     }
     out
@@ -389,6 +412,127 @@ fn remove_requires(m: &Model, at: usize, out: &mut Vec<Fix>) {
     out.push(fix(format!("Remove `{name}` from `requires`"), vec![cut]));
 }
 
+// ---------- settings, quick marks and the scorer ----------
+
+/// "Did you mean `near`?" in a message: change the name at `pos` to it.
+fn change_name(m: &Model, msg: &str, pos: Pos, out: &mut Vec<Fix>) {
+    let Some(k) = msg.find("Did you mean ") else { return };
+    let near = msg[k + "Did you mean ".len()..].trim_end_matches(['?', '.']);
+    if near.is_empty() {
+        return;
+    }
+    let (s, e) = m.tok_at(pos);
+    out.push(fix(format!("Change to `{near}`"), vec![edit(m, s, e, near)]));
+}
+
+/// Removes the whole line holding `at`.
+fn remove_line(m: &Model, at: usize, title: &str, out: &mut Vec<Fix>) {
+    let line = m.li.line_of(at);
+    let (from, to) = (m.li.line_start(line), m.li.line_start(line + 1));
+    out.push(fix(title, vec![edit(m, from, to, "")]));
+}
+
+/// Removes the setting that starts at `pos` in the `settings` block: its
+/// whole line when it is alone on it, else it and its `;`.
+fn remove_setting(m: &Model, pos: Pos, out: &mut Vec<Fix>) {
+    let at = m.byte(pos);
+    let i = m.ci(at);
+    let Some(first) = m.code.get(i).filter(|t| t.s == at) else { return };
+    let line = m.li.line_of(first.s);
+    // The setting's last token: before a `;`, a `}` or the line's end.
+    let mut last = i;
+    let mut semi = None;
+    for k in i + 1..m.code.len() {
+        if m.li.line_of(m.code[k].s) != line || m.is_punct(k, "}") {
+            break;
+        }
+        if m.is_punct(k, ";") {
+            semi = Some(k);
+            break;
+        }
+        last = k;
+    }
+    let end_ix = semi.unwrap_or(last);
+    let end = m.code[end_ix].e;
+    let next = m.code.get(end_ix + 1).filter(|t| m.li.line_of(t.s) == line);
+    let trailing_comment = m.all.iter().any(|t| t.k == K::Comment && t.s >= end && m.li.line_of(t.s) == line);
+    let alone = m.src[m.li.line_start(line)..first.s].trim().is_empty() && next.is_none() && !trailing_comment;
+    let cut = if alone {
+        edit(m, m.li.line_start(line), m.li.line_start(line + 1), "")
+    } else {
+        match next {
+            Some(t) if !(t.k == K::Punct && m.text(t) == "}") => edit(m, first.s, t.s, ""),
+            _ => edit(m, first.s, end, ""),
+        }
+    };
+    let name = m.text(first);
+    out.push(fix(format!("Remove `{name}` from the settings"), vec![cut]));
+}
+
+/// Removes the name at `pos` from the `quick` line, with its comma, and
+/// the whole line when it is the only name.
+fn remove_mark(m: &Model, pos: Pos, out: &mut Vec<Fix>) {
+    let Some((names, qpos)) = &m.script.quick else { return };
+    let (s, e) = m.tok_at(pos);
+    let name = &m.src[s..e];
+    let cut = if names.len() <= 1 {
+        let line = m.li.line_of(m.byte(*qpos));
+        edit(m, m.li.line_start(line), m.li.line_start(line + 1), "")
+    } else {
+        let i = m.ci(s);
+        if m.is_punct(i + 1, ",") {
+            let next = m.code.get(i + 2).map_or(m.code[i + 1].e, |t| t.s);
+            edit(m, s, next, "")
+        } else if i > 0 && m.is_punct(i - 1, ",") {
+            edit(m, m.code[i - 1].s, e, "")
+        } else {
+            return;
+        }
+    };
+    out.push(fix(format!("Remove `{name}` from `quick`"), vec![cut]));
+}
+
+/// `quick` names more than five: drops the names from the one the
+/// diagnostic marks (the sixth) to the end of the line.
+fn drop_extra_marks(m: &Model, pos: Pos, out: &mut Vec<Fix>) {
+    let Some((names, _)) = &m.script.quick else { return };
+    let Some(k) = names.iter().position(|(_, p)| *p == pos) else { return };
+    let Some((_, lastpos)) = names.last() else { return };
+    let first = m.ci(m.byte(pos));
+    if first == 0 || !m.is_punct(first - 1, ",") {
+        return;
+    }
+    let (_, end) = m.tok_at(*lastpos);
+    let title = if k + 1 == names.len() {
+        "Drop the sixth mark".to_string()
+    } else {
+        format!("Drop the {} marks past the fifth", names.len() - k)
+    };
+    out.push(fix(title, vec![edit(m, m.code[first - 1].s, end, "")]));
+}
+
+/// A script that scores nothing: `scoring carrier` after the header's
+/// last line.
+fn add_scoring(m: &Model, out: &mut Vec<Fix>) {
+    let script = m.script;
+    let mut last = script.pos;
+    for p in [
+        script.carrier.as_ref().map(|c| c.1),
+        script.teams.map(|t| t.1),
+        script.list.as_ref().map(|l| l.1),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        last = last.max(p);
+    }
+    let (off, before) = line_after(m, m.byte(last));
+    out.push(fix(
+        "Add `scoring carrier`",
+        vec![edit(m, off, off, format!("{before}scoring carrier\n"))],
+    ));
+}
+
 // ---------- rename ----------
 
 /// The edits that rename the name at `off`; see `ide::rename`.
@@ -397,6 +541,9 @@ pub(crate) fn prepare_rename(m: &Model, off: usize) -> Result<PrepareRename, Str
     let def = &m.defs[r.def];
     if def.kind == DefKind::Palette {
         return Err("a palette is named by its string; edit the string".to_string());
+    }
+    if def.kind == DefKind::Setting {
+        return Err(format!("{} is the game's name for a setting; it cannot be renamed", def.name));
     }
     Ok(PrepareRename {
         range: m.li.range(r.s, r.e),
@@ -418,8 +565,15 @@ pub(crate) fn rename(m: &Model, off: usize, new: &str) -> Result<Vec<TextEdit>, 
     if def.kind == DefKind::Palette {
         return Err("a palette is named by its string; edit the string".to_string());
     }
+    if def.kind == DefKind::Setting {
+        return Err(format!("{} is the game's name for a setting; it cannot be renamed", def.name));
+    }
     if new == def.name {
         return Ok(Vec::new());
+    }
+    // An option and a setting share the `quick` line's names.
+    if def.kind == DefKind::Option && settings::named(new).is_some() {
+        return Err(format!("{new} is a setting's name; an option needs a name of its own"));
     }
     let script_level = matches!(
         def.kind,

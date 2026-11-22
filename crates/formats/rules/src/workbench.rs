@@ -13,6 +13,7 @@ use crate::fake::{FakeGame, FakePlayer};
 use crate::ir::{self, Event, Handler, Ir, LabelDef, LabelKind, Op, Scope};
 use crate::labels;
 use crate::scenario::{self, ScenarioLabel};
+use crate::settings;
 use crate::ty::{MAX_LABELLED, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty};
 use crate::vm::{self, Arg, ErrorKind, Fired, Input, ScriptError, Vm, Warning};
 
@@ -102,6 +103,88 @@ pub struct LabelLine {
     pub needs: String,
 }
 
+/// One setting the script's `settings` block names, as the check report
+/// lists it: the table's name and label, and the value both ways.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SettingLine {
+    pub name: &'static str,
+    pub label: &'static str,
+    /// The table's kind word: `bool`, `int`, `seconds`, `choice`, `percent`.
+    pub kind: &'static str,
+    /// What the record stores.
+    pub value: i32,
+    /// The value in words ("On", "Battle Rifle", "5 minutes").
+    pub text: String,
+}
+
+/// One row of the lobby's Quick Options, in the script's order.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct QuickLine {
+    /// `setting` (a record setting of the table) or `option` (one of the
+    /// script's own).
+    pub kind: &'static str,
+    pub name: String,
+    pub label: String,
+    /// The value the script starts the row at, in words: the block's
+    /// value of a setting, an option's default. None for a setting the
+    /// block leaves out, which starts at the carrier's stock value.
+    pub value: Option<String>,
+}
+
+/// The settings a script's block names, in table order.
+fn setting_lines(ir: &Ir) -> Vec<SettingLine> {
+    ir.settings
+        .iter()
+        .filter_map(|s| {
+            let row = settings::row_at(s.index)?;
+            Some(SettingLine {
+                name: row.name,
+                label: row.label,
+                kind: row.kind.word(),
+                value: s.value,
+                text: settings::value_label(s.index, s.value),
+            })
+        })
+        .collect()
+}
+
+/// The Quick Options rows the script marks.
+fn quick_lines(ir: &Ir) -> Vec<QuickLine> {
+    ir.quick
+        .iter()
+        .filter_map(|q| match *q {
+            ir::Quick::Setting(index) => {
+                let row = settings::row_at(index)?;
+                let set = ir.settings.iter().find(|s| s.index == index);
+                Some(QuickLine {
+                    kind: "setting",
+                    name: row.name.to_string(),
+                    label: row.label.to_string(),
+                    value: set.map(|s| settings::value_label(index, s.value)),
+                })
+            }
+            ir::Quick::Option(i) => {
+                let o = ir.options.get(i as usize)?;
+                let value = match o.ty {
+                    Ty::Bool => (if o.default != 0 { "On" } else { "Off" }).to_string(),
+                    Ty::Enum(e) => ir
+                        .enums
+                        .get(e as usize)
+                        .and_then(|d| d.variants.get(o.default as usize))
+                        .map_or_else(|| o.default.to_string(), |&v| text(ir, v).to_string()),
+                    _ => o.default.to_string(),
+                };
+                Some(QuickLine {
+                    kind: "option",
+                    name: text(ir, o.name).to_string(),
+                    label: text(ir, o.label).to_string(),
+                    value: Some(value),
+                })
+            }
+        })
+        .collect()
+}
+
 fn label_line(def: &LabelDef) -> LabelLine {
     LabelLine {
         text: def.text.clone(),
@@ -154,6 +237,11 @@ pub struct CheckReport {
     /// `map` lists. Their handles start at [`scenario::MAP_BASE`]; a page
     /// that merges them into a map gives them handles of its own.
     pub minimal: Vec<ScenarioLabel>,
+    /// The record settings the script's `settings` block names, in table
+    /// order.
+    pub settings: Vec<SettingLine>,
+    /// The Quick Options rows the script marks, in its order.
+    pub quick: Vec<QuickLine>,
 }
 
 /// A script checked: compiled, verified and measured.
@@ -333,6 +421,8 @@ pub fn check(src: &str) -> Check {
         unhostable: unhostable_all(&ir),
         labels: ir.labels.iter().map(label_line).collect(),
         minimal: scenario::things_of(&labels::minimal(&ir, &header_teams(&ir)), scenario::MAP_BASE),
+        settings: setting_lines(&ir),
+        quick: quick_lines(&ir),
     };
     Check {
         ok: errors.is_empty(),
@@ -1067,6 +1157,23 @@ mod tests {
             c.hash.unwrap(),
             crate::compile(crate::builtin::SLAYER).unwrap().id().to_string()
         );
+    }
+
+    #[test]
+    fn the_report_lists_the_settings_and_the_quick_rows() {
+        let src = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nquick score_limit, shields, lives\n\
+                   settings {\n    score_limit = 50\n    shields = none\n    time_limit = 300s\n}\n";
+        let c = check(src);
+        assert!(c.ok, "{:?}", c.errors);
+        let r = c.report.unwrap();
+        let names: Vec<(&str, i32)> = r.settings.iter().map(|s| (s.name, s.value)).collect();
+        assert_eq!(names, [("score_limit", 50), ("time_limit", 300), ("shields", 1)]);
+        assert!(r.settings.iter().all(|s| !s.label.is_empty() && !s.text.is_empty()));
+        let quick: Vec<(&str, &str, bool)> = r.quick.iter().map(|q| (q.kind, q.name.as_str(), q.value.is_some())).collect();
+        assert_eq!(quick, [("setting", "score_limit", true), ("setting", "shields", true), ("setting", "lives", false)]);
+        // A script with neither has neither.
+        let plain = check(crate::builtin::SLAYER).report.unwrap();
+        assert!(plain.settings.is_empty() && plain.quick.is_empty());
     }
 
     #[test]

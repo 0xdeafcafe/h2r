@@ -32,8 +32,8 @@ const CODES_DOC: &str =
 
 /// The words after which a typed space asks for completions: what comes
 /// next is a label, an event, a carrier, a capability, a set, a palette or
-/// a game type list.
-const SPACE_TRIGGER_WORDS: &[&str] = &["is", "on", "carrier", "requires", "each", "palette", "list"];
+/// a game type list, a `scoring` word or a Quick Options mark.
+const SPACE_TRIGGER_WORDS: &[&str] = &["is", "on", "carrier", "requires", "each", "palette", "list", "scoring", "quick"];
 
 /// Serves until the client shuts the server down.
 pub fn run() -> Result<()> {

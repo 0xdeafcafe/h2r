@@ -12,6 +12,10 @@
   "carrier"
   "teams"
   "list"
+  "scoring"
+  "about"
+  "quick"
+  "settings"
   "requires"
   "option"
   "palette"
@@ -96,6 +100,18 @@
 
 (list_declaration
   name: (identifier) @constant)
+
+(scoring_declaration
+  name: (identifier) @constant)
+
+(setting
+  value: (identifier) @constant)
+
+(setting
+  name: (identifier) @property)
+
+(quick_declaration
+  mark: (identifier) @property)
 
 (carrier_declaration
   name: (identifier) @constant)
