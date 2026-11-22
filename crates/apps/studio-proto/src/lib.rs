@@ -151,6 +151,8 @@ pub mod method {
     pub const UI_RENDER: &str = "ui.render";
     pub const UI_CONSISTENCY: &str = "ui.consistency";
     pub const UI_COMPONENTS: &str = "ui.components";
+    pub const UI_SELECT_FOLDER: &str = "ui.select_folder";
+    pub const UI_SHEET: &str = "ui.sheet";
 
     pub const PAIR_LIST: &str = "pair.list";
     pub const PAIR_STATUS: &str = "pair.status";

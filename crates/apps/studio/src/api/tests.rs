@@ -3731,3 +3731,136 @@ fn the_design_systems_checks_and_catalogue_through_the_api() {
     assert!(c["layouts"].as_array().unwrap().iter().any(|l| l["name"] == "layout.list"));
     assert!(c["palette"].as_array().unwrap().iter().any(|p| p["name"] == "hint_blue"));
 }
+
+#[test]
+fn ui_screens_lists_the_folders_of_both_trees() {
+    let t = Temp::new("ui-folders");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let list = call(&mut api, &mut app, m::UI_SCREENS, Value::Null);
+    let ours = &list["folders"]["ours"];
+    // Every screen of ours is in the tree once (the existing fields stay).
+    assert_eq!(
+        ours["count"].as_u64().unwrap() as usize,
+        list["screens"].as_array().unwrap().len()
+    );
+    assert!(!ours["folders"].as_array().unwrap().is_empty());
+    let first = &ours["folders"][0];
+    assert!(first["id"].is_string() && first["label"].is_string());
+    assert!(!first["items"].as_array().unwrap().is_empty());
+    // No disc: no retail tree, no grid shown.
+    assert!(list["folders"]["retail"].is_null());
+    assert!(list["folders"]["browse"].is_null());
+    assert_eq!(list["retail"], json!([]));
+}
+
+#[test]
+fn ui_select_folder_shows_the_grid_and_picking_goes_back_to_the_picture() {
+    let t = Temp::new("ui-select-folder");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let list = call(&mut api, &mut app, m::UI_SCREENS, Value::Null);
+    let folder = list["folders"]["ours"]["folders"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let inside = list["folders"]["ours"]["folders"][0]["count"].as_u64().unwrap();
+
+    let shown = call(&mut api, &mut app, m::UI_SELECT_FOLDER, json!({"folder": format!("ours/{folder}")}));
+    assert_eq!(shown["browse"]["path"], format!("ours/{folder}"));
+    assert_eq!(shown["tiles"].as_u64().unwrap(), inside);
+    assert_eq!(app.tool, crate::ToolKind::UiScreens);
+    let at = app.ui_screens.gallery.at.clone().unwrap();
+    assert_eq!(at.folder, folder);
+    let after = call(&mut api, &mut app, m::UI_SCREENS, Value::Null);
+    assert_eq!(after["folders"]["browse"]["folder"], json!(folder));
+
+    // The root, by root alone; `root` and `folder` together.
+    let all = call(&mut api, &mut app, m::UI_SELECT_FOLDER, json!({"root": "ours"}));
+    assert_eq!(
+        all["tiles"].as_u64().unwrap() as usize,
+        list["screens"].as_array().unwrap().len()
+    );
+    let both = call(&mut api, &mut app, m::UI_SELECT_FOLDER, json!({"root": "ours", "folder": folder}));
+    assert_eq!(both["browse"]["path"], format!("ours/{folder}"));
+
+    // Picking a screen shows its picture again.
+    let first = crate::app::UiScreens::tree()[0].0;
+    call(&mut api, &mut app, m::UI_PICK, json!({"screen": first}));
+    assert!(app.ui_screens.gallery.at.is_none());
+
+    // What cannot be shown says why.
+    let bad = |api: &mut Api, app: &mut App, p: Value| code_of(api.call(app, m::UI_SELECT_FOLDER, p));
+    assert_eq!(bad(&mut api, &mut app, json!({})), code::INVALID_PARAMS);
+    assert_eq!(bad(&mut api, &mut app, json!({"folder": "ours/no-such-folder"})), code::INVALID_PARAMS);
+    assert_eq!(bad(&mut api, &mut app, json!({"folder": "mine/x"})), code::INVALID_PARAMS);
+    assert_eq!(bad(&mut api, &mut app, json!({"root": "elsewhere"})), code::INVALID_PARAMS);
+    assert_eq!(bad(&mut api, &mut app, json!({"root": "retail"})), code::FAILED, "no disc");
+    assert!(app.ui_screens.gallery.at.is_none(), "a refusal changes nothing");
+}
+
+#[test]
+fn ui_sheet_renders_a_folders_previews_into_one_png() {
+    let t = Temp::new("ui-sheet");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let list = call(&mut api, &mut app, m::UI_SCREENS, Value::Null);
+    let folder = list["folders"]["ours"]["folders"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let inside = list["folders"]["ours"]["folders"][0]["count"].as_u64().unwrap() as usize;
+
+    let out = t.path("out/folder.png");
+    let sheet = call(
+        &mut api,
+        &mut app,
+        m::UI_SHEET,
+        json!({"folder": format!("ours/{folder}"), "out": out.display().to_string(), "columns": 2}),
+    );
+    assert_eq!(sheet["path"], out.display().to_string());
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(&bytes[1..4], b"PNG");
+    let (w, h) = (sheet["width"].as_u64().unwrap(), sheet["height"].as_u64().unwrap());
+    let tiles = sheet["tiles"].as_array().unwrap();
+    assert_eq!(tiles.len(), inside);
+    for tile in tiles {
+        assert!(tile["pick"]["screen"].is_string(), "{tile}");
+        assert!(tile["x"].as_u64().unwrap() + tile["w"].as_u64().unwrap() <= w);
+        assert!(tile["y"].as_u64().unwrap() + tile["h"].as_u64().unwrap() <= h);
+        assert_eq!(tile["checked"], true);
+        assert!(tile["findings"].is_u64() && tile.get("error").is_none());
+    }
+    // Two columns: the second tile sits to the right of the first.
+    if tiles.len() > 1 {
+        assert!(tiles[1]["x"].as_u64() > tiles[0]["x"].as_u64());
+    }
+    // The grid shown is the default; `states` gives a tile per state.
+    let shown = call(&mut api, &mut app, m::UI_SELECT_FOLDER, json!({"folder": format!("ours/{folder}")}));
+    assert_eq!(shown["tiles"].as_u64().unwrap() as usize, inside);
+    let again = call(&mut api, &mut app, m::UI_SHEET, json!({"out": t.path("out/again.png").display().to_string()}));
+    assert_eq!(again["tiles"].as_array().unwrap().len(), inside);
+    let states = call(
+        &mut api,
+        &mut app,
+        m::UI_SHEET,
+        json!({"states": true, "out": t.path("out/states.png").display().to_string()}),
+    );
+    assert!(states["tiles"].as_array().unwrap().len() >= inside);
+    assert_eq!(states["states"], true);
+
+    // Refusals: nothing to draw, no folder, a Git checkout.
+    let t2 = Temp::new("ui-sheet-fresh");
+    let mut fresh = self::app(&t2);
+    assert_eq!(code_of(api.call(&mut fresh, m::UI_SHEET, json!({}))), code::INVALID_PARAMS);
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_SHEET, json!({"folder": "ours/no-such-folder"}))),
+        code::INVALID_PARAMS
+    );
+    let png = Path::new(env!("CARGO_MANIFEST_DIR")).join("never-sheet.png");
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_SHEET, json!({"root": "ours", "out": png.display().to_string()}))),
+        code::REFUSED
+    );
+    assert!(!png.exists());
+}
