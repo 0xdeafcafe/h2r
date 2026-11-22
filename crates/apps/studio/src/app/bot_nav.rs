@@ -391,7 +391,7 @@ pub fn spots(
             kind: Some(match (s.kind, s.shape) {
                 (Kind::Crouch, _) => SpotKind::Crouch,
                 (Kind::Bounce, Shape::Slot) => SpotKind::Bounce,
-                (Kind::Bounce, Shape::Crease | Shape::Vee) => SpotKind::Strip,
+                (Kind::Bounce, Shape::Crease | Shape::Vee | Shape::Busy) => SpotKind::Strip,
             }),
             source,
             stand: s.stand,

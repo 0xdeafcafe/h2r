@@ -16,7 +16,7 @@
 
 use superbounce::{Kind, Spot, Vec3};
 
-use crate::superbounce_mode::{RIBBON_WIDTH, primed};
+use crate::superbounce_mode::primed;
 
 /// A crouched player within this distance (world units) of a crouch
 /// spot's stand point is `near` it.
@@ -173,18 +173,18 @@ pub struct Predicted {
     pub speed: f32,
     /// The touchdown speed the strip needs ([`need_of`]).
     pub need: f32,
-    /// The strip: its edge (the crease line), stand point, slot width
-    /// ([`width_of`]) and fall.
+    /// The strip: its edge (the collision edge, the target), stand point
+    /// and fall.
     pub edge: [Vec3; 2],
     pub stand: Vec3,
-    pub width: f32,
     pub fall: f32,
 }
 
 impl Predicted {
-    /// How far the landing is outside the slot, horizontally: 0 inside it.
+    /// How far the landing is outside the edge's catch, horizontally
+    /// (`superbounce::catch_miss`): 0 when caught.
     pub fn miss(&self) -> f32 {
-        (segment_distance_xy(self.edge, [self.at[0], self.at[1]]) - self.width / 2.0).max(0.0)
+        superbounce::catch_miss(self.edge, [self.at[0], self.at[1]])
     }
 
     /// The lock (docs/game/superbounce.md, "Lock-on"): the landing is in
@@ -233,13 +233,6 @@ pub struct Landing {
 
 // ---- the strip's slot ----
 
-/// A strip's slot width (world units): the gap between its joints, the
-/// scanner's `width`; a spot from before the scanner had it (0) reads as
-/// the floor ribbon's [`RIBBON_WIDTH`].
-pub fn width_of(spot: &Spot) -> f32 {
-    if spot.width > 0.0 { spot.width } else { RIBBON_WIDTH }
-}
-
 /// The touchdown speed a strip needs (units/s): its measured `need`;
 /// else, with a measured drop (`fall`) and no need, what that fall gives
 /// on top of a standing jump's landing (`superbounce::speed::touchdown`);
@@ -280,9 +273,10 @@ pub fn edge_distance_xy(spot: &Spot, xy: [f32; 2]) -> f32 {
     segment_distance_xy(spot.edge, xy)
 }
 
-/// How far `xy` is outside a strip's slot, horizontally: 0 inside it.
+/// How far `xy` is outside a strip's catch, horizontally: 0 within
+/// `superbounce::CATCH` of its edge, the hit side of the verdict.
 pub fn slot_miss(spot: &Spot, xy: [f32; 2]) -> f32 {
-    (edge_distance_xy(spot, xy) - width_of(spot) / 2.0).max(0.0)
+    superbounce::catch_miss(spot.edge, xy)
 }
 
 fn distance(a: Vec3, b: Vec3) -> f32 {
@@ -989,7 +983,6 @@ mod tests {
             need: 5.0,
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
-            width: 0.2,
             fall: 1.0,
         }
     }
@@ -1034,7 +1027,7 @@ mod tests {
             classify(&strip, Some(MINUS_3), on, need + 0.1, -0.04),
             NoBounce
         );
-        // Inside the slot is within half its width of the edge.
+        // Caught is within the one catch of the edge.
         assert_eq!(slot_miss(&strip, [10.09, 0.5]), 0.0);
         assert!((slot_miss(&strip, [10.3, 0.5]) - 0.2).abs() < 1e-5);
         // A strip with no measured need or drop needs the one threshold

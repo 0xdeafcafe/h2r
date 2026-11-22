@@ -173,8 +173,8 @@ A match with `superbounce = true` and a `[train]` table is a training run
 is). Its bots share one board, `learn::Board` (process-wide, as
 `practice::CLAIMS` is), built from the map's bounce sites and its
 `.learned` at the first pick. Every known site is on it, the scan's
-candidates (single creases and Vs, `Site::candidate`) too: the training
-is what proves them. A site with no measured drop
+candidates (single creases, Vs and busy points, `Site::candidate`)
+too: the training is what proves them. A site with no measured drop
 (`mind::practice::site_in`) allows the stand first, then a run-off and a
 running jump from its launch floor: the nav floor nearest over the
 target at the speed model's 2.43 drop (`bounce_route::launch_floor`),

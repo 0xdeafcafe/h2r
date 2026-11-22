@@ -1284,13 +1284,14 @@ impl Touchdown {
 
     /// What it came to, by its first failed test, as the game's landing
     /// classifier names it: `bounce`, `not_primed`, `missed` (more than
-    /// `width / 2` off the target), `too_slow` (under `need`), `no_bounce`.
-    pub fn result(&self, width: f32, need: f32) -> &'static str {
+    /// the one catch, `superbounce::CATCH`, off the target), `too_slow`
+    /// (under `need`), `no_bounce`.
+    pub fn result(&self, need: f32) -> &'static str {
         if self.bounced() {
             "bounce"
         } else if self.word.is_some_and(|w| !is_primed(w)) {
             "not_primed"
-        } else if self.miss > width / 2.0 {
+        } else if self.miss > superbounce::CATCH {
             "missed"
         } else if need > 0.0 && self.speed_in < need {
             "too_slow"
@@ -1766,12 +1767,7 @@ impl OrderRun {
             && let Some(t) = self.watch.step(at, v[2], pair, tick, site.target())
         {
             self.landing = Some(t);
-            let width = if site.width > 0.0 {
-                site.width
-            } else {
-                crate::spots::SLOT_WIDTH
-            };
-            let result = t.result(width, site.need);
+            let result = t.result(site.need);
             self.note(tick, result, t.at);
             if let Some(f) = self.flight.as_mut().filter(|f| f.landing.is_none()) {
                 f.landing = Some(t);

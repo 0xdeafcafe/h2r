@@ -1171,14 +1171,10 @@ impl Mind {
         let why = if bounced {
             None
         } else {
-            let landing = view.landing.filter(|t| !t.bounced()).map(|t| {
-                let width = if site.width > 0.0 {
-                    site.width
-                } else {
-                    crate::spots::SLOT_WIDTH
-                };
-                t.result(width, site.need)
-            });
+            let landing = view
+                .landing
+                .filter(|t| !t.bounced())
+                .map(|t| t.result(site.need));
             Some(match (view.error, landing) {
                 (Some("no_bounce"), Some(l)) => l,
                 (Some(e), _) => e,

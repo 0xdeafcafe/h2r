@@ -1073,7 +1073,6 @@ fn spot(
         edge,
         stand: origin,
         score,
-        width,
         out: way_out(stand),
         lip: Lip::new(&scene.lip(origin)),
         ..Spot::default()

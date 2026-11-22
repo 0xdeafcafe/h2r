@@ -312,7 +312,6 @@ fn scanned_slot() -> Spot {
         kind: Kind::Bounce,
         edge: [[-11.10, 4.0, -3.2], [-9.98, 4.0, -3.2]],
         stand: [-10.54, 4.0, -3.19],
-        width: 0.2,
         score: 0.97,
         ..Spot::default()
     }
@@ -334,13 +333,10 @@ fn a_learned_line_s_aim_overrides_the_scan_s_aim() {
     apply(&mut spots, &[learned_line()]);
     let s = spots[0];
     assert_eq!(s.stand, [-10.54, 4.09, -3.19]);
-    // The line moved across onto the aim, its length and height kept.
-    for p in s.edge {
-        assert!((p[1] - 4.09).abs() < 1e-5 && p[2] == -3.2, "{:?}", s.edge);
-    }
-    assert!((s.edge[0][0] + 11.10).abs() < 1e-5 && (s.edge[1][0] + 9.98).abs() < 1e-5);
+    // The edge is the collision edge: the aim moves, the edge does not.
+    assert_eq!(s.edge, scanned_slot().edge);
     // A line proves nothing: the status and score are the scan's.
-    assert_eq!((s.status, s.score, s.width), (Status::Likely, 0.97, 0.2));
+    assert_eq!((s.status, s.score), (Status::Likely, 0.97));
     // Not a bounce spot, or too far: as they were.
     assert_eq!(spots[1], crouch);
     assert_eq!(spots[2], far);
@@ -396,7 +392,6 @@ fn a_line_belongs_to_the_spot_whose_target_its_aim_is_on() {
         edge: [[-11.10, 3.8, -3.2], [-9.98, 3.8, -3.2]],
         stand: [-10.54, 3.8, -3.19],
         shape: crate::Shape::Crease,
-        width: 0.1,
         score: 0.6,
         ..scanned_slot()
     };

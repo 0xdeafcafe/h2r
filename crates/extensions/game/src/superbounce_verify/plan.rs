@@ -33,9 +33,8 @@ pub const MAX_OUT: u32 = 300;
 pub const MAX_FALL: u32 = 600;
 pub const MAX_ROUTE: u32 = 36_000;
 pub const MAX_REPEAT: u32 = 20;
-/// An explicit drop point's defaults: slot width, touchdown speed needed,
-/// and the length of the midline drawn through `stand`.
-pub const POINT_WIDTH: f32 = 0.2;
+/// An explicit drop point's defaults: touchdown speed needed, and the
+/// length of the edge drawn through `stand`.
 pub const POINT_NEED: f32 = 4.3;
 pub const POINT_EDGE: f32 = 0.3;
 /// A route's default target: this far straight up from the strip's stand,
@@ -275,17 +274,15 @@ pub fn point_spot(p: &VerifyPoint, kind: Kind) -> Result<Spot, String> {
                     ]
                 }
             };
-            let width = p.width.unwrap_or(POINT_WIDTH);
             let need = p.need.unwrap_or(POINT_NEED);
-            if !(width.is_finite() && width > 0.0 && need.is_finite() && need >= 0.0) {
-                return Err("points: width must be over 0 and need at least 0".into());
+            if !(need.is_finite() && need >= 0.0) {
+                return Err("points: need must be at least 0".into());
             }
             Ok(Spot {
                 kind,
                 edge,
                 stand: p.stand,
                 drift,
-                width,
                 need,
                 score: 0.0,
                 ..Spot::default()

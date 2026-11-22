@@ -621,7 +621,7 @@ pub fn predict_on(
     body: &Body,
     ground: &Ground<'_>,
 ) -> Option<superbounce_mode::Predicted> {
-    use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss, width_of};
+    use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss};
     use superbounce_mode::{Course, Predicted};
     let vz = body.velocity[2];
     if !body.airborne || !vz.is_finite() || vz >= 0.0 {
@@ -659,7 +659,6 @@ pub fn predict_on(
         need: need_of(spot),
         edge: spot.edge,
         stand: spot.stand,
-        width: width_of(spot),
         fall: spot.fall,
     })
 }

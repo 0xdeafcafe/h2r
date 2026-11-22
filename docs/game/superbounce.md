@@ -507,7 +507,8 @@ y 4.04: the capsule sinks into the flat seam, between the edges of the
 two coplanar pieces. A contact with the ramp would carry the ramp's
 normal and none did; the bots' one learned Ascension site settled its
 aim at y 3.985 ([bounce-search.md](bounce-search.md)). So a spot's
-target is the joint the pinch sits on, not the strip between.
+target is the joint the pinch sits on, not the strip between: that
+collision edge itself ([the target](#the-target-the-collision-edge)).
 
 The community guide's Ascension spot says "jump onto the line where the
 ramp meets the ground" ([known
@@ -522,7 +523,8 @@ on the seam, and the crease's own [candidate](#single-creases) on
 y 3.800.
 
 The scan finds every joint between two walkable polygons: edges on one
-line (to 1 cm) that overlap. A joint is a seam when the two normals
+line (to 1 cm) that overlap, the overlap's ends taken as vertices (one
+polygon's or the other's, as the map stores them). A joint is a seam when the two normals
 agree (dot at least 0.999), a concave crease when the neighbour rises
 away from the edge, and is dropped when convex. A slot is two joints
 that are parallel (horizontal directions' dot at least 0.98), between
@@ -535,18 +537,14 @@ trough) and a seam up a ramp beside its foot all qualify
 
 What it reports:
 
-- **edge**: the target line. With a seam, the seam's joint over the two
-  joints' overlap, at its own floor height (Ascension: y 4.000, x
-  −11.10 to −9.98, z −3.20). A trough has no seam and nothing measured:
-  its sharper crease.
-- **stand**: the aim point, on the target line's middle, origin 0.01
-  above the floor (Ascension: (−10.54, 4.00, −3.19)). A learned or
-  partial line of the map's learned file moves it, see below.
-- **width**: the landing band, centred on the target line. Unmeasured:
-  the gap between the two joints, the scale the geometry gives (0.2 at
-  Ascension, so y 3.9 to 4.1, holding the measured origin 4.04 and the
-  learned aim 3.985). It is for the sim to measure (a TODO in
-  `strip`).
+- **edge**: the target, the seam's collision edge: its two end
+  vertices to the float (Ascension: (−11.10, 4.000, −3.20) to (−9.98,
+  4.000, −3.20)). A trough has no seam and nothing measured: its
+  sharper crease's edge.
+- **stand**: the aim point, on the edge across the middle of the two
+  joints' overlap, origin 0.01 above the floor (Ascension: (−10.54,
+  4.00, −3.19)). A learned or partial line of the map's learned file
+  moves it, see below.
 - **launch**: 111.3 × the sum over the two joints of `1 − cos(dihedral)`
   (0 for a seam): the launch at the [speed threshold](#speed). One
   point calibrates it: Ascension's crease, ramp normal z 0.8396 against
@@ -564,16 +562,19 @@ What it reports:
   0.3 for a crease and a seam (the traced shape) or 0.15 for two
   creases.
 
-Strips along one line (drift to 5°, target position across to 5 cm,
-height to 10 cm) that touch or overlap within 10 cm are merged into one
-spot, so a floor split into pieces gives one edge. The merged spot keeps
-the narrower `width`.
+Strips along one line (drift to 5°, edge across to 1 cm, height to
+10 cm) that share an end vertex or overlap (to 1 cm) are merged into
+one spot, so a floor split into pieces gives one edge, from the first
+edge's start vertex to the last's end vertex. No gap is bridged, so the
+merged edge's ends are still vertices. Its aim is the better-scored
+strip's.
 
 **The sim's answer first.** Where the map's learned file
 ([bounce-search.md](bounce-search.md)) has a `learned` or `partial`
 line with a hit for a bounce spot, that line's aim (`ax ay`) outranks
-the scan's: `superbounce::learned::apply` moves `stand` onto it and the
-`edge` across onto it (its direction and length kept). It proves
+the scan's: `superbounce::learned::apply` moves `stand` onto it. The
+`edge` stays the collision edge: the aim says where on and beside it
+to land, the edge is what the catch is measured from. It proves
 nothing: the training writes the word, and only a primed game run
 proves a spot ([Verifying spots](#verifying-spots)). A line belongs to
 one spot: of those it is about, the one whose target line passes
@@ -599,7 +600,8 @@ Nothing has measured one, so a single crease is a **candidate**
 play, the HUD and the assist leave it out until a game run or the
 training proves it ([which spots are marked](#the-superbounce-game-type)).
 
-- **edge**: the crease, at floor height: the joint is the target line.
+- **edge**: the crease's collision edge, its two end vertices to the
+  float (Zanzibar: (1.80, −26.70, 2.10) to (6.00, −26.70, 2.10)).
   **drift**: across it onto the flatter floor.
 - **stand**: the crease's middle, on the line, origin 0.01 above it
   (Zanzibar: (3.90, −26.70, 2.11)).
@@ -607,9 +609,8 @@ training proves it ([which spots are marked](#the-superbounce-game-type)).
   with no second joint: 5.2 units/s at Zanzibar, the scale of the small
   pop its first try made. Under 3 units/s (a dihedral under about 13°)
   it is no candidate.
-- **need**, **fall**: none.
-- **width**: 0.1 centred on the crease, unmeasured (a TODO for the sim):
-  it holds the Zanzibar landing that went through, 4.8 cm off the line.
+- **need**, **fall**: none. The one [catch](#the-target-the-collision-edge)
+  holds the Zanzibar landing that fell through, 4.8 cm off the edge.
 - **score**: 0.3, plus 0.2 × its length over a diameter (to 1), plus
   0.1 × its crease over Ascension's (to 1): at most 0.6, under a slot of
   the traced shape. The Zanzibar window scores 0.53.
@@ -641,19 +642,69 @@ the line and not parallel to it (`bounce.rs`, `converging`), scores at
 least 0.85, 0.05 more for each further one to 0.95: ranked with the Vs.
 Coplanar seams ending on the line are not counted, as a floor's
 triangulation ends them on every joint; so a thin seam crossed by grid
-lines is not told apart from its tessellation.
+lines is not told apart from its tessellation. The vertices where
+many such lines meet are [busy points](#busy-points), spots of their
+own.
 
 Creases and Vs are merged along their line like slots, and ranked with
-the slots by score: no cap of their own. They are not strips to the
+the slots and busy points by score: no cap of their own. They are not strips to the
 crouch rules: a candidate neither keeps a crouch spot "by a strip" nor
 scores one up. `--explain` lists every concave crease within its radius
 with its dihedral and the candidate it makes, or why none
 (`superbounce::explain_bounces`), then the bounce spots there.
 
+#### Busy points
+
+A floor vertex where many collision edges meet is a spot of its own
+(`Shape::Busy`, `shape` `busy`; `busy.rs`): the stressed, busy points
+of the floor's mesh, where a landing meets the most edges at once.
+Every edge of a walkable polygon ending at the vertex counts once,
+coplanar triangulation edges as much as creases; edges under 2 cm are
+slivers and don't. Vertices within a millimetre are one, and the
+coordinate kept is the map's own vertex, unrounded.
+
+- **edge**: the vertex twice, to the float: the vertex is the target,
+  and the [catch](#the-target-the-collision-edge) round it a disc.
+- **stand**: on the vertex, origin 0.01 above it. **drift**: none.
+- **launch**: unmeasured: the sharpest crease between its floors under
+  the slot calibration (111.3 × `1 − cos`), at least 3 for a flat one.
+- **need**, **fall**: none.
+- **score**: by the edges and the planes that meet there. A point for
+  each edge past 4 (to 6 points) and for each distinct plane past the
+  first (to 3; normals' dot under 0.999), and 0.1 plus 0.05 a point:
+  0.1 to 0.55, under every slot and most creases.
+
+A busy point needs at least 4 edges and 2 points to be a spot
+(`busy::MIN_POINTS`, a TODO to raise if a map lists too many): six flat
+edges (a triangulated grid's vertex), five over two planes, or four over
+three. A plain flat four-edge grid corner scores 0.1 and is left out, so
+a floor's every vertex does not flood the list; there is no cap by
+count. Busy points are candidates like creases: the sim's training flies
+them, and play, the HUD and the assist leave them out until a game run
+proves one.
+
+#### The target: the collision edge
+
+A bounce spot's target is the collision edge itself, the segment
+between two vertices, and its `edge` is those two vertices to the
+float, as the map's collision stores them (a busy point's is its vertex
+twice). Floor marks, the aligner and the assist aim at that line
+(`stand`, on it, or a learned line's aim beside it), and `h2 superbounce
+scan` prints it with every digit the float has.
+
+There is no band and no width. One tolerance remains, the catch: how
+far either side of the edge, horizontally, a landing's origin still
+counts as on it, `superbounce::CATCH`, 0.1. It is used only for the hit
+or miss verdict (`superbounce::catch_miss`: the game's landing
+classifier and lock, the verifier and the bots' `missed`). It is a TODO
+for the sim to measure; 0.1 holds the measured Ascension origin (y 4.04,
+0.04 off the seam), the bots' learned aim (y 3.985) and the second
+Zanzibar window try (4.8 cm off its crease).
+
 #### Covered seams
 
 A seam under a low ceiling, indoors, can't launch anyone. Every bounce
-spot, slot, crease or V, is dropped when at least half the points along
+spot, slot, crease, V or busy point, is dropped when at least half the points along
 its target line (each 0.25, and both ends) have structure over them
 within 5.06 of the floor (`bounce.rs`, `covered`): a column cast up from
 each point, where any face that isn't vertical counts, an upper floor as
@@ -752,7 +803,6 @@ rule](#crouch-spots-the-stricter-rule) cuts them to the ones kept.
   capsule hits at `stand`: of each face, its edge nearest the capsule's
   segment, at its own height, clipped to 0.5 each side of its point
   nearest the capsule (`superbounce::Lip`).
-- **width**: the widest band measured at the probed exits.
 - **edge**: across the largest group of exits that have standing room
   the same way, between its two ends: where a player walks in crouched
   and can't stand up.
@@ -1142,8 +1192,8 @@ bar"; this is the state they
 read, the scanner's rules and the world overlay. The numbers are in
 [notes/superbounce-spots.md](notes/superbounce-spots.md).
 
-The scanner's part (the stricter crouch rule, and the strip's `width`
-and `need`) is built in `crates/live/superbounce`. The state is built:
+The scanner's part (the stricter crouch rule, the strip's edge and the
+one catch) is built in `crates/live/superbounce`. The state is built:
 `superbounce_mode::State` carries `charge`, `verb`,
 `nav_target`, `landing`, `last_landing`, `still_ticks` and
 `standing_fits` (Code: `crates/extensions/game/src/superbounce_charge.rs`
@@ -1318,9 +1368,9 @@ is drawn: a crouch now would lose the charge.
 
 ### Landings
 
-The scanner's bounce spot carries `width` (the landing band centred on
-its target line; [Bounce](#bounce)); its `need` is the
-[one threshold](#speed). How a landing is shown is in
+The scanner's bounce spot carries its collision edge as the target
+([the target](#the-target-the-collision-edge)), judged with the one
+catch; its `need` is the [one threshold](#speed). How a landing is shown is in
 [Floor marks](#floor-marks) and [Lock-on](#lock-on); this is the state
 under them.
 
@@ -1331,15 +1381,15 @@ under them.
   3 units of the coasting landing, the one it lands nearest the slot of,
   with its `verdict`
   (`OnSlot`, `Fixable` by the assist's reach gate, else `Miss`), `speed`
-  and `need`, and the strip's `edge`, `stand`, `width` and `fall`.
-  `miss` is how far outside the slot it lands (0 inside), and it is
+  and `need`, and the strip's `edge`, `stand` and `fall`. `miss` is how
+  far outside the edge's catch it lands (0 when caught), and it is
   `locked` when it is `OnSlot` and `speed` is at least `need`
   (`superbounce_charge::Predicted`).
 - **What happened.** On the tick a primed or unprimed player touches
   down within 0.5 of a strip the mode files the landing: `bounce` when
   the vertical speed comes out over 8 units/s, else the first of
   `not primed` (the word was not −3 on the tick before), `missed` (the
-  origin was outside the slot), `too slow` (the speed in was under
+  origin was outside the edge's catch), `too slow` (the speed in was under
   `need`), `no bounce`. A touchdown is a tick whose previous tick was
   airborne and falling at 1 unit/s or more and which has stopped falling
   (over −0.5), launched, or landed; the origin tested is the previous
@@ -1387,12 +1437,12 @@ While primed, airborne and falling onto a predicted landing, the crease
 is a target (`superbounce_world::lock_box`, `brackets`): four corner
 brackets on the floor round the point of the crease nearest the
 landing, 0.3 along it and 0.2 across when closed. They open by 1.5 per
-unit the landing misses the slot by (at most 0.9 wider) and move toward
+unit the landing misses the edge's catch by (at most 0.9 wider) and move toward
 the landing by half the miss (at most 0.5), so they close in as the
 landing comes onto the crease. A box that appears starts 0.6 wider and
 closes in.
 
-**Locked** is the landing's `locked`: in the slot and at least the
+**Locked** is the landing's `locked`: within the edge's catch and at least the
 touchdown speed the strip needs. Locked, the brackets and the landing
 mark are red (`RED`, 1.0, 0.275, 0.196) with `Locked` over them, and
 the reticle goes red (below). Red is the

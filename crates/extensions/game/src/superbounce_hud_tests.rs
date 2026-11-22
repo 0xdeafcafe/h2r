@@ -503,7 +503,6 @@ fn the_reticle_locks_with_the_landing() {
             need: 5.0,
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
-            width: 0.2,
             fall: 1.0,
         })
     };

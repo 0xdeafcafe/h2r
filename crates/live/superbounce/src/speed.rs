@@ -66,7 +66,7 @@ pub fn fall_of(spot: &Spot) -> f32 {
 /// crease): `base` plus [`EXCESS_GAIN`] × the speed over [`BOUNCE_SPEED`].
 /// `None` under the threshold: no bounce.
 pub fn launch(base: f32, speed_in: f32) -> Option<f32> {
-    (speed_in >= BOUNCE_SPEED).then(|| base + EXCESS_GAIN * (speed_in - BOUNCE_SPEED))
+    (speed_in >= BOUNCE_SPEED).then_some(base + EXCESS_GAIN * (speed_in - BOUNCE_SPEED))
 }
 
 /// How high (world units) a launch of `v` units/s climbs.

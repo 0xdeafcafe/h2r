@@ -76,8 +76,6 @@ pub const BOUNCE_LABELS: usize = 3;
 /// it is gone.
 pub const FADE_NEAR: f32 = 25.0;
 pub const FADE_FAR: f32 = 45.0;
-/// A slot's width when the scan gives none.
-pub const RIBBON_WIDTH: f32 = 0.2;
 
 // ---- pure rules ----
 
@@ -499,9 +497,10 @@ struct ScanView {
 
 /// `raw` with the map's verified file and then its learned file applied,
 /// and the speed model filled in: every spot, and the ones [`marked`]. A
-/// `learned` or `partial` line of the sim's training moves its spot's
-/// target onto the line's aim and proves it (`superbounce::learned::apply`):
-/// the sim's measured answer outranks the scan's aim. Each strip with no
+/// `learned` or `partial` line of the sim's training moves its spot's aim
+/// (`stand`) onto the line's (`superbounce::learned::apply`): the sim's
+/// measured answer outranks the scan's aim. The edge stays the collision
+/// edge, and a line proves nothing. Each strip with no
 /// measured `need` or `fall` takes the one threshold every seam shares and
 /// the drop that reaches it (`superbounce::speed::apply`).
 fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
@@ -525,9 +524,9 @@ pub fn verified(spot: &Spot) -> bool {
 /// - Crouch spots: every one not failed.
 /// - Strips, once a game run has proved any strip of the map
 ///   ([`verified`]): only the proved ones.
-/// - Strips before that: the scan's two-joint slots. A single crease is a
-///   candidate (`Spot::candidate`) for the sim's training only, so it is
-///   left out until a game run or the training proves it.
+/// - Strips before that: the scan's two-joint slots. A single crease, V
+///   or busy point is a candidate (`Spot::candidate`) for the sim's
+///   training only, so it is left out until a game run proves it.
 pub fn marked(all: &[Spot]) -> Vec<Spot> {
     let proved = all.iter().any(|s| s.kind == Kind::Bounce && verified(s));
     all.iter()
@@ -1417,7 +1416,6 @@ mod tests {
                 need: 4.0,
                 edge: [[0.0, 2.0, -3.0], [2.0, 2.0, -3.0]],
                 stand: [1.0, 2.0, -3.0],
-                width: 0.2,
                 fall: 1.0,
             }),
             last_landing: Some(Landing {

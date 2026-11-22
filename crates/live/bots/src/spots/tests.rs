@@ -10,7 +10,6 @@ pub(crate) fn bounce_spot(stand: Vec3, launch: f32, score: f32) -> Spot {
         launch,
         drift: [0.0, 1.0],
         score,
-        width: 0.2,
         need: 4.3,
         ..Spot::default()
     }
@@ -25,7 +24,6 @@ pub(crate) fn crouch_spot(stand: Vec3) -> Spot {
         launch: 0.0,
         drift: [0.0, 0.0],
         score: 0.9,
-        width: 0.05,
         out: [0.0, 1.0],
         lip: superbounce::Lip::new(&[[stand, [stand[0] + 0.4, stand[1], stand[2] + 0.5]]]),
         ..Spot::default()
@@ -99,7 +97,13 @@ fn the_spots_file_round_trips_and_refuses_damage() {
     let failed = Spot { status: superbounce::Status::Failed, ..bounce_spot([7.0, 8.0, 9.0], 9.0, 0.5) };
     let crease = Spot { shape: superbounce::Shape::Crease, ..bounce_spot([2.0, 3.0, 4.0], 5.2, 0.5) };
     let vee = Spot { shape: superbounce::Shape::Vee, ..bounce_spot([2.0, 9.0, 4.0], 26.0, 0.95) };
-    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0]), proven, failed, crease, vee];
+    let busy = Spot {
+        shape: superbounce::Shape::Busy,
+        edge: [[2.5, 9.5, 4.0]; 2],
+        drift: [0.0; 2],
+        ..bounce_spot([2.5, 9.5, 4.01], 3.0, 0.3)
+    };
+    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0]), proven, failed, crease, vee, busy];
     let stamp = Stamp::now(0xfeed);
     let b = to_bytes(&spots, stamp);
     assert_eq!(from_bytes(&b), Some((spots, stamp)));

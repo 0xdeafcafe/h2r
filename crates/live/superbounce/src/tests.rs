@@ -132,8 +132,14 @@ fn the_ascension_slot_targets_its_flat_seam_not_the_strip_midline() {
     let b = bounces(&spots);
     assert_eq!(b.len(), 1, "{spots:?}");
     let s = b[0];
-    // The target line is the seam, to a centimetre, at floor height, over
-    // the joints' overlap.
+    // The target is the seam's collision edge itself: its two end
+    // vertices, exactly as the floor pieces store them.
+    let seam = 3.8f32 + 0.2;
+    assert!(
+        s.edge.contains(&[-11.10, seam, -3.2]) && s.edge.contains(&[-9.98, seam, -3.2]),
+        "{:?}",
+        s.edge
+    );
     for p in s.edge {
         assert!(
             (p[1] - 4.0).abs() <= 0.01 && (p[2] + 3.2).abs() < 1e-3,
@@ -153,13 +159,12 @@ fn the_ascension_slot_targets_its_flat_seam_not_the_strip_midline() {
         "{:?}",
         s.stand
     );
-    // The band is centred on the seam: half its width each side, so the
-    // measured bounce's origin (y 4.04) and the bots' learned aim (y 3.985)
-    // are on it, and the crease (y 3.8) is not.
-    assert!((s.width - 0.2).abs() < 1e-3, "width {}", s.width);
-    let on_band = |y: f32| off_line(s.edge, [-10.54, y, -3.2]) <= s.width / 2.0;
-    assert!(on_band(4.04) && on_band(3.985) && on_band(4.09));
-    assert!(!on_band(3.8) && !on_band(4.12));
+    // No band: the one catch either side of the edge is the verdict's.
+    // The measured bounce's origin (y 4.04) and the bots' learned aim
+    // (y 3.985) are caught; the crease (y 3.8) is not.
+    let caught = |y: f32| catch_miss(s.edge, [-10.54, y]) == 0.0;
+    assert!(caught(4.04) && caught(3.985) && caught(4.09));
+    assert!(!caught(3.8) && !caught(4.12));
     // One-point calibration: this crease is the 17.85.
     assert!((s.launch - 17.85).abs() < 0.2, "launch {}", s.launch);
     // From the crease toward the seam: +y, the way every traced bounce
@@ -221,7 +226,8 @@ fn a_slot_with_a_flat_seam_targets_the_seam_s_joint_line_at_any_heading() {
         ),
     ];
     let (deg, d) = (37.0, [5.0, -3.0, 1.5]);
-    let spots = scan(&turn(base, deg, d));
+    let polys = turn(base, deg, d);
+    let spots = scan(&polys);
     let b = bounces(&spots);
     assert_eq!(b.len(), 1, "{spots:?}");
     let s = b[0];
@@ -234,8 +240,15 @@ fn a_slot_with_a_flat_seam_targets_the_seam_s_joint_line_at_any_heading() {
         assert!(off_line(crease, *p) > 0.14, "{:?}", s.edge);
     }
     assert!((s.edge[0][2] - 1.5).abs() < 1e-3 && (s.stand[2] - 1.51).abs() < 1e-3);
-    // The band, centred on the seam: the gap's width, unmeasured.
-    assert!((s.width - 0.15).abs() < 1e-3, "{}", s.width);
+    // The edge's ends are the turned floor's own seam vertices, to the
+    // float.
+    let verts: Vec<Vec3> = polys[0]
+        .verts
+        .iter()
+        .chain(&polys[1].verts)
+        .copied()
+        .collect();
+    assert!(s.edge.iter().all(|p| verts.contains(p)), "{:?}", s.edge);
     assert_eq!((s.need, s.fall), (0.0, 0.0));
 }
 
@@ -694,7 +707,6 @@ fn a_ceiling_at_crouch_height_is_a_crouch_spot() {
     // No bounce strip near: 0.4 + 0.2 (wide) + 0.1 (long).
     assert!((s.score - 0.7).abs() < 1e-4, "{}", s.score);
     assert!(bounces(&spots).is_empty());
-    assert!(s.width >= 0.15, "{}", s.width);
 }
 
 #[test]
@@ -1297,10 +1309,15 @@ fn the_zanzibar_crease_is_a_single_crease_candidate() {
     // A candidate for the sim, with no speed and no drop.
     assert_eq!((s.fall, s.need, s.status), (0.0, 0.0, Status::Likely));
     assert!(s.candidate());
-    // The band is centred on the crease and holds the second try's
-    // landing, y −26.748, which fell through the floor at the joint.
-    assert!(s.width > 0.0, "{s:?}");
-    assert!(off_line(s.edge, [4.876, -26.748, 2.1]) <= s.width / 2.0);
+    // The edge is the crease's own two vertices, to the float, and the
+    // catch holds the second try's landing, y −26.748, which fell
+    // through the floor at the joint.
+    assert!(
+        s.edge.contains(&[1.8, -26.7, 2.1]) && s.edge.contains(&[6.0, -26.7, 2.1]),
+        "{:?}",
+        s.edge
+    );
+    assert_eq!(catch_miss(s.edge, [4.876, -26.748]), 0.0);
     assert!(s.score >= 0.3 && s.score <= 0.6 + 1e-5, "{}", s.score);
 }
 

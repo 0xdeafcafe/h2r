@@ -710,9 +710,9 @@ pub fn entry_for(entries: &[Entry], stand: Vec3) -> Option<&Entry> {
 /// The map's learned lines applied to scanned `spots`: the sim's measured
 /// aim outranks the scan's. A bounce spot whose line is `learned` or
 /// `partial` with a hit (some try bounced) and has an aim (`ax ay`) has
-/// its target moved onto it: `stand` to the aim (its height kept), and
-/// `edge` across, keeping its direction and length, so the line runs
-/// through the aim. Its status is left alone: a line never proves a site
+/// its aim moved onto it: `stand` to the aim (its height kept). `edge`
+/// stays the collision edge it is: the aim is where on and across it to
+/// land, the edge what the catch is measured from. Its status is left alone: a line never proves a site
 /// (the training writes the word; only a primed game run proves,
 /// [`crate::verified`]). Other lines and crouch spots are left as they
 /// are.
@@ -755,20 +755,9 @@ pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
     }
 }
 
-/// `s`'s target moved onto `aim`: `stand` there, `edge` moved across its
-/// own line (or, a point, onto the aim) so that it runs through it.
+/// `s`'s aim moved onto `aim`: `stand` there, its height kept; the edge
+/// is left as the map's collision has it.
 fn retarget(s: &mut Spot, aim: [f32; 2]) {
-    let [a, b] = s.edge;
-    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let l = dx.hypot(dy);
-    let (ox, oy) = if l > 1e-6 {
-        let (nx, ny) = (-dy / l, dx / l);
-        let d = (aim[0] - a[0]) * nx + (aim[1] - a[1]) * ny;
-        (nx * d, ny * d)
-    } else {
-        (aim[0] - a[0], aim[1] - a[1])
-    };
-    s.edge = [[a[0] + ox, a[1] + oy, a[2]], [b[0] + ox, b[1] + oy, b[2]]];
     s.stand = [aim[0], aim[1], s.stand[2]];
 }
 

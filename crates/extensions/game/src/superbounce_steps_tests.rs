@@ -46,7 +46,6 @@ fn fall(speed: f32, off: f32, verdict: Course) -> Option<Predicted> {
         need: 4.28,
         edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
         stand: [0.0, 0.0, 0.0],
-        width: 0.2,
         fall: 1.1,
     })
 }
