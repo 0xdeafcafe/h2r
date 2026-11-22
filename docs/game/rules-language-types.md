@@ -1,7 +1,7 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slices 1, 3 and 4 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"). The rest is not built; the code compiles the language of [rules-engine.md](rules-engine.md#the-language), called "the built language" below.
-Code: `crates/formats/rules/src/lang` (lexer, parser, `lower.rs`, which type checks and lowers in one pass), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
+Status: Design, with slices 1 to 4 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"). Time, constants, `match` and fixes are not built. "The built language" below is the language before slice 2, which the gap table describes.
+Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
 Switch: none.
 
 A Forge label is a declared, typed name, and the checker catches the
@@ -545,10 +545,11 @@ group.
   `SetBase::bound` is the label's `max`, which `verify::cost` charges
   in the worst-tick estimate, and `Vm::members` takes at most `max`, so
   the bound holds on any map, checked or not.
-- Until the checker declares labels (slice 2), `lower.rs` writes every
-  string label as `LabelDef::objects`: kind object, `min` 0, `max` 256,
-  no flags, which every map satisfies. Every tag path is `TagDef::any`.
-  It refuses a label outside `label_char` and a 65th label.
+- `lower.rs` writes each label from its declaration (`check::Label`):
+  kind, `min`, `max`, the numbered and per-team flags, and its map text.
+  A tag path used as a weapon is `TagGroup::Weapon`; every other is
+  `TagDef::any`. The checker refuses a label outside `label_char` and a
+  65th label.
 - A front end that writes IR directly declares its labels the same way:
   Firefight's `ZONE_LABEL` (`crates/formats/firefight/src/script.rs`) is
   kind object.
@@ -633,7 +634,7 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | # | Slice | Owns | Tests | Done when | After |
 |---|---|---|---|---|---|
 | 1 (built) | The IR's tables and the check | `ir.rs`, `verify.rs`, `vm.rs`, `ty.rs`, `labels.rs` (new: `check`, `minimal`), `crates/formats/firefight/src/script.rs`; in `lang/lower.rs` only the label and tag writers (a string label is an unbounded `objects` set) | each verifier refusal; `members` stops at `max`; `check` gives each text of the gate's "The check" from a hand-built census; `check(ir, minimal(ir))` passes for every built-in; the IR fuzz seeds are remade | every existing test passes on the changed tables | the scenario-events lane |
-| 2 | The checker and labels | `lang/check.rs`, `lang/sig.rs`, `lang/types.rs` (new); `lang/ast.rs`, `lang/parse.rs`, `lang/lex.rs`, `lang/lower.rs`, `lang/mod.rs`; `builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/*`; the scripts in `docs/game/rules-engine.md` and `.claude/skills/h2-rules/*` | one test per diagnostic code for labels, `T?` and narrowing, `zone`, `weapon`, `is` and handlers by label; `sig` erases to `caps::ENTRIES`; a script with five errors reports five; every built-in compiles, verifies, fits the budget and passes its scenario tests | the string label forms are gone from the grammar and the tree; a built-in's label table carries its declarations; `lower.rs` makes no type decision | 1 |
+| 2 (built) | The checker and labels | `lang/check.rs`, `lang/sig.rs`, `lang/types.rs` (new); `lang/ast.rs`, `lang/parse.rs`, `lang/lex.rs`, `lang/lower.rs`, `lang/mod.rs`; `builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/*`; the scripts in `docs/game/rules-engine.md` and `.claude/skills/h2-rules/*` | one test per diagnostic code for labels, `T?` and narrowing, `zone`, `weapon`, `is` and handlers by label; `sig` erases to `caps::ENTRIES`; a script with five errors reports five; every built-in compiles, verifies, fits the budget and passes its scenario tests | the string label forms are gone from the grammar and the tree; a built-in's label table carries its declarations; `lower.rs` makes no type decision | 1 |
 | 3 (built) | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
 | 4 (built) | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `sim.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
 | 5 | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |

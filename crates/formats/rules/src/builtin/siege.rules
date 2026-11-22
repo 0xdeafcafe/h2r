@@ -20,11 +20,19 @@ carrier slayer
 teams 2
 requires objects.create, objects.delete, player.spawn, player.weapons
 
+// What the map supplies.
+label barrier: objects numbered
+label attack: spawns numbered 0..2
+label defend: spawns numbered 0..2
+label capture: zones numbered 0..1 = "zone"
+label core: object
+label goal: zone
+
 option phase_time: int 60..600 = 180 "Phase time" "Seconds the attackers have for each phase"
 option capture_time: int 5..60 = 20 "Capture time" "Seconds the attackers hold a zone to take it"
 option wave_seconds: int 3..15 = 8 "Respawn wave" "Seconds between respawn waves"
 
-table loadouts: (side: team, primary: tag, secondary: tag) = [
+table loadouts: (side: team, primary: weapon, secondary: weapon) = [
     (team 0, "objects/weapons/rifle/battle_rifle/battle_rifle", "objects/weapons/pistol/magnum/magnum"),
     (team 1, "objects/weapons/rifle/covenant_carbine/covenant_carbine", "objects/weapons/rifle/plasma_rifle/plasma_rifle"),
 ]
@@ -36,10 +44,10 @@ global var wave: timer
 fn open(n: int) {
     phase = n
     clock = seconds(phase_time)
-    for each objects labelled "barrier" b where b.number < n { delete(b) }
-    spawn_areas(team 0, labelled "attack", n)
-    spawn_areas(team 1, labelled "defend", n)
-    if n == 2 { create("objects/weapons/multiplayer/assault_bomb/assault_bomb", first(objects labelled "core")) }
+    for each barrier b where b.number < n { delete(b) }
+    spawn_areas(team 0, attack, n)
+    spawn_areas(team 1, defend, n)
+    if n == 2 { create("objects/weapons/multiplayer/assault_bomb/assault_bomb", core) }
 }
 
 on round_start {
@@ -53,13 +61,12 @@ on pickup(p, o) {
 
 on tick {
     if phase < 2 {
-        let zone = first(objects labelled "zone" z where z.number == phase)
-        if zone != none and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+        if let zone = capture[phase] and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
     }
 }
 
-on enter(zone, o) {
-    if phase == 2 and zone.label == labelled "goal" and is_objective(o) { end_round(team 0) }
+on enter(goal, o) {
+    if phase == 2 and is_objective(o) { end_round(team 0) }
 }
 
 on timer(clock) { end_round(team 1) }

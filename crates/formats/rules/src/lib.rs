@@ -26,7 +26,7 @@ pub mod workbench;
 
 pub use content::Sha256;
 pub use ir::{DecodeError, Event, Ir};
-pub use lang::{CompileError, compile};
+pub use lang::{CompileError, Compiled, Diagnostic, Severity, compile, diagnose};
 pub use ty::Ty;
 pub use verify::{Refusal, Report, load, verify};
 pub use vm::{Call, Fired, Game, Input, RulesExt, ScriptError, Vm};

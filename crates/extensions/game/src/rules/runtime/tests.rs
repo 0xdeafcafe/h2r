@@ -402,7 +402,7 @@ fn a_script_the_host_cannot_run_is_refused_by_the_entry_or_event_it_names() {
 
 #[test]
 fn a_ranked_game_refuses_a_script_that_grants_edits_by_the_capability() {
-    let src = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+    let src = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
     let ir = ::rules::compile(src).unwrap();
     let blob = ir.encode();
     let id = ir.id();
@@ -549,7 +549,7 @@ use crate::game_variants::GameScripts;
 use crate::game_variants::store::{Origin, Store as VariantStore};
 use live_hle::game_variants::LiveVariant;
 
-const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { score(killer, 2) }\n";
+const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { if killer != none { score(killer, 2) } }\n";
 
 type Answer = Box<dyn Fn(&str, std::time::Duration) -> Result<Vec<u8>, String> + Send + Sync>;
 
