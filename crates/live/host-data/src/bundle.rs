@@ -1,8 +1,14 @@
 //! Build the owner's bundle from the DVD filesystem. The light host boots
 //! the original XBE and retail menu, including its packed fonts, and uses
-//! the shared caches and multiplayer maps for matches.
+//! the shared caches and multiplayer maps for matches, and the bots play
+//! them with the nav meshes and visibility grids it carries.
 
+mod nav;
 mod stores;
+
+pub use nav::BotData;
+#[cfg(test)]
+pub(crate) use nav::tests::write_current as write_current_bot_data;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -36,6 +42,9 @@ pub struct BundleSpec {
     pub stripped: Option<PathBuf>,
     /// Directory of previously recorded shared resource stores to verify against the disc.
     pub sim_stores: Option<PathBuf>,
+    /// The bots' nav meshes and visibility grids for every multiplayer
+    /// map, as `bots/<map>.<bsp>.bots` and `.vis`; `None` leaves them out.
+    pub bots: Option<BotData>,
     /// Replace existing bundle files.
     pub force: bool,
     /// zstd compression level, 1..=21.
@@ -59,6 +68,8 @@ pub struct BundleOut {
     pub stripped_used: usize,
     /// Number of shared resource maps carried as stores.
     pub stores_used: usize,
+    /// Multiplayer maps whose bot nav data the bundle carries.
+    pub nav_maps: usize,
     /// Payload bytes before compression.
     pub raw_bytes: u64,
     /// Bytes of the written archive.
@@ -90,6 +101,7 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
     }];
     let (mut multiplayer, mut shared, mut campaign_skipped, mut unknown_skipped, mut stripped_used) =
         (0, 0, 0, 0, 0);
+    let mut nav_maps = Vec::new();
     for map in disc.files(&["maps"])? {
         if !map.name.to_ascii_lowercase().ends_with(".map") {
             continue;
@@ -110,6 +122,13 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
             _ => shared += 1,
         }
         let path = format!("maps/{}", map.name);
+        if kind == CacheType::Multiplayer {
+            // The bots' data is built from the disc's map: a stripped copy
+            // has the same header (so the same fingerprint) but not the
+            // collision the build reads.
+            let key = map.name[..map.name.len() - ".map".len()].to_owned();
+            nav_maps.push(nav::NavMap { key, header, size: map.size, source: map.source.clone() });
+        }
         let (source, size) = match stripped_index.get(&map.name.to_ascii_lowercase()) {
             Some(stripped) => {
                 let metadata = fs::symlink_metadata(stripped)?;
@@ -182,6 +201,10 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
         } else {
             0
         };
+        let nav_count = match &spec.bots {
+            Some(bots) => nav::stage(bots, &nav_maps, &staging, &mut payload)?,
+            None => 0,
+        };
         let archive = staging.join(ARCHIVE_NAME);
         let metadata = staging.join(MANIFEST_NAME);
         let manifest = write_archive(&archive, spec.zstd_level, &mut payload)?;
@@ -204,10 +227,10 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
                 return Err(error.into());
             }
         }
-        Ok((manifest, archive_bytes, stores_used))
+        Ok((manifest, archive_bytes, stores_used, nav_count))
     })();
     let _ = fs::remove_dir_all(staging);
-    let (manifest, archive_bytes, stores_used) = result?;
+    let (manifest, archive_bytes, stores_used, nav_count) = result?;
     let raw_bytes = manifest.files.iter().map(|file| file.size).sum();
 
     Ok(BundleOut {
@@ -218,6 +241,7 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
         unknown_skipped,
         stripped_used,
         stores_used,
+        nav_maps: nav_count,
         raw_bytes,
         archive_bytes,
     })
@@ -233,6 +257,7 @@ struct Payload {
 }
 
 /// Where a payload file's bytes come from.
+#[derive(Clone)]
 enum Source {
     /// A bounded region of the ISO file: (iso path, absolute byte
     /// offset, length).
@@ -527,6 +552,7 @@ mod tests {
             out: out.to_path_buf(),
             stripped: None,
             sim_stores: None,
+            bots: None,
             force: false,
             zstd_level: 3,
         }

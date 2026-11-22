@@ -434,7 +434,12 @@ or `H2_LEASE` before provisioning. It provisions the verified bundle under
 `H2_HOST_CACHE` (default `host-data` in the user cache) and starts a child
 `h2 serve --system-link --host-light`. The bundle's disc directory must
 contain `default.xbe` and the maps. The module must match the XBE and its
-build settings, including `H2_OPT`.
+build settings, including `H2_OPT`. Before it starts either child, the
+supervisor copies the bundle's `bots/` files into the child's data
+directory (`<data>/bots`), where the game loads a map's nav mesh and grid
+and the nav worker finds them current. A sim lease whose map has no nav
+mesh in the bundle fails before its child starts.
+[`install_bot_data`](../../crates/live/host-data/src/lib.rs)
 
 The child gets `H2_HOST_LOBBY=1`, its own private Unix agent socket,
 and the provider's `H2_HOST_TOKEN`, `H2_HOST_LIVE_URL` and `H2_HOST_LEASE_JSON`.
@@ -579,10 +584,20 @@ h2 host bundle --disc "$H2_DISC" --out "$bundle_dir"
 | `maps/shared.map`, `maps/single_player_shared.map` | The map loader can resolve references into these shared caches. |
 | Multiplayer `maps/*.map` | The host loads these maps for matches. The bundle selects them by their cache headers. |
 | `maps/fonts/` | The retail menu reads the font tables and packed glyphs from the DVD. |
+| `bots/<map>.<bsp>.bots`, `bots/<map>.<bsp>.vis` | Each multiplayer map's bot nav mesh and visibility grid, built from the disc. A sim child builds none, and a light host would otherwise build each map's when it is first played. |
 
 The light host skips Bink movies. Campaign levels and dashboard media are
 outside the multiplayer boot path. See [boot](../../crates/apps/boot/src/lib.rs)
 and [disc fonts](../formats/fonts.md).
+
+The bot data comes from `<data>/bots`, the directory `h2 bots nav` and the
+game write. The command first builds the maps whose files are missing or
+stale there, as `h2 bots nav all` does, restoring completed builds from
+the shared nav cache. It then checks every map's files against the
+bundled map's header and refuses a map without a current mesh and grid.
+`--data DIR` names the data root (default: the one `h2 play` uses).
+`--no-bots` leaves the bot data out.
+[Bundle nav data](../../crates/live/host-data/src/bundle/nav.rs) · [Bot data files](../game/bots.md)
 
 To use server copies, make them with `h2 server-map strip ORIGINAL.map
 OUTPUT.map`, keeping the original filenames, and add `--stripped-maps DIR`.

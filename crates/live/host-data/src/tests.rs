@@ -183,6 +183,7 @@ fn build_fixture_disc(out: &TempDir) -> (PathBuf, crate::BundleOut) {
         out: bundle_out,
         stripped: None,
         sim_stores: None,
+        bots: None,
         force: false,
         zstd_level: 3,
     })
@@ -348,6 +349,7 @@ fn the_cache_evicts_least_recently_used_entries() {
             out: out.clone(),
             stripped: None,
             sim_stores: None,
+            bots: None,
             force: false,
             zstd_level: 3,
         })
@@ -465,4 +467,94 @@ fn an_incomplete_cache_entry_is_rebuilt() {
 
     assert_eq!(provision(&url, &sha, &cache).unwrap(), dir);
     assert!(dir.join("maps/zanzibar.map").is_file());
+}
+
+#[test]
+fn provisioning_places_the_bundles_bot_data_where_the_game_loads_it() {
+    let tmp = TempDir::new("bots-install");
+    let disc = tmp.join("disc");
+    testkit::write_disc_dir(&disc);
+    let built_data = tmp.join("owner-data");
+    for map in ["lockout", "zanzibar"] {
+        crate::bundle::write_current_bot_data(&built_data, &disc, map);
+    }
+    let out = tmp.join("bundle");
+    let built = crate::build(&crate::BundleSpec {
+        disc,
+        out: out.clone(),
+        stripped: None,
+        sim_stores: None,
+        bots: Some(crate::BotData { dir: bots::cache::dir(&built_data), build: false }),
+        force: false,
+        zstd_level: 3,
+    })
+    .unwrap();
+    assert_eq!(built.nav_maps, 2);
+    let dir = provision(
+        &testkit::file_url(&out.join(ARCHIVE_NAME)),
+        &built.manifest.sha256,
+        &tmp.join("cache"),
+    )
+    .unwrap();
+    let files = bundled_bot_files(&dir).unwrap();
+    assert_eq!(files, ["lockout.0.bots", "lockout.0.vis", "zanzibar.0.bots", "zanzibar.0.vis"]);
+
+    // A host's data root: a stale file of the same name is replaced.
+    let data = tmp.join("host-data-root");
+    let placed_dir = bots::cache::dir(&data);
+    fs::create_dir_all(&placed_dir).unwrap();
+    fs::write(placed_dir.join("lockout.0.bots"), b"stale").unwrap();
+    assert_eq!(install_bot_data(&dir, &data).unwrap(), 4);
+    for name in &files {
+        assert_eq!(
+            testkit::read_all(&placed_dir.join(name)),
+            testkit::read_all(&bots::cache::dir(&built_data).join(name)),
+            "{name}"
+        );
+    }
+    // The game's own check finds them current for the bundled maps.
+    let lockout = testkit::read_all(&dir.join("maps/lockout.map"));
+    let header = bots::autonav::MapHeader::parse(&lockout[..0x800]).unwrap();
+    assert_eq!(
+        bots::autonav::status(&placed_dir, &header.name, header.fingerprint),
+        bots::autonav::Status::Fresh
+    );
+    assert_eq!(bots::vis::status(&placed_dir, "lockout"), bots::vis::Status::Fresh);
+    // Placed copies are writable; placing again works over them; no
+    // temporary files stay.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(placed_dir.join("lockout.0.bots")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o200, 0o200);
+    }
+    assert_eq!(install_bot_data(&dir, &data).unwrap(), 4);
+    assert_eq!(fs::read_dir(&placed_dir).unwrap().count(), 4);
+}
+
+#[test]
+fn a_bundle_without_bot_data_places_nothing() {
+    let tmp = TempDir::new("bots-none");
+    let (_, built) = build_fixture_disc(&tmp);
+    assert_eq!(built.nav_maps, 0);
+    let dir = provision(
+        &testkit::file_url(&tmp.join("bundle").join(ARCHIVE_NAME)),
+        &built.manifest.sha256,
+        &tmp.join("cache"),
+    )
+    .unwrap();
+    assert!(bundled_bot_files(&dir).unwrap().is_empty());
+    let data = tmp.join("data");
+    assert_eq!(install_bot_data(&dir, &data).unwrap(), 0);
+    assert!(!data.exists());
+}
+
+#[test]
+fn only_flat_bot_data_files_are_bot_payload() {
+    for ok in ["bots/lockout.0.bots", "bots/lockout.1.vis"] {
+        assert!(validate_payload_path(ok).is_ok(), "{ok}");
+    }
+    for bad in ["bots/lockout.spots", "bots/sub/lockout.0.bots", "bots/.lockout.0.bots", "bots/", "botsx/a.bots"] {
+        assert!(validate_payload_path(bad).is_err(), "{bad}");
+    }
 }
