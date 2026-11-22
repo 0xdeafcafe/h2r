@@ -865,7 +865,7 @@ mod tests {
         );
         assert_eq!(
             s.description_text().unwrap(),
-            "short\n\n\u{e100} Go",
+            "short\n\n\u{e100} GO",
             "focus 0"
         );
     }

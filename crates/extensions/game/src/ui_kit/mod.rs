@@ -19,10 +19,17 @@
 //! - [`preview`]: a screen drawn offline from the disc's tags and fonts.
 //! - [`picker`]: the value picker, retail's `low_level_settings`.
 //! - [`page`]: a screen's behaviour as a pure state machine, table-tested.
+//! - [`data`]: our screens' presentation, in `assets/ui/` (YAML).
+//! - [`components`]: the design system, its specimens and the layout
+//!   gallery.
+//! - [`consistency`]: where screens drift from the design system.
 
 pub mod animation;
 pub mod choice;
+pub mod components;
+pub mod consistency;
 pub mod content;
+pub mod data;
 pub mod dialog;
 pub mod dialog_tag;
 pub mod forge;

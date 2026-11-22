@@ -149,6 +149,8 @@ pub mod method {
     pub const UI_PRESS: &str = "ui.press";
     pub const UI_WIDGETS: &str = "ui.widgets";
     pub const UI_RENDER: &str = "ui.render";
+    pub const UI_CONSISTENCY: &str = "ui.consistency";
+    pub const UI_COMPONENTS: &str = "ui.components";
 
     pub const PAIR_LIST: &str = "pair.list";
     pub const PAIR_STATUS: &str = "pair.status";

@@ -3701,3 +3701,33 @@ fn a_grown_geometry_edit_refuses_the_save_and_names_the_target() {
     let why = check["save_refusal"].as_str().unwrap();
     assert!(why.contains("cluster:e1000004:0") && why.contains("grown"), "{why}");
 }
+
+#[test]
+fn the_design_systems_checks_and_catalogue_through_the_api() {
+    let t = Temp::new("ui-kit");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let one = call(&mut api, &mut app, m::UI_CONSISTENCY, json!({"screen": "kit.example"}));
+    assert!(one["checked"].as_u64().unwrap() > 0);
+    assert!(
+        one["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["screen"] == "kit.example" && f["rule"].is_string() && f["ids"].is_array())
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_CONSISTENCY, json!({"screen": "no-such-screen"}))),
+        code::INVALID_PARAMS
+    );
+    let c = call(&mut api, &mut app, m::UI_COMPONENTS, json!({}));
+    let names: Vec<&str> = c["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert!(names.contains(&"title") && names.contains(&"legend"), "{names:?}");
+    assert!(c["layouts"].as_array().unwrap().iter().any(|l| l["name"] == "layout.list"));
+    assert!(c["palette"].as_array().unwrap().iter().any(|p| p["name"] == "hint_blue"));
+}

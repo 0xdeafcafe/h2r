@@ -275,8 +275,10 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
     s
 }
 
-/// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 42] = [
+/// The screens `h2 ui preview` knows, by name: ours, then the design
+/// system's specimens (`design.<component>`) and the layout gallery
+/// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
+pub const NAMES: [&str; 71] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -319,6 +321,35 @@ pub const NAMES: [&str; 42] = [
     FORGE_MAP_PICKER,
     crate::custom_games::browser_filters::SCREEN,
     crate::lobby_tabs::preview::NAME,
+    "design.title",
+    "design.body",
+    "design.panel-text",
+    "design.description",
+    "design.row.action",
+    "design.row.value-inline",
+    "design.row.value-column",
+    "design.row.setting",
+    "design.row.info",
+    "design.row.text",
+    "design.row.disabled",
+    "design.legend",
+    "design.picker",
+    "design.cells",
+    "design.art",
+    "design.focus",
+    "layout.list",
+    "layout.list.description",
+    "layout.list.panel-edge",
+    "layout.list.level-select",
+    "layout.list.texts",
+    "layout.dialog.settings",
+    "layout.dialog.settings.header",
+    "layout.dialog.large",
+    "layout.dialog.message",
+    "layout.dialog.over-screen",
+    "layout.code-entry",
+    "layout.picker",
+    "layout.hud",
 ];
 
 /// The value picker as the Forge Map row opens it, with two saved maps
@@ -329,6 +360,12 @@ pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
 /// first, middle and last row focused; the sign-in prompt's pages
 /// ([`crate::ui_kit::page::Page::states`]).
 pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
+    Some(live(name)?.specs())
+}
+
+/// Screen `name`'s named states as its Rust builds them: what the
+/// converter reads (`crate::ui_kit::data::export`).
+pub fn raw_states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
     Some(live(name)?.specs())
 }
 
@@ -365,6 +402,9 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         crate::theater_ui::FILMS | crate::theater_ui::DETAIL | crate::theater_ui::OVERLAY
         | crate::theater_ui::PAUSE_MENU => {
             crate::theater_ui::preview::live(name)
+        }
+        _ if name.starts_with("design.") || name.starts_with("layout.") => {
+            crate::ui_kit::components::live(name)
         }
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
@@ -991,6 +1031,10 @@ mod tests {
         ) || matches!(
             (screen, issue),
             ("theater.pause-menu", Issue::Contrast { id, .. }) if id == "title"
+        ) || (
+            // The specimens and layouts on a dialog's rows: kit.dialog's.
+            (screen.starts_with("design.") || screen.starts_with("layout."))
+                && matches!(issue, Issue::Contrast { id, .. } if id.starts_with("row."))
         )
     }
 

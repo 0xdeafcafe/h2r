@@ -20,12 +20,13 @@ use tags::ui::{
 };
 use tags::wire::StringId;
 
-const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
+const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui export-yaml [--out assets/ui]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("preview") => return preview(args[1..].to_vec()),
         Some("sheet") => return sheet(args[1..].to_vec()),
+        Some("export-yaml") => return export_yaml(&args[1..]),
         _ => {}
     }
     let mut args = args.into_iter();
@@ -513,6 +514,28 @@ fn animation_phases(value: &str) -> Result<Vec<boot::ui_kit::animation::Phase>> 
         _ => bail!("animation direction must be in or out"),
     };
     Ok(vec![phase])
+}
+
+const EXPORT_USAGE: &str = "usage: h2 ui export-yaml [--out DIR]\n\nWrites every screen of ours (boot::ui_kit::screens::NAMES) as its doc,\nDIR/screens/<name>.yaml, and DIR/design.yaml with the tokens and presets\nthe screens use, starting from DIR/design.yaml (default DIR assets/ui).\ndocs/game/ui-builder.md \"Screens in YAML\".";
+
+/// `h2 ui export-yaml`: the screens' presentation, from their Rust, as the
+/// files in `assets/ui/` (`boot::ui_kit::data::export`).
+fn export_yaml(args: &[String]) -> Result<()> {
+    let mut out = PathBuf::from("assets/ui");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--out" => out = it.next().context(EXPORT_USAGE)?.into(),
+            "-h" | "--help" => {
+                println!("{EXPORT_USAGE}");
+                return Ok(());
+            }
+            _ => bail!("unknown option {a}\n{EXPORT_USAGE}"),
+        }
+    }
+    let written = boot::ui_kit::data::export::export(&out)?;
+    println!("wrote {} files under {}", written.len(), out.display());
+    Ok(())
 }
 
 /// `h2 ui preview`: a screen of ours drawn offline in its states

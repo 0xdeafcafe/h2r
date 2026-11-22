@@ -1,0 +1,191 @@
+# The design system's tokens (docs/game/ui-builder.md "The design system").
+# Every screen of ours takes its colours, fonts, spacing and component
+# presets from here; assets/ui/screens/<name>.yaml names them. The values
+# are retail's: the Controls tag's header and item colours, the default
+# skin's item colour, the header layouts' font. ui_kit::components tests
+# hold the ones the list and dialog geometry also draw to these.
+
+palette:
+  # Titles, legends, status lines: the header layouts' text colour.
+  hint_blue: [0.678431, 0.764706, 0.847059]
+  # Body text, descriptions, help lines, panel labels.
+  pale_blue: [0.388235, 0.580392, 0.756863]
+  # The default list skin's item colour.
+  item_blue: [0.560784, 0.694118, 0.811765]
+  # Row text (focused or not), panel values, emphasis.
+  white: [1.0, 1.0, 1.0]
+  # A warning line (a film that diverged).
+  alert: [1.0, 0.62, 0.56]
+
+fonts:
+  title: 2
+  legend: 2
+  cell: 2
+  body: 1
+  row_controls: 4
+  row_default: 1
+
+spacing:
+  # Each row this much below the one before, by skin.
+  row_controls: 26
+  row_default: 22
+  # A dialog's body starts here (retail's dialog texts at 72 and 74).
+  body_top: 72
+  # Code cells: their top, the gap between two, the extra gap mid-code.
+  cell_top: 6
+  cell_gap: 4
+  cell_half_gap: 12
+
+alpha:
+  # An unfocused row's text, and its frame.
+  unfocused: 100
+  frame_dim: 110
+
+legend:
+  # Glyphs of one prompt two spaces apart, one space, the words, prompts
+  # two spaces apart: "(A) SELECT  (B) BACK" (mainmenu.map's a_select_b_back).
+  glyph_gap: 2
+  prompt_gap: 2
+  words: upper
+
+components:
+  title:
+    role: "the screen's name in its header layout's first rectangle"
+    font: title
+    colour: hint_blue
+    justify: left
+    variants: [rest]
+    specimen: design.title
+  legend:
+    role: "the prompts in the footer: glyph, space, WORDS, two spaces apart"
+    font: legend
+    colour: hint_blue
+    justify: right
+    variants: [rest]
+    specimen: design.legend
+  legend.panel:
+    role: "the prompts on the panel's edge, under the description, when the header layout has no footer"
+    font: body
+    colour: pale_blue
+    justify: left
+  body:
+    role: "a dialog's paragraph, from y 72 down, wrapped"
+    font: body
+    colour: pale_blue
+    justify: left
+    variants: [rest]
+    specimen: design.body
+  status:
+    role: "a dialog's line under its body or cells: a check running, an error"
+    font: body
+    colour: hint_blue
+    justify: left
+  description:
+    role: "the focused row's description, or the screen's help line, under a Controls list"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-242, -24]
+    size: [362, 40]
+    variants: [first, second, long]
+    specimen: design.description
+  description.pane:
+    role: "the description pane right of a moved list (the level select's)"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [39, -30]
+    size: [221, 103]
+  description.settings:
+    role: "a settings dialog's help line, above its list (Quick Options')"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-224, 143]
+    size: [494, 20]
+  description.picker:
+    role: "the value picker's description, right of its list"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [15, 74]
+    size: [235, 154]
+  text.label:
+    role: "a text of no row: a table's label, a checklist's line"
+    font: body
+    colour: pale_blue
+    justify: left
+    variants: [rest]
+    specimen: design.panel-text
+  text.value:
+    role: "a table's value, beside its label"
+    font: body
+    colour: white
+    justify: right
+  text.heading:
+    role: "a heading over a panel's texts"
+    font: title
+    colour: hint_blue
+    justify: left
+  text.emphasis:
+    role: "a name or a figure that stands out in a panel"
+    font: body
+    colour: white
+    justify: left
+  row.action:
+    role: "a row A runs"
+    variants: [focused, unfocused, long]
+    specimen: design.row.action
+  row.value-inline:
+    role: "a value in the label (Label: Value) on a one-text skin; left and right step it"
+    variants: [focused, unfocused, long]
+    specimen: design.row.value-inline
+  row.value-column:
+    role: "a value in the Controls skin's value column; left and right step it"
+    variants: [focused, unfocused, long]
+    specimen: design.row.value-column
+  row.setting:
+    role: "a value alone in a settings dialog's value text; A opens the picker"
+    variants: [focused, unfocused, long]
+    specimen: design.row.setting
+  row.info:
+    role: "a value shown beside its label, never pressed"
+    variants: [focused, unfocused, long]
+    specimen: design.row.info
+  row.text:
+    role: "a row A opens the keyboard on, the text so far as its value"
+    variants: [focused, unfocused, empty]
+    specimen: design.row.text
+  row.disabled:
+    role: "a row that can't be used now: focusable, never pressed, Locked as its value"
+    variants: [focused, unfocused]
+    specimen: design.row.disabled
+  picker:
+    role: "the value picker: a setting's values on low_level_settings, its description beside them"
+    variants: [first, scrolled, last]
+    specimen: design.picker
+  cells:
+    role: "code entry cells: a digit in the header font over the passcode dialog's box, the cursor's lit"
+    font: cell
+    colour: white
+    justify: centre
+    variants: [first, middle, last]
+    specimen: design.cells
+  art:
+    role: "a retail bitmap, named, never held: a frame, a picture, an icon"
+    variants: [rest]
+    specimen: design.art
+  focus:
+    role: "the focused row at full alpha and its frame lit; the rest at alpha.unfocused and alpha.frame_dim"
+    variants: [first, middle, last]
+    specimen: design.focus
+  hud.text:
+    role: "a HUD's line over the running game, in title-safe coordinates"
+    font: body
+    colour: white
+    justify: left
+  hud.label:
+    role: "a HUD's caption beside its line"
+    font: body
+    colour: hint_blue
+    justify: left

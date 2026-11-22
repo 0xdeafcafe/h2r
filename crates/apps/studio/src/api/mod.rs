@@ -43,6 +43,7 @@ mod sound;
 mod tag_fields;
 mod tag_io;
 mod tags;
+mod ui_kit;
 mod ui_screens;
 mod variants;
 mod view;
@@ -550,6 +551,20 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"out":"$OUT/screen.png"}"#,
     ),
     def(
+        m::UI_CONSISTENCY,
+        "Check our screens (or one) in every state against the design system: palette, fonts by role, title and legend places, legend format, capitals, row pitch, fit",
+        r#"{"screen?":"string"}"#,
+        r#"{"findings":"[{screen,state,ids,rule,text}]","checked":"integer"}"#,
+        r#"{"screen":"$SCREEN"}"#,
+    ),
+    def(
+        m::UI_COMPONENTS,
+        "The design system's catalogue: each component with its role, font, colour, variants and specimen page; each layout page; the palette and fonts",
+        "{}",
+        r#"{"components":"[{name,role,font,colour,justify,variants,specimen}]","layouts":"[{name,kind,states}]","palette":"[{name,rgb}]","fonts":"{role:integer}"}"#,
+        "null",
+    ),
+    def(
         m::VIEW_CAMERA,
         "Read or set the viewport camera (degrees and world units), set fly speed, or frame a placement",
         r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean","fly_speed?":"number (0.5..1000 units/s)"}"#,
@@ -761,6 +776,9 @@ impl Api {
             "collision" => collision::call(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
+            "ui" if matches!(method, m::UI_CONSISTENCY | m::UI_COMPONENTS) => {
+                ui_kit::call(app, method, &p)
+            }
             "ui" => ui_screens::call(app, method, &p),
             "view" => self.view(app, method, &p),
             _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
