@@ -1,7 +1,7 @@
 # A Cranelift fast tier for the first build
 
-Status: Partly built. `crates/recompiler/clif` lowers all integer, control-flow, memory, transfer, flag, atomic and REP constructs, and x87 and SSE through helper calls; `boot::tier` starts on it and builds clang's module in the background. Not built: inline fast memory, direct calls, native floating point and hot swap (section 8).
-Code: `crates/recompiler/clif/src/lib.rs` (`compile_shard`), `crates/recompiler/clif/src/lower.rs`, `crates/runtime/recomp/src/tier.rs`. Tests: `crates/recompiler/clif/tests/differential.rs`, `crates/runtime/recomp/tests/fast_tier.rs`.
+Status: Partly built. `crates/recompiler/clif` lowers all integer, control-flow, memory, transfer, flag, atomic and REP constructs, and x87 and SSE through helper calls; its module is Cranelift objects only, linked by the platform's linker, so a fast build needs no C compiler. `boot::tier` starts on it and builds clang's module in the background. Not built: inline fast memory, direct calls, native floating point and hot swap (section 8).
+Code: `crates/recompiler/clif/src/lib.rs` (`compile_shard`, `build_dylib`), `crates/recompiler/clif/src/lower.rs`, `crates/recompiler/clif/src/module.rs`, `crates/recompiler/emit/src/compile.rs` (`link_objects`), `crates/runtime/recomp/src/tier.rs`. Tests: `crates/recompiler/clif/tests/differential.rs`, `crates/runtime/recomp/tests/fast_tier.rs`.
 Switch: `H2_TIER` and `--tier` (`fast`, `clang`, `auto`), `H2_CLIF_OPT`, listed in [switches.md](../runtime/switches.md).
 
 The cold `h2 build` spends about eleven minutes in clang on 1,001 shards of
@@ -38,30 +38,42 @@ Three options were weighed.
 | Windows/tvOS later | no JIT on tvOS (no W+X pages) | same | the same objects and link step |
 | Cache | none | new | the existing per-object cache |
 
-**Choice: `cranelift-object`, one object per shard, linked by the same
-`host_dylib` step clang's objects use.** The decisive points are tvOS (no
-runtime code generation allowed), zero change to boot and the runtime,
-and that every existing loader, test host, profiler and stamp check keeps
-working. Start-up cost is the same as today's `dlopen`. The cost is the
-link (2.3 s today for 1,001 objects, less for fewer, larger shards).
+**Choice: `cranelift-object`, one object per shard, linked into a dylib
+by the platform's linker.** The decisive points are tvOS (no runtime code
+generation allowed), zero change to boot and the runtime, and that every
+existing loader, test host, profiler and stamp check keeps working.
+Start-up cost is the same as today's `dlopen`. The cost is the link (2.3 s
+for 1,001 objects, less for fewer, larger shards).
 
-The module is three kinds of object:
+Every object in the module is Cranelift's, so a fast build compiles no C
+and needs no C compiler:
 
-1. **Shards** from Cranelift: the handlers, sharded like the C (entry >>
-   12), each with its own `h2gen_abi_version_<stem>` probe, also written
-   in Cranelift.
-2. **The registry**, `h2clif_registry.c`: the entry and resume tables,
-   generated as C exactly as emit's `registry` does, with features 0 (no
-   accounting, no direct calls; see section 5). It is plain data, so clang
-   compiles it at `-O0` in well under a second.
-3. **The helper library**, `h2clif_helpers.c`: a few hundred lines that
-   include the same `h2gen.h` and expose the SSE intrinsics (`h2i_sse_*`,
-   which take `h2u128` by value and are `static inline`) as out-of-line
-   functions with pointer arguments. It is not derived from the disc and is
-   the same for every image, so it compiles once and stays in the object
-   cache.
+1. **Shards**: the handlers, sharded like the C (entry >> 12), each with
+   its own `h2gen_abi_version_<stem>` probe.
+2. **The registry** (`clif::module::registry`): `h2gen_module_abi_version`
+   and `h2gen_module` with the entry and resume tables, the rows emit's C
+   `registry` writes, as data with relocations to the handlers and probes,
+   and features 0 (no accounting, no direct calls; see section 5).
+3. **The bridge** (`clif::module::bridge`): the import table
+   `h2clif_imports`, hidden in the module, and the installers the hosts
+   call to fill it. Every call a handler makes out of the module (the
+   checked accessors, events, atomics, the x87 helpers, the SSE helper)
+   loads its target from a fixed slot of the table and calls it
+   indirectly, so a shard has no undefined function symbols. The bridge
+   exports boot's `h2boot_install_v3`, the test host's
+   `h2bridge_install_v3` and `h2bridge_layout_v3`, and
+   `h2x87bridge_install`, each with the C bridges' size and layout
+   checks, so `load_module` and `emit::host::Generated::load` install a
+   fast module exactly as a clang one. The fast tier's own helpers come
+   through `h2clif_install_v1`, which both hosts call when a module
+   exports it (`recomp::shim::clif_helpers`). An x87 slot left null
+   answers `H2X87_UNMODELLED`, as the C bridge's forwarders do, and a
+   helper never installed answers `H2SHIM_UNMODELLED`.
 
-Plus the bridge (`boot::BRIDGE`, or the test host's).
+`emit::compile::link_objects` links them with the linker alone: `ld` on
+the Apple targets (with `xcrun` asked once for the SDK, for `-lSystem`),
+`ld.lld` or `ld` on Linux, `lld-link` on Windows with the exports listed.
+A linker is still required; a C compiler is not.
 
 ## 3. Lowering
 
@@ -217,9 +229,15 @@ Both go through calls first, correct before fast:
   call and every exit, which is what the C's locals-and-spill achieves.
 - **SSE and the small intrinsics**: `MXCSR`, control and status word
   reads, `MmxEnter`, `Emms`, `X87Wait`, XMM and MMX register access are a
-  few loads and stores and are inlined. The 28 `SseOp`s call the helper
-  library's out-of-line wrappers of the same `h2i_sse_*` functions clang's
-  tier inlines, with the same `H2_SSE_NATIVE` guard.
+  few loads and stores and are inlined. The 28 `SseOp`s call one Rust
+  helper in the host, `ir::interp::sse_helper(&cpu->mxcsr, op, args,
+  out)`: the operation's number in `SseOp::ALL`, its operands in 16-byte
+  slots at their own widths, the result at its width, and 0 or
+  `H2SHIM_SIMD_EXCEPTION` back, as `h2i_sse_*` return. It runs
+  `ir::interp::sse_op`, the interpreter's own SSE code on the `simd`
+  crate, which `crates/recompiler/simd/tests/differential.rs` proves
+  bit-identical to `h2simd.h`, the C tier's reference that its native
+  `H2_SSE_NATIVE` path is proved equal to.
 - `ReadTsc` calls `h2shim_v1_rdtsc`.
 
 Native Cranelift FP for the guarded common cases (as `h2x87_native.h` and
@@ -283,9 +301,10 @@ input:
    on every machine.
 
 Points 1 and 2 hold by construction: integer semantics are the IR's
-(checked against the interpreter), and all FP arithmetic is the same
-compiled helper code the clang tier uses or its proved-equal native
-twins. Cranelift emits no host FP instruction.
+(checked against the interpreter), and all FP arithmetic is helper code
+proved equal to the clang tier's: the same `h2x87_v1_*` helpers for x87,
+and for SSE the `simd` crate, the Rust twin of `h2simd.h` (section 3.9).
+Cranelift emits no host FP instruction.
 
 Point 3 does **not** hold across tiers. The fast tier charges every access
 through the runtime and makes no direct calls; clang's module counts
@@ -315,13 +334,19 @@ A function the backend cannot lower (an unsupported construct, a Cranelift verif
   random states, and requires identical ends, CPU state and memory.
 - The x87 and SSE fixtures of the same harness, then `native_x87.rs` and
   `native_sse.rs`, cover the FP paths.
-- `crates/runtime/recomp/tests/fast_tier.rs`: a fast-tier module links with boot's
-  bridges and exports what `load_module` looks up; `tier.rs`'s tests
-  cover the stamps, the choice of module and the background command.
+- `crates/runtime/recomp/tests/fast_tier.rs`: a fast-tier module builds
+  with a `PATH` holding only the linker and fakes of `clang`, `cc` and
+  `gcc` that mark when run, and none runs; it exports what `load_module`
+  looks up and takes boot's bridge and helpers. `tier.rs`'s tests cover
+  the stamps, the choice of module and the background command.
+- `emit::compile`'s unit tests check that the link's arguments compile
+  nothing for any target; `clif`'s that every import has its own table
+  slot; `ir::interp`'s that the SSE helper reads operands at their widths
+  and matches the interpreter.
 
 ## 8. Stages
 
-1. **Built**: `crates/recompiler/clif/src/lower.rs`: integer, control flow, memory, transfers, flags, atomics and REP; `crates/recompiler/clif/src/x87.rs` and the SSE wrappers in `c/h2clif_helpers.c`: x87 and SSE through helper calls.
+1. **Built**: `crates/recompiler/clif/src/lower.rs`: integer, control flow, memory, transfers, flags, atomics and REP; `crates/recompiler/clif/src/x87.rs` and `ir::interp::sse_helper`: x87 and SSE through helper calls; `crates/recompiler/clif/src/module.rs`: the registry and the bridge as Cranelift objects, so the module needs no C compiler.
 2. **Built**: the differential harness, `crates/recompiler/clif/tests/differential.rs`, against the interpreter and the C tier.
 3. **Not recorded**: the timed whole-image fast build against the 30 s cold target. No test in the tree times it.
 4. **Built**: `boot::tier` (`Tier`, `Choice`, `build_fast`, `background_build`) loads either tier and starts clang's build in the background; `crates/runtime/recomp/tests/fast_tier.rs` covers the link.
@@ -330,4 +355,5 @@ A function the backend cannot lower (an unsupported construct, a Cranelift verif
 ## Not verified
 
 - Wall time of a cold fast build on the retail image.
+- The Windows link of a fast module (`lld-link /noentry` with the bridge's and registry's exports listed): only `windows_play_prepares_and_loads_both_tiers` in `crates/runtime/recomp/src/lib.rs` builds one, on a Windows host.
 - Lockstep behaviour of two peers on different tiers (refused by design, section 5; the handshake check belongs to the co-op crates).

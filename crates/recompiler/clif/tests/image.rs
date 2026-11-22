@@ -42,10 +42,6 @@ fn fast_tier_compiles_the_whole_image() {
         common::skip("fast_tier_compiles_the_whole_image", "needs H2_XBE");
         return;
     };
-    let Some(header) = common::abi_header() else {
-        common::skip("fast_tier_compiles_the_whole_image", "needs h2abi.h");
-        return;
-    };
     let bytes = std::fs::read(&xbe_path).unwrap();
     let x = xbe::Xbe::parse(&bytes).unwrap();
     let t = Instant::now();
@@ -71,16 +67,16 @@ fn fast_tier_compiles_the_whole_image() {
     let dylib = dir.join(emit::compile::Arch::host().module_file_name());
     let cpu0 = cpu_secs();
     let t = Instant::now();
-    let r = clif::build_dylib(&owners, &dir, &header, &[("bridge.c", emit::host::BRIDGE)], &dylib, jobs);
+    let r = clif::build_dylib(&owners, &dir, &dylib, jobs);
     let total = t.elapsed().as_secs_f64();
     // Wall time depends on the machine's load; this process's CPU time
-    // (Cranelift on every thread, not clang's children) does not.
+    // (Cranelift on every thread, not the linker's) does not.
     let cpu = cpu_secs() - cpu0;
     let size = std::fs::metadata(&dylib).map(|m| m.len()).unwrap_or(0);
     let _ = std::fs::remove_dir_all(&dir);
     let r = r.unwrap_or_else(|e| panic!("{e}"));
     eprintln!(
-        "clif: {} owners in {} shards on {jobs} threads: compile {:.1}s, write {:.1}s, C parts and link {:.1}s, total {total:.1}s ({cpu:.1}s of CPU in this process); {:.1} MB of objects, dylib {:.1} MB",
+        "clif: {} owners in {} shards on {jobs} threads: compile {:.1}s, write {:.1}s, link {:.1}s, total {total:.1}s ({cpu:.1}s of CPU in this process); {:.1} MB of objects, dylib {:.1} MB",
         r.owners,
         r.shards,
         r.compile_secs,
