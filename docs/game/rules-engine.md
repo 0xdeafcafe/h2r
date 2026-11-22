@@ -299,21 +299,61 @@ than the record's, when it calls an entry no host can make on its carrier
 (`verify::unhostable`, `caps::Entry::hostable_on`: `role_traits` is made
 only on Juggernaut and `reset_objective` only on Oddball, so a script on
 another carrier is refused as "the script calls role_traits, which a host
-makes only on juggernaut, and the script rides slayer"), or when it needs what this runtime does not do
-yet (`runtime::host_refusal`): an event other than `init`, `kill`,
+makes only on juggernaut, and the script rides slayer"). Then the start
+gate checks the map's labels (`Runtime::gate`, `rules/census.rs`;
+[rules-start-gate.md](rules-start-gate.md)), unless the run plays a film:
+a map that lacks or breaks a label or tag the script needs blocks the
+game (`Status::Blocked`, below), and no rules play, the carrier's
+included. Last, a script is refused when it needs what this runtime does
+not do yet (`runtime::host_refusal`): an event other than `init`, `kill`,
 `timer`, `tick`, `bounce` and `bounced`; a read other than the scores,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
-`is_objective` and `carrier_of`; an action other than `score`,
+`is_objective`, `carrier_of` and the label reads (`label_number`,
+`label_of`, `zone_id`, `object_team`); an action other than `score`,
 `end_round`, `set_lives`, `respawn`, `role_traits` and
 `reset_objective`; a
 variant field other than `team_play`, `score_limit`, `time_limit` and
-`lives`, whose record offsets are not traced; a `grant`; a Forge label.
+`lives`, whose record offsets are not traced; a `grant`.
 Then the VM starts with the record's option bits and seed 0 (as
 Firefight's, until the session carries one), `on init` runs, and its
 state becomes the `RULES` record. **A refused script is logged
 ("refused, the game plays the carrier engine's own rules: ...") and kept
 with its reason for `rules.state`, and the game plays as the record's
 own engine.** Nothing runs with a call stubbed out.
+
+**A blocked start.** `Status::Blocked` keeps the full hash and every
+problem's text, which `rules.state` lists as `blocked`. No VM is made and
+no record is set; `rules: blocked, the game does not start: ...` is
+logged; the first tick boundary asks `GAME_ENGINE_AUTHORITATIVE` and, on
+the authority, makes one `end_round` (`firefight::guest::end_game`), so
+the game ends in its first tick. A machine that is not the authority goes
+idle and ends nothing. In a Forge session (the lobby's mode is Forge,
+`lobby_start::Mode::Forge`) the block refuses the script and does not end
+the game. The block holds until the next start, and
+`feature::blocked()` reads it for the lobby's verdict. An in-place
+reload (`Runtime::swap`) is checked against the census the game started
+with, and refused with the problems.
+
+**Label reads.** `rules/census.rs` reads the loaded scenario's rows
+(each block's count, the netgame flags' type and team at `scnr+0x118`,
+the starting locations' team at `scnr+0x100`) and builds the labelled
+things with `forge_doc::labelled`: each flag with its type's built-in
+label, and what the session's Forge document labels. At a game's start a
+session has no document (a Forge session loads its draft at its first
+tick), so the host's things are the flags' built-in labels. The script
+holds a labelled thing by a handle of our own, `0x4000_0000` with the
+placement id (the block's number times 65,536 plus the final index): a
+flag has no object datum. `objects labelled` visits the things with the
+label (not starting locations); `o.number` is the label's number (0 when
+none); `zone.label` is the script's label of that text; `zone.id` the
+placement id; `o.team` a flag's team through its designator
+(`E+0x10 + 2d`), or an objective record's `+4` on CTF and Assault, with
+neutral as `none`. `inside`, the zone tests behind `on enter` and
+`on leave`, and `ticks_held` stay refused: no zone has a volume a host
+can test. Forge trigger volumes are not in the document, and no netgame
+flag's capture volume is traced outside the engines' own occupancy
+(King's mask `K+0x1a8` for the hill in play, Territories' site bytes
+`T+0x95+8p`), which answers only on its own carrier.
 
 A Live host (`variant_ext::part`) puts the running blob's full hash on
 its session at every start (`Hle::set_session_rules`, none when no
@@ -442,7 +482,13 @@ never on a guest or for a refused script), `role_traits` making the
 role setter's call (none for a player already in that state, and a
 refusal by carrier on Slayer), `reset_objective` making Oddball's ball
 return with each refusal named, and the objective set and its carriers
-read from the registry. Boot's registration tests check that the
+read from the registry; and the start gate (`runtime/tests/gate.rs`): a
+map that lacks a label blocks the game with every problem, no VM and one
+`end_round` at the first boundary, a map that has it starts, a film
+skips the check, a Forge session refuses without ending, a machine that
+is not the authority ends nothing, an unreadable census blocks a script
+with labels, a swap the map lacks a label for is refused, and the label
+reads answer from the labelled flags. Boot's registration tests check that the
 feature's four scoring `before`s are in the plan only with the feature
 on.
 
@@ -919,12 +965,12 @@ Reads:
 | team play, score and time limits, type area | variant record `V` (`variants::record`, [live-gamestate.md](../live/live-gamestate.md)) | named |
 | `round_time_left()`: the round start tick against the time limit | `E+0x70` (`ROUND_START_TICK`, likely) and `V` | named |
 | objects: tag, position, parent | object datum (`guest-layout` `object.rs`) | named |
-| objects by label; `zone.label`, `zone.id`, `o.number` | Forge labels | not built |
+| objects by label; `zone.label`, `zone.id`, `o.number` | the host's labelled things (`rules/census.rs`): netgame flags in guest memory and the session's Forge document | named |
 | `is_objective(o)`; objective records (object, team, carrier); `o.carrier` (`carrier_of`); `for each objectives` | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
-| `o.team` (`object_team`): an objective's team, or a flag placement's team through its designator | record `+4`; `E+0x10` (bots.md section 3.7) | traced |
+| `o.team` (`object_team`): an objective's team, or a flag placement's team through its designator | record `+4` (CTF, Assault); `E+0x10` (`engine::objectives::DESIGNATOR_TEAMS`, bots.md section 3.7) | named |
 | `player_of(o)`: the player whose unit an object is | unit `+0x13c` (bots.md section 3.7) | traced |
-| `inside(p, zone)`: a living unit inside a labelled volume, a territory marker's capture volume, or a hill corner's hill | zone tests, as below | not built |
-| zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built |
+| `inside(p, zone)`: a living unit inside a labelled volume, a territory marker's capture volume, or a hill corner's hill | zone tests, as below | not built: no zone has a volume a host can test ("The host runtime", "Label reads") |
+| zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built: Forge trigger volumes are not in the document, and no flag's capture volume is traced |
 | netgame flags by type and team | `scnr+0x118` (`engine::objectives`); query `0x19ec40` | named; traced |
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
 | events of the tick | hooks on `PLAYER_KILLED` `0x15ce70`, `PLAYER_SPAWN` `0x14f2e0`; `SimRead::events` once sim-rewrite section 7 exists | named; not built |
@@ -1684,8 +1730,10 @@ The phased mode is the check that the API is wide enough:
 
 A prerequisite. `crates/formats/forge-doc` has teleporter and device
 links (`links.rs`) and labels (`labels.rs`) to tell a script which
-placement is which. Status: the document side is built; the `RulesExt`
-table and `objects labelled` are not.
+placement is which. Status: the document side is built, and the host
+reads labelled things (`rules/census.rs`, "The host runtime"); the
+`RulesExt` table is not, since the host's table is rebuilt from the map
+at each start.
 
 **Design.** A label is a string of at most 32 bytes plus an optional
 number (`"checkpoint" 3`, `"hill" 0`). It is a field of a placement in

@@ -3668,7 +3668,7 @@ builds with the `rules` cargo feature; with the `rules` switch off
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors, last_reload?}` |
+| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors, last_reload?, blocked?, labelled?}` |
 | `rules.reload` (act) | `{ir_b64 \| source, mode?: auto \| in_place \| restart}` | `{mode: in_place \| restarted, hash, reasons, tick}` |
 
 `running` is false with the switch off, outside a multiplayer game, for
@@ -3690,6 +3690,19 @@ estimate. `pending` counts the calls waiting for the next tick boundary.
 `tick`, `call` (the entry's name) and `error`. `last_reload` is the
 last `rules.reload` on this run: its `mode` (`in_place`, `restarted` or
 `refused`), `hash`, `tick` and `reasons` (for a refusal, why).
+
+`blocked` lists every problem the host's start gate found with the map
+([rules-start-gate.md](../game/rules-start-gate.md)), in the check's
+order, while the block holds: the game was ended in its first tick (or,
+in a Forge session, the script does not run), until the next game
+starts. `labelled` is the map's labelled things as the host counted
+them, for a blocked script or a running one that declares labels: each
+with its `label`, `class` (`object`, `flag`, `volume` or `spawn`),
+`number`, `team` (the placement's designator), `id` (the placement id
+`zone.id` reads) and `declared` (the script declares that label). To
+check a map against a script, start a game with it and read
+`rules.state`; there is no separate census method, since the host's
+census is the loaded game's.
 
 `rules.reload` puts a new script into the running game
 ([rules-engine.md](../game/rules-engine.md#reloading-a-running-script);
