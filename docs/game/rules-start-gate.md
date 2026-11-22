@@ -1,7 +1,7 @@
 # Rules start gate: a map must satisfy the script's labels
 
-Status: Design, with the check (`rules::labels::check`), both census builders and the host's gate built (slice 3); the workbench, `h2 rules run` and the match generator call the check; the lobby's and Live's gates are not built.
-Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder). Tests: `crates/formats/forge-doc/tests/census.rs`, `crates/extensions/game/src/rules/runtime/tests/gate.rs`; the other slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name theirs.
+Status: Design, with the check (`rules::labels::check`), both census builders and the host's gate built (slice 3); the workbench, `h2 rules run` and the match generator call the check; Live's hopper gate is built (slice 9); the lobby's gate is not.
+Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder: `check_pairs`, `blocked_pairs`, `blocked_by_census`), `crates/live/live-proto/src/map_census.rs` (the census event), `crates/apps/cli/src/live_maps.rs` (`census`). Tests: `crates/formats/forge-doc/tests/census.rs`, `crates/extensions/game/src/rules/runtime/tests/gate.rs`, `crates/live/live-server/tests/hopper_gate.rs`, `a_pair_is_held_to_the_maps_census` in `admin.rs`; the other slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name theirs.
 Switch: none.
 
 A rules script declares the Forge labels its map must hold
@@ -112,25 +112,36 @@ script stays refused for that game.
 
 ## Hoppers, System Link, offline and Theater
 
-**Live hoppers.** A hopper entry is a map id and a variant record
-(`live_proto::hopper::Record`, `hopper::variant::VariantRecord`).
+**Live hoppers.** **Code.** A hopper entry is a map id and a variant
+record (`live_proto::hopper::Record`, `hopper::variant::VariantRecord`).
 `admin::check_pairs` takes each entry of each hopper the patch names
 whose record's block names a script, finds the blob by its prefix (a
-built-in, else a saved script, `Live::saved_rules`), and runs
+built-in, else a saved script: `Live::slot_script_ir`), and runs
 `labels::check` with the map's census and the teams the record's team
-setting gives. A problem refuses the whole edit with `invalid`, naming
-the hopper, the entry and the problem's text, so the published file
-never holds a blocked pair and matchmaking never picks one. An entry
-whose script or whose map's census Live does not have is refused the
-same way, by name. Live holds no map bytes: a census reaches it as
-`PUT /v1/maps/{map}/census` (admin, a server-signed `MapCensusSet`
-event, in both homes), which `h2 live maps census <map>` writes from the
-admin's own copy of the map, as `h2 live maps analyze` writes a
+setting gives: team play with the record's team count (0, the map's own,
+is taken as 2), none without team play. A problem refuses the whole edit
+with `invalid`, naming the playlist, the entry, the map and the
+problem's text, so the published file never holds a blocked pair and
+matchmaking never picks one. An entry whose script Live cannot find, or
+whose script declares a label or a tag and whose map has no census on
+Live, is refused the same way, by name; a script that declares neither
+needs no census. `admin::put_hopper` calls it after `check_scripts`
+(the context policy, which checks the script alone).
+
+Live holds no map bytes: a census reaches it as
+`PUT /v1/maps/{map_id}/census` (admin or operator, `lxm:
+content.moderate`; `null` clears it), a server-signed `MapCensusSet`
+event on the stream `mapcensus-<map_id>` (`live_proto::map_census`)
+that `content::CatalogState` projects, so both homes (the native
+server and the Worker, which runs the same projection and routes) apply
+it alike. The key is the level id a hopper entry names, not a package's
+`MapId`. `h2 live maps census <map>` writes it from the admin's own
+copy of the map (`Census::of_file`), as `h2 live maps analyze` writes a
 package's contents report. A new census for a map re-checks the
-published hoppers and its answer lists each entry it blocks. The host's
-check still runs on a matchmade game. The context-policy lane checks a
-hopper entry's script in the same place; `check_pairs` is the second
-check of the pair there.
+published hopper file (`admin::blocked_by_census`) and the answer lists
+each entry on that map it blocks (`blocked`); the census is kept
+either way, so an admin fixes or removes those entries. The host's
+check still runs on a matchmade game.
 
 **System Link and offline.** Both checks need only this machine: the
 script is a built-in or the store's (a System Link game takes no other),
@@ -176,7 +187,12 @@ when it is set.
   there, with the file census, and no map loads.
 - How many characters the lobby's status line shows.
 - The teams a hopper entry's game has, from its record alone, for
-  `per team` in `check_pairs`.
+  `per team` in `check_pairs`: a record's team count 0 means the map's
+  own (up to 8), which the check takes as 2, so a map with a team short
+  of a member passes Live's check and is blocked at the host.
+- A census for a package's modded map: the census is keyed by the level
+  id a hopper entry names, so a package published over a retail map
+  shares that map's census.
 
 ## Related
 

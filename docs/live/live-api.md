@@ -1485,6 +1485,7 @@ stored: players use their own disc for the base.
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps/{map_id}/credit` | admin or operator token, `lxm: content.moderate`; a credit `{authors?, release?, released?, source_url?, notes?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's credit; 403 for others; 404 if not published; 400 when malformed |
 | `PUT /v1/maps/{map_id}/details` | admin or operator token, `lxm: content.moderate`; details `{description?, images?: [{sha256, caption?, source_url?, credit?, licence?}], contents?, features?, pack?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's details; each image must be stored content that is a PNG or JPEG; 403 for others; 404 if not published; 400 when malformed |
+| `PUT /v1/maps/{map_id}/census` | admin or operator token, `lxm: content.moderate`; `{map_id}` is the decimal level id a hopper entry names (30 is Zanzibar); a census `{labels: {text: [{class, number?, team?}]}, tags: {path: object type}}` (`rules::labels::Census`), or `null` to clear | 200 `{position, map_id, set, blocked: [{hopper, entry, map_id, problems}]}`: the published hopper entries on that map the census blocks; 403 for others; 400 when malformed or over the limits |
 | `GET /v1/maps/{map_id}/images/{n}` | read rule | the map's gallery image at index `n` (from 0), with its content type; 404 if none or optional `?v=sha256` differs |
 | `GET /v1/mod-packs` | read rule | `{items: [pack], position}` |
 | `GET /v1/mod-packs/{id}` | read rule | `{pack, position}` |
@@ -1727,6 +1728,20 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
   Both are display data only, like the credit. `h2 live maps details
   --file docs/game/mod-details.toml` applies a file of them, and `h2 live
   maps analyze` writes the contents reports.
+- **Census, and the hopper gate.** A rules script declares the Forge
+  labels and tags its map must hold
+  ([rules-start-gate.md](../game/rules-start-gate.md)). Live holds no map
+  bytes, so an admin sends each map's census (`PUT
+  /v1/maps/{map_id}/census`, `{map_id}` the level id a hopper entry
+  names): a server-signed `MapCensusSet` on `mapcensus-<map_id>`, data
+  `{map_id, census?, by?}`, projected by the catalog in both homes.
+  `h2 live maps census MAP` reads it from the admin's copy of the map.
+  `PUT /v1/titles/{title}/hopper` then refuses, with 400 and the
+  playlist, entry, map and problem named, any hopper edit whose entry
+  pairs a script with a map it does not fit: an unknown script, a script
+  that declares labels or tags on a map with no census, or a label the
+  census does not satisfy. A new census answers with the published
+  entries it blocks.
 - **Credits.** `PUT /v1/maps/{map_id}/credit` (an admin's account token or
   the operator's, `lxm: content.moderate`) sets who made a published
   package, over what its publisher said: the body is a credit as above

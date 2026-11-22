@@ -420,6 +420,24 @@ pub fn mod_over_base(
     )
 }
 
+/// The retail map `base` (a lower-case stem such as `zanzibar`) from the
+/// disc at `disc`, else from the map pack disc `mappack`. For `h2 live
+/// maps census`.
+pub fn disc_map_bytes(disc: &Path, mappack: Option<&Path>, base: &str) -> Result<Vec<u8>> {
+    let base = base.to_ascii_lowercase();
+    if !is_map_name(&base) {
+        bail!("{base:?} is not a map name (lockout, midship, ...)");
+    }
+    let mut d =
+        vfs::open_disc(disc).map_err(|e| anyhow!("opening the disc {}: {e}", disc.display()))?;
+    let pack = match mappack {
+        Some(iso) => crate::live_mappack::from_iso(iso)
+            .with_context(|| format!("reading the map pack disc {}", iso.display()))?,
+        None => Vec::new(),
+    };
+    Ok(read_base(&mut d, &pack, mappack, &base)?.0)
+}
+
 /// [`mod_over_base`] of a mod already read (`what` names it in errors).
 pub fn mod_bytes_over_base(
     bytes: Vec<u8>,
