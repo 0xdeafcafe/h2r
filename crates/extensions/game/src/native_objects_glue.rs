@@ -1423,7 +1423,7 @@ mod tests {
     #[test]
     fn a_completed_upload_is_visible_only_after_a_swap() {
         let mut state = MapState {
-            name: "arena".into(), generation: 3, job: Arc::new(()), palette: Arc::default(), published: None,
+            name: "arena".into(), generation: 3, job: Arc::new(()), _palette: Arc::default(), published: None,
         };
         assert!(state.resident(10).is_none());
         let models = Arc::new(Models::default());
@@ -1437,7 +1437,7 @@ mod tests {
         let first = Arc::new(());
         let second = Arc::new(());
         let state = MapState {
-            name: "arena".into(), generation: 3, job: Arc::clone(&second), palette: Arc::default(), published: None,
+            name: "arena".into(), generation: 3, job: Arc::clone(&second), _palette: Arc::default(), published: None,
         };
         assert!(!state.owns(&first, 3), "the same name, another load");
         assert!(!state.owns(&second, 4), "a snapshot reset");

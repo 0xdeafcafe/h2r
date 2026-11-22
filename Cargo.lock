@@ -2473,6 +2473,7 @@ dependencies = [
 name = "geometry-edit"
 version = "0.1.0"
 dependencies = [
+ "collision-build",
  "editor-core",
  "h1convert",
  "map",

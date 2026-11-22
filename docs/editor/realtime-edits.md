@@ -271,7 +271,7 @@ the next activation, and the old extents stay allocated until then.
 
 | Mode | When | Activation | Shows |
 |---|---|---|---|
-| `append` | solids added by `scenery_collision::merge`: every existing plane, surface and leaf keeps its index | none; or, with `activate: true`, the switch below | rays next tick; Havok bodies after an activation |
+| `append` | solids added by `collision_build::merge` (`geometry_edit::level_collision::LevelEdit::stage` gives the blocks, the per-leaf table and the MOPP, `collision_build::level::LevelStage`): every existing plane, surface and leaf keeps its index | none; or, with `activate: true`, the switch below | rays next tick; Havok bodies after an activation |
 | `rebuild` | surfaces moved or deleted: indices change | always: a BSP switch to the active BSP through `BSP_SWITCH` (`scenario_switch_structure_bsp`), which rebuilds the Havok structure, re-creates the placed objects and fires the Rust observers | after a hitch of one BSP switch; players and their state stay, as across a campaign switch |
 
 The editor sends `append` with `activate: true` on every commit, dragging
@@ -396,6 +396,10 @@ block or of the LOD chain. `target` is `{structure: tag}`,
 `refs`, `nodes_2d`, `surfaces`, `edges`, `vertices`), each its elements'
 bytes as `Bsp::encode_blocks` lays them out
 (`collision_build::coll::stage_blocks`).
+`leaves` is `{count, bytes}` of the structure's per-leaf block
+(`sbsp+0x2c`, 8 bytes a leaf) and `mopp` the bytes of the `sbsp+0x1e0`
+block; for an added solid all three come from
+`collision_build::level::LevelStage`, the bytes the map's save writes.
 `block` is a `placement::BLOCKS` name or `starting_locations`,
 `netgame_equipment`, `netgame_flags`, `starting_equipment`.
 
