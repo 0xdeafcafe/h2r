@@ -41,6 +41,17 @@ pub struct Problem {
     pub message: String,
 }
 
+impl Problem {
+    /// A compile diagnostic as a problem: its line, column and message.
+    pub fn of(d: &crate::Diagnostic) -> Problem {
+        Problem {
+            line: d.pos.line,
+            col: d.pos.col,
+            message: d.message.clone(),
+        }
+    }
+}
+
 /// One handler's worst-case cost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandlerCost {
@@ -155,7 +166,11 @@ pub struct Check {
     /// The script's `rules "<name>"`, when it compiled.
     pub name: Option<String>,
     pub version: Option<u16>,
+    /// Every error, in source order: all of the compile's, else the
+    /// budget, refusal and IR cap.
     pub errors: Vec<Problem>,
+    /// The compile's warnings, in source order.
+    pub warnings: Vec<Problem>,
     /// Present when it compiled.
     pub report: Option<CheckReport>,
 }
@@ -242,22 +257,18 @@ fn capabilities(ir: &Ir) -> Vec<CapLine> {
 
 /// Compiles, verifies and measures source: the workbench's Check.
 pub fn check(src: &str) -> Check {
-    let ir = match crate::compile(src) {
-        Ok(ir) => ir,
-        Err(e) => {
-            return Check {
-                ok: false,
-                hash: None,
-                name: None,
-                version: None,
-                errors: vec![Problem {
-                    line: e.line,
-                    col: e.col,
-                    message: e.message,
-                }],
-                report: None,
-            };
-        }
+    let compiled = crate::diagnose(src);
+    let warnings: Vec<Problem> = compiled.warnings().map(Problem::of).collect();
+    let Some(ir) = compiled.ir else {
+        return Check {
+            ok: false,
+            hash: None,
+            name: None,
+            version: None,
+            errors: compiled.errors().map(Problem::of).collect(),
+            warnings,
+            report: None,
+        };
     };
     let bytes = ir.encode();
     let mut errors = Vec::new();
@@ -329,6 +340,7 @@ pub fn check(src: &str) -> Check {
         name: Some(ir.header.name.clone()),
         version: Some(ir.header.version),
         errors,
+        warnings,
         report: Some(report),
     }
 }
@@ -740,20 +752,12 @@ fn refused(r: impl std::fmt::Display) -> RunError {
 
 /// Compiles and verifies source for a run.
 pub fn build(src: &str) -> Result<Ir, RunError> {
-    match crate::build(src) {
-        Ok((ir, _)) => Ok(ir),
-        Err(crate::BuildError::Compile(c)) => Err(RunError::Script(vec![Problem {
-            line: c.line,
-            col: c.col,
-            message: c.message,
-        }])),
-        Err(crate::BuildError::Refused(r)) => Err(refused(r)),
-        Err(other) => Err(RunError::Script(vec![Problem {
-            line: 0,
-            col: 0,
-            message: other.to_string(),
-        }])),
-    }
+    let compiled = crate::diagnose(src);
+    let Some(ir) = compiled.ir else {
+        return Err(RunError::Script(compiled.errors().map(Problem::of).collect()));
+    };
+    crate::verify(&ir).map_err(refused)?;
+    Ok(ir)
 }
 
 type Vars = (Vec<(String, String)>, Vec<PlayerState>);

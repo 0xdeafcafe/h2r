@@ -243,11 +243,40 @@ async fn ide_answers_each_op_in_lsp_shapes() {
     assert_eq!(v[0]["severity"], 1);
     assert_eq!(v[0]["range"]["start"]["line"], 3);
 
+    // `killer` may be none: a quick fix at the use, as a code action.
+    let v = ide(&h, json!({"source": src, "op": "actions", "line": 4, "character": 12})).await;
+    let actions = v.as_array().expect("an array of actions");
+    assert!(!actions.is_empty(), "{v}");
+    assert!(actions.iter().all(|a| a["kind"] == "quickfix" && a["diagnostic"]["code"] == "null.arg"), "{v}");
+    assert!(actions[0]["edits"][0].get("newText").is_some(), "{v}");
+    let v = ide(
+        &h,
+        json!({"source": src, "op": "actions", "line": 0, "character": 0, "end_line": 0, "end_character": 3}),
+    )
+    .await;
+    assert_eq!(v, json!([]));
+
+    // Renaming the option edits its declaration and its use.
+    let v = ide(&h, json!({"source": src, "op": "rename", "line": 2, "character": 8, "new_name": "pts"})).await;
+    let lines: Vec<u64> = v["edits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            assert_eq!(e["newText"], "pts");
+            e["range"]["start"]["line"].as_u64().unwrap()
+        })
+        .collect();
+    assert_eq!(lines, [2, 4]);
+
     // The place is required where an op reads one; an unknown op and an
     // unknown field are refused.
     for bad in [
         json!({"source": src, "op": "hover"}),
-        json!({"source": src, "op": "rename", "line": 0, "character": 0}),
+        json!({"source": src, "op": "rename", "line": 2, "character": 8}),
+        json!({"source": src, "op": "rename", "line": 2, "character": 8, "new_name": "on"}),
+        json!({"source": src, "op": "actions", "line": 0, "character": 0, "end_line": 1}),
+        json!({"source": src, "op": "inlay", "line": 0, "character": 0}),
         json!({"source": src, "op": "tokens", "extra": 1}),
         json!({"op": "tokens"}),
     ] {

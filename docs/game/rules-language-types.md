@@ -1,6 +1,6 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slices 1 to 4 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"). Time, constants, `match` and fixes are not built. "The built language" below is the language before slice 2, which the gap table describes.
+Status: Design, with slices 1 to 4 and 6 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"). Time, constants and `match` are not built. "The built language" below is the language before slice 2, which the gap table describes.
 Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
 Switch: none.
 
@@ -406,10 +406,20 @@ a warning for one nothing uses:
 ## Diagnostics and the editor
 
 Every diagnostic has a stable `code`, a range, a message and, where one
-exists, fixes: text edits the editor applies. `ide::Diagnostic` gains
-`code` and `fixes`; a new `actions` operation returns the fixes at a
-range (LSP `textDocument/codeAction`), and `rename` renames a
-declaration and its uses.
+exists, fixes: text edits the editor applies. `ide::Diagnostic` carries
+the checker's `code` and its `fixes` (`ide/fix.rs`); `ide::actions`
+returns the fixes at a range (LSP `textDocument/codeAction`), and
+`ide::rename` renames a declaration and its uses. `h2 rules lsp`
+(`crates/apps/cli/src/rules_lsp.rs`) answers both, and Live's
+`POST /v1/rules/ide` has them as the `actions` and `rename` operations.
+
+The editor, the workbench's check and `h2 rules check` list every
+diagnostic `rules::diagnose` gives, errors and warnings, not only the
+first error. `rules::ide` reads the types from the checker's `Checked`
+script; `ide/model.rs` resolves names and works out no type of its own.
+A fix is offered only where its edit is plain: `Wrap in for each` only
+for a statement on one line, `Add numbered` only when the label is not
+numbered.
 
 | Code | Message | Fixes |
 |---|---|---|
@@ -433,8 +443,9 @@ declaration and its uses.
 | `cap.missing`, `cap.unused` (warning) | "Capabilities" | Add to `requires`; Remove from `requires` |
 | `event.args`, `event.label` | `on enter gives 2 arguments (zone, object); this handler names 3.` `core is an object; on enter takes a zone label.` | none |
 
-**Hover** shows a type on every name: `lead: player?`, and
-`lead: player (not none here: checked on line 41)` where it is narrowed.
+**Hover** shows a type on every name: `lead: player?`. Where the
+checker narrows it, a second line says so:
+``Here `lead: player` (not none here: checked on line 41).``
 A label's hover is its declaration, then what the script sees, what a
 map needs in Forge's words, and its uses:
 
@@ -448,10 +459,11 @@ Used 2 times.
 ```
 
 An API entry's hover gives the front-end signature
-(`inside(p: player, z: zone) -> bool`).
+(`inside(player, zone) -> bool`, from `lang::sig`).
 
-**Completion** asks the checker for the type wanted at the caret
-(`Checked::wanted_at`) and ranks by it; nothing is hidden. In
+**Completion** works out the type wanted at the caret from the call's
+front-end signature (`lang::sig`) or the user function's parameter, and
+ranks by it; nothing is hidden. In
 `inside(p, |)`: zone labels, then locals and members of type `zone`,
 then `zone?` values (their detail says "may be none"), then set labels
 with `[`, then the rest. After `for each`, `count(`, `first(` and
@@ -638,7 +650,7 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | 3 (built) | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
 | 4 (built) | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `sim.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
 | 5 | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
-| 6 | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
+| 6 (built) | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
 | 7 | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
 | 8 | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
 | 9 | The hopper gate | `crates/live/live-server/src/admin.rs` (`check_pairs`), `crates/live/live-proto/src/map_census.rs` (new), the census route in `crates/live/live-server/src/content.rs` and `http.rs`, `crates/apps/cli/src/live_maps.rs` (`census`), `docs/live/live-api.md` | an edit with a blocked pair, an unknown script or a map with no census is refused by name, and one with good pairs publishes; a new census lists the entries it blocks; the census event applies in both homes | no published hopper holds a blocked pair | 1, 3 (`Census`); the context-policy lane |
