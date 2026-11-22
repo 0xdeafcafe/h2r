@@ -657,6 +657,27 @@ points! { ALL;
     /// (record flag bit 2), 2 extra damage (bit 12), 3 damage resistance
     /// (bit 13). The slot is called at `0x15b28e`, `0x2404ad`, `0x2bc967`.
     ENGINE_TRAIT_QUERY @ 0x0024_dda0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's role setter: sets (ECX's low byte nonzero) or clears
+    /// the player's bit of the role mask `[JUGGERNAUT_GLOBALS]+0` (`u16`;
+    /// EAX the salted player datum, its index the bit). Setting posts the
+    /// engine event that announces the Juggernaut (`0xa7c50`, `0x19eb30`),
+    /// except in a distributed client; either way it marks the
+    /// engine-globals entity (`E+0x24`, bit `0x20`) and rebuilds the teams'
+    /// mask at `+2` (`0x192b20`). Juggernaut's trait query `0x1926c0`
+    /// answers the role's traits from the mask. [`JUGGERNAUT_KILL`] and the
+    /// role pick `0x192a30` call it.
+    JUGGERNAUT_ROLE_SET @ 0x0019_2970: [fn(player: eax, on: ecx) ret 0], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
+    /// Oddball's ball return: ball `n` (EAX; its objective record's team,
+    /// `+4`) back to its spawn flag (`[ODDBALL_GLOBALS]+0xc+4n`, a netgame
+    /// flag's position) through [`OBJECTIVE_RETURN`]. Its idle timer
+    /// (`0x2bc990`) calls it; the caller checks the ball has a spawn.
+    ODDBALL_BALL_RETURN @ 0x002b_c340: [fn(ball: eax) ret 0], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
+    /// The objective return the engines share (Oddball `0x2bc361`, CTF
+    /// `0x242b41`, `0x242c7e`): drops the objective object (ESI) from the
+    /// unit carrying it, moves it to the position (a pointer to three
+    /// floats) with the default orientation, and clears its `+0x14c` and
+    /// `+0x150`. No engine, nothing.
+    OBJECTIVE_RETURN @ 0x0015_e360: [fn(object: esi, position: stack 0) ret 4], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
@@ -1712,6 +1733,14 @@ mod tests {
         assert_eq!(SLAYER_KILL.sig.arg("victim"), Some(Loc::Stack(1)));
         assert!(matches!(SLAYER_KILL.sig, Sig::Fn { ret: None, pop: 16, .. }));
         assert!(matches!(ENGINE_TRAIT_QUERY.sig, Sig::Fn { ret: Some(Loc::Al), pop: 8, .. }));
+        // The routines a script's calls reach: register arguments, no pop.
+        assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("player"), Some(Loc::Eax));
+        assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("on"), Some(Loc::Ecx));
+        assert!(matches!(JUGGERNAUT_ROLE_SET.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert_eq!(ODDBALL_BALL_RETURN.sig.arg("ball"), Some(Loc::Eax));
+        assert!(matches!(ODDBALL_BALL_RETURN.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert_eq!(OBJECTIVE_RETURN.sig.arg("object"), Some(Loc::Esi));
+        assert!(matches!(OBJECTIVE_RETURN.sig, Sig::Fn { ret: None, pop: 4, .. }));
         assert_eq!(by_base(0x0013_7fe0).map(|p| p.name), Some("GAME_TICK"));
     }
 }

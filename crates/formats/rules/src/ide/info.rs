@@ -476,16 +476,23 @@ pub(crate) fn diagnostics(m: &Model) -> Vec<Diagnostic> {
                 if let Use::Api(entry) = u
                     && report.unhostable.contains(&entry.name)
                 {
-                    out.push(diag(
-                        m.li.range(s, e),
-                        severity::INFORMATION,
-                        format!(
+                    let message = match entry.hosts {
+                        Some(hosts) if entry.status.hostable() => format!(
+                            "a host makes `{}` only on {}",
+                            entry.name,
+                            hosts
+                                .iter()
+                                .map(|&c| crate::caps::carrier_name(c).unwrap_or("?"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        _ => format!(
                             "no host can make `{}` yet: its entry is {}",
                             entry.name,
                             status_short(entry.status)
                         ),
-                        "unhostable",
-                    ));
+                    };
+                    out.push(diag(m.li.range(s, e), severity::INFORMATION, message, "unhostable"));
                 }
             }
         }

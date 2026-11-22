@@ -323,7 +323,7 @@ fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
 /// other (`hill_corner`, `checkpoint`).
 fn objects(ir: &Ir, teams: u8) -> Vec<ScenarioLabel> {
     let mut out = Vec::new();
-    for label in &ir.labels {
+    for label in ir.labels.iter().map(|l| &l.text) {
         if label.is_empty() {
             continue;
         }

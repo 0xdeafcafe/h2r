@@ -13,6 +13,9 @@ use variants::ext::{LEN, Script};
 use super::*;
 use crate::rules::feature::Shared;
 
+/// The carrier's own scoring, `role_traits` and the objectives on the host.
+mod hosted;
+
 const GAME_GLOBALS: u32 = 0x1000_0000;
 const GAME_TIME: u32 = 0x1000_2000;
 const ENGINE: u32 = 0x1000_4000;

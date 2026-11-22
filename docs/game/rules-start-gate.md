@@ -1,6 +1,6 @@
 # Rules start gate: a map must satisfy the script's labels
 
-Status: Design. Nothing here is built.
+Status: Design. The check (`rules::labels::check`) is built; nothing calls it yet.
 Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder). Tests: none yet; the slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name them.
 Switch: none.
 
@@ -19,27 +19,36 @@ Everything not marked **Code** is **Design**
 
 ## The check
 
-`rules::labels::check(ir, census, teams)` (`labels.rs`, new, pure)
+**Code**, `crates/formats/rules/src/labels.rs`.
+`rules::labels::check(ir, census, teams)` (pure)
 compares the IR's label table and tag table with a census of the map
-(`forge_doc::Census`, new: for each label text, its members' class,
-number and team; and the group of each tag the map holds) for the teams
-in play. It returns every problem, each with its text:
+(`labels::Census`: for each label text, its members' class, number and
+team; and the object type of each tag the map holds) for the teams in
+play. It returns every problem (`labels::Problem`: a `ProblemKind` and
+its text), labels in table order, then tags:
 
 | Case | Text |
 |---|---|
 | none of a required label | `the map has no zone labelled "goal"; Siege needs exactly 1` |
 | too many or too few | `the map has 3 objects labelled "core"; Siege needs exactly 1` |
-| wrong class | `"goal" on this map is a crate; Siege needs a zone (a trigger volume or a flag)` |
+| wrong class | `"goal" on this map is an object; Siege needs a zone (a trigger volume or a flag)` |
 | a missing number | `no zone labelled "zone" has the number 1; Siege needs 0 and 1` |
+| a number outside the range | `a zone labelled "zone" has the number 3; Siege needs only 0 and 1` |
 | an unnumbered member | `a zone labelled "hill_corner" has no number; King of the Hill needs every one numbered` |
 | a team without one | `team 1 has no zone labelled "ctf_flag_spawn"` |
 | a tag of the wrong group | `"<path>" on this map is a vehicle; Siege gives it as a weapon` |
 
-A census has two builders with one result type, in
-`crates/formats/forge-doc/src/labels.rs`: `Census::of_file` from a map
+A member whose class does not satisfy the label is reported once per
+label and is not counted; a label with no member of its class reports
+the class alone. A stated `max` blocks a map over it; a label of `max`
+256 states none. `labels::minimal(ir, teams)` is the smallest census
+the check accepts.
+
+A census has two builders with the one result type, in
+`crates/formats/forge-doc/src/labels.rs`: `of_file` from a map
 file's netgame flag and starting-location blocks
 (`crates/formats/map/src/scenario_layout.rs`) and the lobby's Forge
-document (`ForgeDoc::labels`), and `Census::of_game` from the loaded
+document (`ForgeDoc::labels`), and `of_game` from the loaded
 scenario in guest memory and the session's document. A test builds both
 from one fixture and asserts they are equal.
 

@@ -202,7 +202,8 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "the game's start, kills, tick and end on the game thread: starts the script, runs its \
          handlers and makes their calls through guest calls before the tick (an async answer \
-         that re-enters it)",
+         that re-enters it), and answers the carrier engine's kill callbacks, Juggernaut tick \
+         and scoring in the game tick",
     ),
     (
         "variant-vitality",
