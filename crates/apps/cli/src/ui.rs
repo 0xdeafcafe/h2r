@@ -645,8 +645,20 @@ fn preview(args: Vec<String>) -> Result<()> {
         let file = label.replace('/', "-");
         println!("wrote {}", dir.join(format!("{file}.png")).display());
     }
+    record_findings(&dir, &name, &reports, animated, a.strict)
+}
+
+/// Each state's findings, notes and drawn footprints into its JSON beside
+/// the picture, the count printed; `strict` fails on any finding.
+fn record_findings(
+    dir: &std::path::Path,
+    name: &str,
+    reports: &[(String, boot::ui_kit::findings::StateReport, Vec<boot::ui_kit::preview::Footprint>)],
+    animated: bool,
+    strict: bool,
+) -> Result<()> {
     let mut found = 0;
-    for (state, r, drawn) in &reports {
+    for (state, r, drawn) in reports {
         found += r.findings.len();
         if animated {
             continue;
@@ -663,9 +675,9 @@ fn preview(args: Vec<String>) -> Result<()> {
     println!(
         "{found} finding(s) in {} state(s){}",
         reports.len(),
-        if found > 0 && !a.strict { " (--strict fails on them)" } else { "" }
+        if found > 0 && !strict { " (--strict fails on them)" } else { "" }
     );
-    if a.strict && found > 0 {
+    if strict && found > 0 {
         bail!("{found} finding(s) in {name}");
     }
     Ok(())
@@ -771,22 +783,30 @@ mod tests {
             v.extend(extra.iter().map(|s| s.to_string()));
             v
         };
-        // The Quick Options dialogs have layout findings without the disc's
-        // art (the synthetic source has no `fs_dialog` under their rows).
-        run(args("clankers", &[])).unwrap();
-        let mut findings = Vec::new();
-        let mut drawn = Vec::new();
-        for (state, _) in boot::ui_kit::screens::states("clankers").unwrap() {
-            let json: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(out.join(format!("clankers-{state}.json"))).unwrap(),
-            )
-            .unwrap();
-            findings.extend(json["findings"].as_array().unwrap().clone());
-            drawn.extend(json["drawn"].as_array().unwrap().clone());
-        }
-        assert!(findings.iter().any(|f| f["check"] == "layout"), "{findings:?}");
-        assert!(drawn.iter().any(|d| d["bbox"].is_array()));
-        assert!(run(args("clankers", &["--strict"])).is_err());
+        // A state with a finding (no screen of ours keeps one): its JSON
+        // takes the findings and the footprints, and --strict fails on it.
+        use boot::ui_kit::findings::{Found, StateReport};
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("t-s.json"), "{}").unwrap();
+        let faulty = StateReport {
+            findings: vec![Found {
+                check: "layout",
+                kind: "unsafe".into(),
+                ids: vec!["stray".into()],
+                text: "stray: outside the title-safe area".into(),
+            }],
+            ..StateReport::default()
+        };
+        let reports = vec![("s".to_string(), faulty, Vec::new())];
+        assert!(record_findings(&out, "t", &reports, false, true).is_err());
+        record_findings(&out, "t", &reports, false, false).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("t-s.json")).unwrap()).unwrap();
+        assert_eq!(json["findings"][0]["check"], "layout");
+        assert_eq!(json["findings"][0]["kind"], "unsafe");
+        assert!(json["drawn"].as_array().unwrap().is_empty());
+        let clean = vec![("s".to_string(), StateReport::default(), Vec::new())];
+        record_findings(&out, "t", &clean, false, true).unwrap();
         assert!(run(args("kit.example", &["--strict"])).is_ok());
         assert!(run(vec!["sheet".into(), "--strict".into()]).is_err());
         let _ = std::fs::remove_dir_all(&out);

@@ -17,10 +17,10 @@ use super::{Issue, Rules, area, row_of};
 use crate::ui_kit::preview::{Footprint, Source, render_traced};
 use crate::ui_kit::view::{Art, Kind, Layer, View, Widget};
 
-/// Kit screens whose modal may cover the content of the screen beneath
-/// it, each with the retail precedent: `(screen, why)`. A modal over a kit
-/// screen that isn't here and covers its pictures, status or roster is a
-/// [`Issue::CoversUnder`].
+/// Kit screens whose modal text may lie over the content of the screen
+/// beneath it, each with the retail precedent: `(screen, why)`. A modal
+/// over a kit screen that isn't here and draws its text over that
+/// screen's pictures, status or roster is a [`Issue::CoversUnder`].
 pub const COVERS: &[(&str, &str)] = &[(
     crate::theater_ui::PAUSE_MENU,
     "its value pickers open over the pause menu and its scoreboard as \
@@ -217,7 +217,11 @@ fn panel_shared(shown: &[(&Widget, &Footprint)], rules: &Rules, out: &mut Vec<Is
 }
 
 /// The modal (`shown`) over kit screen `under`: what of `under`'s content
-/// (pictures, and texts that are neither the list's nor chrome) it covers.
+/// (pictures, and texts that are neither the list's nor chrome) lies under
+/// the modal's own texts. A modal's panel hides what is beneath it, as any
+/// modal does, so covering is not a fault; the modal's glyphs drawn over
+/// the beneath screen's pictures or text are, as those show through the
+/// see-through panel and spoil the read.
 fn covers_under(
     shown: &[(&Widget, &Footprint)],
     under: &View,
@@ -238,7 +242,11 @@ fn covers_under(
         };
         let pixels = uf
             .touched()
-            .filter(|&(x, y)| shown.iter().any(|(_, f)| f.hits(x, y)))
+            .filter(|&(x, y)| {
+                shown
+                    .iter()
+                    .any(|(w, f)| w.text().is_some() && f.hits(x, y))
+            })
             .count();
         if pixels > rules.max_covered {
             out.push(Issue::CoversUnder {

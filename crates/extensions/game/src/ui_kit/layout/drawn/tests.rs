@@ -110,8 +110,9 @@ fn a_row_list_in_the_status_panel_beside_its_text_is_found() {
     assert!(of_kind(&r.issues, "panel_shared").is_empty());
 }
 
-/// A value picker's panel over a lobby's map picture.
-fn picker_over_lobby(screen: &str) -> View {
+/// A value picker over a lobby's map picture: its panel, and with `text`
+/// its title at `[0, -100, -20, -60]`, which lies over the picture.
+fn picker_over_lobby(screen: &str, with_text: bool) -> View {
     let under = View {
         backing: Backing::GameShell,
         ..view(vec![
@@ -130,25 +131,32 @@ fn picker_over_lobby(screen: &str) -> View {
     View {
         screen: screen.into(),
         underlay: Some(Box::new(under)),
-        ..view(vec![art("panel.0", [104, -268, -152, -12], Layer::Panel, screen_art(2))])
+        ..view({
+            let mut w = vec![art("panel.0", [104, -268, -152, -12], Layer::Panel, screen_art(2))];
+            if with_text {
+                w.push(text("title", [0, -100, -20, -60], "Pick"));
+            }
+            w
+        })
     }
 }
 
 #[test]
-fn a_picker_over_the_screens_picture_is_found_unless_allowed() {
-    let r = check(&picker_over_lobby("t"), &SyntheticSource, &Rules::default());
-    // The picture is covered over 140 by 184; the row under the panel is
-    // the list's, covered as retail's dialogs cover theirs; the game's line
-    // is clear of it.
-    assert_eq!(
-        of_kind(&r.issues, "covers_under"),
-        [&Issue::CoversUnder {
-            under: "panel.2".into(),
-            pixels: 140 * 184,
-        }]
+fn a_pickers_text_over_the_screens_picture_is_found_unless_allowed() {
+    // A panel over the picture hides it, as a modal does: no finding.
+    let hides = check(&picker_over_lobby("t", false), &SyntheticSource, &Rules::default());
+    assert!(of_kind(&hides.issues, "covers_under").is_empty(), "{:?}", hides.issues);
+    // The picker's title drawn over the picture is found; the rows and
+    // the game's line beneath are the list's and clear of it.
+    let r = check(&picker_over_lobby("t", true), &SyntheticSource, &Rules::default());
+    let found = of_kind(&r.issues, "covers_under");
+    assert!(
+        matches!(found[..], [Issue::CoversUnder { under, pixels }] if under == "panel.2" && *pixels > 24),
+        "{:?}",
+        r.issues
     );
     let allowed = check(
-        &picker_over_lobby(crate::theater_ui::PAUSE_MENU),
+        &picker_over_lobby(crate::theater_ui::PAUSE_MENU, true),
         &SyntheticSource,
         &Rules::default(),
     );

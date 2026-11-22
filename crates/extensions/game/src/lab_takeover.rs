@@ -43,12 +43,13 @@ fn prompts() -> [Prompt; 2] {
 fn layout() -> ListLayout {
     let mut l = ui_kit::dialog_tag::base_layout(DialogBase::Large, LABELS.len());
     // Four body lines need the list lower than the other question dialogs
-    // put it: row 0's frame art tops out 4 units below the anchor's row
-    // top plus 34 (`ui_kit::view` item art), and the body's ink ends 19
-    // units a line below `dialog::BODY_TOP`. At -34 the frame's top (-4)
-    // clears the fourth line (-4), and row 1's bottom (-66) stays above
-    // the footer (-83).
-    l.anchor[1] = -34;
+    // put it: row 0's frame art tops out 33 units above the anchor at most
+    // (`ui_kit::view` item art), and the body's ink ends 19 units a line
+    // below `dialog::BODY_TOP`, at -4 for four lines. At -44 the frame's
+    // top (-11) clears the fourth line, row 1's cap (-70 to -74) stays
+    // above the footer (-83), and the rows sit below the main menu's logo
+    // (bottom -19), so the unfocused Allow label keeps its contrast.
+    l.anchor[1] = -44;
     l
 }
 

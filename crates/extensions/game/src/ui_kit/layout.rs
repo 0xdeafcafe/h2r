@@ -39,8 +39,8 @@
 //!   art, picture or text.
 //! - **panel shared**: a panel that holds a list's rows holds another
 //!   group's texts too, unless [`drawn::SHARED_PANELS`] says why it may.
-//! - **covers under**: a modal over a kit screen covers that screen's
-//!   content (its pictures, status, roster), unless [`drawn::COVERS`]
+//! - **covers under**: a modal over a kit screen draws its text over that
+//!   screen's content (its pictures, status, roster), unless [`drawn::COVERS`]
 //!   says why it may.
 //! - **drawn outside**: art drawn past its declared rectangle by more than
 //!   [`Rules::max_outside`].
@@ -196,8 +196,8 @@ pub enum Issue {
         rows: String,
         with: Vec<String>,
     },
-    /// The modal covers `pixels` of the drawn content `under` of the kit
-    /// screen beneath it.
+    /// The modal's text is drawn over `pixels` of the drawn content `under`
+    /// of the kit screen beneath it.
     CoversUnder {
         under: String,
         pixels: usize,
@@ -294,7 +294,7 @@ impl fmt::Display for Issue {
             ),
             Issue::CoversUnder { under, pixels } => write!(
                 f,
-                "the modal covers {pixels} pixels of the screen beneath's {under}"
+                "the modal's text is drawn over {pixels} pixels of the screen beneath's {under}"
             ),
             Issue::DrawnOutside { id, by } => {
                 write!(f, "{id}: drawn {by} units past its declared rectangle")

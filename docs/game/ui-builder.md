@@ -247,7 +247,7 @@ state.
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
 | on drawn | a text's glyphs meet another group's drawn row or cell art, picture (`Art::Level`) or text over more than 24 pixels (`Issue::OnDrawn`); the pairs `overlap` already names are left out |
 | panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`). A screen that draws the lobby's panel as retail's lobby does, the list and its status lines in one pane, is listed in `layout::drawn::SHARED_PANELS` with its retail precedent |
-| covers under | a modal over a kit screen (`View::underlay`) covers more than 24 drawn pixels of that screen's content: its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal may cover is listed in `layout::drawn::COVERS` with its retail precedent |
+| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
 | drawn outside | art drew more than `Rules::max_outside` (2) units past its declared rectangle (`Issue::DrawnOutside`): fix the rectangle |
 
 The last four read what the preview really drew. `preview::render_traced`
@@ -263,11 +263,10 @@ the trace together.
 
 A widget's group is its id's first part, the spec's own naming:
 `button.start` is the buttons', `player.2` the roster's, `game` its own,
-and every row and cell is the list's (`layout::drawn::group`). The design
-lobby's concept F is what these catch: its mode list sits on the status
-panel (`lobby_display`) beside the game's lines, and no two rects meet, so
-only `panel shared` sees it; concept D's mode picker covers the lobby's
-map picture (`covers under`).
+and every row and cell is the list's (`layout::drawn::group`). A mode list
+that sits on a status panel beside the game's lines is what `panel
+shared` catches when no two rects meet; a picker whose text lies over the
+lobby's map picture is what `covers under` catches.
 
 The art checks need the images' pixels, so the synthetic source skips
 them, and says so (`Report::skipped`). The provenance check runs without a

@@ -93,11 +93,11 @@ pub fn of_state(from: &preview::From<'_>, spec: &ScreenSpec, view: &View) -> Res
 mod tests {
     use super::*;
 
-    /// A clean screen has nothing; the Quick Options dialogs, whose rows
-    /// the synthetic source (no `fs_dialog` art) leaves with too little
-    /// contrast, have layout findings named by check and kind.
+    /// A clean screen has nothing; a text drawn off the title-safe area has
+    /// a layout finding, named by check and kind, in the same list.
     #[test]
     fn a_states_findings_come_in_one_list() {
+        use crate::ui_kit::view::{Justify, Kind, Layer, Widget};
         let from = preview::From::Synthetic;
         let clean = crate::ui_kit::screens::states("kit.example").unwrap();
         let (name, spec) = &clean[0];
@@ -106,12 +106,25 @@ mod tests {
         assert!(r.findings.is_empty(), "{:?}", r.findings);
         assert_eq!(r.skipped, ["covered", "off screen"]);
 
-        let mut found = Vec::new();
-        for (state, spec) in crate::ui_kit::screens::states("clankers").unwrap() {
-            let v = from.view(&spec, &state).unwrap();
-            found.extend(of_state(&from, &spec, &v).unwrap().findings);
-        }
-        assert!(found.iter().any(|x| x.check == "layout" && !x.kind.is_empty()), "{found:?}");
-        assert!(found.iter().all(|x| x.to_string().starts_with(x.check)));
+        let mut faulty = v.clone();
+        faulty.widgets.push(Widget {
+            id: "stray".into(),
+            rect: [236, -310, 220, -200],
+            layer: Layer::Content,
+            alpha: 255,
+            kind: Kind::Text {
+                text: "Stray".into(),
+                font: 1,
+                justify: Justify::Left,
+                colour: [255, 255, 255],
+            },
+        });
+        let r = of_state(&from, spec, &faulty).unwrap();
+        assert!(
+            r.findings.iter().any(|x| x.check == "layout" && x.ids == ["stray"]),
+            "{:?}",
+            r.findings
+        );
+        assert!(r.findings.iter().all(|x| x.to_string().starts_with(x.check)));
     }
 }
