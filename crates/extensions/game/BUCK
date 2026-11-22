@@ -19,6 +19,7 @@ crate_tree(
     files = [
         ":src",
         "//:Cargo.lock",
+        "//:art",
         "//crates/formats/map:src",
         "//crates/formats/tags:src",
         "//crates/platform/d3d:src",
@@ -30,6 +31,7 @@ crate_tree(
     files = [
         ":all",
         "//:Cargo.lock",
+        "//:art",
         "//crates/formats/map:src",
         "//crates/formats/tags:src",
         "//crates/platform/d3d:src",
