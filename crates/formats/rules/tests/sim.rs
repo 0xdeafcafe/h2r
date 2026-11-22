@@ -25,7 +25,7 @@ const ALL: [(&str, &str); 12] = [
     ("vip", builtin::VIP),
     ("siege", builtin::SIEGE),
     ("race", builtin::RACE),
-    ("bounce_practice", builtin::BOUNCE_PRACTICE),
+    ("bounce_hunt", builtin::BOUNCE_HUNT),
 ];
 
 fn setup(players: u8, teams: u8, seed: u64) -> Setup {
@@ -105,13 +105,13 @@ fn a_match_holds_only_events_the_script_can_notice() {
     }
     let events = |src: &str| sim::emits(&rules::compile(src).unwrap());
     assert_eq!(events(builtin::SLAYER), [Event::Kill, Event::Spawn]);
-    assert_eq!(events(builtin::BOUNCE_PRACTICE), [Event::Bounce]);
+    assert_eq!(events(builtin::BOUNCE_HUNT), [Event::Bounce]);
     assert_eq!(events(builtin::RACE), [Event::Enter, Event::Leave]);
     assert!(events(builtin::KING).contains(&Event::Enter));
     assert!(events(builtin::ODDBALL).contains(&Event::Pickup));
     assert!(!events(builtin::SLAYER).contains(&Event::Bounce));
 
-    let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 1)).unwrap();
+    let m = sim::simulate(builtin::BOUNCE_HUNT, &setup(4, 0, 1)).unwrap();
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Bounce { .. })));
     let m = sim::simulate(builtin::SIEGE, &setup(8, 0, 1)).unwrap();
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Death(_))));
@@ -277,7 +277,7 @@ fn the_scenario_file_holds_the_match() {
     assert!(left.is_empty(), "{left:?}");
     assert_eq!(file.map, m.scenario.map);
     assert!(file.map.iter().flatten().any(|l| l.team == Some(1)));
-    let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 2)).unwrap();
+    let m = sim::simulate(builtin::BOUNCE_HUNT, &setup(4, 0, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
     let bounces = file
