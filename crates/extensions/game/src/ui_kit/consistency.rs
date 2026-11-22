@@ -366,7 +366,7 @@ mod tests {
             {
                 *text = "Choices".into();
                 *font = 9;
-                *colour = [1, 2, 3];
+                *colour = [255, 0, 255];
             }
         }
         let mut out = Vec::new();

@@ -99,7 +99,10 @@ impl Design {
         {
             return n.clone();
         }
-        let name = format!("{screen}.{}", self.doc.palette.len());
+        let name = (self.doc.palette.len()..)
+            .map(|n| format!("{screen}.{n}"))
+            .find(|n| !self.doc.palette.contains_key(n))
+            .expect("a free name");
         self.doc.palette.insert(name.clone(), c);
         name
     }
@@ -148,11 +151,14 @@ impl Design {
             return n.clone();
         }
         let font_name = self.font(font, if role == "title" { "title" } else { "body" });
-        let name = format!("{role}.{screen}.{}", self.doc.components.len());
+        let name = (self.doc.components.len()..)
+            .map(|n| format!("{role}.{screen}.{n}"))
+            .find(|n| !self.doc.components.contains_key(n))
+            .expect("a free name");
         self.doc.components.insert(
             name.clone(),
             ComponentDoc {
-                role: format!("{role} of {screen}, as the converter found it"),
+                role: format!("{role} of {screen}{FOUND}"),
                 font: Some(font_name),
                 colour: Some(colour_name),
                 justify: Some(justify_name(justify).into()),
@@ -582,6 +588,7 @@ pub fn export(dir: &Path) -> Result<Vec<PathBuf>> {
     let screens = dir.join("screens");
     std::fs::create_dir_all(&screens).with_context(|| screens.display().to_string())?;
     let mut written = Vec::new();
+    let mut docs = Vec::new();
     for name in crate::ui_kit::screens::NAMES {
         let states = crate::ui_kit::screens::raw_states(name)
             .with_context(|| format!("no states for {name}"))?;
@@ -590,10 +597,38 @@ pub fn export(dir: &Path) -> Result<Vec<PathBuf>> {
         let path = screens.join(format!("{name}.yaml"));
         std::fs::write(&path, super::to_yaml(&doc)).with_context(|| path.display().to_string())?;
         written.push(path);
+        docs.push(doc);
     }
+    prune(&mut design.doc, &docs);
     std::fs::write(&seed, design_to_yaml(&design.doc)).with_context(|| seed.display().to_string())?;
     written.push(seed);
     Ok(written)
+}
+
+/// The end of the role of a component the converter made for one screen's
+/// style (no preset matched it).
+const FOUND: &str = ", as the converter found it";
+
+/// Drops what an earlier export made and no screen uses now: components
+/// the converter made ([`FOUND`]) that no screen names, then palette
+/// entries it named after a screen (`<screen>.<n>`) that no component
+/// names. The design system's own entries always stay.
+pub(crate) fn prune(design: &mut DesignDoc, docs: &[ScreenDoc]) {
+    let used: std::collections::HashSet<&str> = docs
+        .iter()
+        .flat_map(|d| d.widgets.values().filter_map(|w| w.component.as_deref()))
+        .collect();
+    design
+        .components
+        .retain(|n, c| !c.role.ends_with(FOUND) || used.contains(n.as_str()));
+    let colours: std::collections::HashSet<String> =
+        design.components.values().filter_map(|c| c.colour.clone()).collect();
+    let screens_own = |n: &str| {
+        crate::ui_kit::screens::NAMES
+            .iter()
+            .any(|s| n.strip_prefix(s).and_then(|r| r.strip_prefix('.')).is_some_and(|r| r.parse::<usize>().is_ok()))
+    };
+    design.palette.retain(|n, _| !screens_own(n) || colours.contains(n));
 }
 
 /// The design doc as its file (the converter's form: no comments).

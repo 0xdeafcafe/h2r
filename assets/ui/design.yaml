@@ -4,9 +4,6 @@ palette:
   item_blue: [0.560784, 0.694118, 0.811765]
   white: [1, 1, 1]
   alert: [1, 0.62, 0.56]
-  forge.hud.5: [0.9235294, 0.95490193, 0.99019605]
-  theater.playback.6: [0.86, 0.91, 0.96]
-  theater.playback.7: [0.65, 0.76, 0.87]
 fonts:
   title: 2
   legend: 2
@@ -169,21 +166,6 @@ components:
     font: body
     colour: hint_blue
     justify: left
-  hud.forge.hud.26:
-    role: "hud of forge.hud, as the converter found it"
-    font: body
-    colour: forge.hud.5
-    justify: left
-  hud.forge.hud.27:
-    role: "hud of forge.hud, as the converter found it"
-    font: body
-    colour: forge.hud.5
-    justify: right
-  hud.forge.hud.28:
-    role: "hud of forge.hud, as the converter found it"
-    font: body
-    colour: forge.hud.5
-    justify: centre
   description.kit.example.29:
     role: "description of kit.example, as the converter found it"
     font: body
@@ -198,26 +180,6 @@ components:
     role: "text of mods.detail, as the converter found it"
     font: body
     colour: pale_blue
-    justify: right
-  text.theater.playback.32:
-    role: "text of theater.playback, as the converter found it"
-    font: body
-    colour: theater.playback.6
-    justify: left
-  text.theater.playback.33:
-    role: "text of theater.playback, as the converter found it"
-    font: body
-    colour: theater.playback.7
-    justify: left
-  text.theater.playback.34:
-    role: "text of theater.playback, as the converter found it"
-    font: body
-    colour: theater.playback.6
-    justify: right
-  text.theater.playback.35:
-    role: "text of theater.playback, as the converter found it"
-    font: body
-    colour: theater.playback.7
     justify: right
   hud.forge.hud.36:
     role: "hud of forge.hud, as the converter found it"
