@@ -1752,7 +1752,7 @@ fn lab_sim_names_the_first_differing_tick_and_fails_a_job_whose_run_failed() {
 
 #[test]
 fn lab_sim_refuses_bad_requests_before_the_host_sees_them() {
-    let lab = Lab::start();
+    let lab = Lab::named("sr");
     write_sim_files(&lab);
     let refused = |args: &[&str], what: &str| {
         let mut a = vec!["sim", "m/lockout.toml", "--current"];
@@ -1812,7 +1812,7 @@ fn lab_sim_uploads_the_drivers_nav_meshes_and_runs_on_them() {
 
 #[test]
 fn lab_sim_refuses_a_map_the_driver_has_no_nav_mesh_for() {
-    let lab = Lab::start();
+    let lab = Lab::named("sn");
     write_sim_files(&lab);
     fs::remove_file(lab.dir.join("driver-data/bots/lockout.0.bots")).unwrap();
     let e = err(&lab.local(&["sim", "m/lockout.toml", "--current"]));
