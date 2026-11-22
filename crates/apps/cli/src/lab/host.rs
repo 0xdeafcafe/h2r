@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agent_proto::takeover::{Operation, Request as TakeoverRequest};
+use agent_proto::takeover::{Operation, Request as TakeoverRequest, Source as TakeoverSource};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1114,7 +1114,7 @@ fn takeover_request(
     let (operation, estimate_seconds) = match job {
         Job::Build(_) => (Operation::Build, build_seconds),
         // A sim has no frame limit to estimate from.
-        Job::Sim(_) => (Operation::Run, 0),
+        Job::Sim(_) => (Operation::Sim, 0),
         Job::Run(run) => {
             let frames = run
                 .env
@@ -1136,17 +1136,42 @@ fn takeover_request(
             (Operation::Run, seconds)
         }
     };
-    let mut revision: String = commit.map_or_else(
-        || "installed image".into(),
-        |sha| sha.chars().take(12).collect(),
-    );
-    if matches!(job, Job::Run(run) if run.own_data) {
-        revision.push_str(", using your own data");
-    }
+    // Builds carry no name of their own.
+    let name = match job {
+        Job::Run(run) => run.name.clone(),
+        Job::Sim(sim) => sim.name.clone(),
+        Job::Build(_) => "Image build".into(),
+    };
+    let spec = job.spec();
+    let source = match (commit, &spec.rev) {
+        (Some(commit), Some(rev)) => match &spec.branch {
+            Some(branch) => TakeoverSource::Branch {
+                name: branch.clone(),
+                commit: commit.chars().take(12).collect(),
+            },
+            None => TakeoverSource::Rev {
+                rev: rev.clone(),
+                commit: commit.chars().take(12).collect(),
+            },
+        },
+        // The host's own image, as installed. Its checkout's commit is
+        // known only when this binary was built with one.
+        _ => TakeoverSource::Current {
+            commit: option_env!("H2_BUILD_SHA").map(str::to_owned),
+        },
+    };
+    let (level, own_data) = match job {
+        Job::Run(run) => (run.level.clone(), run.own_data),
+        _ => (None, false),
+    };
     TakeoverRequest {
         requester: requester.to_owned(),
+        name,
         operation,
-        revision,
+        builds_image,
+        source,
+        level,
+        own_data,
         estimate_seconds,
         timeout_seconds,
     }
@@ -2242,16 +2267,62 @@ mod tests {
             film_library(&cfg, "0001", &run),
             content::store::default_data_root().join("films")
         );
-        let ask = |run: &RunReq| {
-            takeover_request(&Job::Run(run.clone()), None, "Lab", false, 60).revision
-        };
-        assert_eq!(ask(&run), "installed image, using your own data");
+        let ask = |run: &RunReq| takeover_request(&Job::Run(run.clone()), None, "Lab", false, 60);
+        run.name = "Own data check".into();
+        run.level = Some("ascension".into());
+        let request = ask(&run);
+        assert!(request.own_data);
+        assert_eq!(request.name, "Own data check");
+        assert_eq!(request.level.as_deref(), Some("ascension"));
+        assert!(matches!(request.source, TakeoverSource::Current { .. }));
         run.own_data = false;
-        assert_eq!(ask(&run), "installed image");
+        assert!(!ask(&run).own_data);
         for name in ["H2_DATA", "H2_LIVE_DIR", "H2_LIVE_SERVER"] {
             assert!(proto::OWN_DATA_ENV.contains(&name));
         }
         assert!(!proto::RUN_ENV.iter().any(|k| proto::OWN_DATA_ENV.contains(k)));
+    }
+
+    #[test]
+    fn the_player_is_told_the_jobs_name_source_and_operation() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let mut run = RunReq {
+            name: "Menu bands".into(),
+            ..RunReq::default()
+        };
+        run.build.rev = Some(commit.into());
+        run.build.branch = Some("menu-bands".into());
+        let ask = |job: &Job, builds| takeover_request(job, Some(commit), "Lab", builds, 60);
+        let request = ask(&Job::Run(run.clone()), true);
+        assert_eq!(request.operation, Operation::Run);
+        assert!(request.builds_image);
+        assert_eq!(
+            request.source,
+            TakeoverSource::Branch {
+                name: "menu-bands".into(),
+                commit: commit[..12].into()
+            }
+        );
+        run.build.branch = None;
+        run.build.rev = Some("v1.2".into());
+        assert_eq!(
+            ask(&Job::Run(run), false).source,
+            TakeoverSource::Rev {
+                rev: "v1.2".into(),
+                commit: commit[..12].into()
+            }
+        );
+        let sim = SimReq {
+            name: "Bot bench".into(),
+            ..SimReq::default()
+        };
+        let request = takeover_request(&Job::Sim(sim), None, "Lab", false, 60);
+        assert_eq!(request.operation, Operation::Sim);
+        assert_eq!(request.name, "Bot bench");
+        assert!(matches!(request.source, TakeoverSource::Current { .. }));
+        let request = ask(&Job::Build(BuildSpec::default()), true);
+        assert_eq!(request.operation, Operation::Build);
+        assert_eq!(request.name, "Image build");
     }
 
     #[test]

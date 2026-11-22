@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use agent::Access;
-use agent_proto::takeover::{self, Decision, Operation, Request};
+use agent_proto::takeover::{self, Decision, Operation, Request, Source};
 use agent_proto::{RpcError, code};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
@@ -66,19 +66,54 @@ fn display_field(value: &str, max: usize) -> String {
     }
 }
 
+fn source_line(source: &Source) -> String {
+    let short = |commit: &str| display_field(commit, 7);
+    match source {
+        Source::Branch { name, commit } => {
+            format!("lab/{} at {}", display_field(name, 20), short(commit))
+        }
+        Source::Rev { rev, commit } => {
+            format!("{} at {}", display_field(rev, 20), short(commit))
+        }
+        Source::Current { commit: Some(c) } => format!("installed image at {}", short(c)),
+        Source::Current { commit: None } => "installed image".into(),
+    }
+}
+
+/// The dialog's text: who asks, what the job is called, what it does, which
+/// code it runs, and what to do next. Six lines at most.
 fn body(request: &Request) -> String {
     let who = display_field(&request.requester, 16);
-    let revision = display_field(&request.revision, 16);
-    let operation = match request.operation {
-        Operation::Build => "build",
-        Operation::Run => "run",
+    let name = display_field(&request.name, 36);
+    let action = match (request.operation, request.builds_image) {
+        (Operation::Build, _) => "build",
+        (Operation::Run, false) => "run",
+        (Operation::Run, true) => "build, then run",
+        (Operation::Sim, false) => "run a sim",
+        (Operation::Sim, true) => "build, then sim",
     };
     let time = match request.estimate_seconds {
         0 => "duration varies".into(),
         n @ 1..=59 => format!("about {n} sec"),
         n => format!("about {} min", n.div_ceil(60)),
     };
-    format!("{who} requests a lab {operation}.\n{revision}, {time}\nAllow, then quit when ready.")
+    let mut facts = Vec::new();
+    if let Some(level) = request.level.as_deref().filter(|l| !l.trim().is_empty()) {
+        facts.push(format!("level {}", display_field(level, 12)));
+    }
+    if request.own_data {
+        facts.push("your own data".into());
+    }
+    facts.push(time);
+    format!(
+        "{who} asks to {action}.
+"{name}"
+{}
+{}
+Allow, then quit when ready.",
+        source_line(&request.source),
+        facts.join(", ")
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,13 +172,19 @@ impl Dialog {
     }
 
     fn submit(&self, request: Request, now: Instant) -> Result<u64, RpcError> {
+        let source_empty = match &request.source {
+            Source::Branch { name, commit } => name.trim().is_empty() || commit.trim().is_empty(),
+            Source::Rev { rev, commit } => rev.trim().is_empty() || commit.trim().is_empty(),
+            Source::Current { commit } => commit.as_deref().is_some_and(|c| c.trim().is_empty()),
+        };
         if request.requester.trim().is_empty()
-            || request.revision.trim().is_empty()
+            || request.name.trim().is_empty()
+            || source_empty
             || !(1..=takeover::MAX_TIMEOUT_SECONDS).contains(&request.timeout_seconds)
         {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
-                "expected a requester, a revision and a timeout from 1 to 3600 seconds",
+                "expected a requester, a job name, a source and a timeout from 1 to 3600 seconds",
             ));
         }
         let mut prompt = self.prompt();
@@ -518,8 +559,15 @@ pub(crate) fn sample_page() -> ListPage {
 fn sample_request() -> Request {
     Request {
         requester: "Lab driver".into(),
+        name: "Menu bands check".into(),
         operation: Operation::Run,
-        revision: "cb9b315e1".into(),
+        builds_image: true,
+        source: Source::Branch {
+            name: "menu-bands".into(),
+            commit: "cb9b315".into(),
+        },
+        level: Some("ascension".into()),
+        own_data: false,
         estimate_seconds: 240,
         timeout_seconds: 60,
     }

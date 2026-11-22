@@ -115,6 +115,11 @@ pub const DIFFICULTIES: &[&str] = &["easy", "normal", "heroic", "legendary"];
 #[serde(default, deny_unknown_fields)]
 pub struct BuildSpec {
     pub rev: Option<String>,
+    /// The branch `rev` was resolved from (`--branch`, or the driving
+    /// checkout's current branch). Only shown to the player; absent for
+    /// `--rev` and `--current`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub features: Vec<String>,
     pub env: BTreeMap<String, String>,
 }
@@ -693,6 +698,10 @@ pub fn validate_sim(s: &SimReq) -> Result<()> {
 pub fn validate_build(b: &BuildSpec) -> Result<()> {
     if let Some(rev) = &b.rev {
         check_rev(rev)?;
+    }
+    if let Some(branch) = &b.branch {
+        check_rev(branch)?;
+        ensure!(b.rev.is_some(), "a build branch needs the rev it names");
     }
     for f in &b.features {
         ensure!(

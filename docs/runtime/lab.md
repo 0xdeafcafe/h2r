@@ -310,8 +310,28 @@ available for new lab jobs. An open player game window whose agent cannot
 show the prompt leaves the job skipped.
 Service updates use the separate maintenance path.
 
-The game shows the requesting lab driver, the run or build, the commit or
-installed image, and an estimated duration if one is available.
+The game shows a "Lab request" dialog with a short body:
+
+```
+Lab driver asks to build, then run.
+"Menu bands check"
+lab/menu-bands at cb9b315
+level ascension, about 4 min
+Allow, then quit when ready.
+```
+
+The first line names the requesting lab driver and what the job does:
+build, run, build then run, run a sim, or build then sim. The second line
+is the job's `--name`. The third is its source: `lab/NAME at COMMIT` for
+`--branch` (or the driving checkout's branch when none is given),
+`REV at COMMIT` for `--rev`, or `installed image at COMMIT` for
+`--current`. The fourth lists the level when the run names one,
+"your own data" when the run uses `--own-data`, and the estimated
+duration, or "duration varies". A build with no `--name` of its own is
+called "Image build". The host sends these as the `name`, `source`,
+`operation`, `level` and `own_data` fields of the game's
+[takeover request](agent-api.md), and `h2 lab` sends the branch it
+resolved as `build.branch`.
 The dialog opens over the current screen and pauses local campaign play.
 Networked games keep running while the dialog is up.
 **Allow** lets the lab wait for the player to finish, save if needed,
