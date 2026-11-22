@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use super::scan::{self, K, Tk};
 use super::{Position, Range};
-use crate::caps::{self, Entry, VARIANT_FIELDS};
+use crate::caps::{self, CARRIERS, Entry, VARIANT_FIELDS};
 use crate::ir::{Event, Scope};
 use crate::lang::ast::*;
 use crate::lang::check::{self, Checked};
@@ -25,6 +25,7 @@ use crate::lang::lower::FIELDS;
 use crate::lang::sig;
 use crate::lang::types::{Handle, Type};
 use crate::lang::{CompileError, Pos, lex, parse};
+use crate::settings;
 
 /// Byte offsets to LSP positions and back.
 pub(crate) struct LineIndex<'s> {
@@ -134,6 +135,9 @@ pub(crate) enum DefKind {
     Label,
     /// A `const`, of the type and value the checker folds.
     Const,
+    /// A setting named in the `settings` block, by its row in
+    /// `settings::TABLE`. The names are the game's: no rename.
+    Setting,
 }
 
 /// A declaration's type, as the checker or the declaration gives it.
@@ -185,6 +189,9 @@ pub(crate) enum Use {
     /// A carrier as a value (`carrier.assault`), by index in `CARRIERS`;
     /// `None` for a name that is not one.
     CarrierValue(Option<usize>),
+    /// A setting named on the `quick` line that the `settings` block does
+    /// not set, by its index in `settings::TABLE`.
+    Setting(u16),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -433,6 +440,11 @@ impl<'s> Model<'s> {
         header.extend(script.carrier.iter().map(|c| c.1));
         header.extend(script.teams.iter().map(|t| t.1));
         header.extend(script.requires.iter().map(|r| r.1));
+        header.extend(script.list.iter().map(|l| l.1));
+        header.extend(script.scoring.iter().map(|s| s.1));
+        header.extend(script.about.iter().map(|a| a.1));
+        header.extend(script.quick.iter().map(|q| q.1));
+        header.extend(script.settings.iter().map(|b| b.pos));
         for p in header {
             bounds.push(self.li.line_start(self.li.line_of(self.byte(p))));
         }
@@ -567,6 +579,17 @@ impl<'s> Model<'s> {
             let e = self.dotted_end(s);
             self.add_use((s, e), Use::Capability);
         }
+        // Each setting the block names, once: a declaration the `quick`
+        // line, a hover and go to definition read.
+        if let Some(block) = &script.settings {
+            for line in &block.lines {
+                let known = settings::named(&line.name).is_some();
+                if known && self.top_kind(&line.name, DefKind::Setting).is_none() {
+                    let span = self.tok_at(line.pos);
+                    self.def(&line.name, DefKind::Setting, span, T::Unknown);
+                }
+            }
+        }
         // Enums first, as the checker reads them, so a type may name one
         // declared further down.
         for (i, item) in script.items.iter().enumerate() {
@@ -659,12 +682,45 @@ impl<'s> Model<'s> {
                 Item::Enum { .. } => {}
             }
         }
+        // The `quick` line's names: an option or a setting the block sets
+        // is a use of its declaration (so a rename of the option renames
+        // its mark); another setting of the table is a use of the table's.
+        if let Some((names, _)) = &script.quick {
+            for (name, pos) in names {
+                let span = self.tok_at(*pos);
+                let found = self
+                    .top_kind(name, DefKind::Option)
+                    .or_else(|| self.top_kind(name, DefKind::Setting));
+                match (found, settings::named(name)) {
+                    (Some(d), _) => self.add_ref(span, d, None),
+                    (None, Some((index, _))) => self.add_use(span, Use::Setting(index)),
+                    (None, None) => {}
+                }
+            }
+        }
     }
 
     // ---- bodies ----
 
     fn bodies(&mut self) {
         let script: &'s Script = self.script;
+        // A `settings` value names a `const` and no variable: a bare name
+        // is a choice's value (`shields = none`) unless it is a `const`.
+        if let Some(block) = &script.settings {
+            let mut env = Env::default();
+            for line in &block.lines {
+                match &line.value.kind {
+                    ExprKind::Name(n) => {
+                        if let Some(d) = self.top_kind(n, DefKind::Const) {
+                            let span = self.tok_at(line.value.pos);
+                            let ty = self.checked.ty(&line.value);
+                            self.use_of(span, d, ty, &mut env);
+                        }
+                    }
+                    _ => self.expr(&line.value, &mut env),
+                }
+            }
+        }
         for (i, item) in script.items.iter().enumerate() {
             let end = self.items[i].1;
             let mut env = Env::default();
@@ -1287,6 +1343,55 @@ impl<'s> Model<'s> {
             }
             _ => T::Unknown,
         }
+    }
+
+    /// The engine index of the script's `carrier`, when it names one.
+    pub fn carrier_engine(&self) -> Option<u8> {
+        if let Some((c, _)) = self.script.carrier.as_ref() {
+            return CARRIERS.iter().find(|(n, _)| n == c).map(|&(_, e)| e);
+        }
+        // A header that did not parse (a `settings` block left open) has
+        // no tree: read the `carrier` line from the tokens.
+        let i = (0..self.code.len()).find(|&i| {
+            self.is_word(i, "carrier")
+                && (i == 0 || self.li.line_of(self.code[i - 1].s) < self.li.line_of(self.code[i].s))
+                && self.code.get(i + 1).is_some_and(|t| t.k == K::Ident)
+        })?;
+        let word = self.text(&self.code[i + 1]);
+        CARRIERS.iter().find(|(n, _)| *n == word).map(|&(_, e)| e)
+    }
+
+    /// The code indices of the header words `settings`, `quick`, `scoring`
+    /// and `about`: the first word of a top-level line followed by what
+    /// the parser looks for (a `{`, a name or a string). Elsewhere they
+    /// are names.
+    pub fn header_words(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut depth = 0i32;
+        for (i, t) in self.code.iter().enumerate() {
+            match t.k {
+                K::Punct => match self.text(t) {
+                    "{" | "(" | "[" => depth += 1,
+                    "}" | ")" | "]" => depth = (depth - 1).max(0),
+                    _ => {}
+                },
+                K::Ident if depth == 0 => {
+                    let first = i == 0 || self.li.line_of(self.code[i - 1].s) < self.li.line_of(t.s);
+                    let Some(next) = self.code.get(i + 1) else { continue };
+                    let ok = match self.text(t) {
+                        "settings" => next.k == K::Punct && self.text(next) == "{",
+                        "quick" | "scoring" => next.k == K::Ident,
+                        "about" => next.k == K::Str,
+                        _ => false,
+                    };
+                    if first && ok {
+                        out.push(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// A type's name as the language writes it.

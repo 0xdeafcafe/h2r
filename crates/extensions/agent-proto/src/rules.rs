@@ -46,6 +46,13 @@ pub struct State {
     /// The retail engine index the game rides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier: Option<u8>,
+    /// Who scores the game the script runs in: `script` when its VM
+    /// runs, `carrier` for a `scoring carrier` script, which runs no VM
+    /// and leaves the carrier engine's own scoring to answer as retail
+    /// (docs/game/rules-variants.md, "A script that keeps its carrier's
+    /// rules").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring: Option<Scoring>,
     /// The packed option bits from the record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<u32>,
@@ -79,6 +86,16 @@ pub struct State {
     /// answer from.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labelled: Vec<Labelled>,
+}
+
+/// Who scores a running script's game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scoring {
+    /// The script's VM is the game's one scorer.
+    Script,
+    /// `scoring carrier`: the carrier engine scores; no VM runs.
+    Carrier,
 }
 
 /// One labelled thing of the map, as the host's census holds it.
@@ -260,6 +277,22 @@ mod tests {
             json!({"label": "territory", "class": "flag", "team": 1, "id": 524291, "declared": true})
         );
         assert_eq!(from_value::<State>(v).unwrap(), s);
+    }
+
+    #[test]
+    fn a_carrier_scored_state_names_its_scoring() {
+        let s = State {
+            running: true,
+            script: Some("SWAT".into()),
+            carrier: Some(2),
+            scoring: Some(Scoring::Carrier),
+            ..Default::default()
+        };
+        let v = to_value(&s).unwrap();
+        assert_eq!(v["scoring"], json!("carrier"));
+        assert!(v.get("budget").is_none() && v.get("options").is_none(), "{v}");
+        assert_eq!(from_value::<State>(v).unwrap(), s);
+        assert_eq!(to_value(Scoring::Script).unwrap(), json!("script"));
     }
 
     #[test]

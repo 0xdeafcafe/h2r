@@ -321,6 +321,23 @@ state becomes the `RULES` record. **A refused script is logged
 with its reason for `rules.state`, and the game plays as the record's
 own engine.** Nothing runs with a call stubbed out.
 
+**A `scoring carrier` script** ([rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules))
+is loaded for its header only. It passes the same prefix, engine and
+policy checks; then, before the start gate (it can declare no label), the
+runtime keeps its name, version, hash, source and carrier
+(`Status::Carrier`, `runtime::Carried`) and stops there: no VM, no `on
+init`, no `RULES` record, and no tick boundary asks for the authority or
+makes a call. `scoring::script_scores` is false for it, so none of the
+carrier's scoring or role-making routines is answered ("One scorer") and
+the carrier plays as a record with no mode does. Its `requires` still
+turn their modes on, since those are read from the record's script
+reference (`rules::header::script_asks_superbounce`), not from the
+runtime. `Runtime::hash` is none, so a Live host's session names no
+script; `rules.state` reports it running, with `scoring: carrier`; a
+`rules.reload` can only restart the game with the new blob. The log line
+is `rules: <name> (<hash>) from <source> on engine <n>, scoring carrier:
+the carrier engine scores and no VM runs`.
+
 **A blocked start.** `Status::Blocked` keeps the full hash and every
 problem's text, which `rules.state` lists as `blocked`. No VM is made and
 no record is set; `rules: blocked, the game does not start: ...` is
@@ -1451,7 +1468,8 @@ Tooling:
     folding ranges, formatting and range formatting, quick fix code
     actions, `prepareRename` and rename from `rules::ide`. A typed space
     asks for completions only after `is`, `on`, `carrier`, `requires`,
-    `each`, `palette`, `list`, a `:` or a `,` (`SPACE_TRIGGER_WORDS`).
+    `each`, `palette`, `list`, `scoring`, `quick`, a `:` or a `,`
+    (`SPACE_TRIGGER_WORDS`).
   - `h2 rules editors [status|install [vscode|zed] [--build]]` installs
     the VS Code extension and prints the Zed steps, or says what is
     installed and whether `h2 rules lsp` starts
@@ -1476,7 +1494,9 @@ Tooling:
     naming its status.
   - `actions` gives the fixes of the diagnostics at a range, and
     `rename` the edits that rename a name and every use of it
-    (`ide/fix.rs`).
+    (`ide/fix.rs`). An option's `quick` mark is a use of the option, so
+    renaming the option renames the mark; a setting's name is the
+    game's and is not renamed.
   - `complete` reads the tokens before the place: declarations and
     their snippets at the start of a top-level line; event names, with
     their arguments as a snippet, after `on`; carriers after `carrier`;
@@ -1485,11 +1505,21 @@ Tooling:
     `variant` fields, an enum's variants, a table row's columns, or a
     player's, team's or object's variables and built-in fields;
     palettes after `palette`, and sets, the declared labels among them,
-    after `each` and in `count`, `first` and `pick`. In a body it offers the locals
+    after `each` and in `count`, `first` and `pick`. Inside `settings { }`
+    it offers the setting names of the script's carrier that the block
+    does not set (each as `name = ` with its values as the snippet's
+    choice), and after an `=` that setting's values: a choice's names, a
+    bool's two, `none` where zero is none, a number's place. After
+    `quick` it offers the script's options, then the settings its block
+    sets, then the carrier's other record settings; after `scoring`,
+    `carrier`. The header words `scoring`, `about`, `quick` and
+    `settings` are among the top-level snippets. In a body it offers the locals
     in scope, the script's globals, options, tables, enums and
     functions, every API entry and language built-in as a snippet, and
     the statements. Each item's documentation is the hover text.
-  - `hover`: a name's declaration and type; an API entry's signature,
+  - `hover`: a setting's label, kind, the game types it applies to and
+    its values (on its line in the block or on its `quick` mark); a name's
+    declaration and type; an API entry's signature,
     whether it reads or acts (and whether it is queued), the capability
     it needs in the lobby's words, and its status in plain words; an
     event's arguments; a `variant` field, a built-in field, a carrier, a
@@ -1953,10 +1983,10 @@ gets the defaults.
 The modes below that have a script are examples in
 `crates/formats/rules/src/builtin/`, listed by `builtin::examples()`
 rather than by engine: `infection.rules`, `gun_game.rules`,
-`vip.rules`, `siege.rules`, `race.rules`, `bounce_practice.rules` and
+`vip.rules`, `siege.rules`, `race.rules`, `bounce_hunt.rules` and
 `superbounce.rules`. Each compiles, verifies and fits a tick
 (`tests/engines.rs`), and each header names the entries a host cannot
-make yet. VIP, Bounce Practice and Superbounce call none. VIP waits on
+make yet. VIP, Bounce Hunt and Superbounce call none. VIP waits on
 the match edit log, and Bounce Practice on the host runtime's
 `round_start` and `set_gravity`. Superbounce runs. The examples are
 compiled into the game, so a record names one by its hash prefix with

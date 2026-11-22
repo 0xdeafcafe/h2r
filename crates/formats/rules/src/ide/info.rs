@@ -17,6 +17,7 @@ use crate::lang::parse::KEYWORDS;
 use crate::lang::sig;
 use crate::lang::types::Type;
 use crate::lang::{MAX_SOURCE_BYTES, Pos, Severity};
+use crate::settings::{self, Kind as SettingKind};
 use crate::ty::Ty;
 
 /// A language built-in the compiler answers itself.
@@ -326,6 +327,10 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "match" => "One arm per variant of an enum value: `match role { Role.vip { } Role.guard, Role.none { } }`, or an `else` arm. Every variant needs an arm.",
         "teams" => "In the header, the team count (1 to 8): `teams 2`. In a set, every team.",
         "list" => "The game type list row a variant of the script is filed under: `list research` (Research and Devolution) or `list party` (Party Games). With no `list` line it is under its carrier's game type.",
+        "settings" => "The record settings the script sets, one `name = value` a line: `settings { score_limit = 50; shields = none }`. A setting the block leaves out has the carrier's stock value.",
+        "quick" => "The settings and options the lobby's Quick Options shows, at most five, in row order: `quick score_limit, starting_weapon`.",
+        "scoring" => "Who scores the game: `scoring carrier` leaves the carrier engine's own scoring in place, and the script holds settings only. With no `scoring` line the script's handlers score.",
+        "about" => "The variant's description, at most 150 characters: `about \"No shields. 50 points to win.\"`.",
         "requires" => "The capabilities the script declares: `requires player.weapons, hud.message`. The lobby shows them in plain words.",
         "option" => "A row of the variant editor: `option name: int 1..5 = 1 \"Label\" \"Description\"`. An int, a bool or an enum, read-only in handlers.",
         "palette" => "A named list of tag paths: `palette \"x\" = [\"objects/...\"]`. `palette \"x\"` is a `grant` argument.",
@@ -443,7 +448,53 @@ pub(crate) fn def_markdown(m: &Model, d: usize) -> String {
         DefKind::Local => code_block(&format!("let {name}: {ty}")),
         DefKind::Binder => format!("{}\nA member of the set.", code_block(&format!("(member) {name}: {ty}"))),
         DefKind::Label => label_markdown(m, d),
+        DefKind::Setting => match settings::named(name) {
+            Some((index, _)) => setting_markdown(index, m.carrier_engine()),
+            None => decl(),
+        },
     }
+}
+
+/// A setting's hover: its name and kind, our label, the game types it
+/// applies to, the values it takes and, for a script of another carrier,
+/// that the script cannot name it.
+pub(crate) fn setting_markdown(index: u16, carrier: Option<u8>) -> String {
+    let Some(row) = settings::row_at(index) else {
+        return String::new();
+    };
+    let mut out = format!(
+        "{}\n**{}**. A setting of the game variant. Applies to {}.",
+        code_block(&format!("{}: {}", row.name, row.kind.word())),
+        row.label,
+        row.carrier_words()
+    );
+    let (lo, hi) = row.kind.range();
+    let takes = match row.kind {
+        SettingKind::Bool => "`true` or `false`.".to_string(),
+        SettingKind::Int { .. } => format!("A number, {lo} to {hi}."),
+        SettingKind::Seconds { .. } => format!("A time in whole seconds, {lo}s to {hi}s: `300s`."),
+        SettingKind::Percent { .. } => format!("A percent, {lo} to {hi}."),
+        SettingKind::Choice { names, .. } => {
+            let list: Vec<String> = names.iter().map(|c| format!("`{}` ({})", c.name, c.label)).collect();
+            format!("One of {}, or a number, {lo} to {hi}.", list.join(", "))
+        }
+    };
+    out.push_str(&format!("\nTakes: {takes}"));
+    if row.zero_is_none && row.choice("none").is_none() {
+        out.push_str(" `none` is 0.");
+    }
+    if !row.is_record() {
+        out.push_str("\nStored in the variant's extras (the `hx` block), not the game's own record.");
+    }
+    if let Some(c) = carrier
+        && !row.applies(c)
+    {
+        out.push_str(&format!(
+            "\nThis script's carrier is {}, so it cannot name this setting.",
+            settings::carrier_label(c)
+        ));
+    }
+    out
 }
 
 /// A label's hover: its declaration, what the script sees, what a map
@@ -569,6 +620,7 @@ pub(crate) fn use_markdown(m: &Model, u: Use, s: usize, e: usize) -> String {
             )
         }
         Use::CarrierValue(None) => format!("Unknown carrier `{text}`."),
+        Use::Setting(index) => setting_markdown(index, m.carrier_engine()),
         Use::Variant => {
             let fields: Vec<String> = VARIANT_FIELDS
                 .iter()
@@ -888,7 +940,7 @@ fn def_token(kind: DefKind) -> TokenKind {
         DefKind::Fn => TokenKind::Function,
         DefKind::Param | DefKind::Arg => TokenKind::Parameter,
         DefKind::Label => TokenKind::Label,
-        DefKind::Const => TokenKind::Variable,
+        DefKind::Const | DefKind::Setting => TokenKind::Variable,
     }
 }
 
@@ -904,6 +956,7 @@ fn use_token(u: Use) -> TokenKind {
         Use::Variant => TokenKind::Keyword,
         Use::CarrierEnum => TokenKind::Enum,
         Use::CarrierValue(_) => TokenKind::EnumMember,
+        Use::Setting(_) => TokenKind::Variable,
     }
 }
 
@@ -920,6 +973,7 @@ pub(crate) fn semantic_tokens(m: &Model) -> Vec<Token> {
     };
     let mut skip_to = 0usize;
     let mut prev_colon = false;
+    let header: Vec<usize> = m.header_words().into_iter().map(|i| m.code[i].s).collect();
     for t in &m.all {
         if t.s < skip_to {
             continue;
@@ -935,7 +989,9 @@ pub(crate) fn semantic_tokens(m: &Model) -> Vec<Token> {
             K::Punct => OPERATORS.contains(&text).then_some(TokenKind::Operator),
             K::Bad => None,
             K::Ident => {
-                if let Some((s, e, u)) = m.use_at(t.s) {
+                if header.contains(&t.s) {
+                    Some(TokenKind::Keyword)
+                } else if let Some((s, e, u)) = m.use_at(t.s) {
                     if matches!(u, Use::Capability) && e > t.e && m.li.line_of(s) == m.li.line_of(e) {
                         push(&mut out, s, e, TokenKind::Capability);
                         skip_to = e;

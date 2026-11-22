@@ -14,6 +14,19 @@
   "list" @context
   name: (identifier) @name) @item
 
+(scoring_declaration
+  "scoring" @context
+  name: (identifier) @name) @item
+
+(about_declaration
+  "about" @name) @item
+
+(quick_declaration
+  "quick" @name) @item
+
+(settings_declaration
+  "settings" @name) @item
+
 (requires_declaration
   "requires" @name) @item
 

@@ -253,8 +253,12 @@ pub fn all_settings() -> impl Iterator<Item = SettingId> {
 
 /// Our names for the settings we can identify (from the community variant
 /// model in `crates/extensions/game/src/community_variants.rs` and the engine fields
-/// in docs/live/live-gamestate.md). The editor shows the disc's own labels when
-/// it has them; these are the fallback.
+/// in docs/live/live-gamestate.md; the CTF, Assault, Oddball and
+/// Territories type-area names are the editor's page labels against
+/// [`field`], as `rules::caps::VARIANT_FIELDS` notes them). The editor
+/// shows the disc's own labels when it has them; these are the fallback.
+/// Every setting a script may name (`rules::settings::TABLE`) has one
+/// (docs/game/rules-variants.md, "Rules and limits").
 pub fn symbolic_name(id: SettingId) -> Option<&'static str> {
     Some(match id.0 {
         0 => "Rounds",
@@ -269,10 +273,17 @@ pub fn symbolic_name(id: SettingId) -> Option<&'static str> {
         21 => "Active camo",
         24 => "Friendly fire",
         40 => "Moving hill (seconds)",
+        43 => "Ball count",
         45 => "Ball speed",
+        50 | 59 => "Flag type",
+        52 => "Flag at home to score",
+        53 | 62 => "Flag touch return",
+        54 | 61 => "Flag reset time (seconds)",
+        63 => "Bomb arming time (seconds)",
         71 => "Juggernaut overshield",
         72 => "Juggernaut active camo",
         73 => "Juggernaut motion sensor",
+        74 => "Territory count",
         76 => "Light vehicle",
         77 => "Second light vehicle",
         78 => "Heavy vehicle",
@@ -288,8 +299,10 @@ pub fn symbolic_name(id: SettingId) -> Option<&'static str> {
         89 => "Starting weapon",
         90 => "Max players",
         91 => "Team play",
+        93 => "Team count",
         94 => "Secondary weapon",
         96 => "Juggernaut movement",
+        98 => "Territory contest time (seconds)",
         102 => "Ball toughness",
         104 => "Extra damage",
         105 => "Damage resistance",
@@ -358,6 +371,79 @@ impl GameVariant {
         };
         v.set_game_type(ty);
         v
+    }
+
+    /// The stock record of `ty`: what the game's defaults writer
+    /// (`0x19d220`) gives a new record before the menu applies anything,
+    /// named by our label of the type in place of its localized name.
+    /// Every other byte is 0. The disc's per-type defaults (the `goof`
+    /// tag's, [`crate::schema::Schema::new_variant`]) play no part, so it
+    /// is the same with or without a disc; it is the base of a script's
+    /// record (`portable::record_for`). The port of the same writer for
+    /// servers is `live_proto::hopper::variant::VariantRecord::stock`.
+    /// `None` for an engine the editor does not offer.
+    pub fn stock(ty: GameType) -> Option<Self> {
+        let team = matches!(
+            ty,
+            GameType::Ctf | GameType::Assault | GameType::Territories
+        );
+        let score = match ty {
+            GameType::Slayer => 25,
+            GameType::Oddball | GameType::King => 120,
+            GameType::Juggernaut => 15,
+            GameType::Ctf | GameType::Assault => 3,
+            GameType::Territories => 300,
+            GameType::Other(_) => return None,
+        };
+        let mut v = Self::blank(ty);
+        v.raw[DESCRIPTION_AT] = 0xff;
+        v.set_name(&ty.label())
+            .expect("our type labels fit the name field");
+        // `& 0xffff8f9b | 0xf9a`, team play by type.
+        v.put(FLAGS_AT, &(0xf9a | u32::from(team)).to_le_bytes());
+        let respawn: i32 = if team { 10 } else { 5 };
+        for (at, value) in [
+            (0x4c, 0),     // rounds
+            (0x50, score), // score to win
+            (0x54, 480),   // time limit
+            (0x74, 16),    // setting 15
+            (0x78, 16),    // max players
+            (0x7c, 0),     // lives
+            (0x80, respawn),
+            (0x84, respawn), // suicide penalty
+            (0xa8, 2),       // respawn modifier: none
+            (0xac, 10),      // betrayal penalty
+        ] {
+            v.put(at, &i32::to_le_bytes(value));
+        }
+        let area = TYPE_AREA.start;
+        match ty {
+            GameType::Slayer => v.put(area, &2u32.to_le_bytes()),
+            GameType::Oddball => v.put(area + 4, &1i16.to_le_bytes()),
+            GameType::Juggernaut => {
+                v.put(area, &0x1bu32.to_le_bytes());
+                v.put(area + 4, &2i16.to_le_bytes());
+            }
+            GameType::King => v.put(area + 4, &60i16.to_le_bytes()),
+            GameType::Ctf => {
+                v.put(area, &2u32.to_le_bytes());
+                v.put(area + 4, &30i32.to_le_bytes());
+            }
+            GameType::Assault => {
+                v.put(area, &0x22u32.to_le_bytes());
+                v.put(area + 4, &30i32.to_le_bytes());
+                v.put(area + 0x10, &1i32.to_le_bytes());
+                v.put(area + 0x18, &5i16.to_le_bytes());
+                v.put(area + 0x1a, &3i16.to_le_bytes());
+            }
+            GameType::Territories => {
+                v.put(area, &3i16.to_le_bytes());
+                v.put(area + 2, &5i16.to_le_bytes());
+                v.put(area + 4, &5i16.to_le_bytes());
+            }
+            GameType::Other(_) => unreachable!("refused above"),
+        }
+        Some(v)
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Self, RecordError> {
@@ -1014,6 +1100,75 @@ mod tests {
             }),
             Err(RecordError::ExtRange("gravity"))
         );
+    }
+
+    /// The stock records are what `0x19d220` writes, and the game keeps
+    /// every one as it is.
+    #[test]
+    fn the_stock_records() {
+        for ty in GameType::ALL {
+            let v = GameVariant::stock(ty).unwrap();
+            assert!(refused(&v).is_empty(), "{ty}: {:?}", refused(&v));
+            assert_eq!(v.game_type(), ty);
+            assert_eq!(v.name(), ty.label());
+            assert_eq!(v.description(), 0xff);
+            assert_eq!(v.ext_state(), crate::ext::Block::None);
+            let team = matches!(
+                ty,
+                GameType::Ctf | GameType::Assault | GameType::Territories
+            );
+            assert_eq!(v.team_play(), team, "{ty}");
+            let get = |s: u32| v.get(SettingId(s)).unwrap();
+            assert_eq!((get(0), get(10), get(16), get(90)), (0, 480, 0, 16), "{ty}");
+            let respawn = if team { 10 } else { 5 };
+            assert_eq!((get(17), get(18)), (respawn, respawn), "{ty}");
+            assert_eq!((get(25), get(26)), (2, 10), "{ty}");
+            // Motion sensor, friendly fire, the pickups and starting
+            // grenades on; active camo, extra damage and resistance off.
+            for (s, on) in [
+                (20, 1),
+                (24, 1),
+                (84, 1),
+                (85, 1),
+                (86, 1),
+                (88, 1),
+                (21, 0),
+                (104, 0),
+                (105, 0),
+            ] {
+                assert_eq!(get(s), on, "{ty}: setting {s}");
+            }
+            // Map default weapons, nothing on the map changed.
+            for s in [76, 77, 78, 79, 81, 82, 83, 87, 89, 94, 93, 19] {
+                assert_eq!(get(s), 0, "{ty}: setting {s}");
+            }
+        }
+        let score = |ty: GameType| {
+            GameVariant::stock(ty)
+                .unwrap()
+                .get(ty.score_setting().unwrap())
+                .unwrap()
+        };
+        assert_eq!(score(GameType::Slayer), 25);
+        assert_eq!(score(GameType::King), 120);
+        assert_eq!(score(GameType::Territories), 300);
+        assert_eq!(score(GameType::Ctf), 3);
+        let jugg = GameVariant::stock(GameType::Juggernaut).unwrap();
+        assert_eq!(jugg.get(SettingId(96)), Some(2), "fast");
+        assert_eq!(jugg.get(SettingId(71)), Some(1), "overshield");
+        let king = GameVariant::stock(GameType::King).unwrap();
+        assert_eq!(king.get(SettingId(40)), Some(60));
+        let terr = GameVariant::stock(GameType::Territories).unwrap();
+        assert_eq!(
+            (terr.get(SettingId(74)), terr.get(SettingId(98))),
+            (Some(3), Some(5))
+        );
+        let assault = GameVariant::stock(GameType::Assault).unwrap();
+        assert_eq!(
+            (assault.get(SettingId(61)), assault.get(SettingId(63))),
+            (Some(30), Some(5))
+        );
+        assert_eq!(GameVariant::stock(GameType::Other(5)), None);
     }
 
     #[test]

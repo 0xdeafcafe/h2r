@@ -114,12 +114,12 @@ fn each_header_names_exactly_the_entries_a_host_lacks() {
         assert_eq!(listed_entries(src), used, "{name}");
         assert_eq!(rules::verify::unhostable(&ir).is_none(), used.is_empty(), "{name}");
     }
-    // Slayer, VIP, Bounce Practice and Superbounce need nothing a host
+    // Slayer, VIP, Bounce Hunt and Superbounce need nothing a host
     // lacks.
     for src in [
         builtin::SLAYER,
         builtin::VIP,
-        builtin::BOUNCE_PRACTICE,
+        builtin::BOUNCE_HUNT,
         builtin::SUPERBOUNCE,
     ] {
         assert!(unhostable_entries(&compile(src).unwrap()).is_empty());

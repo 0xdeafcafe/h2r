@@ -378,7 +378,8 @@ struct NextestRun {
     ok: bool,
     cases: Option<Vec<report::Case>>,
     skipped: Option<BTreeMap<String, usize>>,
-    /// Stale test executables deleted after the run, and the bytes freed.
+    /// Stale test executables and debug-info leftovers deleted after the
+    /// run, and the bytes freed.
     pruned: (usize, u64),
 }
 
@@ -535,7 +536,7 @@ fn cmd_test(ws: &Workspace, o: &Opts) -> Result<bool> {
         let r = run_nextest(ws, &to_run, Tier::Normal, &BTreeMap::new())?;
         if r.pruned.0 > 0 {
             let (n, b) = r.pruned;
-            steps.note("prune", "DONE", format!("{n} stale test executables, {} MiB", b >> 20));
+            steps.note("prune", "DONE", format!("{n} stale test executables and debug leftovers, {} MiB", b >> 20));
         }
         match &r.cases {
             Some(cases) => {

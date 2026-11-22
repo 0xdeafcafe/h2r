@@ -16,6 +16,12 @@
       "include": "#requires"
     },
     {
+      "include": "#header-lines"
+    },
+    {
+      "include": "#settings-block"
+    },
+    {
       "include": "#label-declaration"
     },
     {
@@ -84,6 +90,106 @@
         {
           "match": ",",
           "name": "punctuation.separator.comma.rules"
+        }
+      ]
+    },
+    "header-lines": {
+      "comment": "The header words scoring, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
+      "patterns": [
+        {
+          "comment": "scoring carrier",
+          "match": "^\\s*(scoring)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            },
+            "2": {
+              "name": "support.constant.scoring.rules"
+            }
+          }
+        },
+        {
+          "comment": "about \"No shields. 50 points to win.\"",
+          "begin": "^\\s*(about)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.about.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
+        },
+        {
+          "comment": "quick score_limit, starting_weapon: the marks run to the end of the line.",
+          "begin": "^\\s*(quick)\\b(?=\\s+[A-Za-z_])",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.quick.rules",
+          "patterns": [
+            {
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.property.setting.rules"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.comma.rules"
+            }
+          ]
+        }
+      ]
+    },
+    "settings-block": {
+      "comment": "settings { name = value }: one setting a line, or ; between them. A bare name after = is a choice's value.",
+      "begin": "^\\s*(settings)\\s*(\\{)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.declaration.rules"
+        },
+        "2": {
+          "name": "punctuation.section.braces.begin.rules"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.braces.end.rules"
+        }
+      },
+      "name": "meta.settings.rules",
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "match": "(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\\s*(?==(?!=))",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.setting.rules"
+            }
+          }
+        },
+        {
+          "match": "(=)\\s*(?!(?:true|false|none)\\b)([A-Za-z_][A-Za-z0-9_]*)\\s*(?=;|\\}|//|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.assignment.rules"
+            },
+            "2": {
+              "name": "variable.other.enummember.rules"
+            }
+          }
+        },
+        {
+          "include": "#expression"
         }
       ]
     },

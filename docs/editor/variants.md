@@ -1,6 +1,6 @@
 # Game variants: record, schema and saved files
 
-Status: Built. Code: `crates/formats/variants/src`. Tests: in-source unit tests; `crates/formats/variants/tests/disc.rs` (ignored, needs a disc).
+Status: Built. Code: `crates/formats/variants/src`. Tests: in-source unit tests; `crates/formats/variants/tests/settings_table.rs`; `crates/formats/variants/tests/disc.rs` (ignored, needs a disc).
 Switch: none.
 
 `crates/formats/variants` is the game variant editor of the editor suite: the
@@ -89,6 +89,25 @@ rule. `record::check` reports the broken ones:
   `+0xf4` 0..0x7fff; Juggernaut never team play, mask 0x7f, i16 `+0xf4`
   0..2; Territories i16 `+0xf0` 1..8, `+0xf2` and `+0xf4` 1..0x7fff; Race
   and Headhunter always reset.
+
+### The stock record (inferred from the port)
+
+`GameVariant::stock(type)` is what the defaults writer `0x19d220` gives a
+new record before the menu or the `goof` defaults apply anything, as
+`live_proto::hopper::variant::VariantRecord::stock` ports it: description
+number 0xff, flags `0xf9a` (motion sensor, friendly fire, the overshield,
+camo and grenade pickups and starting grenades on) with team play for
+CTF, Assault and Territories, rounds 0, the type's score to win (Slayer
+25, Oddball and King 120, Juggernaut 15, CTF and Assault 3, Territories
+300), time limit 480, setting 15 and max players 16, unlimited lives, a
+respawn time and suicide penalty of 10 s for the team types and 5 s for
+the others, respawn modifier 2, betrayal penalty 10, map-default weapons
+and vehicles, and each type's own area (Juggernaut fast with an
+overshield, a hill that moves every 60 s, one ball, a 30 s flag reset,
+three territories). It is named by our label of the type. Every stock
+record passes `record::refused`. The ignored test
+`the_stock_record_is_offered` (`tests/settings_table.rs`) checks that the
+retail editor offers each stock value.
 
 ## The schema (`goof` and `sily`)
 
@@ -251,6 +270,31 @@ file, so it carries no signature.
   disc's `goof` tag (`Schema::build`), and refuses without a disc. The
   community variants are built by the game at boot and are not ported by
   the tool.
+- **A script's own variant.** `portable::record_for(ir, options)` is the
+  one builder of a variant from a rules script
+  ([rules-variants.md](../game/rules-variants.md#the-record-of-a-script)):
+  the stock record of the script's carrier (`GameVariant::stock`, below),
+  each setting of the script's `settings` block written where its row of
+  `rules::settings::TABLE` stores it (a record setting through
+  `GameVariant::set`, the carrier's own score setting for `score_limit`,
+  CTF's or Assault's setting for the paired `ctf_*` rows, an `hx` field
+  for `gravity`, `damage`, `shield`, `health` and `unlimited_grenades`),
+  the script's name, and the script reference (mode 2, the IR hash's
+  first 8 bytes and the option bits, the defaults for options not
+  given). It refuses a setting past the table, on a carrier it does not
+  apply to or out of its range, a name the name rules refuse, and a
+  record `record::refused` refuses (a Juggernaut script with team play,
+  a CTF script without), in those rules' words; nothing falls back.
+  `portable::settings_record` is the same record before the name and the
+  reference: `Bundle::check` and `h2 rules check` refuse a script whose
+  settings it refuses. `portable::from_script(ir, source, options)`
+  makes the bundle: that record, the script's name and `about` as the
+  bundle's name and description, and the script part. `h2 variants
+  from-script <file.rules> [--option KEY=VALUE]... [-o DIR]` writes it
+  and prints its id and path; the same script and options give the same
+  id. `h2 rules settings <file.rules>` prints the record: every setting
+  of the carrier a script may name, with its value and `script` or
+  `stock`, then the record's settings no script names.
 
 ## The editor
 
@@ -274,7 +318,11 @@ The editor asks before picking another variant over unsaved changes
 ## Tests
 
 `cargo test -p variants`: synthetic records, files, stores in a temp dir,
-an invented schema, and the editor's commands. With the
+an invented schema, and the editor's commands. `tests/settings_table.rs`
+holds `rules::settings::TABLE` to the record: every row's setting has a
+`record::field` and a name of ours, applies where `schema::applies` says
+on exactly the row's carriers, and takes exactly the values the
+clean-up keeps at that field (`the_table_matches_the_record`). With the
 disc (`H2_XBE`, `halo2.iso` beside it), `cargo test -p variants --test disc
 -- --ignored` checks the setter descriptors, the schema (every setting has
 a field and values, type pages match `fallback_owner`, every built-in

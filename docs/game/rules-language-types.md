@@ -506,17 +506,17 @@ numbered.
 | `text.hole` | "Messages" | none |
 | `cap.missing`, `cap.unused` (warning) | "Capabilities" | Add to `requires`; Remove from `requires` |
 | `event.args`, `event.label` | `on enter gives 2 arguments (zone, object); this handler names 3.` `core is an object; on enter takes a zone label.` | none |
-| `setting.unknown` | `no setting named score_limt. Did you mean score_limit?` | none |
-| `setting.carrier` | `juggernaut_movement is a Juggernaut setting; this script's carrier is slayer` | none |
-| `setting.twice` | `lives is set twice; it is first set on line 5` | none |
+| `setting.unknown` | `no setting named score_limt. Did you mean score_limit?` | Change to `score_limit` |
+| `setting.carrier` | `juggernaut_movement is a Juggernaut setting; this script's carrier is slayer` | Remove the setting (or the mark) |
+| `setting.twice` | `lives is set twice; it is first set on line 5` | Remove the repeated setting |
 | `setting.value` | `time_limit is a time: write 300s for 300 seconds. time_limit takes a time in whole seconds, 0s to 32767s, or none.` | none |
-| `quick.many` | `Quick Options has five rows; this line names 6` | none |
-| `quick.unknown` | `bounce_points is no setting and no option of this script` | none |
-| `quick.twice` | `lives is marked twice` | none |
+| `quick.many` | `Quick Options has five rows; this line names 6` | Drop the marks past the fifth |
+| `quick.unknown` | `bounce_points is no setting and no option of this script` | Change to the nearest name; Remove the mark |
+| `quick.twice` | `lives is marked twice` | Remove the repeated mark |
 | `option.setting` | `option lives has a setting's name; an option needs a name of its own` | none |
-| `scoring.handlers` | `on kill has no place here: with scoring carrier the carrier's engine scores the game, and the script holds requires, list, settings, quick and about only` | none |
-| `scoring.none` | ``this script scores nothing. Write `scoring carrier` to play Slayer's rules.`` | none |
-| `list.carrier` | `list party files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is king` | none |
+| `scoring.handlers` | `on kill has no place here: with scoring carrier the carrier's engine scores the game, and the script holds requires, list, settings, quick and about only` | Remove `scoring carrier` |
+| `scoring.none` | ``this script scores nothing. Write `scoring carrier` to play Slayer's rules.`` | Add `scoring carrier` |
+| `list.carrier` | `list party files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is king` | Remove the `list` line |
 
 The `setting.*`, `quick.*`, `option.setting`, `scoring.*` and
 `list.carrier` codes check the settings block, the `quick` line and the
@@ -619,7 +619,11 @@ with the start gate's check.
   `max` (absent when unbounded), `single`, `numbered`, number range,
   `per_team` and `needs`, its sentence in Forge's words
   (`labels::describe`), read from the IR's label table; and `minimal`,
-  the smallest passing map as scenario things. The CLI's `h2 rules
+  the smallest passing map as scenario things. It also has `settings`
+  (`workbench::SettingLine`: the table's name, label and kind, the
+  stored value and its words, in table order) and `quick`
+  (`workbench::QuickLine`: each Quick Options row's kind, name, label and
+  starting value, in the script's order). The CLI's `h2 rules
   check` prints the sentences under "a map needs". The workbench page
   shows it as "What a map needs" beside the problems (**Code**,
   `MapNeeds`): each label's text, its kind in words and its sentence.

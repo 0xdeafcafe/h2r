@@ -243,14 +243,18 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           ending in a JSON report (docs/runtime/sim.md)
   sim batch <batch.toml>  many matches in parallel, A/B tuning compared;
                           sim compare <dir> prints the comparison again
-  rules check|build|run|sim|caps|builtin|lsp|editors
+  rules check|build|run|sim|caps|builtin|settings|lsp|editors
                           the scripted game types' compiler, verifier,
-                          scenario runner, language server and editor
-                          extensions (docs/game/rules-engine.md)
+                          scenario runner, the record a script makes,
+                          language server and editor extensions
+                          (docs/game/rules-engine.md)
   variants port <input>... [--script builtin|keep|FILE] [-o DIR]
                           self-contained .h2variant files from records, saves,
                           hopper slots or old files; --all-builtins from the
                           disc (docs/editor/variants.md)
+  variants from-script <file.rules> [--option K=V]... [-o DIR]
+                          a script's own .h2variant: the stock record with
+                          its settings (docs/editor/variants.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
   film stat FILE          report keyframes, capture points and tape usage

@@ -792,3 +792,303 @@ fn offsets_count_utf16_units_for_incremental_changes() {
     assert_eq!(offset(src, p(0, 99)), 6);
     assert_eq!(offset(src, p(9, 0)), src.len());
 }
+
+// ---------- the settings block, quick marks and the scorer ----------
+
+const SWAT: &str = "rules \"Swat\" 1
+carrier slayer
+scoring carrier
+about \"No shields.\"
+quick score_limit, shields
+settings {
+    score_limit = 50
+    shields = none
+}
+";
+
+/// `src`'s `code` diagnostic, and the script each of its fixes makes, by
+/// the fix's title. Each result is checked to be without the diagnostic.
+fn fixed(src: &str, code: &str) -> Vec<(String, String)> {
+    let d = diagnostics(src);
+    let found = d
+        .iter()
+        .find(|x| x.code == code)
+        .unwrap_or_else(|| panic!("no {code} in {d:#?}\nfor\n{src}"));
+    found
+        .fixes
+        .iter()
+        .map(|f| {
+            let out = apply(src, &f.edits);
+            let after = crate::diagnose(&out);
+            assert!(
+                !after.diagnostics.iter().any(|x| x.code == code),
+                "{code}: \"{}\" leaves it in\n{out}\n{:#?}",
+                f.title,
+                after.diagnostics
+            );
+            (f.title.clone(), out)
+        })
+        .collect()
+}
+
+#[test]
+fn a_settings_script_is_clean() {
+    let bad: Vec<_> = diagnostics(SWAT)
+        .into_iter()
+        .filter(|d| d.severity <= severity::WARNING)
+        .collect();
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+#[test]
+fn completion_in_the_settings_block_offers_the_carriers_settings() {
+    let src = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nsettings {\n    score_limit = 50\n    \n}\n";
+    let items = complete(src, p(5, 4));
+    let l = labels(&items);
+    assert!(l.contains(&"shields") && l.contains(&"starting_weapon") && l.contains(&"lives"), "{l:?}");
+    assert!(!l.contains(&"score_limit"), "a setting the block has is not offered again");
+    assert!(
+        !l.contains(&"juggernaut_movement") && !l.contains(&"oddball_ball_count") && !l.contains(&"ctf_flag_type"),
+        "{l:?}"
+    );
+    let shields = items.iter().find(|i| i.label == "shields").unwrap();
+    assert_eq!(shields.kind, kind::PROPERTY);
+    assert_eq!(shields.insert_text, "shields = ${1|normal,none,overshields|}");
+    assert_eq!(shields.insert_text_format, SNIPPET);
+    assert!(shields.documentation.value.contains("Shields") && shields.documentation.value.contains("every game type"));
+    let sensor = items.iter().find(|i| i.label == "motion_sensor").unwrap();
+    assert_eq!(sensor.insert_text, "motion_sensor = ${1|true,false|}");
+    let others = complete(&src.replace("score_limit", "lives"), p(5, 4));
+    assert!(labels(&others).contains(&"score_limit"));
+
+    // A game type's own settings are offered on its carrier only.
+    let jug = src.replace("slayer", "juggernaut");
+    assert!(labels(&complete(&jug, p(5, 4))).contains(&"juggernaut_movement"));
+
+    // After a `;` on a line, and with the block left open and the word
+    // half typed (the carrier is read from the tokens).
+    let semi = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nsettings {\n    lives = 3; \n}\n";
+    assert!(labels(&complete(semi, p(4, 15))).contains(&"shields"));
+    let open = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nsettings {\n    sc";
+    let items = complete(open, p(4, 6));
+    let l = labels(&items);
+    assert!(l.contains(&"score_limit") && !l.contains(&"juggernaut_movement"), "{l:?}");
+
+    // After a value is typed the place wants nothing.
+    let done = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nsettings {\n    lives = 3 \n}\n";
+    assert!(complete(done, p(4, 14)).is_empty());
+}
+
+#[test]
+fn completion_after_an_equals_offers_the_settings_values() {
+    let at = |setting: &str| {
+        let src = format!(
+            "rules \"T\" 1\ncarrier slayer\nscoring carrier\nsettings {{\n    {setting} = \n    lives = 3\n}}\n"
+        );
+        complete(&src, p(4, (4 + setting.len() + 3) as u32))
+    };
+    assert_eq!(labels(&at("shields")), ["normal", "none", "overshields"]);
+    assert_eq!(labels(&at("motion_sensor")), ["true", "false"]);
+    assert_eq!(labels(&at("score_limit")), ["number", "none"]);
+    let weapons = at("starting_weapon");
+    assert!(labels(&weapons).contains(&"battle_rifle") && labels(&weapons).contains(&"magnum"));
+    let rifle = weapons.iter().find(|i| i.label == "battle_rifle").unwrap();
+    assert_eq!(
+        (rifle.kind, rifle.detail.as_str(), rifle.insert_text.as_str()),
+        (kind::ENUM_MEMBER, "Battle Rifle", "battle_rifle")
+    );
+    let time = at("time_limit");
+    let seconds = time.iter().find(|i| i.label == "seconds").unwrap();
+    assert!(seconds.insert_text.ends_with("}s"), "{seconds:?}");
+    assert!(labels(&time).contains(&"none"));
+    assert!(at("no_such_setting").is_empty());
+}
+
+#[test]
+fn completion_after_quick_offers_options_then_settings() {
+    // An option first, then the block's settings, then the rest of the
+    // carrier's record settings; a name marked already is not offered.
+    let src = "rules \"T\" 1\ncarrier slayer\nquick lives, points\noption points: int 1..5 = 2 \"Points\"\non tick { }\n";
+    let items = complete(src, p(2, 13));
+    let l = labels(&items);
+    assert_eq!(l[0], "points");
+    assert_eq!(items[0].kind, kind::CONSTANT);
+    assert!(l.contains(&"shields") && !l.contains(&"lives"), "{l:?}");
+    assert!(!l.contains(&"gravity"), "an extra of More Options is no Quick Options row");
+    assert!(!l.contains(&"juggernaut_movement"));
+
+    let items = complete(SWAT, p(4, 19));
+    let l = labels(&items);
+    assert_eq!(&l[..2], ["shields", "team_play"], "{l:?}");
+    assert!(!l.contains(&"score_limit"));
+
+    // `scoring` is followed by `carrier`, and by nothing after that.
+    assert_eq!(labels(&complete("rules \"T\" 1\ncarrier slayer\nscoring \n", p(2, 8))), ["carrier"]);
+    assert!(complete("rules \"T\" 1\ncarrier slayer\nscoring carrier \n", p(2, 16)).is_empty());
+}
+
+#[test]
+fn the_header_words_are_offered_as_snippets() {
+    let items = complete("rules \"T\" 1\n\n", p(1, 0));
+    let l = labels(&items);
+    for w in ["scoring", "about", "quick", "settings"] {
+        assert!(l.contains(&w), "{w}: {l:?}");
+    }
+    let block = items.iter().find(|i| i.label == "settings").unwrap();
+    assert_eq!(block.insert_text, "settings {\n\t${1:score_limit} = ${2:50}\n}");
+    assert_eq!(block.insert_text_format, SNIPPET);
+    assert!(block.documentation.value.contains("record settings"));
+    let scoring = items.iter().find(|i| i.label == "scoring").unwrap();
+    assert_eq!(scoring.insert_text, "scoring carrier");
+}
+
+#[test]
+fn hover_on_a_setting_names_its_label_carriers_and_values() {
+    // In the block, and on the mark that names it.
+    let h = hover_text(SWAT, 6, 6);
+    assert!(h.contains("score_limit: int") && h.contains("Score to Win"), "{h}");
+    assert!(h.contains("Applies to every game type") && h.contains("A number"), "{h}");
+    let h = hover_text(SWAT, 4, 20);
+    assert!(
+        h.contains("Shields") && h.contains("`none` (None)") && h.contains("`overshields` (Overshields)"),
+        "{h}"
+    );
+    assert_eq!(hover(SWAT, p(4, 20)).unwrap().range, Range { start: p(4, 19), end: p(4, 26) });
+    // A marked setting the block does not set.
+    let lives = "rules \"T\" 1\ncarrier slayer\nscoring carrier\nquick lives\n";
+    assert!(hover_text(lives, 3, 7).contains("Lives per Round"));
+    // A setting of another game type.
+    let jug = "rules \"T\" 1\ncarrier slayer\nscoring carrier\nsettings {\n    juggernaut_movement = fast\n}\n";
+    let h = hover_text(jug, 4, 8);
+    assert!(h.contains("Applies to Juggernaut") && h.contains("carrier is Slayer, so it cannot name"), "{h}");
+    // The four words.
+    assert!(hover_text(SWAT, 5, 2).contains("record settings"));
+    assert!(hover_text(SWAT, 4, 2).contains("Quick Options"));
+    assert!(hover_text(SWAT, 2, 3).contains("`scoring carrier`"));
+    assert!(hover_text(SWAT, 3, 2).contains("description"));
+}
+
+#[test]
+fn a_mark_goes_to_its_settings_line_or_its_option() {
+    let at = |l: &[Location]| -> Vec<(u32, u32)> {
+        l.iter().map(|x| (x.range.start.line, x.range.start.character)).collect()
+    };
+    assert_eq!(at(&definition(SWAT, p(4, 20))), vec![(7, 4)]);
+    assert_eq!(at(&references(SWAT, p(7, 5))), vec![(7, 4), (4, 19)]);
+    let opt = "rules \"T\" 1\ncarrier slayer\nquick points\noption points: int 1..5 = 2 \"Points\"\non kill(v, k) { score(k, points) }\n";
+    assert_eq!(at(&definition(opt, p(2, 8))), vec![(3, 7)]);
+}
+
+#[test]
+fn renaming_an_option_renames_its_quick_mark() {
+    let src = "rules \"T\" 1\ncarrier slayer\nquick points, lives\noption points: int 1..5 = 2 \"Points\"\non kill(v, k) { score(k, points) }\n";
+    for pos in [p(2, 8), p(3, 9), p(4, 27)] {
+        let edits = rename(src, pos, "reward").unwrap();
+        assert_eq!(edits.len(), 3, "{edits:?}");
+        assert_eq!(apply(src, &edits), src.replace("points", "reward"), "{pos:?}");
+    }
+    // An option cannot take a setting's name; a setting is not renamed.
+    assert!(rename(src, p(3, 9), "lives").unwrap_err().contains("setting's name"));
+    assert!(rename(SWAT, p(6, 5), "points").unwrap_err().contains("cannot be renamed"));
+    assert!(prepare_rename(SWAT, p(7, 5)).is_err());
+    assert!(prepare_rename(src, p(2, 8)).is_ok());
+}
+
+#[test]
+fn each_settings_fix_removes_its_diagnostic() {
+    let head = "rules \"T\" 1\ncarrier slayer\nscoring carrier\n";
+    let block = |lines: &str| format!("{head}settings {{\n{lines}}}\n");
+
+    // setting.unknown: the nearest name.
+    let r = fixed(&block("    score_limt = 50\n"), "setting.unknown");
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].0, "Change to `score_limit`");
+    assert_eq!(r[0].1, block("    score_limit = 50\n"));
+
+    // setting.carrier, in the block and on the `quick` line.
+    let r = fixed(&block("    lives = 3\n    juggernaut_movement = fast\n"), "setting.carrier");
+    assert_eq!(r[0].1, block("    lives = 3\n"));
+    let r = fixed(&format!("{head}quick juggernaut_movement, lives\n"), "setting.carrier");
+    assert_eq!(r[0].0, "Remove `juggernaut_movement` from `quick`");
+    assert_eq!(r[0].1, format!("{head}quick lives\n"));
+    // Two on a line.
+    let r = fixed(&block("    lives = 3; juggernaut_movement = fast\n"), "setting.carrier");
+    assert!(!r[0].1.contains("juggernaut_movement") && r[0].1.contains("lives = 3"), "{}", r[0].1);
+
+    // setting.twice: the repeat goes.
+    let r = fixed(&block("    lives = 3\n    lives = 4\n"), "setting.twice");
+    assert_eq!(r[0].1, block("    lives = 3\n"));
+
+    // quick.many: the sixth, or everything past the fifth.
+    let five = "score_limit, lives, shields, rounds, team_play";
+    let r = fixed(&format!("{head}quick {five}, time_limit\n"), "quick.many");
+    assert_eq!(r[0].0, "Drop the sixth mark");
+    assert_eq!(r[0].1, format!("{head}quick {five}\n"));
+    let r = fixed(&format!("{head}quick {five}, time_limit, max_players\n"), "quick.many");
+    assert_eq!(r[0].0, "Drop the 2 marks past the fifth");
+    assert_eq!(r[0].1, format!("{head}quick {five}\n"));
+
+    // quick.unknown: the nearest name, or no mark; quick.twice.
+    let r = fixed(&format!("{head}quick lives, score_limt\n"), "quick.unknown");
+    let titles: Vec<&str> = r.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(titles, ["Change to `score_limit`", "Remove `score_limt` from `quick`"]);
+    assert_eq!(r[0].1, format!("{head}quick lives, score_limit\n"));
+    assert_eq!(r[1].1, format!("{head}quick lives\n"));
+    let r = fixed(&format!("{head}quick score_limt\n"), "quick.unknown");
+    assert_eq!(r[1].1, head);
+    let r = fixed(&format!("{head}quick lives, lives\n"), "quick.twice");
+    assert_eq!(r[0].1, format!("{head}quick lives\n"));
+
+    // scoring.none: add the line after the carrier's.
+    let none = "rules \"T\" 1\ncarrier slayer\nsettings {\n    lives = 3\n}\n";
+    let r = fixed(none, "scoring.none");
+    assert_eq!(r[0].0, "Add `scoring carrier`");
+    assert_eq!(r[0].1, "rules \"T\" 1\ncarrier slayer\nscoring carrier\nsettings {\n    lives = 3\n}\n");
+
+    // scoring.handlers: the script scores, so the line goes.
+    let r = fixed("rules \"T\" 1\ncarrier slayer\nscoring carrier\non tick { }\n", "scoring.handlers");
+    assert_eq!(r[0].1, "rules \"T\" 1\ncarrier slayer\non tick { }\n");
+
+    // list.carrier: the `list` line goes.
+    let r = fixed("rules \"T\" 1\ncarrier oddball\nlist party\nscoring carrier\n", "list.carrier");
+    assert_eq!(r[0].1, "rules \"T\" 1\ncarrier oddball\nscoring carrier\n");
+}
+
+#[test]
+fn the_formatter_lays_out_the_settings_block_and_the_header_lines() {
+    let messy = "rules \"Swat\" 1\ncarrier slayer\nscoring   carrier\nabout  \"No shields.\"\nquick score_limit,shields\n\
+                 settings {\nscore_limit=50;shields = none\n   time_limit =   300s\n}\n";
+    let clean = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nabout \"No shields.\"\nquick score_limit, shields\n\
+                 settings {\n    score_limit = 50\n    shields = none\n    time_limit = 300s\n}\n";
+    let out = format(messy).unwrap();
+    assert_eq!(out, clean);
+    assert_eq!(format(&out).unwrap(), out);
+    assert_eq!(crate::compile(messy).unwrap().id(), crate::compile(&out).unwrap().id());
+    // A block on one line goes one setting a line.
+    let one = "rules \"T\" 1\ncarrier slayer\nscoring carrier\nsettings { lives = 3 }\n";
+    assert_eq!(
+        format(one).unwrap(),
+        "rules \"T\" 1\ncarrier slayer\nscoring carrier\nsettings {\n    lives = 3\n}\n"
+    );
+    // A range over a setting line formats that line.
+    let edits = format_range(messy, Range { start: p(7, 0), end: p(7, 1) }).unwrap();
+    assert!(!edits.is_empty());
+}
+
+#[test]
+fn the_settings_block_folds_and_the_header_words_are_keywords() {
+    let folds: Vec<(u32, u32)> = folding_ranges(SWAT).iter().map(|f| (f.start_line, f.end_line)).collect();
+    assert_eq!(folds, vec![(5, 7)]);
+
+    let tokens = semantic_tokens(SWAT);
+    let kind_at = |line: u32, start: u32| tokens.iter().find(|t| t.line == line && t.start == start).map(|t| t.kind);
+    for (line, start) in [(2, 0), (3, 0), (4, 0), (5, 0)] {
+        assert_eq!(kind_at(line, start), Some(TokenKind::Keyword), "{line}:{start}");
+    }
+    assert_eq!(kind_at(6, 4), Some(TokenKind::Variable), "a setting's name");
+    assert_eq!(kind_at(4, 19), Some(TokenKind::Variable), "a mark");
+    // In a handler the four words are names.
+    let src = "rules \"T\" 1\ncarrier slayer\non tick {\n    let about = 1\n    let quick = about + 1\n}\n";
+    let tokens = semantic_tokens(src);
+    assert!(tokens.iter().filter(|t| t.line >= 3).all(|t| t.kind != TokenKind::Keyword || t.len == 3));
+}

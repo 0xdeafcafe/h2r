@@ -24,6 +24,10 @@
  * them ("expected the end of the line"). Enum variants may be separated
  * by spaces as well as commas and newlines.
  *
+ * `settings`, `quick`, `scoring` and `about` are keywords only at the
+ * start of a top-level line, where the grammar can take them; in a
+ * handler they are names, as in parse.rs.
+ *
  * Other places this grammar is looser than parse.rs:
  *
  *   - Label requirement counts, option range bounds and match patterns
@@ -98,6 +102,10 @@ module.exports = grammar({
       $.carrier_declaration,
       $.teams_declaration,
       $.list_declaration,
+      $.scoring_declaration,
+      $.about_declaration,
+      $.quick_declaration,
+      $.settings_declaration,
       $.requires_declaration,
       $.option_declaration,
       $.palette_declaration,
@@ -116,6 +124,26 @@ module.exports = grammar({
 
     // `list research`.
     list_declaration: $ => seq('list', field('name', $.identifier)),
+
+    // `scoring carrier`.
+    scoring_declaration: $ => seq('scoring', field('name', $.identifier)),
+
+    // `about "No shields. 50 points to win."`.
+    about_declaration: $ => seq('about', field('text', $.string)),
+
+    // `quick score_limit, starting_weapon`: the lobby's Quick Options rows.
+    quick_declaration: $ => seq('quick', commaSep1(field('mark', $.identifier))),
+
+    // `settings { score_limit = 50; shields = none }`: one setting a line,
+    // or `;` between them.
+    settings_declaration: $ => seq(
+      'settings',
+      '{',
+      repeat(choice($.setting, ';')),
+      '}',
+    ),
+
+    setting: $ => seq(field('name', $.identifier), '=', field('value', $._expression)),
 
     // `requires player.weapons, hud.message`.
     requires_declaration: $ => seq('requires', commaSep1(field('capability', $.capability))),

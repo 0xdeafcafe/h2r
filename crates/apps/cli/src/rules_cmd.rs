@@ -1,4 +1,4 @@
-//! `h2 rules check|build|run|sim|caps|builtin|lsp|editors`: the rules language's tooling
+//! `h2 rules check|build|run|sim|settings|caps|builtin|lsp|editors`: the rules language's tooling
 //! (docs/game/rules-engine.md, "Security and usability"). Every command is pure over its
 //! inputs: no game, no disc. The `*_text` functions build what a command
 //! prints, so tests read it without a process.
@@ -20,6 +20,7 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
        h2 rules sim <file.rules> [--players N] [--teams N] [--seed S]
                     [--matches N] [--length SECONDS] [--score-limit N]
                     [--json] [-o <scenario.json>]
+       h2 rules settings <file.rules>
        h2 rules caps
        h2 rules builtin [name]
        h2 rules lsp
@@ -27,8 +28,9 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   check compiles and verifies; errors print as file:line:col: message and
   the exit status is 1. The report gives the worst-tick estimate against
   the budget, the IR size, the slots, what the script can do, and any
-  entries a host cannot make; a script over the budget or the IR cap
-  prints the report with a refusal and exits 1 too.
+  entries a host cannot make; a script over the budget or the IR cap, or
+  whose settings make a record the game would not keep, prints the report
+  with a refusal and exits 1 too.
   build writes the verified IR blob and prints its SHA-256. It writes
   nothing for a script check refuses.
   run steps the script over a JSON scenario on a fake game and prints the
@@ -39,6 +41,11 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   match for the same seed. --matches plays that many seeds and sums them
   up (who wins, how games end, the worst tick, warnings). -o writes the
   match as a scenario file for run.
+  settings prints the record of the script's own variant: every setting
+  of its carrier a script may name, with its value and whether the script
+  or the stock record set it, then the record's settings no script names.
+  It exits 1 for a script check refuses or a record the game would not
+  keep.
   caps lists the capabilities and the engine API entries with their status.
   builtin lists the built-in scripts (the engine ports) and the example
   scripts, or prints one by name, engine index or example key.
@@ -64,6 +71,7 @@ pub fn run(words: Vec<String>) -> Result<()> {
         "build" => build(&rest),
         "run" => run_scenario(&rest),
         "sim" => simulate(&rest),
+        "settings" => settings(&rest),
         "lsp" => crate::rules_lsp::run(),
         "editors" => crate::rules_editors::run(&rest),
         "caps" => {
@@ -148,6 +156,21 @@ fn build(words: &[String]) -> Result<()> {
         Ok((bytes, hash)) => {
             std::fs::write(&out, &bytes).with_context(|| format!("writing {}", out.display()))?;
             println!("{hash}  {}  ({} bytes)", out.display(), bytes.len());
+            Ok(())
+        }
+        Err(text) => {
+            eprint!("{text}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn settings(words: &[String]) -> Result<()> {
+    let p = parse(words)?;
+    let label = p.file.display().to_string();
+    match settings_text(&label, &read(&p.file)?) {
+        Ok(text) => {
+            print!("{text}");
             Ok(())
         }
         Err(text) => {
@@ -567,6 +590,84 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
         let _ = writeln!(s, "{label}: refused: {e}");
         return Err(s);
     }
+    // Settings that make a record the game would not keep.
+    if let Err(e) = variants::portable::settings_record(&ir) {
+        let _ = writeln!(s, "{label}: refused: {e}");
+        return Err(s);
+    }
+    Ok(s)
+}
+
+/// What `h2 rules settings` prints: the record of the script's own
+/// variant (`variants::portable::record_for`, the script's option
+/// defaults). Every row of `rules::settings::TABLE` that applies to the
+/// carrier, in table order, with its value and `script` or `stock`; then
+/// the record's settings of the carrier that no row names, which have the
+/// stock value.
+pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
+    use rules::settings::{TABLE, carrier_label, value_label};
+    use variants::record;
+    let (ir, _) = compile(label, src)?;
+    let v = variants::portable::record_for(&ir, &[]).map_err(|e| format!("{label}: refused: {e}\n"))?;
+    let carrier = ir.header.carrier;
+    let set: Vec<u16> = ir.settings.iter().map(|x| x.index).collect();
+    let mut rows = Vec::new();
+    for (i, row) in TABLE.iter().enumerate() {
+        if !row.applies(carrier) {
+            continue;
+        }
+        let at = i as u16;
+        let value = variants::portable::setting_value(&v, row, carrier)
+            .ok_or_else(|| format!("{label}: {} has no place in the record\n", row.name))?;
+        let from = if set.contains(&at) { "script" } else { "stock" };
+        rows.push((row, value_label(at, value), from));
+    }
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "{label}: \"{}\" on {}, {} settings, {} set by the script",
+        ir.header.name,
+        carrier_label(carrier),
+        rows.len(),
+        set.len()
+    );
+    let quick: Vec<&str> = ir
+        .quick
+        .iter()
+        .map(|q| match *q {
+            rules::ir::Quick::Setting(i) => TABLE.get(usize::from(i)).map_or("?", |r| r.name),
+            rules::ir::Quick::Option(i) => ir.option_name(usize::from(i)),
+        })
+        .collect();
+    let _ = writeln!(
+        s,
+        "quick options: {}",
+        if quick.is_empty() { "none".to_string() } else { quick.join(", ") }
+    );
+    let name_w = rows.iter().map(|(r, _, _)| r.name.len()).max().unwrap_or(0);
+    let text_w = rows.iter().map(|(_, t, _)| t.chars().count()).max().unwrap_or(0);
+    for (row, text, from) in &rows {
+        let _ = writeln!(s, "  {:name_w$}  {text:text_w$}  {from}", row.name);
+    }
+    let named: Vec<u32> = TABLE.iter().filter_map(|r| r.setting(carrier)).collect();
+    let others: Vec<_> = v
+        .known_settings()
+        .into_iter()
+        .filter(|(id, _)| !named.contains(&id.0))
+        .collect();
+    if !others.is_empty() {
+        let _ = writeln!(s, "settings no script names (stock):");
+        for (id, value) in others {
+            match record::symbolic_name(id) {
+                Some(n) => {
+                    let _ = writeln!(s, "  setting {} ({n}): {value}", id.0);
+                }
+                None => {
+                    let _ = writeln!(s, "  setting {}: {value}", id.0);
+                }
+            }
+        }
+    }
     Ok(s)
 }
 
@@ -967,7 +1068,7 @@ on kill(victim, killer) {
         assert!(builtin_text(Some("nothing")).is_err());
         // The examples follow the ports, marked, and print by key.
         assert!(list.contains("engine 2: Slayer"), "{list}");
-        for key in ["infection", "gun_game", "vip", "siege", "race", "bounce_practice"] {
+        for key in ["infection", "gun_game", "vip", "siege", "race", "bounce_hunt"] {
             assert!(list.contains(&format!("example {key}: ")), "{list}");
             assert_eq!(builtin_text(Some(key)).unwrap(), rules::builtin::examples().iter().find(|(k, _)| *k == key).unwrap().1);
         }
@@ -987,5 +1088,79 @@ on kill(victim, killer) {
         assert!(err.contains("x.rules: refused: the worst tick costs"), "{err}");
         let err = build_blob("x.rules", HEAVY).unwrap_err();
         assert!(err.starts_with("x.rules: refused: the worst tick costs"), "{err}");
+    }
+
+    const SWAT: &str = "rules \"SWAT\" 1
+carrier slayer
+scoring carrier
+quick score_limit, starting_weapon
+settings {
+    score_limit = 50
+    shields = none
+    starting_weapon = battle_rifle
+    gravity = 50
+}
+";
+
+    /// The line of `name` in `h2 rules settings`' output, its words.
+    fn row_words(text: &str, name: &str) -> Vec<String> {
+        let line = text
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("no {name} row:\n{text}"));
+        line.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn settings_prints_the_whole_record_and_who_set_each() {
+        let text = settings_text("swat.rules", SWAT).unwrap();
+        let first = text.lines().next().unwrap();
+        assert!(first.starts_with("swat.rules: \"SWAT\" on Slayer, "), "{text}");
+        assert!(first.ends_with(", 4 set by the script"), "{text}");
+        assert!(text.contains("quick options: score_limit, starting_weapon\n"), "{text}");
+        assert_eq!(row_words(&text, "score_limit"), ["score_limit", "50", "script"]);
+        assert_eq!(row_words(&text, "shields"), ["shields", "None", "script"]);
+        assert_eq!(row_words(&text, "starting_weapon"), ["starting_weapon", "Battle", "Rifle", "script"]);
+        assert_eq!(row_words(&text, "gravity"), ["gravity", "50%", "script"]);
+        // What the script leaves out has the stock value.
+        assert_eq!(row_words(&text, "time_limit"), ["time_limit", "8", "minutes", "stock"]);
+        assert_eq!(row_words(&text, "secondary_weapon"), ["secondary_weapon", "Map", "Default", "stock"]);
+        assert_eq!(row_words(&text, "damage"), ["damage", "100%", "stock"]);
+        assert_eq!(row_words(&text, "friendly_fire"), ["friendly_fire", "On", "stock"]);
+        // Only the carrier's settings.
+        assert!(!text.contains("juggernaut_movement"), "{text}");
+        assert!(!text.contains("ctf_flag_type"), "{text}");
+        // The record's other settings, which no script names.
+        assert!(text.contains("settings no script names (stock):\n"), "{text}");
+        assert!(text.contains("  setting 25: 2\n"), "{text}");
+        assert!(text.contains("  setting 14 (Join in progress): 0\n"), "{text}");
+        // The same text twice.
+        assert_eq!(settings_text("swat.rules", SWAT).unwrap(), text);
+
+        // A Juggernaut script lists the Juggernaut rows and its own score.
+        let jugg = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { juggernaut_movement = slow }\n";
+        let text = settings_text("j.rules", jugg).unwrap();
+        assert_eq!(row_words(&text, "juggernaut_movement"), ["juggernaut_movement", "Slow", "script"]);
+        assert_eq!(row_words(&text, "score_limit"), ["score_limit", "15", "stock"]);
+        assert!(text.contains("quick options: none\n"), "{text}");
+    }
+
+    #[test]
+    fn settings_and_check_refuse_a_record_the_game_would_not_keep() {
+        let src = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { team_play = true }\n";
+        let err = settings_text("j.rules", src).unwrap_err();
+        assert_eq!(
+            err,
+            "j.rules: refused: the game would not keep the record: Juggernaut is never team play\n"
+        );
+        let err = check_text("j.rules", src).unwrap_err();
+        assert!(
+            err.ends_with("j.rules: refused: the game would not keep the record: Juggernaut is never team play\n"),
+            "{err}"
+        );
+        // A compile error prints as check prints it.
+        let err = settings_text("x.rules", "rules \"A\" 1\ncarrier slayer\nscoring carrier\nsettings { nope = 1 }\n")
+            .unwrap_err();
+        assert!(err.starts_with("x.rules:4:"), "{err}");
     }
 }
