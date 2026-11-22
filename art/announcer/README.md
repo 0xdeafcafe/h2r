@@ -7,8 +7,9 @@ docs/game/teabag.md), named by medal id: `superbounce`, `double-bounce`,
 `super-ounce` is an alternate Superbounce take. Halo 2's own announcer lines
 are not here; the game plays those from the disc.
 
-The lines are AI-generated in the style of the Halo announcer, not
-recordings from any Halo game. Each is 44.1 kHz mono 16-bit PCM, its
+**Placeholders.** These lines are AI-generated, not recordings of any
+person or from any Halo game, and they will be replaced. This is a personal,
+non-commercial fan project. Each is 44.1 kHz mono 16-bit PCM, its
 silence trimmed, then matched to the retail announcer's mix by
 `scripts/announcer-mix.py`: the median loudness (-14.5 LUFS integrated, peaks
 under -0.5 dBTP) and the median balance of five bands around 2 kHz of the
