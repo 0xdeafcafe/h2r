@@ -872,10 +872,12 @@ pub(crate) mod tests {
             state(R::DestBlend, BlendFactor::One.xbox_value()),
             // Its own blend op, so layer 3's state reads its blend.
             state(R::BlendOp, 0x8006),
+            state(R::ZWriteEnable, 0),
         ];
         let fetch = [shaders::vsh::InputFetch::Float; 16];
         let pass = map::TagId(0xe000_0001);
-        assert!(object_pass(pass, &imp, &rigid_program(), WORLD, fetch, true).unwrap_err().contains("blends"), "layer 3's refuse it");
+        let e = object_pass(pass, &imp, &rigid_program(), WORLD, fetch, true).unwrap_err();
+        assert!(e.contains("blends"), "layer 3's refuse it: {e}");
         let p = object_layer_pass(pass, &imp, &rigid_program(), WORLD, fetch).unwrap();
         assert!(p.program.state.as_ref().unwrap().blend.is_some(), "the pipeline's blend");
         // Outside layer 3 the draw binds no lightmap page.
