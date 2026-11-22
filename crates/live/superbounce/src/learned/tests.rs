@@ -433,15 +433,15 @@ fn a_control_line_is_a_site_of_its_own_and_never_steers_a_spot() {
     assert_eq!(parse_line(&text).unwrap(), control.canonical());
     assert!(!parse_line(&line(&arm)).unwrap().control);
     // Two sites at one `at`: merging and replacing keep both.
-    assert_eq!(merge(&[arm.clone()], &[control.clone()]).len(), 2);
-    assert_eq!(replace(&[arm.clone()], control.clone()).len(), 2);
+    assert_eq!(merge(std::slice::from_ref(&arm), std::slice::from_ref(&control)).len(), 2);
+    assert_eq!(replace(std::slice::from_ref(&arm), control.clone()).len(), 2);
     assert_ne!(spot_id("ascension", arm.at), control_id("ascension", arm.at));
     // Only the arm's own line is found for the spot, and applied.
     let both = [control.clone(), arm.clone()];
     assert_eq!(entry_for(&both, arm.at), Some(&arm));
     assert_eq!(control_for(&both, arm.at), Some(&control));
     let mut spots = vec![scanned_slot()];
-    apply(&mut spots, &[control.clone()]);
+    apply(&mut spots, std::slice::from_ref(&control));
     assert_eq!(spots[0], scanned_slot());
     assert_eq!(knobs_for(&[control], arm.at), Knobs::default());
 }
