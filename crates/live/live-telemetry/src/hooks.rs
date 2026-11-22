@@ -526,6 +526,24 @@ impl Telemetry {
         });
     }
 
+    /// The game awarded medal `index` (its row in the game's medal table,
+    /// `live_proto::film::events::medals::OFFICIAL`) to the player in
+    /// absolute slot `player`, `count` times: a `GameMedal` game event for
+    /// each, as the game names the medal. An index past the table (the
+    /// game's unused rows) or a count of 0 sends nothing.
+    fn medal(&self, guest: &runtime::Guest, index: u32, player: u32, count: u32) {
+        let Some(medal) = live_proto::film::events::medals::official_at(index) else {
+            return;
+        };
+        for _ in 0..count.min(16) {
+            self.bounce_work(guest, |tick| Work::Medal {
+                tick,
+                player: player & 0xffff,
+                medal: medal.id,
+            });
+        }
+    }
+
     /// Queues a medal event at the game tick, as a kill: none in a
     /// cinematic.
     fn bounce_work(&self, guest: &runtime::Guest, work: impl FnOnce(u64) -> Work) {
@@ -663,6 +681,23 @@ impl ::hooks::Feature for TelemetryFeature {
                 if t.disabled() { return; }
                 t.protect(|| t.kill(&o.guest(), o.cpu.esp));
             });
+        // Custom ABI: EAX the medal's index, ECX the player's slot, EBX the
+        // count; read before the original counts it. Every medal the game
+        // awards passes here (docs/live/live-gamestate.md, "Medals").
+        // Optional: without it a film and Live have no Halo 2 medals.
+        let t = Arc::clone(&self.0);
+        b.raw()
+            .observe_before(&points::GAME_MEDAL, "medal", move |o| {
+                if t.disabled() { return; }
+                let (Some(index), Some(player), Some(count)) =
+                    (o.arg_u32("medal"), o.arg_u32("player"), o.arg_u32("count"))
+                else {
+                    t.dropped_film_sample("medal");
+                    return;
+                };
+                t.medal(&o.guest(), index, player, count);
+            })
+            .optional();
         // Observers only: nothing here writes the guest or feeds back into
         // it. The session is an outbound record of the run; a load winds
         // the engine's tick, which the session reads as a campaign revert
@@ -1246,8 +1281,10 @@ mod tests {
                 None,
             ]
         );
-        assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("hits dropped"), "{notes:?}");
+        // The fixture has neither the damage point nor the medal point.
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("hits dropped")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("medal dropped")), "{notes:?}");
     }
 
     /// The weapon fire hook is optional: an image without that entry still
@@ -1257,7 +1294,7 @@ mod tests {
         let (names, notes) = install_on_fixture(0x40_5000);
         assert!(names[..4].iter().all(Option::is_some), "{names:?}");
         assert_eq!(names[4], None);
-        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert_eq!(notes.len(), 3, "{notes:?}");
         assert!(
             notes.iter().any(|n| n.contains("shots dropped")),
             "{notes:?}"

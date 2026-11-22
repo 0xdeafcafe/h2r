@@ -112,6 +112,12 @@ pub(crate) enum Work {
         player: u32,
         victim: u32,
     },
+    /// The game awarded one of its medals (`medal` is its id).
+    Medal {
+        tick: u64,
+        player: u32,
+        medal: &'static str,
+    },
     End(Box<Snapshot>),
     FinishSim(serde_json::Value),
 }
@@ -533,6 +539,11 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
             player,
             victim,
         } => session.teabag(tick, player, victim),
+        Work::Medal {
+            tick,
+            player,
+            medal,
+        } => session.medal(tick, player, medal),
         Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
             session.end(&snapshot);
