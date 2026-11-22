@@ -98,6 +98,9 @@ fn skipped(c: char) -> bool {
 /// end a line (the game's strings use `\r\n` and its scanner ignores
 /// `\n`; ours use `\n`). Kerning starts afresh on each line, as the
 /// rasteriser draws one.
+// Each `start =` in the loop is followed by `continue 'line`, which
+// starts a new range from it.
+#[allow(clippy::mut_range_bound)]
 pub fn lines(text: &str, room: i32, advance: &dyn Fn(Option<char>, char) -> i32) -> Vec<Line> {
     let mut chars: Vec<char> = Vec::with_capacity(text.len());
     let mut it = text.chars().peekable();
