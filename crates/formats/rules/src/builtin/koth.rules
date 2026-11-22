@@ -4,7 +4,6 @@
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
 // Entries a host cannot make yet (`verify::unhostable`):
-//   label_number     not built (Forge labels)
 //   inside           not built (zone tests on the corners' polygon)
 // Not reproduced: the KotH globals (`[0x51ecc8]`: the hill in play
 // `+0x1a4`, the occupants mask `+0x1a8`, player `+0x1b8`) are not written;

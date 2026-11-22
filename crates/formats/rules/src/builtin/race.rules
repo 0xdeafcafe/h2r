@@ -5,8 +5,6 @@
 //
 // Entries a host cannot make yet (`verify::unhostable`):
 //   player_of        traced (unit `+0x13c`)
-//   label_of         not built (Forge labels)
-//   label_number     not built (Forge labels)
 //   spawn_areas      untraced (the PLAYER_SPAWN_LOCATION rule)
 // `on enter` waits on the zone tests (not built).
 rules "Race" 1

@@ -2228,6 +2228,7 @@ version = "0.1.0"
 dependencies = [
  "content",
  "map",
+ "rules",
  "scenario-edit",
  "serde",
  "serde_json",

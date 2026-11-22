@@ -6,10 +6,14 @@
 //! moments:
 //!
 //! - [`Runtime::start`] after a successful `GAME_ACTIVATE`: read the
-//!   record's script reference, find the blob, verify it, refuse what this
-//!   host cannot run by name, start the VM, run `on init` and set the
-//!   `RULES` record. A refusal is kept with its reason and logged; the game
-//!   then plays as the carrier engine's lifted rules.
+//!   record's script reference, find the blob, verify it, refuse what no
+//!   host can run, check the map's labels (the start gate), refuse what
+//!   this host cannot run yet by name, start the VM, run `on init` and set
+//!   the `RULES` record. A refusal is kept with its reason and logged; the
+//!   game then plays as the carrier engine's lifted rules. A map the gate
+//!   blocks plays no rules at all: [`Status::Blocked`] keeps every problem,
+//!   no VM is made, and the first tick boundary ends the game
+//!   (docs/game/rules-start-gate.md, "What a blocked start shows").
 //! - [`Runtime::pre_tick`] before each game tick: the VM's tick begins and
 //!   its queued calls join the calls the handlers made since the last
 //!   boundary. The feature makes them, in order, in an async body
@@ -56,8 +60,10 @@ use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::points;
 use variants::ext::{Ext, Mode};
 
+use super::census::{self, Table};
 use super::guest;
 use crate::firefight::runtime::read_players;
+use forge_doc::LabelledThing;
 
 /// The match seed until the session data carries one (as Firefight's).
 pub const SEED: u64 = 0;
@@ -92,6 +98,11 @@ pub const READS: &[u16] = &[
     id::ROUND_TIME_LEFT,
     id::IS_OBJECTIVE,
     id::CARRIER_OF,
+    // The labelled things' reads (`super::census::Table`).
+    id::LABEL_NUMBER,
+    id::LABEL_OF,
+    id::ZONE_ID,
+    id::OBJECT_TEAM,
 ];
 /// The action entries this runtime makes.
 pub const ACTIONS: &[u16] = &[
@@ -139,6 +150,11 @@ pub type Fetch = dyn Fn([u8; 8]) -> Result<Vec<u8>, String> + Send + Sync;
 /// The blob on this machine (the game-variant store) whose SHA-256 starts
 /// with the prefix, if any.
 pub type LocalScripts = dyn Fn([u8; 8]) -> Option<Vec<u8>> + Send + Sync;
+
+/// The loaded game's labelled things, for the start gate's census and the
+/// script's label reads. In the game it is [`census::things`]: the loaded
+/// scenario's netgame flags and starting locations in guest memory.
+pub type CensusSource = dyn Fn(&dyn GuestMemory) -> Result<Vec<LabelledThing>, String> + Send + Sync;
 
 /// No fetch: refused by name.
 pub fn no_fetch(prefix: [u8; 8]) -> Result<Vec<u8>, String> {
@@ -274,10 +290,16 @@ pub struct Work {
 
 /// Why a script is not hostable here, by the first thing this runtime
 /// cannot do; `None` when it can run it all. Entries no host can make are
-/// named first (`verify::unhostable`), then what this runtime does not do
-/// yet: an event it does not deliver, an entry it does not answer or make,
-/// a variant field whose offset is not traced, a grant, a Forge label.
+/// named first ([`unhostable_refusal`]), then what this runtime does not
+/// do yet: an event it does not deliver, an entry it does not answer or
+/// make, a variant field whose offset is not traced, a grant.
 pub fn host_refusal(ir: &Ir) -> Option<String> {
+    unhostable_refusal(ir).or_else(|| runtime_refusal(ir))
+}
+
+/// An entry no host can make on the script's carrier
+/// (`verify::unhostable`), in words.
+pub fn unhostable_refusal(ir: &Ir) -> Option<String> {
     if let Some(e) = verify::unhostable(ir) {
         let status = match e.status {
             EntryStatus::Traced => "traced but not a named point",
@@ -301,9 +323,11 @@ pub fn host_refusal(ir: &Ir) -> Option<String> {
             caps::spelled(e)
         ));
     }
-    if !ir.labels.is_empty() {
-        return Some("the script names Forge labels, which are not built".into());
-    }
+    None
+}
+
+/// What this runtime does not do yet, of a script every host could run.
+fn runtime_refusal(ir: &Ir) -> Option<String> {
     for hd in &ir.handlers {
         if !DELIVERED.contains(&hd.event) {
             return Some(format!(
@@ -363,6 +387,8 @@ pub struct GuestGame<'a> {
     pub calls: &'a mut Vec<Call>,
     /// The script error the VM stopped on, if it did.
     pub error: Option<ScriptError>,
+    /// The map's labelled things; none reads as a map with none.
+    pub table: Option<&'a Table>,
 }
 
 impl<'a> GuestGame<'a> {
@@ -371,6 +397,20 @@ impl<'a> GuestGame<'a> {
             m,
             calls,
             error: None,
+            table: None,
+        }
+    }
+
+    /// The same game whose labelled things are `table`.
+    pub fn with_table(mut self, table: &'a Table) -> Self {
+        self.table = Some(table);
+        self
+    }
+
+    fn thing(&self, call: &VmCall) -> Option<&census::Thing> {
+        match call.args.first() {
+            Some(Arg::Object(Some(o))) => self.table.and_then(|t| t.get(*o)),
+            _ => None,
         }
     }
 
@@ -402,9 +442,9 @@ impl Game for GuestGame<'_> {
         teams
     }
 
-    /// Forge labels are not built; a script naming one is refused at load.
-    fn labelled(&self, _label: &str) -> Vec<Placed> {
-        Vec::new()
+    /// The map's things with this label ([`Table::labelled`]).
+    fn labelled(&self, label: &str) -> Vec<Placed> {
+        self.table.map_or_else(Vec::new, |t| t.labelled(label))
     }
 
     fn objectives(&self) -> Vec<u32> {
@@ -445,6 +485,24 @@ impl Game for GuestGame<'_> {
                     .ok()
                     .flatten()
                     .map_or(::rules::ty::NONE, i32::from),
+                _ => ::rules::ty::NONE,
+            },
+            // An unnumbered thing, or one that is not labelled, reads 0.
+            id::LABEL_NUMBER => self.thing(call).and_then(|t| t.number).unwrap_or(0),
+            // A label the script does not declare is no label of its.
+            id::LABEL_OF => self
+                .thing(call)
+                .and_then(|t| t.label)
+                .map_or(::rules::ty::NONE, i32::from),
+            id::ZONE_ID => self.thing(call).map_or(0, |t| t.id() as i32),
+            id::OBJECT_TEAM => match call.args.first() {
+                Some(Arg::Object(Some(o))) => {
+                    let engine = guest::engine_index(m).ok().flatten();
+                    census::object_team(m, self.table, engine, *o)
+                        .ok()
+                        .flatten()
+                        .map_or(::rules::ty::NONE, i32::from)
+                }
                 _ => ::rules::ty::NONE,
             },
             _ => 0,
@@ -501,6 +559,12 @@ pub struct Running {
     /// ran for.
     pre: Option<u32>,
     post: Option<u32>,
+    /// The map's labelled things the script reads.
+    pub table: Table,
+    /// What the start gate checked, and for which teams: a swap is checked
+    /// against them again.
+    census: ::rules::labels::Census,
+    teams: Vec<u8>,
 }
 
 impl Running {
@@ -516,6 +580,17 @@ pub enum Status {
     /// `hash`: the full hash, or the record's prefix when the blob was not
     /// found.
     Refused { hash: Option<String>, why: String },
+    /// The start gate found the map lacks or breaks what the script needs
+    /// (docs/game/rules-start-gate.md): no VM, and the carrier's rules do
+    /// not play either. `end`: the game is still to be ended at the next
+    /// tick boundary; a Forge session (`forge`) is never ended.
+    Blocked {
+        hash: String,
+        problems: Vec<String>,
+        forge: bool,
+        end: bool,
+        table: Table,
+    },
     Running(Box<Running>),
 }
 
@@ -529,6 +604,14 @@ pub struct Runtime {
     /// The kind of game the next start plays, for the script policy
     /// (`rules::policy`): custom until the feature says otherwise.
     context: Context<'static>,
+    /// The map's labelled things at a start.
+    census: Box<CensusSource>,
+    /// This run plays a film back (Theater): the start gate does not run,
+    /// since the film's host passed it.
+    film: bool,
+    /// The next start is a Forge session's (`lobby_start::Mode::Forge`):
+    /// a block refuses the script and does not end the game.
+    forge: bool,
 }
 
 fn describe(e: &ScriptError) -> String {
@@ -573,7 +656,82 @@ impl Runtime {
             local: Box::new(|_: [u8; 8]| None),
             fetch,
             context: Context::Custom,
+            census: Box::new(census::things),
+            film: false,
+            forge: false,
         }
+    }
+
+    /// The same runtime for a run that plays a film back, or not.
+    pub fn with_film(mut self, film: bool) -> Self {
+        self.film = film;
+        self
+    }
+
+    /// The same runtime with `census` for the map's labelled things.
+    pub fn with_census(mut self, census: Box<CensusSource>) -> Self {
+        self.census = census;
+        self
+    }
+
+    /// Whether the next [`Runtime::start`] is a Forge session's.
+    pub fn set_forge_session(&mut self, forge: bool) {
+        self.forge = forge;
+    }
+
+    /// The problems the start gate blocked this game on, while it holds
+    /// the block: the seam the lobby's verdict reads
+    /// (docs/game/rules-start-gate.md, "What a blocked start shows").
+    pub fn blocked(&self) -> Option<&[String]> {
+        match &self.status {
+            Status::Blocked { problems, .. } => Some(problems),
+            _ => None,
+        }
+    }
+
+    /// The start gate (docs/game/rules-start-gate.md, "The check"): the
+    /// map's labelled things, and every problem the script's label and tag
+    /// tables have with them for `teams`. A census that cannot be read is a
+    /// problem for a script with either table: no script runs on a map the
+    /// check has not passed. A script with neither has nothing to check.
+    fn gate(&self, m: &dyn GuestMemory, ir: &Ir, teams: &[u8]) -> (Vec<LabelledThing>, Vec<String>) {
+        let unchecked = self.film || (ir.labels.is_empty() && ir.tags.is_empty());
+        match (self.census)(m) {
+            Ok(things) if unchecked => (things, Vec::new()),
+            Ok(things) => {
+                let census = census::census(&things);
+                let problems = ::rules::labels::check(ir, &census, teams)
+                    .into_iter()
+                    .map(|p| p.text)
+                    .collect();
+                (things, problems)
+            }
+            Err(_) if unchecked => (Vec::new(), Vec::new()),
+            Err(e) => (Vec::new(), vec![format!("the map's labels could not be read: {e}")]),
+        }
+    }
+
+    /// Blocks the game on `problems`: no VM, no record, and (outside a
+    /// Forge session) one `end_round` at the next tick boundary.
+    fn block(&mut self, hash: Sha256, problems: Vec<String>, table: Table) -> String {
+        self.store.remove();
+        let forge = self.forge;
+        let line = if forge {
+            format!(
+                "rules: blocked in a Forge session, the script does not run until the map has what it needs: {}",
+                problems.join("; ")
+            )
+        } else {
+            format!("rules: blocked, the game does not start: {}", problems.join("; "))
+        };
+        self.status = Status::Blocked {
+            hash: hash.to_string(),
+            problems,
+            forge,
+            end: !forge,
+            table,
+        };
+        line
     }
 
     /// The kind of game the next [`Runtime::start`] plays. The feature sets
@@ -710,9 +868,25 @@ impl Runtime {
         {
             return self.refuse(full, d.to_string());
         }
-        if let Some(why) = host_refusal(&ir) {
+        if let Some(why) = unhostable_refusal(&ir) {
             return self.refuse(full, why);
         }
+        // The start gate: the final authority on the map's labels. Theater
+        // skips it (`film`): the film's host passed it.
+        let teams = if guest::variant(m, "team_play").unwrap_or(0) != 0 {
+            GuestGame::new(m, &mut Vec::new()).teams()
+        } else {
+            Vec::new()
+        };
+        let (things, problems) = self.gate(m, &ir, &teams);
+        let table = Table::new(&things, &ir);
+        if !problems.is_empty() {
+            return self.block(hash, problems, table);
+        }
+        if let Some(why) = runtime_refusal(&ir) {
+            return self.refuse(full, why);
+        }
+        let census = census::census(&things);
         let options = if script.mode == Mode::Rules {
             script.options
         } else {
@@ -725,7 +899,7 @@ impl Runtime {
         };
         let mut pending = Vec::new();
         let error = {
-            let mut g = GuestGame::new(m, &mut pending);
+            let mut g = GuestGame::new(m, &mut pending).with_table(&table);
             vm.fire(&mut g, Input::Init);
             g.error
         };
@@ -739,6 +913,9 @@ impl Runtime {
             authority: None,
             pre: None,
             post: None,
+            table,
+            census,
+            teams,
         };
         if let Err(why) = save(&mut running, &mut *self.store) {
             return self.refuse(full, why);
@@ -764,9 +941,20 @@ impl Runtime {
 
     /// Before the game tick: the VM's tick begins and its queued calls join
     /// the pending ones. The work is for the async body; none means the
-    /// tick runs as it is.
+    /// tick runs as it is. A blocked game's first boundary ends it, on the
+    /// authority only: one `end_round`, through the call `end_round` makes.
     pub fn pre_tick(&mut self, m: &dyn GuestMemory) -> Option<Work> {
         let tick = bots::guest::game_tick(m)?.wrapping_add(1);
+        if let Status::Blocked { end, .. } = &mut self.status {
+            if !std::mem::take(end) {
+                return None;
+            }
+            return Some(Work {
+                tick,
+                ask_authority: true,
+                calls: vec![Call::End],
+            });
+        }
         let Status::Running(r) = &mut self.status else {
             return None;
         };
@@ -780,8 +968,10 @@ impl Runtime {
         }
         r.vm.begin_tick(tick);
         {
-            let Running { vm, pending, .. } = &mut **r;
-            let mut g = GuestGame::new(m, pending);
+            let Running {
+                vm, pending, table, ..
+            } = &mut **r;
+            let mut g = GuestGame::new(m, pending).with_table(table);
             vm.flush_queue(&mut g);
         }
         if let Err(why) = save(r, &mut *self.store) {
@@ -811,8 +1001,10 @@ impl Runtime {
         }
         let tick = r.vm.ext().tick;
         let error = {
-            let Running { vm, pending, .. } = &mut **r;
-            let mut g = GuestGame::new(m, pending);
+            let Running {
+                vm, pending, table, ..
+            } = &mut **r;
+            let mut g = GuestGame::new(m, pending).with_table(table);
             f(vm, &mut g);
             g.error
         };
@@ -899,6 +1091,14 @@ impl Runtime {
         for (call, error) in refused {
             self.error(tick, &call, error);
         }
+        // A machine that is not the authority ends no blocked game: its host
+        // decides.
+        if matches!(self.status, Status::Blocked { .. }) && authority == Some(false) {
+            self.status = Status::Idle(
+                "this machine is not the game engine's authority; the host runs the script",
+            );
+            return;
+        }
         let Status::Running(r) = &mut self.status else {
             return;
         };
@@ -928,6 +1128,7 @@ impl Runtime {
     /// slot value (`super::reload`, `Vm::swap_program`): the record is
     /// synced first and written after. An error keeps the old program.
     pub fn swap(&mut self, ir: Ir) -> Result<Sha256, String> {
+        let film = self.film;
         let Status::Running(r) = &mut self.status else {
             return Err("no script runs in this game".into());
         };
@@ -935,8 +1136,23 @@ impl Runtime {
             self.stop(why.clone());
             return Err(why);
         }
+        // The new program's labels must hold on the map the game started
+        // with, as at the start.
+        if !film {
+            let problems = ::rules::labels::check(&ir, &r.census, &r.teams);
+            if !problems.is_empty() {
+                let texts: Vec<String> = problems.into_iter().map(|p| p.text).collect();
+                return Err(format!(
+                    "the map does not have what the script needs: {}",
+                    texts.join("; ")
+                ));
+            }
+        }
         let hash = ir.id();
+        let mut table = r.table.clone();
+        table.relabel(&ir);
         r.vm.swap_program(ir).map_err(|e| e.to_string())?;
+        r.table = table;
         r.hash = hash;
         if let Err(why) = save(r, &mut *self.store) {
             self.stop(why.clone());
@@ -972,6 +1188,24 @@ impl Runtime {
                 errors,
                 ..Default::default()
             },
+            Status::Blocked {
+                hash,
+                problems,
+                forge,
+                table,
+                ..
+            } => wire::State {
+                refused: Some(if *forge {
+                    "the map does not have what the script needs; in a Forge session the script does not run until it does".into()
+                } else {
+                    "the map does not have what the script needs; the game was ended".into()
+                }),
+                hash: Some(hash.clone()),
+                errors,
+                blocked: problems.clone(),
+                labelled: table.view(),
+                ..Default::default()
+            },
             Status::Running(r) => {
                 let ir = r.vm.ir();
                 let ext = r.vm.ext();
@@ -995,6 +1229,13 @@ impl Runtime {
                     pending: r.pending.len(),
                     errors,
                     last_reload: None,
+                    blocked: Vec::new(),
+                    // The labelled things, for a script that reads labels.
+                    labelled: if ir.labels.is_empty() {
+                        Vec::new()
+                    } else {
+                        r.table.view()
+                    },
                 }
             }
         }

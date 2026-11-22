@@ -9,8 +9,6 @@
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`):
-//   label_number        not built (Forge labels)
-//   label_of            not built (Forge labels)
 //   ticks_held          not built (the VM counts; the host has no zone test)
 //   spawn_areas         untraced (the PLAYER_SPAWN_LOCATION rule)
 //   create              traced (Forge's creation)
