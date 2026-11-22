@@ -69,8 +69,13 @@ objective registry, object teams, label numbers and `inside` answers.
 with line and column, budget, slots, IR bytes, capabilities in plain
 words, unhostable entries). `workbench::run` steps a `Scenario` over
 `FakeGame` into a per-tick `Trace`, within 36,000 ticks, 4,096 events and
-4,000,000 ops. Live's `/v1/rules/check` and `/v1/rules/run` serve them to
-the web app ([Workbench](../../../docs/game/rules-engine.md#workbench)).
+12,000,000 ops; `workbench::Runner` is the same run one tick at a time.
+`sim::simulate` makes a match up from what a script handles and a seed,
+playing it as it goes, and `sim::batch` sums up many seeds (who wins,
+how matches end, the costliest tick, what looks wrong). Live's
+`/v1/rules/check`, `/v1/rules/run` and `/v1/rules/simulate` serve them to
+the web app, and `h2 rules sim` to the terminal
+([Workbench](../../../docs/game/rules-engine.md#workbench)).
 
 The Firefight director script is built outside this crate, by
 `firefight::script` from a wave-set definition; the `firefight.director`

@@ -1831,6 +1831,7 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 |---|---|---|
 | `POST /v1/rules/check` | none; rate-limited per client address | `{ok, hash, name, version, errors: [{line, col, message}], report}` |
 | `POST /v1/rules/run` | as check | a trace, or `{ok: false, errors}` when the script does not build |
+| `POST /v1/rules/simulate` | as check | generated matches: `{ok, teams, summary, rows, match}`, or `{ok: false, errors}` when the script does not build |
 | `POST /v1/rules/ide` | none; rate-limited per client address, in a bucket of its own | one editor operation's answer, in LSP's field names (below) |
 | `GET /v1/rules/ide/legend` | none | `{legend: [...]}`, the semantic token types by index |
 | `GET /v1/rules/builtin` | a read | `{items: [{name, engine, source, hash}]}` from `rules::builtin::ALL` |
@@ -1839,9 +1840,11 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 | `GET /v1/rules/{hash}/ir` | a read | the IR blob (`application/octet-stream`, immutable), compiled again from the saved source |
 | `GET /v1/rules?author=` | a read | `{items: [...]}`, the author's scripts newest first; `author` is a gamertag or xuid |
 
-- Bodies are JSON with `source`, at most 256 KiB (413 over it). Check and
-  run share a bucket of 20 requests per client address, refilled at 2 a
-  second (`rule_scripts::RATE`); an empty bucket is 429.
+- Bodies are JSON with `source`, at most 256 KiB (413 over it). Check,
+  run and simulate share a bucket of 20 tokens per client address,
+  refilled at 2 a second (`rule_scripts::RATE`); an empty bucket is 429.
+  A check, a run or one generated match costs 1 token; a batch costs 2,
+  and 1 more for each further 25 matches (`sim_cost`).
 - `ok` on a check means the script compiled, verified, fits the 20,000-op
   tick budget and the 64 KiB IR cap. `hash` is the IR's SHA-256, present
   whenever it compiled. An error with line and column 0 is about the whole
@@ -1855,22 +1858,53 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
   words, grantable, known}]` with the lobby's plain words, and
   `unhostable`: the entries the script calls that no host can make yet.
-- A run's `scenario` is `{players: [{slot, team, lives}], teams, variant,
-  options, seed, round_time, ticks, start, timeline: [{tick, events}]}`.
+- A run's `scenario` is `{players: [{slot, team, lives}], objects: [{id,
+  label, number, team}], teams, variant, options, seed, round_time,
+  ticks, start, timeline: [{tick, events}]}`. `objects` (at most 64) are
+  the labelled objects the script can find; a player's own object is
+  4096 plus the slot.
   An event is `{type, ...}` with the handler's event name: `kill {victim,
   killer}`, `spawn`, `death`, `join`, `quit {player}`, `pickup`, `drop`,
   `press`, `bounce`, `edit {player, object}`, `enter`, `leave {zone,
-  object}`, `squad_dead {squad}`, `actor_kill {killer, class}`,
-  `round_start`, `round_end`, `init`. `start` (default true) fires `init`
+  object}`, `squad_dead {squad}`, `actor_kill {killer, class}`, `actor_assist
+  {killer, assist, class}`, `round_start`, `round_end`, `init`. `start` (default true) fires `init`
   and `round_start` at tick 0; `ticks` is the last tick run, at most
   36,000; a scenario lists at most 4,096 events. A bad scenario is 400.
 - The trace is `{ok, hash, options, ticks, last_tick, error, round_ended,
-  cut, ops, scores: [{slot, score}]}`. Each entry of `ticks` is a tick in
+  round_winner, limit, cut, ops, worst_tick_ops, handlers_ran, scores:
+  [{slot, score}]}`. `limit` is `"score"` or `"time"` when the variant's
+  `score_limit` or `time_limit` ended the game, and `round_winner` the
+  team `end_round` named. Each entry of `ticks` is a tick in
   which something happened: `{tick, ran, calls: [{entry, args}], ops,
   warnings, globals: [{name, value}], players: [{slot, team, alive, score,
   lives, vars}], error}`. A run stops at a script error, after the tick
-  that calls `end_round`, or past 4,000,000 ops (`cut` says so), and keeps
-  at most 2,000 ticks.
+  that calls `end_round`, at a limit, or past 12,000,000 ops (`cut` says
+  so), and keeps at most 2,000 ticks.
+- A simulate body is `{source, players, teams, seed, matches, length,
+  score_limit}`: `players` 1 to 16 (default 8), `teams` 0 to 8 (0 or 1
+  is no team play; a carrier that needs teams gets them), `seed`
+  (default 1), `matches` 1 to 100 (default 1), and optionally `length`
+  in seconds (at most 1,200; absent, 300) and `score_limit`. An unknown
+  field or a value out of range is 400. Match `i` of a batch plays seed
+  `seed + i`; the same body gives the same answer
+  (`rules::sim`; [rules-engine.md, "Workbench"](../game/rules-engine.md#workbench)).
+- A simulate answer's `match` is the first seed's match in full:
+  `{seed, end, why, winner, top_score, scenario, trace}`, with `scenario`
+  in the run's shape (posting it to `/v1/rules/run` gives the same
+  scores) and `trace` a run's trace holding the ticks in which an event
+  fired. `end` is `script`, `score_limit`, `time_limit`, `error` or
+  `cap` (the match never ended), and `winner` is `{kind, index}` with
+  `kind` `player`, `team`, `draw` or `nobody`. `teams` is the team count
+  played. With one match `summary` is null and `rows` empty. A batch's
+  `rows` are `[{seed, end, winner, ticks, top_score, ops,
+  worst_tick_ops}]` and its `summary` is `{asked, ran, wins: [{winner,
+  matches}], ends: [{end, matches}], avg_score, max_score, avg_ticks,
+  max_ticks, worst_tick_ops, worst_tick_seed, budget, errors: [{seed,
+  message}], flags: [{kind, text, seed, matches}], stopped}`. A flag's
+  `kind` is `never_ends`, `nobody_scores`, `negative_score`, `never_ran`
+  or `clock`, and its `seed` a match that shows it. A batch starts no
+  match past 24,000,000 ops or 400,000 ticks; `ran` is how many it
+  played and `stopped` says why it played fewer.
 - An editor request is `{source, op, line, character}`: `line` (0-based)
   and `character` (UTF-16 units) are the place, required by `complete`,
   `hover`, `signature`, `definition` and `references`. Each op answers

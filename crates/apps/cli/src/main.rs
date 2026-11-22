@@ -242,7 +242,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           ending in a JSON report (docs/runtime/sim.md)
   sim batch <batch.toml>  many matches in parallel, A/B tuning compared;
                           sim compare <dir> prints the comparison again
-  rules check|build|run|caps|builtin|lsp
+  rules check|build|run|sim|caps|builtin|lsp
                           the scripted game types' compiler, verifier,
                           scenario runner and language server
                           (docs/game/rules-engine.md)

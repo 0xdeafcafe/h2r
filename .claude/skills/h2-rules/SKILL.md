@@ -1,6 +1,6 @@
 ---
 name: h2-rules
-description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, and Live's /v1/rules and /v1/variants routes.
+description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, and Live's /v1/rules and /v1/variants routes.
 ---
 
 # Write, test and ship a game type script
@@ -30,6 +30,7 @@ References beside this file:
 
 ```sh
 h2 rules check my_mode.rules                        # compile, verify, measure
+h2 rules sim my_mode.rules --matches 25             # play generated matches, summed up
 h2 rules run my_mode.rules --scenario my_mode.json  # step it on a fake game
 h2 rules run my_mode.rules --scenario my_mode.json --trace
 h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its SHA-256
@@ -45,14 +46,24 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
    slayer`, optional `teams n` and `requires ...`), options, variables,
    functions, handlers. A new mode carries `slayer`.
 3. **`h2 rules check`.** Fix every error and read the report.
-4. **Write a scenario** and run it. Read the final scores and the calls;
+4. **`h2 rules sim`** first: it plays whole matches made up from what
+   the script handles and says who won, how each match ended, the
+   costliest tick, and what looks wrong (the game never ends, nobody
+   scores, a score below zero, a handler that never ran), each with a
+   seed. `--players N` (1 to 16, default 8), `--teams N`, `--seed S`,
+   `--length SECONDS`, `--score-limit N`; `--matches N` (at most 100)
+   plays seeds `S` to `S + N - 1`; `--json` prints it all as JSON; `-o
+   case.json` writes the seed's match as a scenario file for `h2 rules
+   run`. A script error in any match exits 1. Run a flagged seed again
+   alone (`--seed 14 -o case.json`) to get its scenario.
+5. **Write a scenario** for an exact case and run it. Read the final scores and the calls;
    `--trace` adds each event with what the VM did and each call (arguments
    print in Rust debug form). Write one scenario per rule: a kill, a
    suicide, a betrayal, a timer firing, the round ending.
-5. **`h2 rules build`** writes the blob and prints `<sha256>  <path>
+6. **`h2 rules build`** writes the blob and prints `<sha256>  <path>
    (<n> bytes)`. The same source gives the same hash. (`build` refuses to
    overwrite its own source file.)
-6. **Ship it** as a game variant or save it on Live.
+7. **Ship it** as a game variant or save it on Live.
 
 `h2 rules caps` lists every capability and API entry with its types and
 status; run it when unsure whether an entry exists or a host can make it.
@@ -180,7 +191,8 @@ objects; `round_time_left()` stays at the number you gave; there is no
 `bounce`, `edit`, `actor_kill` or `actor_assist` event. For those use
 Live's run (below), which seats `variant` fields, counts round time down
 one a tick, marks a kill's victim dead and counts the kill and death, and
-takes `bounce`, `edit` and `actor_kill`. `actor_assist` is in neither.
+takes `bounce`, `edit`, `actor_kill` and `actor_assist`. `h2 rules sim`
+plays on that same fake world.
 
 ## Ship it
 
@@ -220,6 +232,7 @@ client address, refilled at 2 a second (429 past it).
 |---|---|---|
 | `POST /v1/rules/check` `{source}` | none | `{ok, hash, name, errors: [{line, col, message}], report, options}`; line 0 col 0 is about the whole script |
 | `POST /v1/rules/run` `{source, scenario}` | none | a trace, or `{ok: false, errors}` when it does not build; a bad scenario is 400 |
+| `POST /v1/rules/simulate` `{source, players, teams, seed, matches}` | none | generated matches: `{ok, teams, summary, rows, match}`; `match` holds the first seed's `scenario` (the run's shape) and `trace`; a batch costs 2 tokens and 1 more per further 25 matches |
 | `POST /v1/rules/ide` `{source, op, line, character}` | none | one editor answer (complete, hover, signature, definition, references, tokens, symbols, format, diagnostics) |
 | `GET /v1/rules/builtin` | read | `{items: [{name, engine, source, hash}]}` |
 | `POST /v1/rules` `{source}` | token, `content.write` | saves a script that verifies; 201 new, 200 saved already |
@@ -238,7 +251,9 @@ handler's name plus its arguments as fields. `ticks` is the last tick run
 (at most 36,000), `start` defaults true, at most 4,096 events. The trace
 lists only ticks in which something happened, with `ran`, `calls`,
 `globals`, `players`, and the run's `scores`; `cut` says it stopped early
-(past 4,000,000 ops).
+(past 12,000,000 ops), and `limit` that the variant's `score_limit` or
+`time_limit` ended the game. A scenario's `objects: [{id, label, number,
+team}]` are the labelled objects the script finds.
 
 `options` in `from-script` and `bundle` maps an option's name to a number,
 a bool or an enum value's name; an omitted one takes its default; an

@@ -1004,6 +1004,15 @@ Tooling:
     steps the script over a scenario on the fake game, printing the calls
     made each tick (with `--trace`, each event and call), the final
     scores and the result; a script error exits 1.
+  - `h2 rules sim <file.rules> [--players N] [--teams N] [--seed S]
+    [--matches N] [--length SECONDS] [--score-limit N] [--json]
+    [-o <scenario.json>]` plays generated matches (`rules::sim`,
+    "Workbench" below) and prints how the seed's match ended, who won
+    and the standings; with `--matches`, the batch's summary and
+    warnings too. `-o` writes the seed's match as a scenario file that
+    `h2 rules run` reads, naming on stderr what that format has no place
+    for. `--json` prints the match, the summary and the rows. A script
+    error in any match exits 1.
   - `h2 rules caps` lists the capabilities and the API entries with their
     status; `h2 rules builtin [name]` lists the built-in scripts or
     prints one.
@@ -1127,8 +1136,8 @@ routes call `rules::workbench` in both homes.
 
 The **Workbench** tab is one screen. The editor is on the left with the
 check beside it (Problems, Budget, Capabilities); under them the test
-scenario sits beside the results of running it. Under 1100 px the parts
-stack in that order. The page's other tabs are **My Scripts** and **My
+(generated matches and their summary) sits beside one match's results.
+Under 1100 px the parts stack in that order. The page's other tabs are **My Scripts** and **My
 Game Types**. The layout, its states and its copy are described in
 [web-app.md, "Game type scripts"](../live/web-app.md#game-type-scripts).
 
@@ -1172,13 +1181,52 @@ Game Types**. The layout, its states and its copy are described in
   trace keeps the ticks in which a handler other than `on tick` ran, a
   call was made, a variable or player row changed (a timer counting
   down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
-  that calls `end_round`, or past 4,000,000 ops, and the same input gives
-  the same trace. The page runs the scenario by itself, 350 ms after the
-  checked script's hash or the scenario changes, and shows the trace as
-  final standings and a timeline (`rules.ts`, `timeline` and
-  `standings`): each tick the scenario put an event in or the trace
-  kept, with the event as a sentence, the handlers that ran, their
-  calls, and each score, team, lives count or variable that changed.
+  that calls `end_round`, or past 12,000,000 ops, and the same input gives
+  the same trace. The page shows a trace as final standings and a
+  timeline (`rules.ts`, `timeline` and `standings`): each tick the
+  scenario put an event in or the trace kept, with the event as a
+  sentence, the handlers that ran, their calls, and each score, team,
+  lives count or variable that changed.
+- **The fake world.** `workbench::Runner` steps one tick at a time and
+  keeps the parts of a match a script reads back. A player's own object
+  is `UNIT_BASE` (0x1000) plus the slot; a scenario's `objects` are
+  labelled objects (`{id, label, number, team}`) that `labelled`,
+  `label_of`, `number_of` and `team_of` answer for. An `enter` or
+  `leave` sets what `inside` says, a `pickup` or `drop` sets an
+  objective's carrier, and a kill, death or quit takes the player out of
+  every zone and drops what they carried. `spawn_objective` makes an
+  objective numbered from `SPAWNED_BASE` (0x4000) and `reset_objective`
+  clears its carrier. The carrier's own limits end the game: the
+  variant's `score_limit` (a player's score, or a team's sum with
+  `team_play`) and its `time_limit` in seconds; the trace's `limit` says
+  which. `round_winner` is the team `end_round` named, `worst_tick_ops`
+  the costliest tick and `handlers_ran` every handler that ran.
+- **Generated matches.** `sim::simulate` makes a match up from the
+  script and a setup (players 1 to 16, teams, a seed, a length in
+  seconds or the carrier's time limit, a score limit) and plays it on a
+  `Runner` as it goes, so what happens next follows what the script did.
+  It reads the IR for what the script handles and calls, and makes only
+  those events: kills at a steady rate with a few suicides, betrayals
+  and deaths to the world, respawns after five seconds unless the script
+  respawns players itself, players walking into and out of the labelled
+  objects the script names, objectives picked up and dropped, and
+  `bounce`, `edit`, `press`, `actor_kill`, `actor_assist` and
+  `squad_dead` only for a script with that handler. The seed fixes the
+  whole match. The match stops when the script ends the round, a limit
+  is reached, the script fails, or 4,096 events or 36,000 ticks pass.
+  Its output is a `workbench::Scenario` and the trace of running it;
+  `workbench::run` on that scenario gives the same scores.
+  `sim::batch` plays up to 100 seeds in a row, starting no match past
+  24,000,000 ops or 400,000 ticks, and sums them up: who won how often,
+  how the matches ended, the average and best top score, the costliest
+  tick against the budget with its seed, each script error with its
+  seed, and flags with a seed that shows each (the game never ends,
+  nobody scores, a score below zero, a handler that never ran, every
+  match running out the clock). `sim::to_file` turns a match into the
+  CLI's scenario file. The page plays 25 matches by itself, 350 ms
+  after the checked script's hash or the setup changes; a match opened
+  with **Edit this match** runs through `workbench::run` when it
+  changes.
 - **Editor.** `POST /v1/rules/ide` answers one editor request (complete,
   hover, signature, definition, references, tokens, symbols, format or
   diagnostics) from `rules::ide`, in LSP's field names, so the page's
@@ -1200,8 +1248,8 @@ Game Types**. The layout, its states and its copy are described in
   Types** tab lists them beside My Scripts, and a player's page lists
   their public ones; each has a page (`statsPath("/variants/:id")`) with
   its settings, its script (opened read-only here) and the file.
-- **Drafts.** The page keeps the source and the scenario in
-  `localStorage`, and starts from a blank starter, a built-in
+- **Drafts.** The page keeps the source, the generator's setup and the
+  match edited by hand in `localStorage`, and starts from a blank starter, a built-in
   (`builtin::ALL`) or one of the player's saved scripts.
 
 ## Porting the seven engines

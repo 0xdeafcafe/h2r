@@ -285,7 +285,20 @@ The Workbench tab, top to bottom:
   its place; choosing one selects it in the editor. **Budget** has the
   meters and each handler's worst case, and **Capabilities** the
   lobby's words. The page checks as you type.
-- **Test scenario.** How long to run, the round clock, the seed and
+- **Test.** No form: the server makes the matches up
+  (`POST /v1/rules/simulate`). One strip sets them up (`SimStrip`): the
+  players, 2 to 16, as a slider with a stepper; team play; and the seed
+  with a die that rolls a new one (`rerolled`). The page plays 25
+  matches by itself after each check and each change to the strip.
+  Under the strip is the summary (`BatchView`): who wins, as bars with
+  "9 of 25"; how the games end and how long they run; the best and
+  average top score; the costliest tick against the budget, as a meter;
+  and the warnings (`simWarnings`), script errors first, each with a
+  link to a seed that shows it. **All matches** unfolds one row a
+  match. Choosing a seed anywhere shows that match beside the summary.
+- **Edit this match**, folded at the foot of Test. Opening it puts the
+  shown match in the hand editor (`ScenarioEditor`) and uses it instead
+  of the generated ones: how long to run, the round clock, the seed and
   team play; the seated players (slot, team by colour name, lives); and
   the events in time order. "Player 0 kills Player 1, Add kill" adds a
   kill in one click and a menu adds any other event; a new event lands
@@ -293,16 +306,19 @@ The Workbench tab, top to bottom:
   end. Each event is a row that reads as a sentence, and its time is
   typed as `0:02.50`, as seconds (`2.5`) or as ticks (`75t`)
   (`parseTickTime`). Every field is black on white, as the site's other
-  fields are.
-- **Results**, beside the scenario. The scenario runs by itself when the
-  script or the scenario changes; **Run again** asks for it by hand.
-  The results are how the run ended, the final standings (team totals
-  with team play), and a timeline: for each moment its time, what
-  happened ("Player 0 killed Player 1"), the handlers that ran and
-  their calls, who scored and their new score, and any team, lives or
-  variable change. An event no handler answered says so. While the
-  script has problems the last results stay, dimmed, with the reason.
-  **Copy as text** copies the trace, a line a tick.
+  fields are. Folding it goes back to the generated matches.
+- **Match**, beside Test: one match in full. Its bar (`MatchBar`) names
+  the seed, steps to the match before or after it in the batch, and has
+  **Edit this match**; for an edited match it has **Back to generated
+  matches**. Under it are how the match ended (the script, the score
+  limit, the time limit), the final standings (team totals with team
+  play), and a timeline: for each moment its time, what happened
+  ("Player 0 killed Player 1", "Player 3 entered hill_corner 0"), the
+  handlers that ran and their calls, who scored and their new score,
+  and any team, lives or variable change. A long timeline shows its
+  first 150 moments and **Show all**. An event no handler answered says
+  so. While the script has problems the last results stay, dimmed, with
+  the reason. **Copy as text** copies the trace, a line a tick.
 
 A request that fails is put in words with whose fault it is
 (`explainFailure`): the server's ("The Live server had a problem (HTTP
@@ -312,11 +328,12 @@ check asks again after three seconds. A server whose rules routes
 answer 404 gets one notice, "This Live server doesn't have the script
 tools yet", with **Ask the server again**; the draft is still kept in
 the browser, the editor completes plain words, and Save, Make a game
-variant and the run are off.
+variant and the test are off.
 
 Signed out, everything but Save, Publish and the two list tabs works.
 `?script=<hash>` opens a saved or built-in script read-only. The mock
-(`mock/rules.ts`) answers every route from a few text checks.
+(`mock/rules.ts`) answers every route from a few text checks, and makes
+its matches from seeded random kills to ten points or two minutes.
 
 ### Server stats
 

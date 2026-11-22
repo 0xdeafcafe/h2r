@@ -1,11 +1,12 @@
 // Game type scripts: the rules workbench (docs/game/rules-engine.md,
 // "Workbench"). One screen: the script in the editor with its problems,
-// budget and capabilities beside it, and under them a scenario for the
-// fake game with the results of running it. The server checks the script
-// as you type and runs the scenario when either changes; a signed-in
-// account saves it. The pure half is ../lib/rules.ts (the editor's,
+// budget and capabilities beside it, and under them the test: generated
+// matches on the fake game summed up, beside one of them in full. The
+// server checks the script as you type and plays the matches after each
+// check; "Edit this match" opens one in the hand editor, and that match
+// runs when it changes. A signed-in account saves the script. The pure half is ../lib/rules.ts (the editor's,
 // ../lib/rulesIde.ts); the editor is RulesEditor (Monaco, loaded on first
-// use); the scenario and the results are RulesTest; the draft lives in
+// use); the test's parts are RulesTest; the draft lives in
 // localStorage. "Make a game variant" turns a checked script into a game
 // variant (../lib/variants.ts): a file to download, or published to Live
 // when signed in. The tabs beside the workbench list your saved scripts
@@ -25,9 +26,10 @@ import { issueToken } from "../admin/token";
 import { usDate } from "./fmt";
 import {
   buildScenario, carrierOf, checkRules, explainFailure, fetchBuiltins, fetchScript, fetchScripts, loadDraft, meter, meterText,
-  problemCount, problemPlace, runBlocked, runFailed, runRules, saveBlocked, saveDraft, saveRules, scenarioProblems, toolsAfter,
-  variantBlocked, whyOff,
-  type CheckResult, type Gate, type Problem, type ScenarioDraft, type ScriptOption, type Tools, type Trouble,
+  problemCount, problemPlace, runBlocked, runFailed, runRules, saveBlocked, saveDraft, saveRules, scenarioProblems, simFailed,
+  simulateRules, toolsAfter, variantBlocked, whyOff, SIM_MATCHES,
+  type CheckResult, type Gate, type Problem, type ScenarioDraft, type ScriptOption, type SimMatch, type SimResult, type SimSetup,
+  type Tools, type Trouble,
 } from "../lib/rules";
 import {
   VARIANT_DESCRIPTION_MAX, VARIANT_NAME_MAX, coerceOption, coerceOptions, defaultOptions, deleteVariant, descriptionProblem,
@@ -36,7 +38,7 @@ import {
 } from "../lib/variants";
 import { fetchMenuCompletions, insertMenus, type InsertItem, type InsertMenu, type InsertMenuId } from "../lib/rulesIde";
 import RulesEditor, { type RulesEditorApi } from "./RulesEditor";
-import { ResultsView, ScenarioEditor, TroubleNote, type Ran } from "./RulesTest";
+import { BatchView, MatchBar, ResultsView, ScenarioEditor, SimStrip, TroubleNote, type Ran } from "./RulesTest";
 import "../styles/rules.css";
 
 const CRUMB: [string, string] = ["Game Types", statsPath("/rules")];
@@ -67,7 +69,8 @@ on kill(victim, killer) {
 
 /** How long typing pauses before a check. */
 const CHECK_DELAY_MS = 450;
-/** How long a checked script or a changed scenario waits before it runs. */
+/** How long a checked script, a changed setup or a changed match waits
+ *  before it is played. */
 const RUN_DELAY_MS = 350;
 /** How long a rate-limited check waits before it asks again. */
 const LIMITED_RETRY_MS = 3000;
@@ -208,7 +211,17 @@ export default function RulesPage() {
   const tab = (): Tab => (sp.tab === "mine" || sp.tab === "types" ? sp.tab : "edit");
   const first = loadDraft(storage(), STARTER);
   const [source, setSource] = createSignal(first.source);
+  /** The match edited by hand, and whether it is the one in use. */
   const [scenario, setScenario] = createSignal<ScenarioDraft>(first.scenario);
+  const [custom, setCustom] = createSignal(first.custom);
+  /** What the generated matches are played with. */
+  const [setup, setSetup] = createSignal<SimSetup>(first.setup);
+  /** The last batch, and a match of it switched to. */
+  const [sim, setSim] = createSignal<{ result: SimResult; key: string } | null>(null);
+  const [picked, setPicked] = createSignal<{ match: SimMatch; key: string } | null>(null);
+  const [simming, setSimming] = createSignal(false);
+  const [simTrouble, setSimTrouble] = createSignal<Trouble | null>(null);
+  const [simErrors, setSimErrors] = createSignal<Problem[]>([]);
   const [check, setCheck] = createSignal<CheckResult | null>(null);
   const [checking, setChecking] = createSignal(false);
   const [checkTrouble, setCheckTrouble] = createSignal<Trouble | null>(null);
@@ -236,7 +249,7 @@ export default function RulesPage() {
   /** "Couldn't save. " and why, with whose fault it is. */
   const sayFailed = (what: string, e: unknown, route = false) => setNotice({ text: `${what} ${explainFailure(e, route).text}`, bad: true });
 
-  createEffect(on([source, scenario], ([s, d]) => saveDraft(storage(), { source: s, scenario: d })));
+  createEffect(on([source, scenario, setup, custom], ([s, d, su, c]) => saveDraft(storage(), { source: s, scenario: d, setup: su, custom: c })));
 
   // Check as you type: one request a pause, the older one abandoned.
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -382,13 +395,78 @@ export default function RulesPage() {
     return whyOff(buttons);
   };
 
-  // ---------- running the scenario ----------
+  // ---------- generated matches ----------
 
-  // The script (by its hash) and the scenario a run answers; null while
-  // either can't run. A run is asked when this changes, after a pause.
+  const simWhy = () => runBlocked(gate(), []);
+  // The script (by its hash) and the setup a batch answers; null while the
+  // script can't run. A batch is asked when this changes, after a pause.
+  const simKey = createMemo((): string | null => {
+    const h = check()?.hash;
+    return !simWhy() && h ? `${h}\n${JSON.stringify(setup())}` : null;
+  });
+  let simTimer: ReturnType<typeof setTimeout> | undefined;
+  let simFlight: AbortController | undefined;
+  /** Plays the batch, or with a seed that one match of it. */
+  async function simulate(seed?: number) {
+    const key = simKey();
+    if (!key) return;
+    simFlight?.abort();
+    const ctl = new AbortController();
+    simFlight = ctl;
+    const su = setup();
+    const one = seed !== undefined;
+    setSimming(true);
+    try {
+      const r = await simulateRules(live.server().api, source(), su, one ? 1 : SIM_MATCHES, seed ?? su.seed, fetch, ctl.signal);
+      if (simFlight !== ctl) return;
+      setSimTrouble(null);
+      if (simFailed(r)) { setSimErrors(r.errors); return; }
+      setSimErrors([]);
+      if (one) setPicked({ match: r.match, key });
+      else { setSim({ result: r, key }); setPicked(null); }
+    } catch (e) {
+      if (simFlight !== ctl || aborted(e)) return;
+      setSimTrouble(explainFailure(e));
+    } finally {
+      if (simFlight === ctl) setSimming(false);
+    }
+  }
+  createEffect(on(simKey, (key) => {
+    clearTimeout(simTimer);
+    if (key && key !== sim()?.key) simTimer = setTimeout(() => void simulate(), RUN_DELAY_MS);
+  }));
+  const simStale = () => !!sim() && sim()?.key !== simKey();
+  /** The generated match shown: the one switched to, else the batch's first. */
+  const shownMatch = (): SimMatch | null => {
+    const s = sim(), p = picked();
+    if (!s) return null;
+    return p && p.key === s.key ? p.match : s.result.match;
+  };
+  const generated = createMemo((): Ran | null => {
+    const m = shownMatch(), s = sim();
+    return m && s ? { trace: m.trace, scenario: m.scenario, key: s.key } : null;
+  });
+  /** Switches to another match of the batch; the first is already here. */
+  const showSeed = (seed: number) => {
+    const s = sim();
+    if (s && s.key === simKey() && seed === s.result.match.seed) setPicked(null);
+    else void simulate(seed);
+  };
+  /** Opens the shown match in the hand editor. */
+  const editMatch = () => {
+    const m = shownMatch();
+    if (m) setScenario(m.scenario);
+    setCustom(true);
+  };
+
+  // ---------- running the match edited by hand ----------
+
+  // The script (by its hash) and the match a run answers; null while
+  // either can't run or the generated matches are in use. A run is asked
+  // when this changes, after a pause.
   const runKey = createMemo((): string | null => {
     const h = check()?.hash;
-    return !runWhy() && h ? `${h}\n${JSON.stringify(buildScenario(scenario()))}` : null;
+    return custom() && !runWhy() && h ? `${h}\n${JSON.stringify(buildScenario(scenario()))}` : null;
   });
   let runTimer: ReturnType<typeof setTimeout> | undefined;
   let runFlight: AbortController | undefined;
@@ -419,7 +497,7 @@ export default function RulesPage() {
     if (key && key !== ran()?.key) runTimer = setTimeout(() => void run(), RUN_DELAY_MS);
   }));
   const stale = () => !!ran() && ran()?.key !== runKey();
-  onCleanup(() => { clearTimeout(timer); clearTimeout(runTimer); inflight?.abort(); runFlight?.abort(); });
+  onCleanup(() => { clearTimeout(timer); clearTimeout(runTimer); clearTimeout(simTimer); inflight?.abort(); runFlight?.abort(); simFlight?.abort(); });
 
   async function save() {
     const me = identity.me(), wk = live.wellKnown();
@@ -616,11 +694,56 @@ export default function RulesPage() {
             </div>
 
             <div class="s-rules-test">
-              <Panel title="Test scenario" sub="a fake game: who is in it and what happens when" class="s-rules-testbox">
-                <ScenarioEditor scenario={scenario()} set={(f) => setScenario(f)} problems={issues()} />
+              <Panel title="Test" sub="generated matches on a fake game" right={simming() ? "playing..." : simStale() ? "out of date" : ""} class="s-rules-testbox">
+                <div class="s-rules-scenario">
+                  <SimStrip setup={setup()} set={(f) => setSetup(f)} />
+                  <BatchView
+                    sim={sim()?.result ?? null}
+                    setup={setup()}
+                    busy={simming()}
+                    blocked={simWhy()}
+                    stale={simStale()}
+                    trouble={simTrouble()}
+                    errors={simErrors()}
+                    shown={custom() ? null : shownMatch()?.seed ?? null}
+                    onSeed={(seed) => { setCustom(false); showSeed(seed); }}
+                    onRetry={() => void simulate()}
+                    onJump={jumpTo}
+                  />
+                  <details class="s-rules-hand" open={custom()} onToggle={(e) => { const open = e.currentTarget.open; if (open !== custom()) { if (open) editMatch(); else setCustom(false); } }}>
+                    <summary>Edit this match <small>for an exact case, event by event</small></summary>
+                    <Show when={custom()}>
+                      <ScenarioEditor scenario={scenario()} set={(f) => setScenario(f)} problems={issues()} />
+                    </Show>
+                  </details>
+                </div>
               </Panel>
-              <Panel title="Results" sub="who scored, when and why" right={running() ? "running..." : stale() ? "out of date" : ""} class="s-rules-testbox">
-                <ResultsView ran={ran()} running={running()} blocked={runWhy()} stale={stale()} trouble={runTrouble()} errors={runErrors()} onRun={() => void run()} onJump={jumpTo} />
+              <Panel
+                title="Match"
+                sub={custom() ? "your edited match: who scored, when and why" : "one of the matches: who scored, when and why"}
+                right={custom() ? (running() ? "running..." : stale() ? "out of date" : "") : simming() ? "playing..." : simStale() ? "out of date" : ""}
+                class="s-rules-testbox"
+              >
+                <MatchBar
+                  seed={shownMatch()?.seed ?? null}
+                  rows={sim()?.result.rows ?? []}
+                  custom={custom()}
+                  onSeed={showSeed}
+                  onEdit={editMatch}
+                  onBack={() => setCustom(false)}
+                />
+                <Show
+                  when={custom()}
+                  fallback={
+                    <ResultsView
+                      ran={generated()} running={simming()} blocked={simWhy()} stale={simStale()} trouble={null} errors={[]}
+                      again="Play again" hint="Plays by itself when the script or the setup changes."
+                      onRun={() => void simulate(picked() ? shownMatch()?.seed : undefined)} onJump={jumpTo}
+                    />
+                  }
+                >
+                  <ResultsView ran={ran()} running={running()} blocked={runWhy()} stale={stale()} trouble={runTrouble()} errors={runErrors()} onRun={() => void run()} onJump={jumpTo} />
+                </Show>
               </Panel>
             </div>
           </div>

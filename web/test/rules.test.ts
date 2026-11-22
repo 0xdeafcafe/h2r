@@ -3,16 +3,19 @@
 // scenario built into the run request, the trace as lines, errors mapped
 // onto the text, the editor's tab key, drafts, the calls with their token
 // scope, times as typed, the scenario's quick edits, the results as a
-// timeline and standings, failures in words, why a button is off, and the
-// mock's routes. Every gamertag and script is invented.
+// timeline and standings, failures in words, why a button is off, the
+// generated matches (the setup, the request, the answer, its warnings),
+// and the mock's routes. Every gamertag and script is invented.
 
 import { describe, expect, test } from "bun:test";
 import {
-  CONTENT_WRITE, DRAFT_KEY, INDENT, TOOLS_MISSING, buildScenario, checkRules, defaultScenario, describeEvent, explainFailure,
-  faultLabel, formatCall, gutter, lineAt, loadDraft, meter, moveEvent, newEvent, nextEventTick, nextSlot, offsetOf, parseCheck,
-  parseTickTime, parseTrace, problemCount, problemPlace, runBlocked, runFailed, runRules, saveBlocked, saveDraft, saveRules,
-  scenarioProblems, signed, sortEvents, standings, tabKey, teamStandings, tickTime, timeline, toolsAfter, traceLines,
-  variantBlocked, whyOff, wireEvent, withEvent, type CheckResult, type Gate, type ScenarioDraft, type Trace,
+  CONTENT_WRITE, DRAFT_KEY, INDENT, MAX_SEED, SIM_MATCHES, SPAWNED_BASE, TOOLS_MISSING, UNIT_BASE, buildScenario, checkRules,
+  defaultScenario, defaultSetup, describeEvent, draftOfWire, endLabel, explainFailure, faultLabel, formatCall, gutter, lineAt,
+  loadDraft, meter, moveEvent, neighbourSeed, newEvent, nextEventTick, nextSlot, objectName, ofMatches, offsetOf, parseCheck,
+  parseSetup, parseSim, parseTickTime, parseTrace, problemCount, problemPlace, rerolled, runBlocked, runFailed, runRules,
+  saveBlocked, saveDraft, saveRules, scenarioProblems, shortTime, signed, simFailed, simRequest, simWarnings, simulateRules,
+  sortEvents, standings, tabKey, teamStandings, tickTime, timeline, toolsAfter, traceLines, variantBlocked, whyOff, winnerName,
+  wireEvent, withEvent, type CheckResult, type Gate, type ScenarioDraft, type SimResult, type Trace,
 } from "../src/lib/rules";
 import { ApiError } from "../src/api/http";
 import type { LocalAccount } from "../src/state/account";
@@ -364,12 +367,21 @@ describe("drafts", () => {
     const s = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
     expect(loadDraft(s, "fresh").source).toBe("fresh");
     const scenario = { ...defaultScenario(), ticks: 99 };
-    saveDraft(s, { source: SRC, scenario });
-    expect(loadDraft(s, "fresh")).toEqual({ source: SRC, scenario });
+    expect(loadDraft(s, "fresh").setup).toEqual(defaultSetup());
+    expect(loadDraft(s, "fresh").custom).toBe(false);
+    const setup = { players: 6, teamPlay: true, seed: 77 };
+    saveDraft(s, { source: SRC, scenario, setup, custom: true });
+    expect(loadDraft(s, "fresh")).toEqual({ source: SRC, scenario, setup, custom: true });
+    // A match opened from a generated one keeps its record and objects.
+    const made = { ...scenario, variant: { team_play: 0, score_limit: 25 }, objects: [{ id: 256, label: "hill_corner", number: 0, team: null }] };
+    saveDraft(s, { source: SRC, scenario: made, setup, custom: true });
+    expect(loadDraft(s, "fresh").scenario).toEqual(made);
     store.set(DRAFT_KEY, "{not json");
     expect(loadDraft(s, "fresh").source).toBe("fresh");
     store.set(DRAFT_KEY, JSON.stringify({ source: "x", scenario: { events: [{ tick: 1, type: "fly" }], ticks: "ten" } }));
     const d = loadDraft(s, "fresh");
+    expect(d.setup).toEqual(defaultSetup());
+    expect(d.custom).toBe(false);
     expect(d.scenario.events).toEqual([]);
     expect(d.scenario.ticks).toBe(defaultScenario().ticks);
     expect(loadDraft(null, "fresh").source).toBe("fresh");
@@ -430,12 +442,241 @@ describe("the mock's workbench", async () => {
 
   test("with the tools off every route is a server from before them", async () => {
     const m = new MockRules(new World(), false);
-    for (const [path, method] of [["/v1/rules/check", "POST"], ["/v1/rules/run", "POST"], ["/v1/rules/builtin", "GET"], ["/v1/rules/ide", "POST"]] as const) {
+    for (const [path, method] of [["/v1/rules/check", "POST"], ["/v1/rules/run", "POST"], ["/v1/rules/simulate", "POST"], ["/v1/rules/builtin", "GET"], ["/v1/rules/ide", "POST"]] as const) {
       const r = await m.handle(new Request(`http://m${path}`, { method, body: method === "POST" ? JSON.stringify({ source: SRC }) : undefined }), new URL(`http://m${path}`));
       expect(r!.status).toBe(404);
       const body = r!.body as { error: string; message: string };
       expect(explainFailure(new ApiError(r!.status, body.error, body.message)).missing).toBe(true);
     }
     expect(await m.handle(new Request("http://m/v1/other"), new URL("http://m/v1/other"))).toBeNull();
+  });
+});
+
+describe("generated matches", () => {
+  const wire = {
+    players: [{ slot: 0, team: 0, lives: 0 }, { slot: 1, team: 1, lives: 0 }],
+    objects: [{ id: 256, label: "hill_corner", number: 0, team: null }, { id: 257, label: "ctf_flag_return", number: 1, team: 1 }],
+    teams: [0, 1],
+    variant: { team_play: 1, score_limit: 50, time_limit: 300 },
+    options: null, seed: 9, round_time: 9000, ticks: 400, start: true,
+    timeline: [
+      { tick: 12, events: [{ type: "enter", zone: 256, object: 4097 }, { type: "pickup", player: 0, object: 16384 }] },
+      { tick: 40, events: [{ type: "kill", victim: 1, killer: 0 }, { type: "fly" }, { type: "actor_kill", killer: null, class: "grunt" }] },
+    ],
+  };
+  const summary = {
+    asked: 25, ran: 24,
+    wins: [{ winner: { kind: "team", index: 0 }, matches: 14 }, { winner: { kind: "team", index: 1 }, matches: 9 }, { winner: { kind: "draw" }, matches: 1 }],
+    ends: [{ end: "score_limit", matches: 22 }, { end: "time_limit", matches: 2 }],
+    avg_score: 49.5, max_score: 50, avg_ticks: 5700, max_ticks: 9000,
+    worst_tick_ops: 112, worst_tick_seed: 14, budget: 20000,
+    errors: [{ seed: 17, message: "script error at tick 4, in on kill, op 2: a table row is out of range" }],
+    flags: [{ kind: "nobody_scores", text: "nobody scored in 3 of 24 matches", seed: 11, matches: 3 }, { kind: "never_ran", text: "on spawn never ran", seed: 9, matches: 24 }],
+    stopped: "24 of 25 matches ran: a batch starts no match past 24000000 ops or 400000 ticks",
+  };
+  const answer = {
+    ok: true, teams: 2, summary,
+    rows: [
+      { seed: 9, end: "score_limit", winner: { kind: "team", index: 0 }, ticks: 400, top_score: 50, ops: 900, worst_tick_ops: 14 },
+      { seed: 10, end: "time_limit", winner: { kind: "draw" }, ticks: 9000, top_score: 31, ops: 800, worst_tick_ops: 14 },
+    ],
+    match: {
+      seed: 9, end: "score_limit", why: null, winner: { kind: "team", index: 0 }, top_score: 50, scenario: wire,
+      trace: { ok: true, hash: "ab".repeat(32), ticks: [], last_tick: 400, error: null, round_ended: null, limit: "score", cut: null, ops: 900, worst_tick_ops: 14, scores: [{ slot: 0, score: 50 }, { slot: 1, score: 3 }] },
+    },
+  };
+
+  test("a setup stays in range, and the die never lands on the same seed", () => {
+    expect(defaultSetup()).toEqual({ players: 8, teamPlay: false, seed: 1 });
+    expect(parseSetup({ players: 40, teamPlay: true, seed: -3 })).toEqual({ players: 16, teamPlay: true, seed: 0 });
+    expect(parseSetup({ players: 1, teamPlay: "yes", seed: 2.5 })).toEqual({ players: 2, teamPlay: false, seed: 1 });
+    expect(parseSetup(null)).toEqual(defaultSetup());
+    expect(rerolled(5, () => 0)).toBe(1);
+    expect(rerolled(1, () => 0)).toBe(2);
+    expect(rerolled(MAX_SEED, () => 0.9999999)).toBe(1);
+    for (let i = 0; i < 50; i++) { const s = rerolled(7); expect(s).not.toBe(7); expect(s >= 1 && s <= MAX_SEED).toBe(true); }
+  });
+
+  test("the request names the players, the teams, the seed and how many", () => {
+    expect(simRequest(SRC, { players: 6, teamPlay: true, seed: 4 }, SIM_MATCHES)).toEqual({ source: SRC, players: 6, teams: 2, seed: 4, matches: 25 });
+    expect(simRequest(SRC, { players: 6, teamPlay: false, seed: 4 }, 1, 11)).toEqual({ source: SRC, players: 6, teams: 0, seed: 11, matches: 1 });
+  });
+
+  test("a match's scenario reads into a draft and builds back into a run", () => {
+    const d = draftOfWire(wire);
+    expect(d.players).toEqual(wire.players);
+    expect(d.teamPlay).toBe(true);
+    expect(d.seed).toBe(9);
+    expect(d.ticks).toBe(400);
+    expect(d.roundTime).toBe(9000);
+    expect(d.variant).toEqual(wire.variant);
+    expect(d.objects).toEqual(wire.objects);
+    // An event type the page does not know is left out; the rest keep their order.
+    expect(d.events).toEqual([
+      { tick: 12, type: "enter", zone: 256, object: 4097 },
+      { tick: 12, type: "pickup", player: 0, object: 16384 },
+      { tick: 40, type: "kill", victim: 1, killer: 0 },
+      { tick: 40, type: "actor_kill", killer: null, class: "grunt" },
+    ]);
+    const built = buildScenario(d);
+    expect(built.variant).toEqual(wire.variant);
+    expect(built.objects).toEqual(wire.objects);
+    expect(built.timeline).toEqual([
+      { tick: 12, events: wire.timeline[0]!.events },
+      { tick: 40, events: [{ type: "kill", victim: 1, killer: 0 }, { type: "actor_kill", killer: null, class: "grunt" }] },
+    ]);
+    // Turning team play off in the editor wins over the record's field.
+    expect((buildScenario({ ...d, teamPlay: false }).variant as Record<string, number>).team_play).toBe(0);
+    expect(scenarioProblems(d)).toEqual([]);
+    expect(draftOfWire(null)).toEqual({ players: [], events: [], ticks: 0, roundTime: 0, seed: 0, teamPlay: false });
+  });
+
+  test("objects read by what they are", () => {
+    const objects = draftOfWire(wire).objects!;
+    expect(objectName(UNIT_BASE + 3)).toBe("Player 3");
+    expect(objectName(256, objects)).toBe("hill_corner 0");
+    expect(objectName(257, objects)).toBe("ctf_flag_return (team 1)");
+    expect(objectName(SPAWNED_BASE, objects)).toBe("objective 1");
+    expect(objectName(77, objects)).toBe("object 77");
+    expect(describeEvent({ tick: 0, type: "enter", zone: 256, object: UNIT_BASE + 1 }, objects)).toBe("Player 1 entered hill_corner 0");
+    expect(describeEvent({ tick: 0, type: "pickup", player: 0, object: SPAWNED_BASE }, objects)).toBe("Player 0 picked up objective 1");
+    expect(describeEvent({ tick: 0, type: "bounce", player: 2, object: 513 })).toBe("Player 2 bounced on object 513");
+    expect(describeEvent({ tick: 0, type: "actor_kill", killer: 2, class: "grunt" })).toBe("Player 2 killed a grunt");
+    expect(describeEvent({ tick: 0, type: "squad_dead", squad: 3 })).toBe("Squad 3 died");
+    expect(wireEvent({ tick: 1, type: "actor_assist", killer: 1, class: "elite" })).toEqual({ type: "actor_assist", killer: 1, assist: null, class: "elite" });
+    expect(newEvent("squad_dead", 9, [])).toEqual({ tick: 9, type: "squad_dead", squad: 0 });
+  });
+
+  test("an answer reads back with its summary, rows and match", () => {
+    const r = parseSim(answer) as SimResult;
+    expect(simFailed(r)).toBe(false);
+    expect(r.teams).toBe(2);
+    expect(r.summary!.wins[0]).toEqual({ winner: { kind: "team", index: 0 }, matches: 14 });
+    expect(r.summary!.wins[2]!.winner).toEqual({ kind: "draw", index: null });
+    expect(r.summary!.ends).toEqual([{ end: "score_limit", matches: 22 }, { end: "time_limit", matches: 2 }]);
+    expect(r.rows.map((x) => x.seed)).toEqual([9, 10]);
+    expect(r.match.seed).toBe(9);
+    expect(r.match.trace.limit).toBe("score");
+    expect(r.match.scenario.events.length).toBe(4);
+    // The existing results read a generated match unchanged.
+    expect(standings(r.match.trace, r.match.scenario).map((s) => [s.slot, s.team, s.score])).toEqual([[0, 0, 50], [1, 1, 3]]);
+    expect(timeline(r.match.trace, r.match.scenario)[0]!.happened).toEqual(["Player 1 entered hill_corner 0", "Player 0 picked up objective 1"]);
+    expect(traceLines(r.match.trace)).toEqual(["the game ended at tick 400 on the score limit"]);
+
+    const f = parseSim({ ok: false, errors: [{ line: 2, col: 1, message: "nope" }] });
+    expect(simFailed(f)).toBe(true);
+    const junk = parseSim({ ok: true, summary: 7, rows: "x", match: { end: "exploded", winner: 3 } }) as SimResult;
+    expect(junk.summary).toBeNull();
+    expect(junk.rows).toEqual([]);
+    expect(junk.match.end).toBe("cap");
+    expect(junk.match.winner).toEqual({ kind: "nobody", index: null });
+    expect(junk.match.trace.ticks).toEqual([]);
+  });
+
+  test("winners, endings and lengths read as words", () => {
+    const team = (n: number) => `${["Red", "Blue"][n]} team`;
+    expect(winnerName({ kind: "player", index: 3 })).toBe("Player 3");
+    expect(winnerName({ kind: "team", index: 1 }, team)).toBe("Blue team");
+    expect(winnerName({ kind: "draw", index: null })).toBe("Draw");
+    expect(winnerName({ kind: "nobody", index: null })).toBe("Nobody");
+    expect(endLabel("score_limit")).toBe("Score limit");
+    expect(endLabel("cap")).toBe("Never ended");
+    expect(ofMatches(9, 25)).toBe("9 of 25");
+    expect(shortTime(5700)).toBe("3:10");
+    expect(shortTime(0)).toBe("0:00");
+  });
+
+  test("warnings list errors first, each with the seed that shows it", () => {
+    const r = parseSim(answer) as SimResult;
+    expect(simWarnings(r.summary!)).toEqual([
+      { text: "Script error at tick 4, in on kill, op 2: a table row is out of range", seed: 17, bad: true },
+      { text: "Nobody scored in 3 of 24 matches", seed: 11, bad: false },
+      { text: "On spawn never ran", seed: 9, bad: false },
+      { text: "24 of 25 matches ran: a batch starts no match past 24000000 ops or 400000 ticks", seed: null, bad: false },
+    ]);
+    expect(simWarnings({ ...r.summary!, errors: [], flags: [], stopped: null })).toEqual([]);
+    expect(simWarnings({ ...r.summary!, errors: [], stopped: null, flags: [{ kind: "never_ends", text: "the game never ended in every match (20 minutes passed)", seed: 2, matches: 5 }] })[0]!.bad).toBe(true);
+  });
+
+  test("a match's neighbours are the seeds beside it", () => {
+    const rows = (parseSim(answer) as SimResult).rows;
+    expect(neighbourSeed(rows, 9, 1)).toBe(10);
+    expect(neighbourSeed(rows, 9, -1)).toBeNull();
+    expect(neighbourSeed(rows, 10, 1)).toBeNull();
+    expect(neighbourSeed(rows, 99, 1)).toBeNull();
+  });
+
+  test("simulate posts the setup and passes its signal on", async () => {
+    const { f, calls } = recorder(() => json(answer));
+    const stop = new AbortController();
+    const r = await simulateRules("http://x/v1", SRC, { players: 4, teamPlay: true, seed: 9 }, 25, undefined, f, stop.signal);
+    expect(simFailed(r)).toBe(false);
+    expect(calls[0]!.url).toBe("http://x/v1/rules/simulate");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ source: SRC, players: 4, teams: 2, seed: 9, matches: 25 });
+    expect(calls[0]!.init.signal).toBe(stop.signal);
+    await simulateRules("http://x/v1", SRC, { players: 4, teamPlay: false, seed: 9 }, 1, 12, f);
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ source: SRC, players: 4, teams: 0, seed: 12, matches: 1 });
+  });
+});
+
+describe("the mock's generated matches", async () => {
+  const { MockRules, mockSimulate } = await import("../mock/rules");
+  const { World } = await import("../mock/world");
+  const call = async (body: unknown) => {
+    const m = new MockRules(new World());
+    return m.handle(new Request("http://m/v1/rules/simulate", { method: "POST", body: JSON.stringify(body) }), new URL("http://m/v1/rules/simulate"));
+  };
+
+  test("the same seed gives the same batch, and another seed another", async () => {
+    const a = await call({ source: SRC, players: 4, seed: 3, matches: 5 });
+    const b = await call({ source: SRC, players: 4, seed: 3, matches: 5 });
+    expect(a!.status).toBe(200);
+    expect(a!.body).toEqual(b!.body);
+    const c = await call({ source: SRC, players: 4, seed: 4, matches: 5 });
+    expect(JSON.stringify(c!.body)).not.toBe(JSON.stringify(a!.body));
+  });
+
+  test("a batch sums up its matches in the server's shape", async () => {
+    const r = parseSim((await call({ source: SRC, players: 6, teams: 2, seed: 3, matches: 8 }))!.body) as SimResult;
+    expect(simFailed(r)).toBe(false);
+    expect(r.teams).toBe(2);
+    expect(r.rows.map((x) => x.seed)).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+    const s = r.summary!;
+    expect([s.asked, s.ran, s.budget]).toEqual([8, 8, 20000]);
+    expect(s.wins.reduce((n, w) => n + w.matches, 0)).toBe(8);
+    expect(s.ends.reduce((n, e) => n + e.matches, 0)).toBe(8);
+    expect(s.max_score).toBe(Math.max(...r.rows.map((x) => x.top_score)));
+    expect(r.match.seed).toBe(3);
+    expect(r.match.scenario.players.length).toBe(6);
+    expect(r.match.scenario.teamPlay).toBe(true);
+    expect(r.match.scenario.events.every((e) => e.type === "kill")).toBe(true);
+    expect(r.rows[0]!.winner).toEqual(r.match.winner);
+    // A match that reached the limit ends at its last kill.
+    if (r.match.end === "score_limit") expect(r.match.trace.last_tick).toBe(r.match.scenario.events.at(-1)!.tick);
+    // The page's standings and timeline read it.
+    expect(standings(r.match.trace, r.match.scenario).length).toBe(6);
+    expect(timeline(r.match.trace, r.match.scenario).length).toBe(r.match.scenario.events.length);
+  });
+
+  test("one match has no summary, and its scenario runs again to the same scores", async () => {
+    const m = new MockRules(new World());
+    const one = parseSim((await call({ source: SRC, seed: 21 }))!.body) as SimResult;
+    expect(one.summary).toBeNull();
+    expect(one.rows).toEqual([]);
+    expect(one.match.scenario.players.length).toBe(8);
+    const again = await m.handle(new Request("http://m/v1/rules/run", { method: "POST", body: JSON.stringify({ source: SRC, scenario: buildScenario(one.match.scenario) }) }), new URL("http://m/v1/rules/run"));
+    expect((parseTrace(again!.body) as Trace).scores).toEqual(one.match.trace.scores);
+  });
+
+  test("a script that scores nothing is flagged, a broken one reads as its errors, a bad setup is refused", async () => {
+    const idle = mockSimulate('rules "Idle" 1\ncarrier slayer\non tick {\n}\n', { players: 4, matches: 3 }) as unknown as { summary: { flags: Array<{ kind: string; seed: number }> } };
+    expect(idle.summary.flags.map((f) => f.kind)).toEqual(["nobody_scores", "clock"]);
+    expect(idle.summary.flags[0]!.seed).toBe(1);
+    const broken = parseSim((await call({ source: "carrier slayer" }))!.body);
+    expect(simFailed(broken)).toBe(true);
+    for (const bad of [{ players: 0 }, { players: 17 }, { teams: 9 }, { matches: 0 }, { matches: 101 }, { seed: "x" }]) {
+      expect((await call({ source: SRC, ...bad }))!.status).toBe(400);
+    }
+    expect((await call({ players: 4 }))!.status).toBe(400);
   });
 });
