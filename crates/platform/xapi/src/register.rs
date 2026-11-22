@@ -598,7 +598,8 @@ impl GuestMemory for RuntimeMemory<'_> {
 /// 5. lock XAPI again and `acknowledge_signals`.
 ///
 /// Returns the first error after all five steps ran, so a failed write or
-/// signal never skips the acknowledgement of the others.
+/// signal never skips the acknowledgement of the others. With no signal
+/// owed, steps 4 and 5 have nothing to do and XAPI is not locked again.
 pub fn service_input<S: Storage>(
     runtime: &Runtime,
     xapi: &Mutex<Xapi<S>>,
@@ -610,6 +611,9 @@ pub fn service_input<S: Storage>(
         let written = x.sync_input(&mut RuntimeMemory::new(&mut guard));
         (written, x.take_signals())
     };
+    if batch.is_empty() {
+        return written;
+    }
     let report = batch.deliver(events);
     let acknowledged = lock(xapi).acknowledge_signals(report);
     written.and(acknowledged)

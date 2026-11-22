@@ -513,6 +513,7 @@ fn seat_at(m: &dyn GuestMemory, slot: u32) -> Result<Option<SlotSeat>, MemFault>
 impl super::Phantom {
     /// The whole sample at this phantom's own gather ([`think::Mode::Serial`]).
     fn serial_pad(&mut self, m: &dyn GuestMemory, tick: u32) -> Report {
+        let _timer = think::GameThreadTimer::start();
         self.reset_source_if_due();
         let mut source = lock_source(&self.source);
         let pad = source.pad(&Frame {

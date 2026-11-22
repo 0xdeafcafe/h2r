@@ -2,6 +2,61 @@
 
 Evidence for [../sim-10x.md](../sim-10x.md). Newest first.
 
+## 2026-11-22: lane C1's read, the title's no-sound path
+
+Commit: `4386d06aa`. Method: static reading of retail `default.xbe`
+(5849) with `h2 disasm`, plus a call graph from a linear sweep of `.text`
+(`h2 disasm 0x12000 1300000`). Reproduce with the addresses below.
+
+**Where creation failure goes.** The sound core's init `0x21e4b0` calls
+`DirectSoundCreate` at `0x21e516` and branches on a negative HRESULT
+(`jl 0x21eacc`, `0x21e51d`). That exit tears down through `0x21eae0`, which
+null-checks the interface at `[[0x51ebe4] + 0x2ab0]` before releasing it,
+and returns 0. The real library writes `*ppDS` only on success (the store
+at `0x37d7c5` is skipped by `jl 0x37d7c7`), so the slot stays the zero the
+init cleared. The sound manager's init `0x1253d0` (lifecycle slot 44 at
+`0x440dd8 + 44 * 0x24`) then skips to `0x1255e9`: the manager's
+initialized byte `[[0x4e6380] + 0x78]` stays 0 and its record count
+`+0x208` stays 0.
+
+**What the manager tests afterwards.** The byte at `+0x78` gates the
+service `0x125b40` (`0x125b4f`, skipping to `0x125d17`), the active test
+`0x125a60` (which gates the periodic path `0x125d60`), and the entries at
+`0x1257b0`, `0x125920`, `0x125f70`, `0x126400`, `0x1264c0` and `0x126c30`.
+`0x1293f0` has no test of its own; its record loop runs zero times when
+`+0x208` is 0, and it is reached only from gated callers.
+
+**What does not test it.** Two paths call DirectSound with the handles a
+failed creation never filled:
+
+- **Every map load.** Lifecycle slot 44 is `{0x1253d0, 0x125600,
+  0x125690, 0x1257b0, 0x125920, 0x175f40}`. The third pointer, the
+  per-map init `0x125690`, has no gate and calls `0x191270` at
+  `0x12576e`, which passes `[[0x51ebe4] + 0x2ab0]` (zero) to
+  `IDirectSound_SetEffectData` (`0x37b60d`) three times. The library's
+  wrapper keeps a null `this` null and `CDirectSound::SetEffectData`
+  (`0x37a2ed`) reads `[this + 0xc]` at `0x37a31b`. Its only early exit is
+  the library's fatal flag `[0x386b0c]`, set solely at `0x37ef53`, not by a
+  failed create. On the console this is a null read, a fault.
+- **Pause and unpause.** `0x125a90` (from `0x1482e2`, `0x18fa48` and
+  `0x232087`: the pause screen, unpause and the controller check
+  `0x18f9be`) tests only `+0x7b`. Pausing calls `0x21f570`, unpausing
+  `0x21f5a0`, and both call `IDirectSoundBuffer_Pause` (`0x37b73f`) on
+  `[[0x51ebe4] + 0x2a90]` and `+0x2a94`, buffers made only on the success
+  path.
+
+**Verdict.** The title has a partial no-sound path: the service and the
+play entries are gated, but its own per-map init dereferences the
+DirectSound interface it never created. A sim booted with creation refused
+would stop at the first map load, in the HLE as a `BadHandle` stop on
+`IDirectSound_SetEffectData`, as a fault on the console. Making it run
+would need the HLE to answer calls on a null interface, behaviour the
+retail library does not have, or a stub of the guest's per-map init. Lane
+C1 stops here; `impl.sim.sound-off` is not built.
+
+The other three `DirectSoundCreate` callers (`0x33334f`, `0x3338b0`,
+`0x334167`) are the XHV voice engine, not the sound manager.
+
 ## 2026-11-22: the Lockout budget model (arithmetic, not a measurement)
 
 Commit: none; computed from the tables of

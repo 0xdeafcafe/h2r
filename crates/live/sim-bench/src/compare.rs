@@ -468,6 +468,7 @@ mod tests {
             kills: vec![],
             nav: "loaded".into(),
             dispatch_per_tick: None,
+            flat: None,
             notes: vec![],
         }
     }

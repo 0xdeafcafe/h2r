@@ -402,8 +402,12 @@ fn sim_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             rest.push(a);
         }
     }
-    let simbench::Parsed { mut req, path, wait, to } = simbench::parse_args(rest)?;
+    let simbench::Parsed { mut req, path, data, wait, to } = simbench::parse_args(rest)?;
     let loaded = simbench::load_files(&path)?;
+    // The bots' meshes come from this Mac's data root; a map without one
+    // is refused before anything syncs.
+    let root = data.unwrap_or_else(content::store::default_data_root);
+    req.data = simbench::bot_data(&loaded.maps, &root)?;
     req.file = loaded.file;
     req.batch = loaded.batch;
     req.files = loaded.files;
