@@ -13,6 +13,7 @@ pub mod caps;
 pub mod fake;
 pub mod ide;
 pub mod ir;
+pub mod labels;
 pub mod lang;
 pub mod policy;
 pub mod scenario;

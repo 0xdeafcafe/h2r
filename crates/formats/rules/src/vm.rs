@@ -808,7 +808,7 @@ impl Vm {
                 let inside = self.ir.palettes.get(palette as usize).is_some_and(|pal| {
                     pal.tags
                         .iter()
-                        .any(|&t| self.ir.tags.get(t as usize).is_some_and(|tag| tag == p.tag))
+                        .any(|&t| self.ir.tags.get(t as usize).is_some_and(|tag| tag.path == p.tag))
                 });
                 if !inside {
                     return Err(ProposalRefusal::OutsidePalette(p.tag.to_string()));
@@ -1009,8 +1009,14 @@ fn to_arg(ir: &Ir, ty: Ty, v: i32) -> Arg {
         Ty::Object => Arg::Object(u32::try_from(v).ok()),
         Ty::Squad => Arg::Squad(opt_u8(v).unwrap_or(0)),
         Ty::Class => Arg::Class(string(&ir.strings, v)),
-        Ty::Tag => Arg::Tag(string(&ir.tags, v)),
-        Ty::Label => Arg::Label(string(&ir.labels, v).unwrap_or_default()),
+        Ty::Tag => Arg::Tag(usize::try_from(v).ok().and_then(|i| ir.tags.get(i)).map(|t| t.path.clone())),
+        Ty::Label => Arg::Label(
+            usize::try_from(v)
+                .ok()
+                .and_then(|i| ir.labels.get(i))
+                .map(|l| l.text.clone())
+                .unwrap_or_default(),
+        ),
         Ty::Text => Arg::Text(string(&ir.strings, v).unwrap_or_default()),
         Ty::Enum(_) => Arg::Enum(opt_u8(v).unwrap_or(0)),
     }
@@ -1292,13 +1298,17 @@ impl<'a> Run<'a> {
             SetBase::Players => sorted_small(game.players(), MAX_PLAYERS),
             SetBase::Teams => sorted_small(game.teams(), MAX_TEAMS),
             SetBase::Labelled(l) => {
-                let mut placed = game.labelled(&self.ir.labels[l as usize]);
+                // The label's max bounds the set on any map, checked or not:
+                // the verifier's estimate counts no more.
+                let def = &self.ir.labels[l as usize];
+                let max = (def.max as usize).min(MAX_LABELLED);
+                let mut placed = game.labelled(&def.text);
                 placed.sort();
                 placed.dedup_by_key(|p| p.object);
                 placed
                     .into_iter()
                     .filter_map(|p| i32::try_from(p.object).ok())
-                    .take(MAX_LABELLED)
+                    .take(max)
                     .collect()
             }
             SetBase::Objectives => {
@@ -1416,6 +1426,32 @@ mod tests {
         assert_eq!(splitmix64(&mut s), 0xe220_a839_7b1d_cdaf);
         assert_eq!(splitmix64(&mut s), 0x6e78_9e6a_a1b9_65f4);
         assert_eq!(splitmix64(&mut s), 0x06c4_5d18_8009_454f);
+    }
+
+    #[test]
+    fn a_labelled_set_visits_at_most_its_label_max() {
+        let src = "rules \"Bound\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+                   on tick { for each objects labelled \"crate\" o { n = n + 1 } }\n";
+        let run = |max: Option<u16>, placed: u32| {
+            let (mut ir, _) = crate::build(src).unwrap();
+            assert_eq!(ir.labels[0].max as usize, MAX_LABELLED);
+            if let Some(max) = max {
+                ir.labels[0].max = max;
+            }
+            let mut vm = Vm::new(ir, 0, 0).unwrap();
+            let mut g = crate::fake::FakeGame::with_players(0);
+            for i in 0..placed {
+                g.label("crate", 1000 + i, 0, i);
+            }
+            vm.begin_tick(1);
+            vm.update(&mut g);
+            vm.global("n")
+        };
+        // The map holds 10; the label allows 3, so the loop visits 3.
+        assert_eq!(run(Some(3), 10), Some(3));
+        assert_eq!(run(Some(3), 2), Some(2));
+        // With no stated limit the set visits the first 256.
+        assert_eq!(run(None, 300), Some(MAX_LABELLED as i32));
     }
 
     #[test]

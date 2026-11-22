@@ -456,11 +456,11 @@ pub fn value_text(ir: &Ir, ty: Ty, v: i32) -> String {
         Ty::Tag => ir
             .tags
             .get(v as usize)
-            .map_or_else(|| "none".into(), |s| format!("{s:?}")),
+            .map_or_else(|| "none".into(), |t| format!("{:?}", t.path)),
         Ty::Label => ir
             .labels
             .get(v as usize)
-            .map_or_else(|| "?".into(), |s| format!("labelled {s:?}")),
+            .map_or_else(|| "?".into(), |l| format!("labelled {:?}", l.text)),
         Ty::Enum(e) => ir
             .enums
             .get(e as usize)
