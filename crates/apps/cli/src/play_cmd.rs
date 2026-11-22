@@ -794,6 +794,9 @@ pub(crate) fn run_with_theater(
     config.closer = Some(closer.clone());
     let interrupted = watch_signals(closer);
     crate::boot_cmd::start_memory_watch(&opts.data_root);
+    // Under `h2 follow`, a restart exits for the follower to start the
+    // next build; on its own, `h2 play` starts itself again.
+    let followed = follow_status.is_some();
     // After the signal mask is set, so the reader thread inherits it.
     #[cfg(unix)]
     if let Some(path) = follow_status {
@@ -909,9 +912,18 @@ pub(crate) fn run_with_theater(
     drop(session);
     #[cfg(unix)]
     if report.restart_requested {
-        println!("play: restarting into the update");
-        std::process::exit(crate::follow::RESTART_EXIT);
+        if followed {
+            println!("play: restarting into the update");
+            std::process::exit(crate::follow::RESTART_EXIT);
+        }
+        // F5 on the window's "the game stopped" notice.
+        if let Some(restart) = restart_in_place() {
+            println!("play: starting the game again");
+            restart().map_err(anyhow::Error::msg)?;
+        }
     }
+    #[cfg(not(unix))]
+    let _ = followed;
     Ok(())
 }
 

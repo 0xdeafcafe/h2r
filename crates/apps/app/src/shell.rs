@@ -826,8 +826,17 @@ impl ApplicationHandler<UserEvent> for Shell {
                     self.exit = Some(e);
                 }
                 if self.config.keep_open_on_guest_exit {
+                    // Say what happened over the last frame, and offer F5
+                    // to start again (docs/runtime/app.md "When the game
+                    // stops").
+                    if let Some(notice) = self.exit.as_ref().and_then(crate::overlay::stopped_notice) {
+                        self.config.banner.get_or_insert_with(crate::Banner::new).set(Some(notice));
+                    }
                     self.status.last = Instant::now() - Duration::from_secs(2);
                     self.update_status();
+                    if let Some(g) = &self.gpu {
+                        g.window.request_redraw();
+                    }
                 } else {
                     self.close(event_loop, "the guest exited");
                 }
@@ -990,7 +999,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                             }
                         } else if banner.restart_offered() {
                             self.restart_requested = true;
-                            self.close(event_loop, "F5: restart for update");
+                            self.close(event_loop, "F5: restart");
                         }
                     }
                     return;
