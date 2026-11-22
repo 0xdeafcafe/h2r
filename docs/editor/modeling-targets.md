@@ -104,9 +104,10 @@ and the session marks the target collision-stale; the viewport's
 collision overlay shows the difference. Changing the collision is three
 steps of rising risk.
 
-1. **The compiler** (the proposed `collision-build` crate, beside `mopp` and
-   `pathfind`). `build(polygons: &[Polygon]) -> Result<Bsp>` from convex,
-   planar polygons with a material and flags each:
+1. **The compiler** (`crates/tools/collision-build`, built; modeling.md,
+   "The collision compiler"). `build(polygons: &[Polygon]) ->
+   Result<Compiled>` (the `Bsp` and each surface's source polygon) from
+   convex, planar polygons with a material and flags each:
    - weld vertices; build the winged-edge table (each edge names its two
      surfaces, forward and reverse edges, so `Bsp::surface_ring` closes);
      split polygons over eight vertices (**V**: retail rings have at most
@@ -115,19 +116,22 @@ steps of rising risk.
      plane with bit 15 for the flipped side;
    - build the 3D tree by recursive partition on a surface's plane
      (fewest splits, then best balance, ties by lowest plane index),
-     splitting straddling polygons; a cell with no polygon left is a
-     leaf, solid on the back of its last plane;
+     splitting straddling polygons; a side with no polygon left is
+     solid when a one-sided polygon on the node's plane faces away from
+     it and none faces it, else an open leaf;
    - give each open leaf one 2D reference per plane it borders that has
      surfaces, its flip bit saying the leaf is on the plane's back, and
      a 2D tree over those surfaces in the plane's projection
-     (`surface_query::PROJECTION`, `dominant_axis`);
+     (`collision_build::query::PROJECTION`, `dominant_axis`);
    - set leaf flag bit 0 where a reference reaches a two-sided surface.
 
-   It refuses what the packed fields cannot hold (32,767 surfaces behind
-   a 2D child, 65,534 edges or vertices, 2^23 nodes or leaves, as
-   `h1convert::scenery_collision`'s limits). Acceptance is the engine's
-   own walks as `h1convert::surface_query` models them, which move to
-   this crate: `Bsp::validate` passes; every surface's centroid walks
+   It refuses what the packed fields cannot hold
+   (`collision_build::Limits::HALO2`: 32,767 surfaces behind a 2D child,
+   65,535 edges or vertices, 2^23 nodes, 2^23 - 1 leaves, 255 references
+   a leaf). Acceptance is the engine's
+   own walks as `collision_build::query` models them (the same model as
+   `h1convert::surface_query`), in `collision_build::verify::check` and
+   the crate's tests: `Bsp::validate` passes; every surface's centroid walks
    its reference's 2D tree back to it; every reference is on its leaf's
    path on the side its flip bit says; and for a set of random segments
    the first hit of `vector` equals a brute-force ray against the
@@ -266,7 +270,8 @@ only (above). Rewriting bucket streams is deferred.
   writes the blocks as grown blocks (a `coll` is one contiguous payload,
   so a block that still fits is patched where it is). A permutation with
   BSP physics slots gets each slot's box and MOPP code again
-  (`h1objects::coll::bsp_box`, `bsp_mopp`). The object's small trees
+  (`collision_build::coll::rebuild`, as `h1objects::coll::bsp_box` and
+  `bsp_mopp` write them for converted objects). The object's small trees
   make this the compiler's first user. **From render** makes a
   collision mesh from a render section's faces, welded and joined into
   convex polygons.

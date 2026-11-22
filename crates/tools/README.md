@@ -16,5 +16,6 @@ The tools domain is offline work on game data: the Halo 1 readers and converters
 | [hopper-edit](hopper-edit/README.md) | The playlist editor's UI-free logic. |
 | [hud-edit](hud-edit/README.md) | The HUD editor's UI-free logic. |
 | [mesh-edit](mesh-edit/README.md) | The modeling kernel: an editable radial-edge mesh, its operations and stable export. |
+| [collision-build](collision-build/README.md) | The collision compiler: polygons to a Halo 2 collision BSP; `coll` BSPs as meshes. |
 | [perf](perf/README.md) | Sampling profiler, timeline capture and the benchmark harness. |
 | [viewer](viewer/README.md) | Render-model viewer and the offline BSP tools. |
