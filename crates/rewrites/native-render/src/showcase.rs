@@ -32,6 +32,59 @@ pub const DECAL_FACING: f32 = 0.35;
 pub const SWAY_DEGREES: f32 = 32.0;
 pub const SWAY_SECONDS: f64 = 9.0;
 
+/// A picture is drawn at twice its rectangle's texels each way, and
+/// filtered down two by two, while its longer side stays within this;
+/// a larger one is drawn at the rectangle's own texels. Either way each
+/// pixel resolves `showcase_gpu::SAMPLES` samples.
+pub const SUPERSAMPLED_SIDE: u32 = 1280;
+/// No picture is drawn larger than this a side.
+pub const LARGEST_SIDE: u32 = 4096;
+
+/// A picture's place and size for a rectangle of a target: the rectangle
+/// moved onto whole texels, and the picture a whole number of times its
+/// size, so the composite never stretches the picture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fit {
+    /// `x, y, width, height` in the target's texels, all whole.
+    pub rect: [f32; 4],
+    /// The picture's size in texels.
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Fit {
+    /// `rect` is `x, y, width, height` in the target's texels. `None` for
+    /// a rectangle that is not finite or rounds to nothing.
+    pub fn of(rect: [f32; 4]) -> Option<Self> {
+        if rect.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let [x, y, w, h] = rect;
+        let (left, top) = (x.round(), y.round());
+        let (width, height) = ((x + w).round() - left, (y + h).round() - top);
+        if width < 1.0 || height < 1.0 {
+            return None;
+        }
+        let (tw, th) = (width as u32, height as u32);
+        let scale = if tw.max(th) * 2 <= SUPERSAMPLED_SIDE {
+            2
+        } else {
+            1
+        };
+        Some(Self {
+            rect: [left, top, width, height],
+            width: (tw * scale).min(LARGEST_SIDE),
+            height: (th * scale).min(LARGEST_SIDE),
+        })
+    }
+
+    /// How many of the picture's texels cover one of the rectangle's,
+    /// each way (below 1 only past [`LARGEST_SIDE`]).
+    pub fn scale(&self) -> f32 {
+        self.width as f32 / self.rect[2]
+    }
+}
+
 /// Where the model sits and where its decal goes, from its bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
@@ -440,6 +493,36 @@ mod tests {
         }
         assert_eq!(sway(0.0), 0.0);
         assert!(sway(SWAY_SECONDS / 4.0) > 0.0);
+    }
+
+    #[test]
+    fn a_picture_fits_its_rectangle_on_whole_texels() {
+        // The picture box in a 640 by 480 target: twice its texels.
+        let small = Fit::of([359.0, 63.0, 220.0, 207.0]).unwrap();
+        assert_eq!(small.rect, [359.0, 63.0, 220.0, 207.0]);
+        assert_eq!((small.width, small.height), (440, 414));
+        assert_eq!(small.scale(), 2.0);
+        // A fractional rectangle moves onto texels; its far edge is the
+        // rounded far edge, not the rounded size.
+        let odd = Fit::of([10.4, 20.6, 100.3, 50.2]).unwrap();
+        assert_eq!(odd.rect, [10.0, 21.0, 101.0, 50.0]);
+        assert_eq!((odd.width, odd.height), (202, 100));
+        // The box in a 3840 by 2160 window: its own texels, sample for
+        // sample.
+        let large = Fit::of([2095.5, 283.5, 990.0, 931.5]).unwrap();
+        assert_eq!(large.rect, [2096.0, 284.0, 990.0, 931.0]);
+        assert_eq!((large.width, large.height), (990, 931));
+        assert_eq!(large.scale(), 1.0);
+        // The last size drawn twice over.
+        let edge = Fit::of([0.0, 0.0, 640.0, 600.0]).unwrap();
+        assert_eq!((edge.width, edge.height), (1280, 1200));
+        assert_eq!(Fit::of([0.0, 0.0, 641.0, 600.0]).unwrap().width, 641);
+        // Never past the largest side.
+        let huge = Fit::of([0.0, 0.0, 9000.0, 4500.0]).unwrap();
+        assert_eq!((huge.width, huge.height), (LARGEST_SIDE, LARGEST_SIDE));
+        assert!(Fit::of([0.0, 0.0, 0.4, 10.0]).is_none());
+        assert!(Fit::of([f32::NAN, 0.0, 10.0, 10.0]).is_none());
+        assert!(Fit::of([0.0, 0.0, f32::INFINITY, 10.0]).is_none());
     }
 
     #[test]

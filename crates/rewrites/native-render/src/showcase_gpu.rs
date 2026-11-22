@@ -1,9 +1,10 @@
 //! A model shown on its own on the GPU, as a menu picture
 //! (docs/game/skulls.md, "The model picture"): the model's opaque parts at
-//! rest, uploaded once, drawn into a target of its own with the lighting,
-//! tint, decal and silhouette of `showcase.wgsl`, then composited into the
-//! menu's colour target at a rectangle. The placement and look are
-//! [`crate::showcase`]'s.
+//! rest, uploaded once, drawn into a multisampled target of its own with
+//! the lighting, tint, engraved glyph and silhouette of `showcase.wgsl`,
+//! then composited into the menu's colour target at a rectangle. The
+//! placement, the look and the picture's size for a rectangle
+//! ([`crate::showcase::Fit`]) are [`crate::showcase`]'s.
 
 use wgpu::util::DeviceExt;
 
@@ -18,6 +19,42 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The picture's own colour format (premultiplied).
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Samples a pixel of the picture's target: its edges are resolved from
+/// these before the composite.
+pub const SAMPLES: u32 = 4;
+
+/// The glyph's distance field: 16-bit floats, filtered.
+const GLYPH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+
+/// The distance an absent glyph holds everywhere: far outside any stroke.
+const NO_GLYPH: f32 = 8.0;
+
+/// How many sizes of target are kept: a frame draws the picture once for
+/// each copy of the menu's target (the guest's size and the window's).
+const TARGETS: usize = 2;
+
+/// `value` as an IEEE half float's bits, rounded to nearest; a value past
+/// a half's range is its largest, one too small for a normal half is 0.
+fn half(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    if !value.is_finite() {
+        return sign | 0x7bff;
+    }
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let mantissa = bits & 0x007f_ffff;
+    if exponent <= 0 {
+        return sign;
+    }
+    if exponent >= 31 {
+        return sign | 0x7bff;
+    }
+    // Round to nearest; a carry out of the mantissa bumps the exponent,
+    // which the addition does by itself.
+    let rounded = ((exponent as u32) << 10 | (mantissa >> 13)) + ((mantissa >> 12) & 1);
+    sign | rounded.min(0x7bff) as u16
+}
 
 /// One run of a [`ShowcaseMesh`]'s indices drawn with one material's base
 /// map.
@@ -111,8 +148,11 @@ struct Mesh {
 }
 
 struct Target {
+    /// The resolved picture: what the composite samples.
     color: wgpu::Texture,
     view: wgpu::TextureView,
+    /// The multisampled colour and depth the model is drawn into.
+    samples: wgpu::TextureView,
     depth: wgpu::TextureView,
 }
 
@@ -120,25 +160,31 @@ struct Target {
 pub struct Showcase {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    /// The base maps': trilinear, anisotropic, repeating.
     sampler: wgpu::Sampler,
+    /// The glyph's and the composite's: linear, clamped.
+    clamped: wgpu::Sampler,
     /// White: a part with no base map of its own shows the tint alone.
     white: wgpu::TextureView,
     glyph: wgpu::TextureView,
     mesh: Option<Mesh>,
-    target: Option<Target>,
+    /// The targets by size, the last drawn first.
+    targets: Vec<Target>,
     composite_layout: wgpu::BindGroupLayout,
     composite_module: wgpu::ShaderModule,
     composites: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
 }
 
+/// A texture of `levels` (level 0 first, each half the last, tight rows).
 fn texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
     (width, height): (u32, u32),
     format: wgpu::TextureFormat,
-    bytes: &[u8],
+    levels: &[&[u8]],
 ) -> wgpu::TextureView {
+    let bytes = levels.concat();
     device
         .create_texture_with_data(
             queue,
@@ -149,7 +195,7 @@ fn texture(
                     height,
                     depth_or_array_layers: 1,
                 },
-                mip_level_count: 1,
+                mip_level_count: levels.len().max(1) as u32,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
@@ -157,9 +203,52 @@ fn texture(
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            bytes,
+            &bytes,
         )
         .create_view(&Default::default())
+}
+
+/// `image`'s levels that are each half the one before and hold their
+/// size's bytes: level 0 and as much of its mip chain as is well formed.
+/// `None` when level 0 is not.
+fn levels(image: &Image) -> Option<Vec<&[u8]>> {
+    let bytes = |w: u32, h: u32| (4 * u64::from(w) * u64::from(h)) as usize;
+    if image.width == 0 || image.height == 0 || image.rgba.len() != bytes(image.width, image.height)
+    {
+        return None;
+    }
+    let mut out = vec![image.rgba.as_slice()];
+    let (mut w, mut h) = (image.width, image.height);
+    for mip in &image.mips {
+        if w == 1 && h == 1 {
+            break;
+        }
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+        if mip.len() != bytes(w, h) {
+            break;
+        }
+        out.push(mip);
+    }
+    Some(out)
+}
+
+/// The glyph texture: `size` square of distances, or one texel of
+/// [`NO_GLYPH`].
+fn glyph_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    distances: &[f32],
+) -> wgpu::TextureView {
+    let halves: Vec<u16> = distances.iter().map(|d| half(*d)).collect();
+    texture(
+        device,
+        queue,
+        "showcase glyph",
+        (size, size),
+        GLYPH_FORMAT,
+        &[bytemuck::cast_slice(&halves)],
+    )
 }
 
 fn entry(binding: u32, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry {
@@ -209,6 +298,7 @@ impl Showcase {
                 texture_entry(1),
                 sampler_entry(2),
                 texture_entry(3),
+                sampler_entry(4),
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -247,7 +337,10 @@ impl Showcase {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: SAMPLES,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs_main"),
@@ -267,6 +360,14 @@ impl Showcase {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 16,
+            ..Default::default()
+        });
+        let clamped = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("showcase clamped"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -281,24 +382,26 @@ impl Showcase {
             pipeline,
             layout,
             sampler,
-            white: texture(device, queue, "showcase white", (1, 1), FORMAT, &[255; 4]),
-            glyph: texture(
+            clamped,
+            white: texture(
                 device,
                 queue,
-                "showcase glyph",
+                "showcase white",
                 (1, 1),
-                wgpu::TextureFormat::R8Unorm,
-                &[0],
+                FORMAT,
+                &[&[255; 4]],
             ),
+            glyph: glyph_texture(device, queue, 1, &[NO_GLYPH]),
             mesh: None,
-            target: None,
+            targets: Vec::new(),
             composite_layout,
             composite_module,
             composites: Vec::new(),
         }
     }
 
-    /// Uploads the model to show and its materials' base maps: each part
+    /// Uploads the model to show and its materials' base maps with their
+    /// mip chains: each part
     /// draws with the image `bases` gives for its material, and a part
     /// whose material has none (or a malformed one) draws white, so it
     /// takes the look's tint alone.
@@ -322,17 +425,17 @@ impl Showcase {
         };
         let mut uploaded: Vec<(u16, wgpu::TextureView)> = Vec::new();
         for (material, image) in bases {
-            let ok = image.width > 0
-                && image.height > 0
-                && image.rgba.len() == (4 * image.width * image.height) as usize;
-            if ok && !uploaded.iter().any(|(m, _)| m == material) {
+            if uploaded.iter().any(|(m, _)| m == material) {
+                continue;
+            }
+            if let Some(levels) = levels(image) {
                 let view = texture(
                     device,
                     queue,
                     "showcase base",
                     (image.width, image.height),
                     FORMAT,
-                    &image.rgba,
+                    &levels,
                 );
                 uploaded.push((*material, view));
             }
@@ -372,82 +475,91 @@ impl Showcase {
         self.mesh.as_ref().map(|m| m.placement)
     }
 
-    /// The decal: a `size` by `size` coverage mask, a byte a texel, row 0
-    /// at the top. A mask of the wrong length clears the decal.
+    /// The glyph: a `size` by `size` signed distance field, row 0 at the
+    /// top, each texel the distance from its centre to the glyph's
+    /// strokes in glyph units (the decal's box runs -1 to 1), negative
+    /// inside a stroke. The shader cuts the groove where it is negative,
+    /// its edge anti-aliased at the picture's own resolution, so the
+    /// field's size bounds only how fine a stroke's shape can be. A field
+    /// of the wrong length clears the glyph.
     pub fn set_glyph(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         size: u32,
-        coverage: &[u8],
+        distances: &[f32],
     ) {
-        let ok = size > 0 && coverage.len() == (size * size) as usize;
+        let ok = size > 0 && distances.len() == (size as usize) * (size as usize);
         self.glyph = if ok {
-            texture(
-                device,
-                queue,
-                "showcase glyph",
-                (size, size),
-                wgpu::TextureFormat::R8Unorm,
-                coverage,
-            )
+            glyph_texture(device, queue, size, distances)
         } else {
-            texture(
-                device,
-                queue,
-                "showcase glyph",
-                (1, 1),
-                wgpu::TextureFormat::R8Unorm,
-                &[0],
-            )
+            glyph_texture(device, queue, 1, &[NO_GLYPH])
         };
     }
 
+    /// The target of this size, made if there is none, moved to the
+    /// front; the least recently drawn beyond [`TARGETS`] is dropped.
     fn target(&mut self, device: &wgpu::Device, width: u32, height: u32) -> &Target {
-        let fits = self
-            .target
-            .as_ref()
-            .is_some_and(|t| t.color.width() == width && t.color.height() == height);
-        if !fits {
-            let make = |label, format, usage| {
-                device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage,
-                    view_formats: &[],
-                })
-            };
-            let color = make(
-                "showcase picture",
-                FORMAT,
-                wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
-            );
-            let depth = make(
-                "showcase depth",
-                DEPTH,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            );
-            self.target = Some(Target {
-                view: color.create_view(&Default::default()),
-                depth: depth.create_view(&Default::default()),
-                color,
-            });
-        }
-        self.target.as_ref().expect("made above")
+        let found = self
+            .targets
+            .iter()
+            .position(|t| t.color.width() == width && t.color.height() == height);
+        let target = match found {
+            Some(i) => self.targets.remove(i),
+            None => {
+                let make = |label, format, sample_count, usage| {
+                    device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage,
+                        view_formats: &[],
+                    })
+                };
+                let color = make(
+                    "showcase picture",
+                    FORMAT,
+                    1,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
+                );
+                let samples = make(
+                    "showcase samples",
+                    FORMAT,
+                    SAMPLES,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT,
+                );
+                let depth = make(
+                    "showcase depth",
+                    DEPTH,
+                    SAMPLES,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT,
+                );
+                Target {
+                    view: color.create_view(&Default::default()),
+                    samples: samples.create_view(&Default::default()),
+                    depth: depth.create_view(&Default::default()),
+                    color,
+                }
+            }
+        };
+        self.targets.insert(0, target);
+        self.targets.truncate(TARGETS);
+        &self.targets[0]
     }
 
-    /// Records the picture: the target cleared to transparent, the model
-    /// drawn as `look` says. False, recording nothing, with no model.
+    /// Records the picture, `width` by `height`: its target cleared to
+    /// transparent, the model drawn as `look` says, [`SAMPLES`] samples a
+    /// pixel resolved into the picture. False, recording nothing, with no
+    /// model.
     pub fn draw(
         &mut self,
         device: &wgpu::Device,
@@ -495,6 +607,10 @@ impl Showcase {
                             binding: 3,
                             resource: wgpu::BindingResource::TextureView(&self.glyph),
                         },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: wgpu::BindingResource::Sampler(&self.clamped),
+                        },
                     ],
                 });
                 (part.first_index, part.index_count, group)
@@ -502,16 +618,20 @@ impl Showcase {
             .collect();
         let (vertices, indices) = (mesh.vertices.clone(), mesh.indices.clone());
         let target = self.target(device, width, height);
-        let (view, depth) = (target.view.clone(), target.depth.clone());
+        let (view, samples, depth) = (
+            target.view.clone(),
+            target.samples.clone(),
+            target.depth.clone(),
+        );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("showcase"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view: &samples,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: Some(&view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -536,9 +656,9 @@ impl Showcase {
         true
     }
 
-    /// The last picture drawn (for a readback).
+    /// The last picture drawn, resolved (for a readback).
     pub fn picture(&self) -> Option<&wgpu::Texture> {
-        self.target.as_ref().map(|t| &t.color)
+        self.targets.first().map(|t| &t.color)
     }
 
     fn composite_pipeline(
@@ -588,7 +708,11 @@ impl Showcase {
 
     /// Records the last picture drawn into `target` (format `format`) at
     /// `rect` (`x, y, width, height` in its texels), blended over what is
-    /// there and scaled by `alpha`. False with no picture or an empty rect.
+    /// there and scaled by `alpha`. The picture is filtered into the
+    /// rectangle: with the rectangle on whole texels and the picture a
+    /// whole number of times its size ([`crate::showcase::Fit`]) each
+    /// texel is the picture's own, or the mean of its two by two. False
+    /// with no picture or an empty rect.
     pub fn composite(
         &mut self,
         device: &wgpu::Device,
@@ -598,7 +722,7 @@ impl Showcase {
         rect: [f32; 4],
         alpha: f32,
     ) -> bool {
-        let Some(picture) = self.target.as_ref().map(|t| t.view.clone()) else {
+        let Some(picture) = self.targets.first().map(|t| t.view.clone()) else {
             return false;
         };
         let [x, y, w, h] = rect;
@@ -645,7 +769,7 @@ impl Showcase {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.clamped),
                 },
             ],
         });
@@ -669,5 +793,73 @@ impl Showcase {
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..4, 0..1);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A half's bits as the number it holds.
+    fn unhalf(h: u16) -> f32 {
+        let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+        let exponent = i32::from((h >> 10) & 0x1f);
+        let mantissa = f32::from(h & 0x3ff) / 1024.0;
+        match exponent {
+            0 => sign * mantissa * 2f32.powi(-14),
+            _ => sign * (1.0 + mantissa) * 2f32.powi(exponent - 15),
+        }
+    }
+
+    #[test]
+    fn a_half_float_holds_a_glyph_distance_closely() {
+        assert_eq!(half(0.0), 0);
+        assert_eq!(half(1.0), 0x3c00);
+        assert_eq!(half(-2.0), 0xc000);
+        assert_eq!(half(0.5), 0x3800);
+        for i in -2000..=2000 {
+            let d = i as f32 / 1000.0;
+            let back = unhalf(half(d));
+            assert!((back - d).abs() <= 0.0006, "{d} came back as {back}");
+        }
+        assert_eq!(unhalf(half(NO_GLYPH)), NO_GLYPH);
+        // Past a half's range: its largest, not an infinity.
+        assert_eq!(half(1e9), 0x7bff);
+        assert_eq!(half(f32::INFINITY), 0x7bff);
+        assert_eq!(half(-1e9), 0xfbff);
+        // Too small for a normal half: zero.
+        assert_eq!(half(1e-7), 0);
+    }
+
+    #[test]
+    fn an_images_well_formed_levels_are_uploaded() {
+        let image = |mips: Vec<Vec<u8>>| Image {
+            width: 4,
+            height: 2,
+            rgba: vec![0; 32],
+            mips,
+            blocks: None,
+        };
+        assert_eq!(levels(&image(Vec::new())).unwrap().len(), 1);
+        // 4x2, 2x1, 1x1.
+        assert_eq!(
+            levels(&image(vec![vec![0; 8], vec![0; 4]])).unwrap().len(),
+            3
+        );
+        // A level of the wrong size ends the chain.
+        assert_eq!(
+            levels(&image(vec![vec![0; 8], vec![0; 16]])).unwrap().len(),
+            2
+        );
+        // Nothing past 1x1.
+        assert_eq!(
+            levels(&image(vec![vec![0; 8], vec![0; 4], vec![0; 4]]))
+                .unwrap()
+                .len(),
+            3
+        );
+        let mut bad = image(Vec::new());
+        bad.rgba.pop();
+        assert!(levels(&bad).is_none());
     }
 }

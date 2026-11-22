@@ -1,6 +1,8 @@
 //! The menu picture's renderer on a headless device (skips without an
-//! adapter), on an invented sphere: the glyph decal darkens the forehead
-//! and nothing else, a different glyph changes it, a silhouette is dark
+//! adapter), on an invented sphere: the glyph's groove darkens the forehead
+//! and nothing else, its edge is as sharp in a large picture as the
+//! picture's own pixels, a different glyph changes it, the model's
+//! outline is anti-aliased, a silhouette is dark
 //! with no glyph, the tint colours the bone, each part takes its own
 //! material's base map (white, so the tint alone, without one), a surface
 //! seen from behind its normal is lit as its front, and the
@@ -70,16 +72,26 @@ fn sphere() -> ShowcaseMesh {
     }
 }
 
-/// A glyph mask: a filled disc (`hollow` false) or a ring whose middle is
+/// The disc's radius and the ring's inner radius, in glyph units.
+const DISC: f32 = 0.7;
+const HOLE: f32 = 0.45;
+
+/// A glyph's distance field (glyph units, the box -1 to 1, negative
+/// inside): a filled disc (`hollow` false) or a ring whose middle is
 /// empty, inside a clear border.
-fn glyph(hollow: bool) -> Vec<u8> {
-    let c = (GLYPH as f32 - 1.0) / 2.0;
+fn glyph(hollow: bool) -> Vec<f32> {
+    let texel = 2.0 / GLYPH as f32;
     (0..GLYPH * GLYPH)
         .map(|i| {
-            let (x, y) = ((i % GLYPH) as f32 - c, (i / GLYPH) as f32 - c);
+            let x = -1.0 + ((i % GLYPH) as f32 + 0.5) * texel;
+            let y = 1.0 - ((i / GLYPH) as f32 + 0.5) * texel;
             let d = (x * x + y * y).sqrt();
-            let on = d < 11.0 && (!hollow || d > 7.0);
-            if on { 255 } else { 0 }
+            if hollow {
+                let (mid, half) = ((DISC + HOLE) / 2.0, (DISC - HOLE) / 2.0);
+                (d - mid).abs() - half
+            } else {
+                d - DISC
+            }
         })
         .collect()
 }
@@ -148,12 +160,17 @@ impl Rig {
         Some(Self { ctx, showcase })
     }
 
-    fn draw(&mut self, look: &Look, mask: &[u8]) -> Vec<[u8; 4]> {
+    fn draw(&mut self, look: &Look, field: &[f32]) -> Vec<[u8; 4]> {
+        self.draw_at(look, field, SIZE)
+    }
+
+    /// The picture `size` square (a multiple of 64, for the readback).
+    fn draw_at(&mut self, look: &Look, field: &[f32], size: u32) -> Vec<[u8; 4]> {
         let ctx = &self.ctx;
         self.showcase
-            .set_glyph(&ctx.device, &ctx.queue, GLYPH, mask);
+            .set_glyph(&ctx.device, &ctx.queue, GLYPH, field);
         let mut enc = ctx.device.create_command_encoder(&Default::default());
-        assert!(self.showcase.draw(&ctx.device, &mut enc, SIZE, SIZE, look));
+        assert!(self.showcase.draw(&ctx.device, &mut enc, size, size, look));
         ctx.queue.submit([enc.finish()]);
         read(ctx, self.showcase.picture().unwrap())
     }
@@ -276,6 +293,92 @@ fn another_glyph_marks_the_forehead_differently() {
         ring[centre],
         disc[centre]
     );
+}
+
+// A 32 texel field in a 1024 pixel picture: a field texel covers seven
+// or eight pixels, and the groove's edge is still the picture's own
+// pixels. A mask of that size stretched over the decal would take those
+// seven pixels to go from nothing to its full darkening.
+#[test]
+fn the_glyphs_edge_is_sharp_at_the_pictures_size() {
+    const BIG: u32 = 1024;
+    let Some(mut rig) = Rig::new() else { return };
+    let plain = rig.draw_at(
+        &Look {
+            glyph: false,
+            ..look()
+        },
+        &glyph(false),
+        BIG,
+    );
+    let marked = rig.draw_at(&look(), &glyph(false), BIG);
+    let p = rig.showcase.placement().unwrap();
+    let [cx, cy] = p.project(p.decal_centre, 0.0, BIG, BIG).unwrap();
+    let side = p
+        .project(
+            [
+                p.decal_centre[0],
+                p.decal_centre[1] - p.decal_radius,
+                p.decal_centre[2],
+            ],
+            0.0,
+            BIG,
+            BIG,
+        )
+        .unwrap();
+    // The decal's box reaches this many pixels left of its centre.
+    let reach = cx - side[0];
+    assert!(reach > 100.0, "the decal is large here: {reach}");
+    let row = cy as u32;
+    let drop_at = |x: u32| {
+        let i = (row * BIG + x) as usize;
+        luma(plain[i]) - luma(marked[i])
+    };
+    let floor = drop_at(cx as u32);
+    assert!(floor > 30.0, "the floor is dark: {floor}");
+    // From the box's left side towards the centre: the first pixel the
+    // groove touches is at the disc's edge.
+    let first = (side[0] as u32..cx as u32)
+        .find(|x| drop_at(*x).abs() > 2.0)
+        .expect("the groove's edge");
+    let expected = cx - DISC * reach;
+    assert!(
+        (first as f32 - expected).abs() < 5.0,
+        "the edge is at {first}, the disc's is near {expected}"
+    );
+    // Two pixels on, the pixel is wholly inside the stroke, on the wall
+    // that faces away from the key light: more than half as dark as the
+    // floor already.
+    let wall = drop_at(first + 2);
+    assert!(
+        wall > 0.5 * floor,
+        "two pixels inside the edge: {wall} of the floor's {floor}"
+    );
+}
+
+#[test]
+fn the_models_outline_is_anti_aliased() {
+    let Some(mut rig) = Rig::new() else { return };
+    let lit = rig.draw(
+        &Look {
+            glyph: false,
+            ..look()
+        },
+        &glyph(false),
+    );
+    let partial = lit.iter().filter(|p| p[3] > 0 && p[3] < 255).count();
+    let solid = lit.iter().filter(|p| p[3] == 255).count();
+    assert!(solid > 500, "the sphere is drawn: {solid}");
+    // The outline is about 2 pi r pixels long (r about 17): most of them
+    // are partly covered. Premultiplied: a partly covered pixel is no
+    // brighter than its coverage.
+    assert!(partial > 40, "only {partial} partly covered pixels");
+    for p in &lit {
+        assert!(
+            p[..3].iter().all(|c| *c <= p[3]),
+            "{p:?} is not premultiplied"
+        );
+    }
 }
 
 #[test]

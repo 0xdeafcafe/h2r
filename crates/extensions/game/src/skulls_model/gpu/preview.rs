@@ -1,15 +1,20 @@
 //! A preview of the model picture from your disc, for a look before
-//! landing, without the game: the skull in three states at the picture's
-//! in-game size and at four times it, the model from four sides with a
-//! glyph (where the forehead decal lands), sheets of the model as
-//! authored under each of the 24 axis-aligned orientations (to choose
-//! `MODEL_FORWARD` and `MODEL_UP`) and, from that choice, under a range
-//! of yaw, pitch and roll (to choose the fine-tune), and a sheet of every
-//! glyph. `H2_SKULL_YAW`, `H2_SKULL_PITCH` and `H2_SKULL_ROLL` (degrees)
-//! override the fine-tune constants here only, not in the game.
-//! Writes only to `H2_SKULLS_PREVIEW_DIR`, which must be outside the
-//! repository (disc-derived pixels are never committed); prints the map
-//! and tag it loaded and the model's bounds.
+//! landing, without the game: the skull in three states as the page
+//! shows it in a 640 by 480, a 1280 by 960 and a 3840 by 2160 window
+//! (drawn and composited as the game does, `showcase::Fit`), the model
+//! from four sides with a glyph (where the forehead decal lands), a
+//! sheet of the model as authored under each of the 24 axis-aligned
+//! orientations, sheets of yaw by pitch and of roll about the orientation
+//! in use, a sheet of candidate orientations with the glyph, and a sheet
+//! of every glyph. `H2_SKULL_YAW`, `H2_SKULL_PITCH` and `H2_SKULL_ROLL`
+//! (degrees) override the fine-tune constants here only, not in the
+//! game; `H2_SKULL_CANDIDATES` (`yaw/pitch/roll,...`) adds candidates to
+//! [`CANDIDATES`]. Writes only to `H2_SKULLS_PREVIEW_DIR`, which must be
+//! outside the repository (disc-derived pixels are never committed);
+//! besides the pictures it writes the model's vertices and triangles
+//! (`mesh.txt`) and its base maps there, for working an orientation out
+//! from the geometry. Prints the map and tag it loaded and the model's
+//! bounds.
 //!
 //! `H2_DISC=/path/halo2.iso H2_SKULLS_PREVIEW_DIR=/somewhere cargo test -p
 //! boot --lib skulls_model::gpu::preview -- --ignored --nocapture`
@@ -61,6 +66,24 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// Sets `look`'s glyph and answers how the showcase draws it at `yaw`.
+fn shown(ctx: &gfx::GfxContext, showcase: &mut Showcase, look: &Look, yaw: f32) -> showcase::Look {
+    match look.glyph() {
+        Some(strokes) => {
+            let field = skull_glyphs::distance_field(strokes, skull_glyphs::FIELD);
+            showcase.set_glyph(&ctx.device, &ctx.queue, skull_glyphs::FIELD, &field);
+        }
+        None => showcase.set_glyph(&ctx.device, &ctx.queue, 0, &[]),
+    }
+    showcase::Look {
+        yaw,
+        tint: look.tint(),
+        silhouette: look.silhouette(),
+        glyph: look.glyph().is_some(),
+    }
+}
+
+/// The picture alone, `size` texels, over the background.
 fn render(
     ctx: &gfx::GfxContext,
     showcase: &mut Showcase,
@@ -68,20 +91,109 @@ fn render(
     yaw: f32,
     size: (u32, u32),
 ) -> Canvas {
-    match look.glyph() {
-        Some(strokes) => {
-            let mask = skull_glyphs::rasterise(strokes, skull_glyphs::SIZE);
-            showcase.set_glyph(&ctx.device, &ctx.queue, skull_glyphs::SIZE, &mask);
-        }
-        None => showcase.set_glyph(&ctx.device, &ctx.queue, 0, &[]),
-    }
-    let shown = showcase::Look {
-        yaw,
-        tint: look.tint(),
-        silhouette: look.silhouette(),
-        glyph: look.glyph().is_some(),
-    };
+    let shown = shown(ctx, showcase, look, yaw);
     draw(ctx, showcase, &shown, size)
+}
+
+/// The picture as the page shows it in a `window` sized target: the
+/// picture box's texels there, the picture drawn at its
+/// [`showcase::Fit`] and composited over the background as the game's
+/// pass does. The canvas is the box alone.
+fn seen(
+    ctx: &gfx::GfxContext,
+    showcase: &mut Showcase,
+    look: &Look,
+    yaw: f32,
+    window: (u32, u32),
+) -> Canvas {
+    let [_, _, w, h] = crate::skulls_model::guest_rect(crate::skulls_menu::PICTURE_BOX, window);
+    let fit = showcase::Fit::of([0.0, 0.0, w, h]).expect("a box");
+    let (width, height) = (fit.rect[2] as u32, fit.rect[3] as u32);
+    let shown = shown(ctx, showcase, look, yaw);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("skulls preview"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    let channel = |k: usize| f64::from(BACKGROUND[k]) / 255.0;
+    drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("skulls preview"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: channel(0),
+                    g: channel(1),
+                    b: channel(2),
+                    a: 1.0,
+                }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    }));
+    assert!(showcase.draw(&ctx.device, &mut enc, fit.width, fit.height, &shown));
+    assert!(showcase.composite(&ctx.device, &mut enc, &view, format, fit.rect, 1.0));
+    ctx.queue.submit([enc.finish()]);
+    let rgba =
+        gfx::readback::read_texture(ctx, &target, wgpu::TextureAspect::All, 4, (width, height));
+    println!(
+        "  a {} by {} window: the box is {width} by {height}, the picture {} by {}",
+        window.0, window.1, fit.width, fit.height
+    );
+    Canvas {
+        width,
+        height,
+        rgba,
+    }
+}
+
+/// The model's geometry and base maps, for working its orientation out:
+/// `mesh.txt` holds a `v x y z nx ny nz u v` line a vertex (as authored)
+/// and a `t a b c part` line a triangle; `base-<material>.png` each base
+/// map.
+fn dump(skull: &Skull, dir: &Path) {
+    use std::fmt::Write as _;
+    let mesh = &skull.rest;
+    let mut text = String::new();
+    for v in &mesh.vertices {
+        let ([x, y, z], [nx, ny, nz], [tu, tv]) = (v.position, v.normal, v.uv);
+        writeln!(text, "v {x} {y} {z} {nx} {ny} {nz} {tu} {tv}").unwrap();
+    }
+    for (n, part) in mesh.parts.iter().enumerate() {
+        let range = part.first_index as usize..(part.first_index + part.index_count) as usize;
+        for t in mesh.indices[range].chunks_exact(3) {
+            writeln!(text, "t {} {} {} {n}", t[0], t[1], t[2]).unwrap();
+        }
+    }
+    let path = dir.join("mesh.txt");
+    std::fs::write(&path, text).unwrap();
+    println!("wrote {}", path.display());
+    for (material, image) in &skull.bases {
+        let canvas = Canvas {
+            width: image.width,
+            height: image.height,
+            rgba: image.rgba.clone(),
+        };
+        write(&canvas, dir, &format!("base-{material}.png"));
+    }
 }
 
 fn draw(
@@ -151,14 +263,14 @@ struct Cell {
 }
 
 /// `cells` on a grid `columns` wide, each the picture's size with a label
-/// band under it, gold with no glyph and no sway; written as `name`. The
-/// showcase is left holding the picture's own mesh.
+/// band under it, drawn as `shown` says with no sway; written as `name`.
+/// The showcase is left holding the picture's own mesh.
 #[allow(clippy::too_many_arguments)]
 fn sheet(
     ctx: &gfx::GfxContext,
     showcase: &mut Showcase,
     skull: &Skull,
-    tint: [f32; 3],
+    shown: &showcase::Look,
     picture: (u32, u32),
     columns: u32,
     cells: &[Cell],
@@ -169,19 +281,12 @@ fn sheet(
     let rows = (cells.len() as u32).div_ceil(columns);
     let cell = (picture.0, picture.1 + BAND);
     let mut sheet = Canvas::new(columns * cell.0, rows * cell.1, BACKGROUND);
-    showcase.set_glyph(&ctx.device, &ctx.queue, 0, &[]);
-    let shown = showcase::Look {
-        yaw: 0.0,
-        tint,
-        silhouette: false,
-        glyph: false,
-    };
     println!("{name}, left to right, top to bottom:");
     for (i, c) in cells.iter().enumerate() {
         let (cx, cy) = ((i as u32 % columns) * cell.0, (i as u32 / columns) * cell.1);
         let mesh = skull.rest.oriented(&c.orientation);
         showcase.set_mesh(&ctx.device, &ctx.queue, &mesh, &skull.bases);
-        let canvas = draw(ctx, showcase, &shown, picture);
+        let canvas = draw(ctx, showcase, shown, picture);
         sheet.blit(&canvas, cx, cy);
         let colour = if c.chosen {
             [250, 210, 110]
@@ -199,19 +304,57 @@ fn sheet(
     showcase.set_mesh(&ctx.device, &ctx.queue, &skull.mesh, &skull.bases);
 }
 
+/// Orientations worth a look side by side, as `(yaw, pitch, roll)`
+/// degrees from `MODEL_FORWARD` and `MODEL_UP`: `candidates.png` shows
+/// each with Iron's glyph, the one in use first.
+const CANDIDATES: &[(f32, f32, f32)] = &[];
+
+/// [`CANDIDATES`], then `H2_SKULL_CANDIDATES`'s (`yaw/pitch/roll`
+/// triples, comma separated).
+fn candidates() -> Vec<(f32, f32, f32)> {
+    let mut out = CANDIDATES.to_vec();
+    if let Ok(text) = std::env::var("H2_SKULL_CANDIDATES") {
+        for triple in text.split(',').filter(|t| !t.trim().is_empty()) {
+            let angles: Vec<f32> = triple
+                .split('/')
+                .map(|a| {
+                    a.trim().parse().unwrap_or_else(|_| {
+                        panic!("H2_SKULL_CANDIDATES: {triple:?} is not yaw/pitch/roll")
+                    })
+                })
+                .collect();
+            let [yaw, pitch, roll] = angles[..] else {
+                panic!("H2_SKULL_CANDIDATES: {triple:?} is not yaw/pitch/roll");
+            };
+            out.push((yaw, pitch, roll));
+        }
+    }
+    out
+}
+
 /// The 24 axis-aligned orientations (`orientations.png`), to choose
-/// `MODEL_FORWARD` and `MODEL_UP`; then, from that pair, yaw by pitch
-/// (`orientations-fine.png`) and roll (`orientations-roll.png`), to
-/// choose the fine-tune. `in_use` is labelled in gold.
+/// `MODEL_FORWARD` and `MODEL_UP`; then, about `in_use`, yaw by pitch
+/// (`orientations-fine.png`) and roll (`orientations-roll.png`) 30
+/// degrees either way in steps of 10, to check the fine-tune (the middle
+/// cell is `in_use`, labelled in gold); and `in_use` beside the
+/// candidates, each twice the picture's size with `marked`'s glyph
+/// (`candidates.png`).
 fn orientation_sheets(
     ctx: &gfx::GfxContext,
     showcase: &mut Showcase,
     skull: &Skull,
-    tint: [f32; 3],
+    marked: &Look,
     picture: (u32, u32),
     in_use: Orientation,
     dir: &Path,
 ) {
+    showcase.set_glyph(&ctx.device, &ctx.queue, 0, &[]);
+    let plain = showcase::Look {
+        yaw: 0.0,
+        tint: marked.tint(),
+        silhouette: false,
+        glyph: false,
+    };
     let axes: Vec<Cell> = Orientation::all()
         .into_iter()
         .enumerate()
@@ -225,7 +368,7 @@ fn orientation_sheets(
         ctx,
         showcase,
         skull,
-        tint,
+        &plain,
         picture,
         6,
         &axes,
@@ -233,19 +376,19 @@ fn orientation_sheets(
         "orientations.png",
     );
 
-    let base = Orientation::axes(in_use.forward, in_use.up);
-    let steps =
-        |from: i32, to: i32| -> Vec<f32> { (from..=to).step_by(15).map(|d| d as f32).collect() };
-    let chosen =
-        |o: &Orientation| o.yaw == in_use.yaw && o.pitch == in_use.pitch && o.roll == in_use.roll;
+    let offsets: Vec<f32> = (-3..=3).map(|k| k as f32 * 10.0).collect();
     let mut fine = Vec::new();
-    for pitch in steps(-15, 60) {
-        for yaw in steps(45, 135) {
-            let orientation = Orientation { yaw, pitch, ..base };
+    for dp in &offsets {
+        for dy in &offsets {
+            let (yaw, pitch) = (in_use.yaw + dy, in_use.pitch + dp);
             fine.push(Cell {
-                orientation,
-                label: format!("yaw {yaw} pitch {pitch}"),
-                chosen: chosen(&orientation),
+                orientation: Orientation {
+                    yaw,
+                    pitch,
+                    ..in_use
+                },
+                label: format!("yaw {yaw:.0} pitch {pitch:.0}"),
+                chosen: *dy == 0.0 && *dp == 0.0,
             });
         }
     }
@@ -253,26 +396,21 @@ fn orientation_sheets(
         ctx,
         showcase,
         skull,
-        tint,
+        &plain,
         picture,
         7,
         &fine,
         dir,
         "orientations-fine.png",
     );
-    let roll: Vec<Cell> = steps(-60, 60)
-        .into_iter()
-        .map(|roll| {
-            let orientation = Orientation {
-                yaw: 90.0,
-                pitch: 15.0,
-                roll,
-                ..base
-            };
+    let roll: Vec<Cell> = offsets
+        .iter()
+        .map(|dr| {
+            let roll = in_use.roll + dr;
             Cell {
-                orientation,
-                label: format!("yaw 90 pitch 15 roll {roll}"),
-                chosen: chosen(&orientation),
+                orientation: Orientation { roll, ..in_use },
+                label: format!("roll {roll:.0}"),
+                chosen: *dr == 0.0,
             }
         })
         .collect();
@@ -280,12 +418,43 @@ fn orientation_sheets(
         ctx,
         showcase,
         skull,
-        tint,
+        &plain,
         picture,
-        9,
+        7,
         &roll,
         dir,
         "orientations-roll.png",
+    );
+
+    let mut cells = vec![Cell {
+        orientation: in_use,
+        label: format!(
+            "in use {:.1}/{:.1}/{:.1}",
+            in_use.yaw, in_use.pitch, in_use.roll
+        ),
+        chosen: true,
+    }];
+    cells.extend(candidates().into_iter().map(|(yaw, pitch, roll)| Cell {
+        orientation: Orientation {
+            yaw,
+            pitch,
+            roll,
+            ..in_use
+        },
+        label: format!("{yaw:.1}/{pitch:.1}/{roll:.1}"),
+        chosen: false,
+    }));
+    let with_glyph = shown(ctx, showcase, marked, 0.0);
+    sheet(
+        ctx,
+        showcase,
+        skull,
+        &with_glyph,
+        (picture.0 * 2, picture.1 * 2),
+        4,
+        &cells,
+        dir,
+        "candidates.png",
     );
 }
 
@@ -326,6 +495,7 @@ fn preview() {
     drop(vfs);
     let _ = std::fs::remove_dir_all(&data);
     let mut skull = skull.expect("the skull model");
+    dump(&skull, &dir);
     let orientation = Orientation {
         yaw: angle("H2_SKULL_YAW", MODEL_YAW_DEGREES),
         pitch: angle("H2_SKULL_PITCH", MODEL_PITCH_DEGREES),
@@ -417,34 +587,35 @@ fn preview() {
             },
         ),
     ];
-    // The picture box at a 640 by 480 target, and four times it.
-    let [top, left, bottom, right] = crate::skulls_menu::PICTURE_BOX;
-    let size = ((right - left) as u32, (top - bottom) as u32);
+    // As the page shows it in three windows.
     for (name, look) in &states {
-        for scale in [1, 4] {
-            let canvas = render(
-                &ctx,
-                &mut showcase,
-                look,
-                0.0,
-                (size.0 * scale, size.1 * scale),
-            );
-            write(&canvas, &dir, &format!("{name}-{scale}x.png"));
+        for window in [(640, 480), (1280, 960), (3840, 2160)] {
+            let canvas = seen(&ctx, &mut showcase, look, 0.0, window);
+            write(&canvas, &dir, &format!("{name}-{}.png", window.1));
         }
     }
+    // The sway's ends, as seen.
     let gold = Look {
         skull: iron,
         collected: true,
     };
-    orientation_sheets(
-        &ctx,
-        &mut showcase,
-        &skull,
-        gold.tint(),
-        size,
-        orientation,
-        &dir,
-    );
+    for (name, degrees) in [
+        ("left", -showcase::SWAY_DEGREES),
+        ("right", showcase::SWAY_DEGREES),
+    ] {
+        let canvas = seen(
+            &ctx,
+            &mut showcase,
+            &gold,
+            degrees.to_radians(),
+            (1280, 960),
+        );
+        write(&canvas, &dir, &format!("sway-{name}.png"));
+    }
+    // The picture box at a 640 by 480 target, for the sheets.
+    let [top, left, bottom, right] = crate::skulls_menu::PICTURE_BOX;
+    let size = ((right - left) as u32, (top - bottom) as u32);
+    orientation_sheets(&ctx, &mut showcase, &skull, &gold, size, orientation, &dir);
     for degrees in [0u32, 90, 180, 270] {
         let yaw = (degrees as f32).to_radians();
         let canvas = render(&ctx, &mut showcase, &gold, yaw, (size.0 * 4, size.1 * 4));

@@ -194,7 +194,10 @@ struct Renderer {
     /// `None` for no glyph).
     mesh: Option<usize>,
     glyph: Option<Option<usize>>,
-    masks: HashMap<usize, Vec<u8>>,
+    /// Each glyph's distance field, made when first shown.
+    fields: HashMap<usize, Vec<f32>>,
+    /// The picture's size in the window's copy as last said in the log.
+    said: Option<(u32, u32)>,
 }
 
 static RENDERER: LazyLock<Arc<Mutex<Renderer>>> = LazyLock::new(Arc::default);
@@ -207,11 +210,6 @@ struct Pass {
     alpha: f32,
     renderer: Arc<Mutex<Renderer>>,
 }
-
-/// The picture is drawn at this many texels for each of its box's, then
-/// filtered down into the box.
-const SUPERSAMPLE: f32 = 1.5;
-const LARGEST: u32 = 1024;
 
 impl d3d::ExternalPass for Pass {
     fn colour_only(&self) -> bool {
@@ -243,11 +241,10 @@ impl d3d::ExternalPass for Pass {
         if r.glyph != Some(glyph) {
             match glyph.and_then(|i| skull_glyphs::glyph(i).map(|g| (i, g))) {
                 Some((i, strokes)) => {
-                    let mask = r
-                        .masks
-                        .entry(i)
-                        .or_insert_with(|| skull_glyphs::rasterise(strokes, skull_glyphs::SIZE));
-                    showcase.set_glyph(t.device, t.queue, skull_glyphs::SIZE, mask);
+                    let field = r.fields.entry(i).or_insert_with(|| {
+                        skull_glyphs::distance_field(strokes, skull_glyphs::FIELD)
+                    });
+                    showcase.set_glyph(t.device, t.queue, skull_glyphs::FIELD, field);
                 }
                 None => showcase.set_glyph(t.device, t.queue, 0, &[]),
             }
@@ -256,27 +253,38 @@ impl d3d::ExternalPass for Pass {
         let [x, y, w, h] = super::guest_rect(crate::skulls_menu::PICTURE_BOX, t.guest_size);
         let sx = t.size.0 as f32 / t.guest_size.0.max(1) as f32;
         let sy = t.size.1 as f32 / t.guest_size.1.max(1) as f32;
-        let rect = [x * sx, y * sy, w * sx, h * sy];
-        let side = |n: f32| ((n * SUPERSAMPLE).round() as u32).clamp(16, LARGEST);
+        // The box in this copy's own texels: the window's copy is the
+        // window's pixels, so the picture is drawn at the size it is seen.
+        let Some(fit) = showcase::Fit::of([x * sx, y * sy, w * sx, h * sy]) else {
+            return;
+        };
+        if t.copy == d3d::TargetCopy::Display && r.said != Some((fit.width, fit.height)) {
+            r.said = Some((fit.width, fit.height));
+            eprintln!(
+                "skulls model: the picture is {} by {} texels, {} samples each, for a {} by {} \
+                 box in the {} by {} window",
+                fit.width,
+                fit.height,
+                native_render::showcase_gpu::SAMPLES,
+                fit.rect[2],
+                fit.rect[3],
+                t.size.0,
+                t.size.1,
+            );
+        }
         let look = showcase::Look {
             yaw: showcase::sway(self.seconds),
             tint: self.look.tint(),
             silhouette: self.look.silhouette(),
             glyph: glyph.is_some(),
         };
-        if showcase.draw(
-            t.device,
-            &mut *t.encoder,
-            side(rect[2]),
-            side(rect[3]),
-            &look,
-        ) {
+        if showcase.draw(t.device, &mut *t.encoder, fit.width, fit.height, &look) {
             showcase.composite(
                 t.device,
                 &mut *t.encoder,
                 t.color,
                 t.color_format,
-                rect,
+                fit.rect,
                 self.alpha,
             );
         }

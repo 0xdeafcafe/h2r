@@ -2,13 +2,14 @@
 //! (docs/game/skulls.md, "The model picture"): our own line art, a simple
 //! geometric sign for what the skull does, one per skull in
 //! [`skulls::ABOUT`](crate::skulls::ABOUT)'s order. None copies a Halo
-//! game's skull symbols. They are vector data, rasterised at run time to a
-//! coverage mask ([`rasterise`]) that the renderer projects onto the
-//! forehead as an engraving.
+//! game's skull symbols. They are vector data, sampled at run time into a
+//! signed distance field ([`distance_field`]) that the renderer projects
+//! onto the forehead and cuts as a groove, its edge resolved at the
+//! picture's own resolution whatever the field's size.
 //!
 //! A glyph lives in a box from -1 to 1 on both axes, y up. Every stroke,
-//! with its width, stays inside [`BOX`], so the mask's outer texels are
-//! always clear and the decal has no hard edge.
+//! with its width, stays inside [`BOX`], so the field's outer texels are
+//! always outside every stroke and the decal has no hard edge.
 
 use crate::skulls::TOTAL;
 
@@ -16,8 +17,9 @@ use crate::skulls::TOTAL;
 pub const HALF_WIDTH: f32 = 0.07;
 /// How far from the centre any stroke may reach, its width included.
 pub const BOX: f32 = 0.9;
-/// The mask's size in texels (square).
-pub const SIZE: u32 = 64;
+/// The distance field's size in texels (square): a stroke is 18 texels
+/// wide, so its ends and joins keep their shape.
+pub const FIELD: u32 = 256;
 
 /// One stroke of a glyph.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -348,6 +350,31 @@ impl Stroke {
     }
 }
 
+/// The distance from `p` to the nearest of `strokes`' filled shapes, in
+/// glyph units: negative inside one.
+pub fn signed_distance(strokes: &[Stroke], p: [f32; 2]) -> f32 {
+    strokes
+        .iter()
+        .map(|s| s.signed_distance(p))
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// `strokes` as a `size` by `size` signed distance field: each texel the
+/// distance from its centre to the strokes ([`signed_distance`]), row 0 at
+/// the top (+y). The box's edges are the field's edges. Deterministic.
+pub fn distance_field(strokes: &[Stroke], size: u32) -> Vec<f32> {
+    let texel = 2.0 / size.max(1) as f32;
+    let mut out = Vec::with_capacity((size as usize) * (size as usize));
+    for row in 0..size {
+        let y = 1.0 - (row as f32 + 0.5) * texel;
+        for col in 0..size {
+            let x = -1.0 + (col as f32 + 0.5) * texel;
+            out.push(signed_distance(strokes, [x, y]));
+        }
+    }
+    out
+}
+
 /// Rasterises `strokes` to a `size` by `size` coverage mask, a byte a
 /// texel (255 inside a stroke, 0 outside, the edge anti-aliased over one
 /// texel), row 0 at the top (+y). Deterministic: the same strokes give the
@@ -359,10 +386,7 @@ pub fn rasterise(strokes: &[Stroke], size: u32) -> Vec<u8> {
         let y = 1.0 - (row as f32 + 0.5) * texel;
         for col in 0..size {
             let x = -1.0 + (col as f32 + 0.5) * texel;
-            let d = strokes
-                .iter()
-                .map(|s| s.signed_distance([x, y]))
-                .fold(f32::INFINITY, f32::min);
+            let d = signed_distance(strokes, [x, y]);
             let coverage = (0.5 - d / texel).clamp(0.0, 1.0);
             out.push((coverage * 255.0).round() as u8);
         }
@@ -374,6 +398,42 @@ pub fn rasterise(strokes: &[Stroke], size: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::skulls::ABOUT;
+
+    /// The masks' size in these tests.
+    const SIZE: u32 = 64;
+
+    #[test]
+    fn the_distance_field_is_negative_inside_a_stroke_and_measures_out_from_it() {
+        let line = [l(-0.5, 0.0, 0.5, 0.0)];
+        assert!((signed_distance(&line, [0.0, 0.0]) + HALF_WIDTH).abs() < 1e-6);
+        assert!((signed_distance(&line, [0.0, 0.3]) - (0.3 - HALF_WIDTH)).abs() < 1e-6);
+        // Past the end the cap is round.
+        assert!((signed_distance(&line, [0.8, 0.0]) - (0.3 - HALF_WIDTH)).abs() < 1e-6);
+        // The nearest stroke wins.
+        let two = [l(-0.5, 0.0, 0.5, 0.0), dot(0.0, 0.6, 0.1)];
+        assert!((signed_distance(&two, [0.0, 0.45]) - 0.05).abs() < 1e-6);
+        // The field holds the same distances at its texels' centres, row
+        // 0 at the top.
+        let field = distance_field(&two, 8);
+        assert_eq!(field.len(), 64);
+        assert_eq!(field[8 + 4], signed_distance(&two, [0.125, 0.625]));
+        assert!(field[8 + 4] < field[6 * 8 + 4], "the dot is at the top");
+        for (i, strokes) in GLYPHS.iter().enumerate() {
+            let field = distance_field(strokes, FIELD);
+            assert_eq!(field, distance_field(strokes, FIELD), "deterministic");
+            let inside = field.iter().filter(|d| **d < 0.0).count();
+            assert!(inside > 600, "{} has almost no ink", ABOUT[i].name);
+            // The outer texels are clear of every stroke by the box's
+            // margin, less half a texel.
+            let n = FIELD as usize;
+            let margin = 1.0 - BOX - 1.0 / FIELD as f32;
+            for k in 0..n {
+                for t in [k, (n - 1) * n + k, k * n, k * n + n - 1] {
+                    assert!(field[t] >= margin - 1e-4, "{}: {}", ABOUT[i].name, field[t]);
+                }
+            }
+        }
+    }
 
     #[test]
     fn every_skull_has_a_glyph_and_no_two_are_alike() {
