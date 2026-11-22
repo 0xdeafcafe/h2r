@@ -3,14 +3,51 @@
 use anyhow::Result;
 use bots::phantom::{SeatInput, session::at::ACTION_SIZE};
 use runtime::{
-    CpuAbi, Runtime,
+    CopyKind, CpuAbi, Runtime,
     executor::{ExecutorError, SecondExecutor},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 mod animation;
 use animation::AnimationRead;
+
+/// Game-thread nanoseconds in [`Builder::sample`] since the process
+/// began: every seat's build, snapshot and reverts included. A film that
+/// replays its builds runs none. `h2 sim` reports the delta over a match
+/// as `wall.phantom_build_ms_per_tick` (docs/runtime/sim.md §6).
+static BUILD_NS: AtomicU64 = AtomicU64::new(0);
+/// The part of [`BUILD_NS`] in [`SecondExecutor::snapshot`].
+static SNAPSHOT_NS: AtomicU64 = AtomicU64::new(0);
+/// Snapshots that remapped guest RAM, and that copied it.
+static SNAPSHOTS_REMAPPED: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOTS_COPIED: AtomicU64 = AtomicU64::new(0);
+
+fn elapsed_ns(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// The phantoms' action-build totals since the process began, for the
+/// sim report's `wall.phantom_*` fields.
+pub(crate) fn build_costs() -> sim_bench::metrics::PhantomCosts {
+    sim_bench::metrics::PhantomCosts {
+        build_ns: BUILD_NS.load(Ordering::Relaxed),
+        snapshot_ns: SNAPSHOT_NS.load(Ordering::Relaxed),
+        remapped: SNAPSHOTS_REMAPPED.load(Ordering::Relaxed),
+        copied: SNAPSHOTS_COPIED.load(Ordering::Relaxed),
+    }
+}
+
+fn note_snapshot(since: Instant, kind: CopyKind) {
+    SNAPSHOT_NS.fetch_add(elapsed_ns(since), Ordering::Relaxed);
+    match kind {
+        CopyKind::Remapped => &SNAPSHOTS_REMAPPED,
+        CopyKind::Copied => &SNAPSHOTS_COPIED,
+    }
+    .fetch_add(1, Ordering::Relaxed);
+}
 
 pub(super) const WORK_BYTES: u32 = 0x1000;
 const RAW: u32 = 0x4e61dc;
@@ -103,7 +140,9 @@ pub(super) async fn gather(
         if refresh {
             builder.tick = None;
         }
+        let started = Instant::now();
         let outcome = builder.sample(main, cpu, seat);
+        BUILD_NS.fetch_add(elapsed_ns(started), Ordering::Relaxed);
         if let Some(film) = film {
             let (kind, outputs) = match &outcome {
                 Ok(None) => (0, vec![]),
@@ -233,7 +272,9 @@ impl Builder {
             self.history.remove(&idx);
         }
         if self.tick != Some(s.tick) || s.reset {
-            self.exec.snapshot(main);
+            let started = Instant::now();
+            let kind = self.exec.snapshot(main);
+            note_snapshot(started, kind);
             self.tick = Some(s.tick);
         } else {
             // Each seat sees the same world, even when the search wrote scratch globals.

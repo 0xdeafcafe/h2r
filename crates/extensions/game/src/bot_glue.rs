@@ -515,6 +515,7 @@ pub fn install_for_maps(
 
 pub(crate) mod audio;
 mod retail_input;
+pub(crate) use retail_input::build_costs as phantom_build_costs;
 
 mod film_state;
 mod party_leave;

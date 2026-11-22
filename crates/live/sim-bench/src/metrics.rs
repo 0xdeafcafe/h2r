@@ -354,6 +354,196 @@ pub struct Wall {
     /// `None` when the run did not measure it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bots_ms_per_tick: Option<f64>,
+    /// Game-thread milliseconds per tick the phantoms' action build costs
+    /// (`bot_glue::retail_input`): each seat's run through retail's local
+    /// action builder in the private view, its six guest calls and the
+    /// snapshot below included. Not in `bots_ms_per_tick`. `None` when the
+    /// run did not measure it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_build_ms_per_tick: Option<f64>,
+    /// The part of `phantom_build_ms_per_tick` spent taking the
+    /// copy-on-write snapshots of guest RAM the build runs in
+    /// (`SecondExecutor::snapshot`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_snapshot_ms_per_tick: Option<f64>,
+    /// Those snapshots per tick: one a tick with phantoms, more when a
+    /// failed build or a reset starts a seat from live RAM again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_snapshots_per_tick: Option<f64>,
+    /// How the snapshots copied guest RAM (`runtime::CopyKind`): `remap`
+    /// (a copy-on-write mapping of the same pages), `copy` (every byte),
+    /// or `mixed`. `None` with no snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_snapshot_copy: Option<String>,
+}
+
+/// The phantoms' action build on the game thread, as running totals
+/// (`bot_glue::retail_input`): [`Report::set_phantom_costs`] takes the
+/// difference over the match.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhantomCosts {
+    /// Nanoseconds in the build, snapshots included.
+    pub build_ns: u64,
+    /// Nanoseconds in the snapshots.
+    pub snapshot_ns: u64,
+    /// Snapshots that remapped guest RAM.
+    pub remapped: u64,
+    /// Snapshots that copied its bytes.
+    pub copied: u64,
+}
+
+impl PhantomCosts {
+    /// What was added since `start`.
+    pub fn since(self, start: PhantomCosts) -> PhantomCosts {
+        PhantomCosts {
+            build_ns: self.build_ns.saturating_sub(start.build_ns),
+            snapshot_ns: self.snapshot_ns.saturating_sub(start.snapshot_ns),
+            remapped: self.remapped.saturating_sub(start.remapped),
+            copied: self.copied.saturating_sub(start.copied),
+        }
+    }
+
+    /// [`Wall::phantom_snapshot_copy`]'s value.
+    pub fn copy_kind(self) -> Option<&'static str> {
+        match (self.remapped, self.copied) {
+            (0, 0) => None,
+            (_, 0) => Some("remap"),
+            (0, _) => Some("copy"),
+            _ => Some("mixed"),
+        }
+    }
+}
+
+/// The guest arrays the census counts (docs/runtime/sim.md §6,
+/// `guest_census`), by their data-array names; [`CensusSample::arrays`]
+/// is in this order.
+pub const CENSUS_ARRAYS: [&str; 5] = ["effect", "particle_system", "particles", "decals", "lights"];
+
+/// One tick's read of the guest's presentation-side state: what a
+/// headless match still holds that nobody looks at
+/// (docs/perf/sim-headless-skips.md). `None` where the read failed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CensusSample {
+    /// The local-user count.
+    pub local_users: Option<u32>,
+    /// The local players' visibility set is empty.
+    pub local_visibility_empty: Option<bool>,
+    /// Live elements of each of [`CENSUS_ARRAYS`].
+    pub arrays: [Option<u32>; CENSUS_ARRAYS.len()],
+}
+
+impl CensusSample {
+    /// The sample as `sim.guest_census` answers it: unread fields are
+    /// `null`.
+    pub fn to_json(&self) -> serde_json::Value {
+        let arrays: serde_json::Map<String, serde_json::Value> = CENSUS_ARRAYS
+            .iter()
+            .zip(self.arrays)
+            .map(|(name, count)| ((*name).to_owned(), serde_json::json!(count)))
+            .collect();
+        serde_json::json!({
+            "local_users": self.local_users,
+            "local_visibility_empty": self.local_visibility_empty,
+            "arrays": arrays,
+        })
+    }
+}
+
+/// A count over the ticks it was read on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CountStat {
+    /// Ticks it was read on.
+    pub samples: u64,
+    pub mean: f64,
+    pub peak: u32,
+}
+
+/// The local visibility set over the ticks it was read on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct VisibilityStat {
+    /// Ticks it was read on.
+    pub samples: u64,
+    /// Of those, the ticks it was empty.
+    pub empty_ticks: u64,
+}
+
+/// The report's `guest_census` block: [`CensusSample`]s over the match.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GuestCensus {
+    /// Ticks sampled.
+    pub ticks: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_users: Option<CountStat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_visibility: Option<VisibilityStat>,
+    /// By [`CENSUS_ARRAYS`] name; an array never read is left out.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub arrays: BTreeMap<String, CountStat>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Count {
+    samples: u64,
+    sum: u64,
+    peak: u32,
+}
+
+impl Count {
+    fn add(&mut self, v: Option<u32>) {
+        if let Some(v) = v {
+            self.samples += 1;
+            self.sum += u64::from(v);
+            self.peak = self.peak.max(v);
+        }
+    }
+
+    fn stat(&self) -> Option<CountStat> {
+        (self.samples > 0).then(|| CountStat {
+            samples: self.samples,
+            mean: self.sum as f64 / self.samples as f64,
+            peak: self.peak,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct CensusTally {
+    last_tick: Option<u32>,
+    ticks: u64,
+    local_users: Count,
+    visibility: VisibilityStat,
+    arrays: [Count; CENSUS_ARRAYS.len()],
+}
+
+impl CensusTally {
+    fn add(&mut self, tick: u32, s: &CensusSample) {
+        if self.last_tick == Some(tick) {
+            return;
+        }
+        self.last_tick = Some(tick);
+        self.ticks += 1;
+        self.local_users.add(s.local_users);
+        if let Some(empty) = s.local_visibility_empty {
+            self.visibility.samples += 1;
+            self.visibility.empty_ticks += u64::from(empty);
+        }
+        for (count, v) in self.arrays.iter_mut().zip(s.arrays) {
+            count.add(v);
+        }
+    }
+
+    fn report(&self) -> Option<GuestCensus> {
+        (self.ticks > 0).then(|| GuestCensus {
+            ticks: self.ticks,
+            local_users: self.local_users.stat(),
+            local_visibility: (self.visibility.samples > 0).then(|| self.visibility.clone()),
+            arrays: CENSUS_ARRAYS
+                .iter()
+                .zip(&self.arrays)
+                .filter_map(|(name, c)| Some(((*name).to_owned(), c.stat()?)))
+                .collect(),
+        })
+    }
 }
 
 /// The process's memory, sampled while a report is built: [`Wall`]'s
@@ -473,6 +663,10 @@ pub struct Report {
     /// The flat RAM window's fixups per tick; `None` without a window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flat: Option<FlatReport>,
+    /// The guest census over the match (docs/runtime/sim.md §6); `None`
+    /// with no tick sampled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_census: Option<GuestCensus>,
     #[serde(default)]
     pub notes: Vec<String>,
 }
@@ -491,6 +685,20 @@ impl Report {
         self.flat = fixups.map(|f| FlatReport {
             fixups_per_tick: f as f64 / ticks,
         });
+    }
+
+    /// Fills the phantoms' action-build costs over the match's
+    /// [`Report::ticks`] (`costs`: the difference of two
+    /// [`PhantomCosts`] totals). Nothing is set for a match with no ticks.
+    pub fn set_phantom_costs(&mut self, costs: PhantomCosts) {
+        if self.ticks == 0 {
+            return;
+        }
+        let ticks = self.ticks as f64;
+        self.wall.phantom_build_ms_per_tick = Some(costs.build_ns as f64 / 1e6 / ticks);
+        self.wall.phantom_snapshot_ms_per_tick = Some(costs.snapshot_ns as f64 / 1e6 / ticks);
+        self.wall.phantom_snapshots_per_tick = Some((costs.remapped + costs.copied) as f64 / ticks);
+        self.wall.phantom_snapshot_copy = costs.copy_kind().map(str::to_owned);
     }
 
     pub fn player(&self, index: u8) -> Option<&PlayerReport> {
@@ -594,6 +802,7 @@ pub struct Tally {
     /// `(attacker, victim)` → the first and the latest tick of the fight's
     /// hits, for the time to kill.
     fights: BTreeMap<(u8, u8), (u32, u32)>,
+    census: CensusTally,
 }
 
 impl Tally {
@@ -630,7 +839,9 @@ impl Tally {
     /// Continue a film's tick-limit and discontinuity decisions from the
     /// recorded boundary. Theater does not produce a training report.
     pub fn resume_playback(&mut self, cursor: TickCursor) -> Result<(), String> {
-        let elapsed = cursor.last_tick.zip(cursor.started)
+        let elapsed = cursor
+            .last_tick
+            .zip(cursor.started)
             .and_then(|(last, start)| last.checked_sub(start));
         if elapsed.is_none_or(|ticks| cursor.ticks == 0 || cursor.ticks > u64::from(ticks) + 1)
             || cursor.resets == u32::MAX
@@ -732,6 +943,18 @@ impl Tally {
         components: impl IntoIterator<Item = (String, String)>,
     ) {
         self.components.record(tick, arena_base, components);
+    }
+
+    /// The guest census read after game tick `tick` (the tick just given
+    /// to [`Tally::tick_hashed`]); a second read of one tick is not
+    /// counted. Same timeline, same resets.
+    pub fn tick_census(&mut self, tick: u32, sample: &CensusSample) {
+        self.census.add(tick, sample);
+    }
+
+    /// The census so far, as the report carries it.
+    pub fn census(&self) -> Option<GuestCensus> {
+        self.census.report()
     }
 
     /// A shot by `player`.
@@ -984,12 +1207,17 @@ impl Tally {
                 guest_written_pages: memory.guest_written_pages,
                 guest_pages: memory.guest_pages,
                 bots_ms_per_tick: None,
+                phantom_build_ms_per_tick: None,
+                phantom_snapshot_ms_per_tick: None,
+                phantom_snapshots_per_tick: None,
+                phantom_snapshot_copy: None,
             },
             players,
             kills: self.kills.clone(),
             nav: nav.into(),
             dispatch_per_tick: None,
             flat: None,
+            guest_census: self.census(),
             notes,
         }
     }
@@ -1032,6 +1260,174 @@ mod tests {
         report.set_costs(5, Some(5));
         assert_eq!(report.wall.bots_ms_per_tick, None);
         assert!(report.flat.is_none());
+        report.set_phantom_costs(PhantomCosts {
+            build_ns: 5,
+            remapped: 1,
+            ..PhantomCosts::default()
+        });
+        assert_eq!(report.wall.phantom_build_ms_per_tick, None);
+        assert_eq!(report.wall.phantom_snapshot_copy, None);
+    }
+
+    fn four_ticks() -> Tally {
+        let mut tally = Tally::new();
+        for tick in 1..=4 {
+            tally.tick_hashed(
+                TickSample {
+                    tick,
+                    ..Default::default()
+                },
+                u64::from(tick),
+                None,
+            );
+        }
+        tally
+    }
+
+    #[test]
+    fn phantom_costs_are_per_tick_beside_the_brains() {
+        let mut report = four_ticks().report(Finish::bare(End::TickLimit));
+        let plain = serde_json::to_value(&report).unwrap();
+        for key in [
+            "phantom_build_ms_per_tick",
+            "phantom_snapshot_ms_per_tick",
+            "phantom_snapshots_per_tick",
+            "phantom_snapshot_copy",
+        ] {
+            assert!(plain["wall"].get(key).is_none(), "{key}");
+        }
+        let start = PhantomCosts {
+            build_ns: 1_000_000,
+            snapshot_ns: 500_000,
+            remapped: 3,
+            copied: 0,
+        };
+        let end = PhantomCosts {
+            build_ns: 13_000_000,
+            snapshot_ns: 2_500_000,
+            remapped: 7,
+            copied: 0,
+        };
+        report.set_costs(8_000_000, None);
+        report.set_phantom_costs(end.since(start));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["wall"]["bots_ms_per_tick"], 2.0);
+        assert_eq!(json["wall"]["phantom_build_ms_per_tick"], 3.0);
+        assert_eq!(json["wall"]["phantom_snapshot_ms_per_tick"], 0.5);
+        assert_eq!(json["wall"]["phantom_snapshots_per_tick"], 1.0);
+        assert_eq!(json["wall"]["phantom_snapshot_copy"], "remap");
+        let back: Report = serde_json::from_value(json).unwrap();
+        assert_eq!(back.wall, report.wall);
+    }
+
+    #[test]
+    fn the_copy_kind_names_what_the_snapshots_did() {
+        let kind = |remapped, copied| {
+            PhantomCosts {
+                remapped,
+                copied,
+                ..PhantomCosts::default()
+            }
+            .copy_kind()
+        };
+        assert_eq!(kind(0, 0), None);
+        assert_eq!(kind(2, 0), Some("remap"));
+        assert_eq!(kind(0, 2), Some("copy"));
+        assert_eq!(kind(1, 1), Some("mixed"));
+        // A counter that went backwards (a reset) gives nothing, not a wrap.
+        let earlier = PhantomCosts {
+            build_ns: 9,
+            ..PhantomCosts::default()
+        };
+        assert_eq!(PhantomCosts::default().since(earlier).build_ns, 0);
+    }
+
+    fn census(users: u32, empty: bool, arrays: [Option<u32>; 5]) -> CensusSample {
+        CensusSample {
+            local_users: Some(users),
+            local_visibility_empty: Some(empty),
+            arrays,
+        }
+    }
+
+    #[test]
+    fn the_census_is_mean_and_peak_over_the_ticks_read() {
+        let mut tally = four_ticks();
+        assert!(tally.census().is_none());
+        let plain = serde_json::to_value(tally.report(Finish::bare(End::TickLimit))).unwrap();
+        assert!(plain.get("guest_census").is_none());
+        tally.tick_census(
+            1,
+            &census(0, true, [Some(2), Some(1), Some(10), Some(0), None]),
+        );
+        // A second read of one tick is not counted.
+        tally.tick_census(1, &census(4, false, [Some(99); 5]));
+        tally.tick_census(
+            2,
+            &census(0, true, [Some(4), Some(3), Some(30), Some(1), None]),
+        );
+        tally.tick_census(
+            3,
+            &CensusSample {
+                local_users: None,
+                local_visibility_empty: None,
+                arrays: [Some(0), Some(2), Some(20), Some(2), None],
+            },
+        );
+        let report = tally.report(Finish::bare(End::TickLimit));
+        let c = report.guest_census.clone().unwrap();
+        assert_eq!(c.ticks, 3);
+        assert_eq!(
+            c.local_users,
+            Some(CountStat {
+                samples: 2,
+                mean: 0.0,
+                peak: 0
+            })
+        );
+        assert_eq!(
+            c.local_visibility,
+            Some(VisibilityStat {
+                samples: 2,
+                empty_ticks: 2
+            })
+        );
+        assert_eq!(c.arrays["effect"].mean, 2.0);
+        assert_eq!(c.arrays["effect"].peak, 4);
+        assert_eq!(c.arrays["particles"].mean, 20.0);
+        assert_eq!(c.arrays["particles"].peak, 30);
+        assert_eq!(c.arrays["decals"].peak, 2);
+        // An array never read is left out.
+        assert!(!c.arrays.contains_key("lights"));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["guest_census"]["ticks"], 3);
+        assert_eq!(json["guest_census"]["local_visibility"]["empty_ticks"], 2);
+        assert_eq!(json["guest_census"]["arrays"]["particle_system"]["peak"], 3);
+        assert_eq!(
+            json["guest_census"]["arrays"]["particle_system"]["samples"],
+            3
+        );
+        let back: Report = serde_json::from_value(json).unwrap();
+        assert_eq!(back.guest_census, report.guest_census);
+        // A restart drops it with the rest of the tally.
+        tally.start(100);
+        assert!(tally.census().is_none());
+    }
+
+    #[test]
+    fn a_census_sample_answers_with_nulls_for_what_it_could_not_read() {
+        let v = CensusSample {
+            local_users: Some(0),
+            local_visibility_empty: None,
+            arrays: [Some(3), None, Some(7), Some(1), Some(12)],
+        }
+        .to_json();
+        assert_eq!(v["local_users"], 0);
+        assert!(v["local_visibility_empty"].is_null());
+        assert_eq!(v["arrays"]["effect"], 3);
+        assert!(v["arrays"]["particle_system"].is_null());
+        assert_eq!(v["arrays"]["lights"], 12);
+        assert_eq!(v["arrays"].as_object().unwrap().len(), CENSUS_ARRAYS.len());
     }
 
     fn p(index: u8, score: i32) -> PlayerSample {
