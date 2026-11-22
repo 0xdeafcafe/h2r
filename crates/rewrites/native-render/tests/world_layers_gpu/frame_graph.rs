@@ -635,6 +635,81 @@ fn e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world() {
     set_models(EPOCH, None);
 }
 
+/// A view with twenty eligible candidate lights: an E3 draw reports the
+/// renderer's choice, sixteen lit and four over the cap, every run; retail
+/// reports none, and the pixels are the same in both modes (the chosen
+/// lights draw no pass of their own yet).
+#[test]
+fn e3_reports_its_choice_of_sixteen_lights_from_twenty() {
+    use frame_scene::{Light, LightCandidate, RenderCamera, ViewKey, ViewKind};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let mut builder = SceneBuilder::new(FreeList::new());
+    builder.begin(SceneId {
+        map_epoch: 3,
+        tick: 17,
+        frame: 12,
+    });
+    let camera = RenderCamera {
+        position: [0.0, 0.0, 0.0],
+        forward: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+        fov: std::f32::consts::FRAC_PI_2,
+        projection_xy: None,
+        viewport: [0, 0, SIZE as i16, SIZE as i16],
+        near: 0.1,
+        far: 100.0,
+    };
+    let key = ViewKey {
+        kind: ViewKind::Game,
+        player: 0,
+        view: 0,
+    };
+    builder.open_view(key, camera).unwrap();
+    let lights = (0..20u32)
+        .map(|k| Light {
+            handle: 0xe100_0000 | k,
+            candidate: Some(LightCandidate {
+                position: [5.0, 0.0, 0.0],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                colour_a: [1.0; 3],
+                colour_b: [1.0; 3],
+                intensity: 1.0,
+                bounds: ([5.0, 0.0, 0.0], 2.0),
+                owner: None,
+                definition_kind: 0,
+                volume: None,
+                view_eligible: Some(true),
+                priority: Some(1.0 + k as f32),
+                weight: 1.0,
+                gel_bitmap: None,
+                gel_shader: None,
+                constants: None,
+            }),
+            ..Default::default()
+        })
+        .collect();
+    builder.add_light_candidates(lights).unwrap();
+    let scene = builder.seal(Stamp::default()).unwrap();
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, bind());
+    op(&mut frame, Slot::Opaque, clear());
+
+    let retail = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    assert!(retail.report.e3.is_none());
+    for _ in 0..2 {
+        let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+        let report = e3.report.e3.unwrap();
+        assert_eq!((report.lights_lit, report.lights_over_cap), (16, 4));
+        assert_eq!(report.lights.draws, 0);
+        assert_eq!(e3.rgba, retail.rgba);
+    }
+}
+
 #[test]
 fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     use d3d::{Backend, DrawOutcome};

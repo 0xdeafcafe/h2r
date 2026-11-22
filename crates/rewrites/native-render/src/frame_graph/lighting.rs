@@ -3,6 +3,7 @@
 
 use d3d::gfx_backend::TileWork;
 
+use crate::light_choice::LightChoice;
 use crate::sun_tiles::SunWork;
 
 /// Submitted work for one E3 stage. An empty stage has no GPU interval.
@@ -56,6 +57,13 @@ impl E3Report {
         self.sun_tiles_redrawn += work.sun_tiles_redrawn;
         self.atlas_halved += work.atlas_halved;
         self.tiles_refused += work.refused;
+    }
+
+    /// The renderer's choice of lights (`crate::light_choice`): the
+    /// lights it lights and the candidates its cap left unlit.
+    pub fn add_choice(&mut self, choice: &LightChoice) {
+        self.lights_lit += choice.lit();
+        self.lights_over_cap += choice.over_cap();
     }
 }
 
