@@ -190,7 +190,10 @@ workflow per platform: [buck.yml](../../.github/workflows/buck.yml)
 ([xbox.md](xbox.md#building)) and
 [windows.yml](../../.github/workflows/windows.yml)
 ([windows.md](windows.md#windows-ci)); [ci.yml](../../.github/workflows/ci.yml)
-covers macOS and the Linux desktop host. No workflow touches the disc, so
+covers the repo checks, macOS (clippy and the tests) and the Linux desktop
+host. Every Rust job runs the compiler `rust-toolchain.toml` pins, installed
+by rustup (`scripts/ci/install-rust.sh` on Linux and macOS) and named in
+`RUSTUP_TOOLCHAIN`, and prints `rustc -V`. No workflow touches the disc, so
 none builds the game module: the iOS and Xbox jobs stop at the runtime.
 
 ## Tests

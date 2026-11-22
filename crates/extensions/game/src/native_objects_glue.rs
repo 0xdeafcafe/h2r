@@ -375,17 +375,19 @@ fn refresh_models(
             ((bitmap, image), pixels)
         })
         .collect();
-    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(lit) = lit.as_ref() else { return };
-    for ((bitmap, image), pixels) in &decoded {
-        if let Err(why) = lit.rewrite_image(&queue, *bitmap, *image, pixels) {
-            eprintln!(
-                "native-objects: {name}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
-                bitmap.0
-            );
+    // The lock is released before the submit.
+    {
+        let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lit) = lit.as_ref() else { return };
+        for ((bitmap, image), pixels) in &decoded {
+            if let Err(why) = lit.rewrite_image(&queue, *bitmap, *image, pixels) {
+                eprintln!(
+                    "native-objects: {name}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
+                    bitmap.0
+                );
+            }
         }
     }
-    drop(lit);
     queue.submit([]);
 }
 
@@ -1423,7 +1425,7 @@ mod tests {
     #[test]
     fn a_completed_upload_is_visible_only_after_a_swap() {
         let mut state = MapState {
-            name: "arena".into(), generation: 3, job: Arc::new(()), palette: Arc::default(), published: None,
+            name: "arena".into(), generation: 3, job: Arc::new(()), _palette: Arc::default(), published: None,
         };
         assert!(state.resident(10).is_none());
         let models = Arc::new(Models::default());
@@ -1437,7 +1439,7 @@ mod tests {
         let first = Arc::new(());
         let second = Arc::new(());
         let state = MapState {
-            name: "arena".into(), generation: 3, job: Arc::clone(&second), palette: Arc::default(), published: None,
+            name: "arena".into(), generation: 3, job: Arc::clone(&second), _palette: Arc::default(), published: None,
         };
         assert!(!state.owns(&first, 3), "the same name, another load");
         assert!(!state.owns(&second, 4), "a snapshot reset");

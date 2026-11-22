@@ -619,7 +619,7 @@ fn paint(ui: &Ui, text: &str, spans: &[Span], origin: [f32; 2], lh: f32) {
         let mut runs = by_line[n].clone();
         runs.sort_by_key(|s| s.start);
         let mut at = 0;
-        let mut draw = |from: usize, to: usize, colour: [f32; 4]| {
+        let draw = |from: usize, to: usize, colour: [f32; 4]| {
             if from >= to || to > line.len() || !line.is_char_boundary(from) || !line.is_char_boundary(to) {
                 return;
             }

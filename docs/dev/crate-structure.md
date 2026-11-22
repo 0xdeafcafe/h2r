@@ -91,7 +91,12 @@ their named hook points. See [the feature engine](../engine/feature-engine.md).
 `crates/tools/xtask` owns the local check and test workflow.
 [Build speed](build-speed.md) describes its inputs, test tiers and
 shared ledger. CI jobs are defined in
-[.github/workflows/ci.yml](../../.github/workflows/ci.yml).
+[.github/workflows/ci.yml](../../.github/workflows/ci.yml): the `repo checks`
+job runs `crate-graph.py layers --check`, `crate-table.py --check` and
+`docs-check.py` with python3 alone, and the macOS and Linux jobs run
+the pinned compiler from `rust-toolchain.toml`
+(`scripts/ci/install-rust.sh`), clippy with `-D warnings` on macOS and
+`cargo check --tests` on Linux.
 
 ## The crate table
 

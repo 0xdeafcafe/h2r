@@ -371,7 +371,6 @@ pub(crate) fn panel_with_marks(
         ui.text_disabled("Nothing to show: the element is not in the map's metadata.");
         return;
     };
-    let editable = doc.refusal(tag).is_none();
     let (trail, scene) = match root {
         PanelRoot::Tags(scene) => (None, scene),
         PanelRoot::Inspector(trail) => (Some(trail), None),
@@ -380,7 +379,6 @@ pub(crate) fn panel_with_marks(
         ui,
         doc,
         tag,
-        editable,
         st,
         actions,
         trail,
@@ -419,7 +417,6 @@ struct Cx<'a, 'm> {
     ui: &'a Ui,
     doc: &'a TagDoc,
     tag: TagId,
-    editable: bool,
     st: &'a mut PanelState,
     actions: &'a mut Vec<Action>,
     trail: Option<&'a [TagId]>,

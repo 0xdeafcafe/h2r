@@ -218,7 +218,7 @@ CODE_REF = re.compile(
     r"(docs/[A-Za-z0-9_/.\-]+\.md)(?:[\s,;:(]{0,4}(?:§\s*([0-9]+(?:\.[0-9]+)*)|\"([^\"]{3,80})\"))?"
 )
 # Paths used as examples in doc comments, not citations.
-CODE_REF_EXAMPLES = {"docs/x.md"}
+CODE_REF_EXAMPLES = {"docs/x.md", "docs/a.md"}
 
 
 def headings(path):

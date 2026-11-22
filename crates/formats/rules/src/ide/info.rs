@@ -797,11 +797,10 @@ pub(crate) fn signature_help(m: &Model, off: usize) -> Option<SignatureHelp> {
     } else if let Some(i) = lang_index(name) {
         let (l, o) = lang_signature(&LANG[i]);
         (l, o, LANG[i].doc.to_string())
-    } else if let Some(e) = caps::entry_named(name) {
+    } else {
+        let e = caps::entry_named(name)?;
         let (l, o) = entry_signature(e);
         (l, o, entry_doc(e))
-    } else {
-        return None;
     };
     let units: Vec<u16> = label.encode_utf16().collect();
     let parameters: Vec<Parameter> = offsets

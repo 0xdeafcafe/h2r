@@ -280,7 +280,7 @@ fn guard_condition(m: &Model, at: usize, x: &str) -> Option<Fix> {
     let (a, b) = (m.ci(m.li.line_start(line)), m.ci(m.li.line_end(line)));
     let iff = (a..b)
         .filter(|&j| m.code[j].s < at && m.is_word(j, "if") && !m.is_word(j + 1, "let"))
-        .last()?;
+        .next_back()?;
     let open = (a..b).find(|&j| m.code[j].s > at && m.is_punct(j, "{"))?;
     if open <= iff + 1 {
         return None;

@@ -963,7 +963,7 @@ impl Runner {
             let calls: Vec<TracedCall> = made
                 .iter()
                 .map(|(entry, args)| TracedCall {
-                    entry: *entry,
+                    entry,
                     args: args.iter().map(arg_text).collect(),
                 })
                 .collect();
