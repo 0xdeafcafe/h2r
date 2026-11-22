@@ -1066,6 +1066,10 @@ fn load_ready(
     };
     let opaque = opaque_materials::Library::load(&mut map, &shaders);
     let declared = world.materials().len();
+    // Every opaque part, before the layer-3 filter: E3's sun tiles draw
+    // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
+    // shadows from objects"). Retail never reads it.
+    let sun_world = native_render::sun_casters::SunWorld::new(&world);
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
     let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
@@ -1096,6 +1100,11 @@ fn load_ready(
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
     }))) { return Ok(()); }
+    let bsp = key.clone();
+    native_render::sun_casters::set_world(
+        key.generation,
+        Some(Arc::new(sun_world.with_current(move || bsp.current()))),
+    );
 
     drop(world_setup);
 

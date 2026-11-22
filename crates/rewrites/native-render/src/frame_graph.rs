@@ -183,11 +183,16 @@ fn sun_tiles(
     let models = models
         .as_deref()
         .map(|m| m as &dyn crate::sun_casters::CasterModels);
-    sun::plan(device, scene, replay, scale, models)
+    let world = crate::sun_casters::world_for(scene.id.map_epoch);
+    let world = world
+        .as_deref()
+        .map(|w| w as &dyn crate::sun_casters::WorldReceivers);
+    sun::plan(device, scene, replay, scale, models, world)
 }
 
 fn record(
     pass: &mut impl FramePass,
+    scene: &FrameScene,
     frame: &ReplayFrame,
     fresh_targets: bool,
     lighting: Lighting,
@@ -238,6 +243,9 @@ fn record(
     if let (Some(report), Some(s)) = (e3.as_mut(), &sun_replay) {
         report.add_sun(s.work());
     }
+    if let Some(report) = e3.as_mut() {
+        report.add_choice(&crate::light_choice::choose(scene));
+    }
     Ok(e3)
 }
 
@@ -270,7 +278,7 @@ pub fn draw_private_with_observer(
     let before = backend.batch_stats();
     let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
     let mut pass = GuestDrawPass::new_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, replay, true, lighting, observer, sun_replay)?;
+    let e3 = record(&mut pass, scene, replay, true, lighting, observer, sun_replay)?;
     let (size, rgba) = pass.read_rgba()?;
     Ok(CapturedFrame {
         id: scene.id,
@@ -296,7 +304,7 @@ pub fn draw_display(
     let before = backend.batch_stats();
     let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
     let mut pass = GuestDrawPass::new_display_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, replay, true, lighting, observer, sun_replay)?;
+    let e3 = record(&mut pass, scene, replay, true, lighting, observer, sun_replay)?;
     pass.present(flags, gamma)?;
     Ok(FrameReport::new(
         scene.id,
@@ -328,7 +336,7 @@ pub fn draw_display_on(
     let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, 1, lighting);
     let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
     pass.set_lighting(lighting);
-    let e3 = record(&mut pass, replay, false, lighting, observer, sun_replay)?;
+    let e3 = record(&mut pass, scene, replay, false, lighting, observer, sun_replay)?;
     let outputs = pass.present_with_outputs(flags, gamma)?;
     Ok((
         FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
@@ -360,7 +368,7 @@ pub fn draw_scaled_display_on(
     let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
     // The scaled display draws no sun tile: every object shadow keeps
     // retail's mask there.
-    let e3 = record(&mut pass, replay, false, lighting, observer, None)?;
+    let e3 = record(&mut pass, scene, replay, false, lighting, observer, None)?;
     let (after, outputs) = pass.present(replay.flags, replay.gamma.as_deref())?;
     Ok((
         FrameReport::new(scene.id, lighting, e3, before, after),

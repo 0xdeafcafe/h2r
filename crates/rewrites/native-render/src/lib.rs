@@ -65,6 +65,7 @@ pub mod stage_images;
 #[cfg(feature = "gpu")]
 pub mod ui_gpu;
 pub mod instances;
+pub mod light_choice;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
 pub mod light_list;
