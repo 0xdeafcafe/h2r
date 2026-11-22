@@ -1242,7 +1242,7 @@ mod tests {
             let mut t = Tracker::new();
             t.step(&at(outside, -5.4, true, 100), &spots);
             // Touchdown at 101, ~0, then the launch `late` ticks later.
-            let mut vz = vec![-0.04, 0.0, 0.0, 0.0];
+            let mut vz = [-0.04, 0.0, 0.0, 0.0];
             vz[late as usize] = 11.5;
             let mut filed = None;
             for (i, v) in vz.iter().enumerate() {
