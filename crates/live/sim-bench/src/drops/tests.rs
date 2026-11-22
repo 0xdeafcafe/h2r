@@ -259,6 +259,7 @@ fn the_queue_hands_out_the_first_drop_clear_of_the_others() {
         height: 1.0,
         side: Side::None,
         repeat: 0,
+        carry: [0.0, 0.0],
         point: [x, 0.0, 0.0],
         start: [x, 0.0, 1.0],
         rest: [x, 0.0, 0.05],
@@ -310,6 +311,9 @@ struct Body {
     refuse: bool,
     /// A sideways force in the air (units/s²): a stick steering the fall.
     push: [f32; 2],
+    /// A sideways kick (units/s) once, the tick the origin falls through
+    /// this height: something hitting the body.
+    kick: Option<(f32, [f32; 2])>,
 }
 
 impl Body {
@@ -325,6 +329,7 @@ impl Body {
             launch,
             refuse: false,
             push: [0.0; 2],
+            kick: None,
         }
     }
 
@@ -376,8 +381,17 @@ impl Body {
         self.vel[0] += self.push[0] / 30.0;
         self.vel[1] += self.push[1] / 30.0;
         self.vel[2] -= GRAVITY / 30.0;
+        let was = self.pos[2];
         for (p, v) in self.pos.iter_mut().zip(self.vel) {
             *p += v / 30.0;
+        }
+        if let Some((under, dv)) = self.kick
+            && was >= under
+            && self.pos[2] < under
+        {
+            self.vel[0] += dv[0];
+            self.vel[1] += dv[1];
+            self.kick = None;
         }
         if self.plan == Pairs::NoneInAir && self.pos[2] > 0.3 {
             self.pairs.clear();
@@ -721,6 +735,7 @@ fn small_job() -> Job {
         heights: vec![2.0, 3.0],
         edge: None,
         drift: None,
+        carry: None,
     });
     Job::new(&d, "testmap", 3).unwrap()
 }
@@ -946,4 +961,264 @@ fn the_errors_and_the_first_of_each_outcome_reach_the_report() {
     let f = &r.first["no_bounce"];
     assert_eq!((f.shard, f.drop, f.tick), (1, 7, 400));
     assert!(markdown(&r).contains("**shard 0: control did not bounce: no_bounce**"));
+}
+
+// ---- carried drops ----
+
+const CARRIED: &str = r#"
+map = "ascension"
+
+[drops]
+heights = [4.5]
+across = [0.0]
+along = 1
+carry = [[0.0, 0.0], [1.5, -0.5]]
+
+[drops.control]
+point = [-10.54, 4.0, -3.19]
+carry = [0.5, 0.0]
+
+[[drops.targets]]
+id = "slot"
+edge = [[-11.10, 4.0, -3.2], [-9.98, 4.0, -3.2]]
+"#;
+
+/// A straight drop at `height` on [`edge_spec`] with one carry.
+fn carried(carry: [f32; 2], height: f32) -> (Drop, Target, Settings) {
+    let mut d = bare(vec![edge_spec()]);
+    d.heights = vec![height];
+    d.carry = Some(vec![carry]);
+    let s = d.settings("x").unwrap();
+    let t = Target::from_spec(0, &edge_spec()).unwrap();
+    let drop = plan(&s, std::slice::from_ref(&t))[0];
+    (drop, t, s)
+}
+
+#[test]
+fn a_carry_reads_from_the_table_and_the_control() {
+    let d = table(CARRIED);
+    assert_eq!(d.carry, Some(vec![[0.0, 0.0], [1.5, -0.5]]));
+    let s = d.settings("ascension").unwrap();
+    assert_eq!(s.carries, vec![[0.0, 0.0], [1.5, -0.5]]);
+    assert_eq!(s.control.as_ref().unwrap().carry, Some([0.5, 0.0]));
+    // No carry: one, plumb.
+    assert_eq!(table(MATCH).settings("ascension").unwrap().carries, vec![[0.0, 0.0]]);
+    assert_eq!(ControlSpec::ascension().carry, None);
+    // It round-trips through the TOML a batch writes.
+    let m = resolve(parse_match(CARRIED, false).unwrap(), &no_files).unwrap();
+    let back = parse_match(&toml::to_string(&m.config).unwrap(), false).unwrap();
+    assert_eq!(back.drops, m.config.drops);
+    // The control's drops carry its own; the slot's, each of the list.
+    let job = Job::new(&d, "ascension", 2).unwrap();
+    let drops = plan(&s, job.targets());
+    assert_eq!(drops.iter().filter(|x| x.control).count(), CONTROL_HEIGHTS.len());
+    assert!(drops.iter().filter(|x| x.control).all(|x| x.carry == [0.5, 0.0]));
+    let slot: Vec<[f32; 2]> = drops.iter().filter(|x| !x.control).map(|x| x.carry).collect();
+    assert_eq!(slot, vec![[0.0, 0.0], [1.5, -0.5]]);
+}
+
+#[test]
+fn a_carry_with_an_approach_or_out_of_range_is_refused() {
+    let mut d = bare(vec![edge_spec()]);
+    d.carry = Some(vec![[1.0, 0.0]]);
+    assert!(d.problems("x", false, false, false).is_empty());
+    d.approach = Some(Approach {
+        stick: 0.5,
+        lead: None,
+        from: vec![],
+    });
+    let p = d.problems("x", false, false, false);
+    assert!(
+        p.iter().any(|x| x == "drops: carry and approach: one or the other"),
+        "{p:?}"
+    );
+    for bad in [
+        vec![[3.1, 0.0]],
+        vec![[0.0, 0.0], [2.5, 2.5]],
+        vec![[f32::NAN, 0.0]],
+        vec![[0.0, f32::INFINITY]],
+        vec![],
+    ] {
+        let mut d = bare(vec![edge_spec()]);
+        d.carry = Some(bad.clone());
+        let p = d.problems("x", false, false, false).join("\n");
+        assert!(p.contains("drops: carry:"), "{bad:?}: {p}");
+    }
+    // 3 units/s is the most, any way.
+    d = bare(vec![edge_spec()]);
+    d.carry = Some(vec![[3.0, 0.0], [0.0, -3.0]]);
+    assert!(d.problems("x", false, false, false).is_empty());
+    // The control's too.
+    d.no_control = false;
+    d.control = Some(ControlSpec {
+        carry: Some([0.0, 4.0]),
+        ..ControlSpec::ascension()
+    });
+    let p = d.problems("x", false, false, false).join("\n");
+    assert!(p.contains("drops: control.carry: [0, 4]"), "{p}");
+}
+
+#[test]
+fn the_fall_model_reproduces_the_control_rows() {
+    for (h, row, v) in [(4.5, 46, 5.935), (5.5, 51, 6.630), (3.65, 42, 5.378)] {
+        let (n, speed) = fall_model(h);
+        assert_eq!(n, row, "{h}");
+        assert!((speed - v).abs() < 2e-3, "{h}: {speed} vs {v}");
+    }
+    // Higher is later and faster.
+    let mut last = (0, 0.0);
+    for h in HEIGHTS {
+        let m = fall_model(h);
+        assert!(m.0 > last.0 && m.1 > last.1, "{h}: {m:?} after {last:?}");
+        last = m;
+    }
+    // The travel is the carry over the rows past the still ones, the
+    // touchdown's included; no carry, no travel.
+    let t = carry_travel([1.5, -0.5], 4.5);
+    assert!((t[0] - 1.5 * 42.0 / 30.0).abs() < 1e-5, "{t:?}");
+    assert!((t[1] + 0.5 * 42.0 / 30.0).abs() < 1e-5, "{t:?}");
+    assert_eq!(carry_travel([0.0, 0.0], 4.5), [0.0, 0.0]);
+}
+
+#[test]
+fn a_carried_drop_starts_back_along_its_carry_and_rests_under_its_start() {
+    let mut d = bare(vec![edge_spec()]);
+    d.heights = vec![4.5];
+    d.across = Some(Across::List(vec![0.0, 0.04]));
+    d.carry = Some(vec![[0.0, 0.0], [1.5, -0.5]]);
+    let s = d.settings("x").unwrap();
+    let t = Target::from_spec(0, &edge_spec()).unwrap();
+    assert_eq!(drops_per_target(&t, &s), 4);
+    let drops = plan(&s, std::slice::from_ref(&t));
+    assert_eq!(drops.len(), 4);
+    let find = |carry: [f32; 2]| {
+        *drops
+            .iter()
+            .find(|x| x.carry == carry && x.across == 0.04)
+            .unwrap()
+    };
+    let (plumb, carried) = (find([0.0, 0.0]), find([1.5, -0.5]));
+    assert_eq!(plumb.point, carried.point);
+    // Plumb starts over its point; the carry starts back by its travel:
+    // 4.5 touches down from row 46, 42 rows carried.
+    assert_eq!([plumb.start[0], plumb.start[1]], [plumb.point[0], plumb.point[1]]);
+    let secs = 42.0 / 30.0;
+    assert!((carried.start[0] - (carried.point[0] - 1.5 * secs)).abs() < 1e-4, "{carried:?}");
+    assert!((carried.start[1] - (carried.point[1] + 0.5 * secs)).abs() < 1e-4, "{carried:?}");
+    assert!((carried.start[2] - (carried.point[2] + 4.5)).abs() < 1e-5);
+    // Each rests under its start, lifted by the travel too.
+    assert_eq!([carried.rest[0], carried.rest[1]], [carried.start[0], carried.start[1]]);
+    let travel = 1.5f32.hypot(0.5) * secs;
+    assert!((carried.rest[2] - (carried.point[2] + REST_LIFT + 0.04 + travel)).abs() < 1e-4);
+    assert!((plumb.rest[2] - (plumb.point[2] + REST_LIFT + 0.04)).abs() < 1e-5);
+}
+
+#[test]
+fn a_carried_drop_writes_its_carry_each_fall_row_and_measures_against_it() {
+    let carry = [1.0, -0.5];
+    let (d, t, s) = carried(carry, 3.5);
+    let mut body = Body::new([1.0, 0.0, 0.0], Pairs::Hold, 12.0);
+    // 0.03 units/s a tick: under the tolerance.
+    body.push = [0.9, 0.0];
+    let (r, acts) = fly_body(d, &t, &s, body);
+    assert_eq!(r.outcome, Outcome::Bounced, "{r:#?}");
+    assert_eq!(r.carry, carry);
+    assert_eq!(r.carry_cut, None);
+    let falls: Vec<&Row> = r.rows.iter().filter(|row| row.phase == "fall").collect();
+    assert!(falls.len() > 30, "{}", falls.len());
+    assert_eq!(acts.iter().filter(|a| a.level.is_some()).count(), falls.len());
+    assert!(acts.iter().filter_map(|a| a.level).all(|l| l == carry));
+    // Every fall row measures how far off the carry it was: the lift's
+    // still body by the whole carry, then by a tick's worth of push.
+    let tick = 0.9 / 30.0;
+    let first = falls[0].fixed.unwrap();
+    assert!((first - 1.0f32.hypot(0.5)).abs() < 1e-4, "{:?}", falls[0]);
+    for row in &falls[1..] {
+        let f = row.fixed.unwrap();
+        assert!((f - tick).abs() < 1e-4, "{row:?}");
+    }
+    // The record's counts the falling rows, the ones the gate checks.
+    let fixed = r.drift_fixed.unwrap();
+    assert!((fixed - tick).abs() < 1e-4, "{fixed} vs {tick}");
+}
+
+#[test]
+fn a_carried_drop_touches_down_at_its_carry_near_its_point() {
+    let carry = [1.0, -0.5];
+    let (d, t, s) = carried(carry, 3.5);
+    let body = Body::new([1.0, 0.0, 0.0], Pairs::Hold, 12.0);
+    let (r, _) = fly_body(d, &t, &s, body);
+    assert_eq!(r.outcome, Outcome::Bounced, "{r:#?}");
+    let td = r.touchdown.as_ref().unwrap();
+    // The touchdown tick ran from the written carry, exactly.
+    assert_eq!([td.vel[0], td.vel[1]], carry);
+    // The aim miss is the touchdown from the point; the fake body falls
+    // without the still rows, so it lands a little past.
+    let miss = r.aim_miss.unwrap();
+    assert_eq!(miss, [td.pos[0] - d.point[0], td.pos[1] - d.point[1]]);
+    assert!(miss[0].hypot(miss[1]) < 0.1, "{miss:?}");
+    assert_eq!(r.drift_fixed, Some(0.0));
+}
+
+#[test]
+fn a_push_off_the_carry_once_falling_stops_the_writes_for_good() {
+    let carry = [1.0, 0.0];
+    let (d, t, s) = carried(carry, 3.5);
+    let mut body = Body::new([1.0, 0.0, 0.0], Pairs::Hold, 12.0);
+    body.kick = Some((2.0, [0.0, 0.5]));
+    let (r, acts) = fly_body(d, &t, &s, body);
+    assert!(r.touchdown.is_some(), "{r:#?}");
+    let cut = r.carry_cut.expect("the kick cuts the carry");
+    let falls: Vec<&Row> = r.rows.iter().filter(|row| row.phase == "fall").collect();
+    // The cut row is the first under the kick's height; it and every row
+    // after it write nothing.
+    let i = falls.iter().position(|row| row.t == cut as i32).unwrap();
+    assert!(falls[i].pos.unwrap()[2] < 2.0 && falls[i - 1].pos.unwrap()[2] >= 2.0);
+    assert!(falls[..i].iter().all(|row| row.fixed.is_some()));
+    assert!(falls[i..].iter().all(|row| row.fixed.is_none()));
+    assert_eq!(acts.iter().filter(|a| a.level.is_some()).count(), i);
+    // The touchdown keeps the velocity the kick left.
+    let td = r.touchdown.as_ref().unwrap();
+    assert!((td.vel[0] - 1.0).abs() < 1e-5 && (td.vel[1] - 0.5).abs() < 1e-5, "{td:?}");
+    // Before falling nothing is checked: the lift's still body is off by
+    // the whole carry and the carry still holds.
+    assert!(falls[0].fixed.unwrap() > CARRY_TOLERANCE);
+}
+
+#[test]
+fn a_zero_carry_is_the_plumb_drop_exactly() {
+    // Pushed far over the carry's tolerance: plumb is never cut.
+    let push = [3.0, -2.0];
+    let (plain, t) = drop_at(3.5);
+    let (zero, _, s) = carried([0.0, 0.0], 3.5);
+    assert_eq!(plain, zero);
+    let fly_pushed = |d: Drop, s: &Settings| {
+        let mut body = Body::new([1.0, 0.0, 0.0], Pairs::Hold, 12.0);
+        body.push = push;
+        fly_body(d, &t, s, body)
+    };
+    let (r0, a0) = fly_pushed(plain, &settings());
+    let (r1, a1) = fly_pushed(zero, &s);
+    assert_eq!(a0, a1);
+    assert_eq!(r0, r1);
+    assert_eq!(r1.carry_cut, None);
+    let falls = r1.rows.iter().filter(|row| row.phase == "fall").count();
+    assert_eq!(a1.iter().filter(|a| a.level == Some([0.0, 0.0])).count(), falls);
+    assert_eq!(a1.iter().filter(|a| a.level.is_some()).count(), falls);
+}
+
+#[test]
+fn the_report_keeps_each_carry_its_own_cell() {
+    let mut a = rec("a", Outcome::Bounced, 6.0, 0.0, 14.0);
+    let mut b = rec("a", Outcome::NoBounce, 6.0, 0.0, 0.2);
+    a.carry = [1.0, 0.0];
+    b.carry = [0.0, 0.0];
+    let r = summarize(&[run_of(vec![a, b], 0)]);
+    let ta = r.targets.iter().find(|t| t.id == "a").unwrap();
+    assert_eq!(ta.cells.len(), 2);
+    assert_eq!(ta.cells[0].carry, [0.0, 0.0]);
+    assert_eq!((ta.cells[1].carry, ta.cells[1].bounced), ([1.0, 0.0], 1));
+    let md = markdown(&r);
+    assert!(md.contains("| height | +0.00 | +0.00 c +1.00,+0.00 |"), "{md}");
+    assert!(md.contains("| 2.00 | 0/1 | 1/1 |"), "{md}");
 }

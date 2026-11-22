@@ -31,6 +31,15 @@
 //! ([`Act::level`]), and the most one row took off is the record's
 //! `drift_fixed`. An approach drop's horizontal motion is its stick's
 //! and is left alone.
+//!
+//! **Carrying.** A straight drop with a carry (`carry`, a world-frame
+//! horizontal velocity) writes that velocity instead, so it touches down
+//! moving across the seam at exactly the carry. It starts back along the
+//! carry by the distance the fall model ([`fall_model`]) says the fall
+//! covers, so it lands on its point. Once the body is falling, the first
+//! row whose velocity is off the carry by more than [`CARRY_TOLERANCE`]
+//! (something hit it) or that is on the ground ends the writes for good:
+//! the record's `carry_cut`.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -123,6 +132,27 @@ pub const CONTROL_POINT: [f32; 3] = [-10.54, 4.0, -3.19];
 pub const CONTROL_EDGE: [[f32; 3]; 2] = [[-11.10, 4.0, -3.2], [-9.98, 4.0, -3.2]];
 pub const CONTROL_HEIGHTS: [f32; 2] = [4.5, 5.5];
 pub const CONTROL_ID: &str = "control";
+/// The fastest carry (units/s, horizontal).
+pub const MAX_CARRY: f32 = 3.0;
+/// A falling body whose horizontal velocity is further than this
+/// (units/s) from its carry has been pushed: the writes stop.
+pub const CARRY_TOLERANCE: f32 = 0.05;
+/// The fall model's gravity (units/s²), fitted to the control's rows: the
+/// downward speed gains 0.13904 units/s a row from row 6 on (Ascension,
+/// heights 3.65, 4.5 and 5.5 touching down at 5.378, 5.935 and 6.630 on
+/// rows 42, 46 and 51). [`GRAVITY`]'s 4.15 puts the 4.5 drop's touchdown a
+/// row late, on 47.
+pub const FALL_GRAVITY: f32 = 4.171;
+/// The rows after the release the body barely moves (about 0.02 units
+/// over all of them).
+pub const FALL_STILL_ROWS: u32 = 5;
+/// The downward speed (units/s) the fall starts from on the row after
+/// them.
+pub const FALL_V0: f32 = 0.234;
+/// What the model's sum overshoots the measured fall by.
+pub const FALL_OFFSET: f32 = 0.031;
+/// The origin stops this far over the floor's origin at the touchdown.
+pub const FALL_CLEARANCE: f32 = 0.03;
 
 fn is_false(b: &bool) -> bool {
     !*b
@@ -130,6 +160,14 @@ fn is_false(b: &bool) -> bool {
 
 fn one() -> u32 {
     1
+}
+
+fn is_zero2(v: &[f32; 2]) -> bool {
+    v[0] == 0.0 && v[1] == 0.0
+}
+
+fn carry_ok(v: [f32; 2]) -> bool {
+    v[0].is_finite() && v[1].is_finite() && v[0].hypot(v[1]) <= MAX_CARRY
 }
 
 // ---- the table ----
@@ -186,6 +224,11 @@ pub struct DropsConfig {
     /// list, or `{ from, to, step }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub across: Option<Across>,
+    /// Horizontal velocities (world X and Y, units/s, each at most
+    /// [`MAX_CARRY`]) a straight drop touches down with; each drop once
+    /// with each (default `[[0, 0]]`, plumb). Not with an approach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry: Option<Vec<[f32; 2]>>,
     /// A horizontal push through the fall, from either side of the edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approach: Option<Approach>,
@@ -217,6 +260,7 @@ impl Default for DropsConfig {
             shards: 1,
             heights: Vec::new(),
             across: None,
+            carry: None,
             approach: None,
             control: None,
             targets: Targets::default(),
@@ -345,6 +389,9 @@ pub struct ControlSpec {
     pub edge: Option<[[f32; 3]; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift: Option<[f32; 2]>,
+    /// The horizontal velocity it touches down with (default `[0, 0]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry: Option<[f32; 2]>,
 }
 
 impl ControlSpec {
@@ -356,6 +403,7 @@ impl ControlSpec {
             heights: CONTROL_HEIGHTS.to_vec(),
             edge: Some(CONTROL_EDGE),
             drift: Some([0.0, 1.0]),
+            carry: None,
         }
     }
 }
@@ -391,6 +439,8 @@ pub struct Settings {
     pub seats: u32,
     pub heights: Vec<f32>,
     pub across: Vec<f32>,
+    /// The carries, at least one (`[0, 0]` is plumb).
+    pub carries: Vec<[f32; 2]>,
     pub along: u32,
     pub repeats: u32,
     pub sides: Vec<Side>,
@@ -474,6 +524,28 @@ impl DropsConfig {
                 (from, a.stick, lead)
             }
         };
+        let carries = match &self.carry {
+            None => vec![[0.0, 0.0]],
+            Some(c) => {
+                if self.approach.is_some() {
+                    p.push("drops: carry and approach: one or the other".into());
+                }
+                if c.is_empty() {
+                    p.push("drops: carry: at least one velocity".into());
+                }
+                if let Some(bad) = c.iter().find(|v| !carry_ok(**v)) {
+                    p.push(format!(
+                        "drops: carry: [{}, {}] is not a velocity of at most {MAX_CARRY} units/s",
+                        bad[0], bad[1]
+                    ));
+                }
+                if c.is_empty() {
+                    vec![[0.0, 0.0]]
+                } else {
+                    c.clone()
+                }
+            }
+        };
         let bounce_vz = self.bounce_vz.unwrap_or(BOUNCE_VZ);
         if !(bounce_vz.is_finite() && bounce_vz > 0.5) {
             p.push("drops: bounce_vz is over 0.5 units/s".into());
@@ -498,6 +570,14 @@ impl DropsConfig {
                     || c.drift.is_some_and(|d| !finite(&d))
                 {
                     p.push("drops: control: point, edge and drift are world coordinates".into());
+                }
+                if let Some(v) = c.carry
+                    && !carry_ok(v)
+                {
+                    p.push(format!(
+                        "drops: control.carry: [{}, {}] is not a velocity of at most {MAX_CARRY} units/s",
+                        v[0], v[1]
+                    ));
                 }
                 Some(c)
             }
@@ -539,6 +619,7 @@ impl DropsConfig {
             seats,
             heights,
             across,
+            carries,
             along,
             repeats,
             sides,
@@ -776,10 +857,15 @@ pub struct Drop {
     pub height: f32,
     pub side: Side,
     pub repeat: u32,
+    /// The horizontal velocity (units/s) it touches down with; `[0, 0]`
+    /// falls plumb.
+    #[serde(default)]
+    pub carry: [f32; 2],
     /// The point aimed at, on the floor (the edge's height).
     pub point: [f32; 3],
     /// Where the lift puts the origin: over the point (back by the lead
-    /// against an approach), `height` up.
+    /// against an approach, back along the carry by the fall's travel),
+    /// `height` up.
     pub start: [f32; 3],
     /// Where it settles first, under `start`.
     pub rest: [f32; 3],
@@ -791,13 +877,67 @@ pub fn drops_per_target(t: &Target, s: &Settings) -> usize {
     if t.control {
         return s.control.as_ref().map_or(0, |c| c.heights.len());
     }
-    t.alongs(s.along).len() * s.across.len() * s.heights.len() * s.sides.len() * s.repeats as usize
+    t.alongs(s.along).len()
+        * s.across.len()
+        * s.heights.len()
+        * s.carries.len()
+        * s.sides.len()
+        * s.repeats as usize
 }
 
-fn push_drop(out: &mut Vec<Drop>, s: &Settings, ti: usize, t: &Target, point: [f32; 3], along: f32, across: f32, height: f32, side: Side, repeat: u32) {
+/// The fall model: a drop released `height` over the floor's origin
+/// touches down from row `n` (rows from the release) at `v` units/s
+/// down, `(n, v)`. Fitted to the control's rows: rows 1 to
+/// [`FALL_STILL_ROWS`] barely move; from the row after, the speed is
+/// `v_n = FALL_V0 + FALL_GRAVITY / 30 × (n − 5)` and the body moves
+/// `v_n / 30` a row, so it has fallen `Σ v_k / 30 − FALL_OFFSET` by row
+/// `n`. The touchdown row is the last one still over the floor by more
+/// than [`FALL_CLEARANCE`]. Heights 4.5, 5.5 and 3.65 give rows 46, 51
+/// and 42 at 5.935, 6.630 and 5.378.
+pub fn fall_model(height: f32) -> (u32, f32) {
+    let speed = |n: u32| FALL_V0 + FALL_GRAVITY / 30.0 * (n - FALL_STILL_ROWS) as f32;
+    let mut best = (FALL_STILL_ROWS, FALL_V0);
+    let mut fallen = -FALL_OFFSET;
+    for n in FALL_STILL_ROWS + 1..MAX_TICKS {
+        let v = speed(n);
+        fallen += v / 30.0;
+        if fallen >= height - FALL_CLEARANCE {
+            break;
+        }
+        best = (n, v);
+    }
+    best
+}
+
+/// How far (X and Y) a drop carried at `carry` moves from the release to
+/// the touchdown at `height`: the carry over the rows the fall model
+/// counts past the still ones, the touchdown tick's included.
+pub fn carry_travel(carry: [f32; 2], height: f32) -> [f32; 2] {
+    if is_zero2(&carry) {
+        return [0.0, 0.0];
+    }
+    let (n, _) = fall_model(height);
+    let secs = (n + 1 - FALL_STILL_ROWS) as f32 / 30.0;
+    [carry[0] * secs, carry[1] * secs]
+}
+
+fn push_drop(
+    out: &mut Vec<Drop>,
+    s: &Settings,
+    ti: usize,
+    t: &Target,
+    point: [f32; 3],
+    along: f32,
+    across: f32,
+    height: f32,
+    carry: [f32; 2],
+    side: Side,
+    repeat: u32,
+) {
     let back = side.sign() * s.lead;
-    let sx = point[0] - t.normal[0] * back;
-    let sy = point[1] - t.normal[1] * back;
+    let travel = carry_travel(carry, height);
+    let sx = point[0] - t.normal[0] * back - travel[0];
+    let sy = point[1] - t.normal[1] * back - travel[1];
     out.push(Drop {
         id: out.len() as u32,
         target: ti as u32,
@@ -806,16 +946,21 @@ fn push_drop(out: &mut Vec<Drop>, s: &Settings, ti: usize, t: &Target, point: [f
         height,
         side,
         repeat,
+        carry,
         point,
         start: [sx, sy, point[2] + height],
-        rest: [sx, sy, point[2] + REST_LIFT + across.abs() + s.lead],
+        rest: [
+            sx,
+            sy,
+            point[2] + REST_LIFT + across.abs() + s.lead + travel[0].hypot(travel[1]),
+        ],
         control: t.control,
     });
 }
 
 /// The run's drops over `targets`: a control target's heights at its
-/// point, every other target's along points × across offsets × heights ×
-/// sides × repeats, target by target.
+/// point (with its carry), every other target's along points × heights ×
+/// across offsets × carries × sides × repeats, target by target.
 pub fn plan(s: &Settings, targets: &[Target]) -> Vec<Drop> {
     let mut out = Vec::new();
     for (ti, t) in targets.iter().enumerate() {
@@ -825,8 +970,9 @@ pub fn plan(s: &Settings, targets: &[Target]) -> Vec<Drop> {
             let floor = if t.is_point() { c.point[2] } else { t.at(along)[2] };
             let point = [c.point[0], c.point[1], floor];
             let across = t.across_of(xy(c.point));
+            let carry = c.carry.unwrap_or([0.0, 0.0]);
             for &h in &c.heights {
-                push_drop(&mut out, s, ti, t, point, along, across, h, Side::None, 0);
+                push_drop(&mut out, s, ti, t, point, along, across, h, carry, Side::None, 0);
             }
             continue;
         }
@@ -835,9 +981,11 @@ pub fn plan(s: &Settings, targets: &[Target]) -> Vec<Drop> {
             for &h in &s.heights {
                 for &c in &s.across {
                     let point = [on[0] + t.normal[0] * c, on[1] + t.normal[1] * c, on[2]];
-                    for &side in &s.sides {
-                        for r in 0..s.repeats {
-                            push_drop(&mut out, s, ti, t, point, a, c, h, side, r);
+                    for &carry in &s.carries {
+                        for &side in &s.sides {
+                            for r in 0..s.repeats {
+                                push_drop(&mut out, s, ti, t, point, a, c, h, carry, side, r);
+                            }
                         }
                     }
                 }
@@ -958,7 +1106,8 @@ pub struct Act {
     /// Zero the body's velocity.
     pub stop: bool,
     /// Set the body's horizontal velocity (X and Y) to this, its vertical
-    /// kept: every row of a straight drop's fall, so it falls plumb.
+    /// kept: every row of a straight drop's fall, so it falls plumb (`[0,
+    /// 0]`) or carried (its carry).
     pub level: Option<[f32; 2]>,
     /// The walk, a world direction scaled 0..1.
     pub walk: [f32; 2],
@@ -1020,7 +1169,8 @@ pub struct Touchdown {
     pub tick: u64,
     pub pos: [f32; 3],
     /// The velocity the touchdown tick ran from: a straight drop's with
-    /// its horizontal written off ([`Act::level`]).
+    /// its horizontal written to its carry ([`Act::level`]), unless the
+    /// carry was cut.
     pub vel: [f32; 3],
     /// The speed in, downward.
     pub speed: f32,
@@ -1089,8 +1239,8 @@ pub struct Row {
     /// The word written this row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrote: Option<i32>,
-    /// A straight drop's fall row: the horizontal speed (units/s) the
-    /// row's [`Act::level`] took off the body.
+    /// A straight drop's fall row that wrote [`Act::level`]: how far
+    /// (units/s) the body's horizontal velocity was off its carry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed: Option<f32>,
 }
@@ -1109,6 +1259,9 @@ pub struct Record {
     pub along: f32,
     pub side: Side,
     pub repeat: u32,
+    /// The drop's carry ([`Drop::carry`]).
+    #[serde(default, skip_serializing_if = "is_zero2")]
+    pub carry: [f32; 2],
     pub seat: u8,
     /// Tries (setup failures are tried again).
     pub attempts: u32,
@@ -1127,13 +1280,21 @@ pub struct Record {
     /// Whether the touchdown tick ran with every pair at -3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prime_held: Option<bool>,
-    /// A straight drop's largest horizontal correction: the most
-    /// horizontal speed (units/s) one fall row took off the body. Near 0
-    /// on a clean drop; a big one says something pushed the body
-    /// sideways. `None` for an approach (its push is the stick's) or a
-    /// drop that never fell.
+    /// A straight drop's largest horizontal correction: the most one
+    /// writing fall row's horizontal velocity was off the carry (units/s;
+    /// plumb, off 0; a carried drop's rows from falling on, the ones its
+    /// gate checks). Near 0 on a clean drop; a big one says something
+    /// pushed the body sideways. `None` for an approach (its push is the
+    /// stick's) or a drop that never fell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift_fixed: Option<f32>,
+    /// A carried drop's fall row that stopped the writes: falling, and
+    /// off the carry by more than [`CARRY_TOLERANCE`] or on the ground.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry_cut: Option<u32>,
+    /// Where the touchdown was from the drop's point (X and Y).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim_miss: Option<[f32; 2]>,
     /// The fall's words, run-length (one row a tick).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<WordSpan>,
@@ -1232,8 +1393,15 @@ pub struct DropRun {
     after_ticks: u32,
     bounce_vz: f32,
     walk: [f32; 2],
-    /// A straight drop: the fall is held plumb ([`Act::level`]).
+    /// A straight drop: the fall is held plumb or carried
+    /// ([`Act::level`]).
     plumb: bool,
+    /// The velocity written while `carrying`.
+    carry: [f32; 2],
+    /// The carry is still written: a non-zero carry stops for good at
+    /// `carry_cut`; a zero one never does.
+    carrying: bool,
+    carry_cut: Option<u32>,
     drift_fixed: Option<f32>,
     facing: [f32; 2],
     phase: Phase,
@@ -1270,6 +1438,9 @@ impl DropRun {
             bounce_vz: s.bounce_vz,
             walk: push,
             plumb: drop.side == Side::None,
+            carry: drop.carry,
+            carrying: true,
+            carry_cut: None,
             drift_fixed: None,
             facing,
             phase: Phase::Place(false, 0),
@@ -1481,18 +1652,38 @@ impl DropRun {
         act.word = Some(PRIMED);
         act.walk = self.walk;
         let mut row = self.row(n as i32, "fall", sense, Some(PRIMED));
-        // A straight drop falls plumb: whatever horizontal speed the tick
-        // before gave the body is written off before the next one, and
-        // the most of it is kept for the record. The tick runs from the
-        // written velocity, so that is the row the touchdown keeps.
+        // A straight drop falls plumb or carried: whatever the tick
+        // before did to the body's horizontal velocity is written back to
+        // the carry before the next one, and the most it was off is kept
+        // for the record. The tick runs from the written velocity, so
+        // that is the row the touchdown keeps. A non-zero carry, once
+        // falling, stops for good on the first row something pushed the
+        // body off it or the body is on the ground; before falling (the
+        // lift settling) it is written unchecked.
         let mut vel = vel;
         if self.plumb {
-            let fixed = vel[0].hypot(vel[1]);
-            self.drift_fixed = Some(self.drift_fixed.map_or(fixed, |d| d.max(fixed)));
-            row.fixed = Some(fixed);
-            act.level = Some([0.0, 0.0]);
-            vel[0] = 0.0;
-            vel[1] = 0.0;
+            let c = self.carry;
+            let fixed = (vel[0] - c[0]).hypot(vel[1] - c[1]);
+            if self.carrying
+                && !is_zero2(&c)
+                && self.falling
+                && (fixed > CARRY_TOLERANCE || !sense.airborne)
+            {
+                self.carrying = false;
+                self.carry_cut = Some(n);
+            }
+            if self.carrying {
+                // A carry is off on the rows before falling (the lift's
+                // still body, then the start of the fall): only the rows
+                // it is held to count toward the record's.
+                if is_zero2(&c) || self.falling {
+                    self.drift_fixed = Some(self.drift_fixed.map_or(fixed, |d| d.max(fixed)));
+                }
+                row.fixed = Some(fixed);
+                act.level = Some(c);
+                vel[0] = c[0];
+                vel[1] = c[1];
+            }
         }
         self.rows.push(row);
         self.prev = Some(Prev {
@@ -1584,6 +1775,7 @@ impl DropRun {
             along: self.drop.along,
             side: self.drop.side,
             repeat: self.drop.repeat,
+            carry: self.drop.carry,
             seat: self.seat,
             attempts: 1,
             tick: self.release.or(self.first_tick).unwrap_or(0),
@@ -1594,6 +1786,11 @@ impl DropRun {
             launch,
             prime_held: self.prime.as_ref().map(|p| p.is_ok()),
             drift_fixed: self.drift_fixed,
+            carry_cut: self.carry_cut,
+            aim_miss: self
+                .touch
+                .as_ref()
+                .map(|t| [t.pos[0] - self.drop.point[0], t.pos[1] - self.drop.point[1]]),
             words: self.spans.clone(),
             first: self.first.clone(),
             rows: if rows { self.rows.clone() } else { Vec::new() },
