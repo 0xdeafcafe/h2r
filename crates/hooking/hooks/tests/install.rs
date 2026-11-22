@@ -612,3 +612,37 @@ fn render_setter_uses_the_runner_only_at_a_refused_device_boundary() {
     assert_eq!((cpu.ecx, cpu.edx), (REGISTER, 3));
     assert_eq!(invoked.load(Ordering::Relaxed), 1);
 }
+
+/// Two features' small requests share one arena page: install maps it once,
+/// readable and writable at both addresses, and leaves the next page
+/// unmapped.
+#[test]
+fn a_shared_arena_page_is_mapped_once() {
+    use hooks::arena::{ALIGN, ARENA_START, PAGE};
+    let rt = runtime();
+    let mut r = Registry::new(Switches::defaults());
+    for id in ["a", "b"] {
+        r.add(&from_fn(id, |b| {
+            b.guest_alloc(8, Permissions::RW)?;
+            Ok(())
+        }))
+        .unwrap();
+    }
+    let plan = r.build(&hooks::Base).unwrap();
+    let addrs: Vec<_> = plan.allocs.iter().map(|a| a.addr).collect();
+    assert_eq!(addrs, [ARENA_START, ARENA_START + ALIGN]);
+    plan.install(&rt).unwrap();
+    let mut mem = rt.memory();
+    for at in addrs {
+        mem.set_u32(at, 0x1234_5678).unwrap();
+        assert_eq!(mem.u32(at).unwrap(), 0x1234_5678);
+    }
+    let mapped: Vec<_> = mem
+        .mappings()
+        .iter()
+        .filter(|m| m.virtual_start == ARENA_START)
+        .map(|m| (m.len, m.permissions))
+        .collect();
+    assert_eq!(mapped, [(PAGE, Permissions::RW)]);
+    assert!(mem.u8(ARENA_START + PAGE).is_err());
+}
