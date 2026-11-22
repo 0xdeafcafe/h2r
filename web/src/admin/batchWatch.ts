@@ -1,10 +1,13 @@
 // The pure parts of Clanker Training's Watch view: which way each run's
 // tile plays, the order of the tiles, the shared fast-forward clock and
-// which live tiles hold one of the capped streams
-// (docs/runtime/sim.md, "Watching in Uplink").
+// which live tiles hold one of the capped streams, and the One map overlay
+// that draws a map's runs together (docs/runtime/sim.md, "Watching in
+// Uplink").
 
+import type { MapFrame } from "../components/MapCanvas";
 import { clock } from "../lib/format";
 import { teamName } from "../lib/game";
+import type { Bounds, Marker, RosterEntry } from "../map/render";
 import { TICKS_PER_SECOND } from "../state/frames";
 import type { ScoreSnapshot } from "../state/replay";
 import { tuningLabel, type SimRun } from "./simRuns";
@@ -168,4 +171,91 @@ export function limiter(limit: number): <T>(read: () => Promise<T>) => Promise<T
     });
     next();
   });
+}
+
+/** The batch's runs grouped by map, each group in tile order: one One map
+ *  viewer per group. */
+export function groupByMap<T extends Pick<SimRun, "map" | "sim">>(runs: readonly T[]): { map: string; runs: T[] }[] {
+  const groups: { map: string; runs: T[] }[] = [];
+  for (const run of orderTiles(runs)) {
+    const last = groups.at(-1);
+    if (last && last.map === run.map) last.runs.push(run); else groups.push({ map: run.map, runs: [run] });
+  }
+  return groups;
+}
+
+/** The colours the overlay gives its runs, in tile order. They wrap after
+ *  the last one. */
+export const RUN_COLOURS = [
+  "#4aa3ff", "#ff6b4a", "#5fd35f", "#ffd23f", "#c77dff", "#2ee6d6",
+  "#ff8fc7", "#ff9f1c", "#a0e426", "#9aa8ff", "#d9d9d9", "#b5651d",
+] as const;
+
+export function runColour(slot: number): string {
+  return RUN_COLOURS[((slot % RUN_COLOURS.length) + RUN_COLOURS.length) % RUN_COLOURS.length]!;
+}
+
+/** How strongly the runs that are not highlighted are drawn. */
+export const DIM_ALPHA = 0.25;
+
+/** `colour` at `alpha`, as the renderers' fill and stroke styles take it.
+ *  A colour that is not a hex one is returned as it is. */
+export function dimColour(colour: string, alpha = DIM_ALPHA): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(colour);
+  if (!m) return colour;
+  const hex = m[1]!.length === 3 ? m[1]!.replace(/./g, (c) => c + c) : m[1]!;
+  const n = parseInt(hex, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/** Player indices are small, so each run's players are keyed
+ *  `slot * PLAYER_STRIDE + index` in the merged frame and roster. */
+export const PLAYER_STRIDE = 1000;
+
+export function overlayKey(slot: number, index: number): number {
+  return slot * PLAYER_STRIDE + index;
+}
+
+/** One run's share of an overlay: its slot, name and colour, whether it is
+ *  drawn dimmed, its roster and its frame at this moment. */
+export interface OverlayPart {
+  slot: number;
+  label: string;
+  colour: string;
+  dim: boolean;
+  roster: ReadonlyMap<number, RosterEntry>;
+  frame: MapFrame;
+}
+
+/** One roster for the overlay: every run's players under their own key, in
+ *  the run's colour (dimmed, when the run is) and named after the run. */
+export function mergeRosters(parts: readonly Pick<OverlayPart, "slot" | "label" | "colour" | "dim" | "roster">[]): Map<number, RosterEntry> {
+  const merged = new Map<number, RosterEntry>();
+  for (const part of parts) {
+    const colour = part.dim ? dimColour(part.colour) : part.colour;
+    for (const [index, entry] of part.roster) {
+      merged.set(overlayKey(part.slot, index), { ...entry, name: `${part.label} · ${entry.name}`, colour });
+    }
+  }
+  return merged;
+}
+
+function union(a: Bounds | null, b: Bounds | null): Bounds | null {
+  if (!a || !b) return a ?? b;
+  return { minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) };
+}
+
+/** One frame for the overlay: every run's players re-keyed as in
+ *  `mergeRosters`, its death marks in the run's colour (faded when the run
+ *  is dimmed) and the bounds all of them have covered. */
+export function mergeFrames(parts: readonly Pick<OverlayPart, "slot" | "colour" | "dim" | "frame">[]): MapFrame {
+  const players: MapFrame["players"] = [];
+  const markers: Marker[] = [];
+  let seen: Bounds | null = null;
+  for (const { slot, colour, dim, frame } of parts) {
+    for (const p of frame.players) players.push({ ...p, index: overlayKey(slot, p.index) });
+    for (const m of frame.markers) markers.push({ ...m, colour, alpha: dim ? m.alpha * DIM_ALPHA : m.alpha });
+    seen = union(seen, frame.seen);
+  }
+  return { players, markers, seen };
 }

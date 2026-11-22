@@ -293,6 +293,9 @@ max_ticks = 9000            # stop after this many game ticks (5 min at 30 Hz)
 max_wall_s = 600            # and after this long on the clock
 render_every = 0
 pace = "unpaced"
+components = true           # false: no state_components_v1 in the report (timing arms)
+bot_threads = 3             # bot think workers: a count, "auto" or "off"; unset: see below
+bot_pipeline = false        # true: thinks overlap the guest's tick (a different match)
 
 [settings]                  # any variant setting by id (variants::record)
 83 = 1                      # weapons on map
@@ -377,7 +380,7 @@ ticks; and the final score. The report is one JSON file per match:
   "result": { "end": "game_over", "winner": {"player": 2}, "teams": [] },
   "ticks": 9000, "game_seconds": 300.0,
   "wall": { "setup_s": 21.8, "match_s": 41.2, "process_s": 63.0, "speedup": 7.28,
-            "process_speedup": 4.76, "ms_per_tick": 4.58,
+            "process_speedup": 4.76, "ms_per_tick": 4.58, "bots_ms_per_tick": 0.45,
             "peak_rss_mib": 981, "footprint_mib": 143,
             "guest_written_pages": 2100, "guest_pages": 16384 },
   "players": [
@@ -388,10 +391,20 @@ ticks; and the final score. The report is one JSON file per match:
       "doing": { "fight": 2100, "roam": 3900 } }
   ],
   "kills": [ { "tick": 412, "killer": 0, "victim": 3, "kind": "kill" } ],
+  "flat": { "fixups_per_tick": 0.0 },
   "nav": "loaded",
   "notes": []
 }
 ```
+
+`wall.bots_ms_per_tick` is the game-thread time the bot brains cost per
+tick: every phantom's read, think and conclude phases, and the wait for
+workers, in any think mode (`bots::think::game_thread_ns`). A think that
+runs on a worker is not in it, so batched against serial shows the
+game-thread saving. `flat.fixups_per_tick` is the flat RAM window's
+fixups over the match, per tick (`runtime::window_process_stats`); the
+report has no `flat` without a window. Both count from the tick the
+match begins.
 
 With `H2_DISPATCH_STATS=1`, the report includes `dispatch_per_tick`
 for the observed match interval. It records the CALLs, JUMPs, RESUMEs,
@@ -647,12 +660,15 @@ at 3× plays smoothly at 3× near its live edge. A finished run's replay opens
 at 8× and its speed menu goes from 0.25× to 16×. The training page shows
 measured simulation speed. Use `--pace realtime` for normal game speed.
 
-Pick a batch (the **Batch** filter, or a batch heading in the list) to
-watch the whole batch at once. Above the results table, a grid has one map
-tile per run (`web/src/admin/SimWatch.tsx`). The tiles are ordered by map,
-then seed, then tuning arms, so the arms played on one map and seed sit
-side by side. Each tile shows the map, seed, arms by team, game clock and
-score, and opens the run's page when clicked.
+Above the results table, the page watches the runs it lists
+(`web/src/admin/SimWatch.tsx`). With no batch picked, it draws them as
+**One map**, described below. Pick a batch (the **Batch** filter, or a
+batch heading in the list) to watch it as a grid with one map tile per
+run, or switch the batch to **One map** with the **Grid** / **One map**
+switch in the replay controls. The grid's tiles are ordered by map, then
+seed, then tuning arms, so the arms played on one map and seed sit side by
+side. Each tile shows the map, seed, arms by team, game clock and score,
+and opens the run's page when clicked.
 
 - **Finished runs** replay on one shared clock, in sync from each run's
   first frame. **Speed** picks 1×, 4×, 8× or 16× (8× to start). **Pause**,
@@ -668,6 +684,29 @@ score, and opens the run's page when clicked.
 
 The maps are the stats site's small map renderers on the shared animation
 frame loop. A tile off screen draws nothing.
+
+**One map** draws every run on a map together in one large viewer, titled
+with the map and its run count. A page that lists runs on several maps has
+a viewer per map; the **Map** filter leaves one. The viewer uses the map's
+top view when the server has one, else its outline. Every run plays on the
+same clock and controls as the tiles, each at its own tick: finished runs
+replay their recordings, and running runs stream live under the same six
+slots, shared by the viewers on screen. Runs that wait for their recording
+are left out, with a note.
+
+Each run has its own colour from a fixed palette, in tile order, and its
+players and death marks are drawn in that colour instead of the team's. The
+viewer merges the runs' frames and rosters into one frame and one roster
+(`mergeFrames` and `mergeRosters` in `web/src/admin/batchWatch.ts`). Each
+run's players are keyed `slot * 1000 + index`, so players from different
+runs never meet, and the merged roster gives them the run's colour. The
+map renderers are the same as the tiles'.
+
+A legend beside the viewer has a row per run with its colour, seed, arms,
+live score and a link to the run. Pointing at a row, or at the run's row in
+the results table, draws that run at full strength and dims the others
+(their roster colour and marks turn translucent). Clicking a legend row
+holds the highlight; clicking it again lets go.
 
 Each batch streams at most two matches at once. Other running matches appear
 in the list with replay available after the match. They buffer packed
@@ -830,8 +869,11 @@ that a digest does. Each report also carries `state_components_v1`: the
 same ticks as `state_hashes_v1`, broken into named components with their
 values as text. The first row lists every component; each later row lists
 only those that changed (a component that goes away reads `-`). It is on in
-every `h2 sim run` and is bounded at 250,000 recorded values; a longer match
-keeps its first ticks and sets `truncated_after`.
+every `h2 sim run` unless the match file sets `components = false`, and is
+bounded at 250,000 recorded values; a longer match keeps its first ticks and
+sets `truncated_after`. A timing arm that leaves it out still has
+`state_hashes_v1`, and `h2 sim diff` against it compares those digests
+and says that one report has no component breakdown.
 
 Components: `time.tick`, `rng.seed`, `world.bsp`, `world.flags`,
 `team.NN.score`, and for each player slot `player.NN.{id, stats, pos,
@@ -915,8 +957,14 @@ and some conditional tactical or route outputs can still allocate.
 
 The brains can think off the game thread ([bots.md §5.5](../game/bots.md)):
 `H2_BOT_THREADS=auto` batches every phantom's think across workers, and
-`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. The
-default is serial. To measure, run the same match file (Waterworks and
+`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. A
+single `h2 sim run` thinks batched on `min(phantoms, cores - 1)` workers
+unless told otherwise; `h2 sim batch` children stay serial, because the
+children already fill the cores. Per variable, an `H2_BOT_THREADS` or
+`H2_BOT_PIPELINE` already in the environment wins, then the match file's
+`bot_threads` and `bot_pipeline`, then that default
+(`crates/apps/cli/src/sim_cmd.rs`, `think_env`). The run's first log line
+names the values it ended with. To measure, run the same match file (Waterworks and
 Lockout, phantoms, seed 7) serial, batched and pipelined. Compare
 `state_hashes_v1`: batched must match serial at every tick, and pipelined
 must match itself across thread counts. Then compare ms/tick and the

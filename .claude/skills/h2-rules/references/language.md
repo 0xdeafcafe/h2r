@@ -219,7 +219,7 @@ the type may be `none` (`set_loadout(p, "tag", none)`).
 ## Script errors at run time
 
 The VM stops, the round ends with "script error", the same op every run:
-the tick's 20,000 ops ran out (`Budget`), a table row out of range
+the tick's 100,000 ops ran out (`Budget`), a table row out of range
 (`TableRow`), more than 256 objects with object variables (`Objects`), more
 than 128 queued calls (`Queue`), `squad(n)` outside 0 to 15 (`Squad`),
 more than 32 zones asked about by `ticks_held` (`Zones`).
@@ -244,4 +244,4 @@ exits 1.
 | `on kill takes 2 arguments` | wrong argument count |
 | `a second handler for on kill` | two handlers for one event |
 | `expected the end of the line` | two statements on a line without `;` |
-| `the handler has more than 8192 ops` / `256 registers` | one handler too large; split work across events or tables |
+| `the handler has more than 32768 ops` / `256 registers` | one handler too large; split work across events or tables |

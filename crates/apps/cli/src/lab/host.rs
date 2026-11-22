@@ -1282,6 +1282,14 @@ fn run_sim(
     let mut log = File::create(run_dir.join("run.log"))?;
     writeln!(log, "lab job {id} · {}", sim.name)?;
     simbench::check_entry(sim)?;
+    // The driver's bot meshes, in a data root of the job's own.
+    let job_data = run_dir.join("sim-data");
+    let data = if sim.data.is_empty() {
+        cfg.data.clone()
+    } else {
+        simbench::stage_data(&job_data, &cfg.data, &sim.data)?;
+        job_data.clone()
+    };
     let plan = simbench::schedule(sim.arms.len(), sim.repeat);
     sh.update(id, |m| {
         m.state = "running".into();
@@ -1295,7 +1303,7 @@ fn run_sim(
         let dir = run_dir.join("sim").join(&name);
         writeln!(log, "lab: sim run {}/{}: {name}", n + 1, plan.len())?;
         let t = Instant::now();
-        let ran = sim_command(cfg, id, sim, &sim.arms[arm], image, &dir).and_then(|cmd| {
+        let ran = sim_command(cfg, id, sim, &sim.arms[arm], image, &data, &dir).and_then(|cmd| {
             let step_log = File::create(dir.join("sim.log"))?;
             sh.step(id, cmd, &step_log)
         });
@@ -1320,6 +1328,12 @@ fn run_sim(
         } else if error.is_none() && reports.is_empty() {
             error = Some("no report.json".into());
         }
+        // A match without the nav mesh ran, but not as a bot match: the
+        // bots stood still and its speed means nothing.
+        if error.is_none() {
+            let log_text = fs::read(dir.join("sim.log")).unwrap_or_default();
+            error = simbench::nav_problem(&reports, &String::from_utf8_lossy(&log_text));
+        }
         writeln!(
             log,
             "lab: sim run {name}: {} in {:.1} s ({} report(s))",
@@ -1335,6 +1349,7 @@ fn run_sim(
             reports,
         });
     }
+    let _ = fs::remove_dir_all(&job_data);
     let summary = simbench::summarize(sim, &steps);
     let text = summary.render();
     fs::write(run_dir.join(simbench::SUMMARY_TEXT), &text)?;
@@ -1372,6 +1387,7 @@ fn sim_command(
     sim: &SimReq,
     arm: &SimArm,
     image: &Image,
+    data: &Path,
     dir: &Path,
 ) -> Result<Command> {
     let inputs = dir.join("in");
@@ -1385,7 +1401,7 @@ fn sim_command(
     if let Some(out) = &image.out {
         cmd.arg("--out").arg(out);
     }
-    cmd.arg("--data").arg(&cfg.data);
+    cmd.arg("--data").arg(data);
     if sim.batch {
         // One at a time unless asked: these are benchmarks.
         cmd.arg("--parallel").arg(sim.parallel.unwrap_or(1).to_string());

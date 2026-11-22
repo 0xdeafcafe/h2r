@@ -13,13 +13,13 @@ pub const MAGIC: [u8; 4] = *b"H2RL";
 /// The IR version this build reads. It changes when ops change.
 pub const IR_VERSION: u16 = 1;
 /// The most bytes a blob may have.
-pub const MAX_IR_BYTES: usize = 64 * 1024;
+pub const MAX_IR_BYTES: usize = 256 * 1024;
 /// Capabilities a header may declare.
 pub const MAX_REQUIRES: usize = 32;
 /// Registers one handler may use.
 pub const MAX_REGS: usize = 256;
 /// Ops in one handler.
-pub const MAX_OPS: usize = 8192;
+pub const MAX_OPS: usize = 32_768;
 /// Option bits a variant record carries for a script.
 pub const OPTION_BITS: u32 = 32;
 /// Bytes of a label, and of a message.
@@ -27,10 +27,10 @@ pub const MAX_LABEL_BYTES: usize = 32;
 pub const MAX_TEXT_BYTES: usize = 128;
 pub const MAX_TAG_BYTES: usize = 256;
 /// Per-scope slot budgets.
-pub const MAX_GLOBAL_SLOTS: usize = 64;
-pub const MAX_PLAYER_SLOTS: usize = 16;
-pub const MAX_TEAM_SLOTS: usize = 8;
-pub const MAX_OBJECT_SLOTS: usize = 8;
+pub const MAX_GLOBAL_SLOTS: usize = 256;
+pub const MAX_PLAYER_SLOTS: usize = 64;
+pub const MAX_TEAM_SLOTS: usize = 32;
+pub const MAX_OBJECT_SLOTS: usize = 32;
 /// Rows and columns of a constant table.
 pub const MAX_TABLE_ROWS: usize = 256;
 pub const MAX_TABLE_COLS: usize = 16;

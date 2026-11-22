@@ -72,7 +72,7 @@ impl Kind {
 /// `rules::RulesExt::encode`, set by the rules host runtime
 /// (`game::rules::runtime`) at a script game's start and removed at its
 /// end.
-pub const RULES: Kind = Kind::new("rules", 1, 16 * 1024);
+pub const RULES: Kind = Kind::new("rules", 1, 64 * 1024);
 /// `ForgeExt`: emitter timers, logic node state, volume occupancy
 /// (docs/game/forge-design.md, slice F7). Opaque until F7 lands.
 pub const FORGE: Kind = Kind::new("forge", 1, 64 * 1024);

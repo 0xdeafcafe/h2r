@@ -179,7 +179,7 @@ when the variant is chosen in the lobby. Only the host executes it;
 guests fetch it for its display part (name, option labels, message
 strings). A film stores the blob, so a replay needs no server.
 
-**Limits.** IR at most 64 KiB, source 256 KiB, VM state 16 KiB in
+**Limits.** IR at most 256 KiB, source 256 KiB, VM state 64 KiB in
 `SimExt`. A whole Megalo variant is about 20 KB ("Prior art"); the
 larger cap pays for names and strings.
 
@@ -488,7 +488,7 @@ things the ReachVariantTool dialect lacks ("Prior art").
 
 **Variables** are declared, named and scoped:
 `global|player|team|object var name: type = init`. The compiler assigns
-slots and enforces the budget (64 global, 16 per player, 8 per team, 8
+slots and enforces the budget (256 global, 64 per player, 32 per team, 32
 per labelled object, at most 256 labelled objects). A scoped variable is
 read through its owner: `p.infected`, `t.captures`.
 
@@ -704,7 +704,9 @@ types op by op, and a jump inside a `ForEach` body cannot leave it. A
 read through `none` gives the slot's initial value and a write through
 `none` does nothing.
 
-**Budget.** A tick may execute 20,000 ops across all its handlers. The
+**Budget.** A tick may execute 100,000 ops across all its handlers, about
+1.8 ms on an M-series host at 18 ns an op (the `op_cost` measurement in
+`crates/formats/rules/tests/scripts.rs`). The
 count is always enforced and nothing is marked proven: a handler's worst
 case follows from the set bounds (16 players, 8 teams, 256 labelled
 objects), but the engine decides how many kills or zone entries a tick
@@ -1195,9 +1197,9 @@ Game Types**. The layout, its states and its copy are described in
 
 - **Check.** `workbench::check` compiles, verifies and measures source:
   the IR hash, errors with line and column (0 for a verifier refusal or
-  the budget), the worst-tick estimate against the 20,000-op budget, each
+  the budget), the worst-tick estimate against the 100,000-op budget, each
   handler's worst case, slots per scope against their limits, IR bytes
-  against 64 KiB, the declared capabilities in the lobby's words, and
+  against 256 KiB, the declared capabilities in the lobby's words, and
   every unhostable entry the script calls. The page checks 450 ms after
   typing stops and has no Check button; each error with a place is a
   marker in the editor, and its place in the Problems list selects it. A
