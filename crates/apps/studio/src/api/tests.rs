@@ -3969,11 +3969,14 @@ fn invented_bot_files(data: &Path, map_bytes: &[u8]) {
     let ghost = superbounce::ghost::Ghost {
         spot: strip,
         launch: 11.0,
-        touchdown: 0,
-        frames: vec![superbounce::ghost::Frame {
-            at: strip,
-            ..Default::default()
-        }],
+        touchdown: 1,
+        frames: vec![
+            superbounce::ghost::Frame {
+                at: strip,
+                ..Default::default()
+            };
+            2
+        ],
         ..Default::default()
     };
     std::fs::write(
