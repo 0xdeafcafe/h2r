@@ -17,9 +17,16 @@
 //! for XDVDFS, or one that cannot be opened is refused with a warning, and
 //! the disc's map is served. Explicit reloads use read-only private copies. See docs/runtime/storage.md
 //! ("Map overrides") and docs/editor/scenario-editor.md.
+//!
+//! Every map read, overridden or not, is served through the raw overlay
+//! ([`RawOverlay`], docs/editor/realtime-edits.md, "The edit overlay"):
+//! its replacements are written over the bytes returned, and a map's
+//! length extends over its appended extents.
 mod generation;
+mod overlay;
 
 pub use generation::MapGeneration;
+pub use overlay::{OverlaySummary, RawOverlay, overlay_key};
 use std::{
     collections::HashMap,
     fs::File,
@@ -344,6 +351,9 @@ impl ReservedMapRebind {
         let old = state.bound.insert(prepared.key.clone(), Bound { file, changed: true });
         shared.update_flags(&state);
         drop(state);
+        // The overlay's offsets are the old file's: none of them holds in
+        // the reloaded copy (docs/editor/realtime-edits.md, "The edit overlay").
+        RawOverlay::global().clear();
         drop(old);
     }
 }
@@ -369,6 +379,9 @@ pub struct MapOverrideBackend<B: ?Sized> {
     notice: MapOverrideNotice,
     server_maps: bool,
     rebind: Option<MapRebind>,
+    /// Applied to every map read ([`RawOverlay::global`] unless a test
+    /// gives its own).
+    overlay: RawOverlay,
 }
 
 /// Whether `path` names a map directly under `maps` (any case).
@@ -417,6 +430,12 @@ impl<B: Backend> MapOverrideBackend<B> {
     pub fn into_inner(self) -> B {
         *self.inner
     }
+
+    /// Serve map reads through `overlay` instead of the process's.
+    pub fn with_raw_overlay(mut self, overlay: RawOverlay) -> Self {
+        self.overlay = overlay;
+        self
+    }
 }
 
 impl<B: Backend + ?Sized> MapOverrideBackend<B> {
@@ -450,7 +469,16 @@ impl<B: Backend + ?Sized> MapOverrideBackend<B> {
             notice,
             server_maps: false,
             rebind,
+            overlay: RawOverlay::global().clone(),
         }
+    }
+
+    /// `len` extended over `path`'s appended extents, when it is a map.
+    fn overlaid_len(&self, path: &str, len: u64) -> u64 {
+        if self.overlay.is_empty() {
+            return len;
+        }
+        overlay_key(path).map_or(len, |key| self.overlay.len(&key, len))
     }
 
     /// Ordinary DVD access only tests the atomic after a path matches a map.
@@ -722,6 +750,12 @@ impl<B: Backend + ?Sized> Backend for MapOverrideBackend<B> {
         if let Some(len) = published.or_else(|| self.startup(path).map(|o| o.len)) {
             resize(&mut meta, len);
         }
+        if !meta.is_directory() {
+            let len = self.overlaid_len(path, meta.end_of_file);
+            if len != meta.end_of_file {
+                resize(&mut meta, len);
+            }
+        }
         Ok(meta)
     }
     fn read_directory(&mut self, path: &str) -> Result<Vec<DirectoryEntry>> {
@@ -729,7 +763,9 @@ impl<B: Backend + ?Sized> Backend for MapOverrideBackend<B> {
         if !path.eq_ignore_ascii_case("maps") {
             return Ok(entries);
         }
-        if self.dir.is_none() && !self.rebind.as_ref().is_some_and(MapRebind::has_ever_bound) {
+        let overrides =
+            self.dir.is_some() || self.rebind.as_ref().is_some_and(MapRebind::has_ever_bound);
+        if !overrides && self.overlay.is_empty() {
             return Ok(entries);
         }
         for entry in &mut entries {
@@ -737,7 +773,11 @@ impl<B: Backend + ?Sized> Backend for MapOverrideBackend<B> {
                 continue;
             }
             let key = format!("{path}\\{}", entry.name);
-            if let Some(len) = self.with_override(&key, |file| file.len) {
+            if overrides && let Some(len) = self.with_override(&key, |file| file.len) {
+                resize(&mut entry.metadata, len);
+            }
+            let len = self.overlaid_len(&key, entry.metadata.end_of_file);
+            if len != entry.metadata.end_of_file {
                 resize(&mut entry.metadata, len);
             }
         }
@@ -763,12 +803,24 @@ impl<B: Backend + ?Sized> Backend for MapOverrideBackend<B> {
             }
             Ok(n)
         });
-        served.unwrap_or_else(|| self.inner.read_at(path, offset, buffer))
+        let n = served.unwrap_or_else(|| self.inner.read_at(path, offset, buffer))?;
+        if self.overlay.is_empty() {
+            return Ok(n);
+        }
+        Ok(match overlay_key(path) {
+            Some(key) => self.overlay.apply(&key, offset, buffer, n),
+            None => n,
+        })
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
     }
     fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        // A file the overlay holds is no longer the immutable file region:
+        // guest reads of it take the copying path through `read_at`.
+        if overlay_key(path).is_some_and(|key| self.overlay.touches(&key)) {
+            return Ok(None);
+        }
         let derived = !self.server_maps;
         let source = self.with_override(path, |o| {
             let file = o.file.try_clone()?;
@@ -1562,5 +1614,33 @@ mod tests {
         assert!(host.generation.is_none());
         assert_eq!(host.path, p.canonicalize().unwrap());
         assert_eq!(b.read_at("maps\\a.map", 0, &mut [0; 4096]), Err(Error::FileCorrupt));
+    }
+
+    /// The overlay is applied to every map read, overridden or not, and to
+    /// nothing else; a map's length grows over an appended extent.
+    #[test]
+    fn the_raw_overlay_serves_over_disc_and_override_maps_alike() {
+        let t = Temp::new("overlay");
+        std::fs::write(t.maps().join("b.map"), b"override-b").unwrap();
+        let overlay = RawOverlay::new();
+        let (b, _) = backend(&t.maps());
+        let mut b = b.with_raw_overlay(overlay.clone());
+        overlay.put("a", 2, b"XY");
+        overlay.put("b", 0, b"O");
+        // `a` comes from the disc, `b` from the override directory.
+        assert_eq!(read_all(&mut b, "maps\\a.map"), b"diXY-a");
+        assert_eq!(read_all(&mut b, "MAPS\\B.MAP"), b"Override-b");
+        assert_eq!(read_all(&mut b, "default.xbe"), b"xbe");
+        assert!(b.film_source("maps\\a.map").unwrap().is_none());
+        let at = overlay.append("a", 6, b"tail", 4);
+        assert_eq!(at, 8);
+        assert_eq!(b.stat("maps\\a.map").unwrap().end_of_file, 12);
+        assert_eq!(read_all(&mut b, "maps\\a.map"), b"diXY-a\0\0tail");
+        let listed = b.read_directory("maps").unwrap();
+        let a = listed.iter().find(|e| e.name == "a.map").unwrap();
+        assert_eq!(a.metadata.end_of_file, 12);
+        overlay.clear();
+        assert_eq!(read_all(&mut b, "maps\\a.map"), b"disc-a");
+        assert_eq!(b.stat("maps\\a.map").unwrap().end_of_file, 6);
     }
 }

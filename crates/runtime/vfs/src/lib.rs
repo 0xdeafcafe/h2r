@@ -32,7 +32,8 @@ pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc, open_disc_with_mapping};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{
-    MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, PreparedMapRebind, ReservedMapRebind,
+    MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, OverlaySummary,
+    PreparedMapRebind, RawOverlay, ReservedMapRebind, overlay_key,
 };
 pub use packages::{PackageBackend, Scope as PackageScope};
 pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
