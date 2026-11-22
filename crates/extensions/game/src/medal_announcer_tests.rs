@@ -78,11 +78,11 @@ fn award(seq: u64, chain: u32, monster: bool) -> Award {
 fn hud_lines(a: &mut Announcer, awards: Vec<Award>) -> Vec<String> {
     let mut sent = Sent::default();
     let mut s = ready();
-    assert!(sent.notes(Some(&s), None).is_empty(), "the first state is not news");
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "the first state is not news");
     let mut lines = Vec::new();
     for aw in awards {
         s.medals.recent.push(aw);
-        for (_, text) in sent.notes(Some(&s), None) {
+        for (_, text) in sent.notes(Some(&s), None, true) {
             a.announce(&text);
             lines.push(text);
         }
