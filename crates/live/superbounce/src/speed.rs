@@ -34,13 +34,24 @@ pub const EXCESS_GAIN: f32 = 1.0;
 /// sets how much open air a seam needs over it ([`cover`]).
 pub const TYPICAL_LAUNCH: f32 = 6.0;
 
+/// The threshold in effect: [`BOUNCE_SPEED`], or the live override
+/// (`superbounce.tune`, [`crate::tune`]). Every use goes through this.
+pub fn bounce_speed() -> f32 {
+    crate::tune::BOUNCE_SPEED.get()
+}
+
+/// The launch gain in effect: [`EXCESS_GAIN`], or the live override.
+pub fn excess_gain() -> f32 {
+    crate::tune::EXCESS_GAIN.get()
+}
+
 /// The touchdown speed `spot` needs: its measured `need`, else the one
 /// threshold, [`BOUNCE_SPEED`].
 pub fn need(spot: &Spot) -> f32 {
     if spot.need > 0.0 {
         spot.need
     } else {
-        BOUNCE_SPEED
+        bounce_speed()
     }
 }
 
@@ -53,7 +64,7 @@ pub fn touchdown(fall: f32) -> f32 {
 /// The drop (world units) over a seam that touches down at
 /// [`BOUNCE_SPEED`]: 2.43, the recipe's drop at Ascension.
 pub fn fall() -> f32 {
-    ((BOUNCE_SPEED * BOUNCE_SPEED - JUMP_LAND * JUMP_LAND) / (2.0 * GRAVITY)).max(0.0)
+    ((bounce_speed() * bounce_speed() - JUMP_LAND * JUMP_LAND) / (2.0 * GRAVITY)).max(0.0)
 }
 
 /// The drop `spot` needs: its measured `fall`, else [`fall`].
@@ -66,7 +77,7 @@ pub fn fall_of(spot: &Spot) -> f32 {
 /// crease): `base` plus [`EXCESS_GAIN`] × the speed over [`BOUNCE_SPEED`].
 /// `None` under the threshold: no bounce.
 pub fn launch(base: f32, speed_in: f32) -> Option<f32> {
-    (speed_in >= BOUNCE_SPEED).then_some(base + EXCESS_GAIN * (speed_in - BOUNCE_SPEED))
+    (speed_in >= bounce_speed()).then_some(base + excess_gain() * (speed_in - bounce_speed()))
 }
 
 /// How high (world units) a launch of `v` units/s climbs.

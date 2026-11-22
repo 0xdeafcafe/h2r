@@ -663,6 +663,73 @@ pub fn store_learned(map: &str, lines: &[learned::Entry]) -> std::io::Result<Opt
     Ok(written)
 }
 
+// ---- reloading from the files ----
+
+/// What [`reload_in`] read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reloaded {
+    /// `read` (the scan was replaced by the file's), `absent` (no file;
+    /// the scan stays) or `unread: <why>` (damaged, another format or
+    /// another scanner's; the scan stays).
+    pub spots_file: String,
+    /// The lines of the verified and learned files now kept.
+    pub verified: usize,
+    pub learned: usize,
+}
+
+/// Reads `map`'s `.spots`, `.verified` and `.learned` files from `dir`
+/// again (any case of `map`) and keeps them in place of what was kept,
+/// bumping the [`generation`] so every reader (the mode, the brains)
+/// applies them again. The `.spots` file is taken when it is the current
+/// scanner's ([`stamp`]'s generator): its map fingerprint is not checked,
+/// since the game has no map to check it against here. A file that is not
+/// read leaves the kept data as it was.
+pub fn reload_in(dir: &Path, map: &str) -> Reloaded {
+    let key = map.to_ascii_lowercase();
+    let spots_file = match std::fs::read(dir.join(file_name(&key))) {
+        Ok(bytes) => match from_bytes(&bytes) {
+            Some((found, stamp)) if stamp.generator == self::stamp(0).generator => {
+                let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+                t.get_or_insert_with(Table::default)
+                    .maps
+                    .insert(key.clone(), Arc::new(found));
+                "read".to_string()
+            }
+            Some(_) => "unread: made by another scanner version".to_string(),
+            None => "unread: not a spots file of this format".to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_string(),
+        Err(e) => format!("unread: {e}"),
+    };
+    let verified = read_verified(dir, &key).unwrap_or_else(|why| {
+        eprintln!("bots: {key}'s verified spots not read: {why}");
+        Vec::new()
+    });
+    let learned = read_learned(dir, &key).unwrap_or_else(|why| {
+        eprintln!("bots: {key}'s learned file not read: {why}");
+        Vec::new()
+    });
+    let out = Reloaded {
+        spots_file,
+        verified: verified.len(),
+        learned: learned.len(),
+    };
+    let mut v = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
+    let v = v.get_or_insert_with(Verified::default);
+    v.maps.insert(key.clone(), Arc::new(verified));
+    v.learned.insert(key, Arc::new(learned));
+    GENERATION.fetch_add(1, Ordering::Release);
+    out
+}
+
+/// [`reload_in`] the verified directory ([`set_verified_dir`]); `None`
+/// without one.
+pub fn reload(map: &str) -> Option<(PathBuf, Reloaded)> {
+    let dir = verified_dir()?;
+    let r = reload_in(&dir, map);
+    Some((dir, r))
+}
+
 // ---- the file ----
 
 /// A spots file's first bytes and format version.

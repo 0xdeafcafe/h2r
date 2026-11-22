@@ -247,7 +247,7 @@ pub fn need_of(spot: &Spot) -> f32 {
     if spot.fall.is_finite() && spot.fall > 0.0 {
         return superbounce::speed::touchdown(spot.fall);
     }
-    superbounce::speed::BOUNCE_SPEED
+    superbounce::speed::bounce_speed()
 }
 
 /// Where along `edge` (0 to 1) the point nearest `xy` is, horizontally.

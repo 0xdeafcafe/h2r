@@ -737,6 +737,16 @@ pub fn ghosts_for(map: &str) -> Arc<Vec<Ghost>> {
     kept(map).ghosts
 }
 
+/// Forgets what was kept of `map`'s ghosts file and reads it again
+/// (`superbounce.reload`). The run counts before and after.
+pub fn reload(map: &str) -> (usize, usize) {
+    let before = ghosts_for(map).len();
+    if let Some(maps) = lock(&STORE).as_mut() {
+        maps.remove(&map.to_ascii_lowercase());
+    }
+    (before, ghosts_for(map).len())
+}
+
 /// Keeps `g` for `map` if it beats the run of its spot, and writes the
 /// file (unless it could not be read). Whether it was kept.
 fn keep(map: &str, g: Ghost) -> bool {
