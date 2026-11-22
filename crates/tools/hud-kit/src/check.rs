@@ -1,4 +1,4 @@
-//! The ten checks (docs/game/hud-kit.md, "The preview and the checks"),
+//! The eleven checks (docs/game/hud-kit.md, "The preview and the checks"),
 //! over each state and screen mode of a HUD; each finding names the check,
 //! the elements and, where it has one, the state and mode.
 
@@ -10,7 +10,7 @@ use hud_edit::render::{self, Cover};
 use serde_json::{Value as Json, json};
 
 use crate::compile::{self, AsHudEdit, Compiled};
-use crate::model::{Describe, Hud, Kind, NAVPOINT_FONT, Values};
+use crate::model::{Describe, Hud, Kind, NAVPOINT_FONT, Style, Values, WORLD_FONT};
 use crate::preview::{self, MESSAGE_FONT, Shot, mode_name};
 use crate::rects::{self, FRAME_SLACK, RESERVED, TRAINING_PAD};
 use crate::source::Source;
@@ -45,10 +45,14 @@ pub enum Check {
     /// on the screen (a transparent colour or a missing shader draws
     /// nothing).
     Drawn,
+    /// A world mark a state shows has a sample pose without a fault,
+    /// draws lines there and stays in the frame; a pose names a world
+    /// mark; the lock's red is on a world mark alone.
+    World,
 }
 
 impl Check {
-    pub const ALL: [Check; 10] = [
+    pub const ALL: [Check; 11] = [
         Check::Fit,
         Check::Glyphs,
         Check::Frame,
@@ -59,6 +63,7 @@ impl Check {
         Check::Prompt,
         Check::Modes,
         Check::Drawn,
+        Check::World,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -72,6 +77,7 @@ impl Check {
             Check::Prompt => "prompt",
             Check::Modes => "modes",
             Check::Drawn => "drawn",
+            Check::World => "world",
         }
     }
 }
@@ -227,12 +233,14 @@ fn glyphs_in(
 
 /// The glyph check: every character of every text's longest and of every
 /// state's text, in each font the element is drawn in (a channel's in
-/// font 6 and, split screen, 5; a navpoint's number in [`NAVPOINT_FONT`]).
+/// font 6 and, split screen, 5; a navpoint's number in [`NAVPOINT_FONT`];
+/// a world mark's label in [`WORLD_FONT`]).
 pub fn glyphs(r: &mut Report, hud: &Hud, states: &[(&'static str, Values)], has: GlyphLookup) {
     for e in &hud.elements {
         let fs: Vec<i16> = match &e.kind {
             Kind::Text { font, .. } => vec![font.engine()],
             Kind::Navpoint { .. } => vec![NAVPOINT_FONT.engine()],
+            Kind::WorldMark { .. } => vec![WORLD_FONT.engine()],
             k if k.is_channel() => MESSAGE_FONT.to_vec(),
             _ => continue,
         };
@@ -296,6 +304,33 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             r.push(finding(Check::OneLayout, Some(*s), None, Vec::new(), p));
         }
     }
+    // World: the sample poses and the lock's red, before anything is
+    // drawn.
+    for (s, v) in &states {
+        for (id, pose) in d.world(s) {
+            let fault = match hud.element(id) {
+                None => Some(format!("a pose for {id}, which is not an element")),
+                Some(e) if e.kind.world().is_none() => {
+                    Some(format!("a pose for {id}, which is a {}", e.kind.name()))
+                }
+                Some(_) => pose.fault().map(|why| format!("{id}'s pose has {why}")),
+            };
+            if let Some(text) = fault {
+                r.push(finding(Check::World, Some(*s), None, vec![id.to_owned()], text));
+            }
+        }
+        for e in hud.elements.iter().filter(|e| e.kind.world().is_none()) {
+            if v.get(e.id).is_some_and(|x| x.shown && x.style == Style::Lock) {
+                r.push(finding(
+                    Check::World,
+                    Some(*s),
+                    None,
+                    vec![e.id.to_owned()],
+                    format!("{} is a {} in the lock's red, a world mark's alone", e.id, e.kind.name()),
+                ));
+            }
+        }
+    }
     // Templates.
     let t = src.templates(&hud);
     for m in t.missing(&hud) {
@@ -327,7 +362,7 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
         let covers = retail_covers(src, &retail, mode);
         let st = preview::retail_states(mode, src.words).remove(0);
         for (s, v) in &states {
-            let shot = preview::shot(src, &hud, &compiled, s, v, &st)?;
+            let shot = preview::shot(src, &hud, &compiled, s, v, &d.world(s), &st)?;
             per_shot(&mut r, src, &hud, v, &shot, &covers);
             r.shots.push(shot);
         }
@@ -426,6 +461,23 @@ fn per_shot(
                 vec![d.id.into()],
                 format!("{} is drawn with no {} offset", d.id, s.mode.label()),
             ));
+        }
+        // World: a mark shown here lies somewhere, draws lines and stays
+        // in the frame.
+        if let Some(w) = d.world.as_ref().filter(|_| d.shown && e.at.offset(s.mode).is_some()) {
+            let fault = match (w.pose, w.bounds) {
+                (None, _) => Some(format!("{} is shown with no sample pose", d.id)),
+                (Some(_), _) if w.edges == 0 => {
+                    Some(format!("{} is shown and its {} draws no lines", d.id, w.shape.name()))
+                }
+                (Some(_), Some(b)) if !frame.contains(&b) => {
+                    Some(format!("{}'s sample leaves the HUD frame ({})", d.id, show(&b)))
+                }
+                _ => None,
+            };
+            if let Some(text) = fault {
+                r.push(f(Check::World, vec![d.id.into()], text));
+            }
         }
         // Frame.
         for c in claims(d) {
@@ -573,7 +625,13 @@ fn per_shot(
     // another by design, as a count on its pill, is not compared with it).
     for (i, a) in s.elements.iter().enumerate() {
         for b in &s.elements[i + 1..] {
-            if (a.channel && b.channel) || over(a.id, b.id) || over(b.id, a.id) {
+            // A world mark lies in the world, under the HUD.
+            if (a.channel && b.channel)
+                || a.world.is_some()
+                || b.world.is_some()
+                || over(a.id, b.id)
+                || over(b.id, a.id)
+            {
                 continue;
             }
             let ids = vec![a.id.to_owned(), b.id.to_owned()];

@@ -8,6 +8,7 @@
 //!   the grenade row included, resolved through a [`MapView`];
 //! - [`map_file`]: a [`MapView`] over an open map file and its resources;
 //! - [`motion`]: how a value moves between ticks, on wall time;
+//! - [`world`]: a world mark's shape at a pose, as line segments;
 //! - [`records`]: elements to `nhdt` widget record bytes;
 //! - [`huds`]: the HUDs the kit knows (superbounce).
 //!
@@ -20,6 +21,7 @@ pub mod model;
 pub mod motion;
 pub mod records;
 pub mod templates;
+pub mod world;
 
 pub use model::{
     Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Origin, PillPart, Place,

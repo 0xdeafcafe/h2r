@@ -491,3 +491,50 @@ fn the_line_up_is_to_the_landing_point_and_wants_the_seams_drift() {
     r.caught = false;
     assert!(matches!(line_up(&r, 0.0).steer, Steer::Off { .. }));
 }
+
+/// The approach guide's marks are the state's guide, with the variant's
+/// option: what they show in the view, and where each lies.
+#[test]
+fn the_approach_guide_is_the_states_with_its_option() {
+    use crate::superbounce_guide::{Body, guide};
+    use hud_kit_core::huds::superbounce_guide::{BOX, Call, DRIFT, MARKS, PIPPER, TICKS};
+    use hud_kit_core::model::Style;
+    let spot = Spot {
+        drift: [1.0, 0.0],
+        ..seam()
+    };
+    let mut s = on();
+    assert_eq!(view(&s, Options::DEFAULT, None).guide, None);
+    assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(_, p)| p.is_none()));
+    // Primed on the ground a unit before the seam: the box on its landing
+    // point, the pipper where a jump from here comes down, ticks between
+    // them, the arrow unlit.
+    let body = Body {
+        position: [9.0, 0.0, 2.03],
+        velocity: [0.0; 3],
+        airborne: false,
+        primed: true,
+    };
+    s.guide = guide(&body, &spot);
+    let v = view(&s, Options::DEFAULT, None).guide.unwrap();
+    assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, true, true, Some(false)));
+    let values = rd::values(&view(&s, Options::DEFAULT, None));
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true; 4]);
+    assert_eq!(values.get(BOX).unwrap().style, Style::Dim);
+    let poses = guide_poses(&s, Options::DEFAULT);
+    assert_eq!(poses.map(|(id, _)| id), MARKS);
+    assert!(poses.iter().all(|(_, p)| p.is_some()));
+    let at = |id: &str| poses.iter().find(|(i, _)| *i == id).unwrap().1.unwrap().at;
+    assert_eq!(at(BOX), [10.0, 0.0, 2.0]);
+    assert_eq!(at(PIPPER), [9.0, 0.0, 2.0]);
+    assert!(at(TICKS)[0] > 9.0 && at(TICKS)[0] < 10.0 && at(DRIFT)[0] > 10.0);
+    // The variant's option takes all of it away.
+    let off = Options {
+        approach_guide: false,
+        ..Options::DEFAULT
+    };
+    assert_eq!(view(&s, off, None).guide, None);
+    assert!(guide_poses(&s, off).iter().all(|(_, p)| p.is_none()));
+    let values = rd::values(&view(&s, off, None));
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [false; 4]);
+}

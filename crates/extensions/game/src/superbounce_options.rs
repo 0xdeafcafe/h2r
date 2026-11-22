@@ -12,7 +12,7 @@
 //! name fallback) takes [`Options::DEFAULT`]; so does a script that
 //! declares none of them, or only some.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use engine::GuestMemory;
 use ::rules::ir::Ir;
@@ -24,6 +24,7 @@ pub const ALIGNMENT: &str = "alignment";
 pub const MISS_INFO: &str = "miss_info";
 pub const MEDALS: &str = "medals";
 pub const SECOND_BOUNCE: &str = "second_bounce";
+pub const APPROACH_GUIDE: &str = "approach_guide";
 
 /// Which seams get a target navpoint, by what is known about them
 /// ([`crate::superbounce_targets::Class`]). The script's `Targets` enum,
@@ -85,6 +86,9 @@ pub struct Options {
     /// After a bounce, the seams the flight can reach, ranked
     /// ([`crate::superbounce_second`]).
     pub second_bounce: bool,
+    /// The approach guide: the pipper and the box on the seam
+    /// ([`crate::superbounce_guide`]).
+    pub approach_guide: bool,
 }
 
 impl Default for Options {
@@ -102,6 +106,7 @@ impl Options {
         miss_info: true,
         medals: true,
         second_bounce: true,
+        approach_guide: true,
     };
 
     /// The options a record's option bits `bits` give for the script
@@ -118,23 +123,25 @@ impl Options {
             miss_info: on(MISS_INFO, d.miss_info),
             medals: on(MEDALS, d.medals),
             second_bounce: on(SECOND_BOUNCE, d.second_bounce),
+            approach_guide: on(APPROACH_GUIDE, d.approach_guide),
         }
     }
 
-    const fn pack(self) -> u8 {
+    const fn pack(self) -> u16 {
         let t = match self.targets {
             TargetMode::Common => 0,
             TargetMode::Likely => 1,
             TargetMode::All => 2,
         };
-        t | (self.velocity as u8) << 2
-            | (self.alignment as u8) << 3
-            | (self.miss_info as u8) << 4
-            | (self.medals as u8) << 5
-            | (self.second_bounce as u8) << 6
+        t | (self.velocity as u16) << 2
+            | (self.alignment as u16) << 3
+            | (self.miss_info as u16) << 4
+            | (self.medals as u16) << 5
+            | (self.second_bounce as u16) << 6
+            | (self.approach_guide as u16) << 7
     }
 
-    fn unpack(b: u8) -> Options {
+    fn unpack(b: u16) -> Options {
         Options {
             targets: TargetMode::from_value(i32::from(b & 3)),
             velocity: b & 1 << 2 != 0,
@@ -142,12 +149,13 @@ impl Options {
             miss_info: b & 1 << 4 != 0,
             medals: b & 1 << 5 != 0,
             second_bounce: b & 1 << 6 != 0,
+            approach_guide: b & 1 << 7 != 0,
         }
     }
 }
 
 /// The running game's options, as the mode last read them.
-static CURRENT: AtomicU8 = AtomicU8::new(Options::DEFAULT.pack());
+static CURRENT: AtomicU16 = AtomicU16::new(Options::DEFAULT.pack());
 
 /// The running game's options.
 pub fn current() -> Options {
@@ -183,6 +191,7 @@ mod tests {
         let ir = script();
         assert_eq!(Options::from_ir(&ir, ir.default_options()), Options::DEFAULT);
         assert!(Options::DEFAULT.velocity && Options::DEFAULT.medals);
+        assert!(Options::DEFAULT.approach_guide);
         assert_eq!(Options::DEFAULT.targets, TargetMode::Likely);
     }
 
@@ -202,6 +211,10 @@ mod tests {
         assert_eq!(
             with(SECOND_BOUNCE, OptionValue::Bool(false)),
             Options { second_bounce: false, ..d }
+        );
+        assert_eq!(
+            with(APPROACH_GUIDE, OptionValue::Bool(false)),
+            Options { approach_guide: false, ..d }
         );
         for mode in [TargetMode::Common, TargetMode::Likely, TargetMode::All] {
             assert_eq!(
@@ -225,7 +238,7 @@ mod tests {
     #[test]
     fn the_options_round_trip_through_the_current_slot() {
         for targets in [TargetMode::Common, TargetMode::Likely, TargetMode::All] {
-            for bits in 0..32u8 {
+            for bits in 0..64u8 {
                 let o = Options {
                     targets,
                     velocity: bits & 1 != 0,
@@ -233,6 +246,7 @@ mod tests {
                     miss_info: bits & 4 != 0,
                     medals: bits & 8 != 0,
                     second_bounce: bits & 16 != 0,
+                    approach_guide: bits & 32 != 0,
                 };
                 assert_eq!(Options::unpack(o.pack()), o);
             }

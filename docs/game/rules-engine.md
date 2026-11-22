@@ -1969,7 +1969,8 @@ Slayer's callbacks are answered in place.
 **Options the host reads.** After its scoring options the Superbounce
 script declares the HUD's pieces: `targets` (an enum, `common`, `likely`
 or `all`; default `likely`) and the bools `velocity`, `alignment`,
-`miss_info`, `medals` and `second_bounce`, all on. The script itself never reads them:
+`miss_info`, `medals`, `second_bounce` and `approach_guide`, all on. The
+script itself never reads them:
 they are in the record's option bits for the host, which looks each up
 by name (`Ir::option_value(bits, name)`, the value at the option's
 offset; `rules::header::superbounce_options`, into

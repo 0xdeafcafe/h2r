@@ -5,6 +5,7 @@
 
 use crate::Mode;
 use crate::motion::Motion;
+use crate::world::{Pose, Shape};
 
 /// A HUD of ours.
 #[derive(Clone, Debug, PartialEq)]
@@ -143,8 +144,8 @@ impl Element {
         }
     }
     /// A channel element: [`Kind::Message`], [`Kind::Prompt`],
-    /// [`Kind::Training`] or [`Kind::Navpoint`], fullscreen only
-    /// ([`Place::GAME`]).
+    /// [`Kind::Training`], [`Kind::Navpoint`] or [`Kind::WorldMark`],
+    /// fullscreen only ([`Place::GAME`]).
     pub fn channel(id: &'static str, kind: Kind) -> Self {
         debug_assert!(kind.is_channel());
         Element {
@@ -197,7 +198,22 @@ pub enum Kind {
     /// under them in [`NAVPOINT_FONT`]. Its screen point is the runtime's
     /// (the preview's is a sample).
     Navpoint { longest: &'static str },
+    /// A mark lying on the level's geometry (`crate::world`): `shape`'s
+    /// lines at the element's [`Pose`], drawn by the window's world-line
+    /// pass under the HUD, with the value's text as a label over it in
+    /// [`WORLD_FONT`]. Its pose is the runtime's, as a navpoint's point
+    /// is (the preview's is the HUD's sample, [`Describe::world`]).
+    /// `longest` is the widest label any state gives it, empty for a mark
+    /// with none.
+    WorldMark {
+        shape: Shape,
+        longest: &'static str,
+    },
 }
+
+/// The font a world mark's label is in: the HUD font, engine font 6, at
+/// the size the world labels use.
+pub const WORLD_FONT: Font = Font::Hud;
 
 /// The font a navpoint's number is in: the grenade counts' (font byte 0,
 /// engine font 6).
@@ -235,6 +251,7 @@ impl Kind {
             Kind::Prompt { .. } => "prompt",
             Kind::Training { .. } => "training",
             Kind::Navpoint { .. } => "navpoint",
+            Kind::WorldMark { .. } => "world mark",
         }
     }
     /// A channel into the message or training parts, not a widget.
@@ -245,7 +262,15 @@ impl Kind {
                 | Kind::Prompt { .. }
                 | Kind::Training { .. }
                 | Kind::Navpoint { .. }
+                | Kind::WorldMark { .. }
         )
+    }
+    /// A mark on the level's geometry, and its shape.
+    pub fn world(&self) -> Option<Shape> {
+        match self {
+            Kind::WorldMark { shape, .. } => Some(*shape),
+            _ => None,
+        }
     }
     /// A channel into the game's text lines: a message, the prompt or the
     /// training box (the prompt check's).
@@ -267,7 +292,8 @@ impl Kind {
             | Kind::Message { longest }
             | Kind::Prompt { longest }
             | Kind::Training { longest }
-            | Kind::Navpoint { longest } => Some(longest),
+            | Kind::Navpoint { longest }
+            | Kind::WorldMark { longest, .. } => Some(longest),
             _ => None,
         }
     }
@@ -477,6 +503,11 @@ pub enum Style {
     Inactive,
     /// Run through a `hudg` flash record.
     Flash(Pulse),
+    /// The lock's red (`world::LOCK_RED`), for a world mark alone: "this
+    /// will hit", as the game's reticle is red over a target in range. A
+    /// widget or a text channel in it is a finding of the `world` check
+    /// and is not drawn.
+    Lock,
 }
 
 impl Style {
@@ -486,6 +517,7 @@ impl Style {
             Style::Dim => "dim".into(),
             Style::Inactive => "inactive".into(),
             Style::Flash(p) => format!("flash {}", p.name()),
+            Style::Lock => "lock".into(),
         }
     }
 }
@@ -624,5 +656,13 @@ pub trait Describe {
     /// `00a_introduction`) is no failure of it.
     fn multiplayer_only(&self) -> Option<&'static str> {
         None
+    }
+    /// The sample poses of the HUD's world marks in the state `state`,
+    /// for the preview and the checks: world units in a scene of the
+    /// state's own, whose origin the preview puts at its world sample.
+    /// The runtime gives the real ones (`Handle::world_mark`). A world
+    /// mark a state shows needs one.
+    fn world(&self, _state: &str) -> Vec<(&'static str, Pose)> {
+        Vec::new()
     }
 }

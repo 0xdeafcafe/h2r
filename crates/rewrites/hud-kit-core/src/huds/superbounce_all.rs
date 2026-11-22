@@ -5,6 +5,7 @@
 //! this one is never compiled into a map.
 
 use crate::model::{Describe, Hud, Values};
+use crate::world::Pose;
 
 use super::superbounce::Superbounce;
 use super::superbounce_readout::Readout;
@@ -13,7 +14,7 @@ use super::superbounce_readout::Readout;
 pub const NAME: &str = "superbounce-all";
 
 /// The moments: a name, the superbounce HUD's state, the readout's.
-pub const MOMENTS: [(&str, &str, &str); 15] = [
+pub const MOMENTS: [(&str, &str, &str); 20] = [
     ("1-walking", "not-primed", "moving"),
     ("2-arming", "under", "idle"),
     ("3-primed-targets", "primed-full", "targets"),
@@ -29,6 +30,11 @@ pub const MOMENTS: [(&str, &str, &str); 15] = [
     ("13-second-bounce-targets", "bounced", "second-bounce"),
     ("14-second-bounce-lined-up", "bounced", "second-bounce-lined-up"),
     ("15-targets-switched", "primed-full", "targets-switched"),
+    ("16-guide-approach", "primed-full", "guide-approach"),
+    ("17-guide-lined-up", "primed-full", "guide-lined-up"),
+    ("18-guide-falling-caught", "primed-full", "guide-falling-caught"),
+    ("19-guide-too-shallow", "primed-full", "guide-too-shallow"),
+    ("20-guide-off-line", "primed-full", "guide-off-line"),
 ];
 
 /// Both HUDs at once.
@@ -72,6 +78,15 @@ impl Describe for All {
     fn multiplayer_only(&self) -> Option<&'static str> {
         Superbounce.multiplayer_only()
     }
+
+    /// A moment's world marks are its readout state's.
+    fn world(&self, state: &str) -> Vec<(&'static str, Pose)> {
+        MOMENTS
+            .iter()
+            .find(|(name, _, _)| *name == state)
+            .map(|(_, _, readout)| Readout.world(readout))
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +102,35 @@ mod tests {
         assert_eq!(states.len(), MOMENTS.len());
         for (name, v) in states {
             assert!(v.layout_problems(&hud).is_empty(), "{name}: {:?}", v.layout_problems(&hud));
+        }
+    }
+
+    /// The approach guide's five moments pose the marks they show; the
+    /// others have none.
+    #[test]
+    fn the_guides_moments_pose_their_marks() {
+        use crate::huds::superbounce_guide as guide;
+        let with: Vec<_> = MOMENTS
+            .iter()
+            .filter(|(name, _, _)| !All.world(name).is_empty())
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert_eq!(
+            with,
+            [
+                "16-guide-approach",
+                "17-guide-lined-up",
+                "18-guide-falling-caught",
+                "19-guide-too-shallow",
+                "20-guide-off-line"
+            ]
+        );
+        for (name, v) in All.states() {
+            let poses = All.world(name);
+            for id in guide::MARKS {
+                let shown = v.get(id).unwrap().shown;
+                assert_eq!(shown, poses.iter().any(|(i, _)| *i == id), "{name} {id}");
+            }
         }
     }
 

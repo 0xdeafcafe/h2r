@@ -950,3 +950,210 @@ fn the_prompt_and_message_carry_the_steps_and_landings() {
         superbounce::Medal::Superbounce.line()
     );
 }
+
+/// A test HUD with world marks: its states and their sample poses.
+struct WorldCase {
+    hud: Hud,
+    states: Vec<(&'static str, Values)>,
+    poses: Vec<(&'static str, hud_kit_core::world::Pose)>,
+}
+
+impl Describe for WorldCase {
+    fn hud(&self) -> Hud {
+        self.hud.clone()
+    }
+    fn states(&self) -> Vec<(&'static str, Values)> {
+        self.states.clone()
+    }
+    fn world(&self, _: &str) -> Vec<(&'static str, hud_kit_core::world::Pose)> {
+        self.poses.clone()
+    }
+}
+
+/// The world check: a mark a state shows needs a sample pose without a
+/// fault that draws lines inside the frame; a pose names a world mark;
+/// the lock's red is a world mark's alone. A sound case passes, and its
+/// mark claims no rectangle, so nothing overlaps it.
+#[test]
+fn the_world_check_fires_on_marks_built_to_break_it() {
+    use hud_kit_core::world::{Pose, Shape};
+    let mark = |id, shape| Element::channel(id, Kind::WorldMark { shape, longest: "" });
+    let text = |id| Element::text(id, Font::Hud, Justify::Start, "AB", bl(10, -150));
+    let case = |elements: Vec<Element>, values: Vec<(&'static str, Value)>, poses| {
+        let hud = Hud {
+            name: "world",
+            elements,
+        };
+        WorldCase {
+            hud,
+            states: vec![("s", Values(values))],
+            poses,
+        }
+    };
+    let world = |c: &WorldCase| -> Vec<String> {
+        check::hud(&mut synthetic(), c, &[Mode::Full])
+            .unwrap()
+            .of(Check::World)
+            .map(|f| f.text.clone())
+            .collect()
+    };
+    let pose = Pose::at([0.0; 3], [0.3, 0.1]);
+    // Sound: a bracket at the scene's origin.
+    let sound = case(
+        vec![mark("b", Shape::Bracket), text("t")],
+        vec![("b", Value::shown()), ("t", Value::text("AB"))],
+        vec![("b", pose)],
+    );
+    let r = check::hud(&mut synthetic(), &sound, &[Mode::Full]).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    let b = r.shots[0].element("b").unwrap();
+    assert!(b.drawn && b.rect.is_none() && b.reserved.is_none());
+    let w = b.world.as_ref().unwrap();
+    assert_eq!((w.shape, w.edges), (Shape::Bracket, 8));
+    // No pose.
+    let c = case(vec![mark("b", Shape::Bracket)], vec![("b", Value::shown())], vec![]);
+    assert_eq!(world(&c), ["b is shown with no sample pose"]);
+    // A pose with a fault.
+    let c = case(
+        vec![mark("b", Shape::Bracket)],
+        vec![("b", Value::hidden())],
+        vec![("b", Pose { strength: 2.0, ..pose })],
+    );
+    assert_eq!(world(&c), ["b's pose has strength 2 outside 0 to 1"]);
+    // A pose with no size draws nothing.
+    let c = case(
+        vec![mark("b", Shape::Bracket)],
+        vec![("b", Value::shown())],
+        vec![("b", Pose::at([0.0; 3], [0.0, 0.0]))],
+    );
+    assert_eq!(world(&c), ["b is shown and its bracket draws no lines"]);
+    // A sample far outside the frame.
+    let c = case(
+        vec![mark("b", Shape::Bracket)],
+        vec![("b", Value::shown())],
+        vec![("b", Pose::at([9.0, 0.0, 0.0], [0.3, 0.1]))],
+    );
+    assert!(world(&c)[0].starts_with("b's sample leaves the HUD frame"), "{:?}", world(&c));
+    // A pose for a text, and for nothing.
+    let c = case(
+        vec![text("t")],
+        vec![("t", Value::text("AB"))],
+        vec![("t", pose), ("nope", pose)],
+    );
+    assert_eq!(
+        world(&c),
+        ["a pose for t, which is a text", "a pose for nope, which is not an element"]
+    );
+    // The lock's red on a text.
+    let c = case(
+        vec![text("t")],
+        vec![("t", Value::text("AB").styled(Style::Lock))],
+        vec![],
+    );
+    assert_eq!(world(&c), ["t is a text in the lock's red, a world mark's alone"]);
+}
+
+/// The approach guide in the readout's preview: each moment draws the
+/// marks it shows where the sample scene puts them, and the checks pass.
+/// On the approach the pipper is outside the box with ticks between; in
+/// a caught fall it is inside, the box is in the lock's red and says so.
+#[test]
+fn the_approach_guide_draws_in_its_moments() {
+    use crate::huds::superbounce_guide as guide;
+    use crate::huds::superbounce_readout::{self as readout, Readout};
+    let mut src = synthetic();
+    let r = check::hud(&mut src, &Readout, &Mode::ALL).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    let shot = |state: &str, mode: Mode| {
+        r.shots
+            .iter()
+            .find(|s| s.hud == readout::NAME && s.state == state && s.mode == mode)
+            .unwrap()
+    };
+    let bounds = |state: &str, id: &str| {
+        let d = shot(state, Mode::Full).element(id).unwrap();
+        assert!(d.drawn, "{state} {id}");
+        d.world.as_ref().unwrap().bounds.unwrap()
+    };
+    let drawn = |state: &str, id: &str| shot(state, Mode::Full).element(id).unwrap().drawn;
+    // The box is round the scene's origin in every moment.
+    let frame = shot("guide-approach", Mode::Full).frame;
+    let origin = preview::project(&frame, [0.0; 3]);
+    for (state, _, _) in guide::samples() {
+        let b = bounds(state, guide::BOX);
+        assert!(b.contains_point(origin), "{state}: {b:?} {origin:?}");
+        assert!(drawn(state, guide::PIPPER) && drawn(state, guide::DRIFT), "{state}");
+        // Fullscreen only, as the readout is.
+        for mode in [Mode::Half, Mode::Quarter] {
+            for id in guide::MARKS {
+                assert!(!shot(state, mode).element(id).unwrap().drawn, "{state} {id}");
+            }
+        }
+    }
+    // The approach: the pipper below the box on the screen (nearer the
+    // viewer), ticks between them.
+    let (b, p, t) = (
+        bounds("guide-approach", guide::BOX),
+        bounds("guide-approach", guide::PIPPER),
+        bounds("guide-approach", guide::TICKS),
+    );
+    assert!(p.y0 > b.y1, "{p:?} {b:?}");
+    assert!(t.y1 <= p.y1 && t.y0 >= b.y0, "{t:?} between {b:?} and {p:?}");
+    // Caught: no ticks, the pipper inside the box, the call above it.
+    for (state, label, style) in [
+        ("guide-falling-caught", guide::WILL_BOUNCE, Style::Lock),
+        ("guide-too-shallow", guide::TOO_SHALLOW, Style::Normal),
+    ] {
+        assert!(!drawn(state, guide::TICKS), "{state}");
+        let d = shot(state, Mode::Full).element(guide::BOX).unwrap();
+        assert_eq!((d.text.as_deref(), d.style), (Some(label), style), "{state}");
+        let (b, p) = (bounds(state, guide::BOX), bounds(state, guide::PIPPER));
+        assert!(b.x0 <= p.x0 && p.x1 <= b.x1 && p.y1 <= b.y1 + 1.0, "{state}: {p:?} in {b:?}");
+    }
+    // The arrow is past the box, up the screen: the drift is away.
+    let (b, a) = (
+        bounds("guide-lined-up", guide::BOX),
+        bounds("guide-lined-up", guide::DRIFT),
+    );
+    assert!(a.y1 <= b.y0 + 2.0, "{a:?} {b:?}");
+    // The lock's red is drawn red: the box's top-left corner pixel.
+    let s = shot("guide-falling-caught", Mode::Full);
+    let corner = preview::project(&frame, [-guide::BOX_ALONG, guide::BOX_ACROSS, 0.02]);
+    let at = ((corner[1].round() as u32 * s.canvas.width + corner[0].round() as u32) * 4) as usize;
+    let px = &s.canvas.rgba[at..at + 3];
+    assert!(px[0] > px[1] && px[0] > px[2], "{px:?}");
+    // The other states draw no mark.
+    for id in guide::MARKS {
+        assert!(!drawn("falling-on-seam", id), "{id}");
+    }
+}
+
+/// The preview's world sample is an oblique view of the floor: +X goes
+/// right, depth and height go up the screen, and a split frame draws it
+/// smaller.
+#[test]
+fn the_world_sample_is_an_oblique_view() {
+    let full = Frame {
+        top: 48,
+        left: 48,
+        bottom: 444,
+        right: 592,
+    };
+    let o = preview::project(&full, [0.0; 3]);
+    assert_eq!(o, [320.0, 246.0 + preview::WORLD_SAMPLE[1] * 396.0]);
+    let x = preview::project(&full, [1.0, 0.0, 0.0]);
+    assert_eq!([x[0] - o[0], x[1] - o[1]], [preview::WORLD_SCALE, 0.0]);
+    let y = preview::project(&full, [0.0, 1.0, 0.0]);
+    assert_eq!(y[0], o[0]);
+    assert!((o[1] - y[1] - preview::WORLD_SCALE * preview::WORLD_TILT).abs() < 1e-3);
+    let z = preview::project(&full, [0.0, 0.0, 1.0]);
+    assert!((o[1] - z[1] - preview::WORLD_SCALE).abs() < 1e-3);
+    let half = Frame {
+        top: 18,
+        left: 48,
+        bottom: 216,
+        right: 592,
+    };
+    let (ho, hx) = (preview::project(&half, [0.0; 3]), preview::project(&half, [1.0, 0.0, 0.0]));
+    assert!((hx[0] - ho[0] - preview::WORLD_SCALE / 2.0).abs() < 1e-3);
+}

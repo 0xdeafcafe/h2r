@@ -15,7 +15,7 @@
 //! - [`source`], [`synthetic`]: the disc and the invented map the
 //!   preview draws from;
 //! - [`preview`]: the 640 by 480 picture, its JSON, the sheet;
-//! - [`check`]: the ten checks.
+//! - [`check`]: the eleven checks.
 //!
 //! The kit draws nothing itself in the game: the runtime
 //! (`game::hud_kit`) hands the compiled records to the game's HUD. No

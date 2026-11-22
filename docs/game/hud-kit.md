@@ -379,6 +379,7 @@ pub enum Kind {
     Prompt { longest: &'static str },
     Training { longest: &'static str },
     Navpoint { longest: &'static str },
+    WorldMark { shape: Shape, longest: &'static str },
 }
 
 /// Anchor and offsets in HUD pixels, per screen mode. `None` hides the
@@ -412,7 +413,7 @@ pub enum Art {
 }
 pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
 pub enum PillPart { Body, End }       // the pill's first PILL_BODY (20) pixels, its last PILL_END (7)
-pub enum Style { Normal, Dim, Inactive, Flash(Pulse) }
+pub enum Style { Normal, Dim, Inactive, Flash(Pulse), Lock } // Lock: a world mark's red, alone
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
 pub struct Value {
@@ -429,6 +430,9 @@ pub trait Describe {
     fn states(&self) -> Vec<(&'static str, Values)>;
     /// Why the HUD is not drawn on a campaign map, if it is not.
     fn multiplayer_only(&self) -> Option<&'static str> { None }
+    /// The sample poses of the HUD's world marks in a state, for the
+    /// preview and the checks.
+    fn world(&self, _state: &str) -> Vec<(&'static str, Pose)> { Vec::new() }
 }
 ```
 
@@ -498,8 +502,9 @@ of shown, fill or motion is stamped from the fill the old value was
 showing then (0 if it was not showing); the same value again keeps its
 stamp and its `from`. Text and style alone are no change.
 
-Four more elements are not widgets. They are channels into the game's
-message, training and navpoint parts, one text each:
+Five more elements are not widgets. Four are channels into the game's
+message, training and navpoint parts, one text each, and the fifth is a
+world mark, drawn by the window ("World marks"):
 
 | Element | What the player sees | Through |
 |---|---|---|
@@ -507,6 +512,7 @@ message, training and navpoint parts, one text each:
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
 | `Navpoint` | the game's arrow pointing down at a point of the world, its waypoint marker above, a whole number above that | the navpoint list (`0x0024da7d`, below in "The navpoint"), the number the kit's |
+| `WorldMark` | lines lying on the level's geometry, a label over them | the window's world-line pass (`hud_kit_world`, below in "World marks") |
 
 Their texts are UTF-16 with the font's button glyphs or action tokens.
 A channel, like a widget, shows only in the screen modes its place has:
@@ -524,13 +530,77 @@ copies 63). A sender with no HUD of its own, such as a rules script's `message`
 ([rules-world-api.md](rules-world-api.md#the-show-channel)), queues the
 same line through `hud_kit::notify(user, text)`.
 
+### World marks
+
+A world mark is an element of a HUD that lies on the level's geometry
+and not on the screen: a landing marker, a box round a place to land in.
+It is in the `Hud` with the widgets and the channels, so a state shows
+or hides it, styles it and gives it a label like any other element, and
+the checks and the preview cover it. `hud_kit_core::world` has its
+shapes and its pose:
+
+```rust
+pub enum Shape { Pipper, Bracket, Arrow, Ticks }
+
+pub struct Pose {
+    pub at: Vec3,          // the point on the geometry
+    pub along: [f32; 2],   // the heading, flat: a bracket's long side, an arrow's way
+    pub half: [f32; 2],    // the size, world units
+    pub strength: f32,     // 0 to 1: the lines' alpha, for a mark that fades
+}
+```
+
+| Shape | Lines | `half` |
+|---|---|---|
+| `Pipper` | a ring of 12 segments with a cross at its centre | the ring's radius, unused |
+| `Bracket` | the four corner brackets of a box, each arm half the box's shorter half | along the heading, across it |
+| `Arrow` | a shaft and a head's two wings, pointing along the heading | half the length, the wings' reach |
+| `Ticks` | three dashes from the point along the heading | the run they take, unused |
+
+`world::edges(shape, &pose)` gives the line segments in world space,
+flat and 0.02 above the pose's point. The game and the preview draw the
+same segments: the game through the window's world-line pass, from each
+view's camera, under the HUD and with no depth test
+([superbounce.md](superbounce.md#the-superbounce-game-type), the pass
+the mode's own marks use); the preview projected onto its canvas ("The
+preview and the checks").
+
+A mark is drawn in the user's HUD colour. `Dim` halves its alpha and
+`Inactive` greys it, as for a widget, and the pose's strength scales the
+alpha again. One more style is a world mark's alone: `Lock`, the
+lock-on's red (`world::LOCK_RED`, the colour the superbounce lock-on
+draws its brackets in, [superbounce.md](superbounce.md#lock-on)), for a
+mark that says "this will work" as the game's reticle is red over a
+target in range. The `world` check refuses `Lock` on any other kind. The
+value's text is the mark's label, centred over its point in the HUD font
+(`model::WORLD_FONT`); `longest` is the widest label any state gives it.
+
+A pose is the runtime's, each tick, as a navpoint's point is:
+`Handle::world_mark(id, Option<Pose>)`. For the preview and the checks a
+HUD gives sample poses per state, `Describe::world(state)`: world units
+in a scene of the state's own. A mark shows only in the screen modes its
+place has, like a channel: `Element::channel` gives it `Place::GAME`,
+fullscreen only.
+
+`crates/extensions/game/src/hud_kit_world.rs` is the game's side: a
+world-line source (`hud_kit_world::register`, windowed hosts) that each
+present takes the marks to draw now (`hud_kit::world_marks_now(mode)`:
+the world mark elements of the registered HUDs whose value is shown,
+that have a pose and whose place has the screen mode) and gives the
+pass their lines (`hud_kit_world::lines`: 2.5 pixels wide at 1080p with
+a glow, the label 0.25 over the point). With no pose set it costs one
+atomic load (`hud_kit::any_world_marks`). Nothing is written to guest
+memory.
+
 ### The runtime (`crates/extensions/game/src/hud_kit.rs`)
 
 A feature registers its `Describe` once (`hud_kit::register`, which
 returns a `Handle`), then publishes a `Values` whenever its state changes
-(`Handle::publish`) and the world point of each of its navpoints
+(`Handle::publish`), the world point of each of its navpoints
 (`Handle::navpoint` for its first, `Handle::navpoint_at(id, point)` for
-any). The feature `hud-kit` does the rest:
+any) and the pose of each of its world marks
+(`Handle::world_mark(id, pose)`, "World marks"). The feature `hud-kit`
+does the rest:
 
 1. **Install**, before `GAME_ACTIVATE` and after `hud_swap`: the loaded
    map is opened through `native_map::open` (builds with the `gpu`
@@ -712,11 +782,20 @@ the HUD's navpoints), so two shown at once draw apart; in a split
 frame, whose stack would leave the frame's top at the sample, it moves
 the point down until the stack fits (S: that the game keeps a navpoint
 inside its waypoint area, the safe bounds less `hudg +0xec`..`+0xf8`).
+A world mark is drawn from its HUD's sample pose for the state
+(`Describe::world`): the scene's origin is on the floor ahead, 0.22 of
+the frame's height under its centre (`preview::WORLD_SAMPLE`), a world
+unit is 130 HUD pixels across in a fullscreen frame, and the view is
+oblique, +X to the right and +Y up the screen at half scale
+(`preview::project`). It is the mark's lines in a sample view, not the
+game's camera: it shows the shapes, the styles and the label, and that
+they stay clear of the rest.
 
 `preview` writes `<hud>-<state>-<mode>.png` and a `.json` with every
 element's id, kind, rectangle, the rectangle it may take in any state
 (`reserved`: a text's at its `longest`), text, style, fill, angle, font,
-whether it is drawn and why not, and the findings of that state and
+whether it is drawn and why not, a world mark's shape, pose, segment
+count and bounds (`world`), and the findings of that state and
 mode; by default every state, fullscreen. `preview` fails on a glyphs
 or drawn finding, and, from the disc, when the glyph check could not
 run; its other findings are printed. `sheet` writes every HUD x
@@ -762,6 +841,7 @@ the check, the elements and the state and mode:
 | prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding |
+| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Lock` is on world marks alone. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
 
 The synthetic source has no fonts, so it skips the glyph check and says
 so, and its retail check is against the flat boxes, not the disc's art.
@@ -1287,10 +1367,11 @@ tutorial's step waits.
 
 A second HUD on the kit, `superbounce-readout`
 (`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): three
-rows right of the motion tracker and the charge pill ("The pill") and
-three navpoints, for the first
-local player while the superbounce mode is on. Nothing of it is in the
-middle of the screen. It is a HUD of its own because it is fullscreen
+rows right of the motion tracker and the charge pill ("The pill"),
+three navpoints and the approach guide's four world marks ("The
+approach guide"), for the first
+local player while the superbounce mode is on. Nothing of it is a panel
+in the middle of the screen: the guide is on the geometry. It is a HUD of its own because it is fullscreen
 only: a half or quarter frame has no three rows free under the prompt
 line's box, and the `modes` check wants every widget of one HUD in the
 same screen modes.
@@ -1312,6 +1393,7 @@ same screen modes.
 | `sbr.info` | text, font 6 | (123, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)). For two seconds after the player switches the kinds of seam shown, `Targets: common`, `Targets: likely` or `Targets: all` in place of either ([superbounce.md](superbounce.md#targets)) |
 | `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
 | `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
+| `sbr.guide.box`, `sbr.guide.pipper`, `sbr.guide.ticks`, `sbr.guide.drift` | world mark | on the seam the player is going for | the approach guide ("The approach guide") |
 
 Speeds are metres a second and distances metres (a world unit is
 3.048 m). The rows are 21 pixels apart, a line of font 6, the last
@@ -1323,13 +1405,17 @@ h2 hud preview superbounce-readout --state all --out DIR
 
 The preview's states are `idle`, `moving`, `falling-off-seam`,
 `falling-on-seam`, `falling-wants-drift`, the four `miss-` lines, `targets`, `second-bounce`,
-`second-bounce-lined-up`, `targets-switched` and `tagged`.
+`second-bounce-lined-up`, `targets-switched`, `tagged` and the guide's
+five: `guide-approach`, `guide-lined-up`, `guide-falling-caught`,
+`guide-too-shallow` and `guide-off-line`.
 
 `h2 hud preview superbounce-all` draws both HUDs in one frame, for the
 preview only and fullscreen only, as the readout is
-(`huds::superbounce_all`, `huds::previews`): fifteen moments of a run, each a state of the superbounce HUD beside one of the
-readout's (`MOMENTS`), the last three the second bounce's ranked seams,
-its line-up and the line after a switch of the kinds of seam shown.
+(`huds::superbounce_all`, `huds::previews`): twenty moments of a run, each a state of the superbounce HUD beside one of the
+readout's (`MOMENTS`), the thirteenth to the fifteenth the second
+bounce's ranked seams, its line-up and the line after a switch of the
+kinds of seam shown, and the last five the approach guide's: the walk
+up, lined up, falling and caught, falling too shallow, and off the line.
 
 **The runtime.** `crates/extensions/game/src/superbounce_readout.rs`
 registers it after the superbounce HUD, so that HUD's navpoint is the
@@ -1344,6 +1430,7 @@ through `superbounce_readout::view`:
 | `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances |
 | `switched` (`superbounce_targets::Switch`, for 60 ticks after a double tap of the flashlight) | the switch's line (`kinds`), over the ranked line and the miss line |
 | `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
+| `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`) and its marks' poses (`guide_poses`, `Handle::world_mark`) |
 
 The miss line's numbers are worked out beside the tracker's verdict:
 the seam is the one the landing was by
@@ -1357,13 +1444,47 @@ is not known is not shown.
 A piece the variant's script options turn off is left out of the view
 ([superbounce.md](superbounce.md#the-huds-options)): `velocity` the
 speed line, `alignment` the bar and the steer line, `miss_info` the miss
-line. With the mode off every element is hidden.
+line, `approach_guide` the guide's marks. With the mode off every
+element is hidden.
+
+### The approach guide
+
+Four world marks of the readout
+(`crates/rewrites/hud-kit-core/src/huds/superbounce_guide.rs`) on the
+seam the player is going for, so the line-up is read off the geometry.
+What they mean, the prediction and the depth rule are in
+[superbounce.md](superbounce.md#the-approach-guide); this is how they
+are built.
+
+```text
+            ^          sbr.guide.drift: the way to drift, lit when moving that way
+      .-          -.
+      |   seam's   |   sbr.guide.box: 0.6 along the edge, the catch (0.2) across,
+      '-  point   -'   centred on the seam's landing point
+          - - -        sbr.guide.ticks: from the pipper toward the box
+           (+)         sbr.guide.pipper: where the path touches down
+```
+
+| Element | Shape | Pose | Values |
+|---|---|---|---|
+| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Lock` with `Will bounce` (`box_value`, `Call`) |
+| `sbr.guide.pipper` | `Pipper` | at the predicted landing on the seam's floor, radius 0.06 | shown while a landing is predicted by the seam; `Lock` with the box |
+| `sbr.guide.ticks` | `Ticks` | from the pipper's ring toward the box's centre, over the distance between them, 0.6 at most (`ticks_run`) | shown while the landing is not caught; under a run of 0.02 it has no pose |
+| `sbr.guide.drift` | `Arrow` | 0.06 outside the box on the drift's side, pointing along the drift | `Normal` while the player moves the drift's way, `Dim` when not; hidden on a seam with no drift |
+
+`Guide` is what the marks show and `Layout` where they lie;
+`poses(&Layout)` gives each mark's pose, for the runtime and for the
+preview's five samples alike (`samples`: the seam's point at the scene's
+origin, its edge along +X, its drift away from the viewer). Every pose
+carries the guide's fade as its strength. The marks are fullscreen only,
+as the readout is.
 
 ## Interfaces
 
 - A feature calls `hud_kit::register(describe) -> Handle`, then
-  `Handle::publish(values)`, and `Handle::navpoint(Option<point>)` or
-  `Handle::navpoint_at(id, Option<point>)` for its navpoints. A
+  `Handle::publish(values)`, `Handle::navpoint(Option<point>)` or
+  `Handle::navpoint_at(id, Option<point>)` for its navpoints, and
+  `Handle::world_mark(id, Option<pose>)` for its world marks. A
   `Prompt` or `Training` element's shown text is the channel's text.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
   `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,
@@ -1382,7 +1503,9 @@ line. With the mode off every element is hidden.
   repository. An `Art` is a reference; a colour is an address or a tag
   field.
 - A HUD may use only the styles above. A new colour is a new retail
-  source, named in "Colours", not a constant of ours.
+  source, named in "Colours", not a constant of ours. The one constant
+  is `world::LOCK_RED`, a world mark's `Lock`: the window draws world
+  marks, not the game's HUD, and it is the lock-on's red.
 - A kit widget is drawn only while the game draws the HUD.
 - Fullscreen first: an element without split-screen offsets is hidden in
   split screen.
@@ -1489,6 +1612,12 @@ particular:
   fades with the line, and where a fifth line in four slots goes
   (decoding 6). That the preview's text draw keeps a coloured glyph's
   colours.
+- World marks: that the world-line pass draws the kit's source beside
+  the mode's own, the marks' width, glow and label size in a game, and
+  how a mark reads on a slope or behind geometry (the pass has no depth
+  test, and a mark is flat). The preview's sample view is not the
+  game's camera, so the `world` check's frame rule says nothing of the
+  game.
 - The sheet's retail states draw the player's `nhdt` alone: no weapon's
   HUD is drawn with it, so the retail check does not see the weapon
   panels or the reticle's art (the reticle is a reserved rectangle).

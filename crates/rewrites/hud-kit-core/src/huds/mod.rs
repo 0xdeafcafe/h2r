@@ -5,6 +5,7 @@ use crate::model::Describe;
 
 pub mod superbounce;
 pub mod superbounce_all;
+pub mod superbounce_guide;
 pub mod superbounce_readout;
 
 /// Every registered HUD.

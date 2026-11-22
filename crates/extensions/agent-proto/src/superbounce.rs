@@ -109,6 +109,57 @@ pub struct Options {
     /// The second bounce's ranked targets.
     #[serde(default)]
     pub second_bounce: bool,
+    /// The approach guide: the pipper and the box on the seam.
+    #[serde(default)]
+    pub approach_guide: bool,
+}
+
+/// `superbounce.state`'s `guide`: the approach guide on the seam the
+/// player is going for (docs/game/superbounce.md, "The approach guide").
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Guide {
+    /// The seam's landing point: the box's centre.
+    pub seam: [f64; 3],
+    /// What the box says of the landing: `off_line`, `lined_up`,
+    /// `too_shallow` or `will_bounce`.
+    pub call: String,
+    /// The landing is a jump's from where the player stands, not a flight
+    /// under way.
+    pub jump: bool,
+    /// The pipper: where the path touches down, on the seam's floor;
+    /// absent when it does not come down by the seam.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact: Option<[f64; 3]>,
+    /// The last free row: the body's position on the tick before the
+    /// contact tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<[f64; 3]>,
+    /// Game ticks from now to that row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<u32>,
+    /// The fall speed on that row, world units a second down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+    /// The landing is within the seam's catch.
+    pub caught: bool,
+    /// The last free row ends deep enough for the next tick to bounce;
+    /// absent with no landing, or on a seam with no drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deep: Option<bool>,
+    /// How far under the depth cut the last free row ends, world units
+    /// (negative: too shallow).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f64>,
+    /// The last free row's place past the seam's edge along its drift,
+    /// world units (negative: before it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub past: Option<f64>,
+    /// The body's speed along the seam's drift, world units a second;
+    /// absent on a seam with none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub across: Option<f64>,
+    /// 0 to 1: the guide's fade with distance.
+    pub strength: f64,
 }
 
 /// `superbounce.state`'s `targets`.
@@ -225,6 +276,10 @@ pub struct State {
     /// a strip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landing: Option<Predicted>,
+    /// The approach guide; absent while it is not shown, and with the
+    /// variant's `approach_guide` option off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide: Option<Guide>,
     /// The last landing within 0.5 of a strip, or primed bounce anywhere,
     /// filed when its launch window (the touchdown tick and the 3 after)
     /// closes.
@@ -1309,6 +1364,7 @@ mod tests {
                 miss_info: false,
                 medals: true,
                 second_bounce: true,
+                approach_guide: true,
             },
             targets: Targets {
                 mode: "all".into(),
@@ -1338,6 +1394,21 @@ mod tests {
                 need: 4.0,
                 miss: 0.0,
                 locked: true,
+            }),
+            guide: Some(Guide {
+                seam: [1.0, 2.0, -3.2],
+                call: "will_bounce".into(),
+                jump: false,
+                impact: Some([1.0, 1.95, -3.2]),
+                row: Some([1.0, 1.95, -2.83]),
+                ticks: Some(3),
+                speed: Some(5.3),
+                caught: true,
+                deep: Some(true),
+                depth: Some(0.04),
+                past: Some(-0.05),
+                across: None,
+                strength: 1.0,
             }),
             last_landing: Some(Landing {
                 result: LandingResult::NotPrimed,
@@ -1388,6 +1459,10 @@ mod tests {
         assert_eq!(v["nav_target"]["kind"], "crouch");
         assert_eq!(v["landing"]["verdict"], "on_slot");
         assert_eq!(v["landing"]["locked"], true);
+        assert_eq!(v["guide"]["call"], "will_bounce");
+        assert_eq!(v["guide"]["deep"], true);
+        assert!(v["guide"].get("across").is_none());
+        assert_eq!(v["options"]["approach_guide"], true);
         assert_eq!(v["nav_target"]["fall"], 0.0);
         assert_eq!(v["last_landing"]["result"], "not_primed");
         assert_eq!(v["off_spot"][0]["launch"], 4.2);

@@ -17,8 +17,11 @@
 //!   over the tagged seam and over the two nearest seams the player can
 //!   reach.
 //!
+//! - `sbr.guide.*`: the approach guide, four world marks on the seam the
+//!   player is going for ([`super::superbounce_guide`]).
+//!
 //! Nothing is in the middle of the screen: the rows are bottom left, and
-//! a navpoint is where its seam is. The readout is fullscreen only. A
+//! a navpoint or a world mark is where its seam is. The readout is fullscreen only. A
 //! half or quarter frame has no three rows free under the prompt line's
 //! box, so it is a HUD of its own beside the superbounce HUD
 //! ([`super::superbounce`]), whose widgets show in every screen mode.
@@ -30,6 +33,8 @@
 use crate::model::{Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Value, Values};
 
 use super::superbounce::{DISTANCE_LONGEST, PILL_COLUMN, PILL_FULL, distance_text};
+use super::superbounce_guide::{self as guide, Guide};
+use crate::world::Pose;
 
 pub const NAME: &str = "superbounce-readout";
 
@@ -202,6 +207,9 @@ pub struct View {
     pub tag: Option<f32>,
     /// Metres to each reachable seam marked, nearest first.
     pub targets: [Option<f32>; 2],
+    /// The approach guide on the seam the player is going for
+    /// ([`super::superbounce_guide`]).
+    pub guide: Option<Guide>,
 }
 
 fn one(v: f32, max: f32) -> String {
@@ -268,11 +276,12 @@ pub fn next_text(next: &[Option<Next>; NEXT]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("  "))
 }
 
-/// The elements, in draw order.
+/// The elements, in draw order: the rows, the navpoints, then the
+/// approach guide's world marks.
 pub fn hud() -> Hud {
     let row = |up: i16| Place::new(Anchor::BottomLeft, (LEFT, up));
     let navpoint = |id| Element::channel(id, Kind::Navpoint { longest: DISTANCE_LONGEST });
-    Hud {
+    let mut hud = Hud {
         name: NAME,
         elements: vec![
             Element::meter(
@@ -293,7 +302,9 @@ pub fn hud() -> Hud {
             navpoint(TARGET_1),
             navpoint(TARGET_2),
         ],
-    }
+    };
+    hud.elements.extend(guide::elements());
+    hud
 }
 
 /// The values for `v`: every element of [`hud`], once.
@@ -323,6 +334,7 @@ pub fn values(v: &View) -> Values {
     out.set(TAG, nav(v.tag));
     out.set(TARGET_1, nav(v.targets[0]));
     out.set(TARGET_2, nav(v.targets[1]));
+    guide::set_values(&mut out, v.guide.as_ref());
     out
 }
 
@@ -348,7 +360,7 @@ pub fn views() -> Vec<(&'static str, View)> {
         info: Some(m),
         ..View::default()
     };
-    vec![
+    let mut out = vec![
         ("idle", View::default()),
         (
             "moving",
@@ -454,7 +466,33 @@ pub fn views() -> Vec<(&'static str, View)> {
                 ..View::default()
             },
         ),
-    ]
+    ];
+    // The approach guide's moments: the rows as they are then, with the
+    // guide's marks (`superbounce_guide::samples`).
+    let rows = |name: &str| match name {
+        "guide-approach" | "guide-lined-up" => View {
+            speed: Some(running),
+            ..View::default()
+        },
+        "guide-off-line" => fall(
+            0.97,
+            Steer::Off {
+                heading: 3.0 * FRAC_PI_4,
+                metres: 1.4,
+            },
+        ),
+        _ => fall(0.97, Steer::OnSeam),
+    };
+    for (name, g, _) in guide::samples() {
+        out.push((
+            name,
+            View {
+                guide: Some(g),
+                ..rows(name)
+            },
+        ));
+    }
+    out
 }
 
 /// The readout's description.
@@ -471,6 +509,15 @@ impl Describe for Readout {
 
     fn multiplayer_only(&self) -> Option<&'static str> {
         Some("superbounce is a multiplayer game type")
+    }
+
+    /// The approach guide's sample scene in its moments.
+    fn world(&self, state: &str) -> Vec<(&'static str, Pose)> {
+        guide::samples()
+            .into_iter()
+            .find(|(name, _, _)| *name == state)
+            .map(|(_, _, l)| guide::poses(&l))
+            .unwrap_or_default()
     }
 }
 
@@ -655,6 +702,36 @@ mod tests {
         assert_eq!(shown("tagged", TAG).unwrap(), "34");
         assert_eq!(shown("tagged", TARGET_2), None);
         assert_eq!(shown("idle", TARGET_1), None);
+    }
+
+    /// The approach guide's marks are the readout's last four elements,
+    /// hidden in every state but the guide's moments, which pose every
+    /// mark they show.
+    #[test]
+    fn the_guide_is_in_its_moments_alone() {
+        let h = hud();
+        let ids: Vec<_> = h.elements[h.elements.len() - 4..].iter().map(|e| e.id).collect();
+        assert_eq!(ids, guide::MARKS);
+        for id in guide::MARKS {
+            let e = h.element(id).unwrap();
+            assert!(e.kind.world().is_some() && e.kind.is_channel(), "{id}");
+            assert_eq!((e.at.half, e.at.quarter), (None, None), "{id}: fullscreen only");
+        }
+        let mut moments = 0;
+        for (name, v) in Readout.states() {
+            let poses = Readout.world(name);
+            let is_guide = name.starts_with("guide-");
+            moments += usize::from(is_guide);
+            for id in guide::MARKS {
+                let shown = v.get(id).unwrap().shown;
+                assert_eq!(shown, poses.iter().any(|(i, _)| *i == id), "{name} {id}");
+                assert!(is_guide || !shown, "{name} {id}");
+            }
+        }
+        assert_eq!(moments, guide::samples().len());
+        assert_eq!(shown("guide-falling-caught", guide::BOX).unwrap(), guide::WILL_BOUNCE);
+        assert_eq!(shown("guide-too-shallow", guide::BOX).unwrap(), guide::TOO_SHALLOW);
+        assert_eq!(shown("guide-falling-caught", STEER).unwrap(), ON_SEAM);
     }
 
     /// No text any state or any number gives is longer than its
