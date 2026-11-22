@@ -11,3 +11,6 @@ shaders = { path = "../../formats/shaders" }
 naga = { version = "30", features = ["wgsl-in"] }
 serde.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -303,7 +303,6 @@ impl Producer {
 
     /// Records the native equivalent of target 13. The caller invokes
     /// this at the original quad, before scheduling the consuming light.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &self,
         device: &wgpu::Device,
@@ -354,7 +353,6 @@ impl Producer {
 
     /// Write the native gel into the real guest target, retaining its
     /// previous pixels where blend/discard or colour masks require them.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_into(
         &self,
         device: &wgpu::Device,
@@ -377,7 +375,6 @@ impl Producer {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw(
         &self,
         device: &wgpu::Device,
@@ -453,7 +450,6 @@ impl Producer {
     /// groups and uniforms as [`Self::encode_into`], the uniforms, quad
     /// and its strip indices staged in the submission's `uploads`. No
     /// render pass or command buffer of its own.
-    #[allow(clippy::too_many_arguments)]
     pub fn packet(
         &self,
         device: &wgpu::Device,

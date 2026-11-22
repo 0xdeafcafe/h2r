@@ -463,7 +463,6 @@ impl FrameSink {
         Ok((slot.size, rgba))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn submit_encoded(
         &mut self,
         size: (u32, u32),
@@ -834,7 +833,6 @@ impl Compositor {
 
     /// Records a pass that clears `dst` to `clear` and, if `src` is given,
     /// draws it into `viewport`.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         device: &wgpu::Device,

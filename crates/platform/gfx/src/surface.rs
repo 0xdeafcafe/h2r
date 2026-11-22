@@ -757,7 +757,6 @@ impl SurfaceStore {
 
     /// `CopyRects` when sizes or formats differ: a filtered blit of `src`
     /// (optionally a sub-rectangle) over the whole of `dst`.
-    #[allow(clippy::too_many_arguments)] // mirrors the D3D CopyRects parameter list
     pub fn stretch(
         &self,
         ctx: &GfxContext,

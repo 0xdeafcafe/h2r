@@ -502,7 +502,6 @@ impl QuadDrawer {
     /// reading `stages[n]`, the rest of `dest` kept: its pipeline and
     /// groups made and its uniforms staged in `uploads`, for
     /// [`QuadCommand::record`].
-    #[allow(clippy::too_many_arguments)]
     pub fn quad(
         &mut self,
         device: &wgpu::Device,
@@ -522,7 +521,6 @@ impl QuadDrawer {
     /// strip) of a [`grid_program`] into `dest` (`frame` its size), as
     /// [`Self::quad`] does a quad; `None` when the strips hold no vertex
     /// (nothing to draw).
-    #[allow(clippy::too_many_arguments)]
     pub fn grid(
         &mut self,
         device: &wgpu::Device,
@@ -539,7 +537,6 @@ impl QuadDrawer {
         self.prepare((device, queue, uploads), program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend), stages)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
         (device, queue, uploads): (&wgpu::Device, &wgpu::Queue, &gfx::ring::SubmissionUploads),

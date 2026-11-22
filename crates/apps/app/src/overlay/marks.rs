@@ -881,7 +881,6 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
         }
 
         /// The floor strip along an edge: a flat fill, near-plane clipped.
-        #[allow(clippy::too_many_arguments)]
         fn ribbon(
             &mut self,
             camera: &MarkCamera,
@@ -914,7 +913,6 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
         }
 
         /// Arrowheads along an edge, flowing along their direction.
-        #[allow(clippy::too_many_arguments)]
         fn chevrons(
             &mut self,
             camera: &MarkCamera,
@@ -960,7 +958,6 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             }
         }
 
-        #[allow(clippy::too_many_arguments)]
         fn label(
             &mut self,
             label: &str,
@@ -991,7 +988,6 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
 
         /// A label in the disc's HUD font: one textured quad a glyph, with a
         /// drop shadow when centred. Button glyphs keep their colours.
-        #[allow(clippy::too_many_arguments)]
         fn hud_label(
             &mut self,
             font: &LabelFont,

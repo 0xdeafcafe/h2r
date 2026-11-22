@@ -25,3 +25,6 @@ scenario-edit = { path = "../scenario-edit" }
 # The converter's visibility check, the oracle for a grown section's code
 # and table.
 h1convert = { path = "../h1convert" }
+
+[lints]
+workspace = true

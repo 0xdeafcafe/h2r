@@ -1610,7 +1610,6 @@ fn logical_pacing_does_not_depend_on_how_time_is_partitioned() {
 /// to 64 ms. The output thread either runs freely throughout or cannot run
 /// at all (its sink is held closed). Returns (status and events right
 /// after the 32 ms step, the same after 64 ms, the PCM played).
-#[allow(clippy::type_complexity)]
 fn history_at_32ms(
     tick_first: bool,
     thread_runs: bool,

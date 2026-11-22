@@ -532,7 +532,6 @@ impl ShaderLibrary {
         Ok(SelectedImplementation { pass: pass.pass.id, layer_passes, implementation, render_writes })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn resolve(
         &self,
         tp: &TemplatePostprocess,
@@ -1038,7 +1037,6 @@ fn build_variant(
 }
 
 /// `0x00017170` / `0x00019ca0`: masked write of a packed colour.
-#[allow(clippy::too_many_arguments)]
 fn apply_color(
     ps: &mut [u8; PSDEF_SIZE],
     c0w: &mut u16,

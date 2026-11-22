@@ -301,7 +301,6 @@ impl SubmissionUploads {
 
     /// Pack pairs of dynamic vertex and pixel uniforms for successive draws into the
     /// submission. A pooled backing buffer keeps its bind group across submissions.
-    #[allow(clippy::too_many_arguments)]
     pub fn uniform_run(
         &self, device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout,
         sizes: [usize; 2], count: usize, mut fill: impl FnMut(usize, &mut [u8], &mut [u8]),
@@ -358,7 +357,6 @@ impl SubmissionUploads {
     /// Reuse uniform storage across completed submissions. In a steady scene
     /// only changed constant rows (view, skinning, fog, etc.) cross the bus.
     /// Draws within a submission get distinct slots, including split views.
-    #[allow(clippy::too_many_arguments)]
     pub fn resident_uniform_run(
         &self, device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout,
         sizes: [usize; 2], count: usize, mut fill: impl FnMut(usize, &mut [u8], &mut [u8]),

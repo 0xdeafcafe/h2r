@@ -9,3 +9,6 @@ default = ["abi"]
 # The `#[repr(C)]` state structs and the `extern "C"` `h2x87_v1_*` surface
 # (docs/lifter/FLOAT-ABI.md §1-§4).
 abi = []
+
+[lints]
+workspace = true

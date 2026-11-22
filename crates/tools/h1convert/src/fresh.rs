@@ -1234,7 +1234,6 @@ impl<'a> Space<'a> {
 /// schema says are blocks give addresses, never a data word. `None` when
 /// the root array itself doesn't read: the caller then reads the tag word
 /// by word.
-#[allow(clippy::too_many_arguments)]
 fn walk(
     space: &Space,
     s: &tags::schema::Struct,
@@ -1532,7 +1531,6 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> Reached {
 
 /// Makes each tag but `i` whose bytes hold part of one of `blocks` (`i`'s,
 /// as address and length) a holder ([`pinned_reach`]), unless reached.
-#[allow(clippy::too_many_arguments)]
 fn hold(
     space: &Space,
     i: usize,

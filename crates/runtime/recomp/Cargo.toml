@@ -21,8 +21,8 @@ ir.workspace = true
 runtime.workspace = true
 x87 = { path = "../../recompiler/x87" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
-libloading = "0.8"
-rustc-hash = "2"
+libloading = { workspace = true }
+rustc-hash = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 
@@ -33,3 +33,6 @@ desktop-runtime = ["dep:clif"]
 [[test]]
 name = "fast_tier"
 required-features = ["desktop-runtime"]
+
+[lints]
+workspace = true

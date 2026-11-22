@@ -15,3 +15,6 @@ cpal = { version = "0.18", optional = true }
 
 [features]
 device = ["dep:cpal"]
+
+[lints]
+workspace = true

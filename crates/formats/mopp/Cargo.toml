@@ -12,3 +12,6 @@ tags.workspace = true
 map.workspace = true
 xiso.workspace = true
 anyhow.workspace = true
+
+[lints]
+workspace = true

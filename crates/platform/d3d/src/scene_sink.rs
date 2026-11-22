@@ -840,7 +840,6 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn defers_depth_aliases(&self) -> bool {
         self.inner.defers_depth_aliases()
     }
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self, depth: Self::Surface, format: D3DFormat, width: u32, height: u32, pitch: u32, generation: u64, offset: usize,
         desc: &TextureDesc, options: gfx::texture::DecodeOptions,

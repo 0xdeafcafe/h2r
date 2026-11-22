@@ -28,3 +28,6 @@ webpki-roots = "1"
 [dev-dependencies]
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
 live-server = { path = "../live-server" }
+
+[lints]
+workspace = true

@@ -463,7 +463,6 @@ fn quaternion_blend_takes_the_short_arc() {
 
 /// Keyframe codec stream with one rotation channel, one translation and one scale.
 /// `wide` selects word-sized key times.
-#[allow(clippy::too_many_arguments)]
 fn keyframes(
     wide: bool,
     codec: u8,

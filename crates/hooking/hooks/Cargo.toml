@@ -17,3 +17,6 @@ timeline = { path = "../../runtime/timeline" }
 # tests/install.rs and tests/plan.rs time the render stages (render_timing).
 render-bridge = { path = "../../rewrites/render-bridge" }
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
+
+[lints]
+workspace = true

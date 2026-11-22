@@ -1722,7 +1722,6 @@ impl d3d::backend::Backend for Headless {
     fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
         self.0.judge()
     }
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,
         depth: u32,

@@ -130,7 +130,6 @@ impl MenuRenderer {
 
     /// Records the pass drawing `lines` in the top left of `area` (the
     /// game image) in `dst`. Re-rasterises only when they changed.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         device: &wgpu::Device,

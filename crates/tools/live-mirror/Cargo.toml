@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 agent-proto = { path = "../../extensions/agent-proto" }
 serde_json.workspace = true
+
+[lints]
+workspace = true

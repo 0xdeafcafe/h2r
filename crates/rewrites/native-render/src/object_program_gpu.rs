@@ -673,7 +673,6 @@ impl LitObjects {
     /// target takes `texaccum`, its stages' coordinates in that level's
     /// guest texels. Refuses the whole run (the caller keeps every
     /// original) when any draw cannot be issued exactly.
-    #[allow(clippy::too_many_arguments)]
     pub fn draws(
         &mut self,
         device: &wgpu::Device,
