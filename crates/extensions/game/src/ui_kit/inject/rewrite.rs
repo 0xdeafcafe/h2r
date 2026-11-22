@@ -9,9 +9,14 @@
 //! `<map>.json` says which input it was made from. The key is the SHA-256
 //! of the input map's bytes, the docs ([`Docs`]: `assets/ui/design.yaml`
 //! and every screen's file as baked into the build), the plan the docs and
-//! the screens' samples give ([`super::plan`]) and [`VERSION`], so a boot
-//! after the first reads the file back, and a changed doc, screen or
-//! generator rebuilds.
+//! the screens' samples give ([`super::plan`]), the retail edit files
+//! ([`Edits`]) and [`VERSION`], so a boot after the first reads the file
+//! back, and a changed doc, screen, edit file or generator rebuilds.
+//!
+//! A map's retail edits ([`crate::ui_kit::retail_edits`], the files whose
+//! `map` is the map's) are applied first, to the disc's map, and our
+//! screens are added to what that gives: an edited screen is a template
+//! like any other.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -23,15 +28,16 @@ use serde::{Deserialize, Serialize};
 use super::tag::{Added, add_screens};
 use super::{Entry, plan};
 use crate::ui_kit::data;
+use crate::ui_kit::retail_edits::{self, Applied, EditFile, Edits};
 
 /// Changes with the generator, so a cache made by another one is not read.
-pub const VERSION: &str = "ui-inject-1";
+pub const VERSION: &str = "ui-inject-2";
 
 /// The maps whose interface holds screens the game opens by id: the main
 /// menu's, and the two shared maps' (`shared`: multiplayer, and
 /// `single_player_shared`: campaign). The levels are not rewritten until
 /// a game run shows the game reads its screens from them
-/// (docs/game/ui-in-maps.md, "Which maps").
+/// (docs/game/ui-in-maps.md, "Not verified").
 pub const MAPS: [&str; 3] = ["mainmenu", "shared", "single_player_shared"];
 
 /// A rebuilt map is read back only up to this size.
@@ -86,6 +92,10 @@ pub struct Rebuilt {
     pub file: Option<PathBuf>,
     pub injected: usize,
     pub skipped: Vec<(String, String)>,
+    /// The retail edit files applied to the map, each edit's line.
+    pub edited: Vec<Applied>,
+    /// Each retail edit file that did not apply, and why.
+    pub edit_failures: Vec<(String, String)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,22 +104,39 @@ struct Receipt {
     map: Sha256,
     #[serde(flatten)]
     added: Added,
+    #[serde(default)]
+    edited: Vec<Applied>,
+    #[serde(default)]
+    edit_failures: Vec<(String, String)>,
+}
+
+/// A map as built: our screens added, the retail edits made.
+struct Built {
+    added: Added,
+    edited: Vec<Applied>,
+    edit_failures: Vec<(String, String)>,
 }
 
 /// Serves `maps\mainmenu.map` and the shared maps with our screens added.
 pub struct ScreensRewrite {
     plan: Vec<Entry>,
-    /// The docs, the plan and the version: what a map's key adds to the
-    /// map's own bytes.
+    /// The docs' digest ([`Docs::hash`]).
+    docs: Sha256,
+    /// The retail edit files, parsed, and their digest ([`Edits::hash`]).
+    edits: Vec<(String, EditFile)>,
+    edits_hash: Sha256,
+    /// The docs, the plan, the edits and the version: what a map's key
+    /// adds to the map's own bytes.
     fingerprint: Sha256,
     cache: Option<PathBuf>,
 }
 
 impl ScreensRewrite {
-    /// A rewrite of `docs` and the plan they give. The error names the
-    /// screen whose doc or sample is wrong.
+    /// A rewrite of `docs`, the plan they give and this build's baked
+    /// retail edits. The error names the screen whose doc or sample is
+    /// wrong, or the edit file that does not parse.
     pub fn new(docs: &Docs) -> Result<Self, String> {
-        Ok(Self::with_plan(docs, plan()?))
+        Self::with_plan(docs, plan()?).with_edits(&Edits::baked())
     }
 
     /// A rewrite of this build's baked docs.
@@ -117,18 +144,42 @@ impl ScreensRewrite {
         Self::new(&Docs::baked())
     }
 
-    /// A rewrite of an explicit plan (the tests'; [`ScreensRewrite::new`]
-    /// makes the real one).
+    /// A rewrite of an explicit plan and no retail edits (the tests';
+    /// [`ScreensRewrite::new`] makes the real one).
     pub fn with_plan(docs: &Docs, plan: Vec<Entry>) -> Self {
+        let mut r = Self {
+            plan,
+            docs: docs.hash(),
+            edits: Vec::new(),
+            edits_hash: Edits::default().hash(),
+            fingerprint: Sha256::of(b""),
+            cache: None,
+        };
+        r.fingerprint = r.fingerprint_now();
+        r
+    }
+
+    /// The rewrite with these retail edit files, each parsed and checked
+    /// (the error names every file that is not).
+    pub fn with_edits(mut self, edits: &Edits) -> Result<Self, String> {
+        self.edits = edits.parse()?;
+        self.edits_hash = edits.hash();
+        self.fingerprint = self.fingerprint_now();
+        Ok(self)
+    }
+
+    fn fingerprint_now(&self) -> Sha256 {
         let mut h = Hasher::default();
         field(&mut h, VERSION.as_bytes());
-        h.update(&docs.hash().0);
-        field(&mut h, &serde_json::to_vec(&plan).unwrap_or_default());
-        Self {
-            plan,
-            fingerprint: h.finish(),
-            cache: None,
-        }
+        h.update(&self.docs.0);
+        field(&mut h, &serde_json::to_vec(&self.plan).unwrap_or_default());
+        h.update(&self.edits_hash.0);
+        h.finish()
+    }
+
+    /// The retail edit files, by name, in name order.
+    pub fn edits(&self) -> &[(String, EditFile)] {
+        &self.edits
     }
 
     /// Keep the rebuilt maps under `<data_root>/cache/ui-screens`.
@@ -161,7 +212,7 @@ impl ScreensRewrite {
         h.finish()
     }
 
-    fn load(&self, stem: &str, key: Sha256) -> Option<Added> {
+    fn load(&self, stem: &str, key: Sha256) -> Option<Built> {
         let receipt: Receipt =
             serde_json::from_slice(&std::fs::read(self.receipt_file(stem)?).ok()?).ok()?;
         if receipt.key != key {
@@ -172,16 +223,21 @@ impl ScreensRewrite {
             return None;
         }
         let map = std::fs::read(file).ok()?;
-        (Sha256::of(&map) == receipt.map).then_some(Added {
-            map,
-            ..receipt.added
+        (Sha256::of(&map) == receipt.map).then_some(Built {
+            added: Added {
+                map,
+                ..receipt.added
+            },
+            edited: receipt.edited,
+            edit_failures: receipt.edit_failures,
         })
     }
 
-    fn store(&self, stem: &str, key: Sha256, added: &Added) -> std::io::Result<()> {
+    fn store(&self, stem: &str, key: Sha256, built: &Built) -> std::io::Result<()> {
         let (Some(map), Some(receipt_file)) = (self.cache_file(stem), self.receipt_file(stem)) else {
             return Ok(());
         };
+        let added = &built.added;
         // The map first, the receipt that vouches for it last.
         content::store::write_atomic(&map, &added.map)?;
         let receipt = Receipt {
@@ -191,36 +247,69 @@ impl ScreensRewrite {
                 map: Vec::new(),
                 ..added.clone()
             },
+            edited: built.edited.clone(),
+            edit_failures: built.edit_failures.clone(),
         };
         content::store::write_atomic(&receipt_file, &serde_json::to_vec_pretty(&receipt)?)
     }
 
-    /// Map `stem`'s bytes with our screens in them: from the cache when
-    /// it holds this key, else built (and cached). An error when the map
-    /// is not one the screens can be added to.
+    /// Map `stem` built from `original`: its retail edits made, then our
+    /// screens added.
+    fn build(&self, stem: &str, original: &[u8]) -> Result<Built> {
+        let files: Vec<(String, EditFile)> = self
+            .edits
+            .iter()
+            .filter(|(_, f)| f.map.eq_ignore_ascii_case(stem))
+            .cloned()
+            .collect();
+        let (edited_map, edited, edit_failures) = if files.is_empty() {
+            (None, Vec::new(), Vec::new())
+        } else {
+            let e = retail_edits::apply_all(original, &files)
+                .with_context(|| format!("{stem}.map: retail edits"))?;
+            (Some(e.map), e.applied, e.failed)
+        };
+        let added = add_screens(edited_map.as_deref().unwrap_or(original), &self.plan)
+            .with_context(|| format!("{stem}.map"))?;
+        Ok(Built {
+            added,
+            edited,
+            edit_failures,
+        })
+    }
+
+    /// Map `stem`'s bytes with its retail edits made and our screens in
+    /// them: from the cache when it holds this key, else built (and
+    /// cached). An error when the map is not one the screens can be added
+    /// to; a retail edit file that does not apply is named in
+    /// [`Rebuilt::edit_failures`].
     pub fn rebuild(&mut self, stem: &str, original: &[u8]) -> Result<Rebuilt> {
         let key = self.key(stem, original);
-        if let Some(added) = self.load(stem, key) {
+        if let Some(built) = self.load(stem, key) {
             return Ok(Rebuilt {
                 from_cache: true,
                 file: self.cache_file(stem),
-                injected: added.injected.len(),
-                skipped: added.skipped,
-                map: added.map,
+                injected: built.added.injected.len(),
+                skipped: built.added.skipped,
+                map: built.added.map,
+                edited: built.edited,
+                edit_failures: built.edit_failures,
             });
         }
-        let added = add_screens(original, &self.plan).with_context(|| format!("{stem}.map"))?;
+        let built = self.build(stem, original)?;
         let mut file = None;
-        match self.store(stem, key, &added) {
+        match self.store(stem, key, &built) {
             Ok(()) => file = self.cache_file(stem),
             Err(e) => eprintln!("ui screens: could not cache {stem}: {e}"),
         }
         Ok(Rebuilt {
             from_cache: false,
             file,
-            injected: added.injected.len(),
-            skipped: added.skipped,
-            map: added.map,
+            injected: built.added.injected.len(),
+            skipped: built.added.skipped,
+            map: built.added.map,
+            edited: built.edited,
+            edit_failures: built.edit_failures,
         })
     }
 }
@@ -250,6 +339,17 @@ impl vfs::Rewrite for ScreensRewrite {
                 );
                 for (name, why) in &r.skipped {
                     eprintln!("ui screens: {stem}: {name} not added: {why}");
+                }
+                for a in &r.edited {
+                    eprintln!(
+                        "ui screens: {stem}: retail edits {} on {}: {}",
+                        a.file,
+                        a.screen,
+                        a.lines.join("; ")
+                    );
+                }
+                for (file, why) in &r.edit_failures {
+                    eprintln!("ui screens: {stem}: retail edits {file} not applied: {why}");
                 }
                 Some(r.map)
             }

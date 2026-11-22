@@ -1,0 +1,20 @@
+# The pregame lobby's mode prompt line (docs/game/ui-in-maps.md, "Retail
+# edits as data"; docs/game/party-lobby.md). Pane 0 is the custom game
+# pane. A copy of text block 10 becomes block 48, the line under the
+# header where the lobby code writes the X glyph and "Change Game Mode"
+# for the party leader; block 0 moves right to make room. The lobby code
+# finds block 48 by its place and index, and by the string name below.
+screen: 'ui\screens\game_shell\pregame_lobby\pregame_lobby'
+map: mainmenu
+pane: 0
+edits:
+  - op: duplicate
+    block: text.10
+    rect: [95, -260, 75, 70]
+    as: text.48
+  - op: set_rect
+    block: text.0
+    rect: [135, -258, 95, 45]
+  - op: set_string
+    block: text.48
+    name: lobby_mode_change

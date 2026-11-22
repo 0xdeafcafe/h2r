@@ -50,9 +50,10 @@ fn main() {
     ui_docs();
 }
 
-/// `$OUT_DIR/ui_baked.rs`: `assets/ui/design.yaml` and every
-/// `assets/ui/screens/*.yaml`, each `include_str!`d, so the game carries
-/// our screens' presentation with no file read (ui_kit::data::baked).
+/// `$OUT_DIR/ui_baked.rs`: `assets/ui/design.yaml`, every
+/// `assets/ui/screens/*.yaml` and every `assets/ui/retail-edits/*.yaml`,
+/// each `include_str!`d, so the game carries our screens' presentation and
+/// the retail screens' edits with no file read (ui_kit::data::baked).
 fn ui_docs() {
     let root = Path::new("../../../assets/ui");
     let screens = root.join("screens");
@@ -79,6 +80,25 @@ fn ui_docs() {
     out.push_str("pub const SCREENS: &[(&str, &str)] = &[\n");
     for n in &names {
         let p = abs(&screens.join(format!("{n}.yaml")));
+        println!("cargo:rerun-if-changed={p}");
+        out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
+    }
+    out.push_str("];\n");
+    // Retail screen tag edits (ui_kit::retail_edits), by file stem.
+    let edits = root.join("retail-edits");
+    println!("cargo:rerun-if-changed={}", edits.display());
+    let mut edit_names: Vec<String> = std::fs::read_dir(&edits)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
+        .collect();
+    edit_names.sort();
+    out.push_str("pub const RETAIL_EDITS: &[(&str, &str)] = &[\n");
+    for n in &edit_names {
+        let p = abs(&edits.join(format!("{n}.yaml")));
         println!("cargo:rerun-if-changed={p}");
         out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
     }

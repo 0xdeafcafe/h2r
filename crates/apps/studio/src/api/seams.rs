@@ -84,6 +84,9 @@ pub fn register(api: &mut Api) {
     // The game type script editor: open, check, save and reload a .rules
     // script (app::rules_edit).
     api.register(Box::new(super::game_script::GameScript));
+    // The open map's retail screen edits written as retail edit files
+    // (boot::ui_kit::retail_edits).
+    api.register(Box::new(super::ui_export::UiExport));
     // uik-edit: the UI Screens tool's canvas edits, undo, save and filmstrip
     // (app::ui_screens::edit).
     api.register(Box::new(super::ui_edit::UiEdit));

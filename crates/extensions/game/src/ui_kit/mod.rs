@@ -11,6 +11,8 @@
 //!   time.
 //! - [`inject`]: our screens as real `wgit` tags in the maps
 //!   (docs/game/ui-in-maps.md).
+//! - [`retail_edits`]: retail screens' tag edits as data, applied to the
+//!   maps with our screens.
 //! - [`input`]: events as inputs, named glyphs and legends, the opener's
 //!   press guard.
 //! - [`lifecycle`]: close as B does, and work that waits for the free.
@@ -44,6 +46,7 @@ pub mod lifecycle;
 pub mod page;
 pub mod picker;
 pub mod preview;
+pub mod retail_edits;
 pub mod screen;
 pub mod screens;
 pub mod spec;

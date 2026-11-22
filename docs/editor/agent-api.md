@@ -883,6 +883,17 @@ the window and the API stay one path.
   `doc.save`. Each edit answers with the widget and the checks' findings
   on the edited view; `ui.animate` writes a transition's filmstrip PNG
   (docs/game/ui-builder.md "Editing in the editor").
+- **Retail edits as data.** `api/ui_export.rs` registers `UiExport` for
+  `ui.export_edits {path, screen?}`: the open map's retail screen edits
+  (the tag document's writes to each screen tag's panes and header, as
+  loaded against as edited) written as retail edit files, one per edited
+  pane, into the directory `path` (`boot::ui_kit::retail_edits::diff_pane`,
+  `to_yaml`). It answers `{map, written: [{path, screen, pane, edits}],
+  skipped}`; `skipped` names each change the format cannot hold. No map
+  open is `NO_DOCUMENT`, and a `screen` the map lacks `INVALID_PARAMS`.
+  The files are ours, so `path` may be the checkout's
+  `assets/ui/retail-edits/`, where the game applies them at boot
+  (docs/game/ui-in-maps.md "Retail edits as data").
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets

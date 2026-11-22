@@ -517,7 +517,7 @@ fn animation_phases(value: &str) -> Result<Vec<boot::ui_kit::animation::Phase>> 
     Ok(vec![phase])
 }
 
-const INJECT_USAGE: &str = "usage: h2 ui inject [--map mainmenu|shared|single_player_shared] [--disc disc.iso] [--data DIR]\n\nBuilds the map with our screens (boot::ui_kit::inject) as the game is served it,\nkeeps it under DATA/cache/ui-screens/<map>.map (the editor opens it as a loose map; it\nholds the user's own map, so it is never committed) and runs the h2 ui --all checks\non it. docs/game/ui-in-maps.md.";
+const INJECT_USAGE: &str = "usage: h2 ui inject [--map mainmenu|shared|single_player_shared] [--disc disc.iso] [--data DIR]\n\nBuilds the map with its retail edits (assets/ui/retail-edits) and our screens\n(boot::ui_kit::inject) as the game is served it,\nkeeps it under DATA/cache/ui-screens/<map>.map (the editor opens it as a loose map; it\nholds the user's own map, so it is never committed) and runs the h2 ui --all checks\non it. docs/game/ui-in-maps.md.";
 
 /// `h2 ui inject`: the map with our screens in it, built or read from the
 /// host cache, and checked the way `h2 ui --all` checks a map.
@@ -557,6 +557,15 @@ fn inject(args: &[String]) -> Result<()> {
     for (name, why) in &built.skipped {
         println!("not added: {name}: {why}");
     }
+    for a in &built.edited {
+        println!("retail edits {} on {}:", a.file, a.screen);
+        for line in &a.lines {
+            println!("  {line}");
+        }
+    }
+    for (file, why) in &built.edit_failures {
+        eprintln!("retail edits {file} not applied: {why}");
+    }
     let mut checked = Map::from_reader(std::io::Cursor::new(built.map))?;
     let check = check_map(&mut checked);
     print!("{}", report(1, &check));
@@ -565,6 +574,9 @@ fn inject(args: &[String]) -> Result<()> {
     }
     if !check.failures.is_empty() {
         bail!("{} UI failures", check.failures.len());
+    }
+    if !built.edit_failures.is_empty() {
+        bail!("{} retail edit files not applied", built.edit_failures.len());
     }
     Ok(())
 }

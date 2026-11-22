@@ -1258,6 +1258,13 @@ when its screen has no unsaved edits. A screen with unsaved edits keeps
 them, and the tool says the file changed. Retail edits save with the map
 (`doc.save`, File > Save).
 
+**Shipping a retail edit.** A retail edit saved with the map is the
+user's alone, since the map is disc-derived. `ui.export_edits {path,
+screen?}` writes the open map's retail edits as retail edit files, one
+per edited screen pane, and a file in `assets/ui/retail-edits/` is applied
+to every user's map at boot ([ui-in-maps.md](ui-in-maps.md), "Retail
+edits as data").
+
 **Checks on the edited view.** `UiScreens::draw_native` makes the view
 inside `with_screens`, so `layout::check` and `content::check` run on the
 edited rects and texts. A drag past the title-safe area shows its finding
