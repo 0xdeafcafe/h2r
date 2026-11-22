@@ -18,7 +18,7 @@ works, and its page says which part. **Design**: written up, not built.
 | --- | --- | --- | --- |
 | Recompiler | XBE analysis (about 18,700 functions), x86 to IR to C11, clang build with source and object caches | Built | [LIFTER](lifter/LIFTER.md), [cache](lifter/BUILD-CACHE.md) |
 | | Native x87 and SSE fast paths, inline guest RAM, direct calls (all on by default) | Built | [x87](lifter/x87-native.md), [memory](perf/guest-memory.md) |
-| | Cranelift fast start with an optimised clang build in the background | Built | [fast tier](lifter/cranelift-tier.md), [player](runtime/app.md) |
+| | Cranelift fast start with an optimised clang build in the background, opt-in (`H2_TIER=bridge`) | Built | [fast tier](lifter/cranelift-tier.md), [player](runtime/app.md) |
 | Runtime | Xbox kernel, XAPI, saves and storage replaced in Rust, on a deterministic logical clock with checkpoints | Built | [BOOT](runtime/BOOT.md), [storage](runtime/storage.md) |
 | | Direct3D 8 on wgpu (push buffer, NV2A shaders to WGSL), render thread, merged passes | Built | [d3d](graphics/d3d.md), [graphics](graphics/graphics.md) |
 | | DirectSound mixer, native WMA, Bink playback with optional offline movie conversion | Built | [audio](audio/audio.md), [movies](audio/movies.md) |

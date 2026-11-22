@@ -29,7 +29,7 @@ mod cloud;
 
 const USAGE: &str = "usage:
   h2 sim run <match.toml> [--disc ISO] [--out DIR] [--data DIR] [--report FILE]
-                          [--socket PATH] [--tier auto|fast|clang] [--pace PACE]
+                          [--socket PATH] [--tier auto|bridge|fast|clang] [--pace PACE]
                           [--upload [--as GAMERTAG] [--server URL]]
   h2 sim store build <map|all> --disc ISO --out DIR --reads FILE
   h2 sim batch <batch.toml> [--provider local] [--dry-run] [--keep-data]

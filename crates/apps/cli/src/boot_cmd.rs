@@ -24,7 +24,7 @@ disables kernel tracing and paces to real time. Requires --system-link.
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang] [--arch TARGET]
            [--profile host --coverage FILE]
-  h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
+  h2 run   <disc.iso> [--out DIR] [--tier auto|bridge|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR] [--film FILE]
   h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots]]] [run's options]
 
@@ -35,13 +35,14 @@ const USAGE: &str = "usage:
   select clang's native owners. Use a separate --out directory.
 --tier (or H2_TIER): `build` builds clang's optimised module by default, or
   with `fast` the Cranelift fast tier in --out/fast/ in seconds
-  (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module
-  when it is current, else the fast tier (built first if need be) with
-  clang's build started in the background at low priority (log
-  --out/clang-build.log), used from the next start. `fast` runs the fast
-  tier only; `clang` builds clang's in the foreground, as before tiers.
-  `build --background` is that background build: low priority, and gone at
-  once when another holds --out.
+  (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module,
+  built in the foreground when it is not current (after a background build
+  of it already running, if one is). `bridge` runs the fast tier (built
+  first if need be) with clang's build started in the background at low
+  priority (log --out/clang-build.log), used from the next start. `fast`
+  runs the fast tier only; `clang` is `auto` by name. `build --background`
+  is that background build: low priority, and gone at once when another
+  holds --out.
 --data defaults to `data` in the app data directory (docs/runtime/storage.md), or $H2_DATA (host root of the hard-disk partitions).
 --fresh-data empties it first: the cache partitions, profiles and saves a
   run leaves behind change what the next run does, so runs compared frame
@@ -416,7 +417,7 @@ fn settings_store(cmd: &str, dir: &Path) -> Arc<settings::Store> {
 #[cfg(feature = "desktop")]
 fn background_lock(out: &Path) -> Result<Option<std::fs::File>> {
     std::fs::create_dir_all(out)?;
-    let path = out.join("clang-build.lock");
+    let path = boot::tier::background_lock_path(out);
     let f = std::fs::File::options()
         .create(true)
         .truncate(false)

@@ -17,7 +17,7 @@ use input::backend::scripted::{ScriptedInput, Timeline};
 use input::bindings::{Bindings, Control, Input};
 
 const USAGE: &str = "usage:
-  h2 play <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--transfers N] [--slices N]
+  h2 play <disc.iso> [--out DIR] [--tier auto|bridge|fast|clang] [--data DIR] [--transfers N] [--slices N]
           [--aspect source|4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
@@ -36,9 +36,10 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
 --data default to $TMPDIR/h2boot and `data` in the app data directory
 (docs/runtime/storage.md; $H2_DATA if set; saves live there), as for `h2 run`.
---tier (or H2_TIER) as for `h2 run`: by default clang's module when current,
-else the Cranelift fast tier (built in seconds) with clang's build started in
-the background for the next start. --slices is unlimited by default. When
+--tier (or H2_TIER) as for `h2 run`: by default clang's module, built first
+when it is not current; `bridge` starts on the Cranelift fast tier (built in
+seconds) with clang's build in the background for the next start. --slices
+is unlimited by default. When
 the guest returns, the window stays up with the outcome in its title, except
 for a run with --slices or H2_BOOT_STOP_AT_PRESENT, or a lab job: those close
 it and exit.

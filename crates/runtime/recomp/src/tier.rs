@@ -1,10 +1,11 @@
 //! The two module tiers (docs/lifter/cranelift-tier.md): clang's optimised
 //! build in `<out>/libh2game.dylib` ([`crate::build`]), and the Cranelift
 //! fast tier in `<out>/fast/libh2game.dylib` ([`build_fast`]), built in
-//! seconds so a first start doesn't wait for clang. Each carries its own
-//! stamp; a start uses clang's module when it is current, else the fast
-//! one, and the caller starts clang's build in the background for the next
-//! start ([`background_build`]). Nothing swaps while the game runs.
+//! in seconds. Each carries its own stamp. A start uses clang's module,
+//! building it first when it is not current; the fast tier runs only when
+//! asked for (`fast`, or `bridge`: the fast tier now while clang builds in
+//! the background for the next start, [`background_build`]). The two never
+//! compile at once unless `bridge` asks. Nothing swaps while the game runs.
 
 use std::path::{Path, PathBuf};
 #[cfg(feature = "desktop-runtime")]
@@ -38,14 +39,17 @@ impl Tier {
 /// What `--tier` (or `H2_TIER`) asks a start for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Choice {
-    /// clang's module when current, else the fast tier (built if need be)
-    /// with clang's build started in the background.
+    /// clang's module, built in the foreground when it is not current
+    /// (after a background build of it in progress, if one is).
     #[default]
     Auto,
+    /// clang's module when current, else the fast tier (built if need be)
+    /// with clang's build started in the background: a quick start that
+    /// runs slowly, with the two builds competing for the CPU.
+    Bridge,
     /// The fast tier only: built if need be, no clang build.
     Fast,
-    /// clang's module only, built in the foreground if need be (the old
-    /// behaviour).
+    /// clang's module only, built in the foreground if need be.
     Clang,
 }
 
@@ -53,9 +57,10 @@ impl Choice {
     pub fn parse(s: &str) -> Result<Choice> {
         Ok(match s {
             "auto" => Choice::Auto,
+            "bridge" => Choice::Bridge,
             "fast" => Choice::Fast,
             "clang" => Choice::Clang,
-            _ => bail!("tier {s:?}: expected auto, fast or clang"),
+            _ => bail!("tier {s:?}: expected auto, bridge, fast or clang"),
         })
     }
 
@@ -162,9 +167,9 @@ fn plan_from(best: Option<Tier>, fast_ok: bool, out: &Path, choice: Choice) -> P
     let fast = |build, background_clang| Plan { dylib: fast_dylib(out), tier: Tier::Fast, build, background_clang };
     let clang = |build| Plan { dylib: clang_dylib(out), tier: Tier::Clang, build, background_clang: false };
     match choice {
-        Choice::Clang => clang(best != Some(Tier::Clang)),
+        Choice::Clang | Choice::Auto => clang(best != Some(Tier::Clang)),
         Choice::Fast => fast(!fast_ok, false),
-        Choice::Auto => match best {
+        Choice::Bridge => match best {
             Some(Tier::Clang) => clang(false),
             Some(Tier::Fast) => fast(false, true),
             Some(Tier::Host) => unreachable!("light host planning handles slim modules"),
@@ -179,7 +184,17 @@ fn plan_from(best: Option<Tier>, fast_ok: bool, out: &Path, choice: Choice) -> P
 /// the module to run.
 #[cfg(feature = "desktop-runtime")]
 pub fn prepare(xbe_bytes: &[u8], disc: &Path, out: &Path, choice: Choice, jobs: usize, background: bool) -> Result<Plan> {
-    let p = plan(xbe_bytes, out, choice);
+    let mut p = plan(xbe_bytes, out, choice);
+    // A background build of clang's module (a `bridge` start's) holds
+    // `out`'s lock: wait for it rather than build the same module beside
+    // it, then build only if it did not finish.
+    let _lock = if p.build && p.tier == Tier::Clang {
+        let lock = wait_background(out)?;
+        p = plan(xbe_bytes, out, choice);
+        Some(lock)
+    } else {
+        None
+    };
     if p.build {
         if p.dylib.exists() {
             eprintln!("tier: {} was built from another image or generator; rebuilding", p.dylib.display());
@@ -265,8 +280,42 @@ pub fn build_fast_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::com
     Ok(lib)
 }
 
+/// The lock a background build of clang's module holds under `out`
+/// (`h2 build --background`).
+pub fn background_lock_path(out: &Path) -> PathBuf {
+    out.join("clang-build.lock")
+}
+
+/// Takes `out`'s background-build lock, waiting while a background build
+/// holds it, so a foreground clang build never runs beside one. Held until
+/// the file drops.
+pub fn wait_background(out: &Path) -> Result<std::fs::File> {
+    use anyhow::Context as _;
+    std::fs::create_dir_all(out)?;
+    let path = background_lock_path(out);
+    let f = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match f.try_lock() {
+        Ok(()) => return Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => {}
+        Err(std::fs::TryLockError::Error(e)) => return Err(e).with_context(|| format!("locking {}", path.display())),
+    }
+    eprintln!(
+        "tier: clang's background build is running (log {}); waiting for it",
+        background_log(out).display()
+    );
+    let t = std::time::Instant::now();
+    f.lock().with_context(|| format!("locking {}", path.display()))?;
+    eprintln!("tier: the background build ended after {:.0} s", t.elapsed().as_secs_f64());
+    Ok(f)
+}
+
 /// The log [`background_build`]'s build writes under `out`.
-#[cfg(feature = "desktop-runtime")]
 pub fn background_log(out: &Path) -> PathBuf {
     out.join("clang-build.log")
 }
@@ -308,14 +357,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_start_prefers_clang_then_fast_then_builds_fast() {
+    fn a_default_start_runs_clang_and_never_the_fast_tier_beside_its_build() {
         let out = Path::new("/out");
-        let p = plan_from(Some(Tier::Clang), true, out, Choice::Auto);
+        let clang = |build| Plan { dylib: clang_dylib(out), tier: Tier::Clang, build, background_clang: false };
+        assert_eq!(plan_from(Some(Tier::Clang), true, out, Choice::Auto), clang(false));
+        // A current fast module is not used, and nothing builds in the
+        // background: clang builds now.
+        assert_eq!(plan_from(Some(Tier::Fast), true, out, Choice::Auto), clang(true));
+        assert_eq!(plan_from(None, false, out, Choice::Auto), clang(true));
+    }
+
+    #[test]
+    fn a_bridge_start_prefers_clang_then_fast_then_builds_fast() {
+        let out = Path::new("/out");
+        let p = plan_from(Some(Tier::Clang), true, out, Choice::Bridge);
         assert_eq!(p, Plan { dylib: out.join(crate::DYLIB), tier: Tier::Clang, build: false, background_clang: false });
-        let p = plan_from(Some(Tier::Fast), true, out, Choice::Auto);
+        let p = plan_from(Some(Tier::Fast), true, out, Choice::Bridge);
         assert_eq!(p, Plan { dylib: fast_dylib(out), tier: Tier::Fast, build: false, background_clang: true });
-        let p = plan_from(None, false, out, Choice::Auto);
+        let p = plan_from(None, false, out, Choice::Bridge);
         assert_eq!(p, Plan { dylib: fast_dylib(out), tier: Tier::Fast, build: true, background_clang: true });
+    }
+
+    #[test]
+    fn a_foreground_clang_build_waits_for_the_background_one() {
+        let dir = std::env::temp_dir().join(format!("h2boot-tier-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = std::fs::File::create(background_lock_path(&dir)).unwrap();
+        held.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = dir.clone();
+        let waiter = std::thread::spawn(move || {
+            let lock = wait_background(&d).unwrap();
+            tx.send(()).unwrap();
+            drop(lock);
+        });
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "waits while it is held");
+        drop(held);
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("takes it once released");
+        waiter.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -342,6 +423,7 @@ mod tests {
     #[test]
     fn tier_choices_parse() {
         assert_eq!(Choice::parse("auto").unwrap(), Choice::Auto);
+        assert_eq!(Choice::parse("bridge").unwrap(), Choice::Bridge);
         assert_eq!(Choice::parse("fast").unwrap(), Choice::Fast);
         assert_eq!(Choice::parse("clang").unwrap(), Choice::Clang);
         assert!(Choice::parse("jit").is_err());

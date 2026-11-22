@@ -2023,8 +2023,8 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 
 `game.code` (read, no params) says which game code this start of `h2 play`
 runs ([cranelift-tier.md](../lifter/cranelift-tier.md)): clang's
-full-speed module, or the Cranelift fast tier while clang builds the
-full-speed one in the background. Host method,
+full-speed module, or the Cranelift fast tier (`--tier fast`, or
+`bridge` while clang builds the full-speed one in the background). Host method,
 `crates/extensions/game/src/game_code.rs`; `h2 play` supplies it, other
 hosts don't have it.
 
