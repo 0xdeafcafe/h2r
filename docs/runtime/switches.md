@@ -68,7 +68,7 @@ build and run (`crates/recompiler/emit/src/compile.rs`,
 
 | Switch | What |
 |---|---|
-| `H2_TIER` | Default for `h2 run` and `h2 play` when `--tier` is absent. `auto` uses a current clang build or starts on Cranelift and builds clang in the background. `fast` selects Cranelift only. `clang` waits for the optimised build ([fast tier](../lifter/cranelift-tier.md)). |
+| `H2_TIER` | Default for `h2 run` and `h2 play` when `--tier` is absent. `auto` uses a current clang build or starts on Cranelift and builds clang in the background. `fast` selects Cranelift only. `clang` waits for the optimised build ([fast tier](../lifter/cranelift-tier.md)). `h2 serve`, `h2 sim` and `h2 build` read it too, and default to clang without it. Coding agents run with `fast`: `.claude/settings.json` sets it for their commands. |
 | `H2_BOOT_CACHE` | Boot analysis cache directory (default `$TMPDIR/h2boot-cache`). `off` disables it (`crates/runtime/recomp/src/fallback.rs`). |
 | `H2_OPT`, `H2_DEBUG`, `H2_CPU`, `H2_PGO`, `H2_HOT`, `H2_OPT_COLD`, `H2_PASSES`, `H2_CLIF_OPT` | optimisation level, debug info, target CPU, PGO, tiers (on at `H2_OPT=2`/`3`; `H2_OPT_COLD=off` turns them off), IR passes ([building.md](building.md), [BUILD-CACHE.md](../lifter/BUILD-CACHE.md); `H2_PASSES=all,imprecise-faults` builds imprecise memory faults, [block-clock-imprecise-faults.md](block-clock-imprecise-faults.md)) |
 | `H2_EMIT_TARGET`, `H2_XWIN`, `H2_LINUX_SYSROOT`, `H2_LLD`, `H2_LLVM`, `H2_OBJ_CACHE*` | cross targets, toolchains and the object cache |

@@ -1,4 +1,7 @@
 {
+  "env": {
+    "H2_TIER": "fast"
+  },
   "hooks": {
     "PreToolUse": [
       {
