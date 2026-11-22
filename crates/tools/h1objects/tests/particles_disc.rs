@@ -44,7 +44,7 @@ fn u32_at(b: &[u8], o: usize) -> u32 {
 /// by group, the block fields (count range), and the words: nonzero
 /// count, float range, distinct values when few.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_layout_survey() {
     let g = std::env::var("H1_GROUP").unwrap_or_else(|_| "part".into());
     let group = Group::new(g.as_bytes().try_into().unwrap());
@@ -155,7 +155,7 @@ fn words(b: &[u8], from: usize, to: usize) -> String {
 /// `+0..+0x40`, `+0xa8..+0xe0`, its first point) and every Halo 2 `cont`
 /// on `H2_BASE` (root `+0..+0x40`, `+0x40..+0xe8`, its first point).
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn contrail_survey() {
     let mut seen = std::collections::BTreeSet::new();
     for (_, m) in h1_maps() {
@@ -309,7 +309,7 @@ fn every_contrail_converts() {
 /// bindings and their sources), the particle's parameter names, and its
 /// postprocess block counts and bitmap datums against its parameters.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn particle_shader_survey() {
     let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
     let meta = tags::shader::Metadata::read(&mut m).unwrap();
@@ -463,7 +463,7 @@ fn retail_particle_shaders_compile_from_their_stems() {
 /// vertex shader, input mask, quad and UV window. And every Halo 1 `part`
 /// (by name): its flags, sequence and blend words and its floats.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn particle_root_survey() {
     use h1objects::base::Base;
     use tags::defs::{Defs, Val};
@@ -611,7 +611,7 @@ fn every_particle_converts() {
 /// 4-byte word the value range over every distinct record, then sample
 /// records with their event's duration bounds (`N` of them).
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_effect_particle_survey() {
     let mut seen = std::collections::BTreeSet::new();
     let mut words_at: BTreeMap<usize, BTreeMap<u32, usize>> = BTreeMap::new();
@@ -766,7 +766,7 @@ fn every_effect_particle_becomes_a_particle_system() {
 /// from the addresses. Then each tag's words from the offsets in `PCTL_AT`
 /// (`off:len` pairs, tag-relative).
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_pctl_structure_survey() {
     let mut seen = std::collections::BTreeSet::new();
     let spans: Vec<(usize, usize)> = std::env::var("PCTL_AT")

@@ -47,15 +47,6 @@ The check reads manifests through `scripts/cratemeta.py`. It reports an
 unclaimed package, a package in the wrong directory, a refused
 dependency or an unused exception.
 
-## How a window runs
-
-`scripts/moves/window.sh` wraps the move scripts. Its `list` subcommand
-prints the moves for a window. Its `run` subcommand requires a clean
-tree and records the move between its pre- and post-move tags. Its
-`replay` subcommand applies a tagged move on a branch that still uses
-the old paths. The source of each move is the script or split manifest
-under `scripts/moves/`.
-
 ### W3. The Halo 1 merge
 
 `crates/tools/h1map` reads Halo 1 maps. `crates/tools/h1-assets`,

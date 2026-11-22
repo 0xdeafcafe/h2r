@@ -455,7 +455,7 @@ fn a_bad_package_is_skipped_not_fatal() {
 /// checked against that base's own entry. Reads the disc, writes nothing
 /// to it. `H2_DISC=disc/halo2.iso cargo test -p boot --lib real_disc -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "needs the disc (H2_DISC)"]
 fn real_disc_base_entry_and_record() {
     let path = std::env::var_os("H2_DISC")
         .map(PathBuf::from)
