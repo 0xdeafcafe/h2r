@@ -48,7 +48,7 @@ fn layout() -> ListLayout {
     // units a line below `dialog::BODY_TOP`. At -36 the frame's top (-6)
     // clears the fourth line (-4), and row 1's bottom (-66) stays above
     // the footer (-83).
-    l.anchor[1] = -36;
+    l.anchor[1] = -34;
     l
 }
 
