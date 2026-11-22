@@ -1,17 +1,26 @@
-//! Type checking and lowering: a [`Script`] to [`Ir`].
+//! Lowering: a checked script ([`Checked`]) to [`Ir`].
 //!
-//! One pass checks types and emits register code. Functions are inlined
-//! at each call, so a handler's code is straight-line except for forward
-//! jumps and `ForEach` bodies. Strings, labels and tags are interned in
-//! first-use order, which makes the blob a function of the source alone.
+//! The checker has resolved every name and typed every expression;
+//! lowering reads those types and makes no type decision. An error here is
+//! a limit the IR sets (registers, ops, bytes) or an internal one.
+//!
+//! One pass emits register code. Functions are inlined at each call, so a
+//! handler's code is straight-line except for forward jumps and `ForEach`
+//! bodies. Strings and tags are interned in first-use order, and labels
+//! take their declaration order, which makes the blob a function of the
+//! source alone. Handlers for one event (`on enter(goal, o)`,
+//! `on enter(capture z, o)`) become one IR handler, each body behind a
+//! test that the argument is a member of its label.
 
 use std::collections::BTreeMap;
 
 use super::ast::*;
+use super::check::Checked;
+use super::types::{Handle, Type};
 use super::{CompileError, Pos};
 use crate::caps::{self, CARRIERS, Kind, TICKS_PER_SECOND, VARIANT_FIELDS};
 use crate::ir::*;
-use crate::ty::{MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
+use crate::ty::{NONE, Ty, fixed};
 
 type R<T> = Result<T, CompileError>;
 
@@ -19,11 +28,17 @@ fn err<T>(pos: Pos, message: impl Into<String>) -> R<T> {
     Err(CompileError::at(pos, message))
 }
 
+/// A state the checker rules out.
+fn internal<T>(pos: Pos, what: &str) -> R<T> {
+    err(pos, format!("internal: {what}"))
+}
+
 fn int32(n: i64, pos: Pos) -> R<i32> {
     i32::try_from(n).or_else(|_| err(pos, "number out of the int range"))
 }
 
 /// Fields every player, team, object or squad has, read through an entry.
+/// A zone's fields are an object's.
 pub(crate) const FIELDS: &[(Ty, &str, u16)] = &[
     (Ty::Player, "team", caps::id::TEAM_OF),
     (Ty::Player, "alive", caps::id::ALIVE),
@@ -33,7 +48,6 @@ pub(crate) const FIELDS: &[(Ty, &str, u16)] = &[
     (Ty::Player, "lives", caps::id::LIVES),
     (Ty::Team, "score", caps::id::TEAM_SCORE),
     (Ty::Object, "number", caps::id::LABEL_NUMBER),
-    (Ty::Object, "label", caps::id::LABEL_OF),
     (Ty::Object, "id", caps::id::ZONE_ID),
     (Ty::Object, "carrier", caps::id::CARRIER_OF),
     (Ty::Object, "team", caps::id::OBJECT_TEAM),
@@ -58,6 +72,8 @@ enum Local {
     Reg(Reg, Ty),
     /// A table row: the table and the register holding the row index.
     Row(u8, Reg),
+    /// A function's set parameter: the label it stands for.
+    Set(u16),
 }
 
 #[derive(Default)]
@@ -68,7 +84,7 @@ struct Fun {
     live: Vec<Reg>,
     scopes: Vec<Vec<(String, Local)>>,
     inlining: Vec<String>,
-    /// The element a `where` reads fields of without naming it.
+    /// The member a `where` reads fields of without naming it.
     implicit: Vec<(Reg, Ty)>,
 }
 
@@ -162,105 +178,93 @@ enum Body<'s> {
     Stmts(&'s [Stmt]),
     /// `count`: add one to `acc`.
     Count { acc: Reg, one: Reg },
-    /// `first`: keep the first member in `acc`.
+    /// `first`, and a single label's member: keep the first member in
+    /// `acc`.
     First { acc: Reg, none: Reg },
+    /// `capture[n]`, `flag_spawn[t]`: keep in `acc` the first member whose
+    /// `entry(member)` (its number or its team) is `key`.
+    Find { acc: Reg, none: Reg, entry: u16, key: Reg },
+    /// `x is goal`: set `found` to `yes` when the member is `x`.
+    Member { found: Reg, yes: Reg, x: Reg },
+}
+
+/// The handlers of one event (and, for `on timer`, one timer slot), in
+/// the order of the first.
+struct Group {
+    event: Event,
+    timer: Option<u16>,
+    /// The event's argument registers.
+    args: Vec<Reg>,
+    f: Fun,
 }
 
 struct Cx<'s> {
+    c: &'s Checked<'s>,
     fns: BTreeMap<&'s str, &'s FnDecl>,
     strings: Vec<String>,
     string_ix: BTreeMap<String, u16>,
-    labels: Vec<String>,
-    label_ix: BTreeMap<String, u16>,
-    tags: Vec<String>,
+    tags: Vec<TagDef>,
     tag_ix: BTreeMap<String, u16>,
     options: Vec<(String, OptionDef)>,
     enums: Vec<(String, Vec<String>)>,
+    enum_names: Vec<String>,
     vars: Vec<VarInfo>,
     slots: Vec<Slot>,
     tables: Vec<TableInfo>,
     table_defs: Vec<Table>,
     palettes: Vec<(String, Palette)>,
     requires: Vec<String>,
-    handlers: Vec<Handler>,
+    groups: Vec<Group>,
 }
 
-pub fn lower(script: &Script) -> R<Ir> {
+/// Lowers a checked script with no errors.
+pub fn lower<'s>(c: &'s Checked<'s>) -> R<Ir> {
     let mut cx = Cx {
+        c,
         fns: BTreeMap::new(),
         strings: Vec::new(),
         string_ix: BTreeMap::new(),
-        labels: Vec::new(),
-        label_ix: BTreeMap::new(),
         tags: Vec::new(),
         tag_ix: BTreeMap::new(),
         options: Vec::new(),
         enums: Vec::new(),
+        enum_names: Vec::new(),
         vars: Vec::new(),
         slots: Vec::new(),
         tables: Vec::new(),
         table_defs: Vec::new(),
         palettes: Vec::new(),
         requires: Vec::new(),
-        handlers: Vec::new(),
+        groups: Vec::new(),
     };
-    cx.script(script)
+    cx.script(c.script)
 }
 
 impl<'s> Cx<'s> {
     fn script(&mut self, script: &'s Script) -> R<Ir> {
         let pos = script.pos;
-        if script.name.is_empty() || script.name.len() > MAX_TEXT_BYTES {
-            return err(pos, "a script name is 1 to 128 bytes");
-        }
-        let version = u16::try_from(script.version).or_else(|_| err(pos, "the version is 0 to 65535"))?;
+        let version = u16::try_from(script.version).or_else(|_| internal(pos, "version"))?;
         let Some((carrier_name, cpos)) = &script.carrier else {
-            return err(pos, "a script names its carrier: carrier slayer");
+            return internal(pos, "no carrier");
         };
-        let carrier = CARRIERS
-            .iter()
-            .find(|(n, _)| n == carrier_name)
-            .map(|&(_, i)| i)
-            .ok_or_else(|| CompileError::at(*cpos, format!("unknown carrier {carrier_name}")))?;
-        let teams = match script.teams {
-            None => 0,
-            Some((n, tpos)) => {
-                if !(1..=MAX_TEAMS as i64).contains(&n) {
-                    return err(tpos, "teams is 1 to 8");
-                }
-                n as u8
-            }
+        let Some(carrier) = CARRIERS.iter().find(|(n, _)| n == carrier_name).map(|&(_, i)| i) else {
+            return internal(*cpos, "unknown carrier");
         };
+        let teams = script.teams.map_or(0, |(n, _)| n as u8);
         let list = match &script.list {
             None => List::GameType,
-            Some((name, lpos)) => List::named(name).ok_or_else(|| {
-                let names: Vec<&str> = List::NAMED.iter().filter_map(|l| l.name()).collect();
-                let names = names.join(", ");
-                CompileError::at(*lpos, format!("unknown list {name}: a list is {names}"))
-            })?,
+            Some((name, lpos)) => match List::named(name) {
+                Some(l) => l,
+                None => return internal(*lpos, "unknown list"),
+            },
         };
-        for (name, rpos) in &script.requires {
-            if caps::capability(name, caps::API_VERSION).is_none() {
-                return err(*rpos, format!("unknown capability {name}"));
-            }
-            if self.requires.contains(name) {
-                return err(*rpos, format!("capability {name} is required twice"));
-            }
-            if self.requires.len() >= MAX_REQUIRES {
-                return err(*rpos, "more than 32 capabilities");
-            }
-            self.requires.push(name.clone());
-        }
+        self.requires = script.requires.iter().map(|(n, _)| n.clone()).collect();
 
         // Declarations first, so their order does not matter to handlers.
         for item in &script.items {
-            if let Item::Enum {
-                name,
-                variants,
-                pos,
-            } = item
-            {
-                self.enum_decl(name, variants, *pos)?;
+            if let Item::Enum { name, variants, .. } = item {
+                self.enums.push((name.clone(), variants.clone()));
+                self.enum_names.push(name.clone());
             }
         }
         for item in &script.items {
@@ -281,22 +285,17 @@ impl<'s> Cx<'s> {
                     pos,
                 } => self.table(name, columns, rows, *pos)?,
                 Item::Fn(f) => {
-                    if self.fns.insert(f.name.as_str(), f).is_some() {
-                        return err(f.pos, format!("fn {} is declared twice", f.name));
-                    }
+                    self.fns.insert(f.name.as_str(), f);
                 }
-                Item::Enum { .. } | Item::On { .. } => {}
+                Item::Enum { .. } | Item::Label(_) | Item::On { .. } => {}
             }
         }
-        for item in &script.items {
+        for (index, item) in script.items.iter().enumerate() {
             if let Item::On {
-                event,
-                args,
-                body,
-                pos,
+                event, args, body, pos, ..
             } = item
             {
-                self.handler(event, args, body, *pos)?;
+                self.handler(index, event, args, body, *pos)?;
             }
         }
 
@@ -310,6 +309,15 @@ impl<'s> Cx<'s> {
             }
             enum_defs.push(EnumDef { name, variants: vs });
         }
+        let handlers = std::mem::take(&mut self.groups)
+            .into_iter()
+            .map(|g| Handler {
+                event: g.event,
+                timer: g.timer,
+                regs: g.f.regs,
+                code: g.f.code,
+            })
+            .collect();
         let ir = Ir {
             header: Header {
                 ir_version: IR_VERSION,
@@ -325,18 +333,15 @@ impl<'s> Cx<'s> {
             options: self.options.drain(..).map(|(_, o)| o).collect(),
             enums: enum_defs,
             slots: std::mem::take(&mut self.slots),
-            // Until labels are declared, a string label is a set of objects
-            // that requires nothing of the map, and a tag path is of any
-            // object definition.
-            labels: self.labels.drain(..).map(LabelDef::objects).collect(),
-            tags: self.tags.drain(..).map(TagDef::any).collect(),
+            labels: self.c.labels.iter().map(|l| l.def.clone()).collect(),
+            tags: std::mem::take(&mut self.tags),
             palettes: self.palettes.drain(..).map(|(_, p)| p).collect(),
             tables: std::mem::take(&mut self.table_defs),
-            handlers: std::mem::take(&mut self.handlers),
+            handlers,
         };
         let bytes = ir.encode().len();
         if bytes > MAX_IR_BYTES {
-            return err(pos, format!("the compiled script is {bytes} bytes, over the 64 KiB cap"));
+            return err(pos, format!("the compiled script is {bytes} bytes, over the 256 KiB cap"));
         }
         Ok(ir)
     }
@@ -363,110 +368,70 @@ impl<'s> Cx<'s> {
         Self::intern(&mut self.strings, &mut self.string_ix, s, pos)
     }
 
-    fn label(&mut self, s: &str, pos: Pos) -> R<u16> {
-        if s.is_empty() || s.len() > MAX_LABEL_BYTES {
-            return err(pos, "a label is 1 to 32 bytes");
-        }
-        if !s.chars().all(label_char) {
-            return err(pos, "a label is lowercase letters, digits, _, - and .");
-        }
-        if !self.label_ix.contains_key(s) && self.labels.len() >= MAX_LABELS {
-            return err(pos, "a script names at most 64 labels");
-        }
-        Self::intern(&mut self.labels, &mut self.label_ix, s, pos)
-    }
-
-    fn tag(&mut self, s: &str, pos: Pos) -> R<u16> {
+    /// A tag path's index. A path named once as a weapon is a weapon's on
+    /// every map: its entry's group is [`TagGroup::Weapon`].
+    fn tag(&mut self, s: &str, group: TagGroup, pos: Pos) -> R<u16> {
         if s.is_empty() || s.len() > MAX_TAG_BYTES {
             return err(pos, "a tag path is 1 to 256 bytes");
         }
-        Self::intern(&mut self.tags, &mut self.tag_ix, s, pos)
+        if let Some(&i) = self.tag_ix.get(s) {
+            if group == TagGroup::Weapon {
+                self.tags[i as usize].group = TagGroup::Weapon;
+            }
+            return Ok(i);
+        }
+        if self.tags.len() >= u16::MAX as usize / 2 {
+            return err(pos, "too many names");
+        }
+        let i = self.tags.len() as u16;
+        self.tags.push(TagDef {
+            path: s.to_string(),
+            group,
+        });
+        self.tag_ix.insert(s.to_string(), i);
+        Ok(i)
     }
 
-    fn ty(&self, t: &TypeName) -> R<Ty> {
-        Ok(match t.name.as_str() {
-            "int" => Ty::Int,
-            "fixed" => Ty::Fixed,
-            "bool" => Ty::Bool,
-            "player" => Ty::Player,
-            "team" => Ty::Team,
-            "object" => Ty::Object,
-            "squad" => Ty::Squad,
-            "timer" => Ty::Timer,
-            "Class" | "class" => Ty::Class,
-            "tag" => Ty::Tag,
-            "label" => Ty::Label,
-            "text" => Ty::Text,
-            other => match self.enums.iter().position(|(n, _)| n == other) {
-                Some(i) => Ty::Enum(i as u8),
-                None => return err(t.pos, format!("unknown type {other}")),
-            },
-        })
+    fn label_ix(&self, name: &str, pos: Pos) -> R<u16> {
+        match self.c.label(name) {
+            Some((ix, _)) => Ok(ix),
+            None => internal(pos, "an undeclared label"),
+        }
     }
 
-    fn ty_name(&self, t: Ty) -> String {
-        match t {
-            Ty::Enum(i) => self
-                .enums
-                .get(i as usize)
-                .map_or_else(|| "enum".to_string(), |(n, _)| n.clone()),
-            t => t.name().to_string(),
+    /// The type a declaration names.
+    fn declared(&self, t: &TypeName) -> R<Type> {
+        match Type::named(&t.name, t.optional, &self.enum_names) {
+            Some(ty) => Ok(ty),
+            None => internal(t.pos, "an unknown type"),
+        }
+    }
+
+    /// The checker's type of `e`.
+    fn ty_of(&self, e: &Expr) -> R<Type> {
+        match self.c.ty(e) {
+            Some(t) => Ok(t),
+            None => internal(e.pos, "an expression the checker did not type"),
         }
     }
 
     // ---- declarations ----
 
-    fn enum_decl(&mut self, name: &str, variants: &[String], pos: Pos) -> R<()> {
-        if self.enums.iter().any(|(n, _)| n == name) {
-            return err(pos, format!("enum {name} is declared twice"));
-        }
-        if self.enums.len() >= MAX_ENUMS {
-            return err(pos, "more than 32 enums");
-        }
-        if variants.is_empty() || variants.len() > MAX_ENUM_VARIANTS {
-            return err(pos, "an enum has 1 to 64 variants");
-        }
-        for (i, v) in variants.iter().enumerate() {
-            if variants[..i].contains(v) {
-                return err(pos, format!("{name}.{v} is declared twice"));
-            }
-        }
-        self.enums.push((name.to_string(), variants.to_vec()));
-        Ok(())
-    }
-
     fn option(&mut self, o: &OptionDecl) -> R<()> {
         let pos = o.pos;
-        if self.options.iter().any(|(n, _)| *n == o.name) {
-            return err(pos, format!("option {} is declared twice", o.name));
-        }
-        if self.options.len() >= 32 {
-            return err(pos, "more than 32 options");
-        }
-        let ty = self.ty(&o.ty)?;
+        let ty = self.declared(&o.ty)?;
         let (lo, hi) = match ty {
-            Ty::Int => {
+            Type::Int => {
                 let Some((lo, hi)) = &o.range else {
-                    return err(pos, "an int option needs a range: int 1..5");
+                    return internal(pos, "an int option with no range");
                 };
-                let lo = self.const_int(lo)?;
-                let hi = self.const_int(hi)?;
-                if lo > hi {
-                    return err(pos, "the range is empty");
-                }
-                (lo, hi)
+                (self.const_val(lo, Type::Int)?, self.const_val(hi, Type::Int)?)
             }
-            Ty::Bool => (0, 1),
-            Ty::Enum(e) => (0, self.enums[e as usize].1.len() as i32 - 1),
-            _ => return err(o.ty.pos, "an option is an int, a bool or an enum"),
+            Type::Bool => (0, 1),
+            Type::Enum(e) => (0, self.enums[e as usize].1.len() as i32 - 1),
+            _ => return internal(pos, "an option of no option type"),
         };
-        if ty != Ty::Int && o.range.is_some() {
-            return err(pos, "only an int option takes a range");
-        }
         let default = self.const_val(&o.default, ty)?;
-        if default < lo || default > hi {
-            return err(o.default.pos, "the default is outside the range");
-        }
         let name = self.string(&o.name, pos)?;
         let label = match &o.label {
             Some(l) => self.string(l, pos)?,
@@ -480,67 +445,34 @@ impl<'s> Cx<'s> {
             name,
             label,
             description,
-            ty,
+            ty: ty.ir(),
             lo,
             hi,
             default,
         };
-        let bits: u32 = self.options.iter().map(|(_, o)| o.bits()).sum::<u32>() + def.bits();
-        if bits > OPTION_BITS {
-            return err(pos, format!("the options take {bits} bits; a variant carries 32"));
-        }
         self.options.push((o.name.clone(), def));
         Ok(())
     }
 
     fn palette(&mut self, name: &str, tags: &[String], pos: Pos) -> R<()> {
-        if self.palettes.iter().any(|(n, _)| n == name) {
-            return err(pos, format!("palette {name} is declared twice"));
-        }
-        if self.palettes.len() >= 255 {
-            return err(pos, "more than 255 palettes");
-        }
-        if tags.is_empty() || tags.len() > MAX_PALETTE_TAGS {
-            return err(pos, "a palette has 1 to 64 tags");
-        }
         let n = self.string(name, pos)?;
         let mut list = Vec::with_capacity(tags.len());
         for t in tags {
-            list.push(self.tag(t, pos)?);
+            list.push(self.tag(t, TagGroup::Any, pos)?);
         }
         self.palettes.push((name.to_string(), Palette { name: n, tags: list }));
         Ok(())
     }
 
     fn var(&mut self, scope: Scope, name: &str, ty: &TypeName, init: Option<&Expr>, pos: Pos) -> R<()> {
-        let t = self.ty(ty)?;
-        if t == Ty::Timer && scope != Scope::Global {
-            return err(pos, "a timer is a global variable");
-        }
-        if self.vars.iter().any(|v| v.scope == scope && v.name == name) {
-            return err(pos, format!("variable {name} is declared twice"));
-        }
-        if scope == Scope::Global && self.options.iter().any(|(n, _)| n == name) {
-            return err(pos, format!("{name} is already an option"));
-        }
-        let owner = scope.owner();
-        if let Some(o) = owner
-            && FIELDS.iter().any(|&(fo, f, _)| fo == o && f == name)
-        {
-            return err(pos, format!("{name} is a built-in field of every {}", o.name()));
-        }
-        let (count, max) = match scope {
-            Scope::Global => (0, MAX_GLOBAL_SLOTS),
-            Scope::Player => (1, MAX_PLAYER_SLOTS),
-            Scope::Team => (2, MAX_TEAM_SLOTS),
-            Scope::Object => (3, MAX_OBJECT_SLOTS),
+        let (t, front) = if ty.name == "timer" && !ty.optional {
+            (Ty::Timer, Type::Int)
+        } else {
+            let front = self.declared(ty)?;
+            (front.ir(), front)
         };
-        let used = self.vars.iter().filter(|v| v.scope as usize == count).count();
-        if used >= max {
-            return err(pos, format!("more than {max} variables of this scope"));
-        }
         let init = match init {
-            Some(e) => self.const_val(e, t)?,
+            Some(e) => self.const_val(e, front)?,
             None => t.zero(),
         };
         let slot = self.slots.len() as u16;
@@ -561,41 +493,21 @@ impl<'s> Cx<'s> {
     }
 
     fn table(&mut self, name: &str, columns: &[(String, TypeName)], rows: &[Vec<Expr>], pos: Pos) -> R<()> {
-        if self.tables.iter().any(|t| t.name == name) {
-            return err(pos, format!("table {name} is declared twice"));
-        }
-        if self.tables.len() >= 255 {
-            return err(pos, "more than 255 tables");
-        }
-        if columns.is_empty() || columns.len() > MAX_TABLE_COLS {
-            return err(pos, "a table has 1 to 16 columns");
-        }
-        if rows.len() > MAX_TABLE_ROWS {
-            return err(pos, "a table has at most 256 rows");
-        }
         let mut cols = Vec::with_capacity(columns.len());
+        let mut fronts = Vec::with_capacity(columns.len());
         let mut col_defs = Vec::with_capacity(columns.len());
-        for (i, (cname, cty)) in columns.iter().enumerate() {
-            let t = self.ty(cty)?;
-            if t == Ty::Timer {
-                return err(cty.pos, "a table holds no timers");
-            }
-            if columns[..i].iter().any(|(n, _)| n == cname) {
-                return err(cty.pos, format!("column {cname} is declared twice"));
-            }
+        for (cname, cty) in columns {
+            let front = self.declared(cty)?;
             col_defs.push(Column {
                 name: self.string(cname, pos)?,
-                ty: t,
+                ty: front.ir(),
             });
-            cols.push((cname.clone(), t));
+            cols.push((cname.clone(), front.ir()));
+            fronts.push(front);
         }
         let mut cells = Vec::with_capacity(rows.len() * cols.len());
         for row in rows {
-            if row.len() != cols.len() {
-                let p = row.first().map_or(pos, |e| e.pos);
-                return err(p, format!("a row of {name} has {} values, not {}", row.len(), cols.len()));
-            }
-            for (cell, &(_, t)) in row.iter().zip(&cols) {
+            for (cell, &t) in row.iter().zip(&fronts) {
                 cells.push(self.const_val(cell, t)?);
             }
         }
@@ -618,58 +530,40 @@ impl<'s> Cx<'s> {
             ExprKind::Int(n) => int32(*n, e.pos),
             ExprKind::Unary(UnOp::Neg, inner) => match inner.kind {
                 ExprKind::Int(n) => int32(-n, e.pos),
-                _ => err(e.pos, "expected a constant int"),
+                _ => internal(e.pos, "not a constant int"),
             },
-            _ => err(e.pos, "expected a constant int"),
+            _ => internal(e.pos, "not a constant int"),
         }
     }
 
     /// A constant of type `ty`: an initial value, a default or a cell.
-    fn const_val(&mut self, e: &Expr, ty: Ty) -> R<i32> {
+    fn const_val(&mut self, e: &Expr, ty: Type) -> R<i32> {
         let pos = e.pos;
         let v = match (&e.kind, ty) {
-            (ExprKind::Int(_) | ExprKind::Unary(UnOp::Neg, _), Ty::Int | Ty::Timer) => self.const_int(e)?,
-            (ExprKind::Int(_), Ty::Fixed) => fixed::from_int(self.const_int(e)?),
-            (ExprKind::Fixed(v), Ty::Fixed) => *v,
-            (ExprKind::Unary(UnOp::Neg, inner), Ty::Fixed) => match inner.kind {
+            (ExprKind::Int(_) | ExprKind::Unary(UnOp::Neg, _), Type::Int) => self.const_int(e)?,
+            (ExprKind::Int(_), Type::Fixed) => fixed::from_int(self.const_int(e)?),
+            (ExprKind::Fixed(v), Type::Fixed) => *v,
+            (ExprKind::Unary(UnOp::Neg, inner), Type::Fixed) => match inner.kind {
                 ExprKind::Fixed(v) => -v,
                 ExprKind::Int(n) => fixed::from_int(int32(-n, pos)?),
-                _ => return err(pos, "expected a constant fixed"),
+                _ => return internal(pos, "not a constant fixed"),
             },
-            (ExprKind::Bool(b), Ty::Bool) => *b as i32,
-            (ExprKind::None, t) if t.nullable() => NONE,
-            (ExprKind::Str(s), Ty::Tag) => self.tag(s, pos)? as i32,
-            (ExprKind::Str(s), Ty::Label) => self.label(s, pos)? as i32,
-            (ExprKind::Str(s), Ty::Class | Ty::Text) => self.string(s, pos)? as i32,
-            (ExprKind::Team(inner), Ty::Team) => self.const_team(inner)?,
-            (ExprKind::Field(base, v), Ty::Enum(i)) => {
-                let (ename, variants) = &self.enums[i as usize];
-                match &base.kind {
-                    ExprKind::Name(n) if n == ename => match variants.iter().position(|x| x == v) {
-                        Some(k) => k as i32,
-                        None => return err(pos, format!("{ename} has no variant {v}")),
-                    },
-                    _ => return err(pos, format!("expected a constant {ename}")),
-                }
+            (ExprKind::Bool(b), Type::Bool) => *b as i32,
+            (ExprKind::None, Type::H(..)) => NONE,
+            (ExprKind::Str(s), Type::H(Handle::Tag, _)) => self.tag(s, TagGroup::Any, pos)? as i32,
+            (ExprKind::Str(s), Type::H(Handle::Weapon, _)) => self.tag(s, TagGroup::Weapon, pos)? as i32,
+            (ExprKind::Str(s), Type::Class | Type::Text) => self.string(s, pos)? as i32,
+            (ExprKind::Team(inner), Type::H(Handle::Team, _)) => self.const_int(inner)?,
+            (ExprKind::Field(_, v), Type::Enum(i)) => match self.enums[i as usize].1.iter().position(|x| x == v) {
+                Some(k) => k as i32,
+                None => return internal(pos, "an unknown variant"),
+            },
+            (ExprKind::Call(name, args), Type::Squad) if name == "squad" && args.len() == 1 => {
+                self.const_int(&args[0])?
             }
-            (ExprKind::Call(name, args), Ty::Squad) if name == "squad" && args.len() == 1 => {
-                let n = self.const_int(&args[0])?;
-                if !(0..MAX_SQUADS as i32).contains(&n) {
-                    return err(pos, "a squad slot is 0 to 15");
-                }
-                n
-            }
-            _ => return err(pos, format!("expected a constant {}", self.ty_name(ty))),
+            _ => return internal(pos, "not a constant of its type"),
         };
         Ok(v)
-    }
-
-    fn const_team(&self, inner: &Expr) -> R<i32> {
-        let n = self.const_int(inner)?;
-        if !(0..MAX_TEAMS as i32).contains(&n) {
-            return err(inner.pos, "a team is 0 to 7");
-        }
-        Ok(n)
     }
 
     fn var_named(&self, name: &str, scope: Scope) -> Option<(u16, Ty)> {
@@ -681,47 +575,72 @@ impl<'s> Cx<'s> {
 
     // ---- handlers ----
 
-    fn handler(&mut self, event: &str, args: &[String], body: &'s [Stmt], pos: Pos) -> R<()> {
+    fn handler(&mut self, index: usize, event: &str, args: &[String], body: &'s [Stmt], pos: Pos) -> R<()> {
         let Some(ev) = Event::named(event) else {
-            return err(pos, format!("unknown event {event}"));
+            return internal(pos, "an unknown event");
         };
-        let mut f = Fun::default();
-        f.scopes.push(Vec::new());
         let timer = if ev == Event::Timer {
-            let [name] = args else {
-                return err(pos, "on timer names one timer variable: on timer(t)");
-            };
-            match self.var_named(name, Scope::Global) {
+            match args.first().and_then(|n| self.var_named(n, Scope::Global)) {
                 Some((slot, Ty::Timer)) => Some(slot),
-                _ => return err(pos, format!("{name} is not a global timer")),
+                _ => return internal(pos, "on timer names no timer"),
             }
         } else {
-            let tys = ev.args();
-            if args.len() != tys.len() {
-                let names: Vec<&str> = tys.iter().map(|t| t.name()).collect();
-                let s = if tys.len() == 1 { "" } else { "s" };
-                return err(
-                    pos,
-                    format!("on {event} takes {} argument{s} ({})", tys.len(), names.join(", ")),
-                );
-            }
-            for (name, &ty) in args.iter().zip(tys) {
-                let r = f.alloc(ty, pos)?;
-                f.bind(name, Local::Reg(r, ty));
-            }
             None
         };
-        if self.handlers.iter().any(|h| h.event == ev && h.timer == timer) {
-            return err(pos, format!("a second handler for on {event}"));
+        let gi = match self.groups.iter().position(|g| g.event == ev && g.timer == timer) {
+            Some(i) => i,
+            None => {
+                let mut f = Fun::default();
+                f.scopes.push(Vec::new());
+                let mut regs = Vec::new();
+                for &ty in ev.args() {
+                    regs.push(f.alloc(ty, pos)?);
+                }
+                self.groups.push(Group {
+                    event: ev,
+                    timer,
+                    args: regs,
+                    f,
+                });
+                self.groups.len() - 1
+            }
+        };
+        let mut f = std::mem::take(&mut self.groups[gi].f);
+        let regs = self.groups[gi].args.clone();
+        f.scopes.push(Vec::new());
+        if timer.is_none() {
+            for (k, name) in args.iter().enumerate() {
+                let (Some(&r), Some(&ty)) = (regs.get(k), ev.args().get(k)) else {
+                    return internal(pos, "more handler arguments than the event gives");
+                };
+                f.bind(name, Local::Reg(r, ty));
+            }
         }
-        self.block(&mut f, body)?;
+        let result = self.handler_body(&mut f, index, &regs, body, pos);
+        f.scopes.pop();
+        self.groups[gi].f = f;
+        result
+    }
+
+    fn handler_body(&mut self, f: &mut Fun, index: usize, regs: &[Reg], body: &'s [Stmt], pos: Pos) -> R<()> {
+        let guard = match self.c.handler_label(index) {
+            Some((ix, k)) => {
+                let Some(&x) = regs.get(k) else {
+                    return internal(pos, "a label in no argument's place");
+                };
+                let mark = f.live.len();
+                let found = self.member_test(f, x, ix, pos)?;
+                let j = f.emit(Op::JumpIfNot { cond: found, to: 0 });
+                f.release(mark);
+                Some(j)
+            }
+            None => None,
+        };
+        self.block(f, body)?;
+        if let Some(j) = guard {
+            f.patch(j, pos)?;
+        }
         f.here(pos)?;
-        self.handlers.push(Handler {
-            event: ev,
-            timer,
-            regs: f.regs,
-            code: f.code,
-        });
         Ok(())
     }
 
@@ -739,13 +658,17 @@ impl<'s> Cx<'s> {
     fn stmt(&mut self, f: &mut Fun, s: &'s Stmt) -> R<()> {
         let mark = f.live.len();
         match s {
-            Stmt::Let { name, value, pos } => {
-                if let ExprKind::Index(base, index) = &value.kind {
+            Stmt::Let { name, value, pos, .. } => {
+                if let ExprKind::Index(base, index) = &value.kind
+                    && let ExprKind::Name(t) = &base.kind
+                    && f.lookup(t).is_none()
+                    && self.tables.iter().any(|i| i.name == *t)
+                {
                     let (table, row) = self.row(f, base, index, *pos)?;
                     f.keep(mark, row);
                     f.bind(name, Local::Row(table, row));
                 } else {
-                    let (r, t) = self.expr(f, value, None)?;
+                    let (r, t) = self.expr(f, value)?;
                     f.keep(mark, r);
                     f.bind(name, Local::Reg(r, t));
                 }
@@ -756,10 +679,10 @@ impl<'s> Cx<'s> {
                 ExprKind::Call(name, args) => {
                     self.call(f, name, args, e.pos, false)?;
                 }
-                _ => return err(e.pos, "this expression does nothing; call something or assign it"),
+                _ => return internal(e.pos, "an expression statement"),
             },
             Stmt::If { cond, then, els } => {
-                let c = self.expect(f, cond, Ty::Bool)?;
+                let (c, _) = self.expr(f, cond)?;
                 let skip = f.emit(Op::JumpIfNot { cond: c, to: 0 });
                 self.block(f, then)?;
                 if els.is_empty() {
@@ -771,12 +694,56 @@ impl<'s> Cx<'s> {
                     f.patch(over, cond.pos)?;
                 }
             }
+            Stmt::IfLet {
+                name,
+                value,
+                cond,
+                then,
+                els,
+                pos,
+            } => {
+                let (v, t) = self.expr(f, value)?;
+                let none = f.konst(t, NONE, *pos)?;
+                let c = f.alloc(Ty::Bool, *pos)?;
+                f.emit(Op::Cmp {
+                    op: CmpOp::Ne,
+                    dst: c,
+                    a: v,
+                    b: none,
+                });
+                let mut skips = vec![f.emit(Op::JumpIfNot { cond: c, to: 0 })];
+                f.scopes.push(Vec::new());
+                f.bind(name, Local::Reg(v, t));
+                if let Some(cond) = cond {
+                    let inner = f.live.len();
+                    let (r, _) = self.expr(f, cond)?;
+                    skips.push(f.emit(Op::JumpIfNot { cond: r, to: 0 }));
+                    f.release(inner);
+                }
+                self.block(f, then)?;
+                f.scopes.pop();
+                if els.is_empty() {
+                    for j in skips {
+                        f.patch(j, *pos)?;
+                    }
+                } else {
+                    let over = f.emit(Op::Jump { to: 0 });
+                    for j in skips {
+                        f.patch(j, *pos)?;
+                    }
+                    self.block(f, els)?;
+                    f.patch(over, *pos)?;
+                }
+            }
             Stmt::ForEach {
                 set,
                 binder,
                 body,
                 pos,
-            } => self.foreach(f, set, Some(binder.as_str()), Body::Stmts(body), *pos)?,
+            } => {
+                let source = self.set_source(f, set)?;
+                self.foreach(f, source, set.filter.as_ref(), Some(binder.as_str()), Body::Stmts(body), *pos)?;
+            }
         }
         f.release(mark);
         Ok(())
@@ -785,35 +752,29 @@ impl<'s> Cx<'s> {
     fn assign(&mut self, f: &mut Fun, target: &'s Expr, value: &'s Expr, pos: Pos) -> R<()> {
         match &target.kind {
             ExprKind::Name(n) => {
-                if f.lookup(n).is_some() {
-                    return err(pos, format!("{n} is a let or a parameter and cannot be assigned"));
-                }
-                if let Some((slot, ty)) = self.var_named(n, Scope::Global) {
-                    let r = self.expect(f, value, ty.register())?;
-                    f.emit(Op::Store {
-                        slot,
-                        owner: None,
-                        src: r,
-                    });
-                    return Ok(());
-                }
-                if self.options.iter().any(|(o, _)| o == n) {
-                    return err(pos, format!("option {n} is read-only"));
-                }
-                err(pos, format!("unknown variable {n}"))
+                let Some((slot, _)) = self.var_named(n, Scope::Global) else {
+                    return internal(pos, "an assignment to no variable");
+                };
+                let (r, _) = self.expr(f, value)?;
+                f.emit(Op::Store {
+                    slot,
+                    owner: None,
+                    src: r,
+                });
+                Ok(())
             }
             ExprKind::Field(base, field) => {
-                let (owner, oty) = self.expr(f, base, None)?;
+                let (owner, oty) = self.expr(f, base)?;
                 let scope = match oty {
                     Ty::Player => Scope::Player,
                     Ty::Team => Scope::Team,
                     Ty::Object => Scope::Object,
-                    _ => return err(pos, format!("a {} has no variables", self.ty_name(oty))),
+                    _ => return internal(pos, "an assignment to a field of no owner"),
                 };
-                let Some((slot, ty)) = self.var_named(field, scope) else {
-                    return err(pos, format!("{field} is not a {} variable", oty.name()));
+                let Some((slot, _)) = self.var_named(field, scope) else {
+                    return internal(pos, "an assignment to no variable");
                 };
-                let r = self.expect(f, value, ty.register())?;
+                let (r, _) = self.expr(f, value)?;
                 f.emit(Op::Store {
                     slot,
                     owner: Some(owner),
@@ -821,61 +782,55 @@ impl<'s> Cx<'s> {
                 });
                 Ok(())
             }
-            _ => err(pos, "only a variable can be assigned"),
+            _ => internal(pos, "an assignment to no variable"),
         }
     }
 
     // ---- loops ----
 
-    fn set_source(&mut self, f: &mut Fun, set: &'s SetExpr) -> R<Set> {
-        Ok(match &set.base {
-            SetBaseExpr::Players => Set {
-                base: SetBase::Players,
-                pick: None,
-            },
-            SetBaseExpr::Teams => Set {
-                base: SetBase::Teams,
-                pick: None,
-            },
-            SetBaseExpr::Labelled(l) => Set {
-                base: SetBase::Labelled(self.label(l, set.pos)?),
-                pick: None,
-            },
-            SetBaseExpr::Objectives => Set {
-                base: SetBase::Objectives,
-                pick: None,
-            },
-            SetBaseExpr::Pick(inner, n) => {
-                if inner.filter.is_some() || inner.binder.is_some() {
-                    return err(inner.pos, "pick takes a set with no name and no where");
-                }
-                let base = match &inner.base {
-                    SetBaseExpr::Players => SetBase::Players,
-                    SetBaseExpr::Teams => SetBase::Teams,
-                    SetBaseExpr::Labelled(l) => SetBase::Labelled(self.label(l, inner.pos)?),
-                    SetBaseExpr::Objectives => SetBase::Objectives,
-                    SetBaseExpr::Pick(..) => return err(inner.pos, "pick of a pick"),
-                };
-                let n = self.expect(f, n, Ty::Int)?;
-                Set {
-                    base,
-                    pick: Some(n),
-                }
-            }
-        })
-    }
-
-    fn set_elem(set: &SetExpr) -> Ty {
-        match &set.base {
-            SetBaseExpr::Players => Ty::Player,
-            SetBaseExpr::Teams => Ty::Team,
-            SetBaseExpr::Labelled(_) | SetBaseExpr::Objectives => Ty::Object,
-            SetBaseExpr::Pick(inner, _) => Self::set_elem(inner),
+    /// The label a set name stands for: a set parameter's, or a declared
+    /// label's.
+    fn set_label(&self, f: &Fun, name: &str, pos: Pos) -> R<u16> {
+        match f.lookup(name) {
+            Some(Local::Set(ix)) => Ok(ix),
+            Some(_) => internal(pos, "a set name bound to a value"),
+            None => self.label_ix(name, pos),
         }
     }
 
-    fn foreach(&mut self, f: &mut Fun, set: &'s SetExpr, binder: Option<&str>, body: Body<'s>, pos: Pos) -> R<()> {
-        let source = self.set_source(f, set)?;
+    fn set_base(&self, f: &Fun, base: &SetBaseExpr, pos: Pos) -> R<SetBase> {
+        Ok(match base {
+            SetBaseExpr::Players => SetBase::Players,
+            SetBaseExpr::Teams => SetBase::Teams,
+            SetBaseExpr::Objectives => SetBase::Objectives,
+            SetBaseExpr::Label(l) => SetBase::Labelled(self.set_label(f, l, pos)?),
+            SetBaseExpr::Pick(..) => return internal(pos, "pick of a pick"),
+        })
+    }
+
+    fn set_source(&mut self, f: &mut Fun, set: &'s SetExpr) -> R<Set> {
+        Ok(match &set.base {
+            SetBaseExpr::Pick(inner, n) => {
+                let base = self.set_base(f, &inner.base, inner.pos)?;
+                let (n, _) = self.expr(f, n)?;
+                Set { base, pick: Some(n) }
+            }
+            base => Set {
+                base: self.set_base(f, base, set.pos)?,
+                pick: None,
+            },
+        })
+    }
+
+    fn foreach(
+        &mut self,
+        f: &mut Fun,
+        source: Set,
+        filter: Option<&'s Expr>,
+        binder: Option<&str>,
+        body: Body<'s>,
+        pos: Pos,
+    ) -> R<()> {
         let elem = source.base.elem();
         let dst = f.alloc(elem, pos)?;
         let at = f.emit(Op::ForEach {
@@ -889,11 +844,11 @@ impl<'s> Cx<'s> {
         }
         let mark = f.live.len();
         let mut skips = Vec::new();
-        if let Some(filter) = &set.filter {
+        if let Some(filter) = filter {
             f.implicit.push((dst, elem));
-            let c = self.expect(f, filter, Ty::Bool);
+            let c = self.expr(f, filter);
             f.implicit.pop();
-            let c = c?;
+            let (c, _) = c?;
             skips.push(f.emit(Op::JumpIfNot { cond: c, to: 0 }));
         }
         match body {
@@ -912,15 +867,38 @@ impl<'s> Cx<'s> {
                 });
             }
             Body::First { acc, none } => {
+                Self::keep_first(f, acc, none, dst, &mut skips, pos)?;
+            }
+            Body::Find { acc, none, entry, key } => {
+                let Some(ty) = caps::ENTRIES[entry as usize].result else {
+                    return internal(pos, "a find by an entry with no value");
+                };
+                let k = f.alloc(ty, pos)?;
+                f.emit(Op::Call {
+                    entry,
+                    args: vec![dst],
+                    dst: Some(k),
+                });
                 let c = f.alloc(Ty::Bool, pos)?;
                 f.emit(Op::Cmp {
                     op: CmpOp::Eq,
                     dst: c,
-                    a: acc,
-                    b: none,
+                    a: k,
+                    b: key,
                 });
                 skips.push(f.emit(Op::JumpIfNot { cond: c, to: 0 }));
-                f.emit(Op::Move { dst: acc, src: dst });
+                Self::keep_first(f, acc, none, dst, &mut skips, pos)?;
+            }
+            Body::Member { found, yes, x } => {
+                let c = f.alloc(Ty::Bool, pos)?;
+                f.emit(Op::Cmp {
+                    op: CmpOp::Eq,
+                    dst: c,
+                    a: dst,
+                    b: x,
+                });
+                skips.push(f.emit(Op::JumpIfNot { cond: c, to: 0 }));
+                f.emit(Op::Move { dst: found, src: yes });
             }
         }
         f.release(mark);
@@ -936,26 +914,60 @@ impl<'s> Cx<'s> {
         Ok(())
     }
 
-    // ---- expressions ----
-
-    /// Lowers `e` and checks it has type `ty`.
-    fn expect(&mut self, f: &mut Fun, e: &'s Expr, ty: Ty) -> R<Reg> {
-        let (r, got) = self.expr(f, e, Some(ty))?;
-        if got != ty {
-            return err(
-                e.pos,
-                format!("expected {}, found {}", self.ty_name(ty), self.ty_name(got)),
-            );
-        }
-        Ok(r)
+    /// Moves `member` into `acc` while `acc` is still `none`.
+    fn keep_first(f: &mut Fun, acc: Reg, none: Reg, member: Reg, skips: &mut Vec<usize>, pos: Pos) -> R<()> {
+        let c = f.alloc(Ty::Bool, pos)?;
+        f.emit(Op::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: acc,
+            b: none,
+        });
+        skips.push(f.emit(Op::JumpIfNot { cond: c, to: 0 }));
+        f.emit(Op::Move { dst: acc, src: member });
+        Ok(())
     }
 
-    fn expr(&mut self, f: &mut Fun, e: &'s Expr, want: Option<Ty>) -> R<(Reg, Ty)> {
+    /// A label's member: the first (a single label's one), or with `find`,
+    /// the first whose number or team is the key. `none` when the map has
+    /// none.
+    fn label_pick(&mut self, f: &mut Fun, ix: u16, find: Option<(u16, Reg)>, pos: Pos) -> R<(Reg, Ty)> {
+        let acc = f.konst(Ty::Object, NONE, pos)?;
+        let none = f.konst(Ty::Object, NONE, pos)?;
+        let body = match find {
+            Some((entry, key)) => Body::Find { acc, none, entry, key },
+            None => Body::First { acc, none },
+        };
+        let source = Set {
+            base: SetBase::Labelled(ix),
+            pick: None,
+        };
+        self.foreach(f, source, None, None, body, pos)?;
+        Ok((acc, Ty::Object))
+    }
+
+    /// Whether `x` is a member of label `ix`. It walks the label's members
+    /// rather than comparing `label_of(x)`, which reads label 0 for a thing
+    /// with no declared label.
+    fn member_test(&mut self, f: &mut Fun, x: Reg, ix: u16, pos: Pos) -> R<Reg> {
+        let found = f.konst(Ty::Bool, 0, pos)?;
+        let yes = f.konst(Ty::Bool, 1, pos)?;
+        let source = Set {
+            base: SetBase::Labelled(ix),
+            pick: None,
+        };
+        self.foreach(f, source, None, None, Body::Member { found, yes, x }, pos)?;
+        Ok(found)
+    }
+
+    // ---- expressions ----
+
+    fn expr(&mut self, f: &mut Fun, e: &'s Expr) -> R<(Reg, Ty)> {
         let pos = e.pos;
         match &e.kind {
             ExprKind::Int(n) => {
                 let v = int32(*n, pos)?;
-                if want == Some(Ty::Fixed) {
+                if self.ty_of(e)? == Type::Fixed {
                     Ok((f.konst(Ty::Fixed, fixed::from_int(v), pos)?, Ty::Fixed))
                 } else {
                     Ok((f.konst(Ty::Int, v, pos)?, Ty::Int))
@@ -963,75 +975,83 @@ impl<'s> Cx<'s> {
             }
             ExprKind::Fixed(v) => Ok((f.konst(Ty::Fixed, *v, pos)?, Ty::Fixed)),
             ExprKind::Bool(b) => Ok((f.konst(Ty::Bool, *b as i32, pos)?, Ty::Bool)),
-            ExprKind::None => match want {
-                Some(t) if t.nullable() => Ok((f.konst(t, NONE, pos)?, t)),
-                _ => err(pos, "none needs a player, team, object or tag here"),
-            },
+            ExprKind::None => {
+                let t = self.ty_of(e)?.ir();
+                Ok((f.konst(t, NONE, pos)?, t))
+            }
             ExprKind::Str(s) => {
-                let (ty, index) = match want {
-                    Some(Ty::Tag) => (Ty::Tag, self.tag(s, pos)?),
-                    Some(Ty::Label) => (Ty::Label, self.label(s, pos)?),
-                    Some(Ty::Class) => (Ty::Class, self.string(s, pos)?),
-                    Some(Ty::Text) => (Ty::Text, self.string(s, pos)?),
-                    _ => return err(pos, "a string is a tag path, a label, a class or a text here"),
+                let (ty, index) = match self.ty_of(e)? {
+                    Type::H(Handle::Tag, _) => (Ty::Tag, self.tag(s, TagGroup::Any, pos)?),
+                    Type::H(Handle::Weapon, _) => (Ty::Tag, self.tag(s, TagGroup::Weapon, pos)?),
+                    Type::Class => (Ty::Class, self.string(s, pos)?),
+                    Type::Text => (Ty::Text, self.string(s, pos)?),
+                    _ => return internal(pos, "a string of no string type"),
                 };
                 Ok((f.konst(ty, index as i32, pos)?, ty))
             }
-            ExprKind::Labelled(l) => {
-                let index = self.label(l, pos)?;
-                Ok((f.konst(Ty::Label, index as i32, pos)?, Ty::Label))
-            }
             ExprKind::Team(inner) => {
-                let n = self.const_team(inner)?;
+                let n = self.const_int(inner)?;
                 Ok((f.konst(Ty::Team, n, pos)?, Ty::Team))
             }
             ExprKind::Text(inner) => {
                 let index = match &inner.kind {
                     ExprKind::Str(s) => self.string(s, pos)? as i32,
                     ExprKind::Int(n) => int32(*n, pos)?,
-                    _ => return err(pos, "text takes a string or a string-table index"),
+                    _ => return internal(pos, "text of no string"),
                 };
                 Ok((f.konst(Ty::Text, index, pos)?, Ty::Text))
             }
             ExprKind::Name(n) => self.name(f, n, pos),
             ExprKind::Field(base, field) => self.field(f, base, field, pos),
-            ExprKind::Index(..) => err(pos, "a row is read by column: table[i].column"),
+            ExprKind::Index(base, index) => self.label_index(f, base, index, pos),
             ExprKind::Call(name, args) => match self.call(f, name, args, pos, true)? {
                 Some(v) => Ok(v),
-                None => err(pos, format!("{name} has no value")),
+                None => internal(pos, "a call with no value"),
             },
             ExprKind::Unary(UnOp::Neg, inner) => {
                 match inner.kind {
-                    ExprKind::Int(n) if want != Some(Ty::Fixed) => {
-                        return Ok((f.konst(Ty::Int, int32(-n, pos)?, pos)?, Ty::Int));
+                    ExprKind::Int(n) => {
+                        let v = int32(-n, pos)?;
+                        return if self.ty_of(e)? == Type::Fixed {
+                            Ok((f.konst(Ty::Fixed, fixed::from_int(v), pos)?, Ty::Fixed))
+                        } else {
+                            Ok((f.konst(Ty::Int, v, pos)?, Ty::Int))
+                        };
                     }
                     ExprKind::Fixed(v) => return Ok((f.konst(Ty::Fixed, -v, pos)?, Ty::Fixed)),
                     _ => {}
                 }
-                let (r, t) = self.expr(f, inner, want)?;
-                let ty = numeric(t).ok_or_else(|| CompileError::at(pos, "- takes an int or a fixed"))?;
+                let (r, t) = self.expr(f, inner)?;
+                let Some(ty) = numeric(t) else {
+                    return internal(pos, "- of no number");
+                };
                 let dst = f.alloc(t, pos)?;
                 f.emit(Op::Neg { ty, dst, a: r });
                 Ok((dst, t))
             }
             ExprKind::Unary(UnOp::Not, inner) => {
-                let r = self.expect(f, inner, Ty::Bool)?;
+                let (r, _) = self.expr(f, inner)?;
                 let dst = f.alloc(Ty::Bool, pos)?;
                 f.emit(Op::Not { dst, a: r });
                 Ok((dst, Ty::Bool))
             }
-            ExprKind::Binary(op, a, b) => self.binary(f, *op, a, b, want, pos),
-            ExprKind::Budget(_) | ExprKind::Palette(_) => {
-                err(pos, "budget and palette are arguments of grant")
+            ExprKind::Binary(op, a, b) => self.binary(f, *op, a, b, pos),
+            ExprKind::Is(x, l, lpos) => {
+                let (r, _) = self.expr(f, x)?;
+                let ix = self.label_ix(l, *lpos)?;
+                Ok((self.member_test(f, r, ix, pos)?, Ty::Bool))
             }
-            ExprKind::Set(_) => err(pos, "a set is only allowed in for each, count, first and pick"),
+            ExprKind::Budget(_) | ExprKind::Palette(_) | ExprKind::Set(_) => {
+                internal(pos, "a grant or set argument out of place")
+            }
         }
     }
 
     fn name(&mut self, f: &mut Fun, n: &str, pos: Pos) -> R<(Reg, Ty)> {
         match f.lookup(n) {
             Some(Local::Reg(r, t)) => return Ok((r, t)),
-            Some(Local::Row(..)) => return err(pos, format!("{n} is a row: read a column, as {n}.x")),
+            Some(Local::Set(ix)) => return Ok((f.konst(Ty::Label, ix as i32, pos)?, Ty::Label)),
+            Some(Local::Row(..)) => return internal(pos, "a row read as a value"),
             None => {}
         }
         if let Some(&(r, t)) = f.implicit.last()
@@ -1057,11 +1077,14 @@ impl<'s> Cx<'s> {
             });
             return Ok((dst, ty));
         }
-        if let Some(v) = self.vars.iter().find(|v| v.name == n) {
-            let owner = v.scope.owner().map_or("its owner", |t| t.name());
-            return err(pos, format!("{n} is a variable of each {owner}: read it as x.{n}"));
+        if let Some((ix, label)) = self.c.label(n) {
+            // One value names its member; a set is a set argument.
+            if label.single {
+                return self.label_pick(f, ix, None, pos);
+            }
+            return Ok((f.konst(Ty::Label, ix as i32, pos)?, Ty::Label));
         }
-        err(pos, format!("unknown name {n}"))
+        internal(pos, "an unknown name")
     }
 
     /// A field of an owner register: a scoped variable or a built-in read.
@@ -1101,11 +1124,11 @@ impl<'s> Cx<'s> {
         match &base.kind {
             ExprKind::Name(b) => match f.lookup(b) {
                 Some(Local::Row(table, row)) => return self.column(f, table, row, field, pos),
-                Some(Local::Reg(..)) => {}
+                Some(_) => {}
                 None => {
                     if b == "variant" {
                         let Some(i) = VARIANT_FIELDS.iter().position(|(n, _)| *n == field) else {
-                            return err(pos, format!("variant has no field {field}"));
+                            return internal(pos, "an unknown variant field");
                         };
                         let ty = VARIANT_FIELDS[i].1;
                         let dst = f.alloc(ty, pos)?;
@@ -1117,7 +1140,7 @@ impl<'s> Cx<'s> {
                     }
                     if let Some(i) = self.enums.iter().position(|(n, _)| n == b) {
                         let Some(k) = self.enums[i].1.iter().position(|v| v == field) else {
-                            return err(pos, format!("{b} has no variant {field}"));
+                            return internal(pos, "an unknown variant");
                         };
                         let ty = Ty::Enum(i as u8);
                         return Ok((f.konst(ty, k as i32, pos)?, ty));
@@ -1125,15 +1148,20 @@ impl<'s> Cx<'s> {
                 }
             },
             ExprKind::Index(tbase, index) => {
-                let (table, row) = self.row(f, tbase, index, pos)?;
-                return self.column(f, table, row, field, pos);
+                if let ExprKind::Name(t) = &tbase.kind
+                    && f.lookup(t).is_none()
+                    && self.tables.iter().any(|i| i.name == *t)
+                {
+                    let (table, row) = self.row(f, tbase, index, pos)?;
+                    return self.column(f, table, row, field, pos);
+                }
             }
             _ => {}
         }
-        let (r, t) = self.expr(f, base, None)?;
+        let (r, t) = self.expr(f, base)?;
         match self.field_of(f, r, t, field, pos)? {
             Some(v) => Ok(v),
-            None => err(pos, format!("a {} has no field {field}", self.ty_name(t))),
+            None => internal(pos, "an unknown field"),
         }
     }
 
@@ -1141,22 +1169,14 @@ impl<'s> Cx<'s> {
     /// indexes rows; a value of the first column's type finds its row.
     fn row(&mut self, f: &mut Fun, base: &'s Expr, index: &'s Expr, pos: Pos) -> R<(u8, Reg)> {
         let ExprKind::Name(tname) = &base.kind else {
-            return err(pos, "only a table can be indexed");
+            return internal(pos, "an index of no table");
         };
         let Some(t) = self.tables.iter().position(|t| t.name == *tname) else {
-            return err(pos, format!("unknown table {tname}"));
+            return internal(pos, "an unknown table");
         };
-        let key_ty = self.tables[t].columns[0].1;
-        let hint = if key_ty == Ty::Int { Ty::Int } else { key_ty };
-        let (r, ty) = self.expr(f, index, Some(hint))?;
+        let (r, ty) = self.expr(f, index)?;
         if ty == Ty::Int {
             return Ok((t as u8, r));
-        }
-        if ty != key_ty {
-            return err(
-                index.pos,
-                format!("{tname} is indexed by int or {}, not {}", self.ty_name(key_ty), self.ty_name(ty)),
-            );
         }
         let dst = f.alloc(Ty::Int, pos)?;
         f.emit(Op::TableFind {
@@ -1167,10 +1187,26 @@ impl<'s> Cx<'s> {
         Ok((t as u8, dst))
     }
 
+    /// `capture[n]` or `flag_spawn[t]`: the member with that number or of
+    /// that team, or `none`.
+    fn label_index(&mut self, f: &mut Fun, base: &'s Expr, index: &'s Expr, pos: Pos) -> R<(Reg, Ty)> {
+        let ExprKind::Name(l) = &base.kind else {
+            return internal(pos, "an index of no label");
+        };
+        let ix = self.label_ix(l, base.pos)?;
+        let (key, kty) = self.expr(f, index)?;
+        let entry = match kty {
+            Ty::Int => caps::id::LABEL_NUMBER,
+            Ty::Team => caps::id::OBJECT_TEAM,
+            _ => return internal(pos, "a label index of no number or team"),
+        };
+        self.label_pick(f, ix, Some((entry, key)), pos)
+    }
+
     fn column(&mut self, f: &mut Fun, table: u8, row: Reg, field: &str, pos: Pos) -> R<(Reg, Ty)> {
         let info = &self.tables[table as usize];
         let Some(col) = info.columns.iter().position(|(n, _)| n == field) else {
-            return err(pos, format!("table {} has no column {field}", info.name));
+            return internal(pos, "an unknown column");
         };
         let ty = info.columns[col].1;
         let dst = f.alloc(ty, pos)?;
@@ -1183,31 +1219,30 @@ impl<'s> Cx<'s> {
         Ok((dst, ty))
     }
 
-    fn binary(&mut self, f: &mut Fun, op: BinOp, a: &'s Expr, b: &'s Expr, want: Option<Ty>, pos: Pos) -> R<(Reg, Ty)> {
+    fn binary(&mut self, f: &mut Fun, op: BinOp, a: &'s Expr, b: &'s Expr, pos: Pos) -> R<(Reg, Ty)> {
         if matches!(op, BinOp::And | BinOp::Or) {
             let dst = f.alloc(Ty::Bool, pos)?;
-            let ra = self.expect(f, a, Ty::Bool)?;
+            let (ra, _) = self.expr(f, a)?;
             f.emit(Op::Move { dst, src: ra });
             let j = f.emit(if op == BinOp::And {
                 Op::JumpIfNot { cond: dst, to: 0 }
             } else {
                 Op::JumpIf { cond: dst, to: 0 }
             });
-            let rb = self.expect(f, b, Ty::Bool)?;
+            let (rb, _) = self.expr(f, b)?;
             f.emit(Op::Move { dst, src: rb });
             f.patch(j, pos)?;
             return Ok((dst, Ty::Bool));
         }
-        let arith = matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem);
-        let hint = if arith { want.filter(|t| numeric(*t).is_some()) } else { None };
-        // A literal takes its type from the other side.
+        // A literal takes its type from the other side, which the checker
+        // read first.
         let (ra, rb, ty) = if is_literal(a) && !is_literal(b) {
-            let (rb, tb) = self.expr(f, b, hint)?;
-            let ra = self.expect(f, a, tb)?;
+            let (rb, tb) = self.expr(f, b)?;
+            let (ra, _) = self.expr(f, a)?;
             (ra, rb, tb)
         } else {
-            let (ra, ta) = self.expr(f, a, hint)?;
-            let rb = self.expect(f, b, ta)?;
+            let (ra, ta) = self.expr(f, a)?;
+            let (rb, _) = self.expr(f, b)?;
             (ra, rb, ta)
         };
         let cmp = match op {
@@ -1220,9 +1255,6 @@ impl<'s> Cx<'s> {
             _ => None,
         };
         if let Some(c) = cmp {
-            if !matches!(c, CmpOp::Eq | CmpOp::Ne) && numeric(ty).is_none() {
-                return err(pos, format!("{} values have no order", self.ty_name(ty)));
-            }
             let dst = f.alloc(Ty::Bool, pos)?;
             f.emit(Op::Cmp {
                 op: c,
@@ -1233,7 +1265,7 @@ impl<'s> Cx<'s> {
             return Ok((dst, Ty::Bool));
         }
         let Some(nt) = numeric(ty) else {
-            return err(pos, format!("arithmetic on {}", self.ty_name(ty)));
+            return internal(pos, "arithmetic on no number");
         };
         let aop = match op {
             BinOp::Add => ArithOp::Add,
@@ -1242,9 +1274,6 @@ impl<'s> Cx<'s> {
             BinOp::Div => ArithOp::Div,
             _ => ArithOp::Rem,
         };
-        if aop == ArithOp::Rem && nt == NumTy::Fixed {
-            return err(pos, "% takes ints");
-        }
         let dst = f.alloc(ty, pos)?;
         f.emit(Op::Arith {
             op: aop,
@@ -1259,46 +1288,37 @@ impl<'s> Cx<'s> {
     // ---- calls ----
 
     fn call(&mut self, f: &mut Fun, name: &str, args: &'s [Expr], pos: Pos, need_value: bool) -> R<Option<(Reg, Ty)>> {
-        let arity = |n: usize| -> R<()> {
-            if args.len() == n {
-                Ok(())
-            } else {
-                err(pos, format!("{name} takes {n} arguments"))
-            }
-        };
         match name {
             "count" | "first" => {
-                arity(1)?;
-                let ExprKind::Set(set) = &args[0].kind else {
-                    return err(pos, format!("{name} takes a set"));
+                let Some(ExprKind::Set(set)) = args.first().map(|a| &a.kind) else {
+                    return internal(pos, "count or first of no set");
                 };
-                let elem = Self::set_elem(set);
+                let source = self.set_source(f, set)?;
+                let elem = source.base.elem();
+                let binder = set.binder.as_deref();
                 if name == "count" {
                     let acc = f.konst(Ty::Int, 0, pos)?;
                     let one = f.konst(Ty::Int, 1, pos)?;
-                    self.foreach(f, set, set.binder.as_deref(), Body::Count { acc, one }, pos)?;
+                    self.foreach(f, source, set.filter.as_ref(), binder, Body::Count { acc, one }, pos)?;
                     return Ok(Some((acc, Ty::Int)));
                 }
                 let acc = f.konst(elem, NONE, pos)?;
                 let none = f.konst(elem, NONE, pos)?;
-                self.foreach(f, set, set.binder.as_deref(), Body::First { acc, none }, pos)?;
+                self.foreach(f, source, set.filter.as_ref(), binder, Body::First { acc, none }, pos)?;
                 return Ok(Some((acc, elem)));
             }
-            "pick" => return err(pos, "pick makes a set: use it in for each or count"),
             "len" => {
-                arity(1)?;
-                let ExprKind::Name(t) = &args[0].kind else {
-                    return err(pos, "len takes a table");
+                let Some(ExprKind::Name(t)) = args.first().map(|a| &a.kind) else {
+                    return internal(pos, "len of no table");
                 };
                 let Some(info) = self.tables.iter().find(|i| i.name == *t) else {
-                    return err(pos, format!("unknown table {t}"));
+                    return internal(pos, "len of an unknown table");
                 };
                 let rows = info.rows as i32;
                 return Ok(Some((f.konst(Ty::Int, rows, pos)?, Ty::Int)));
             }
             "seconds" => {
-                arity(1)?;
-                let n = self.expect(f, &args[0], Ty::Int)?;
+                let (n, _) = self.expr(f, &args[0])?;
                 let rate = f.konst(Ty::Int, TICKS_PER_SECOND, pos)?;
                 let dst = f.alloc(Ty::Int, pos)?;
                 f.emit(Op::Arith {
@@ -1311,35 +1331,19 @@ impl<'s> Cx<'s> {
                 return Ok(Some((dst, Ty::Int)));
             }
             "grant" => {
-                if need_value {
-                    return err(pos, "grant has no value");
-                }
-                if args.len() < 3 || args.len() > 4 {
-                    return err(pos, "grant takes a player, a capability, a budget and a palette");
-                }
-                let player = self.expect(f, &args[0], Ty::Player)?;
+                let (player, _) = self.expr(f, &args[0])?;
                 let cap = self.cap_arg(&args[1])?;
                 let mut uses = None;
                 let mut palette = None;
                 for a in &args[2..] {
                     match &a.kind {
-                        ExprKind::Budget(n) if uses.is_none() => {
-                            if !(0..=255).contains(n) {
-                                return err(a.pos, "a grant holds at most 255 uses");
-                            }
-                            uses = Some(*n as u8);
-                        }
-                        ExprKind::Palette(p) if palette.is_none() => {
-                            let Some(i) = self.palettes.iter().position(|(n, _)| n == p) else {
-                                return err(a.pos, format!("unknown palette {p}"));
-                            };
-                            palette = Some(i as u8);
-                        }
-                        _ => return err(a.pos, "expected budget n or palette \"x\""),
+                        ExprKind::Budget(n) => uses = Some(*n as u8),
+                        ExprKind::Palette(p) => palette = self.palettes.iter().position(|(n, _)| n == p).map(|i| i as u8),
+                        _ => return internal(a.pos, "a grant argument"),
                     }
                 }
                 let Some(uses) = uses else {
-                    return err(pos, "a grant needs a budget: budget n");
+                    return internal(pos, "a grant with no budget");
                 };
                 f.emit(Op::Grant {
                     player,
@@ -1350,11 +1354,7 @@ impl<'s> Cx<'s> {
                 return Ok(None);
             }
             "revoke" | "granted" => {
-                arity(2)?;
-                if name == "revoke" && need_value {
-                    return err(pos, "revoke has no value");
-                }
-                let player = self.expect(f, &args[0], Ty::Player)?;
+                let (player, _) = self.expr(f, &args[0])?;
                 let cap = self.cap_arg(&args[1])?;
                 if name == "revoke" {
                     f.emit(Op::Revoke { player, cap });
@@ -1367,27 +1367,18 @@ impl<'s> Cx<'s> {
             _ => {}
         }
         if let Some(&decl) = self.fns.get(name) {
-            if need_value {
-                return err(pos, format!("fn {name} has no value"));
-            }
             self.inline(f, decl, args, pos)?;
             return Ok(None);
         }
         if name == "message" {
-            return self.message(f, args, pos, need_value);
+            return self.message(f, args, pos);
         }
         let Some(entry) = caps::entry_named(name) else {
-            return err(pos, format!("unknown function {name}"));
+            return internal(pos, "an unknown function");
         };
-        arity(entry.args.len())?;
-        if let Some(cap) = entry.cap
-            && !self.requires.iter().any(|r| r == cap)
-        {
-            return err(pos, format!("{name} needs capability {cap}: add it to requires"));
-        }
         let mut regs = Vec::with_capacity(args.len());
-        for (a, &ty) in args.iter().zip(entry.args) {
-            regs.push(self.expect(f, a, ty)?);
+        for a in args {
+            regs.push(self.expr(f, a)?.0);
         }
         match entry.result {
             Some(ty) => {
@@ -1401,7 +1392,7 @@ impl<'s> Cx<'s> {
             }
             None => {
                 if need_value {
-                    return err(pos, format!("{name} has no value"));
+                    return internal(pos, "a value of an action");
                 }
                 debug_assert_eq!(entry.kind, Kind::Action);
                 f.emit(Op::Call {
@@ -1416,40 +1407,24 @@ impl<'s> Cx<'s> {
 
     /// `message(to, text)`: `to` is a player, a team or `all` (everyone),
     /// and picks the entry (`caps::spelled`).
-    fn message(&mut self, f: &mut Fun, args: &'s [Expr], pos: Pos, need_value: bool) -> R<Option<(Reg, Ty)>> {
-        if need_value {
-            return err(pos, "message has no value");
-        }
-        if args.len() != 2 {
-            return err(pos, "message takes 2 arguments: message(to, text)");
-        }
-        let cap = "hud.message";
-        if !self.requires.iter().any(|r| r == cap) {
-            return err(pos, format!("message needs capability {cap}: add it to requires"));
-        }
-        let to = &args[0];
+    fn message(&mut self, f: &mut Fun, args: &'s [Expr], pos: Pos) -> R<Option<(Reg, Ty)>> {
+        let [to, text] = args else {
+            return internal(pos, "message of no two arguments");
+        };
         let mut regs = Vec::with_capacity(2);
         let entry = match &to.kind {
             ExprKind::Name(n) if n == caps::EVERYONE => caps::id::MESSAGE_ALL,
-            ExprKind::None => {
-                return err(to.pos, "message is to a player, a team or all, not none");
-            }
             _ => {
-                let (r, ty) = self.expr(f, to, None)?;
+                let (r, ty) = self.expr(f, to)?;
                 regs.push(r);
                 match ty {
                     Ty::Player => caps::id::MESSAGE,
                     Ty::Team => caps::id::MESSAGE_TEAM,
-                    other => {
-                        return err(
-                            to.pos,
-                            format!("message is to a player, a team or all, not {}", self.ty_name(other)),
-                        );
-                    }
+                    _ => return internal(to.pos, "a message to no player or team"),
                 }
             }
         };
-        regs.push(self.expect(f, &args[1], Ty::Text)?);
+        regs.push(self.expr(f, text)?.0);
         f.emit(Op::Call {
             entry,
             args: regs,
@@ -1467,16 +1442,10 @@ impl<'s> Cx<'s> {
                 _ => None,
             }
         }
-        let Some(name) = path(e) else {
-            return err(e.pos, "expected a capability, as forge.place");
-        };
-        let Some(i) = self.requires.iter().position(|r| *r == name) else {
-            return err(e.pos, format!("capability {name} is not in requires"));
-        };
-        if !caps::capability(&name, caps::API_VERSION).is_some_and(|c| c.grantable) {
-            return err(e.pos, format!("capability {name} cannot be granted"));
+        match path(e).and_then(|name| self.requires.iter().position(|r| *r == name)) {
+            Some(i) => Ok(i as u8),
+            None => internal(e.pos, "a capability not in requires"),
         }
-        Ok(i as u8)
     }
 
     fn inline(&mut self, f: &mut Fun, decl: &'s FnDecl, args: &'s [Expr], pos: Pos) -> R<()> {
@@ -1486,19 +1455,23 @@ impl<'s> Cx<'s> {
         if f.inlining.len() >= 16 {
             return err(pos, "functions nest more than 16 deep");
         }
-        if args.len() != decl.params.len() {
-            return err(pos, format!("{} takes {} arguments", decl.name, decl.params.len()));
-        }
         let mut bound = Vec::with_capacity(args.len());
         for (a, (pname, pty)) in args.iter().zip(&decl.params) {
-            let ty = self.ty(pty)?;
-            if ty == Ty::Timer {
-                return err(pty.pos, "a parameter is not a timer; pass an int");
-            }
-            let r = self.expect(f, a, ty)?;
-            bound.push((pname.clone(), Local::Reg(r, ty)));
+            let local = match self.declared(pty)? {
+                Type::Set(_) => {
+                    let ExprKind::Name(n) = &a.kind else {
+                        return internal(a.pos, "a set argument of no name");
+                    };
+                    Local::Set(self.set_label(f, n, a.pos)?)
+                }
+                _ => {
+                    let (r, ty) = self.expr(f, a)?;
+                    Local::Reg(r, ty)
+                }
+            };
+            bound.push((pname.clone(), local));
         }
-        // The body sees its parameters, globals and options only.
+        // The body sees its parameters, globals, options and labels only.
         let scopes = std::mem::replace(&mut f.scopes, vec![bound]);
         let implicit = std::mem::take(&mut f.implicit);
         f.inlining.push(decl.name.clone());

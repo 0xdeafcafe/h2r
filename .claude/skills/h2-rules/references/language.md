@@ -14,15 +14,17 @@ teams 2                   // optional, 1 to 8
 requires player.weapons, hud.message   // optional, at most 32, no repeats
 ```
 
-Then any order: `option`, `palette`, `enum`, `var`, `table`, `fn`, `on`.
+Then any order: `option`, `palette`, `enum`, `label`, `var`, `table`,
+`fn`, `on`.
 `//` starts a comment. A statement ends at a newline, `;` or `}`. Strings
 take `\"`, `\\` and `\n`. A number with a fraction (`0.5`, `1.25`) is a
 `fixed`; a whole number is an `int`.
 
 Keywords (not usable as names): `rules carrier teams requires option
 palette enum global var table fn on if else for each where let and or not
-true false none labelled text budget`. Field and enum-variant names may be
-keywords (`enum Role { none, vip }`).
+true false none label is text budget`. Field and enum-variant names may be
+keywords (`enum Role { none, vip }`). Type and kind words (`zone`,
+`weapon`, `objects`, `numbered`, `per`) are read by place and stay names.
 
 Carriers (`caps::CARRIERS`): `ctf` 1, `slayer` 2, `oddball` 3, `king` 4,
 `juggernaut` 7, `territories` 8, `assault` 9.
@@ -34,18 +36,20 @@ Carriers (`caps::CARRIERS`): `ctf` 1, `slayer` 2, `oddball` 3, `king` 4,
 | `int` | 32-bit, saturating |
 | `fixed` | 16.16; literals like `0.5`; `*`, `/` work, `%` takes ints only |
 | `bool` | `true`, `false` |
-| `player`, `team`, `object` | handles; may be `none` |
+| `player`, `team`, `object` | handles; never `none` (see `T?`) |
+| `zone` | an object with a volume (a Forge trigger volume or a netgame flag); goes where an `object` is wanted, not the reverse |
 | `squad` | a kit squad slot 0 to 15, `squad(n)` |
 | `timer` | a global variable of ticks left; 0 is stopped; read and written as `int` |
-| `tag` | a tag path string (a table column or `set_loadout` argument); may be `none` |
+| `tag` | a tag path string (a table column or `set_loadout` argument) |
+| `weapon` | a tag path that must be a weapon's (checked against the weapon group at load); goes where a `tag` is wanted |
+| `T?` | `player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`: a handle that may be `none` |
 | `Class` | a kit class name string, for `place_squad` and `on actor_kill` |
-| `label` | `labelled "x"`, a Forge label |
 | `text` | a string-table index: `text 3` or a string |
 | enum | declared with `enum Name { a, b }`, read as `Name.a` (1 to 64 variants, at most 32 enums) |
 
-Literals: `team 0` to `team 7` (a team), `text 9`, `labelled "hill"`,
-`none`. A string literal takes the type its place wants (a tag, a label, a
-class or a text). Compare any two values of one type with `==` and `!=`;
+Literals: `team 0` to `team 7` (a team), `text 9`, `none`. A string
+literal takes the type its place wants (a tag, a weapon, a class or a
+text); a string is never a label. Compare any two values of one type with `==` and `!=`;
 `<`, `<=`, `>`, `>=` take `int` and `fixed` only. `and`, `or`, `not` take
 bools and short-circuit; `and` binds tighter than `or`; `not` is below
 comparisons. Precedence, lowest first: `or`, `and`, `not`, comparison,
@@ -62,10 +66,11 @@ comparisons. Precedence, lowest first: `or`, `and`, `not`, comparison,
 | `player var`, `team var`, `object var` | per-owner variables, read as `p.x`, `t.x`, `o.x` |
 | `table name: (c1: type, c2: type) = [(v, v), ...]` | at most 16 columns and 256 rows; constants only; no timers |
 | `fn name(a: type, b: type) { ... }` | inlined; no return value; no recursion; nests at most 16 deep; a parameter is not a `timer` |
-| `on event(args) { ... }` | one handler per event (and per timer) |
+| `label name: kind requirements = "map text"` | a Forge label the map supplies; below |
+| `on event(args) { ... }` | several handlers of one event run in source order; trailing arguments may be left out; naming more than the event gives is refused |
 
 Variable limits: 64 global, 16 per player, 8 per team, 8 per object (at
-most 256 labelled objects hold object variables). A variable may not share
+most 256 objects of a label hold object variables). A variable may not share
 the name of a built-in field of its owner (`p.team`, `p.score`, ...) or of
 an option. Scope words are `global`, `player`, `team`, `object`.
 
@@ -74,6 +79,41 @@ first row whose first column holds that value (and reads zero values for a
 key no row holds). Read a column as `waves[i].gap`. `let w = waves[i]` then
 `w.gap` works. A row out of range is a script error. `len(table)` is the row
 count.
+
+## Labels
+
+```text
+label core: object                          // exactly one; `object?` if the map may have none
+label goal: zone
+label barrier: objects                      // a set; `zones`, `spawns` likewise
+label capture: zones numbered 0..1 = "zone" // map text "zone"; numbers 0 and 1 each present
+label flag_spawn: zones at most 16 per team
+label race_start: spawns                    // starting locations, for spawn_areas only
+```
+
+Requirements on a set: `at least n`, `at most n`, `exactly n`, `n..m`,
+`numbered` (every member numbered), `numbered a..b` (each number in the
+range present, no other), `per team`. A game whose map breaks a
+declaration does not start. At most 64 labels.
+
+A label is a typed name: `core` is an `object`; `for each barrier b`;
+`count(barrier)`; `capture[n]` is the member numbered `n` and
+`flag_spawn[t]` the member of team `t`, each `zone?` (a plain `zone` when
+`n` is a constant inside `numbered a..b`); `x is goal` tests membership
+and narrows `x` to a `zone`. A handler may pick its things by label:
+`on enter(goal, o)`, or `on enter(capture z, o)` to name the zone. An
+undeclared name is an error with the nearest label offered.
+
+## `T?` and narrowing
+
+The killer of `on kill`, `first(...)`, `o.carrier`, `o.team`,
+`player_of(o)`, `capture[n]` and a handle column read by key are `T?`. A
+handle variable that starts as `none` is declared `T?` (`global var
+juggernaut: player? = none`). A `T?` goes where a `T` is wanted only after
+a check: `if killer != none { ... }`, the `else` of `killer == none`,
+through `and`, `or` and `not`, or `if let k = killer [and cond] { ... }`.
+A `let`, a parameter, a loop member and a handler argument narrow; a
+global never does (copy it with `if let`).
 
 ## Statements and expressions
 
@@ -84,11 +124,12 @@ if cond { ... } else if cond { ... } else { ... }
 for each players p where cond { ... }
 for each teams t { ... }
 for each objectives o { ... }                 // the objective registry, at most 8
-for each objects labelled "x" o where cond { ... }
+for each barrier o where cond { ... }        // a declared objects or zones label
+if let k = killer and k != victim { ... }    // binds a T? as T, then tests
 for each pick(players, n) p { ... }           // n members, drawn with the VM generator
 ```
 
-A bare name in a `where` over `players`, `teams` or labelled objects also
+A bare name in a `where` over `players`, `teams` or a label's set also
 reads that member's variables (`count(players where not infected)`), and a
 set argument may name its member: `count(players p where p.team == t)`.
 
@@ -110,7 +151,7 @@ Fields (read through an owner):
 |---|---|
 | `player` | `team`, `alive`, `score`, `kills`, `deaths`, `lives` |
 | `team` | `score` |
-| `object` | `number`, `label`, `id`, `carrier`, `team` |
+| `object` | `number`, `id`, `carrier` (`player?`), `team` (`team?`) |
 | `squad` | `alive` |
 | `variant` | `team_play`, `score_limit`, `time_limit`, `lives`, `respawn_time`, `friendly_fire`, `rounds`, `engine`, `oddball_ball_count`, `king_moving_hill`, `ctf_flag_type`, `ctf_reset_time`, `ctf_touch_return`, `ctf_flag_at_home`, `assault_arm_time`, `territories_count`, `territories_contest_time` |
 
@@ -129,16 +170,16 @@ An `on` handler names its arguments in order; the count must match.
 | `on round_end` | | a round ends |
 | `on tick` | | every tick, after the timers |
 | `on timer(t)` | a global `timer` var | `t` reaches 0 |
-| `on kill(victim, killer)` | player, player (killer may be `none`; a suicide has killer == victim) | a kill |
+| `on kill(victim, killer)` | player, player? (a suicide has killer == victim) | a kill |
 | `on spawn(p)`, `on death(p)` | player | |
 | `on join(p)`, `on quit(p)` | player | |
 | `on pickup(p, o)`, `on drop(p, o)` | player, object | |
 | `on press(p, o)` | player, object | at most 10 a second a player |
-| `on enter(zone, o)`, `on leave(zone, o)` | object, object | at most 64 a tick together |
+| `on enter(zone, o)`, `on leave(zone, o)` | zone, object | at most 64 a tick together; a label in the zone's place picks the zones (`on enter(goal, o)`, `on enter(capture z, o)`) |
 | `on squad_dead(s)` | squad | |
-| `on actor_kill(killer, class)` | player, Class | |
-| `on actor_assist(killer, assist, class)` | player, player, Class | after its kill |
-| `on bounce(p, spot, chain, monster)` | player, object, int, bool | `chain` is its place in its chain (1 a single bounce); `monster` a Monster Bounce |
+| `on actor_kill(killer, class)` | player?, Class | |
+| `on actor_assist(killer, assist, class)` | player?, player?, Class | after its kill |
+| `on bounce(p, spot, chain, monster)` | player, zone, int, bool | `chain` is its place in its chain (1 a single bounce); `monster` a Monster Bounce |
 | `on bounced(p)` | player | a fall out of the map during a bounce |
 | `on edit(p, o)` | player, object | a granted power was used |
 
@@ -164,11 +205,11 @@ a host refuse the script) or `vm`.
 | `zone_seen(o)`, `zone_distance(o)` | object -> bool, int | named (Firefight's `ff_drop` zones) |
 | `object_team(o)` | object -> team | traced |
 | `player_of(o)` | object -> player | traced |
-| `label_number(o)`, `label_of(o)`, `zone_id(o)` | object -> int, label, int | not built |
+| `label_number(o)`, `zone_id(o)` | object -> int | not built |
 | `ticks_held(o, t)` | object, team -> int | vm, not built on a host (below) |
 | `inside(p, o)` | player, object -> bool | not built |
 
-The field forms (`p.score`, `o.number`, `o.label`, `o.id`, `o.carrier`,
+The field forms (`p.score`, `o.number`, `o.id`, `o.carrier`,
 `o.team`, `s.alive`) call these.
 
 `ticks_held(zone, team)` is counted by the VM: from the first tick the

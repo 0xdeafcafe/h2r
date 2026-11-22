@@ -195,7 +195,7 @@ From `gun_game.rules`: a table gives per-rung data, and `min` and `len` keep
 the index in range (a row out of range is a script error).
 
 ```text
-table ladder: (weapon: tag) = [
+table ladder: (weapon: weapon) = [
     ("objects/weapons/rifle/smg/smg"),
     ("objects/weapons/rifle/battle_rifle/battle_rifle"),
     ("objects/weapons/pistol/magnum/magnum"),
@@ -251,17 +251,18 @@ asking whether a player stands in a zone (`inside`) are not hostable yet;
 the CTF, Oddball, King and Territories scripts call them and say so in
 their headers. In a scenario, seat the objective with `pickup` events.
 
-## Zones and labelled objects
+## Zones and labels
 
-Labelled objects come from Forge labels and the built-in per-flag-type
-table. `for each objects labelled "hill_corner" c where c.number == hill`
-visits them; `first(...)` finds one. `on enter(zone, o)` and `on leave`
-report an object in a zone (at most 64 a tick together). A scenario
-declares labelled objects in `labelled` (`{"label": "hill_corner",
-"object": 40, "number": 1}`) and a player's unit in `unit`, so an `enter`
-naming the unit puts the player in the zone. `ticks_held(zone, team)`
-counts the ticks a team alone holds a zone. Expect `label_number`,
-`label_of`, `zone_id`, `inside` and `ticks_held` to be refused by a
+Declare every Forge label the script reads: `label hill_corner: zones
+numbered`. `if let z = hill_corner[hill] { ... }` finds the member
+numbered `hill` (a `zone?`); `for each hill_corner c` visits them all.
+`on enter(zone, o)` and `on leave` report an object in a zone (at most 64
+a tick together); `on enter(goal, o)` runs for one label's zones only,
+and `x is goal` tests membership. A scenario lists the map's labelled
+objects in `map` (`{"label": "hill_corner", "object": 40, "number":
+1}`; none, and the script's smallest map is used) and a player's unit in `unit`, so an `enter` naming the unit puts
+the player in the zone. `ticks_held(zone, team)` counts the ticks a team
+alone holds a zone. Expect `inside` and `ticks_held` to be refused by a
 host.
 
 ## Randomness

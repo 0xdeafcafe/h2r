@@ -67,6 +67,37 @@ pub struct State {
     /// The last `rules.reload` this run made or refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reload: Option<LastReload>,
+    /// Every problem the start gate found with the map: each label or tag
+    /// the script needs that the map lacks or breaks, in the check's
+    /// order (docs/game/rules-start-gate.md). Present while the host
+    /// holds the block: the game was ended in its first tick, or in a
+    /// Forge session the script does not run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
+    /// The map's labelled things as the host sees them, for a script with
+    /// labels: what the gate counted and what the script's label reads
+    /// answer from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labelled: Vec<Labelled>,
+}
+
+/// One labelled thing of the map, as the host's census holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Labelled {
+    /// The label's text.
+    pub label: String,
+    /// `object`, `flag`, `volume` or `spawn`.
+    pub class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<i32>,
+    /// The placement's team designator, 0 to 7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<u8>,
+    /// The placement id `zone.id` reads: the block's number times 65,536
+    /// plus the entry's index.
+    pub id: u32,
+    /// The script declares a label of this text.
+    pub declared: bool,
 }
 
 // ---- rules.reload ----
@@ -205,6 +236,30 @@ mod tests {
         );
         let back: State = from_value(json!({"running": false})).unwrap();
         assert_eq!(back, State::default());
+    }
+
+    #[test]
+    fn a_blocked_state_lists_every_problem_and_the_labelled_things() {
+        let s = State {
+            refused: Some("blocked".into()),
+            blocked: vec!["the map has no zone labelled \"goal\"; Siege needs exactly 1".into()],
+            labelled: vec![Labelled {
+                label: "territory".into(),
+                class: "flag".into(),
+                number: None,
+                team: Some(1),
+                id: 0x8_0003,
+                declared: true,
+            }],
+            ..Default::default()
+        };
+        let v = to_value(&s).unwrap();
+        assert_eq!(v["blocked"][0], json!("the map has no zone labelled \"goal\"; Siege needs exactly 1"));
+        assert_eq!(
+            v["labelled"][0],
+            json!({"label": "territory", "class": "flag", "team": 1, "id": 524291, "declared": true})
+        );
+        assert_eq!(from_value::<State>(v).unwrap(), s);
     }
 
     #[test]
