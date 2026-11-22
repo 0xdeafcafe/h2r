@@ -38,6 +38,9 @@ fn quote(s: &str) -> String {
 pub fn cargo(root: &Path) -> Command {
     let mut c = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     c.current_dir(root);
+    // Agents run with H2_TIER=fast (.claude/settings.json) so their game
+    // checks skip clang; tests must not depend on the caller's tier.
+    c.env_remove("H2_TIER");
     c
 }
 

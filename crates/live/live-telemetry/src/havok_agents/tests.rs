@@ -256,3 +256,36 @@ fn the_light_pair_word_reads_the_levels_pair_without_decoding_caches() {
     m.put_u32(layout::HAVOK_WORLD_PTR, 0);
     assert_eq!(fixed_pair_word(&m, datum).unwrap(), None);
 }
+
+#[test]
+fn level_pairs_reads_every_objects_level_pairs_in_one_walk() {
+    let (mut m, datum) = scene();
+    let entry = PAIRS + 0x20;
+    // The scene's island is inactive: the body sleeps.
+    let got = level_pairs(&m, &[datum, 0x1234_5678]).unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(
+        got[0].pairs,
+        vec![LevelPair {
+            entry,
+            agent: AGENT,
+            word: u32::MAX
+        }]
+    );
+    assert!(got[0].asleep);
+    // An object with no physics: nothing.
+    assert_eq!(got[1], LevelPairs::default());
+    // The same word the single-pair reader sees.
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), Some(u32::MAX));
+    // Written over the pairs that differ, and read back.
+    assert_eq!(set_level_words(&mut m, &got[0].pairs, 0xffff_fffd).unwrap(), 1);
+    let again = level_pairs(&m, &[datum]).unwrap();
+    assert_eq!(again[0].pairs[0].word, 0xffff_fffd);
+    assert_eq!(set_level_words(&mut m, &again[0].pairs, 0xffff_fffd).unwrap(), 0);
+    // An agent cache that cannot decode does not matter to it.
+    m.put_u32(AGENT, 0xdead_beef);
+    assert_eq!(level_pairs(&m, &[datum]).unwrap()[0].pairs.len(), 1);
+    // No Havok world: none.
+    m.put_u32(layout::HAVOK_WORLD_PTR, 0);
+    assert_eq!(level_pairs(&m, &[datum]).unwrap()[0], LevelPairs::default());
+}

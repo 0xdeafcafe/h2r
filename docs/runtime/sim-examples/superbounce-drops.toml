@@ -1,0 +1,29 @@
+# Seam drops (docs/runtime/sim.md, "Seam drops"): `h2 sim drops` this
+# file. Fifteen phantom seats on Ascension, each put above a point of a
+# candidate collision edge from the map's `.spots` scan, its pair word set
+# to -3 and held there through touchdown, then dropped. Every run starts
+# with the control drop on the slot seam at (-10.54, 4.04, -3.19); if that
+# doesn't bounce, the run stops with `control did not bounce: <outcome>`.
+# The report (results/superbounce-drops/drops.json and drops.md) gives
+# each target's bounce rate by height and across offset, its catch
+# half-width, the slowest touchdown that bounced and the launch against
+# the excess speed. The proven targets go into each run's copy of
+# `ascension.verified`: `h2 sim harvest results/superbounce-drops`.
+map = "ascension"
+game_type = "slayer"
+score_limit = 50      # nobody scores: a dropped seat never fights
+seed = 1
+max_wall_s = 3600     # the run ends when its drops are done
+render_every = 0
+pace = "unpaced"
+# Unset here and filled by the table: 15 "Dropper" seats, no time limit,
+# team play (free-for-all sims end at tick 0) and a training report.
+
+[drops]
+targets = "scan"      # every bounce candidate of ascension.spots
+max_targets = 60      # the first 60 in the scan's order
+heights = [0.5, 1.0, 2.0, 3.5, 5.0, 8.0]          # over the target's floor
+across = { from = -0.12, to = 0.12, step = 0.02 } # units across the edge
+along = 5             # points along each edge
+repeats = 1
+# approach = { stick = 0.3, lead = 0.2 }  # a push through the fall, from each side
