@@ -868,13 +868,30 @@ type script** window is a tab beside the variant's settings
 
 - **New** starts a blank script, or one of the built-in game types or
   examples to change. **Open**, **Save** and **Save as** read and write
-  `.rules` files. **Format** lays the script out the standard way.
-- The text is coloured as the language reads it. Hover a name for what
-  it is. **Ctrl+Space** lists what can go at the cursor; click one to
-  put it in. Inside a call, the line under the text shows the call's
-  parameters.
+  `.rules` files. Opening a script picks the window's tab. **Format**
+  (**Shift+Alt+F**) lays the script out the standard way; it refuses a
+  script that does not parse.
+- The text is coloured as the language reads it (its semantic tokens),
+  and every use of the name at the cursor is highlighted.
+- **Completion as you type.** Typing a name, or a `.`, opens the list of
+  what can go at the cursor, narrowed to what the word typed starts
+  with, then what holds it, each in the language's order (what the
+  place wants first). **Ctrl+Space** opens it with nothing typed.
+  **Up** and **Down** pick, **Enter** or **Tab** (or a click) puts the
+  pick in, **Escape** closes the list. A snippet goes in with its
+  defaults written out and the first one selected, so typing replaces
+  it. The list shows the pick's documentation under it.
+- Hover a name for what it is, and a problem's text for the problem.
+  Inside a call, the line under the text shows the call's parameters.
 - **Problems** lists every error and warning, errors first; each is
-  underlined in the text, and clicking one puts the cursor on it.
+  underlined in the text, and clicking one puts the cursor on it. Each
+  fix the language offers is a button on its row, and **Cmd+.** lists
+  the fixes at the cursor.
+- **Rename** (**F2**) renames the name at the cursor and every use of
+  it; the language refuses a keyword or a name the script has already.
+  **F12** or **Cmd+click** goes to where a name is declared.
+- **Escape** never throws typing away: with the list open it closes the
+  list, otherwise it leaves the text as it is.
 - **Check** is the [workbench](../game/rules-engine.md#workbench)
   report: the worst tick against the op budget and each handler's cost,
   the variables used against their limits, the size, and the
