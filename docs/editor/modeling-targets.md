@@ -1,8 +1,13 @@
 # Modeling targets: the Halo 2 round trip
 
-Status: Design. The geometry targets and map write path are planned.
-Code: `crates/tools/mesh-edit` provides the mesh kernel. The target
-readers and encoders below describe the proposed interfaces.
+Status: Partly built. Structure render geometry and render models are
+read and written in place and grown (`crates/tools/geometry-edit`,
+`crates/formats/tags/src/geometry_write.rs`, `MapEditor::patch_raw` and
+`append_raw`); collision, portals, lightmap rebakes and physics models
+are designs.
+Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
+`crates/formats/tags/src/geometry_write.rs`,
+`crates/formats/map/src/writer.rs`.
 Switch: none in the environment. The session switches **Allow growing full blocks** and **Allow unverified geometry writes** (both off by default) gate the write classes below.
 
 How each thing the Modeling tool of [modeling.md](modeling.md) edits is
@@ -29,8 +34,8 @@ as...** and packages count them as they count tag patches.
 | List | Written by | Rule |
 |---|---|---|
 | `tag_patches`: `(TagId, offset, bytes)` | `MapEditor::patch_tag` | fixed length, in the tag's own space, so it reaches `sbsp` and `ltmp` in a BSP region |
-| `raw_patches`: `(file offset, bytes)` | `MapEditor::patch_raw` (new) | fixed length, inside one local raw block, never the header, index or tables |
-| `raw_new`: bytes, alignment, and the `(TagId, offset)` words that take its file offset | `MapEditor::append_raw` (new) | placed where the tag index starts, as `map::build` places raw data; the index and metadata follow it, header `+0x10` and `+8` grow; the metadata still ends the file, so `append_metadata` still works |
+| `raw_patches`: `(file offset, bytes)` | `MapEditor::patch_raw` | fixed length, inside one local raw block, never the header, index or tables |
+| `raw_appends`: bytes, alignment, and the tag word that takes its raw pointer | `MapEditor::append_raw` | placed where the tag index starts, as `map::build` places raw data; the index and metadata follow it, header `+0x10` and `+8` grow by the bytes padded to a page; the metadata still ends the file, so `append_metadata` still works. Refused on a map whose metadata does not end the file, or with a BSP region or string table past the index (`Map::raw_append_refusal`) |
 
 Three write classes follow from them. A target's edit is in the lowest
 class that holds it, and the status bar and `geometry.check` name it.
@@ -45,7 +50,7 @@ A package of such a map is a BPS patch when the length changed, as for
 grown scenario blocks, and its `[result] geometry` hash
 (`scenario_edit::package::geometry_hash`) differs from its base's.
 
-The proposed section encoder in `tags` is the one section
+The section encoder in `tags` is the one section
 encoder: `encode_section(layout: &SectionLayout, data: &SectionData)`
 returns the framed raw block (`blkh`, struct, `rsrc` resources, `blkf`)
 and its resource entries, for `STRUCTURE_SECTION` and `MODEL_SECTION`. It
@@ -77,6 +82,14 @@ source block `encode(decode(block))` is the block.
   and its `2n` table (`h1convert::structure::visibility_mopp`, checked by
   `check_visibility`), part spheres and boxes, cluster bounds. The
   cluster's predicted resources stay, since no material is added.
+  Built in `geometry_edit::grow`: a part left with no face is dropped,
+  a new vertex starts from the bytes of a source vertex at the same mesh
+  vertex (so the incident light stream carries over), the code and table
+  are rebuilt only when the source section has them, and an encoding
+  that still fits the old block is written over it in place. The
+  cluster's bounds grow to hold the new vertices; the block info word
+  takes the appended block's pointer, and the old block stays,
+  unreferenced.
 - **Limits.** 65,535 vertices and 65,535 indices a section (`u16`
   counts; `h1convert::structure::SECTION_MAX`); a raw block under 16 MiB
   (`geometry::MAX_BLOCK_SIZE`); a material index below the count at
@@ -88,7 +101,11 @@ source block `encode(decode(block))` is the block.
   BSP"). `unknown_0c`, the opaque vertex count, sizes lightmap bucket
   ranges ([structure-bsp.md](../formats/structure-bsp.md)): a section
   that a lightmap bucket reference reaches keeps its vertex count and
-  order, so it is refused for the grown class.
+  order, so it is refused for the grown class. A definition is reached
+  through its placements' instance references; a cluster's reference is
+  chosen by a render-key field that is not mapped to clusters, so any
+  cluster reference with an offset in a flagged bucket refuses every
+  cluster of the BSP (**Design**).
 - **Deferred.** New materials (the block at `sbsp+0xa4` grows and the
   cluster's predicted resources change), new clusters, new instanced
   definitions, the second visibility code (`0x1000` entries), in-tag
@@ -246,8 +263,11 @@ only (above). Rewriting bucket streams is deferred.
   a list, except in a sky's model, which is refused (the sky draw draws
   every part as a strip, [sky.md](../halo1/sky.md)).
 - **LODs.** An edit changes one section. The others are stale, and the
-  tool offers **Use for lower LODs**: a fixed patch pointing the
-  permutation's lower LOD indices at the edited section.
+  session offers **Use for lower LODs**
+  (`GeometrySession::set_use_for_lower_lods`, one undo step): in each
+  permutation whose highest level naming the section is `k`, every
+  present level below `k` is pointed at it, as fixed patches of the
+  permutation's LOD indices (`+4`); a level that is -1 stays -1.
 - **Limits.** 65,535 vertices a section; node indices are bytes into the
   section's node map; the raw pointer's file. A section whose block is
   in `shared.map` or another cache is copied into the open map on the

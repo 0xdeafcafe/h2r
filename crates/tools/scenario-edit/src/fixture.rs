@@ -227,6 +227,29 @@ pub fn fixture_with_volumes_at_end() -> Vec<u8> {
     at_end(fixture_with_volumes())
 }
 
+/// `b` with a copy of its tag index and metadata placed after everything
+/// else and the header pointed at it, so the metadata ends the file while
+/// raw data past the old metadata stays where its pointers say (the old
+/// copy is left as dead bytes). A grown section's block can then be
+/// inserted before the index (`map::MapEditor::append_raw`).
+pub fn metadata_last(mut b: Vec<u8>) -> Vec<u8> {
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let index = word(&b, 0x10) as usize;
+    let len = (word(&b, 0x14) + word(&b, 0x18)) as usize;
+    let moved = b.len();
+    let copy = b[index..index + len].to_vec();
+    b.extend(copy);
+    put(&mut b, 0x10, moved as u32);
+    put(&mut b, 8, b.len() as u32);
+    b
+}
+
+/// [`fixture_with_textured_bsp`] with its metadata ending the file
+/// ([`metadata_last`]).
+pub fn fixture_with_textured_bsp_last() -> Vec<u8> {
+    metadata_last(fixture_with_textured_bsp())
+}
+
 fn at_end(mut b: Vec<u8>) -> Vec<u8> {
     let end = META_FILE + 0x2000;
     b.truncate(end);

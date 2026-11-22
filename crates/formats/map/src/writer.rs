@@ -3,8 +3,11 @@
 //! change. Variable-length tag names are appended; opaque metadata/raw pointers
 //! keep their original addresses. New metadata bytes may be appended after the
 //! last tag (growing the ordinary metadata region in place, see
-//! [`MapEditor::append_metadata`]); nothing that exists moves. This is not a
-//! general tag-graph relocator.
+//! [`MapEditor::append_metadata`]); nothing that exists moves. New raw data
+//! may be inserted before the tag index ([`MapEditor::append_raw`]): the
+//! index and metadata move down the file, and nothing that a raw pointer, a
+//! BSP descriptor or a virtual address names moves. This is not a general
+//! tag-graph relocator.
 use crate::{AddressSpace, Error, Map, Result, TagId, checksum::XorChecksum};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -25,6 +28,42 @@ impl<R: Read + Seek> Map<R> {
         }
         Ok(at)
     }
+    /// Why [`MapEditor::append_raw`] refuses this map, if it does: the
+    /// metadata does not end the file, the file has bytes past its
+    /// declared length, or a BSP region or a string or name table lies at
+    /// or past the tag index (any of them would have to move).
+    pub fn raw_append_refusal(&self) -> Option<&'static str> {
+        let h = self.header();
+        let index = u64::from(h.index_offset);
+        let region_end = index + u64::from(h.index_size) + u64::from(self.metadata_size());
+        if region_end != u64::from(h.file_size) || self.storage_length() != u64::from(h.file_size)
+        {
+            return Some("the metadata region does not end the file");
+        }
+        let metadata = self.metadata_space();
+        if self
+            .tags()
+            .iter()
+            .filter_map(|t| t.location.map(|l| l.space))
+            .any(|s| Some(s) != metadata && s.file_offset + u64::from(s.size) > index)
+        {
+            return Some("a BSP region lies past the tag index");
+        }
+        let tables = [
+            (h.fixed_strings_offset, h.strings.count),
+            (h.strings.index_offset, h.strings.count),
+            (h.strings.data_offset, h.strings.count),
+            (h.tag_names.index_offset, h.tag_names.count),
+            (h.tag_names.data_offset, h.tag_names.count),
+        ];
+        if tables
+            .iter()
+            .any(|&(at, count)| count != 0 && at != 0 && u64::from(at) >= index)
+        {
+            return Some("a string or name table lies past the tag index");
+        }
+        None
+    }
     /// Begin a bounded edit transaction. Dropping it leaves the source unchanged.
     pub fn edit(&mut self) -> MapEditor<'_, R> {
         MapEditor {
@@ -32,6 +71,7 @@ impl<R: Read + Seek> Map<R> {
             patches: BTreeMap::new(),
             names: BTreeMap::new(),
             appended: Vec::new(),
+            raw: Vec::new(),
             strings: Vec::new(),
         }
     }
@@ -47,6 +87,9 @@ pub struct MapEditor<'a, R> {
     names: BTreeMap<usize, String>,
     /// Bytes appended after the ordinary metadata region, unpadded.
     appended: Vec<u8>,
+    /// Raw data inserted where the source's tag index starts, unpadded
+    /// (its first byte lands at the source's `+0x10`).
+    raw: Vec<u8>,
     /// New string IDs, after the source's.
     strings: Vec<String>,
 }
@@ -284,29 +327,99 @@ impl<R: Read + Seek> MapEditor<'_, R> {
     pub fn appended_len(&self) -> usize {
         self.appended.len()
     }
-    /// Header sizes after appending `n` bytes: (growth, new `+0x18`, new
-    /// `+0x1c`, new file length), checked against the engine's limits.
+    /// Header sizes after appending `n` bytes of metadata, with the raw
+    /// data queued so far inserted: (growth, new `+0x18`, new `+0x1c`, new
+    /// file length), checked against the engine's limits.
     fn grown_sizes(&self, n: usize) -> Result<(u32, u32, u32, u32)> {
+        self.sizes(self.raw.len(), n)
+    }
+    /// [`Self::grown_sizes`] for `raw` bytes of raw data and `n` of
+    /// metadata.
+    fn sizes(&self, raw: usize, n: usize) -> Result<(u32, u32, u32, u32)> {
         let h = self.map.header();
-        let a = METADATA_GROWTH_ALIGN as usize;
-        let growth = n.div_ceil(a).checked_mul(a).ok_or(Error::Limit)?;
-        let growth = u32::try_from(growth).map_err(|_| Error::Limit)?;
+        let growth = grown(n)?;
+        let inserted = grown(raw)?;
         let data = self
             .map
             .metadata_size()
             .checked_add(growth)
             .ok_or(Error::Limit)?;
         let total = h.meta_size.checked_add(growth).ok_or(Error::Limit)?;
-        let file = h.file_size.checked_add(growth).ok_or(Error::Limit)?;
+        let file = h
+            .file_size
+            .checked_add(growth)
+            .and_then(|f| f.checked_add(inserted))
+            .ok_or(Error::Limit)?;
         if growth != 0 && total > max_metadata_size(h.cache_type)? {
             return Err(Error::Invalid(
                 "grown metadata exceeds the engine's tag memory",
             ));
         }
-        if growth != 0 && u64::from(file) > cache_size_limit(h.cache_type)? {
+        if (growth != 0 || inserted != 0) && u64::from(file) > cache_size_limit(h.cache_type)? {
             return Err(Error::Invalid("edited map exceeds engine cache size limit"));
         }
         Ok((growth, data, total, file))
+    }
+    /// The length raw data takes in the file: [`Self::append_raw`]'s bytes
+    /// padded to [`METADATA_GROWTH_ALIGN`].
+    fn inserted_len(&self) -> Result<u32> {
+        grown(self.raw.len())
+    }
+
+    /// Insert `bytes` as new raw data of this file (a grown section's
+    /// block, a resized image's pixels) and return the raw pointer to
+    /// their first byte, aligned to `align` (a power of two up to 0x1000)
+    /// in the file. The caller points a tag at them with
+    /// [`Self::patch_metadata`] or [`Self::patch_bsp`]; until then nothing
+    /// names them.
+    ///
+    /// The bytes go where the source's tag index starts, as `map::build`
+    /// places raw data (docs/editor/modeling-targets.md, "The session and
+    /// the save"): on write the index and the ordinary metadata follow
+    /// them, header `+0x10` and `+8` grow by the bytes padded to
+    /// [`METADATA_GROWTH_ALIGN`], and every queued patch at or past the
+    /// index moves with it. Raw pointers, BSP descriptors and every
+    /// virtual address stay valid, because everything they name lies
+    /// before the index. The metadata still ends the file, so
+    /// [`Self::append_metadata`] works in the same transaction and on the
+    /// result.
+    ///
+    /// Refused when the metadata does not end the file, when the file has
+    /// bytes past its declared length, when a BSP region or a string or
+    /// name table lies at or past the index, when the new block would pass
+    /// the 30-bit raw offset, and when the file would pass the per-type
+    /// cache size limit.
+    pub fn append_raw(&mut self, bytes: &[u8], align: u32) -> Result<crate::RawPointer> {
+        if !align.is_power_of_two() || align > METADATA_GROWTH_ALIGN {
+            return Err(Error::Invalid("raw append alignment"));
+        }
+        if bytes.is_empty() {
+            return Err(Error::Invalid("empty raw append"));
+        }
+        if let Some(why) = self.map.raw_append_refusal() {
+            return Err(Error::Invalid(why));
+        }
+        let index = u64::from(self.map.header().index_offset);
+        let align = u64::from(align);
+        let end = index + self.raw.len() as u64;
+        let pad = (align - end % align) % align;
+        let start = self.raw.len() + pad as usize;
+        let total = start.checked_add(bytes.len()).ok_or(Error::Limit)?;
+        let offset = index + start as u64;
+        if offset + bytes.len() as u64 > 1 << 30 {
+            return Err(Error::Invalid("raw data past the 30-bit raw offset"));
+        }
+        self.sizes(total, self.appended.len())?;
+        self.raw.resize(start, 0);
+        self.raw.extend_from_slice(bytes);
+        Ok(crate::RawPointer {
+            file: crate::ResourceFile::Local,
+            offset: offset as u32,
+        })
+    }
+    /// The raw bytes [`Self::append_raw`] has queued, before padding.
+    pub fn appended_raw_len(&self) -> usize {
+        self.raw.len()
     }
     /// Byte ranges (start, end) of the tag index and the string/name tables.
     fn protected_ranges(&self) -> Vec<(u64, u64)> {
@@ -370,6 +483,7 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         if self.patches.is_empty()
             && self.names.is_empty()
             && self.appended.is_empty()
+            && self.raw.is_empty()
             && self.strings.is_empty()
         {
             return self.map.write_to(out);
@@ -392,30 +506,72 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         }
         let origin = out.stream_position()?;
         let mut header = self.map.read_file_range(0, 0x800)?;
+        // Raw data goes where the index was; the index, the metadata and
+        // every patch at or past it follow (`append_raw`).
+        let index_offset = self.map.header().index_offset;
+        let inserted = self.inserted_len()?;
+        let mut raw = std::mem::take(&mut self.raw);
+        raw.resize(inserted as usize, 0);
+        if inserted != 0 {
+            let (.., file) = self.sizes(raw.len(), 0)?;
+            let moved = index_offset.checked_add(inserted).ok_or(Error::Limit)?;
+            for (at, value) in [(8, file), (0x10, moved)] {
+                header[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
         let mut grown = Vec::new();
         if !self.appended.is_empty() {
-            let (growth, data, total, file) = self.grown_sizes(self.appended.len())?;
+            let (growth, data, total, file) = self.sizes(raw.len(), self.appended.len())?;
             grown = std::mem::take(&mut self.appended);
             grown.resize(growth as usize, 0);
             for (at, value) in [(8, file), (0x18, data), (0x1c, total)] {
                 header[at..at + 4].copy_from_slice(&value.to_le_bytes());
             }
         }
-        let names_base = self.map.storage_length() + grown.len() as u64;
+        let source_end = self.map.storage_length() + u64::from(inserted);
+        let names_base = source_end + grown.len() as u64;
         let mut append = grown;
         append.extend(self.rebuild_names(&mut header, names_base)?);
-        let strings_base = self.map.storage_length() + append.len() as u64;
+        let strings_base = source_end + append.len() as u64;
         append.extend(self.rebuild_strings(&mut header, strings_base)?);
-        let length = self.map.storage_length() + append.len() as u64;
+        let length = source_end + append.len() as u64;
         let end = origin.checked_add(length).ok_or(Error::Limit)?;
         if length > limit {
             return Err(Error::Invalid("edited map exceeds engine cache size limit"));
         }
         out.write_all(&header)?;
         let mut checksum = XorChecksum::default();
-        let mut at = 0x800;
-        while at < self.map.storage_length() {
-            let n = (self.map.storage_length() - at).min(CHUNK);
+        let storage = self.map.storage_length();
+        if inserted == 0 {
+            self.copy_patched(0x800, storage, out, &mut checksum)?;
+        } else {
+            let index = u64::from(index_offset);
+            self.copy_patched(0x800, index, out, &mut checksum)?;
+            checksum.update(&raw);
+            out.write_all(&raw)?;
+            self.copy_patched(index, storage, out, &mut checksum)?;
+        }
+        checksum.update(&append);
+        out.write_all(&append)?;
+        out.seek(SeekFrom::Start(
+            origin.checked_add(0x2d0).ok_or(Error::Limit)?,
+        ))?;
+        out.write_all(&checksum.finish().to_le_bytes())?;
+        out.seek(SeekFrom::Start(end))?;
+        Ok(length)
+    }
+    /// Stream the source's bytes `[from, to)` with the queued patches
+    /// applied, into `out` and the checksum.
+    fn copy_patched(
+        &mut self,
+        from: u64,
+        to: u64,
+        out: &mut impl Write,
+        checksum: &mut XorChecksum,
+    ) -> Result<()> {
+        let mut at = from;
+        while at < to {
+            let n = (to - at).min(CHUNK);
             let mut bytes = self.map.read_storage_range(at, n)?;
             for (&start, patch) in self.patches.range(..at + n) {
                 let end = start + patch.len() as u64;
@@ -431,14 +587,7 @@ impl<R: Read + Seek> MapEditor<'_, R> {
             out.write_all(&bytes)?;
             at += n;
         }
-        checksum.update(&append);
-        out.write_all(&append)?;
-        out.seek(SeekFrom::Start(
-            origin.checked_add(0x2d0).ok_or(Error::Limit)?,
-        ))?;
-        out.write_all(&checksum.finish().to_le_bytes())?;
-        out.seek(SeekFrom::Start(end))?;
-        Ok(length)
+        Ok(())
     }
     /// The string-ID tables with the added strings, placed from file offset
     /// `base` (the end of everything written before them), each sector
@@ -578,6 +727,13 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         }
         Ok(append)
     }
+}
+
+/// `n` bytes rounded up to [`METADATA_GROWTH_ALIGN`].
+fn grown(n: usize) -> Result<u32> {
+    let a = METADATA_GROWTH_ALIGN as usize;
+    let g = n.div_ceil(a).checked_mul(a).ok_or(Error::Limit)?;
+    u32::try_from(g).map_err(|_| Error::Limit)
 }
 
 /// Native campaign slots can stream a complete converted level up to the absolute

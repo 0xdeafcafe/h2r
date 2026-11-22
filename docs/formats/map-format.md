@@ -739,6 +739,23 @@ the same type on the owner's disc (V): campaign `0xc24000`, multiplayer
 `0x69e000`. [scenario-editor.md](../editor/scenario-editor.md) §6 has the details and
 the open question.
 
+### Inserting raw data
+
+`append_raw(bytes, align)` (`crates/formats/map/src/writer.rs`) queues new
+raw data and returns its raw pointer; the caller points a tag word at it.
+The bytes go where the source's tag index starts, as the builder places
+raw data ([map-builder.md](map-builder.md), "Layout"): on write the index
+and the ordinary metadata follow them, `+0x10` and `+8` grow by the bytes
+padded to `0x1000`, and every queued patch at or past the index moves with
+it. Raw pointers, BSP descriptors and every virtual address stay valid,
+because what they name lies before the index; the metadata still ends the
+file, so `append_metadata` works in the same edit and on the result.
+`Map::raw_append_refusal` names why a map cannot take it: the metadata
+does not end the file, the file has bytes past its declared length, or a
+BSP region or a string or name table lies past the index. A block must end
+below 2^30 (the raw pointer's offset bits) and the file stay under the
+per-type cache size limit.
+
 To write a whole map from a set of tags, with every layout-dependent field
 recorded as a fixup, use the builder in [map-builder.md](map-builder.md)
 instead.
