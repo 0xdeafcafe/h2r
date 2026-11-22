@@ -47,6 +47,8 @@ carrier slayer
 teams 1
 requires ai.squads
 
+label ff_drop: objects
+
 table waves: (class: Class, per_player: int, min: int, max: int, gap: int) = [
     ("grunt", 2, 2, 6, 3),
     ("elite", 1, 1, 3, 5),
@@ -59,14 +61,14 @@ global var next: timer = 2
 on timer(next) {
     let w = waves[wave]
     let s = squad(wave % 16)
-    place_squad(s, w.class, clamp(count(players) * w.per_player, w.min, w.max), labelled "ff_drop")
+    place_squad(s, w.class, clamp(count(players) * w.per_player, w.min, w.max), ff_drop)
     hunt(s)
 }
 on squad_dead(s) {
     wave = wave + 1
     if wave == len(waves) { end_round(team 0) } else { next = waves[wave - 1].gap }
 }
-on actor_kill(killer, class) { score(killer, points[class].score) }
+on actor_kill(killer, class) { if killer != none { score(killer, points[class].score) } }
 on death(p) {
     if lives > 0 { lives = lives - 1; respawn(p) }
     else if count(players where alive) == 0 { end_round(none) }
@@ -589,18 +591,19 @@ fn on_bounce_hears_its_chain_and_monster_and_on_bounced_its_player() {
     assert_eq!(vm.fire(&mut g, Input::Bounced(1)), Fired::NoHandler);
 }
 
-/// Handler arity is exact for every event, `on bounce` included: a
-/// two-parameter `on bounce(p, spot)` is refused with the parameters it
-/// takes.
+/// A handler may leave out trailing arguments (`on bounce(p, spot)`); one
+/// that names more than its event gives is refused with what the event
+/// gives.
 #[test]
-fn a_bounce_handler_with_too_few_parameters_is_refused() {
-    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounce(p, spot) { }\n");
+fn a_bounce_handler_with_too_many_parameters_is_refused() {
+    compile("rules \"X\" 1\ncarrier slayer\non bounce(p, spot) { score(p, 1) }\n").unwrap();
+    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounce(p, spot, chain, monster, extra) { }\n");
     assert!(
-        e.contains("on bounce takes 4 arguments (player, object, int, bool)"),
+        e.contains("on bounce gives 4 arguments (player, zone, int, bool); this handler names 5."),
         "{e}"
     );
     let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounced(p, spot) { }\n");
-    assert!(e.contains("on bounced takes 1 argument (player)"), "{e}");
+    assert!(e.contains("on bounced gives 1 argument (player); this handler names 2."), "{e}");
     // The verifier refuses a blob whose bounce handler lacks the count.
     let (mut ir, _) = build(BOUNCES).unwrap();
     let hd = ir
@@ -677,10 +680,12 @@ fn for_each_visits_players_by_slot_and_objects_by_placement() {
     let src = r#"
 rules "Order" 1
 carrier slayer
+label flag: objects
+global var n: int = 0
 on tick {
     for each players p { score(p, 1) }
-    for each objects labelled "flag" o { if is_objective(o) { score(none, 0) } }
-    score(first(players where alive), 5)
+    for each flag o { if is_objective(o) { n = n + 1 } }
+    if let p = first(players where alive) { score(p, 5) }
 }
 "#;
     let (ir, _) = build(src).unwrap();

@@ -1,12 +1,14 @@
-// Superbounce: Slayer's rules with the superbounce mode's guide (the HUD,
-// the marks over the map, priming and the medals), which the host turns
-// on for `requires hud.superbounce`. `list tweakers` files its variants
-// under Tweakers. Its record settings (no score or time limit, 3 s
-// respawn, overshields, a magnum, nothing on the map) are the variant
-// record's, not the script's. A bounce scores `bounce_points` times its
-// place in its chain, capped at 6 (Bouncetacular), and twice that for a
-// Monster Bounce; a Bounced (a fall out of the map during a bounce) costs
-// a point. The medals, chains and the Monster test are the host's.
+// Superbounce: the superbounce mode's guide (the HUD, the marks over the
+// map, priming and the medals), which the host turns on for `requires
+// hud.superbounce`, and scoring by bounces alone. `list tweakers` files
+// its variants under Tweakers. Its record settings (no score or time
+// limit, 3 s respawn, overshields, a magnum, nothing on the map) are the
+// variant record's, not the script's. A kill scores nothing. A bounce
+// scores `bounce_points` times its place in its chain, capped at 6
+// (Bouncetacular), and twice that for a Monster Bounce; a Bounced (a fall
+// out of the map during a bounce) costs a point, and so does a death by
+// the player's own hand. The medals, chains and the Monster test are the
+// host's.
 // docs/game/superbounce.md, "The superbounce game type", and
 // docs/game/rules-engine.md, "Firefight, AI and bounces".
 //
@@ -16,22 +18,16 @@ carrier slayer
 list tweakers
 requires hud.superbounce
 
-option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
-option suicide_costs: bool = true "Suicide penalty" "A suicide costs a point"
+option suicide_costs: bool = true "Suicide penalty" "A death with no killer, or by your own hand, costs a point"
 option bounce_points: int 0..5 = 1 "Bounce points" "Points for each superbounce, times its place in the chain"
 option bounced_costs: bool = true "Bounced penalty" "A fall out of the map during a bounce costs a point"
 option monster_double: bool = true "Monster double" "A Monster Bounce scores double"
 
 player var bounces: int = 0
 
+// A kill scores nothing; a suicide or a fall costs a point.
 on kill(victim, killer) {
-    if killer == none or killer == victim {
-        if suicide_costs { score(victim, -1) }
-    } else if variant.team_play and killer.team == victim.team {
-        score(killer, -1)
-    } else {
-        score(killer, kill_points)
-    }
+    if suicide_costs and (killer == none or killer == victim) { score(victim, -1) }
 }
 
 // The chain's multiplier stops at 6, Bouncetacular's count, so a long

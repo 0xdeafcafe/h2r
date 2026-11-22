@@ -264,7 +264,7 @@ mod tests {
     use lsp_server::RequestId;
 
     const URI: &str = "file:///t.rules";
-    const SRC: &str = "rules \"T\" 1\ncarrier slayer\non kill(v, k) {\n    score(k, 1)\n}\n";
+    const SRC: &str = "rules \"T\" 1\ncarrier slayer\non kill(k, v) {\n    score(k, 1)\n}\n";
 
     fn note(method: &str, params: Value) -> Message {
         Message::Notification(Notification::new(method.to_string(), params))
@@ -312,7 +312,7 @@ mod tests {
         assert!(v["contents"]["value"].as_str().unwrap().contains("score(player, int)"));
         let v = result(s.handle(req(2, "textDocument/definition", at(3, 10))));
         assert_eq!(v[0]["uri"], URI);
-        assert_eq!(v[0]["range"]["start"], json!({"line": 2, "character": 11}));
+        assert_eq!(v[0]["range"]["start"], json!({"line": 2, "character": 8}));
         let mut refs = at(3, 10);
         refs["context"] = json!({"includeDeclaration": false});
         let v = result(s.handle(req(3, "textDocument/references", refs)));

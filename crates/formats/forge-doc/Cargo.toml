@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 content.workspace = true
 map.workspace = true
+rules.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

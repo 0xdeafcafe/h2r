@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::fake::{FakeGame, FakePlayer};
-use crate::ir::{Event, Scope};
+use crate::ir::{Event, LabelKind, Scope};
+use crate::labels::{self, Census, Class, Member};
 use crate::ty::Ty;
 use crate::vm::{Arg, Fired, Input, ScriptError};
 use crate::{Ir, Refusal, Vm, caps};
@@ -33,9 +34,12 @@ pub struct Scenario {
     /// script's carrier ([`crate::fake::stock_variant`]).
     #[serde(default)]
     pub variant: BTreeMap<String, i32>,
-    /// Labelled objects the map holds.
-    #[serde(default)]
-    pub labelled: Vec<ScenarioLabel>,
+    /// The map: what the game holds that a script labels. When absent,
+    /// [`labels::minimal`] supplies one ([`resolve_map`]); when present, it
+    /// must pass [`labels::check`] or the run refuses with the problems.
+    /// A file may still call it `labelled`.
+    #[serde(default, alias = "labelled", skip_serializing_if = "Option::is_none")]
+    pub map: Option<Vec<ScenarioLabel>>,
     /// `round_time_left()` at tick 0, counted down one a tick to 0.
     #[serde(default)]
     pub round_time_left: i32,
@@ -61,22 +65,118 @@ pub struct ScenarioPlayer {
     pub unit: Option<u32>,
 }
 
-/// A labelled object: `objects labelled "<label>"` visits it, and
-/// `o.number` reads its number.
+/// One thing of the map: a labelled object, zone or starting location.
+/// `objects labelled "<label>"` visits it, and `o.number` reads its number.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioLabel {
     pub label: String,
     pub object: u32,
-    #[serde(default)]
-    pub number: i32,
+    /// Its number under the label; a numbered label needs one on every
+    /// member, and `o.number` reads 0 when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<i32>,
     /// Its placement id, the order a set visits it in; the object's handle
     /// when absent.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<u32>,
     /// The team it belongs to (a flag's spawn, a base), for `o.team`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<u8>,
+    /// What it is on the map, which a label's kind is checked against.
+    /// When absent, what the script's label of that text is declared as:
+    /// a zone label's member is a volume, a spawn label's a starting
+    /// location, any other (and a label the script does not declare) an
+    /// object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<Class>,
+}
+
+impl ScenarioLabel {
+    /// A thing of `label` with the object handle `object` and nothing else
+    /// set.
+    pub fn new(label: &str, object: u32) -> ScenarioLabel {
+        ScenarioLabel {
+            label: label.to_string(),
+            object,
+            number: None,
+            placement: None,
+            team: None,
+            class: None,
+        }
+    }
+
+    /// Its class: the one it states, or the one its label's kind in `ir`
+    /// suggests.
+    pub fn class_in(&self, ir: &Ir) -> Class {
+        self.class.unwrap_or_else(|| {
+            ir.labels
+                .iter()
+                .find(|d| d.text == self.label)
+                .map_or(Class::Object, |d| match d.kind {
+                    LabelKind::Object => Class::Object,
+                    LabelKind::Zone => Class::Volume,
+                    LabelKind::Spawn => Class::Spawn,
+                })
+        })
+    }
+}
+
+/// The first object handle of a map [`labels::minimal`] supplies: the
+/// things take `MAP_BASE`, `MAP_BASE + 1`, ... in label order.
+pub const MAP_BASE: u32 = 0x100;
+
+/// The census of a list of things: what [`labels::check`] reads.
+pub fn census_of(ir: &Ir, things: &[ScenarioLabel]) -> Census {
+    let mut census = Census::default();
+    for t in things {
+        census.labels.entry(t.label.clone()).or_default().push(Member {
+            class: t.class_in(ir),
+            number: t.number,
+            team: t.team,
+        });
+    }
+    census
+}
+
+/// A census as things, numbered from `base`: its labels in order, each
+/// label's members in order.
+pub fn things_of(census: &Census, base: u32) -> Vec<ScenarioLabel> {
+    let mut out = Vec::new();
+    for (label, members) in &census.labels {
+        for m in members {
+            out.push(ScenarioLabel {
+                label: label.clone(),
+                object: base + out.len() as u32,
+                number: m.number,
+                placement: None,
+                team: m.team,
+                class: Some(m.class),
+            });
+        }
+    }
+    out
+}
+
+/// The things a run places: the scenario's own map when it has one, after
+/// [`labels::check`] for `teams`; else [`labels::minimal`]. `Err` is each
+/// problem's text, in the check's order.
+pub fn resolve_map(
+    ir: &Ir,
+    map: Option<&[ScenarioLabel]>,
+    teams: &[u8],
+) -> Result<Vec<ScenarioLabel>, Vec<String>> {
+    match map {
+        Some(things) => {
+            let problems = labels::check(ir, &census_of(ir, things), teams);
+            if problems.is_empty() {
+                Ok(things.to_vec())
+            } else {
+                Err(problems.into_iter().map(|p| p.text).collect())
+            }
+        }
+        None => Ok(things_of(&labels::minimal(ir, teams), MAP_BASE)),
+    }
 }
 
 fn yes() -> bool {
@@ -206,7 +306,7 @@ impl ScenarioEvent {
 /// Declares labelled objects on a game.
 pub fn label_all(game: &mut FakeGame, labels: &[ScenarioLabel]) {
     for l in labels {
-        game.label(&l.label, l.object, l.number, l.placement.unwrap_or(l.object));
+        game.label(&l.label, l.object, l.number.unwrap_or(0), l.placement.unwrap_or(l.object));
         if let Some(team) = l.team {
             game.object_teams.insert(l.object, team);
         }
@@ -310,15 +410,41 @@ impl RunResult {
     }
 }
 
-/// The game a scenario describes, before any tick.
-pub fn game_of(scenario: &Scenario) -> FakeGame {
+/// Why a scenario did not run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunError {
+    /// The VM refused the script.
+    Refused(Refusal),
+    /// The map fails the script's labels: each problem's text.
+    Map(Vec<String>),
+}
+
+impl From<Refusal> for RunError {
+    fn from(r: Refusal) -> RunError {
+        RunError::Refused(r)
+    }
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunError::Refused(r) => write!(f, "{r}"),
+            RunError::Map(problems) => write!(f, "the map: {}", problems.join("; ")),
+        }
+    }
+}
+
+/// The game a scenario describes, before any tick: its map placed
+/// ([`resolve_map`] over `ir`), or the map's problems.
+pub fn game_of(ir: &Ir, scenario: &Scenario) -> Result<FakeGame, RunError> {
     let mut game = FakeGame::with_players(0);
     if let Some(teams) = &scenario.teams {
         game.teams = teams.clone();
     }
     game.round_time_left = scenario.round_time_left.max(0);
     game.variant = scenario.variant.clone();
-    label_all(&mut game, &scenario.labelled);
+    let things = resolve_map(ir, scenario.map.as_deref(), &game.teams).map_err(RunError::Map)?;
+    label_all(&mut game, &things);
     for p in &scenario.players {
         game.players.insert(
             p.slot,
@@ -335,15 +461,16 @@ pub fn game_of(scenario: &Scenario) -> FakeGame {
             game.units.insert(unit, p.slot);
         }
     }
-    game
+    Ok(game)
 }
 
 /// Runs `ir` over `scenario`, every tick through [`step`]; queued calls
 /// are also made after the last tick. The run does not stop at
-/// `end_round`.
-pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, Refusal> {
+/// `end_round`. A map that fails the script's labels is a
+/// [`RunError::Map`] and nothing runs.
+pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
     let options = scenario.options.unwrap_or_else(|| ir.default_options());
-    let mut game = game_of(scenario);
+    let mut game = game_of(&ir, scenario)?;
     game.carrier = ir.header.carrier;
     let mut vm = Vm::new(ir, options, scenario.seed)?;
     let end_name = caps::entry(caps::id::END_ROUND, caps::API_VERSION).map(|e| e.name);
@@ -432,9 +559,10 @@ on kill(victim, killer) {
         assert!(s.players[0].alive);
         assert_eq!(s.players[0].unit, Some(100));
         assert_eq!(s.variant["score_limit"], 10);
-        assert_eq!(s.labelled[0].number, 2);
-        assert_eq!((s.labelled[0].team, s.labelled[1].team), (None, Some(1)));
-        assert_eq!(game_of(&s).object_teams.get(&41), Some(&1));
+        let map = s.map.as_ref().unwrap();
+        assert_eq!(map[0].number, Some(2));
+        assert_eq!((map[0].team, map[1].team), (None, Some(1)));
+        assert_eq!(game_of(&ir(), &s).unwrap().object_teams.get(&41), Some(&1));
         assert_eq!(
             s.ticks[0].events[0],
             ScenarioEvent::Kill {
@@ -515,7 +643,7 @@ on kill(victim, killer) {
         assert_eq!(r.game.players[&1].deaths, 1);
         assert!(!r.game.players[&1].alive);
         let mut vm = Vm::new(crate::build(src).unwrap().0, 0, 0).unwrap();
-        let mut g = game_of(&s);
+        let mut g = game_of(&crate::build(src).unwrap().0, &s).unwrap();
         step(&mut vm, &mut g, 0, true, &[s.ticks[0].events[0].input()]);
         assert_eq!(vm.global("seen"), Some(11));
     }
@@ -531,7 +659,7 @@ on kill(victim, killer) {
         };
         let ir = crate::build(src).unwrap().0;
         let mut vm = Vm::new(ir.clone(), 0, 0).unwrap();
-        let mut g = game_of(&s);
+        let mut g = game_of(&ir, &s).unwrap();
         g.carrier = ir.header.carrier;
         for t in 0..4 {
             step(&mut vm, &mut g, t, true, &[]);
@@ -541,31 +669,28 @@ on kill(victim, killer) {
         assert_eq!(vm.global("left"), Some(7));
         let mut set = s.clone();
         set.variant.insert("score_limit".into(), 50);
+        let mut g = game_of(&ir, &set).unwrap();
         let mut vm = Vm::new(ir, 0, 0).unwrap();
-        let mut g = game_of(&set);
         step(&mut vm, &mut g, 0, true, &[]);
         assert_eq!(vm.global("limit"), Some(50));
     }
 
     #[test]
     fn ticks_held_counts_a_zone_held_alone() {
-        let src = "rules \"Z\" 1\ncarrier slayer\nglobal var held: int = 0\n\
-                   on tick { held = ticks_held(first(objects labelled \"zone\"), team 0) }\n";
+        let src = "rules \"Z\" 1\ncarrier slayer\nlabel zone: zone\nglobal var held: int = 0\n\
+                   on tick { held = ticks_held(zone, team 0) }\n";
         let mut s = Scenario {
             players: vec![seat(0, 0), seat(1, 1)],
-            labelled: vec![ScenarioLabel {
-                label: "zone".into(),
-                object: 50,
-                number: 0,
-                placement: None,
-                team: None,
-            }],
+            map: Some(vec![ScenarioLabel {
+                number: Some(0),
+                ..ScenarioLabel::new("zone", 50)
+            }]),
             ..Scenario::default()
         };
         s.players[0].unit = Some(100);
         s.players[1].unit = Some(101);
         let mut vm = Vm::new(crate::build(src).unwrap().0, 0, 0).unwrap();
-        let mut g = game_of(&s);
+        let mut g = game_of(&crate::build(src).unwrap().0, &s).unwrap();
         let enter = |object| Input::Enter { zone: 50, object };
         // Tick 0 names the zone; ticks 1 to 3 player 0 holds it alone.
         step(&mut vm, &mut g, 0, true, &[enter(100)]);
@@ -581,6 +706,107 @@ on kill(victim, killer) {
         // The round's end clears the counters.
         step(&mut vm, &mut g, 5, true, &[Input::RoundEnd]);
         assert_eq!(vm.ticks_held(50, 0), 0);
+    }
+
+    /// A Siege-shaped table, built by hand so these tests do not read a
+    /// built-in's source.
+    fn siege() -> Ir {
+        use crate::ir::label_flags::*;
+        use crate::ir::{LabelDef, LabelKind};
+        let mut ir = ir();
+        ir.header.name = "Siege".into();
+        ir.labels = vec![
+            LabelDef { text: "goal".into(), kind: LabelKind::Zone, min: 1, max: 1, flags: SINGLE, lo: 0, hi: 0 },
+            LabelDef { text: "capture".into(), kind: LabelKind::Zone, min: 0, max: 256, flags: NUMBERED | RANGE, lo: 0, hi: 1 },
+            LabelDef { text: "flag_spawn".into(), kind: LabelKind::Zone, min: 0, max: 16, flags: PER_TEAM, lo: 0, hi: 0 },
+        ];
+        crate::verify(&ir).unwrap();
+        ir
+    }
+
+    fn thing(label: &str, object: u32, number: Option<i32>, class: Class) -> ScenarioLabel {
+        ScenarioLabel { number, class: Some(class), ..ScenarioLabel::new(label, object) }
+    }
+
+    #[test]
+    fn no_map_runs_on_the_minimal_one() {
+        let ir = siege();
+        let game = game_of(&ir, &Scenario::default()).unwrap();
+        // goal, capture 0 and 1, and one spawn a team in play.
+        assert_eq!(game.labelled["goal"].len(), 1);
+        assert_eq!(game.labelled["capture"].len(), 2);
+        assert_eq!(game.labelled["flag_spawn"].len(), 2);
+        let first = game.labelled.values().flatten().map(|p| p.object).min().unwrap();
+        assert_eq!(first, MAP_BASE);
+        assert_eq!(
+            census_of(&ir, &things_of(&labels::minimal(&ir, &[0, 1]), MAP_BASE)),
+            labels::minimal(&ir, &[0, 1])
+        );
+        assert!(run(ir, &Scenario::default()).is_ok());
+    }
+
+    #[test]
+    fn a_map_that_misses_a_label_is_refused_and_nothing_runs() {
+        let ir = siege();
+        let s = Scenario {
+            map: Some(vec![thing("goal", 40, None, Class::Volume)]),
+            ..Scenario::default()
+        };
+        let Err(RunError::Map(problems)) = run(ir.clone(), &s) else { panic!("ran") };
+        assert_eq!(
+            problems,
+            vec![
+                "no zone labelled \"capture\" has the number 0; Siege needs 0 and 1",
+                "no zone labelled \"capture\" has the number 1; Siege needs 0 and 1",
+                "team 0 has no zone labelled \"flag_spawn\"",
+                "team 1 has no zone labelled \"flag_spawn\"",
+            ]
+        );
+        // A one-team scenario asks only for team 0's.
+        let one = Scenario { teams: Some(vec![0]), ..s };
+        let Err(RunError::Map(problems)) = run(ir, &one) else { panic!("ran") };
+        assert_eq!(problems.len(), 3);
+        assert!(RunError::Map(problems).to_string().starts_with("the map: no zone"));
+    }
+
+    #[test]
+    fn a_map_with_a_class_runs_and_a_wrong_class_is_named() {
+        let ir = siege();
+        let mut map = things_of(&labels::minimal(&ir, &[0, 1]), 500);
+        let s = Scenario { map: Some(map.clone()), ..Scenario::default() };
+        let game = game_of(&ir, &s).unwrap();
+        assert_eq!(game.labelled["goal"][0].object, map.iter().find(|t| t.label == "goal").unwrap().object);
+        // A flag stands for a zone; an object does not.
+        map.iter_mut().find(|t| t.label == "goal").unwrap().class = Some(Class::Flag);
+        assert!(game_of(&ir, &Scenario { map: Some(map.clone()), ..Scenario::default() }).is_ok());
+        map.iter_mut().find(|t| t.label == "goal").unwrap().class = Some(Class::Object);
+        let Err(RunError::Map(problems)) = game_of(&ir, &Scenario { map: Some(map), ..Scenario::default() }) else {
+            panic!("placed")
+        };
+        assert_eq!(
+            problems,
+            vec!["\"goal\" on this map is an object; Siege needs a zone (a trigger volume or a flag)"]
+        );
+    }
+
+    #[test]
+    fn a_thing_without_a_class_takes_its_labels_kind() {
+        let ir = siege();
+        assert_eq!(ScenarioLabel::new("goal", 1).class_in(&ir), Class::Volume);
+        assert_eq!(ScenarioLabel::new("unlisted", 1).class_in(&ir), Class::Object);
+        // Those with no class in a file pass the check on that footing.
+        let s: Scenario = serde_json::from_str(
+            r#"{"map":[{"label":"goal","object":1},{"label":"capture","object":2,"number":0},
+                       {"label":"capture","object":3,"number":1},
+                       {"label":"flag_spawn","object":4,"team":0},{"label":"flag_spawn","object":5,"team":1}]}"#,
+        )
+        .unwrap();
+        assert!(game_of(&ir, &s).is_ok());
+        // `labelled` is the older name of `map`, and an absent map is not an empty one.
+        let old: Scenario = serde_json::from_str(r#"{"labelled":[]}"#).unwrap();
+        assert_eq!(old.map, Some(vec![]));
+        assert_eq!(serde_json::from_str::<Scenario>("{}").unwrap().map, None);
+        assert!(game_of(&ir, &old).is_err());
     }
 
     #[test]

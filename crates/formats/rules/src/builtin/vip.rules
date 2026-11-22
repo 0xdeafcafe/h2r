@@ -53,14 +53,13 @@ on spawn(p) {
 }
 
 on kill(victim, killer) {
-    let enemy = killer != none and killer != victim and killer.team != victim.team
     if victim.role == Role.vip {
         uncrown(victim)
-        if enemy { score(killer, vip_points) }
+        if let k = killer and k != victim and k.team != victim.team { score(k, vip_points) }
         succeed(victim)
         if count(players p where p.team == victim.team and p.role == Role.vip) == 0 { crown(victim) }
-    } else if enemy {
-        score(killer, 1)
+    } else if let k = killer and k != victim and k.team != victim.team {
+        score(k, 1)
     }
 }
 

@@ -14,8 +14,8 @@ requires player.weapons
 
 option suicide_demotes: bool = true "Suicide demotes" "A suicide sends the player down one rung"
 
-// Tag paths are checked against the map at load.
-table ladder: (weapon: tag) = [
+// Each path must be a weapon on the map, which is checked at load.
+table ladder: (weapon: weapon) = [
     ("objects/weapons/rifle/smg/smg"),
     ("objects/weapons/rifle/battle_rifle/battle_rifle"),
     ("objects/weapons/rifle/covenant_carbine/covenant_carbine"),
