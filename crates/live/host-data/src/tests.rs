@@ -184,6 +184,7 @@ fn build_fixture_disc(out: &TempDir) -> (PathBuf, crate::BundleOut) {
         stripped: None,
         sim_stores: None,
         bots: None,
+        image: None,
         force: false,
         zstd_level: 3,
     })
@@ -350,6 +351,7 @@ fn the_cache_evicts_least_recently_used_entries() {
             stripped: None,
             sim_stores: None,
             bots: None,
+            image: None,
             force: false,
             zstd_level: 3,
         })
@@ -485,6 +487,7 @@ fn provisioning_places_the_bundles_bot_data_where_the_game_loads_it() {
         stripped: None,
         sim_stores: None,
         bots: Some(crate::BotData { dir: bots::cache::dir(&built_data), build: false }),
+        image: None,
         force: false,
         zstd_level: 3,
     })

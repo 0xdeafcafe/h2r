@@ -1,13 +1,17 @@
 # Modeling: mesh, BSP and texture editing in h2-editor
 
-Status: Partly built. The mesh kernel (slice 1), the in-place geometry
-path (slices 2 and 3), grown raw writes (slice 7; `MapEditor::append_raw`
-and **Use for lower LODs**), the collision compiler with `coll` BSPs as
-meshes (slice 8, the crate only) and the Textures tool (slice 5, painting
-and exporting in memory) are implemented; the Modeling window is a
-section of the map inspector with buttons, not yet the gizmo, overlays
-and keymap below. A `coll` BSP is not yet a `geometry-edit` target.
-Structure collision and markers are designs.
+Status: Partly built. The mesh kernel (slice 1), the in-place
+geometry path (slices 2 and 3, for clusters, instanced definitions and
+`mode` sections), grown raw writes (slice 7, with
+`MapEditor::append_raw` and **Use for lower LODs** in the session), the
+collision compiler with `coll` BSPs as meshes (slice 8, the crate only)
+and the Textures tool (slice 5, painting and exporting in memory without
+writing the tag) are implemented; the Modeling window is a section of the
+map inspector with buttons, not yet the gizmo, overlays and keymap below,
+and has no control or API method for **Use for lower LODs** yet. A `coll`
+BSP is not yet a `geometry-edit` target, so the window, `geometry.*` and
+the map's save do not reach it. Structure collision and markers are
+designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/formats/tags/src/geometry_write.rs`,

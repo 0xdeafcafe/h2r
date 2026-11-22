@@ -41,6 +41,12 @@ const STORE_DIR: &str = "sim-stores";
 /// and visibility grids (`<map>.<bsp>.vis`), laid out as in a data root
 /// (`bots::cache::dir`).
 const BOTS_DIR: &str = "bots";
+/// Directory in the bundle holding the Linux game module a dedicated host
+/// runs, when the owner bundled one (`h2 host bundle --image`).
+const IMAGE_DIR: &str = "image";
+/// The files `image/` holds: the Linux module and its build stamp, as
+/// `h2 build --arch x86_64-linux` writes them.
+pub const IMAGE_FILES: [&str; 2] = ["libh2game.so", "libh2game.so.stamp"];
 const CACHE_LOCK: &str = ".host-data.lock";
 const LAST_USED: &str = ".last-used";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -156,6 +162,26 @@ pub fn bundled_bot_files(disc: &Path) -> Result<Vec<String>, Error> {
         .filter_map(|entry| entry.path.strip_prefix(BOTS_DIR)?.strip_prefix('/'))
         .map(str::to_owned)
         .collect())
+}
+
+/// The verified bundle's game module directory (`<disc>/image`, holding
+/// [`IMAGE_FILES`]), or `None` when the bundle carries no module. A
+/// manifest listing only one of the two files is corrupt.
+pub fn bundled_image_dir(disc: &Path) -> Result<Option<PathBuf>, Error> {
+    let manifest = read_embedded_manifest(disc)?;
+    let has = |name: &str| {
+        manifest.files.iter().any(|entry| {
+            entry.path.strip_prefix(IMAGE_DIR).and_then(|rest| rest.strip_prefix('/')) == Some(name)
+        })
+    };
+    let [module, stamp] = IMAGE_FILES;
+    match (has(module), has(stamp)) {
+        (true, true) => Ok(Some(disc.join(IMAGE_DIR))),
+        (false, false) => Ok(None),
+        _ => Err(Error::Corrupt(format!(
+            "{MANIFEST_NAME} must list both {IMAGE_DIR}/{module} and {IMAGE_DIR}/{stamp}, or neither"
+        ))),
+    }
 }
 
 /// Copy the verified bundle's bot data into `data_root`'s bots directory
@@ -357,6 +383,10 @@ fn validate_payload_path(path: &str) -> Result<(), Error> {
         || path.strip_prefix(BOTS_DIR).and_then(|rest| rest.strip_prefix('/')).is_some_and(|name| {
             !name.contains('/') && !name.starts_with('.') && (name.ends_with(".bots") || name.ends_with(".vis"))
         })
+        || path
+            .strip_prefix(IMAGE_DIR)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|name| IMAGE_FILES.contains(&name))
         || path.strip_prefix("maps/").is_some_and(|name| {
             name.strip_prefix("fonts/").map_or_else(
                 || name.to_ascii_lowercase().ends_with(".map") && !name.contains('/'),

@@ -912,7 +912,56 @@ type script** window is a tab beside the variant's settings
   defaults written out and the first one selected, so typing replaces
   it. The list shows the pick's documentation under it.
 - Hover a name for what it is, and a problem's text for the problem.
-  Inside a call, the line under the text shows the call's parameters.
+  The hover wraps at about 60 characters, with code in a monospace
+  font. Inside a call, the line under the text shows the call's
+  parameters.
+- **Open in editor** saves the script and opens its file in another
+  editor. A script with no file goes to `scripts/<name>.rules` under
+  the data root, named after the script (`slayer.rules`; `slayer-2.rules`
+  when that name is in use). Studio tries, in order: the script editor
+  app (`h2 script-edit <file>`, with the `h2` on `PATH`, else
+  `~/.cargo/bin/h2`), `$VISUAL`, `$EDITOR` (skipping a terminal editor
+  such as `vim`, which has no terminal to run in), VS Code (`code`), Zed
+  (`zed`), and on macOS `open -t`. A command that fails within three
+  seconds hands over to the next. Studio then checks the file once a
+  second. Each save there comes into Studio's text, and into the paired
+  game while **Reload on save** is ticked; the status line shows how
+  the reload went. If Studio's text has unsaved changes too, a row
+  under the title asks: **Keep mine** or **Take the file's**
+  (`crates/apps/studio/src/app/rules_edit.rs`, `prepare_external` and
+  `poll_disk`).
+- `h2 rules lsp` gives VS Code, Zed or any editor with a language
+  server client the same completion, hover, problems, quick fixes,
+  rename and formatting
+  ([Security and usability](../game/rules-engine.md#security-and-usability) has Helix and Neovim).
+  In VS Code, a small extension starts it:
+
+  ```ts
+  import { LanguageClient } from "vscode-languageclient/node";
+
+  export function activate() {
+    new LanguageClient(
+      "h2-rules",
+      "h2 rules",
+      { command: "h2", args: ["rules", "lsp"] },
+      { documentSelector: [{ pattern: "**/*.rules" }] },
+    ).start();
+  }
+  ```
+
+  Zed starts language servers from extensions only: an extension that
+  declares the `rules` file type and an `h2-rules` server, then in
+  `settings.json`:
+
+  ```json
+  {
+    "lsp": {
+      "h2-rules": {
+        "binary": { "path": "h2", "arguments": ["rules", "lsp"] }
+      }
+    }
+  }
+  ```
 - **Problems** lists every error and warning, errors first; each is
   underlined in the text, and clicking one puts the cursor on it. Each
   fix the language offers is a button on its row, and **Cmd+.** lists
