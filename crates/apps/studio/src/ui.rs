@@ -864,7 +864,6 @@ impl Studio {
                 return;
             }
             if !app.session.is_open() {
-                layers::section(ui, app, actions);
                 theme::empty_card(ui, &self.fonts, "Open a map to see its scene", || {});
                 return;
             }
@@ -916,7 +915,6 @@ impl Studio {
             let (toggle, range) = (io.key_ctrl() || io.key_super(), io.key_shift());
             let mut place = None;
             theme::panel_body(ui, "##outliner-body", || {
-                layers::section(ui, app, actions);
                 for b in &scenario.blocks {
                     let kind = b.def.kind;
                     let shown: Vec<usize> = (0..b.len())
@@ -1547,7 +1545,6 @@ fn halo1_outliner(
     ui.separator();
     let sel = app.session.selected();
     theme::panel_body(ui, "##h1-outliner-body", || {
-        layers::section(ui, app, actions);
         for kind in editor_core::halo1::H1Kind::ALL {
             let block = block_of(kind);
             let n = view.of(kind).count();
