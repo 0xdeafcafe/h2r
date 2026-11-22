@@ -459,3 +459,591 @@ fn blue_base_scenery() {
         }
     }
 }
+
+/// What Havok's child shape for a structure key (`0x001edd00`: the
+/// surface's ring from its first edge, vertices inline) takes as its
+/// normal: `0x001edf50` crosses the first three vertices,
+/// `(v1 - v0) x (v2 - v0)`. Per surface: the angle between that and the
+/// surface's outward plane normal, in degrees (`None` when the three are
+/// collinear).
+fn shape_normal_angles(b: &impl Surfaces) -> Vec<Option<f32>> {
+    (0..b.surface_count())
+        .map(|i| {
+            let r = b.ring(i);
+            if r.len() < 3 {
+                return None;
+            }
+            let (u, v) = (sub(r[1], r[0]), sub(r[2], r[0]));
+            let c = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+            let scale = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt()
+                * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            if len <= 1e-6 * scale || len == 0.0 {
+                return None;
+            }
+            let n = facing(b, i);
+            let d = (c[0] * n[0] + c[1] * n[1] + c[2] * n[2]) / len;
+            Some(d.clamp(-1.0, 1.0).acos().to_degrees())
+        })
+        .collect()
+}
+
+fn histogram(a: &[Option<f32>]) -> String {
+    let none = a.iter().filter(|x| x.is_none()).count();
+    let bins = [1.0f32, 5.0, 30.0, 90.0, 150.0, 175.0, 179.0, 180.1];
+    let mut lo = 0.0;
+    let mut out = format!("{} surfaces, {none} collinear;", a.len());
+    for hi in bins {
+        let n = a.iter().flatten().filter(|&&x| x >= lo && x < hi).count();
+        out += &format!(" [{lo},{hi}) {n}");
+        lo = hi;
+    }
+    out
+}
+
+/// Havok's normal of each surface shape against the plane: converted Blood
+/// Gulch against the retail Halo 2 controls in `$H2_MAPS` (default
+/// coagulation and lockout).
+#[test]
+#[ignore = "reads both discs ($H1_ISO, $H2_DISC)"]
+fn surface_shape_normals() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    let conv = round_trip(&bsp);
+    let a = shape_normal_angles(&conv);
+    println!("bloodgulch converted: {}", histogram(&a));
+    println!(
+        "bloodgulch Halo 1: {}",
+        histogram(&shape_normal_angles(&bsp))
+    );
+    // The base's surfaces (x 34..47, y -86..-72) that Havok would see wrong.
+    for (i, x) in a.iter().enumerate() {
+        let ring = conv.ring(i);
+        let c: [f32; 3] =
+            std::array::from_fn(|k| ring.iter().map(|p| p[k]).sum::<f32>() / ring.len() as f32);
+        if c[0] > 34.0 && c[0] < 47.0 && c[1] > -86.0 && c[1] < -72.0 && !x.is_some_and(|d| d < 5.0)
+        {
+            println!(
+                "  base surface {i}: angle {x:?} n {:?} ring {ring:?}",
+                &facing(&conv, i)[..3]
+            );
+        }
+    }
+    assert!(
+        a.iter().all(|x| x.is_some_and(|d| d < 1.0)),
+        "a surface shape's normal is off its plane"
+    );
+    let maps = std::env::var("H2_MAPS").unwrap_or_else(|_| "coagulation,lockout".into());
+    for (name, b) in h2_bsps(&maps) {
+        println!("retail {name}: {}", histogram(&shape_normal_angles(&b)));
+    }
+}
+
+fn h2_bsps(only: &str) -> Vec<(String, tags::collision::Bsp)> {
+    use map::{FourCC, Map};
+    let path = disc("H2_DISC", "halo2.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let mut out = Vec::new();
+    for e in iso.entries().unwrap() {
+        let Some(stem) = e
+            .path
+            .rsplit(['/', '\\'])
+            .next()
+            .and_then(|f| f.strip_suffix(".map"))
+        else {
+            continue;
+        };
+        if !only.split(',').any(|x| x == stem) {
+            continue;
+        }
+        let base = iso.partition_offset() + u64::from(e.sector) * xiso::SECTOR;
+        let mut m = Map::from_region(
+            BufReader::new(File::open(&path).unwrap()),
+            base,
+            e.size.into(),
+        )
+        .unwrap();
+        let bsps: Vec<_> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"sbsp") && t.location.is_some())
+            .map(|t| (t.id, t.location.unwrap().address))
+            .collect();
+        for (id, address) in bsps {
+            let b = m.read_tag_bytes(id).unwrap();
+            let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+            if u(0x14) != 1 {
+                continue;
+            }
+            let at = (u(0x18) - address) as usize;
+            if let Ok(c) = tags::collision::Bsp::decode_structure(&b, address, at) {
+                out.push((stem.to_owned(), c));
+            }
+        }
+    }
+    out
+}
+
+/// Every surface a vertical line meets, top down: (z, surface, outward
+/// normal z), by restarting the vector test 1 mm past each hit.
+fn column(b: &impl Surfaces, x: f32, y: f32) -> Vec<(f32, usize, f32)> {
+    let mut out = Vec::new();
+    let mut top = 10.0f32;
+    while top > -3.0 && out.len() < 16 {
+        let t = q::vector(b, [x, y, top], [x, y, -3.0]);
+        let Outcome::Hit(h) = t.outcome else { break };
+        let z = top + (-3.0 - top) * h.t;
+        out.push((z, h.surface, facing(b, h.surface)[2]));
+        top = z - 1e-3;
+    }
+    out
+}
+
+/// Cross sections through the +x ramp of the blue base: along x at the
+/// ramp's y, and along y at its middle.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn blue_base_ramp_sections() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    for y in [-80.6f32, -80.1, -79.6, -79.1, -78.6] {
+        println!("y {y}");
+        for i in 0..=30 {
+            let x = 41.0 + 0.2 * i as f32;
+            let c: Vec<String> = column(&bsp, x, y)
+                .iter()
+                .map(|(z, s, n)| format!("{z:.2}({s},{n:.2})"))
+                .collect();
+            println!("  x {x:.1}: {}", c.join(" "));
+        }
+    }
+    // The outside ramp (y -79.1, x 45.2 up to 42.8, z 0.18 to 1.63) is one
+    // surface whose slope is under both games' steepest walkable ground:
+    // Halo 1's cyborg 45 degrees (cosine 0.7071 at bipd +0x4d0), Halo 2's
+    // Chief 50 degrees (cosine 0.6428 at bipd +0x2b8, which the converted
+    // cyborg holds as its role's word).
+    let ramp: Vec<_> = (0..=10)
+        .map(|i| {
+            column(&bsp, 43.0 + 0.2 * i as f32, -79.1)
+                .last()
+                .copied()
+                .unwrap()
+        })
+        .collect();
+    assert!(ramp.iter().all(|r| r.1 == ramp[0].1), "{ramp:?}");
+    let slope = ramp[0].2.acos().to_degrees();
+    println!("ramp surface {}: slope {slope:.1} degrees", ramp[0].1);
+    assert!(ramp[0].2 > 0.7071 && ramp[0].2 > 0.6428, "{slope}");
+}
+
+/// The character-physics words side by side: Halo 1's cyborg (`bipd`
+/// `+0x400..+0x4d0`) and the Halo 2 Chief (`bipd +0x264..+0x314`), as
+/// floats (and hex), to place Halo 1's ground words against Halo 2's.
+#[test]
+#[ignore = "reads both discs ($H1_ISO, $H2_DISC)"]
+fn character_physics_words() {
+    use map::{FourCC, Map};
+    let h1 = bloodgulch();
+    let t = h1
+        .tags()
+        .iter()
+        .filter(|t| {
+            [u32::from_be_bytes(*b"bipd"), u32::from_le_bytes(*b"bipd")].contains(&t.group.0)
+        })
+        .filter(|t| {
+            t.name == "characters\\cyborg_mp\\cyborg_mp" || t.name == "characters\\cyborg\\cyborg"
+        })
+        .max_by_key(|t| t.data.as_ref().map_or(0, |d| d.len()))
+        .unwrap()
+        .clone();
+    let b = h1.tag_data(&t).unwrap();
+    println!("Halo 1 {} ({:?})", t.name, t.group);
+    for o in (0x2f0..0x4f0).step_by(4) {
+        let w = u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        println!("  h1 +{o:#x}: {:>12.6} {w:#010x}", f32::from_bits(w));
+    }
+    let path = disc("H2_DISC", "halo2.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.ends_with("coagulation.map"))
+        .unwrap();
+    let mut m = Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+    let id = m
+        .tags()
+        .iter()
+        .find(|t| {
+            t.group == FourCC(*b"bipd")
+                && t.name.as_deref() == Some("objects\\characters\\masterchief\\masterchief")
+        })
+        .unwrap()
+        .id;
+    let b = m.read_tag_bytes(id).unwrap();
+    for o in (0x1c8..0x314).step_by(4) {
+        let w = u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        println!("  h2 +{o:#x}: {:>12.6} {w:#010x}", f32::from_bits(w));
+    }
+}
+
+/// Whether `p` (on or near the surface's plane) lies inside the ring's
+/// polygon, within `tol`, projected on the plane's dominant axis.
+fn inside_ring(ring: &[[f32; 3]], n: [f32; 4], p: [f32; 3], tol: f32) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let drop = (0..3)
+        .max_by(|&a, &b| n[a].abs().total_cmp(&n[b].abs()))
+        .unwrap();
+    let (u, v) = match drop {
+        0 => (1, 2),
+        1 => (2, 0),
+        _ => (0, 1),
+    };
+    // Signed distance from each edge, inward positive for either winding.
+    let mut area = 0.0f32;
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        area += a[u] * b[v] - b[u] * a[v];
+    }
+    let sign = area.signum();
+    (0..ring.len()).all(|k| {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        let (ex, ey) = (b[u] - a[u], b[v] - a[v]);
+        let len = (ex * ex + ey * ey).sqrt().max(1e-9);
+        sign * (ex * (p[v] - a[v]) - ey * (p[u] - a[u])) / len >= -tol
+    })
+}
+
+/// What Havok sees of the +x ramp, where the live repro (recording
+/// `bg-ramp-fall`) lost the ground: running up at y -79.33 and -78.92, the
+/// ramp's contact goes away at x 43.6 and the capsule sinks through the
+/// ramp's top metre (contacts then show the ramp's back face). The game's
+/// vector test still finds the ramp there, so the question is Havok's own
+/// view: the surface's ring polygon (the shape `0x001edd00` builds by the
+/// same edge walk), its flags and breakable byte (the key filter
+/// `0x001ef451` drops breakable surfaces whose bit is clear), and the
+/// structure MOPP's keys for a capsule-sized box at each step.
+///
+/// Also, over the whole base, every point the vector test puts on a surface
+/// must lie inside that surface's ring, in Halo 1 and converted alike.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn blue_base_ramp_havok_view() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    let conv = round_trip(&bsp);
+    let code = mopp::Code::parse(&mopp::build_structure(&conv)).unwrap();
+
+    // Rings: converted against Halo 1, every surface.
+    let mut ring_diffs = Vec::new();
+    for i in 0..bsp.surface_count() {
+        let (a, b) = (bsp.ring(i), conv.ring(i));
+        let same = a.len() == b.len()
+            && a.iter()
+                .zip(&b)
+                .all(|(p, q)| (0..3).all(|k| (p[k] - q[k]).abs() < 1e-3));
+        if !same {
+            ring_diffs.push(i);
+        }
+    }
+    println!(
+        "{} of {} surface rings differ from Halo 1's: {:?}",
+        ring_diffs.len(),
+        bsp.surface_count(),
+        &ring_diffs[..ring_diffs.len().min(20)]
+    );
+
+    // The surfaces around the ramp, as Havok gets them.
+    for i in 0..conv.surface_count() {
+        let ring = conv.ring(i);
+        if ring.is_empty() {
+            continue;
+        }
+        let c: [f32; 3] =
+            std::array::from_fn(|k| ring.iter().map(|p| p[k]).sum::<f32>() / ring.len() as f32);
+        if c[0] > 42.0 && c[0] < 46.0 && c[1] > -80.2 && c[1] < -78.0 && c[2] > -0.5 && c[2] < 2.0 {
+            let sf = conv.surfaces[i];
+            println!(
+                "surface {i}: n {:?} flags {:#x} breakable {:#x} first edge {} ring ({}) {:?}",
+                &facing(&conv, i)[..3],
+                sf.flags,
+                sf.breakable_surface,
+                sf.first_edge,
+                ring.len(),
+                ring
+            );
+        }
+    }
+
+    // Up the ramp along the repro's lines.
+    let mut problems = Vec::new();
+    for y in [-79.33f32, -79.1, -78.92] {
+        println!("up the ramp at y {y}");
+        for i in 0..=46 {
+            let x = 45.15 - 0.05 * i as f32;
+            let Some(&(z, s, nz)) = column(&conv, x, y).iter().find(|c| c.2 > 0.8 && c.2 < 0.9)
+            else {
+                problems.push(format!("({x:.2},{y}): no ramp in the column"));
+                continue;
+            };
+            let n = facing(&conv, s);
+            let ring = conv.ring(s);
+            let inside = inside_ring(&ring, n, [x, y, z], 0.01);
+            let sf = conv.surfaces[s];
+            let filtered = sf.flags & 8 != 0 && sf.breakable_surface != 0xff;
+            let aabb = mopp::Aabb {
+                min: [x - 0.3, y - 0.3, z - 0.2],
+                max: [x + 0.3, y + 0.3, z + 1.8],
+            };
+            let keys = mopp::query_aabb(&code, &aabb).unwrap();
+            let keyed = keys.contains(&(0x2000_0000 | s as u32));
+            let tiny = mopp::query_sphere(&code, [x, y, z], 0.01).unwrap();
+            let keyed_tiny = tiny.contains(&(0x2000_0000 | s as u32));
+            println!(
+                "  x {x:.2}: z {z:.3} surface {s} (nz {nz:.3}) in ring {inside} mopp box {keyed} sphere {keyed_tiny} filtered {filtered}"
+            );
+            if !inside || !keyed || !keyed_tiny || filtered {
+                problems.push(format!(
+                    "({x:.2},{y},{z:.3}) surface {s}: in ring {inside}, mopp box {keyed}, sphere {keyed_tiny}, filtered {filtered}"
+                ));
+            }
+        }
+    }
+
+    // Every vector-test hit over the base lies in its surface's ring.
+    let mut outside = Vec::new();
+    hits_in_rings("halo1", &bsp, &mut outside);
+    hits_in_rings("converted", &conv, &mut outside);
+    for o in &outside {
+        println!("  outside: {o}");
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// Walks a 5 cm grid of vertical lines over the blue base, every hit top
+/// down, and notes the hits that fall outside their surface's ring.
+fn hits_in_rings(name: &str, b: &impl Surfaces, outside: &mut Vec<String>) {
+    let (mut n, mut out) = (0, 0);
+    for ix in 0..=240 {
+        for iy in 0..=240 {
+            let (x, y) = (33.0 + 0.05 * ix as f32, -85.0 + 0.05 * iy as f32);
+            let mut top = 6.0f32;
+            for _ in 0..8 {
+                let t = q::vector(b, [x, y, top], [x, y, -3.0]);
+                let Outcome::Hit(h) = t.outcome else { break };
+                let z = top + (-3.0 - top) * h.t;
+                n += 1;
+                if !inside_ring(&b.ring(h.surface), facing(b, h.surface), [x, y, z], 0.02) {
+                    out += 1;
+                    if outside.len() < 40 {
+                        outside.push(format!(
+                            "{name} ({x:.2},{y:.2},{z:.3}) surface {}",
+                            h.surface
+                        ));
+                    }
+                }
+                top = z - 1e-3;
+            }
+        }
+    }
+    println!("{name}: {n} hits over the base, {out} outside their surface's ring");
+}
+
+/// Twice the area of a planar polygon, projected along its normal.
+fn ring_area(ring: &[[f32; 3]], n: [f32; 4]) -> f32 {
+    let mut a = [0f32; 3];
+    for k in 0..ring.len() {
+        let (p, q) = (ring[k], ring[(k + 1) % ring.len()]);
+        a[0] += p[1] * q[2] - p[2] * q[1];
+        a[1] += p[2] * q[0] - p[0] * q[2];
+        a[2] += p[0] * q[1] - p[1] * q[0];
+    }
+    (a[0] * n[0] + a[1] * n[1] + a[2] * n[2]).abs()
+}
+
+/// Twice the area of the convex hull of `pts` on the plane with normal `n`.
+fn hull_area(pts: &[[f32; 3]], n: [f32; 4]) -> f32 {
+    let drop = (0..3)
+        .max_by(|&a, &b| n[a].abs().total_cmp(&n[b].abs()))
+        .unwrap();
+    let (u, v) = match drop {
+        0 => (1, 2),
+        1 => (2, 0),
+        _ => (0, 1),
+    };
+    let mut p: Vec<(f64, f64)> = pts
+        .iter()
+        .map(|q| (f64::from(q[u]), f64::from(q[v])))
+        .collect();
+    p.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    p.dedup();
+    if p.len() < 3 {
+        return 0.0;
+    }
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut h: Vec<(f64, f64)> = Vec::new();
+    for pass in 0..2 {
+        let start = h.len();
+        let it: Vec<_> = if pass == 0 {
+            p.clone()
+        } else {
+            p.iter().rev().copied().collect()
+        };
+        for q in it {
+            while h.len() >= start + 2 && cross(h[h.len() - 2], h[h.len() - 1], q) <= 0.0 {
+                h.pop();
+            }
+            h.push(q);
+        }
+        h.pop();
+    }
+    let mut a = 0.0;
+    for k in 0..h.len() {
+        let (p, q) = (h[k], h[(k + 1) % h.len()]);
+        a += p.0 * q.1 - q.0 * p.1;
+    }
+    // Back to the plane's own area: divide by the dropped axis's share.
+    (a.abs() / f64::from(n[drop].abs())) as f32
+}
+
+/// Coplanar seams: edges between two surfaces on the same plane. Welding
+/// them is only possible where the two polygons' union is convex (the
+/// engine's surfaces are convex rings). Counts wall seams (normal z under
+/// 0.3) whose shared edge slopes (neither level nor plumb), like the blue
+/// ramp corridor's 3081/4404 and 3085/4405, in converted Blood Gulch and
+/// in the retail Halo 2 controls (`$H2_MAPS`, default coagulation and
+/// lockout), to see whether Bungie's tool leaves such seams.
+#[test]
+#[ignore = "reads both discs ($H1_ISO, $H2_DISC)"]
+fn coplanar_seams() {
+    fn census(name: &str, b: &tags::collision::Bsp) {
+        let (mut seams, mut weldable, mut wall_sloped, mut wall_sloped_weldable) = (0, 0, 0, 0);
+        for e in &b.edges {
+            let (l, r) = (usize::from(e.left_surface), usize::from(e.right_surface));
+            if l == r || l >= b.surfaces.len() || r >= b.surfaces.len() {
+                continue;
+            }
+            let (nl, nr) = (facing(b, l), facing(b, r));
+            let dot = nl[0] * nr[0] + nl[1] * nr[1] + nl[2] * nr[2];
+            if dot < 0.99999 || (nl[3] - nr[3]).abs() > 1e-3 {
+                continue;
+            }
+            seams += 1;
+            let (rl, rr) = (b.ring(l), b.ring(r));
+            let all: Vec<_> = rl.iter().chain(&rr).copied().collect();
+            let sum = ring_area(&rl, nl) + ring_area(&rr, nl);
+            let convex = (hull_area(&all, nl) - sum).abs() <= 1e-4 * sum.max(1e-3);
+            weldable += usize::from(convex);
+            let (p, q) = (
+                b.vertices[usize::from(e.start_vertex)].point,
+                b.vertices[usize::from(e.end_vertex)].point,
+            );
+            let d = sub(q, p);
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let rise = if len > 0.0 { d[2].abs() / len } else { 0.0 };
+            if nl[2].abs() < 0.3 && rise > 0.1 && rise < 0.99 {
+                wall_sloped += 1;
+                wall_sloped_weldable += usize::from(convex);
+            }
+        }
+        println!(
+            "{name}: {} surfaces, {seams} coplanar seams ({weldable} weldable into one convex ring); \
+             sloped seams on walls {wall_sloped} ({wall_sloped_weldable} weldable)",
+            b.surfaces.len()
+        );
+    }
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let conv = round_trip(&s.collision_bsps().unwrap().remove(0));
+    census("bloodgulch converted", &conv);
+    for (a, b) in [(3081usize, 4404usize), (3085, 4405)] {
+        let n = facing(&conv, a);
+        let all: Vec<_> = conv.ring(a).into_iter().chain(conv.ring(b)).collect();
+        let sum = ring_area(&conv.ring(a), n) + ring_area(&conv.ring(b), n);
+        println!(
+            "  corridor wall {a}+{b}: areas sum {sum:.4}, hull {:.4} (convex union: {})",
+            hull_area(&all, n),
+            (hull_area(&all, n) - sum).abs() <= 1e-4 * sum
+        );
+    }
+    let maps = std::env::var("H2_MAPS").unwrap_or_else(|_| "coagulation,lockout".into());
+    for (name, b) in h2_bsps(&maps) {
+        census(&format!("retail {name}"), &b);
+    }
+}
+
+/// Open or solid in the 3D tree for points on the blue ramp where the
+/// player loses support (live capture `bg-ramp-centre`: airborne at x 43.56
+/// as the pill's top-sphere centre, feet + 0.5, passes z 1.7035, the roof
+/// plane): the feet + 0.2 (bottom-sphere centre), + 0.5 (top-sphere
+/// centre) and + 0.7 (pill top) points, and the top sphere's six extreme
+/// points, from x 44.0 to 42.9, in Halo 1's tree and the converted one.
+/// Every one of them is in the open corridor above the ramp.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn blue_ramp_pill_points_are_open() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    let conv = round_trip(&bsp);
+    let ramp = |x: f32| 0.134 + (45.275 - x) * 0.6046;
+    let mut solid = Vec::new();
+    for y in [-79.24f32, -79.125, -78.95] {
+        for i in 0..=22 {
+            let x = 44.0 - 0.05 * i as f32;
+            let feet = ramp(x) + 0.01;
+            let mut pts = vec![
+                ("bottom", [x, y, feet + 0.2]),
+                ("top centre", [x, y, feet + 0.5]),
+                ("pill top", [x, y, feet + 0.69]),
+            ];
+            for (k, d) in [
+                [0.19f32, 0.0, 0.0],
+                [-0.19, 0.0, 0.0],
+                [0.0, 0.19, 0.0],
+                [0.0, -0.19, 0.0],
+                [0.0, 0.0, 0.19],
+            ]
+            .iter()
+            .enumerate()
+            {
+                pts.push((
+                    ["top +x", "top -x", "top +y", "top -y", "top +z"][k],
+                    [x + d[0], y + d[1], feet + 0.5 + d[2]],
+                ));
+            }
+            for (what, p) in pts {
+                let a = q::locate(&bsp, p);
+                let b = q::locate(&conv, p);
+                let la = a.and_then(|l| bsp.leaf(l)).map(|l| l.0);
+                let lb = b.and_then(|l| conv.leaf(l)).map(|l| l.0);
+                if a.is_none() || b.is_none() {
+                    solid.push(format!(
+                        "{what} {p:?}: halo1 leaf {a:?} (flags {la:?}), converted leaf {b:?} (flags {lb:?})"
+                    ));
+                }
+            }
+        }
+    }
+    println!("{} pill points solid", solid.len());
+    for s in &solid {
+        println!("  {s}");
+    }
+    assert!(solid.is_empty());
+}
