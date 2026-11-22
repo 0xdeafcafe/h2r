@@ -460,6 +460,18 @@ no pixel outside it, another glyph marks it differently, a silhouette is
 dark with no glyph, the tint colours the bone and the composite stays in
 its rectangle (`crates/rewrites/native-render/tests/showcase_gpu.rs`).
 
+**Preview from a disc**, without the game
+(`crates/extensions/game/src/skulls_model/gpu/preview.rs`, ignored by
+default): `H2_DISC=<iso> H2_SKULLS_PREVIEW_DIR=<dir> cargo test -p boot
+--lib skulls_model::gpu::preview -- --ignored --nocapture` loads the skull
+as the game does and writes PNGs to that directory only: a locked Iron, a
+collected Iron (gold) and a collected Envy (silver), each at the picture
+box's size for a 640 by 480 target and at four times it; the model turned
+0, 90, 180 and 270 degrees with Iron's glyph (`facing-yaw-*.png`); and
+every glyph with its name (`glyphs.png`). It prints the map and tag, the
+mesh and its bounds. The directory must be outside the repository: the
+pictures are made from disc data.
+
 ## Gold and silver
 
 Halo 2 itself does not split its skulls into kinds: they are fifteen bytes,

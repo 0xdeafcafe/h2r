@@ -300,9 +300,17 @@ fn a_locked_skull_is_a_dark_shape_with_no_glyph() {
             assert_eq!(*d, [0; 4], "the background stays clear");
         }
     }
+    // The framing fits the bounds' sphere (radius sqrt 3 for the unit
+    // sphere's box), so the sphere itself is a disc of the radius its top
+    // projects to: about 17 pixels, not a quarter of the picture.
+    let p = rig.showcase.placement().unwrap();
+    let centre = p.project([0.0; 3], 0.0, SIZE, SIZE).unwrap();
+    let top = p.project([0.0, 0.0, 1.0], 0.0, SIZE, SIZE).unwrap();
+    let radius = centre[1] - top[1];
+    let disc = std::f32::consts::PI * radius * radius;
     assert!(
-        drawn > (SIZE * SIZE / 4) as usize,
-        "the sphere fills the picture: {drawn}"
+        (0.85 * disc..1.25 * disc).contains(&(drawn as f32)),
+        "the silhouette is the sphere's disc ({disc:.0} pixels): {drawn}"
     );
     // The lit picture is brighter at the decal's centre than any
     // silhouette pixel can be.

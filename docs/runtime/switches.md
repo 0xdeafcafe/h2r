@@ -83,6 +83,7 @@ the final result through that directory.
 
 | Switch | What |
 |---|---|
+| `H2_SKULLS_PREVIEW_DIR` | Output directory for the ignored `skulls_model::gpu::preview` test, which loads the skull model from `H2_DISC` and writes the Skulls page's model pictures and the glyph sheet there as PNGs. Keep it outside the repository: the pictures come from disc data. [The model picture](../game/skulls.md#the-model-picture) |
 | `H2_FIELD_NAMES` | Assembly's plugin folder (or its `Halo2Xbox` child) for the ignored `every_plugin_merges_against_our_definitions` developer test. The test reads `Halo2Xbox`, its `Halo2` fallback, and the other retail folders as hints. With the variable unset, the test returns immediately. [Field-name comparison](../editor/notes/tag-field-names.md) |
 | `h2 lighting split <map> [--bsp N] [--light ID] [--disc ISO] --out DIR` | Offline [lightmap comparison](../graphics/dynamic-lighting.md#the-split-offline). BSP and sky light default to 0. IDs are zero-based. A number selects a light in scenario sky order among skies used by the BSP; `placed:N` selects scenario lamp placement N. The disc follows the usual map lookup. Use a new or empty directory outside Git and open its `index.html`. |
 | `h2 play --join URL`, `live-join-link` | open a [Live session link](../live/live-custom-games.md#join-in-halo-2) on the selected service during Live player runs. Film recording and playback disable joins. `H2_FEATURES=-live-join-link` disables game-side handling. |

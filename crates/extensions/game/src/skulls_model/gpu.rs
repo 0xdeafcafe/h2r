@@ -86,12 +86,27 @@ pub fn skull() -> Option<Arc<Skull>> {
     None
 }
 
+/// Opens a map by name: the mounted game's (`native_map::open`) or, for the
+/// preview, a disc's (`native_map::open_from_vfs`).
+pub type Open<'a> = dyn Fn(
+        &str,
+    ) -> Result<(crate::native_map::NativeMap, assets::ResourceFiles), native_render::load::Error>
+    + 'a;
+
+#[cfg(test)]
+mod preview;
+
 /// Reads the skull weapon's render model and its first base map from the
-/// first of [`MAPS`] that has it.
+/// first of [`MAPS`] that has it, in the mounted game.
 fn load() -> Result<Skull, String> {
+    load_with(&crate::native_map::open)
+}
+
+/// [`load`] with the maps opened by `open`.
+pub fn load_with(open: &Open<'_>) -> Result<Skull, String> {
     let mut tried = Vec::new();
     for name in MAPS {
-        let (mut map, files) = match crate::native_map::open(name) {
+        let (mut map, files) = match open(name) {
             Ok(opened) => opened,
             Err(e) => {
                 tried.push(format!("{name}: {e}"));
