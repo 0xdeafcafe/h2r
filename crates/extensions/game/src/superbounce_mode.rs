@@ -54,6 +54,7 @@ pub use crate::superbounce_charge::{
 use crate::superbounce_capsule::Room;
 use crate::superbounce_chain::{self as chain, Medals};
 use crate::superbounce_charge::{Tick, Tracker};
+use crate::superbounce_second::{RANKED, Ranked};
 use crate::superbounce_targets::Marks;
 
 /// The feature's name.
@@ -146,6 +147,10 @@ pub struct State {
     /// The seam targets' navpoints and the tag
     /// ([`crate::superbounce_targets`]).
     pub marks: Marks,
+    /// In the flight after a bounce, the seams it can reach, the best
+    /// first ([`crate::superbounce_second`]); none otherwise, and with
+    /// the variant's `second_bounce` option off.
+    pub second: [Option<Ranked>; RANKED],
     /// The charge meter: the phase of the recipe and its fill; `None` is
     /// hidden (not primed, and not crouched by a crouch spot).
     pub charge: Option<Charge>,
@@ -201,6 +206,7 @@ impl State {
         aim: None,
         tick: None,
         marks: Marks::NONE,
+        second: [None; RANKED],
         charge: None,
         verb: None,
         nav_target: None,
@@ -316,6 +322,21 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             count: crate::superbounce_targets::current().len(),
             tag: s.marks.tagged.map(v3),
             marked: s.marks.targets.iter().flatten().map(|m| v3(m.at)).collect(),
+            second: s
+                .second
+                .iter()
+                .flatten()
+                .map(|r| wire::SecondBounce {
+                    at: v3(r.at),
+                    time: f64::from(r.time),
+                    steer: f64::from(r.steer[0].hypot(r.steer[1])),
+                    reach: f64::from(r.reach),
+                    speed: f64::from(r.speed),
+                    need: f64::from(r.need),
+                    cost: f64::from(r.cost),
+                    caught: r.caught,
+                })
+                .collect(),
         },
         charge: s.charge.map(|c| wire::Charge {
             phase: match c.phase {
@@ -1220,6 +1241,35 @@ fn on_tick(o: &hooks::Obs) {
         (awards, m.view())
     };
     keep_awards(&awards);
+    // In the flight after a bounce, the seams it can reach, the best
+    // first, on the target navpoints (docs/game/superbounce.md, "The
+    // second bounce").
+    let second = match (live.position, live.velocity) {
+        (Some(position), Some(velocity))
+            if crate::superbounce_options::current().second_bounce
+                && crate::superbounce_second::window(
+                    live.airborne,
+                    (*lock(&LOCAL)).map(|(slot, _)| slot),
+                    &medals,
+                ) =>
+        {
+            crate::superbounce_second::rank(
+                &crate::superbounce_targets::current(),
+                &crate::superbounce_assist::Body {
+                    position,
+                    velocity,
+                    yaw: live.yaw.unwrap_or(0.0),
+                    airborne: live.airborne,
+                },
+                &crate::superbounce_assist::Ground {
+                    floor: &|xy: [f32; 2], top: f32| room.floor_at(xy, top),
+                    ..crate::superbounce_assist::Ground::open()
+                },
+            )
+        }
+        _ => [None; RANKED],
+    };
+    let marks = crate::superbounce_second::over(marks, &second);
     // The bots' and the verifier's bounces kept as ghost runs, and the
     // ghost the player asks for (docs/game/superbounce.md, "Ghost runs").
     {
@@ -1256,6 +1306,7 @@ fn on_tick(o: &hooks::Obs) {
         aim: live.aim,
         tick: live.tick,
         marks,
+        second,
         charge: step.charge,
         verb: step.verb,
         nav_target,

@@ -1144,6 +1144,58 @@ the tag.
 as `targets`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
 
+### The second bounce
+
+In the flight after a bounce the readout shows where that flight can
+bounce again, the best seam first
+(`crates/extensions/game/src/superbounce_second.rs`).
+
+**When.** The first local player is in the air and their
+[chain](#medals) is live (`window`): from the launch to the next
+touchdown, rising or falling.
+
+**Reached.** A seam of the [targets](#targets)' mode is reached
+(`judge`) when:
+
+- the flight comes down to the seam's height within 8 s, at the speed
+  the seam needs or faster (`√(vz² + 2 × 4.15 × height)` against
+  `need_of`, the [one threshold](#speed) for a scanned strip). A seam
+  over the apex, or just under it, is not;
+- the point of the seam nearest the coasting landing
+  (`superbounce_assist::stand_near`) is within what the stick can move
+  the landing in the time left: half the
+  [fall assist](#hold-x-the-fall-assist)'s air acceleration (3 units/s²,
+  an estimate) times the time squared, plus its 0.4 slack;
+- no floor under the flight's apex covers the point
+  (`superbounce_assist::covered`);
+- a V's arm, only from across its bisector.
+
+**Ranked.** Each reached seam has a cost (`Ranked::cost`), lower first:
+the steer's share of the stick's reach (0 to 1) plus half the seam's
+need over the touchdown speed (0.5 with no speed to spare, less with
+more). So a seam the flight is already coming down on outranks one that
+needs steering, and of two as easy to steer onto the faster landing
+wins. The two lowest are kept (`rank`), and of seams within 1 unit of
+each other only the better.
+
+**Shown**, all by the game's HUD:
+
+- the readout's two target navpoints are on the ranked seams, the best
+  on `sbr.target.1` (`over`); the tag keeps its own;
+- the readout's last row lists them in order, each a rank, an arrow for
+  where the seam is against the aim and its distance:
+  `1 (arrow) 12 m  2 (arrow) 30 m`;
+- the fall row is the best seam's line-up
+  (`superbounce_readout::line_up`): the bar is the touchdown speed there
+  over its need, and beside it `On seam` when the flight comes down in
+  its catch coasting, else an arrow for the way to steer and how far.
+
+With no seam reached the readout is as on any other fall. The game draws
+no number on a navpoint, so the order is the row's; a navpoint's look
+cannot be changed until its draw record is decoded. The variant's
+`second_bounce` [option](#the-huds-options) turns all of it off.
+`superbounce.state` has the ranked seams as `targets.second`.
+
 ### The HUD's options
 
 Which pieces of the HUD a game shows is the variant's: they are options
@@ -1160,6 +1212,7 @@ unless a variant turns it off:
 | `alignment` | bool, on | no fall row: no bar, no steer line |
 | `miss_info` | bool, on | no miss row |
 | `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](#medals)) |
+| `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
 
 The host reads them by name where it decides the mode is on, at a game's
 start and every 30 ticks (`superbounce_options::read`): the active

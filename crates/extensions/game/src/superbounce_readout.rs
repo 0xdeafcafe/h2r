@@ -22,7 +22,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hud_kit_core::huds::superbounce_readout::{
-    self as rd, Fall, Miss, Readout, Speed, Steer, View,
+    self as rd, Fall, Miss, Next, Readout, Speed, Steer, View,
 };
 use hud_kit_core::model::Values;
 use superbounce::Spot;
@@ -31,6 +31,7 @@ use crate::hud_kit::{self, Handle};
 use crate::superbounce_charge::{GRAVITY, Landing, LandingResult, edge_distance_xy, need_of};
 use crate::superbounce_mode::{self as mode, METRES_PER_UNIT, State};
 use crate::superbounce_options::Options;
+use crate::superbounce_second::Ranked;
 
 /// The feature's id.
 pub const FEATURE: &str = "superbounce-readout";
@@ -88,12 +89,45 @@ pub fn fall(s: &State) -> Option<Fall> {
     })
 }
 
+/// The fall row for the second bounce's best seam `r`: the touchdown
+/// speed the flight gives there over its need, and the line-up: caught
+/// coasting, or the way to steer against the aim `yaw` and how far.
+pub fn line_up(r: &Ranked, yaw: f32) -> Fall {
+    Fall {
+        speed: if r.need > 0.0 { r.speed / r.need } else { 1.0 },
+        steer: if r.caught {
+            Steer::OnSeam
+        } else {
+            Steer::Off {
+                heading: against_aim(r.steer[0], r.steer[1], yaw),
+                metres: r.steer[0].hypot(r.steer[1]) * METRES_PER_UNIT,
+            }
+        },
+    }
+}
+
+/// The ranked line's seams for `s`: each ranked seam's bearing against
+/// the aim and its distance in metres.
+pub fn next(s: &State) -> [Option<Next>; rd::NEXT] {
+    let yaw = s.yaw.unwrap_or(0.0);
+    s.second.map(|r| {
+        let (r, p) = (r?, s.position?);
+        Some(Next {
+            heading: against_aim(r.at[0] - p[0], r.at[1] - p[1], yaw),
+            metres: r.distance * METRES_PER_UNIT,
+        })
+    })
+}
+
 /// The readout's [`View`] of the mode's state `s` under the variant's
 /// options `o`, with the miss line `info`.
 ///
 /// - The speed line: [`speed`], with `velocity`.
-/// - The fall row: [`fall`], with `alignment`.
+/// - The fall row: in the flight after a bounce the best ranked seam's
+///   ([`line_up`]), else [`fall`]; with `alignment`.
 /// - The miss line: `info`, with `miss_info`.
+/// - The ranked line: [`next`], the state's `second` (which the mode
+///   leaves empty with `second_bounce` off).
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
 pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
@@ -101,8 +135,12 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
         |m: Option<crate::superbounce_targets::Mark>| m.map(|m| m.distance * METRES_PER_UNIT);
     View {
         speed: speed(s).filter(|_| o.velocity),
-        fall: fall(s).filter(|_| o.alignment),
+        fall: s.second[0]
+            .map(|r| line_up(&r, s.yaw.unwrap_or(0.0)))
+            .or_else(|| fall(s))
+            .filter(|_| o.alignment),
         info: info.filter(|_| o.miss_info),
+        next: next(s),
         tag: metres(s.marks.tag),
         targets: s.marks.targets.map(metres),
     }

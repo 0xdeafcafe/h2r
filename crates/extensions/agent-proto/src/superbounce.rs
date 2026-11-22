@@ -119,8 +119,34 @@ pub struct Targets {
     /// The tagged seam's point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<[f64; 3]>,
-    /// The reachable seams with a navpoint, nearest first (two at most).
+    /// The seams with a target navpoint (two at most): the reachable
+    /// ones, nearest first; in the flight after a bounce, `second`'s.
     pub marked: Vec<[f64; 3]>,
+    /// In the flight after a bounce, the seams it can reach, the best
+    /// first (two at most; docs/game/superbounce.md, "The second
+    /// bounce").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub second: Vec<SecondBounce>,
+}
+
+/// A seam the flight after a bounce can come down on.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecondBounce {
+    /// The point of the seam to land on.
+    pub at: [f64; 3],
+    /// Seconds to touchdown at its height.
+    pub time: f64,
+    /// World units from the coasting landing to the point.
+    pub steer: f64,
+    /// World units the stick can move the landing in that time.
+    pub reach: f64,
+    /// The touchdown speed there and the speed the seam needs, units/s.
+    pub speed: f64,
+    pub need: f64,
+    /// The rank's cost, lower first.
+    pub cost: f64,
+    /// The coasting landing is within the seam's catch.
+    pub caught: bool,
 }
 
 /// `superbounce.state`'s result.
@@ -1285,6 +1311,7 @@ mod tests {
                 count: 12,
                 tag: None,
                 marked: vec![[4.0, 5.0, 6.0]],
+                second: Vec::new(),
             },
             charge: Some(Charge {
                 phase: ChargePhase::Held,

@@ -12,6 +12,7 @@ use superbounce::{Kind, Vec3};
 use super::*;
 use crate::superbounce_mode::{Course, Predicted, ScanState};
 use crate::superbounce_options::TargetMode;
+use crate::superbounce_second::Ranked;
 use crate::superbounce_targets::{Mark, Marks};
 
 const M: f32 = METRES_PER_UNIT;
@@ -326,4 +327,85 @@ fn the_miss_line_stays_four_seconds_or_until_the_next_fall() {
     s.landing = None;
     s.last_landing = Some(landing(LandingResult::Bounce, 500, [0.0; 3]));
     assert_eq!(info.step(&s, 420, line), None);
+}
+
+fn ranked(at: Vec3, steer: [f32; 2], caught: bool) -> Ranked {
+    Ranked {
+        at,
+        distance: (at[0] * at[0] + at[1] * at[1] + at[2] * at[2]).sqrt(),
+        time: 2.0,
+        steer,
+        caught,
+        reach: 6.0,
+        speed: 8.1,
+        need: 5.4,
+        cost: 0.4,
+    }
+}
+
+/// In the flight after a bounce the fall row is the best seam's line-up,
+/// the ranked line lists the seams by where they are against the aim, and
+/// `alignment` off leaves the row out and keeps the line.
+#[test]
+fn the_second_bounce_takes_the_fall_row_and_the_line() {
+    let mut s = on();
+    s.airborne = true;
+    s.position = Some([0.0; 3]);
+    // Rising: the assist predicts no landing yet.
+    s.velocity = Some([1.0, 0.0, 6.0]);
+    assert_eq!(view(&s, Options::DEFAULT, None).fall, None);
+    assert_eq!(view(&s, Options::DEFAULT, None).next, [None, None]);
+    // The best seam ahead, 2 units to steer to the right; the second to
+    // the left.
+    s.second = [
+        Some(ranked([10.0, 0.0, 0.0], [0.0, -2.0], false)),
+        Some(ranked([0.0, 20.0, 0.0], [0.0, 3.0], false)),
+    ];
+    let v = view(&s, Options::DEFAULT, Some(Miss::NotPrimed));
+    let f = v.fall.unwrap();
+    assert!(close(f.speed, 8.1 / 5.4));
+    let Steer::Off { heading, metres } = f.steer else {
+        panic!("{f:?}");
+    };
+    assert!(close(heading, FRAC_PI_2) && close(metres, 2.0 * M));
+    let [Some(a), Some(b)] = v.next else {
+        panic!("{:?}", v.next);
+    };
+    assert!(close(a.heading, 0.0) && close(a.metres, 10.0 * M));
+    assert!(close(b.heading, -FRAC_PI_2) && close(b.metres, 20.0 * M));
+    // The line is the ranked seams', over a miss's.
+    let values = rd::values(&v);
+    assert_eq!(
+        values.get(INFO).unwrap().text,
+        format!("1 {} 30 m  2 {} 61 m", arrow(0.0), arrow(-FRAC_PI_2))
+    );
+    assert!(values.get(STEER).unwrap().text.ends_with("6.10 m"));
+    // Caught coasting: on the seam.
+    assert_eq!(
+        line_up(&ranked([10.0, 0.0, 0.0], [0.0, 0.0], true), 0.0).steer,
+        Steer::OnSeam
+    );
+    // The best seam's row is over the assist's prediction.
+    s.velocity = Some([1.0, 0.0, -4.0]);
+    s.landing = Some(predicted([10.02, 0.3, 2.0], 6.0));
+    assert_ne!(
+        view(&s, Options::DEFAULT, None).fall.unwrap().steer,
+        Steer::OnSeam
+    );
+    let off = view(
+        &s,
+        Options {
+            alignment: false,
+            ..Options::DEFAULT
+        },
+        None,
+    );
+    assert_eq!(off.fall, None);
+    assert!(off.next[0].is_some());
+    // With none ranked the row is the assist's again.
+    s.second = [None, None];
+    assert_eq!(
+        view(&s, Options::DEFAULT, None).fall.unwrap().steer,
+        Steer::OnSeam
+    );
 }

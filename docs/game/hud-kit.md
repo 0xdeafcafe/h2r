@@ -1270,7 +1270,7 @@ same screen modes.
 | `sbr.speed` | text, font 6 | (90, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
 | `sbr.fall` | meter, the battery strip's last 64 columns | (90, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
 | `sbr.steer` | text, font 6 | (160, −47) | beside the bar: `On seam` when the coasting landing is caught, else an arrow for the way from the landing to the seam against the aim and how far, `(arrow) 0.40 m` |
-| `sbr.info` | text, font 6 | (90, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s` |
+| `sbr.info` | text, font 6 | (90, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)) |
 | `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
 | `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
 
@@ -1283,7 +1283,14 @@ h2 hud preview superbounce-readout --state all --out DIR
 ```
 
 The preview's states are `idle`, `moving`, `falling-off-seam`,
-`falling-on-seam`, the four `miss-` lines, `targets` and `tagged`.
+`falling-on-seam`, the four `miss-` lines, `targets`, `second-bounce`,
+`second-bounce-lined-up` and `tagged`.
+
+`h2 hud preview superbounce-all` draws both HUDs in one frame, for the
+preview only (`huds::superbounce_all`, `huds::previews`): fourteen
+moments of a run, each a state of the superbounce HUD beside one of the
+readout's (`MOMENTS`), the last two the second bounce's ranked seams and
+its line-up.
 
 **The runtime.** `crates/extensions/game/src/superbounce_readout.rs`
 registers it after the superbounce HUD, so that HUD's navpoint is the
@@ -1296,6 +1303,7 @@ through `superbounce_readout::view`:
 | `landing` (the assist's prediction), while airborne | the bar and the steer line (`fall`): `speed` over `need`; caught when `miss()` is 0, else the way to `crease_point()` |
 | `last_landing` (result, tick, origin) | the miss line (`miss`, `Info`): put up when a landing is filed, taken down after 120 ticks, by the next fall toward a seam, or by a bounce |
 | `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances |
+| `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
 
 The miss line's numbers are worked out beside the tracker's verdict:
 the seam is the one the landing was by

@@ -233,6 +233,7 @@ pub mod superbounce_options;
 pub mod superbounce_prompts;
 pub mod superbounce_readout;
 pub mod superbounce_reload;
+pub mod superbounce_second;
 pub mod superbounce_targets;
 pub mod superbounce_world;
 pub mod superbounce_mode;
