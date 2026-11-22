@@ -210,6 +210,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             axum::routing::put(crate::content::put_details),
         )
         .route(
+            "/v1/maps/{map}/census",
+            axum::routing::put(crate::content::put_census),
+        )
+        .route(
             "/v1/maps/{map}/images/{n}",
             get(crate::content::get_map_detail_image),
         )

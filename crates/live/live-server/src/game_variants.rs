@@ -362,6 +362,15 @@ impl Live {
         }
     }
 
+    /// A hopper slot's script as its verified IR, for the hopper gate
+    /// (`admin::check_pairs`).
+    pub(crate) fn slot_script_ir(&self, prefix: &str) -> ApiResult<rules::ir::Ir> {
+        let attach = self.script_by_hash(&self.slot_script_hash(prefix)?)?;
+        rules::verify::load(&attach.ir)
+            .map(|(ir, _)| ir)
+            .map_err(|e| invalid(format!("the script does not load: {e}")))
+    }
+
     /// A hopper slot's script, named by the record's hash prefix (16
     /// lowercase hex digits), against `context`: one saved or built-in
     /// script has the prefix, and the context takes its header.
@@ -370,6 +379,12 @@ impl Live {
         prefix: &str,
         context: rules::policy::Context<'_>,
     ) -> ApiResult<()> {
+        self.script_policy(&self.slot_script_hash(prefix)?, context)
+    }
+
+    /// The hash of the one saved or built-in script a hopper record's hash
+    /// prefix (16 lowercase hex digits) names.
+    pub(crate) fn slot_script_hash(&self, prefix: &str) -> ApiResult<String> {
         let mut hashes: Vec<String> = builtins()
             .keys()
             .filter(|h| h.starts_with(prefix))
@@ -382,7 +397,7 @@ impl Live {
             [] => Err(invalid(format!(
                 "no saved or built-in script has hash prefix {prefix}"
             ))),
-            [hash] => self.script_policy(hash, context),
+            [hash] => Ok(hash.clone()),
             _ => Err(invalid(format!(
                 "more than one script has hash prefix {prefix}"
             ))),
