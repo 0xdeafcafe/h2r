@@ -244,3 +244,91 @@ Changed after this, on `sb9-approach`:
 - `pair_lost` is unchanged.
 
 What to look for in the next batch: Ascension's `path_lost_jump_crouch` should mostly go, and the bots on the ramp at (−18, 1.3) should take another way down or fail `no_path`. There should be fewer `path_lost_stuck_crouch` on midship, and the ones left (lockout's (5.98, −9.12)) are a different cause. Each bot should log fewer `prime_failed` at a scanned spot that doesn't prime. Zanzibar should try sites. If it still tries none, its nothing-to-try line shows how many crouch spots are set aside.
+
+## 2026-11-22: Zanzibar's crouch spots, the mesh and the glass
+
+Read on `sb10-zanzibar` (from `ee48ba458`) offline, no game run: the
+installed `h2 superbounce scan zanzibar --near 5.3,-26.4,5.0,2.0`,
+`--near 9.0,-2.8,4.0,3.0` and `--explain 8.05,-2.8,4.51,1.0` for the
+polygons, `h2 tags zanzibar` for the tags. No nav mesh was built; the
+links below are worked from the polygons and `nav::NavMesh::cross_link`.
+
+**The second proven crouch spot (8.07, −3.01, 4.51).** It is on a ring of
+floor at z 4.50: three strips, (7.63 to 10.20, −3.20 to −2.50), (9.50 to
+10.30, −5.00 to −2.50) and (7.84 to 10.20, −5.00 to −4.30), under a sloping
+overhang at its west end (the forced crouch). The floors round it are
+z 4.10 (y −5.0 to −7.1, south), 3.50 (y −2.5 to −1.2, north, a wall 1.0
+high) and 2.10 (east). The only way up is the 0.40 step from z 4.10 at
+y −5.0. The generator's standing jump climbed 0.35 at most, so that step
+was a crouch-jump link, and a route walk takes no crouch jump
+(`nav::route::skipped`). Nothing else climbs to the ring. That is the
+"no walk to them" of batch 4 for this spot.
+
+- **Fix: the measured jump.** A standing jump leaves at 3.08 units/s and
+  falls under 4.15 units/s² (batch 2's runs), so it tops out 1.14 over its
+  takeoff. The generator climbs ledges up to 0.6 standing
+  (`nav::Build::max_jump_up`) and 0.825 crouched, along an arc that tops
+  out 0.2 over the ledge (`nav::ledge_lift`). Up to 0.35 the arc is the old
+  flat one, so the links there are as before. The 0.40 step is a jump
+  link. Test: `a_sill_within_the_measured_jump_is_jumped_onto_standing`
+  (it builds the same sill with the old 0.35 and gets a crouch jump).
+- **Fix: polygons judged by their standing room.** A polygon took links
+  only when a standing body fit at its centre. A floor whose centre runs
+  in under a low lip lost every link. A polygon now takes links when a
+  standing body fits at its centre or at a corner pulled 0.3 in
+  (`nav::stands_on`). This doesn't change the ring (its centres are clear
+  of the overhang), but it is the same failure for any crouch spot whose
+  floor's centre is under its lip. Test:
+  `a_floor_running_under_a_lip_keeps_its_links_and_a_recess_under_it_has_none`.
+- `cache::GENERATOR` is 6 and the file format 4, so every cached mesh
+  rebuilds.
+
+**The window (5.22, −26.285, 5.11).** The sill (x 5.20 to 5.40, z 5.10)
+is flush with the room's floor (x 5.40 to 7.20, z 5.10) and shares an
+edge with it at x 5.40, so the mesh walks onto it. The walk that failed
+was to the prime's start: the `PROVEN` row's way out was the jump's
+direction, (−0.69, −0.72), out of the window, so the start, 0.35 along
+it, was at x 4.98, over the ground 3 units down. A walk there ends
+`goal_off_mesh`. The way out is now back into the room, (1, 0), and the
+start is (5.57, −26.285) on the room's floor. Test:
+`the_window_primes_from_the_room_floor_not_from_the_air`.
+
+**The glass.** `--near` lists two-sided vertical polygons in the plane
+x 5.30 filling both openings of the window (y −24.5 to −25.5 and −26.1 to
+−27.1, z 5.10 to 6.30), cut into irregular pieces. The map has
+`globals\glass` (`bsdt`, a breakable-surface definition),
+`effects\generic\solids\glass_breakable_surface` and the
+`scenarios\shaders\multi\zanzibar\zanzibar_glass` shader, and no scenery
+or crate named for glass or a window. So the pane is the structure BSP's
+breakable surfaces, not an object: flag bit 3 and a breakable index, a
+piece skipped in collision once its bit in the live mask (`[0x4ed280] + 1
++ 32 × bsp`) is clear. The pieces' flags and indices were not read
+offline. The scan takes every surface as solid, which is why it sees a
+wall and no lip at the sill; the lip is a piece left above the gap.
+
+- **Fix: break first.** The nav build keeps the breakable surfaces
+  (`glass::panes`). Before a prime the route finds the pieces in the
+  crouched walk in, under the crouched capsule's top, and while the mask
+  says one is whole it stands at the start and shoots it
+  (`bounce_route::glass_in_the_way`, `break_glass`, the phase `break`), or
+  fails `glass_whole` after 150 ticks. Tests in `glass::tests` and
+  `bounce_route::tests`.
+- `h2 agent world.breakable` reads the mask.
+
+**Not checked in a game.** A sim or a game must show:
+
+1. that the mask's address and layout are right: `world.breakable` reads
+   every index whole after a map loads, and a shot at the window clears
+   bits;
+2. which indices Zanzibar's window pieces have, and that a shot breaks one
+   piece, not the whole pane: if the whole pane goes, the lip goes too and
+   the prime can't work;
+3. that a bot standing at (5.57, −26.285) facing the low piece hits it
+   with its held weapon (a phantom spawns with one);
+4. that standing jumps make the 0.4 to 0.6 ledges the mesh now links
+   (Zanzibar's 0.40 step to the ring first). The corpus test
+   (`bots/tests/map_corpus.rs`, ignored) asks H1 Blood Gulch and H1
+   Sidewinder for crouch-jump links; their 0.57 and 0.40 ledges are jump
+   links now, so it may need its expectation changed;
+5. that the walk out of the window prime still turns the word: the user's
+   word turned on the jump, and the prime walks out into the room.

@@ -739,3 +739,35 @@ fn only_a_visible_enemy_with_depleted_shields_gives_a_melee_finishing_cue() {
     g.put_f32(shield, 0.35);
     assert_eq!(observed(&g, Some(&map)), None);
 }
+
+#[test]
+fn the_breakable_state_reads_each_bsps_mask_after_the_enable_byte() {
+    const STATE: u32 = 0x0068_0000;
+    let mut g = FakeGuest::new();
+    g.put_u32(BREAKABLE_STATE, 0);
+    assert_eq!(breakable(&g, 0).unwrap(), None, "no map: a null pointer");
+    g.put_u32(BREAKABLE_STATE, STATE).map(STATE, 0x100);
+    // Everything whole on BSP 0, then index 3 and index 255 broken: the
+    // mask starts one byte in, unaligned.
+    for i in 0..32 {
+        g.put_u8(STATE + 1 + i, 0xff);
+    }
+    g.put_u8(STATE, 1);
+    g.put_u8(STATE + 1, 0xff & !(1 << 3));
+    g.put_u8(STATE + 1 + 31, 0x7f);
+    // BSP 1's mask follows, 32 bytes on.
+    g.put_u8(STATE + 1 + 32, 0x01);
+    let b = breakable(&g, 0).unwrap().unwrap();
+    assert!(b.enabled);
+    assert!(!crate::glass::intact(&b.mask, 3));
+    assert!(crate::glass::intact(&b.mask, 4));
+    assert_eq!(b.broken(), vec![3, 255]);
+    let hex = b.mask_hex();
+    assert_eq!(hex.len(), 64);
+    assert!(hex.starts_with("f7ff") && hex.ends_with("ff7f"), "{hex}");
+    let one = breakable(&g, 1).unwrap().unwrap();
+    assert!(crate::glass::intact(&one.mask, 0));
+    assert!(!crate::glass::intact(&one.mask, 1));
+    g.put_u8(STATE, 0);
+    assert!(!breakable(&g, 0).unwrap().unwrap().enabled);
+}

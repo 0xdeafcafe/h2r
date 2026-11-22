@@ -658,7 +658,7 @@ const SPOT_BYTES: usize = 3 + 4 * SPOT_FLOATS;
 
 /// The scanner's version. **Bump it whenever `superbounce`'s scan changes
 /// what it finds**: every file made by another version is scanned again.
-pub const SCAN: u32 = 3;
+pub const SCAN: u32 = 4;
 
 /// The stamp of a map's spots file: the nav generator and the scan
 /// version, for the map with `fingerprint`.

@@ -41,6 +41,16 @@ impl RoutePad {
     pub fn report(&mut self, aim: Vec3, tick: u32, motion: RouteMotion) -> HostPadState {
         let facing = angles(aim);
         let look = motion.yaw.map(|yaw| angle_error(facing, (yaw, facing.1)));
+        self.pad(facing, look, tick, motion)
+    }
+
+    fn pad(
+        &mut self,
+        facing: (f32, f32),
+        look: Option<[f32; 2]>,
+        tick: u32,
+        motion: RouteMotion,
+    ) -> HostPadState {
         let jump = self.buttons.jump(motion.jump, tick);
         let desired = (motion.speed > 0.0).then_some(motion.dir);
         // Follow the checked steering direction on turns, without
@@ -55,4 +65,29 @@ impl RoutePad {
         pad.buttons.set(CROUCH, motion.crouch);
         pad
     }
+
+    /// [`RoutePad::report`], looking from `eye` at `point` (yaw and
+    /// pitch, over the motion's yaw) and pulling the trigger once the aim
+    /// is within [`SHOOT_CONE`] of it: a route breaking glass
+    /// (`bounce_route`'s break step).
+    pub fn report_shooting(
+        &mut self,
+        aim: Vec3,
+        eye: Vec3,
+        point: Vec3,
+        tick: u32,
+        motion: RouteMotion,
+    ) -> HostPadState {
+        let facing = angles(aim);
+        let to = angles([point[0] - eye[0], point[1] - eye[1], point[2] - eye[2]]);
+        let error = angle_error(facing, to);
+        let mut pad = self.pad(facing, Some(error), tick, motion);
+        let on = error[0].abs() <= SHOOT_CONE && error[1].abs() <= SHOOT_CONE;
+        pad.right_trigger = if on { 1.0 } else { 0.0 };
+        pad
+    }
 }
+
+/// A route shoots at its point only while the aim is this near it, in yaw
+/// and in pitch (radians: 4 degrees).
+pub const SHOOT_CONE: f32 = 4.0 * std::f32::consts::PI / 180.0;
