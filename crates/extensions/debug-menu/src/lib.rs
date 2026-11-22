@@ -4,9 +4,8 @@
 //! * [`model`]: rows, sections and the navigation state machine. Every
 //!   value comes from an agent call and every change is one, so the menu
 //!   and `h2 agent` read and change the same registries.
-//! * [`sources`]: the sections (Render, Shader overrides, Tag edits,
-//!   Cheats, Perf, Features), each over agent methods.
-//! * [`gate`]: the input side: the touchpad + Options chord, gestures,
+//! * [`sources`]: the sections, each over agent methods.
+//! * [`gate`]: the input side: the open chords, gestures, hold-repeat,
 //!   and hiding pads from the game while the menu is open.
 //! * [`layout`]: the lines the overlay draws.
 //! * [`Shared`]: the menu behind a lock, for the input thread (the gate),
@@ -24,7 +23,7 @@ use serde_json::Value;
 
 pub use gate::Gate;
 pub use layout::{Line, Tone};
-pub use model::{Action, Answer, Call, Edit, Menu, Nav, Row, Section, Setter};
+pub use model::{Action, Answer, Call, Device, Edit, Menu, Nav, OnOk, Row, Section, Setter, Toast};
 
 /// Where the menu's calls go: the agent API, in process.
 pub trait Rpc: Send {
@@ -40,6 +39,24 @@ pub enum Key {
     /// Opens and closes it (Backquote).
     Toggle,
     Nav(Nav),
+    /// A printable key: a letter of the search (`f` stars a row and `/`
+    /// starts the search, until it has started).
+    Char(char),
+    /// Space: selects, or is a letter of the search once it has started.
+    Space,
+    /// Backspace: erases a letter of the search, or goes back.
+    Erase,
+}
+
+impl Key {
+    /// A key held down repeats (the others act once per press).
+    pub fn repeats(self) -> bool {
+        matches!(
+            self,
+            Key::Nav(Nav::Up | Nav::Down | Nav::Left | Nav::Right | Nav::PageUp | Nav::PageDown)
+                | Key::Erase
+        )
+    }
 }
 
 /// What [`Shared`] guards.
@@ -82,7 +99,9 @@ pub struct Shared(Arc<Mutex<Inner>>);
 
 impl Default for Shared {
     fn default() -> Self {
-        Self::new(Menu::default())
+        let mut menu = Menu::default();
+        menu.set_header(crate::sources::header());
+        Self::new(menu)
     }
 }
 
@@ -140,10 +159,15 @@ impl Shared {
     pub fn key(&self, k: Key) -> bool {
         let mut g = self.lock();
         let now = g.epoch.elapsed();
+        g.menu.set_device(Device::Keyboard);
         match k {
             Key::Toggle => g.menu.toggle(now),
-            Key::Nav(_) if !g.menu.is_open() => return false,
+            _ if !g.menu.is_open() => return false,
             Key::Nav(n) => g.menu.nav(n, now),
+            Key::Char(c) => g.menu.type_char(c, now),
+            Key::Space if g.menu.typing() => g.menu.type_char(' ', now),
+            Key::Space => g.menu.nav(Nav::Select, now),
+            Key::Erase => g.menu.erase(now),
         }
         g.pump(now);
         true
@@ -154,15 +178,20 @@ impl Shared {
         self.lock().menu.add_section(s);
     }
 
-    /// The overlay's lines while open, `None` while closed. Pumps the
-    /// agent connection first, so answers show without input.
+    /// The overlay's lines while open; while closed, the last result's
+    /// toast for its few seconds, else `None`. Pumps the agent connection
+    /// first, so answers show without input.
     pub fn lines(&self) -> Option<Vec<Line>> {
         let mut g = self.lock();
         let now = g.epoch.elapsed();
         g.pump(now);
         let open = g.menu.is_open();
         g.drawn = Some(g.menu.generation());
-        open.then(|| layout::lines(&g.menu))
+        if open {
+            return Some(layout::lines(&g.menu));
+        }
+        let toast = layout::toast_lines(&g.menu);
+        (!toast.is_empty()).then_some(toast)
     }
 
     /// Whether the window should draw again: what it shows changed since

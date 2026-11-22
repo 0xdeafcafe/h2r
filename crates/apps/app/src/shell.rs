@@ -886,7 +886,12 @@ impl ApplicationHandler<UserEvent> for Shell {
                 if let Some(menu) = self.config.debug_menu.clone() {
                     match keymap::menu_key(code, menu.is_open()) {
                         keymap::MenuKey::Take(k) => {
-                            if down && let Some(k) = k {
+                            // The OS repeats a held arrow, page key or
+                            // Backspace; the other keys act once a press.
+                            if down
+                                && let Some(k) = k
+                                && (!event.repeat || k.repeats())
+                            {
                                 menu.key(k);
                                 if let Some(g) = &self.gpu {
                                     g.window.request_redraw();

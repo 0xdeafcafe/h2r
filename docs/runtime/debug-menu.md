@@ -19,26 +19,39 @@ It is on in `h2 play` and `h2 run` windows unless `H2_DEBUG_MENU=0`.
 
 | | DualSense / DualShock 4 | Any pad | Keyboard |
 |---|---|---|---|
-| Open | touchpad click (or touchpad click + Options) | | `` ` `` (backquote) |
+| Open | touchpad click (or touchpad click + Options) | hold Back (View) + D-pad down for 0.5 s | `` ` `` (backquote) |
 | Close | two-finger tap at the top, or touchpad click + Options | Circle / B at the top | `` ` ``, Escape at the top |
-| Move the selection | swipe up / down on the touchpad | D-pad up / down | arrows up / down |
-| Change a value | swipe left / right | D-pad left / right | arrows left / right |
+| Move the selection | swipe up / down on the touchpad | D-pad up / down (hold repeats), wraps at the ends | arrows up / down, wraps |
+| Change a value | swipe left / right | D-pad left / right (hold repeats) | arrows left / right |
+| Page up / down | | LB / RB | PageUp / PageDown |
+| First / last row | | | Home / End |
 | Select or enter | touchpad click | Cross / A | Enter, Space |
 | Back | two-finger tap | Circle / B | Escape, Backspace |
+| Star or unstar the row | | Triangle / Y | F |
+| Search every section | | | type, or `/` first |
 
-The D-pad and face-button fallback means a pad without a touchpad can still
-use the menu once it is open, but only a DualSense, a DualShock 4 or the
-keyboard can open it.
+Any pad can open and use the menu. The open chord is Back and D-pad down:
+none of the layouts in [controller-layouts.md](../input/controller-layouts.md)
+gives either an action in the table there, and nobody holds both for half
+a second by accident. The game keeps the pair until the menu opens. After
+that it is hidden from the game until both are let go, and the D-pad down
+that was part of the chord does not move the cursor.
 
 - **The click alone.** The game has no use for the touchpad click, so a
   click on a closed menu opens it. That press neither selects a row nor,
   with Options added, closes the menu again; the next click selects.
-
 - **The chord.** A pad with a touchpad holds Options back for 80 ms
   (`debug_menu::gate::CHORD`) in case the click follows. If the click doesn't
   come, the game gets Options then. A press shorter than that still reaches
   the game, one sync late. Pads without a touchpad pass Options straight
-  through.
+  through. The Back + D-pad down hold (`debug_menu::gate::HOLD`, 0.5 s)
+  works on every pad.
+- **Hold-repeat.** A held D-pad direction moves once at the press, then
+  repeats every 80 ms after 350 ms (`REPEAT_DELAY`, `REPEAT_EVERY` in
+  `gate.rs`). The keyboard repeats at the OS's key-repeat rate.
+- **Wrap and paging.** Up from the top goes to the last row, down from the
+  bottom to the first. A page is 14 rows (`debug_menu::model::PAGE`) and
+  stops at the ends.
 - **Swipes.** A swipe is 0.4 of the touchpad's half-width (`SWIPE` in
   `input::touchpad`). Each 0.4 travelled is one step, so a long swipe moves
   several rows. A second finger is one back, and the rest of that touch does
@@ -48,18 +61,47 @@ keyboard can open it.
   whatever was held, so a player doesn't keep running or firing. After it
   closes, anything still held stays hidden until it is let go. The Circle
   that closed the menu never melees, and the Options from the chord never
-  pauses the game. While the menu is open, the keyboard keys above go to the
-  menu, and every other key is swallowed.
+  pauses the game.
 - **Values.** A toggle flips with left, right or select. A number steps by
-  its own step, clamped to its range. A choice cycles through its options.
-  An action (reload, revert) runs on select. Greyed rows say why in the
-  footer, and refuse to change.
+  a step scaled to its range (the range over 64, rounded to 1, 2, 5 or 10
+  times a power of ten, and never finer than the row's own step) unless the
+  row sets one, clamped to its range. Select on a number with a default puts
+  it back. A choice cycles through its options. An action (reload, revert)
+  runs on select. Greyed rows say why in the footer, and refuse to change.
+- **Confirm.** A destructive row asks first: the first select shows
+  "press again to <label>", and a second within 2 s makes the call.
+- **Results.** A change's result is one line under the menu for 3 s: the
+  row's own text for its result (`Row::on_ok`), else "<label>: done" for an
+  action and "<label>: <value>" for an edit. Errors show the same way, in
+  red. The overlay also draws the line for those 3 s after the menu closes.
+- **Footer.** The last line teaches the controls of the device last used
+  (keyboard, a touchpad pad's touchpad, or a pad's buttons). The line above
+  it is the call the selected row makes, as the agent API would send it, so
+  the menu shows the matching `h2 agent` call.
+- **Header.** `Menu::set_header` pins a section above every page. Its rows
+  are drawn as `label value` pairs on up to two lines, listed every second
+  while the menu is open.
+- **Favourites and Recent.** Star the selected row with Triangle / Y or F.
+  The first page lists starred rows under Favourites and the last five
+  actions or edits under Recent, above the sections. A row is keyed by its
+  section's id and its label. They live in memory, for the run.
+- **Search.** With the menu open, a letter, digit or `/ - .` starts a
+  search over every section's rows; the list becomes the matching rows,
+  labelled "Section > row". `f` stars a row and Space selects until the
+  search has started; `/` starts it without a letter, so `f` can be the
+  first one. Escape clears the search, and only then goes back. Backspace
+  erases a letter, and goes back with none. Modifier and function keys are
+  not the menu's.
 
 ## Keyboard
 
 The keys are the Keyboard column of the table above, mapped by
-`debug_menu::Key` (`crates/extensions/debug-menu/src/lib.rs`). While the menu is open
-they go to the menu and every other key is swallowed.
+`debug_menu::Key` (`crates/extensions/debug-menu/src/lib.rs`, from
+`keymap::menu_key` in `crates/apps/app/src/keymap.rs`). While the menu is
+open the arrows, PageUp/PageDown, Home/End, Enter, Space, Escape and
+Backspace act on it, and letters, digits and `/ - .` go to its search. Modifier
+keys and F1 to F12 are not the menu's and pass as before; every other key is
+swallowed.
 
 ## Sections
 
@@ -252,15 +294,18 @@ answers the calls the way the host methods do.
 
 ## When a pad doesn't open it
 
-`h2 agent hostpads` (`input.host`, [agent-api.md](agent-api.md#inputhost-the-host-controllers))
-shows each controller three ways. Run it while the touchpad is held down:
+Hold Back and D-pad down for half a second; that works on any pad. If it
+doesn't, `h2 agent hostpads` (`input.host`,
+[agent-api.md](agent-api.md#inputhost-the-host-controllers)) shows each
+controller three ways. Run it while the buttons are held:
 
-- `devices`: the controller as GameController reads it. `profile` must be
-  `dualsense` or `dualshock4` for it to have a touchpad. `extended` means
-  the framework gave it a plain profile, so there is no touchpad to read.
-  `touchpad.click` should be `true` while the pad is held.
-- `pads`: what the gate is handed. Player one's touchpad should match the
-  one under `devices`.
+- `devices`: the controller as GameController reads it. Back must show as
+  held. For the touchpad, `profile` must be `dualsense` or `dualshock4`;
+  `extended` means the framework gave it a plain profile, so there is no
+  touchpad to read, and `touchpad.click` should be `true` while the pad is
+  held.
+- `pads`: what the gate is handed. Player one's buttons and touchpad should
+  match the one under `devices`.
 - `gate`: `open`, and per pad `touchpad`, `click`, `chord`, and
   `chord_pending` (Start waiting for the click).
 
