@@ -74,7 +74,6 @@ impl AliasDecoder {
     /// Rows are staged on the GPU because a volume mip and a cube face use
     /// different storage view dimensions. A bounded buffer also fits large
     /// aliases without requiring a whole mip's worth of storage bindings.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode(&mut self, device: &wgpu::Device, enc: &mut wgpu::CommandEncoder,
         source: &wgpu::Texture, format: D3DFormat, size: (u32, u32), pitch: u32,
         offset: usize, desc: &TextureDesc, signed: [bool; 4]) -> Result<wgpu::Texture, String> {

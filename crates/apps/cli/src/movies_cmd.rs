@@ -454,7 +454,6 @@ fn load_manifest(dir: &Path, force: bool) -> Result<Manifest> {
 }
 
 /// Convert one movie; on success the output and manifest are written.
-#[allow(clippy::too_many_arguments)]
 fn convert_one(
     iso: &mut Iso,
     src: &xiso::Entry,

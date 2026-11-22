@@ -376,7 +376,6 @@ pub(super) fn placed_position(inst: &InstancedGeometryInstance, local: [f32; 3])
     std::array::from_fn(|i| inst.position[i] + rotated[i])
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_instances(
     bsp: &StructureRender,
     group: &LightmapGroup,

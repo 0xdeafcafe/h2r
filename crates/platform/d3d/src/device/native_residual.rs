@@ -78,7 +78,6 @@ impl<B: Backend> Device<B> {
     /// Whole attachments need neither a rectangle list nor a clear shader.
     /// The caller checked that the viewport covers the target, count is
     /// zero, and color clears select either all channels or none.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn native_attachment_clear(
         &mut self,
         mem: &mut dyn GuestMemory,

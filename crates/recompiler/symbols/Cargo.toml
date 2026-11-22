@@ -8,3 +8,6 @@ description = "Identify statically linked Xbox SDK library functions in an XBE u
 [dependencies]
 xbe.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

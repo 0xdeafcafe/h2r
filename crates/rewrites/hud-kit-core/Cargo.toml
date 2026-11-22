@@ -17,3 +17,6 @@ map.workspace = true
 tags.workspace = true
 # The strip's texels, for the cropped meter's ramp.
 assets.workspace = true
+
+[lints]
+workspace = true

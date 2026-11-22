@@ -40,3 +40,6 @@ lift = { workspace = true, optional = true }
 timeline = { path = "../../runtime/timeline" }
 gfx = { path = "../../platform/gfx" }
 pollster = "1"
+
+[lints]
+workspace = true

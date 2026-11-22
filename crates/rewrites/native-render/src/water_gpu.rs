@@ -381,7 +381,6 @@ impl WaterSet {
     /// [`WaterSet::draw`] issues, as data (the pipelines are made,
     /// [`WaterSet::pipelines`]). Refused when a part, pass, supply or
     /// group is missing, as `draw` records nothing then.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn items(
         &self,
         device: &wgpu::Device,

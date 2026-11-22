@@ -17,4 +17,7 @@ host-dirs.workspace = true
 # Anchored format operations and page size for disc mappings.
 rustix = { version = "1", default-features = false, features = ["fs", "param", "std"] }
 # Dropping a disc mapping's pages after a bulk read (msync/madvise/fadvise).
-libc = "0.2"
+libc = { workspace = true }
+
+[lints]
+workspace = true

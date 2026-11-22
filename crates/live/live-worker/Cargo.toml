@@ -36,7 +36,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 ruzstd = "0.9.1"
-sha2 = "0.10"
+sha2 = { workspace = true }
 # The D1 store's SQL run on SQLite here, against the shared store tests and
 # the native SQLite store.
 live-server = { path = "../live-server", features = ["conformance"] }
@@ -46,3 +46,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 axum = { version = "0.8", default-features = false }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[lints]
+workspace = true

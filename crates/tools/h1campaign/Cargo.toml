@@ -49,3 +49,6 @@ path = "tests/scripts/disc.rs"
 [[test]]
 name = "scripts_survey"
 path = "tests/scripts/survey.rs"
+
+[lints]
+workspace = true

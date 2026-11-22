@@ -727,7 +727,6 @@ fn cached_order(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn platoon_actions(
     plan: &mut Plan,
     opts: &Options,
@@ -889,7 +888,6 @@ fn push_order(plan: &mut Plan, order: Order) -> crate::ai::Result<u16> {
 const FOLLOW_PLAYER: u32 = 1 << 4;
 const FOLLOW_SQUAD: u32 = 1 << 5;
 
-#[allow(clippy::too_many_arguments)]
 fn follow_actions(
     source: &H1Ai,
     plan: &mut Plan,

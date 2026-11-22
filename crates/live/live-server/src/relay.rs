@@ -393,7 +393,6 @@ async fn run(live: Arc<Live>, admission: Ticket, mut socket: WebSocket) {
 
 #[cfg(feature = "native")]
 /// Runs one member's socket until it ends; the close code to send, if any.
-#[allow(clippy::too_many_arguments)]
 async fn pump(
     live: &Live,
     session: &str,

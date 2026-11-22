@@ -12,3 +12,6 @@ sim-core.workspace = true
 # `synth`: synthetic collision BSPs laid out in guest form, for the unit
 # tests here and the engine's differential test. No game data.
 synth = []
+
+[lints]
+workspace = true

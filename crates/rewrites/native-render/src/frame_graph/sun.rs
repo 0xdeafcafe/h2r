@@ -367,7 +367,6 @@ pub(crate) fn plan(
 }
 
 /// The sun stage that stands in for marked shadow `m`'s ops.
-#[allow(clippy::too_many_arguments)]
 fn sun_stage(
     device: &wgpu::Device,
     scene: &FrameScene,

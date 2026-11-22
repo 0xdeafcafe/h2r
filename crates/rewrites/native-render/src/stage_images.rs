@@ -93,7 +93,6 @@ impl StageDecoder {
     /// so went through the stage's palette), or why the stage cannot have
     /// it, as `stage <n> bitmap <why>`. `refuse_linear`: a linear texture
     /// is refused (it is not cached as failed: another pass may take it).
-    #[allow(clippy::too_many_arguments)]
     pub fn decode<R: std::io::Read + std::io::Seek>(
         &mut self,
         map: &mut Map<R>,

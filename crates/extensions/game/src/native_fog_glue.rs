@@ -350,7 +350,6 @@ pub fn late_selected(parts: &[LatePart]) -> Vec<(Owner, u8)> {
 /// on the game thread. Either way the load stays pinned until the masks and
 /// the sealed commands commit. `false`: nothing was committed and the
 /// guest draws the layer (the D3D path).
-#[allow(clippy::too_many_arguments)]
 pub fn commit_late<B: d3d::backend::Backend + Send + 'static>(
     d: &mut d3d::Device<B>,
     mem: &mut dyn GuestMemory,

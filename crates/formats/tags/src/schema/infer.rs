@@ -543,7 +543,6 @@ pub fn apply_engine_strides(schema: &mut Schema) {
 /// offset of the element in the tag).
 type RawElements = BTreeMap<(FourCC, Vec<u32>), HashSet<(usize, u32, u32)>>;
 
-#[allow(clippy::too_many_arguments)]
 fn raw_elements(
     m: &MapSample,
     mi: usize,

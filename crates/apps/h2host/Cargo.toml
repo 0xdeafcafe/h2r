@@ -41,3 +41,6 @@ perf = ["boot/perf"]
 # Mac-side packer: the trimmed disc, the device module framework and the
 # boot cache for an app bundle (platform/tvos/build.sh, platform/ios/build.sh).
 name = "pack"
+
+[lints]
+workspace = true

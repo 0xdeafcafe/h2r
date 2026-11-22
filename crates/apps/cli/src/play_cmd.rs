@@ -319,7 +319,6 @@ fn pad_hid(config: input::pad_hid::PadHidConfig, wanted: bool) -> Option<input::
 /// window's handoff, DirectSound plays on the audio device, XAPI reads the
 /// window's input, and every slice paces against the wall clock and stops
 /// when the window closes.
-#[allow(clippy::too_many_arguments)]
 fn hosted(
     mut host: app::GuestHost,
     audio: bool,

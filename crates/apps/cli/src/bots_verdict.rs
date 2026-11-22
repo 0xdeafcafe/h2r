@@ -267,7 +267,6 @@ fn is_deleted(text: &str) -> bool {
 /// advertisement lines and the advertisement's text. Failing that, the
 /// first advertisement made in another lobby mode: the mode, its line
 /// and the advertisement's line.
-#[allow(clippy::type_complexity)]
 fn custom_game_hosting<'a>(
     l: &Log<'a>,
 ) -> (

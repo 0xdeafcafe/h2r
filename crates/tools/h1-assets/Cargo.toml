@@ -37,3 +37,6 @@ path = "tests/sounds/real_disc.rs"
 [[example]]
 name = "text_dump"
 path = "examples/text/dump.rs"
+
+[lints]
+workspace = true

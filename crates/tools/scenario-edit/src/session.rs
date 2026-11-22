@@ -610,7 +610,6 @@ impl Session {
     }
 
     /// The cached scene of a map, else a new one (cached).
-    #[allow(clippy::too_many_arguments)]
     fn scene_for<R: std::io::Read + std::io::Seek>(
         &mut self,
         source: &MapSource,

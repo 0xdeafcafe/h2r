@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 tags.workspace = true
 quick-xml = "0.41"
+
+[lints]
+workspace = true

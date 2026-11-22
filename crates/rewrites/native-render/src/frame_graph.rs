@@ -283,7 +283,6 @@ pub fn draw_private_with_observer(
 
 /// Present the result of the same graph at the display scale. Logical
 /// guest ordering, including split-screen view transitions, is preserved.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_display(
     backend: &mut GfxBackend,
     scene: &FrameScene,
@@ -312,7 +311,6 @@ pub fn draw_display(
 /// their contents from the preceding frame. They belong to the caller;
 /// private draws always allocate their own. Its shadow maps keep the
 /// guest's size, so it draws no E3 tiles.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_display_on(
     backend: &mut GfxBackend,
     scene: &FrameScene,

@@ -529,7 +529,6 @@ fn set_fog(draw: &mut PlannedDraw, words: [u32; 7], specular: Option<u32>) -> Op
 /// the guest's handler, and each part's draw from the frame step's view
 /// (`scene`, `view`): its object's frame and its rows as extraction read
 /// them. `first` is the run's first slot.
-#[allow(clippy::too_many_arguments)]
 fn plan_walk<B: d3d::backend::Backend>(
     models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory,
     scene: &FrameScene, view: &View, first: usize, run: &[Entry],

@@ -17,3 +17,6 @@ runtime-glue = ["dep:runtime"]
 # Field names for the accessors `record!` generates (src/view.rs).
 paste = "1"
 runtime = { workspace = true, optional = true }
+
+[lints]
+workspace = true

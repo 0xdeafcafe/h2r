@@ -13,3 +13,6 @@ live-proto.workspace = true
 map.workspace = true
 editor-core = { path = "../editor-core" }
 variants = { path = "../../formats/variants" }
+
+[lints]
+workspace = true

@@ -50,7 +50,6 @@ impl VehiclePaths {
             .then_some(points)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn vehicle_path_into(
         &mut self,
         map: &MapData,

@@ -18,3 +18,6 @@ host-dirs.workspace = true
 [dev-dependencies]
 # The post-load determinism check is lockstep's own whole-RAM hash.
 lockstep = { path = "../../extensions/lockstep" }
+
+[lints]
+workspace = true

@@ -1403,7 +1403,6 @@ fn entry_menu(
 
 /// A package's row in the Maps list: its name, its `[package] image` and
 /// `description` when it has them, and what it is an edit of.
-#[allow(clippy::too_many_arguments)]
 fn package_row(
     ui: &Ui,
     app: &App,
