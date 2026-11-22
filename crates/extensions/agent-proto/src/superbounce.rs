@@ -1394,7 +1394,8 @@ mod tests {
             bounce_speed: Tuned { value: 5.4, source: "default".into() },
             ..Tune::default()
         };
-        assert_eq!(serde_json::to_value(&out).unwrap()["bounce_speed"]["value"], 5.4);
+        let value = serde_json::to_value(&out).unwrap()["bounce_speed"]["value"].as_f64().unwrap();
+        assert!((value - 5.4).abs() < 1e-6, "{value}");
     }
 
     #[test]
