@@ -1,0 +1,24 @@
+# Game Setup, opened from a custom game's lobby with the first row
+# focused (docs/game/ui-builder.md "Retail screens in a believable
+# state"). The tag has the frame, the panel and its texts; the game's code
+# adds the rows. A `string:` names one of the screen's own strings, read
+# from the disc when the picture is drawn.
+screen: ui\screens\game_shell\pregame_lobby\squad_settings_dialog
+
+tokens:
+  e41f: SYSTEM LINK        # the network the party is on
+  e408: Glasshouse         # the map
+
+footer: { string: key_offline }
+
+panes:
+  0:
+    lists:
+      0:
+        focus: 0
+        rows:
+          - { string: change_map }
+          - { string: change_variant }
+          - { string: quick_options }
+          - { string: switch_to_coop }
+          - { string: switch_to_playlist }

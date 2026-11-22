@@ -1551,7 +1551,8 @@ UI; `ui/ui_screens.rs` draws it.
   state; its spec becomes a `View` (`view_of`) drawn by
   `preview::render_view` from the editor's disc (`App::sync_ui_disc`: the
   open source when it is a disc image) or the synthetic source. A retail
-  pick is `Disc::render_retail` (pane 0, the tag's own texts), not
+  pick is `Disc::render_retail` (pane 0, in the screen's sample state:
+  docs/game/ui-builder.md "Retail screens in a believable state"), not
   checked. The canvas goes to a `Rgba8Unorm` texture registered with the
   renderer (not sRGB, as the viewport's), re-uploaded when the shot's
   `rev` changes.

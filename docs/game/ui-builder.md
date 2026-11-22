@@ -1371,6 +1371,99 @@ repeated, and named by a string of ours.
   has for its three retail modes, takes the same edit on each pane it
   should show on.
 
+## Retail screens in a believable state
+
+Status: Built, not compiled or run in the editor yet.
+Code: `crates/extensions/game/src/ui_kit/preview.rs`
+(`Disc::render_retail_edited`, `Disc::retail_view_edited`,
+`Canvas::text_boxed`),
+`crates/extensions/game/src/ui_kit/preview/retail_sample.rs`,
+`crates/extensions/game/src/ui_kit/preview/text_layout.rs`,
+`assets/ui/retail-samples/`.
+
+A retail screen's tag lays out every block the game might show. The
+pregame lobby's pane has the two buttons the leader gets and, in the
+same place, the line everyone else gets; a status line whose own string
+is for a party with no session; sixteen speaker icons; six empty lines
+for the variant's options; a table of sixteen player cells. The game's
+code picks among them, writes the empty ones, replaces the substitution
+units in the strings (docs/formats/ui.md "Substitution units") and adds
+the rows of a list. A picture of the tag alone shows all of it at once,
+with a square for every unit.
+
+So the picture is drawn in a **sample state**: a file in
+`assets/ui/retail-samples/` that stands in for the game's code on one
+screen. `render_retail` and `retail_view` look the sample up by the
+screen tag's path; every caller gets it (the UI Screens tool's picture,
+its thumbnails, `ui.render`).
+
+```yaml
+screen: ui\screens\game_shell\pregame_lobby\pregame_lobby
+tokens:                       # substitution unit (hex) to what it reads as
+  e416: Kestrel
+  e425: "4"
+footer: { string: button_key_squad_leader_teams_disabled }
+cells:                        # the tables' filled cells, first cell first
+  - text: Kestrel
+    blocks:
+      ui\global_bitmaps\rank_icons_sm: { image: 14 }
+panes:
+  0:
+    blocks:
+      party_leader: { hide: true }
+      game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
+      text.4: { text: "Score to Win: 50" }
+      ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+    lists:
+      0: { focus: 0, rows: [{ string: change_map }] }
+```
+
+| Key | What it says |
+|---|---|
+| `tokens` | what each substitution unit reads as, for every pane |
+| `footer` | the legend in the header layout's second rectangle |
+| `cells` | the tables' filled cells: `text` is the cell skin's first text block, `blocks` its bitmaps. A cell with no entry is not drawn |
+| `panes.N.blocks` | what the game does to a block of pane `N` |
+| `panes.N.lists.M` | the rows the game's code gives list `M`, and the focused one, drawn on the list's skin from its anchor as a screen of ours lays its rows |
+
+A block is named by its widget id (`text.4`, `button.0`, `bitmap.21`,
+`title`), by the name of its string, or by its bitmap's tag path; a
+widget id wins. What it takes:
+
+| Field | Meaning |
+|---|---|
+| `hide: true` | the game does not show the block in this state. A hidden button's art goes with its text |
+| `string: name` | the game writes another string of the screen's own table there. The text is read from the disc when the picture is drawn |
+| `text: "..."` | the game writes text of its own making there |
+| `image: N` | the image of the block's bitmap the game picks (a rank, a game type's icon) |
+| `tint: [r, g, b]` | the colour the game draws the bitmap in (a player's colour on a white bar) |
+
+Rules:
+
+- **Nothing of the disc is in a sample.** The names, numbers and options
+  are made up. A retail string is named by `string:`, never quoted. A
+  sample that names a string the screen's table lacks fails the render
+  with the names (`State::missing`).
+- **Without a sample, the game's blocks are hidden.** A string that holds
+  a substitution unit is not drawn, nor is one with a unit the sample
+  has no text for (`retail_sample::substitute`). What the tag says
+  outright still shows.
+- **One pane.** The picture is pane `Retail::pane`'s blocks alone; a
+  sample's `panes.N` applies to that pane only.
+- **The editor's edits come first.** A stand-in for a string set with
+  `ui.set_string` is drawn ahead of the sample, then `Retail::text`'s
+  answer, then the sample, then the tag's own string.
+- **Text is laid out as the game does** (docs/formats/ui.md "Text
+  layout"): broken at the rectangle's width, justified line by line,
+  and the lines under the rectangle's bottom left out.
+- **The view keeps every block.** `retail_view` has a widget for a
+  hidden block, with no text, so the editor can still select and move
+  it.
+
+Not drawn: a cell skin's shader bitmaps (the player emblem, which the
+game draws through `ui_small_emblem` with the player's colours) and model
+scenes.
+
 ## The fidelity loop
 
 Status: Design. `h2 ui compare` and the agent API's `ui.screenshot` are not built.

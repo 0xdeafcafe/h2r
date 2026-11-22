@@ -13,6 +13,10 @@
 //! - the description block; text with a drop shadow; button glyphs in
 //!   their own colours from the font.
 //!
+//! A retail screen ([`Disc::render_retail`]) is drawn from its own tag in
+//! a state its sample gives it ([`retail_sample`]), its texts broken and
+//! cut to their rectangles as the game does ([`text_layout`]).
+//!
 //! What it leaves out: the scroll of the track
 //! lines, the skulls page's picture, the dimming of unfocused rows (taken
 //! as 55%, not traced) and model scenes. Nothing is kept: the PNG goes
@@ -29,6 +33,10 @@ use map::TagId;
 use tags::ui::{self as tui, MapSource, Rect, UiTag};
 
 mod retail_edit;
+pub mod retail_sample;
+pub mod text_layout;
+#[cfg(test)]
+mod retail_tests;
 pub use retail_edit::{
     PARKED, RetailBlocks, RetailEdits, parked, retail_block, retail_copy_id, retail_string_field,
 };
@@ -140,6 +148,25 @@ impl Fonts {
         self.font(index)
             .map_or(spec::fallback::LINE, |f| f.line_height())
     }
+    /// `text`'s lines in a rectangle `room` wide in font `index`, as the
+    /// game breaks a text widget's ([`text_layout::lines`]).
+    pub fn wrap(&self, index: i16, text: &str, room: i32) -> Vec<text_layout::Line> {
+        let font = self.font(index);
+        text_layout::lines(text, room, &|prev, c| match &font {
+            Some(f) => glyph_advance(f, prev, c),
+            None => spec::fallback::width(c.encode_utf8(&mut [0; 4])),
+        })
+    }
+    /// How many lines a rectangle `height` high draws in font `index`
+    /// ([`text_layout::lines_drawn`]).
+    pub fn lines_drawn(&self, index: i16, height: i32) -> usize {
+        match self.font(index) {
+            Some(f) => {
+                text_layout::lines_drawn(height, i32::from(f.header.ascent), f.line_height())
+            }
+            None => text_layout::lines_drawn(height, spec::fallback::LINE, spec::fallback::LINE),
+        }
+    }
     /// Whether font `index` has its own picture for `c` (not record 0,
     /// nor the filler every unused icon code point draws).
     pub fn has(&self, index: i16, c: char) -> bool {
@@ -153,6 +180,32 @@ impl Fonts {
             u == u16::from(b' ') || (i != 0 && !((0xe000..=0xe3ff).contains(&u) && i == filler))
         })
     }
+}
+
+/// The pen's travel for `c` after `prev` in `font`: kerning, x offset
+/// and advance ([`Fonts::width`]'s sum, one glyph of it).
+fn glyph_advance(font: &font::Font<'_>, prev: Option<char>, c: char) -> i32 {
+    let unit = |c: char| u16::try_from(u32::from(c)).ok();
+    let Some(u) = unit(c) else {
+        return 0;
+    };
+    let k = prev
+        .and_then(unit)
+        .map_or(0, |p| i32::from(font.kerning(p, u)));
+    font.record(font.glyph_index(u))
+        .map_or(0, |r| k + i32::from(r.x_offset) + i32::from(r.advance))
+}
+
+/// `img` in colour `tint`: each pixel's colour scaled by it, as the game
+/// draws a white bar in a player's colour.
+fn tinted(img: &Image, tint: [u8; 3]) -> Image {
+    let mut out = img.clone();
+    for p in out.rgba.chunks_exact_mut(4) {
+        for (c, t) in p.iter_mut().zip(tint) {
+            *c = (u16::from(*c) * u16::from(t) / 255) as u8;
+        }
+    }
+    out
 }
 
 /// A decoded bitmap image.
@@ -824,22 +877,71 @@ impl Disc {
             Some(u) => Some((loc.unic(&mut m, u)?, loc)),
             None => None,
         };
+        let mut names = HashMap::new();
+        let mut ids = HashMap::new();
+        if let Some((u, loc)) = &unic {
+            let english = tags::localization::Language::English;
+            for e in loc.entries_for(u, english)? {
+                if let Ok(Some(n)) = e.id.resolve(m.strings()) {
+                    names.insert(e.id.0, n.to_owned());
+                    ids.entry(n.to_owned()).or_insert(e.id.0);
+                }
+            }
+        }
+        // The blocks' own strings have names whether or not the table
+        // has text for them (a status line's default).
+        let block_strings = screen
+            .panes
+            .iter()
+            .flat_map(|p| {
+                p.text_blocks
+                    .iter()
+                    .map(|t| t.string)
+                    .chain(p.buttons.iter().map(|b| b.string))
+            })
+            .chain([screen.header]);
+        for id in block_strings {
+            if let Ok(Some(n)) = id.resolve(m.strings()) {
+                names.entry(id.0).or_insert_with(|| n.to_owned());
+            }
+        }
+        let bitmaps = screen
+            .panes
+            .iter()
+            .flat_map(|p| p.bitmaps.iter())
+            .chain(skins.values().flat_map(|s| s.bitmaps.iter()))
+            .filter_map(|b| b.bitmap.id)
+            .filter_map(|id| Some((id, m.tag(map::TagQuery::Id(id)).ok()?.name.clone()?)))
+            .collect();
         Ok(RetailParts {
             screen,
             unic,
             skins,
+            names,
+            ids,
+            bitmaps,
         })
     }
 
-    /// A retail screen at rest, as its tag lays it out: pane `r.pane`'s
-    /// bitmaps, text blocks and buttons, and its tables' cells, over the
+    /// A retail screen in a state the game shows it in: pane `r.pane`'s
+    /// bitmaps, buttons, lists, text blocks and tables' cells, over the
     /// game shell background, with the header and footer in the `wigl`
-    /// header layout. Texts come from the screen's own string table
-    /// (`unic`, English) unless `r.text` answers the block's string id; the
-    /// game's code fills the empty blocks and the format strings at run
-    /// time, which `r.text` stands in for (`Some("")` leaves one blank).
-    /// Each table cell's first text block shows `r.cells[i]`; a cell with
-    /// no entry is not drawn (the game hides empty player slots).
+    /// header layout.
+    ///
+    /// The tag lays out every block the game might show, and the game's
+    /// code picks among them, writes the empty ones and replaces the
+    /// substitution units in the strings. The screen's sample
+    /// ([`retail_sample`], `assets/ui/retail-samples/`) stands in for
+    /// that code: which blocks show, what they read, the rows of a list
+    /// and the cells of a table. Without one, a string holding a
+    /// substitution unit is not drawn. `r.text` answers a string id ahead
+    /// of the sample (`Some("")` leaves a block blank), `r.cells` and
+    /// `r.footer` ahead of the sample's cells and footer.
+    ///
+    /// Texts are in the screen's own string table (`unic`, English),
+    /// broken into lines and cut to their rectangles as the game does
+    /// ([`Canvas::text_boxed`]). A cell with no entry is not drawn (the
+    /// game hides empty player slots).
     pub fn render_retail(&self, r: &Retail<'_>) -> Result<Canvas> {
         self.render_retail_with(r, &RetailPlaces::new())
     }
@@ -865,19 +967,55 @@ impl Disc {
         let header = edits.apply(&mut pane, parts.screen.header.0);
         let screen = &parts.screen;
         let skins = &parts.skins;
-        let lookup = |id: u32| edits.text(id).or_else(|| parts.text(r, id));
+        let (table, name, named) = parts.strings();
+        let state = retail_sample::State {
+            sample: retail_sample::for_screen(r.tag).map_err(|e| anyhow!(e))?,
+            pane: r.pane,
+            strings: retail_sample::Strings {
+                text: &table,
+                name: &name,
+                named: &named,
+            },
+        };
+        let missing = state.missing();
+        if !missing.is_empty() {
+            bail!(
+                "the sample for {} names strings its table lacks: {}",
+                r.tag,
+                missing.join(", ")
+            );
+        }
+        let lookup = |widget: &str, id: u32| {
+            edits
+                .text(id)
+                .or_else(|| (r.text)(id))
+                .or_else(|| state.text(widget, id))
+        };
         let g = self.geometry(ListPlace::Controls)?;
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
         let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
         for p in &self.background.panes {
             self.draw_blocks(&mut c, p.bitmaps.iter());
         }
-        self.draw_blocks(
-            &mut c,
-            pane.bitmaps.iter().filter(|b| on_screen_point(b.top_left)),
-        );
+        // The pane's bitmaps the state shows, lowest render depth first.
+        let mut blocks: Vec<(&tui::BitmapBlock, retail_sample::Shown)> = pane
+            .bitmaps
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| on_screen_point(b.top_left))
+            .filter_map(|(i, b)| {
+                let tag = b.bitmap.id.and_then(|id| parts.bitmaps.get(&id));
+                Some((b, state.bitmap(&format!("bitmap.{i}"), tag.map(String::as_str))?))
+            })
+            .collect();
+        blocks.sort_by_key(|(b, _)| b.render_depth_bias);
+        for (b, shown) in blocks {
+            if let Some(img) = self.shown_image(b, shown) {
+                c.image(&img, i32::from(b.top_left.x), i32::from(b.top_left.y), 255);
+            }
+        }
         if screen.flags & tui::Screen::NO_HEADER == 0
-            && let Some(h) = lookup(header)
+            && let Some(h) = lookup("title", header)
         {
             c.text(
                 &self.fonts,
@@ -888,17 +1026,21 @@ impl Disc {
                 rgb(g.header_colour),
             );
         }
-        if let Some(f) = &r.footer {
+        if let Some(f) = r.footer.clone().or_else(|| state.footer()) {
             c.text(
                 &self.fonts,
                 g.header_font,
-                f,
+                &f,
                 g.footer,
                 1,
                 rgb(g.header_colour),
             );
         }
-        for b in &pane.buttons {
+        for (i, b) in pane.buttons.iter().enumerate() {
+            let id = format!("button.{i}");
+            if state.hidden(&id, b.string.0) {
+                continue;
+            }
             if let Some(img) = self.image(b.bitmap, 0) {
                 c.image(
                     &img,
@@ -907,49 +1049,105 @@ impl Disc {
                     255,
                 );
             }
-            if let Some(t) = lookup(b.string.0) {
-                c.text(
+            if let Some(t) = lookup(&id, b.string.0) {
+                c.text_boxed(
                     &self.fonts,
                     b.font,
                     &t,
                     b.rect,
                     tui::justification(b.flags),
                     rgb(b.text_color),
+                    255,
                 );
             }
         }
-        for t in pane.text_blocks.iter().filter(|t| on_screen_rect(&t.rect)) {
-            if let Some(text) = lookup(t.string.0).filter(|s| !s.is_empty()) {
-                c.text(
+        // A list's rows are the game's code's: the sample's, on the
+        // list's skin from its anchor, as a screen of ours lays its rows.
+        for (i, l) in pane.lists.iter().enumerate() {
+            let Some((rows, focus)) = state.rows(i) else {
+                continue;
+            };
+            let place = ListPlace::Moved {
+                skin: l.skin,
+                anchor: [l.anchor.x, l.anchor.y],
+                bitmaps_left_of: i16::MIN,
+                visible: l.visible_items.max(1),
+            };
+            let mut s = ScreenSpec::new(r.tag, "");
+            s.list = place;
+            s.rows = rows.iter().map(|t| RowSpec::action(t)).collect();
+            s.focus = focus;
+            let v = view_of(&s, &self.geometry(place)?, &self.fonts, "");
+            paint(
+                &mut c,
+                v.widgets.iter().filter(|w| w.id.starts_with("row.")),
+                self,
+                false,
+            );
+        }
+        for (i, t) in pane.text_blocks.iter().enumerate() {
+            if !on_screen_rect(&t.rect) {
+                continue;
+            }
+            if let Some(text) = lookup(&format!("text.{i}"), t.string.0).filter(|s| !s.is_empty()) {
+                c.text_boxed(
                     &self.fonts,
                     t.font,
                     &text,
                     t.rect,
                     tui::justification(t.flags),
                     rgb(t.text_color),
+                    255,
                 );
             }
         }
+        // The caller's cells are names alone, on the cell's lowest
+        // bitmap; the sample's say what each of the skin's bitmaps shows.
+        let named_cells: Vec<retail_sample::Cell> = r
+            .cells
+            .iter()
+            .map(|text| retail_sample::Cell {
+                text: text.clone(),
+                blocks: BTreeMap::new(),
+            })
+            .collect();
+        let (cells, plain) = if named_cells.is_empty() {
+            (state.cells(), false)
+        } else {
+            (named_cells.as_slice(), true)
+        };
         for table in &pane.tables {
             let Some(skin) = table.skin.id.and_then(|id| skins.get(&id)) else {
                 continue;
             };
-            for (i, cell) in r.cells.iter().enumerate() {
+            for (i, cell) in cells.iter().enumerate() {
                 let Some(o) = table.cell_origin(i as i32) else {
                     continue;
                 };
                 let (ox, oy) = (i32::from(o.x), i32::from(o.y));
-                let mut bitmaps: Vec<&tui::BitmapBlock> = skin.bitmaps.iter().collect();
-                bitmaps.sort_by_key(|b| b.render_depth_bias);
-                if let Some(b) = bitmaps.first()
-                    && let Some(img) = self.image(b.bitmap, b.image)
-                {
-                    c.image(
-                        &img,
-                        ox + i32::from(b.top_left.x),
-                        oy + i32::from(b.top_left.y) + img.height as i32,
-                        255,
+                let mut bitmaps: Vec<(usize, &tui::BitmapBlock)> =
+                    skin.bitmaps.iter().enumerate().collect();
+                bitmaps.sort_by_key(|(_, b)| b.render_depth_bias);
+                if plain {
+                    bitmaps.truncate(1);
+                }
+                for (k, b) in bitmaps {
+                    let tag = b.bitmap.id.and_then(|id| parts.bitmaps.get(&id));
+                    let shown = retail_sample::cell_bitmap(
+                        cell,
+                        &format!("bitmap.{k}"),
+                        tag.map(String::as_str),
                     );
+                    // An item's bitmap covers its point's y up to y plus
+                    // its height (docs/formats/ui.md).
+                    if let Some(img) = shown.and_then(|s| self.shown_image(b, s)) {
+                        c.image(
+                            &img,
+                            ox + i32::from(b.top_left.x),
+                            oy + i32::from(b.top_left.y) + img.height as i32,
+                            255,
+                        );
+                    }
                 }
                 if let Some(t) = skin.text_blocks.first() {
                     let at = Rect {
@@ -958,18 +1156,29 @@ impl Disc {
                         left: (i32::from(t.rect.left) + ox) as i16,
                         right: (i32::from(t.rect.right) + ox) as i16,
                     };
-                    c.text(
+                    c.text_boxed(
                         &self.fonts,
                         t.font,
-                        cell,
+                        &cell.text,
                         at,
                         tui::justification(t.flags),
                         rgb(t.text_color),
+                        255,
                     );
                 }
             }
         }
         Ok(c)
+    }
+
+    /// Bitmap block `b`'s picture as a state shows it: the image the
+    /// state picks (else the block's own), in the state's colour.
+    fn shown_image(&self, b: &tui::BitmapBlock, shown: retail_sample::Shown) -> Option<Image> {
+        let img = self.image(b.bitmap, shown.image.unwrap_or(b.image))?;
+        Some(match shown.tint {
+            Some(t) => tinted(&img, t),
+            None => img,
+        })
     }
 
     /// A retail screen's widgets as a [`View`], for the editor to select
@@ -996,7 +1205,22 @@ impl Disc {
             .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?
             .clone();
         let header = edits.apply(&mut pane, parts.screen.header.0);
-        let lookup = |id: u32| edits.text(id).or_else(|| parts.text(r, id));
+        let (table, name, named) = parts.strings();
+        let state = retail_sample::State {
+            sample: retail_sample::for_screen(r.tag).map_err(|e| anyhow!(e))?,
+            pane: r.pane,
+            strings: retail_sample::Strings {
+                text: &table,
+                name: &name,
+                named: &named,
+            },
+        };
+        let lookup = |widget: &str, id: u32| {
+            edits
+                .text(id)
+                .or_else(|| (r.text)(id))
+                .or_else(|| state.text(widget, id))
+        };
         let screen = &parts.screen;
         let g = self.geometry(ListPlace::Controls)?;
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
@@ -1040,7 +1264,7 @@ impl Disc {
             });
         }
         if screen.flags & tui::Screen::NO_HEADER == 0
-            && let Some(h) = lookup(header)
+            && let Some(h) = lookup("title", header)
         {
             w.push(text(
                 "title".into(),
@@ -1052,7 +1276,7 @@ impl Disc {
             ));
         }
         for (i, b) in pane.buttons.iter().enumerate() {
-            let s = lookup(b.string.0).unwrap_or_default();
+            let s = lookup(&format!("button.{i}"), b.string.0).unwrap_or_default();
             w.push(text(
                 format!("button.{i}"),
                 edges(b.rect),
@@ -1066,7 +1290,7 @@ impl Disc {
             if !on_screen_rect(&t.rect) {
                 continue;
             }
-            let s = lookup(t.string.0).unwrap_or_default();
+            let s = lookup(&format!("text.{i}"), t.string.0).unwrap_or_default();
             w.push(text(
                 format!("text.{i}"),
                 edges(t.rect),
@@ -1134,11 +1358,13 @@ pub struct Retail<'a> {
     /// The screen tag's name in `mainmenu.map`.
     pub tag: &'a str,
     pub pane: usize,
-    /// The text for a string id, standing in for what the game's code
-    /// writes (formats, empty blocks); None takes the tag's own.
+    /// The text for a string id, ahead of the screen's sample
+    /// ([`retail_sample`]); None takes the sample's, else the tag's own.
     pub text: &'a dyn Fn(u32) -> Option<String>,
-    /// The table cells' texts (player names), one per filled slot.
+    /// The table cells' texts (player names), one per filled slot, each
+    /// on the cell skin's lowest bitmap; empty takes the sample's cells.
     pub cells: &'a [String],
+    /// The footer's legend; None takes the sample's.
     pub footer: Option<String>,
 }
 
@@ -1148,15 +1374,34 @@ struct RetailParts {
     screen: tui::Screen,
     unic: Option<(tags::localization::Unic, tags::localization::Localization)>,
     skins: HashMap<TagId, tui::Skin>,
+    /// The string table's names: id to name, and name to id.
+    names: HashMap<u32, String>,
+    ids: HashMap<String, u32>,
+    /// The tag paths of the bitmaps the panes and the skins draw.
+    bitmaps: HashMap<TagId, String>,
 }
 
 impl RetailParts {
-    /// String id `id`'s text: `r.text`'s answer, else the screen's own
-    /// (English).
-    fn text(&self, r: &Retail<'_>, id: u32) -> Option<String> {
-        if let Some(t) = (r.text)(id) {
-            return Some(t);
-        }
+    /// The screen's string table as a state reads it
+    /// ([`retail_sample::Strings`]): a string id's text, its name, and
+    /// the text of the string named so.
+    #[allow(clippy::type_complexity)]
+    fn strings(
+        &self,
+    ) -> (
+        impl Fn(u32) -> Option<String> + '_,
+        impl Fn(u32) -> Option<String> + '_,
+        impl Fn(&str) -> Option<String> + '_,
+    ) {
+        (
+            move |id: u32| self.text(id),
+            move |id: u32| self.names.get(&id).cloned(),
+            move |name: &str| self.ids.get(name).and_then(|id| self.text(*id)),
+        )
+    }
+
+    /// String id `id`'s text in the screen's own table (English).
+    fn text(&self, id: u32) -> Option<String> {
         let (unic, loc) = self.unic.as_ref()?;
         loc.text_in(
             unic,
@@ -1639,9 +1884,22 @@ fn render_composite(
         src.backing(&mut c, v.backing);
         c
     };
-    let mut order: Vec<&crate::ui_kit::view::Widget> = v.widgets.iter().collect();
+    paint(&mut c, v.widgets.iter().filter(|w| keep(w)), src, marks);
+    c
+}
+
+/// `widgets` drawn on `c` from `src` by layer (frame art, row and cell
+/// art, texts), each with its alpha; with `marks`, texts that overflow
+/// are outlined in red.
+fn paint<'a>(
+    c: &mut Canvas,
+    widgets: impl Iterator<Item = &'a crate::ui_kit::view::Widget>,
+    src: &dyn Source,
+    marks: bool,
+) {
+    let mut order: Vec<&crate::ui_kit::view::Widget> = widgets.collect();
     order.sort_by_key(|w| w.layer);
-    for w in order.into_iter().filter(|w| w.alpha > 0 && keep(w)) {
+    for w in order.into_iter().filter(|w| w.alpha > 0) {
         let r = w.rect();
         match &w.kind {
             Kind::Art { art: Art::Solid { rgba }, .. } => {
@@ -1663,14 +1921,13 @@ fn render_composite(
                 justify,
                 colour,
             } => {
-                src.text(&mut c, *font, text, r, *justify, *colour, w.alpha);
+                src.text(c, *font, text, r, *justify, *colour, w.alpha);
                 if marks && overflows(w, src) {
                     c.outline(r, [230, 40, 40, 255]);
                 }
             }
         }
     }
-    c
 }
 
 /// A contact sheet: each tile at half size under its label (in
@@ -1816,7 +2073,6 @@ impl Canvas {
         rgb: [u8; 3],
         alpha: u8,
     ) {
-        let shadow = (160 * u32::from(alpha) / 255) as u8;
         let Some(font) = fonts.font(index) else {
             return;
         };
@@ -1829,25 +2085,71 @@ impl Canvas {
                 2 => left + (r.width() - w) / 2,
                 _ => left,
             };
-            let y = top + n as i32 * line_h;
-            // Runs of plain text and of icons, each drawn on its own.
-            let mut runs: Vec<(bool, String)> = Vec::new();
-            for ch in line.chars() {
-                let icon = ('\u{e000}'..='\u{e3ff}').contains(&ch);
-                match runs.last_mut() {
-                    Some((i, s)) if *i == icon => s.push(ch),
-                    _ => runs.push((icon, ch.to_string())),
-                }
+            self.line(fonts, &font, index, line, x, top + n as i32 * line_h, rgb, alpha);
+        }
+    }
+    /// `text` as the game draws a text widget in `r` (docs/formats/ui.md
+    /// "Text layout"): broken into lines at the rectangle's width
+    /// ([`Fonts::wrap`]), each justified in it, and only the lines whose
+    /// baseline is above its bottom ([`Fonts::lines_drawn`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_boxed(
+        &mut self,
+        fonts: &Fonts,
+        index: i16,
+        text: &str,
+        r: Rect,
+        just: u8,
+        rgb: [u8; 3],
+        alpha: u8,
+    ) {
+        let Some(font) = fonts.font(index) else {
+            return;
+        };
+        let line_h = font.line_height();
+        let (left, top) = self.px(i32::from(r.left), i32::from(r.top));
+        let lines = fonts.wrap(index, text, r.width());
+        let shown = fonts.lines_drawn(index, r.height());
+        for (n, l) in lines.iter().take(shown).enumerate() {
+            let x = match just {
+                1 => left + r.width() - l.width,
+                2 => left + (r.width() - l.width) / 2,
+                _ => left,
+            };
+            self.line(fonts, &font, index, &l.text, x, top + n as i32 * line_h, rgb, alpha);
+        }
+    }
+    /// One line of text with its top-left at pixel `(x, y)`: runs of
+    /// plain text, shadowed, and of icons, each drawn on its own.
+    #[allow(clippy::too_many_arguments)]
+    fn line(
+        &mut self,
+        fonts: &Fonts,
+        font: &font::Font<'_>,
+        index: i16,
+        line: &str,
+        x: i32,
+        y: i32,
+        rgb: [u8; 3],
+        alpha: u8,
+    ) {
+        let shadow = (160 * u32::from(alpha) / 255) as u8;
+        let mut runs: Vec<(bool, String)> = Vec::new();
+        for ch in line.chars() {
+            let icon = ('\u{e000}'..='\u{e3ff}').contains(&ch);
+            match runs.last_mut() {
+                Some((i, s)) if *i == icon => s.push(ch),
+                _ => runs.push((icon, ch.to_string())),
             }
-            let mut pen = x;
-            for (icon, s) in runs {
-                let units: Vec<u16> = s.encode_utf16().collect();
-                if !icon {
-                    self.run(&font, &units, pen + 1, y + 1, [0, 0, 0, shadow], false);
-                }
-                self.run(&font, &units, pen, y, [rgb[0], rgb[1], rgb[2], alpha], icon);
-                pen += fonts.width(index, &s);
+        }
+        let mut pen = x;
+        for (icon, s) in runs {
+            let units: Vec<u16> = s.encode_utf16().collect();
+            if !icon {
+                self.run(font, &units, pen + 1, y + 1, [0, 0, 0, shadow], false);
             }
+            self.run(font, &units, pen, y, [rgb[0], rgb[1], rgb[2], alpha], icon);
+            pen += fonts.width(index, &s);
         }
     }
     /// `other` copied in with its top-left at pixel `(x, y)`.

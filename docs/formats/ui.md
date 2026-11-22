@@ -144,6 +144,76 @@ with 32 or 256 units including the terminator (`0x0022f50d`, `0x0022f545`).
 [The UI audit](../runtime/agent-api.md#ui-what-the-menus-show) reads these
 buffers after row binding and localization.
 
+### Substitution units
+
+A string can hold units the game replaces before it measures and draws
+the text (`0x0022d2ee`, called from the widget's draw at `0x0022d18a`).
+The routine looks each unit from U+E000 to U+F8FF up in a table of 131
+entries of 12 bytes at `0x00470200`: a name, the unit and a handler
+(`0x0022d336`). The entries with a handler are U+E408 to U+E45E: the
+handler writes the text in (a gamertag, a count, a map's name), so the
+unit itself is never drawn and no font has a glyph for it. The others
+(`&`, U+E100 to U+E12B) have none; the fonts have pictures for those
+units ([button icons](../input/button-icons.md)).
+
+A string that is only a unit (`level_format`), or a sentence around one,
+is therefore the game's code's to fill: the tag alone does not say what
+it reads. The units the pregame lobby and Game Setup use, by what their
+strings are for:
+
+| Unit | Stands for |
+|---|---|
+| U+E408 | the map's name |
+| U+E40A | the game variant's name |
+| U+E413 | the countdown's seconds |
+| U+E414 | a player's name |
+| U+E416 | the party leader's name |
+| U+E41F | the network the party is on |
+| U+E425 | the number of players in the party |
+| U+E426, U+E427, U+E428 | the campaign level's name, its description, the difficulty |
+| U+E43A, U+E43B | the matchmaking playlist's name, its description |
+| U+E45D | a percentage |
+
+### Text layout
+
+A text widget draws its string in its rectangle (E; `text_layout` in
+`crates/extensions/game/src/ui_kit/preview/` implements this):
+
+- **It wraps.** The widget's text request is made with its wrap word
+  set to 1 (`0x0022ccc9`), which the draw copies to the font renderer's
+  flags (`0x0022d1a1`); bit 0 turns the break test on (`0x0013f4a1`).
+- **A line takes glyphs while they fit.** The line measure
+  (`0x0013ef40`) adds each glyph's kerning, x offset and advance while
+  the rectangle's right edge is beyond the pen (`0x0013f04c`). A line's
+  first glyph always joins it.
+- **It breaks at the last allowed place.** The first glyph that does not
+  fit ends the line at the last break the scanner allowed, and the next
+  line starts with the glyph after that break; the space before it stays
+  on the line and in its width. With no allowed break in the line, the
+  line ends after the glyph that did not fit: it is drawn, and not
+  counted in the width.
+- **Where a break is allowed** (`0x0013fd20`): after a space (the 12
+  ranges at `0x004536cc`: U+0009 to U+000D, U+0020, U+0085, U+00A0,
+  U+1680, U+180E, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F,
+  U+3000), or beside a character of the wide scripts (`0x0013fd90`:
+  U+1100 to U+11FF, U+3000 to U+D7AF, U+F900 to U+FAFF, U+FF00 to
+  U+FFDC); never before a character that may not start a line
+  (`0x0013fde0`: `! " % ) , . : ; ? ] }`, U+00B0, U+00B7, U+2013,
+  U+2014, U+2019, U+201D, U+2022, U+2026, U+2027, U+2032, U+2033,
+  U+2103 and the wide scripts' closing marks) nor after one that may not
+  end a line (`0x00140260`: `" $ ( [ \ {`, U+2018, U+201C, U+2035 and
+  the wide scripts' opening marks).
+- **Justification is per line** (`0x0013f2d7`): left at the rectangle's
+  left, right with the line's width against its right, centred with half
+  the room left over on each side.
+- **Lines under the rectangle are not drawn.** Line `n`'s baseline is the
+  rectangle's top plus `n` line heights plus the font's ascent; the line
+  is drawn only while the rectangle's bottom is below it (`0x0013f331`).
+  A rectangle one line high therefore shows the first line of a text
+  that wraps, and nothing of the rest.
+- `0x0d` ends a line and `0x0a` is skipped (`0x0013f5a0`), so the
+  strings' `\r\n` is one break.
+
 ## Layouts
 
 Offsets are hexadecimal. Tag references are eight bytes, group FourCC then
