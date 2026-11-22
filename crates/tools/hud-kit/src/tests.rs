@@ -200,6 +200,78 @@ fn templates_resolve_on_the_hud_editors_fixture_map() {
     assert!(t.art(&nope).unwrap_err().contains("no bitmap widget nope"));
 }
 
+/// The readout beside the superbounce HUD: every check passes for both
+/// in every mode but the glyphs (no fonts), no element of one meets one
+/// of the other, and the readout draws fullscreen only, bottom left.
+#[test]
+fn the_readout_passes_beside_the_superbounce_hud() {
+    use crate::huds::superbounce_readout::{self as readout, Readout};
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&Superbounce, &Readout], &Mode::ALL).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    let shot = |state: &str, mode: Mode| {
+        r.shots
+            .iter()
+            .find(|s| s.hud == readout::NAME && s.state == state && s.mode == mode)
+            .unwrap()
+    };
+    let drawn = |state: &str, mode: Mode| -> Vec<&str> {
+        shot(state, mode)
+            .elements
+            .iter()
+            .filter(|d| d.drawn)
+            .map(|d| d.id)
+            .collect()
+    };
+    assert_eq!(
+        drawn("falling-off-seam", Mode::Full),
+        [readout::FALL, readout::SPEED, readout::STEER]
+    );
+    assert_eq!(drawn("miss-too-slow", Mode::Full), [readout::INFO]);
+    assert!(drawn("idle", Mode::Full).is_empty());
+    for mode in [Mode::Half, Mode::Quarter] {
+        assert!(drawn("falling-off-seam", mode).is_empty(), "{mode:?}");
+        assert!(drawn("tagged", mode).is_empty(), "{mode:?}");
+    }
+    // Right of the tracker, under its top, left of the screen's middle
+    // third's far edge.
+    for id in [readout::FALL, readout::SPEED, readout::STEER] {
+        let d = shot("falling-off-seam", Mode::Full).element(id).unwrap();
+        let rect = d.rect.unwrap();
+        assert!(rect.x0 >= 138.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
+    }
+}
+
+/// Each navpoint of a HUD has a sample of its own, so two shown at once
+/// (the readout's two targets, the ranked seams after a bounce) draw
+/// apart: neither's arrow, marker and number is over the other's.
+#[test]
+fn a_huds_navpoints_draw_at_samples_of_their_own() {
+    use crate::huds::superbounce_readout::{self as readout, Readout};
+    for (i, a) in preview::NAVPOINT_SAMPLES.iter().enumerate() {
+        for b in &preview::NAVPOINT_SAMPLES[i + 1..] {
+            assert!((a[0] - b[0]).abs() >= 0.1, "{a:?} {b:?}");
+        }
+    }
+    assert_eq!(preview::navpoint_sample(0), preview::NAVPOINT_SAMPLE);
+    assert_eq!(preview::navpoint_sample(9), preview::NAVPOINT_SAMPLES[3]);
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&Readout], &[Mode::Full]).unwrap();
+    for state in ["targets", "second-bounce"] {
+        let shot = r
+            .shots
+            .iter()
+            .find(|s| s.hud == readout::NAME && s.state == state)
+            .unwrap();
+        let rect = |id: &str| shot.element(id).unwrap().rect.unwrap();
+        let (a, b) = (rect(readout::TARGET_1), rect(readout::TARGET_2));
+        assert!(
+            a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0,
+            "{state}: {a:?} {b:?}"
+        );
+    }
+}
+
 /// The synthetic sheet draws: the superbounce HUD in every state and
 /// mode, every check passing but the glyphs (no fonts), and a picture
 /// and its JSON written to a folder.
@@ -213,7 +285,7 @@ fn the_synthetic_sheet_draws_and_passes() {
         [Check::Glyphs]
     );
     let states = Superbounce.states().len();
-    assert_eq!(states, 27);
+    assert_eq!(states, 26);
     assert_eq!(r.shots.len(), states * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
     assert_eq!((sheet.width, sheet.height), (3 * 320, states as u32 * 240));
@@ -741,7 +813,7 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
 /// `hud_input1` the fill), where retail draws it: centred 110 under the
 /// frame's centre; drawn in the recipe's states at their fills.
 #[test]
-fn the_arming_bar_is_assaults_where_retail_draws_it() {
+fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
     let mut src = synthetic();
     let hud = superbounce::hud();
     let t = src.templates(&hud);
@@ -763,8 +835,10 @@ fn the_arming_bar_is_assaults_where_retail_draws_it() {
     let centre = frame.anchor_point(4).unwrap();
     let rect = arm("held").rect.unwrap();
     assert_eq!([rect.width(), rect.height()], [140.0, 13.0]);
-    assert_eq!(rect.x0 + rect.width() / 2.0, centre[0]);
-    assert_eq!(rect.y0 + rect.height() / 2.0, centre[1] + 110.0);
+    // Bottom left with the readout, above its speed row.
+    let (x, y) = superbounce::ARM_FULL;
+    assert_eq!(rect.x0 + rect.width() / 2.0, centre[0] + f32::from(x));
+    assert_eq!(rect.y0 + rect.height() / 2.0, centre[1] + f32::from(y));
     assert!(arm("held").drawn && arm("near").drawn && arm("primed-ending").drawn);
     assert_eq!(arm("under").fill, Some(superbounce::FILL_UNDER));
     assert_eq!(arm("held").fill, Some(superbounce::FILL_HELD));

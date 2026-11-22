@@ -408,7 +408,7 @@ returns the counter and adds one), so differential tests are exact.
 
 #### Optional access accounting (`H2_ACCESS_COUNT`, module feature 1)
 
-On by default in `h2 build`/`h2 emit`; `H2_ACCESS_COUNT=0` turns it off. With it, a handler counts its own guest accesses instead of
+On in `h2 build`/`h2 emit` unless `H2_ACCESS_COUNT=0`; by default it carries the block clock (below), and `H2_ACCESS_COUNT=access` builds the access clock this section describes. With it, a handler counts its own guest accesses instead of
 having each accessor charge one: a local `h2acc`, incremented before every
 attempted load or store (the faulting one included), inline or not. The
 accesses go through `h2abi_v1_read_counted` and `h2abi_v1_write_counted`,
@@ -444,9 +444,9 @@ so a module is never run by a runtime that would charge twice or not at all.
 A bridge forwards the four functions; the test bridge's legacy install fills
 them with the charged accessors, a no-op charge and an unlimited budget.
 
-#### The block clock (`H2_ACCESS_COUNT=block`, module feature 64)
+#### The block clock (`H2_ACCESS_COUNT` unset or `block`, module feature 64)
 
-A module built with the block clock (it also has feature 1) uses all of
+The default. A module built with the block clock (it also has feature 1) uses all of
 the above, but `h2acc` counts the plan's block costs instead of accesses
 (`crates/recompiler/emit/src/clock.rs`): the guest instructions of the
 function's entry block when the handler is entered with the entry as its

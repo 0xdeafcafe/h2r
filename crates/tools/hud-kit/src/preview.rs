@@ -37,6 +37,21 @@ pub const INACTIVE_ALPHA: f32 = 0.7;
 /// frame's width and height from the frame's centre (the runtime's is the
 /// strip's stand point projected, slice 6).
 pub const NAVPOINT_SAMPLE: [f32; 2] = [0.2, -0.25];
+/// The samples of a HUD's navpoints, by their order among its elements:
+/// the first is [`NAVPOINT_SAMPLE`], and the others are apart from it and
+/// from each other, so two navpoints shown at once do not draw their
+/// numbers over each other. A navpoint past the last takes the last.
+pub const NAVPOINT_SAMPLES: [[f32; 2]; 4] = [
+    NAVPOINT_SAMPLE,
+    [-0.22, -0.25],
+    [0.0, -0.3],
+    [0.34, -0.12],
+];
+
+/// The sample of a HUD's `ordinal`th navpoint ([`NAVPOINT_SAMPLES`]).
+pub fn navpoint_sample(ordinal: usize) -> [f32; 2] {
+    NAVPOINT_SAMPLES[ordinal.min(NAVPOINT_SAMPLES.len() - 1)]
+}
 /// Pixels between a navpoint's arrow and its marker: the marker is put
 /// out from the point by the arrow's length and one more (E `0x0024ecae`
 /// with `0x0024e9c7`'s return; S: the rest of its sum).
@@ -349,9 +364,10 @@ fn channel(
     mode: Mode,
     e: &Element,
     v: &Value,
+    navpoint_ordinal: usize,
 ) -> Drawn {
     if let Kind::Navpoint { .. } = e.kind {
-        return navpoint(canvas, src, frame, mode, e, v);
+        return navpoint(canvas, src, frame, mode, e, v, navpoint_ordinal);
     }
     let fonts = src.fonts.as_ref();
     let font = MESSAGE_FONT[usize::from(mode != Mode::Full)];
@@ -502,7 +518,8 @@ fn draw_sprite(canvas: &mut Canvas, cover: &mut Cover, sprite: &Sprite, at: &Rec
 /// four colours `0x0024da7d` writes are all `0x0013927e`'s, the
 /// notifications' colour here; S: the shader's combine) at the style's
 /// alpha. Then the value's number, centred above the marker in
-/// [`NAVPOINT_FONT`] (the game draws no number: the kit's). The outline
+/// [`NAVPOINT_FONT`] (the game draws no number: the kit's). The point is
+/// the sample of the HUD's `ordinal`th navpoint ([`navpoint_sample`]). The outline
 /// `0x0024f0fc` draws from `arrow_assets +0x1c` is not drawn (decoding 8).
 fn navpoint(
     canvas: &mut Canvas,
@@ -511,6 +528,7 @@ fn navpoint(
     mode: Mode,
     e: &Element,
     v: &Value,
+    ordinal: usize,
 ) -> Drawn {
     let font = NAVPOINT_FONT.engine();
     let in_mode = e.at.offset(mode).is_some();
@@ -544,9 +562,10 @@ fn navpoint(
         return d;
     }
     let c = frame.anchor_point(4).expect("the centre");
+    let sample = navpoint_sample(ordinal);
     let mut point = [
-        c[0] + NAVPOINT_SAMPLE[0] * f32::from(frame.right - frame.left),
-        c[1] + NAVPOINT_SAMPLE[1] * f32::from(frame.bottom - frame.top),
+        c[0] + sample[0] * f32::from(frame.right - frame.left),
+        c[1] + sample[1] * f32::from(frame.bottom - frame.top),
     ];
     let hudg = src.hudg.clone();
     let mut sprite = |image, seq: i16, what: &str, notes: &mut Vec<String>| {
@@ -673,7 +692,14 @@ pub fn shot(
     for e in &hud.elements {
         let v = values.get(e.id).cloned().unwrap_or_default();
         if e.kind.is_channel() {
-            elements.push(channel(&mut canvas, src, &frame, mode, e, &v));
+            // Which of the HUD's navpoints this is: its own sample.
+            let ordinal = hud
+                .elements
+                .iter()
+                .filter(|x| matches!(x.kind, Kind::Navpoint { .. }))
+                .position(|x| x.id == e.id)
+                .unwrap_or(0);
+            elements.push(channel(&mut canvas, src, &frame, mode, e, &v, ordinal));
             continue;
         }
         let p = pic

@@ -125,13 +125,18 @@ mod tests {
     }
 
     #[test]
-    fn the_key_covers_access_accounting_and_its_default() {
+    fn the_key_covers_the_clock_and_its_default() {
         let passes = emit::opt::Passes::parse("all").unwrap();
         let on = settings(&passes, emit::Codegen::accesses(true));
         let off = settings(&passes, emit::Codegen::accesses(false));
+        let block = settings(&passes, emit::Codegen::BLOCK_CLOCK);
         assert_ne!(on, off);
-        assert_eq!(settings(&passes, emit::Codegen::parse(None).unwrap()), on);
+        assert_ne!(block, on);
+        assert_eq!(settings(&passes, emit::Codegen::parse(None).unwrap()), block);
+        assert_eq!(settings(&passes, emit::Codegen::parse(Some("access")).unwrap()), on);
         assert_eq!(settings(&passes, emit::Codegen::parse(Some("0")).unwrap()), off);
+        // Imprecise faults (the default passes) are part of the key too.
+        assert_ne!(settings(&emit::opt::Passes::DEFAULT, emit::Codegen::BLOCK_CLOCK), block);
         let tree = Tree::new("settings");
         let exe = tree.0.join("generator");
         fs::write(&exe, "generator").unwrap();

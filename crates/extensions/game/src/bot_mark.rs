@@ -10,7 +10,9 @@
 //! adds the Mods list's state marks (`font::mod_marks`: U+2605 new,
 //! U+2713 installed, U+2193 downloading), drawn in code the same way, and
 //! to the two HUD message fonts the superbounce medals (`font::medals`,
-//! U+E2A0..U+E2A8; docs/game/hud-kit.md, "The medals").
+//! U+E2A0..U+E2A8; docs/game/hud-kit.md, "The medals"), and to every
+//! font the HUD's eight direction arrows (`font::arrows`,
+//! U+E2B0..U+E2B7; docs/game/hud-kit.md, "Direction arrows").
 
 /// Adds the gear to every font file.
 pub struct GearRewrite;
@@ -18,7 +20,8 @@ pub struct GearRewrite;
 impl GearRewrite {
     /// The font file `name` (a bare name or its path) with the gear and
     /// the Mods list's marks (`font::mod_marks`: new, installed,
-    /// downloading) added, and the superbounce medals for a message font
+    /// downloading) and the HUD's direction arrows (`font::arrows`) added,
+    /// and the superbounce medals for a message font
     /// (`font::medals::wants_font`), or `None` if it is not a font or draws
     /// them all already.
     pub fn patch(name: &str, original: &[u8]) -> Option<Vec<u8>> {
@@ -26,6 +29,7 @@ impl GearRewrite {
         let mut add: Vec<font::patch::Replacement> =
             font::gear::replacement(&font).into_iter().collect();
         add.extend(font::mod_marks::replacements(&font));
+        add.extend(font::arrows::replacements(&font));
         if font::medals::wants_font(name) {
             add.extend(font::medals::replacements(&font));
         }
@@ -93,6 +97,12 @@ mod tests {
             let m = f.glyph(unit).unwrap();
             assert_eq!((m.record.width, m.record.height), (12, 12), "U+{unit:04X}");
             assert!(font::mod_marks::has_glyph(&f, unit));
+        }
+        for step in 0..font::arrows::COUNT {
+            let unit = font::arrows::unit(step);
+            let a = f.glyph(unit).unwrap();
+            assert_eq!((a.record.width, a.record.height), (12, 12), "U+{unit:04X}");
+            assert!(font::arrows::has_glyph(&f, unit));
         }
         // A font that has it is left alone.
         assert_eq!(r.rewrite("maps\\fonts\\again", &out), None);

@@ -196,6 +196,16 @@ impl Decision {
             if ext.superbounce || crate::rules::header::script_asks_superbounce(ext.script))
     }
 
+    /// The rules script reference of a block this machine applies: what a
+    /// host feature reads a script's options through
+    /// ([`crate::superbounce_options::read`]).
+    pub fn script(&self) -> Option<variants::ext::Script> {
+        match self {
+            Decision::Apply { ext, .. } => Some(ext.script),
+            _ => None,
+        }
+    }
+
     /// The options when this machine scales damage (damage dealt, shield
     /// strength or health not 100%): host, guest with its host's block, or
     /// alone. A guest scales too: it simulates the hits it predicts.

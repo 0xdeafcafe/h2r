@@ -523,8 +523,9 @@ same line through `hud_kit::notify(user, text)`.
 
 A feature registers its `Describe` once (`hud_kit::register`, which
 returns a `Handle`), then publishes a `Values` whenever its state changes
-(`Handle::publish`) and the world point of its navpoint
-(`Handle::navpoint`). The feature `hud-kit` does the rest:
+(`Handle::publish`) and the world point of each of its navpoints
+(`Handle::navpoint` for its first, `Handle::navpoint_at(id, point)` for
+any). The feature `hud-kit` does the rest:
 
 1. **Install**, before `GAME_ACTIVATE` and after `hud_swap`: the loaded
    map is opened through `native_map::open` (builds with the `gpu`
@@ -599,19 +600,25 @@ returns a `Handle`), then publishes a `Values` whenever its state changes
    - `Navpoint`: at install the scenario's point block, the tag block
      at `scnr +0x1e0` (count, then the address at `+0x1e4`, which is what
      the draw reads, E `0x0024db5e`; `0x38`-byte points), is copied into
-     the kit's second allocation with one point after it, and the
-     scenario points at the copy (`hud_kit::install_point`, kept and put
-     back as the widget blocks are, and only while the loaded scenario
-     is the one it changed). Each tick that point is set to the HUD's
-     navpoint and one slot of the first local player's navpoint list is
-     kept on it: the slot already ours, else the first the game's draw
-     passes (`+0` or `+8` -1, or kind 15; the draw walks all four slots
-     and no slot ends the list, E `0x0024dc21`..`0x0024dc3e`)
-     (`hud_kit::write_navpoint`). The game's own slots are not touched.
-     Without a point, or once the loaded scenario no longer points at
-     the copy, the slot is skipped (kind 15): the draw does not check a
-     kind-0 slot's index against the block's count. The game draws its
-     own arrow and marker there; the kit's number is not drawn.
+     the kit's second allocation with four points after it
+     (`KIT_POINTS`, as many as a player's navpoint list has slots), and
+     the scenario points at the copy (`hud_kit::install_point`, kept and
+     put back as the widget blocks are, and only while the loaded
+     scenario is the one it changed). The kit's navpoints are the
+     `Navpoint` elements of the registered HUDs, in registration order,
+     the first four (`hud_kit::navpoints_now`); an element keeps its
+     place in that list whatever shows, so it keeps its point. Each tick
+     each point is set to its element's navpoint and one slot of the
+     first local player's navpoint list is kept on it: the slot already
+     that point's, else the first the game's draw passes (`+0` or `+8`
+     -1, or kind 15; the draw walks all four slots and no slot ends the
+     list, E `0x0024dc21`..`0x0024dc3e`) (`hud_kit::write_navpoint_n`).
+     The game's own slots are not touched, so a navpoint of the kit's
+     with no slot free is not drawn that tick. Without a point, or once
+     the loaded scenario no longer points at the copy, the slot is
+     skipped (kind 15): the draw does not check a kind-0 slot's index
+     against the block's count. The game draws its own arrow and marker
+     there; the kit's number is not drawn.
    - `Message`: `Handle::notify(user, text)` queues the line (a user
      under 4, a text `message_fault` passes; else refused and logged).
      At the top of the next tick a before-hook on `GAME_TICK` writes
@@ -649,6 +656,21 @@ bottom-left corner and moved by the host's fit of the bottom-left group
 (`render_aspect::hud_bottom_left_fit`)
 ([superbounce.md](superbounce.md#the-bounce-view)).
 
+### Direction arrows
+
+A direction on the HUD is a character. Every HUD font of a served map
+carries eight arrows at U+E2B0 to U+E2B7, the first pointing up and each
+the last turned 45 degrees clockwise (`crates/formats/font/src/arrows.rs`:
+`glyph_for(angle)`, the angle in radians clockwise from up). They are
+drawn in code, white, as tall as the font's capitals, and added where the
+gear and the medal glyphs are (`bot_mark::GearRewrite` at load;
+`hud-edit`'s `Fonts::as_served` for the preview and the checks), so a
+text widget draws one in the text's colour as it draws a letter. The
+disc's fonts have no arrows of their own.
+
+A `Pointer` element is not used for a direction: the runtime does not
+turn a widget.
+
 ### Cost
 
 S, to be measured with `profile` on the lab Mac: one address-range test
@@ -679,7 +701,9 @@ show bit of the widget the HUD editor places on the tracker's rim
 (`rects::TRACKER`) that lets it through the gate (S: that the game sets
 that bit whenever it draws the tracker; decoding 5). A HUD with no
 widget there keeps `0x1000` alone. Every report notes which bit was
-taken. The preview draws a navpoint at its own sample point; in a split
+taken. The preview draws a navpoint at a sample point, each navpoint of
+a HUD at one of its own (`preview::NAVPOINT_SAMPLES`, by its order among
+the HUD's navpoints), so two shown at once draw apart; in a split
 frame, whose stack would leave the frame's top at the sample, it moves
 the point down until the stack fits (S: that the game keeps a navpoint
 inside its waypoint area, the safe bounds less `hudg +0xec`..`+0xf8`).
@@ -904,7 +928,6 @@ its notification list:
 | `Message` | Primed! | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` (`sb.medal`) | a medal line (below, "The medals") | a bounce, or a Bounced |
-| `Message` | Not primed. / Missed the strip. / Too slow. / No bounce. | a landing within 0.5 of a strip that did not bounce, by its first failed test ([superbounce.md](superbounce.md), "Landings") |
 
 (crouch) is U+E110, the left stick click's glyph, the default crouch
 button ([button-icons.md](../input/button-icons.md)), which the button
@@ -913,8 +936,9 @@ both sticks: the left one lit and outlined, the right one faint (alpha
 3 of 15), as every retail stick glyph does. The preview draws it as the
 game does, so the prompt reads "Let go of" and a pair of sticks. A
 prompt of the game's own wins the line.
-The landing's result is `superbounce_mode`'s `last_landing`. A bounce's
-line is its medal. "Charging..." and "Primed!" are the shape of
+A landing has no notification: a bounce's line is its medal, and why
+another did not bounce is the readout's line
+("The superbounce readout"). "Charging..." and "Primed!" are the shape of
 Assault's pair, "Bomb is arming..." and "Bomb armed!" (V:
 `multiplayer\multiplayer_globals`), in the same list.
 
@@ -923,12 +947,14 @@ Assault's pair, "Bomb is arming..." and "Bomb armed!" (V:
 `sb.arm` is Assault's bomb arming bar, reused: how far the player is
 through the recipe, then a short ending when primed. Halo 2 draws it
 low in the middle while a bomb carrier arms; ours is the same widget's
-art at the same place.
+art, fullscreen at the bottom left with the readout, right of the motion
+tracker and just above the speed row, so nothing of the superbounce HUD
+sits mid-screen.
 
 | Field | Value |
 |---|---|
 | element | `Element::meter("sb.arm", Art::Widget { hud: HudRef::Named("ui\\hud\\scoreboard"), name: "bomb_defusal" }, ..)`, `hidden_on_d(0x400)` |
-| place | anchor centre, (0, 110) fullscreen, the retail widget's (V); (0, −35) half and (−7, −35) quarter, ours (below); registration (0.5, 0.5) |
+| place | anchor centre, (−112, 121) fullscreen (`ARM_FULL`, x 138 to 278, y 355 to 368: above the speed row); the retail widget's is (0, 110) (V, `RETAIL_ARM_FULL`); (0, −35) half and (−7, −35) quarter, ours (below); registration (0.5, 0.5) |
 | art | the scoreboard `nhdt`'s bitmap widget `bomb_defusal`: `ui\hud\bitmaps\new_hud\bomb_meter`, a capsule 140 by 13 (sequence 0) and 86 by 9 (sequence 1, split screen), its blue rising 4 to 253 left to right; the shader `ui\hud\shaders\bomb_defusal_meter` on `widget_legacy_meter`, red `6d2323` to `cf6767` where the texel's blue is below `hud_input1`, white for the outline (V) |
 | input | uncropped, so `hud_input1` is the fill itself |
 | crop, ramp | none |
@@ -944,8 +970,7 @@ the navpoint's stack at its sample, right of and above the centre. A
 quarter frame has no row free between the navpoint's arrow at its sample
 and the prompt's first line, and at the centre the bar's right end meets
 the arrow (the `overlap` check, x 198 to 203), so in a quarter view the
-bar sits 7 to the left (`ARM_QUARTER`, (−7, −35)). Fullscreen stays
-retail's (0, 110).
+bar sits 7 to the left (`ARM_QUARTER`, (−7, −35)).
 
 The retail widget's input is `0x43`, the bomb arming amount, and it is
 shown on word D `0x400` alone (V: `zanzibar.map`; `0x40` and `0x41` are
@@ -1122,7 +1147,6 @@ target.
 | `medal-bouncetacular` | lit | 1 | hidden | (medal) Bouncetacular! | strip, "3" | |
 | `medal-bounced` | inactive | hidden | hidden | (medal) Bounced! | crouch spot, "12" | |
 | `medal-monster` | lit | 1 | hidden | (medal) Monster bounce! | strip, "3" | |
-| `missed` | lit | 0.8 | hidden | Missed the strip. | strip, "3" | |
 | `scanning` | dim | hidden | hidden | | hidden | |
 | `no-strips` | hidden | hidden | hidden | | hidden | |
 | `tutorial-1` | inactive | hidden | hidden | | crouch spot | step 1 |
@@ -1156,12 +1180,11 @@ feeds it each tick from `superbounce_mode`'s state through one adapter,
 | `charge` (phase, fill) | the charge, as it is; the arming bar from the phase tick to tick (`ArmTrack`: the run out when a step gives way to no charge); on a recipe step begun, one `Handle::notify` of "Charging..." |
 | `verb` | the prompt's verb (a crouch step, keep moving, charge again); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
 | `word` | on its change to −3, one `Handle::notify` of "Primed!" |
-| the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick, when newer than the last landing; the HUD keeps the last loss past the 150 ticks the state has it, so an older landing does not take its place. One `Handle::notify` per loss, by its tick |
+| the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick; the HUD keeps the last loss past the 150 ticks the state has it. One `Handle::notify` per loss, by its tick |
 | `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
-| `last_landing` (result, tick) | the landing's message at its tick, for a landing that did not bounce; one `Handle::notify` per such landing, by its tick |
-| `medals` (the awards newer than the last sent) | `sb.medal`: the last local award's highest medal at its tick; one `Handle::notify` per award of a local player, to its user: the line of its highest medal ([superbounce.md](superbounce.md#medals)) |
+| `medals` (the awards newer than the last sent) | `sb.medal`: the last local award's highest medal at its tick; one `Handle::notify` per award of a local player, to its user: the line of its highest medal ([superbounce.md](superbounce.md#medals)). With the variant's `medals` option off no medal line is sent, and an award made then is not sent later |
 
-Charging, primed, the loss and the landing go to user 0, the first local player's,
+Charging, primed and the loss go to user 0, the first local player's,
 whose state the mode tracks. The first state after the mode comes on is
 not news: what it already holds is not sent (`superbounce_hud::Sent`).
 
@@ -1172,9 +1195,9 @@ newer than the last it saw (`superbounce_hud::watch`).
 What shows in the game: the pill and its icon while primed (`Inactive`
 not drawn), the arming bar through the recipe, the charge meter while
 primed, the prompt verbs, the navpoint (the game's arrow and marker, no
-number) and the tutorial's training text, and in the notification list
-"Charging...", "Primed!", a loss's reason, a landing that did not bounce
-and the medals.
+number) and, when asked for, the tutorial's training text, and in the
+notification list "Charging...", "Primed!", a loss's reason and the
+medals.
 `superbounce.state` has a loss's reason as `lost_reason` and the medals
 as `medals`.
 
@@ -1183,7 +1206,9 @@ as `medals`.
 The four steps are `Training` texts: the game's own training box, two
 centred lines of font 6 in the middle of the HUD frame, drawn by the
 game with its frame bitmaps and its training colour. There are no
-diagrams: a retail training prompt has none.
+diagrams: a retail training prompt has none. The box is in the middle of
+the screen, so the steps show only when `H2_SUPERBOUNCE_TUTORIAL=1` asks
+for them (`superbounce_hud::install`).
 
 | Step | Text | Moves on when |
 |---|---|---|
@@ -1216,14 +1241,89 @@ is fullscreen only. The step machine is
 `superbounce_hud` runs it once a game tick on game seconds (ticks over
 30, `tutorial_seconds`), so 20 s is 600 ticks at every frame rate, and
 sets the `superbounce.tutorial_seen`
-setting when it closes (`H2_SUPERBOUNCE_TUTORIAL=1` shows it anyway). A
+setting when it closes. A
 game training prompt of its own takes the box while it shows; the
 tutorial's step waits.
+
+## The superbounce readout
+
+A second HUD on the kit, `superbounce-readout`
+(`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): three
+rows right of the motion tracker and three navpoints, for the first
+local player while the superbounce mode is on. Nothing of it is in the
+middle of the screen. It is a HUD of its own because it is fullscreen
+only: a half or quarter frame has no three rows free under the prompt
+line's box, and the `modes` check wants every widget of one HUD in the
+same screen modes.
+
+```text
+  x 47     130 138
+   .---.
+  /     \   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
+ | track |  [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
+  \     /   Too slow: 12.4 of 16.5 m/s        sbr.info    y 418
+   '---'                                                  y 444
+```
+
+| Element | Kind | Place, from the frame's bottom left (48, 444) | Shows |
+|---|---|---|---|
+| `sbr.speed` | text, font 6 | (90, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
+| `sbr.fall` | meter, the battery strip's last 64 columns | (90, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
+| `sbr.steer` | text, font 6 | (160, −47) | beside the bar: `On seam` when the coasting landing is caught, else an arrow for the way from the landing to the seam against the aim and how far, `(arrow) 0.40 m` |
+| `sbr.info` | text, font 6 | (90, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)) |
+| `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
+| `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
+
+Speeds are metres a second and distances metres (a world unit is
+3.048 m). The rows are 21 pixels apart, a line of font 6, the last
+ending 5 above the frame's foot.
+
+```sh
+h2 hud preview superbounce-readout --state all --out DIR
+```
+
+The preview's states are `idle`, `moving`, `falling-off-seam`,
+`falling-on-seam`, the four `miss-` lines, `targets`, `second-bounce`,
+`second-bounce-lined-up` and `tagged`.
+
+`h2 hud preview superbounce-all` draws both HUDs in one frame, for the
+preview only (`huds::superbounce_all`, `huds::previews`): fourteen
+moments of a run, each a state of the superbounce HUD beside one of the
+readout's (`MOMENTS`), the last two the second bounce's ranked seams and
+its line-up.
+
+**The runtime.** `crates/extensions/game/src/superbounce_readout.rs`
+registers it after the superbounce HUD, so that HUD's navpoint is the
+kit's first and the readout's three follow, and feeds it each tick
+through `superbounce_readout::view`:
+
+| State (`superbounce_mode::State`) | View |
+|---|---|
+| `velocity`, `yaw`, `airborne` | the speed line (`speed`) |
+| `landing` (the assist's prediction), while airborne | the bar and the steer line (`fall`): `speed` over `need`; caught when `miss()` is 0, else the way to `crease_point()` |
+| `last_landing` (result, tick, origin) | the miss line (`miss`, `Info`): put up when a landing is filed, taken down after 120 ticks, by the next fall toward a seam, or by a bounce |
+| `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances |
+| `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
+
+The miss line's numbers are worked out beside the tracker's verdict:
+the seam is the one the landing was by
+(`superbounce_charge::landing_spot`), the distance is the origin's to
+its edge, the need is the seam's (`need_of`), and the speed in is the
+fall speed on the tick before touchdown (a 48-tick history of the
+state's `vz`, `History`) carried down to the seam's height under
+gravity (`speed_in`), as the tracker's own. A line whose seam or speed
+is not known is not shown.
+
+A piece the variant's script options turn off is left out of the view
+([superbounce.md](superbounce.md#the-huds-options)): `velocity` the
+speed line, `alignment` the bar and the steer line, `miss_info` the miss
+line. With the mode off every element is hidden.
 
 ## Interfaces
 
 - A feature calls `hud_kit::register(describe) -> Handle`, then
-  `Handle::publish(values)` and `Handle::navpoint(Option<point>)`. A
+  `Handle::publish(values)`, and `Handle::navpoint(Option<point>)` or
+  `Handle::navpoint_at(id, Option<point>)` for its navpoints. A
   `Prompt` or `Training` element's shown text is the channel's text.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
   `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,

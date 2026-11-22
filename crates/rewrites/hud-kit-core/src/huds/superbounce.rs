@@ -16,7 +16,7 @@
 //! - the recipe's verbs on the game's prompt line, the bound button drawn
 //!   by the game;
 //! - the results ("Charging..." as the arming bar comes up, "Primed!",
-//!   lost, each landing on a strip that did not bounce) and the medals (a bounce's medal glyph and line, as a retail
+//!   lost) and the medals (a bounce's medal glyph and line, as a retail
 //!   multi-kill's) in the game's notification list;
 //! - a navpoint over the next thing to do, the nearest crouch spot while
 //!   not primed and the chosen strip while primed, the game's arrow
@@ -84,9 +84,13 @@ pub const FILL_HELD: f32 = 2.0 / 3.0;
 /// in the scoreboard `nhdt` (V: `zanzibar.map`).
 pub const ARM_HUD: &str = "ui\\hud\\scoreboard";
 pub const ARM_WIDGET: &str = "bomb_defusal";
-/// Fullscreen, the retail widget's place: centre, 110 down, registered at
-/// its centre (V).
-pub const ARM_FULL: (i16, i16) = (0, 110);
+/// Fullscreen, bottom left with the readout: right of the motion tracker,
+/// just above the readout's speed row (`superbounce_readout::SPEED_UP`),
+/// registered at its centre. The retail widget's own place is
+/// [`RETAIL_ARM_FULL`].
+pub const ARM_FULL: (i16, i16) = (-112, 121);
+/// The retail widget's fullscreen place: centre, 110 down (V).
+pub const RETAIL_ARM_FULL: (i16, i16) = (0, 110);
 /// The retail widget's split-screen place, 27 down (V): not ours.
 pub const RETAIL_ARM_SPLIT: (i16, i16) = (0, 27);
 /// Ours in split screen: 35 above the centre. Retail's 27 down puts the
@@ -136,10 +140,6 @@ pub const MESSAGE_PRIMED: &str = "Primed!";
 pub const MESSAGE_LOST: &str = "Charge lost";
 pub const MESSAGE_LOST_STOOD_STILL: &str = "Charge lost: you stood still";
 pub const MESSAGE_LOST_CROUCHED: &str = "Charge lost: you crouched";
-pub const MESSAGE_NOT_PRIMED: &str = "Not primed.";
-pub const MESSAGE_MISSED: &str = "Missed the strip.";
-pub const MESSAGE_TOO_SLOW: &str = "Too slow.";
-pub const MESSAGE_NO_BOUNCE: &str = "No bounce.";
 /// The widest notification: the most characters, all of them plain.
 pub const MESSAGE_LONGEST: &str = MESSAGE_LOST_STOOD_STILL;
 
@@ -348,25 +348,15 @@ pub enum Target {
     Strip,
 }
 
-/// How a landing within 0.5 of a strip that did not bounce ended, by its
-/// first failed test (docs/game/superbounce.md, "Landings"). A bounce's
-/// line is its medal ([`Medal`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Landed {
-    NotPrimed,
-    Missed,
-    TooSlow,
-    NoBounce,
-}
-
-/// A notification.
+/// A notification. A landing has none: a bounce's line is its medal
+/// ([`Medal`]), and why another did not bounce is the readout's line
+/// ([`super::superbounce_readout::Miss`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Note {
     /// The arming bar came up: a recipe step began.
     Charging,
     Primed,
     ChargeLost(Lost),
-    Landed(Landed),
 }
 
 impl Note {
@@ -377,10 +367,6 @@ impl Note {
             Note::ChargeLost(Lost::StoodStill) => MESSAGE_LOST_STOOD_STILL.into(),
             Note::ChargeLost(Lost::Crouched) => MESSAGE_LOST_CROUCHED.into(),
             Note::ChargeLost(Lost::Unknown) => MESSAGE_LOST.into(),
-            Note::Landed(Landed::NotPrimed) => MESSAGE_NOT_PRIMED.into(),
-            Note::Landed(Landed::Missed) => MESSAGE_MISSED.into(),
-            Note::Landed(Landed::TooSlow) => MESSAGE_TOO_SLOW.into(),
-            Note::Landed(Landed::NoBounce) => MESSAGE_NO_BOUNCE.into(),
         }
     }
 }
@@ -781,13 +767,6 @@ pub fn views() -> Vec<(&'static str, View)> {
             },
         ),
         ("medal-monster", medal(Medal::Monster, 13)),
-        (
-            "missed",
-            View {
-                note: Some((Note::Landed(Landed::Missed), 4)),
-                ..primed(0.8)
-            },
-        ),
         ("scanning", scanning),
         (
             "no-strips",
@@ -991,7 +970,6 @@ mod tests {
             style("primed-still-warning", PILL_ICON),
             Some(Style::Flash(Pulse::TimeWarning))
         );
-        assert_eq!(style("missed", PILL_ICON), Some(Style::Normal));
         assert_eq!(style("held", PILL_ICON), Some(Style::Flash(Pulse::Help)));
         assert_eq!(style("under", PILL_ICON), Some(Style::Inactive));
         assert_eq!(style("primed-draining", PILL), Some(Style::Normal));
@@ -1018,7 +996,7 @@ mod tests {
 
     /// Each notification once, by its tick; a bounce's line is its medal.
     #[test]
-    fn the_landings_and_the_charge_are_notified() {
+    fn the_charge_is_notified() {
         let msg = |s: &str| {
             let v = state(s);
             let m = v.get(MESSAGE).unwrap();
@@ -1041,22 +1019,11 @@ mod tests {
         for m in [MESSAGE_LOST_STOOD_STILL, MESSAGE_LOST_CROUCHED] {
             assert!(m.starts_with(MESSAGE_LOST) && m.len() <= MESSAGE_LONGEST.len());
         }
-        for m in [MESSAGE_MISSED, MESSAGE_NOT_PRIMED] {
-            assert!(m.len() <= MESSAGE_LONGEST.len(), "{m}");
-        }
         assert_eq!(msg("bounced"), None);
-        assert_eq!(msg("missed"), Some((MESSAGE_MISSED.into(), 4)));
         assert_eq!(msg("under"), None);
         for m in [MESSAGE_CHARGING, MESSAGE_PRIMED] {
             assert!(crate::model::message_fault(m).is_none(), "{m}");
             assert!(m.len() <= MESSAGE_LONGEST.len(), "{m}");
-        }
-        for (n, t) in [
-            (Landed::NotPrimed, MESSAGE_NOT_PRIMED),
-            (Landed::TooSlow, MESSAGE_TOO_SLOW),
-            (Landed::NoBounce, MESSAGE_NO_BOUNCE),
-        ] {
-            assert_eq!(Note::Landed(n).text(), t);
         }
     }
 
@@ -1098,7 +1065,6 @@ mod tests {
         ] {
             assert_eq!(medal(s).map(|x| x.0), Some(m.line()), "{s}");
         }
-        assert_eq!(medal("missed"), None);
         assert_eq!(medal("primed-full"), None);
         let glyphs: std::collections::HashSet<char> =
             MEDAL_GLYPHS.iter().map(|(_, c)| *c).collect();
@@ -1182,7 +1148,6 @@ mod tests {
                 "medal-bouncetacular",
                 "medal-bounced",
                 "medal-monster",
-                "missed",
                 "scanning",
                 "no-strips",
                 "tutorial-1",
@@ -1218,7 +1183,7 @@ mod tests {
         assert_eq!(e.at.anchor, Anchor::Centre);
         assert_eq!(
             (e.at.full, e.at.half, e.at.quarter),
-            ((0, 110), Some((0, -35)), Some((-7, -35)))
+            (ARM_FULL, Some((0, -35)), Some((-7, -35)))
         );
         assert_eq!(e.at.registration, [0.5, 0.5]);
         assert_eq!(e.hide_when_d, 0x400);

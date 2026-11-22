@@ -4,13 +4,26 @@
 use crate::model::Describe;
 
 pub mod superbounce;
+pub mod superbounce_all;
+pub mod superbounce_readout;
 
 /// Every registered HUD.
 pub fn all() -> Vec<Box<dyn Describe>> {
-    vec![Box::new(superbounce::Superbounce)]
+    vec![
+        Box::new(superbounce::Superbounce),
+        Box::new(superbounce_readout::Readout),
+    ]
 }
 
 /// The registered HUD named `name`.
 pub fn find(name: &str) -> Option<Box<dyn Describe>> {
     all().into_iter().find(|d| d.hud().name == name)
+}
+
+/// What `h2 hud preview` draws: the registered HUDs and the preview-only
+/// combined ones ([`superbounce_all`]).
+pub fn previews() -> Vec<Box<dyn Describe>> {
+    let mut v = all();
+    v.push(Box::new(superbounce_all::All));
+    v
 }

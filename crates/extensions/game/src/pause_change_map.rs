@@ -1,33 +1,43 @@
-//! **Change Map** on the multiplayer pause menu (GAME MENU, screen 195),
-//! for the party leader of a custom game: pick a map, the game ends, and
-//! the next game starts on that map with no further press
-//! (docs/game/settings-menu.md "Change Map from the pause menu").
+//! **Game Setup** on the multiplayer pause menu (GAME MENU, screen 195),
+//! for the party leader of a custom game: change the map, the rules and
+//! the Quick Options for the next game, and the Clankers at once
+//! (docs/game/settings-menu.md "Game Setup from the pause menu").
 //!
 //! - **The row.** Retail shows End Game (action 5) only on the console
 //!   that leads the party (`0x592f0`) outside matchmaking (lobby mode
 //!   `0x19989d` not 6). An `after` hook on the list's constructor
-//!   (`MP_MENU_LIST_CTOR`) adds our row ([`CHANGE_MAP_ACTION`]) just above
-//!   End Game when the list has it, this console hosts the game (or plays
-//!   it offline) and the map list has maps to offer ([`offered`]). The
-//!   rows' array has room for it: `layout_glue` asks [`list_count`] when
-//!   the array is made.
+//!   (`MP_MENU_LIST_CTOR`) adds our row ([`SETUP_ACTION`]) just above End
+//!   Game when the list has it, this console hosts the game (or plays it
+//!   offline) and Game Setup has a row to show ([`offered`],
+//!   [`setup_rows`]). One row, not four: GAME MENU's list is not shown to
+//!   scroll past its item widgets. The rows' array has room for it:
+//!   `layout_glue` asks [`list_count`] when the array is made.
 //! - **Text and press.** `MP_MENU_ROW_TEXT` draws our label;
 //!   `MP_MENU_ROW_CHOSEN` runs action 5's press (End Game) for any word it
-//!   does not know, so ours is always taken before the original.
-//! - **The picker.** The same categories and maps as Game Setup's Change
-//!   Map (`crate::map_select`), as two list classes of ours on the pause
-//!   menu's own window and slot ([`CATEGORIES_SCREEN`], [`MAPS_SCREEN`]):
-//!   a Forge or Firefight lobby opens its own category's maps
-//!   ([`opening`]). B goes back a step, then to the pause menu, with
-//!   nothing changed.
-//! - **A map.** [`choose`] records the map ([`Pending`]) and ends the game
-//!   through the engine's round-over path
+//!   does not know, so ours is always taken before the original. The
+//!   press reads what the rows offer (the built-in variants, the lobby's
+//!   variant) and opens Game Setup ([`setup`]) on GAME MENU's window.
+//! - **Game Setup** lists Change Map, Change Rules, Quick Options and
+//!   Clanker Options. The first three fill the visit's [`Draft`]; nothing
+//!   changes in the running game. B on Game Setup with a draft asks
+//!   **Restart with these settings** or **Keep playing**; Keep playing
+//!   drops the draft. Clanker Options' changes apply at once
+//!   ([`clanker_rows`]).
+//! - **The restart.** [`commit`] records the draft ([`Pending`]) and ends
+//!   the game through the engine's round-over path
 //!   (`crate::firefight::guest::end_game`). Back in the pregame lobby
 //!   ([`Lobby::pregame`]) the UI update hook sets the lobby's map
-//!   (`LOBBY_SET_MAP`, as retail's Change Map does, so it replicates), and
+//!   (`LOBBY_SET_MAP`, as retail's Change Map does, so it replicates), then
+//!   its variant (`host_lobby::SET_VARIANT`, the lobby variant setter), and
 //!   once retail's start check (`LOBBY_START_STATE`) answers ready, starts
 //!   the countdown for the pressing controller
-//!   (`host_lobby::CONTROLLER_COUNTDOWN`). The variant stays the lobby's.
+//!   (`host_lobby::CONTROLLER_COUNTDOWN`). What the draft leaves out stays
+//!   the lobby's.
+
+pub mod clanker_rows;
+pub mod game_types;
+pub mod quick;
+pub mod setup;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -40,20 +50,23 @@ use engine::points;
 use engine::view::ui::{self, ListHandler};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use runtime::guest::Permissions;
+use variants::record::{GameType, GameVariant, RECORD_SIZE};
 
-use crate::list_class::{self, ListClass, Rows};
+use crate::list_class;
 use crate::lobby_start;
 use crate::map_select::{self, Catalogue, Category, Map};
-use crate::ui::Chosen;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::screen::{SLOT_LEN, SlotTexts};
 
-/// The feature (`features.pause-change-map` switches the row, the picker
-/// and the start).
+/// The feature (`features.pause-change-map` switches the row, Game Setup
+/// and the restart).
 pub const FEATURE: &str = "pause-change-map";
-/// The picker's two list classes, by the names `Push` rows use.
+/// Our list classes, by the names `Push` rows use; each its own feature.
+pub const SETUP_SCREEN: &str = "pause-game-setup";
 pub const CATEGORIES_SCREEN: &str = "pause-map-categories";
-pub const MAPS_SCREEN: &str = "pause-map-list";
+pub const TYPES_SCREEN: &str = "pause-game-types";
+pub const QUICK_SCREEN: &str = "pause-quick-options";
+pub const CLANKERS_SCREEN: &str = "pause-clanker-options";
 
 /// GAME MENU's rows' array (`crate::forge_screens::game_menu`).
 pub const ARRAY_NAME: u32 = crate::forge_screens::game_menu::ARRAY_NAME;
@@ -61,32 +74,46 @@ pub const ARRAY_NAME: u32 = crate::forge_screens::game_menu::ARRAY_NAME;
 pub const END_GAME: u16 = 5;
 /// Our row's action word: clear of retail's 0 to 5 and the Forge rows'
 /// `0x20` to `0x24`.
-pub const CHANGE_MAP_ACTION: u16 = 0x30;
+pub const SETUP_ACTION: u16 = 0x30;
 const ACTION_WORD: u32 = 2;
 
-/// Our strings: the row's label, the two titles, then the categories'
-/// labels and one a map row.
+/// Our strings: the row's label, the lists' titles, then each list's rows.
 pub const IDS: Family = ids::family("pause change map");
 const ROW_SLOT: u32 = 0;
-const CATEGORIES_TITLE_SLOT: u32 = 1;
-const MAPS_TITLE_SLOT: u32 = 2;
-const CATEGORY_SLOTS: u32 = 3;
-const MAP_SLOTS: u32 = CATEGORY_SLOTS + Category::ALL.len() as u32;
-/// The most maps a list shows: one slot each.
-pub const MAX_ROWS: usize = (IDS.len - MAP_SLOTS) as usize;
+const SETUP_TITLE_SLOT: u32 = 1;
+const CATEGORIES_TITLE_SLOT: u32 = 2;
+const TYPES_TITLE_SLOT: u32 = 3;
+const QUICK_TITLE_SLOT: u32 = 4;
+const CLANKER_TITLE_SLOT: u32 = 5;
+const CATEGORY_SLOTS: u32 = 6;
+const TYPE_SLOTS: u32 = CATEGORY_SLOTS + Category::ALL.len() as u32;
+const SETUP_SLOTS: u32 = TYPE_SLOTS + game_types::ORDER.len() as u32;
+const QUICK_SLOTS: u32 = SETUP_SLOTS + SetupRow::ALL.len() as u32;
+const CLANKER_SLOTS: u32 = QUICK_SLOTS + quick::Setting::ALL.len() as u32;
+/// Clanker Options' rows: one a setting of `clankers::DEFS` (a static,
+/// which a constant can't read; a test holds the two equal).
+const CLANKER_ROWS: u32 = 8;
+/// The slots in use.
+pub const SLOTS: u32 = CLANKER_SLOTS + CLANKER_ROWS;
 
-pub const ROW_LABEL: &str = "Change Map";
+pub const ROW_LABEL: &str = "Game Setup";
+const SETUP_TITLE: &str = "Game Setup";
 const CATEGORIES_TITLE: &str = "Select Map";
+const TYPES_TITLE: &str = "Select Game";
+const QUICK_TITLE: &str = "Quick Options";
+const CLANKER_TITLE: &str = "Clanker Options";
 
 static TEXTS: LazyLock<SlotTexts> = LazyLock::new(|| SlotTexts::new(IDS));
 /// Set once the feature is built: GAME MENU's array grows by our row.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 /// The GAME MENU list being built (ESI at the constructor's entry).
 static BUILDING: AtomicU32 = AtomicU32::new(0);
-/// The map picked and how far the next game is.
+/// The settings picked and how far the next game is.
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 /// Our own UI update call, which the hook lets through.
 static PASSING: AtomicBool = AtomicBool::new(false);
+/// Guest memory for the record the lobby variant setter is given.
+static RECORD_AT: AtomicU32 = AtomicU32::new(0);
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -146,10 +173,10 @@ impl Menu {
 
 /// Whether a GAME MENU with these action words gets our row: it has End
 /// Game (the party leader's, outside matchmaking), not ours yet, this
-/// console runs the game, and the picker has something to open.
+/// console runs the game, and Game Setup has something to show.
 pub fn offered(actions: &[u16], menu: Menu, can_open: bool) -> bool {
     actions.contains(&END_GAME)
-        && !actions.contains(&CHANGE_MAP_ACTION)
+        && !actions.contains(&SETUP_ACTION)
         && menu.runs_the_game()
         && can_open
 }
@@ -161,7 +188,7 @@ pub fn placed(actions: &[u16]) -> Vec<u16> {
         .position(|a| *a == END_GAME)
         .unwrap_or(actions.len());
     let mut out = actions.to_vec();
-    out.insert(at, CHANGE_MAP_ACTION);
+    out.insert(at, SETUP_ACTION);
     out
 }
 
@@ -205,24 +232,15 @@ pub fn add_row(m: &mut dyn GuestMemory, array: u32) -> Result<usize, String> {
     Ok(words.len())
 }
 
-// ---- the picker ----
+// ---- what Game Setup offers ----
 
-/// What the row opens.
+/// What Change Map opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opening {
     /// The categories, then a category's maps.
     Categories,
     /// One category's maps straight away.
     Maps(Category),
-}
-
-impl Opening {
-    pub fn screen(self) -> &'static str {
-        match self {
-            Opening::Categories => CATEGORIES_SCREEN,
-            Opening::Maps(_) => MAPS_SCREEN,
-        }
-    }
 }
 
 /// The categories with maps a Multiplayer lobby lists, in order.
@@ -233,9 +251,10 @@ pub fn categories(cat: &Catalogue) -> Vec<Category> {
         .collect()
 }
 
-/// What the row opens for a lobby in `mode`: a Forge or Firefight lobby's
-/// own category ([`map_select::mode_category`]), else the categories, or
-/// the one category's maps when there is one. `None` with nothing to pick.
+/// What Change Map opens for a lobby in `mode`: a Forge or Firefight
+/// lobby's own category ([`map_select::mode_category`]), else the
+/// categories, or the one category's maps when there is one. `None` with
+/// nothing to pick.
 pub fn opening(mode: lobby_start::Mode, cat: &Catalogue) -> Option<Opening> {
     if let Some(c) = map_select::mode_category(mode) {
         return (!cat.maps(c).is_empty()).then_some(Opening::Maps(c));
@@ -247,188 +266,323 @@ pub fn opening(mode: lobby_start::Mode, cat: &Catalogue) -> Option<Opening> {
     }
 }
 
-/// The maps a category's list shows, in the catalogue's order.
+/// The maps a category's picker shows, in the catalogue's order.
 pub fn maps(cat: &Catalogue, c: Category) -> Vec<Map> {
-    cat.maps(c).iter().take(MAX_ROWS).cloned().collect()
-}
-
-fn category_slot(c: Category) -> u32 {
-    CATEGORY_SLOTS + Category::ALL.iter().position(|k| *k == c).unwrap_or(0) as u32
-}
-
-/// What the two screens share: the category opened, the map pressed and
-/// the controller that pressed the row.
-#[derive(Default)]
-pub struct Picker {
-    category: Mutex<Option<Category>>,
-    pressed: Mutex<Option<u32>>,
-    port: AtomicU32,
-}
-
-impl Picker {
-    pub fn open(&self, opening: Opening, port: u32) {
-        self.port.store(port, Ordering::SeqCst);
-        *lock(&self.pressed) = None;
-        if let Opening::Maps(c) = opening {
-            *lock(&self.category) = Some(c);
-        }
-    }
-    pub fn category(&self) -> Option<Category> {
-        *lock(&self.category)
-    }
-    pub fn take_pressed(&self) -> Option<u32> {
-        lock(&self.pressed).take()
-    }
-    pub fn port(&self) -> u32 {
-        self.port.load(Ordering::SeqCst)
-    }
+    cat.maps(c).to_vec()
 }
 
 fn catalogue() -> Arc<Catalogue> {
     map_select::current().unwrap_or_default()
 }
 
-/// The categories' screen.
-pub struct CategoryRows(pub Arc<Picker>);
+/// Which of Game Setup's rows this visit can show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Avail {
+    pub map: Option<Opening>,
+    pub rules: bool,
+    pub quick: bool,
+    pub clankers: bool,
+}
 
-impl Rows for CategoryRows {
-    fn title(&self) -> u32 {
-        IDS.id(CATEGORIES_TITLE_SLOT)
+/// What the rows offer in a lobby of `mode`: Change Map what [`opening`]
+/// opens; Change Rules the built-in variants, except in a Firefight lobby
+/// (whose Game Setup has no Change Rules); Quick Options the lobby's
+/// variant, when it can be read; Clanker Options the Clankers page's
+/// settings, when they are installed.
+pub fn avail(
+    mode: lobby_start::Mode,
+    cat: &Catalogue,
+    variants: &[game_types::Listed],
+    base: Option<&GameVariant>,
+    clankers: bool,
+) -> Avail {
+    Avail {
+        map: opening(mode, cat),
+        rules: !matches!(mode, lobby_start::Mode::Firefight) && !variants.is_empty(),
+        quick: base.is_some(),
+        clankers,
     }
-    fn count(&self) -> usize {
-        TEXTS.set(CATEGORIES_TITLE_SLOT, CATEGORIES_TITLE);
-        categories(&catalogue()).len()
-    }
-    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        let cats = categories(&catalogue());
-        match usize::try_from(row).ok().and_then(|r| cats.get(r)) {
-            Some(c) => vec![(0, TEXTS.set(category_slot(*c), c.label()))],
-            None => Vec::new(),
+}
+
+/// A row of Game Setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupRow {
+    ChangeMap,
+    ChangeRules,
+    QuickOptions,
+    ClankerOptions,
+}
+
+impl SetupRow {
+    /// In the lobby's Game Setup order.
+    pub const ALL: [SetupRow; 4] = [
+        SetupRow::ChangeMap,
+        SetupRow::ChangeRules,
+        SetupRow::QuickOptions,
+        SetupRow::ClankerOptions,
+    ];
+
+    /// The lobby's own labels.
+    pub fn label(self) -> &'static str {
+        match self {
+            SetupRow::ChangeMap => "Change Map...",
+            SetupRow::ChangeRules => "Change Rules...",
+            SetupRow::QuickOptions => "Quick Options...",
+            SetupRow::ClankerOptions => "Clanker Options...",
         }
     }
-    fn press(&self, row: i16) -> Chosen {
-        let cats = categories(&catalogue());
-        let Some(&c) = usize::try_from(row).ok().and_then(|r| cats.get(r)) else {
-            return Chosen::Nothing;
-        };
-        *lock(&self.0.category) = Some(c);
-        Chosen::Push(MAPS_SCREEN)
-    }
-    fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-        TEXTS.write(m)
-    }
-    fn describe(&self, count: usize) -> Option<String> {
-        let labels: Vec<&str> = categories(&catalogue()).iter().map(|c| c.label()).collect();
-        Some(format!("{CATEGORIES_TITLE}: {count} rows ({})", labels.join(", ")))
-    }
-}
 
-/// The maps' screen: the opened category's maps. A on one runs [`choose`].
-pub struct MapRows(pub Arc<Picker>);
-
-impl MapRows {
-    fn maps(&self) -> Vec<Map> {
-        self.0
-            .category()
-            .map_or_else(Vec::new, |c| maps(&catalogue(), c))
-    }
-}
-
-impl Rows for MapRows {
-    fn title(&self) -> u32 {
-        IDS.id(MAPS_TITLE_SLOT)
-    }
-    fn count(&self) -> usize {
-        let label = self.0.category().map_or(CATEGORIES_TITLE, Category::label);
-        TEXTS.set(MAPS_TITLE_SLOT, label);
-        self.maps().len()
-    }
-    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        let maps = self.maps();
-        match usize::try_from(row).ok().and_then(|r| maps.get(r)) {
-            Some(m) => vec![(0, TEXTS.set(MAP_SLOTS + row as u32, &m.name))],
-            None => Vec::new(),
+    fn shown(self, a: Avail) -> bool {
+        match self {
+            SetupRow::ChangeMap => a.map.is_some(),
+            SetupRow::ChangeRules => a.rules,
+            SetupRow::QuickOptions => a.quick,
+            SetupRow::ClankerOptions => a.clankers,
         }
     }
-    fn press(&self, row: i16) -> Chosen {
-        let maps = self.maps();
-        let Some(m) = usize::try_from(row).ok().and_then(|r| maps.get(r)) else {
-            return Chosen::Nothing;
+
+    /// The row as one line: its label, or what the draft picked for it,
+    /// two spaces after the label as retail's settings rows read.
+    pub fn line(self, d: &Draft) -> String {
+        let bare = self.label().trim_end_matches("...");
+        let value = match self {
+            SetupRow::ChangeMap => d.map.as_ref().map(|(_, n)| n.clone()),
+            SetupRow::ChangeRules => d.rules.clone(),
+            SetupRow::QuickOptions => (!d.quick.is_empty()).then(|| "Changed".to_owned()),
+            SetupRow::ClankerOptions => None,
         };
-        *lock(&self.0.pressed) = Some(m.id);
-        Chosen::Act
-    }
-    fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-        TEXTS.write(m)
-    }
-    fn describe(&self, count: usize) -> Option<String> {
-        let names: Vec<String> = self.maps().into_iter().map(|m| m.name).collect();
-        let c = self.0.category().map_or("none", Category::label);
-        Some(format!("{c}: {count} maps ({})", names.join(", ")))
+        match value {
+            Some(v) => format!("{bare}  {v}"),
+            None => self.label().to_owned(),
+        }
     }
 }
 
-type ActionFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), EntryError>> + Send>>;
-
-/// The two list classes. They open in a game, on the in-game Controller
-/// Settings' tag (`crate::list_class`, module docs). X and Start do
-/// nothing on the maps: only A on a map picks it.
-pub fn classes(picker: &Arc<Picker>) -> [ListClass; 2] {
-    let categories = ListClass::with_rows(
-        CATEGORIES_SCREEN,
-        CATEGORIES_SCREEN,
-        Arc::new(CategoryRows(Arc::clone(picker))),
-    );
-    let p = Arc::clone(picker);
-    let pick: list_class::Action = Arc::new(move |cx: Cx, _screen: u32| -> ActionFuture {
-        let p = Arc::clone(&p);
-        Box::pin(async move {
-            choose(&cx, &p).await;
-            Ok(())
-        })
-    });
-    let maps = ListClass::with_rows(MAPS_SCREEN, MAPS_SCREEN, Arc::new(MapRows(Arc::clone(picker))))
-        .action(pick)
-        .action_buttons(&[]);
-    [categories, maps]
+/// Game Setup's rows for a visit that can show `a`, in order.
+pub fn setup_rows(a: Avail) -> Vec<SetupRow> {
+    SetupRow::ALL.into_iter().filter(|r| r.shown(a)).collect()
 }
 
-/// A on a map: remember it, then end the game. Nothing changes when the
-/// game cannot be ended.
-pub async fn choose(cx: &Cx, picker: &Picker) {
-    let Some(id) = picker.take_pressed() else {
+/// The variant the lobby plays: the squad session's (`+0x4db0`), else the
+/// game's own copy (`G+0x13c`); `None` when neither reads as a variant of
+/// a listed game type.
+pub fn lobby_variant(m: &dyn GuestMemory) -> Option<GameVariant> {
+    /// The game's options' variant (docs/game/game-options.md).
+    const GAME_VARIANT: u32 = 0x13c;
+    let session = m
+        .u32(bots::lobby::SESSION)
+        .ok()
+        .filter(|s| *s != 0)
+        .map(|s| s + bots::phantom::session::at::VARIANT);
+    let game = m
+        .u32(crate::level_boot::GAME_GLOBALS)
+        .ok()
+        .filter(|g| *g != 0)
+        .map(|g| g + GAME_VARIANT);
+    [session, game].into_iter().flatten().find_map(|at| {
+        let mut raw = [0u8; RECORD_SIZE];
+        m.read(at, &mut raw).ok()?;
+        GameVariant::from_bytes(&raw)
+            .ok()
+            .filter(|v| !matches!(v.game_type(), GameType::Other(_)))
+    })
+}
+
+// ---- the visit ----
+
+/// What a visit to Game Setup changes for the next game.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Draft {
+    /// The map picked: its list id and name.
+    pub map: Option<(u32, String)>,
+    /// The variant the next game plays: the one Change Rules picked, or
+    /// the lobby's, with the Quick Options changes on it.
+    pub variant: Option<GameVariant>,
+    /// The name of the variant Change Rules picked.
+    pub rules: Option<String>,
+    /// The Quick Options settings changed, by label.
+    pub quick: Vec<&'static str>,
+}
+
+impl Draft {
+    /// Nothing to restart for.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_none() && self.variant.is_none()
+    }
+
+    pub fn pick_map(&mut self, id: u32, name: &str) {
+        self.map = Some((id, name.to_owned()));
+    }
+
+    /// A variant from Change Rules: earlier Quick Options changes were to
+    /// the old one, so they go.
+    pub fn pick_rules(&mut self, l: &game_types::Listed) {
+        self.variant = Some(l.variant.clone());
+        self.rules = Some(l.name.clone());
+        self.quick.clear();
+    }
+
+    /// The variant Quick Options shows: the draft's, else `base`.
+    pub fn working<'a>(&'a self, base: Option<&'a GameVariant>) -> Option<&'a GameVariant> {
+        self.variant.as_ref().or(base)
+    }
+
+    /// Quick Options' `setting` at `value`, on [`Draft::working`]; what to
+    /// log, or why it was refused (the draft unchanged).
+    pub fn set_quick(
+        &mut self,
+        base: Option<&GameVariant>,
+        setting: quick::Setting,
+        id: variants::record::SettingId,
+        value: i32,
+    ) -> Result<String, String> {
+        let from = self
+            .working(base)
+            .ok_or("no variant to change")?;
+        let v = quick::apply(from, id, value)?;
+        self.variant = Some(v);
+        if !self.quick.contains(&setting.label()) {
+            self.quick.push(setting.label());
+        }
+        Ok(format!("{} {}", setting.label(), setting.text(value)))
+    }
+
+    /// What the restart starts, for the confirm dialog.
+    pub fn summary(&self) -> String {
+        let with = match (&self.rules, self.quick.is_empty()) {
+            (Some(r), true) => Some(r.clone()),
+            (Some(r), false) => Some(format!("{r} and your Quick Options")),
+            (None, false) => Some("this game's rules and your Quick Options".to_owned()),
+            (None, true) => None,
+        };
+        let next = match (&self.map, with) {
+            (Some((_, m)), Some(w)) => format!(" on {m} with {w}"),
+            (Some((_, m)), None) => format!(" on {m}"),
+            (None, Some(w)) => format!(" with {w}"),
+            (None, None) => String::new(),
+        };
+        format!("The game ends for everyone and the next one starts{next}.")
+    }
+
+    /// The next game, pressed by controller `port` at `now`; `None` with
+    /// nothing to change.
+    pub fn pending(&self, port: u32, now: Instant) -> Option<Pending> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut name: Vec<String> = Vec::new();
+        if let Some((_, m)) = &self.map {
+            name.push(m.clone());
+        }
+        match (&self.rules, &self.variant) {
+            (Some(r), _) => name.push(r.clone()),
+            (None, Some(v)) => name.push(game_types::display_name(&v.name())),
+            (None, None) => {}
+        }
+        if !self.quick.is_empty() {
+            name.push(format!("Quick Options: {}", self.quick.join(", ")));
+        }
+        Some(Pending::new(
+            self.map.as_ref().map(|(id, _)| *id),
+            self.variant.as_ref().map(|v| Box::new(v.to_bytes())),
+            name.join(", "),
+            port,
+            now,
+        ))
+    }
+}
+
+/// The confirm dialog's choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confirm {
+    Restart,
+    KeepPlaying,
+}
+
+impl Confirm {
+    pub const ALL: [Confirm; 2] = [Confirm::Restart, Confirm::KeepPlaying];
+    pub fn label(self) -> &'static str {
+        match self {
+            Confirm::Restart => "Restart with these settings",
+            Confirm::KeepPlaying => "Keep playing",
+        }
+    }
+}
+
+/// One visit to Game Setup: what it offers, the draft, and the screens
+/// the pickers close.
+#[derive(Clone, Debug, Default)]
+pub struct VisitState {
+    pub avail: Avail,
+    pub rules: Vec<game_types::Listed>,
+    /// The lobby's variant when Game Setup opened.
+    pub base: Option<GameVariant>,
+    pub draft: Draft,
+    /// The categories or game types list a picker was opened from.
+    pub list_screen: Option<u32>,
+    /// Game Setup itself, while the confirm dialog is up.
+    pub setup_screen: Option<u32>,
+    pub confirm: Option<Confirm>,
+}
+
+/// What Game Setup's screens share.
+#[derive(Default)]
+pub struct Visit {
+    port: AtomicU32,
+    state: Mutex<VisitState>,
+}
+
+impl Visit {
+    /// A new visit for controller `port`: the draft starts empty.
+    pub fn open(&self, port: u32, avail: Avail, rules: Vec<game_types::Listed>, base: Option<GameVariant>) {
+        self.port.store(port, Ordering::SeqCst);
+        *lock(&self.state) = VisitState {
+            avail,
+            rules,
+            base,
+            ..VisitState::default()
+        };
+    }
+    pub fn port(&self) -> u32 {
+        self.port.load(Ordering::SeqCst)
+    }
+    pub fn with<T>(&self, f: impl FnOnce(&mut VisitState) -> T) -> T {
+        f(&mut lock(&self.state))
+    }
+    pub fn draft(&self) -> Draft {
+        self.with(|s| s.draft.clone())
+    }
+}
+
+/// Restart with the visit's draft: remember it, then end the game.
+/// Nothing changes when the game cannot be ended.
+pub async fn commit(cx: &Cx, visit: &Visit) {
+    let Some(p) = visit.draft().pending(visit.port(), Instant::now()) else {
         return;
     };
-    let cat = catalogue();
-    let map = cat.all().find(|m| m.id == id).cloned();
-    let name = map
-        .as_ref()
-        .map_or_else(|| format!("{id:#x}"), |m| m.name.clone());
-    if let Some(m) = &map {
-        // With Clankers on, the map's nav mesh is asked for now, as Game
-        // Setup's Change Map does (docs/game/bots.md §10 stage 2).
-        crate::clankers::map_picked(&m.short_name());
-    }
-    *lock(&PENDING) = Some(Pending::new(id, name.clone(), picker.port(), Instant::now()));
+    let name = p.name.clone();
+    *lock(&PENDING) = Some(p);
     match crate::firefight::guest::end_game(cx).await {
-        Ok(()) => eprintln!(
-            "pause change map: {name} ({id:#x}) picked; the game ends, then the lobby takes the map and starts"
-        ),
+        Ok(()) => {
+            visit.with(|s| s.draft = Draft::default());
+            eprintln!(
+                "pause game setup: {name}; the game ends, then the lobby takes the settings and starts"
+            );
+        }
         Err(e) => {
             *lock(&PENDING) = None;
-            eprintln!("pause change map: the game was not ended ({e:#}); nothing changed");
+            eprintln!("pause game setup: the game was not ended ({e:#}); nothing changed");
         }
     }
 }
 
 // ---- the next game ----
 
-/// Give up on starting the next game this long after the pick: the lobby
-/// keeps the map, and the leader presses Start.
+/// Give up on starting the next game this long after the restart: the
+/// lobby keeps what was set, and the leader presses Start.
 pub const TIMEOUT: Duration = Duration::from_secs(300);
-/// Wait this long after the lobby's map is set before the start check,
-/// so the change reaches the other consoles first.
+/// Wait this long after the lobby's settings are set before the start
+/// check, so the change reaches the other consoles first.
 pub const SETTLE: Duration = Duration::from_secs(2);
 /// The least time between two of our guest calls.
 pub const RETRY: Duration = Duration::from_millis(500);
@@ -475,16 +629,22 @@ impl Lobby {
 /// Where the next game is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// The game is ending; the lobby's map is set once it is back.
+    /// The game is ending; the lobby's settings are set once it is back.
     Ending,
-    /// The lobby has the map (since `at`); the countdown is next.
-    MapSet { at: Instant },
+    /// The lobby has the settings (since `at`); the countdown is next.
+    Set { at: Instant },
 }
 
-/// The map picked from the pause menu.
+/// The settings picked from the pause menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
-    pub map: u32,
+    /// The map's list id, when the draft changed it.
+    pub map: Option<u32>,
+    /// The variant record, when the draft changed it.
+    pub variant: Option<Box<[u8; RECORD_SIZE]>>,
+    /// The lobby variant setter took [`Pending::variant`].
+    pub variant_set: bool,
+    /// What changes, for the log.
     pub name: String,
     /// The controller that pressed the row: the countdown's.
     pub port: u32,
@@ -500,6 +660,8 @@ pub enum Next {
     Wait,
     /// Set the lobby's map to this id (`LOBBY_SET_MAP`).
     SetMap(u32),
+    /// Set the lobby's variant to this record (`host_lobby::SET_VARIANT`).
+    SetVariant(Box<[u8; RECORD_SIZE]>),
     /// Ask retail's start check (`LOBBY_START_STATE`).
     StartCheck,
     /// Stop, and why.
@@ -519,9 +681,17 @@ pub enum Start {
 }
 
 impl Pending {
-    pub fn new(map: u32, name: String, port: u32, now: Instant) -> Pending {
+    pub fn new(
+        map: Option<u32>,
+        variant: Option<Box<[u8; RECORD_SIZE]>>,
+        name: String,
+        port: u32,
+        now: Instant,
+    ) -> Pending {
         Pending {
             map,
+            variant,
+            variant_set: false,
             name,
             port,
             since: now,
@@ -530,6 +700,8 @@ impl Pending {
         }
     }
 
+    /// The map first, then the variant, then the start check once both
+    /// have settled.
     pub fn next(&mut self, lobby: &Lobby, now: Instant) -> Next {
         if now.duration_since(self.since) >= TIMEOUT {
             return Next::GiveUp(format!(
@@ -540,22 +712,26 @@ impl Pending {
         if !lobby.pregame() || now < self.next_try {
             return Next::Wait;
         }
-        match self.step {
-            Step::Ending if lobby.map == self.map => {
-                self.step = Step::MapSet { at: now };
-                Next::Wait
-            }
-            Step::Ending => {
-                self.next_try = now + RETRY;
-                Next::SetMap(self.map)
-            }
-            // Changed again by someone: set it again.
-            Step::MapSet { .. } if lobby.map != self.map => {
+        if let Some(map) = self.map.filter(|m| *m != lobby.map) {
+            if matches!(self.step, Step::Set { .. }) {
+                // Changed again by someone: set it again.
                 self.step = Step::Ending;
+                return Next::Wait;
+            }
+            self.next_try = now + RETRY;
+            return Next::SetMap(map);
+        }
+        if let Some(v) = self.variant.as_ref().filter(|_| !self.variant_set) {
+            self.next_try = now + RETRY;
+            return Next::SetVariant(v.clone());
+        }
+        match self.step {
+            Step::Ending => {
+                self.step = Step::Set { at: now };
                 Next::Wait
             }
-            Step::MapSet { at } if now.duration_since(at) < SETTLE => Next::Wait,
-            Step::MapSet { .. } => {
+            Step::Set { at } if now.duration_since(at) < SETTLE => Next::Wait,
+            Step::Set { .. } => {
                 self.next_try = now + RETRY;
                 Next::StartCheck
             }
@@ -565,7 +741,15 @@ impl Pending {
     /// `LOBBY_SET_MAP` answered (AL nonzero: set).
     pub fn map_set(&mut self, set: bool, now: Instant) {
         if set {
-            self.step = Step::MapSet { at: now };
+            self.step = Step::Set { at: now };
+        }
+    }
+
+    /// The lobby variant setter answered (AL nonzero: taken).
+    pub fn variant_taken(&mut self, set: bool, now: Instant) {
+        if set {
+            self.variant_set = true;
+            self.step = Step::Set { at: now };
         }
     }
 
@@ -590,21 +774,21 @@ impl Pending {
     }
 }
 
-/// Why a snapshot waits: a pick is under way.
+/// Why a snapshot waits: a restart is under way.
 pub fn snapshot_live() -> Option<String> {
     lock(&PENDING)
         .as_ref()
-        .map(|p| format!("a Change Map to {} from the pause menu is under way", p.name))
+        .map(|p| format!("a restart from the pause menu's Game Setup ({}) is under way", p.name))
 }
 
 fn finish(why: &str, done: bool) {
     let p = lock(&PENDING).take();
     let name = p.map_or_else(String::new, |p| p.name);
     if done {
-        eprintln!("pause change map: {why}");
+        eprintln!("pause game setup: {why}");
     } else {
         eprintln!(
-            "pause change map: gave up ({why}); the lobby keeps {name} if it was set, press Start"
+            "pause game setup: gave up ({why}); the lobby keeps what was set of {name}, press Start"
         );
     }
 }
@@ -628,11 +812,30 @@ async fn drive(cx: &Cx, next: Next) -> Result<(), EntryError> {
                 != 0;
             if let Some(p) = lock(&PENDING).as_mut() {
                 eprintln!(
-                    "pause change map: the lobby's map {} {}",
-                    p.name,
+                    "pause game setup: the lobby's map {}",
                     if set { "is set" } else { "was refused; trying again" }
                 );
                 p.map_set(set, Instant::now());
+            }
+        }
+        Next::SetVariant(record) => {
+            let at = RECORD_AT.load(Ordering::SeqCst);
+            if at == 0 {
+                finish("no memory for the variant record", false);
+                return Ok(());
+            }
+            cx.write(|m| m.write(at, record.as_slice()))?;
+            let set = cx
+                .call(GuestCall::new(crate::host_lobby::SET_VARIANT).args([at]))
+                .await?
+                .eax as u8
+                != 0;
+            if let Some(p) = lock(&PENDING).as_mut() {
+                eprintln!(
+                    "pause game setup: the lobby's variant {}",
+                    if set { "is set" } else { "was refused; trying again" }
+                );
+                p.variant_taken(set, Instant::now());
             }
         }
         Next::StartCheck => {
@@ -655,7 +858,7 @@ async fn drive(cx: &Cx, next: Next) -> Result<(), EntryError> {
                     let s = lock(&PENDING).as_ref().map(|p| p.countdown(started));
                     if let Some(s) = s {
                         if s == Start::Wait {
-                            eprintln!("pause change map: retail refused the countdown; trying again");
+                            eprintln!("pause game setup: retail refused the countdown; trying again");
                         }
                         settle(s);
                     }
@@ -669,12 +872,28 @@ async fn drive(cx: &Cx, next: Next) -> Result<(), EntryError> {
     Ok(())
 }
 
+/// What a visit offers now, read from guest memory: the built-in
+/// variants, the lobby's variant, and Game Setup's rows.
+fn read_visit(m: &dyn GuestMemory) -> (Avail, Vec<game_types::Listed>, Option<GameVariant>) {
+    let variants = game_types::read(m);
+    let base = lobby_variant(m);
+    let on = |screen: &str| list_class::loader_of(screen).is_some();
+    let mut a = avail(lobby_start::mode(), &catalogue(), &variants, base.as_ref(), on(CLANKERS_SCREEN));
+    // A row whose screen's class is off is left out.
+    if a.map == Some(Opening::Categories) && !on(CATEGORIES_SCREEN) {
+        a.map = None;
+    }
+    a.rules &= on(TYPES_SCREEN);
+    a.quick &= on(QUICK_SCREEN);
+    (a, variants, base)
+}
+
 /// The hooks (feature [`FEATURE`]).
-pub struct PauseChangeMap(pub Arc<Picker>);
+pub struct PauseChangeMap(pub Arc<Visit>);
 
 impl Feature for PauseChangeMap {
     fn manifest(&self) -> Manifest {
-        Manifest::new(FEATURE, "Change Map on the multiplayer pause menu")
+        Manifest::new(FEATURE, "Game Setup on the multiplayer pause menu")
             .doc("docs/game/settings-menu.md")
     }
 
@@ -682,8 +901,14 @@ impl Feature for PauseChangeMap {
         let base = b.guest_alloc((IDS.len * SLOT_LEN).next_multiple_of(0x1000), Permissions::RW)?;
         TEXTS.base.store(base, Ordering::SeqCst);
         TEXTS.set(ROW_SLOT, ROW_LABEL);
+        TEXTS.set(SETUP_TITLE_SLOT, SETUP_TITLE);
         TEXTS.set(CATEGORIES_TITLE_SLOT, CATEGORIES_TITLE);
+        TEXTS.set(TYPES_TITLE_SLOT, TYPES_TITLE);
+        TEXTS.set(QUICK_TITLE_SLOT, QUICK_TITLE);
+        TEXTS.set(CLANKER_TITLE_SLOT, CLANKER_TITLE);
         b.locale().source("pause change map", |id| TEXTS.address(id));
+        let record = b.guest_alloc(0x1000, Permissions::RW)?;
+        RECORD_AT.store(record, Ordering::SeqCst);
         INSTALLED.store(true, Ordering::SeqCst);
 
         // The row: noted at entry, added once the retail rows are in.
@@ -692,7 +917,7 @@ impl Feature for PauseChangeMap {
                 BUILDING.store(o.cpu.esi, Ordering::SeqCst);
             });
         b.raw()
-            .after(&points::MP_MENU_LIST_CTOR, "add the Change Map row", |c| {
+            .after(&points::MP_MENU_LIST_CTOR, "add the Game Setup row", |c| {
                 let list = BUILDING.swap(0, Ordering::SeqCst);
                 if list == 0 {
                     return Ok(());
@@ -703,25 +928,25 @@ impl Feature for PauseChangeMap {
                     return Ok(());
                 };
                 let words = actions(&*mem, array).unwrap_or_default();
-                let can_open = opening(lobby_start::mode(), &catalogue()).is_some();
-                if !offered(&words, Menu::read(&*mem), can_open) {
+                let (a, _, _) = read_visit(&*mem);
+                if !offered(&words, Menu::read(&*mem), !setup_rows(a).is_empty()) {
                     return Ok(());
                 }
                 match add_row(&mut *mem, array) {
-                    Ok(n) => eprintln!("pause change map: GAME MENU has Change Map ({n} rows)"),
-                    Err(why) => eprintln!("pause change map: no Change Map row: {why}"),
+                    Ok(n) => eprintln!("pause game setup: GAME MENU has Game Setup ({n} rows; {a:?})"),
+                    Err(why) => eprintln!("pause game setup: no Game Setup row: {why}"),
                 }
                 Ok(())
             });
 
         b.raw()
-            .before(&points::MP_MENU_ROW_TEXT, "name the Change Map row", |c| {
+            .before(&points::MP_MENU_ROW_TEXT, "name the Game Setup row", |c| {
                 let Some(item) = c.arg_u32("item") else {
                     return Ok(Flow::Continue);
                 };
                 let ours = {
                     let mem = c.ctx.runtime().memory();
-                    crate::pause_menu::item_action(&*mem, c.cpu.ecx, item) == Some(CHANGE_MAP_ACTION)
+                    crate::pause_menu::item_action(&*mem, c.cpu.ecx, item) == Some(SETUP_ACTION)
                 };
                 if !ours {
                     return Ok(Flow::Continue);
@@ -738,42 +963,47 @@ impl Feature for PauseChangeMap {
             .after_feature("pause-mp-rows")
             .after_feature("forge-screens");
 
-        let picker = Arc::clone(&self.0);
+        let visit = Arc::clone(&self.0);
         b.raw()
-            .before(&points::MP_MENU_ROW_CHOSEN, "open the Change Map picker", move |c| {
+            .before(&points::MP_MENU_ROW_CHOSEN, "open Game Setup", move |c| {
                 let (Some(chain), Some(row)) = (c.arg_u32("chain"), c.arg_u32("row")) else {
                     return Ok(Flow::Continue);
                 };
                 let list = c.cpu.ecx;
-                let (word, mask) = {
+                let (word, mask, (a, variants, base)) = {
                     let mem = c.ctx.runtime().memory();
                     (
                         crate::pause_menu::chosen_action(&*mem, list, row),
                         list_class::player_mask(&*mem, chain).ok().flatten(),
+                        read_visit(&*mem),
                     )
                 };
-                if word != Some(CHANGE_MAP_ACTION) {
+                if word != Some(SETUP_ACTION) {
                     return Ok(Flow::Continue);
                 }
                 // The original would run End Game's press for our word.
-                let open = opening(lobby_start::mode(), &catalogue());
-                let (Some(open), Some(mask)) = (open, mask) else {
-                    eprintln!("pause change map: nothing to open (picker {open:?}, player {mask:?})");
+                let Some(mask) = mask.filter(|_| !setup_rows(a).is_empty()) else {
+                    eprintln!("pause game setup: nothing to open ({a:?}, player {mask:?})");
                     return c.ret(8).map(Flow::Return);
                 };
-                picker.open(open, mask.trailing_zeros());
+                eprintln!(
+                    "pause game setup: opening Game Setup ({} variants listed, lobby variant {})",
+                    variants.len(),
+                    base.as_ref().map_or("unread".to_owned(), |v| v.name())
+                );
+                visit.open(mask.trailing_zeros(), a, variants, base);
                 c.answer_async(move |cx| -> EntryFuture {
                     Box::pin(async move {
-                        list_class::push(&cx, chain, list.wrapping_sub(ui::LIST), open.screen())
-                            .await?;
+                        list_class::push(&cx, chain, list.wrapping_sub(ui::LIST), SETUP_SCREEN).await?;
                         Ok(Ret::new(0, 8))
                     })
                 })
             })
             .after_feature("forge-screens");
 
-        // The next game: each UI update, back in the lobby, the map and
-        // then the countdown. The UI update runs in the menus and in a game.
+        // The next game: each UI update, back in the lobby, the map, the
+        // variant and then the countdown. The UI update runs in the menus
+        // and in a game.
         b.raw()
             .before(&points::UI_UPDATE, "pause change map: start the next game", |c| {
                 if PASSING.load(Ordering::SeqCst) {
@@ -793,13 +1023,13 @@ impl Feature for PauseChangeMap {
                         finish(&why, false);
                         return Ok(Flow::Continue);
                     }
-                    Next::SetMap(_) | Next::StartCheck => {}
+                    Next::SetMap(_) | Next::SetVariant(_) | Next::StartCheck => {}
                 }
                 c.answer_async(move |cx| -> EntryFuture {
                     Box::pin(async move {
                         let elapsed = cx.arg(0)?;
                         if let Err(e) = drive(&cx, next).await {
-                            eprintln!("pause change map: {e}");
+                            eprintln!("pause game setup: {e}");
                         }
                         PASSING.store(true, Ordering::SeqCst);
                         let out = cx
@@ -830,20 +1060,33 @@ impl Feature for PauseChangeMap {
     }
 }
 
-/// Registers the picker's classes and the hooks, unless
-/// `features.pause-change-map` is off. Whether they were added.
-pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<bool> {
+/// Registers Game Setup's classes and the hooks, unless
+/// `features.pause-change-map` is off. Clanker Options is listed when
+/// `clankers` (the settings store the Clankers driver follows) is given.
+/// Whether the hooks were added.
+pub fn install(
+    registry: &mut hooks::Registry,
+    clankers: Option<Arc<settings::Store>>,
+) -> anyhow::Result<bool> {
     if !registry.switches().feature(FEATURE, true) {
         eprintln!("pause change map: features.{FEATURE} is off");
         return Ok(false);
     }
-    let picker = Arc::new(Picker::default());
-    let [categories, maps] = classes(&picker);
-    if !(registry.add(&categories)? && registry.add(&maps)?) {
-        eprintln!("pause change map: a picker class is off; no Change Map row");
+    let visit = Arc::new(Visit::default());
+    let classes = setup::classes(&visit, clankers);
+    let Some((first, rest)) = classes.split_first() else {
+        return Ok(false);
+    };
+    if !registry.add(first)? {
+        eprintln!("pause change map: features.{SETUP_SCREEN} is off; no Game Setup row");
         return Ok(false);
     }
-    Ok(registry.add(&PauseChangeMap(picker))?)
+    for c in rest {
+        if !registry.add(c)? {
+            eprintln!("pause change map: features.{} is off; Game Setup leaves its row out", c.id);
+        }
+    }
+    Ok(registry.add(&PauseChangeMap(visit))?)
 }
 
 #[cfg(test)]

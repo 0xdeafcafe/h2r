@@ -126,6 +126,11 @@ pub const NAV_USER_LEN: u32 = 0x30;
 pub const NAV_SLOTS: u32 = 4;
 pub const NAV_SLOT_LEN: u32 = 12;
 pub const NAV_SCENARIO_POINT: u16 = 0;
+/// The scenario points the kit adds, and so the navpoints it can show at
+/// once: one for each slot of a user's list ([`NAV_SLOTS`]). A navpoint
+/// element takes them in order over the registered HUDs
+/// ([`navpoints_now`]).
+pub const KIT_POINTS: u32 = NAV_SLOTS;
 pub const NAV_SKIP: u16 = 15;
 /// The scenario (`[0x004e0350]`) and the tag block a kind-0 slot indexes:
 /// `scnr +0x1e0`, its count at `+0` and its address at `+4`, `0x38` bytes
@@ -169,7 +174,8 @@ struct Registered {
     values: Values,
     /// When each moving value last changed ([`stamp_values`]).
     stamps: Stamps,
-    nav: Option<[f32; 3]>,
+    /// The world point of each navpoint element that has one, by its id.
+    navs: Vec<(&'static str, [f32; 3])>,
 }
 
 /// Per element, the wall time its value's motion started.
@@ -280,7 +286,7 @@ pub fn register(describe: Arc<dyn Describe + Send + Sync>) -> Handle {
         hud,
         values,
         stamps: Stamps::new(),
-        nav: None,
+        navs: Vec::new(),
     });
     Handle(r.len() - 1)
 }
@@ -306,11 +312,43 @@ impl Handle {
     pub fn notify(&self, user: u32, text: &str) -> bool {
         notify(user, text)
     }
-    /// The world point the HUD's navpoint is over, if it shows.
+    /// The world point the HUD's navpoint is over, if it shows: its
+    /// first navpoint element's ([`Handle::navpoint_at`]).
     pub fn navpoint(&self, at: Option<[f32; 3]>) {
+        let first = {
+            let r = read(&REGISTRY);
+            r.get(self.0).and_then(|x| {
+                x.hud
+                    .elements
+                    .iter()
+                    .find(|e| matches!(e.kind, Kind::Navpoint { .. }))
+                    .map(|e| e.id)
+            })
+        };
+        if let Some(id) = first {
+            self.navpoint_at(id, at);
+        }
+    }
+    /// The world point navpoint element `id` is over; `None` takes it
+    /// away. The game draws it while the element's value is shown too. An
+    /// id that is not a navpoint of this HUD is ignored.
+    pub fn navpoint_at(&self, id: &str, at: Option<[f32; 3]>) {
         let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(x) = r.get_mut(self.0) {
-            x.nav = at;
+        let Some(x) = r.get_mut(self.0) else {
+            return;
+        };
+        let Some(e) = x
+            .hud
+            .elements
+            .iter()
+            .find(|e| e.id == id && matches!(e.kind, Kind::Navpoint { .. }))
+        else {
+            return;
+        };
+        let id = e.id;
+        x.navs.retain(|(i, _)| *i != id);
+        if let Some(at) = at {
+            x.navs.push((id, at));
         }
     }
 }
@@ -435,14 +473,31 @@ fn channel(want: fn(&Kind) -> bool) -> Option<String> {
     })
 }
 
-fn navpoint_at() -> Option<[f32; 3]> {
+/// The point of each of the kit's navpoints now: the navpoint elements
+/// of the registered HUDs in their order, the first [`KIT_POINTS`] of
+/// them, each `Some` while its value is shown and it has a point. An
+/// element keeps its place in the list whatever shows, so it keeps its
+/// scenario point and its slot.
+pub fn navpoints_now() -> [Option<[f32; 3]>; KIT_POINTS as usize] {
     let r = read(&REGISTRY);
-    r.iter().find_map(|x| {
-        let shown = x.hud.elements.iter().any(|e| {
-            matches!(e.kind, Kind::Navpoint { .. }) && x.values.get(e.id).is_some_and(|v| v.shown)
-        });
-        x.nav.filter(|_| shown)
-    })
+    let mut out = [None; KIT_POINTS as usize];
+    let elements = r.iter().flat_map(|x| {
+        x.hud
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, Kind::Navpoint { .. }))
+            .map(move |e| (x, e.id))
+    });
+    for (slot, (x, id)) in out.iter_mut().zip(elements) {
+        let shown = x.values.get(id).is_some_and(|v| v.shown);
+        *slot = x
+            .navs
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, at)| *at)
+            .filter(|_| shown);
+    }
+    out
 }
 
 /// The string lookup's answer for the kit's ids (`0x001a0180`, through
@@ -980,9 +1035,10 @@ pub fn write_training(mem: &mut dyn GuestMemory, show: bool) -> Result<bool, Mem
     Ok(false)
 }
 
-/// Where our navpoint's scenario point is: the scenario's point block as
-/// it was, and our point's index (one past its last). Kept at the head of
-/// the points memory, as [`Header`] is.
+/// Where our navpoints' scenario points are: the scenario's point block
+/// as it was, and the index of the first of our [`KIT_POINTS`] points
+/// (one past its last). Kept at the head of the points memory, as
+/// [`Header`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PointHeader {
     pub scenario: u32,
@@ -1004,8 +1060,9 @@ fn read_point_header(mem: &dyn GuestMemory, region: u32) -> Result<Option<PointH
 }
 
 /// Puts the scenario's point block back where the loaded scenario still
-/// points at our copy, then copies it there with one point after it and points the
-/// scenario at the copy. `None` without a scenario or room.
+/// points at our copy, then copies it there with [`KIT_POINTS`] points
+/// after it and points the scenario at the copy. `None` without a scenario
+/// or room.
 pub fn install_point(
     mem: &mut dyn GuestMemory,
     region: (u32, u32),
@@ -1027,7 +1084,7 @@ pub fn install_point(
     }
     let field = scenario + SCENARIO_POINTS;
     let (count, from) = (mem.u32(field)?, mem.u32(field + 4)?);
-    let bytes = (count + 1) * POINT_LEN;
+    let bytes = (count + KIT_POINTS) * POINT_LEN;
     if POINT_HEADER_LEN + bytes > len {
         return Ok(None);
     }
@@ -1037,8 +1094,8 @@ pub fn install_point(
         mem.read(from, &mut old)?;
         mem.write(block, &old)?;
     }
-    mem.fill(block + count * POINT_LEN, POINT_LEN, 0)?;
-    mem.set_u32(field, count + 1)?;
+    mem.fill(block + count * POINT_LEN, KIT_POINTS * POINT_LEN, 0)?;
+    mem.set_u32(field, count + KIT_POINTS)?;
     mem.set_u32(field + 4, block)?;
     let h = PointHeader {
         scenario,
@@ -1054,9 +1111,9 @@ pub fn install_point(
 }
 
 /// Whether the scenario loaded now still points at the copy
-/// [`install_point`] made, our point its last: the only state in which a
-/// kind-0 slot with our index reads our point (the draw does not check
-/// the index against the block's count).
+/// [`install_point`] made, our points its last: the only state in which a
+/// kind-0 slot with one of our indices reads our point (the draw does not
+/// check the index against the block's count).
 fn point_installed(
     mem: &dyn GuestMemory,
     region: (u32, u32),
@@ -1066,23 +1123,40 @@ fn point_installed(
         return Ok(false);
     }
     let field = h.scenario + SCENARIO_POINTS;
-    Ok(mem.u32(field)? == h.index + 1 && mem.u32(field + 4)? == region.0 + POINT_HEADER_LEN)
+    Ok(mem.u32(field)? == h.index + KIT_POINTS
+        && mem.u32(field + 4)? == region.0 + POINT_HEADER_LEN)
 }
 
-/// Puts our point at `at` and keeps one slot of user `user`'s navpoint
-/// list on it (the slot already ours, else the first one the game's draw
-/// passes: `+0` or `+8` -1, or kind 15), or skips our slot when `at` is
-/// `None` or our point is not installed in the loaded scenario. The
-/// game's own slots are never touched. Returns the slot used.
+/// [`write_navpoint_n`] for the first of our points.
 pub fn write_navpoint(
     mem: &mut dyn GuestMemory,
     region: (u32, u32),
     user: u32,
     at: Option<[f32; 3]>,
 ) -> Result<Option<u32>, MemFault> {
+    write_navpoint_n(mem, region, user, 0, at)
+}
+
+/// Puts our point `k` (under [`KIT_POINTS`]) at `at` and keeps one slot
+/// of user `user`'s navpoint list on it (the slot already that point's,
+/// else the first one the game's draw passes: `+0` or `+8` -1, or kind
+/// 15), or skips its slot when `at` is `None` or our points are not
+/// installed in the loaded scenario. The game's own slots, and our other
+/// points' slots, are never touched. Returns the slot used.
+pub fn write_navpoint_n(
+    mem: &mut dyn GuestMemory,
+    region: (u32, u32),
+    user: u32,
+    k: u32,
+    at: Option<[f32; 3]>,
+) -> Result<Option<u32>, MemFault> {
+    if k >= KIT_POINTS {
+        return Ok(None);
+    }
     let Some(h) = read_point_header(&*mem, region.0)? else {
         return Ok(None);
     };
+    let index = h.index + k;
     let list = mem.u32(NAVPOINTS)?;
     if list == 0 {
         return Ok(None);
@@ -1096,7 +1170,7 @@ pub fn write_navpoint(
     let ours = |mem: &dyn GuestMemory, i: u32| -> Result<bool, MemFault> {
         Ok(!unused(mem, i)?
             && mem.u16(slot(i) + 2)? & 0xf == NAV_SCENARIO_POINT
-            && mem.u32(slot(i) + 8)? == h.index)
+            && mem.u32(slot(i) + 8)? == index)
     };
     let mut mine = None;
     let mut free = None;
@@ -1119,7 +1193,7 @@ pub fn write_navpoint(
             return Ok(None);
         }
     };
-    let p = region.0 + POINT_HEADER_LEN + h.index * POINT_LEN + POINT_AT;
+    let p = region.0 + POINT_HEADER_LEN + index * POINT_LEN + POINT_AT;
     for (k, v) in at.iter().enumerate() {
         mem.set_f32(p + 4 * k as u32, *v)?;
     }
@@ -1129,7 +1203,7 @@ pub fn write_navpoint(
     mem.set_u16(slot(i), 0)?;
     mem.set_u16(slot(i) + 2, NAV_SCENARIO_POINT)?;
     mem.set_f32(slot(i) + 4, 0.0)?;
-    mem.set_u32(slot(i) + 8, h.index)?;
+    mem.set_u32(slot(i) + 8, index)?;
     Ok(Some(i))
 }
 
@@ -1237,7 +1311,9 @@ fn tick(mem: &mut dyn GuestMemory, points_region: (u32, u32)) -> Result<(), MemF
         *lock(&TRAINING_TEXT) = t.clone();
     }
     write_training(mem, training.is_some())?;
-    write_navpoint(mem, points_region, 0, navpoint_at())?;
+    for (k, at) in navpoints_now().into_iter().enumerate() {
+        write_navpoint_n(mem, points_region, 0, k as u32, at)?;
+    }
     Ok(())
 }
 

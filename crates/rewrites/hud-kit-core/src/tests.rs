@@ -204,7 +204,7 @@ impl MapView for Invented {
                 superbounce::ARM_WIDGET,
                 0,
                 0x43,
-                superbounce::ARM_FULL,
+                superbounce::RETAIL_ARM_FULL,
                 BOMB,
             );
             // Shown on word D 0x400, not word A.
@@ -327,8 +327,8 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
     assert_eq!(off(superbounce::PILL), (106, 0));
     assert_eq!(off(superbounce::PILL_END), (106 + PILL_BODY, 0));
     assert_eq!(off(CHARGE), (106, CHARGE_DOWN));
-    // The arming bar: the scoreboard's bomb_defusal, uncropped, centred
-    // where retail draws it fullscreen.
+    // The arming bar: the scoreboard's bomb_defusal, uncropped, bottom
+    // left with the readout.
     assert_eq!(off(superbounce::ARM), superbounce::ARM_FULL);
     let arm = c.widget(superbounce::ARM).unwrap();
     assert_eq!(u32_at(&arm.bytes, bf::BITMAP + 4), BOMB);

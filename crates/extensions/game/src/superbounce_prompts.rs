@@ -191,7 +191,7 @@ fn raised(p: Vec3) -> Vec3 {
 
 /// The prompts for one frame. The mode draws none of them
 /// (docs/game/superbounce.md, "In the air"): in the air the screen is the
-/// step chain's and the tracker's, and on the ground the floor mark says
+/// readout's and the tracker's, and on the ground the floor mark says
 /// where to land. This is the rule table (`prompt_for`) and its labels,
 /// kept with their tests. `target` is the assist's pick (the strip a
 /// falling player can be steered onto, and where the player would land
