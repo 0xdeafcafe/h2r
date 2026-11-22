@@ -97,6 +97,11 @@ pub const RETAIL_ARM_SPLIT: (i16, i16) = (0, 27);
 /// line of font 5) and under the navpoint's arrow at its sample
 /// (docs/game/hud-kit.md, "The arming bar").
 pub const ARM_SPLIT: (i16, i16) = (0, -35);
+/// In a quarter view, [`ARM_SPLIT`]'s height 7 to the left: the quarter
+/// frame has no row free between the navpoint's arrow at its sample and
+/// the prompt's first line, and at the centre the bar's right end meets
+/// the arrow (x 198 to 203, the `overlap` check); 7 left clears it.
+pub const ARM_QUARTER: (i16, i16) = (-7, -35);
 /// The game's word D bit that shows the retail bar: Assault arming (V:
 /// the widget's only show bit). Ours hides while it is set.
 pub const ASSAULT_ARMING_D: u16 = 0x400;
@@ -531,7 +536,7 @@ pub fn hud() -> Hud {
                     name: ARM_WIDGET,
                 },
                 Place::new(Anchor::Centre, ARM_FULL)
-                    .split(ARM_SPLIT, ARM_SPLIT)
+                    .split(ARM_SPLIT, ARM_QUARTER)
                     .registered([0.5, 0.5]),
             )
             .hidden_on_d(ASSAULT_ARMING_D),
@@ -1213,7 +1218,7 @@ mod tests {
         assert_eq!(e.at.anchor, Anchor::Centre);
         assert_eq!(
             (e.at.full, e.at.half, e.at.quarter),
-            ((0, 110), Some((0, -35)), Some((0, -35)))
+            ((0, 110), Some((0, -35)), Some((-7, -35)))
         );
         assert_eq!(e.at.registration, [0.5, 0.5]);
         assert_eq!(e.hide_when_d, 0x400);

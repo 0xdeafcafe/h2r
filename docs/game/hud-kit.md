@@ -921,7 +921,7 @@ art at the same place.
 | Field | Value |
 |---|---|
 | element | `Element::meter("sb.arm", Art::Widget { hud: HudRef::Named("ui\\hud\\scoreboard"), name: "bomb_defusal" }, ..)`, `hidden_on_d(0x400)` |
-| place | anchor centre, (0, 110) fullscreen, the retail widget's (V); (0, −35) half and quarter, ours (below); registration (0.5, 0.5) |
+| place | anchor centre, (0, 110) fullscreen, the retail widget's (V); (0, −35) half and (−7, −35) quarter, ours (below); registration (0.5, 0.5) |
 | art | the scoreboard `nhdt`'s bitmap widget `bomb_defusal`: `ui\hud\bitmaps\new_hud\bomb_meter`, a capsule 140 by 13 (sequence 0) and 86 by 9 (sequence 1, split screen), its blue rising 4 to 253 left to right; the shader `ui\hud\shaders\bomb_defusal_meter` on `widget_legacy_meter`, red `6d2323` to `cf6767` where the texel's blue is below `hud_input1`, white for the outline (V) |
 | input | uncropped, so `hud_input1` is the fill itself |
 | crop, ramp | none |
@@ -933,8 +933,12 @@ carrier our player has a verb on the prompt line the whole time the bar
 is up. Below the box the training box and the reticle take the rest of
 the 204-high frame, so ours sits 35 above the centre (`ARM_SPLIT`):
 under the prompt's first line (the frame's top plus 35) and clear of
-the navpoint's stack at its sample, right of and above the centre.
-Fullscreen stays retail's (0, 110).
+the navpoint's stack at its sample, right of and above the centre. A
+quarter frame has no row free between the navpoint's arrow at its sample
+and the prompt's first line, and at the centre the bar's right end meets
+the arrow (the `overlap` check, x 198 to 203), so in a quarter view the
+bar sits 7 to the left (`ARM_QUARTER`, (−7, −35)). Fullscreen stays
+retail's (0, 110).
 
 The retail widget's input is `0x43`, the bomb arming amount, and it is
 shown on word D `0x400` alone (V: `zanzibar.map`; `0x40` and `0x41` are
