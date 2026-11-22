@@ -103,8 +103,6 @@ pub enum LayerObjectRefusal {
     /// left it (no entry for the object, no coefficients, or geometry not
     /// resident).
     Layer5Stream,
-    /// No bit 9 on a part that is not a triangle list.
-    Topology,
     /// The visible subparts do not read.
     Subparts,
     /// Bit 11, and the auxiliary state toggle's inputs do not read.
@@ -121,7 +119,6 @@ impl LayerObjectRefusal {
             LayerObjectRefusal::ShaderFlag => "object_shader_flag",
             LayerObjectRefusal::Argument => "object_argument",
             LayerObjectRefusal::Layer5Stream => "object_layer5_stream",
-            LayerObjectRefusal::Topology => "object_topology",
             LayerObjectRefusal::Subparts => "object_subparts",
             LayerObjectRefusal::AuxState => "object_aux_state",
             LayerObjectRefusal::Unread => "object_unread",

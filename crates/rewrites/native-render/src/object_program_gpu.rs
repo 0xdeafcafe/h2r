@@ -70,6 +70,10 @@ pub struct LitPart {
     /// Its subparts' index ranges in the same buffers, when the part has
     /// subparts a record can choose ([`LitSubparts`]).
     pub subparts: Option<SubpartRanges>,
+    /// A strip part's indices decoded as a list, in the same buffers:
+    /// what the emitter draws for a record without bit 9
+    /// ([`LitSection::listed`]). `None` for a list part.
+    pub listed: Option<Range<u32>>,
 }
 
 /// A lit part's subparts in its buffers: the section's index of the
@@ -204,6 +208,8 @@ pub struct LitLayerPart {
     pub shader: ShaderValues,
     pub indices: Range<u32>,
     pub subparts: Option<SubpartRanges>,
+    /// [`LitPart::listed`].
+    pub listed: Option<Range<u32>>,
     pub passes: Vec<LitLayerPass>,
 }
 
@@ -224,22 +230,32 @@ impl LitModelInput {
     }
 
     fn valid_draw_references(&self) -> bool {
-        let valid = |mut slots: &mut dyn Iterator<Item = (usize, usize)>, indices: &Range<u32>, subparts: Option<&SubpartRanges>| {
+        let valid = |mut slots: &mut dyn Iterator<Item = (usize, usize)>,
+                     indices: &Range<u32>,
+                     subparts: Option<&SubpartRanges>,
+                     listed: Option<&Range<u32>>| {
             // `&mut dyn Iterator` is itself a sized iterator; `all` needs one.
             Iterator::all(&mut slots, |(program, buffer)| {
                 let Some(buffer) = self.buffers.get(buffer) else { return false };
                 let fits = |range: &Range<u32>| range.start <= range.end && range.end as usize <= buffer.indices.len();
                 program < self.programs.len() && fits(indices)
                     && subparts.is_none_or(|subparts| subparts.ranges.iter().all(fits))
+                    && listed.is_none_or(fits)
             })
         };
         self.parts.iter().all(|part| {
-            valid(&mut part.implementations.iter().flatten().copied(), &part.indices, part.subparts.as_ref())
+            valid(
+                &mut part.implementations.iter().flatten().copied(),
+                &part.indices,
+                part.subparts.as_ref(),
+                part.listed.as_ref(),
+            )
         }) && self.layers.iter().all(|part| {
             valid(
                 &mut part.passes.iter().flat_map(|p| p.implementations.iter().flatten().copied()),
                 &part.indices,
                 part.subparts.as_ref(),
+                part.listed.as_ref(),
             )
         })
     }
@@ -702,7 +718,13 @@ impl LitObjects {
     pub fn plan_part_of(
         &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
     ) -> Result<PlannedDraw, String> {
-        let inputs = PartInputs { instance: instance.key, lighting: instance.lighting.as_ref(), defaults: instance.defaults, subparts: part.subparts };
+        let inputs = PartInputs {
+            instance: instance.key,
+            lighting: instance.lighting.as_ref(),
+            defaults: instance.defaults,
+            subparts: part.subparts,
+            strip: Some(part.flags.contains(PartFlags::STRIP)),
+        };
         self.plan_inputs(index, inputs, &part.key, scene.rows_of(part), entry, true)
     }
 
@@ -1092,10 +1114,8 @@ pub fn plan_layer_part<'a>(
     if p.shader_tag != key.shader {
         return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
     }
-    let ranges = match item.subparts {
-        None => vec![p.indices.clone()],
-        Some(chosen) => p.subparts.as_ref().ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)?,
-    };
+    let strip = Some(item.flags.contains(PartFlags::STRIP));
+    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts)?;
     let defaults = pass.inputs.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
     let unstenciled;
@@ -1172,11 +1192,48 @@ struct PartInputs<'a> {
     defaults: Option<Defaults>,
     /// The subparts the item's record chose; `None`, the whole part.
     subparts: Option<Subparts>,
+    /// Whether the emitter draws the part as a strip
+    /// (`frame_scene::PartFlags::STRIP`); `None`, in the part's own
+    /// topology.
+    strip: Option<bool>,
 }
 
 impl<'a> PartInputs<'a> {
     fn of(frame: &'a ObjectFrame) -> Self {
-        Self { instance: frame_scene::InstanceKey(frame.handle), lighting: frame.lighting.as_ref(), defaults: frame.defaults, subparts: None }
+        Self {
+            instance: frame_scene::InstanceKey(frame.handle),
+            lighting: frame.lighting.as_ref(),
+            defaults: frame.defaults,
+            subparts: None,
+            strip: None,
+        }
+    }
+}
+
+/// The index ranges a part draws (`whole` its own topology's, `subparts`
+/// its chosen subparts', `listed` a strip part's as a list) for a record
+/// that draws it as a strip or not (`strip`, `None` in the part's own
+/// topology) and chooses `chosen` of its subparts. The emitter `0x0004daa0`
+/// draws a part as a strip only with bit 9 and the part's triangle-list
+/// flag clear (`0x0004d5e2`), so a strip part whose record lacks bit 9
+/// draws its indices as a list. Its chosen subparts would then join into
+/// one list (`0x0004db68`), which is not built. A list part draws as a
+/// list whatever the record says.
+fn part_ranges(
+    whole: &Range<u32>, subparts: Option<&SubpartRanges>, listed: Option<&Range<u32>>, strip: Option<bool>,
+    chosen: Option<Subparts>,
+) -> Result<Vec<Range<u32>>, String> {
+    match (listed, strip) {
+        (Some(_), Some(false)) if chosen.is_some() => {
+            Err("the record draws a strip part's chosen subparts as one list".into())
+        }
+        (Some(listed), Some(false)) => Ok(vec![listed.clone()]),
+        _ => match chosen {
+            None => Ok(vec![whole.clone()]),
+            Some(chosen) => {
+                subparts.ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)
+            }
+        },
     }
 }
 
@@ -1205,10 +1262,7 @@ fn plan_indexed_part<'a>(
         .flatten()
         .ok_or_else(|| format!("the part has no implementation {}", key.implementation))?;
     let (pass, inherited) = pass_of(program).ok_or("its program is missing")?;
-    let ranges = match frame.subparts {
-        None => vec![p.indices.clone()],
-        Some(chosen) => p.subparts.as_ref().ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)?,
-    };
+    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), frame.strip, frame.subparts)?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { lighting: frame.lighting, defaults: &defaults, shader: p.shader };
     let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
@@ -1318,6 +1372,10 @@ pub struct LitSection<'a> {
     /// By part index, the subparts of the parts a record can draw a
     /// choice of; a part not here draws whole only.
     pub subparts: HashMap<u8, LitSubparts>,
+    /// By part index, each drawn strip part's indices decoded as a list
+    /// (`tags::geometry::list_triangles`): what the emitter draws for a
+    /// record without bit 9 ([`LitPart::listed`]).
+    pub listed: HashMap<u8, Vec<[u16; 3]>>,
 }
 
 /// A part's subparts as the emitter draws a chosen one
@@ -1356,6 +1414,18 @@ pub fn lit_subparts(
         triangles.push(if list { tags::geometry::list_triangles(run) } else { tags::geometry::strip_triangles(run) });
     }
     Some(LitSubparts { first: part.first_subpart, triangles })
+}
+
+/// A strip `part`'s indices (over the section's `indices`) decoded as a
+/// list, as the emitter draws them for a record without bit 9
+/// ([`LitSection::listed`]): D3D's list of `n` indices is its `n / 3`
+/// whole triangles. `None` for a list part, or one whose range does not
+/// lie in the indices.
+pub fn lit_listed(indices: &[u16], part: &tags::geometry::Part) -> Option<Vec<[u16; 3]>> {
+    if part.is_triangle_list() {
+        return None;
+    }
+    Some(tags::geometry::list_triangles(indices.get(part.index_range())?))
 }
 
 /// A material the lit build takes: resolved, and its shader values.
@@ -1409,9 +1479,9 @@ pub fn lit_model(
     // (section, declaration) -> buffer.
     let mut buffers: HashMap<(u16, Vec<Element>), usize> = HashMap::new();
     // Per section, its lit parts' triangles in one list: (material, part,
-    // range, subpart ranges), one per part (a record draws one part), each
-    // part's subparts after it.
-    type Listed = (u16, u8, Range<u32>, Option<SubpartRanges>);
+    // range, subpart ranges, the range as a list), one per part (a record
+    // draws one part), each part's subparts and list after it.
+    type Listed = (u16, u8, Range<u32>, Option<SubpartRanges>, Option<Range<u32>>);
     let mut lists: HashMap<u16, (Vec<u32>, Vec<Listed>)> = HashMap::new();
     for s in sections {
         let mut list = Vec::new();
@@ -1435,7 +1505,12 @@ pub fn lit_model(
                     })
                     .collect(),
             });
-            ranges.push((*material, *part, whole, subparts));
+            let listed = s.listed.get(part).map(|t| {
+                let start = list.len() as u32;
+                list.extend(t.iter().flatten().map(|&i| u32::from(i)));
+                start..list.len() as u32
+            });
+            ranges.push((*material, *part, whole, subparts, listed));
         }
         lists.insert(s.index, (list, ranges));
     }
@@ -1450,19 +1525,15 @@ pub fn lit_model(
                 continue;
             }
         };
-        // The material's parts: (section, part, index range, subparts).
-        let parts: Vec<(&LitSection<'_>, u8, Range<u32>, Option<SubpartRanges>)> = sections
-            .iter()
-            .flat_map(|s| {
-                lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone()))
-            })
-            .collect();
+        // The material's parts: (section, part, index range, subparts,
+        // the range as a list).
+        let parts: Vec<MaterialPart<'_, '_>> = material_parts(sections, &lists, m);
         if parts.is_empty() {
             continue;
         }
         // Compiled once per section: its parts share the programs.
         let mut secs: Vec<&LitSection<'_>> = Vec::new();
-        for (s, _, _, _) in &parts {
+        for (s, _, _, _, _) in &parts {
             if !secs.iter().any(|x| x.index == s.index) {
                 secs.push(s);
             }
@@ -1565,7 +1636,7 @@ pub fn lit_model(
             }
             by_section.push(implementations);
         }
-        for (s, part, indices, subparts) in parts {
+        for (s, part, indices, subparts, listed) in parts {
             let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
             let implementations = by_section[k];
             out.input.parts.push(LitPart {
@@ -1577,6 +1648,7 @@ pub fn lit_model(
                 indices,
                 implementations,
                 subparts,
+                listed,
             });
         }
         out.taken.push(m);
@@ -1592,17 +1664,12 @@ pub fn lit_model(
     ids.sort_unstable();
     for m in ids {
         let lit = &materials[&m];
-        let parts: Vec<(&LitSection<'_>, u8, Range<u32>, Option<SubpartRanges>)> = sections
-            .iter()
-            .flat_map(|s| {
-                lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone()))
-            })
-            .collect();
+        let parts = material_parts(sections, &lists, m);
         if parts.is_empty() {
             continue;
         }
         let mut secs: Vec<&LitSection<'_>> = Vec::new();
-        for (s, _, _, _) in &parts {
+        for (s, _, _, _, _) in &parts {
             if !secs.iter().any(|x| x.index == s.index) {
                 secs.push(s);
             }
@@ -1663,7 +1730,7 @@ pub fn lit_model(
             if !drawn {
                 continue;
             }
-            for (s, part, indices, subparts) in &parts {
+            for (s, part, indices, subparts, listed) in &parts {
                 let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
                 out.input.layers.push(LitLayerPart {
                     layer,
@@ -1674,12 +1741,33 @@ pub fn lit_model(
                     shader: lit.shader,
                     indices: indices.clone(),
                     subparts: subparts.clone(),
+                    listed: listed.clone(),
                     passes: per[k].clone(),
                 });
             }
         }
     }
     out
+}
+
+/// A material's part in [`lit_model`]'s lists: its section, its index
+/// among the section's parts, its index range, its subparts' and its range
+/// as a list.
+type MaterialPart<'s, 'a> = (&'s LitSection<'a>, u8, Range<u32>, Option<SubpartRanges>, Option<Range<u32>>);
+
+/// Material `m`'s parts in `lists` (by section: the section's index list
+/// and its parts' ranges), in `sections`' order.
+fn material_parts<'s, 'a>(
+    sections: &'s [LitSection<'a>],
+    lists: &HashMap<u16, (Vec<u32>, Vec<(u16, u8, Range<u32>, Option<SubpartRanges>, Option<Range<u32>>)>)>,
+    m: u16,
+) -> Vec<MaterialPart<'s, 'a>> {
+    sections
+        .iter()
+        .flat_map(|s| {
+            lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone(), r.4.clone()))
+        })
+        .collect()
 }
 
 /// One implementation of a world layer's pass (`pass` its tag)
@@ -1837,6 +1925,7 @@ mod tests {
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
             subparts: HashMap::new(),
+            listed: HashMap::new(),
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1893,6 +1982,7 @@ mod tests {
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
             subparts: HashMap::new(),
+            listed: HashMap::new(),
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -2066,6 +2156,7 @@ mod tests {
             indices: u32::from(part) * 3..u32::from(part) * 3 + 3,
             implementations,
             subparts: None,
+            listed: None,
         }
     }
 
@@ -2179,6 +2270,39 @@ mod tests {
         assert!(lit_subparts(&indices, &[sub(7, 4)], &part(0, 0, 1)).is_none());
     }
 
+    /// A strip part whose record lacks bit 9 draws its indices as a list
+    /// (`0x0004d5e2`): its whole triangles, a partial one dropped.
+    #[test]
+    fn a_strip_part_decodes_as_the_list_a_record_without_bit_9_draws() {
+        use tags::geometry::{PART_FLAG_TRIANGLE_LIST, Part};
+        let part = |flags, first_index, index_count| Part {
+            kind: 1, flags, material: 0, first_index, index_count, first_subpart: 0, subpart_count: 0, raw: Vec::new(),
+        };
+        let indices = [9u16, 0, 1, 2, 3, 4, 5, 3, 3];
+        assert_eq!(lit_listed(&indices, &part(0, 1, 8)), Some(vec![[0, 1, 2], [3, 4, 5]]));
+        assert_eq!(lit_listed(&indices, &part(0, 1, 7)), Some(vec![[0, 1, 2], [3, 4, 5]]), "a partial triangle draws nothing");
+        assert_eq!(lit_listed(&indices, &part(0, 3, 6)), Some(vec![[2, 3, 4]]), "a degenerate triangle dropped");
+        assert_eq!(lit_listed(&indices, &part(PART_FLAG_TRIANGLE_LIST, 0, 9)), None, "a list part");
+        assert_eq!(lit_listed(&indices, &part(0, 4, 9)), None, "outside the indices");
+    }
+
+    /// The ranges a part draws by the record's topology: a strip part
+    /// drawn as a list takes its listed range, not with chosen subparts;
+    /// a list part and a strip drawn as a strip their own.
+    #[test]
+    fn a_part_draws_the_ranges_of_the_topology_its_record_picks() {
+        let subparts = SubpartRanges { first: 2, ranges: vec![10..13, 13..19] };
+        let chosen = Subparts { first: 2, count: 2, visible: 0b10 };
+        let strip = |strip, chosen| part_ranges(&(0..9), Some(&subparts), Some(&(20..26)), strip, chosen);
+        assert_eq!(strip(Some(true), None), Ok(vec![0..9]));
+        assert_eq!(strip(Some(true), Some(chosen)), Ok(vec![13..19]));
+        assert_eq!(strip(None, None), Ok(vec![0..9]), "in its own topology");
+        assert_eq!(strip(Some(false), None), Ok(vec![20..26]), "as a list");
+        assert!(strip(Some(false), Some(chosen)).unwrap_err().contains("one list"));
+        let list = |strip| part_ranges(&(0..9), None, None, strip, None);
+        assert_eq!((list(Some(false)), list(None)), (Ok(vec![0..9]), Ok(vec![0..9])));
+    }
+
     #[test]
     fn an_auxiliary_depth_draw_takes_the_toggles_rows_and_clip_and_nothing_else() {
         let base = VertexUniforms::default();
@@ -2241,6 +2365,7 @@ mod tests {
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
             subparts: HashMap::new(),
+            listed: HashMap::new(),
         };
         let mut opaque = lit();
         opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -2322,6 +2447,7 @@ mod tests {
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
             subparts: HashMap::new(),
+            listed: HashMap::new(),
         };
         let mut opaque = crate::object_program::tests::lit();
         opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -2385,6 +2511,7 @@ mod tests {
             shader: ShaderValues::default(),
             indices: 0..3,
             subparts: None,
+            listed: None,
             passes: vec![LitLayerPass {
                 count: 1,
                 implementations: [Some((0, 0)), None, None, None, None],
@@ -2450,6 +2577,7 @@ mod tests {
             shader: ShaderValues::default(),
             indices: 0..3,
             subparts: None,
+            listed: None,
             passes: vec![
                 // One implementation: every item draws it.
                 LitLayerPass { count: 1, implementations: [Some((0, 0)), None, None, None, None], empty: 0, prt: [None; IMPLEMENTATIONS] },

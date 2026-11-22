@@ -435,6 +435,16 @@ fn lit_parts(
                 .collect(),
             // First-person items draw whole parts (`plan` with no subparts).
             subparts: HashMap::new(),
+            // A record without bit 9 draws a strip part as a list.
+            listed: geometry
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
+                .filter_map(|(index, part)| {
+                    Some((index as u8, native_render::object_program_gpu::lit_listed(&geometry.indices, part)?))
+                })
+                .collect(),
         });
     }
 
