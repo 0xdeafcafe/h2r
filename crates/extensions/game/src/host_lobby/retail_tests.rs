@@ -93,7 +93,7 @@ fn reply(f: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
             assert_eq!(f.args, [SCRATCH, 0]);
             0
         }
-        SET_VARIANT => {
+        t if t == SET_VARIANT.base => {
             assert_eq!(m.u32(SCRATCH + variant::MAX_PLAYERS as u32), Ok(2));
             let raw = m.bytes(SCRATCH, level_boot::VARIANT_SIZE as usize).unwrap();
             m.write(S + VARIANT, &raw).unwrap();
@@ -512,7 +512,7 @@ fn an_all_phantom_sim_starts_with_zero_local_users_and_four_phantoms() {
         })
     };
     let run = testing::run(&test, menu(), Regs::default(), |f, m| {
-        if f.target == SET_VARIANT {
+        if f.target == SET_VARIANT.base {
             // Four seats: the limit open writes before the variant setter.
             assert_eq!(m.u32(SCRATCH + variant::MAX_PLAYERS as u32), Ok(4));
             let raw = m.bytes(SCRATCH, level_boot::VARIANT_SIZE as usize).unwrap();
@@ -984,7 +984,7 @@ fn synchronous_open_keeps_the_fresh_squad_variant_free_and_can_request_start() {
         result
     });
     assert_eq!(run.result.unwrap(), Ret::new(1, 0));
-    assert!(!run.calls.iter().any(|call| call.target == SET_VARIANT));
+    assert!(!run.calls.iter().any(|call| call.target == SET_VARIANT.base));
     assert!(run.calls.iter().any(|call| call.target == MACHINE_LOAD_REQUEST));
     assert_eq!(
         phase(3, 4, false, Some(level_boot::MODE_MULTIPLAYER), Some(WORLD_SYNC_SERVER),

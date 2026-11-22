@@ -267,7 +267,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 73] = [
+pub const NAMES: [&str; 74] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -285,6 +285,7 @@ pub const NAMES: [&str; 73] = [
     "skulls.mp",
     "h1-options",
     "variant-more-options",
+    crate::variant_quick::page::SCREEN,
     "coop",
     "coop.friends",
     "coop.join",
@@ -397,6 +398,9 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         _ if name.starts_with("design.") || name.starts_with("layout.") => {
             crate::ui_kit::components::live(name)
         }
+        // Quick Options for a script variant: Superbounce's rows, fewer
+        // marks, a refusal (`crate::variant_quick::page::samples`).
+        crate::variant_quick::page::SCREEN => Some(Box::new(crate::variant_quick::page::Samples::new())),
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
 }
@@ -591,6 +595,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             );
             list(ListPage::new(class, move || p.spec()))
         }
+        crate::variant_quick::page::SCREEN => list(crate::variant_quick::page::sample_page()),
         "coop" | "coop.friends" | "coop.join" => {
             let lobby = lobby();
             let [host, friends, join] = coop_live::classes(&lobby);
@@ -741,11 +746,12 @@ mod tests {
     }
 
     /// Our settings dialogs: the pages that are Quick Options inside.
-    const QUICK_PAGES: [&str; 4] = [
+    const QUICK_PAGES: [&str; 5] = [
         "clankers",
         "h1-options",
         crate::firefight::options::SCREEN,
         crate::custom_games::browser_filters::SCREEN,
+        crate::variant_quick::page::SCREEN,
     ];
 
     /// Screen `name` drawn from `from` has every widget the kit's own
@@ -1071,6 +1077,7 @@ mod tests {
             (screen, issue),
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
+                | crate::variant_quick::page::SCREEN
                 | FORGE_MAP_PICKER
                 | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"

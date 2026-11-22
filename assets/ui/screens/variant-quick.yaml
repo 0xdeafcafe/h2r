@@ -1,0 +1,40 @@
+screen: variant-quick
+kind: dialog
+layout: settings
+backing: over
+opener: game-setup
+settings:
+  host: menu
+  icon: banner
+  name: "{variant}"
+  about: "The game type's main settings, for this lobby's games."
+widgets:
+  title:
+    component: title
+    text: "QUICK OPTIONS"
+rows:
+  row.0:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.0
+  row.1:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.1
+  row.2:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.2
+  row.3:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.3
+  row.4:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.4

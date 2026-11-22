@@ -316,6 +316,13 @@ fn settings_findings(name: &str, doc: &data::ScreenDoc, base: &ScreenSpec) -> Ve
     let from = From::Synthetic;
     let mut first: Option<Vec<Widget>> = None;
     for (i, r) in rows.iter().enumerate() {
+        // A slot row (`{label}`, `{help}`) is its binding's: past the
+        // binding's last row it is not drawn, and what it says is the
+        // spec's.
+        let slot = data::lone_slot(&r.text);
+        if slot && i >= base.rows.len() {
+            continue;
+        }
         let state = format!("focus-{i}");
         let s = ScreenSpec {
             focus: i,
@@ -367,9 +374,14 @@ fn settings_findings(name: &str, doc: &data::ScreenDoc, base: &ScreenSpec) -> Ve
             ids.dedup();
             flag(ids, "the top changes with the focus: it is the window's, the same at every focus".into());
         }
-        let help = r.help.as_deref().unwrap_or_default();
+        let help = match (slot, base.rows.get(i)) {
+            (true, Some(row)) => row.description.as_deref().unwrap_or_default(),
+            _ => r.help.as_deref().unwrap_or_default(),
+        };
         let Some(d) = v.widget("description") else {
-            flag(vec!["description".into()], format!("no help under the rows for row {:?}", r.text));
+            if !(slot && help.is_empty()) {
+                flag(vec!["description".into()], format!("no help under the rows for row {:?}", r.text));
+            }
             continue;
         };
         let shown = d.text().unwrap_or_default();

@@ -223,6 +223,9 @@ pub(crate) fn register_core_film(
         // The value picker A opens on a setting row, and our Game Setup
         // rows' picture and description (docs/game/ui-builder.md).
         crate::ui_kit::picker::install(features).context("installing the value picker")?;
+        // Quick Options for a script variant: the dialog its marks fill
+        // and the Game Setup row that opens it (docs/game/rules-variants.md).
+        crate::variant_quick::page::install(features).context("installing Quick Options for script variants")?;
         // The row's description on Game Setup: the page's caller help,
         // from the page's own slot.
         game_setup_help::register(

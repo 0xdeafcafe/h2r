@@ -14,8 +14,10 @@ use crate::ui_kit::view::{Art, Kind};
 
 use super::{DataError, DesignDoc, ScreenDoc, WidgetDoc, fill, slots_of};
 
-/// `t` is one slot and nothing else.
-fn lone_slot(t: &str) -> bool {
+/// `t` is one slot and nothing else: the screen's dynamic value (a
+/// settings row's `{label}` and `{help}`, a header's `{variant}`), which
+/// stays as Rust set it.
+pub fn lone_slot(t: &str) -> bool {
     slots_of(t).is_ok_and(|s| s.len() == 1 && t == format!("{{{}}}", s[0]))
 }
 
@@ -177,14 +179,15 @@ pub fn present(s: &ScreenSpec, doc: &ScreenDoc, design: &DesignDoc) -> Result<Sc
             }
         }
     }
+    let label = |i: usize| doc.row_text(i).filter(|t| !lone_slot(t));
     for (i, row) in s.rows.iter_mut().enumerate() {
-        if let Some(label) = doc.row_text(i) {
+        if let Some(label) = label(i) {
             row.label = label.into();
         }
     }
     if let Some(d) = &mut s.dialog {
         for (i, row) in d.rows.iter_mut().enumerate() {
-            if let Some(label) = doc.row_text(i) {
+            if let Some(label) = label(i) {
                 row.label = label.into();
             }
         }
@@ -204,7 +207,7 @@ fn settings_over(s: &mut ScreenSpec, doc: &ScreenDoc) {
     for t in &mut s.texts {
         match t.id.as_str() {
             "header.name" => {
-                if let Some(n) = &st.name {
+                if let Some(n) = st.name.as_ref().filter(|n| !lone_slot(n)) {
                     t.text = n.clone();
                 }
             }
@@ -217,7 +220,12 @@ fn settings_over(s: &mut ScreenSpec, doc: &ScreenDoc) {
     {
         *image = icon as i16;
     }
-    let help = |i: usize| doc.rows.get(&format!("row.{i}")).and_then(|r| r.help.clone());
+    let help = |i: usize| {
+        doc.rows
+            .get(&format!("row.{i}"))
+            .and_then(|r| r.help.clone())
+            .filter(|h| !lone_slot(h))
+    };
     for (i, row) in s.rows.iter_mut().enumerate() {
         if let Some(h) = help(i) {
             row.description = Some(h);
