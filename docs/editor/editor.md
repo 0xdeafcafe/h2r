@@ -1488,6 +1488,21 @@ UI; `ui/ui_screens.rs` draws it.
 - **Export** (`Action::UiExport(dir)`): the PNG, the JSON and
   `preview::write_sheet`'s files, refused inside a Git checkout (any
   folder with `.git` at or above it).
+- **Editing** (`Action::UiEdit`, `app/ui_screens/edit.rs`): select,
+  drag, resize, nudge and retype widgets on the picture
+  (`ui/ui_screens/edit.rs`), with a **Selected** section and a widget
+  list in the inspector. Our screens' edits change their
+  `assets/ui/screens/<name>.yaml` docs (`edit::ours`, saved into the
+  checkout and reloaded when the files change on disk); a retail
+  screen's are tag writes on the open `mainmenu` map (`edit::retail`,
+  `App::tags`), saved with the map. A retail pick is drawn with its
+  edited places (`Disc::render_retail_with`) and has a view
+  (`Disc::retail_view`) for the overlays and edits. The design, the
+  refusals and the `ui.*` edit methods are in docs/game/ui-builder.md
+  "Editing in the editor".
+- **The transport** (`ui/ui_screens/transport.rs`): the kit's Open and
+  Close transitions played, looped or scrubbed, 0.25 to 2 times, with
+  an onion skin; `ui.animate` writes the same transition as a filmstrip.
 
 **Why the studio depends on `boot`.** The pure parts (view, spec,
 preview, checks) could move to a crate of their own, but the pages can't:

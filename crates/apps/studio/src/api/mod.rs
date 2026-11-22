@@ -45,6 +45,7 @@ mod tag_io;
 mod tags;
 mod ui_kit;
 mod ui_browse;
+mod ui_edit;
 mod ui_screens;
 mod variants;
 mod view;

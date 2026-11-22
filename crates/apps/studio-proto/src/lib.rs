@@ -153,6 +153,16 @@ pub mod method {
     pub const UI_COMPONENTS: &str = "ui.components";
     pub const UI_SELECT_FOLDER: &str = "ui.select_folder";
     pub const UI_SHEET: &str = "ui.sheet";
+    pub const UI_SELECT: &str = "ui.select";
+    pub const UI_MOVE: &str = "ui.move";
+    pub const UI_SET_RECT: &str = "ui.set_rect";
+    pub const UI_SET_TEXT: &str = "ui.set_text";
+    pub const UI_REVERT: &str = "ui.revert";
+    pub const UI_UNDO: &str = "ui.undo";
+    pub const UI_REDO: &str = "ui.redo";
+    pub const UI_EDITS: &str = "ui.edits";
+    pub const UI_SAVE: &str = "ui.save";
+    pub const UI_ANIMATE: &str = "ui.animate";
 
     pub const PAIR_LIST: &str = "pair.list";
     pub const PAIR_STATUS: &str = "pair.status";

@@ -12,7 +12,7 @@ use boot::ui_kit::animation::{AnimatedView, Phase};
 use boot::ui_kit::input::Input;
 use boot::ui_kit::layout::{self, Rules};
 use boot::ui_kit::page::Live;
-use boot::ui_kit::preview::{self, Canvas, Disc, Retail};
+use boot::ui_kit::preview::{self, Canvas, Disc};
 use boot::ui_kit::screens;
 use boot::ui_kit::spec::ScreenSpec;
 use boot::ui_kit::view::View;
@@ -22,6 +22,7 @@ pub mod gallery;
 
 pub use browse::{Browse, Root};
 pub use gallery::Gallery;
+pub mod edit;
 
 /// What the tool shows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -46,6 +47,9 @@ pub struct Shot {
     pub view: Option<View>,
     /// The checks' findings, the kit's then the layout's.
     pub findings: Vec<Finding>,
+    /// A retail screen's widgets (with the map's moves), for the editing;
+    /// none for ours (`view` has them) or without the disc.
+    pub retail_view: Option<View>,
     /// Checks the source could not run (the art checks without a disc).
     pub skipped: Vec<String>,
     /// The rules the view was held to (safe and reserved areas).
@@ -77,6 +81,9 @@ pub struct UiScreens {
     /// The grid of previews shown in place of the picture, and its
     /// thumbnails.
     pub gallery: Gallery,
+    /// The selection and the edits (docs/game/ui-builder.md "Editing in
+    /// the editor").
+    pub edit: edit::UiEdit,
 }
 
 impl Default for UiScreens {
@@ -96,6 +103,7 @@ impl Default for UiScreens {
             show_safe: true,
             show_reserved: true,
             gallery: Gallery::default(),
+            edit: edit::UiEdit::default(),
         }
     }
 }
@@ -218,6 +226,9 @@ impl UiScreens {
 
     /// The picture of the pick, drawn when it changed.
     pub fn shot(&mut self) -> Option<&Shot> {
+        if self.edit.ours.poll() {
+            self.shot = None;
+        }
         if self.shot.is_none() {
             let pick = self.pick.clone()?;
             self.rev += 1;
@@ -236,7 +247,21 @@ impl UiScreens {
         self.shot.as_ref()
     }
 
+    /// Our screen, drawn with the edited docs ([`edit::ours::with_docs`]):
+    /// the preview and the checks see the edits.
     fn draw_native(&mut self, state: &str) -> Result<Shot> {
+        if let Some(Pick::Native { screen, .. }) = &self.pick {
+            let screen = screen.clone();
+            self.edit
+                .ours
+                .doc(&screen)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        let docs = self.shown_docs();
+        edit::ours::with_docs(&docs, || self.draw_native_with(state))
+    }
+
+    fn draw_native_with(&mut self, state: &str) -> Result<Shot> {
         let spec = self.spec().context("no page")?;
         let rev = self.rev;
         let phase = self.animation;
@@ -276,6 +301,7 @@ impl UiScreens {
         Ok(Shot {
             canvas: preview::render_view(&view, src),
             view: Some(view),
+            retail_view: None,
             findings,
             skipped: report.skipped.iter().map(|s| s.to_string()).collect(),
             rules,
@@ -284,19 +310,19 @@ impl UiScreens {
         })
     }
 
+    /// A retail screen as the disc has it, with the widgets the map's tag
+    /// document moved ([`edit::retail`]) where they are now.
     fn draw_retail(&mut self, tag: &str) -> Result<Shot> {
         let rev = self.rev;
+        let places = self.edit.places.get(tag).cloned().unwrap_or_default();
         let d = self.disc().context("retail screens need the disc")?;
-        let canvas = d.render_retail(&Retail {
-            tag,
-            pane: 0,
-            text: &|_| None,
-            cells: &[],
-            footer: None,
-        })?;
+        let r = edit::retail_pick(tag);
+        let canvas = d.render_retail_with(&r, &places)?;
+        let retail_view = Some(d.retail_view(&r, &places)?);
         Ok(Shot {
             canvas,
             view: None,
+            retail_view,
             findings: Vec::new(),
             skipped: Vec::new(),
             rules: Rules::default(),

@@ -667,7 +667,7 @@ impl Studio {
             .build(|| ui_screens::tree(ui, app, st, fonts, actions));
         ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
-            .build(|| ui_screens::preview(ui, app, st, gpu));
+            .build(|| ui_screens::preview(ui, app, st, gpu, actions));
         ui.window(&keys.inspector)
             .build(|| ui_screens::inspector(ui, app, st, fonts, self.dialogs, actions));
     }

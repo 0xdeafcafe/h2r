@@ -1092,6 +1092,156 @@ a folder outside any Git checkout. The studio takes `boot` as a library
 for it: the pages step the screens' real classes, which can't leave
 `boot`.
 
+## Editing in the editor
+
+Status: Partly built. The code uses `ui_kit::data` (`ScreenDoc`, `load`,
+`parse`, `to_yaml`, `with_screens`), which arrives with the YAML screens,
+and it has not been compiled or run in the editor yet.
+Code: `crates/apps/studio/src/app/ui_screens/edit.rs` (`edit/ours.rs`,
+`edit/retail.rs`), `crates/apps/studio/src/ui/ui_screens/edit.rs`,
+`crates/apps/studio/src/ui/ui_screens/transport.rs`,
+`crates/apps/studio/src/api/ui_edit.rs`,
+`crates/extensions/game/src/ui_kit/preview.rs` (`Disc::retail_view`,
+`RetailPlaces`, `retail_field`, `filmstrip`),
+`crates/extensions/game/src/ui_kit/animation.rs` (`Transition`).
+Tests: `app::ui_screens::edit::tests`, the `ui_edit` tests in
+`crates/apps/studio/src/api/tests.rs`, `ui_kit::preview::edit_tests`.
+
+The UI Screens tool edits the picture it shows: click a widget to select
+it, drag it, resize it, or double-click a text to retype it. The agent
+API does the same with `ui.move`, `ui.set_rect` and `ui.set_text`. Every edit
+changes the data the game reads. It is never a change to the preview
+alone. Where that data lives depends on the screen.
+
+```text
+            canvas drag / handle / inline text / inspector / ui.* call
+                                   │
+                          edit::EditAction
+                                   │
+             ┌─────────────────────┴──────────────────────┐
+             ▼                                            ▼
+  ours: ScreenDoc fields                    retail: tag fields of the open
+  (assets/ui/screens/<name>.yaml)           mainmenu map (App::tags writes)
+  text, at, size by widget id               rect, top_left, anchor by widget id
+             │                                            │
+  with_screens(edited docs) ─▶ View          RetailPlaces ─▶ Disc::retail_view,
+             │                               Disc::render_retail_with
+             ▼                                            ▼
+        layout and content checks run on the edited view; ui.render shows it
+             │                                            │
+  Save: to_yaml into <checkout>/assets/      Save: the map's own save
+  ui/screens/<name>.yaml (live-reloaded)     (patches with the user's map)
+```
+
+**One edit model, two sinks.** An edit is `Rect(widget, [top, left, bottom,
+right])` or `Text(widget, string)` in UI units (`edit::Change`). A move
+is a rect: the shown rect plus the step. The tool picks the sink from the
+pick:
+
+- **Our screens** (`edit::ours`). Presentation lives in
+  `assets/ui/screens/<name>.yaml`, one `ScreenDoc` per screen
+  (`ui_kit::data`). The sink holds the edited docs, the docs as last loaded
+  or saved, and an undo stack of whole-doc snapshots. A rect sets the
+  widget's `at` (its top-left, `[left, top]`) and `size` (`[width,
+  height]`). A text sets `text`, or `rows.<row id>.text` for a row's
+  label (`row.N.label`). The view is made with the edited docs standing
+  in for the baked ones (`data::with_screens`), so the preview, the checks,
+  `ui.widgets`, `ui.render` and `ui.animate` show the edit at once.
+- **Retail screens** (`edit::retail`). A retail screen is a `wgit` tag of
+  the user's `mainmenu.map`. Its edits are tag field writes through the
+  map's tag document (`App::tags`, `tag_api::set_field`, `TagAction::Write`).
+  That is the path the Tags tool uses, with its undo and its save, which
+  patches the user's map. Nothing disc-derived goes in the repository. The
+  map open in the editor must be `mainmenu`. Otherwise the sink refuses
+  and says so. The picture is drawn from the disc, then the edited fields
+  are read back as `RetailPlaces` (widget id to rect) and applied before
+  drawing (`Disc::render_retail_with`).
+
+**What can be edited, and the refusals.** A refusal is an error that
+names the owner. It is never a silent no-op.
+
+| Widget | Ours | Retail |
+|---|---|---|
+| a widget with an entry in its YAML (`title`, `body`, `legend`, a panel text, art) | rect (`at`, `size`), text | — |
+| a text block `text.N`, a button `button.N` | — | rect (`panes[0].text_blocks[N].rect`, `buttons[N].rect`) |
+| a bitmap `bitmap.N`, a list `list.N`, a table `table.N` | — | move only (`top_left`, `anchor`): the image or skin sets the size |
+| a row label `row.N.label` | text (`rows.row.N.text`) | — |
+| any row widget, moved | refused: rows sit where the list's `layout` puts them | — |
+| a widget with no YAML entry (`row.N.value`, `description`, `status`, `cell.N.*`) | refused: Rust fills it, and the refusal names the kind of value | — |
+| a text with `{slots}` | the template is edited, and its slots must stay as they are (the refusal names a slot that went or came) | — |
+| a legend made of `prompts` | text refused: edit its prompts | — |
+| any retail text | — | refused: retail strings live in the map's localized string table (`unic`), which the editor does not write |
+| `title` of a retail screen | — | refused: the header rectangle is the shared `wigl` header layout's |
+
+**Undo.** Edits are undo steps of the editor's Undo and Redo while the UI
+Screens tool is shown (`App::undo_redo`). Ours have their own stack. A
+retail edit is a step of the map's tag document. A drag or a run of
+nudges merges into one step, and so does typing in an inspector field
+(`merge`).
+
+**Saving.** Ours write `data::to_yaml(doc)` to
+`<checkout>/assets/ui/screens/<name>.yaml` for every edited screen. The
+checkout is the one the editor was started from: the first folder at or
+above the working directory, then above the executable, that has
+`assets/ui/screens`. With none, Save is refused. The game bakes those
+files when it is built, so a saved edit is in the next build. The editor
+polls that folder (once a second) and reloads a file that changed on disk
+when its screen has no unsaved edits. A screen with unsaved edits keeps
+them, and the tool says the file changed. Retail edits save with the map
+(`doc.save`, File > Save).
+
+**Checks on the edited view.** `UiScreens::draw_native` makes the view
+inside `with_screens`, so `layout::check` and `content::check` run on the
+edited rects and texts. A drag past the title-safe area shows its finding
+on the next frame.
+
+**Canvas interaction** (`ui/ui_screens/edit.rs`). Click selects the
+topmost visible widget. A selection draws an outline and, on a resizable
+widget, eight handles. A drag moves it, and a handle resizes it. Moves snap
+to the 640 by 480 unit grid and to other widgets' edges and centres within
+4 units. Hold Shift to place freely. Arrow keys nudge by 1 unit, with
+Shift by 10. A double-click on a text opens an input over its rect: Enter
+commits and Esc cancels. The inspector's **Selected** section shows the
+id, the rect as numbers you can type, the text, the font and the
+justification. Tint, alpha and layer are shown read-only. It also has
+**Copy JSON**, **Revert widget** and **Revert screen**. The widget list
+lights a widget in the picture while you hover its row.
+
+**Animation preview** (`ui/ui_screens/transport.rs`, `animation::Transition`).
+The kit defines two transitions, **Open** (`Phase::In`) and **Close**
+(`Phase::Out`). Focus moves and page changes play the skin's native
+tracks in game, and the builder does not sample them. The transport plays,
+pauses and loops one transition, and you can scrub its timeline by tick.
+The speed runs from 0.25 to 2 times, at the builder's representative 30
+ticks a second (`animation::TICKS_PER_SECOND`). An optional onion skin
+outlines the widgets two ticks before and after. `ui.animate {phase,
+frames?, out?}` writes a filmstrip PNG, the frames side by side at half
+size, each labelled with its time (`preview::filmstrip`), and returns
+`{path, frames: [{t, tick, x, w}]}`.
+
+**Agent API** (`api/ui_edit.rs`, docs/editor/agent-api.md). Each method
+works on the screen `ui.pick` shows, of either kind, and runs the same
+`EditAction` as the window, so its edits are the window's undo steps and
+its save. Rects are `[top, left, bottom, right]` in UI units.
+
+| Method | Params | Result |
+|---|---|---|
+| `ui.select` | `{id?}` (none or null: nothing) | `{selected, widget}` |
+| `ui.move` | `{id, dx, dy}` | `{widget, findings, sink, dirty}` |
+| `ui.set_rect` | `{id, rect}` | `{widget, findings, sink, dirty}` |
+| `ui.set_text` | `{id, text}` | `{widget, findings, sink, dirty}` |
+| `ui.revert` | `{id?}` (none: the whole screen) | `{line, edits}` |
+| `ui.undo`, `ui.redo` | `{}` | `{done, can_undo, can_redo, edits}` |
+| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_dirty, checkout, changed_on_disk}` |
+| `ui.save` | `{}` | ours `{sink, written: [path]}`; retail `{sink, save}` (`doc.save`'s answer) |
+| `ui.animate` | `{phase: open\|close, frames?: 1..32 (5), out?}` | `{path, width, height, frames: [{t, tick, x, w}]}` |
+
+A refusal answers `REFUSED` with the owner named. A widget that is not
+shown, a rect whose top is below its bottom or right left of its left,
+and a phase that is neither `open` nor `close` answer `INVALID_PARAMS`.
+`ui.animate` and the default output path follow `ui.render`: under
+`studio/ui/` in the cache directory, never inside a Git checkout.
+
 ## The fidelity loop
 
 Status: Design. `h2 ui compare` and the agent API's `ui.screenshot` are not built.

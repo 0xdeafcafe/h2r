@@ -268,6 +268,26 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             m::TAG_EXPORT,
             json!({"tag": "itmc", "out": t.path("out/kit.h2tag").display().to_string()}),
         ),
+        m::UI_SELECT
+        | m::UI_MOVE
+        | m::UI_SET_RECT
+        | m::UI_SET_TEXT
+        | m::UI_REVERT
+        | m::UI_UNDO
+        | m::UI_REDO
+        | m::UI_EDITS
+        | m::UI_SAVE
+        | m::UI_ANIMATE => {
+            // Our example screen, its files saved into a temporary checkout.
+            ui_edit_checkout(app, t);
+            call(api, app, m::UI_PICK, json!({"screen": UI_EDIT_SCREEN}));
+            if matches!(name, m::UI_UNDO | m::UI_REDO | m::UI_REVERT | m::UI_SAVE) {
+                call(api, app, m::UI_SET_TEXT, json!({"id": "title", "text": "Edited"}));
+            }
+            if name == m::UI_REDO {
+                call(api, app, m::UI_UNDO, json!({}));
+            }
+        }
         // The window's pairing, as its first frame publishes it.
         n if n.starts_with("pair.") => {
             crate::play::Play::new().update(app);
@@ -3863,4 +3883,241 @@ fn ui_sheet_renders_a_folders_previews_into_one_png() {
         code::REFUSED
     );
     assert!(!png.exists());
+}
+
+/// The screen the UI edit methods' examples and tests edit: our example
+/// screen, which has a static `title` and rows whose values Rust fills.
+const UI_EDIT_SCREEN: &str = "kit.example";
+
+/// Points our screens' files at a temporary checkout, never the repo's.
+fn ui_edit_checkout(app: &mut App, t: &Temp) -> PathBuf {
+    let checkout = t.path("checkout");
+    std::fs::create_dir_all(checkout.join(crate::app::ui_screens::edit::ours::SCREENS_DIR))
+        .unwrap();
+    app.ui_screens.edit.ours.set_checkout(Some(checkout.clone()));
+    checkout
+}
+
+/// An app showing our example screen, its checkout under `t`.
+fn ui_edit_app(t: &Temp) -> (Api, App, PathBuf) {
+    let mut app = app(t);
+    let mut api = Api::new();
+    let checkout = ui_edit_checkout(&mut app, t);
+    call(&mut api, &mut app, m::UI_PICK, json!({"screen": UI_EDIT_SCREEN}));
+    (api, app, checkout)
+}
+
+fn ui_title(api: &mut Api, app: &mut App) -> Value {
+    let widgets = call(api, app, m::UI_WIDGETS, json!({}));
+    widgets["widgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["id"] == "title")
+        .cloned()
+        .expect("the example has a title")
+}
+
+#[test]
+fn ui_edits_answer_with_the_widget_and_the_render_shows_them() {
+    let t = Temp::new("uiedit-api");
+    let (mut api, mut app, _) = ui_edit_app(&t);
+    let before = ui_title(&mut api, &mut app);
+    let [top, left, bottom, right]: [i64; 4] = serde_json::from_value(before["rect"].clone()).unwrap();
+
+    let sel = call(&mut api, &mut app, m::UI_SELECT, json!({"id": "title"}));
+    assert_eq!(sel["selected"], "title");
+    assert_eq!(sel["widget"]["id"], "title");
+
+    let text = call(&mut api, &mut app, m::UI_SET_TEXT, json!({"id": "title", "text": "From the API"}));
+    assert_eq!(text["widget"]["text"], "From the API");
+    assert_eq!(text["sink"], "ours");
+    assert_eq!(text["dirty"], true);
+    assert!(text["findings"].is_array());
+    // ui.widgets (what ui.render draws) shows the edit.
+    assert_eq!(ui_title(&mut api, &mut app)["text"], "From the API");
+
+    let moved = call(&mut api, &mut app, m::UI_MOVE, json!({"id": "title", "dx": 4, "dy": -2}));
+    assert_eq!(
+        moved["widget"]["rect"],
+        json!([top - 2, left + 4, bottom - 2, right + 4])
+    );
+    let png = t.path("out/edited.png");
+    std::fs::create_dir_all(t.path("out")).unwrap();
+    call(&mut api, &mut app, m::UI_RENDER, json!({"out": png.display().to_string()}));
+    assert!(png.exists());
+
+    // Past the title-safe area: the checks name the title.
+    let off = call(
+        &mut api,
+        &mut app,
+        m::UI_SET_RECT,
+        json!({"id": "title", "rect": [236, -316, 212, 24]}),
+    );
+    assert_eq!(off["widget"]["rect"], json!([236, -316, 212, 24]));
+    assert!(
+        off["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["ids"].as_array().unwrap().iter().any(|i| i == "title")),
+        "{off}"
+    );
+
+    let edits = call(&mut api, &mut app, m::UI_EDITS, json!({}));
+    assert_eq!(edits["sink"], "ours");
+    assert_eq!(edits["ours_dirty"], true);
+    assert_eq!(edits["ours"][0]["screen"], UI_EDIT_SCREEN);
+    assert!(edits["ours"][0]["yaml"].as_str().unwrap().contains("From the API"));
+}
+
+#[test]
+fn ui_undo_redo_and_revert_through_the_api() {
+    let t = Temp::new("uiedit-undo");
+    let (mut api, mut app, _) = ui_edit_app(&t);
+    let before = ui_title(&mut api, &mut app)["text"].clone();
+    call(&mut api, &mut app, m::UI_SET_TEXT, json!({"id": "title", "text": "Once"}));
+
+    let undo = call(&mut api, &mut app, m::UI_UNDO, json!({}));
+    assert_eq!(undo["done"], true);
+    assert_eq!(undo["can_redo"], true);
+    assert_eq!(ui_title(&mut api, &mut app)["text"], before);
+    let again = call(&mut api, &mut app, m::UI_UNDO, json!({}));
+    assert_eq!(again["done"], false, "nothing left");
+
+    let redo = call(&mut api, &mut app, m::UI_REDO, json!({}));
+    assert_eq!(redo["done"], true);
+    assert_eq!(ui_title(&mut api, &mut app)["text"], "Once");
+
+    let revert = call(&mut api, &mut app, m::UI_REVERT, json!({"id": "title"}));
+    assert_eq!(revert["edits"]["ours_dirty"], false);
+    assert_eq!(ui_title(&mut api, &mut app)["text"], before);
+    // The revert is an undo step of its own.
+    call(&mut api, &mut app, m::UI_UNDO, json!({}));
+    assert_eq!(ui_title(&mut api, &mut app)["text"], "Once");
+    call(&mut api, &mut app, m::UI_REVERT, json!({}));
+    assert_eq!(ui_title(&mut api, &mut app)["text"], before);
+}
+
+#[test]
+fn ui_edits_refuse_rust_owned_widgets_and_bad_rects() {
+    let t = Temp::new("uiedit-refuse");
+    let (mut api, mut app, _) = ui_edit_app(&t);
+    let widgets = call(&mut api, &mut app, m::UI_WIDGETS, json!({}));
+    let value = widgets["widgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["id"].as_str().unwrap().to_owned())
+        .find(|id| id.ends_with(".value"))
+        .expect("the example has a value row");
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_SET_TEXT, json!({"id": value, "text": "x"}))),
+        code::REFUSED
+    );
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::UI_SET_RECT,
+            json!({"id": "title", "rect": [0, 10, 20, 0]})
+        )),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_SET_RECT, json!({"id": "title", "rect": [1, 2, 3]}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_MOVE, json!({"id": "title", "dx": 40000, "dy": 0}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_SELECT, json!({"id": "nope"}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_ANIMATE, json!({"phase": "sideways"}))),
+        code::INVALID_PARAMS
+    );
+    let edits = call(&mut api, &mut app, m::UI_EDITS, json!({}));
+    assert_eq!(edits["ours_dirty"], false);
+}
+
+#[test]
+fn ui_save_writes_the_yaml_into_the_checkout() {
+    let t = Temp::new("uiedit-save");
+    let (mut api, mut app, checkout) = ui_edit_app(&t);
+    call(&mut api, &mut app, m::UI_SET_TEXT, json!({"id": "title", "text": "Saved by the API"}));
+    let saved = call(&mut api, &mut app, m::UI_SAVE, json!({}));
+    assert_eq!(saved["sink"], "ours");
+    let file = crate::app::ui_screens::edit::ours::file_of(&checkout, UI_EDIT_SCREEN);
+    assert_eq!(saved["written"], json!([file.display().to_string()]));
+    assert!(std::fs::read_to_string(&file).unwrap().contains("Saved by the API"));
+    assert_eq!(call(&mut api, &mut app, m::UI_EDITS, json!({}))["ours_dirty"], false);
+
+    // Outside a checkout the save is refused and the edit kept.
+    app.ui_screens.edit.ours.set_checkout(None);
+    call(&mut api, &mut app, m::UI_SET_TEXT, json!({"id": "title", "text": "Kept"}));
+    assert_eq!(code_of(api.call(&mut app, m::UI_SAVE, json!({}))), code::REFUSED);
+    assert_eq!(call(&mut api, &mut app, m::UI_EDITS, json!({}))["ours_dirty"], true);
+}
+
+#[test]
+fn ui_animate_writes_a_filmstrip_outside_git() {
+    let t = Temp::new("uiedit-film");
+    let (mut api, mut app, _) = ui_edit_app(&t);
+    let out = t.path("out/open.png");
+    let film = call(
+        &mut api,
+        &mut app,
+        m::UI_ANIMATE,
+        json!({"phase": "open", "frames": 3, "out": out.display().to_string()}),
+    );
+    assert_eq!(film["path"], out.display().to_string());
+    assert!(out.exists());
+    let frames = film["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 3);
+    assert_eq!(frames[0]["tick"], 0);
+    assert_eq!(frames[0]["t"], 0.0);
+    assert_eq!(frames[2]["tick"], boot::ui_kit::animation::Transition::Open.ticks());
+    assert_eq!(film["width"], 3 * (320 + 8) + 8);
+    let close = call(&mut api, &mut app, m::UI_ANIMATE, json!({"phase": "close", "frames": 2, "out": t.path("out/close.png").display().to_string()}));
+    assert_eq!(close["frames"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_ANIMATE, json!({"phase": "open", "frames": 0}))),
+        code::INVALID_PARAMS
+    );
+    let png = Path::new(env!("CARGO_MANIFEST_DIR")).join("never-film.png");
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_ANIMATE, json!({"phase": "open", "out": png.display().to_string()}))),
+        code::REFUSED
+    );
+    assert!(!png.exists());
+}
+
+#[test]
+fn ui_edits_need_a_screen_and_retail_needs_the_disc() {
+    let t = Temp::new("uiedit-retail");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_MOVE, json!({"id": "title", "dx": 1, "dy": 0}))),
+        code::NO_DOCUMENT
+    );
+    // ui.edits answers with nothing shown.
+    assert_eq!(call(&mut api, &mut app, m::UI_EDITS, json!({}))["sink"], Value::Null);
+    // A retail screen without the disc draws nothing, so has no widget to
+    // edit; nor a filmstrip.
+    app.dispatch(Action::SetTool(crate::app::ToolKind::UiScreens));
+    app.dispatch(Action::UiPick(crate::app::Pick::Retail(r"ui\screens\x".into())));
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_MOVE, json!({"id": "text.0", "dx": 1, "dy": 0}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_ANIMATE, json!({"phase": "open", "out": t.path("out/r.png").display().to_string()}))),
+        code::INVALID_PARAMS
+    );
+    let undo = call(&mut api, &mut app, m::UI_UNDO, json!({}));
+    assert_eq!(undo["done"], false);
 }

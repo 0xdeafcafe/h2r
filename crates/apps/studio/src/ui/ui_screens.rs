@@ -7,13 +7,15 @@
 use dear_imgui_rs::{TextureId, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 
-use boot::ui_kit::animation::{Phase, SAMPLES};
 use boot::ui_kit::input::Input;
 
 use crate::app::ui_screens::browse::{self, Browse, Folder, Item, Root};
 use crate::app::{Action, App, Pick, UiScreens};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
+
+mod edit;
+mod transport;
 
 /// The pad as the inspector lays it out: rows of (input, label).
 const PAD: [&[(Input, &str)]; 3] = [
@@ -54,6 +56,10 @@ pub struct UiScreensUi {
     filter: String,
     /// The grid of previews.
     gallery: gallery::GalleryUi,
+    /// Selecting, dragging and typing on the picture.
+    edit: edit::EditUi,
+    /// The animation transport.
+    transport: transport::Transport,
 }
 
 /// What the outliner's folders and rows need while they draw.
@@ -228,7 +234,13 @@ fn retail_row(ui: &Ui, item: &Item, cx: &mut Cx<'_>) {
 
 /// The picture: zoom, the overlays' switches, then the screen at 640 by
 /// 480 times the zoom, with its rectangles, findings and areas over it.
-pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) {
+pub fn preview(
+    ui: &Ui,
+    app: &mut App,
+    st: &mut UiScreensUi,
+    gpu: &mut Gpu<'_>,
+    actions: &mut Vec<Action>,
+) {
     // A folder or root shows its grid of previews; a picked screen says
     // where it is and goes back to its folder's grid.
     if let Some(at) = app.ui_screens.gallery.at.clone() {
@@ -238,6 +250,23 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     if gallery::pick_crumbs(ui, app) {
         return;
     }
+    let picture = preview_picture(ui, app, st, gpu);
+    // The editing draws on its own draw list: the picture's is let go.
+    if let Some((origin, zoom, hovered)) = picture {
+        let at = |px: [f32; 2]| [origin[0] + px[0] * zoom, origin[1] + px[1] * zoom];
+        transport::onion(ui, &mut app.ui_screens, &st.transport, &at);
+        edit::canvas(ui, app, &mut st.edit, origin, zoom, hovered, actions);
+    }
+}
+
+/// The picture and its overlays: where it is (top left, zoom) and whether
+/// the mouse is over it, when drawn.
+fn preview_picture(
+    ui: &Ui,
+    app: &mut App,
+    st: &mut UiScreensUi,
+    gpu: &mut Gpu<'_>,
+) -> Option<([f32; 2], f32, bool)> {
     let s = &mut app.ui_screens;
     ui.set_next_item_width(140.0);
     ui.slider_f32("Zoom", &mut s.zoom, 0.5, 3.0);
@@ -248,7 +277,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     ui.same_line();
     ui.checkbox("Reserved", &mut s.show_reserved);
     if matches!(s.pick.as_ref(), Some(Pick::Native { .. })) {
-        transition_picker(ui, s);
+        transport::bar(ui, s, &mut st.transport);
     }
     let (zoom, rects, safe, reserved) = (s.zoom, s.show_rects, s.show_safe, s.show_reserved);
     let hot: Vec<String> = st
@@ -261,7 +290,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         .unwrap_or_default();
     let Some(shot) = s.shot() else {
         ui.text_disabled("Pick a screen and a state on the left.");
-        return;
+        return None;
     };
     ui.same_line();
     ui.text_disabled(if shot.from_disc {
@@ -271,7 +300,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     });
     let Some(texture) = upload(st, gpu, shot) else {
         ui.text_disabled("The preview could not create its texture.");
-        return;
+        return None;
     };
     let size = [640.0 * zoom, 480.0 * zoom];
     let origin = ui.cursor_screen_pos();
@@ -316,7 +345,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         .iter()
         .flat_map(|f| f.ids.iter().map(String::as_str))
         .collect();
-    if let Some(view) = &shot.view {
+    if let Some(view) = shot.view.as_ref().or(shot.retail_view.as_ref()) {
         for w in view.widgets.iter().filter(|w| w.alpha != 0) {
             let r = w.pixels();
             if hot.contains(&w.id) {
@@ -340,28 +369,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
             st.hovered = Some(id);
         }
     }
-}
-
-fn transition_picker(ui: &Ui, s: &mut UiScreens) {
-    let label = |phase| match phase {
-        Phase::In(0) => "Before opening",
-        Phase::In(_) => "Opening",
-        Phase::Rest => "At rest",
-        Phase::Out(4) => "Closing",
-        Phase::Out(_) => "Closed",
-    };
-    ui.set_next_item_width(140.0);
-    if let Some(_combo) = ui.begin_combo("Transition", label(s.animation())) {
-        for phase in SAMPLES {
-            if ui
-                .selectable_config(label(phase))
-                .selected(s.animation() == phase)
-                .build()
-            {
-                s.set_animation(phase);
-            }
-        }
-    }
+    Some((origin, zoom, hovered))
 }
 
 /// The picture uploaded when it changed.
@@ -474,6 +482,15 @@ pub fn inspector(
         ui.spacing();
         ui.separator();
     }
+    if s.pick.is_some() {
+        edit::selected(ui, app, &mut st.edit, fonts, actions);
+        if ui.collapsing_header("Widgets##ui-widgets", dear_imgui_rs::TreeNodeFlags::empty()) {
+            edit::widget_list(ui, app, &mut st.edit, actions);
+        }
+        ui.spacing();
+        ui.separator();
+    }
+    let s = &mut app.ui_screens;
     heading("Checks");
     st.hot = None;
     match s.shot() {
