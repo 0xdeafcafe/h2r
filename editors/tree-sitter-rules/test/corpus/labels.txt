@@ -33,7 +33,7 @@ label territory: zones 1..most
     (type
       (identifier))
     (requirement
-      (range
+      (count_range
         (integer)
         (integer)))
     (string
@@ -48,7 +48,7 @@ label territory: zones 1..most
     (type
       (identifier))
     (requirement
-      (range
+      (count_range
         (integer)
         (identifier)))))
 

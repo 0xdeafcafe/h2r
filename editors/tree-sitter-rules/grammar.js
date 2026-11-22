@@ -207,14 +207,21 @@ module.exports = grammar({
     // `at least n`, `at most n`, `exactly n`, `numbered`, `numbered a..b`,
     // `per team`, `n..m`. Right associative so `numbered 0..1` takes its
     // range, as parse.rs does.
+    // A count is a number or a constant: an expression could run on into
+    // the next declaration (`palette ...`).
+    _count: $ => choice($.integer, $.identifier),
+
     requirement: $ => prec.right(choice(
-      seq('at', 'least', field('count', $._expression)),
-      seq('at', 'most', field('count', $._expression)),
-      seq('exactly', field('count', $._expression)),
-      seq('numbered', optional(field('range', $.range))),
+      seq('at', 'least', field('count', $._count)),
+      seq('at', 'most', field('count', $._count)),
+      seq('exactly', field('count', $._count)),
+      seq('numbered', optional(field('range', $.count_range))),
       seq('per', 'team'),
-      field('range', $.range),
+      field('range', $.count_range),
     )),
+
+    // `0..2`, `1..max_hills`: a label's numbers or counts.
+    count_range: $ => seq(field('start', $._count), '..', field('end', $._count)),
 
     // `fn name(a: type) { ... }` or `fn name(a: type) -> type = expr`.
     function_declaration: $ => seq(
