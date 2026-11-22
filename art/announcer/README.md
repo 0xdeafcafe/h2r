@@ -2,7 +2,8 @@
 
 One WAV per medal of our own (docs/game/superbounce.md, "Medals";
 docs/game/teabag.md), named by medal id: `superbounce`, `double-bounce`,
-`triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular` and `incel`.
+`triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`,
+`monster-bounce` and `incel`.
 `super-ounce` is an alternate Superbounce take. Halo 2's own announcer lines
 are not here; the game plays those from the disc.
 
