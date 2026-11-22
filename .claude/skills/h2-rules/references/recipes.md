@@ -40,6 +40,33 @@ carrier's stock record is free-for-all, so the betrayal branch needs
 
 Expected: player 0 ends on 0 (+1, then -1).
 
+## A message with values
+
+`message(to, text)` needs `requires hud.message`, and a host cannot make
+it yet (untraced); scenarios show it. Holes name values in scope: a
+player, a team, an int, a time or an enum. A `killer` may be `none`, so
+bind it first.
+
+```text
+option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
+
+on kill(victim, killer) {
+    if let k = killer {
+        if k != victim {
+            score(k, kill_points)
+            let side = k.team
+            message(victim, "{k} got you")
+            message(side, "{k} scored {kill_points}")
+        }
+    }
+}
+```
+
+Scenario: two players and a kill. `h2 rules run` lists two `message`
+calls, each with the template (`{player} got you`) and then the values
+(`player 1`). `{{` writes a brace; `{k.team}` is an error, as a hole
+holds one name.
+
 ## Score for time held (a per-second counter)
 
 A counter in a player variable, paid when it reaches a second. Oddball and

@@ -1517,7 +1517,32 @@ impl<'s> Cx<'s> {
                 }
             }
         };
-        regs.push(self.expr(f, text)?.0);
+        let c: &'s Checked<'s> = self.c;
+        let Some(template) = c.template(text) else {
+            regs.push(self.expr(f, text)?.0);
+            f.emit(Op::Call {
+                entry,
+                args: regs,
+                dst: None,
+            });
+            return Ok(None);
+        };
+        // The holes' values first, then the stored template, the `fmt_*`
+        // run and the message, with nothing between them (the verifier's
+        // message rule).
+        let mut values = Vec::with_capacity(template.holes.len());
+        for (name, hole) in &template.holes {
+            values.push((self.name(f, name, text.pos)?.0, *hole));
+        }
+        let index = self.string(&template.text, text.pos)?;
+        regs.push(f.konst(Ty::Text, index as i32, text.pos)?);
+        for (r, hole) in values {
+            f.emit(Op::Call {
+                entry: hole.entry(),
+                args: vec![r],
+                dst: None,
+            });
+        }
         f.emit(Op::Call {
             entry,
             args: regs,

@@ -726,6 +726,58 @@ fn a_list_line_files_the_script_under_a_named_row() {
     );
 }
 
+// ---- Messages ----
+
+#[test]
+fn a_message_reaches_the_game_with_its_holes_values() {
+    let src = r#"
+rules "Callout" 1
+carrier slayer
+requires hud.message
+
+enum Phase { warmup, fight }
+option grace: time 5s..60s = 35s "Grace" "How long a new player is spared"
+global var phase: Phase = Phase.fight
+
+on kill(victim, killer) {
+    if let k = killer {
+        let side = k.team
+        message(victim, "{k} scored")
+        message(all, "{phase}: {k} on {side}, {grace} of grace {{x}}")
+    }
+}
+"#;
+    let (ir, _) = build(src).unwrap();
+    assert!(ir.strings.iter().any(|s| s == "{player} scored"), "{:?}", ir.strings);
+    assert!(
+        ir.strings.iter().any(|s| s == "{enum}: {player} on {team}, {time} of grace {{x}}"),
+        "{:?}",
+        ir.strings
+    );
+    let options = ir.default_options();
+    let mut vm = Vm::new(ir, options, 0).unwrap();
+    let mut g = FakeGame::with_players(2);
+    g.players.get_mut(&1).unwrap().team = 1;
+    vm.begin_tick(1);
+    assert_eq!(vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) }), Fired::Ran);
+    assert_eq!(g.messages.len(), 2, "{:#?}", g.messages);
+    let scored = &g.messages[0];
+    assert_eq!(scored.to, Some(player(0)));
+    assert_eq!(scored.template, "{player} scored");
+    assert_eq!(scored.values, [player(1)]);
+    assert_eq!(scored.line, "player 1 scored");
+    let all = &g.messages[1];
+    assert_eq!(all.to, None);
+    assert_eq!(
+        all.values,
+        [Arg::Text("fight".into()), player(1), Arg::Team(Some(1)), Arg::Int(35 * 30)]
+    );
+    assert_eq!(all.line, "fight: player 1 on team 1, 0:35 of grace {x}");
+    // A message to nobody's killer shows nothing.
+    assert_eq!(vm.fire(&mut g, Input::Kill { victim: 0, killer: None }), Fired::Ran);
+    assert_eq!(g.messages.len(), 2);
+}
+
 /// What one op costs, for choosing [`TICK_BUDGET`]: run with
 /// `cargo test --release -p rules --test scripts op_cost -- --ignored --nocapture`.
 #[test]

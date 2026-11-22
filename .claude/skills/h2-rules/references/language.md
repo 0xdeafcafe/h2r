@@ -268,6 +268,19 @@ the host has a zone test; a scenario's fake game answers it.
 | `ff_respawn` | player | `firefight.director` | queued | named |
 | `ff_finish` | bool | `firefight.director` | queued | named |
 
+A `message` text written in the call may hold holes: `message(victim,
+"{k} scored, {left} to go")`. A hole is one name in scope (a local, a
+global, an option or a constant) whose value is a `player`, `team`,
+`int`, `time` (shown as `m:ss`) or enum (shown by its variant's name); a
+`player?` shows once narrowed (`if let k = killer { ... }`). At most four
+holes; `{{` and `}}` write a brace. The compiler stores the text as
+`{player} scored, {int} to go` and passes the values through VM-only
+`fmt_player`, `fmt_team`, `fmt_int`, `fmt_time` and `fmt_enum` calls,
+which a script cannot name. `h2 rules run` and the workbench list the
+`message` call with the template and then the values; the fake game
+(`FakeGame::messages`) also keeps the line a player reads
+(`player 1 scored`).
+
 An action has no value: `let x = score(p, 1)` is an error (`score has no
 value`). A function call has none either. Passing `none` is allowed where
 the type may be `none` (`set_loadout(p, "tag", none)`).
@@ -300,6 +313,7 @@ exits 1.
 | `match on Role has no arm for Role.guard. ...` (`match.missing`) | a `match` with no arm for a variant and no `else` |
 | `ladder[12]: ladder has 12 rows, 0 to 11.` (`const.range`) | a constant index out of a table's rows or a label's `numbered` range, or a constant outside the `int` range |
 | `division by zero in the constant "step".` (`const.zero`) | a constant divided by zero |
+| `{q} in this message is not a name here. Names in scope: p, n.` (`text.hole`) | a message hole names nothing in scope; the other `text.hole` errors are a value a message cannot show (`an object can't be shown in a message.`), a `player?` not narrowed, a hole that is not one name (`{p.team}`), an unpaired brace, and more than four holes |
 | `the options take N bits; a variant carries 32` | too many or too wide options |
 | `a grant needs a budget: budget n` | `grant` with no `budget` |
 | `on kill takes 2 arguments` | wrong argument count |

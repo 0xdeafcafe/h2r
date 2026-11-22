@@ -130,6 +130,21 @@ pub enum Fault {
     Palette(u8),
     #[error("remainder of fixed values")]
     FixedRem,
+    #[error("{0} is not followed at once by a message")]
+    Unshown(&'static str),
+    #[error("a message shows at most {max} values, given {0}", max = caps::MAX_HOLES)]
+    Holes(usize),
+    #[error("the values of a message do not follow at once the constant that writes its text")]
+    Template,
+    #[error("a jump or a loop lands inside a message's values")]
+    IntoHoles,
+    #[error("string {0} is no message template")]
+    NotTemplate(u32),
+    #[error("the message's text has holes {want:?}, given values {got:?}")]
+    HoleTypes {
+        want: Vec<caps::Hole>,
+        got: Vec<caps::Hole>,
+    },
 }
 
 /// A passing blob's budget figures.
@@ -392,6 +407,11 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
                 fault,
             })?;
         }
+        message_runs(ir, hd).map_err(|(pc, fault)| Refusal::Op {
+            handler: hi,
+            pc,
+            fault,
+        })?;
         handler_ops.push(cost(&ir.labels, &hd.code, 0, hd.code.len()));
     }
 
@@ -421,6 +441,100 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
         worst_tick,
         costliest: costliest.map(|(i, _)| i),
     })
+}
+
+/// The hole a `fmt_*` call queues a value for.
+fn fmt_hole(op: &Op) -> Option<caps::Hole> {
+    match *op {
+        Op::Call { entry, .. } => caps::Hole::of_entry(entry),
+        _ => None,
+    }
+}
+
+/// The text register of a `message` call: its last argument.
+fn message_text(op: &Op) -> Option<Reg> {
+    match op {
+        Op::Call { entry, args, .. } if caps::is_message(*entry) => args.last().copied(),
+        _ => None,
+    }
+}
+
+/// The message rule ("Messages" in `docs/game/rules-language-types.md`).
+/// Each run of `fmt_*` calls directly follows the `Const` that writes the
+/// text of the `message` call directly after it, nothing jumps or loops
+/// into the run or onto the message, and the text is a template whose
+/// holes match the run in count, order and type. A message with no run
+/// whose text is written by the op before it shows a template with no
+/// holes. Runs after the per-op checks, so every index here is valid.
+fn message_runs(ir: &Ir, hd: &Handler) -> Result<(), (usize, Fault)> {
+    let code = &hd.code;
+    // The ops reached other than from the op before them: jump targets,
+    // and the op after a loop body (reached when the set is empty).
+    let mut entered = vec![false; code.len() + 1];
+    for (pc, op) in code.iter().enumerate() {
+        let to = match *op {
+            Op::Jump { to } | Op::JumpIf { to, .. } | Op::JumpIfNot { to, .. } => to as usize,
+            Op::ForEach { body, .. } => pc + 1 + body as usize,
+            _ => continue,
+        };
+        if let Some(e) = entered.get_mut(to) {
+            *e = true;
+        }
+    }
+    let template = |text: Reg, before: Option<usize>| -> Option<Result<Vec<caps::Hole>, u32>> {
+        let i = before?;
+        match code[i] {
+            Op::Const { dst, value } if dst == text => {
+                let s = ir.strings.get(value as usize)?;
+                Some(caps::holes(s).ok_or(value as u32))
+            }
+            _ => None,
+        }
+    };
+    let mut pc = 0;
+    while pc < code.len() {
+        let start = pc;
+        let mut got = Vec::new();
+        while let Some(h) = code.get(pc).and_then(fmt_hole) {
+            got.push(h);
+            pc += 1;
+        }
+        if got.is_empty() {
+            // A message with no values.
+            if let Some(text) = message_text(&code[pc])
+                && !entered[pc]
+            {
+                match template(text, pc.checked_sub(1)) {
+                    Some(Ok(want)) if !want.is_empty() => return Err((pc, Fault::HoleTypes { want, got })),
+                    Some(Err(s)) => return Err((pc, Fault::NotTemplate(s))),
+                    _ => {}
+                }
+            }
+            pc += 1;
+            continue;
+        }
+        if got.len() > caps::MAX_HOLES {
+            return Err((start, Fault::Holes(got.len())));
+        }
+        let Some(text) = code.get(pc).and_then(message_text) else {
+            let name = match code[start] {
+                Op::Call { entry, .. } => caps::ENTRIES[entry as usize].name,
+                _ => "a message value",
+            };
+            return Err((start, Fault::Unshown(name)));
+        };
+        if let Some(at) = (start..=pc).find(|&i| entered[i]) {
+            return Err((at, Fault::IntoHoles));
+        }
+        match template(text, start.checked_sub(1)) {
+            None => return Err((start, Fault::Template)),
+            Some(Err(s)) => return Err((pc, Fault::NotTemplate(s))),
+            Some(Ok(want)) if want != got => return Err((pc, Fault::HoleTypes { want, got })),
+            Some(Ok(_)) => {}
+        }
+        pc += 1;
+    }
+    Ok(())
 }
 
 fn enum_known(t: Ty, sizes: &Sizes) -> bool {
@@ -684,7 +798,16 @@ impl Cx<'_> {
                     });
                 }
                 for (&r, &ty) in args.iter().zip(e.args) {
-                    self.want(r, ty)?;
+                    if e.id == caps::id::FMT_ENUM {
+                        // Any enum: the VM names the variant from the
+                        // register's type.
+                        let got = self.reg(r)?;
+                        if !matches!(got, Ty::Enum(_)) {
+                            return Err(Fault::Type { reg: r, want: "an enum", got });
+                        }
+                    } else {
+                        self.want(r, ty)?;
+                    }
                 }
                 let got = match dst {
                     Some(r) => Some(self.reg(r)?),
@@ -1222,5 +1345,161 @@ mod tests {
         assert_eq!(unhostable(&on_juggernaut), None);
         let on_slayer = crate::compile(&src("slayer")).unwrap();
         assert_eq!(unhostable(&on_slayer).map(|e| e.name), Some("role_traits"));
+    }
+
+    /// The sample with one `on kill` handler of `code`: registers victim,
+    /// killer, an int, a bool, a text and an enum; string 2 is
+    /// `{player} scored, {int} to go`, string 3 `{object}`.
+    fn message_ir(code: Vec<Op>) -> Ir {
+        let mut ir = sample();
+        ir.header.requires.push("hud.message".into());
+        ir.strings.push("{player} scored, {int} to go".into());
+        ir.strings.push("{object}".into());
+        ir.enums.push(EnumDef { name: 0, variants: vec![1] });
+        let hd = &mut ir.handlers[0];
+        hd.regs = vec![Ty::Player, Ty::Player, Ty::Int, Ty::Bool, Ty::Text, Ty::Enum(0)];
+        hd.code = code;
+        ir
+    }
+
+    fn call(entry: u16, args: &[Reg]) -> Op {
+        Op::Call {
+            entry,
+            args: args.to_vec(),
+            dst: None,
+        }
+    }
+
+    fn refused(code: Vec<Op>) -> (usize, Fault) {
+        match verify(&message_ir(code)) {
+            Err(Refusal::Op { pc, fault, .. }) => (pc, fault),
+            other => panic!("expected an op refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_message_run_verifies_and_every_break_of_it_is_refused() {
+        use crate::caps::{Hole, id};
+        let text = Op::Const { dst: 4, value: 2 };
+        let n = Op::Const { dst: 2, value: 3 };
+        let good = vec![
+            n.clone(),
+            text.clone(),
+            call(id::FMT_PLAYER, &[1]),
+            call(id::FMT_INT, &[2]),
+            call(id::MESSAGE, &[0, 4]),
+        ];
+        verify(&message_ir(good)).unwrap();
+
+        // A run with no message after it.
+        assert_eq!(
+            refused(vec![n.clone(), text.clone(), call(id::FMT_PLAYER, &[1]), call(id::FMT_INT, &[2])]),
+            (2, Fault::Unshown("fmt_player"))
+        );
+        assert_eq!(
+            refused(vec![n.clone(), text.clone(), call(id::FMT_PLAYER, &[1]), call(id::SCORE, &[0, 2])]),
+            (2, Fault::Unshown("fmt_player"))
+        );
+        // The values out of order, too few, or none.
+        assert_eq!(
+            refused(vec![
+                n.clone(),
+                text.clone(),
+                call(id::FMT_INT, &[2]),
+                call(id::FMT_PLAYER, &[1]),
+                call(id::MESSAGE, &[0, 4]),
+            ]),
+            (
+                4,
+                Fault::HoleTypes {
+                    want: vec![Hole::Player, Hole::Int],
+                    got: vec![Hole::Int, Hole::Player],
+                }
+            )
+        );
+        assert_eq!(
+            refused(vec![text.clone(), call(id::FMT_PLAYER, &[1]), call(id::MESSAGE, &[0, 4])]),
+            (
+                2,
+                Fault::HoleTypes {
+                    want: vec![Hole::Player, Hole::Int],
+                    got: vec![Hole::Player],
+                }
+            )
+        );
+        assert_eq!(
+            refused(vec![text.clone(), call(id::MESSAGE, &[0, 4])]),
+            (
+                1,
+                Fault::HoleTypes {
+                    want: vec![Hole::Player, Hole::Int],
+                    got: vec![],
+                }
+            )
+        );
+        // A value of the wrong register type.
+        assert!(matches!(
+            refused(vec![text.clone(), call(id::FMT_PLAYER, &[2]), call(id::MESSAGE, &[0, 4])]),
+            (1, Fault::Type { reg: 2, .. })
+        ));
+        assert_eq!(
+            refused(vec![text.clone(), call(id::FMT_ENUM, &[2]), call(id::MESSAGE, &[0, 4])]),
+            (
+                1,
+                Fault::Type {
+                    reg: 2,
+                    want: "an enum",
+                    got: Ty::Int,
+                }
+            )
+        );
+        // The text not written just before the run.
+        assert_eq!(
+            refused(vec![
+                text.clone(),
+                n.clone(),
+                call(id::FMT_PLAYER, &[1]),
+                call(id::FMT_INT, &[2]),
+                call(id::MESSAGE, &[0, 4]),
+            ]),
+            (2, Fault::Template)
+        );
+        // A jump into the run.
+        assert_eq!(
+            refused(vec![
+                n.clone(),
+                Op::Cmp {
+                    op: CmpOp::Eq,
+                    dst: 3,
+                    a: 0,
+                    b: 1,
+                },
+                Op::JumpIfNot { cond: 3, to: 5 },
+                text.clone(),
+                call(id::FMT_PLAYER, &[1]),
+                call(id::FMT_INT, &[2]),
+                call(id::MESSAGE, &[0, 4]),
+            ]),
+            (5, Fault::IntoHoles)
+        );
+        // More values than a message shows.
+        let mut five = vec![n.clone(), text.clone()];
+        five.extend((0..5).map(|_| call(id::FMT_INT, &[2])));
+        five.push(call(id::MESSAGE, &[0, 4]));
+        assert_eq!(refused(five), (2, Fault::Holes(5)));
+        // A text that is no template.
+        assert_eq!(
+            refused(vec![Op::Const { dst: 4, value: 3 }, call(id::MESSAGE, &[0, 4])]),
+            (1, Fault::NotTemplate(3))
+        );
+        // An enum value of any enum type is a value.
+        let mut ir = message_ir(vec![]);
+        ir.strings.push("{enum}".into());
+        ir.handlers[0].code = vec![
+            Op::Const { dst: 4, value: 4 },
+            call(id::FMT_ENUM, &[5]),
+            call(id::MESSAGE_ALL, &[4]),
+        ];
+        verify(&ir).unwrap();
     }
 }

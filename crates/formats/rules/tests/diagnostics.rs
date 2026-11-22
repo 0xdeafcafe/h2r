@@ -147,6 +147,35 @@ fn declaration_syntax_and_limit_codes() {
     warning(&script("", "label goal: zone\non enter(goal, o) { let goal = 1 }\n"), "name.shadow");
 }
 
+#[test]
+fn text_hole_codes() {
+    let msg = |body: &str| script("hud.message", body);
+    let m = error(&msg("on kill(victim, killer) { let n = 2\nmessage(victim, \"{q} got you\") }\n"), "text.hole");
+    assert_eq!(m, "{q} in this message is not a name here. Names in scope: victim, killer, n.");
+    let m = error(&msg("on pickup(p, o) { message(p, \"{o} is yours\") }\n"), "text.hole");
+    assert_eq!(
+        m,
+        "an object can't be shown in a message. A message shows a player, a team, an int, a time or an enum."
+    );
+    let m = error(&msg("on kill(victim, killer) { message(victim, \"{killer} got you\") }\n"), "text.hole");
+    assert!(m.contains("killer may be none here"), "{m}");
+    let m = error(&msg("on spawn(p) { message(p, \"{p scored\") }\n"), "text.hole");
+    assert!(m.contains("this { opens a hole with no }"), "{m}");
+    let m = error(&msg("on spawn(p) { message(p, \"p} scored\") }\n"), "text.hole");
+    assert!(m.contains("this } closes no hole"), "{m}");
+    let m = error(&msg("on spawn(p) { message(p, \"{p.team} scored\") }\n"), "text.hole");
+    assert!(m.contains("{p.team} is not a name"), "{m}");
+    let m = error(&msg("on spawn(p) { message(p, \"{p}{p}{p}{p}{p}\") }\n"), "text.hole");
+    assert!(m.contains("at most 4 values, and this one has 5"), "{m}");
+    // The hole is reported where it is: column 29 is the `{` of `{q}`.
+    let c = diagnose(&msg("on spawn(p) { message(p, \"a {q}\") }\n"));
+    let d = c.diagnostics.iter().find(|d| d.code == "text.hole").unwrap();
+    assert_eq!((d.pos.line, d.pos.col), (4, 29));
+    // Narrowed, a handle that may be none shows; a doubled brace is a brace.
+    let ok = msg("on kill(victim, killer) { if let k = killer { message(victim, \"{k} got you {{x}}\") } }\n");
+    assert!(diagnose(&ok).diagnostics.is_empty(), "{:#?}", diagnose(&ok).diagnostics);
+}
+
 // ---- every error, in order ----
 
 #[test]

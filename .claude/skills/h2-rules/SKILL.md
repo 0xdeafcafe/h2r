@@ -385,7 +385,10 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   Slayer-shaped; everything else is proven by scenario. Name the entries
   your script waits on in a comment at the top, as the built-ins do.
 - **`message(to, text)`.** `to` is a player, a team or `all`; `h2 rules
-  caps` lists the three forms under the one name. `ticks_held(zone,
+  caps` lists the three forms under the one name. The text may hold up
+  to four `{name}` holes (a player, team, int, time or enum in scope;
+  `{{` is a brace), passed through the VM-only `fmt_*` entries a script
+  cannot name ([language.md](references/language.md)). `ticks_held(zone,
   team)` is the VM's count, and a host refuses it until it has a zone
   test. If the design page and the code disagree, follow the code and
   say so; `h2 rules caps` is the truth.

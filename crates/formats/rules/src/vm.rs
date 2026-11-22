@@ -984,6 +984,7 @@ impl Vm {
                 options: self.options,
                 warnings: &mut self.warnings,
                 handler: handler as u16,
+                holes: Vec::new(),
             };
             run.exec(game, args)
         };
@@ -1059,6 +1060,9 @@ struct Run<'a> {
     options: u32,
     warnings: &'a mut Vec<Warning>,
     handler: u16,
+    /// The values `fmt_*` calls queued for the next `message`, at most
+    /// [`caps::MAX_HOLES`] (the verifier's message rule).
+    holes: Vec<Arg>,
 }
 
 type Fault = (u16, ErrorKind);
@@ -1217,6 +1221,11 @@ impl<'a> Run<'a> {
                     dst,
                 } => {
                     let e = &caps::ENTRIES[entry as usize];
+                    if let Some(hole) = caps::Hole::of_entry(entry) {
+                        let r = args[0];
+                        self.hole(hole, hd.regs[r as usize], regs[r as usize]);
+                        continue;
+                    }
                     let raw: Vec<i32> = args.iter().map(|&r| regs[r as usize]).collect();
                     let result = self.call(game, e, raw).map_err(|k| (here, k))?;
                     if let (Some(dst), Some(v)) = (dst, result) {
@@ -1397,7 +1406,12 @@ impl<'a> Run<'a> {
             Kind::Action => {
                 match e.order {
                     Order::Now => {
-                        let call = self.resolve(e, &raw);
+                        let mut call = self.resolve(e, &raw);
+                        if caps::is_message(e.id) {
+                            // The holes' values follow the entry's own
+                            // arguments, in hole order.
+                            call.args.append(&mut self.holes);
+                        }
                         game.act(&call);
                     }
                     Order::Queued => {
@@ -1412,6 +1426,32 @@ impl<'a> Run<'a> {
                 }
                 Ok(None)
             }
+        }
+    }
+
+    /// A `fmt_*` call: queues the value of register type `ty` for the next
+    /// `message`. A player or team shows as itself, an int or a time as
+    /// its number (the template's hole says which), and an enum as its
+    /// variant's name.
+    fn hole(&mut self, hole: caps::Hole, ty: Ty, v: i32) {
+        let arg = match (hole, ty) {
+            (caps::Hole::Enum, Ty::Enum(e)) => {
+                let name = self
+                    .ir
+                    .enums
+                    .get(e as usize)
+                    .and_then(|d| usize::try_from(v).ok().and_then(|i| d.variants.get(i)))
+                    .and_then(|&s| self.ir.strings.get(s as usize))
+                    .cloned()
+                    .unwrap_or_default();
+                Arg::Text(name)
+            }
+            _ => to_arg(self.ir, ty, v),
+        };
+        // The verifier bounds a run at MAX_HOLES; the cap keeps the VM's
+        // own promise.
+        if self.holes.len() < caps::MAX_HOLES {
+            self.holes.push(arg);
         }
     }
 
