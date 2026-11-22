@@ -63,9 +63,10 @@ struct Form {
 // 19 units a line below `dialog::BODY_TOP` (72), and the footer's top is
 // -83.
 //
-// Four body lines end at -4: at -38 the frame's top (-5) clears them, and
-// row 1's cap (-64 to -68) stays above the footer. Rows lower than the
-// main menu's logo (its bottom is -19) keep the labels' contrast.
+// Four body lines end at -4: at -44 the frame's top (-11) clears them, and
+// row 1's cap (-70 to -74) stays above the footer. Row 1 sits below the
+// opener's brighter rows there, so its unfocused label keeps the 2.5
+// contrast floor (at -38 it measured 2.44).
 const START: Form = Form {
     ask: Ask::Start,
     screen: SCREEN,
@@ -74,7 +75,7 @@ const START: Form = Form {
     first_id: 2,
     answers: &[Decision::Declined, Decision::Allowed],
     dismissed: Decision::Declined,
-    anchor: -38,
+    anchor: -44,
 };
 
 // Three body lines end at 15, well above the frame's top (-2). At -35 row
