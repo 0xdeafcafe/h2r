@@ -453,8 +453,10 @@ fn a_cue_split_across_three_packets_shows_once() {
     // A different sequence of the same tick is a new cue; a repeated or
     // older packet is not applied.
     let next = Record::Cue {
+        tick: 40,
         sequence: 3,
-        ..record.clone()
+        kind: 0,
+        bytes: vec![1, 2, 3],
     };
     assert!(client.apply(&packet(43, vec![next]), 43).unwrap());
     assert_eq!(client.pending_cues.len(), 2);
