@@ -1,0 +1,140 @@
+================================================================================
+Scoring, about and quick lines
+================================================================================
+
+rules "Swat" 1
+carrier slayer
+scoring carrier
+about "No shields. 50 points to win."
+quick score_limit, shields, starting_weapon
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (header
+    (string
+      (string_content))
+    (integer))
+  (carrier_declaration
+    (identifier))
+  (scoring_declaration
+    (identifier))
+  (about_declaration
+    (string
+      (string_content)))
+  (quick_declaration
+    (identifier)
+    (identifier)
+    (identifier)))
+
+================================================================================
+Settings block, one a line
+================================================================================
+
+settings {
+    score_limit = 50
+    shields = none
+    time_limit = 300s
+    motion_sensor = false
+    starting_weapon = battle_rifle
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (settings_declaration
+    (setting
+      (identifier)
+      (integer))
+    (setting
+      (identifier)
+      (none))
+    (setting
+      (identifier)
+      (time))
+    (setting
+      (identifier)
+      (false))
+    (setting
+      (identifier)
+      (identifier))))
+
+================================================================================
+Settings block, separated by semicolons and on one line
+================================================================================
+
+settings { lives = 3; rounds = 2 }
+settings { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (settings_declaration
+    (setting
+      (identifier)
+      (integer))
+    (setting
+      (identifier)
+      (integer)))
+  (settings_declaration))
+
+================================================================================
+A script that keeps its carrier's rules
+================================================================================
+
+rules "Duel" 1
+carrier slayer
+scoring carrier
+list party
+quick score_limit
+settings {
+    score_limit = 10
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (header
+    (string
+      (string_content))
+    (integer))
+  (carrier_declaration
+    (identifier))
+  (scoring_declaration
+    (identifier))
+  (list_declaration
+    (identifier))
+  (quick_declaration
+    (identifier))
+  (settings_declaration
+    (setting
+      (identifier)
+      (integer))))
+
+================================================================================
+The four words are names in a handler
+================================================================================
+
+global var quick: int = 0
+on tick {
+    let about = 1
+    quick = about
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (identifier)
+    (type
+      (identifier))
+    (integer))
+  (handler_declaration
+    (identifier)
+    (block
+      (let_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (identifier)
+        (identifier)))))

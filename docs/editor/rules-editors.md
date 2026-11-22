@@ -60,7 +60,7 @@ describes each feature):
 | Feature | LSP method |
 |---|---|
 | Problems as you type, each with its code and a link to [the codes](../game/rules-language-types.md#diagnostics-and-the-editor) | `publishDiagnostics` (pushed on open and on each change) |
-| Completion, ranked, with snippets | `completion` (triggered by `.`, `:`, `"`, `(`, `,`, and a space after `is`, `on`, `carrier`, `requires`, `each`, `palette`, `list`, `:` or `,`) |
+| Completion, ranked, with snippets | `completion` (triggered by `.`, `:`, `"`, `(`, `,`, and a space after `is`, `on`, `carrier`, `requires`, `each`, `palette`, `list`, `scoring`, `quick`, `:` or `,`) |
 | Hover | `hover` |
 | The call's parameters | `signatureHelp` (`(` and `,`) |
 | Go to definition, find references, the uses of the name under the cursor | `definition`, `references`, `documentHighlight` |

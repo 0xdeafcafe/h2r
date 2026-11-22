@@ -44,6 +44,18 @@ const source = [
   /* 12 */ '    let x = 5st',
   /* 13 */ '    if variant.engine == carrier.assault and r == Role.vip { }',
   /* 14 */ '}',
+  /* 15 */ 'scoring carrier',
+  /* 16 */ 'about "No shields."',
+  /* 17 */ 'quick score_limit, shields',
+  /* 18 */ 'settings {',
+  /* 19 */ '    score_limit = 50',
+  /* 20 */ '    shields = none; time_limit = 300s',
+  /* 21 */ '    starting_weapon = battle_rifle // the rifle',
+  /* 22 */ '}',
+  /* 23 */ 'on tick {',
+  /* 24 */ '    let about = 1',
+  /* 25 */ '    quick = about',
+  /* 26 */ '}',
 ];
 
 const lines = [];
@@ -198,4 +210,38 @@ test('enum, carrier and variant access', () => {
   exact(13, 'assault', 'variable.other.enummember.rules');
   exact(13, 'Role', 'entity.name.type.enum.rules');
   exact(13, 'vip', 'variable.other.enummember.rules');
+});
+
+test('the header lines scoring, about and quick', () => {
+  exact(15, 'scoring', 'keyword.other.declaration.rules');
+  exact(15, 'carrier', 'support.constant.scoring.rules');
+  exact(16, 'about', 'keyword.other.declaration.rules');
+  hasScope(16, 'No shields.', 'string.quoted.double.rules');
+  exact(17, 'quick', 'keyword.other.declaration.rules');
+  exact(17, 'score_limit', 'variable.other.property.setting.rules');
+  exact(17, 'shields', 'variable.other.property.setting.rules');
+  hasScope(17, 'shields', 'meta.quick.rules');
+});
+
+test('the settings block', () => {
+  exact(18, 'settings', 'keyword.other.declaration.rules');
+  exact(18, '{', 'punctuation.section.braces.begin.rules');
+  exact(19, 'score_limit', 'variable.other.property.setting.rules');
+  hasScope(19, 'score_limit', 'meta.settings.rules');
+  exact(19, '50', 'constant.numeric.integer.rules');
+  exact(20, 'shields', 'variable.other.property.setting.rules');
+  exact(20, 'none', 'constant.language.none.rules');
+  exact(20, 'time_limit', 'variable.other.property.setting.rules');
+  exact(20, '300s', 'constant.numeric.time.rules');
+  exact(21, 'starting_weapon', 'variable.other.property.setting.rules');
+  exact(21, 'battle_rifle', 'variable.other.enummember.rules');
+  hasScope(21, 'the rifle', 'comment.line.double-slash.rules');
+  exact(22, '}', 'punctuation.section.braces.end.rules');
+  lacksScope(23, 'on', 'meta.settings.rules');
+});
+
+test('the four header words are names in a handler', () => {
+  lacksScope(24, 'about', 'keyword.other.declaration.rules');
+  lacksScope(25, 'quick', 'keyword.other.declaration.rules');
+  lacksScope(25, 'about', 'keyword.other.declaration.rules');
 });

@@ -1451,7 +1451,8 @@ Tooling:
     folding ranges, formatting and range formatting, quick fix code
     actions, `prepareRename` and rename from `rules::ide`. A typed space
     asks for completions only after `is`, `on`, `carrier`, `requires`,
-    `each`, `palette`, `list`, a `:` or a `,` (`SPACE_TRIGGER_WORDS`).
+    `each`, `palette`, `list`, `scoring`, `quick`, a `:` or a `,`
+    (`SPACE_TRIGGER_WORDS`).
   - `h2 rules editors [status|install [vscode|zed] [--build]]` installs
     the VS Code extension and prints the Zed steps, or says what is
     installed and whether `h2 rules lsp` starts
@@ -1476,7 +1477,9 @@ Tooling:
     naming its status.
   - `actions` gives the fixes of the diagnostics at a range, and
     `rename` the edits that rename a name and every use of it
-    (`ide/fix.rs`).
+    (`ide/fix.rs`). An option's `quick` mark is a use of the option, so
+    renaming the option renames the mark; a setting's name is the
+    game's and is not renamed.
   - `complete` reads the tokens before the place: declarations and
     their snippets at the start of a top-level line; event names, with
     their arguments as a snippet, after `on`; carriers after `carrier`;
@@ -1485,11 +1488,21 @@ Tooling:
     `variant` fields, an enum's variants, a table row's columns, or a
     player's, team's or object's variables and built-in fields;
     palettes after `palette`, and sets, the declared labels among them,
-    after `each` and in `count`, `first` and `pick`. In a body it offers the locals
+    after `each` and in `count`, `first` and `pick`. Inside `settings { }`
+    it offers the setting names of the script's carrier that the block
+    does not set (each as `name = ` with its values as the snippet's
+    choice), and after an `=` that setting's values: a choice's names, a
+    bool's two, `none` where zero is none, a number's place. After
+    `quick` it offers the script's options, then the settings its block
+    sets, then the carrier's other record settings; after `scoring`,
+    `carrier`. The header words `scoring`, `about`, `quick` and
+    `settings` are among the top-level snippets. In a body it offers the locals
     in scope, the script's globals, options, tables, enums and
     functions, every API entry and language built-in as a snippet, and
     the statements. Each item's documentation is the hover text.
-  - `hover`: a name's declaration and type; an API entry's signature,
+  - `hover`: a setting's label, kind, the game types it applies to and
+    its values (on its line in the block or on its `quick` mark); a name's
+    declaration and type; an API entry's signature,
     whether it reads or acts (and whether it is queued), the capability
     it needs in the lobby's words, and its status in plain words; an
     event's arguments; a `variant` field, a built-in field, a carrier, a

@@ -12,6 +12,7 @@ use crate::ir::{Event, Scope};
 use crate::lang::lower::FIELDS;
 use crate::lang::sig;
 use crate::lang::types::{Handle, Type};
+use crate::settings::{self, Kind as SettingKind};
 
 /// The netgame flags' built-in labels (`forge_doc::labels::builtin_label`),
 /// each with the kind and requirements the built-in scripts declare it
@@ -107,6 +108,23 @@ fn candidates(m: &Model, off: usize) -> Vec<CompletionItem> {
     }
     let depth = braces.len();
     let in_requires = depth == 0 && first_on_line.is_some_and(|f| m.is_word(f, "requires"));
+
+    // Inside `settings { }`: the carrier's setting names, and the values
+    // of the setting before an `=`.
+    if let Some(open) = settings_open(m, i) {
+        return settings_block(m, open, i, off);
+    }
+    // The header lines `quick` and `scoring`.
+    if depth == 0
+        && let Some(f) = first_on_line
+    {
+        if m.is_word(f, "quick") && (prev == Some(f) || ptext == ",") {
+            return quick_marks(m, f, i);
+        }
+        if m.is_word(f, "scoring") {
+            return if prev == Some(f) { scoring_words() } else { Vec::new() };
+        }
+    }
 
     if let Some(dot) = prev
         && ptext == "."
@@ -399,6 +417,197 @@ fn events(m: &Model, prefix: &str) -> Vec<CompletionItem> {
             )
         })
         .collect()
+}
+
+/// The `{` of the `settings` block the code index `i` is inside, when it
+/// is directly inside one.
+fn settings_open(m: &Model, i: usize) -> Option<usize> {
+    let mut open: Vec<usize> = Vec::new();
+    for j in 0..i.min(m.code.len()) {
+        if m.is_punct(j, "{") {
+            open.push(j);
+        } else if m.is_punct(j, "}") {
+            open.pop();
+        }
+    }
+    let &last = open.last()?;
+    (open.len() == 1 && last >= 1 && m.is_word(last - 1, "settings")).then_some(last)
+}
+
+/// The names the block's other lines set: the first word of a line (or
+/// after a `;`) followed by `=`, leaving out the word at `skip`.
+fn block_names<'s>(m: &Model<'s>, open: usize, skip: usize) -> Vec<&'s str> {
+    let end = m.partner(open).unwrap_or(m.code.len());
+    let mut out = Vec::new();
+    for j in open + 1..end {
+        if j == skip || m.code[j].k != K::Ident || !m.is_punct(j + 1, "=") {
+            continue;
+        }
+        let starts = j == open + 1
+            || m.is_punct(j - 1, ";")
+            || m.li.line_of(m.code[j - 1].s) < m.li.line_of(m.code[j].s);
+        if starts {
+            out.push(m.text(&m.code[j]));
+        }
+    }
+    out
+}
+
+/// Inside the block: after an `=` the setting's values; where a setting
+/// starts (after `{`, a `;` or on a new line) the settings of the
+/// script's carrier that the block does not set yet.
+fn settings_block(m: &Model, open: usize, i: usize, off: usize) -> Vec<CompletionItem> {
+    // `open < i`, so there is a token before.
+    let prev = i - 1;
+    let ptext = m.text(&m.code[prev]);
+    if ptext == "=" {
+        return match prev.checked_sub(1).filter(|&j| j > open) {
+            Some(j) => setting_values(m.text(&m.code[j])),
+            None => Vec::new(),
+        };
+    }
+    let line = m.li.line_of(off);
+    let fresh = prev == open || ptext == ";" || m.li.line_of(m.code[prev].s) < line;
+    if !fresh {
+        return Vec::new();
+    }
+    let carrier = m.carrier_engine();
+    let taken = block_names(m, open, i);
+    settings::TABLE
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| carrier.is_none_or(|c| r.applies(c)) && !taken.contains(&r.name))
+        .map(|(index, r)| setting_item(index as u16, r, carrier))
+        .collect()
+}
+
+/// One setting as a completion: it inserts `name = ` and the value place.
+fn setting_item(index: u16, r: &settings::Row, carrier: Option<u8>) -> CompletionItem {
+    let value = match r.kind {
+        SettingKind::Bool => "${1|true,false|}".to_string(),
+        SettingKind::Choice { names, .. } if !names.is_empty() => {
+            let list: Vec<&str> = names.iter().map(|c| c.name).collect();
+            format!("${{1|{}|}}", list.join(","))
+        }
+        SettingKind::Seconds { lo, .. } => format!("${{1:{}}}s", lo.max(1)),
+        k => format!("${{1:{}}}", k.range().0),
+    };
+    item(
+        r.name,
+        kind::PROPERTY,
+        format!("{}: {}", r.label, r.kind.word()),
+        info::setting_markdown(index, carrier),
+        format!("{} = {value}", r.name),
+        SNIPPET,
+    )
+}
+
+/// The values the setting called `name` takes: a bool's two, a choice's
+/// names, `none` where zero is none, and a number's place.
+fn setting_values(name: &str) -> Vec<CompletionItem> {
+    let Some((_, row)) = settings::named(name) else {
+        return Vec::new();
+    };
+    let (lo, hi) = row.kind.range();
+    let mut out = Vec::new();
+    match row.kind {
+        SettingKind::Bool => {
+            out.push(plain("true", kind::KEYWORD, row.label, format!("{} on.", row.label)));
+            out.push(plain("false", kind::KEYWORD, row.label, format!("{} off.", row.label)));
+        }
+        SettingKind::Choice { names, .. } => {
+            for c in names {
+                out.push(plain(
+                    c.name,
+                    kind::ENUM_MEMBER,
+                    c.label,
+                    format!("{}: {}. The record stores {}.", row.label, c.label, c.value),
+                ));
+            }
+        }
+        SettingKind::Int { .. } | SettingKind::Percent { .. } => {
+            out.push(item(
+                "number",
+                kind::SNIPPET,
+                format!("{lo} to {hi}"),
+                format!("{}: a number, {lo} to {hi}.", row.label),
+                format!("${{1:{lo}}}"),
+                SNIPPET,
+            ));
+        }
+        SettingKind::Seconds { .. } => {
+            out.push(item(
+                "seconds",
+                kind::SNIPPET,
+                format!("{lo}s to {hi}s"),
+                format!("{}: a time in whole seconds, {lo}s to {hi}s.", row.label),
+                format!("${{1:{}}}s", lo.max(1)),
+                SNIPPET,
+            ));
+        }
+    }
+    if row.zero_is_none && row.choice("none").is_none() {
+        out.push(plain("none", kind::KEYWORD, row.label, "No limit: the record stores 0."));
+    }
+    out
+}
+
+/// After `scoring`.
+fn scoring_words() -> Vec<CompletionItem> {
+    vec![plain(
+        "carrier",
+        kind::ENUM_MEMBER,
+        "scoring",
+        "The carrier engine scores the game, and the script holds settings and options for the lobby only.",
+    )]
+}
+
+/// After `quick` or a `,` on its line: the script's options, then the
+/// settings its block sets, then the other record settings of its
+/// carrier; each name once.
+fn quick_marks(m: &Model, first: usize, i: usize) -> Vec<CompletionItem> {
+    let marked: Vec<&str> = (first + 1..i)
+        .filter(|&j| m.code[j].k == K::Ident)
+        .map(|j| m.text(&m.code[j]))
+        .collect();
+    let carrier = m.carrier_engine();
+    let mut out = Vec::new();
+    for (d, def) in m.defs.iter().enumerate() {
+        if def.kind == DefKind::Option && !marked.contains(&def.name.as_str()) {
+            out.push(plain(
+                &def.name,
+                kind::CONSTANT,
+                format!("option: {}", m.type_name(def.ty)),
+                info::def_markdown(m, d),
+            ));
+        }
+    }
+    // The settings the block sets, from the tokens: the line being edited
+    // may keep the tree from parsing.
+    let in_block = m
+        .header_words()
+        .into_iter()
+        .find(|&w| m.is_word(w, "settings"))
+        .map_or_else(Vec::new, |w| block_names(m, w + 1, usize::MAX));
+    let mut rows: Vec<(bool, u16, &settings::Row)> = Vec::new();
+    for (index, r) in settings::TABLE.iter().enumerate() {
+        if !r.is_record() || !carrier.is_none_or(|c| r.applies(c)) || marked.contains(&r.name) {
+            continue;
+        }
+        let set = in_block.contains(&r.name);
+        rows.push((set, index as u16, r));
+    }
+    rows.sort_by_key(|&(set, index, _)| (!set, index));
+    for (set, index, r) in rows {
+        let origin = if set { "set in this script" } else { "setting" };
+        out.push(plain(
+            r.name,
+            kind::PROPERTY,
+            format!("{origin}: {}", r.label),
+            info::setting_markdown(index, carrier),
+        ));
+    }
+    out
 }
 
 fn carriers() -> Vec<CompletionItem> {
@@ -697,6 +906,14 @@ fn top_level(m: &Model) -> Vec<CompletionItem> {
         ("teams", "teams ${1:2}".to_string(), "teams"),
         ("list", "list ${1|research,party|}".to_string(), "list"),
         ("requires", "requires ${1:capability}".to_string(), "requires"),
+        ("scoring", "scoring carrier".to_string(), "scoring"),
+        ("about", "about \"${1:Description}\"".to_string(), "about"),
+        ("quick", "quick ${1:score_limit}".to_string(), "quick"),
+        (
+            "settings",
+            "settings {\n\t${1:score_limit} = ${2:50}\n}".to_string(),
+            "settings",
+        ),
         (
             "label",
             "label ${1:name}: ${2|zone,zones,object,objects,spawns|}".to_string(),

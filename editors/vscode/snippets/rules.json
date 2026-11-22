@@ -16,6 +16,37 @@
       "requires ${1|hud.message,player.weapons,player.team,player.spawn,player.traits,game.traits,objects.create,objects.delete,ai.squads,forge.place,forge.move,forge.delete,forge.scale|}$0"
     ]
   },
+  "scoring": {
+    "prefix": "scoring",
+    "description": "The carrier's engine scores the game; the script holds settings only.",
+    "body": [
+      "scoring carrier$0"
+    ]
+  },
+  "about": {
+    "prefix": "about",
+    "description": "The variant's description, at most 150 characters.",
+    "body": [
+      "about \"${1:Description}\"$0"
+    ]
+  },
+  "quick": {
+    "prefix": "quick",
+    "description": "The settings and options the lobby's Quick Options shows, at most five.",
+    "body": [
+      "quick ${1:score_limit}$0"
+    ]
+  },
+  "settings": {
+    "prefix": "settings",
+    "description": "The record settings the script sets, one name = value a line.",
+    "body": [
+      "settings {",
+      "\t${1:score_limit} = ${2:50}",
+      "\t$0",
+      "}"
+    ]
+  },
   "option int": {
     "prefix": "option int",
     "description": "An int option with a range, a default, a label and a description.",
