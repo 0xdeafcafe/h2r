@@ -152,6 +152,29 @@ pub struct Next {
     pub metres: f32,
 }
 
+/// Which kinds of seam the target navpoints are on: the variant's
+/// `targets` option, or the player's switch of it in the game
+/// (docs/game/superbounce.md, "Targets").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kinds {
+    Common,
+    Likely,
+    All,
+}
+
+impl Kinds {
+    pub const EVERY: [Kinds; 3] = [Kinds::Common, Kinds::Likely, Kinds::All];
+}
+
+/// The line that says which kinds the player has just switched to.
+pub fn kinds_text(k: Kinds) -> &'static str {
+    match k {
+        Kinds::Common => "Targets: common",
+        Kinds::Likely => "Targets: likely",
+        Kinds::All => "Targets: all",
+    }
+}
+
 /// How many ranked seams the line lists: as many as the readout has
 /// target navpoints ([`TARGETS`]).
 pub const NEXT: usize = 2;
@@ -166,6 +189,9 @@ pub struct View {
     /// first. With any, the line is theirs and not the miss's, the fall
     /// row is the best one's, and the target navpoints are on them.
     pub next: [Option<Next>; NEXT],
+    /// The kinds of seam the player has just switched the targets to:
+    /// while set, the line says so ([`kinds_text`]) and nothing else.
+    pub kinds: Option<Kinds>,
     /// Metres to the tagged seam.
     pub tag: Option<f32>,
     /// Metres to each reachable seam marked, nearest first.
@@ -280,7 +306,12 @@ pub fn values(v: &View) -> Values {
     out.set(STEER, text(v.fall.map(|f| steer_text(&f.steer))));
     out.set(
         INFO,
-        text(next_text(&v.next).or_else(|| v.info.as_ref().map(miss_text))),
+        text(
+            v.kinds
+                .map(|k| kinds_text(k).to_owned())
+                .or_else(|| next_text(&v.next))
+                .or_else(|| v.info.as_ref().map(miss_text)),
+        ),
     );
     out.set(TAG, nav(v.tag));
     out.set(TARGET_1, nav(v.targets[0]));
@@ -387,6 +418,15 @@ pub fn views() -> Vec<(&'static str, View)> {
                     None,
                 ],
                 targets: [Some(4.0), None],
+                ..View::default()
+            },
+        ),
+        (
+            "targets-switched",
+            View {
+                speed: Some(running),
+                kinds: Some(Kinds::All),
+                targets: [Some(6.0), Some(9.0)],
                 ..View::default()
             },
         ),
@@ -565,6 +605,30 @@ mod tests {
         assert_eq!(shown("second-bounce", TARGET_2).unwrap(), "30");
         assert_eq!(shown("second-bounce-lined-up", STEER).unwrap(), ON_SEAM);
         assert_eq!(shown("second-bounce-lined-up", TARGET_2), None);
+    }
+
+    /// The switch's line names the kinds, takes the row from the ranked
+    /// line and the miss line while it is up, and is no longer than the
+    /// row's longest.
+    #[test]
+    fn the_switch_line_names_the_kinds() {
+        assert_eq!(
+            Kinds::EVERY.map(kinds_text),
+            ["Targets: common", "Targets: likely", "Targets: all"]
+        );
+        for k in Kinds::EVERY {
+            assert!(kinds_text(k).chars().count() <= INFO_LONGEST.chars().count());
+        }
+        let v = View {
+            info: Some(Miss::NotPrimed),
+            next: [Some(Next { heading: 0.0, metres: 4.0 }), None],
+            kinds: Some(Kinds::Common),
+            ..View::default()
+        };
+        assert_eq!(values(&v).get(INFO).unwrap().text, "Targets: common");
+        assert_eq!(shown("targets-switched", INFO).unwrap(), "Targets: all");
+        assert_eq!(shown("targets-switched", TARGET_2).unwrap(), "9");
+        assert_eq!(shown("targets", INFO), None);
     }
 
     #[test]

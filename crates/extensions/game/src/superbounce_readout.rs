@@ -119,6 +119,16 @@ pub fn next(s: &State) -> [Option<Next>; rd::NEXT] {
     })
 }
 
+/// The readout's name for a target mode.
+pub fn kinds(m: crate::superbounce_options::TargetMode) -> rd::Kinds {
+    use crate::superbounce_options::TargetMode;
+    match m {
+        TargetMode::Common => rd::Kinds::Common,
+        TargetMode::Likely => rd::Kinds::Likely,
+        TargetMode::All => rd::Kinds::All,
+    }
+}
+
 /// The readout's [`View`] of the mode's state `s` under the variant's
 /// options `o`, with the miss line `info`.
 ///
@@ -128,6 +138,8 @@ pub fn next(s: &State) -> [Option<Next>; rd::NEXT] {
 /// - The miss line: `info`, with `miss_info`.
 /// - The ranked line: [`next`], the state's `second` (which the mode
 ///   leaves empty with `second_bounce` off).
+/// - The switch's line: the kinds the player has just switched the
+///   targets to (`superbounce_targets::Switch`), over the other lines.
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
 pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
@@ -141,6 +153,7 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
             .filter(|_| o.alignment),
         info: info.filter(|_| o.miss_info),
         next: next(s),
+        kinds: s.switched.map(kinds),
         tag: metres(s.marks.tag),
         targets: s.marks.targets.map(metres),
     }

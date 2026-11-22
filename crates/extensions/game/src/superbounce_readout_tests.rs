@@ -409,3 +409,28 @@ fn the_second_bounce_takes_the_fall_row_and_the_line() {
         Steer::OnSeam
     );
 }
+
+/// The kinds the player has just switched the targets to are the line's
+/// while the mode's state carries them, with every option off too: the
+/// line answers the player's own press.
+#[test]
+fn the_switch_of_the_kinds_takes_the_line() {
+    let mut s = on();
+    assert_eq!(view(&s, Options::DEFAULT, None).kinds, None);
+    s.switched = Some(TargetMode::Common);
+    let off = Options {
+        miss_info: false,
+        velocity: false,
+        alignment: false,
+        ..Options::DEFAULT
+    };
+    for o in [Options::DEFAULT, off] {
+        let v = view(&s, o, Some(Miss::NotPrimed));
+        assert_eq!(v.kinds, Some(rd::Kinds::Common));
+        assert_eq!(rd::values(&v).get(INFO).unwrap().text, "Targets: common");
+    }
+    assert_eq!(
+        [TargetMode::Common, TargetMode::Likely, TargetMode::All].map(kinds),
+        rd::Kinds::EVERY
+    );
+}

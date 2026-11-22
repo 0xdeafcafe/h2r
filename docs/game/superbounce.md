@@ -1119,6 +1119,18 @@ line of the learned file says nothing.
 On a map with nothing proven or measured, `common` shows no target. The
 list is classed once per scan, file change and mode.
 
+**Switching the kinds in the game.** Two taps of the flashlight within
+0.4 s (12 ticks from one let-go to the next, `DOUBLE_TICKS`) move the
+mode on: common, likely, all and round again
+(`superbounce_targets::Switch`, `TargetMode::next`). The variant's
+option is where a game starts; the player's switch lasts that game. For
+two seconds after it the readout's last row says which kinds are shown,
+`Targets: common`, `Targets: likely` or `Targets: all`, in place of its
+other lines ([hud-kit.md](hud-kit.md#the-superbounce-readout)). The
+flashlight is the mode's one button: the game binds it on every input
+set and layout, a tap is the bounce view's pulse and a hold its marks
+and the tag, and after two taps a biped's light is as it was.
+
 **Reachable.** Of the mode's seams, the two nearest the player can
 reach from their height are marked (`superbounce_targets::choose`,
 `sbr.target.1` and `sbr.target.2`): the feet are at least the seam's
@@ -1141,8 +1153,8 @@ not falling onto a strip, a tagged seam that is one of the
 the world marker and the [fall assist](#hold-x-the-fall-assist) follow
 the tag.
 
-`superbounce.state` has the mode's count, the tag and the marked points
-as `targets`
+`superbounce.state` has the mode in effect, its count, the tag and the
+marked points as `targets`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
 
 ### The second bounce
@@ -1208,7 +1220,7 @@ unless a variant turns it off:
 
 | Option | Type, default | Off |
 |---|---|---|
-| `targets` | `common`, `likely` or `all`; `likely` | picks the [targets](#targets)' classes; it has no off |
+| `targets` | `common`, `likely` or `all`; `likely` | picks the [targets](#targets)' classes a game starts with (the player can switch them in the game); it has no off |
 | `velocity` | bool, on | no speed row |
 | `alignment` | bool, on | no fall row: no bar, no steer line |
 | `miss_info` | bool, on | no miss row |
@@ -2274,6 +2286,7 @@ the map-view set of 2026-11-21 (concepts 1, 3, 4 and 6).
 | Nothing | Two blips on the tracker, drawn as the game's own are, filled dots: the next spot (the navpoint's) is a dot with a ring round it, and the spot after it, the landing a next crouch spot pairs with, a smaller, fainter dot. One out of the tracker's range sits on its rim, toward the spot. No other spot is on the tracker (`tracker_blips`, `TRACKER_MARKS`). Hidden while the variant turns the tracker off. |
 | Tap the flashlight | A scan pulse. A ring leaves the player at 40 units a second and crosses the tracker; each spot in the world lights as it passes, settles and is gone 4 s after it lit. |
 | Hold the flashlight | Every spot on the level is marked in the world: a small upright ring or diamond with its distance in metres (none past 40 m), dashed and dimmer when a wall is between it and the player, a chevron over or under it for a floor above or below, and a dashed line from each crouch spot to its landing. The tracker grows to twice its size into a map: the floors from the collision within 50 m and from 2.5 units below to 1.5 above the player's feet, their outline, the spots and pairs, every proven spot out of range on its rim, turned so ahead is up. Let go and it shrinks back. |
+| Tap the flashlight twice | Each tap pulses, and the pair switches the kinds of seam the target navpoints show ([Targets](#targets)). |
 
 Proven spots are drawn at full strength, likely ones at half, as the
 mode's other marks. Everything is in the HUD's colour (`0x00468c84`,

@@ -147,6 +147,9 @@ pub struct State {
     /// The seam targets' navpoints and the tag
     /// ([`crate::superbounce_targets`]).
     pub marks: Marks,
+    /// The kinds of seam the player has just switched the targets to, for
+    /// the readout's line (`superbounce_targets::Switch::switched`).
+    pub switched: Option<crate::superbounce_options::TargetMode>,
     /// In the flight after a bounce, the seams it can reach, the best
     /// first ([`crate::superbounce_second`]); none otherwise, and with
     /// the variant's `second_bounce` option off.
@@ -206,6 +209,7 @@ impl State {
         aim: None,
         tick: None,
         marks: Marks::NONE,
+        switched: None,
         second: [None; RANKED],
         charge: None,
         verb: None,
@@ -319,6 +323,10 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         velocity: s.velocity.map(v3),
         options: options_reply(crate::superbounce_options::current()),
         targets: wire::Targets {
+            mode: crate::superbounce_targets::mode()
+                .unwrap_or(crate::superbounce_options::current().targets)
+                .name()
+                .into(),
             count: crate::superbounce_targets::current().len(),
             tag: s.marks.tagged.map(v3),
             marked: s.marks.targets.iter().flatten().map(|m| v3(m.at)).collect(),
@@ -1306,6 +1314,7 @@ fn on_tick(o: &hooks::Obs) {
         aim: live.aim,
         tick: live.tick,
         marks,
+        switched: crate::superbounce_targets::switched(),
         second,
         charge: step.charge,
         verb: step.verb,

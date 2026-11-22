@@ -13,7 +13,7 @@ use super::superbounce_readout::Readout;
 pub const NAME: &str = "superbounce-all";
 
 /// The moments: a name, the superbounce HUD's state, the readout's.
-pub const MOMENTS: [(&str, &str, &str); 14] = [
+pub const MOMENTS: [(&str, &str, &str); 15] = [
     ("1-walking", "not-primed", "moving"),
     ("2-arming", "under", "idle"),
     ("3-primed-targets", "primed-full", "targets"),
@@ -28,6 +28,7 @@ pub const MOMENTS: [(&str, &str, &str); 14] = [
     ("12-miss-not-primed", "not-primed", "miss-not-primed"),
     ("13-second-bounce-targets", "bounced", "second-bounce"),
     ("14-second-bounce-lined-up", "bounced", "second-bounce-lined-up"),
+    ("15-targets-switched", "primed-full", "targets-switched"),
 ];
 
 /// Both HUDs at once.

@@ -50,6 +50,16 @@ impl TargetMode {
         }
     }
 
+    /// The next mode round the cycle common, likely, all: the player's
+    /// switch of it in the game (`superbounce_targets::Switch`).
+    pub fn next(self) -> TargetMode {
+        match self {
+            TargetMode::Common => TargetMode::Likely,
+            TargetMode::Likely => TargetMode::All,
+            TargetMode::All => TargetMode::Common,
+        }
+    }
+
     /// The enum value's name in the script.
     pub fn name(self) -> &'static str {
         match self {
