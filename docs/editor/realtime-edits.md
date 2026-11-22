@@ -138,18 +138,20 @@ measured; `edit.arena` reports it. An arena extent a move made belongs to
 the moved block's tag for `edit.batch`'s "inside one loaded tag" rule and
 for `hot_tags::path::locate`.
 
-**The native refresh.** `render_bridge::native_edits` is a queue the glue
-drains on the thread that owns the GPU objects, before the frame's native
-passes. The hot-edit glue pushes one refresh per owner after a batch or a
-revert applies (**Code**, `hot_glue::native_edit`); the drain and the
-refreshes below are slice R2's:
+**The native refresh.** `render_bridge::native_edits` is a queue with one
+share per drainer: the world's glue drains at the frame boundary once its
+world is resident, the objects' glue at the next walk once its models
+are; each applies a drain on a worker, one at a time, under the lock of
+the GPU objects the frame's passes use. The hot-edit glue pushes one refresh per owner
+after a batch or a revert applies (`hot_glue::native_edit`). A new map
+load drops what is queued:
 
 | Refresh | Does |
 |---|---|
-| `Section { bsp, owner }` same counts | decodes the section from the overlaid file with `tags::geometry::decode_section`, calls `GpuWorld::set_section_vertices` (a `queue.write_buffer` of the section's run; the buffers carry `COPY_DST`), and recomputes the draw bounds and `Ready::part_bounds`, which the built call leaves as uploaded |
-| `Section` with changed counts, or any refusal above | `native_map_work::request_bsp_load`: the world reloads on its worker from the overlaid file and is published when ready; until then `BspKey::current` fails and the parts keep their D3D draws from guest memory |
-| `Model { tag }` | decodes the `mode` from the overlaid file and replaces its entry in `LitObjects::models` (`add_model` over the old key), and the fallback `GpuModels` entry; covers moved and grown sections alike |
-| `Image { bitmap, image }` | re-decodes the image with `StageDecoder`, and `queue.write_texture`s every level of the textures keyed `(bitmap, image, signed)`; a changed size or format is refused |
+| `Section` same counts | decodes the section from the overlaid file as the load does (`native_render::load::load_sections`; a definition once per rigid placement), calls `GpuWorld::replace_section` (a `queue.write_buffer` of the section's run of both vertex buffers; the buffers carry `COPY_DST`), and recomputes the draw and world bounds and `Ready::part_bounds` (**Code**, `native_world_glue::refresh_world`) |
+| `Section` with changed counts, or any refusal above | `native_map_work::reload_bsp`: the world reloads on its worker from the overlaid file and is published when ready; until then `BspKey::current` fails and the parts keep their D3D draws from guest memory (**Code**) |
+| `Model { tag }` | decodes the `mode` from the overlaid file as the load does, uploads it into a staging set and moves it into `LitObjects` under the draw set's lock with its new coverage; a model that no longer loads natively leaves the native path and draws from guest memory; covers moved and grown sections alike. `GpuModels::replace_model` does the same for the editor's and Theater's models (**Code**, `native_objects_glue::refresh_models`) |
+| `Image { bitmap, image }` | re-decodes the image at each stage that samples it (`stage_images::decode_stages`), and `queue.write_texture`s every level of every material program texture made from it, each signed variant biased (`GpuWorld::rewrite_image`, `LitObjects::rewrite_image`); a changed size, level count or format is refused with a log line, all or nothing (**Code**) |
 
 ### Geometry
 
@@ -404,8 +406,13 @@ other machines in the game.
 
 `render_bridge::native_edits::push(Edit)`, with
 `Edit::{Section { bsp: u32, kind: u8, index: u32, grown: bool }, Model { tag: u32 }, Image { bitmap: u32, image: u32 }}`,
-called by the hot-edit glue after a batch applies. The glue for the world
-and for objects drains it (`native_world_glue`, `native_objects_glue`).
+called by the hot-edit glue after a batch applies. `bsp`, `tag` and
+`bitmap` are tag datums (matched by index). `kind` is `KIND_CLUSTER` (0),
+`KIND_INSTANCE_DEF` (1) or `KIND_MODE` (2, with `bsp` the render model's
+datum: queued as `Model`). Edits of one owner merge, a grown section
+staying grown. The glue for the world and for objects drains its share
+(`native_edits::drain(Consumer::World | Consumer::Objects)`;
+`native_world_glue`, `native_objects_glue`); an `Image` goes to both.
 Plain integers keep `render-bridge` free of the agent's types.
 
 ### The editor
@@ -499,7 +506,7 @@ methods in its own section of the runtime agent API page.
 | Slice | Goal | Owns | Tests without the game | Live check | After |
 |---|---|---|---|---|---|
 | **R1** Overlay and raw writes | the raw overlay in both file readers; `raw` and `evict` in `edit.batch`; `edit.raw.append`, `edit.stage.put`, `edit.overlay`; the journal over raw entries; the `native_edits::push` call | `crates/runtime/vfs/src/map_override*`, `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/agent-proto/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs` | overlay reads across entry edges and past the end; a raw write changes the file view and a synthetic resident copy and nothing else; `was` mismatch writes nothing; revert restores both; a non-resident owner takes the overlay only; co-op, client and Live refuse | `edit.batch` with one `raw` vertex write on a visible cluster, then `edit.overlay` and `render.frame` with `snap` before and after; `edit.revert` restores the picture | nothing |
-| **R2** Native refresh | `native_edits`; section bounds recompute; world reload request; model replace; image rewrite | `crates/rewrites/native-render`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_objects_glue.rs` | `GpuWorld` after a `Section` edit equals a world loaded from the edited bytes (vertices and bounds), beside `crates/rewrites/native-render/tests/gpu.rs`; a replaced model draws its new vertices (`tests/models_gpu.rs`); an image rewrite changes the sampled texel; a size change is refused | with R1: the frame columns `native_world_opaque_prereserved_draws` and `native_world_opaque_guest_indexed_draws` name which path drew the edited part, and both pictures change | nothing |
+| **R2** Native refresh (built) | `native_edits`; section bounds recompute; world reload request; model replace; image rewrite | `crates/rewrites/native-render`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_objects_glue.rs` | `GpuWorld` after a `Section` edit equals a world loaded from the edited bytes (vertices and bounds), beside `crates/rewrites/native-render/tests/gpu.rs`; a replaced model draws its new vertices (`tests/models_gpu.rs`); an image rewrite changes the sampled texel; a size change is refused | with R1: the frame columns `native_world_opaque_prereserved_draws` and `native_world_opaque_guest_indexed_draws` name which path drew the edited part, and both pictures change | nothing |
 | **R3** Placement transactions | `world.placement.edit`; linked creation; relink; name repoints; capacity from the loaded count; the count-change refusal with peers | `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/calls/placement.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` | fake game: add into a dead tail slot, remove with swap, and the undo of each leave the block byte-equal to the editor's save of the same edit; an occupant's index follows a relink; a refused shape writes the record and reports `created: false`; a `was` mismatch changes nothing | `world.placement.edit` adding a scenery entry after a removal, then `world.object` shows the new object with its placement; a BSP switch or `map.reload {}` keeps one object per entry | nothing |
 | **R4** Edit arena and block moves | the arena, its allocator, `moves`, `edit.arena`; arena capacity for R3's growth | `crates/extensions/hot-tags/src/arena.rs` (new) and the batch, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, the capacity call in `calls/placement.rs` | allocator: first fit, free, coalesce, full; a move then a path read resolves through the new address; revert puts the pair back and frees; an `at` write inside a moved block is admitted | `edit.arena` on a loaded multiplayer map records the free size (a note in `docs/editor/notes/`); a ninth scenery entry on a block of eight appears and survives a BSP switch | R1, R3 |
 | **R5** Editor: geometry and pixels live | `play/raw_sync.rs`; the effect chips; Pending rows; dirty spans from `GeometrySession`; the stroke push | `crates/apps/studio/src/play/raw_sync.rs` (new), `crates/apps/studio/src/play/tag_sync.rs`, `crates/apps/studio/src/play.rs`, `crates/tools/geometry-edit` | fake game: a `mesh.transform` is one batch with `raw` and bounds; undo sends the old bytes; View mode sends nothing; a mismatch leaves the batch pending; a grown edit sends append, `writes`, `evict` in that order | `mesh.transform` through the editor's API on a paired game, `render.frame` with `snap` shows the moved faces; `mirror.pending` is empty after | R1; R2 for the native picture; modeling slices 5 to 7 for pixels and grown sections |
@@ -522,6 +529,10 @@ which is why R4 follows R1.
 - **Code**: `GpuWorld::set_section_vertices`
   (`crates/rewrites/native-render/src/gpu.rs`) writes a section's run and
   leaves bounds alone; its callers are the editor's viewport only.
+  `GpuWorld::replace_section` writes the run and recomputes the bounds;
+  the native refresh calls it (tests
+  `crates/rewrites/native-render/tests/edits_gpu.rs`,
+  `world::tests::a_replaced_section_equals_a_world_built_from_it`).
 - **Code**: the D3D device re-reads written ranges
   (`crates/platform/d3d/src/vertex_cache.rs`, `dirty.rs`); `Lock` is not a
   hook.
@@ -539,8 +550,12 @@ which is why R4 follows R1.
   (scenario-editor.md section 6); the MOPP activation on a BSP activation
   (multiplayer.md).
 - **Design**: the overlay, the four primitives in one batch, the arena,
-  the refresh queue, the block transaction for placements, stage and
-  commit for collision, same-size-only pixels.
+  the block transaction for placements, stage and commit for collision,
+  same-size-only pixels.
+- **Code**: the refresh queue and its drainers
+  (`render_bridge::native_edits`, `native_world_glue::refresh_world`,
+  `native_objects_glue::refresh_models`); tested without the game, not
+  yet driven by a batch (R1 makes the `push` call).
 - **S**: a resident section buffer is the file block at the same offsets.
   The `was` comparison of slice R1 on a real map verifies it.
 - **S**: the texture cache's handle leads to the resident pixels'
