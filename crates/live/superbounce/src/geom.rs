@@ -269,3 +269,15 @@ pub(crate) fn point_line(p: Vec3, a: Vec3, b: Vec3) -> f32 {
     }
     len(cross(d, sub(p, a))) / l
 }
+
+/// The horizontal distance from `p` to the segment `edge`.
+pub(crate) fn segment_xy([a, b]: [Vec3; 2], p: V2) -> f32 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a[0] + dx * t - p[0]).hypot(a[1] + dy * t - p[1])
+}

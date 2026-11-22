@@ -2,10 +2,12 @@
 //! geometry (docs/game/superbounce.md, "Spots in the geometry").
 //!
 //! A superbounce needs two things: the player's level pair word at -3
-//! (a forced crouch, [`Kind::Crouch`] spots), then a landing on a narrow
-//! strip of floor between two parallel floor edges, at least one a
-//! concave crease, that the capsule sinks onto at once ([`Kind::Bounce`]
-//! spots). The scan is pure: it takes the
+//! (a forced crouch, [`Kind::Crouch`] spots), then a landing on a seam in
+//! the collision, the joint where two floor surfaces meet, that the
+//! capsule sinks into ([`Kind::Bounce`] spots: a narrow strip between two
+//! parallel joints, at least one a concave crease, targeted on the joint
+//! the pinch sits on; and single creases, candidates for the sim's
+//! training). The scan is pure: it takes the
 //! collision surfaces and returns spots. Reading them out of a `.map`
 //! is [`scan_map`].
 //!
@@ -18,6 +20,7 @@ pub mod ghost;
 pub mod learned;
 mod read;
 mod scan;
+pub mod speed;
 pub mod verified;
 pub mod view;
 
@@ -115,10 +118,16 @@ pub enum Shape {
     #[default]
     Slot,
     /// One concave crease between two walkable floors (a flat floor at the
-    /// foot of a ramp): a candidate for a game run to try, with a launch
-    /// estimate from its own dihedral (docs/game/superbounce.md, "Bounce",
-    /// "Single creases").
+    /// foot of a ramp): a candidate for the sim's training to test
+    /// ([`Spot::candidate`]), with a launch estimate from its own dihedral
+    /// and no speed (docs/game/superbounce.md, "Bounce", "Single
+    /// creases"). Not marked for play until proved.
     Crease,
+    /// Two ramps meeting at the bottom, a V (Sanctuary's): a single crease
+    /// whose two floors both tilt and rise away from it. The groove's
+    /// bottom line is the target. A candidate like [`Shape::Crease`],
+    /// ranked over every other single crease.
+    Vee,
 }
 
 impl Shape {
@@ -127,6 +136,7 @@ impl Shape {
         match self {
             Shape::Slot => "slot",
             Shape::Crease => "crease",
+            Shape::Vee => "vee",
         }
     }
 }
@@ -135,15 +145,17 @@ impl Shape {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Spot {
     pub kind: Kind,
-    /// The line to draw: for a bounce, the strip's midline at floor
+    /// The line to draw: for a bounce, the target line, the seam the
+    /// pinch sits on (a slot's seam, or a crease's own joint) at floor
     /// height; for a crouch spot, the side where standing becomes clear.
     pub edge: [Vec3; 2],
-    /// Where a player stands to use it: on the strip, a little toward the
-    /// crease, or inside the forced-crouch place. A unit's origin.
+    /// Where a player stands to use it, a unit's origin: for a bounce, the
+    /// aim point, on the target line's middle (or a learned line's aim,
+    /// [`learned::apply`]); for a crouch spot, inside the forced-crouch
+    /// place.
     pub stand: Vec3,
-    /// Bounce only: how far (world units) the player must fall onto the
-    /// strip for the landing to reach it (0 for a standing jump). Crouch
-    /// spots: 0.
+    /// Bounce only: a measured drop (world units) onto the strip; 0 when
+    /// none is measured, which is every scanned spot. Crouch spots: 0.
     pub fall: f32,
     /// Bounce only: the estimated launch speed straight up (world units a
     /// second) for a primed landing after `fall`. Crouch spots: 0.
@@ -153,19 +165,21 @@ pub struct Spot {
     pub drift: [f32; 2],
     /// 0..1: how sure the scan is; 1 for a proven crouch spot.
     pub score: f32,
-    /// Bounce: the gap between the slot's two joints (world units), the
-    /// ribbon's real width. Crouch: the widest the forced band measures
-    /// across its edge.
+    /// Bounce: the landing band (world units), centred on `edge`.
+    /// Unmeasured: a slot's is the gap between its two joints, a crease's
+    /// a fixed 0.1, until the sim measures them. Crouch: the widest the
+    /// forced band measures across its edge.
     pub width: f32,
-    /// Bounce: the downward speed (world units a second) the landing must
-    /// touch down at for the capsule to sink onto both edges; `fall` is
-    /// worked from it. Crouch spots: 0.
+    /// Bounce: a measured touchdown speed (world units a second, downward)
+    /// the landing needs; 0 when none is measured, which is every scanned
+    /// spot, and then nothing shows a speed for it. Crouch spots: 0.
     pub need: f32,
     /// Crouch: [`Status::Proven`] near a measured priming place, else
     /// [`Status::Likely`]. Bounce spots: `Likely` (the measured bounces
     /// are the bots' list, `crates/live/bots/src/glitches/spots.rs`). A
     /// map's verified file ([`verified::apply`]) makes either kind
-    /// `Proven` or `Failed`.
+    /// `Proven` or `Failed`; a learned file's `learned` or `partial` line
+    /// ([`learned::apply`]) makes a bounce spot `Proven`.
     pub status: Status,
     /// Crouch: the unit direction (X and Y) from `stand` to the standing
     /// room next to it, the way out. Bounce spots: zero.
@@ -173,8 +187,20 @@ pub struct Spot {
     /// Crouch: the edges the standing capsule hits at `stand`. Bounce
     /// spots: empty.
     pub lip: Lip,
-    /// Bounce: a two-joint slot or a single crease. Crouch spots: `Slot`.
+    /// Bounce: a two-joint slot, a single crease or a V. Crouch spots:
+    /// `Slot`.
     pub shape: Shape,
+}
+
+impl Spot {
+    /// A single crease or V nothing has proved: a candidate the sim's
+    /// training tests (`h2 sim train`), never marked for play, the HUD or
+    /// the assist (docs/game/superbounce.md, "Single creases").
+    pub fn candidate(&self) -> bool {
+        self.kind == Kind::Bounce
+            && matches!(self.shape, Shape::Crease | Shape::Vee)
+            && self.status != Status::Proven
+    }
 }
 
 /// A measured place where a forced crouch primed the pair word: a unit's
@@ -280,9 +306,9 @@ pub struct Poly {
 /// Every spot in a set of collision polygons (a map's structure BSP plus
 /// its placed instanced geometry, already in world space).
 ///
-/// Bounce spots come first (slots and single creases together, at most
-/// 512), then crouch spots (at most 12, by the stricter rules), each kind
-/// best score first. With no [`Context`]: no starting locations and no
+/// Bounce spots come first (slots and single creases together, ranked by
+/// score alone), then crouch spots (at most 12, by the stricter rules),
+/// each kind best score first. With no [`Context`]: no starting locations and no
 /// proven places. A heuristic: the thresholds and their calibration
 /// against the two measured Ascension spots are in `bounce.rs` and
 /// `crouch.rs`.

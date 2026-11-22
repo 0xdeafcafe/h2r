@@ -22,8 +22,9 @@
 
 use std::cmp::Ordering;
 
-use crate::Vec3;
+use crate::geom::segment_xy;
 use crate::verified::{MATCH, MATCH_Z};
+use crate::{Kind, Spot, Vec3};
 
 /// The file format's version; [`parse`] refuses any other. It rises
 /// whenever the format or what the route makes of a knob changes.
@@ -704,6 +705,71 @@ pub fn entry_for(entries: &[Entry], stand: Vec3) -> Option<&Entry> {
         let d = |e: &Entry| (e.at[0] - stand[0]).hypot(e.at[1] - stand[1]);
         d(a).total_cmp(&d(b)).then_with(|| order(a, b))
     })
+}
+
+/// The map's learned lines applied to scanned `spots`: the sim's measured
+/// aim outranks the scan's. A bounce spot whose line is `learned` or
+/// `partial` with a hit (some try bounced) and has an aim (`ax ay`) has
+/// its target moved onto it: `stand` to the aim (its height kept), and
+/// `edge` across, keeping its direction and length, so the line runs
+/// through the aim. Its status is left alone: a line never proves a site
+/// (the training writes the word; only a primed game run proves,
+/// [`crate::verified`]). Other lines and crouch spots are left as they
+/// are.
+///
+/// A line belongs to one spot: of the bounce spots it is about
+/// ([`Entry::is_of`]), the one whose target line passes nearest its aim
+/// (with no aim, the one standing nearest it). Ascension's slot (target
+/// y 4.000) and its crease candidate (y 3.800) are both within reach of
+/// the line at y 3.88; its aim, y 3.985, is on the slot's seam, so the
+/// slot takes it and the crease stays where it is.
+pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
+    if entries.is_empty() {
+        return;
+    }
+    let before: Vec<Spot> = spots.to_vec();
+    let owner = |e: &Entry, s: &Spot| match e.knobs.aim {
+        Some(aim) => segment_xy(s.edge, aim),
+        None => (e.at[0] - s.stand[0]).hypot(e.at[1] - s.stand[1]),
+    };
+    for (i, s) in spots.iter_mut().enumerate() {
+        if s.kind != Kind::Bounce {
+            continue;
+        }
+        let Some(e) = entry_for(entries, s.stand) else {
+            continue;
+        };
+        if !matches!(e.state, State::Learned | State::Partial) || e.hits == 0 {
+            continue;
+        }
+        let mine = owner(e, &before[i]);
+        let taken = before.iter().enumerate().any(|(k, o)| {
+            k != i && o.kind == Kind::Bounce && e.is_of(o.stand) && owner(e, o) < mine
+        });
+        if taken {
+            continue;
+        }
+        if let Some(aim) = e.knobs.aim {
+            retarget(s, aim);
+        }
+    }
+}
+
+/// `s`'s target moved onto `aim`: `stand` there, `edge` moved across its
+/// own line (or, a point, onto the aim) so that it runs through it.
+fn retarget(s: &mut Spot, aim: [f32; 2]) {
+    let [a, b] = s.edge;
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l = dx.hypot(dy);
+    let (ox, oy) = if l > 1e-6 {
+        let (nx, ny) = (-dy / l, dx / l);
+        let d = (aim[0] - a[0]) * nx + (aim[1] - a[1]) * ny;
+        (nx * d, ny * d)
+    } else {
+        (aim[0] - a[0], aim[1] - a[1])
+    };
+    s.edge = [[a[0] + ox, a[1] + oy, a[2]], [b[0] + ox, b[1] + oy, b[2]]];
+    s.stand = [aim[0], aim[1], s.stand[2]];
 }
 
 /// The knobs the route plays at the site standing at `stand`: its line's,

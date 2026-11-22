@@ -1,21 +1,29 @@
 //! Bounce spots: a narrow strip of walkable floor between two parallel
-//! floor joints, at least one of them a concave crease
-//! (docs/game/superbounce.md, "Spots in the geometry", "Bounce").
+//! floor joints, at least one of them a concave crease, and the single
+//! creases the sim's training tries (docs/game/superbounce.md, "Spots in
+//! the geometry", "Bounce").
 //!
 //! At Ascension the touchdown tick's two contacts (normals `(0, −1, 0)` at
 //! y 4.105 and `(0, 0.9993, 0.0372)` at y 3.939) are Havok's contacts with
-//! floor edges, not walls: the strip y 3.8..4.0 between the crease where
-//! the ramp (normal z 0.8396) meets the floor and a flat seam with the
-//! next floor piece. A capsule (radius 0.175) not caught by the floor
-//! sinks onto both edges at once; the crease's tilt is what is left
-//! upward.
+//! floor edges, not walls. The strip y 3.8..4.0 has two joints: the crease
+//! where the ramp (normal z 0.8396) meets the floor at y 3.800, and a flat
+//! seam with the next floor piece at y 4.000. The contacts straddle
+//! y 4.02, on the seam: the pinch sits on the seam, and a spot's target
+//! line is that joint ([`strip`]).
 //!
 //! A single concave crease (a flat floor at the foot of a ramp) is a
 //! candidate of its own ([`Shape::Crease`]): the Zanzibar window landing is
 //! one, a flat floor meeting a 17.6° ramp along y −26.70, with no second
-//! joint (docs/game/superbounce.md, "Single creases").
-use crate::geom::{Grid, V2, dot, dot2, len, len2, plane_z, point_line, scale, sub, sub2, unit};
-use crate::scan::{Face, ORIGIN_LIFT, WALKABLE, best};
+//! joint (docs/game/superbounce.md, "Single creases"). Two ramps meeting
+//! at the bottom, a V ([`Shape::Vee`], Sanctuary's), are single creases
+//! too, ranked high, with the groove's bottom line as the target.
+//! Candidates are for the sim's training to test; play shows them only
+//! once proved. A seam with structure over it nearer than a launch climbs
+//! ([`covered`]) is no spot at all.
+use crate::geom::{
+    Grid, V2, dot, dot2, inside2, len, len2, plane_z, point_line, scale, sub, sub2, unit, xy_ccw,
+};
+use crate::scan::{Face, ORIGIN_LIFT, WALKABLE, grid_of};
 use crate::{BounceExplain, CreaseNote, Kind, RADIUS, Shape, Spot, Vec3};
 
 /// Two polygon edges are one joint when both ends of one are this close
@@ -47,36 +55,37 @@ const MIN_LAUNCH: f32 = 3.0;
 /// Launch estimates past this are capped and scored down: the line is
 /// fitted to one crease.
 const MAX_LAUNCH: f32 = 60.0;
-/// Pinch past first touch: the shallowest traced bounce sank 0.070 below
-/// the floor, and on the 0.2 strip the capsule's bottom first touches both
-/// edges at 0.031 (docs/game/superbounce.md, "Traces").
-const PINCH_DEPTH: f32 = 0.04;
-/// Ticks a second the bounce was measured at (the lab runs at 30).
-const TICKS: f32 = 30.0;
-/// Vertical speed a standing jump lands at on the floor it left (units/s):
-/// "a standing jump at the patch lands at −3".
-const JUMP_LAND: f32 = 3.0;
-/// Gravity (units/s²), fitted from the recipe: a standing jump lands at 3,
-/// the jump off the upper level (z −0.76) onto the patch (z −3.19, a 2.43
-/// drop) lands at 5.4: (5.4² − 3²) / (2 × 2.43) ≈ 4.15.
-const GRAVITY: f32 = 4.15;
-/// The stand point is this far from the strip's midline toward the
-/// crease, so drifting across carries the landing onto the midline: the
-/// measured spot stands at y 3.88 on the strip y 3.8..4.0.
-const STAND_BACK: f32 = 0.02;
 
-/// A single crease's landing band (world units): its ribbon's width and
-/// what the verifier counts as on it. A guess: the lower sphere touches
-/// both floors only on one line, and the traced Ascension bounces landed
-/// within 0.1 of their slot's midline.
+/// A single crease's landing band (world units), centred on the crease:
+/// its ribbon's width and what the verifier counts as on it.
+// TODO(sim): unmeasured. Measure the band across the crease with the
+// sim's training (`h2 sim train`) and replace this. 0.1 holds the second
+// Zanzibar window try, 4.8 cm on the ramp side of the crease, which fell
+// through the floor at the joint (docs/game/notes/superbounce-spots.md).
 const CREASE_BAND: f32 = 0.1;
-/// Single creases kept at most, best first, before they join the slots:
-/// a hilly map has a fold at every ramp's foot, and they must not crowd
-/// the slots out of the scan's cap.
-const MAX_CREASES: usize = 128;
+/// Bounce spots kept at most, slots and candidates together, best score
+/// first. A sanity bound, not a ranking cut: a map's creases and slots
+/// come to a few hundred, so a high-scoring candidate (the Zanzibar
+/// window, 0.53) is never dropped for lower ones.
+pub(crate) const MAX_BOUNCES: usize = 4096;
 /// Ascension's crease, `1 − cos(dihedral)` with its ramp at z 0.8396: a
 /// single crease's score counts its own against this.
 const ASCENSION_CREASE: f32 = 1.0 - 0.8396;
+/// A V's two floors each tilt at least this from flat (their normals' z
+/// under cos 5°): a flat floor at a ramp's foot is no V.
+const VEE_TILT: f32 = 0.9962;
+/// The cover test samples the target line this often (world units), and
+/// both ends.
+const COVER_STEP: f32 = 0.25;
+/// Faces less than this over the floor are the floor itself, not cover.
+const COVER_MIN: f32 = 0.05;
+/// A "monster bounce" (Halopedia: a V of converging lines): at least this
+/// many other creases end on a spot's target line, crossing it
+/// ([`converging`]).
+const MONSTER_CONVERGING: usize = 2;
+/// A monster's score at [`MONSTER_CONVERGING`] creases, 0.05 more for each
+/// further one to 0.95: ranked with the Vs. Unmeasured, like the Vs'.
+const MONSTER_SCORE: f32 = 0.85;
 
 /// How two walkable polygons meet along a shared edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,25 +142,61 @@ fn floor_joints(faces: &[Face]) -> Vec<Joint> {
 }
 
 /// Two-joint slots and single creases, each merged along its line, best
-/// first.
+/// score first, at most [`MAX_BOUNCES`]. Creases are ranked with the slots
+/// by score alone: no cap of their own drops a high-scoring one.
 pub(crate) fn bounces(faces: &[Face]) -> Vec<Spot> {
     let joints = floor_joints(faces);
     let creases: Vec<Spot> = joints
         .iter()
         .filter_map(|j| crease(faces, j).ok())
         .collect();
-    let mut creases = merge_bounces(creases);
-    creases.sort_by(|a, b| b.score.total_cmp(&a.score));
-    creases.truncate(MAX_CREASES);
     let mut out = merge_bounces(slots(faces, &joints));
-    out.extend(creases);
-    best(out)
+    out.extend(merge_bounces(creases));
+    let grid = grid_of(faces, &(0..faces.len()).collect::<Vec<_>>());
+    out.retain(|s| covered(faces, &grid, s.edge).is_none());
+    for s in &mut out {
+        let n = converging(&joints, s.edge);
+        if n >= MONSTER_CONVERGING {
+            let more = (n.min(MONSTER_CONVERGING + 2) - MONSTER_CONVERGING) as f32;
+            s.score = s.score.max(MONSTER_SCORE + 0.05 * more);
+        }
+    }
+    out.sort_by(|a, b| b.score.total_cmp(&a.score));
+    out.truncate(MAX_BOUNCES);
+    out
+}
+
+/// How many concave creases other than `line`'s own run into it: an end
+/// on the line (to [`JOIN_TOL`]), not parallel to it. Lines converging on
+/// a seam, a monster bounce's shape. Seams are not counted: a floor's
+/// triangulation ends coplanar seams on every joint.
+fn converging(joints: &[Joint], line: [Vec3; 2]) -> usize {
+    let Some(u) = unit(sub(line[1], line[0])) else {
+        return 0;
+    };
+    let l = len(sub(line[1], line[0]));
+    joints
+        .iter()
+        .filter(|j| matches!(j.join, Join::Crease(_)))
+        .filter(|j| {
+            let Some(d) = unit(sub(j.b, j.a)) else {
+                return false;
+            };
+            dot(u, d).abs() < PARALLEL
+                && [j.a, j.b].into_iter().any(|p| {
+                    let t = dot(sub(p, line[0]), u);
+                    (-JOIN_TOL..=l + JOIN_TOL).contains(&t)
+                        && point_line(p, line[0], line[1]) <= JOIN_TOL
+                })
+        })
+        .count()
 }
 
 /// The bounce side of `--explain`: every concave joint within `r` of `at`
 /// judged as a single crease, and the bounce spots near it.
 pub(crate) fn explain(faces: &[Face], at: Vec3, r: f32) -> BounceExplain {
     let joints = floor_joints(faces);
+    let grid = grid_of(faces, &(0..faces.len()).collect::<Vec<_>>());
     let creases = joints
         .iter()
         .filter_map(|j| {
@@ -163,7 +208,16 @@ pub(crate) fn explain(faces: &[Face], at: Vec3, r: f32) -> BounceExplain {
             }
             let dihedral = (1.0 - c).clamp(-1.0, 1.0).acos().to_degrees();
             let (spot, rejected) = match crease(faces, j) {
-                Ok(s) => (Some(s), None),
+                Ok(s) => match covered(faces, &grid, s.edge) {
+                    Some(h) => (
+                        None,
+                        Some(format!(
+                            "covered: structure {h:.2} over it, under the {:.2} a launch needs",
+                            crate::speed::cover()
+                        )),
+                    ),
+                    None => (Some(s), None),
+                },
                 Err(why) => (None, Some(why)),
             };
             Some(CreaseNote {
@@ -183,20 +237,27 @@ pub(crate) fn explain(faces: &[Face], at: Vec3, r: f32) -> BounceExplain {
 
 /// The single-crease candidate on joint `j`, or why it is none.
 ///
+/// - **edge**: the crease itself, at floor height: the joint is the
+///   target line.
 /// - **launch**: [`LAUNCH_PER_CREASE`] × its own `1 − cos(dihedral)`, the
 ///   Ascension calibration with no second joint: 5.2 units/s for
 ///   Zanzibar's 17.6° ramp, the "mini bounce" scale.
 /// - **drift**: across the crease onto the flatter floor, the side
 ///   landed on.
-/// - **stand**: where the capsule's lower sphere rests touching both
-///   floors, its centre `r · tan(θ/2)` out over the flatter one (2.7 cm
-///   at Zanzibar), at that floor's height plus the origin's lift.
-/// - **need**, **fall**: the slot rule with no gap: the sphere touches
-///   both at once, so the landing needs [`PINCH_DEPTH`] of sink, 2.4
-///   units/s, and a standing jump gives that (`fall` 0). A guess.
+/// - **stand**: the crease's middle, on the line, at its height plus the
+///   origin's lift.
+/// - **width**: [`CREASE_BAND`], centred on the crease; unmeasured.
+/// - **need**, **fall**: none. Nothing has measured what a crease needs,
+///   so the spot carries no speed and no drop.
 /// - **score**: 0.3, plus 0.2 × its length over a diameter (to 1), plus
 ///   0.1 × its crease over Ascension's (to 1): at most 0.6, so a slot of
 ///   the traced shape outranks every crease.
+///
+/// Two ramps meeting at the bottom, each tilted over 5° and rising away
+/// from the joint, are a V ([`Shape::Vee`]): the groove's bottom line is
+/// the target, and it scores 0.5, plus 0.25 × its length fit, plus 0.2 ×
+/// its crease fit, at most 0.95, over every other single crease (the
+/// user's Sanctuary bounces are Vs).
 fn crease(faces: &[Face], j: &Joint) -> Result<Spot, String> {
     let Join::Crease(c) = j.join else {
         return Err("a seam".into());
@@ -227,16 +288,22 @@ fn crease(faces: &[Face], j: &Joint) -> Result<Spot, String> {
     } else {
         [-perp[0], -perp[1]]
     };
-    let theta = (1.0 - c).clamp(-1.0, 1.0).acos();
-    let off = RADIUS * (theta / 2.0).tan();
     let m = mid([j.a, j.b]);
-    let at = [m[0] + drift[0] * off, m[1] + drift[1] * off];
-    let floor = plane_z(faces[flat].poly, at).unwrap_or(m[2]);
-    let stand = [at[0], at[1], floor + ORIGIN_LIFT];
-    let need = 2.0 * TICKS * PINCH_DEPTH;
-    let fall = ((need * need - JUMP_LAND * JUMP_LAND) / (2.0 * GRAVITY)).max(0.0);
-    let mut score =
-        0.3 + 0.2 * (length / (2.0 * RADIUS)).min(1.0) + 0.1 * (c / ASCENSION_CREASE).min(1.0);
+    let stand = [m[0], m[1], m[2] + ORIGIN_LIFT];
+    let (na, nb) = (faces[p].poly.normal, faces[q].poly.normal);
+    // Each floor's horizontal normal points across the joint toward it
+    // when the floor rises away from it: opposite sides for a V.
+    let (sa, sb) = (dot2(perp, [na[0], na[1]]), dot2(perp, [nb[0], nb[1]]));
+    let vee = na[2] < VEE_TILT && nb[2] < VEE_TILT && sa * sb < 0.0;
+    let (length_fit, crease_fit) = (
+        (length / (2.0 * RADIUS)).min(1.0),
+        (c / ASCENSION_CREASE).min(1.0),
+    );
+    let mut score = if vee {
+        0.5 + 0.25 * length_fit + 0.2 * crease_fit
+    } else {
+        0.3 + 0.2 * length_fit + 0.1 * crease_fit
+    };
     if launch_raw > MAX_LAUNCH {
         score *= 0.5;
     }
@@ -244,15 +311,52 @@ fn crease(faces: &[Face], j: &Joint) -> Result<Spot, String> {
         kind: Kind::Bounce,
         edge: [j.a, j.b],
         stand,
-        fall,
         launch,
         drift,
         score,
         width: CREASE_BAND,
-        need,
-        shape: Shape::Crease,
+        shape: if vee { Shape::Vee } else { Shape::Crease },
         ..Spot::default()
     })
+}
+
+/// How high (world units) the lowest structure over `line` is, when at
+/// least half the points along it (each [`COVER_STEP`], and both ends)
+/// have a face over them within [`crate::speed::cover`] of their floor:
+/// a seam under a low ceiling or indoors, which can't launch anyone.
+/// `None` for open air. A column cast up from each point: any face that
+/// isn't vertical counts, an upper floor as much as a ceiling.
+fn covered(faces: &[Face], grid: &Grid, line: [Vec3; 2]) -> Option<f32> {
+    let reach = crate::speed::cover();
+    let n = ((len(sub(line[1], line[0])) / COVER_STEP).ceil() as usize).max(1);
+    let mut near = Vec::new();
+    let mut hits = 0;
+    let mut lowest = f32::INFINITY;
+    for k in 0..=n {
+        let t = k as f32 / n as f32;
+        let p = [
+            line[0][0] + (line[1][0] - line[0][0]) * t,
+            line[0][1] + (line[1][1] - line[0][1]) * t,
+            line[0][2] + (line[1][2] - line[0][2]) * t,
+        ];
+        let at = [p[0], p[1]];
+        grid.query(at, at, &mut near);
+        let over = near
+            .iter()
+            .map(|&i| &faces[i as usize])
+            .filter(|f| f.b.max[2] > p[2] + COVER_MIN && f.b.min[2] <= p[2] + reach)
+            .filter_map(|f| {
+                let h = plane_z(f.poly, at)? - p[2];
+                (h > COVER_MIN && h <= reach && inside2(&xy_ccw(&f.poly.verts), at, 1e-4))
+                    .then_some(h)
+            })
+            .reduce(f32::min);
+        if let Some(h) = over {
+            hits += 1;
+            lowest = lowest.min(h);
+        }
+    }
+    (2 * hits >= n + 1).then_some(lowest)
 }
 
 /// Every strip between two joints that makes a slot.
@@ -373,8 +477,43 @@ fn same_floor(faces: &[Face], i: usize, k: usize) -> bool {
             && dot(a.normal, sub(b.verts[0], a.verts[0])).abs() <= JOIN_TOL)
 }
 
+/// The point of joint `j`'s horizontal line nearest `p`.
+fn foot(j: &Joint, p: V2) -> V2 {
+    let a = xy(j.a);
+    let d = sub2(xy(j.b), a);
+    let t = dot2(sub2(p, a), d) / dot2(d, d).max(1e-12);
+    [a[0] + d[0] * t, a[1] + d[1] * t]
+}
+
 /// The bounce spot on the strip between joints `p` and `q`, if they make
 /// one.
+///
+/// Its target line (`edge`) is the joint the pinch sits on, over the two
+/// joints' overlap, at that joint's own height, and `stand` is on it.
+/// Which joint: Ascension's slot has two, the concave crease at y 3.800
+/// (ramp meets strip) and the flat seam at y 4.000 (strip meets the main
+/// floor piece). The touchdown tick's two contacts, y 4.105 with normal
+/// `(0, −1, 0)` and y 3.939 with normal `(0, 0.9993, 0.0372)`, straddle
+/// y 4.022, and the stepped run's origin was y 4.04: the capsule sank
+/// into the seam between the edges of the two coplanar pieces. A contact
+/// with the ramp would carry the ramp's normal (z 0.84), and none did. The
+/// bots' one learned Ascension site settled its aim at y 3.985, on the
+/// seam too. So with a seam the pinch is on the seam. Two creases (a
+/// trough) have no seam and nothing measured: the sharper crease is
+/// taken.
+///
+/// The community guide's Ascension spot says "jump onto the line where
+/// the ramp meets the ground", the crease. From the capsule: centred at
+/// y 4.02 the lower sphere (radius 0.175) reaches y 3.845, short of the
+/// crease at 3.800; however deep it sinks its centre stays over 0.22 from
+/// the crease line, the ramp polygon's nearest edge, so neither is
+/// touched, and the 3.939 contact is 0.14 from the crease. The
+/// guide names the line a player sees: the seam between coplanar pieces
+/// is not drawn, and the two are 0.2 apart (about 60 cm), one landing's
+/// width. Both lines stay targets for the sim to settle: the slot on the
+/// seam, and the crease's own candidate on y 3.800 ([`crease`]).
+///
+/// `width` is the landing band centred on that line.
 fn strip(faces: &[Face], p: &Joint, q: &Joint) -> Option<Spot> {
     // `c` is the crease (the sharper, for two); `o` the other joint.
     let (c, o) = match (p.join, q.join) {
@@ -419,21 +558,25 @@ fn strip(faces: &[Face], p: &Joint, q: &Joint) -> Option<Spot> {
     if hi - lo < MIN_OVERLAP {
         return None;
     }
-    // The midline between them at floor height, at both ends.
-    let mid_at = |t: f32| -> Option<Vec3> {
+    // The joint the pinch sits on: the seam when there is one.
+    let on_seam = o.join == Join::Seam;
+    // The target line's point across from the crease at `t`, at floor
+    // height on its joint.
+    let target_at = |t: f32| -> Option<Vec3> {
         let cxy = [c.a[0] + u[0] * t, c.a[1] + u[1] * t];
-        let oxy = [cxy[0] + drift[0] * gap, cxy[1] + drift[1] * gap];
+        let oxy = foot(o, cxy);
         let (cz, oz) = (line_z(c, cxy), line_z(o, oxy));
         // The floor between rises at most 45°.
-        ((cz - oz).abs() <= gap + JOIN_TOL).then(|| {
-            [
-                cxy[0] + drift[0] * gap / 2.0,
-                cxy[1] + drift[1] * gap / 2.0,
-                (cz + oz) / 2.0,
-            ]
+        let across = len2(sub2(oxy, cxy));
+        ((cz - oz).abs() <= across + JOIN_TOL).then(|| {
+            if on_seam {
+                [oxy[0], oxy[1], oz]
+            } else {
+                [cxy[0], cxy[1], cz]
+            }
         })
     };
-    let (e0, e1) = (mid_at(lo)?, mid_at(hi)?);
+    let (e0, e1) = (target_at(lo)?, target_at(hi)?);
 
     let launch_raw = LAUNCH_PER_CREASE * (c.join.crease() + o.join.crease());
     if launch_raw < MIN_LAUNCH {
@@ -441,50 +584,38 @@ fn strip(faces: &[Face], p: &Joint, q: &Joint) -> Option<Spot> {
     }
     let launch = launch_raw.min(MAX_LAUNCH);
 
-    // fall: the touchdown tick moves the capsule v / 30 down; started
-    // anywhere in the tick, half the landings sink at least v / 60. With
-    // the floor not caught, the capsule's bottom reaches both edges
-    // r − √(r² − (gap/2)²) below the floor, and a bounce needs PINCH_DEPTH
-    // more.
-    let half = gap / 2.0;
-    let first_touch = RADIUS - (RADIUS * RADIUS - half * half).sqrt();
-    let land = 2.0 * TICKS * (first_touch + PINCH_DEPTH);
-    let fall = ((land * land - JUMP_LAND * JUMP_LAND) / (2.0 * GRAVITY)).max(0.0);
-
-    let m = [
-        (e0[0] + e1[0]) / 2.0,
-        (e0[1] + e1[1]) / 2.0,
-        (e0[2] + e1[2]) / 2.0,
-    ];
-    let stand = [
-        m[0] - drift[0] * STAND_BACK,
-        m[1] - drift[1] * STAND_BACK,
-        m[2] + ORIGIN_LIFT,
-    ];
+    let m = mid([e0, e1]);
+    let stand = [m[0], m[1], m[2] + ORIGIN_LIFT];
+    // The landing band, centred on the target line. TODO(sim): unmeasured.
+    // The slot's gap is the scale the geometry gives (0.2 at Ascension:
+    // y 3.9..4.1, holding the measured origin 4.04 and the learned aim
+    // 3.985); measure the band across the line with the sim's training
+    // and replace this.
+    let width = gap;
     let overlap_fit = ((hi - lo) / (2.0 * RADIUS)).min(1.0);
     // The traced shape is one crease and one seam.
-    let shape_fit = if o.join == Join::Seam { 1.0 } else { 0.5 };
+    let shape_fit = if on_seam { 1.0 } else { 0.5 };
     let mut score = 0.4 + 0.3 * overlap_fit + 0.3 * shape_fit;
     if launch_raw > MAX_LAUNCH {
         score *= 0.5;
     }
+    // No `need` and no `fall`: nothing has measured the touchdown speed a
+    // slot needs, so the spot carries none.
     Some(Spot {
         kind: Kind::Bounce,
         edge: [e0, e1],
         stand,
-        fall,
         launch,
         drift,
         score,
-        width: gap,
-        need: land,
+        width,
         ..Spot::default()
     })
 }
 
-/// Bounce spots on one line: the same drift (to 5°), the same crease
-/// position across the slot (to 5 cm) and height (to 10 cm), and
-/// touching or overlapping along it (within 10 cm) are one spot.
+/// Bounce spots on one line: the same drift (to 5°), the same target
+/// line position across (to 5 cm) and height (to 10 cm), and touching or
+/// overlapping along it (within 10 cm) are one spot.
 fn merge_bounces(spots: Vec<Spot>) -> Vec<Spot> {
     const ANGLE: f32 = 5.0 * std::f32::consts::PI / 180.0;
     const ACROSS: f32 = 0.05;
@@ -530,13 +661,8 @@ fn merge_bounces(spots: Vec<Spot>) -> Vec<Spot> {
             let m = mid(last.edge);
             last.stand = [m[0] + offset[0], m[1] + offset[1], m[2] + offset[2]];
             last.launch = (last.launch * wl + s.launch * ws) / (wl + ws);
-            // The easiest landing along the merged slot, with the width
-            // and touchdown speed it is worked from.
-            if s.fall < last.fall {
-                last.fall = s.fall;
-                last.need = s.need;
-                last.width = s.width;
-            }
+            // The narrower band of the two: the one sure of both.
+            last.width = last.width.min(s.width);
             last.score = last.score.max(s.score);
             continue;
         }
@@ -551,4 +677,39 @@ fn mid([a, b]: [Vec3; 2]) -> Vec3 {
         (a[1] + b[1]) / 2.0,
         (a[2] + b[2]) / 2.0,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crease(a: Vec3, b: Vec3) -> Joint {
+        Joint {
+            a,
+            b,
+            polys: [0, 1],
+            join: Join::Crease(0.1),
+        }
+    }
+
+    #[test]
+    fn creases_converging_on_a_line_are_counted_and_seams_and_parallels_are_not() {
+        let line = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]];
+        let joints = [
+            // Its own crease, along it: parallel, not counted.
+            crease([0.0, 0.0, 0.0], [4.0, 0.0, 0.0]),
+            // Two creases ending on it, one at its end.
+            crease([1.0, 0.0, 0.0], [1.5, 1.0, 0.1]),
+            crease([4.0, 0.0, 0.0], [5.0, -1.0, 0.2]),
+            // A seam ending on it: a floor's triangulation.
+            Joint {
+                join: Join::Seam,
+                ..crease([2.0, 0.0, 0.0], [2.0, 1.0, 0.0])
+            },
+            // A crease that stops short of it.
+            crease([3.0, 0.2, 0.0], [3.0, 1.0, 0.0]),
+        ];
+        assert_eq!(converging(&joints, line), 2);
+        assert_eq!(converging(&joints[..2], line), 1);
+    }
 }

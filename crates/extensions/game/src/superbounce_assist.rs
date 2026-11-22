@@ -56,9 +56,9 @@ pub const REACH_RADIUS: f32 = 3.0;
 pub const AIM_BACK: f32 = 0.1;
 /// Cross the strip at this speed along the drift (units/s).
 pub const ARRIVE_SPEED: f32 = 0.8;
-/// Gravity (units/s²): the 4.15 that fits the traced jump
-/// (docs/game/superbounce.md, "Spots in the geometry").
-pub const GRAVITY: f32 = 4.15;
+/// Gravity (units/s²): the 4.15 that fits the traced jump, the speed
+/// model's (`superbounce::speed::GRAVITY`).
+pub const GRAVITY: f32 = superbounce::speed::GRAVITY;
 /// What a full stick pushes a biped sideways in the air (units/s²). An
 /// estimate: the stick is this scaled, and the lab is where it is measured.
 pub const AIR_ACCEL: f32 = 3.0;

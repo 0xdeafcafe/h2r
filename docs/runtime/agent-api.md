@@ -957,7 +957,7 @@ every kind but `route` needs the `agent-calls` feature's teleport
 | `points` | explicit spots instead: `{stand, out?, edge?, drift?, width?, need?}`; never saved |
 | `seat` | `player.<n>` (default `player.0`, driven through the first controller's pad) or a brain-driven bot by gamertag, handle or `player.<n>` (driven by holding its pad); `route` needs a bot |
 | `turns`, `distances`, `offsets` | crouch: approach turns in degrees from straight in (default `[0,25,-25]`), starts outside the lip along it (default `[0.3,0.6]`), and X/Y offsets (default `[[0,0]]`) |
-| `across`, `along`, `heights` | drop: offsets across the slot toward the drift (default `[-0.05,0,0.05,0.1,0.15]`), along it (`[0]`), and heights over the strip (`[1.5,2.5,3.5]`) |
+| `across`, `along`, `heights` | drop: offsets across the spot's target line toward the drift (default `[-0.1,-0.05,0,0.05,0.1]`), along it (`[0]`), and heights over the strip (`[1.5,2.5,3.5]`) |
 | `prime` | drop: `set` (−3, default), `none` (0, the control) or `keep` |
 | `drift_stick` | drop: the stick along the drift while falling, 0 to 1 (default 0) |
 | `settle_ticks`, `hold_ticks`, `out_ticks`, `fall_ticks`, `route_ticks` | 20, 15, 30, 120, 3600 |
@@ -3465,13 +3465,15 @@ read a scan; the measured spots are listed regardless) and `spots`, the
 measured ones first, then the scan best first. Each has `kind` (`bounce`
 or `crouch`; `kind` in the request filters), `source` (`measured` or
 `scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift`,
-`score`, `width` (a slot's gap between its joints, a crouch band's
-widest), `need` (a slot's touchdown speed down, which `fall` is worked
-from; a measured spot with a recipe takeoff falls 2.43 from it), `status` (`proven` for a crouch spot at a measured priming place
+`score`, `width` (a bounce spot's landing band centred on its target
+line, unmeasured; a crouch band's widest), `need` and `fall` (measured
+only: 0 for a scanned spot, which the game reads as the one threshold
+every seam shares, [superbounce.md, "Speed"](../game/superbounce.md#speed);
+a measured spot with a recipe takeoff falls 2.43 from it), `status` (`proven` for a crouch spot at a measured priming place
 or one the map's verified file proved, `failed` for one it failed, else
 `likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
 `lip` (a crouch spot's edges overhead at `stand`, up to 8) and `shape`
-(`slot`, or `crease` for a single-crease bounce candidate). A bounce spot
+(`slot`, or `crease` or `vee` for a single-crease bounce candidate). A bounce spot
 with a line in the map's learned file has `learned`: `state` (`open`,
 `learned`, `partial`, `dead`, `blocked`), `knobs` (as in
 `bots.bounce_status`), `tries`, `hits`, `n`, `ok`, `score`, `best` and,

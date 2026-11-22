@@ -13,9 +13,10 @@ pub const MAX_TRIALS: usize = 400;
 /// out) and the distances outside the lip a trial starts at.
 pub const TURNS: [f32; 3] = [0.0, 25.0, -25.0];
 pub const DISTANCES: [f32; 2] = [0.3, 0.6];
-/// Drop: offsets across the slot from its midline (toward the drift) and
-/// along it from its middle, and the heights fallen from.
-pub const ACROSS: [f32; 5] = [-0.05, 0.0, 0.05, 0.1, 0.15];
+/// Drop: offsets across from the spot's target line, the seam (toward
+/// the drift), centred on it, and along it from its middle, and the
+/// heights fallen from.
+pub const ACROSS: [f32; 5] = [-0.1, -0.05, 0.0, 0.05, 0.1];
 pub const ALONG: [f32; 1] = [0.0];
 pub const HEIGHTS: [f32; 3] = [1.5, 2.5, 3.5];
 /// Tick defaults ([`VerifyParams`]'s fields of those names).
@@ -527,7 +528,7 @@ pub fn crouch_trial(spot: usize, s: &Spot, turn_by: f32, distance: f32, offset: 
     }
 }
 
-/// A drop trial: the point `across` the slot's midline toward the drift
+/// A drop trial: the point `across` the spot's target line toward the drift
 /// and `along` it from its middle, fallen onto from `height` over the
 /// strip's stand height.
 pub fn drop_trial(spot: usize, s: &Spot, across: f32, along: f32, height: f32) -> Trial {

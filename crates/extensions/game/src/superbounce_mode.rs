@@ -497,11 +497,18 @@ struct ScanView {
     status: ScanState,
 }
 
-/// `raw` with the map's verified file applied: every spot, and the ones not
-/// failed.
+/// `raw` with the map's verified file and then its learned file applied,
+/// and the speed model filled in: every spot, and the ones [`marked`]. A
+/// `learned` or `partial` line of the sim's training moves its spot's
+/// target onto the line's aim and proves it (`superbounce::learned::apply`):
+/// the sim's measured answer outranks the scan's aim. Each strip with no
+/// measured `need` or `fall` takes the one threshold every seam shares and
+/// the drop that reaches it (`superbounce::speed::apply`).
 fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
     let mut all = raw.to_vec();
     superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
+    superbounce::learned::apply(&mut all, &bots::spots::learned_for(map));
+    superbounce::speed::apply(&mut all);
     let shown = marked(&all);
     (Arc::new(all), Arc::new(shown))
 }
@@ -519,8 +526,8 @@ pub fn verified(spot: &Spot) -> bool {
 /// - Strips, once a game run has proved any strip of the map
 ///   ([`verified`]): only the proved ones.
 /// - Strips before that: the scan's two-joint slots. A single crease is a
-///   guess (its `need` and `fall` are not measured), so it is left out
-///   until a run proves it.
+///   candidate (`Spot::candidate`) for the sim's training only, so it is
+///   left out until a game run or the training proves it.
 pub fn marked(all: &[Spot]) -> Vec<Spot> {
     let proved = all.iter().any(|s| s.kind == Kind::Bounce && verified(s));
     all.iter()
@@ -528,7 +535,7 @@ pub fn marked(all: &[Spot]) -> Vec<Spot> {
         .filter(|s| match s.kind {
             Kind::Crouch => true,
             Kind::Bounce if proved => verified(s),
-            Kind::Bounce => s.shape == superbounce::Shape::Slot,
+            Kind::Bounce => !s.candidate(),
         })
         .copied()
         .collect()
@@ -1276,6 +1283,8 @@ mod tests {
         ];
         assert_eq!(xs(&marked(&scan)), [1.0, 4.0, 5.0]);
         assert!(!verified(&scan[0]) && verified(&scan[4]));
+        // The crease is the sim's candidate, not play's.
+        assert!(scan[1].candidate() && !scan[0].candidate());
         // A proved crouch spot proves no strip: the slots still show.
         // Once a run proves a strip, only proved strips are marked, a
         // crease among them; an unproved slot is not.

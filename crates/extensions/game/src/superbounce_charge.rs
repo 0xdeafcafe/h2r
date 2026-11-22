@@ -49,9 +49,6 @@ pub const BOUNCE_VZ: f32 = 8.0;
 pub const TOUCHDOWN_VZ: f32 = -1.0;
 /// It has stopped falling when its vertical speed is over this.
 pub const LANDED_VZ: f32 = -0.5;
-/// The vertical speed a standing jump lands at (units/s): a strip with no
-/// fall needs this much.
-pub const STANDING_JUMP_SPEED: f32 = 3.0;
 /// Gravity (units/s²), as the assist has it.
 pub const GRAVITY: f32 = crate::superbounce_assist::GRAVITY;
 
@@ -243,20 +240,21 @@ pub fn width_of(spot: &Spot) -> f32 {
     if spot.width > 0.0 { spot.width } else { RIBBON_WIDTH }
 }
 
-/// The touchdown speed a strip needs (units/s): what a fall of its `fall`
-/// gives on top of a standing jump's landing, `√(3² + 2 × 4.15 × fall)`.
-/// The scanner's `need` when the spot has one; a spot from before the
-/// scanner had it (0) works it from `fall`.
+/// The touchdown speed a strip needs (units/s): its measured `need`;
+/// else, with a measured drop (`fall`) and no need, what that fall gives
+/// on top of a standing jump's landing (`superbounce::speed::touchdown`);
+/// else the one threshold every seam shares,
+/// `superbounce::speed::BOUNCE_SPEED`. The game's spots carry the model's
+/// `need` already (`superbounce::speed::apply`), so the speed model is
+/// tuned in that one place.
 pub fn need_of(spot: &Spot) -> f32 {
     if spot.need > 0.0 {
         return spot.need;
     }
-    let fall = if spot.fall.is_finite() {
-        spot.fall.max(0.0)
-    } else {
-        0.0
-    };
-    (STANDING_JUMP_SPEED * STANDING_JUMP_SPEED + 2.0 * GRAVITY * fall).sqrt()
+    if spot.fall.is_finite() && spot.fall > 0.0 {
+        return superbounce::speed::touchdown(spot.fall);
+    }
+    superbounce::speed::BOUNCE_SPEED
 }
 
 /// Where along `edge` (0 to 1) the point nearest `xy` is, horizontally.
@@ -1039,8 +1037,12 @@ mod tests {
         // Inside the slot is within half its width of the edge.
         assert_eq!(slot_miss(&strip, [10.09, 0.5]), 0.0);
         assert!((slot_miss(&strip, [10.3, 0.5]) - 0.2).abs() < 1e-5);
-        // A strip with no fall needs a standing jump's landing speed.
-        assert_eq!(need_of(&spot(Kind::Bounce, on, 0.0)), STANDING_JUMP_SPEED);
+        // A strip with no measured need or drop needs the one threshold
+        // every seam shares.
+        let bare = spot(Kind::Bounce, on, 0.0);
+        assert_eq!(need_of(&bare), superbounce::speed::BOUNCE_SPEED);
+        assert_eq!(classify(&bare, Some(MINUS_3), on, 5.0, -0.04), TooSlow);
+        assert_eq!(classify(&bare, Some(MINUS_3), on, 5.5, -0.04), NoBounce);
     }
 
     #[test]

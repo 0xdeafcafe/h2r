@@ -591,7 +591,11 @@ pub fn knobs_text(k: &Knobs) -> String {
 /// "The search"): the `how`s it allows, the route's own first (a standing
 /// site: a stand; a drop: the flight model's choice, then the other), and
 /// the route's own knobs from [`crate::bounce_route::flown`] with no line,
-/// the search's centre for a site never flown.
+/// the search's centre for a site never flown. A standing site with no
+/// measured drop ([`Site::drop_known`], every scanned one) allows the
+/// stand first, then both drops from its launch floor when `ledge` finds
+/// one: the scan does not say how far a landing must fall, so the search
+/// finds out.
 pub fn site_in(
     s: &Site,
     ledge: crate::bounce_route::Ledge,
@@ -601,7 +605,25 @@ pub fn site_in(
         knobs: Knobs::default(),
         ..*s
     };
-    let (hows, base) = if own.standing() {
+    let unmeasured = own.standing() && !own.drop_known();
+    let (hows, base) = if unmeasured
+        && let Some(from) = crate::bounce_route::launch_from(&own, ledge)
+    {
+        // The drop's own knobs as the base; the stand's arm keeps only
+        // the knobs a stand uses (`Knobs::canonical`).
+        let drop = Site {
+            knobs: Knobs {
+                how: Some(How::Runoff),
+                ..Knobs::default()
+            },
+            ..own
+        };
+        let f = crate::bounce_route::flown(&drop, from, tune);
+        (
+            vec![How::Stand, How::Runoff, How::Jump],
+            f.knobs(Some(from)),
+        )
+    } else if own.standing() {
         let f = crate::bounce_route::flown(&own, own.bounce.from(), tune);
         (vec![How::Stand], f.knobs(None))
     } else {

@@ -270,12 +270,13 @@ fn line(s: &Spot) -> String {
     match s.kind {
         Kind::Bounce => {
             out += &format!(
-                "  {}  {}  launch {:.1}  fall {:.2}  need {:.1}  width {:.3}  drift ({:.2}, {:.2})",
+                "  {}{}  {}  launch {:.1}  fall {}  need {}  width {:.3}  drift ({:.2}, {:.2})",
                 s.shape.name(),
+                if s.candidate() { " (candidate)" } else { "" },
                 s.status.name(),
                 s.launch,
-                s.fall,
-                s.need,
+                measured(s.fall, 2),
+                measured(s.need, 1),
                 s.width,
                 s.drift[0],
                 s.drift[1]
@@ -295,21 +296,35 @@ fn line(s: &Spot) -> String {
     out
 }
 
+/// A measured number, or `unmeasured` for 0: the scan measures no speed
+/// and no drop.
+fn measured(v: f32, places: usize) -> String {
+    if v > 0.0 {
+        format!("{v:.places$}")
+    } else {
+        "unmeasured".into()
+    }
+}
+
+/// `fall` and `need` are `null` when unmeasured (0), as every scanned
+/// spot's are.
 fn to_json(s: &Spot) -> serde_json::Value {
+    let some = |v: f32| (v > 0.0).then_some(v);
     serde_json::json!({
         "kind": kind(s.kind),
         "edge": s.edge,
         "stand": s.stand,
-        "fall": s.fall,
+        "fall": some(s.fall),
         "launch": s.launch,
         "drift": s.drift,
         "score": s.score,
         "width": s.width,
-        "need": s.need,
+        "need": some(s.need),
         "status": s.status.name(),
         "out": s.out,
         "lip": s.lip.edges(),
         "shape": s.shape.name(),
+        "candidate": s.candidate(),
     })
 }
 
@@ -339,7 +354,9 @@ mod tests {
             b.contains("launch 17.9") && b.contains("drift (0.00, 1.00)"),
             "{b}"
         );
-        assert!(b.contains("need ") && b.contains("width "), "{b}");
+        // Its fall is measured; its need is not.
+        assert!(b.contains("fall 0.50") && b.contains("need unmeasured"), "{b}");
+        assert!(b.contains("width ") && !b.contains("candidate"), "{b}");
         let c = line(&spot(Kind::Crouch));
         assert!(c.starts_with("crouch") && !c.contains("launch"), "{c}");
         assert!(c.contains("likely") && c.contains("lip 0"), "{c}");
@@ -353,7 +370,8 @@ mod tests {
         assert_eq!(v["drift"][1], 1.0);
         assert_eq!(v["status"], "likely");
         assert!(v["lip"].as_array().is_some_and(|l| l.is_empty()));
-        assert!(v["need"].is_number() && v["width"].is_number());
+        assert!(v["need"].is_null() && v["fall"] == 0.5 && v["width"].is_number());
+        assert_eq!(v["candidate"], false);
     }
 
     #[test]
@@ -451,11 +469,12 @@ mod tests {
         assert!(t.contains("5.0 degrees: none: launch 0.4"), "{t}");
         assert!(t.contains("1 bounce spots within 1\n  bounce"), "{t}");
         assert!(
-            line(&crease).contains("crease  likely"),
+            line(&crease).contains("crease (candidate)  likely"),
             "{}",
             line(&crease)
         );
         assert_eq!(to_json(&crease)["shape"], "crease");
+        assert_eq!(to_json(&crease)["candidate"], true);
         assert_eq!(to_json(&spot(Kind::Bounce))["shape"], "slot");
     }
 }

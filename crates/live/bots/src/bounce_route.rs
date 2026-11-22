@@ -45,10 +45,19 @@ pub const LEDGE_OVER: f32 = 2.5;
 /// A launch floor for a site that needs a drop: the nav mesh's point
 /// nearest the site's target sideways, within [`LEDGE_REACH`], whose floor
 /// is the drop height over the target, to [`LEDGE_UNDER`] below and
-/// [`LEDGE_OVER`] above it. The [`Ledge`] a plan is made with.
+/// [`LEDGE_OVER`] above it. A site with no measured drop
+/// ([`Site::drop_known`]) takes the speed model's drop instead, the one
+/// that touches down at the threshold every seam shares
+/// (`superbounce::speed::fall`), for the training's drops to try. The
+/// [`Ledge`] a plan is made with.
 pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
     let t = s.target();
-    let over = [t[0], t[1], t[2] + s.drop_height()];
+    let height = if s.drop_known() {
+        s.drop_height()
+    } else {
+        superbounce::speed::fall()
+    };
+    let over = [t[0], t[1], t[2] + height];
     m.nav
         .nearest(over, LEDGE_REACH, LEDGE_OVER, LEDGE_UNDER)
         .map(|(_, p)| p)
@@ -476,6 +485,8 @@ pub fn plan_with(ask: &Ask, known: &Known, walk: Walk, ledge: Ledge) -> Plan {
         .sites
         .iter()
         .copied()
+        // A candidate crease is the training's until it is proved.
+        .filter(Site::plays)
         .filter(|s| dist_xy(ask.from, s.bounce.from()) <= limit)
         .filter(|s| flight(s, flight_z(ask, s)).is_some())
         .map(|s| (s, None))

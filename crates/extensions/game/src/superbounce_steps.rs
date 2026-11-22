@@ -20,7 +20,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use crate::superbounce_charge::{GRAVITY, STANDING_JUMP_SPEED};
 use crate::superbounce_mode::{
     ChargePhase, Course, LandingResult, METRES_PER_UNIT, NavKind, State, Verb,
 };
@@ -128,19 +127,20 @@ fn metres(units: f32) -> String {
 }
 
 /// The touchdown speed the strip ahead needs (units/s): the predicted
-/// landing's strip's, else the navpoint's strip's worked from its fall.
-/// `None` with neither.
+/// landing's strip's, else the navpoint's strip's: what its drop gives
+/// (`superbounce::speed::touchdown`), or with no drop the one threshold
+/// every seam shares (`superbounce::speed::BOUNCE_SPEED`). `None` with
+/// neither.
 pub fn need(s: &State) -> Option<f32> {
     if let Some(l) = &s.landing {
         return Some(l.need);
     }
     let n = s.nav_target.as_ref().filter(|n| n.kind == NavKind::Strip)?;
-    let fall = if n.fall.is_finite() {
-        n.fall.max(0.0)
+    Some(if n.fall.is_finite() && n.fall > 0.0 {
+        superbounce::speed::touchdown(n.fall)
     } else {
-        0.0
-    };
-    Some((STANDING_JUMP_SPEED * STANDING_JUMP_SPEED + 2.0 * GRAVITY * fall).sqrt())
+        superbounce::speed::BOUNCE_SPEED
+    })
 }
 
 /// The player's speed downward now (units/s): 0 on the ground or rising.
@@ -188,7 +188,7 @@ fn speed_block(s: &State) -> Option<Block> {
     } else if fall > FLAT_FALL {
         format!("Fall {} m for {}", whole_metres(fall), metres(need))
     } else {
-        "A jump is enough".to_owned()
+        format!("Need {} m/s", metres(need))
     };
     Some(Block {
         fill: Some((at_strip / need).clamp(0.0, 1.0)),

@@ -21,6 +21,7 @@
 //! `best` (the best launch seen, units/s). Unknown keys are kept out of the
 //! way: a reader ignores them. Blank lines and `#` lines are comments.
 
+use crate::geom::segment_xy;
 use crate::{Kind, Spot, Status, Vec3};
 
 /// The first line [`to_text`] writes.
@@ -190,12 +191,30 @@ pub fn entry_for<'a>(entries: &'a [Entry], spot: &Spot) -> Option<&'a Entry> {
 
 /// Marks each spot an entry is about with the entry's status. A proven
 /// spot scores 1. Spots no entry is about keep the scan's status.
+///
+/// A bounce entry belongs to one spot: of the bounce spots it is about,
+/// the one whose target line passes nearest the entry's working point.
+/// Ascension's entry (standing at y 3.88, landing at y 3.976) is within
+/// reach of both the slot on its seam (y 4.000) and the crease candidate
+/// (y 3.800); its landing is on the seam, so it proves the slot alone.
 pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
     if entries.is_empty() {
         return;
     }
-    for s in spots.iter_mut() {
+    let before = spots.to_vec();
+    let off = |e: &Entry, s: &Spot| {
+        let w = e.working();
+        segment_xy(s.edge, [w[0], w[1]])
+    };
+    for (i, s) in spots.iter_mut().enumerate() {
         if let Some(e) = entry_for(entries, s) {
+            let taken = s.kind == Kind::Bounce
+                && before.iter().enumerate().any(|(k, o)| {
+                    k != i && e.matches(o) && off(e, o) < off(e, &before[i])
+                });
+            if taken {
+                continue;
+            }
             s.status = e.status;
             if e.status == Status::Proven {
                 s.score = 1.0;
@@ -359,6 +378,36 @@ mod tests {
         );
         let w = crouch_entry().working();
         assert!((w[0] + 10.85).abs() < 1e-4 && (w[1] - 0.69).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_bounce_entry_proves_the_spot_its_landing_is_on_and_no_other() {
+        // Ascension's file: standing at y 3.88, the drop that worked landed
+        // 0.096 on, at y 3.976.
+        let e = Entry {
+            kind: Kind::Bounce,
+            status: Status::Proven,
+            at: [-10.538, 3.88, -3.19],
+            offset: [0.081, 0.096],
+            ..Entry::default()
+        };
+        let line = |y: f32| [[-11.10, y, -3.2], [-9.98, y, -3.2]];
+        let slot = Spot {
+            edge: line(4.0),
+            ..spot(Kind::Bounce, [-10.54, 4.0, -3.19])
+        };
+        let crease = Spot {
+            edge: line(3.8),
+            shape: crate::Shape::Crease,
+            ..spot(Kind::Bounce, [-10.54, 3.8, -3.19])
+        };
+        let mut spots = vec![slot, crease];
+        apply(&mut spots, &[e]);
+        assert_eq!(
+            (spots[0].status, spots[1].status),
+            (Status::Proven, Status::Likely)
+        );
+        assert!(spots[1].candidate());
     }
 
     #[test]
