@@ -256,6 +256,7 @@ pub mod ui_watch;
 pub mod variant_ext;
 pub mod variant_options;
 pub mod variant_page;
+pub mod variant_quick;
 pub mod video_screen;
 #[cfg(feature = "local-io")]
 pub mod voice_glue;

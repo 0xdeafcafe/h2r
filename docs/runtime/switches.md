@@ -58,6 +58,7 @@ An `impl.` name is an implementation switch
 | `impl.engine.datums`, `impl.engine.tags`, `impl.engine.locale` | on; `=off` turns off the Rust datum, tag and locale leaves, each group or one function (`impl.engine.tags.tag_get_checked=off`) |
 | `skulls-model` | on by default, with the native renderer. The Skulls pages' picture is the focused skull's 3D model from the disc, with its glyph, or a silhouette while locked. `H2_FEATURES=-skulls-model` keeps the game's tinted skull bitmap ([skulls.md](../game/skulls.md#the-model-picture)) |
 | `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)); the party lobby's header has its own hook on that update and names the mode either way ([party-lobby.md](../game/party-lobby.md#the-header-and-the-prompt)) |
+| `variant-quick` | on by default, with `lobby-options`. For a variant whose record names a rules script, the custom game lobby's Quick Options lines are the script's `quick` marks, "Label: value" in its order ([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)). `H2_FEATURES=-variant-quick` keeps the retail lines for every variant; `variants.quick` then answers `shown: false` |
 
 ## Build and code generation
 

@@ -203,6 +203,10 @@ impl AgentGlue {
             ),
             sim.calls(),
         );
+        // variants.quick: the lobby variant's Quick Options rows as its
+        // script marks them (docs/game/rules-variants.md, "Quick Options
+        // in the lobby").
+        agent::variants::install(&agent, std::sync::Arc::new(crate::variant_quick::AgentSource));
         let probes = agent::probe::Probes::default();
         if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {
             probes.install(&agent, &sim);
