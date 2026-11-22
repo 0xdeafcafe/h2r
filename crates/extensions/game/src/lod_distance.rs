@@ -1,6 +1,8 @@
 //! Pixel-based detail in the structure record walks. Each of their three
 //! callers resets the record counters, builds clusters and placements, then
 //! builds object records. Object lighting needs the retail projection.
+//! A menu's model widget (the profile and Appearance previews) renders
+//! through the same record walk; it keeps the retail factor.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -83,8 +85,10 @@ impl Feature for LodDistance {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         // Both words belong to the current render context. A worker snapshot
         // or a mid-view restore carries the factor and original projection together.
+        // The third word marks the UI model view, so a snapshot taken inside
+        // a widget's view carries it with the factor.
         b.snapshot(SnapshotPolicy::Stateless);
-        let saved = b.guest_alloc(8, Permissions::RW)?;
+        let saved = b.guest_alloc(12, Permissions::RW)?;
         let view_scale = ViewLodScale::new(saved + 4);
         self.view_scale
             .set(view_scale)
@@ -106,6 +110,29 @@ impl Feature for LodDistance {
                 },
             )
             .context_only();
+        // A model widget's view (0x2b0e12 calls 0x2c560, which reaches the
+        // world caller 0x31ef5 through 0x2bcd0 and 0x31c80) keeps retail
+        // detail. The mark is set only when the return site is generated,
+        // so it cannot be left set for the next world view.
+        b.raw()
+            .before(&points::ui_render::MODEL_VIEW_CALL, "retail LOD in the UI model view", move |c| {
+                let rt = c.ctx.runtime();
+                if rt.read_dispatch(|d| d.has_generated(points::ui_render::MODEL_VIEW_RETURN.base)) {
+                    set_model_view(&mut rt.memory(), saved, true)?;
+                }
+                Ok(Flow::Continue)
+            })
+            .context_only()
+            .after_feature("native-hud")
+            .optional();
+        b.raw()
+            .before(&points::ui_render::MODEL_VIEW_RETURN, "end the UI model view's retail LOD", move |c| {
+                set_model_view(&mut c.ctx.runtime().memory(), saved, false)?;
+                Ok(Flow::Continue)
+            })
+            .context_only()
+            .after_feature("native-hud")
+            .optional();
         b.raw()
             .before(
                 &points::OBJECT_RENDER_RECORDS,
@@ -126,10 +153,13 @@ fn reset_view(mem: &mut Guest, saved: u32, caller: u32, factor: f32) -> Result<(
     // A prior walk may have exited before OBJECT_RENDER_RECORDS restored the
     // projection. Recover it even when switching to Retail or another caller.
     end_structure(mem, saved)?;
-    mem.set_f32(saved + 4, factor)?;
     // Only these three callers bracket both structure walks with the reset
-    // and OBJECT_RENDER_RECORDS.
-    if factor == 1.0 || !matches!(caller, 0x0002_cbcc | 0x0003_1ef5 | 0x0003_f3b9) {
+    // and OBJECT_RENDER_RECORDS. Any other view, and a menu's model widget
+    // (which reaches 0x31ef5), records retail detail.
+    let world = matches!(caller, 0x0002_cbcc | 0x0003_1ef5 | 0x0003_f3b9);
+    let factor = if world && !in_model_view(mem, saved)? { factor } else { 1.0 };
+    mem.set_f32(saved + 4, factor)?;
+    if factor == 1.0 {
         return Ok(());
     }
     let vertical = mem.f32(points::PIXEL_SCALE)?;
@@ -139,6 +169,16 @@ fn reset_view(mem: &mut Guest, saved: u32, caller: u32, factor: f32) -> Result<(
         mem.set_f32(points::PIXEL_SCALE, scaled)?;
     }
     Ok(())
+}
+
+const MODEL_VIEW: u32 = 8;
+
+fn set_model_view(mem: &mut Guest, saved: u32, inside: bool) -> Result<(), GuestFault> {
+    mem.set_u32(saved + MODEL_VIEW, u32::from(inside))
+}
+
+fn in_model_view(mem: &Guest, saved: u32) -> Result<bool, GuestFault> {
+    Ok(mem.u32(saved + MODEL_VIEW)? != 0)
 }
 
 fn end_structure(mem: &mut Guest, saved: u32) -> Result<(), GuestFault> {
@@ -193,16 +233,18 @@ mod tests {
         mem.map_zeroed(points::PIXEL_SCALE & !0xfff, 0x1000, Permissions::RW)
             .unwrap();
         mem.set_f32(points::PIXEL_SCALE, 30.0).unwrap();
-        for (next_caller, factor, pixels) in [
-            (caller, 4.0, 120.0),
-            (caller, 1.5, 45.0),
-            (caller, 1.0, 30.0),
-            (caller, 2.0, 60.0),
-            (0, 3.0, 30.0),
+        for (next_caller, factor, pixels, kept) in [
+            (caller, 4.0, 120.0, 4.0),
+            (caller, 1.5, 45.0, 1.5),
+            (caller, 1.0, 30.0, 1.0),
+            (caller, 2.0, 60.0, 2.0),
+            // Not a world caller: retail detail, for its objects too.
+            (0, 3.0, 30.0, 1.0),
+            (caller, 3.0, 90.0, 3.0),
         ] {
             reset_view(&mut mem, saved, next_caller, factor).unwrap();
             assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), pixels);
-            assert_eq!(cached.read(&mem), factor);
+            assert_eq!(cached.read(&mem), kept);
         }
         end_structure(&mut mem, saved).unwrap();
         assert_eq!(mem.u32(saved).unwrap(), 0);
@@ -211,6 +253,31 @@ mod tests {
             3.0,
             "object records retain this view's factor"
         );
+    }
+
+    #[test]
+    fn a_menu_model_view_keeps_retail_detail_and_the_world_still_scales() {
+        let mut mem = Guest::new();
+        let saved = 0x1000;
+        let cached = ViewLodScale::new(saved + 4);
+        let world = 0x0003_1ef5; // The caller the UI model view reaches.
+        mem.map_zeroed(saved, 0x1000, Permissions::RW).unwrap();
+        mem.map_zeroed(points::PIXEL_SCALE & !0xfff, 0x1000, Permissions::RW)
+            .unwrap();
+        mem.set_f32(points::PIXEL_SCALE, 30.0).unwrap();
+
+        set_model_view(&mut mem, saved, true).unwrap();
+        reset_view(&mut mem, saved, world, 4.0).unwrap();
+        assert_eq!(cached.read(&mem), 1.0);
+        assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 30.0);
+        assert_eq!(mem.u32(saved).unwrap(), 0, "no projection saved to restore");
+
+        set_model_view(&mut mem, saved, false).unwrap();
+        reset_view(&mut mem, saved, world, 4.0).unwrap();
+        assert_eq!(cached.read(&mem), 4.0);
+        assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 120.0);
+        end_structure(&mut mem, saved).unwrap();
+        assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 30.0);
     }
 
     #[test]
