@@ -155,7 +155,7 @@ fn swipes_move_and_change_a_click_selects_two_fingers_go_back() {
     r.sync(&[HostButton::Start], click());
     r.idle();
     assert!(r.s.is_open());
-    // Swipe down three rows to Cheats (one long drag, then a short one),
+    // Swipe down three rows to Time (one long drag, then a short one),
     // click into it.
     for y in [0.6, 0.0, -0.6] {
         r.sync(&[], finger(0.0, y));
@@ -171,16 +171,16 @@ fn swipes_move_and_change_a_click_selects_two_fingers_go_back() {
     r.idle();
     assert_eq!(
         r.s.lock().menu.current().map(|x| x.id.clone()),
-        Some("cheats".into())
+        Some("time".into())
     );
     r.s.lines();
-    // Swipe right on God mode: cheat.set.
+    // Swipe right on Game speed: cheat.set.
     for x in [-0.5, 0.1] {
         r.sync(&[], finger(x, 0.0));
     }
     r.idle();
     r.s.lines();
-    assert!(r.fake.game(|g| g.god));
+    assert_eq!(r.fake.game(|g| g.speed), 2.0);
     // Two fingers: back to the first page; again: closed.
     let two = Touchpad {
         primary: Some((0.0, 0.0)),
@@ -220,7 +220,7 @@ fn the_d_pad_and_face_buttons_work_and_circle_never_reaches_the_game() {
     r.idle();
     assert_eq!(
         r.s.lock().menu.current().map(|x| x.id.clone()),
-        Some("tags".into())
+        Some("game".into())
     );
     r.sync(&[HostButton::East], Touchpad::default());
     r.idle();
@@ -279,9 +279,11 @@ fn keys_drive_it_and_closed_keys_pass() {
 #[test]
 fn writes_are_only_what_the_user_asked() {
     let (s, fake) = menu();
-    enter(&s, "render");
-    enter(&s, "perf");
-    enter(&s, "features");
+    for id in [
+        "player", "world", "game", "time", "view", "perf", "settings", "dev",
+    ] {
+        enter(&s, id);
+    }
     assert!(fake.writes().is_empty(), "{:?}", fake.writes());
 }
 

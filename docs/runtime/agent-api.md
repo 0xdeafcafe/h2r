@@ -321,7 +321,7 @@ object count, byte rate and capture timings.
 | `session.wait` | `{until, timeout_ticks?, timeout_ms?}` | `{at, ticks}` once every field of `until` holds |
 | `session.subscribe` | `{events: ["phase","map","bsp","pause"]}` | then `event` notifications: `phase {from,to}`, `map {from,to}`, `bsp {from,to}`, `paused`, `resumed {why: request, timeout or released}` |
 | `session.takeover_info` | none | `{window, pid}`, whether the game has a window and its process id |
-| `session.request_takeover` | `{requester, name, operation, builds_image, source, level, own_data, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt |
+| `session.request_takeover` | `{ask?, requester, name, operation, builds_image, source, level, own_data, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt, or for the running job's question with `"ask": "running"` |
 | `session.takeover_status` | `{id}` | `{decision}` for the request |
 | `features.list` | none | `{at, plan, features}`: the feature plan text the game printed at start, and each feature as `{id, on, reason?}` (`reason` when the plan turned it off), read from the plan's `feature <id>: on` and `feature <id>: off (<reason>)` lines (`agent_proto::FeatureState`) |
 
@@ -369,6 +369,14 @@ waits for the player to quit. The game leaves saving and quitting with
 the player. A request expires even if the UI is still loading. The game
 dismisses the expired dialog at the next UI update. The status method is
 read-only and answers `GONE` for an unknown or superseded id.
+
+`ask` is `"start"` when left out: the consent prompt above. With
+`"ask": "running"` the request asks about a job already running ([When the
+player opens a game](lab.md#when-the-player-opens-a-game)), in its own
+dialog (`lab.running`, class `lab-running-dialog`). Its rows are **Finish
+this one**, **Keep running** and **Stop and pause**, answering
+`finish_this`, `keep_running` and `stop_and_pause`; Back also answers
+`finish_this`, and an unanswered question `timed_out`.
 
 ### Control
 
@@ -787,7 +795,7 @@ with `INVALID_PARAMS`) answers from the state the
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
 | `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
 | `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
-| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
+| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `bounces` its bounces, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
@@ -1582,8 +1590,8 @@ h2 agent render.parity '{"arm": true}'
   `scene_stages_<stage>`, the scene stages queued to the render thread,
   and `scene_dropped_<stage>`, those it could not record after the guest
   skipped their items, for `world` and `objects` (framescene.md, slice
-  2) and `fog` and `water` (slice 5); with `frame-scene.layers`
-  in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
+  2) and `fog` and `water` (slice 5); unless `frame-scene.layers=off`
+  is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
   (`render_bridge::native_layers`; framescene.md, slice 4); a later slice adds

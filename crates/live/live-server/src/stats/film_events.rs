@@ -171,7 +171,7 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         expected.totals.medals,
         medals(&[
             ("sniper-kill", 1),
-            ("superbounce", 2),
+            ("superbounce", 1),
             ("double-bounce", 1),
             ("monster-bounce", 1),
             ("bounced", 1),
@@ -181,7 +181,7 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         row(&expected, A).medals,
         medals(&[
             ("sniper-kill", 1),
-            ("superbounce", 2),
+            ("superbounce", 1),
             ("double-bounce", 1),
             ("monster-bounce", 1),
         ])

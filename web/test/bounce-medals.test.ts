@@ -95,7 +95,7 @@ describe("a game's bounces", () => {
     applyGameSnapshot(s, {
       game_id: "g", map: "lockout", mode: "multiplayer", started_at: "2026-11-15T10:00:00.000Z", players: [],
       medals: [
-        { player: 0, name: "a", xuid: A, medals: { "superbounce": 2, "double-bounce": 1, "monster-bounce": 1, "incel": 1 } },
+        { player: 0, name: "a", xuid: A, medals: { "superbounce": 1, "double-bounce": 1, "monster-bounce": 1, "incel": 1 } },
         { player: 1, name: "b", xuid: B, medals: { "bounced": 1, "incel": 1 } },
         { player: 2, name: "Clanker 2", medals: { "superbounce": 1, "incel": 1 } },
       ],
@@ -105,14 +105,14 @@ describe("a game's bounces", () => {
 
   test("the game's medals hold every player's bounce medals, a bot's included", () => {
     const g = withServerMedals().games.g!;
-    expect(Object.fromEntries(gameMedalCounts(g, [0]))).toEqual({ "superbounce": 2, "double-bounce": 1, "monster-bounce": 1, "incel": 1 });
+    expect(Object.fromEntries(gameMedalCounts(g, [0]))).toEqual({ "superbounce": 1, "double-bounce": 1, "monster-bounce": 1, "incel": 1 });
     expect(Object.fromEntries(gameMedalCounts(g, [1]))).toEqual({ "bounced": 1, "incel": 1 });
     expect(Object.fromEntries(gameMedalCounts(g, [2]))).toEqual({ "superbounce": 1, "incel": 1 });
   });
 
   test("a career holds the player's own bounce medals", () => {
     const s = withServerMedals();
-    expect(serviceRecord(s, A).medals.get("superbounce")).toBe(2);
+    expect(serviceRecord(s, A).medals.get("superbounce")).toBe(1);
     expect(serviceRecord(s, A).medals.get("double-bounce")).toBe(1);
     expect(serviceRecord(s, A).medals.get("monster-bounce")).toBe(1);
     expect(serviceRecord(s, B).medals.get("monster-bounce")).toBeUndefined();

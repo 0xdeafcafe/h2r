@@ -1,7 +1,7 @@
 //! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20 drawn
 //! from the scene's plan instead of the guest's draws under the layer
-//! call (docs/graphics/framescene.md, slice 4). An option, with the native
-//! renderer on, until `render.compare` holds over the gate corpus.
+//! call (docs/graphics/framescene.md, slice 4). On with the native
+//! renderer; `frame-scene.layers=off` leaves every layer to the D3D path.
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), as
 //! `native_fog`'s:
@@ -36,9 +36,10 @@ pub const ID: &str = "frame-scene.layers";
 /// The layers taken.
 pub const LAYERS: [u32; 5] = [1, 5, 7, 8, 20];
 
-/// Whether the stage is placed: its option, with the native renderer on.
+/// Whether the stage is placed: with the native renderer on, unless
+/// `frame-scene.layers=off`.
 pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches) && switches.feature(ID, false)
+    hooks::switches::native_render_on(switches) && switches.feature(ID, true)
 }
 
 /// What draws the layers: boot's glue over the plan, the GPU world and
@@ -212,6 +213,14 @@ impl Feature for NativeLayers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stage_is_on_with_the_native_renderer_unless_turned_off() {
+        let on = |spec: &str| super::on(&hooks::Switches::parse(spec).unwrap());
+        assert!(on(""), "on by default");
+        assert!(!on("frame-scene.layers=off"));
+        assert!(!on("impl.render.native=off"), "the D3D path is the off arm");
+    }
 
     #[test]
     fn the_plans_outcomes_count_by_layer_and_cause() {

@@ -1,8 +1,9 @@
 //! A dedicated System Link host job (`h2 lab run --dedicated`,
 //! docs/runtime/lab.md, "Dedicated System Link host"): headless
 //! `h2 serve --system-link --host-light` on the lab's image, its XNet bound
-//! to this Mac's LAN IPv4 so a player on another Mac can join, and its
-//! agent socket where `h2 lab agent` finds it. It runs until `h2 lab stop`.
+//! to this Mac's LAN IPv4 so a player on another Mac can join (at
+//! `proto::LAB_BASE_PORT`, off the player's own ports), and its agent socket
+//! where `h2 lab agent` finds it. It runs until `h2 lab stop`.
 //! With a map the job opens the lobby itself once the host is at the menu.
 
 use std::fs::{self, File};
@@ -17,7 +18,7 @@ use agent_proto::host_lobby::OpenParams;
 use anyhow::{Context, Result, ensure};
 use serde_json::json;
 
-use super::super::proto::{Dedicated, RunReq};
+use super::super::proto::{Dedicated, RunReq, XNET_PORTS, xnet_ports};
 use super::{HostConfig, Image, JobOutcome, Shared, agent_socket_path};
 
 /// How long the host may take to open its agent socket and reach the main
@@ -27,10 +28,6 @@ const MENU_TIMEOUT: Duration = Duration::from_secs(600);
 /// Seconds `host.lobby.open` may take: it waits for retail to publish the
 /// lobby's parameters.
 const OPEN_TIMEOUT_S: u64 = 120;
-
-/// Ports an XNet host binds from its base: title channels +0, +1, +5, +6,
-/// QoS +2, co-op +4 (`live_hle::NetworkConfig`).
-const XNET_PORTS: u16 = 7;
 
 pub(super) fn run(
     sh: &Arc<Shared>,
@@ -86,14 +83,16 @@ pub(super) fn run(
     Ok(JobOutcome::Finished(Some(st)))
 }
 
-/// What the job's notes and log tell the person joining.
+/// What the job's notes and log tell the person joining. System Link finds
+/// hosts on the joiner's own base only, and the lab's is never an
+/// unconfigured `h2 play`'s.
 fn join_note(xnet: SocketAddrV4) -> String {
+    let ports = xnet_ports(xnet.port());
     format!(
         "System Link host at {xnet} (UDP {}-{}): join from a Mac on this LAN running the same \
-         commit with XNet base port {} (H2_XNET_ADDR=<its IP>:{} for a base other than 3074)",
-        xnet.port(),
-        xnet.port() + XNET_PORTS - 1,
-        xnet.port(),
+         commit, started with H2_XNET_ADDR=<its LAN IPv4>:{}",
+        ports.start(),
+        ports.end(),
         xnet.port()
     )
 }
@@ -152,7 +151,7 @@ fn serve_command(
 /// The IPv4 the default route leaves from, chosen as the XNet HLE does
 /// (`live_hle::config::lan_address`): a connected UDP socket's local
 /// address, without sending a packet. None without a route or on loopback.
-fn route_ipv4() -> Option<Ipv4Addr> {
+pub(super) fn route_ipv4() -> Option<Ipv4Addr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
     socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?;
     match socket.local_addr().ok()? {
@@ -164,7 +163,7 @@ fn route_ipv4() -> Option<Ipv4Addr> {
 /// Refuses a base whose seven ports another process holds, before the host
 /// starts and fails on its own less plainly.
 fn check_xnet_ports(base: SocketAddrV4) -> Result<()> {
-    for port in base.port()..base.port() + XNET_PORTS {
+    for port in xnet_ports(base.port()) {
         UdpSocket::bind(SocketAddrV4::new(*base.ip(), port)).with_context(|| {
             format!(
                 "UDP {}:{port} is in use; a dedicated host needs {} to {} free (--base-port picks another base)",
@@ -271,6 +270,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsStr;
 
+    use super::super::super::proto::LAB_BASE_PORT;
     use super::*;
 
     fn cfg() -> HostConfig {
@@ -328,7 +328,7 @@ mod tests {
             run,
             d,
             &image(),
-            "192.168.1.20:3074".parse().unwrap(),
+            "192.168.1.20:3174".parse().unwrap(),
             Path::new("/lab/scratch/0007/data"),
             Path::new("/lab/a/0007.sock"),
         )
@@ -366,7 +366,7 @@ mod tests {
             ("H2_FEATURES", "x"),
             ("H2_HOST_LOBBY", "1"),
             ("H2_BOOT_REALTIME", "1"),
-            ("H2_XNET_ADDR", "192.168.1.20:3074"),
+            ("H2_XNET_ADDR", "192.168.1.20:3174"),
             ("H2_LAB_JOB_ID", "0007"),
             ("H2_LAB_JOB_NAME", "Join test"),
             ("H2_AGENT", "/lab/a/0007.sock"),
@@ -408,9 +408,13 @@ mod tests {
 
     #[test]
     fn the_join_note_names_the_address_and_port_range() {
-        let note = join_note("192.168.1.20:3074".parse().unwrap());
-        assert!(note.contains("192.168.1.20:3074"), "{note}");
-        assert!(note.contains("UDP 3074-3080"), "{note}");
+        let note = join_note(SocketAddrV4::new(
+            Ipv4Addr::new(192, 168, 1, 20),
+            LAB_BASE_PORT,
+        ));
+        assert!(note.contains("192.168.1.20:3174"), "{note}");
+        assert!(note.contains("UDP 3174-3180"), "{note}");
+        assert!(note.contains("H2_XNET_ADDR=<its LAN IPv4>:3174"), "{note}");
     }
 
     #[test]

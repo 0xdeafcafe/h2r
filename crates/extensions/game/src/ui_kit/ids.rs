@@ -72,7 +72,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("kit.picker", 0x20ff_c100, 0x40),
     Family::new("kit.picker.game", 0x20ff_c140, 0x40),
     Family::new("join link", 0x20ff_c180, 4),
-    Family::new("lab takeover", 0x20ff_c184, 5),
+    Family::new("lab takeover", 0x20ff_c184, 8),
     Family::new("browser filters", 0x20ff_c1c0, 0x40),
     Family::new("forge objects", 0x20ff_c200, 0x40),
     Family::new("forge properties", 0x20ff_c240, 0x40),

@@ -331,6 +331,34 @@ fn fog_parity(look: &PassLook) -> Result<(), FogParity> {
     Ok(())
 }
 
+/// The stencil a world layer's native draws take: the device's at the
+/// layer call, as it is (`0x00015370`'s mode there: 0, the test off, or 1,
+/// `ALWAYS` writing reference 0 on pass, which the scene's layers 1 and 3
+/// begin in; `object_state::structure_stencil`). A pass never sets one of
+/// its own (`pass_state` refuses it), and the structure items a layer's
+/// native pass takes come before any object item that switches it
+/// (`layer_pass::clear_prefix`), so every one of them draws under that
+/// state. The pipelines' stencil state (the packets set its reference,
+/// [`FogSet::draws_stencil`]); `None` when the state tests or writes the
+/// stencil and `depth` has no stencil aspect.
+pub fn layer_stencil(device: &gfx::state::StencilState, depth: wgpu::TextureFormat) -> Option<wgpu::StencilState> {
+    if !device.enable {
+        return Some(wgpu::StencilState::default());
+    }
+    if !depth.has_stencil_aspect() {
+        return None;
+    }
+    let rs = gfx::state::RenderState { stencil: *device, ..Default::default() };
+    Some(gfx::translate::depth_stencil_state(&rs, Some(depth), wgpu::PrimitiveTopology::TriangleList)?.stencil)
+}
+
+/// Whether drawing under `device`'s stencil changes the stencil buffer:
+/// the test on, a write mask, and an operation other than `KEEP`.
+pub fn stencil_writes(device: &gfx::state::StencilState) -> bool {
+    use gfx::state::StencilOp::Keep;
+    device.enable && device.write_mask != 0 && [device.fail, device.depth_fail, device.pass].iter().any(|&op| op != Keep)
+}
+
 /// One compiled layer-16 pass of a material.
 #[derive(Clone, Debug)]
 pub struct FogProgram {
@@ -388,7 +416,7 @@ struct FogMaterial {
 /// The fog materials the native pass draws, and each part's index range
 /// (the glue's parts list, in the world's draw order).
 pub struct FogSet {
-    ready_formats: HashSet<(wgpu::TextureFormat, wgpu::TextureFormat)>,
+    ready_formats: HashSet<(wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState)>,
     materials: HashMap<u16, FogMaterial>,
     /// Index range, lightmap page and material for each eligible part.
     parts: HashMap<(Owner, u8), (u32, u32, Option<LightmapKey>, u16)>,
@@ -563,10 +591,34 @@ impl FogSet {
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let off = gfx::state::StencilState::default();
+        self.draws_stencil(cache, vertices, indices, color, depth, target_size, selected, view, fogs, &off)
+    }
+
+    /// [`FogSet::draws`] under the device's stencil at the layer call
+    /// ([`layer_stencil`]): the pipelines made with its state
+    /// ([`FogSet::prepare_pipelines_stencil`]), each packet setting its
+    /// reference. Refused when the state needs a stencil `depth` lacks.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::mutable_key_type)]
+    pub(crate) fn draws_stencil(
+        &self,
+        cache: &mut HashMap<wgpu::RenderPipeline, std::sync::Arc<gfx::compile::PendingPipeline>>,
+        vertices: &wgpu::Buffer,
+        indices: &wgpu::Buffer,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
+        device_stencil: &gfx::state::StencilState,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
-        let stencil = wgpu::StencilState::default();
+        let stencil = layer_stencil(device_stencil, depth).ok_or("the layer's stencil needs a stencil attachment")?;
         let scissor = ScissorRect::full(target_size.0, target_size.1);
-        let render = gfx::state::RenderState::default();
+        // The packets set the stencil reference from the render state.
+        let render = gfx::state::RenderState { stencil: *device_stencil, ..Default::default() };
         let mut packets = Vec::new();
         // The materials the selection reads, and per material the
         // placements it draws.
@@ -651,8 +703,17 @@ impl FogSet {
     pub(crate) fn prepare_pipelines(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, usage: PipelineUse,
     ) -> bool {
-        if self.ready_formats.contains(&(color, depth)) { return true; }
-        let stencil = wgpu::StencilState::default();
+        self.prepare_pipelines_stencil(device, color, depth, &wgpu::StencilState::default(), usage)
+    }
+
+    /// [`FogSet::prepare_pipelines`] with `stencil` (a world layer's,
+    /// [`layer_stencil`]) in every pipeline.
+    pub(crate) fn prepare_pipelines_stencil(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        stencil: &wgpu::StencilState, usage: PipelineUse,
+    ) -> bool {
+        if self.ready_formats.contains(&(color, depth, stencil.clone())) { return true; }
+        let stencil = stencil.clone();
         let mut ready = true;
         for m in self.materials.values_mut() {
             for (g, state, rigid) in &mut m.passes {
@@ -665,7 +726,7 @@ impl FogSet {
         // Only an admission check observes the frame boundary. Direct rendering
         // can use a pipeline as soon as the compiler finishes.
         if ready && matches!(usage, PipelineUse::Preflight) {
-            self.ready_formats.insert((color, depth));
+            self.ready_formats.insert((color, depth, stencil));
         }
         ready
     }
@@ -919,6 +980,98 @@ pub(crate) mod tests {
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the fog drew something");
         assert_eq!(images[0], images[1]);
+    }
+
+    /// A world layer's draws take the device's stencil at the layer call:
+    /// off as it is, the scene's layer-1 mode 1 (`ALWAYS`, `REPLACE` on
+    /// pass, masks `0xff`) as its pipeline state, and only a state that is
+    /// on needs the depth's stencil aspect.
+    #[test]
+    fn a_layers_stencil_is_the_devices_and_needs_a_stencil_aspect_only_when_on() {
+        use gfx::state::{CompareFunc, StencilOp, StencilState};
+        let off = StencilState::default();
+        assert_eq!(layer_stencil(&off, F::Depth32Float), Some(wgpu::StencilState::default()));
+        assert!(!stencil_writes(&off), "the test off writes nothing");
+        let mode1 = crate::object_state::structure_stencil(0);
+        let state = layer_stencil(&mode1, F::Depth24PlusStencil8).expect("a stencil aspect holds mode 1");
+        assert_eq!((state.read_mask, state.write_mask), (0xff, 0xff));
+        for face in [state.front, state.back] {
+            assert_eq!(face.compare, wgpu::CompareFunction::Always);
+            assert_eq!((face.fail_op, face.depth_fail_op, face.pass_op), (
+                wgpu::StencilOperation::Keep, wgpu::StencilOperation::Keep, wgpu::StencilOperation::Replace,
+            ));
+        }
+        assert!(stencil_writes(&mode1), "mode 1 writes its reference on pass");
+        assert_eq!(layer_stencil(&mode1, F::Depth32Float), None, "no stencil aspect: refused, not drawn without it");
+        let test_only = StencilState { enable: true, func: CompareFunc::Equal, reference: 3, ..off };
+        assert_eq!(layer_stencil(&test_only, F::Depth24PlusStencil8).map(|s| s.front.compare), Some(wgpu::CompareFunction::Equal));
+        assert!(!stencil_writes(&test_only), "a test that keeps every value writes nothing");
+        assert!(!stencil_writes(&StencilState { write_mask: 0, pass: StencilOp::Replace, ..test_only }), "no write mask");
+    }
+
+    /// A layer's packets under a stencil that writes draw the colour they
+    /// draw with the stencil off and leave the reference in the stencil
+    /// of what they cover, and nothing elsewhere; without a stencil
+    /// aspect they are refused.
+    #[test]
+    fn layer_packets_under_the_devices_stencil_write_its_reference_where_they_draw() {
+        use crate::gpu::GpuWorld;
+        use gfx::state::StencilState;
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let world = world();
+        let parts = parts(&world);
+        let mut gpu = GpuWorld::new(&ctx.device, &ctx.queue, world, &mut |_| None, &mut |_| None);
+        let (_, program) = pass(Stage::Bitmap { bitmap: map::TagId(7), image: 1 });
+        let set = FogSet::new(
+            &ctx.device, &ctx.queue, gpu.world(), parts, [(0, vec![program])].into(),
+            &mut |_| Some(Image::solid([200, 100, 50, 255])), &mut |_| None,
+        );
+        gpu.set_layer(1, set);
+        let (selected, view, fogs) = (selected(), view(), fogs());
+        let marking = StencilState { reference: 0x80, ..crate::object_state::structure_stencil(0) };
+        assert!(
+            gpu.layer_draws(1, &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs, &marking).is_err(),
+            "a stencil that is on needs the attachment's stencil"
+        );
+        let depth_format = F::Depth24PlusStencil8;
+        let mut out = Vec::new();
+        for stencil in [StencilState::default(), marking] {
+            let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: None, size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+                usage: U::RENDER_ATTACHMENT | U::COPY_SRC, view_formats: &[],
+            });
+            let (color, depth) = (texture(F::Rgba8Unorm), texture(depth_format));
+            let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+            let target = gfx::RenderTarget {
+                color: &cv, color_format: F::Rgba8Unorm, depth: Some(&dv), depth_format: Some(depth_format),
+                size: (SIZE, SIZE), samples: 1,
+            };
+            let draws = gpu
+                .layer_draws(1, &ctx.device, F::Rgba8Unorm, depth_format, (SIZE, SIZE), &selected, &view, &fogs, &stencil)
+                .expect("the layer draws under the device's stencil");
+            assert_eq!((draws.ranges, draws.packets.len()), (2, 2), "one pass each, cluster and placement");
+            let arena = gfx::ring::UploadPool::default().begin();
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            for (buffer, offset, bytes) in &draws.writes {
+                arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
+            }
+            gfx::Renderer::encode_pass(&ctx, &mut enc, &target, gfx::Clear::all([0.0; 4]), &draws.packets, None).unwrap();
+            let front = arena.upload_commands(&ctx.queue);
+            ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let colour = gfx::readback::read_texture(&ctx, &color, wgpu::TextureAspect::All, 4, (SIZE, SIZE));
+            let marks = gfx::readback::read_texture(&ctx, &depth, wgpu::TextureAspect::StencilOnly, 1, (SIZE, SIZE));
+            out.push((colour, marks));
+        }
+        let [(plain, unmarked), (colour, marks)] = <[_; 2]>::try_from(out).unwrap();
+        assert!(plain.iter().any(|&b| b != 0), "the layer drew something");
+        assert_eq!(plain, colour, "the stencil changes no colour");
+        assert!(unmarked.iter().all(|&s| s == 0), "the test off writes no stencil");
+        for (texel, &mark) in marks.iter().enumerate() {
+            let drawn = colour[texel * 4..texel * 4 + 4] != [0; 4];
+            assert_eq!(mark, if drawn { 0x80 } else { 0 }, "texel {texel}: the reference where drawn, zero elsewhere");
+        }
     }
 
     #[test]

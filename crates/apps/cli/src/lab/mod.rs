@@ -66,8 +66,9 @@ const USAGE: &str = "usage:
         [--no-sync] [--feature F]... [--build-env KEY=VALUE]... [--mem-limit SIZE] [--note TEXT]
                           a dedicated System Link host: headless `h2 serve --system-link
                           --host-light` on the host's LAN IPv4 (the job's system_link),
-                          until `stop`; --map opens its lobby; XNet base 3074 unless
-                          --base-port; driven by `agent` like --serve
+                          until `stop`; --map opens its lobby; XNet base 3174 unless
+                          --base-port (never the player's 3074-3080); driven by
+                          `agent` like --serve
     agent <id> <method> [json-params] [--timeout S]
                           one `h2 agent` call against that run's game, run on the
                           host; its output and exit code come back unchanged

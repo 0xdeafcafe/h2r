@@ -365,6 +365,7 @@ pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
                 player: *slot,
                 chain: r.chain,
                 live: r.live,
+                bounces: r.bounces,
                 counts: r
                     .counts
                     .iter()

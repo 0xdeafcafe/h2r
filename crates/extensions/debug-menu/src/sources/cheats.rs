@@ -122,4 +122,20 @@ mod tests {
         assert_eq!(active_cheats(&v), ["Noclip"]);
         assert!(active_cheats(&json!({"cheats": []})).is_empty());
     }
+
+    #[test]
+    fn a_cheat_refused_on_its_own_greys_only_its_row() {
+        // A networked game's host: game speed refused, the rest on offer.
+        let why = "a networked game: game speed would not reach the guests";
+        let v = json!({"refused": null, "cheats": [
+            {"name": "god", "label": "God mode", "kind": "bool", "value": false, "about": ""},
+            {"name": "game_speed", "label": "Game speed", "kind": "choice", "value": 1.0,
+             "refused": why, "choices": [{"value": 1.0, "label": "1x"}, {"value": 2.0, "label": "2x"}]},
+        ]});
+        let out = rows(&v, &["god", "game_speed"], None);
+        let labels: Vec<_> = out.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["God mode", "Game speed"], "no Cheats are off row");
+        assert_eq!(out[0].disabled, None);
+        assert_eq!(out[1].disabled.as_deref(), Some(why));
+    }
 }

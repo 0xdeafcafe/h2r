@@ -1,11 +1,14 @@
-//! The lab's consent prompt. Only a player choosing Allow can grant consent.
+//! The lab's questions to the player. Only a player choosing Allow can
+//! grant consent to start a job. While a job runs, a game the player opens
+//! asks what the job should do (`Ask::Running`, docs/runtime/lab.md "When
+//! the player opens a game").
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use agent::Access;
-use agent_proto::takeover::{self, Decision, Operation, Request, Source};
+use agent_proto::takeover::{self, Ask, Decision, Operation, Request, Source};
 use agent_proto::{RpcError, code};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
@@ -27,11 +30,78 @@ use crate::ui_kit::view::Opener;
 use crate::{coop_probe, level_boot, ui_kit, ui_watch};
 
 pub const SCREEN: &str = "lab.takeover";
-const CLASS: &str = "lab-takeover-dialog";
+/// The question a game asks while a lab job runs.
+pub const RUNNING_SCREEN: &str = "lab.running";
 const IDS: ui_kit::ids::Family = ui_kit::ids::family("lab takeover");
 const TITLE: &str = "LAB REQUEST";
-// Put the safe answer on the initial focus, including when a button is held.
-const LABELS: [&str; 2] = ["Not now", "Allow"];
+/// Ids both questions share: the title, the body and the footer.
+const TITLE_ID: u32 = 0;
+const BODY_ID: u32 = 1;
+const FOOTER_ID: u32 = 4;
+
+/// One of the two questions: its screen and class, its rows and what each
+/// answers. The safe answer is row 0, the initial focus, including when a
+/// button is held.
+struct Form {
+    ask: Ask,
+    screen: &'static str,
+    class: &'static str,
+    labels: &'static [&'static str],
+    /// Row `n`'s label is [`IDS`] id `first_id + n`.
+    first_id: u32,
+    answers: &'static [Decision],
+    /// What closing the dialog without a choice answers.
+    dismissed: Decision,
+    /// The list's anchor height, which puts the rows under the body.
+    anchor: i16,
+}
+
+// The dialog's list is on skin 0 (`ui_kit::view` item art): row 0's frame
+// art tops out 33 units above the anchor at most (the cap is 34 high, from
+// 1 below the anchor, or 4 below on the Controls skin), rows are 22 apart
+// and the last row's cap reaches 4 below its anchor. The body's ink ends
+// 19 units a line below `dialog::BODY_TOP` (72), and the footer's top is
+// -83.
+//
+// Four body lines end at -4: at -38 the frame's top (-5) clears them, and
+// row 1's cap (-64 to -68) stays above the footer. Rows lower than the
+// main menu's logo (its bottom is -19) keep the labels' contrast.
+const START: Form = Form {
+    ask: Ask::Start,
+    screen: SCREEN,
+    class: "lab-takeover-dialog",
+    labels: &["Not now", "Allow"],
+    first_id: 2,
+    answers: &[Decision::Declined, Decision::Allowed],
+    dismissed: Decision::Declined,
+    anchor: -38,
+};
+
+// Three body lines end at 15, well above the frame's top (-2). At -35 row
+// 0 sits lower than the consent question's row 0 did when its label kept
+// its contrast over the logo, and row 2's cap (-83 at the lowest) meets
+// the footer's top without reaching it.
+const RUNNING: Form = Form {
+    ask: Ask::Running,
+    screen: RUNNING_SCREEN,
+    class: "lab-running-dialog",
+    labels: &["Finish this one", "Keep running", "Stop and pause"],
+    first_id: 5,
+    answers: &[
+        Decision::FinishThis,
+        Decision::KeepRunning,
+        Decision::StopAndPause,
+    ],
+    dismissed: Decision::FinishThis,
+    anchor: -35,
+};
+
+fn form(ask: Ask) -> &'static Form {
+    match ask {
+        Ask::Start => &START,
+        Ask::Running => &RUNNING,
+    }
+}
 
 fn prompts() -> [Prompt; 2] {
     [
@@ -40,15 +110,9 @@ fn prompts() -> [Prompt; 2] {
     ]
 }
 
-fn layout() -> ListLayout {
-    let mut l = ui_kit::dialog_tag::base_layout(DialogBase::Large, LABELS.len());
-    // Four body lines need the list lower than the other question dialogs
-    // put it: row 0's frame art tops out 4 units below the anchor's row
-    // top plus 34 (`ui_kit::view` item art), and the body's ink ends 19
-    // units a line below `dialog::BODY_TOP`. At -34 the frame's top (-4)
-    // clears the fourth line (-4), and row 1's bottom (-66) stays above
-    // the footer (-83).
-    l.anchor[1] = -34;
+fn layout(form: &Form) -> ListLayout {
+    let mut l = ui_kit::dialog_tag::base_layout(DialogBase::Large, form.labels.len());
+    l.anchor[1] = form.anchor;
     l
 }
 
@@ -86,13 +150,17 @@ fn source_line(source: &Source) -> String {
     }
 }
 
-/// The dialog's text, four lines: who asks and what it does, the job's
-/// name, its source, and the level, data and time. Each line stays one line
-/// at the widest letters (the fit test), since the body wraps only at spaces
-/// and four lines is all the room above the rows.
+/// The dialog's text. To start a job, four lines: who asks and what it
+/// does, the job's name, its source, and the level, data and time. While a
+/// job runs, three: who runs it, its name and the question. Each line stays
+/// one line at the widest letters (the fit test), since the body wraps only
+/// at spaces and that is all the room above the rows.
 fn body(request: &Request) -> String {
     let who = display_field(&request.requester, 12);
     let name = display_field(&request.name, 22);
+    if request.ask == Ask::Running {
+        return format!("{who} is running\n\"{name}\"\nwhile you play. What now?");
+    }
     let action = match (request.operation, request.builds_image) {
         (Operation::Build, _) => "build",
         (Operation::Run, false) => "run",
@@ -132,6 +200,7 @@ enum Screen {
 
 struct PromptState {
     id: u64,
+    ask: Ask,
     until: Instant,
     body: String,
     screen: Screen,
@@ -159,11 +228,13 @@ struct Dialog {
 impl Default for Dialog {
     fn default() -> Self {
         let texts = SlotTexts::new(IDS);
-        texts.set(0, TITLE);
-        for (row, label) in LABELS.iter().enumerate() {
-            texts.set(2 + row as u32, label);
+        texts.set(TITLE_ID, TITLE);
+        for form in [&START, &RUNNING] {
+            for (row, label) in form.labels.iter().enumerate() {
+                texts.set(form.first_id + row as u32, label);
+            }
         }
-        texts.set(4, &ui_kit::input::legend(&prompts()));
+        texts.set(FOOTER_ID, &ui_kit::input::legend(&prompts()));
         Self {
             texts,
             prompt: Mutex::default(),
@@ -202,6 +273,7 @@ impl Dialog {
         let id = prompt.as_ref().map_or(1, |p| p.id + 1);
         *prompt = Some(PromptState {
             id,
+            ask: request.ask,
             until: now + Duration::from_secs(request.timeout_seconds.into()),
             body: body(&request),
             screen: Screen::Queued,
@@ -228,18 +300,22 @@ impl Dialog {
         )?;
         p.expire(Instant::now());
         if p.decision == Decision::Pending {
-            p.decision = Decision::Declined;
+            p.decision = form(p.ask).dismissed;
         }
         p.screen = Screen::Gone;
         p.pause.take()
     }
 
-    fn class(self: &Arc<Self>) -> ListClass {
+    fn class(self: &Arc<Self>, form: &'static Form) -> ListClass {
         let closed = Arc::clone(self);
         let g = DialogGeometry::fallback();
-        ListClass::with_rows(CLASS, SCREEN, self.clone())
+        let rows = Arc::new(FormRows {
+            dialog: Arc::clone(self),
+            form,
+        });
+        ListClass::with_rows(form.class, form.screen, rows)
             .dialog(DialogBase::Large)
-            .layout(layout())
+            .layout(layout(form))
             .panel(Panel {
                 art: Vec::new(),
                 texts: vec![PanelText {
@@ -258,7 +334,7 @@ impl Dialog {
                     bias: 0,
                 }],
             })
-            .footer(IDS.id(4))
+            .footer(IDS.id(FOOTER_ID))
             .action(Arc::new(|cx, screen| {
                 Box::pin(async move { ui_kit::dialog_tag::close(&cx, screen).await })
             }))
@@ -271,23 +347,24 @@ impl Dialog {
             }))
     }
 
-    fn spec(&self) -> ScreenSpec {
+    fn spec(&self, form: &Form) -> ScreenSpec {
         let body = self
             .prompt()
             .as_ref()
             .map_or_else(String::new, |p| p.body.clone());
-        let mut spec = ScreenSpec::new(SCREEN, TITLE);
-        spec.list = ListPlace::from(Some(layout()));
-        spec.rows = LABELS
+        let mut spec = ScreenSpec::new(form.screen, TITLE);
+        spec.list = ListPlace::from(Some(layout(form)));
+        spec.rows = form
+            .labels
             .iter()
             .enumerate()
             .map(|(row, label)| {
                 RowSpec::action(label)
                     .press(Press::Act)
-                    .ids(&[IDS.id(2 + row as u32)])
+                    .ids(&[IDS.id(form.first_id + row as u32)])
             })
             .collect();
-        spec.ids = vec![IDS.id(0), IDS.id(1), IDS.id(4)];
+        spec.ids = vec![IDS.id(TITLE_ID), IDS.id(BODY_ID), IDS.id(FOOTER_ID)];
         spec.prompts = prompts().into();
         spec.footer = true;
         spec.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
@@ -298,50 +375,66 @@ impl Dialog {
         spec
     }
 
-    fn page(self: &Arc<Self>) -> ListPage {
+    fn page(self: &Arc<Self>, form: &'static Form) -> ListPage {
         let dialog = Arc::clone(self);
-        ListPage::new(self.class(), move || dialog.spec())
+        ListPage::new(self.class(form), move || dialog.spec(form))
+    }
+
+    /// A press on row `row` of `form`'s dialog. Only an open question of
+    /// that form takes it.
+    fn press(&self, form: &Form, row: i16) -> Chosen {
+        let Some(&decision) = usize::try_from(row)
+            .ok()
+            .and_then(|row| form.answers.get(row))
+        else {
+            return Chosen::Nothing;
+        };
+        if let Some(p) = self.prompt().as_mut() {
+            p.expire(Instant::now());
+            if p.ask == form.ask
+                && p.decision == Decision::Pending
+                && matches!(p.screen, Screen::Open(_))
+            {
+                p.decision = decision;
+            }
+        }
+        Chosen::Act
     }
 }
 
-impl Rows for Dialog {
+/// One question's rows over the shared dialog state.
+struct FormRows {
+    dialog: Arc<Dialog>,
+    form: &'static Form,
+}
+
+impl Rows for FormRows {
     fn title(&self) -> u32 {
-        IDS.id(0)
+        IDS.id(TITLE_ID)
     }
 
     fn count(&self) -> usize {
-        LABELS.len()
+        self.form.labels.len()
     }
 
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        if (0..LABELS.len() as i16).contains(&row) {
-            vec![(LABEL_SLOT, IDS.id(2 + row as u32))]
+        if (0..self.form.labels.len() as i16).contains(&row) {
+            vec![(LABEL_SLOT, IDS.id(self.form.first_id + row as u32))]
         } else {
             Vec::new()
         }
     }
 
     fn panel_text(&self, index: usize) -> Option<u32> {
-        (index == 0).then(|| IDS.id(1))
+        (index == 0).then(|| IDS.id(BODY_ID))
     }
 
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-        self.texts.write(m)
+        self.dialog.texts.write(m)
     }
 
     fn press(&self, row: i16) -> Chosen {
-        let decision = match row {
-            0 => Decision::Declined,
-            1 => Decision::Allowed,
-            _ => return Chosen::Nothing,
-        };
-        if let Some(p) = self.prompt().as_mut() {
-            p.expire(Instant::now());
-            if p.decision == Decision::Pending && matches!(p.screen, Screen::Open(_)) {
-                p.decision = decision;
-            }
-        }
-        Chosen::Act
+        self.dialog.press(self.form, row)
     }
 }
 
@@ -411,17 +504,17 @@ impl CampaignPause {
     }
 }
 
-async fn open(cx: &Cx) -> Result<u32, EntryError> {
+async fn open(cx: &Cx, screen: &str) -> Result<u32, EntryError> {
     use ui_kit::dialog_tag;
 
-    let Some(d) = list_class::loader_of(SCREEN).and_then(dialog_tag::by_loader) else {
+    let Some(d) = list_class::loader_of(screen).and_then(dialog_tag::by_loader) else {
         return Ok(0);
     };
     dialog_tag::open_over_screen(cx, &d, 1).await
 }
 
 enum UiStep {
-    Open,
+    Open(&'static str),
     Close(u32),
 }
 
@@ -437,9 +530,11 @@ impl Feature for Driver {
             .texts
             .base
             .store(b.guest_alloc(0x1000, Permissions::RW)?, Ordering::SeqCst);
-        let dialog = Arc::clone(&self.0);
-        b.locale()
-            .source(SCREEN, move |id| dialog.texts.address(id));
+        for form in [&START, &RUNNING] {
+            let dialog = Arc::clone(&self.0);
+            b.locale()
+                .source(form.screen, move |id| dialog.texts.address(id));
+        }
         let (guard, restore) = (Arc::clone(&self.0), Arc::clone(&self.0));
         b.snapshot(SnapshotPolicy::section_forbid_while(
             move || {
@@ -480,9 +575,9 @@ impl Feature for Driver {
                             {
                                 return Ok(Flow::Continue);
                             }
-                            dialog.texts.set(1, &p.body.replace('\n', "\r\n"));
+                            dialog.texts.set(BODY_ID, &p.body.replace('\n', "\r\n"));
                             p.screen = Screen::Opening;
-                            UiStep::Open
+                            UiStep::Open(form(p.ask).screen)
                         }
                         Screen::Open(at) if p.decision == Decision::TimedOut => {
                             p.screen = Screen::Closing(at);
@@ -496,8 +591,8 @@ impl Feature for Driver {
                         Box::pin(async move {
                             let elapsed = cx.arg(0)?;
                             match step {
-                                UiStep::Open => {
-                                    let result = open(&cx).await;
+                                UiStep::Open(screen) => {
+                                    let result = open(&cx, screen).await;
                                     if let Err(e) = &result {
                                         eprintln!("lab takeover: opening the dialog: {e}");
                                     }
@@ -547,22 +642,41 @@ impl Feature for Driver {
 
 pub fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> anyhow::Result<()> {
     let dialog = Arc::new(Dialog::default());
-    if registry.add(&dialog.class())? && registry.add(&Driver(Arc::clone(&dialog)))? {
+    if registry.add(&dialog.class(&START))? && registry.add(&Driver(Arc::clone(&dialog)))? {
+        // With its class switched off, the running question can't open and
+        // answers Unavailable; the lab then lets the job finish.
+        registry.add(&dialog.class(&RUNNING))?;
         add_consent(agent, &dialog);
     }
     Ok(())
 }
 
 pub(crate) fn sample_page() -> ListPage {
+    sample(sample_request(), &START)
+}
+
+/// The question a game asks while a lab job runs, for the screen audit.
+pub(crate) fn sample_running_page() -> ListPage {
+    sample(
+        Request {
+            ask: Ask::Running,
+            ..sample_request()
+        },
+        &RUNNING,
+    )
+}
+
+fn sample(request: Request, form: &'static Form) -> ListPage {
     let dialog = Arc::new(Dialog::default());
     dialog
-        .submit(sample_request(), Instant::now())
+        .submit(request, Instant::now())
         .expect("sample request");
-    dialog.page()
+    dialog.page(form)
 }
 
 fn sample_request() -> Request {
     Request {
+        ask: Ask::Start,
         requester: "Lab driver".into(),
         name: "Menu bands check".into(),
         operation: Operation::Run,
