@@ -182,6 +182,7 @@ are under [Reviews](#reviews).
 - [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
 - [ui-builder.md](game/ui-builder.md): the UI builder for native screens: pages as pure state machines, one `View` drawn offline from the disc, layout checks, the fidelity loop against game captures
 - [ui-screens.md](game/ui-screens.md): the UI kit for list screens of ours: ids, input, previews, the checklist
+- [ui-in-maps.md](game/ui-in-maps.md): our screens as generated `wgit` tags in the mainmenu and shared maps, listed in the `wgtz`, cached by disc map and docs hash
 - [hud-kit.md](game/hud-kit.md): the HUD kit (design): what Halo 2's HUD is made of (widgets, messages, training prompts, colours, fonts, anchors), HUD elements of ours drawn by the game's own HUD code, `h2 hud preview` and its checks, the superbounce HUD rebuilt on it
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants

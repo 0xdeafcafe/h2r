@@ -20,13 +20,14 @@ use tags::ui::{
 };
 use tags::wire::StringId;
 
-const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui export-yaml [--out assets/ui]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
+const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui export-yaml [--out assets/ui]\n       h2 ui inject [--map mainmenu|shared|single_player_shared] [--disc disc.iso] [--data DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("preview") => return preview(args[1..].to_vec()),
         Some("sheet") => return sheet(args[1..].to_vec()),
         Some("export-yaml") => return export_yaml(&args[1..]),
+        Some("inject") => return inject(&args[1..]),
         _ => {}
     }
     let mut args = args.into_iter();
@@ -514,6 +515,58 @@ fn animation_phases(value: &str) -> Result<Vec<boot::ui_kit::animation::Phase>> 
         _ => bail!("animation direction must be in or out"),
     };
     Ok(vec![phase])
+}
+
+const INJECT_USAGE: &str = "usage: h2 ui inject [--map mainmenu|shared|single_player_shared] [--disc disc.iso] [--data DIR]\n\nBuilds the map with our screens (boot::ui_kit::inject) as the game is served it,\nkeeps it under DATA/cache/ui-screens/<map>.map (the editor opens it as a loose map; it\nholds the user's own map, so it is never committed) and runs the h2 ui --all checks\non it. docs/game/ui-in-maps.md.";
+
+/// `h2 ui inject`: the map with our screens in it, built or read from the
+/// host cache, and checked the way `h2 ui --all` checks a map.
+fn inject(args: &[String]) -> Result<()> {
+    let (mut stem, mut disc, mut data) = ("mainmenu".to_owned(), None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--map" => stem = it.next().context(INJECT_USAGE)?.clone(),
+            "--disc" => disc = Some(PathBuf::from(it.next().context(INJECT_USAGE)?)),
+            "--data" => data = Some(PathBuf::from(it.next().context(INJECT_USAGE)?)),
+            "-h" | "--help" => {
+                println!("{INJECT_USAGE}");
+                return Ok(());
+            }
+            _ => bail!("unknown option {a}\n{INJECT_USAGE}"),
+        }
+    }
+    let data = data.unwrap_or_else(content::store::default_data_root);
+    let mut source = super::maps::load_map(&stem, disc)?;
+    let size = u64::from(source.header().file_size);
+    let original = source.read_file_range(0, size)?;
+    let mut rewrite = boot::ui_kit::inject::ScreensRewrite::baked()
+        .map_err(|e| anyhow!(e))?
+        .with_cache(&data);
+    let built = rewrite.rebuild(&stem.to_ascii_lowercase(), &original)?;
+    println!(
+        "{} screens in {stem}{}{}",
+        built.injected,
+        if built.from_cache { " (from cache)" } else { "" },
+        built
+            .file
+            .as_ref()
+            .map(|f| format!(", {}", f.display()))
+            .unwrap_or_default()
+    );
+    for (name, why) in &built.skipped {
+        println!("not added: {name}: {why}");
+    }
+    let mut checked = Map::from_reader(std::io::Cursor::new(built.map))?;
+    let check = check_map(&mut checked);
+    print!("{}", report(1, &check));
+    for f in &check.failures {
+        eprintln!("{f}");
+    }
+    if !check.failures.is_empty() {
+        bail!("{} UI failures", check.failures.len());
+    }
+    Ok(())
 }
 
 const EXPORT_USAGE: &str = "usage: h2 ui export-yaml [--out DIR]\n\nWrites every screen of ours (boot::ui_kit::screens::NAMES) as its doc,\nDIR/screens/<name>.yaml, and DIR/design.yaml with the tokens and presets\nthe screens use, starting from DIR/design.yaml (default DIR assets/ui).\ndocs/game/ui-builder.md \"Screens in YAML\".";

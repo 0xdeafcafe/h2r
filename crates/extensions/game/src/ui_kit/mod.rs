@@ -9,6 +9,8 @@
 //!   that opens it as the game opens its dialogs.
 //! - [`ids`]: the one registry of string-id families, checked at compile
 //!   time.
+//! - [`inject`]: our screens as real `wgit` tags in the maps
+//!   (docs/game/ui-in-maps.md).
 //! - [`input`]: events as inputs, named glyphs and legends, the opener's
 //!   press guard.
 //! - [`lifecycle`]: close as B does, and work that waits for the free.
@@ -34,6 +36,7 @@ pub mod dialog;
 pub mod dialog_tag;
 pub mod forge;
 pub mod ids;
+pub mod inject;
 pub mod input;
 pub mod layout;
 pub(crate) mod level_art;

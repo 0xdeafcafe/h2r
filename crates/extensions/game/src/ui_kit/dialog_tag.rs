@@ -225,7 +225,7 @@ impl PaneTracks {
         Self::override_style(style, count)
     }
 
-    fn override_style(style: TransitionStyle, count: Option<u32>) -> Option<Self> {
+    pub(crate) fn override_style(style: TransitionStyle, count: Option<u32>) -> Option<Self> {
         let (pane, rows) = match style {
             TransitionStyle::Off => (0, 0),
             TransitionStyle::Retail { pane, rows }
