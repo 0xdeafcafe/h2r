@@ -271,11 +271,34 @@ fn reloading_a_play_copy_uses_the_layout_at_save_time() {
             FieldValue::Vec3([3., 4., 5.]),
         ))
         .unwrap();
-    until(&mut play, &mut app, "the field in the reloaded block", |p, a| {
-        !game.calls("edit.batch").is_empty()
-            && p.edits.sent.is_none()
-            && a.pairing.pending.is_empty()
-    });
+    // Not `until`: a timeout here says whether the batch never went out or a
+    // Pending row stayed, and which.
+    let end = Instant::now() + Duration::from_secs(25);
+    loop {
+        play.update(&mut app);
+        if !game.calls("edit.batch").is_empty()
+            && play.edits.sent.is_none()
+            && app.pairing.pending.is_empty()
+        {
+            break;
+        }
+        if Instant::now() >= end {
+            let rows: Vec<String> = app.pairing.pending.iter()
+                .map(|row| format!("{} {} [{}]: {}", row["doc"], row["path"], row["effect"], row["why"]))
+                .collect();
+            panic!(
+                "timed out waiting for the field in the reloaded block; pending: {rows:?}; \
+                 edit.batch calls: {}; batch in flight: {}; live_edits: {}; \
+                 has world.placement.edit: {}; log: {:?}",
+                game.calls("edit.batch").len(),
+                play.edits.sent.is_some(),
+                play.live_edits,
+                play.has_method(agent_proto::sim::method::PLACEMENT_EDIT),
+                app.log().iter().map(|l| &l.status).collect::<Vec<_>>(),
+            );
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
     let calls = game.calls("edit.batch");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["writes"].as_array().unwrap().len(), 1);
