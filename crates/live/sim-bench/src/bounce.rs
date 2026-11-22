@@ -81,6 +81,10 @@ pub struct Stats {
     pub primes: u64,
     /// Of those, read from the game (else assumed after the stand-up).
     pub primes_read: u64,
+    /// Tries that began primed with the word read at -3 rather than
+    /// priming at a crouch spot: a drill's word, set by the host.
+    #[serde(default)]
+    pub armed: u64,
     /// Tries the route saw launch.
     pub practice_bounces: u64,
     /// Tries with at least one chain bounce.
@@ -259,6 +263,11 @@ impl BounceTally {
             }
             Event::Primed { site, read, own } => {
                 if !own {
+                    // A word carried in: counted when it was read.
+                    if read {
+                        let i = self.site(site);
+                        self.both(player, Some(i), |a| a.stats.armed += 1);
+                    }
                     return;
                 }
                 let i = self.site(site);
@@ -430,6 +439,7 @@ fn add(a: &mut Acc, b: &Acc) {
     s.attempts += o.attempts;
     s.primes += o.primes;
     s.primes_read += o.primes_read;
+    s.armed += o.armed;
     s.practice_bounces += o.practice_bounces;
     s.bounced_tries += o.bounced_tries;
     s.chain_bounces += o.chain_bounces;

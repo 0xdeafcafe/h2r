@@ -767,7 +767,7 @@ site (the stand point the try was at):
 ```json
 "bounce": {
   "format": "h2-sim-bounce/1",
-  "totals": { "attempts": 40, "primes": 31, "primes_read": 29,
+  "totals": { "attempts": 40, "primes": 31, "primes_read": 29, "armed": 0,
               "practice_bounces": 14, "bounced_tries": 12, "bounce_rate": 0.3,
               "chain_bounces": 17, "chains": { "1": 8, "2": 3 }, "best_chain": 3,
               "bounced_deaths": 1, "launch": { "n": 17, "best": 6.1, "mean": 4.2 },
@@ -849,10 +849,20 @@ pair `fixed_pair` finds), the write `havok.pair.set` makes
 ([agent-api.md](agent-api.md#havokpairset)); a unit with no single
 level pair (asleep) is asked for again. The notes say `drill: the word
 was set to -3 at the start` once it has been. The tries go into the
-`bounce` block as any practice's; `primes` stays 0 (they count primes at
-a crouch spot, and a drill's start is not one). A try that fails here failed in the approach or the jump:
+`bounce` block as any practice's; `primes` and `primes_read` stay 0 (they
+count primes at a crouch spot, and a drill's start is not one), and
+`armed` counts the tries that began with the word read at −3, so a
+drill's `armed` is its tries that got the word. A try that fails here failed in the approach or the jump:
 `pair_lost` is the word read as something else on the ground between the
 start and the jump.
+
+What to read in the run's log: `bots: bounce drill: site ...` once the
+bot has found the site (its aim and the start; a `no known site` before
+it is the spots still coming in), and a `bots: bounce try:` line per try
+with the last jump's takeoff, ground and vertical speed, word, air
+stick, touchdown and result
+([bots.md, "Practising bounces"](../game/bots.md#practising-bounces),
+"The try's line").
 
 [sim-examples/superbounce-ground-truth.toml](sim-examples/superbounce-ground-truth.toml)
 is one bot on Ascension drilling the measured spot from its takeoff, the

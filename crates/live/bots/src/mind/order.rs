@@ -11,10 +11,10 @@
 use input::host::HostPadState;
 
 use super::{Mind, Vec3};
-use crate::brain::{Me, Perception, Seen};
 use crate::bounce_route::{
-    self, Ask, Logged, Mode, OrderRun, Touchdown, Why, launch_floor, path_length,
+    self, Ask, Flight, Logged, Mode, OrderRun, Touchdown, Why, launch_floor, path_length,
 };
+use crate::brain::{Me, Perception, Seen};
 use crate::cache::MapData;
 use crate::glitches::prime::is_primed;
 
@@ -57,6 +57,7 @@ pub(super) struct Ended {
     landing: Option<Touchdown>,
     log: Vec<Logged>,
     site: Option<crate::spots::Site>,
+    flights: Vec<Flight>,
 }
 
 /// Where a bot's bounce route stands, for the agent.
@@ -88,6 +89,8 @@ pub struct OrderView {
     pub landing: Option<Touchdown>,
     /// What the route did, oldest first.
     pub log: Vec<Logged>,
+    /// Its jumps and drops, oldest first ([`OrderRun::flights`]).
+    pub flights: Vec<Flight>,
     /// The bounce the plan uses.
     pub site: Option<crate::spots::Site>,
     /// The practice loop's tally while the superbounce mode is on
@@ -166,6 +169,7 @@ impl Mind {
             tries: 0,
             landing: None,
             log: Vec::new(),
+            flights: Vec::new(),
             site: None,
             practice: self.practice_view(),
         };
@@ -192,6 +196,7 @@ impl Mind {
                 tries: s.tries,
                 landing: s.landing,
                 log: o.run.log().to_vec(),
+                flights: o.run.flights(),
                 site: o.run.plan.site,
                 ..none
             };
@@ -207,6 +212,7 @@ impl Mind {
                 error: e.result.err(),
                 landing: e.landing,
                 log: e.log.clone(),
+                flights: e.flights.clone(),
                 site: e.site,
                 ..none
             },
@@ -284,8 +290,7 @@ impl Mind {
                     Some(plan) => plan,
                     None => {
                         self.stuck.blacklist(site.bounce.stand, p.tick);
-                        self.ended =
-                            Some(Ended::empty(a.to, a.mode, Why::Asked, Err("no_route")));
+                        self.ended = Some(Ended::empty(a.to, a.mode, Why::Asked, Err("no_route")));
                         return;
                     }
                 }
@@ -311,7 +316,8 @@ impl Mind {
         }
         let seed = u64::from(p.tick) ^ 0xb0_0c5;
         // A plain walk keeps no word: it neither primes nor needs one.
-        let mut run = OrderRun::new(plan, primed && !a.plain, p.tick, seed);
+        // Primed here is the word read at -3 (a drill's, set by the host).
+        let mut run = OrderRun::new(plan, primed && !a.plain, p.tick, seed).primed_read();
         run.show_off = a.show_off;
         self.order = Some(Ordered {
             run,
@@ -334,10 +340,15 @@ impl Mind {
             why: o.run.plan.why,
             steps: o.run.plan.steps.iter().map(|s| s.name()).collect(),
             result,
-            step: if result.is_ok() { status.steps } else { status.step },
+            step: if result.is_ok() {
+                status.steps
+            } else {
+                status.step
+            },
             landing: status.landing,
             log: o.run.log().to_vec(),
             site: o.run.plan.site,
+            flights: o.run.flights(),
         });
     }
 }
@@ -354,6 +365,7 @@ impl Ended {
             landing: None,
             log: Vec::new(),
             site: None,
+            flights: Vec::new(),
         }
     }
 }

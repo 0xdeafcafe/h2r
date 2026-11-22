@@ -1610,11 +1610,12 @@ wait, and the trigger is the trick's.
 spots. Each spot has a map, the place to stand, a spread to nudge within
 between tries, a drift direction, a source and, for a spot a standing
 jump can't reach, the takeoff of the running jump onto it
-(`Bounce::takeoff`). There is one:
+(`Bounce::takeoff`) and where its traced bounces landed, which a route
+aims at (`Bounce::landing`, the site's `Site::aim`). There is one:
 
-| Map | Stand at (x, y, z) | Drift | Takeoff | Source |
-|---|---|---|---|---|
-| `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | (−8.4, 2.5, −0.76) | superbounce.md: the crease where the ramp meets the floor; every traced bounce fell onto it at −5.26 to −5.40 from the recipe's running jump off the upper level, a 2.43 drop; the launch is a pinch between faces at y 4.12 and 3.94 |
+| Map | Stand at (x, y, z) | Drift | Takeoff | Aim | Source |
+|---|---|---|---|---|---|
+| `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | (−8.4, 2.5, −0.76) | (−10.45, 3.985, −3.19) | superbounce.md: the crease where the ramp meets the floor; every traced bounce fell onto it at −5.26 to −5.40 from the recipe's running jump off the upper level, a 2.43 drop, landing on x −10.2 to −10.7, y 3.93 to 4.04 (the aim is the middle, which the takeoff heads at along the recipe's (−0.8, 0.6)); the launch is a pinch between faces at y 4.12 and 3.94 |
 
 A bounce needs the player primed first: a forced crouch leaves the
 level pair word at -3 and only a landing with it at -3 bounces
@@ -1696,7 +1697,7 @@ a walk-length function over the nav mesh:
    behind the launch point (45 ticks at most), run at the aim at the
    ground speed that carries the flight onto it
    (`bounce_route::takeoff_speed`: the gap over the fall's time from a
-   jump of 3.08 up; about 1.3 units/s on Ascension), steered back onto
+   jump of 3.08 up; about 1.2 units/s on Ascension), steered back onto
    the line, and jump 0.05 short of the launch point, holding A 3 ticks
    (60 ticks to get there, else `no_drop`). Otherwise walk off at half
    stick. In the air it steers where the landing comes down as it flies
@@ -1713,7 +1714,13 @@ a walk-length function over the nav mesh:
 A touchdown during a bounce or a drop is kept (`bounce_route::Touchdown`:
 the tick, the origin before, the speeds in and out, how far outside the
 slot, the word) and named as the HUD's landings are: `bounce`,
-`not_primed`, `missed`, `too_slow` or `no_bounce`.
+`not_primed`, `missed`, `too_slow` or `no_bounce`. Each jump or drop is a
+**flight** (`bounce_route::Flight`, `OrderRun::flights`, the last 8):
+from the tick the step goes airborne (the jump pressed, or a walk-off
+leaving the floor), where it left, the ground speed then, the best
+vertical speed in the 6 ticks after, the word on that tick, the stick
+asked in the air (mean, most, and the ticks let go), and the touchdown
+it ended in with its result (`no_landing` when none was seen).
 
 The plan is the best bounce under the asker's mode. **Help** (the
 default) takes a bounce only where it reaches the goal and the plain walk
@@ -1885,7 +1892,27 @@ since a body that sleeps has no level pair to write. Primed, it runs the
 route by the site from there (no prime: the walk to the approach, then
 the jump or the drop), tallied as a practice try, pauses 10 ticks and
 walks back to the start. The word is read between tries too
-(`Mind::wants_pair`).
+(`Mind::wants_pair`). A route that starts primed from a word read at −3
+says so (`OrderRun::primed_read`: `primed_read`, and a practice event
+`Primed` with `read` and not `own`). The log says once a drill which
+site it found (`bots: bounce drill: site ... (a drop), aim ..., start
+..., N sites known`), after any `no known site` said while the map's
+spots were still coming in.
+
+**The try's line.** Every tallied try, drilled or practised, logs one
+line (`mind::practice::try_line`):
+
+```text
+bots: bounce try: bot 0x2f drill site (-10.62, 3.88, -3.19) aim (-10.45, 3.99, -3.19): missed; jumps 3, the last: takeoff (-8.41, 2.49, -0.76) ground 1.21 vz +3.08 word -3; air 62 ticks stick mean (-0.05, +0.04) max 0.31 let go 20; down (-10.30, 4.11, -3.19) miss 0.204 in 5.38 out +0.00: missed; before: missed, too_slow
+```
+
+The bot (its seed), drill or practice, the site and its aim, what the
+try came to, then the last flight: where it took off, the ground and
+vertical speed, the word then (`unread` when it could not be read), the
+air stick in world axes, the touchdown (origin the tick before, the
+miss, the speeds in and out) and its result; then the results of the
+flights before it. A try with no flight ends `no jump, ended at step N
+(name)`. (The numbers above show the shape, not a run.)
 
 The bots spread over the sites by claims on a board the process shares
 (`practice::CLAIMS`): a bot renews its claim each tick of its route, and

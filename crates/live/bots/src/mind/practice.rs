@@ -199,6 +199,8 @@ pub struct Practice {
     arm: bool,
     armed_since: Option<u32>,
     drill_said: bool,
+    /// Whether it said which site the drill found.
+    drill_found: bool,
 }
 
 /// What a pick found.
@@ -249,6 +251,49 @@ impl std::fmt::Display for NothingWhy {
     }
 }
 
+/// The log's line for a try (docs/game/bots.md, "Practising bounces"):
+/// `bots: bounce try:`, the bot, drill or practice, the site and the aim,
+/// what it came to, then how many jumps or drops it made and the last
+/// ([`crate::bounce_route::Flight::describe`]: the takeoff, the ground
+/// and vertical speed, the word, the air stick, the touchdown and its
+/// result) and the results of those before it; or, with none, the step
+/// it ended on.
+pub(super) fn try_line(
+    drill: bool,
+    owner: u64,
+    site: Site,
+    why: Option<&str>,
+    view: &super::OrderView,
+) -> String {
+    let p = |v: Vec3| format!("({:.2}, {:.2}, {:.2})", v[0], v[1], v[2]);
+    let head = format!(
+        "bots: bounce try: bot {owner:#x} {} site {} aim {}: {}",
+        if drill { "drill" } else { "practice" },
+        p(site.bounce.stand),
+        p(site.target()),
+        why.unwrap_or("bounce"),
+    );
+    match view.flights.split_last() {
+        Some((last, before)) => {
+            let mut line = format!(
+                "{head}; jumps {}, the last: {}",
+                before.len() + 1,
+                last.describe()
+            );
+            if !before.is_empty() {
+                let ends: Vec<_> = before.iter().map(|f| f.end.unwrap_or("open")).collect();
+                line.push_str(&format!("; before: {}", ends.join(", ")));
+            }
+            line
+        }
+        None => format!(
+            "{head}; no jump, ended at step {} ({})",
+            view.step,
+            view.steps.get(view.step).copied().unwrap_or("done")
+        ),
+    }
+}
+
 fn stand_key(p: Vec3) -> [u32; 3] {
     p.map(f32::to_bits)
 }
@@ -294,6 +339,7 @@ impl Practice {
             arm: false,
             armed_since: None,
             drill_said: false,
+            drill_found: false,
         }
     }
 
@@ -449,6 +495,7 @@ impl Mind {
             self.practice.drill = d;
             self.practice.armed_since = None;
             self.practice.drill_said = false;
+            self.practice.drill_found = false;
         }
         if d.is_none() {
             self.practice.arm = false;
@@ -519,7 +566,9 @@ impl Mind {
         // What was given up comes back in time; a crouch spot back pairs
         // again.
         let gone = self.practice.gone.len();
-        self.practice.gone.retain(|&(_, until)| !reached(tick, until));
+        self.practice
+            .gone
+            .retain(|&(_, until)| !reached(tick, until));
         if self.practice.gone.len() != gone {
             self.practice.pairs.clear();
         }
@@ -745,6 +794,16 @@ impl Mind {
         if !bounced {
             self.practice_strike(site, &view.steps, view.step, why);
         }
+        eprintln!(
+            "{}",
+            try_line(
+                self.practice.drill.is_some(),
+                self.practice.owner,
+                site,
+                why,
+                &view
+            )
+        );
         self.practice.record(site.bounce.stand, bounced, why);
         let tick = self.tick.unwrap_or(0);
         self.practice.event(PracticeEvent::Tried {
@@ -882,7 +941,8 @@ impl Mind {
             .sites
             .iter()
             .filter(|s| {
-                dist_xy(s.bounce.stand, d.site) <= same && (s.bounce.stand[2] - d.site[2]).abs() <= same
+                dist_xy(s.bounce.stand, d.site) <= same
+                    && (s.bounce.stand[2] - d.site[2]).abs() <= same
             })
             .min_by(|a, b| {
                 dist_xy(a.bounce.stand, d.site).total_cmp(&dist_xy(b.bounce.stand, d.site))
@@ -958,7 +1018,26 @@ impl Mind {
         };
         self.practice.waiting = false;
         let ledge = |s: &Site| launch_floor(m, s);
-        let Some(start) = d.start.or_else(|| approach(&site, &ledge)) else {
+        let start = d.start.or_else(|| approach(&site, &ledge));
+        if !self.practice.drill_found {
+            // Said once a drill: the site found (after a "no known site"
+            // while the spots were still coming in, the drill goes on).
+            self.practice.drill_found = true;
+            let p = |v: Vec3| format!("({:.2}, {:.2}, {:.2})", v[0], v[1], v[2]);
+            eprintln!(
+                "bots: bounce drill: site {} ({}), aim {}, start {} ({} sites known)",
+                p(site.bounce.stand),
+                if site.standing() {
+                    "a standing jump"
+                } else {
+                    "a drop"
+                },
+                p(site.target()),
+                start.map_or_else(|| "none".to_string(), p),
+                self.known.sites.len()
+            );
+        }
+        let Some(start) = start else {
             if !self.practice.drill_said {
                 self.practice.drill_said = true;
                 eprintln!("bots: bounce drill: the site has no approach and no start was given");
@@ -968,7 +1047,8 @@ impl Mind {
             return None;
         };
         let at = me.position;
-        let there = dist_xy(at, start) <= DRILL_AT && (at[2] - start[2]).abs() <= crate::nav::ARRIVE_Z;
+        let there =
+            dist_xy(at, start) <= DRILL_AT && (at[2] - start[2]).abs() <= crate::nav::ARRIVE_Z;
         let walk = |mind: &mut Mind, to: Vec3| {
             mind.asked = Some(Asked {
                 to,

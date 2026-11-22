@@ -163,3 +163,22 @@ Changed after this, in the next commit on `sb6-bottrain`:
 - The bounce drill (`[drill]`, sim.md, "The bounce drill") and [superbounce-ground-truth.toml](../../runtime/sim-examples/superbounce-ground-truth.toml): one bot, the measured spot, each try from the takeoff with the word set to −3. Its `why` reads the approach and the jump alone; `pair_lost` there is the word lost between the start and the jump.
 
 Not changed: the standing sites' drift (`[bounce] drift`, sweepable without a rebuild; the traced bounces came in at 0.27 to 1.29 units/s toward the drift), and the HUD's own spot data.
+
+## 2026-11-22: the ground-truth drill at `66784c400`, no bounce
+
+`h2 sim run docs/runtime/sim-examples/superbounce-ground-truth.toml` (one bot, Ascension, 9000 ticks), run by the coordinator; read from its log and `report.json`'s `bounce` block. 9 tries, all at the measured site (−10.62, 3.88, −3.19), `why` {missed: 9}, `primes` 0, `primes_read` 0, no bounce. The log, in order: `bots: bounce drill: no known site within 0.5 of [-10.62, 3.88, -3.19] (1 sites known)` after the match started and before the nav mesh loaded; the nav mesh loading; `sim: drill: the word was set to -3 at the start` (once: the note is said once a match, not once a write); nothing else about the tries.
+
+What it does and doesn't show:
+
+- The word got there. A drill try starts only once the word reads −3 at the start (`Mind::drill_next`), and a word read as anything else on the ground before the jump ends the try `pair_lost`, so `missed` × 9 means the word was −3 up to the takeoff. Spawning or respawning doesn't defeat it: the bot asks for the word whenever it stands at the start unprimed.
+- `primes` and `primes_read` are 0 by design: they count primes at a crouch spot, and a drill's route starts primed. The route also said a word it started with was assumed rather than read (`OrderRun::new` set `read` false), so a set word left no trace at all in the report.
+- The `no known site` line is the bot looking before the map's spots were all in (1 site known, not the measured one). It waits and looks again; the 9 tries are at the site, so it found it later. Nothing said so.
+- `missed` is a touchdown more than 0.1 (half `SLOT_WIDTH`) from the aim, which was the stand. The traced bounces landed on x −10.2 to −10.7, y 3.93 to 4.04: 0.05 to 0.16 past the stand in y and up to 0.4 off it in x. The takeoff headed at the stand along (−0.85, 0.53), 5° off the recipe's (−0.8, 0.6). Where the bot came down isn't in the report.
+- The unit tests' drop body moved at the stick's speed in the air too, so the air steering (which predicts the landing from the sideways speed held, as the game's body keeps it) swung the body back onto the ledge: three of `bounce_route`'s drop tests failed. The game's body keeps its speed in the air and the stick nudges it (about 1 unit/s² at a stick past the dead zone, the round-3 runs' free falls).
+
+Changed after this, in the next commit on `sb6-bottrain`:
+
+- The measured spot aims at the middle of the traced landings, (−10.45, 3.985, −3.19) (`Bounce::landing`, `Site::aim`): the takeoff then heads along (−0.81, 0.59), 1° off the recipe's, at about 1.23 units/s.
+- A route started primed from a word read at −3 says it was read (`OrderRun::primed_read`), and the report's `armed` counts those tries.
+- Each try logs one line, `bots: bounce try: ...`: the last jump's takeoff, ground and vertical speed, word, air stick, touchdown and result, and the results of the jumps before it (bots.md, "Practising bounces", "The try's line"). The drill says once which site it found.
+- The drop tests' body keeps its sideways speed in the air (`TEST_AIR_ACCEL`, 1 unit/s²).

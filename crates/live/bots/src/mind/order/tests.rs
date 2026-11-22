@@ -28,6 +28,7 @@ fn known() -> Known {
                 drift: [1.0, 0.0],
                 source: "scan",
                 takeoff: None,
+                landing: None,
             },
             launch: 12.3,
             fall: 0.0,
@@ -148,7 +149,11 @@ fn a_failed_show_off_gives_its_site_up() {
     });
     mind.order_pad(&perception([0.0; 3], 1), Me::default(), Some(&m), &[]);
     assert!(!mind.stuck.blocked(site.bounce.stand, 2));
-    let enemy = [Seen { id: 2, position: [5.0, 5.0, 0.0], team: 1 }];
+    let enemy = [Seen {
+        id: 2,
+        position: [5.0, 5.0, 0.0],
+        team: 1,
+    }];
     mind.order_pad(&perception([0.0; 3], 2), Me::default(), Some(&m), &enemy);
     assert!(mind.stuck.blocked(site.bounce.stand, 3));
 }
@@ -157,7 +162,10 @@ fn a_failed_show_off_gives_its_site_up() {
 fn an_order_without_a_map_fails_by_name() {
     let mut mind = Mind::new(Skill::Normal, 1);
     mind.order_bounce([6.0, 0.0, 0.0], Mode::Help);
-    assert!(mind.order_pad(&perception([0.0; 3], 1), Me::default(), None, &[]).is_none());
+    assert!(
+        mind.order_pad(&perception([0.0; 3], 1), Me::default(), None, &[])
+            .is_none()
+    );
     let v = mind.order_view();
     assert_eq!((v.state, v.error), ("failed", Some("no_map")));
 }

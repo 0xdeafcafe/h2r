@@ -29,6 +29,7 @@ fn site(stand: Vec3, status: Status) -> Site {
             drift: [1.0, 0.0],
             source: "scan",
             takeoff: None,
+            landing: None,
         },
         launch: 12.3,
         fall: 0.0,
@@ -344,7 +345,8 @@ fn a_site_whose_approach_is_just_off_the_mesh_is_picked_and_routed() {
         Pick::Site(p, Some(c)) if p == s && c.stand == [3.0, 0.0, 0.0]
     ));
     mind.set_practice(true);
-    let started = |e: &[PracticeEvent]| e.iter().any(|e| matches!(e, PracticeEvent::Started { .. }));
+    let started =
+        |e: &[PracticeEvent]| e.iter().any(|e| matches!(e, PracticeEvent::Started { .. }));
     let events = practise(&mut mind, &m, 200, started);
     assert!(
         matches!(events.as_slice(), [PracticeEvent::Started { site, .. }] if *site == s.bounce.stand),
@@ -369,7 +371,10 @@ fn a_site_far_off_the_mesh_is_skipped_not_tried() {
     };
     mind.set_practice(true);
     let events = practise(&mut mind, &m, 600, |_| false);
-    assert!(events.is_empty(), "never started, never tallied: {events:?}");
+    assert!(
+        events.is_empty(),
+        "never started, never tallied: {events:?}"
+    );
     let v = mind.practice_view().unwrap();
     assert_eq!((v.state, v.attempts), ("waiting", 0));
     // Found out once, and kept.
@@ -434,7 +439,10 @@ fn a_crouch_spot_that_keeps_failing_is_given_up_and_its_site_paired_again() {
     for _ in 0..5 {
         mind.practice_strike(s, &steps, 3, Some("not_primed"));
     }
-    assert!(matches!(mind.pick_practice([0.0; 3], 10, Some(&m)), Pick::Site(..)));
+    assert!(matches!(
+        mind.pick_practice([0.0; 3], 10, Some(&m)),
+        Pick::Site(..)
+    ));
 }
 
 #[test]
@@ -520,7 +528,10 @@ fn with_everything_given_up_it_all_comes_back_rather_than_nothing() {
     };
     // The only site given up.
     for n in 0..SITE_STRIKES {
-        assert!(matches!(mind.pick_practice([0.0; 3], n, Some(&m)), Pick::Site(..)));
+        assert!(matches!(
+            mind.pick_practice([0.0; 3], n, Some(&m)),
+            Pick::Site(..)
+        ));
         mind.practice_strike(s, &steps, 2, Some("path_lost_stuck_approach"));
     }
     assert!(!mind.practice.given_up.is_empty());
@@ -579,15 +590,84 @@ fn a_drill_walks_to_its_start_asks_for_the_word_and_tries_from_there_primed() {
     }
     assert!(asked, "asks for the word");
     assert!(mind.take_practice_events().is_empty());
-    // The host wrote it: the try, from there, with no prime.
+    // The host wrote it: the try, from there, with no prime. The ticks go
+    // on from where they were (the start's wait runs to them).
     mind.pair_word = Some(PRIMED_WORD);
-    let events = practise(&mut mind, &m, 10, |e| !e.is_empty());
+    let mut events = Vec::new();
+    for t in 50..60 {
+        mind.step(&scene(bot(1.0), t), Some(&m));
+        events.extend(mind.take_practice_events());
+        if events.len() >= 2 {
+            break;
+        }
+    }
+    // Started, then primed: read from the game, not its own.
     assert!(
-        matches!(events.as_slice(), [PracticeEvent::Started { site, .. }] if *site == s.bounce.stand),
+        matches!(
+            events.as_slice(),
+            [
+                PracticeEvent::Started { site, .. },
+                PracticeEvent::Primed { read: true, own: false, .. },
+            ] if *site == s.bounce.stand
+        ),
         "{events:?}"
     );
     let v = mind.order_view();
     assert_eq!(v.steps, ["walk", "bounce", "fly"]);
+    assert!(v.primed && v.primed_read);
+}
+
+#[test]
+fn a_tries_line_says_the_site_the_result_and_its_last_jump() {
+    use crate::bounce_route::{Flight, Touchdown};
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let landing = Touchdown {
+        tick: 40,
+        at: [10.3, 0.1, 0.0],
+        speed_in: 5.2,
+        vz_out: 0.0,
+        miss: 0.32,
+        word: None,
+    };
+    let jump = |end| Flight {
+        tick: 10,
+        takeoff: [9.0, 0.0, 2.4],
+        speed: 1.25,
+        vz: 3.08,
+        word: Some(crate::glitches::prime::PRIMED_WORD),
+        stick_sum: [6.0, 0.0],
+        stick_max: 0.5,
+        ticks: 30,
+        idle: 4,
+        landing: Some(landing),
+        end: Some(end),
+    };
+    let mut v = Mind::new(Skill::Normal, 47).order_view();
+    v.steps = vec!["walk", "drop", "fly"];
+    v.step = 1;
+    v.flights = vec![jump("too_slow"), jump("missed")];
+    let line = try_line(true, 0x2f, s, Some("missed"), &v);
+    assert!(
+        line.starts_with("bots: bounce try: bot 0x2f drill site (10.00, 0.00, 0.00)"),
+        "{line}"
+    );
+    for part in [
+        ": missed; jumps 2, the last: takeoff (9.00, 0.00, 2.40) ground 1.25 vz +3.08 word -3",
+        "air 30 ticks stick mean (+0.20, +0.00) max 0.50 let go 4",
+        "down (10.30, 0.10, 0.00) miss 0.320 in 5.20 out +0.00: missed",
+        "; before: too_slow",
+    ] {
+        assert!(line.contains(part), "{part} in {line}");
+    }
+    assert!(!line.contains('\n'));
+    // No jump: the step it ended on.
+    v.flights.clear();
+    v.step = 0;
+    let line = try_line(false, 1, s, Some("no_path"), &v);
+    assert!(
+        line.ends_with(": no_path; no jump, ended at step 0 (walk)"),
+        "{line}"
+    );
 }
 
 #[test]

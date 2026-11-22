@@ -23,8 +23,8 @@
 
 use crate::brain::Vec3;
 use crate::cache::MapData;
-use crate::glitches::prime::{Geo, PrimeRun, Primed, is_primed};
 use crate::glitches::BounceRun;
+use crate::glitches::prime::{Geo, PrimeRun, Primed, is_primed};
 use crate::mind::RouteMotion;
 use crate::nav::RouteWalk;
 use crate::spots::{Crouch, Known, Site, dist_xy};
@@ -261,7 +261,13 @@ struct Candidate {
 
 impl Candidate {
     fn cost(&self) -> f32 {
-        self.lead + self.tail + if self.crouch.is_some() { PRIME_COST } else { 0.0 }
+        self.lead
+            + self.tail
+            + if self.crouch.is_some() {
+                PRIME_COST
+            } else {
+                0.0
+            }
     }
 }
 
@@ -302,7 +308,12 @@ pub fn geo(c: &Crouch) -> Option<Geo> {
 /// The crouch spots a plan may prime at, with the walk to each: none
 /// when the asker is primed already, else the [`NEAR_CROUCHES`] nearest
 /// the start within `limit` (straight line), proven ones first.
-fn primes(ask: &Ask, known: &Known, limit: f32, query: &dyn Fn(Vec3, Vec3) -> Option<f32>) -> Vec<Prime> {
+fn primes(
+    ask: &Ask,
+    known: &Known,
+    limit: f32,
+    query: &dyn Fn(Vec3, Vec3) -> Option<f32>,
+) -> Vec<Prime> {
     if ask.primed {
         return Vec::new();
     }
@@ -319,7 +330,12 @@ fn primes(ask: &Ask, known: &Known, limit: f32, query: &dyn Fn(Vec3, Vec3) -> Op
     });
     near.into_iter()
         .take(NEAR_CROUCHES)
-        .filter_map(|at| Some(Prime { at, lead: query(ask.from, prime_start(&at))? }))
+        .filter_map(|at| {
+            Some(Prime {
+                at,
+                lead: query(ask.from, prime_start(&at))?,
+            })
+        })
         .collect()
 }
 
@@ -377,7 +393,10 @@ fn route(ask: &Ask, c: &Candidate, why: Why) -> Plan {
     // rebuilds the pair and the word is lost.
     match c.ledge {
         Some(from) => {
-            steps.push(Step::Walk { to: from, crouch: false });
+            steps.push(Step::Walk {
+                to: from,
+                crouch: false,
+            });
             steps.push(Step::Drop { from, site: c.site });
         }
         None => {
@@ -436,7 +455,9 @@ pub fn plan_with(ask: &Ask, known: &Known, walk: Walk, ledge: Ledge) -> Plan {
         used.set(used.get() + 1);
         walk(a, b)
     };
-    let plain_cost = (ask.mode == Mode::Help).then(|| query(ask.from, ask.to)).flatten();
+    let plain_cost = (ask.mode == Mode::Help)
+        .then(|| query(ask.from, ask.to))
+        .flatten();
     // Nothing farther off than this (straight line) can be a route that
     // pays: the walk it must beat, or the reach for fun.
     let limit = match ask.mode {
@@ -552,7 +573,11 @@ pub fn plan_site(
         primed,
         mode: Mode::Fun,
     };
-    let floor = if site.standing() { None } else { Some(launch_from(&site, ledge)?) };
+    let floor = if site.standing() {
+        None
+    } else {
+        Some(launch_from(&site, ledge)?)
+    };
     let primes = primes(&ask, known, f32::INFINITY, walk);
     if !primed && primes.is_empty() {
         return None;
@@ -811,7 +836,11 @@ enum Dropping {
     Jump(u32),
     /// Off the floor, from the tick; the highest point, and the lowest
     /// once falling.
-    Air { since: u32, top: f32, low: Option<f32> },
+    Air {
+        since: u32,
+        top: f32,
+        low: Option<f32>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -821,7 +850,11 @@ enum State {
     Prime(PrimeRun),
     Bounce(BounceRun),
     Drop(Dropping),
-    Fly { since: u32, peaked: bool, still: u32 },
+    Fly {
+        since: u32,
+        peaked: bool,
+        still: u32,
+    },
 }
 
 /// A touchdown by the route's strip, as the bot saw it.
@@ -864,6 +897,99 @@ impl Touchdown {
     }
 }
 
+/// The vertical speed off the floor is the best of this many ticks
+/// (ticks) from the takeoff: the press is on the ground.
+pub const TAKEOFF_TICKS: u32 = 6;
+/// The most [`Flight`]s a run keeps.
+pub const FLIGHTS: usize = 8;
+
+/// One jump or drop of a bounce step, from the takeoff to the landing:
+/// what the practice's line for the try says
+/// (docs/game/bots.md, "Practising bounces").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flight {
+    /// The tick it left: the jump pressed, or, a walk-off, the floor left.
+    pub tick: u32,
+    /// Where it left from.
+    pub takeoff: Vec3,
+    /// The ground speed then (world units a second, from positions).
+    pub speed: f32,
+    /// The best vertical speed in the [`TAKEOFF_TICKS`] from the takeoff
+    /// (world units a second, up positive).
+    pub vz: f32,
+    /// The pair word on the takeoff tick, when it could be read.
+    pub word: Option<u32>,
+    /// The stick the run asked for in the air (world axes, direction
+    /// times speed), summed over `ticks`; `idle` of them let it go; the
+    /// most it asked.
+    pub stick_sum: [f32; 2],
+    pub stick_max: f32,
+    pub ticks: u32,
+    pub idle: u32,
+    /// The touchdown by the strip it ended in, when one was seen.
+    pub landing: Option<Touchdown>,
+    /// What it came to: the landing's result, or why it ended without
+    /// one (`no_landing`, a route error).
+    pub end: Option<&'static str>,
+}
+
+impl Flight {
+    fn new(tick: u32, at: Vec3, v: Vec3, word: Option<u32>) -> Flight {
+        Flight {
+            tick,
+            takeoff: at,
+            speed: v[0].hypot(v[1]),
+            vz: v[2],
+            word,
+            stick_sum: [0.0; 2],
+            stick_max: 0.0,
+            ticks: 0,
+            idle: 0,
+            landing: None,
+            end: None,
+        }
+    }
+
+    /// The mean air stick (world axes).
+    pub fn stick_mean(&self) -> [f32; 2] {
+        let n = self.ticks.max(1) as f32;
+        [self.stick_sum[0] / n, self.stick_sum[1] / n]
+    }
+
+    /// One line: the takeoff, the air, the landing and what it came to.
+    pub fn describe(&self) -> String {
+        let p = |v: Vec3| format!("({:.2}, {:.2}, {:.2})", v[0], v[1], v[2]);
+        let word = self
+            .word
+            .map_or_else(|| "unread".to_string(), |w| (w as i32).to_string());
+        let s = self.stick_mean();
+        let down = match self.landing {
+            Some(t) => format!(
+                "down {} miss {:.3} in {:.2} out {:+.2}",
+                p(t.at),
+                t.miss,
+                t.speed_in,
+                t.vz_out
+            ),
+            None => "no touchdown seen".to_string(),
+        };
+        format!(
+            "takeoff {} ground {:.2} vz {:+.2} word {}; air {} ticks stick mean ({:+.2}, {:+.2}) max {:.2} let go {}; {}: {}",
+            p(self.takeoff),
+            self.speed,
+            self.vz,
+            word,
+            self.ticks,
+            s[0],
+            s[1],
+            self.stick_max,
+            self.idle,
+            down,
+            self.end.unwrap_or("open")
+        )
+    }
+}
+
 /// Watches the vertical speed for touchdowns during a bounce or a drop.
 #[derive(Clone, Copy, Debug, Default)]
 struct Watch {
@@ -877,7 +1003,14 @@ struct Watch {
 
 impl Watch {
     /// This tick; a touchdown once its speed out is read.
-    fn step(&mut self, at: Vec3, vz: f32, word: Option<u32>, tick: u32, target: Vec3) -> Option<Touchdown> {
+    fn step(
+        &mut self,
+        at: Vec3,
+        vz: f32,
+        word: Option<u32>,
+        tick: u32,
+        target: Vec3,
+    ) -> Option<Touchdown> {
         let mut done = None;
         if let Some((mut t, left)) = self.open.take() {
             t.vz_out = t.vz_out.max(vz);
@@ -969,6 +1102,11 @@ pub struct OrderRun {
     watching: Option<Site>,
     landing: Option<Touchdown>,
     log: Vec<Logged>,
+    /// The jump or drop in the air now, those over (at most
+    /// [`FLIGHTS`]), and whether the last tick was in the air.
+    flight: Option<Flight>,
+    flights: Vec<Flight>,
+    was_air: bool,
     /// A show-off: the bot gives it up when it sees an enemy.
     pub show_off: bool,
     /// How near the goal a [`Step::Nav`] ends ([`GOAL`] unless
@@ -1006,9 +1144,76 @@ impl OrderRun {
             watching: None,
             landing: None,
             log: Vec::new(),
+            flight: None,
+            flights: Vec::new(),
+            was_air: false,
             show_off: false,
             goal: GOAL,
             tune: crate::tuning::bounce().sane(),
+        }
+    }
+
+    /// The same, started primed from a word read at -3 (a drill's word
+    /// set by the host, or one kept from before): [`OrderStatus::read`].
+    pub fn primed_read(mut self) -> OrderRun {
+        self.read = self.primed;
+        self
+    }
+
+    /// The jumps and drops so far, oldest first (at most [`FLIGHTS`]),
+    /// the one in the air last.
+    pub fn flights(&self) -> Vec<Flight> {
+        self.flights
+            .iter()
+            .chain(self.flight.as_ref())
+            .copied()
+            .collect()
+    }
+
+    fn end_flight(&mut self, end: &'static str) {
+        if let Some(mut f) = self.flight.take() {
+            f.end.get_or_insert(end);
+            if self.flights.len() >= FLIGHTS {
+                self.flights.remove(0);
+            }
+            self.flights.push(f);
+        }
+    }
+
+    /// The flight's bookkeeping, after this tick's motion: a takeoff on
+    /// the tick the step goes airborne, the vertical speed off the floor,
+    /// and the stick asked in the air.
+    fn track_flight(
+        &mut self,
+        at: Vec3,
+        vel: Option<Vec3>,
+        pair: Option<u32>,
+        tick: u32,
+        m: &RouteMotion,
+    ) {
+        let air = match &self.state {
+            State::Drop(Dropping::Jump(_) | Dropping::Air { .. }) => true,
+            State::Bounce(b) => b.airborne(),
+            _ => false,
+        };
+        let v = vel.unwrap_or([0.0; 3]);
+        if air && !self.was_air {
+            self.end_flight("no_landing");
+            self.flight = Some(Flight::new(tick, at, v, pair));
+        }
+        self.was_air = air;
+        let Some(f) = self.flight.as_mut().filter(|_| air) else {
+            return;
+        };
+        if tick.wrapping_sub(f.tick) <= TAKEOFF_TICKS {
+            f.vz = f.vz.max(v[2]);
+        }
+        f.ticks += 1;
+        f.stick_sum[0] += m.dir[0] * m.speed;
+        f.stick_sum[1] += m.dir[1] * m.speed;
+        f.stick_max = f.stick_max.max(m.speed);
+        if m.speed <= 0.0 {
+            f.idle += 1;
         }
     }
 
@@ -1042,7 +1247,12 @@ impl OrderRun {
         if self.log.len() >= LOG {
             self.log.remove(0);
         }
-        self.log.push(Logged { tick, step, what, at });
+        self.log.push(Logged {
+            tick,
+            step,
+            what,
+            at,
+        });
     }
 
     pub fn status(&self) -> OrderStatus {
@@ -1076,6 +1286,7 @@ impl OrderRun {
 
     fn fail(&mut self, why: &'static str, tick: u32, at: Vec3) -> OrderOut {
         self.note(tick, why, at);
+        self.end_flight(why);
         self.primed = false;
         OrderOut {
             motion: RouteMotion::default(),
@@ -1127,8 +1338,17 @@ impl OrderRun {
             && let Some(t) = self.watch.step(at, v[2], pair, tick, site.target())
         {
             self.landing = Some(t);
-            let width = if site.width > 0.0 { site.width } else { crate::spots::SLOT_WIDTH };
-            self.note(tick, t.result(width, site.need), t.at);
+            let width = if site.width > 0.0 {
+                site.width
+            } else {
+                crate::spots::SLOT_WIDTH
+            };
+            let result = t.result(width, site.need);
+            self.note(tick, result, t.at);
+            if let Some(f) = self.flight.as_mut().filter(|f| f.landing.is_none()) {
+                f.landing = Some(t);
+                f.end = Some(result);
+            }
         }
         // The word read as something else on the ground: it was lost
         // (the pair was rebuilt). Back to the crouch spot.
@@ -1156,6 +1376,7 @@ impl OrderRun {
         for _ in 0..8 {
             let Some(step) = self.plan.steps.get(self.at).copied() else {
                 self.primed = false;
+                self.end_flight("no_landing");
                 return OrderOut {
                     motion: RouteMotion::default(),
                     done: Some(Ok(())),
@@ -1169,7 +1390,11 @@ impl OrderRun {
                 self.plan.steps.get(self.at + 1),
                 Some(Step::Bounce(_) | Step::Drop { .. })
             );
-            let speed = if approach { self.tune.approach_speed } else { 1.0 };
+            let speed = if approach {
+                self.tune.approach_speed
+            } else {
+                1.0
+            };
             let out = match step {
                 Step::Walk { to, crouch } => {
                     self.walk(map, at, tick, to, crouch, ARRIVED, speed, true)
@@ -1186,6 +1411,7 @@ impl OrderRun {
                         // Never crouch between the prime and the bounce.
                         motion.crouch = false;
                     }
+                    self.track_flight(at, vel, pair, tick, &motion);
                     return OrderOut { motion, done: None };
                 }
                 // The step is over; the next one starts this tick.
@@ -1371,13 +1597,20 @@ impl OrderRun {
             let side = [-heading[1], heading[0]];
             let lateral = (from[0] - at[0]) * side[0] + (from[1] - at[1]) * side[1];
             let lateral = (2.0 * lateral).clamp(-0.6, 0.6);
-            let (dir, _) = norm([heading[0] + side[0] * lateral, heading[1] + side[1] * lateral]);
+            let (dir, _) = norm([
+                heading[0] + side[0] * lateral,
+                heading[1] + side[1] * lateral,
+            ]);
             motion(dir, stick_for(want + 0.5 * (want - have)), false)
         };
         match *d {
             Dropping::Line(since) => {
                 let back = if jumps {
-                    [from[0] - heading[0] * RUN_UP, from[1] - heading[1] * RUN_UP, from[2]]
+                    [
+                        from[0] - heading[0] * RUN_UP,
+                        from[1] - heading[1] * RUN_UP,
+                        from[2],
+                    ]
                 } else {
                     from
                 };
@@ -1386,7 +1619,11 @@ impl OrderRun {
                     *d = Dropping::Run(tick);
                     return Ok(Some(run(at)));
                 }
-                Ok(Some(motion(to_back, (off * 4.0).clamp(MIN_STICK, 0.6), false)))
+                Ok(Some(motion(
+                    to_back,
+                    (off * 4.0).clamp(MIN_STICK, 0.6),
+                    false,
+                )))
             }
             Dropping::Run(since) => {
                 if at[2] < from[2] - LEFT_FLOOR {

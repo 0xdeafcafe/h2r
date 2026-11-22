@@ -34,6 +34,10 @@ pub struct Bounce {
     /// used as the drop's launch point (`bounce_route::launch_from`).
     /// `None`: a standing jump, or a launch floor found on the nav mesh.
     pub takeoff: Option<Vec3>,
+    /// Where the measured landings that bounced came down, when they were
+    /// traced: the point a route aims at ([`crate::spots::Site::target`]).
+    /// `None`: `stand`.
+    pub landing: Option<Vec3>,
 }
 
 /// Every measured spot.
@@ -55,6 +59,10 @@ pub static SPOTS: &[Bounce] = &[Bounce {
     // The recipe's step 3: a running jump from about (-8.4, 2.5, -0.76),
     // heading (-0.8, 0.6) at about 1.6 units/s, a 2.43 drop onto the patch.
     takeoff: Some([-8.4, 2.5, -0.76]),
+    // The recipe's step 4: the bounces landed on x -10.2 to -10.7, y 3.93
+    // to 4.04. The middle, which the takeoff heads at along the recipe's
+    // (-0.8, 0.6); the stand is 0.1 short of the crease in y.
+    landing: Some([-10.45, 3.985, -3.19]),
 }];
 
 /// How far behind a spot (against its drift) the walk there ends.

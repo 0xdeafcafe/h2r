@@ -149,6 +149,37 @@ fn tries_primes_bounces_and_reasons_by_bot_and_by_site() {
 }
 
 #[test]
+fn a_drills_word_read_at_the_start_is_armed_not_a_prime() {
+    let mut t = BounceTally::new();
+    for read in [true, true, false] {
+        t.event(1, 10, Event::Started { site: A });
+        t.event(
+            1,
+            10,
+            Event::Primed {
+                site: A,
+                read,
+                own: false,
+            },
+        );
+        t.event(
+            1,
+            20,
+            Event::Tried {
+                site: A,
+                bounced: false,
+                why: Some("missed".into()),
+            },
+        );
+    }
+    let r = t.report(Some(0), &who());
+    let s = &r.players[0].stats;
+    assert_eq!((s.attempts, s.primes, s.primes_read, s.armed), (3, 0, 0, 2));
+    assert_eq!(r.sites[0].stats.armed, 2);
+    assert_eq!(r.totals.armed, 2);
+}
+
+#[test]
 fn a_chain_bounce_outside_a_try_counts_for_the_bot_not_a_site() {
     let mut t = BounceTally::new();
     let mut tick = 5;

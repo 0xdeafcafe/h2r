@@ -95,6 +95,7 @@ impl Site {
                 drift: s.drift,
                 source: "scan",
                 takeoff: None,
+                landing: None,
             },
             launch: s.launch,
             fall: s.fall,
@@ -107,16 +108,21 @@ impl Site {
     }
 
     /// A measured spot as a site: a drop from its takeoff
-    /// ([`MEASURED_FALL`]) when it has one, else a standing jump.
+    /// ([`MEASURED_FALL`]) when it has one, else a standing jump, aimed
+    /// at its traced landing when it has one.
     pub fn measured(b: Bounce) -> Site {
         Site {
             bounce: b,
             launch: MEASURED_LAUNCH,
-            fall: if b.takeoff.is_some() { MEASURED_FALL } else { 0.0 },
+            fall: if b.takeoff.is_some() {
+                MEASURED_FALL
+            } else {
+                0.0
+            },
             need: MEASURED_NEED,
             width: SLOT_WIDTH,
             status: Status::Proven,
-            aim: None,
+            aim: b.landing,
             height: None,
         }
     }
@@ -241,7 +247,9 @@ impl Known {
         };
         let mut sites: Vec<Site> = measured
             .into_iter()
-            .map(|b| Site::measured(b).verified(verified::entry_for(ver, &probe(Kind::Bounce, b.stand))))
+            .map(|b| {
+                Site::measured(b).verified(verified::entry_for(ver, &probe(Kind::Bounce, b.stand)))
+            })
             .collect();
         let kept = sites.len();
         let mut scan: Vec<&Spot> = scan.iter().filter(|s| s.score >= MIN_SCORE).collect();
@@ -566,7 +574,9 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
             if lip_len > MAX_LIP {
                 return None;
             }
-            let lip: Vec<[[f32; 3]; 2]> = (0..lip_len).map(|e| [v(18 + 6 * e), v(21 + 6 * e)]).collect();
+            let lip: Vec<[[f32; 3]; 2]> = (0..lip_len)
+                .map(|e| [v(18 + 6 * e), v(21 + 6 * e)])
+                .collect();
             let (kind, shape) = match c[0] {
                 0 => (Kind::Bounce, Shape::Slot),
                 1 => (Kind::Crouch, Shape::Slot),
@@ -610,7 +620,9 @@ pub fn write(dir: &Path, map: &str, stamp: Stamp, spots: &[Spot]) -> std::io::Re
 /// `stamp`.
 pub fn read(dir: &Path, map: &str, stamp: Stamp) -> Option<Vec<Spot>> {
     let bytes = std::fs::read(dir.join(file_name(map))).ok()?;
-    from_bytes(&bytes).filter(|(_, s)| *s == stamp).map(|(v, _)| v)
+    from_bytes(&bytes)
+        .filter(|(_, s)| *s == stamp)
+        .map(|(v, _)| v)
 }
 
 // ---- the scan ----
