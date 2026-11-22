@@ -130,6 +130,7 @@ are under [Reviews](#reviews).
 - [sim-10x-tier.md](perf/sim-10x-tier.md): spec for the sim tier in the image: roots, journaled segments, the exact clock, call-outs and the fallback to the reference image
 - [sim-10x-callouts.md](perf/sim-10x-callouts.md): spec for `ExecCtx::call_inline`: a Rust body calls lifted code in place and leaves to the runner only when the runner has work
 - [sim-headless-skips.md](perf/sim-headless-skips.md): what a headless sim still computes for a screen, a speaker or a local player, what the title already skips for a phantom roster, and each candidate skip classed for game state, films and the viewer
+- [sim-light.md](perf/sim-light.md): RAM, disk and setup time per headless match: why mapped reads never fire in a sim, the levers ranked, and the lanes for a warm N:, frozen slots and lean reports
 - Notes: [device-cost.md](perf/notes/device-cost.md) (D3D device CPU cost), [fastmem-proto.md](perf/notes/fastmem-proto.md) (the Mach write-watch prototype), [gameplay-budget.md](perf/notes/gameplay-budget.md) (where an in-level frame goes), [guest-memory.md](perf/notes/guest-memory.md) (guest memory and runner measurements), [menu-budget.md](perf/notes/menu-budget.md) (the main-menu frame budget), [steammachine-perf.md](perf/notes/steammachine-perf.md) (the Steam Machine profile and the music hangs), [sim-10x.md](perf/notes/sim-10x.md) (phantom-roster sim speeds and the Lockout budget arithmetic), [not-adopted.md](perf/notes/not-adopted.md) (performance experiments that lost)
 
 ## Data formats and tags (`formats/`)
