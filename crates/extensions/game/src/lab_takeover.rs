@@ -45,7 +45,7 @@ fn layout() -> ListLayout {
     // Four body lines need the list lower than the other question dialogs
     // put it: row 0's frame art tops out 4 units below the anchor's row
     // top plus 34 (`ui_kit::view` item art), and the body's ink ends 19
-    // units a line below `dialog::BODY_TOP`. At -36 the frame's top (-6)
+    // units a line below `dialog::BODY_TOP`. At -34 the frame's top (-4)
     // clears the fourth line (-4), and row 1's bottom (-66) stays above
     // the footer (-83).
     l.anchor[1] = -34;
