@@ -119,10 +119,15 @@ local players' units, with the helpers our custom skulls use:
 | `god` (god mode) | sets the body's cannot-take-damage flag; switching off clears it only on the units we set it on |
 | `infinite_ammo` | each magazine's reserve to its maximum, an energy weapon's charge to full, both grenade counts topped; reloads still happen |
 | `bottomless_clip` | each magazine's loaded rounds to its maximum, so no reloads (plasma heat still builds) |
-| `game_speed` | 0.25x, 0.5x, 1x, 1.5x or 2x game time, set the way the game's own set-speed helper sets it; a new map puts it back to 1 |
+| `game_speed` | 0.1x, 0.25x, 0.5x, 1x, 1.5x, 2x or 4x game time, set the way the game's own set-speed helper sets it; a new map puts it back to 1 |
 | `fly` | flight through the game's own physics (walls still stop you); controls below |
 | `noclip` | the same flight through walls; the body takes no damage while it is on |
 | `hide_hud` | the HUD hidden through the game's own HUD switch (the flag a script's HUD builtin sets); the game's last value goes back when off |
+| `ai_off` | the actors stand still: the AI globals' on byte (`[0x4f55d0]+0`, which `ai_update` checks and the script's `ai` switch writes) held at 0; the game's last value goes back when off |
+
+A cheat switched on at the main menu is kept and takes hold when a
+campaign or multiplayer game starts; until then `cheat.list` gives it a
+`pending` reason.
 
 ### Fly and noclip
 

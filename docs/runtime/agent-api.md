@@ -29,6 +29,7 @@ connection to hold `session.claim`.
 | `session.request_takeover` | act | [Lab consent](#lab-consent) |
 | `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
+| `host.pause`, `host.step` | act, without the controller check | [Window pause and frame step](#window-pause-and-frame-step) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
@@ -67,6 +68,7 @@ connection to hold `session.claim`.
 | `edit.set`, `edit.batch`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `game.menu` | act | [Returning to the main menu](#returning-to-the-main-menu) |
+| `game.load`, `game.levels` | act, read | [Loading a level](#loading-a-level) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `live.matchmaking.trace` | read | [Matchmaking transitions](#matchmaking-transitions) |
@@ -88,6 +90,7 @@ connection to hold `session.claim`.
 | `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](#bounce-routes) |
 | `player.goto`, `player.goto_cancel` | act | [`player.goto`](#playergoto-drive-the-player-somewhere) |
 | `player.goto_status` | read | [`player.goto`](#playergoto-drive-the-player-somewhere) |
+| `player.mark`, `player.recall` | act | [Saved places](#saved-places-playermark-and-playerrecall) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
@@ -109,8 +112,8 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`) and where the host adds
-them (`Agent::add_method`, `Agent::add_game_method`).
+`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `game_load`) and where the host adds
+them (`Agent::add_method`, `Agent::add_game_method`, `Agent::add_connection_read`).
 
 ## Connecting
 
@@ -317,7 +320,7 @@ object count, byte rate and capture timings.
 | `session.takeover_info` | none | `{window, pid}`, whether the game has a window and its process id |
 | `session.request_takeover` | `{requester, name, operation, builds_image, source, level, own_data, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt |
 | `session.takeover_status` | `{id}` | `{decision}` for the request |
-| `features.list` | none | `{at, plan}`: the feature plan text the game printed at start |
+| `features.list` | none | `{at, plan, features}`: the feature plan text the game printed at start, and each feature as `{id, on, reason?}` (`reason` when the plan turned it off), read from the plan's `feature <id>: on` and `feature <id>: off (<reason>)` lines (`agent_proto::FeatureState`) |
 
 `until` takes `tick`, `ticks` (more ticks than when the wait began),
 `activation` (exact match), `map_ticks`, `present`, `phase`, `map` and `paused`; all given must hold,
@@ -376,11 +379,69 @@ for while loading takes hold at the next tick; its limit runs meanwhile.
 again; a resume, a new pause or a release first answers it with
 `INTERRUPTED`. With the tick observer off, pause and step answer
 `UNAVAILABLE`. In `h2 play` a pause also stops the window's event loop, so
-it is meant for `h2 serve`. Input calls need no claim while nobody holds
+it is meant for `h2 serve`; a windowed game pauses with
+[`host.pause`](#window-pause-and-frame-step). Input calls need no claim while nobody holds
 control.
 
 ```sh
 printf 'claim\npause\nstep 1\nobject player.0\nrelease\n' | h2 agent -
+```
+
+### Window pause and frame step
+
+`host.pause {on}` is the window's own pause, the one Cmd+P toggles, asked
+for over the API; `host.step {ticks?}` runs game ticks under it. They are
+meant for `h2 play` and other windowed games, where `session.pause` also
+stops the window's event loop. The window stays live: it keeps drawing
+its last frame, the debug menu and overlays keep working, and the audio
+pauses as for Cmd+P.
+
+| Method | Params | Result |
+|---|---|---|
+| `host.pause` | `{on: bool}` | `{paused, held, tick}` once the window has applied it |
+| `host.step` | `{ticks?}`: 1 to 1800, default 1 | `{paused, held, tick, stepped}` once the ticks ran and the game is held again |
+
+`paused` is the window's pause (Cmd+P's, whoever set it); `held` says
+the game thread has stopped at its pause wait; `tick` is the game's tick
+at the last game tick. A pause waits up to 2 s for the window and up to
+2 s more for the hold, so `held` can be false during a long load. Cmd+P
+and `host.pause` change the same pause, so either undoes the other.
+`stepped` counts the game ticks the step ran. A frame that runs several
+ticks before the game stops again (catch-up after a slow frame) gives a
+`stepped` above `ticks`.
+
+Refusals: no window (a headless game) is `UNAVAILABLE`, naming
+`session.pause`; `host.step` while not paused is `INVALID_REQUEST`, with
+a step already running `BUSY`, and `ticks` out of range `INVALID_PARAMS`.
+A resume (Cmd+P or `host.pause {"on": false}`) or a closed window during
+a step answers it with `INTERRUPTED`. Ticks that do not run within 0.2 s
+each plus 5 s (at most 2 minutes) answer `TIMEOUT` with `data.stepped`;
+the step then ends. Focus pause (`pause_on_focus_loss`) is not the
+window's pause: a game paused only by losing focus refuses a step.
+
+Both are answered on the connection's own thread
+(`Agent::add_connection_read`), since a held game thread answers
+nothing, so they skip the controller check that **act** methods have.
+The in-process debug menu sends from the window's own thread, which
+cannot wait for itself: there `host.pause` answers at once with the pause
+asked for and `held` false, and `host.step` answers at once without
+`stepped` while the step runs on (a second step is `BUSY` until it ends). The
+window shell (`crates/apps/app/src/shell.rs`) applies each request as
+Cmd+P does. The game thread's pause wait (`crates/apps/app/src/lifecycle.rs`)
+lets the game run while a step has ticks left and reports when it is held.
+An agent ticker counts the game ticks (`crates/extensions/agent/src/sim/pause.rs`).
+They meet in `agent_proto::host_pause`. The game stops at the next
+slice boundary after the step's last tick.
+
+Every other method is answered on the game thread, so while the game is
+held it waits. A request sent while held is answered at the next tick a
+step runs; `session.pause` and `session.step` are the way to read the
+world between ticks without running any.
+
+```sh
+h2 agent host.pause '{"on":true}'
+h2 agent host.step '{"ticks":10}'
+h2 agent host.pause '{"on":false}'
 ```
 
 ## `world`: what is in the level
@@ -1847,6 +1908,51 @@ h2 agent game.menu
 h2 agent wait '{"map":"mainmenu"}' 120000 && h2 agent loads 1
 ```
 
+## Loading a level
+
+`game.load {scenario, difficulty?, variant?}` (act) queues any campaign
+mission or multiplayer map on the disc as the next game, from the main
+menu or a running game. `scenario` is a map file's stem
+(`03a_oldmombasa`, `lockout`) or a scenario path, any case, or a level of
+a campaign installed under the data root (`a30`), resolved as
+`h2 play --level` resolves it (`level_boot::resolve_in`). `difficulty`
+(campaign only) is `easy`, `normal` (default), `heroic` or `legendary`.
+`variant` (multiplayer only) is a game type, `slayer` (default),
+`oddball`, `juggernaut`, `king`, `ctf`, `assault` or `territories`: a
+local game on that game type's default variant, built by
+`VARIANT_DEFAULTS` as the level boot builds Slayer's
+([community-gametypes.md](../game/community-gametypes.md)). The options
+are the level boot's ([level-boot.md](level-boot.md)), made by the
+agent's guest calls at the next tick (`Call::QueueGame`), as
+`maps.test.load` queues a test map. Host method,
+`crates/extensions/game/src/game_load.rs`; it needs the `agent-calls`
+feature.
+
+The answer comes after the next tick: `{name, scenario, kind, difficulty?,
+variant?, check, queued}`, `kind` being `campaign` or `multiplayer`,
+`check` the game's options check and `queued` whether the options went to
+the next transition. Wait for the level with `session.wait` on its `map`
+and `phase: "gameplay"`.
+
+Refusals: an unknown level is `INVALID_PARAMS` listing the disc's
+levels; so are a `difficulty` for a multiplayer map, a `variant` for a
+campaign mission and an unknown difficulty or game type. A co-op or
+networked session (simulation modes 2 to 5) is `UNAVAILABLE`: every
+machine plays its game, so leave it first with `game.menu`. Without the
+`agent-calls` feature, `UNAVAILABLE`.
+
+`game.levels` (read, no params) lists what `scenario` takes:
+`{campaign: [{name, scenario}], multiplayer: [{name, scenario}],
+difficulties, variants}`, the disc's maps sorted by name (read once and
+kept). Installed campaigns' levels are not listed but load by name.
+
+```sh
+h2 agent game.levels
+h2 agent game.load '{"scenario":"03a_oldmombasa","difficulty":"heroic"}'
+h2 agent wait '{"map":"03a_oldmombasa","phase":"gameplay","map_ticks":30}' 120000
+h2 agent game.load '{"scenario":"lockout","variant":"ctf"}'
+```
+
 ## Live session links
 
 `live.join.open {"url":"..."}` submits a website link to the same inbox as
@@ -2791,8 +2897,8 @@ the methods it added beside the agent's own are in
 | `settings.list` | read | `{prefix?}` | settings (`settings.toml`) and how each applies (`crates/extensions/agent/src/menu.rs`) |
 | `settings.set` | act | `{key, value}` | saves the value and applies it as the setting applies; `UNAVAILABLE` when something else set it for this run |
 | `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
-| `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/extensions/game/src/cheats.rs`) |
-| `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
+| `cheat.list` | read | `{}` | `{refused, pending, cheats}`: each cheat's `name`, `label`, `about`, `kind` (`bool`, or `choice` with `choices`), `value`, `refused` (why the session refuses it) and `pending` (why it does nothing yet: on while no campaign or multiplayer game runs; it takes hold when one starts); the top-level `pending` says the same with no game running (`crates/extensions/game/src/cheats.rs`) |
+| `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` or `{"name":"game_speed","value":0.1}`; answers with `cheat.list`'s answer. Cheats: `god`, `infinite_ammo`, `bottomless_clip`, `game_speed` (0.1, 0.25, 0.5, 1, 1.5, 2, 4), `fly`, `noclip`, `hide_hud`, `ai_off` ([debug-menu.md](debug-menu.md#cheats)) |
 
 ### World debug views
 
@@ -3170,6 +3276,39 @@ h2 agent player.goto '{"to":[-10.6,9.0,2.4],"within":0.2}'
 h2 agent player.goto_status '{"wait_ticks":280}'
 h2 agent player.goto '{"to":{"spot":0,"kind":"crouch"},"then":"crouch_recipe"}'
 h2 agent player.goto_cancel
+```
+
+### Saved places: `player.mark` and `player.recall`
+
+`player.mark {slot?, player?}` keeps a player's position and aim under a
+slot; `player.recall {slot?, player?}` puts a player back there through
+[`sim.state.set`'s teleport](#the-games-own-functions-teleport-give-spawn).
+Game methods in `crates/extensions/agent/src/sim/mod.rs`, wire types
+`agent_proto::sim::{MarkParams, Mark}`.
+
+- `slot`: a name of 1 to 32 characters, or a number taken as its decimal
+  name; default `quick`. At most 32 slots; marking an existing slot
+  replaces it.
+- `player`: `player.<index>` or `sim.<n>`; default the player on local
+  user 0 (for a recall with none found, the mark's own player).
+
+`player.mark` answers at once: `{slot, player, pos, forward?, yaw?,
+pitch?, map, slots}`, read at the tick boundary as `world.query` reads
+the player (`forward` is the unit's aiming vector), `slots` every slot
+kept. `player.recall` answers after the next tick with `sim.state.set`'s
+teleport result (`{player, wrote, teleport, session}`) plus `slot` and
+`mark`; the facing is the mark's aiming vector, else its yaw and pitch.
+
+Refusals: a player with no position (between lives) or no local player
+is `GONE`, as is an empty slot on recall; a bad slot name, a 33rd slot or
+a `player` that is not a player is `INVALID_PARAMS`. A mark made on
+another map is `INVALID_REQUEST` on recall. A recall is a host write: a
+co-op or client session refuses it as `sim.state.set` does, and it needs
+the `agent-calls` feature. Marks live as long as the process.
+
+```sh
+h2 agent player.mark '{"slot":"ledge"}'
+h2 agent player.recall '{"slot":"ledge"}'
 ```
 
 ## `sim`: simulated players and direct state
