@@ -1,16 +1,22 @@
 name: Live deploy
 
 # Deploys the Live Worker, the web and the dedicated host image to
-# production on each push to master (docs/live/live-worker.md, "Deploy from
-# CI"). The host image holds public code only: this job builds the Linux h2
+# production once CI has passed on a push to master (docs/live/live-worker.md,
+# "Deploy from CI"). It deploys the commit CI tested, not the branch tip.
+# The host image holds public code only: this job builds the Linux h2
 # (deploy/host/build.sh --h2, glibc 2.36 through cargo-zigbuild) and
 # deploy.sh pushes the image by content tag. The game module compiled from
 # the owner's disc never comes near CI: hosts take it from the private
 # host-data bundle (docs/live/dedicated-host-build.md#the-game-module).
 # Skips until the CLOUDFLARE_API_TOKEN secret is set.
 
+# workflow_run jobs get the repository's secrets, so the job runs only for a
+# push to master in this repository (never a fork's or a pull request's run).
+
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [master]
   workflow_dispatch:
 
@@ -23,7 +29,14 @@ concurrency:
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
+    environment: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -36,6 +49,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         if: env.CLOUDFLARE_API_TOKEN != ''
         with:
+          # The commit CI tested; a manual run deploys the commit it was
+          # started on.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           lfs: true # web/public/art
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
         if: env.CLOUDFLARE_API_TOKEN != ''
