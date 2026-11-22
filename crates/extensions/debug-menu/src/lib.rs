@@ -4,8 +4,9 @@
 //! * [`model`]: rows, sections and the navigation state machine. Every
 //!   value comes from an agent call and every change is one, so the menu
 //!   and `h2 agent` read and change the same registries.
-//! * [`sources`]: the sections (Render, Shader overrides, Tag edits,
-//!   Cheats, Perf, Features), each over agent methods.
+//! * [`sources`]: the sections (Player, World, Game, Time, View, Perf,
+//!   Settings, Dev and their sub-pages), each over agent methods, and the
+//!   status header.
 //! * [`gate`]: the input side: the touchpad + Options chord, gestures,
 //!   and hiding pads from the game while the menu is open.
 //! * [`layout`]: the lines the overlay draws.

@@ -475,6 +475,13 @@ impl Shell {
                 now,
             );
         }
+        // The cheat line is the watermark's, but it stays while the perf
+        // overlay is off, and goes while the debug menu covers the corner.
+        let menu_open = self
+            .config
+            .debug_menu
+            .as_ref()
+            .is_some_and(debug_menu::Shared::is_open);
         if frame.as_ref().is_some_and(|f| f.loading) {
             self.watermark_text = None;
         } else if let Some(wm) = &self.config.watermark
@@ -502,11 +509,34 @@ impl Shell {
                 });
             }
             if let Some(t) = &self.watermark_text {
+                let mut panels = t.panels.clone();
+                if menu_open {
+                    panels.cheats.clear();
+                }
                 g.watermark.draw(
                     &g.ctx.device,
                     &g.ctx.queue,
                     &mut enc,
-                    &t.panels,
+                    &panels,
+                    &view,
+                    g.surface.config.format,
+                    size,
+                    viewport,
+                );
+            }
+        } else if let Some(wm) = &self.config.watermark
+            && !menu_open
+        {
+            let panels = Panels {
+                cheats: wm.cheat_panel(),
+                ..Panels::default()
+            };
+            if !panels.cheats.is_empty() {
+                g.watermark.draw(
+                    &g.ctx.device,
+                    &g.ctx.queue,
+                    &mut enc,
+                    &panels,
                     &view,
                     g.surface.config.format,
                     size,
