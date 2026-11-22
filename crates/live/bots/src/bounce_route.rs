@@ -584,10 +584,17 @@ pub struct Pairing {
 /// [`PAIR_CROUCHES`] within [`PAIR_REACH`] of its approach, proven first
 /// and nearest first, the ones whose start a walk reaches and from which a
 /// walk reaches the approach, proven first, then the shortest walk. At
-/// most two walks a crouch spot looked at.
+/// most two walks a crouch spot looked at. A crouch spot `usable` rules
+/// out (one the practice has given up on) is not looked at.
 /// `Err("no_approach")` for a drop with no launch floor, or a launch that
 /// never gets the bot up.
-pub fn pair_site(site: &Site, known: &Known, walk: Walk, ledge: Ledge) -> Result<Pairing, &'static str> {
+pub fn pair_site(
+    site: &Site,
+    known: &Known,
+    walk: Walk,
+    ledge: Ledge,
+    usable: &dyn Fn(&Crouch) -> bool,
+) -> Result<Pairing, &'static str> {
     let to = approach(site, ledge).ok_or("no_approach")?;
     let ask = Ask {
         from: to,
@@ -600,7 +607,7 @@ pub fn pair_site(site: &Site, known: &Known, walk: Walk, ledge: Ledge) -> Result
         .crouches
         .iter()
         .copied()
-        .filter(|c| dist_xy(c.stand, to) <= PAIR_REACH)
+        .filter(|c| dist_xy(c.stand, to) <= PAIR_REACH && usable(c))
         .collect();
     near.sort_by(|a, b| {
         (!a.proven())
@@ -627,6 +634,42 @@ pub fn pair_site(site: &Site, known: &Known, walk: Walk, ledge: Ledge) -> Result
 
 // ---- playing a plan ----
 
+/// The leg a walk is on, for the reason a lost walk fails with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Leg {
+    /// To a crouch spot's start (a prime is next).
+    Crouch,
+    /// To a bounce's approach or a drop's launch floor.
+    Approach,
+    /// Any other walk (the rest of a route, a plain walk).
+    Nav,
+}
+
+/// The reason a walk the follower lost fails a route with: the check
+/// (`nav::RouteWalk`'s `path_lost_stuck`, `_fell`, `_jump`, `_link`,
+/// `_ended`) and
+/// the leg, as `path_lost_<check>_<leg>`. Every one starts `path_lost`.
+pub fn lost_on(check: &'static str, leg: Leg) -> &'static str {
+    match (check, leg) {
+        ("path_lost_stuck", Leg::Crouch) => "path_lost_stuck_crouch",
+        ("path_lost_stuck", Leg::Approach) => "path_lost_stuck_approach",
+        ("path_lost_stuck", Leg::Nav) => "path_lost_stuck_nav",
+        ("path_lost_fell", Leg::Crouch) => "path_lost_fell_crouch",
+        ("path_lost_fell", Leg::Approach) => "path_lost_fell_approach",
+        ("path_lost_fell", Leg::Nav) => "path_lost_fell_nav",
+        ("path_lost_link", Leg::Crouch) => "path_lost_link_crouch",
+        ("path_lost_link", Leg::Approach) => "path_lost_link_approach",
+        ("path_lost_link", Leg::Nav) => "path_lost_link_nav",
+        ("path_lost_ended", Leg::Crouch) => "path_lost_ended_crouch",
+        ("path_lost_ended", Leg::Approach) => "path_lost_ended_approach",
+        ("path_lost_ended", Leg::Nav) => "path_lost_ended_nav",
+        ("path_lost_jump", Leg::Crouch) => "path_lost_jump_crouch",
+        ("path_lost_jump", Leg::Approach) => "path_lost_jump_approach",
+        ("path_lost_jump", Leg::Nav) => "path_lost_jump_nav",
+        (other, _) => other,
+    }
+}
+
 /// A route gives up after this long (ticks): 200 s.
 pub const ORDER_TICKS: u32 = 6000;
 /// Tries at the bounce spot before giving it up.
@@ -640,6 +683,9 @@ pub const ARRIVED: f32 = 0.3;
 pub const GOAL: f32 = 0.6;
 /// Walking back to prime again, at most this often.
 pub const REPRIMES: u32 = 2;
+/// A walk the follower gives up on (`path_lost_*`) is planned again from
+/// where the bot is, this many times a step, before the route fails.
+pub const WALK_REPLANS: u32 = 3;
 /// The ride gives up waiting to come down after this long (ticks).
 pub const FLY_TICKS: u32 = 450;
 /// Coming down: still this long (ticks), vertical speed under
@@ -838,6 +884,8 @@ pub struct OrderRun {
     started: u32,
     last: Option<Vec3>,
     reprimes: u32,
+    /// The walk under way planned again ([`WALK_REPLANS`]).
+    replans: u32,
     drops: u32,
     seed: u64,
     watch: Watch,
@@ -875,6 +923,7 @@ impl OrderRun {
             started: tick,
             last: None,
             reprimes: 0,
+            replans: 0,
             drops: 0,
             seed,
             watch: Watch::default(),
@@ -959,6 +1008,7 @@ impl OrderRun {
 
     fn next(&mut self, tick: u32, at: Vec3) {
         self.note(tick, "done", at);
+        self.replans = 0;
         self.at += 1;
         self.state = State::Fresh;
     }
@@ -966,6 +1016,7 @@ impl OrderRun {
     /// Back to step `i` (a walk), starting it afresh.
     fn back_to(&mut self, i: usize, tick: u32, at: Vec3, why: &'static str) {
         self.note(tick, why, at);
+        self.replans = 0;
         self.at = i;
         self.state = State::Fresh;
     }
@@ -1004,8 +1055,11 @@ impl OrderRun {
         }
         // The word read as something else on the ground: it was lost
         // (the pair was rebuilt). Back to the crouch spot.
+        // Settling on the stand before the jump counts: a jump with the
+        // word lost is a landing that cannot bounce (`not_primed`).
         let grounded = match &self.state {
             State::Walk(_) => true,
+            State::Bounce(b) => !b.airborne(),
             State::Drop(Dropping::Line(_) | Dropping::Run(_)) => true,
             _ => false,
         };
@@ -1090,7 +1144,30 @@ impl OrderRun {
         let State::Walk(w) = &mut self.state else {
             return Err("state");
         };
-        w.step(map, at, tick, tolerance, speed)
+        match w.step(map, at, tick, tolerance, speed) {
+            Err(lost) if lost.starts_with("path_lost") => {
+                if self.replans < WALK_REPLANS {
+                    // Plan the walk again from here.
+                    self.replans += 1;
+                    self.note(tick, lost, at);
+                    let w = RouteWalk::new(map, at, to, crouch, tick)?;
+                    self.state = State::Walk(if near { w.ending_near() } else { w });
+                    return Ok(Some(RouteMotion::default()));
+                }
+                Err(lost_on(lost, self.leg()))
+            }
+            out => out,
+        }
+    }
+
+    /// Which leg the walk under way is: to a crouch spot (a prime next),
+    /// to a bounce's approach (a bounce or a drop next), or another walk.
+    fn leg(&self) -> Leg {
+        match self.plan.steps.get(self.at + 1) {
+            Some(Step::Prime(_)) => Leg::Crouch,
+            Some(Step::Bounce(_) | Step::Drop { .. }) => Leg::Approach,
+            _ => Leg::Nav,
+        }
     }
 
     fn prime(

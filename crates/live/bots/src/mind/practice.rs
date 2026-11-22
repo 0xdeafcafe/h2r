@@ -10,7 +10,9 @@
 //! ([`crate::bounce_route::pair_site`]: a walk from the crouch spot reaches
 //! the bounce's approach), and a pick checks the one walk from the bot to
 //! that crouch spot. A site with no reachable crouch spot, or whose
-//! approach a walk cannot reach, is never tried.
+//! approach a walk cannot reach, is never tried. A crouch spot or a site
+//! whose tries keep failing on the way to it (or, a crouch spot, in its
+//! prime) is given up for the map ([`CROUCH_STRIKES`], [`SITE_STRIKES`]).
 //!
 //! The loop sits in front of everything else in [`Mind::step`]: no
 //! target is chosen, nothing is shot, thrown or meleed, and being shot
@@ -62,6 +64,12 @@ pub const PAIRING_PAUSE: u32 = 2;
 /// A site the bot has no walk to from where it stood is passed over for
 /// this long (ticks), not tried.
 pub const OUT_OF_REACH_TICKS: u32 = 600;
+/// A crouch spot whose tries failed this many times on the walk to it or
+/// in the prime is given up for the map: its sites pair again without it.
+pub const CROUCH_STRIKES: u32 = 2;
+/// A site whose tries failed this many times on the walk to its approach
+/// is given up for the map.
+pub const SITE_STRIKES: u32 = 3;
 
 /// One site's practice so far.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -146,6 +154,13 @@ pub struct Practice {
     pairs_for: u64,
     /// Sites with no walk from where the bot last looked, until the tick.
     out_of_reach: Vec<([u32; 3], u32)>,
+    /// The crouch spot the route under way primes at.
+    route_crouch: Option<Crouch>,
+    /// Failed tries by the crouch spot (its stand) and by the site, and
+    /// the crouch spots given up, for the map in [`Practice::pairs_for`].
+    crouch_strikes: HashMap<[u32; 3], u32>,
+    site_strikes: HashMap<[u32; 3], u32>,
+    gone: Vec<[u32; 3]>,
 }
 
 /// What a pick found.
@@ -194,6 +209,10 @@ impl Practice {
             pairs: HashMap::new(),
             pairs_for: 0,
             out_of_reach: Vec::new(),
+            route_crouch: None,
+            crouch_strikes: HashMap::new(),
+            site_strikes: HashMap::new(),
+            gone: Vec::new(),
         }
     }
 
@@ -378,6 +397,9 @@ impl Mind {
         if self.practice.pairs_for != for_map {
             self.practice.pairs.clear();
             self.practice.out_of_reach.clear();
+            self.practice.crouch_strikes.clear();
+            self.practice.site_strikes.clear();
+            self.practice.gone.clear();
             self.practice.pairs_for = for_map;
         }
         self.practice
@@ -417,7 +439,9 @@ impl Mind {
                         return Pick::Later;
                     }
                     paired += 1;
-                    let p = pair_site(&s, &self.known, &walk, &ledge);
+                    let gone = &self.practice.gone;
+                    let usable = |c: &Crouch| !gone.contains(&stand_key(c.stand));
+                    let p = pair_site(&s, &self.known, &walk, &ledge, &usable);
                     self.practice.pairs.insert(k, p);
                     p
                 }
@@ -451,6 +475,47 @@ impl Mind {
         });
     }
 
+    /// A failed try counts against what it failed at: the walk to the
+    /// crouch spot or its prime against the crouch spot, the walk to the
+    /// approach against the site. One that has failed often enough
+    /// ([`CROUCH_STRIKES`], [`SITE_STRIKES`]) is given up for the map. A
+    /// landing that did not bounce counts against neither.
+    fn practice_strike(
+        &mut self,
+        site: Site,
+        steps: &[&'static str],
+        step: usize,
+        why: Option<&'static str>,
+    ) {
+        let Some(why) = why else { return };
+        let walked = why.starts_with("path_lost")
+            || matches!(why, "no_path" | "goal_off_mesh" | "tail_stuck");
+        let at = steps.get(step).copied();
+        let next = steps.get(step + 1).copied();
+        let crouch_leg = (walked && next == Some("prime")) || at == Some("prime");
+        let site_leg = walked && matches!(next, Some("bounce" | "drop"));
+        let p = &mut self.practice;
+        if crouch_leg && let Some(c) = p.route_crouch {
+            let k = stand_key(c.stand);
+            let n = p.crouch_strikes.entry(k).or_insert(0);
+            *n += 1;
+            if *n >= CROUCH_STRIKES && !p.gone.contains(&k) {
+                p.gone.push(k);
+                // Its sites pair again, without it.
+                p.pairs
+                    .retain(|_, v| !matches!(v, Ok(Pairing { crouch: Some(c), .. }) if stand_key(c.stand) == k));
+            }
+        }
+        if site_leg {
+            let k = stand_key(site.bounce.stand);
+            let n = p.site_strikes.entry(k).or_insert(0);
+            *n += 1;
+            if *n >= SITE_STRIKES {
+                p.pairs.insert(k, Err("given_up"));
+            }
+        }
+    }
+
     /// The route asked for by the practice has ended: tally it.
     fn practice_tally(&mut self, site: Site) {
         let view = self.order_view();
@@ -476,6 +541,9 @@ impl Mind {
                 (None, _) => "no_route",
             })
         };
+        if !bounced {
+            self.practice_strike(site, &view.steps, view.step, why);
+        }
         self.practice.record(site.bounce.stand, bounced, why);
         let tick = self.tick.unwrap_or(0);
         self.practice.event(PracticeEvent::Tried {
@@ -537,6 +605,7 @@ impl Mind {
                 match self.pick_practice(me.position, tick, map) {
                     Pick::Site(site, crouch) => {
                         self.practice.waiting = false;
+                        self.practice.route_crouch = crouch;
                         claim(
                             self.practice.board,
                             self.practice.owner,

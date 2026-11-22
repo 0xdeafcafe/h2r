@@ -779,18 +779,22 @@ site (the stand point the try was at):
 (The numbers above show the shape, not a measurement.) `why` uses the
 practice's names: the route's errors (`prime_failed`, `pair_lost`,
 `no_route`, `no_drop`, `no_bounce`, `timeout`, `stalled`, and the walk's
-`no_path`, `goal_off_mesh`, `path_lost` and `tail_stuck`) and the
-landing's results (`not_primed`, `missed`, `too_slow`). A walk's errors
-are `nav::RouteWalk`'s: `no_path` (no corridor without a teleporter or
-crouch-jump link), `goal_off_mesh` (the goal farther off the mesh than a
-last stretch reaches), `path_lost` (the follower gave up: stuck, fallen
-below its path) and `tail_stuck` (the last stretch to a goal off the
-mesh stopped getting nearer; a practice's walks end there instead, so it
-is not a practice reason in practice). The practice tries only sites a
-route reaches (a site paired with a crouch spot a walk reaches it from,
-and a walk from the bot to that crouch spot), so a site out of reach
-adds no try and no reason; `no_route` is a route that failed to plan
-from where the bot stood.
+`no_path`, `goal_off_mesh`, `tail_stuck` and `path_lost_<check>_<leg>`)
+and the landing's results (`not_primed`, `missed`, `too_slow`). A walk's
+errors are `nav::RouteWalk`'s: `no_path` (no corridor without a
+teleporter or crouch-jump link), `goal_off_mesh` (the goal farther off
+the mesh than a last stretch reaches), `tail_stuck` (the last stretch to
+a goal off the mesh stopped getting nearer; a practice's walks end there
+instead, so it is not a practice reason in practice), and a walk the
+follower gave up on, planned again three times first: `path_lost_` and
+the check (`stuck`, `fell`, `jump`, `link`, `ended`) and the leg
+(`crouch`: to the crouch spot, `approach`: to the bounce's approach or
+launch floor, `nav`: another walk), such as `path_lost_stuck_approach`
+([bots.md, "Superbounce routes"](../game/bots.md#superbounce-routes)).
+The practice tries only sites a route reaches (a site paired with a
+crouch spot a walk reaches it from, and a walk from the bot to that
+crouch spot), so a site out of reach adds no try and no reason;
+`no_route` is a route that failed to plan from where the bot stood.
 `first_bounce_ticks` counts from the match's start to the bot's first
 chain bounce. The block is absent from a match without `superbounce`.
 

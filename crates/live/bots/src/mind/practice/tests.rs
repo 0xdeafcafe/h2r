@@ -292,8 +292,16 @@ fn edge_map(edge: f32) -> MapData {
         [60.0, 5.0, 0.0],
         [50.0, 5.0, 0.0],
     ]);
+    // The collision's floor goes on 2 past the mesh's edge.
+    let collision = [
+        [-40.0, -40.0, 0.0],
+        [edge + 2.0, -40.0, 0.0],
+        [edge + 2.0, 40.0, 0.0],
+        [-40.0, 40.0, 0.0],
+    ];
     MapData {
         nav: NavMesh::new(vec![floor, island], vec![]),
+        walls: crate::los::Walls::from_polygons([&collision[..]]),
         ..MapData::default()
     }
 }
@@ -391,5 +399,54 @@ fn a_site_with_no_reachable_crouch_spot_is_not_picked() {
     }
     // With only the lonely site there is nothing to practise.
     mind.known.sites = vec![lonely];
+    assert_eq!(mind.pick_practice([0.0; 3], 9, Some(&m)), Pick::Nothing);
+}
+
+// ---- giving up what keeps failing ----
+
+#[test]
+fn a_crouch_spot_that_keeps_failing_is_given_up_and_its_site_paired_again() {
+    let m = map();
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let near = Crouch::at([9.0, 1.0, 0.0]);
+    let other = Crouch::at([4.0, 0.0, 0.0]);
+    let mut mind = Mind::new(Skill::Normal, 39);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![near, other],
+    };
+    let steps = ["walk_crouched", "prime", "walk", "bounce", "fly"];
+    for n in 0..CROUCH_STRIKES {
+        let Pick::Site(_, crouch) = mind.pick_practice([0.0; 3], n, Some(&m)) else {
+            panic!("a pick");
+        };
+        assert_eq!(crouch, Some(near));
+        mind.practice.route_crouch = crouch;
+        mind.practice_strike(s, &steps, 1, Some("prime_failed"));
+    }
+    let Pick::Site(_, crouch) = mind.pick_practice([0.0; 3], 9, Some(&m)) else {
+        panic!("a pick");
+    };
+    assert_eq!(crouch, Some(other), "paired again without the failing one");
+    // A landing that did not bounce counts against neither.
+    mind.practice.route_crouch = crouch;
+    for _ in 0..5 {
+        mind.practice_strike(s, &steps, 3, Some("not_primed"));
+    }
+    assert!(matches!(mind.pick_practice([0.0; 3], 10, Some(&m)), Pick::Site(..)));
+}
+
+#[test]
+fn a_site_whose_approach_walk_keeps_failing_is_given_up() {
+    let m = map();
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let mut mind = Mind::new(Skill::Normal, 40);
+    mind.known = known();
+    mind.known.sites = vec![s];
+    let steps = ["walk_crouched", "prime", "walk", "bounce", "fly"];
+    for n in 0..SITE_STRIKES {
+        assert!(matches!(mind.pick_practice([0.0; 3], n, Some(&m)), Pick::Site(..)));
+        mind.practice_strike(s, &steps, 2, Some("path_lost_stuck_approach"));
+    }
     assert_eq!(mind.pick_practice([0.0; 3], 9, Some(&m)), Pick::Nothing);
 }

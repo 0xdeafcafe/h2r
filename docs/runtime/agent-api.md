@@ -3016,7 +3016,9 @@ game, or assumed after the walk out because it could not be), `landing`
 `vz_out`, `miss`, `result` `bounce`, `not_primed`, `missed`, `too_slow`
 or `no_bounce`), `log` (each step and phase change, `{tick, step, what,
 at}`, the last 64) and, for a failed route, `error`: `timeout`, `no_map`,
-`no_path`, `goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`,
+`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_<check>_<leg>`
+(the follower's check and the walk's leg, [bots.md, "Superbounce
+routes"](../game/bots.md#superbounce-routes)), `prime_failed`, `pair_lost`,
 `no_bounce`, `no_drop`, `stalled`, `state` (an internal fault), `enemy`,
 `no_route`, `practice_off`, `died` or `map_changed`. While a route runs
 the bot fights and picks up nothing. While the superbounce mode is on the
@@ -3085,7 +3087,7 @@ ticks for the end): `state` (`none`, `loading`, `running`, `facing`,
 `step`, `phase`, `primed`, `position`, `distance` (left along the walk
 under way, else straight to the goal), `path` (the player, then the
 waypoints ahead, at most 32), `replans`, `replanned` (`strayed`,
-`stuck`, `path_lost`, `stalled`, `pair_lost`), `ticks` and, for a failed
+`stuck`, `path_lost_<check>_<leg>`, `stalled`, `pair_lost`), `ticks` and, for a failed
 drive, `error` (the route's reasons as in `bots.bounce_status`, `stuck`,
 `timeout`, `no_route`, `no_launch_floor`, a missing nav mesh, a changed
 map). `player.goto_cancel` stops it and lets go of the pad. The player

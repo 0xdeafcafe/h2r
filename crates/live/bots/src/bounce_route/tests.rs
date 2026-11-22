@@ -655,8 +655,18 @@ fn a_named_site_is_planned_by_itself_with_no_reach_limit() {
 // ---- spots off the nav mesh, and pairing a site with a crouch spot ----
 
 /// A floor from x -10 to `edge`, y -5 to 5, at z 0: past `edge` is off
-/// the mesh (a seam, an edge the scan stands on).
+/// the mesh (a seam, an edge the scan stands on), but the collision's
+/// floor goes on 1.2 further.
 fn edge_map(edge: f32) -> MapData {
+    let collision = [[-10.0, -5.0, 0.0], [edge + 1.2, -5.0, 0.0], [edge + 1.2, 5.0, 0.0], [-10.0, 5.0, 0.0]];
+    MapData {
+        walls: crate::los::Walls::from_polygons([&collision[..]]),
+        ..cliff_map(edge)
+    }
+}
+
+/// The same floor with nothing past `edge`: a ledge, a sill.
+fn cliff_map(edge: f32) -> MapData {
     let floor = Poly::new(vec![[-10.0, -5.0, 0.0], [edge, -5.0, 0.0], [edge, 5.0, 0.0], [-10.0, 5.0, 0.0]]);
     MapData {
         nav: NavMesh::new(vec![floor], vec![]),
@@ -723,7 +733,7 @@ fn a_spot_far_off_the_mesh_has_no_walk_and_is_not_planned() {
     let s = site(8.3, 0.0, 12.3);
     let k = known(vec![s]);
     let walk = |a: Vec3, b: Vec3| path_length(&map, a, b);
-    let p = pair_site(&s, &k, &walk, &|_| None).unwrap();
+    let p = pair_site(&s, &k, &walk, &|_| None, &|_| true).unwrap();
     assert_eq!((p.crouch, p.walk), (None, None));
     assert!(plan_site([0.0; 3], false, s, &k, &walk, &|_| None).is_none());
 }
@@ -769,7 +779,7 @@ fn a_site_pairs_with_the_crouch_spot_a_walk_reaches_its_approach_from() {
     };
     // Nothing walks from the nearest crouch spot.
     let walk = |a: Vec3, b: Vec3| (dist_xy(a, near.stand) > 0.01).then(|| dist3(a, b));
-    let p = pair_site(&s, &k, &walk, &|_| None).unwrap();
+    let p = pair_site(&s, &k, &walk, &|_| None, &|_| true).unwrap();
     assert_eq!(p.approach, s.bounce.from());
     assert_eq!(p.crouch, Some(reachable));
     assert!((p.walk.unwrap() - dist3(reachable.stand, s.bounce.from())).abs() < 1e-4);
@@ -778,8 +788,176 @@ fn a_site_pairs_with_the_crouch_spot_a_walk_reaches_its_approach_from() {
         sites: vec![s],
         crouches: vec![far],
     };
-    assert_eq!(pair_site(&s, &lone, &flat_walk, &|_| None).unwrap().crouch, None);
+    assert_eq!(pair_site(&s, &lone, &flat_walk, &|_| None, &|_| true).unwrap().crouch, None);
     // A drop with no launch floor, or a launch that goes nowhere: no route.
-    assert_eq!(pair_site(&drop_site(10.0, 12.3), &k, &flat_walk, &|_| None), Err("no_approach"));
-    assert_eq!(pair_site(&site(10.0, 0.0, 0.0), &k, &flat_walk, &|_| None), Err("no_approach"));
+    assert_eq!(pair_site(&drop_site(10.0, 12.3), &k, &flat_walk, &|_| None, &|_| true), Err("no_approach"));
+    assert_eq!(pair_site(&site(10.0, 0.0, 0.0), &k, &flat_walk, &|_| None, &|_| true), Err("no_approach"));
+}
+
+// ---- a lost walk: its check and leg, planned again; the prime kept ----
+
+/// Plays `steps` with a body that never moves; the route's end and log.
+fn play_stuck(steps: Vec<Step>, ticks: u32) -> (Option<Result<(), &'static str>>, Vec<&'static str>) {
+    let map = flat_map();
+    let plan = Plan {
+        steps,
+        why: Why::Asked,
+        site: None,
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, false, 0, 1);
+    for tick in 0..ticks {
+        let o = run.step(&map, [0.0; 3], tick, None);
+        if o.done.is_some() {
+            return (o.done, run.log().iter().map(|l| l.what).collect());
+        }
+    }
+    (None, run.log().iter().map(|l| l.what).collect())
+}
+
+#[test]
+fn a_lost_walk_is_planned_again_then_fails_naming_the_check_and_the_leg() {
+    let to = [5.0, 0.0, 0.0];
+    let c = Crouch::at(to);
+    let s = site(6.0, 0.0, 12.3);
+    let cases = [
+        (vec![Step::Walk { to, crouch: false }, Step::Prime(c)], "path_lost_stuck_crouch"),
+        (vec![Step::Walk { to, crouch: false }, Step::Bounce(s)], "path_lost_stuck_approach"),
+        (vec![Step::Nav { to }], "path_lost_stuck_nav"),
+    ];
+    for (steps, why) in cases {
+        let (done, log) = play_stuck(steps, 2000);
+        assert_eq!(done, Some(Err(why)));
+        let replans = log.iter().filter(|w| **w == "path_lost_stuck").count() as u32;
+        assert_eq!(replans, WALK_REPLANS, "{log:?}");
+        assert!(why.starts_with("path_lost"));
+    }
+    assert_eq!(lost_on("path_lost_fell", Leg::Approach), "path_lost_fell_approach");
+    assert_eq!(lost_on("path_lost_link", Leg::Crouch), "path_lost_link_crouch");
+    assert_eq!(lost_on("path_lost_ended", Leg::Nav), "path_lost_ended_nav");
+}
+
+#[test]
+fn a_walk_below_its_path_is_lost_by_the_fall_check() {
+    let map = ledge_map();
+    let goal = [-1.0, 0.0, 2.4];
+    let mut w = RouteWalk::new(&map, [-5.0, 0.0, 2.4], goal, false, 0).unwrap();
+    // Knocked off the ledge, half a unit from the goal sideways.
+    assert_eq!(w.step(&map, [-1.5, 0.0, 0.0], 1, ARRIVED, 1.0).err(), Some("path_lost_fell"));
+}
+
+#[test]
+fn a_walk_ends_at_a_lip_without_stopping_for_headroom_past_it() {
+    // A low ceiling (z 0.5) from x 5 on: the standing capsule does not fit
+    // under it. The walk's goal is at its edge, as a crouch spot's start.
+    let lip = [[5.0, -1.0, 0.5], [7.0, -1.0, 0.5], [7.0, 1.0, 0.5], [5.0, 1.0, 0.5]];
+    let map = MapData {
+        walls: crate::los::Walls::from_polygons([&lip[..]]),
+        ..flat_map()
+    };
+    let to = [5.0, 0.0, 0.0];
+    let plan = Plan {
+        steps: vec![Step::Walk { to, crouch: false }],
+        why: Why::Asked,
+        site: None,
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, false, 0, 1);
+    let mut at = [0.0f32, 0.0, 0.0];
+    let (mut standing, mut most) = (0, 0);
+    let mut done = None;
+    for tick in 0..300 {
+        let o = run.step(&map, at, tick, None);
+        if o.done.is_some() {
+            done = o.done;
+            break;
+        }
+        assert!(!o.motion.jump, "tick {tick}");
+        standing = if o.motion.speed == 0.0 { standing + 1 } else { 0 };
+        most = most.max(standing);
+        let step = 5.0 * o.motion.speed / 30.0;
+        at[0] += o.motion.dir[0] * step;
+        at[1] += o.motion.dir[1] * step;
+    }
+    assert_eq!(done, Some(Ok(())), "at {at:?}");
+    assert!(most < 5, "stood {most} ticks on the way");
+}
+
+#[test]
+fn a_word_lost_while_settling_on_the_stand_primes_again_rather_than_jumping() {
+    let map = flat_map();
+    let c = Crouch::at([3.0, 0.0, 0.0]);
+    let s = site(10.0, 0.0, 12.3);
+    let plan = Plan {
+        steps: vec![
+            Step::Walk { to: c.stand, crouch: true },
+            Step::Prime(c),
+            Step::Walk { to: s.bounce.from(), crouch: false },
+            Step::Bounce(s),
+            Step::Fly { to: s.target() },
+        ],
+        why: Why::Asked,
+        site: Some(s),
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, false, 0, 1);
+    let (mut at, mut tick) = ([0.0, 0.0, 0.0], 0);
+    play(&mut run, &map, &mut at, &mut tick, Some(PRIMED_WORD), "bounce", 900);
+    assert_eq!(run.status().what, "bounce");
+    assert!(run.primed());
+    // The body slept on the stand: the pair came back at 0.
+    let o = run.step(&map, at, tick, Some(0));
+    assert!(!o.motion.jump);
+    assert!(!run.primed());
+    assert_eq!(run.status().what, "walk_crouched");
+    assert!(run.log().iter().any(|l| (l.step, l.what) == ("bounce", "reprime")));
+}
+
+#[test]
+fn a_spot_just_past_a_ledge_is_not_walked_off_to() {
+    // The same 0.6 past the edge, with no floor there: off a sill.
+    let map = cliff_map(5.0);
+    let goal = [5.6, 0.0, 0.0];
+    assert_eq!(path_length(&map, [0.0; 3], goal), None);
+    let (done, at) = play_steps(&map, vec![Step::Walk { to: goal, crouch: false }], [0.0; 3], 60);
+    assert_eq!(done, Some(Err("goal_off_mesh")));
+    assert!(at[0] <= 5.0, "{at:?}");
+}
+
+#[test]
+fn a_goal_under_the_ramp_beside_it_is_walked_to_on_the_ramp() {
+    // A ramp from x 0 (z 0) up to x 4 (z 2): a point at x 2 with the
+    // crease's height (0), as a bounce's approach behind a crease keeps.
+    let ramp = Poly::new(vec![[0.0, -5.0, 0.0], [4.0, -5.0, 2.0], [4.0, 5.0, 2.0], [0.0, 5.0, 0.0]]);
+    let flat = Poly::new(vec![[-10.0, -5.0, 0.0], [0.0, -5.0, 0.0], [0.0, 5.0, 0.0], [-10.0, 5.0, 0.0]]);
+    let (a, b) = ([0.0, -5.0, 0.0], [0.0, 5.0, 0.0]);
+    let walk = |from, to| crate::nav::Edge {
+        from,
+        to,
+        a,
+        b,
+        kind: crate::nav::Kind::Walk,
+    };
+    let map = MapData {
+        nav: NavMesh::new(vec![flat, ramp], vec![walk(0, 1), walk(1, 0)]),
+        ..MapData::default()
+    };
+    let goal = [1.2, 0.0, 0.0];
+    assert!((crate::nav::floor_goal(&map, goal)[2] - 0.6).abs() < 1e-4);
+    assert!(path_length(&map, [-3.0, 0.0, 0.0], goal).is_some());
+    // The body walks up the ramp; its height follows the floor.
+    let mut w = RouteWalk::new(&map, [-3.0, 0.0, 0.0], goal, false, 0).unwrap();
+    let mut at = [-3.0f32, 0.0, 0.0];
+    for tick in 0..300 {
+        match w.step(&map, at, tick, ARRIVED, 1.0) {
+            Ok(None) => return,
+            Ok(Some(m)) => {
+                at[0] += m.dir[0] * 5.0 * m.speed / 30.0;
+                at[1] += m.dir[1] * 5.0 * m.speed / 30.0;
+                at[2] = (at[0] * 0.5).max(0.0);
+            }
+            Err(e) => panic!("{e} at {at:?}"),
+        }
+    }
+    panic!("never arrived: {at:?}");
 }

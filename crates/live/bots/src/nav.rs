@@ -37,7 +37,9 @@ mod route;
 mod search;
 mod traversal;
 mod vehicle;
-pub use route::{ARRIVE_Z, RouteJump, RouteWalk, TAIL_REACH, plan_route_jump, walk_length};
+pub use route::{
+    ARRIVE_Z, RouteJump, RouteWalk, TAIL_REACH, floor_goal, plan_route_jump, walk_length,
+};
 use search::Search;
 pub(crate) use vehicle::VehiclePaths;
 

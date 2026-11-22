@@ -1676,7 +1676,11 @@ a walk-length function over the nav mesh:
    crouch 12 ticks, let go, stand up;
 3. for a site with no fall, walk to 0.8 units behind it, never
    crouching, then the bounce run (`glitches::BounceRun`) until it
-   launches. For a site that needs a fall, walk to its **launch
+   launches. The run settles onto the stand and jumps; settling that
+   moves the body less than 0.002 units a tick for 12 ticks
+   (`glitches::SETTLE_STILL_TICKS`) jumps from where it is, since a
+   primed body that stands still 38 ticks sleeps and wakes with its word
+   at 0 ([superbounce.md](superbounce.md), "Charge"). For a site that needs a fall, walk to its **launch
    floor** (`bounce_route::launch_floor`: the nav mesh's point nearest
    the site's aim sideways, within 3 units **[guess]**, whose floor is
    the drop height over the strip, 0.2 under to 2.5 over), then
@@ -1707,17 +1711,38 @@ unless the bot's pair word reads -3 already.
 **Walks to spots off the mesh.** A scanned stand sits on a seam or an
 edge, so the point a walk goes to (a prime's start, a bounce's
 approach, a drop's launch floor) may be just off the nav mesh, or a
-little under the floor beside it. A walk (`nav::RouteWalk`) has arrived
-within its tolerance sideways and 0.6 units up or down
-(`nav::route::ARRIVE_Z`). A goal off the mesh within 1.5 units
-(`nav::TAIL_REACH`) of the corridor's end, 0.5 units over it to 0.8
-under it, with nothing solid between them at knee height, is walked to
-by a **last stretch**: the corridor to its end, then straight at the
-goal, slowing as it nears it. A last stretch that gets no 0.05 units
-nearer in 45 ticks ends a walk to a prime's start or a bounce's
-approach where the body got to (the prime and the bounce steer the rest
-themselves), and fails a walk to a goal (`tail_stuck`). A goal farther
-off is `goal_off_mesh`. The planner measures walks the way a walk is
+little under the floor beside it. A walk (`nav::RouteWalk`) first puts
+its goal on the mesh's floor where a polygon under it has one from 0.3
+under it to a standing height (0.725) over it (`nav::floor_goal`): an
+approach 0.8 behind a crease, on the ramp rising from it, keeps the
+crease's height otherwise, under the ramp. It has arrived within its
+tolerance sideways and 0.6 units up or down (`nav::route::ARRIVE_Z`).
+A goal off the mesh within 1.5 units (`nav::TAIL_REACH`) of the
+corridor's end, 0.5 units over it to 0.8 under it, with nothing solid
+between them at knee height and the collision's floor under the line
+every 0.25 units (within 0.3 over it to 0.5 under it, so never off a
+ledge or a sill), is walked to by a **last stretch**: the corridor to
+its end, then straight at the goal, slowing as it nears it. A last
+stretch that gets no 0.05 units nearer in 20 ticks (under the 38 still
+ticks a primed body sleeps after) ends a walk to a prime's start or a
+bounce's approach where the body got to (the prime and the bounce steer
+the rest themselves), and fails a walk to a goal (`tail_stuck`). A goal
+farther off is `goal_off_mesh`. Within 0.5 units of its goal on its
+last leg a walk does not stop for the standing capsule's headroom
+ahead (`nav::route::END_HEADROOM`): the probes reach past the goal, under
+the lip a crouch spot's start stands beside.
+
+**A lost walk.** When the follower gives a walk up, the route plans the
+walk again from where the bot is, 3 times a step
+(`bounce_route::WALK_REPLANS`, each logged with the check), then fails
+naming the check and the leg (`bounce_route::lost_on`):
+`path_lost_<check>_<leg>`. The check is the follower's: `stuck` (no
+nearer in 30 ticks, a jump, and no nearer in 30 more), `fell` (its
+waypoint above it past 1.2 units plus the distance), `jump` (stuck at a
+jump or drop link), `link` (a lift, teleporter, elevator or crouch jump
+that did not carry it) or `ended` (no waypoint left). The leg is
+`crouch` (to a crouch spot's start), `approach` (to a bounce's approach
+or a drop's launch floor) or `nav` (any other walk). The planner measures walks the way a walk is
 taken (`bounce_route::path_length`, `nav::walk_length`): no teleporter
 or crouch-jump link, and a goal off the mesh only within a last
 stretch's reach, so a plan holds no walk that fails `no_path` or
@@ -1745,8 +1770,10 @@ through a reader the host installs (`bots::set_pair_reader`: the unit's
 datum in, the word out; the game's reader is `live_telemetry::havok_agents`'s
 `fixed_pair_word`). It is read only while a route is asked for or under
 way (`Mind::wants_pair`), not on every sample. With it a priming ends when the word reads
--3, a word that reads anything else on the ground after priming sends
-the bot back to the crouch spot (twice at most), and a priming whose
+-3, a word that reads anything else on the ground after priming
+(walking, lining up or running off a drop, or settling on a bounce's
+stand before the jump) sends the bot back to the crouch spot (twice at
+most), and a priming whose
 word never reaches -3 fails (`prime_failed`). Without it the bot assumes
 it is primed once the stand-up has had its 12 ticks; `bots.bounce_status`
 says which (`primed_read`). `Mind::primed` is true from the priming to
@@ -1783,7 +1810,8 @@ is a practice loop (`mind::practice`, ahead of everything else in
    distance (−1 a 60 units), a proven site +2, one another bot practises
    at −3, the one just tried −1.5, plus a random 0 to 0.8, the best
    weighed first. A failed try blacklists the site for a while
-   (`Stuck::blacklist`), so the next try is somewhere else. With no
+   (`Stuck::blacklist`), so the next try is somewhere else, and counts
+   against what it failed at (below). With no
    crouch spot to prime at (and the word not −3) or no site a route
    reaches, it waits 300 ticks and looks again (`waiting`);
 3. run the bounce route to the site (`bounce_route::plan_site`: that one
@@ -1809,6 +1837,17 @@ again 2 ticks later. A practice try is therefore never spent finding
 out that a site is out of reach: `no_route` is a site whose route
 failed to plan from where the bot stood, which a pairing rules out but
 for a bot that moved between the pick and the plan.
+
+**Giving up what keeps failing.** A failed try counts against what it
+failed at (`Mind::practice_strike`): a walk to the crouch spot that
+failed (`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_*`), or
+its prime, against the crouch spot; a walk to the approach that failed,
+against the site. A crouch spot with 2 (`practice::CROUCH_STRIKES`) is
+given up for the map and the sites paired with it pair again without
+it; a site with 3 (`practice::SITE_STRIKES`) is given up. A landing that
+did not bounce counts against neither. So a proven crouch spot a bot
+cannot use (Zanzibar's window wants its glass broken first, and its way
+out is off the sill) stops drawing every site near it.
 
 The bots spread over the sites by claims on a board the process shares
 (`practice::CLAIMS`): a bot renews its claim each tick of its route, and

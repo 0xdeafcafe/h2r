@@ -19,8 +19,10 @@ pub const TAIL_UP: f32 = 0.5;
 /// ...or go down this much (a crease below the floors either side of it).
 pub const TAIL_DOWN: f32 = 0.8;
 /// The last stretch gives up after this long (ticks) without getting
-/// [`TAIL_GAIN`] nearer.
-pub const TAIL_TICKS: u32 = 45;
+/// [`TAIL_GAIN`] nearer: well under the 38 still ticks a primed body
+/// sleeps after (docs/game/superbounce.md, "Charge"), which loses its
+/// prime.
+pub const TAIL_TICKS: u32 = 20;
 pub const TAIL_GAIN: f32 = 0.05;
 /// A walk has arrived within its tolerance (XY) and this much (or the
 /// tolerance, if more) up or down: a scanned spot's height is the seam's,
@@ -28,22 +30,58 @@ pub const TAIL_GAIN: f32 = 0.05;
 pub const ARRIVE_Z: f32 = 0.6;
 /// A path's end this near its goal (XY) needs no last stretch.
 const TAIL_EPS: f32 = 0.05;
+/// Within this (XY) of the walk's goal, on its last leg, the standing
+/// capsule's headroom ahead is not checked: the probes (0.32 ahead) reach
+/// past the goal, under the lip a crouch spot's start stands beside.
+pub const END_HEADROOM: f32 = 0.5;
 
 /// Whether a body at `at` has arrived at `goal`, within `tolerance`.
 pub fn arrived(at: V3, goal: V3, tolerance: f32) -> bool {
     dist_xy(at, goal) <= tolerance && (at[2] - goal[2]).abs() <= ARRIVE_Z.max(tolerance)
 }
 
+/// Floor this far apart (world units, along the straight last stretch)
+/// is looked for under it.
+const TAIL_STEP: f32 = 0.25;
+/// Under each point of the last stretch, something solid within this
+/// (world units) above and below the line: the stretch walks on a floor
+/// the collision has and the mesh lacks, never off a ledge.
+const TAIL_FLOOR_UP: f32 = 0.3;
+const TAIL_FLOOR_DOWN: f32 = 0.5;
+
 /// Whether the straight last stretch from a path's `end` to an off-mesh
 /// `goal` can be walked: within [`TAIL_REACH`], [`TAIL_UP`] and
-/// [`TAIL_DOWN`], and nothing solid between them at knee height.
+/// [`TAIL_DOWN`], nothing solid between them at knee height, and the
+/// collision's floor under it all the way (a stretch off a sill would
+/// fall).
 fn tail_ok(map: &MapData, end: V3, goal: V3) -> bool {
     let dz = goal[2] - end[2];
     let knee = [0.0, 0.0, moves::KNEE];
-    dist_xy(end, goal) <= TAIL_REACH
+    let d = dist_xy(end, goal);
+    let floored = || {
+        let n = (d / TAIL_STEP).ceil().max(1.0) as usize;
+        (1..=n).all(|k| {
+            let p = add(end, scale(sub(goal, end), k as f32 / n as f32));
+            !map.walls.clear(add(p, [0.0, 0.0, TAIL_FLOOR_UP]), sub(p, [0.0, 0.0, TAIL_FLOOR_DOWN]))
+        })
+    };
+    d <= TAIL_REACH
         && dz <= TAIL_UP
         && -dz <= TAIL_DOWN
         && map.walls.clear(add(end, knee), add(goal, knee))
+        && floored()
+}
+
+/// `goal` on the mesh's floor when a polygon under it has one from a
+/// little under it to less than a standing height over it: a scanned
+/// point's height is its seam's or its stand's (an approach 0.8 behind a
+/// crease, on the ramp that rises from it, keeps the crease's height),
+/// and nobody stands under a floor lower than that over them.
+pub fn floor_goal(map: &MapData, goal: V3) -> V3 {
+    match map.nav.below(goal, goal[2] + super::STANDING, u32::MAX) {
+        Some((_, z)) if z >= goal[2] - TAIL_FLOOR_UP => [goal[0], goal[1], z],
+        _ => goal,
+    }
 }
 
 /// The links a route walk never takes: a teleporter (the player's movement
@@ -79,6 +117,7 @@ fn walk_path(map: &MapData, at: V3, goal: V3, crouch: bool) -> Option<Vec<Waypoi
 /// last stretch reaches). The planner's measure of a walk, so what it
 /// plans is what a walk can do.
 pub fn walk_length(map: &MapData, at: V3, goal: V3, crouch: bool, tolerance: f32) -> Option<f32> {
+    let goal = floor_goal(map, goal);
     let path = walk_path(map, at, goal, crouch)?;
     let end = path.last()?.at;
     if !arrived(end, goal, tolerance) && !tail_ok(map, end, goal) {
@@ -127,6 +166,7 @@ impl RouteWalk {
         crouch: bool,
         tick: u32,
     ) -> Result<Self, &'static str> {
+        let goal = floor_goal(map, goal);
         let path = walk_path(map, at, goal, crouch).ok_or("no_path")?;
         let tail = path
             .last()
@@ -205,7 +245,7 @@ impl RouteWalk {
             self.follower
                 .steer_until(at, u64::from(tick), |d, _reach| moves::bend_clear(map, at, d), true);
         if steer.replan {
-            return Err("path_lost");
+            return Err(self.lost(at));
         }
         let crouch = steer.crouch || (self.crouch && !steer.traversing);
         let pace = if steer.traversing || steer.jump {
@@ -219,9 +259,12 @@ impl RouteWalk {
             }
         };
         let moving = steer.dir != [0.0; 2];
+        let ending = self.follower.next + 1 >= self.follower.path.len()
+            && dist_xy(at, self.goal) <= END_HEADROOM;
         let clear = crouch
             || steer.jump
             || self.follower.committed()
+            || ending
             || moves::headroom(map, at, steer.dir);
         Ok(Some(RouteMotion {
             dir: steer.dir,
@@ -234,6 +277,23 @@ impl RouteWalk {
             jump: steer.jump,
             crouch,
         }))
+    }
+
+    /// Which of the follower's checks gave the corridor up, as a reason:
+    /// `path_lost_ended` (no waypoint left), `path_lost_link` (a lift,
+    /// teleporter, elevator or crouch jump that did not carry it),
+    /// `path_lost_jump` (a jump or drop link it did not make),
+    /// `path_lost_fell` (the waypoint is above it past [`super::FELL`]:
+    /// it fell below its path) or `path_lost_stuck` (no nearer in
+    /// [`super::STUCK_FRAMES`], a jump, and no nearer again).
+    fn lost(&self, at: V3) -> &'static str {
+        match self.follower.path.get(self.follower.next) {
+            None => "path_lost_ended",
+            Some(w) if w.kind.traversal() => "path_lost_link",
+            Some(w) if w.at[2] - at[2] > super::FELL + dist_xy(w.at, at) => "path_lost_fell",
+            Some(w) if matches!(w.kind, Kind::Jump | Kind::Drop) => "path_lost_jump",
+            Some(_) => "path_lost_stuck",
+        }
     }
 
     /// Straight at the goal, slowing as it nears it, until it is there or
@@ -250,7 +310,7 @@ impl RouteWalk {
         let goal = self.goal;
         if goal[2] - at[2] > super::FELL {
             // Fell below it.
-            return Err("path_lost");
+            return Err("path_lost_fell");
         }
         let d = dist_xy(at, goal);
         if d < t.best - TAIL_GAIN {

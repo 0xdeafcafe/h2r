@@ -98,4 +98,26 @@ What the code did then, at `ed34fe894`:
 - `no_path` (`nav/route.rs:34`): the walk excludes teleporter and crouch-jump links, but the planner's measure took them (`bounce_route.rs:58`).
 - `path_lost` (`nav/route.rs:91`): the follower gave up, by its stuck check (`nav.rs:1261`: 30 ticks without getting nearer, a jump, 30 more) or its fall check (`nav.rs:1232`). Read from the code, not traced: the arrival test was 3D (`nav/route.rs:73`), so a body at the corridor's end near a goal at a seam's height, under the floor beside it, could stand short of the tolerance and stall there.
 
-The fix's numbers go below once the coordinator's batch runs.
+
+## 2026-11-22: after the reachability fix (`91ff0ee7b`), still no bounce
+
+The same batch at `91ff0ee7b` (sites paired with reachable crouch spots, the last stretch to a goal off the mesh), run by the coordinator:
+
+```
+map        tries  bounced  primes  why not (top 3)
+ascension    208        0     210  not_primed 102, path_lost 89, no_bounce 8
+lockout      269        0     114  path_lost 128, prime_failed 74, not_primed 67
+midship      304        0     123  path_lost 148, not_primed 85, prime_failed 30
+zanzibar     727        0       0  path_lost 645, prime_failed 82
+(all)       1508        0     447  path_lost 1010, not_primed 254, prime_failed 189
+```
+
+`no_route` and `goal_off_mesh` are gone. Read from the runs' `report.json` (`state_components_v1`: each player's position, crouch and flags by tick) and the code, at `91ff0ee7b`:
+
+- **Zanzibar.** 169 spots (BSP 0, the only structure BSP the map has), and nearly every site is within 60 units of the two proven crouch places in `superbounce::PROVEN`, which pair first. The window one (5.22, −26.285, 5.11) is on a sill, its lip the window's glass (an object, broken first in the recipe), its way out off the sill. In `zanzibar-s1` player 0 walks up to the sill (tick 933), walks its prime's start off the edge and falls 3 units to z 2.11 (ticks 982 to 1023), then crouches on the floor below, where nothing forces it: `prime_failed`. Others stand at (2.0, −27.5, 2.4) under the window and jump in place, as the follower's stuck jump does (927 still ticks there in one run), then the route ends `path_lost`. Which link it was at is not read; the split reasons will say. The BSP-0 scan is not the cause.
+- **Ascension's measured site** (−10.62, 3.88, −3.19): 23 tries, 23 `path_lost` in `ascension-s1`. The bots prime in the measured corner (crouch, stand up at (−10.91, 0.75)), then stand on the ramp at (−10.6, 3.0, −2.6): the approach, 0.8 behind the crease, keeps the crease's height, 0.6 under the ramp's floor there, so the walk never arrives.
+- **not_primed.** Before a jump the bots stood still for 50 to 99 ticks most often (in `ascension-s1`, 184 of 251 jumps followed a still spell of 50 ticks or more; 33 of them 90 to 99 ticks, the settle's give-up time), at the sites' stands (−8.3, 3.7, −3.0). A primed body sleeps after 38 still ticks and wakes at 0 (superbounce.md, "Charge"). The settling stick near the stand moved the body too little to count, and the settle waited out its 90 ticks.
+- **prime_failed** elsewhere: scanned crouch spots whose recipe does not turn the word (lockout 74, midship 30), and a word lost on the walk out.
+- **no_bounce** (8, Ascension): landings at the stand, primed, that did not launch: the stand's place within the slot, the jump's drift (0.15) and the approach line are the sweep's (`superbounce-sweep.toml`) once bounces happen. Nothing here changes them.
+
+Changed after this, in the next commit: the walk's goal put on the mesh's floor up to a standing height over it, the last stretch only over the collision's floor, the walk planned again three times when lost and its reason split by check and leg, no headroom stop within 0.5 of a walk's goal, a settle that has not moved for 12 ticks jumps, a word lost while settling primes again, and crouch spots and sites that keep failing given up for the map. The next batch's numbers go below.
