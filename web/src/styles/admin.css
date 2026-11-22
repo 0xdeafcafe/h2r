@@ -61,6 +61,7 @@
 .adm .s-box-body > * { max-width: 100%; }
 .adm .s-box-body > .adm-hopper-cols,
 .adm .s-box-body > .adm-sim-empty,
+.adm .s-box-body > .adm-watch,
 .adm .s-box-body > .adm-messages,
 .adm .s-box-body > .adm-field,
 .adm .s-box-body > table,
@@ -625,5 +626,89 @@
   max-height: 24rem;
   overflow: auto;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Clanker Training's Watch view: a tile per run in the batch. */
+.adm-watch {
+  display: grid;
+  gap: 8px;
+}
+
+.adm-watch-note {
+  align-self: center;
+  color: var(--s-ink-soft);
+}
+
+.adm-watch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.adm-watch-tile > a {
+  display: block;
+  border: 1px solid var(--s-box-edge);
+  background: var(--s-row);
+  text-decoration: none;
+  color: inherit;
+}
+
+.adm-watch-tile > a:hover { border-color: var(--s-gold); }
+
+.adm-watch-map {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 3;
+  background: #07121d;
+  overflow: hidden;
+}
+
+.adm-watch-map > .map-canvas,
+.adm-watch-map > .adm-watch-thumb,
+.adm-watch-map > .s-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.adm-watch-map > .s-live-tag { position: absolute; left: 4px; top: 4px; }
+
+.adm-watch-clock,
+.adm-watch-score {
+  position: absolute;
+  top: 4px;
+  padding: 0 4px;
+  background: rgba(0, 0, 0, .65);
+  color: #fff;
+  font: bold 11px/15px var(--font-ui);
+}
+
+.adm-watch-clock { right: 4px; }
+.adm-watch-score { right: 4px; top: 22px; color: var(--s-gold); }
+
+.adm-watch-wait {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, .65);
+  color: var(--s-ink-soft);
+  font-size: 11px;
+}
+
+.adm-watch-info {
+  display: grid;
+  gap: 1px;
+  padding: 4px 6px 5px;
+}
+
+.adm-watch-info b { color: var(--s-link); }
+
+.adm-watch-info small {
+  color: var(--s-ink-soft);
   overflow-wrap: anywhere;
 }

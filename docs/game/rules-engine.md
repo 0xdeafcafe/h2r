@@ -1520,6 +1520,8 @@ the ReachVariantTool importer follows phase 10.
 - **A join gate and the allow-list.** Neither is designed: the session
   and matchmaking path only lets a host log who lacks a capability, and
   where Live keeps the allow-list and which routes consult it is open.
+  The gate for a map that breaks a script's labels is a separate design,
+  [rules-start-gate.md](rules-start-gate.md).
 - **The session's `rules` field** is checked in `NewSession::validate`
   and `Session::apply`, which both homes run (`live-server` and the
   Cloudflare worker); the worker's own run of the test is not seen.

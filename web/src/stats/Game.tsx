@@ -312,14 +312,14 @@ function Side(props: { game: GameState; scores: GameState; kills: FeedKill[]; at
 }
 
 /** The shared live and recorded game viewer, also embedded in Uplink. */
-export function GameView(props: { game: GameState; embedded?: boolean; focus?: () => number | null; clip?: Clip; hostFilm?: HostFilm }) {
+export function GameView(props: { game: GameState; embedded?: boolean; focus?: () => number | null; clip?: Clip; hostFilm?: HostFilm; speed?: number }) {
   const [search] = useSearchParams<{ t?: string | string[]; view?: string; cam?: string }>();
   const at = useLocation();
   const navigate = useNavigate();
   const [hover, setHover] = createSignal<number | null>(null);
   const roster = createMemo(() => rosterFor(props.game));
   // One session drives the 2D map, the 3D view and the scrubber alike.
-  const session = createReplaySession(() => props.game, roster, () => search.t, { range: props.clip, hostFilm: () => props.hostFilm });
+  const session = createReplaySession(() => props.game, roster, () => search.t, { range: props.clip, hostFilm: () => props.hostFilm, speed: props.speed });
   const { timeline, error, tick, isLive } = session;
   const openFilm = () => !props.embedded && (!!props.clip || at.hash === `#${GAME_VIEWER_ID}`);
   const showFilmControls = () => !props.embedded && !isLive();

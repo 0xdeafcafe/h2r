@@ -22,6 +22,7 @@ function run(id: string, extra: Partial<SimRun> = {}): SimRun {
 }
 
 let page: typeof import("../src/admin/ClankerTraining");
+let watch: typeof import("../src/admin/SimWatch");
 let render: (content: () => JSX.Element) => string;
 let component: typeof import("solid-js").createComponent;
 
@@ -47,6 +48,7 @@ beforeAll(async () => {
   const { Router, Route } = await import(router);
   component = createComponent;
   page = await import("../src/admin/ClankerTraining");
+  watch = await import("../src/admin/SimWatch");
   render = (content) => renderToString(() => component(Router, {
     url: trainingHref(),
     get children() { return component(Route, { path: "/games/halo2/admin", component: content }); },
@@ -191,4 +193,20 @@ test("the shared viewer follows an unpaced sim at its live edge", () => {
   expect(playback.tickAt(now, edge)).toBe(220);
   playback.goLive(now);
   expect(playback.tickAt(now, edge)).toBe(edge);
+});
+
+test("a batch's watch grid has a tile per run with its seed, arms, clock and score", () => {
+  const finished = run("done", { status: "finished", ticks: 2700, sim: { ...run("done").sim, seed: "7" } });
+  const queued = run("queued", { sim: { ...run("queued").sim, seed: "8", deferred: true }, speedup: null });
+  const streaming = run("live", { sim: { ...run("live").sim, seed: "9" } });
+  const html = render(() => component(watch.BatchWatch, { batch: "a-batch", runs: [streaming, queued, finished], position: 43, onEnded() {} }))
+    .replace(/<!--.*?-->/g, "");
+  for (const expected of ["Seed 7", "Seed 8", "Seed 9", "aggressive", "Loading recording…", "Replay after match", "1:30",
+    "Speed", "16×", "Pause", "Restart", "Finished runs play in sync", "sim-done", "batch=a-batch"]) {
+    expect(html).toContain(expected);
+  }
+  expect(html).toMatch(/<option[^>]*value="8"[^>]*selected/);
+  // Tiles run in map, then seed order.
+  expect(html.indexOf("Seed 7")).toBeLessThan(html.indexOf("Seed 8"));
+  expect(html.indexOf("Seed 8")).toBeLessThan(html.indexOf("Seed 9"));
 });
