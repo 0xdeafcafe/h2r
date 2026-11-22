@@ -25,9 +25,15 @@
 //! evicts. [`raw`] writes them live: an overlay entry in the file view
 //! both the guest and the native renderer read, and the resident copy when
 //! there is one (docs/editor/realtime-edits.md).
+//!
+//! **Grown blocks.** A tag block that must hold more elements than the map
+//! gave it is copied into the edit [`arena`] and its `(count, address)`
+//! pair repointed (`moves` in [`Editor::batch_with`]); writes inside the
+//! moved block count as writes to its tag.
 
+pub mod arena;
 mod batch;
-pub use batch::BatchError;
+pub use batch::{BatchError, Move, MoveRoot};
 pub mod index;
 pub mod names;
 pub mod path;
@@ -156,6 +162,12 @@ pub struct Editor {
     refresh: Option<RefreshSink>,
     /// Raw writes, evictions and appends, by batch id.
     raw_journal: Vec<raw::RawChange>,
+    /// Where moved blocks go ([`Editor::with_arena`]).
+    arena: Option<arena::Shared>,
+    /// The map activation [`Editor::at_epoch`] last saw.
+    map_epoch: Option<u64>,
+    /// Block moves, by batch id.
+    moves: Vec<batch::Moved>,
 }
 
 fn fault(e: runtime::GuestFault) -> Error {
@@ -180,9 +192,13 @@ impl Editor {
             return Ok(());
         }
         self.cached = None;
+        self.map_epoch = Some(map_epoch);
         if self.epoch.is_none_or(|e| e < map_epoch) {
             self.journal.clear();
             self.clear_raw();
+            // The arena itself is released at its next binding
+            // ([`Self::bind_arena`]), which holds the guest mutably.
+            self.moves.clear();
         }
         if self.journal.is_empty() {
             self.epoch = Some(epoch);
@@ -191,6 +207,7 @@ impl Editor {
         // During a BSP change the tag table can still be loading. Retry
         // without consuming the epoch or losing the journal if a read faults.
         let idx = self.index(g)?;
+        self.moves.retain(|m| m.scenario == idx.scenario);
         let mut slots = BTreeMap::new();
         for c in &self.journal {
             let slot = c.tag & 0xffff;
@@ -201,6 +218,8 @@ impl Editor {
                 v.insert(index::entry(g, &idx, slot).map_err(Error::unavailable)?);
             }
         }
+        let held = self.arena.clone();
+        let held = held.as_ref().map(|a| arena::lock(a));
         self.journal.retain(|c| {
             c.scenario == idx.scenario
                 && slots
@@ -210,9 +229,10 @@ impl Editor {
                         entry.datum == c.tag
                             && entry.address == c.tag_address
                             && group_text(entry.group) == c.group
-                            && entry.contains(c.addr, c.new_bytes.len() as u32)
+                            && admits(held.as_deref(), entry, c.addr, c.new_bytes.len() as u32)
                     })
         });
+        drop(held);
         // Model reverse undo in a scratch copy: an older write hidden by a
         // later journal entry is still restorable. Never write into the game.
         let mut earlier = BTreeMap::new();
@@ -239,6 +259,79 @@ impl Editor {
 
     pub fn new() -> Editor {
         Editor::default()
+    }
+
+    /// Moved blocks go to `arena` (shared with `world.placement.edit`).
+    pub fn with_arena(mut self, arena: arena::Shared) -> Editor {
+        self.arena = Some(arena);
+        self
+    }
+
+    /// Ties the arena to the map activation [`Self::at_epoch`] last saw: a
+    /// new map releases every extent and unmaps its pages.
+    pub fn bind_arena(&mut self, g: &mut Guest) {
+        if let (Some(a), Some(epoch)) = (&self.arena, self.map_epoch) {
+            arena::lock(a).bind(g, epoch);
+        }
+    }
+
+    /// `edit.arena`: the window, what is mapped and used, the largest
+    /// extent a move could have now, free physical memory and the moved
+    /// blocks.
+    pub fn arena(&mut self, g: &mut Guest) -> Result<Value> {
+        let a = self
+            .arena
+            .clone()
+            .ok_or_else(|| Error::unavailable("the edit arena is not installed in this game"))?;
+        self.bind_arena(g);
+        let (mut out, tags) = {
+            let held = arena::lock(&a);
+            let tags: Vec<u32> = held.extents().map(|e| e.tag).collect();
+            (held.summary(g), tags)
+        };
+        let names = self.names_of(g, &tags);
+        if let Some(list) = out["moves"].as_array_mut() {
+            for (m, name) in list.iter_mut().zip(names) {
+                m["name"] = json!(name);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether `[addr, addr + len)` belongs to tag `e`: inside its
+    /// allocation, or inside an arena extent holding one of its blocks.
+    fn owns(&self, e: &index::Entry, addr: u32, len: u32) -> bool {
+        let held = self.arena.as_ref().map(|a| arena::lock(a));
+        admits(held.as_deref(), e, addr, len)
+    }
+
+    /// The loaded tag `[addr, addr + len)` belongs to (see [`Self::owns`]).
+    fn holder(
+        &self,
+        g: &Guest,
+        idx: &index::TagIndex,
+        entries: &[index::Entry],
+        addr: u32,
+        len: u32,
+    ) -> Result<index::Entry> {
+        if let Some(e) = entries.iter().find(|e| e.contains(addr, len)) {
+            return Ok(e.clone());
+        }
+        let tag = self
+            .arena
+            .as_ref()
+            .and_then(|a| arena::lock(a).containing(addr, len).map(|x| x.tag));
+        let end = u64::from(addr) + u64::from(len);
+        match tag {
+            Some(tag) => index::by_datum(g, idx, tag).map_err(|e| {
+                Error::invalid(format!(
+                    "{addr:#010x}..{end:#x} is in a moved block of a tag no longer loaded: {e}"
+                ))
+            }),
+            None => Err(Error::invalid(format!(
+                "{addr:#010x}..{end:#x} outside loaded tags"
+            ))),
+        }
     }
 
     /// Names come from `source` (the loaded map's file).
@@ -499,6 +592,15 @@ impl Editor {
                 return Ok(json!({"at": addr, "holds_bytes": value::hex(&bytes)}));
             }
         }
+        // A moved block reads as its tag's bytes do.
+        if self
+            .arena
+            .as_ref()
+            .is_some_and(|a| arena::lock(a).containing(addr, len).is_some())
+        {
+            let bytes = read_bytes(g, addr, len)?;
+            return Ok(json!({"at": addr, "holds_bytes": value::hex(&bytes)}));
+        }
         Err(Error::invalid("address range outside loaded tags"))
     }
 
@@ -639,7 +741,7 @@ impl Editor {
                 list.extend(fields);
             }
         }
-        json!({ "changes": list, "raw": self.raw_changes() })
+        json!({ "changes": list, "raw": self.raw_changes(), "moves": self.moves_json() })
     }
 
     /// `edit.revert`: puts back the original bytes of one change (`id`) or
@@ -649,12 +751,14 @@ impl Editor {
         if let Some(id) = id
             && !self.journal.iter().any(|c| c.id == id)
             && !self.raw_journal.iter().any(|c| c.id() == id)
+            && !self.moves.iter().any(|m| m.id == id)
         {
             return Err(Error::invalid(format!(
                 "no change {id} (edit.changes lists them)"
             )));
         }
-        let scenario = index::index(g).ok().map(|i| i.scenario);
+        let idx = index::index(g).ok();
+        let scenario = idx.map(|i| i.scenario);
         let mut reverted = Vec::new();
         let mut dropped = Vec::new();
         let mut protected = Vec::new();
@@ -680,6 +784,20 @@ impl Editor {
                 self.journal.remove(index);
                 continue;
             }
+            // A field in a moved block that has since moved back: its
+            // bytes are free arena memory now.
+            let (tag, addr, len) = (c.tag, c.addr, c.new_bytes.len() as u32);
+            let owned = idx
+                .and_then(|idx| index::by_datum(g, &idx, tag).ok())
+                .is_some_and(|e| self.owns(&e, addr, len));
+            let c = &mut self.journal[index];
+            if !owned {
+                dropped.push(json!({"id": c.id, "at": c.addr, "tag": format!("{:#010x}", c.tag),
+                    "path": c.path, "holds_bytes": null,
+                    "why": "its block is no longer in its tag or the edit arena"}));
+                self.journal.remove(index);
+                continue;
+            }
             let now = read_bytes(g, c.addr, c.new_bytes.len() as u32)?;
             let why = if c.changed || now != c.new_bytes {
                 Some("the game changed it since; left alone")
@@ -699,11 +817,23 @@ impl Editor {
             }
             self.journal.remove(index);
         }
-        // Tag bytes first: a grown section's block info points at its old
-        // block again before the section is evicted to page it in.
+        // Tag bytes first, then the moved blocks' pairs (a write inside a
+        // moved block is undone before the block moves back), then raw: a
+        // grown section's block info points at its old block again before
+        // the section is evicted to page it in.
+        self.revert_moves(g, id, scenario, &mut reverted, &mut dropped)?;
         self.revert_raw(g, id, &mut reverted, &mut dropped)?;
         Ok(json!({ "reverted": reverted, "dropped": dropped }))
     }
+}
+
+/// Whether `[addr, addr + len)` belongs to tag `e`: inside its allocation
+/// or inside an extent of `arena` that holds one of its blocks.
+fn admits(arena: Option<&arena::Arena>, e: &index::Entry, addr: u32, len: u32) -> bool {
+    e.contains(addr, len)
+        || arena
+            .and_then(|a| a.containing(addr, len))
+            .is_some_and(|x| x.tag == e.datum)
 }
 
 #[cfg(test)]

@@ -12,10 +12,17 @@
 //! - **Room.** The scenario block is a run of records in tag memory with
 //!   nothing reserved after it. A block has room while its count is under
 //!   its capacity: the count the loaded map gave it, which the host records
-//!   at the block's first edit of a map activation ([`BlockState`]). A removed
-//!   entry's slot stays in the block, so an add after a remove reuses it. A
-//!   count past the capacity is refused: the edit arena that would move the
-//!   block (design slice R4) is not built.
+//!   at the block's first edit of a map activation ([`BlockState`]), or the
+//!   capacity of the edit arena extent it was moved to
+//!   (`hot_tags::arena`). A removed entry's slot stays in the block, so an
+//!   add after a remove reuses it. A count past the capacity moves the
+//!   block into the arena with twice the capacity (at least the new count,
+//!   at most the per-type limit): the extent is allocated before anything
+//!   is written, the live records and the dead tail are copied into it, and
+//!   the root's address is repointed in the same write as the records and
+//!   the count. An arena extent the block left is freed. A full arena, or a
+//!   game without one, refuses with `data.need` and `data.capacity` and the
+//!   edit falls back to a reload.
 //! - **Creation is linked.** The object is made by the placement-data and
 //!   `object_new` sequence that `world.object.respawn` uses, with the
 //!   placement index written into the placement data at `+0x10` before the
@@ -43,6 +50,7 @@ use map::scenario_layout::{self as layout, BlockKind};
 use serde_json::{Value, json};
 
 use super::super::{Outcome, RespawnTarget, Shared, addr, lock, object_delete, prepare_spawn};
+use hot_tags::arena;
 use super::{BLOCKS, fault, read, resolve};
 use crate::sim::edits::refused;
 
@@ -328,6 +336,12 @@ struct Survey {
     header: u32,
     base: u32,
     capacity: u32,
+    /// The capacity to grow into, when the count passes `capacity`.
+    grow: Option<u32>,
+    /// The scenario tag's datum, which an arena extent is booked to.
+    scenario_tag: u32,
+    /// The arena, when the game has one.
+    arena: Option<arena::Link>,
     /// Live objects to delete, in the order of `plan.delete` then previews.
     delete: Vec<ObjectId>,
     /// `(new index, objects)` for each relink.
@@ -393,8 +407,17 @@ fn survey(
         return Err(refused(format!("{} has no block pointer", plan.block)));
     }
     let checksum = guest_layout::game::cache_checksum(m).unwrap_or(0);
-    let capacity = match lock(queue).blocks.get(&plan.block) {
-        Some(s) if s.scenario == scenario && s.checksum == checksum => {
+    let link = lock(queue).arena();
+    // A block in an arena extent made for this root has that extent's room.
+    let moved = link.as_ref().and_then(|l| {
+        arena::lock(&l.arena)
+            .extent(base)
+            .filter(|e| e.root == header && e.stride == spec.stride)
+            .map(|e| e.capacity)
+    });
+    let capacity = match (moved, lock(queue).blocks.get(&plan.block)) {
+        (Some(capacity), _) => capacity,
+        (None, Some(s)) if s.scenario == scenario && s.checksum == checksum => {
             if s.address != base {
                 return Err(refused(format!(
                     "{} moved from {:#x} to {base:#x} since the host last edited it",
@@ -405,25 +428,46 @@ fn survey(
         }
         _ => live,
     };
-    if plan.count > capacity {
-        let mut e = refused(format!(
-            "{} has room for {capacity} entries (the count the map loaded with); the edit \
-             asks for {}, and the edit arena that would grow the block is not built",
-            plan.block, plan.count
-        ));
-        e.data = Some(json!({ "why": e.message, "need": plan.count, "capacity": capacity }));
-        return Err(e);
-    }
+    let grow = if plan.count > capacity {
+        if link.is_none() {
+            let mut e = refused(format!(
+                "{} has room for {capacity} entries; the edit asks for {}, and this game has \
+                 no edit arena to grow the block into",
+                plan.block, plan.count
+            ));
+            e.data = Some(json!({ "why": e.message, "need": plan.count, "capacity": capacity }));
+            return Err(e);
+        }
+        // Twice the room, at least the new count, at most the type's limit
+        // (which `Plan::new` held the count to).
+        let limit = spec.max.map_or(u32::MAX, |max| u32::try_from(max).unwrap_or(u32::MAX));
+        Some(capacity.saturating_mul(2).max(plan.count).min(limit))
+    } else {
+        None
+    };
+    // The tag an arena extent is booked to: the loaded scenario's datum.
+    let scenario_tag = match grow {
+        Some(_) => m
+            .u32(engine::points::TAG_INDEX.base)
+            .and_then(|index| m.u32(index.wrapping_add(hot_tags::index::HEADER_SCENARIO)))
+            .map_err(fault)?,
+        None => 0,
+    };
 
     let stride = spec.stride;
     let slot = |index: u16| base.wrapping_add(u32::from(index) * stride);
     let mut stale = Vec::new();
     for (index, _, was) in &plan.records {
         // A slot is addressable below the capacity; a dead tail slot holds
-        // what the last removal left in it.
-        let current = m
-            .bytes(slot(*index), stride as usize)
-            .map_err(|e| refused(format!("record {index} is not addressable at {:#x}", e.addr)))?;
+        // what the last removal left in it. A slot past it is new room,
+        // zeroed in the arena.
+        let current = if u32::from(*index) >= capacity {
+            vec![0; stride as usize]
+        } else {
+            m.bytes(slot(*index), stride as usize).map_err(|e| {
+                refused(format!("record {index} is not addressable at {:#x}", e.addr))
+            })?
+        };
         if was.as_ref().is_some_and(|w| !w.holds(&current)) {
             stale.push(*index);
         }
@@ -507,7 +551,17 @@ fn survey(
         plan.block.clone(),
         BlockState { scenario, checksum, address: base, capacity },
     );
-    Ok(Survey { header, base, capacity, delete, relink, names })
+    Ok(Survey {
+        header,
+        base,
+        capacity,
+        grow,
+        scenario_tag,
+        arena: link,
+        delete,
+        relink,
+        names,
+    })
 }
 
 /// Run the transaction. A refusal is the outcome and nothing was written; a
@@ -526,6 +580,61 @@ pub(in super::super) async fn run(
         Err(e) => return Ok(Err(e)),
     };
 
+    // 0. A block that grows gets its arena extent before anything is
+    // written: a full arena refuses with the block as it was.
+    let grown = match (&survey.arena, survey.grow) {
+        (Some(link), Some(capacity)) => {
+            let claim = arena::Claim {
+                tag: survey.scenario_tag,
+                root: survey.header,
+                stride: spec.stride,
+                capacity,
+            };
+            match link.with(|a, pages| a.alloc(pages, claim)) {
+                Ok(extent) => Some((link.clone(), extent)),
+                Err(full) => {
+                    let mut e = refused(format!(
+                        "{} has room for {} entries and the edit arena has none for {capacity}: {}",
+                        plan.block, survey.capacity, full.why
+                    ));
+                    e.data = Some(json!({
+                        "why": e.message,
+                        "need": plan.count,
+                        "capacity": survey.capacity,
+                        "need_bytes": full.need,
+                        "largest_free": full.largest_free,
+                    }));
+                    return Ok(Err(e));
+                }
+            }
+        }
+        _ => None,
+    };
+    let applied = apply(cx, scratch, queue, plan, &spec, &survey, grown.as_ref().map(|g| g.1)).await;
+    if let (Err(_), Some((link, extent))) = (&applied, &grown) {
+        // The guest call faulted before the block was repointed, or after:
+        // either way the tick's work ends here, and an extent nothing
+        // points at is freed.
+        let points = cx
+            .read(|m| m.u32(survey.header + 4))
+            .is_ok_and(|address| address == extent.at);
+        if !points {
+            arena::lock(&link.arena).free(extent.at);
+        }
+    }
+    applied
+}
+
+/// Steps 1 to 4 of [`run`], into `grown` when the block moves.
+async fn apply(
+    cx: &Cx,
+    scratch: u32,
+    queue: &Shared,
+    plan: &Plan,
+    spec: &BlockSpec,
+    survey: &Survey,
+    grown: Option<arena::Extent>,
+) -> Result<Outcome, EntryError> {
     // 1. Delete the occupants of the removed entries. An object already gone
     // (a child of an earlier delete) is what the edit wanted.
     let mut deleted = Vec::new();
@@ -556,31 +665,63 @@ pub(in super::super) async fn run(
         lock(queue).previews.reindex(kind, &plan.delete, &plan.relink);
     }
 
-    // 3. Write the records, the name repoints and the count.
+    // 3. Move a grown block (its old room copied into the extent, the rest
+    // zeroed, the root repointed), then write the records, the name
+    // repoints and the count.
     let stride = spec.stride;
+    let base = grown.map_or(survey.base, |e| e.at);
     cx.write(|m| -> Result<(), engine::MemFault> {
+        if let Some(extent) = grown {
+            let mut block = if survey.capacity == 0 {
+                Vec::new()
+            } else {
+                m.bytes(survey.base, (survey.capacity * stride) as usize)?
+            };
+            block.resize(extent.len as usize, 0);
+            m.write(extent.at, &block)?;
+            m.write(survey.header + 4, &extent.at.to_le_bytes())?;
+        }
         for (index, bytes, _) in &plan.records {
-            m.write(survey.base + u32::from(*index) * stride, bytes)?;
+            m.write(base + u32::from(*index) * stride, bytes)?;
         }
         for (at, (_, placement)) in survey.names.iter().zip(&plan.names) {
             m.write(*at, &placement.to_le_bytes())?;
         }
         m.write(survey.header, &plan.count.to_le_bytes())
     })?;
+    let mut moved = None;
+    if let Some(extent) = grown {
+        // The block left an extent of its own: nothing points there now.
+        if let Some(link) = &survey.arena {
+            let mut held = arena::lock(&link.arena);
+            if held.extent(survey.base).is_some_and(|e| e.root == survey.header) {
+                held.free(survey.base);
+            }
+        }
+        if let Some(state) = lock(queue).blocks.get_mut(&plan.block) {
+            state.address = extent.at;
+            state.capacity = extent.capacity;
+        }
+        moved = Some(json!({ "address": extent.at, "capacity": extent.capacity }));
+    }
 
     // 4. Make an object for each created index.
     let mut created = Vec::with_capacity(plan.create.len());
     for &index in &plan.create {
-        created.push(create(cx, scratch, queue, &spec, index).await?);
+        created.push(create(cx, scratch, queue, spec, index).await?);
     }
 
-    Ok(Ok(json!({
+    let mut out = json!({
         "count": plan.count,
-        "capacity": survey.capacity,
+        "capacity": grown.map_or(survey.capacity, |e| e.capacity),
         "deleted": deleted,
         "relinked": relinked,
         "created": created,
-    })))
+    });
+    if let Some(moved) = moved {
+        out["moved"] = moved;
+    }
+    Ok(Ok(out))
 }
 
 fn not_created(index: u16, why: impl Into<String>) -> PlacementCreated {
