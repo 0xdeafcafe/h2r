@@ -114,7 +114,8 @@ fn a_move_then_a_path_read_resolves_through_the_new_address() {
     let mut g = level();
     let (mut ed, a) = editor(&g);
     let (stride, at) = color();
-    let r = ed.batch_with(&mut g, &[], &grow_colors(&g, 0x1122_3344, Some(8)), Some("grow")).unwrap();
+    let grown = grow_colors(&g, 0x1122_3344, Some(8));
+    let r = ed.batch_with(&mut g, &[], &grown, Some("grow")).unwrap();
     let base = arena::WINDOW.start;
     assert_eq!(r["moves"][0]["address"], base, "{r}");
     assert_eq!(r["moves"][0]["capacity"], 8);
@@ -147,7 +148,8 @@ fn an_at_write_inside_a_moved_block_is_admitted() {
     let mut g = level();
     let (mut ed, _a) = editor(&g);
     let (stride, at) = color();
-    ed.batch_with(&mut g, &[], &grow_colors(&g, 1, None), None).unwrap();
+    let grown = grow_colors(&g, 1, None);
+    ed.batch_with(&mut g, &[], &grown, None).unwrap();
     let base = arena::WINDOW.start;
     let field = base + 2 * stride + at;
     let r = ed.batch(&mut g, &[json!({"at": field, "value": "efbeadde", "was": "01000000"})], None).unwrap();
@@ -171,7 +173,8 @@ fn revert_puts_the_pair_back_and_frees_the_extent() {
     let mut g = level();
     let (mut ed, a) = editor(&g);
     let (stride, at) = color();
-    let id = ed.batch_with(&mut g, &[], &grow_colors(&g, 1, Some(4)), None).unwrap()["id"].as_u64().unwrap();
+    let grown = grow_colors(&g, 1, Some(4));
+    let id = ed.batch_with(&mut g, &[], &grown, None).unwrap()["id"].as_u64().unwrap();
     let field = arena::WINDOW.start + 2 * stride + at;
     ed.batch(&mut g, &[json!({"at": field, "value": "02000000"})], None).unwrap();
     // Reverting everything undoes the write inside the block, then the move.
@@ -188,7 +191,8 @@ fn revert_puts_the_pair_back_and_frees_the_extent() {
     // A move reverted on its own leaves a later write inside the block
     // nothing to restore: that write is dropped, not written into freed
     // arena memory.
-    let id = ed.batch_with(&mut g, &[], &grow_colors(&g, 1, None), None).unwrap()["id"].as_u64().unwrap();
+    let grown = grow_colors(&g, 1, None);
+    let id = ed.batch_with(&mut g, &[], &grown, None).unwrap()["id"].as_u64().unwrap();
     ed.batch(&mut g, &[json!({"at": field, "value": "03000000"})], None).unwrap();
     let r = ed.revert(&mut g, Some(id)).unwrap();
     assert_eq!(r["reverted"][0]["id"], id, "{r}");
@@ -197,7 +201,8 @@ fn revert_puts_the_pair_back_and_frees_the_extent() {
     assert!(r["dropped"][0]["why"].as_str().unwrap().contains("no longer"), "{r}");
 
     // A root pointed elsewhere since is left alone, and its extent kept.
-    let id = ed.batch_with(&mut g, &[], &grow_colors(&g, 1, None), None).unwrap()["id"].as_u64().unwrap();
+    let grown = grow_colors(&g, 1, None);
+    let id = ed.batch_with(&mut g, &[], &grown, None).unwrap()["id"].as_u64().unwrap();
     g.set_u32(colors_root() + 4, COLORS_AT).unwrap();
     let r = ed.revert(&mut g, Some(id)).unwrap();
     assert!(r["dropped"][0]["why"].as_str().unwrap().contains("moved since"), "{r}");
@@ -225,7 +230,8 @@ fn a_move_is_checked_before_anything_is_written() {
     let mut batch = grow_colors(&g, 1, None);
     batch.moves[0].bytes.pop();
     assert!(matches!(ed.batch_with(&mut g, &[], &batch, None), Err(BatchError::Field(_))));
-    assert!(matches!(ed.batch_with(&mut g, &[], &grow_colors(&g, 1, Some(2)), None), Err(BatchError::Field(_))));
+    let grown = grow_colors(&g, 1, Some(2));
+    assert!(matches!(ed.batch_with(&mut g, &[], &grown, None), Err(BatchError::Field(_))));
     // A value field is not a block.
     let mut batch = grow_colors(&g, 1, None);
     batch.moves[0].root = MoveRoot::Path { tag: sel("0xe1110001"), path: "postprocess[0].colors[0].color".into() };
@@ -250,7 +256,8 @@ fn a_move_is_checked_before_anything_is_written() {
     );
     // No arena in this game.
     let mut bare = Editor::new();
-    let e = bare.batch_with(&mut g, &[], &grow_colors(&g, 1, None), None).unwrap_err();
+    let grown = grow_colors(&g, 1, None);
+    let e = bare.batch_with(&mut g, &[], &grown, None).unwrap_err();
     assert!(matches!(e, BatchError::Field(Error { kind: ErrorKind::Unavailable, .. })), "{e:?}");
     assert_eq!(pair_at(&g, colors_root()), (2, COLORS_AT));
     assert!(arena::lock(&a).is_empty());
@@ -266,7 +273,8 @@ fn a_full_arena_refuses_and_writes_nothing() {
         .alloc(&mut g, arena::Claim { tag: SCNR, root: META, stride: 1, capacity: len - 0x100 })
         .unwrap();
     let write = [json!({"at": META + 0x10, "value": "aa"})];
-    let e = ed.batch_with(&mut g, &write, &grow_colors(&g, 1, Some(64)), None).unwrap_err();
+    let grown = grow_colors(&g, 1, Some(64));
+    let e = ed.batch_with(&mut g, &write, &grown, None).unwrap_err();
     let BatchError::Full { root, need, largest_free, .. } = e else { panic!("not full: {e:?}") };
     assert_eq!(root, colors_root());
     assert_eq!(need, (64 * color().0).next_multiple_of(arena::ALIGN));
@@ -312,7 +320,8 @@ fn a_root_by_address_moves_a_raw_block() {
 fn a_new_map_releases_the_arena() {
     let mut g = level();
     let (mut ed, a) = editor(&g);
-    ed.batch_with(&mut g, &[], &grow_colors(&g, 1, None), None).unwrap();
+    let grown = grow_colors(&g, 1, None);
+    ed.batch_with(&mut g, &[], &grown, None).unwrap();
     ed.bind_arena(&mut g);
     assert!(!arena::lock(&a).is_empty(), "the same map keeps it");
     ed.at_epoch(&g, 5, 5).unwrap();
