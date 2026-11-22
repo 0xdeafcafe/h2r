@@ -518,6 +518,25 @@ fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::full(&format!("{ALL_ON},-forge")));
 }
 
+/// The biggest plans a test can build leave at least an eighth of the guest
+/// arena (`hooks::arena`) free, so a few more features do not refuse boot.
+#[test]
+fn the_biggest_plans_leave_room_in_the_guest_arena() {
+    use hooks::arena::ARENA_SIZE;
+    let native_off = format!("{ALL_ON},{NATIVE_OFF}");
+    let forge = format!("{ALL_ON},forge");
+    for switches in [ALL_ON, native_off.as_str(), forge.as_str()] {
+        let mut case = Case::full(switches);
+        case.coop_live = true;
+        let used = plan(&case).unwrap().arena_used();
+        assert!(
+            used <= ARENA_SIZE / 8 * 7,
+            "{used:#x} of the arena's {ARENA_SIZE:#x} bytes used, for {}",
+            case.describe()
+        );
+    }
+}
+
 /// The rules runtime is off by default, and `rules` puts it in the plan.
 #[cfg(feature = "rules")]
 #[test]
