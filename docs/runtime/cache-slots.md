@@ -315,7 +315,7 @@ dead stack.
 
 ## Sim batches: a warm Z:
 
-Each `h2 sim batch` run has a data directory of its own
+Each `h2 sim batch` and `h2 sim train` run has a data directory of its own
 (`<out>/runs/<id>/data`, [sim.md](sim.md)), so every boot copies maps from
 the disc into the cache slots. What survives a boot decides what can be
 kept warm.
@@ -371,7 +371,7 @@ and repeated runs give identical `state_hashes_v1`
 unchanged is inferred from this, not yet measured: an A/A `h2 sim diff`
 of a warm run against a cold one on the same seed checks it.
 
-**The template.** `h2 sim batch` keeps Z:'s finished slots per image in
+**The template.** `h2 sim batch` and `h2 sim train` (`play_runs`) keep Z:'s finished slots per image in
 `<out>/sim-cache/utility/<key>/` (`disk/` the slot files, `metadata/`
 their records). The key hashes the image's build stamp
 (`<dylib>.stamp`), the disc's path, length and mtime, and the running

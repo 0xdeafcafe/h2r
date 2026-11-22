@@ -3038,14 +3038,28 @@ game, or assumed after the walk out because it could not be), `landing`
 `vz_out`, `miss`, `result` `bounce`, `not_primed`, `missed`, `too_slow`
 or `no_bounce`), `log` (each step and phase change, `{tick, step, what,
 at}`, the last 64) and, for a failed route, `error`: `timeout`, `no_map`,
-`no_path`, `goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`,
+`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_<check>_<leg>`
+(the follower's check and the walk's leg, [bots.md, "Superbounce
+routes"](../game/bots.md#superbounce-routes)), `prime_failed`, `pair_lost`,
 `no_bounce`, `no_drop`, `stalled`, `state` (an internal fault), `enemy`,
 `no_route`, `practice_off`, `died` or `map_changed`. While a route runs
 the bot fights and picks up nothing. While the superbounce mode is on the
 bots practise bounces instead of fighting, and `practice` gives the tally:
 `state` (`idle`, `route`, `waiting`), `site`, `attempts`, `bounces` and
 `spots` (each site's `stand`, `attempts`, `bounces` and `why`, by count)
-([bots.md](../game/bots.md#practising-bounces)).
+([bots.md](../game/bots.md#practising-bounces)). In a sim's training run
+([bounce-search.md](../game/bounce-search.md)) `practice.train` gives the
+round the bot flies: `site` (the stand its learned line keys), `stage`
+(`arms`, `shift`, `compass`, `scatter`), `axis` (in `compass`: `aim_along`,
+`aim_side`, `from_side`, `yaw`, `back`, `run`, `early`, `gain`, `letgo`,
+`drift`, `still`), `slot` (the try's, from 0) and `tries` (the site's
+scored tries). `knobs` is what the route's site is flown with, by the
+learned file's keys (`how`, `fx` `fy` `fz`, `ax` `ay`, `yaw`, `back`,
+`run`, `early`, `gain`, `letgo`, `drift`, `still`; only those set): its
+learned line's, or a training try's; `null` for the route's own. The
+types are `crates/extensions/agent-proto/src/bot_bounce.rs`
+(`LearnedKnobs`, `PracticeTrain`), filled in
+`crates/extensions/game/src/sim_bots.rs`.
 
 `superbounce.spots {map?, kind?}` lists the spots the bots know for a map
 (default the loaded one): `map`, `scanned` (the nav worker has made or
@@ -3055,11 +3069,16 @@ or `crouch`; `kind` in the request filters), `source` (`measured` or
 `scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift`,
 `score`, `width` (a slot's gap between its joints, a crouch band's
 widest), `need` (a slot's touchdown speed down, which `fall` is worked
-from), `status` (`proven` for a crouch spot at a measured priming place
+from; a measured spot with a recipe takeoff falls 2.43 from it), `status` (`proven` for a crouch spot at a measured priming place
 or one the map's verified file proved, `failed` for one it failed, else
 `likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
 `lip` (a crouch spot's edges overhead at `stand`, up to 8) and `shape`
-(`slot`, or `crease` for a single-crease bounce candidate).
+(`slot`, or `crease` for a single-crease bounce candidate). A bounce spot
+with a line in the map's learned file has `learned`: `state` (`open`,
+`learned`, `partial`, `dead`, `blocked`), `knobs` (as in
+`bots.bounce_status`), `tries`, `hits`, `n`, `ok`, `score`, `best` and,
+for a `dead` or `blocked` line, `why` (`SpotLearned`). A `dead` site is
+listed, but the bots leave it out unless it is proven.
 
 ```sh
 # a bot standing at x, sent to y over a ledge, bouncing on the way
@@ -3107,7 +3126,7 @@ ticks for the end): `state` (`none`, `loading`, `running`, `facing`,
 `step`, `phase`, `primed`, `position`, `distance` (left along the walk
 under way, else straight to the goal), `path` (the player, then the
 waypoints ahead, at most 32), `replans`, `replanned` (`strayed`,
-`stuck`, `path_lost`, `stalled`, `pair_lost`), `ticks` and, for a failed
+`stuck`, `path_lost_<check>_<leg>`, `stalled`, `pair_lost`), `ticks` and, for a failed
 drive, `error` (the route's reasons as in `bots.bounce_status`, `stuck`,
 `timeout`, `no_route`, `no_launch_floor`, a missing nav mesh, a changed
 map). `player.goto_cancel` stops it and lets go of the pad. The player

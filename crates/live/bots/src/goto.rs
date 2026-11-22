@@ -9,7 +9,7 @@
 //!
 //! What it adds is for a body the bots' brain does not own: a walk that
 //! strays more than [`STRAY`] from its corridor, makes no progress for
-//! [`STUCK_TICKS`], or that the follower gives up on (`path_lost`) is
+//! [`STUCK_TICKS`], or that the follower gives up on (`path_lost_*`) is
 //! planned again from where the body is, up to [`REPLANS`] times; the
 //! whole goto gives up after its timeout. A jump is asked for as a fresh
 //! press ([`Goto::step`] never holds A two ticks running).
@@ -258,8 +258,9 @@ pub struct Status {
     /// World units left along that path; `None` when not walking.
     pub distance: Option<f32>,
     pub replans: u32,
-    /// Why it last planned again: `strayed`, `stuck`, or the follower's
-    /// `path_lost`, `stalled`, `pair_lost`.
+    /// Why it last planned again: `strayed`, `stuck`, or the route's
+    /// `path_lost_<check>_<leg>` ([`bounce_route::lost_on`]), `stalled`,
+    /// `pair_lost`.
     pub replanned: Option<&'static str>,
     pub error: Option<&'static str>,
 }
@@ -416,7 +417,11 @@ impl Goto {
                 Out { motion, done: None }
             }
             Some(Ok(())) => self.finish(Ok(())),
-            Some(Err(why @ ("path_lost" | "stalled" | "pair_lost"))) => self.replan(why),
+            Some(Err(why))
+                if why.starts_with("path_lost") || why == "stalled" || why == "pair_lost" =>
+            {
+                self.replan(why)
+            }
             Some(Err(why)) => self.finish(Err(why)),
         }
     }

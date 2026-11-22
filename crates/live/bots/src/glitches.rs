@@ -531,6 +531,14 @@ pub const SETTLE: f32 = 0.05;
 pub const SETTLE_TICKS: u32 = 90;
 /// Stands still this long before jumping.
 pub const STILL_TICKS: u32 = 4;
+/// Settling that has not moved the body [`UNMOVED`] a tick for this long
+/// jumps from where it is: a primed body that stands still 38 ticks
+/// sleeps and loses its prime (docs/game/superbounce.md, "Charge"), and a
+/// settling stick too small to move it would stand there for
+/// [`SETTLE_TICKS`].
+pub const SETTLE_STILL_TICKS: u32 = 12;
+/// Moving less than this in a tick (world units) is standing still.
+pub const UNMOVED: f32 = 0.002;
 /// A rise this much over its lowest point after starting to fall is the
 /// launch (world units). A plain landing never rises again.
 pub const LAUNCH_RISE: f32 = 0.4;
@@ -595,6 +603,13 @@ pub struct BounceRun {
     max_tries: u32,
     phase: Phase,
     rng: u64,
+    /// The numbers it plays by, taken when it starts
+    /// ([`crate::tuning::bounce`]).
+    tune: crate::tuning::BounceTuning,
+    /// Where the body was last tick, and the ticks running it has not
+    /// moved while settling.
+    seen: Option<Vec3>,
+    unmoved: u32,
 }
 
 impl BounceRun {
@@ -609,7 +624,18 @@ impl BounceRun {
                 still: None,
             },
             rng: seed | 1,
+            tune: crate::tuning::bounce().sane(),
+            seen: None,
+            unmoved: 0,
         }
+    }
+
+    /// The same, played by `tune` instead of [`crate::tuning::bounce`]: a
+    /// bounce route's own numbers, with a learned line's `drift` and
+    /// `still` (`bounce_route::flown`).
+    pub fn tuned(mut self, tune: crate::tuning::BounceTuning) -> BounceRun {
+        self.tune = tune;
+        self
     }
 
     fn signed(&mut self) -> f32 {
@@ -634,18 +660,29 @@ impl BounceRun {
     pub fn step(&mut self, at: Vec3, tick: u32) -> BounceOut {
         let mut out = BounceOut::default();
         let floor = self.spot.stand[2];
+        let t = self.tune;
+        let moved = self.seen.map_or(f32::INFINITY, |p| {
+            (at[0] - p[0]).hypot(at[1] - p[1]).max((at[2] - p[2]).abs())
+        });
+        self.seen = Some(at);
         match self.phase {
             Phase::Settle { since, still } => {
                 let d = [self.target[0] - at[0], self.target[1] - at[1]];
                 let far = d[0].hypot(d[1]);
-                let late = tick.wrapping_sub(since) > SETTLE_TICKS;
-                if far > SETTLE && !late {
-                    let pace = (far * 4.0).clamp(0.12, 0.6) / far;
+                self.unmoved = if far > t.settle && moved < UNMOVED {
+                    self.unmoved + 1
+                } else {
+                    0
+                };
+                let late = tick.wrapping_sub(since) > t.settle_ticks
+                    || self.unmoved >= SETTLE_STILL_TICKS;
+                if far > t.settle && !late {
+                    let pace = (far * t.settle_gain).clamp(t.settle_min, t.settle_max) / far;
                     out.walk = Some([d[0] * pace, d[1] * pace]);
                     self.phase = Phase::Settle { since, still: None };
                 } else {
                     let still = still.unwrap_or(tick);
-                    if tick.wrapping_sub(still) >= STILL_TICKS || late {
+                    if tick.wrapping_sub(still) >= t.still_ticks || late {
                         self.phase = Phase::Jump(tick);
                         out.jump = true;
                     } else {
@@ -657,7 +694,7 @@ impl BounceRun {
                 }
             }
             Phase::Jump(from) => {
-                if tick.wrapping_sub(from) < 3 {
+                if tick.wrapping_sub(from) < t.jump_ticks {
                     out.jump = true;
                 } else {
                     self.phase = Phase::Air {
@@ -680,7 +717,7 @@ impl BounceRun {
                 } else {
                     low
                 };
-                out.walk = Some([self.spot.drift[0] * DRIFT, self.spot.drift[1] * DRIFT]);
+                out.walk = Some([self.spot.drift[0] * t.drift, self.spot.drift[1] * t.drift]);
                 if low.is_some_and(|l| at[2] > l + LAUNCH_RISE) {
                     // Sank into the seam and was thrown up.
                     self.phase = Phase::Done(true);

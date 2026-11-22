@@ -664,3 +664,120 @@ fn a_walking_prime_starts_where_a_verified_trial_primed_and_else_out_along_the_w
     let o = run.step_at(1 + prime::CROUCH_FIRST, at, Some(0));
     assert!(o.crouch && o.walk.is_some_and(|w| w[0] < 0.0));
 }
+
+/// A standing bounce's pads over a scripted flight: walked onto from a
+/// little behind, a jump, up 1.2 and back down onto the floor twice.
+fn bounce_pads(seed: u64) -> Vec<BounceOut> {
+    let s = spot();
+    let mut run = BounceRun::new(s, 2, 0, seed);
+    let mut at = [s.stand[0], s.stand[1] - 0.3, s.stand[2]];
+    let mut air = None;
+    let mut out = Vec::new();
+    for t in 0..400 {
+        let o = run.step(at, t);
+        if let Some(w) = o.walk
+            && air.is_none()
+        {
+            at[0] += w[0] * 0.1;
+            at[1] += w[1] * 0.1;
+        }
+        if o.jump && air.is_none() {
+            air = Some(t);
+        }
+        if let Some(from) = air {
+            let k = t - from;
+            at[2] = s.stand[2] + (1.2 - (k as f32 - 12.0).powi(2) / 120.0).max(0.0);
+            if k > 30 {
+                air = None;
+            }
+        }
+        out.push(o);
+        if o.done.is_some() {
+            break;
+        }
+    }
+    out
+}
+
+/// A walking prime's pads from its start in, with the word read `-3`
+/// after the release.
+fn prime_pads() -> Vec<prime::PrimeOut> {
+    let g = prime::Geo {
+        stand: [1.0, 2.0, 0.0],
+        out: [1.0, 0.0],
+        start: None,
+    };
+    let mut run = prime::PrimeRun::at(0, g);
+    let mut at = [1.0 + prime::START_OUT + 0.2, 2.0, 0.0];
+    let mut out = Vec::new();
+    for t in 0..300 {
+        let word = (run.phase() == "out" && t % 7 == 0)
+            .then_some(PRIMED_WORD)
+            .or(Some(0));
+        let o = run.step_at(t, at, word);
+        if let Some(w) = o.walk {
+            at[0] += w[0] * 0.05;
+            at[1] += w[1] * 0.05;
+        }
+        out.push(o);
+        if o.done.is_some() {
+            break;
+        }
+    }
+    out
+}
+
+#[test]
+fn the_default_bounce_tuning_plays_as_no_tuning_does() {
+    use crate::tuning::{BounceTuning, Tuning, with};
+    let tuned = Tuning {
+        bounce: Some(BounceTuning::default()),
+        ..Tuning::default()
+    };
+    let plain = (bounce_pads(5), prime_pads(), spot().from());
+    let under = with(Some(tuned), || {
+        (bounce_pads(5), prime_pads(), spot().from())
+    });
+    assert!(plain.0.len() > 10 && plain.1.len() > 10);
+    assert_eq!(plain, under);
+}
+
+#[test]
+fn a_bounce_tuning_changes_the_jump_the_drift_and_the_approach() {
+    use crate::tuning::{BounceTuning, Tuning, with};
+    let tuned = Tuning {
+        bounce: Some(BounceTuning {
+            still_ticks: 9,
+            drift: 0.4,
+            approach: 1.5,
+            ..BounceTuning::default()
+        }),
+        ..Tuning::default()
+    };
+    let s = spot();
+    let (first_jump, w, from) = with(Some(tuned), || {
+        let mut run = BounceRun::new(s, 1, 0, 3);
+        let mut first_jump = None;
+        for t in 0..30 {
+            if run.step(s.stand, t).jump {
+                first_jump.get_or_insert(t);
+            }
+        }
+        (first_jump, run.step(floor3(0.5), 31).walk, s.from())
+    });
+    assert_eq!(first_jump, Some(9));
+    assert!(w.is_some_and(|w| (w[1] - 0.4).abs() < 1e-6), "{w:?}");
+    assert!((s.stand[1] - from[1] - 1.5).abs() < 1e-5);
+}
+
+#[test]
+fn settling_that_does_not_move_the_body_jumps_before_a_primed_body_would_sleep() {
+    use crate::glitches::{SETTLE_STILL_TICKS, SETTLE_TICKS};
+    let s = spot();
+    let mut run = BounceRun::new(s, 1, 0, 3);
+    // 0.3 short of the spot, and the settling stick moves it not at all.
+    let at = [s.stand[0], s.stand[1] - 0.3, s.stand[2]];
+    let jump = (0..200).find(|&t| run.step(at, t).jump).expect("a jump");
+    assert!(jump <= SETTLE_STILL_TICKS + STILL_TICKS + 1, "jumped at {jump}");
+    assert!(jump < 38 && jump < SETTLE_TICKS);
+}

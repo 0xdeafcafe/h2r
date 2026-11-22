@@ -258,7 +258,7 @@ fn kv(s: &str, what: &str) -> Result<(String, String)> {
 }
 
 /// Which commit a run or build uses, from --branch/--rev/--current.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Source {
     branch: Option<String>,
     rev: Option<String>,
@@ -308,7 +308,23 @@ impl Source {
     }
 }
 
+/// What `h2 lab run` was asked: the request, its build source, `--wait`
+/// and `--to`.
+type RunArgs = (RunReq, Source, bool, Option<PathBuf>);
+
 fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
+    let (req, src, wait, to) = parse_run_args(args)?;
+    let (mut c, v) = launch(r, req, &src)?;
+    let id = v["id"].as_str().context("no id in the answer")?.to_string();
+    if !wait {
+        print(&v)?;
+        return Ok(());
+    }
+    eprintln!("lab: job {id} started");
+    wait_and_fetch(r, &mut c, &id, to)
+}
+
+fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
     let mut req = RunReq::default();
     let mut src = Source::default();
     let mut wait = false;
@@ -345,6 +361,7 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
                 req.build.env.insert(k, v);
             }
             "--fresh-data" => req.fresh_data = true,
+            "--own-data" => req.own_data = true,
             "--note" => req.note = Some(val()?),
             "--serve" => req.serve = true,
             "--wait" => wait = true,
@@ -354,17 +371,14 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         }
     }
     ensure!(
+        !(req.own_data && req.fresh_data),
+        "--own-data plays on the host's own data; --fresh-data asks for an empty one"
+    );
+    ensure!(
         !(wait && req.serve),
         "--serve runs until `h2 lab stop`; --wait would wait forever (h2 lab bench does the whole loop)"
     );
-    let (mut c, v) = launch(r, req, &src)?;
-    let id = v["id"].as_str().context("no id in the answer")?.to_string();
-    if !wait {
-        print(&v)?;
-        return Ok(());
-    }
-    eprintln!("lab: job {id} started");
-    wait_and_fetch(r, &mut c, &id, to)
+    Ok((req, src, wait, to))
 }
 
 /// Validates `req`, resolves and syncs its build, and starts it. Returns
@@ -1119,6 +1133,24 @@ mod tests {
                         .contains("--name")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn own_data_parses_and_refuses_fresh_data() {
+        let a = |extra: &[&str]| {
+            let mut v: Vec<String> = ["--name", "Play", "--level", "x", "--serve"]
+                .map(String::from)
+                .into();
+            v.extend(extra.iter().map(|s| s.to_string()));
+            parse_run_args(v)
+        };
+        let (req, ..) = a(&["--own-data"]).unwrap();
+        assert!(req.own_data && !req.fresh_data && req.serve);
+        assert!(!a(&[]).unwrap().0.own_data);
+        for extra in [["--own-data", "--fresh-data"], ["--fresh-data", "--own-data"]] {
+            let e = a(&extra).unwrap_err().to_string();
+            assert!(e.contains("--own-data") && e.contains("--fresh-data"), "{e}");
         }
     }
 

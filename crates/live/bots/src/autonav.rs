@@ -1117,6 +1117,15 @@ pub fn load_cached(
         );
         let _stage = timeline::setup::Stage::Visibility.worker();
         eprintln!("{}", crate::vis::load(dir, map, 0, stamp, &data.walls));
+        // The superbounce spots saved beside the mesh, for a run with no
+        // worker to restore them (sim mode never starts one): published
+        // when the file is this map's and this scanner's.
+        if !crate::spots::has_scan(map)
+            && let Some(found) = crate::spots::read(dir, map, crate::spots::stamp(stamp.fingerprint))
+        {
+            eprintln!("bots: {map}: {} superbounce spots from {}", found.len(), crate::spots::file_name(map));
+            crate::spots::publish(map, found);
+        }
     }
     Ok(())
 }
