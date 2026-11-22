@@ -187,8 +187,9 @@ pub(crate) struct State {
     /// The guest's system time for the call in progress, when it is the
     /// accepted-invitation read ([`State::set_guest_now`]).
     guest_now: Option<u64>,
-    /// The network's registered keys for the stat read in progress
-    /// ([`State::set_read_keys`]): they name the session joined.
+    /// The network's registered keys for the stat read or arbitration
+    /// call in progress ([`State::set_read_keys`]): they name the session
+    /// joined.
     read_keys: Option<Vec<[u8; 8]>>,
     /// The bot accounts the server leased to this console for this logon
     /// (docs/game/bots.md §9.5): every bot of each roster it answered
@@ -1522,6 +1523,8 @@ impl State {
             }
             let session = self.session();
             let advertising = self.sessions.current_id();
+            let keys = self.read_keys.take().unwrap_or_default();
+            let game_session = self.game_session(&keys);
             return self.arbitration.invoke(
                 op,
                 a,
@@ -1531,6 +1534,8 @@ impl State {
                     service: self.service.as_ref(),
                     session: session.as_ref(),
                     advertising,
+                    game_session,
+                    keys,
                 },
             );
         }

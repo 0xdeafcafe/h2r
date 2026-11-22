@@ -1283,8 +1283,17 @@ fn invoke(
     // A stat read names the session this console is in; the joined one
     // comes from the network's keys, read before the state lock as
     // `Hle::matchmade` does.
-    let read_keys = matches!(e.operation, Operation::Stats(crate::stats::Op::Read))
-        .then(|| hle.network.registered_keys());
+    // Arbitration names the same session, so it reads them too.
+    let read_keys = matches!(
+        e.operation,
+        Operation::Stats(crate::stats::Op::Read)
+            | Operation::Arbitration(
+                crate::arbitration::Op::Register
+                    | crate::arbitration::Op::Extend
+                    | crate::arbitration::Op::Report
+            )
+    )
+    .then(|| hle.network.registered_keys());
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();

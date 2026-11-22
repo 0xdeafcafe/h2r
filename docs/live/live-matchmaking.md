@@ -1079,7 +1079,17 @@ lowercase hex digits.
    console:
    `POST /v1/arbitration/{session}/{round}/register` `{duration, flags}`,
    `.../extend` `{duration}` and `.../report` `{flags, procedures}` (the
-   procedure ids only, until their data is decoded). The task reports 0
+   procedure ids only, until their data is decoded).
+   - The round's first 8 bytes are the target session's key id (target
+     `+0x1c`, read by `0x72170` → `0x73bc0` → `0x924e0`). A matchmaking
+     host makes that key itself (`XNetCreateKey`) and registers it beside
+     the Live session it advertises, so the id is not a Live session.
+     The HLE posts a round that names one of this console's registered
+     keys under the Live session the console plays in
+     (`State::game_session`, the id the game record carries) and logs
+     `live: arbitration: round <id> names the title's network key <key>;
+     registering it under Live session <id>`. Any other id is posted as
+     the game named it (`arbitration::live_session`). The task reports 0
    until the server answers. It then succeeds, or completes with the
    failure's status as the Live worker maps it (an unreachable server is
    `CANNOT_ACCESS_SERVICE`). With no server (System Link, offline), the
@@ -1140,7 +1150,9 @@ ranked matchmaking game on two consoles. Each console logs
 `live arbitration: session <id> round <id> (advertising <id>): …` for
 Register, and again for Report.
 
-- On the host, `session` should equal `advertising`.
+- On the host, `session` is its own network key, not `advertising`; the
+  next line names the Live session the round is registered under, which
+  should equal `advertising`.
 - On the joining console, `session` should be the host's `advertising`
   id.
 - The game's record on the server should carry that same `session_id`,

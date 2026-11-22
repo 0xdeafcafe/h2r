@@ -4531,6 +4531,53 @@ fn arbitration_registers_and_reports_the_round_as_the_signed_in_account() {
     assert_eq!(body.data["procedures"], json!([0x8001]));
 }
 
+/// A matchmaking host's target session runs on a network key of its own
+/// (`XNetCreateKey`), registered beside the Live session it advertises,
+/// and its round names that key: the round is registered under the Live
+/// session, the one the game record carries.
+#[test]
+fn a_round_naming_the_hosts_network_key_registers_under_its_live_session() {
+    const ROUND: u32 = DATA + 0x12000;
+    const GAME_KEY: u32 = DATA + 0x12100;
+    let server = Server::new();
+    let account = server.account("Arbiter");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    assert_eq!(w.call("XNetCreateKey", &[ROUND, GAME_KEY]), OK);
+    assert_eq!(w.call("XNetRegisterKey", &[ROUND, GAME_KEY]), OK);
+    let network_key = sign::hex(&w.bytes(ROUND, 8));
+    attr(&w, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = w.u32(OUT);
+    assert_eq!(w.wait(create), TASK_SUCCESS);
+    let session_hex = w.hle.hosted_session().expect("the advertised session");
+    assert_ne!(session_hex, network_key);
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+    let round_hex = sign::hex(&w.bytes(ROUND + 8, 8));
+
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+
+    let stream = live_proto::arbitration::stream(&session_hex, &round_hex);
+    let kinds: Vec<String> = server
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == stream)
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(kinds, ["ArbitrationRegistered"]);
+}
+
 // Outages (docs/live/live.md "Outages"): a Worker deploy or a dropped
 // connection is ridden out; only a real outage, past the grace, loses the
 // connection.
