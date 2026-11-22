@@ -269,6 +269,42 @@ work directories used last (by their stamp's time, which a cache hit
 renews) and removes older ones. The host and install flags are in
 [Switches](switches.md#tools).
 
+### The free-disk floor and `h2 lab clean`
+
+Every cache above lives on the laptop's disk, and a nearly full macOS
+disk starves swap, so the game is then killed for memory pressure. The host
+keeps a floor of free space on the lab root's volume (20 GiB by default;
+`--disk-floor SIZE`, zero turns it off). `h2 lab status` reports the volume
+as `disk: {free_bytes, total_bytes}` beside `disk_floor_bytes`, and each
+job's `meta.json` records `disk_free_bytes_at_start`.
+
+Before an uncached image build, if the free space is under the floor, the
+host prunes in this order and stops at the first step that clears it:
+
+1. finished job runs past the newest 30 (oldest first; a run whose job is
+   not final is never removed);
+2. image work directories, least recently used first, never the one being
+   built;
+3. the object cache down to half its budget;
+4. the Cargo target.
+
+If the space is still under the floor the job fails with `lab: only X GiB
+free on the lab disk (floor Y GiB) after pruning; free space on the laptop`,
+in `job.error` and `build.log`.
+
+`h2 lab clean --host NAME [--all]` runs that prune on request, through the
+host's socket with the same pairing as `h2 lab stop`. Without `--all` it
+removes everything the floor's order can: runs past the newest 30, every
+image work directory but the one used last, the object cache down to half
+its budget and the Cargo target. `--all` empties them completely and also
+removes the source checkout; recordings, PGO profiles, the data root and
+the host's `bin/h2` stay. The reply lists the bytes freed per category
+(`freed`, `freed_bytes`), `disk_before` and `disk_after`, and the log lines.
+While a job is active only finished runs are removed, and the reply's
+`skipped` says so: the active job's image, caches, checkout and run
+directory are in use. A clean holds the activity lock, so a job submitted
+meanwhile is refused as busy.
+
 At startup the host takes the build/run activity lock before removing
 the old commit-named worktrees, 16-hex-key `images/` directories, the
 single `image/` directory and the private `obj-cache/`, whose objects
@@ -492,7 +528,10 @@ The game child has a 12 GiB lab cap. For example,
 `h2 lab run --name "Memory check" --mem-limit 10G --level ascension` sets a 10 GiB cap.
 `--mem-limit 0` disables the per-job cap. The game and daemon also run their
 own process watchdogs. Machine memory pressure stops the active job, including
-a build, and holds queued jobs until pressure clears.
+a build, and holds queued jobs until pressure clears. The stop records the
+lab disk's free bytes at that moment as `disk_free_bytes` in
+`mem/lab-host.json`; under the [free-disk floor](#the-free-disk-floor-and-h2-lab-clean)
+the reason reads `machine memory pressure (disk nearly full: X GiB free)`.
 
 A cap or pressure stop fails the job with its reason in `meta.json`.
 The host asks a running game's agent for a memory report before terminating

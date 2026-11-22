@@ -434,7 +434,8 @@ struct Scans {
     /// (`superbounce::verified`), failed ones too: what the verifier
     /// indexes.
     scanned: Arc<Vec<Spot>>,
-    /// The same without the failed spots: what is drawn and steered onto.
+    /// The ones of them that are marked ([`marked`]): what is drawn and
+    /// steered onto.
     spots: Arc<Vec<Spot>>,
     /// The bots' spots generation the verified file was applied at.
     verified_at: u64,
@@ -501,12 +502,36 @@ struct ScanView {
 fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
     let mut all = raw.to_vec();
     superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
-    let shown: Vec<Spot> = all
-        .iter()
-        .filter(|s| s.status != superbounce::Status::Failed)
-        .copied()
-        .collect();
+    let shown = marked(&all);
     (Arc::new(all), Arc::new(shown))
+}
+
+/// Whether a game run has shown `spot` works: its `verified` flag, from
+/// the map's verified file or a measured place.
+pub fn verified(spot: &Spot) -> bool {
+    spot.status == superbounce::Status::Proven
+}
+
+/// The spots that are marked, pointed at and steered onto, of `all` (the
+/// scan with the verified file applied): never a failed one.
+///
+/// - Crouch spots: every one not failed.
+/// - Strips, once a game run has proved any strip of the map
+///   ([`verified`]): only the proved ones.
+/// - Strips before that: the scan's two-joint slots. A single crease is a
+///   guess (its `need` and `fall` are not measured), so it is left out
+///   until a run proves it.
+pub fn marked(all: &[Spot]) -> Vec<Spot> {
+    let proved = all.iter().any(|s| s.kind == Kind::Bounce && verified(s));
+    all.iter()
+        .filter(|s| s.status != superbounce::Status::Failed)
+        .filter(|s| match s.kind {
+            Kind::Crouch => true,
+            Kind::Bounce if proved => verified(s),
+            Kind::Bounce => s.shape == superbounce::Shape::Slot,
+        })
+        .copied()
+        .collect()
 }
 
 fn request_scan(key: ScanKey) -> ScanView {
@@ -608,8 +633,9 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
     }
 }
 
-/// The spots of the current scan, for the world lines: the map's verified
-/// file applied, the failed spots left out.
+/// The spots of the current scan that are marked ([`marked`]): the map's
+/// verified file applied, the failed spots and the unproved creases left
+/// out.
 pub fn current_spots() -> Arc<Vec<Spot>> {
     Arc::clone(&lock(scans()).spots)
 }
@@ -1021,7 +1047,11 @@ fn on_tick(o: &hooks::Obs) {
     {
         let guest = o.guest();
         let m: &dyn GuestMemory = &*guest;
-        crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots);
+        // Only the strip the player is going for may show its run.
+        let chosen = nav_target
+            .filter(|n| n.kind == NavKind::Strip)
+            .map(|n| n.at);
+        crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots, chosen);
         // A rules script hears each bounce on the tick it is filed.
         crate::rules::feature::bounces(m, &awards);
     }
@@ -1217,6 +1247,44 @@ mod tests {
         };
         assert!(s.primed());
         assert!(!State::EMPTY.primed());
+    }
+
+    fn spot(kind: Kind, x: f32, shape: superbounce::Shape, status: superbounce::Status) -> Spot {
+        Spot {
+            kind,
+            stand: [x, 0.0, 0.0],
+            edge: [[x, -0.5, 0.0], [x, 0.5, 0.0]],
+            shape,
+            status,
+            ..Spot::default()
+        }
+    }
+
+    #[test]
+    fn creases_are_hidden_until_a_run_proves_a_strip_and_then_only_proved_strips_are_marked() {
+        use superbounce::{Shape, Status};
+        let xs = |spots: &[Spot]| -> Vec<f32> { spots.iter().map(|s| s.stand[0]).collect() };
+        // No strip proved: the slots, never a crease; crouch spots stay;
+        // failed ones go.
+        let scan = [
+            spot(Kind::Bounce, 1.0, Shape::Slot, Status::Likely),
+            spot(Kind::Bounce, 2.0, Shape::Crease, Status::Likely),
+            spot(Kind::Bounce, 3.0, Shape::Slot, Status::Failed),
+            spot(Kind::Crouch, 4.0, Shape::Slot, Status::Likely),
+            spot(Kind::Crouch, 5.0, Shape::Slot, Status::Proven),
+            spot(Kind::Crouch, 6.0, Shape::Slot, Status::Failed),
+        ];
+        assert_eq!(xs(&marked(&scan)), [1.0, 4.0, 5.0]);
+        assert!(!verified(&scan[0]) && verified(&scan[4]));
+        // A proved crouch spot proves no strip: the slots still show.
+        // Once a run proves a strip, only proved strips are marked, a
+        // crease among them; an unproved slot is not.
+        let mut run = scan;
+        run[1].status = Status::Proven;
+        assert_eq!(xs(&marked(&run)), [2.0, 4.0, 5.0]);
+        run[0].status = Status::Proven;
+        assert_eq!(xs(&marked(&run)), [1.0, 2.0, 4.0, 5.0]);
+        assert!(marked(&[]).is_empty());
     }
 
     fn near(distance: f32) -> Near {

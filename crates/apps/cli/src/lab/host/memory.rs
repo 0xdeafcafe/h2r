@@ -105,7 +105,10 @@ fn monitor(
         let elapsed = start.elapsed().as_millis() as u64;
         let cap =
             game.and_then(|pid| samples.sample(meta, pid, elapsed, limit, mem_watch::footprint));
-        let reason = cap.or_else(|| pressure.then(|| "machine memory pressure".to_owned()));
+        let disk_free = pressure
+            .then(|| super::build_cache::disk(&sh.cfg.root).map(|d| d.free_bytes))
+            .flatten();
+        let reason = cap.or_else(|| pressure.then(|| pressure_reason(disk_free, sh.cfg.disk_floor)));
         if let Some(reason) = &reason {
             meta.error = Some(reason.clone());
         }
@@ -115,7 +118,7 @@ fn monitor(
         if let Some(reason) = reason {
             let observation = json!({
                 "job_id": id, "job_name": meta.name, "reason": reason, "pid": pgid, "game_pid": game,
-                "mem_limit": limit, "pressure": pressure, "samples": samples.recent,
+                "mem_limit": limit, "pressure": pressure, "disk_free_bytes": disk_free, "samples": samples.recent,
                 "last_footprint_bytes": meta.last_footprint_bytes,
                 "peak_footprint_bytes": meta.peak_footprint_bytes,
                 "elapsed_ms": elapsed, "commit": meta.commit,
@@ -136,6 +139,18 @@ fn monitor(
             Ok(Event::Step) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Ok(Event::Finished) | Err(mpsc::RecvTimeoutError::Disconnected) => return None,
         }
+    }
+}
+
+/// The stop reason for machine memory pressure. A nearly full disk starves
+/// macOS swap, so say so when the free space is under the floor.
+fn pressure_reason(disk_free: Option<u64>, floor: u64) -> String {
+    match disk_free {
+        Some(free) if floor != 0 && free < floor => format!(
+            "machine memory pressure (disk nearly full: {} GiB free)",
+            super::build_cache::gib(free)
+        ),
+        _ => "machine memory pressure".to_owned(),
     }
 }
 
@@ -239,6 +254,18 @@ mod tests {
             Some("memory limit: 13 over 12 bytes")
         );
         assert_eq!(record.peak_footprint_bytes, Some(13));
+    }
+
+    #[test]
+    fn pressure_names_a_nearly_full_disk() {
+        let gib = |n: u64| n << 30;
+        assert_eq!(
+            pressure_reason(Some(gib(2)), gib(20)),
+            "machine memory pressure (disk nearly full: 2 GiB free)"
+        );
+        assert_eq!(pressure_reason(Some(gib(30)), gib(20)), "machine memory pressure");
+        assert_eq!(pressure_reason(Some(gib(2)), 0), "machine memory pressure");
+        assert_eq!(pressure_reason(None, gib(20)), "machine memory pressure");
     }
 
     #[test]

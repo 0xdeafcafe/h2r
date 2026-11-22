@@ -161,6 +161,14 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             };
             print(&r.connect()?.call(json!({"cmd": "stop", "id": id}))?)
         }
+        "clean" => {
+            let all = match args.as_slice() {
+                [] => false,
+                [flag] if flag == "--all" => true,
+                _ => bail!("usage: h2 lab clean [--all]"),
+            };
+            print(&r.connect()?.call(json!({"cmd": "clean", "all": all}))?)
+        }
         "runs" => runs_cmd(&r, args),
         "logs" => logs_cmd(&r, args),
         "fetch" => {

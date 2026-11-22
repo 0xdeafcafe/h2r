@@ -406,6 +406,12 @@ pub enum Request {
     Stop {
         id: String,
     },
+    /// Free the host's disk (`h2 lab clean`): the floor's prune, or with
+    /// `all` everything but a running job's files.
+    Clean {
+        #[serde(default)]
+        all: bool,
+    },
     Runs {
         #[serde(default)]
         limit: Option<usize>,
@@ -480,7 +486,11 @@ pub fn parse(line: &str) -> Result<Request> {
 
 pub fn validate(r: &Request) -> Result<()> {
     match r {
-        Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
+        Request::Status
+        | Request::Update
+        | Request::Recordings
+        | Request::Runs { .. }
+        | Request::Clean { .. } => Ok(()),
         Request::Fetch { id } | Request::Mem { id } => check_job_id(id),
         Request::Logs { id, .. } => check_log_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
@@ -1072,6 +1082,8 @@ mod tests {
     #[test]
     fn short_requests_parse() {
         assert_eq!(run(r#"{"cmd":"status"}"#).unwrap(), Request::Status);
+        assert_eq!(run(r#"{"cmd":"clean"}"#).unwrap(), Request::Clean { all: false });
+        assert_eq!(run(r#"{"cmd":"clean","all":true}"#).unwrap(), Request::Clean { all: true });
         assert_eq!(
             run(r#"{"cmd":"wait","id":"0003","timeout":2.5}"#).unwrap(),
             Request::Wait {

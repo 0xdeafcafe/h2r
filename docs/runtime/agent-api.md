@@ -848,7 +848,7 @@ with `INVALID_PARAMS`) answers from the state the
 | `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
 | `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
 | `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed: the chosen strip, [superbounce.md](../game/superbounce.md#floor-marks)), `distance` (world units), `fall` (a strip's drop, world units; 0 for a crouch spot) |
-| `takeoff` | while primed on the ground, where to jump from for the chosen strip (the floor mark's place); absent when none is found |
+| `takeoff` | while primed on the ground, where to jump from for the chosen strip; absent when none is found. Nothing is drawn there |
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
 | `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
 | `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
@@ -1045,8 +1045,9 @@ each spot, kept in `<map>.ghosts` in the bots directory
 `superbounce.ghost_show {spot?, stop?}` (access: act) plays run `spot`
 once from its start, or the run looked at without `spot`; `{"stop":
 true}` stops the playback. It answers `playing`, the `index` and the
-run's length in `ticks`. Refused while the mode is off, with no map, or
-for an index the map has no run at.
+run's length in `ticks`. Refused while the mode is off, with no map, for
+an index the map has no run at, or (to play one) without the
+`superbounce-ghost` feature, which is off by default.
 
 ```sh
 h2 agent superbounce.ghosts

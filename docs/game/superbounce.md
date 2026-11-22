@@ -837,23 +837,26 @@ worked out from the mode's state at each 30 Hz tick; the slide and the
 each present. The `superbounce-steps` feature
 ([switches](../runtime/switches.md)) turns it off.
 
-**The lines.** One marker, on the next spot, drawn by the window's
-world-line pass with no depth test (the styles are described in
+**The lines.** One marker, on the one spot the player is going for,
+drawn by the window's world-line pass with no depth test (the styles are
+described in
 [the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)),
 from `crates/extensions/game/src/superbounce_world.rs` (`frame`,
-`figures`, and the lock-on's `LockMarks`): a bold ring on the floor with
-a pin standing over it and a short label at the pin's top, as
+`targets`, `figures`, and the lock-on's `LockMarks`): a bold ring on the
+floor with a pin standing over it and a short label at the pin's top, as
 [Floor marks](#floor-marks) and
 [Crouch spots in the world](#crouch-spots-in-the-world) describe, and
-while falling the [lock-on](#lock-on).
+while falling the [lock-on](#lock-on), the slot's outline.
 
-- The next spot is the navpoint's: not primed, the nearest crouch spot;
-  primed, the chosen strip, by way of its take-off when it has one.
-- The other spots of the kind to go to next (crouch spots while not
-  primed, strips while primed) are small faint rings: the 6 nearest
-  within 15 world units, fading out between 25 and 45 units from the
-  camera. The other kind is not drawn. The whole level's spots are on
-  the flashlight ([The bounce view](#the-bounce-view)).
+- The spot is the navpoint's: not primed, the nearest crouch spot;
+  primed, the chosen strip, which the
+  [fall assist](#hold-x-the-fall-assist) steers onto.
+- No other spot is drawn: no field of rings, no lines between spots.
+  The whole level's spots are on the flashlight
+  ([The bounce view](#the-bounce-view)), when the player asks.
+- Not primed and further than 6 world units from the next crouch spot
+  (`NEAR_RANGE`), nothing is drawn in the world; the HUD's navpoint
+  leads there.
 - The marker does not fade with distance: it shows from across the map,
   under the HUD's navpoint.
 - Lines are in the user's HUD colour and labels in the HUD's font
@@ -865,42 +868,32 @@ while falling the [lock-on](#lock-on).
   each present, so it is as smooth at 60 or 120 frames a second as at 30
   ([high-framerate.md](high-framerate.md)).
 
-**The prompts.** While the player is primed and in the air, the window
-also draws big, centred, shadowed labels with a pulse, on the strip they
-say something about (`crates/extensions/game/src/superbounce_prompts.rs`).
-On the ground the [floor marks](#floor-marks) say where to jump from and
-land; `prompt_for` keeps the ground rules below as its table, and the
-mode draws none of them:
+**Which spots are marked.** The mode marks, points at and steers onto a
+subset of the scan (`superbounce_mode::marked`, applied where the map's
+verified file is, so the marker, the navpoint, the tracker, the bounce
+view and the fall assist agree):
 
-- With the [fall assist](#hold-x-the-fall-assist) on, airborne and
-  falling toward a strip it can steer onto (its pick), `Hold X` (the X
-  button's glyph) floats 0.3 units above the
-  strip's stand point. It grows as the player nears: 1x at 6 units and
-  more, 3x at 0.5 and less, linear between (`label_scale`). A guide runs
-  along the floor from where the player lands if nothing is done to the
-  stand point; the landing itself is the [lock-on](#lock-on).
-- Once X is held and the assist is steering, the label reads `Guiding`
-  and stops pulsing.
-- With the assist off (the default) nothing is said in the air and no
-  strip is anyone's target: the landing is the player's, and what the
-  map shows of it is the [lock-on](#lock-on).
-- On the ground, within 1.5 units of a strip whose fall is at most 0.05 (a
-  standing jump does it), `Jump` is drawn at the take-off spot, 0.2 units
-  back from the stand point against the drift (`takeoff`), with a small
-  ring on the floor there. Within 0.1 units of the take-off spot it
-  flashes `Jump now`. Only the nearest such strip gets one.
-- On the ground, within 3 units of a strip whose fall is more than 0.3,
-  `Drop 3 m` (the fall in whole metres, `whole_metres`) is drawn over it,
-  so the player knows to come from above. Only the nearest gets one.
+- a spot a game run failed is never marked;
+- every other crouch spot is;
+- a strip is marked by its `verified` flag (`superbounce_mode::verified`:
+  the verified file made it `proven`, [Verifying spots](#verifying-spots))
+  once any strip of the map has one: then only proved strips are marked;
+- on a map with no proved strip, the scan's two-joint slots are marked
+  and its [single creases](#single-creases) are not: a crease's `need`
+  and `fall` are guesses, and most say a standing jump is enough.
 
-The prompts are in sentence case, in the HUD's colour and font, the
-words told apart by what they say and how they pulse, not by colour.
+`superbounce.verify` and the bots still see every spot.
 
-`prompt_for` decides what a strip says from whether the player is primed,
-airborne, targeted and engaged, the strip's fall and the distances to its
-stand point and take-off spot. Strips more than a metre above or below the
-player on the ground are ignored. Only the labels that are drawn are
-formatted.
+**In the air.** While the player is airborne the screen is the
+[step chain](#the-superbounce-game-type)'s and the motion tracker's. The
+HUD kit's superbounce elements keep the pill, the notification and the
+medal line and drop the charge strip, the arming bar, the prompt line,
+the navpoint and the tutorial step (`superbounce_hud::in_air`). The
+world keeps the chosen strip's rings and line and the lock-on, and no
+label. The mode draws no prompt over a strip:
+`crates/extensions/game/src/superbounce_prompts.rs` keeps `prompt_for`'s
+table (`Hold X`, `Guiding`, `Jump`, `Drop 3 m`) and its label rules,
+which nothing draws.
 
 ### Hold X: the fall assist
 
@@ -1208,13 +1201,11 @@ pass (`crates/extensions/game/src/superbounce_world.rs`, the geometry;
 - **The approach arrow.** One arrowhead on the floor 0.15 outside the
   ring along `out` (`arrowhead`), pointing in toward the ring until the
   phase is `held`, then out: walk in, then walk out.
-- **The other crouch spots.** A small ring of radius 0.1 each, at 30%
-  (15% for a `likely` spot), the 6 nearest within 15 units, with no
-  label.
 
-A `likely` spot that is next has the same marker as a `proven` one.
-While primed no crouch spot is drawn: a crouch now would lose the
-charge.
+The marker appears once the player is within 6 world units of the spot
+(`NEAR_RANGE`). No other crouch spot is drawn. A `likely` spot that is
+next has the same marker as a `proven` one. While primed no crouch spot
+is drawn: a crouch now would lose the charge.
 
 ### Landings
 
@@ -1250,45 +1241,36 @@ under them.
 
 ### Floor marks
 
-While primed the marker is on the way to the **chosen strip**: the
-navpoint's (`superbounce_charge::nav_target`), the nearest strip the
-player's floor is high enough for (feet at least `fall` above `stand`,
-less 0.05; a standing-jump strip always is), else the nearest strip, and
-while falling onto a strip that strip (`nav_to_landing`). The HUD's
-navpoint is over the same strip with the drop in metres
+While primed the marker is on the **chosen strip**: the navpoint's
+(`superbounce_charge::nav_target`), the nearest strip the player's floor
+is high enough for (feet at least `fall` above `stand`, less 0.05; a
+standing-jump strip always is), else the nearest strip, and while
+falling onto a strip that strip (`nav_to_landing`). The HUD's navpoint
+is over the same strip with the drop in metres
 ([hud-kit.md](hud-kit.md#the-navpoint)), and the
 [fall assist](#hold-x-the-fall-assist) steers onto it. Not primed, there
-is no chosen strip.
+is no chosen strip. Only [marked](#the-superbounce-game-type) strips can
+be chosen.
 
-- **Jump.** On the ground, the next spot is where to take off
-  (`superbounce_world::takeoff`, the mode's `takeoff`): the marker (the
-  0.35 ring, the footprint ring, the pin) with `Jump` and the A button's
-  glyph, its ring pulsing once the player is within 0.15 of it, and one
-  arrowhead 0.5 out from its centre toward the landing, where the
-  landing is clear of it. For a standing jump (fall at most 0.05) it is
-  0.2 back from `stand` against the drift. For a fall it is found on the
-  map: out from `stand` toward the player (against the drift when the
-  player is over the strip), in 0.05 steps up to 4 units, the first
-  floor at least the fall above the strip (less 0.05) and at most 0.5
-  above the player's feet (`superbounce_capsule::Room::floor_at`, faces
-  looking up more than 0.7) is the lip of the ledge to come from; the
-  take-off is a capsule radius back from the lip, on its floor.
-  `superbounce.state` returns it as `takeoff`.
 - **Land.** The chosen strip has the marker's two rings round `stand`
-  and the strip's own line through them, 0.26 each way along `edge` (at
-  most half the edge; `strip_bar`), which says which way the strip runs.
-  While a take-off is the next spot it has no more. With no take-off
-  found it is the next spot: the pin, with `Land, 3 m` (the drop, `fall`
-  in whole metres; `Land` alone for a standing jump). In a fall it has
-  no pin and no label: the [lock-on](#lock-on) speaks, and locked, the
-  mark turns red with the lock.
-- **Other strips.** A small ring of radius 0.1 each, at 30% (15% when
-  the player's floor is too low for the strip), the 6 nearest within
-  15 units.
+  (0.35 and the capsule's 0.175) and the strip's own line through them,
+  0.26 each way along `edge` (at most half the edge; `strip_bar`), which
+  says which way the strip runs. On the ground a pin stands over it with
+  `Land, 3 m` (the drop, `fall` in whole metres; `Land` alone for a
+  standing jump). In the air it has no pin and no label: the
+  [lock-on](#lock-on) is the slot's outline, and locked, the mark turns
+  red with the lock.
+- **No other strip** is drawn, and no take-off mark.
+  `superbounce.state` still returns `takeoff`, where the map says the
+  drop starts (`superbounce_world::takeoff`): for a standing jump (fall
+  at most 0.05) 0.2 back from `stand` against the drift; for a fall, out
+  from `stand` toward the player in 0.05 steps up to 4 units, the first
+  floor at least the fall above the strip (less 0.05) and at most 0.5
+  above the player's feet (`superbounce_capsule::Room::floor_at`), a
+  capsule radius back from its lip.
 
 The scanner cannot know steps that need an object (break the window,
-crouch under the shard) or a turn before the jump; the take-off is where
-the geometry says the drop starts, not a recorded recipe.
+crouch under the shard) or a turn before the jump.
 
 ### Lock-on
 
@@ -1519,9 +1501,11 @@ tick counts) are first guesses to tune on the lab.
 ## Ghost runs
 
 A ghost run is a recorded run that bounced off a spot, replayed in the
-world when the player asks for it: an outline figure in the HUD's colour
-walks the run, the button the run pressed shows over where it pressed
-it, a dotted trail shows the path and a ring marks the touchdown. It is
+world when the player asks for it: one faint outline figure in the HUD's
+colour walks the run, with no trail, ring or button glyph. Showing one
+is the `superbounce-ghost` feature, off by default
+([switches](../runtime/switches.md)); runs are recorded and kept either
+way. It is
 `crates/extensions/game/src/superbounce_ghost.rs`; the file format is
 `superbounce::ghost` (`crates/live/superbounce/src/ghost.rs`).
 
@@ -1577,7 +1561,9 @@ many `f` lines follow. A frame is x, y, z, the facing in degrees and its
 flags: `c` crouch, `j` jump, `a` airborne, `p` primed, `-` none. A run
 is at most 1800 frames.
 
-**Showing one.** The player looks at a spot that has a run: its `stand`
+**Showing one.** With the feature on, only the chosen strip's run is
+offered (`showable`: the navpoint's strip while primed, its run's spot
+within 0.3 of the strip's `stand`). The player looks at it: its `stand`
 within 15 units of the eye (0.62 over the origin), and within 6 degrees
 of the aim, or the angle a 0.4-unit mark spans when that is wider. The
 prompt line says "Press (X) to show ghost". The prompt line's
@@ -1607,20 +1593,15 @@ around it. At 60 or 120 frames a second each presented frame shows its
 own pose, at the recorded speed. The figure holds on its last frame for
 a second, then goes.
 
-**What is drawn**, all in the HUD's colour ([Crouch spots in the
-world](#crouch-spots-in-the-world)):
-
-- the figure, an outline flat to the viewer, as tall as the standing
-  capsule (as the crouched one while the run crouched), with a tick on
-  the floor the way it faces;
-- the glyph of each button the run pressed (A for the jump, the left
-  stick for crouch) over where it pressed it, for a second of playback;
-- the run's path as a dotted line, every second tick;
-- a ring the capsule's size where it touched down, pulsing.
+**What is drawn**: the figure alone, an outline flat to the viewer at
+35% of the HUD's colour, as tall as the standing capsule (as the
+crouched one while the run crouched), with a tick on the floor the way
+it faces (`marks`).
 
 `superbounce.ghosts` lists the map's runs, the one looked at, the prompt
 and the playback; `superbounce.ghost_show` plays one by its index or
-stops it ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+stops it ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type));
+with the feature off it refuses to play one.
 
 No game has recorded or shown a run yet. To check one on the lab: turn
 the mode on with bots practising, wait for `superbounce.ghosts`'s

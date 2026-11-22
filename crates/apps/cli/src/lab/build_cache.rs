@@ -11,12 +11,18 @@ use std::process::Command;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail, ensure};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{host::HostConfig, proto, transfer};
 
 pub(super) const DEFAULT_OBJECT_LIMIT: u64 = 8 << 30;
 pub(super) const DEFAULT_TARGET_LIMIT: u64 = 32 << 30;
+/// Free space the lab disk keeps (`--disk-floor`). A build under it
+/// prunes the lab's caches first and fails if that is not enough.
+pub(super) const DEFAULT_DISK_FLOOR: u64 = 20 << 30;
+/// The newest finished job runs a prune for the disk floor keeps.
+pub(super) const RUNS_KEPT: usize = 30;
 
 /// The image work directories kept, the one in use included. Each holds
 /// the generated C, the object pins, the module and `h2` of its variant.
@@ -269,14 +275,29 @@ pub(super) fn touch(dir: &Path) {
 /// else the directory), [`IMAGE_VARIANTS`] in all. Only real directories
 /// named like a variant key are removed; anything else is left alone.
 pub(super) fn prune_variants(cfg: &HostConfig, keep: &Path, log: &mut impl Write) -> Result<()> {
+    let dirs = variant_dirs(cfg, Some(keep))?;
+    for path in variants_to_remove(dirs, IMAGE_VARIANTS.saturating_sub(1)) {
+        writeln!(log, "lab: removing image work directory {}", path.display())?;
+        fs::remove_dir_all(&path)?;
+    }
+    Ok(())
+}
+
+/// The variant work directories except `keep`, with when each was last
+/// used (its stamp, else the directory).
+fn variant_dirs(cfg: &HostConfig, keep: Option<&Path>) -> Result<Vec<(SystemTime, PathBuf)>> {
     let mut dirs = Vec::new();
-    for entry in fs::read_dir(cfg.dir("variants"))? {
+    let entries = match fs::read_dir(cfg.dir("variants")) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(dirs),
+        other => other?,
+    };
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name();
         let ours =
             name.len() == 16 && name.as_encoded_bytes().iter().all(u8::is_ascii_hexdigit);
-        if !ours || !entry.file_type()?.is_dir() || path == keep {
+        if !ours || !entry.file_type()?.is_dir() || Some(path.as_path()) == keep {
             continue;
         }
         let used = fs::metadata(path.join("image.json"))
@@ -285,11 +306,7 @@ pub(super) fn prune_variants(cfg: &HostConfig, keep: &Path, log: &mut impl Write
             .unwrap_or(SystemTime::UNIX_EPOCH);
         dirs.push((used, path));
     }
-    for path in variants_to_remove(dirs, IMAGE_VARIANTS.saturating_sub(1)) {
-        writeln!(log, "lab: removing image work directory {}", path.display())?;
-        fs::remove_dir_all(&path)?;
-    }
-    Ok(())
+    Ok(dirs)
 }
 
 /// Those of `dirs` past the `keep` used last.
@@ -483,6 +500,233 @@ pub(super) fn prune(cfg: &HostConfig, log: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
+/// The lab volume's free and total bytes, as `h2 lab status` reports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct Disk {
+    pub free_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// Free space on the volume holding `path` (what a non-root user can use).
+#[allow(clippy::unnecessary_cast)]
+pub(super) fn disk(path: &Path) -> Option<Disk> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `st` is a valid out-pointer.
+    if unsafe { libc::statvfs(path.as_ptr(), st.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: statvfs succeeded, so it filled `st`.
+    let st = unsafe { st.assume_init() };
+    let unit = st.f_frsize as u64;
+    Some(Disk {
+        free_bytes: (st.f_bavail as u64).saturating_mul(unit),
+        total_bytes: (st.f_blocks as u64).saturating_mul(unit),
+    })
+}
+
+/// Bytes as GiB for messages: `20`, or `3.5`.
+pub(super) fn gib(bytes: u64) -> String {
+    let unit = 1u64 << 30;
+    if bytes % unit == 0 {
+        (bytes / unit).to_string()
+    } else {
+        format!("{:.1}", bytes as f64 / unit as f64)
+    }
+}
+
+/// Why a build is refused when pruning could not clear the floor.
+pub(super) fn floor_message(free: u64, floor: u64) -> String {
+    format!(
+        "lab: only {} GiB free on the lab disk (floor {} GiB) after pruning; free space on the laptop",
+        gib(free),
+        gib(floor)
+    )
+}
+
+/// What a reclaim removes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Goal {
+    /// Stop as soon as this many bytes are free (the disk floor).
+    Until(u64),
+    /// Everything the floor's order prunes, to its end: runs past the
+    /// newest [`RUNS_KEPT`], all variants but the one used last, the
+    /// object cache down to half its budget, the Cargo target.
+    Default,
+    /// Finished runs past the newest [`RUNS_KEPT`] only (a job is active).
+    Runs,
+    /// Every finished run, every variant, the whole object cache and
+    /// Cargo target, and the source checkout.
+    All,
+}
+
+/// Bytes a reclaim freed, per category.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub(super) struct Freed {
+    pub runs: u64,
+    pub variants: u64,
+    pub object_cache: u64,
+    pub cargo_target: u64,
+    pub checkout: u64,
+}
+
+impl Freed {
+    pub(super) fn total(&self) -> u64 {
+        self.runs + self.variants + self.object_cache + self.cargo_target + self.checkout
+    }
+}
+
+fn goal_met(goal: Goal, free: &mut impl FnMut() -> Option<u64>) -> bool {
+    matches!(goal, Goal::Until(floor) if free().is_none_or(|bytes| bytes >= floor))
+}
+
+/// Finished job runs, newest first. A run whose metadata is missing,
+/// unreadable or not final may belong to a live job and is left alone.
+fn finished_runs(cfg: &HostConfig) -> Vec<(SystemTime, PathBuf)> {
+    let mut runs = Vec::new();
+    let Ok(entries) = fs::read_dir(cfg.dir("runs")) else {
+        return runs;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let finished = super::host::load_meta(&path)
+            .ok()
+            .flatten()
+            .is_some_and(|m| super::host::is_final(&m.state));
+        if finished {
+            let used = entry.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+            runs.push((used, path));
+        }
+    }
+    runs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    runs
+}
+
+/// Frees disk in the order that costs least: old job runs, the least
+/// recently used variant work directories (never `keep`), the object cache
+/// down to half its budget, then the Cargo target. `free` reports the
+/// volume's free bytes; with [`Goal::Until`] the reclaim stops once it is
+/// enough. The caller holds the activity lock, so nothing here is in use
+/// except `keep` and runs that are not final.
+pub(super) fn reclaim(
+    cfg: &HostConfig,
+    goal: Goal,
+    keep: Option<&Path>,
+    free: &mut impl FnMut() -> Option<u64>,
+    log: &mut impl Write,
+) -> Result<Freed> {
+    let mut freed = Freed::default();
+    let kept_runs = if goal == Goal::All { 0 } else { RUNS_KEPT };
+    let old: Vec<_> = finished_runs(cfg).into_iter().skip(kept_runs).collect();
+    for (_, dir) in old.into_iter().rev() {
+        if goal_met(goal, free) {
+            return Ok(freed);
+        }
+        let bytes = size(&dir).unwrap_or(0);
+        writeln!(log, "lab: removing job run {}", dir.display())?;
+        fs::remove_dir_all(&dir)?;
+        freed.runs += bytes;
+    }
+    if goal == Goal::Runs {
+        return Ok(freed);
+    }
+
+    let mut dirs = variant_dirs(cfg, keep)?;
+    dirs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    if keep.is_none() && goal != Goal::All {
+        // The variant used last is the one the next job most likely wants.
+        dirs.pop();
+    }
+    for (_, dir) in dirs {
+        if goal_met(goal, free) {
+            return Ok(freed);
+        }
+        let bytes = size(&dir).unwrap_or(0);
+        writeln!(log, "lab: removing image work directory {}", dir.display())?;
+        fs::remove_dir_all(&dir)?;
+        freed.variants += bytes;
+    }
+
+    let objects = obj_cache_dir(cfg);
+    if goal_met(goal, free) {
+        return Ok(freed);
+    }
+    if objects.is_dir() {
+        let limit = if goal == Goal::All { 0 } else { cfg.obj_cache_limit / 2 };
+        let pruned = emit::compile::prune_obj_cache(&objects, limit, &Default::default())
+            .map_err(anyhow::Error::msg)?;
+        writeln!(
+            log,
+            "lab: pruned {} cache objects ({} bytes), {} bytes remain",
+            pruned.removed, pruned.freed, pruned.kept
+        )?;
+        freed.object_cache += pruned.freed;
+    }
+
+    let target = target_dir(cfg);
+    if goal_met(goal, free) {
+        return Ok(freed);
+    }
+    if target.is_dir() {
+        let bytes = size(&target)?;
+        writeln!(log, "lab: clearing Cargo target ({bytes} bytes)")?;
+        fs::remove_dir_all(&target)?;
+        fs::create_dir(&target)?;
+        freed.cargo_target += bytes;
+    }
+
+    if goal == Goal::All {
+        let checkout = cfg.dir("src").join("current");
+        if fs::symlink_metadata(&checkout).is_ok_and(|m| m.is_dir()) {
+            let bytes = size(&checkout).unwrap_or(0);
+            writeln!(log, "lab: removing the source checkout ({bytes} bytes)")?;
+            fs::remove_dir_all(&checkout)?;
+            // Drop the registration; the next build adds the worktree again.
+            let _ = transfer::git(&cfg.repo).args(["worktree", "prune"]).status();
+            freed.checkout += bytes;
+        }
+    }
+    Ok(freed)
+}
+
+/// Before a build: when free space is under the floor, prune until it is
+/// above, else fail. `keep` is the variant being built. `free` is the
+/// volume's free bytes. A floor of zero turns the check off.
+pub(super) fn ensure_free(
+    cfg: &HostConfig,
+    keep: &Path,
+    free: &mut impl FnMut() -> Option<u64>,
+    log: &mut impl Write,
+) -> Result<()> {
+    let floor = cfg.disk_floor;
+    if floor == 0 {
+        return Ok(());
+    }
+    let Some(start) = free() else { return Ok(()) };
+    if start >= floor {
+        return Ok(());
+    }
+    writeln!(
+        log,
+        "lab: {} GiB free on the lab disk, under its {} GiB floor; pruning caches",
+        gib(start),
+        gib(floor)
+    )?;
+    let freed = reclaim(cfg, Goal::Until(floor), Some(keep), free, log)?;
+    let after = free().unwrap_or(u64::MAX);
+    writeln!(log, "lab: pruning freed {} bytes, {} GiB free", freed.total(), gib(after))?;
+    if after < floor {
+        let reason = floor_message(after, floor);
+        writeln!(log, "{reason}")?;
+        bail!("{reason}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -509,6 +753,7 @@ mod tests {
             cargo: "cargo".into(),
             obj_cache_limit: 0,
             target_limit: 0,
+            disk_floor: 0,
             max_jobs: 1,
             lan: None,
             managed: false,
@@ -720,5 +965,151 @@ mod tests {
         assert_eq!(log_since(&log, 7), "after\n");
         assert_eq!(log_since(&root.join("missing"), 0), "");
         let _ = fs::remove_dir_all(root);
+    }
+    const GIB: u64 = 1 << 30;
+
+    fn aged(path: &Path, age: u64) {
+        File::open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(age))
+            .unwrap();
+    }
+
+    fn run_dir(cfg: &HostConfig, id: &str, state: &str, age: u64) {
+        let dir = cfg.dir("runs").join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("meta.json"), format!(r#"{{"id":"{id}","state":"{state}"}}"#)).unwrap();
+        fs::write(dir.join("run.log"), [0u8; 10]).unwrap();
+        aged(&dir, age);
+    }
+
+    fn variant(cfg: &HostConfig, n: u64, age: u64) -> PathBuf {
+        let dir = cfg.dir("variants").join(format!("{n:016x}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("big.bin"), [0u8; 100]).unwrap();
+        let stamp = File::create(dir.join("image.json")).unwrap();
+        stamp.set_modified(SystemTime::now() - Duration::from_secs(age)).unwrap();
+        dir
+    }
+
+    /// 35 finished runs (`0000` newest), a running one, three variants
+    /// (the oldest in use), an object and a Cargo target file.
+    fn full_lab(name: &str) -> (PathBuf, HostConfig, PathBuf) {
+        let root = scratch(name).join("lab");
+        fs::create_dir_all(&root).unwrap();
+        let mut cfg = config(&root);
+        cfg.disk_floor = 20 * GIB;
+        for i in 0..35u64 {
+            run_dir(&cfg, &format!("{i:04}"), "done", 1000 + i * 10);
+        }
+        run_dir(&cfg, "9999", "running", 100_000);
+        variant(&cfg, 1, 10);
+        variant(&cfg, 2, 20);
+        let keep = variant(&cfg, 3, 30);
+        fs::create_dir_all(obj_cache_dir(&cfg)).unwrap();
+        fs::write(obj_cache_dir(&cfg).join("a.o"), [0u8; 100]).unwrap();
+        fs::create_dir_all(target_dir(&cfg)).unwrap();
+        fs::write(target_dir(&cfg).join("deps.rlib"), [0u8; 100]).unwrap();
+        (root, cfg, keep)
+    }
+
+    fn count(dir: &Path) -> usize {
+        fs::read_dir(dir).map_or(0, Iterator::count)
+    }
+
+    #[test]
+    fn under_the_floor_a_build_prunes_in_order_and_then_fails_with_the_reason() {
+        let (root, cfg, keep) = full_lab("floor-order");
+        let mut log = Vec::new();
+        let err = ensure_free(&cfg, &keep, &mut || Some(3 * GIB + GIB / 2), &mut log).unwrap_err();
+        let reason = "lab: only 3.5 GiB free on the lab disk (floor 20 GiB) after pruning; free space on the laptop";
+        assert_eq!(format!("{err:#}"), reason);
+        let log = String::from_utf8(log).unwrap();
+        assert!(log.trim_end().ends_with(reason), "{log}");
+        let at = |what: &str| log.find(what).unwrap_or_else(|| panic!("{what} not in {log}"));
+        assert!(at("removing job run") < at("removing image work directory"));
+        assert!(at("removing image work directory") < at("pruned "));
+        assert!(at("pruned ") < at("clearing Cargo target"));
+        // Runs: the oldest five finished ones go; the newest 30 and the
+        // running job stay. Variants: all but the one in use.
+        let runs = cfg.dir("runs");
+        assert!(!runs.join("0034").exists() && !runs.join("0030").exists());
+        assert!(runs.join("0029").exists() && runs.join("9999").exists());
+        assert_eq!(count(&runs), 31);
+        assert_eq!(count(&cfg.dir("variants")), 1);
+        assert!(keep.exists());
+        assert_eq!(count(&obj_cache_dir(&cfg)), 0);
+        assert_eq!(count(&target_dir(&cfg)), 0);
+        assert!(target_dir(&cfg).is_dir());
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn pruning_stops_at_the_first_step_that_clears_the_floor() {
+        let (root, cfg, keep) = full_lab("floor-stop");
+        let variants = cfg.dir("variants");
+        // Free space is enough once only the variant in use is left.
+        let mut free = || Some(if count(&variants) == 1 { 25 * GIB } else { GIB });
+        let mut log = Vec::new();
+        ensure_free(&cfg, &keep, &mut free, &mut log).unwrap();
+        assert_eq!(count(&variants), 1);
+        assert!(!cfg.dir("runs").join("0034").exists());
+        assert_eq!(count(&obj_cache_dir(&cfg)), 1);
+        assert_eq!(count(&target_dir(&cfg)), 1);
+        // Plenty of space: nothing is touched.
+        let (root2, cfg2, keep2) = full_lab("floor-ok");
+        ensure_free(&cfg2, &keep2, &mut || Some(21 * GIB), &mut Vec::new()).unwrap();
+        assert_eq!(count(&cfg2.dir("runs")), 36);
+        assert_eq!(count(&cfg2.dir("variants")), 3);
+        // A floor of zero is off, however little is free.
+        let mut off = cfg2.clone();
+        off.disk_floor = 0;
+        ensure_free(&off, &keep2, &mut || Some(0), &mut Vec::new()).unwrap();
+        assert_eq!(count(&cfg2.dir("runs")), 36);
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+        let _ = fs::remove_dir_all(root2.parent().unwrap());
+    }
+
+    #[test]
+    fn a_clean_reports_bytes_freed_per_category() {
+        let (root, cfg, _) = full_lab("clean");
+        let checkout = cfg.dir("src").join("current");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("lib.rs"), [0u8; 1000]).unwrap();
+        // Default: the variant used last stays, runs past 30 go, caches go.
+        let mut log = Vec::new();
+        let freed = reclaim(&cfg, Goal::Default, None, &mut || None, &mut log).unwrap();
+        assert_eq!(freed.runs, 5 * (10 + "{\"id\":\"0030\",\"state\":\"done\"}".len() as u64));
+        assert_eq!(freed.variants, 2 * (100 + 0));
+        assert_eq!(freed.object_cache, 100);
+        assert_eq!(freed.cargo_target, 100);
+        assert_eq!(freed.checkout, 0);
+        assert_eq!(count(&cfg.dir("variants")), 1);
+        assert!(checkout.exists());
+        // All: every finished run, the last variant and the checkout too,
+        // but not the running job.
+        let freed = reclaim(&cfg, Goal::All, None, &mut || None, &mut log).unwrap();
+        assert_eq!(count(&cfg.dir("runs")), 1);
+        assert!(cfg.dir("runs").join("9999").exists());
+        assert_eq!(count(&cfg.dir("variants")), 0);
+        assert_eq!(freed.checkout, 1000);
+        assert!(!checkout.exists());
+        // With a job active only finished runs go.
+        let (root2, cfg2, _) = full_lab("clean-runs");
+        let freed = reclaim(&cfg2, Goal::Runs, None, &mut || None, &mut Vec::new()).unwrap();
+        assert!(freed.runs > 0 && freed.total() == freed.runs);
+        assert_eq!(count(&cfg2.dir("variants")), 3);
+        assert_eq!(count(&target_dir(&cfg2)), 1);
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+        let _ = fs::remove_dir_all(root2.parent().unwrap());
+    }
+
+    #[test]
+    fn disk_serialises_as_free_and_total_bytes() {
+        let json = serde_json::to_value(Disk { free_bytes: 5, total_bytes: 9 }).unwrap();
+        assert_eq!(json, serde_json::json!({ "free_bytes": 5, "total_bytes": 9 }));
+        let here = disk(&std::env::temp_dir()).unwrap();
+        assert!(here.total_bytes > 0 && here.free_bytes <= here.total_bytes);
+        assert!(disk(Path::new("/definitely/not/here")).is_none());
     }
 }
