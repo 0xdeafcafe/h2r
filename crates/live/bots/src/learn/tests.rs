@@ -248,6 +248,18 @@ fn all_void_rounds_end_blocked() {
         s.fold(&[]);
     }
     assert_eq!(s.state(), State::Open);
+    // A site flown before is never blocked: its bots are where their last
+    // tries left them, not the site.
+    for _ in 0..VOID_ROUNDS * 3 {
+        s.fold(&[]);
+    }
+    assert_eq!(s.state(), State::Open);
+    // And a blocked line with tries, from the file, is flown again.
+    let mut e = s.entry().clone();
+    assert!(e.tries > 0);
+    e.state = State::Blocked;
+    e.why = Some("no_path".into());
+    assert_eq!(Search::new(setup(100), Some(&e)).state(), State::Open);
 }
 
 #[test]
