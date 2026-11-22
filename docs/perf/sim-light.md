@@ -1,8 +1,8 @@
 # Light sims: RAM, disk and setup per match
 
-Status: Design. Nothing on this page is built; the lanes below build it.
+Status: Design, with lane L2 built and not yet measured; the other lanes below build the rest.
 Code: `crates/apps/cli/src/sim_cmd.rs` (`batch`), `crates/apps/cli/src/sim_cmd/cache_template.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::try_map_read`), `crates/extensions/game/src/map_copy.rs`, `crates/live/sim-bench/src/diff.rs` (`Recorder`). Tests: named in each lane.
-Switch: `H2_SIM_CACHE_TEMPLATE` and `impl.sim.mapped-reads` exist ([switches.md](../runtime/switches.md)); each lane lists the switch it adds there.
+Switch: `H2_SIM_CACHE_TEMPLATE`, `map-copy.lobby` and `impl.sim.mapped-reads` exist ([switches.md](../runtime/switches.md)); each lane lists the switch it adds there.
 
 A batch of headless matches (`h2 sim batch`, [sim.md](../runtime/sim.md))
 pays per match about 143 to 171 MiB of dirty memory, about 170 MB of disk
@@ -23,8 +23,8 @@ Every saving is **S** until its lane's measurement is in a note.
 
 | # | Lever | RAM saved | Disk saved | Setup saved | Exactness risk | Built | Lane |
 |---|---|---:|---:|---:|---|---|---|
-| 1 | Warm N:: the batch seeds the menu and match-map slots after the boot's format | 0 | about 168 MB (all of N:) on APFS | the lobby's copy wait and the menu's copy, 3 to 7 s | Low: same class as the warm Z:, which leaves hashes equal | no | L2 |
-| 2 | Boost the main loop's background copy on a sim or light host | 0 | 0 | 2 to 5 s where N: is cold (the producer run, `h2 sim run`) | Low: same calls in the same order | no | L2 |
+| 1 | Warm N:: the batch seeds the menu and match-map slots after the boot's format | 0 | about 168 MB (all of N:) on APFS | the lobby's copy wait and the menu's copy, 3 to 7 s | Low: same class as the warm Z:, which leaves hashes equal | yes, unmeasured | L2 |
+| 2 | Boost the main loop's background copy on a sim or light host | 0 | 0 | 2 to 5 s where N: is cold (the producer run, `h2 sim run`) | Low: same calls in the same order | yes, unmeasured | L2 |
 | 3 | Compact component recorder; `detail = "training"` reports | 15 to 30 with components on | report from about 10 MB to under 100 KB | 0 | None: host-side, same JSON for the full detail | no | L1 |
 | 4 | Census in the report: setup phases, read bytes by file, heap by tag, guest pages written | 0 (it prices rows 5 to 8) | 0 | 0 | None | no | L1 |
 | 5 | Frozen slots: runs bind the template's slot files read-only, no clone or copy | 0 to 5 | 734 MB + 168 MB a run on a filesystem without clones (ext4, overlayfs) | 0 to 1 s | Low: same bytes; a guest write detaches | no | L3 |
@@ -160,16 +160,23 @@ report's result, players and kills; hashes and components are for
 macOS has no range clone, and a map's payload in the ISO is 2 KiB
 aligned, which Linux `FICLONERANGE` refuses. Two exact routes remain:
 
-- *Seed after the format* (**Design**, L2). The boot still formats N:
+- *Seed after the format* (**Design**, built by L2). The boot still formats N:
   (`VfsStorage::mount_cache`, `crates/platform/xapi/src/vfs_storage.rs`);
   straight after, the host clones the template's slot 2 and slot 3 files
   and their metadata records into the empty partition. The title finds
   valid headers and copies nothing, as it does on Z:. The guest reads
   the same payload bytes. What differs from a cold run: the header's
-  FILETIME (`+0x14c`, eviction order of campaign slots only) and that
-  files exist on N: after a format. **Test**:
-  `crates/runtime/kernel/tests/cache_slots.rs` shows a warm reopen of an
-  N: slot causes no disc read and no payload write.
+  FILETIME (`+0x14c`, eviction order of campaign slots only), that
+  files exist on N: after a format, and the producer's
+  `preferences.dat` on Z:. **Code**: the boot's slot pass (`0x213970`)
+  takes a valid N: slot of the right size as it takes slot 0; nothing in
+  the title invalidates N: alone. It needs the preferences file: without
+  it the cache services (`0x2136c0`) see language -1 and build 0 and
+  delete every slot file on Z: and N:, so the Z: template carries it
+  ([cache-slots.md](../runtime/cache-slots.md#sim-batches-a-warm-z)).
+  **Test**: `crates/runtime/kernel/tests/cache_slots.rs` copies Lockout
+  into slot 3, formats and seeds N:, and reopens the slot with no disc
+  read and no payload write.
 - *Elide on write* (fallback if the title rejects a seeded N:). The
   copier's write of bytes equal to the disc's at the same offset becomes
   an extent that points at the disc; the slot file stays sparse. Same
@@ -237,6 +244,15 @@ Measurement for all three: the batch of the 2026-11-22 throughput entry
   `ms_per_tick` within 0.05 with the census off.
 
 ### L2: warm N: and the lobby copy pace
+
+Status: built, waiting for its gate measurement. The template's parts,
+the seed after the format and `map-copy.lobby` are described in
+[cache-slots.md](../runtime/cache-slots.md#sim-batches-a-warm-n). The
+first step's finding is **Code**: the title accepts a seeded N: slot,
+but deletes every slot file at boot when Z: has no `preferences.dat`,
+which the Z: template therefore carries. The warm Z: measured in job
+0060 had no preferences file, so its slots were deleted at each boot
+(**S**, from the code: it fits that job's unchanged setup time).
 
 - **Files**: `crates/apps/cli/src/sim_cmd/cache_template.rs`,
   `crates/apps/cli/src/sim_cmd.rs`, `crates/runtime/vfs/src/lib.rs`
@@ -307,7 +323,8 @@ Measurement for all three: the batch of the 2026-11-22 throughput entry
 - The split of the 9 to 14 s, the 736 MB of copied reads on a warm Z:,
   and of the 74 MiB of heap.
 - How many guest pages a match writes, at either page size.
-- That the title accepts a seeded N: after its own format.
+- That a seeded N: and the carried preferences file leave every tick
+  hash equal (the title's acceptance of the slot is read from the code).
 - That a store built from a cold recording is the whole map.
 - That menu-time state never reaches a match's arena.
 - Whether macOS can fork this process, and every saving in the table.

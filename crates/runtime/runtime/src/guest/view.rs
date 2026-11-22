@@ -82,6 +82,7 @@ impl Guest {
             ident: super::fresh_layout(),
             congruence_skipped: self.congruence_skipped,
             aliasable_ram: self.aliasable_ram,
+            journal: None,
         };
         view.copy_layout_from(self);
         if self.fast_pages.is_some() {
@@ -104,6 +105,8 @@ impl Guest {
     /// shared with `source` until either side writes them.
     pub fn cow_refresh(&mut self, source: &Guest) -> CopyKind {
         self.invalidate_hle_capture();
+        // A view's stores stay in its own copy: nothing to journal.
+        self.end_journal();
         self.fold_cards();
         let (ram, kind) = source.ram.cow_copy_for(self.aliasable_ram);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
@@ -125,6 +128,47 @@ impl Guest {
         }
         self.watch.clear_dirty();
         kind
+    }
+
+    /// Make this Guest an alias of `live` (docs/runtime/second-executor.md,
+    /// "The alias and its journal"): the two exchange RAM blocks, so this
+    /// Guest reads and writes `live`'s bytes in place, with no mapping
+    /// call and no copy, through its own mappings (copied from `live`'s
+    /// when they changed since the last copy) and its own page table, under
+    /// a journal ([`Guest::begin_journal`]). `live` holds this Guest's old
+    /// block until [`end_alias`](Self::end_alias). Call it with both
+    /// memory guards held, and hold `live`'s until `end_alias`: no store
+    /// to either may be in flight, and nothing may read `live` meanwhile.
+    pub(crate) fn alias_ram(&mut self, live: &mut Guest) {
+        self.invalidate_hle_capture();
+        live.invalidate_hle_capture();
+        self.fold_cards();
+        std::mem::swap(&mut self.ram, &mut live.ram);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            self.flat = None;
+            self.flat_requested = false;
+        }
+        self.watch_revision = self.watch_revision.wrapping_add(1);
+        // The journal first, so a layout copy's table rebuild arms it.
+        self.begin_journal();
+        if self.cow_source_layout != live.layout {
+            self.copy_layout_from(live);
+        }
+        self.watch.clear_dirty();
+    }
+
+    /// End an alias ([`alias_ram`](Self::alias_ram)): undo the journal's
+    /// round, so `live`'s bytes are as they were at `alias_ram`, and give
+    /// `live` its block back. The journal stays on, armed, for the next
+    /// alias. Returns the pages the undo restored. Call it with both memory
+    /// guards held.
+    pub(crate) fn end_alias(&mut self, live: &mut Guest) -> usize {
+        let restored = self.journal_undo();
+        self.watch.clear_dirty();
+        std::mem::swap(&mut self.ram, &mut live.ram);
+        self.watch_revision = self.watch_revision.wrapping_add(1);
+        restored
     }
 
     fn copy_layout_from(&mut self, source: &Guest) {
