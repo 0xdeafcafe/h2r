@@ -6,7 +6,7 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/0xdeafcafe/h2recomp",
+    "url": "https://github.com/0xdeafcafe/h2r",
     "directory": "editors/tree-sitter-rules"
   },
   "keywords": ["tree-sitter", "parser", "rules", "h2recomp"],

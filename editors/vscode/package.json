@@ -7,13 +7,13 @@
   "license": "WTFPL",
   "repository": {
     "type": "git",
-    "url": "https://github.com/0xdeafcafe/h2recomp",
+    "url": "https://github.com/0xdeafcafe/h2r",
     "directory": "editors/vscode"
   },
   "bugs": {
-    "url": "https://github.com/0xdeafcafe/h2recomp/issues"
+    "url": "https://github.com/0xdeafcafe/h2r/issues"
   },
-  "homepage": "https://github.com/0xdeafcafe/h2recomp/tree/master/editors/vscode",
+  "homepage": "https://github.com/0xdeafcafe/h2r/tree/master/editors/vscode",
   "engines": {
     "vscode": "^1.90.0"
   },

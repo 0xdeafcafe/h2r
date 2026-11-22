@@ -34,7 +34,7 @@ server starts on the first file.
 
 ```toml
 [grammars.rules]
-repository = "https://github.com/0xdeafcafe/h2recomp"
+repository = "https://github.com/0xdeafcafe/h2r"
 rev = "<commit SHA>"
 path = "editors/tree-sitter-rules"
 ```

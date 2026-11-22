@@ -4,14 +4,14 @@ version = "0.1.0"
 schema_version = 1
 authors = ["Alexander Forbes-Reed"]
 description = "Game type scripts (.rules) for h2recomp: highlighting, outline and the `h2 rules lsp` language server."
-repository = "https://github.com/0xdeafcafe/h2recomp"
+repository = "https://github.com/0xdeafcafe/h2r"
 
 [language_servers.h2-rules-lsp]
 name = "h2 rules lsp"
 languages = ["Rules"]
 
 [grammars.rules]
-repository = "https://github.com/0xdeafcafe/h2recomp"
+repository = "https://github.com/0xdeafcafe/h2r"
 # REV PLACEHOLDER: the commit of this repository that holds the generated
 # grammar (editors/tree-sitter-rules/src/parser.c). Replace it with that
 # commit's full SHA after `tree-sitter generate` is committed.

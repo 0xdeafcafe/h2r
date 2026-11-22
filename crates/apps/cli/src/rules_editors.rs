@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 /// The rolling release CI attaches the extensions to
 /// (`.github/workflows/editors.yml`); [`VSIX_ASSET`] is the `.vsix` there.
-pub const EDITORS_RELEASE: &str = "https://github.com/0xdeafcafe/h2recomp/releases/download/editors-latest";
+pub const EDITORS_RELEASE: &str = "https://github.com/0xdeafcafe/h2r/releases/download/editors-latest";
 pub const VSIX_ASSET: &str = "h2-rules.vsix";
 
 /// The extension's id in VS Code (`publisher.name` in
