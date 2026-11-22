@@ -28,12 +28,23 @@ describe("the bounce medal table", () => {
     expect(bounceMedals(Number.NaN)).toEqual([]);
   });
 
+  // `bounce_medals_with`: a Monster adds Monster Bounce after the chain's medals.
+  test("a Monster adds Monster Bounce last", () => {
+    expect(bounceMedals(2, true)).toEqual(["superbounce", "double-bounce", "monster-bounce"]);
+    expect(bounceMedals(1, true)).toEqual(["superbounce", "monster-bounce"]);
+    expect(bounceMedals(9, true)).toEqual(["superbounce", "monster-bounce"]);
+    expect(bounceMedals(0, true)).toEqual([]);
+    expect(bounceMedals(2, false)).toEqual(bounceMedals(2));
+  });
+
   test("ids, names and the medal list", () => {
     expect(BOUNCE_MEDALS).toEqual([
       "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced",
+      "monster-bounce",
     ]);
     expect(BOUNCE_MEDALS.map((id) => MEDAL_BY_ID[id].name)).toEqual([
       "Superbounce", "Double Bounce", "Triple Bounce", "Quad Bounce", "Chain Bounce", "Bouncetacular", "Bounced",
+      "Monster Bounce",
     ]);
     expect(MEDALS.filter((m) => isBounceMedal(m.id)).map((m) => m.id)).toEqual(BOUNCE_MEDALS);
     expect(isBounceMedal("twofer")).toBe(false);
@@ -59,7 +70,7 @@ describe("a game's bounces", () => {
         { index: 2, name: "Clanker 2", team: 1, bot: true },
       ] }, "2026-11-15T10:00:00.000Z"),
       ev("Superbounce", "game-g", { tick: 40, player: 0, chain: 1 }),
-      ev("Superbounce", "game-g", { tick: 70, player: 0, chain: 2 }),
+      ev("Superbounce", "game-g", { tick: 70, player: 0, chain: 2, monster: true }),
       ev("Superbounce", "game-g", { tick: 80, player: 2, chain: 1 }),
       ev("PlayerKilled", "game-g", { tick: 90, victim: 1, kind: "world", weapon: "fall" }),
       ev("Bounced", "game-g", { tick: 90, player: 1 }),
@@ -71,6 +82,9 @@ describe("a game's bounces", () => {
   test("the stream's events become the game's bounces, in log order", () => {
     const g = world().games.g!;
     expect(g.bounces.map((b) => [b.tick, b.player, b.chain])).toEqual([[40, 0, 1], [70, 0, 2], [80, 2, 1], [90, 1, null]]);
+    // Only the Monster carries the flag.
+    expect(g.bounces.map((b) => b.monster === true)).toEqual([false, true, false, false]);
+    expect("monster" in g.bounces[0]!).toBe(false);
     expect(g.last_tick).toBe(900);
     // The events count towards the game's signature summary.
     for (const b of g.bounces) expect(g.positions).toContain(b.position);
@@ -95,13 +109,27 @@ describe("a game's bounces", () => {
     });
     expect(fresh.games.h!.bounces).toEqual([{ position: 3, at: "", tick: 5, player: 0, chain: 2 }]);
     expect(Object.fromEntries(countMedals(gameAwards(fresh.games.h!)))).toEqual({ "superbounce": 1, "double-bounce": 1 });
+
+    // A snapshot's bounce row carries `monster` beside `chain`.
+    resetPos();
+    const monster = initialState();
+    applyGameSnapshot(monster, {
+      game_id: "m", map: "lockout", mode: "multiplayer", started_at: "2026-11-15T10:00:00.000Z", players: [],
+      bounces: [{ tick: 5, player: 0, chain: 2, monster: true, position: 3, at: "" }],
+    });
+    expect(monster.games.m!.bounces).toEqual([{ position: 3, at: "", tick: 5, player: 0, chain: 2, monster: true }]);
+    expect(Object.fromEntries(countMedals(gameAwards(monster.games.m!)))).toEqual({
+      "superbounce": 1, "double-bounce": 1, "monster-bounce": 1,
+    });
   });
 
   test("the game's medals hold every player's bounces, a bot's included", () => {
     const g = world().games.g!;
     const awards = gameAwards(g);
     // A finished game with no teabag: everyone completed it clean (incel).
-    expect(Object.fromEntries(countMedals(awards, new Set([0])))).toEqual({ "superbounce": 2, "double-bounce": 1, "incel": 1 });
+    expect(Object.fromEntries(countMedals(awards, new Set([0])))).toEqual({
+      "superbounce": 2, "double-bounce": 1, "monster-bounce": 1, "incel": 1,
+    });
     expect(Object.fromEntries(countMedals(awards, new Set([1])))).toEqual({ "bounced": 1, "incel": 1 });
     expect(Object.fromEntries(countMedals(awards, new Set([2])))).toEqual({ "superbounce": 1, "incel": 1 });
   });
@@ -110,6 +138,8 @@ describe("a game's bounces", () => {
     const s = world();
     expect(serviceRecord(s, A).medals.get("superbounce")).toBe(2);
     expect(serviceRecord(s, A).medals.get("double-bounce")).toBe(1);
+    expect(serviceRecord(s, A).medals.get("monster-bounce")).toBe(1);
+    expect(serviceRecord(s, B).medals.get("monster-bounce")).toBeUndefined();
     expect(serviceRecord(s, B).medals.get("bounced")).toBe(1);
     expect(serviceRecord(s, B).medals.get("superbounce")).toBeUndefined();
   });

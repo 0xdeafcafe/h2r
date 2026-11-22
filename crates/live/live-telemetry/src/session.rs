@@ -1037,12 +1037,12 @@ impl Session {
     }
 
     /// A player of the match bounced off a superbounce crease at the
-    /// engine's `tick`, `chain` bounces into its chain
-    /// (docs/game/superbounce.md, "Recording"). The superbounce mode calls
+    /// engine's `tick`, `chain` bounces into its chain, a Monster when
+    /// `monster` (docs/game/superbounce.md, "Recording"). The superbounce mode calls
     /// it, through [`crate::Telemetry::superbounce`], for every player it
     /// watches. Like a kill it is not sent after the end or in a cinematic,
     /// and a slot that is not in the match, or a chain of 0, sends nothing.
-    pub fn superbounce(&mut self, tick: u64, player: u32, chain: u32) {
+    pub fn superbounce(&mut self, tick: u64, player: u32, chain: u32, monster: bool) {
         let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
             return;
         };
@@ -1059,6 +1059,7 @@ impl Session {
                 tick,
                 player,
                 chain,
+                monster,
             },
         );
     }
@@ -2078,10 +2079,10 @@ mod tests {
         let mut session = Session::new("test", None);
         session.start(&info(), vec![player(0, 0), player(1, 0)]);
         session.take_output();
-        session.superbounce(40, 1, 1);
-        session.superbounce(70, 1, 2);
-        session.superbounce(71, 5, 1);
-        session.superbounce(72, 0, 0);
+        session.superbounce(40, 1, 1, false);
+        session.superbounce(70, 1, 2, true);
+        session.superbounce(71, 5, 1, true);
+        session.superbounce(72, 0, 0, true);
         session.bounced(80, 1, 3);
         session.bounced(81, 5, 0);
         let events: Vec<_> = session
@@ -2105,16 +2106,18 @@ mod tests {
                 Ok(())
             );
         }
-        for (event, (tick, chain)) in events.iter().zip([(40, 1), (70, 2)]) {
+        // A non-Monster writes no `monster` key.
+        let sent = [
+            serde_json::json!({"tick": 40, "player": 1, "chain": 1}),
+            serde_json::json!({"tick": 70, "player": 1, "chain": 2, "monster": true}),
+        ];
+        for (event, data) in events.iter().zip(sent) {
             assert_eq!(event.kind, live_proto::game::SUPERBOUNCE);
-            assert_eq!(
-                event.data,
-                serde_json::json!({"tick": tick, "player": 1, "chain": chain})
-            );
+            assert_eq!(event.data, data);
         }
         session.end(&snapshot(90, vec![player(0, 0), player(1, 0)]));
         session.take_output();
-        session.superbounce(95, 1, 1);
+        session.superbounce(95, 1, 1, false);
         session.bounced(96, 1, 0);
         assert!(kinds(&mut session).is_empty());
     }

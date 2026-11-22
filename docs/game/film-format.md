@@ -225,15 +225,17 @@ available. It comes from the report that depleted an actor unit's body.
 It is public stats data, with no input, score or digest attached. Player
 kill totals and medals come from `PlayerKilled`.
 
-`Superbounce` carries the match tick, the player's slot and `chain`, the
-bounce's place in its chain (1 and up); `Bounced` carries the match tick,
+`Superbounce` carries the match tick, the player's slot, `chain`, the
+bounce's place in its chain (1 and up), and `monster`, true for a Monster
+bounce and left out when false (absent reads as false); `Bounced` carries the match tick,
 slot and ended chain's count (0 if none) of a death falling out of the map while trying a bounce
 ([superbounce.md](superbounce.md#recording)). Both are public stats
 records, imported into the game's events like a kill. The Tracker writes,
 at the same tick, a `Medal` record for each medal the bounce earns
-(`film::events::medals::bounce_medals`: `superbounce`, then
+(`film::events::medals::bounce_medals_with`: `superbounce`, then
 `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce` or
-`bouncetacular` at chain 2 to 6) or `bounced` for the death, and counts them
+`bouncetacular` at chain 2 to 6, then `monster-bounce` for a Monster) or
+`bounced` for the death, and counts them
 in the summary's `medals` map. The film's version stays 3.
 
 `Teabag` carries the match tick, the crouching player's slot (`player`)

@@ -29,7 +29,8 @@ pub enum Event {
     ScoreChanged(game::ScoreChanged),
     GameEnded(game::GameEnded),
     /// A bounce off a superbounce crease. The Tracker follows it with a
-    /// `Medal` for each medal of its chain count.
+    /// `Medal` for each medal of its chain count, and `monster-bounce` last
+    /// for a Monster.
     Superbounce(game::Superbounce),
     /// A death falling out of the map while trying a bounce. The Tracker
     /// follows it with a `bounced` `Medal`.
@@ -344,7 +345,7 @@ impl Tracker {
             Event::FirefightEnded(e) => e.tick,
             Event::Superbounce(bounce) => {
                 let player = self.generation(bounce.player);
-                self.medals.bounce_with(player, bounce.chain, |medal| {
+                self.medals.bounce_with(player, bounce.chain, bounce.monster, |medal| {
                     extra.push(Event::Medal {
                         player: bounce.player,
                         earned_at: bounce.tick,
@@ -845,7 +846,8 @@ mod tests {
                 Event::Superbounce(game::Superbounce {
                     tick,
                     player: 3,
-                    chain
+                    chain,
+                    monster: false,
                 })
             );
             for r in &records {
@@ -932,6 +934,7 @@ mod tests {
                 tick: 70,
                 player: 3,
                 chain: 2,
+                monster: false,
             }),
         };
         let wire: Value = serde_json::from_slice(&bounce.encode().unwrap()).unwrap();
@@ -958,6 +961,79 @@ mod tests {
         assert!(
             Record::decode_telemetry(br#"{"tick":9,"kind":"Superbounce","data":{"player":1}}"#)
                 .is_err()
+        );
+    }
+
+    /// A Monster bounce carries `monster` on the wire and earns
+    /// `monster-bounce` after its chain's medals; an event without the key
+    /// is no Monster, and a non-Monster writes no key.
+    #[test]
+    fn a_monster_bounce_records_monster_bounce_last() {
+        use crate::film::PlayerSummary;
+        let mut tracker = Tracker::default();
+        tracker
+            .event(
+                game::GAME_STARTED,
+                &json!({"host":"h","game_id":"g","map":"lockout","mode":"multiplayer",
+                    "team_play":false,"players":[{"index":3,"name":"Ada","team":0}]}),
+                0,
+            )
+            .unwrap();
+        tracker
+            .event(game::SUPERBOUNCE, &json!({"tick":40,"player":3,"chain":1}), 41)
+            .unwrap();
+        let records = tracker
+            .event(
+                game::SUPERBOUNCE,
+                &json!({"tick":70,"player":3,"chain":2,"monster":true}),
+                71,
+            )
+            .unwrap();
+        assert_eq!(
+            records[0].event,
+            Event::Superbounce(game::Superbounce {
+                tick: 70,
+                player: 3,
+                chain: 2,
+                monster: true,
+            })
+        );
+        let medals: Vec<_> = records[1..]
+            .iter()
+            .map(|r| match &r.event {
+                Event::Medal { medal, .. } => medal.as_str(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(medals, ["superbounce", "double-bounce", "monster-bounce"]);
+        let wire: Value = serde_json::from_slice(&records[0].encode().unwrap()).unwrap();
+        assert_eq!(
+            wire,
+            json!({"tick":70,"kind":"Superbounce",
+                "data":{"tick":70,"player":3,"chain":2,"monster":true}})
+        );
+        assert_eq!(Record::decode(&records[0].encode().unwrap()).unwrap(), records[0]);
+        let mut rows = vec![PlayerSummary {
+            seat: 3,
+            name: "Ada".into(),
+            ..Default::default()
+        }];
+        tracker.summary_medals(&mut rows);
+        assert_eq!(
+            rows[0].medals,
+            BTreeMap::from([
+                ("superbounce".into(), 2),
+                ("double-bounce".into(), 1),
+                ("monster-bounce".into(), 1),
+            ])
+        );
+
+        let old: game::Superbounce =
+            serde_json::from_value(json!({"tick":9,"player":1,"chain":1})).unwrap();
+        assert!(!old.monster);
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            json!({"tick":9,"player":1,"chain":1})
         );
     }
 

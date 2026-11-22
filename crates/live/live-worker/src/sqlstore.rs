@@ -1206,7 +1206,7 @@ mod tests {
             ),
             (
                 "Superbounce",
-                serde_json::json!({"tick": 70, "player": 0, "chain": 2}),
+                serde_json::json!({"tick": 70, "player": 0, "chain": 2, "monster": true}),
             ),
             (
                 "Superbounce",
@@ -1226,11 +1226,22 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|b| (b["player"].as_u64(), b["chain"].as_u64()))
+            .map(|b| {
+                (
+                    b["player"].as_u64(),
+                    b["chain"].as_u64(),
+                    b["monster"].as_bool(),
+                )
+            })
             .collect();
+        // A Monster's row carries `monster`; any other has no key.
         assert_eq!(
             chains,
-            [(Some(0), Some(1)), (Some(0), Some(2)), (Some(1), Some(1))]
+            [
+                (Some(0), Some(1), None),
+                (Some(0), Some(2), Some(true)),
+                (Some(1), Some(1), None)
+            ]
         );
         assert_eq!(g["bounced"][0]["player"], 1);
         let (_, v) = call(

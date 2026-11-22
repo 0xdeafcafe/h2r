@@ -3,8 +3,10 @@
 // on for `requires hud.superbounce`. `list tweakers` files its variants
 // under Tweakers. Its record settings (no score or time limit, 3 s
 // respawn, overshields, a magnum, nothing on the map) are the variant
-// record's, not the script's. A bounce scores nothing unless the variant
-// asks; the medals and chains are the host's.
+// record's, not the script's. A bounce scores `bounce_points` times its
+// place in its chain, capped at 6 (Bouncetacular), and twice that for a
+// Monster Bounce; a Bounced (a fall out of the map during a bounce) costs
+// a point. The medals, chains and the Monster test are the host's.
 // docs/game/superbounce.md, "The superbounce game type", and
 // docs/game/rules-engine.md, "Firefight, AI and bounces".
 //
@@ -16,7 +18,9 @@ requires hud.superbounce
 
 option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
 option suicide_costs: bool = true "Suicide penalty" "A suicide costs a point"
-option bounce_points: int 0..5 = 0 "Bounce points" "Points for each superbounce"
+option bounce_points: int 0..5 = 1 "Bounce points" "Points for each superbounce, times its place in the chain"
+option bounced_costs: bool = true "Bounced penalty" "A fall out of the map during a bounce costs a point"
+option monster_double: bool = true "Monster double" "A Monster Bounce scores double"
 
 player var bounces: int = 0
 
@@ -30,7 +34,19 @@ on kill(victim, killer) {
     }
 }
 
-on bounce(p, spot) {
+// The chain's multiplier stops at 6, Bouncetacular's count, so a long
+// chain cannot run away; a Monster doubles after the cap.
+on bounce(p, spot, chain, monster) {
     p.bounces = p.bounces + 1
-    if bounce_points > 0 { score(p, bounce_points) }
+    if bounce_points > 0 {
+        let points = bounce_points * min(chain, 6)
+        if monster and monster_double { score(p, points * 2) } else { score(p, points) }
+    }
+}
+
+// A Bounced is a fall out of the map, a death with no killer, so with
+// the suicide penalty on `on kill` has already taken its point: a Bounced
+// costs one point either way, never two.
+on bounced(p) {
+    if bounced_costs and not suicide_costs { score(p, -1) }
 }

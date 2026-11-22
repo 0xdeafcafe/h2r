@@ -182,7 +182,8 @@ error (`scenario: unknown field ...`) and every field is optional.
   `{"quit": 2}`, `{"enter": {"zone": 3, "object": 9}}`, `{"leave": {...}}`,
   `{"press": {"player": 0, "object": 0}}`, `{"pickup": {"player": 0,
   "object": 5}}`, `{"drop": {...}}`, `{"bounce": {"player": 0, "object":
-  0}}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
+  0, "chain": 2, "monster": false}}` (`chain` 1 and `monster` false when
+  left out), `{"bounced": 0}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
   `{"actor_kill": {"killer": 0, "class": "elite"}}`, `{"actor_assist":
   {"killer": 0, "assist": 1, "class": "elite"}}`, `"round_end"`.
 - A kill marks the victim dead and counts its death and the killer's
@@ -254,7 +255,7 @@ options, seed, round_time, ticks, start, timeline: [{tick, events}]}`,
 with each event `{type: "kill", victim, killer}`, `{type: "spawn",
 player}`, `enter {zone, object}`, `squad_dead {squad}`, `actor_kill
 {killer, class}`, `actor_assist {killer, assist, class}`, `bounce
-{player, object}` and so on: the handler's name plus its arguments as
+{player, object, chain, monster}`, `bounced {player}` and so on: the handler's name plus its arguments as
 fields. `ticks` is the last tick run
 (at most 36,000), `start` defaults true, at most 4,096 events. The trace
 lists only ticks in which something happened, with `ran`, `calls`,

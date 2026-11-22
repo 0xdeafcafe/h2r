@@ -23,7 +23,7 @@ on round_start {
     for each players p { p.bounces = 0 }
 }
 
-on bounce(p, spot) {
+on bounce(p, spot, chain, monster) {
     p.bounces = p.bounces + 1
     if not spot.found {
         spot.found = true

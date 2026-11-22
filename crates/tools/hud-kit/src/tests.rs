@@ -213,7 +213,7 @@ fn the_synthetic_sheet_draws_and_passes() {
         [Check::Glyphs]
     );
     let states = Superbounce.states().len();
-    assert_eq!(states, 26);
+    assert_eq!(states, 27);
     assert_eq!(r.shots.len(), states * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
     assert_eq!((sheet.width, sheet.height), (3 * 320, states as u32 * 240));

@@ -98,7 +98,7 @@ const ZONE_O: &[&str] = &["zone", "o"];
 const T_ARG: &[&str] = &["t"];
 const S: &[&str] = &["s"];
 const KILLER_CLASS: &[&str] = &["killer", "class"];
-const P_SPOT: &[&str] = &["p", "spot"];
+const BOUNCE: &[&str] = &["p", "spot", "chain", "monster"];
 const KILLER_ASSIST_CLASS: &[&str] = &["killer", "assist", "class"];
 
 /// An event's argument names, as the docs write them, and what fires it.
@@ -128,11 +128,15 @@ pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
             KILLER_ASSIST_CLASS,
             "A player assisted another's kill of an AI actor of a kit class.",
         ),
-        Event::Bounce => (P_SPOT, "A player superbounced."),
+        Event::Bounce => (
+            BOUNCE,
+            "A player superbounced off a strip. `chain` is the bounce's place in its chain (1 for a single bounce, 2 for a double); `monster` is true for a Monster Bounce, a launch well above a normal one.",
+        ),
         Event::Edit => (P_O, "A player used a granted power."),
         Event::Join => (P, "A player joined."),
         Event::Quit => (P, "A player quit."),
         Event::RoundEnd => (NO_ARGS, "At the end of each round."),
+        Event::Bounced => (P, "A player fell out of the map during a bounce: the Bounced medal."),
     }
 }
 

@@ -416,6 +416,16 @@ pub fn landing_spot(spots: &[Spot], at: Vec3) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// How many bounce spots have their edge within [`LANDING_RADIUS`] of `at`:
+/// 1 by a single seam, more where strips meet (`superbounce_chain` keeps
+/// it on a bounce's award, for the study of Monster Bounces).
+pub fn strips_near(spots: &[Spot], at: Vec3) -> usize {
+    spots
+        .iter()
+        .filter(|s| s.kind == Kind::Bounce && edge_distance(s, at) <= LANDING_RADIUS)
+        .count()
+}
+
 /// A touchdown's result by the nearest strip within [`LANDING_RADIUS`] of
 /// the origin on the tick before (`at`, with the word `word_before` and
 /// the vertical speed `vz_before` then), coming out at `vz`; `None` with no

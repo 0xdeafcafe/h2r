@@ -40,7 +40,7 @@ export const PACK_MEDALS: ReadonlySet<string> = new Set([
   "opening-act", "last-word", "payback", "twofer", "hat-trick", "full-house", "encore",
   "hot-streak", "wildfire", "untouchable",
   "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce",
-  "bouncetacular", "bounced",
+  "bouncetacular", "bounced", "monster-bounce",
   "incel",
 ]);
 

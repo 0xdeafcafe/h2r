@@ -671,8 +671,21 @@ on it and a saved copy of it name the script. The script is
 game: `list tweakers` files the variant under Tweakers and
 `requires hud.superbounce` turns the mode on
 ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). Its rules
-are Slayer's kill rule, and points for a bounce when the variant asks,
-none by default.
+are Slayer's kill rule and points for bounces, which the script works out
+from what the medal chain files ([Medals](#medals)):
+
+| Event | Points, by default | Option |
+|---|---|---|
+| a bounce | `bounce_points` (1) times its place in its chain, at most 6: a single 1, a double 2 (3 for the chain of two), the sixth and every bounce after it 6 | `bounce_points`, 0 to 5; 0 scores no bounce |
+| a Monster Bounce | twice the bounce's, after the cap: a Monster single 2, a Monster eighth of a chain 12 | `monster_double`, on |
+| a Bounced | −1, once: Slayer's suicide point while `suicide_costs` is on, else the Bounced penalty | `bounced_costs`, on |
+| a kill, a suicide | Slayer's: `kill_points` (1), −1 | `kill_points`, `suicide_costs` |
+
+The cap is Bouncetacular's count, so a long chain cannot run away. A
+Bounced is a death with no killer too, so while `suicide_costs` is on,
+`on kill` takes its point and `on bounced` takes none: a Bounced costs one
+point either way (supposed: that the game reports a fall out of the map as
+a death with no killer; a kill feed line on a lab run would show it).
 
 The mode is on when the variant's extension block names a rules script
 that requires `hud.superbounce` (`rules::header::script_asks_superbounce`,
@@ -691,7 +704,9 @@ variant may set. An agent can force it on or off in any game with
 `crates/extensions/game/src/superbounce_mode.rs`.
 
 Each bounce the medal chain files goes to a running rules script as
-`on bounce(p, spot)`, `spot` the strip's id (`superbounce_chain::spot_id`).
+`on bounce(p, spot, chain, monster)`, `spot` the strip's id
+(`superbounce_chain::spot_id`), `chain` its count and `monster` whether
+it is a Monster Bounce; each Bounced goes as `on bounced(p)`.
 
 **State.** On or off is decided when a game starts and again every 30
 ticks (so a guest's late host block counts); off, a tick costs a counter
@@ -1529,10 +1544,11 @@ read `playing` until `done`; the figure itself needs a windowed run.
 
 ## Medals
 
-Seven medals: **Superbounce** for every bounce; **Double Bounce**,
+Eight medals: **Superbounce** for every bounce; **Double Bounce**,
 **Triple Bounce**, **Quad Bounce**, **Chain Bounce** and
 **Bouncetacular** for the second to the sixth bounce with no ground
-between them; and **Bounced**, for a fall out of the map during a
+between them; **Monster Bounce**, for a bounce that launches well above
+a normal one; and **Bounced**, for a fall out of the map during a
 bounce. They are awarded to every player in the game, bots included,
 while the mode is on. The player sees a medal as Halo 2 shows its own, a
 line of the notification list with a medal glyph ([hud-kit.md](hud-kit.md),
@@ -1569,6 +1585,23 @@ Sixteen pair reads a tick at most, only while the mode is on.
   (`superbounce_charge::landing_spot`), by `superbounce_chain::spot_id`,
   and a running rules script hears it as `on bounce`
   ([the game type](#the-superbounce-game-type)).
+- **A Monster Bounce** is a bounce whose vertical speed comes out over
+  16 units/s (`superbounce_chain::MONSTER_VZ`), the speed the landing
+  classifier reads (`strip_landing`'s `vz`). Every measured launch was
+  under it: 7.97 to 13.22 over the six traced bounces
+  ([Traces](#traces-trace)) and 12.31 to 12.45 with the word set
+  ([the pair word](#the-pair-word-trace-lab-playback)); 16 is about a
+  fifth over the top of them. The number is reasoned from those, not
+  measured: no Monster has been traced (**Open**). The community's
+  definition (Halo Fandom wiki and Halopedia, "Super bouncing") is a
+  superbounce that launches higher than a normal one, off a seam thin
+  enough to fall through onto a second set of gridlines, or between
+  gridlines that fan out from one point in a V; neither page gives a
+  number. Geometry alone does not tell a V from seams that cross, which
+  launch as a normal bounce, so the test is the launch alone. Each
+  bounce's award keeps how many bounce strips were within 0.5 of the
+  touchdown (`Award::strips`, `superbounce.state`'s `recent`), for
+  comparing Monsters against their geometry later; nothing reads it.
 - **The chain** is a count per player. A bounce while the chain is live
   adds one; a bounce while it is not makes it 1. Each bounce makes the
   chain live. It stops being live at the first of:
@@ -1604,6 +1637,7 @@ multi-kills:
 | 5 | Superbounce, Chain Bounce | `chain-bounce` |
 | 6 | Superbounce, Bouncetacular | `bouncetacular` |
 | 7 and over | Superbounce | |
+| any, launched over 16 units/s | the above, and Monster Bounce | `monster-bounce` |
 
 Superbounce is every bounce, so its count is the player's bounces. A
 chain gives each of the other five once, as the count passes it: a
@@ -1613,8 +1647,11 @@ The table is one function, `bounce_medals(chain)`. Its canonical home is
 Live; the site has a copy in `web/src/state/derive.ts`, as it has of the
 kill medals. The game, which does not depend on Live, has its own copy
 in `superbounce_chain::bounce_medals`, kept to the same ids
-(`medals_by_id`), for the HUD and the agent API. The live and site
-lists of the seven ids are `BOUNCE_MEDALS` (`medals.rs`, `derive.ts`).
+(`medals_by_id`), for the HUD and the agent API. Monster Bounce is not
+in the count: `bounce_medals_with(chain, monster)` adds it last, so it is
+the line a Monster shows, and the bounce's event carries the flag. The
+live and site lists of the eight ids are `BOUNCE_MEDALS` (`medals.rs`,
+`derive.ts`).
 
 **Bounced** (`bounced`) is not on the chain's table: it is its own
 event, `Event::Bounced`. It is earned when, for a player who was
@@ -1672,8 +1709,9 @@ A chain needs a bounce with no crouch between it and the last one.
 One notification per award for a local player, to that player's view:
 the line of the highest medal the award earned (`Superbounce!`, `Double
 bounce!`, `Triple bounce!`, `Quad bounce!`, `Chain bounce!`,
-`Bouncetacular!`, `Bounced!`) behind its medal glyph (U+E2A0 to U+E2A6,
-new art in the two HUD message fonts), queued through the game's own
+`Bouncetacular!`, `Bounced!`, `Monster bounce!`) behind its medal glyph
+(U+E2A0 to U+E2A6, and U+E2A8 for Monster Bounce, new art in the two HUD
+message fonts), queued through the game's own
 insert (`Handle::notify`). Halo 2 shows a multi-kill the same way,
 to the earner only and through the same routine, so the line's font,
 colour, place and fade are the game's. No sound. A bot's medals and
@@ -1683,12 +1721,13 @@ other choices for the picture and the preview states are in
 
 ### Recording
 
-The game says that a bounce happened and what the chain's count was;
-the medals are worked out from the count wherever they are shown, as
-kill medals are worked out from kills.
+The game says that a bounce happened, what the chain's count was and
+whether it was a Monster; the medals are worked out from those wherever
+they are shown, as kill medals are worked out from kills.
 
-- **The events.** `Superbounce`, with `tick`, `player` (the slot) and
-  `chain` (1 and up), and `Bounced`, with `tick`, `player` and the `chain`
+- **The events.** `Superbounce`, with `tick`, `player` (the slot),
+  `chain` (1 and up) and `monster` (true for a Monster Bounce; absent,
+  false, otherwise), and `Bounced`, with `tick`, `player` and the `chain`
   it ended (0 if none): game events
   beside `PlayerKilled` (`live_proto::game`, with their validation: a
   player of the game, a chain of at least 1). The mode sends them for
@@ -1709,7 +1748,7 @@ kill medals are worked out from kills.
   players; where the two disagree the record is the host's.
 - **The film.** `film::events::Tracker` takes the events as it takes a
   kill: it writes a `Superbounce` (or `Bounced`) record at the match tick,
-  then a `Medal` record for each medal of that count, or `bounced` (the
+  then a `Medal` record for each medal of that count and flag, or `bounced` (the
   `Medal` kind as it is: `player`, `earned_at`, and the id in `medal`),
   and adds them to the counts the summary's `medals` map carries
   (`medals::Tally`). Both are stats records: `Record::decode_telemetry`
@@ -1729,7 +1768,7 @@ kill medals are worked out from kills.
   server refuses a whole batch holding a kind it does not know, and the
   console drops a refused batch with the kills beside it, so the server
   is released before the consoles that send them. A game's snapshot
-  serves its last 100 `bounces` and `bounced` beside its `kills`; the
+  serves its last 100 `bounces` (each with `monster` when true) and `bounced` beside its `kills`; the
   stats summary counts `bounces` and `bounced` in the totals and in an
   account's row ([live-api.md](../live/live-api.md#stats-summary)). The
   site derives the medals from them (`derive.ts`: `BounceMedalId`,
@@ -1742,8 +1781,8 @@ kill medals are worked out from kills.
   art, `web/public/art/ART.md`), or the game's own medal from the
   owner's disc where the server has game art
   ([web-viewer.md](../live/web-viewer.md), `medalKey`). The disc has no
-  bounce medal, so `medalKey` gives none for the seven ids; the pack's
-  seven are drawn from the HUD glyphs' pixels (`scripts/superbounce-medals.py`
+  bounce medal, so `medalKey` gives none for the eight ids; the pack's
+  eight are drawn from the HUD glyphs' pixels (`scripts/superbounce-medals.py`
   makes the glyphs; the site's files are their nearest-neighbour upscale)
   and listed in `PACK_MEDALS` (`web/src/lib/art.ts`).
 - **Theater.** A film played in the game runs the simulation again,
@@ -1762,9 +1801,10 @@ has `medals`:
 | Field | Meaning |
 |---|---|
 | `players` | a row for each player slot with a chain or a medal this game: `player` (the slot), `chain` (the count of its last chain), `live` (whether the next bounce adds to it) and `counts` (each medal id's total this game) |
-| `recent` | the last 8 awards, oldest first: `player`, `tick`, `chain` and `medals` (the ids the award earned, lowest first) |
+| `recent` | the last 8 awards, oldest first: `player`, `tick`, `chain`, `medals` (the ids the award earned, lowest first) and, for a bounce, `strips` (the bounce strips within 0.5 of its touchdown) |
 
-`superbounce.medal_test {"chain": N}` or `{"bounced": true}` (access:
+`superbounce.medal_test {"chain": N}` (with `"monster": true` for a
+Monster Bounce) or `{"bounced": true}` (access:
 act) files a bounce at that count, or a Bounced, for the first local
 player with a unit, after the chain's rule: the HUD line and `medals`
 as a real one gives them, and nothing sent to the film or Live. It is how a run checks the line without five bounces in a
