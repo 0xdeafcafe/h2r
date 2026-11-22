@@ -38,7 +38,7 @@ fn page_has_two_working_answers_and_defaults_to_decline() {
         let mut focus = Focus::default();
         let spec = page.spec(&focus);
         assert_eq!(spec.rows[0].label, "Not now");
-        assert_eq!(spec.rows[1].label, "Allow");
+        assert_eq!(spec.rows[1].label, "Close and start");
         assert!(check_fallback(&spec).is_empty());
         let effect = input.into_iter().map(|i| page.step(&mut focus, i)).last();
         assert!(matches!(

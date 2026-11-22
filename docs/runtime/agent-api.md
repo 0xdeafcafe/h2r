@@ -31,6 +31,7 @@ connection to hold `session.claim`.
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `host.pause`, `host.step` | act, without the controller check | [Window pause and frame step](#window-pause-and-frame-step) |
 | `host.screenshot` | act, without the controller check | [Window screenshots](#window-screenshots) |
+| `host.quit` | act, without the controller check | [Close the window](#close-the-window) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
@@ -365,9 +366,9 @@ while a prompt is queued or open.
 
 The status result is `pending`, `allowed`, `declined`, `timed_out` or
 `unavailable` (the dialog failed to open). **Not now** and Back both
-decline. **Allow** grants consent for that request, after which the lab
-waits for the player to quit. The game leaves saving and quitting with
-the player. A request expires even if the UI is still loading. The game
+decline. **Close and start** answers `allowed`: consent for that
+request, after which the lab closes the game with
+[`host.quit`](#close-the-window) and waits for it to exit. A request expires even if the UI is still loading. The game
 dismisses the expired dialog at the next UI update. The status method is
 read-only and answers `GONE` for an unknown or superseded id.
 
@@ -478,6 +479,27 @@ has no screenshots directory are `UNAVAILABLE` with the reason.
 ```sh
 h2 agent host.screenshot '{}'
 h2 agent host.screenshot '{"path":"/tmp/ledge.png"}'
+```
+
+### Close the window
+
+`host.quit {}` closes the game window as its close button and Cmd+Q do:
+the window shell stops the guest and leaves its event loop, and the
+process exits once the guest has stopped. It answers `{closing: true}` at
+once, before the window has closed; the caller watches the process to
+see it go. It takes no params (`{}` or none), and a repeat is harmless.
+The lab calls it when the player answers **Close and start** to a
+[consent request](#lab-consent) ([Player consent before a
+job](lab.md#player-consent-before-a-job)).
+
+The game has no save step of its own to run first: a campaign keeps what
+its last checkpoint saved, as with the close button. Like `host.pause` it
+is answered on the connection's own thread, through the window shell's
+hub (`crates/apps/app/src/shell.rs`, over `agent_proto::host_quit`), so a
+paused game takes it too. A headless game has no window: `UNAVAILABLE`.
+
+```sh
+h2 agent host.quit '{}'
 ```
 
 ## `world`: what is in the level

@@ -1,5 +1,7 @@
 //! Consent to use the playing Mac (docs/runtime/lab.md). A job holds the
-//! lab activity lock while waiting. The game stays under the player's control.
+//! lab activity lock while waiting. The game stays under the player's
+//! control: only their Allow lets the lab close it, through the game's own
+//! `host.quit`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -9,7 +11,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agent_proto::{Client, discover, takeover};
+use agent_proto::{Client, discover, host_quit, takeover};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
@@ -38,6 +40,10 @@ pub(super) enum Outcome {
     Proceed,
     Skipped(&'static str),
     Stopped,
+    /// The player allowed the job, but their game is still open: the lab
+    /// couldn't close it. The job waits for `game` to close, and `reason`
+    /// says why and what the player can do.
+    Held { reason: String, game: GameKey },
 }
 
 pub(super) struct Gate {
@@ -136,25 +142,28 @@ impl Gate {
                     return Outcome::Skipped(DECLINED);
                 }
             }
+            // Allow closes the game: ask it to, then wait for it to go.
             phase("awaiting_quit");
-            let quit_by = (Instant::now() + QUIT_TIMEOUT).min(deadline);
-            loop {
-                if stopped() {
-                    return Outcome::Stopped;
+            let closed = close_allowed(
+                || quit(path),
+                || match self.windows(&owns_game) {
+                    Ok(games) => Ok(games.iter().any(|candidate| game.same_as(candidate))),
+                    Err(error) => Err(format!("{error:#}")),
+                },
+                &stopped,
+                Instant::now() + QUIT_TIMEOUT,
+                Instant::now,
+                std::thread::sleep,
+            );
+            match closed {
+                Closed::Gone => {}
+                Closed::Stopped => return Outcome::Stopped,
+                Closed::StillOpen(reason) => {
+                    return Outcome::Held {
+                        reason,
+                        game: game.key(),
+                    };
                 }
-                match self.windows(&owns_game) {
-                    Ok(games) if !games.iter().any(|candidate| game.same_as(candidate)) => break,
-                    Ok(_) => {}
-                    Err(error) => {
-                        eprintln!("lab: checking if the game quit: {error:#}");
-                        return Outcome::Skipped("could not check whether the game quit");
-                    }
-                }
-                let remaining = quit_by.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Outcome::Skipped("player allowed takeover, but the game is still open");
-                }
-                std::thread::sleep(POLL_INTERVAL.min(remaining));
             }
         }
     }
@@ -187,13 +196,11 @@ impl Gate {
             .windows(owns_game)?
             .into_iter()
             .filter_map(|game| {
-                let key = match (game.pid, &game.socket) {
-                    (Some(pid), _) => GameKey::Pid(pid),
-                    (None, Some(path)) => GameKey::Socket(path.clone()),
-                    (None, None) => return None,
-                };
+                if game.pid.is_none() && game.socket.is_none() {
+                    return None;
+                }
                 Some(Seen {
-                    key,
+                    key: game.key(),
                     socket: game.socket.filter(|_| game.can_ask),
                 })
             })
@@ -425,6 +432,12 @@ impl PlayerGames {
         self.look(seen, now, timeout, false, |_| None, poll)
     }
 
+    /// Holds the queue for `game` until it closes: the player allowed a job
+    /// but the lab couldn't close their game ([`Outcome::Held`]).
+    pub(super) fn hold(&mut self, game: GameKey) {
+        self.games.insert(game, Answer::Chosen(Choice::FinishThis));
+    }
+
     /// Whether the queue waits: a game of the player's is open that hasn't
     /// answered Keep running.
     pub(super) fn holds(&self) -> bool {
@@ -486,6 +499,84 @@ impl PlayerGames {
     }
 }
 
+/// How closing a game the player allowed the lab to take ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Closed {
+    /// The game exited: the job starts.
+    Gone,
+    /// The game is still open: why, and what the player can do. The job
+    /// waits for it to close.
+    StillOpen(String),
+    /// The job was stopped meanwhile.
+    Stopped,
+}
+
+/// What the player can do when the lab couldn't close their game.
+const CLOSE_IT_YOURSELF: &str =
+    "quit it from its menu or close its window, and the job starts once it has closed";
+
+/// After the player's Allow: asks the game to close (`quit`), then waits
+/// until `open` no longer finds it, until `quit_by`. A game that refused
+/// or didn't take the request but has gone anyway counts as gone. Pure:
+/// the caller passes the asking, the looking, the clock and the sleep in.
+pub(super) fn close_allowed(
+    quit: impl FnOnce() -> Result<(), String>,
+    mut open: impl FnMut() -> Result<bool, String>,
+    stopped: &impl Fn() -> bool,
+    quit_by: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> Closed {
+    let asked = quit();
+    loop {
+        if stopped() {
+            return Closed::Stopped;
+        }
+        match open() {
+            Ok(false) => return Closed::Gone,
+            Ok(true) => {}
+            Err(error) => {
+                eprintln!("lab: checking if the game closed: {error}");
+                return Closed::StillOpen(format!(
+                    "allowed the job, but the lab could not check whether their game \
+                     closed ({error}); {CLOSE_IT_YOURSELF}"
+                ));
+            }
+        }
+        if let Err(error) = &asked {
+            return Closed::StillOpen(format!(
+                "allowed the job, but the lab could not close their game ({error}); \
+                 {CLOSE_IT_YOURSELF}"
+            ));
+        }
+        let remaining = quit_by.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Closed::StillOpen(format!(
+                "allowed the job, but their game did not close within {} seconds of \
+                 being asked; {CLOSE_IT_YOURSELF}",
+                QUIT_TIMEOUT.as_secs()
+            ));
+        }
+        sleep(POLL_INTERVAL.min(remaining));
+    }
+}
+
+/// Asks the game at `path` to close its window (`host.quit`).
+fn quit(path: &Path) -> Result<(), String> {
+    let reply = call::<host_quit::QuitReply>(
+        path,
+        host_quit::method::QUIT,
+        json!({}),
+        discover::PROBE_TIMEOUT,
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    if reply.closing {
+        Ok(())
+    } else {
+        Err("the game would not close".to_owned())
+    }
+}
+
 fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -500,6 +591,16 @@ struct Game {
 }
 
 impl Game {
+    /// Known by its process when it has one, else by its socket. Every
+    /// game the scan finds has one of the two.
+    fn key(&self) -> GameKey {
+        match (self.pid, &self.socket) {
+            (Some(pid), _) => GameKey::Pid(pid),
+            (None, Some(path)) => GameKey::Socket(path.clone()),
+            (None, None) => GameKey::Socket(PathBuf::new()),
+        }
+    }
+
     fn same_as(&self, other: &Self) -> bool {
         self.pid.is_some_and(|pid| other.pid == Some(pid))
             || self
@@ -902,5 +1003,103 @@ mod tests {
         assert!(note(Choice::FinishThis, true).contains("chose Finish this one"));
         assert!(note(Choice::FinishThis, false).contains("gave no answer"));
         assert!(note(Choice::KeepRunning, true).starts_with("player: opened a game and "));
+    }
+
+    /// `close_allowed` on a fake clock: `open` answers from `looks` in
+    /// turn (the last one repeats), and every call is logged in order.
+    fn close_with(
+        quit: Result<(), String>,
+        looks: &[Result<bool, String>],
+        stop_after: Option<usize>,
+    ) -> (Closed, Vec<String>, Duration) {
+        use std::cell::RefCell;
+        let log = RefCell::new(Vec::new());
+        let start = Instant::now();
+        let slept = Cell::new(Duration::ZERO);
+        let looked = Cell::new(0usize);
+        let closed = close_allowed(
+            || {
+                log.borrow_mut().push("quit".to_owned());
+                quit
+            },
+            || {
+                let i = looked.get();
+                looked.set(i + 1);
+                log.borrow_mut().push("look".to_owned());
+                looks[i.min(looks.len() - 1)].clone()
+            },
+            &|| stop_after.is_some_and(|n| looked.get() >= n),
+            start + QUIT_TIMEOUT,
+            || start + slept.get(),
+            |d| {
+                log.borrow_mut().push("sleep".to_owned());
+                slept.set(slept.get() + d);
+            },
+        );
+        (closed, log.into_inner(), slept.get())
+    }
+
+    #[test]
+    fn allowed_with_the_game_open_closes_it_then_starts() {
+        let (closed, log, slept) = close_with(Ok(()), &[Ok(true), Ok(true), Ok(false)], None);
+        assert_eq!(closed, Closed::Gone);
+        // Asked once, first; then watched until it went.
+        assert_eq!(log, ["quit", "look", "sleep", "look", "sleep", "look"]);
+        assert_eq!(slept, POLL_INTERVAL * 2);
+    }
+
+    #[test]
+    fn a_game_that_cant_be_closed_holds_the_job_with_the_reason() {
+        // The game didn't take the request (no host.quit, agent gone).
+        let (closed, log, slept) = close_with(Err("method not found".into()), &[Ok(true)], None);
+        let Closed::StillOpen(reason) = closed else {
+            panic!("{closed:?}");
+        };
+        assert!(reason.starts_with("allowed the job, but the lab could not close"), "{reason}");
+        assert!(reason.contains("method not found"), "{reason}");
+        assert!(reason.ends_with(CLOSE_IT_YOURSELF), "{reason}");
+        assert_eq!(log, ["quit", "look"]);
+        assert_eq!(slept, Duration::ZERO);
+
+        // It took the request but is still open when the time is up.
+        let (closed, _, slept) = close_with(Ok(()), &[Ok(true)], None);
+        let Closed::StillOpen(reason) = closed else {
+            panic!("{closed:?}");
+        };
+        assert!(reason.contains("did not close within 60 seconds"), "{reason}");
+        assert!(reason.ends_with(CLOSE_IT_YOURSELF), "{reason}");
+        assert_eq!(slept, QUIT_TIMEOUT, "bounded by the quit timeout");
+
+        // The Mac can't be looked at.
+        let (closed, _, _) = close_with(Ok(()), &[Err("ps failed".into())], None);
+        let Closed::StillOpen(reason) = closed else {
+            panic!("{closed:?}");
+        };
+        assert!(reason.contains("ps failed"), "{reason}");
+    }
+
+    #[test]
+    fn a_game_gone_anyway_starts_and_a_stop_ends_the_wait() {
+        // Refused, but the player closed it themselves meanwhile.
+        let (closed, _, _) = close_with(Err("busy".into()), &[Ok(false)], None);
+        assert_eq!(closed, Closed::Gone);
+        let (closed, log, _) = close_with(Ok(()), &[Ok(true)], Some(2));
+        assert_eq!(closed, Closed::Stopped);
+        assert_eq!(log, ["quit", "look", "sleep", "look", "sleep"]);
+    }
+
+    #[test]
+    fn a_held_game_holds_the_queue_until_it_closes() {
+        let mut games = PlayerGames::default();
+        let now = Instant::now();
+        let no_poll = |_: &Path, _| -> Option<Decision> { panic!("nothing asked") };
+        games.hold(GameKey::Pid(42));
+        assert!(games.holds());
+        // Still open: nothing to settle, nothing asked, still held.
+        assert!(games.refresh(&[game(42)], now, TIMEOUT, no_poll).is_empty());
+        assert!(games.holds());
+        // Closed: the queue goes on.
+        assert!(games.refresh(&[], now, TIMEOUT, no_poll).is_empty());
+        assert!(!games.holds());
     }
 }

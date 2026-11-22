@@ -192,6 +192,8 @@ struct JobFeed {
     phase: Option<Phase>,
     build: Tail,
     run: Tail,
+    /// The job's `player` notes already shown.
+    notes: usize,
 }
 
 impl JobFeed {
@@ -201,6 +203,7 @@ impl JobFeed {
             phase: None,
             build: Tail::new(attaching),
             run: Tail::new(attaching),
+            notes: 0,
         }
     }
 
@@ -212,6 +215,11 @@ impl JobFeed {
         let running = meta.state == "running";
         let elapsed = || now().saturating_sub(meta.created) as f64;
         self.advance(Phase::Queued, "queued", meta, 0.0, emit)?;
+        // What the player chose, or why the job waits for their game.
+        for note in meta.player.iter().skip(self.notes) {
+            emit(&format!("[{}] {}", self.id, short(note, 200)))?;
+        }
+        self.notes = self.notes.max(meta.player.len());
         let building = meta.state == "building";
         let built_or_building = building || meta.build_elapsed_s.is_some();
         if !built_or_building {
@@ -697,6 +705,29 @@ mod tests {
         let line = |id: &str| lines.iter().find(|l| l.starts_with(id)).unwrap().clone();
         assert!(line("[0001]").contains(" data=own"), "{lines:?}");
         assert!(!line("[0002]").contains("data=own"));
+    }
+
+    #[test]
+    fn a_held_job_says_why_once() {
+        let scratch = Scratch::new();
+        let mut held = meta("0001", "awaiting_quit");
+        save(&scratch.0, &held);
+        let mut watch = Watch::new(&scratch.0, None).unwrap();
+        let mut lines = Vec::new();
+        poll(&mut watch, &mut lines);
+        // Back in the queue, with the reason the lab couldn't close the game.
+        held.state = "queued".into();
+        held.player = vec!["player: allowed the job, but the lab could not close their game".into()];
+        save(&scratch.0, &held);
+        lines.clear();
+        poll(&mut watch, &mut lines);
+        assert_eq!(
+            lines,
+            ["[0001] player: allowed the job, but the lab could not close their game"]
+        );
+        lines.clear();
+        poll(&mut watch, &mut lines);
+        assert!(lines.is_empty(), "{lines:?}");
     }
 
     #[test]

@@ -334,10 +334,33 @@ called "Image build". The host sends these as the `name`, `source`,
 [takeover request](agent-api.md), and `h2 lab` sends the branch it
 resolved as `build.branch`.
 The dialog opens over the current screen and pauses local campaign play.
-Networked games keep running while the dialog is up.
-**Allow** lets the lab wait for the player to finish, save if needed,
-and quit. The lab waits up to 60 seconds for the game window to close
-after approval. Saving and quitting use the game's normal controls.
+Networked games keep running while the dialog is up. Its rows are
+**Not now** and **Close and start**.
+
+**Close and start** is the player's consent (the request's `allowed`
+answer). The lab closes the game for them: it calls the game's
+[`host.quit`](agent-api.md#close-the-window), which closes the window as
+its close button does, then waits up to 60 seconds for the process to
+exit, and starts the job once it has. The game has no separate save step:
+a campaign keeps what its last checkpoint saved, as when the player
+closes the window themselves. Code: `close_allowed` in
+`crates/apps/cli/src/lab/takeover.rs`.
+
+When the game doesn't close (its agent doesn't take `host.quit`, it
+refuses, or it is still open after the 60 seconds), the job isn't
+skipped. It goes back to the front of the queue as `queued`, and the
+queue waits for that game to close, as after
+[Stop and pause](#when-the-player-opens-a-game). The installed host (the
+LaunchAgent from `h2 lab host install`) shows a macOS
+notification on the playing Mac, "Lab job waiting: your game is still
+open", telling the player to quit the game from its menu or close its
+window, and that the job starts once it has closed. The job's `player`
+field and the job lines of `h2 lab logs` and `h2 lab host watch` carry the
+reason, for example
+`player: allowed the job, but their game did not close within 60 seconds
+of being asked; quit it from its menu or close its window, and the job
+starts once it has closed`. Once the game is gone the job starts with no
+second prompt, since no game window is open.
 
 **Not now**, Back, and an unanswered prompt all decline the request.
 The job finishes with `job.state` set to `"skipped"` and
