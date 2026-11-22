@@ -167,8 +167,9 @@ impl LitModelInput {
     }
 
     fn valid_draw_references(&self) -> bool {
-        let valid = |slots: &mut dyn Iterator<Item = (usize, usize)>, indices: &Range<u32>, subparts: Option<&SubpartRanges>| {
-            slots.all(|(program, buffer)| {
+        let valid = |mut slots: &mut dyn Iterator<Item = (usize, usize)>, indices: &Range<u32>, subparts: Option<&SubpartRanges>| {
+            // `&mut dyn Iterator` is itself a sized iterator; `all` needs one.
+            Iterator::all(&mut slots, |(program, buffer)| {
                 let Some(buffer) = self.buffers.get(buffer) else { return false };
                 let fits = |range: &Range<u32>| range.start <= range.end && range.end as usize <= buffer.indices.len();
                 program < self.programs.len() && fits(indices)

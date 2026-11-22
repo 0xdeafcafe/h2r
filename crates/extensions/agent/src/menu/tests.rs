@@ -100,6 +100,9 @@ impl Rig {
         hub.declare_toggle("fog", true, "distance fog");
         hub.declare_param("bloom", 0.5, "bloom strength");
         crate::hot::add_render_methods(&agent, hub);
+        // The View page lists the debug views; the game installs them even
+        // with no presenter, so the page and its links show.
+        crate::debug_views::install(&agent, None, None, None);
         let store = Arc::new(Store::defaults(&[&FOV, &LIGHTING, &SPEAKER]));
         add_settings_methods(&agent, Arc::clone(&store));
         let overlay = Arc::new(AtomicBool::new(true));
@@ -131,15 +134,14 @@ impl Rig {
         }
     }
 
+    /// The row called `label` on the page showing. The rows are read into
+    /// a local first: the guard must be dropped before a missing row
+    /// panics, or a `lock()` in the panic message waits on it forever.
     fn row(&self, label: &str) -> debug_menu::Row {
         self.frames();
-        self.menu
-            .lock()
-            .menu
-            .rows()
-            .into_iter()
-            .find(|r| r.label == label)
-            .unwrap_or_else(|| panic!("no row {label}: {:?}", self.menu.lock().menu.rows()))
+        let rows = self.menu.lock().menu.rows();
+        let found = rows.iter().find(|r| r.label == label).cloned();
+        found.unwrap_or_else(|| panic!("no row {label}: {rows:?}"))
     }
 
     fn cursor_to(&self, label: &str) {
@@ -148,7 +150,10 @@ impl Rig {
             let g = self.menu.lock();
             (g.menu.rows(), g.menu.cursor())
         };
-        let i = rows.iter().position(|r| r.label == label).unwrap();
+        let i = rows
+            .iter()
+            .position(|r| r.label == label)
+            .unwrap_or_else(|| panic!("no row {label}: {rows:?}"));
         let n = if i > at { Nav::Down } else { Nav::Up };
         for _ in 0..i.abs_diff(at) {
             self.menu.key(Key::Nav(n));
@@ -160,19 +165,33 @@ impl Rig {
 fn the_render_page_reads_and_changes_the_hub_and_the_store() {
     let r = Rig::new();
     r.menu.key(Key::Toggle);
+    // View > Render passes: the hub's switches and parameters.
+    r.cursor_to("View");
     r.keys(&[Nav::Select]);
-    assert_eq!(r.row("fog").value, json!(true));
-    assert_eq!(r.row("bloom").shown(), "0.50");
-    assert_eq!(r.row("Field of View").shown(), "70");
+    r.cursor_to("Render passes");
+    r.keys(&[Nav::Select]);
+    assert_eq!(r.row("Fog").value, json!(true));
+    assert_eq!(r.row("Bloom").shown(), "0.50");
     // Flip fog from the menu: the hub, which the renderer reads, has it.
-    r.cursor_to("fog");
+    r.cursor_to("Fog");
     r.keys(&[Nav::Right]);
     assert_eq!(r.hub.toggle("fog"), Some(false));
-    assert_eq!(r.row("fog").value, json!(false));
+    assert_eq!(r.row("Fog").value, json!(false));
     // A parameter steps by a tenth of its default.
-    r.cursor_to("bloom");
+    r.cursor_to("Bloom");
     r.keys(&[Nav::Right]);
     assert_eq!(r.hub.param("bloom"), Some(0.55));
+    // And the other way: an `h2 agent render.toggle` shows in the menu.
+    r.hub.set_toggle("fog", Some(true)).unwrap();
+    let later = r.menu.now() + debug_menu::model::REFRESH;
+    r.menu.lock().pump(later);
+    r.agent.between_slices(&mut Nothing, 0);
+    assert_eq!(r.row("Fog").value, json!(true));
+    // View > Graphics settings is Settings > Video, over the store.
+    r.keys(&[Nav::Back]);
+    r.cursor_to("Graphics settings");
+    r.keys(&[Nav::Select]);
+    assert_eq!(r.row("Field of View").shown(), "70");
     // The FOV steps through the store, as the Video screen does.
     r.cursor_to("Field of View");
     r.keys(&[Nav::Right]);
@@ -182,7 +201,7 @@ fn the_render_page_reads_and_changes_the_hub_and_the_store() {
         r.row("Lighting")
             .disabled
             .unwrap()
-            .starts_with("applies after a restart")
+            .starts_with("takes effect on restart")
     );
     r.cursor_to("Lighting");
     r.keys(&[Nav::Right]);
@@ -190,21 +209,9 @@ fn the_render_page_reads_and_changes_the_hub_and_the_store() {
         r.store.get("graphics.lighting"),
         Some(settings::Value::Int(0))
     );
-    // pad_speaker is not under graphics.
-    assert!(
-        !r.menu
-            .lock()
-            .menu
-            .rows()
-            .iter()
-            .any(|x| x.label == "Controller Speaker")
-    );
-    // And the other way: an `h2 agent render.toggle` shows in the menu.
-    r.hub.set_toggle("fog", Some(true)).unwrap();
-    let later = r.menu.now() + debug_menu::model::REFRESH;
-    r.menu.lock().pump(later);
-    r.agent.between_slices(&mut Nothing, 0);
-    assert_eq!(r.row("fog").value, json!(true));
+    // pad_speaker is not under graphics: it is on the Controls page.
+    let rows = r.menu.lock().menu.rows();
+    assert!(!rows.iter().any(|x| x.label == "Controller Speaker"));
 }
 
 #[test]
@@ -213,12 +220,15 @@ fn the_perf_overlay_switch_is_shared() {
     r.menu.key(Key::Toggle);
     r.cursor_to("Perf");
     r.keys(&[Nav::Select]);
-    assert_eq!(r.row("perf overlay").value, json!(true));
+    assert_eq!(r.row("Overlay (F3)").value, json!(true));
+    r.cursor_to("Overlay (F3)");
     r.keys(&[Nav::Select]);
     assert!(!r.overlay.load(Ordering::Relaxed));
-    assert_eq!(r.row("perf overlay").value, json!(false));
-    // Frame times: no frame stats in a test, so the row says why.
-    assert!(r.row("profile.counters").disabled.is_some());
+    assert_eq!(r.row("Overlay (F3)").value, json!(false));
+    // Frame times: no frame stats in a test, so the row says why, and the
+    // capture is greyed with it.
+    assert!(r.row("Frame times").disabled.is_some());
+    assert!(r.row("Capture 10 s").disabled.is_some());
 }
 
 #[test]
