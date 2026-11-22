@@ -203,18 +203,6 @@ fn open_resolved(
     Ok((map, files))
 }
 
-/// The overlay name of the file a selector names: the loaded map's for
-/// [`ResourceFile::Local`], the shared maps' stems for the others (as the
-/// hot-edit glue names them, `hot_glue::RawFiles`).
-pub fn overlay_name(file: ResourceFile, map: &str) -> String {
-    match file {
-        ResourceFile::Local => map.to_ascii_lowercase(),
-        ResourceFile::MainMenu => "mainmenu".into(),
-        ResourceFile::Shared => "shared".into(),
-        ResourceFile::SinglePlayerShared => "single_player_shared".into(),
-    }
-}
-
 /// One file's view of the raw overlay, for `assets::ResourceFiles`.
 struct Overlaid {
     overlay: vfs::RawOverlay,
@@ -241,7 +229,7 @@ fn overlay(files: &mut ResourceFiles, map: &str, overlay: &vfs::RawOverlay) {
     ] {
         files.set_overlay(file, Arc::new(Overlaid {
             overlay: overlay.clone(),
-            name: overlay_name(file, map),
+            name: crate::hot_glue::overlay_name(file, map),
         }));
     }
 }

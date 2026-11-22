@@ -1229,6 +1229,7 @@ fn run_configured(
             &a.agent,
             &loaded.runtime,
             maps(),
+            k.vfs(),
             watch_overrides,
             replaying,
         );
