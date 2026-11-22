@@ -674,8 +674,8 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
    says `no dialog screen 222 in this interface`, the lobby's interface
    doesn't have Quick Options loaded; try `Large`.
 2. On screen: `fs_dialog` over the lobby, the header at the top left,
-   the rows as Quick Options' (label left, value right) from (-254, 87),
-   no game type picture. Compare with `kit.dialog` in the sheet, and with
+   the rows on Quick Options' skin (label left, value right) from (-254, 68),
+   the page's icon in the game type picture. Compare with `kit.dialog` in the sheet, and with
    the lobby's own Quick Options side by side: the same row bars and
    focus highlight, the same two blues, the value alone ("Normal", not
    "< Normal >"), the window's line where Quick Options says
@@ -707,7 +707,7 @@ the doc's `settings:` block. It keeps one rule:
 | Icon | `art.0` | Quick Options' picture `[166 -267 126 -227]`, `mp_games2` image N | `settings.icon` |
 | Name | `header.name` | `[163 -224 143 0]`, white, font 1, one line | `settings.name` |
 | About | `header.about` | `[143 -224 103 270]`, pale blue, font 1, two lines | `settings.about`, else `settings.caller.help` |
-| Rows | `row.N.*` | skin 2 at (-254, 87), 26 apart, at most 8 (`spacing.settings_rows`) | the doc's rows |
+| Rows | `row.N.*` | skin 2 at (-254, 68), 26 apart, at most 8 (`spacing.settings_rows`) | the doc's rows |
 | Help | `description` | `[-133 -244 -173 246]`, pale blue, font 1, two lines | the focused row's `help` |
 | Legend | `legend` | layout 1 footer `[-178 -200 -198 259]` | the rows and `settings.actions` |
 
@@ -716,8 +716,13 @@ the doc's `settings:` block. It keeps one rule:
 settings doc gives no `description`, `legend`, `header.*` or `art.*`
 widget. The name is Quick Options' variant-name block
 (`dialog::QUICK_NAME_TEXT`). The about block starts on Quick Options'
-help line and runs two lines down, clear of the first row's bar
-(`dialog::SETTINGS_ABOUT_TEXT`). The help block sits between the last
+help line and runs two lines down to y 103 (`dialog::SETTINGS_ABOUT_TEXT`).
+A row's cap rises 33 above its item's anchor (34 high from 1 below
+it), so Quick Options' own list at (-254, 87) would put row 0's cap at
+y 120, under the about's second line; a settings dialog's list is
+Quick Options' skin moved down to (-254, 68) (`dialog::SETTINGS_LIST`,
+`KitScreen`'s list on a settings dialog), row 0's cap topping out at
+y 101. The help block sits between the last
 row and the legend, its left on the row labels' left
 (`dialog::SETTINGS_HELP_TEXT`). The disc test holds the name to the
 tag's text block 1 and the about's top, left, font and colour to its

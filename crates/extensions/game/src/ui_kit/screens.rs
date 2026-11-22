@@ -784,9 +784,10 @@ mod tests {
             assert_eq!(s.style, ValueStyle::Setting, "{name}: the value alone");
             assert_eq!(
                 s.list,
-                DialogGeometry::list_place(g.list, s.rows.len()),
-                "{name}: Quick Options' own list"
+                DialogGeometry::list_place(crate::ui_kit::dialog::SETTINGS_LIST, s.rows.len()),
+                "{name}: Quick Options' skin, under the header"
             );
+            assert_eq!(crate::ui_kit::dialog::SETTINGS_LIST.skin, g.list.skin, "{name}");
             assert!(
                 s.rows.len() <= g.list_items,
                 "{name}: fits without scrolling"

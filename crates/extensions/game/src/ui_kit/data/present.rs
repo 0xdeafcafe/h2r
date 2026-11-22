@@ -1,7 +1,8 @@
 //! A screen's doc laid over the spec its Rust built: the title, the
 //! legend, the description block and its help line, a dialog's body and
-//! status, its texts, art and HUD widgets, and its fixed rows' labels, each
-//! as the doc has them (docs/game/ui-builder.md "Screens in YAML").
+//! status, its texts, art and HUD widgets, its fixed rows' labels, and a
+//! settings dialog's header and rows' helps, each as the doc has them
+//! (docs/game/ui-builder.md "Screens in YAML").
 //!
 //! A text that is one slot alone (`{title}`) is the screen's dynamic
 //! value: it stays as Rust set it. A template with words around its slots
@@ -188,5 +189,45 @@ pub fn present(s: &ScreenSpec, doc: &ScreenDoc, design: &DesignDoc) -> Result<Sc
             }
         }
     }
+    if doc.settings.is_some() {
+        settings_over(&mut s, doc);
+    }
     Ok(s)
+}
+
+/// A settings dialog's `settings:` block and rows' helps over spec `s`
+/// (docs/game/ui-builder.md "The settings dialog"): the header's name and
+/// about lines, its icon, and each row's help, so an edited doc shows as
+/// the game would build it.
+fn settings_over(s: &mut ScreenSpec, doc: &ScreenDoc) {
+    let Some(st) = &doc.settings else { return };
+    for t in &mut s.texts {
+        match t.id.as_str() {
+            "header.name" => {
+                if let Some(n) = &st.name {
+                    t.text = n.clone();
+                }
+            }
+            "header.about" => t.text = st.about().to_string(),
+            _ => {}
+        }
+    }
+    if let Some(icon) = st.icon.as_deref().and_then(crate::ui_kit::dialog::icon::named)
+        && let Some(Art::Screen { image, .. }) = s.art.first_mut().map(|a| &mut a.art)
+    {
+        *image = icon as i16;
+    }
+    let help = |i: usize| doc.rows.get(&format!("row.{i}")).and_then(|r| r.help.clone());
+    for (i, row) in s.rows.iter_mut().enumerate() {
+        if let Some(h) = help(i) {
+            row.description = Some(h);
+        }
+    }
+    if let Some(d) = &mut s.dialog {
+        for (i, row) in d.rows.iter_mut().enumerate() {
+            if let Some(h) = help(i) {
+                row.description = Some(h);
+            }
+        }
+    }
 }

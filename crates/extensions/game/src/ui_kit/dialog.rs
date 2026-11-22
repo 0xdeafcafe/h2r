@@ -344,6 +344,15 @@ pub const QUICK_LIST: ListAt = ListAt {
     skin: 2,
 };
 pub const QUICK_LIST_ROWS: usize = 11;
+/// A settings dialog's list: Quick Options' skin, moved down from y 87 to
+/// 68 so the two-line about block (down to y 103, [`SETTINGS_ABOUT`])
+/// stays clear of row 0's art, which rises 33 above its anchor (the cap
+/// is 34 high from 1 below it). Eight rows 26 apart end at y -115, above
+/// the help block (y -133, [`SETTINGS_HELP`]).
+pub const SETTINGS_LIST: ListAt = ListAt {
+    anchor: [-254, 68],
+    skin: QUICK_LIST.skin,
+};
 
 /// Quick Options' game type picture: pane 0's bitmap block 1,
 /// `mp_games2.bitm` (eleven 40 x 40 icons, the variant's game type's
