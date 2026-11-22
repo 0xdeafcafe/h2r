@@ -44,7 +44,9 @@ any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
   those keep the pack's (`medalKey` is null for them).
 - **Weapons** (`weapon/<alias>`, by the words of the reported name,
   `weaponKey`) are single masks, used as a CSS mask so they take the page's
-  tint like the SVG silhouettes, which every other weapon keeps.
+  tint like the SVG silhouettes, which every other weapon keeps. Melee
+  has no weapon picture on the disc; it shows the Bone Cracker medal
+  (`medal/bone_cracker`, the game's melee kill art) in its own colours.
 
 The mock's stand-in (`mock/gameart.ts`) uses the pack's rank badges and
 medals and draws its own emblem masks, weapon masks, game-type glyphs and

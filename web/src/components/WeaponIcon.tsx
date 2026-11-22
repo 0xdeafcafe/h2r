@@ -3,7 +3,9 @@
 // the server has game art for that weapon, its silhouette. Those are single
 // masks (the alpha channel carries the shape, faintly), so the picture is
 // stretched to full strength and used as a CSS mask over the current text
-// colour: it takes the page's tint.
+// colour: it takes the page's tint. Melee has no weapon picture in the
+// game; its own melee kill art is the Bone Cracker medal (the fist), shown
+// in its colours.
 
 import { Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { weaponKey } from "../lib/gameart";
@@ -38,12 +40,20 @@ export default function WeaponIcon(props: { weapon: string; width?: number }) {
     onCleanup(() => { current = false; });
     void maskUrl(ref).then((url) => { if (current) setGame(url); });
   });
+  const medal = () => (weaponKey(props.weapon) === "weapon/melee" ? gameImage("medal/bone_cracker") : null);
   const mask = (url: string) => `url("${url}") center / contain no-repeat`;
   return (
+    <Show when={medal()} fallback={<Picture />}>
+      {(m) => <img class="weapon-icon weapon-icon--medal" src={m().url} width={Math.round(h() * 1.4)} height={Math.round(h() * 1.4)} alt="" aria-hidden="true" decoding="async" draggable={false} />}
+    </Show>
+  );
+  function Picture() {
+    return (
     <Show when={game()} fallback={<Svg />}>
       {(url) => <span class="weapon-icon weapon-icon--game" aria-hidden="true" style={{ width: `${w()}px`, height: `${h()}px`, mask: mask(url()), "-webkit-mask": mask(url()) }} />}
     </Show>
-  );
+    );
+  }
   function Svg() {
     return (
     <svg class="weapon-icon" width={w()} height={Math.round(w() * 20 / 64)} viewBox="0 0 64 20" aria-hidden="true">

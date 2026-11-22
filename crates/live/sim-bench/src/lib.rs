@@ -2,8 +2,8 @@
 //! tuning files ([`config`]), pacing and speed-up ([`clock`]), the metrics
 //! tally and the match report ([`metrics`]), the superbounce practice's
 //! tally ([`bounce`]), the A/B comparison of a batch ([`compare`]) and
-//! the bounce tuning sweep ([`sweep`]) and the bounce site training's
-//! plan and report ([`train`]).
+//! the bounce tuning sweep ([`sweep`]), the bounce site training's
+//! plan and report ([`train`]) and the seam drops ([`drops`]).
 //!
 //! Nothing here touches the game: the boot glue (`boot::sim_glue`) reads
 //! the game and feeds this crate plain values, and `h2 sim` (the CLI) runs
@@ -15,6 +15,7 @@ pub mod clock;
 pub mod compare;
 pub mod config;
 pub mod diff;
+pub mod drops;
 pub mod metrics;
 pub mod sweep;
 pub mod train;

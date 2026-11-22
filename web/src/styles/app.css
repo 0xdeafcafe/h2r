@@ -154,3 +154,4 @@ code { font-family: var(--font-mono); }
   box-sizing: border-box; padding: 2px;
 }
 .weapon-icon--game { background: currentColor; }
+.weapon-icon--medal { object-fit: contain; }

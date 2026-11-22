@@ -533,7 +533,11 @@ runs in any worktree, and it refuses:
   `CARGO_TARGET_DIR` on a command: kache is the machine-wide wrapper
   (`~/.cargo/config.toml`) and each worktree keeps its own target.
 
-`cargo check`, `cargo clippy` and `cargo h2` pass. People at a shell are
+`cargo check`, `cargo clippy` and `cargo h2` pass. Before one runs in a
+worktree with no `target` yet, the guard links and seeds it with the
+hooks directory's `target-on-builds.sh` and `seed-target.py` (section 2):
+an agent harness that makes its worktrees without the post-checkout hook
+would otherwise build cold onto the source volume. People at a shell are
 not affected. Tests: `python3 scripts/agent_cargo_guard_test.py`.
 
 ## Measurement plan
