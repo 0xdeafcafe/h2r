@@ -837,21 +837,25 @@ worked out from the mode's state at each 30 Hz tick; the slide and the
 each present. The `superbounce-steps` feature
 ([switches](../runtime/switches.md)) turns it off.
 
-**The lines.** The spots are small marks on the map, drawn by the
-window's world-line pass with no depth test (the styles are described in
+**The lines.** One marker, on the next spot, drawn by the window's
+world-line pass with no depth test (the styles are described in
 [the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)),
-from `crates/extensions/game/src/superbounce_world.rs` (`frame`, and the
-lock-on's `LockMarks`): the chosen strip's landing mark and its
-take-off, the other strips' creases, the crouch spots' footprints, small
-diamonds far away, and while falling the lock-on, as
-[Floor marks](#floor-marks), [Lock-on](#lock-on) and
-[Crouch spots in the world](#crouch-spots-in-the-world) describe.
+from `crates/extensions/game/src/superbounce_world.rs` (`frame`,
+`figures`, and the lock-on's `LockMarks`): a bold ring on the floor with
+a pin standing over it and a short label at the pin's top, as
+[Floor marks](#floor-marks) and
+[Crouch spots in the world](#crouch-spots-in-the-world) describe, and
+while falling the [lock-on](#lock-on).
 
-- Only the 40 spots nearest the player are drawn, nearest first by the
-  middle of their edges, and the chosen strip whatever its distance.
-  Everything fades out between 25 and 45 world units from the camera.
-- While the player is not primed a strip is at 35%; primed, at full
-  strength, so a bright strip means a landing there launches.
+- The next spot is the navpoint's: not primed, the nearest crouch spot;
+  primed, the chosen strip, by way of its take-off when it has one.
+- The other spots of the kind to go to next (crouch spots while not
+  primed, strips while primed) are small faint rings: the 6 nearest
+  within 15 world units, fading out between 25 and 45 units from the
+  camera. The other kind is not drawn. The whole level's spots are on
+  the flashlight ([The bounce view](#the-bounce-view)).
+- The marker does not fade with distance: it shows from across the map,
+  under the HUD's navpoint.
 - Lines are in the user's HUD colour and labels in the HUD's font
   (`crates/extensions/game/src/superbounce_font.rs`, below). The lock is
   the one exception: red, as the game's reticle is over an enemy in
@@ -977,12 +981,14 @@ until the player lets go, so a landing or a strip going out of reach does
 not hand the game a fresh press. With no strip in reach, X and the stick
 pass through unchanged.
 
-**The prompt.** With the setting on, the assist's pick is also what the
+**The prompt.** With the setting on, the assist's choice is also what the
 world prompts are drawn from, whether or not X is held: the window reads
-the player's body and runs `pick` on each frame, so `Hold X` appears on
-the strip before the button is pressed, and turns to `Guiding` once the
+the player's body and makes the tap's own choice on each frame
+(`choose_now`, keeping the strip the tap is steering onto), so `Hold X`
+appears on the strip the stick would be steered onto before the button
+is pressed, and turns to `Guiding` once the
 tap reports it is engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
-Off, there is no pick: no prompt in the air. The [lock-on](#lock-on)
+Off, there is no choice: no prompt in the air. The [lock-on](#lock-on)
 does not depend on the assist: it closes in on the predicted landing
 either way.
 
@@ -1186,30 +1192,29 @@ tries each kept spot in the game and writes the map's verified file
 
 ### Crouch spots in the world
 
-One spot is one figure on the floor, drawn by the window's world-line
+While not primed, the crouch spot the navpoint is over (the nearest, by
+its stand point) carries the marker, drawn by the window's world-line
 pass (`crates/extensions/game/src/superbounce_world.rs`, the geometry;
 `crates/apps/app/src/overlay/marks.rs`, the drawing):
 
-- **The footprint.** A ring of the capsule's radius (0.175) round
-  `stand`, 0.02 above the floor (`ring`): the size of the player's own
-  feet, where to be. It is thin while the player is elsewhere, and bold
-  and pulsing while the phase is `under` or `held`. The phase belongs to
-  the nearest crouch spot within 1 unit of the player, sideways.
+- **The marker.** A bold ring of radius 0.35 round `stand`, 0.02 above
+  the floor, with a ring of the capsule's radius (0.175) inside it: the
+  size of the player's own feet, where to be. A pin stands over it from
+  0.3 to 1.2 above the floor with `Crouch` at its top (`marker`). The
+  verb with the button is on the HUD's prompt line and in the
+  [step chain](#the-superbounce-game-type).
+- **Under the lip.** The ring pulses while the phase is `under` or
+  `held` and the player is within 1 unit of the spot, sideways.
 - **The approach arrow.** One arrowhead on the floor 0.15 outside the
   ring along `out` (`arrowhead`), pointing in toward the ring until the
   phase is `held`, then out: walk in, then walk out.
-- **The label.** `Crouch` 0.15 over the lip (0.8 over `stand` without
-  one) of the nearest spot within 3 units; none on the others. The verb
-  with the button is on the HUD's prompt line.
-- **Far away.** Past 10 units the spot is a small upright diamond facing
-  the player instead (`diamond`), 0.3 over `stand`, its size 0.012 of
-  its distance so it stays the same size on screen (`far`,
-  `diamond_half`).
+- **The other crouch spots.** A small ring of radius 0.1 each, at 30%
+  (15% for a `likely` spot), the 6 nearest within 15 units, with no
+  label.
 
-A `likely` spot is drawn at half strength, a `proven` one at full. While
-primed every crouch figure drops to a fifth and the strips come up, as
-the strips are dimmed while not primed: what is bright is what to do
-next, and a crouch now would lose the charge.
+A `likely` spot that is next has the same marker as a `proven` one.
+While primed no crouch spot is drawn: a crouch now would lose the
+charge.
 
 ### Landings
 
@@ -1245,38 +1250,41 @@ under them.
 
 ### Floor marks
 
-Two small marks say where to jump from and where to land, on the
-**chosen strip**: the navpoint's (`superbounce_charge::nav_target`), the
-nearest strip the player's floor is high enough for (feet at least
-`fall` above `stand`, less 0.05; a standing-jump strip always is), else
-the nearest strip, and while falling onto a strip that strip
-(`nav_to_landing`). The HUD's navpoint is over the same strip with the
-drop in metres ([hud-kit.md](hud-kit.md#the-navpoint)). The marks are
-drawn while primed; not primed, there is no chosen strip.
+While primed the marker is on the way to the **chosen strip**: the
+navpoint's (`superbounce_charge::nav_target`), the nearest strip the
+player's floor is high enough for (feet at least `fall` above `stand`,
+less 0.05; a standing-jump strip always is), else the nearest strip, and
+while falling onto a strip that strip (`nav_to_landing`). The HUD's
+navpoint is over the same strip with the drop in metres
+([hud-kit.md](hud-kit.md#the-navpoint)), and the
+[fall assist](#hold-x-the-fall-assist) steers onto it. Not primed, there
+is no chosen strip.
 
-- **Land.** The crease as a short line along `edge`, 0.26 each way from
-  `stand` (at most half the edge), with a cap across each end
-  (`crease_mark`); a ring of the capsule's radius round `stand` and a
-  centre dot. `Land, 3 m` beside it (the drop, `fall` in whole metres;
-  `Land` alone for a standing jump), on the ground only: in the air the
-  [lock-on](#lock-on) speaks. Locked, the mark turns red with the lock.
-- **Jump.** On the ground, where to take off (`superbounce_world::takeoff`,
-  the mode's `takeoff`): a 0.25 ring with two small feet in it, three
-  chevrons toward the landing (fainter nearest the ring), and `Jump`
-  with the A button's glyph, pulsing once the player is within 0.15 of
-  it. For a standing jump (fall at most 0.05) it is 0.2 back from
-  `stand` against the drift, and has no chevrons (the landing is under
-  the ring). For a fall it is found on the map: out from `stand` toward
-  the player (against the drift when the player is over the strip), in
-  0.05 steps up to 4 units, the first floor at least the fall above the
-  strip (less 0.05) and at most 0.5 above the player's feet
-  (`superbounce_capsule::Room::floor_at`, faces looking up more than
-  0.7) is the lip of the ledge to come from; the take-off is a capsule
-  radius back from the lip, on its floor. No such floor, no take-off
-  mark. `superbounce.state` returns it as `takeoff`.
-- **Other strips.** The crease line alone, at the strip's strength (35%
-  unprimed, half when the floor is too low). Past 10 units, a small
-  upright diamond instead, as far crouch spots have.
+- **Jump.** On the ground, the next spot is where to take off
+  (`superbounce_world::takeoff`, the mode's `takeoff`): the marker (the
+  0.35 ring, the footprint ring, the pin) with `Jump` and the A button's
+  glyph, its ring pulsing once the player is within 0.15 of it, and one
+  arrowhead 0.5 out from its centre toward the landing, where the
+  landing is clear of it. For a standing jump (fall at most 0.05) it is
+  0.2 back from `stand` against the drift. For a fall it is found on the
+  map: out from `stand` toward the player (against the drift when the
+  player is over the strip), in 0.05 steps up to 4 units, the first
+  floor at least the fall above the strip (less 0.05) and at most 0.5
+  above the player's feet (`superbounce_capsule::Room::floor_at`, faces
+  looking up more than 0.7) is the lip of the ledge to come from; the
+  take-off is a capsule radius back from the lip, on its floor.
+  `superbounce.state` returns it as `takeoff`.
+- **Land.** The chosen strip has the marker's two rings round `stand`
+  and the strip's own line through them, 0.26 each way along `edge` (at
+  most half the edge; `strip_bar`), which says which way the strip runs.
+  While a take-off is the next spot it has no more. With no take-off
+  found it is the next spot: the pin, with `Land, 3 m` (the drop, `fall`
+  in whole metres; `Land` alone for a standing jump). In a fall it has
+  no pin and no label: the [lock-on](#lock-on) speaks, and locked, the
+  mark turns red with the lock.
+- **Other strips.** A small ring of radius 0.1 each, at 30% (15% when
+  the player's floor is too low for the strip), the 6 nearest within
+  15 units.
 
 The scanner cannot know steps that need an object (break the window,
 crouch under the shard) or a turn before the jump; the take-off is where

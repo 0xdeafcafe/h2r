@@ -872,7 +872,7 @@ pub fn marked() -> Option<Vec3> {
 
 /// The choice for `body` on the loaded map: the scan's spots and collision
 /// (`superbounce_mode`), the HUD's mark, and `kept` from the last read.
-fn choose_now(body: &Body, kept: Option<Vec3>) -> Choice {
+pub(crate) fn choose_now(body: &Body, kept: Option<Vec3>) -> Choice {
     use superbounce::view::LineOfSight;
     let room = superbounce_mode::current_room();
     let floor = |xy: [f32; 2], top: f32| room.floor_at(xy, top);
