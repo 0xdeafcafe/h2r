@@ -3126,6 +3126,8 @@ or “Editor · edits blocked”. Optional `text` appears on the second line.
 The plate expires on the wall clock, including while the game is paused.
 The shell draws it after the watermark and leaves room for the banner
 (`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
+While the debug menu is open, the plate's lines show inside the menu
+instead ([debug-menu.md](debug-menu.md#layout)).
 
 | Method | Access | Params | Result |
 |---|---|---|---|

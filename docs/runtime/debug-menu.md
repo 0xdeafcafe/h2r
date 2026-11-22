@@ -70,17 +70,20 @@ that was part of the chord does not move the cursor.
   runs on select. Greyed rows say why in the footer, and refuse to change.
 - **Confirm.** A destructive row asks first: the first select shows
   "press again to <label>", and a second within 2 s makes the call.
-- **Results.** A change's result is one line under the menu for 3 s: the
-  row's own text for its result (`Row::on_ok`), else "<label>: done" for an
-  action and "<label>: <value>" for an edit. Errors show the same way, in
-  red. The overlay also draws the line for those 3 s after the menu closes.
+- **Results.** A change's result shows in the menu for 3 s, above the
+  controls: the row's own text for its result (`Row::on_ok`), else
+  "<label>: done" for an action and "<label>: <value>" for an edit. Errors
+  show the same way, in red. The overlay also draws the result for those
+  3 s after the menu closes, on a small plate of its own (see
+  [Layout](#layout)).
 - **Footer.** The last line teaches the controls of the device last used
-  (keyboard, a touchpad pad's touchpad, or a pad's buttons). The line above
-  it is the call the selected row makes, as the agent API would send it, so
-  the menu shows the matching `h2 agent` call.
-- **Header.** `Menu::set_header` pins a section above every page. Its rows
-  are drawn as `label value` pairs on up to two lines, listed every second
-  while the menu is open.
+  (keyboard, a touchpad pad's touchpad, or a pad's buttons), split by
+  dots. Above it are the selected row's description and the call it
+  makes, as the agent API would send it, so the menu shows the matching
+  `h2 agent` call.
+- **Header.** `Menu::set_header` pins a section above every page, right
+  under the title bar. Its rows are drawn as `label value` pairs split by
+  dots on up to two lines, listed every second while the menu is open.
 - **Favourites and Recent.** Star the selected row with Triangle / Y or F.
   The first page lists starred rows under Favourites and the last five
   actions or edits under Recent, above the sections. A row is keyed by its
@@ -103,6 +106,59 @@ Backspace act on it, and letters, digits and `/ - .` go to its search. Modifier
 keys and F1 to F12 are not the menu's and pass as before; every other key is
 swallowed.
 
+## Layout
+
+`debug_menu::layout` turns the menu into lines of text, each with a tone,
+64 characters wide (`COLS`). `crates/apps/app/src/menu_overlay.rs` draws
+them on one dark panel in the top left of the game image, one step bigger
+than the watermark:
+
+```text
++==================================================================+
+| DEBUG MENU > Player                                              |  <- title bar
++==================================================================+
+| mainmenu · tick 376 · 11 fps · offline                           |  <- status
+|------------------------------------------------------------------|  <- rule
+| > God mode                                               < off > |  <- selected: bar, panel width
+|   Infinite ammo                                              off |
+|   Give weapon  >                                                 |  <- chevrons by the labels
+|   Teleport     >                                                 |
+|------------------------------------------------------------------|  <- rule
+| makes you take no damage                                         |  <- help, wrapped on phrases
+| agent: cheat.set {"name":"god","value":true}                     |  <- the call
+| Full-speed ready. Restart from debug menu > Game > Game code.    |  <- window notice
+|------------------------------------------------------------------|  <- rule
+| arrows move/change · Enter select · Esc back · F star · / search |  <- controls
++------------------------------------------------------------------+
+```
+
+- **Title bar.** The breadcrumb (`DEBUG MENU > Game > Game code`) on a bar
+  across the top of the panel, in the same font and near-white as the
+  rows.
+- **Rules.** The parts (status, rows, help, controls) are split by
+  `Tone::Rule` lines, drawn one font pixel thick across the whole panel
+  with equal space above and below. A heading among the rows (Favourites,
+  Recent) is its label with a thin line on to the right edge.
+- **Rows.** The label on the left and the value on the right. A page's
+  chevron sits two columns after the longest page label shown, so it reads
+  with its label. The selected row is on a bar exactly the panel's width.
+- **Help.** The selected row's description, or why it is greyed, on up to
+  two lines, broken after a phrase (`,` `;` `:` `.`) when one ends at
+  least half a line in, else at a space (`layout::wrap_phrases`). Section
+  descriptions fit one line (a test checks every section).
+- **Width and padding.** The panel is always 64 characters wide, so it
+  keeps its size from page to page; the padding is the same at the sides
+  and the bottom.
+- **The window's notices.** While the menu is open, the window's banner
+  (the full-speed build, an update) and the paired editor's status
+  ("Editor · edits blocked") are lines inside the panel above the controls,
+  in the menu's tones (`layout::lines_with`, `menu_overlay::notice_tone`),
+  up to three lines each. Nothing is drawn over the open menu. While it is
+  closed they are their own plates (the banner top left, the editor's top
+  right), in the panel's dark colour with a strip in their tone down the
+  left edge (`app::overlay`). The menu's lone result then goes below any
+  plate it would cover (`menu_overlay::place`).
+
 ## Sections
 
 The first page is organised by what you are doing, not by agent namespace:
@@ -123,7 +179,7 @@ shows as a one-line result.
 
 A pinned line over every page (`sources::header`, from `session.status`,
 `sim.view` and `sim.session`) says where you are:
-`coagulation  tick 5412  30 fps  pos 36.7 -80.8 1.7  offline`.
+`coagulation · tick 5412 · 30 fps · pos 36.7 -80.8 1.7 · offline`.
 
 Writes to the simulation (give, spawn, teleport, load, restart) are host
 writes: `sim.session` refuses them in a co-op session and on a multiplayer
@@ -332,10 +388,9 @@ from the method's implementation, not its doc).
 - `crates/extensions/game/src/debug_menu_glue.rs`: installs those methods. A game
   without `H2_AGENT` still gets a socketless agent for the menu. Its shader
   overrides are not loaded or watched until asked.
-- `crates/apps/app/src/menu_overlay.rs`: the drawing (top left of the game image,
-  one step bigger than the watermark, a dark plate, the selected row on a
-  bar). `keymap.rs` has the backquote key, and `shell.rs` routes keys and
-  redraws.
+- `crates/apps/app/src/menu_overlay.rs`: the drawing ([Layout](#layout)).
+  `keymap.rs` has the backquote key, and `shell.rs` routes keys, redraws,
+  and hands the menu the window's notices while it is open.
 - `crates/apps/cli/src/play_cmd.rs`: makes the menu, sets the gate, hands it to
   the window and the game.
 - With the keyboard on (the default), player one is

@@ -459,22 +459,34 @@ fn the_layout_is_a_fixed_width_block_with_a_scrolling_window() {
     go(&s, &[Nav::Select]);
     let l = s.lines().unwrap();
     assert!(l.iter().all(|l| l.text.chars().count() <= COLS), "{l:?}");
-    assert_eq!(l[0].text, "DEBUG MENU > Many");
+    assert_eq!((l[0].text.as_str(), l[0].tone), ("DEBUG MENU > Many", Tone::Title));
+    // No header: the rows start right under the title bar.
     assert_eq!(
-        l[2].text,
+        l[1].text,
         format!("> row 00{}< on >", " ".repeat(COLS - 2 - 6 - 6))
     );
-    assert_eq!(l[2].tone, Tone::Selected);
-    assert_eq!(l[7].tone, Tone::Greyed, "row 05");
+    assert_eq!(l[1].tone, Tone::Selected);
+    assert_eq!(l[6].tone, Tone::Greyed, "row 05");
     let rows_shown = l.iter().filter(|l| l.text.contains("row ")).count();
     assert_eq!(rows_shown, ROWS);
-    assert_eq!(l[2 + ROWS].text, "  ... 16 more");
+    assert_eq!(l[1 + ROWS].text, "  ... 16 more");
+    // Parts are split by drawn rules, never by characters.
+    assert_eq!(l[2 + ROWS].tone, Tone::Rule);
+    assert!(l.iter().all(|l| !l.text.contains("---")), "{l:?}");
+    assert!(
+        l.iter().filter(|l| l.tone == Tone::Rule).all(|l| l.text.is_empty()),
+        "{l:?}"
+    );
+    assert!(
+        l.windows(2).all(|w| !(w[0].tone == Tone::Rule && w[1].tone == Tone::Rule)),
+        "never two rules in a row: {l:?}"
+    );
     // Down to row 20: the window follows, with more above and below.
     for _ in 0..20 {
         s.key(Key::Nav(Nav::Down));
     }
     let l = s.lines().unwrap();
-    assert_eq!(l[2].text, "  ... 13 more");
+    assert_eq!(l[1].text, "  ... 13 more");
     assert!(
         l.iter()
             .any(|l| l.tone == Tone::Selected && l.text.starts_with("> row 20"))
@@ -864,10 +876,134 @@ fn the_pinned_header_shows_above_every_page() {
     go(&s, &[]);
     go(&s, &[]);
     let l = s.lines().unwrap();
-    assert_eq!(l[2].text, "map coagulation  tick 5412");
-    assert_eq!(l[3].text, "-".repeat(COLS));
+    // Right under the title bar, its parts split by a dot, then a rule.
+    assert_eq!(l[1].text, "map coagulation \u{b7} tick 5412");
+    assert_eq!(l[1].tone, Tone::Hint);
+    assert_eq!((l[2].text.as_str(), l[2].tone), ("", Tone::Rule));
     enter(&s, "play");
-    assert_eq!(s.lines().unwrap()[2].text, "map coagulation  tick 5412");
+    assert_eq!(s.lines().unwrap()[1].text, "map coagulation \u{b7} tick 5412");
+}
+
+#[test]
+fn a_long_status_line_breaks_between_its_parts() {
+    fn status(a: &[Answer]) -> Vec<Row> {
+        match a.first() {
+            Some(Some(_)) => vec![Row::info(
+                [
+                    "coagulation",
+                    "tick 5412",
+                    "30 fps",
+                    "pos -136.7 -180.8 11.7",
+                    "co-op guest",
+                    "read-only",
+                ]
+                .join(layout::SEP),
+                Value::Null,
+            )],
+            _ => vec![],
+        }
+    }
+    let (s, _) = playground();
+    s.lock().menu.set_header(Section {
+        id: "status".into(),
+        title: "Status".into(),
+        about: String::new(),
+        calls: vec![Call::bare("features.list")],
+        rows: status,
+    });
+    s.key(Key::Toggle);
+    go(&s, &[]);
+    go(&s, &[]);
+    let l = s.lines().unwrap();
+    assert_eq!(
+        l[1].text,
+        "coagulation \u{b7} tick 5412 \u{b7} 30 fps \u{b7} pos -136.7 -180.8 11.7"
+    );
+    assert_eq!(l[2].text, "co-op guest \u{b7} read-only");
+    assert_eq!(l[3].tone, Tone::Rule);
+}
+
+#[test]
+fn chevrons_sit_in_one_column_by_the_labels() {
+    let (s, _) = menu();
+    s.key(Key::Toggle);
+    let l = s.lines().unwrap();
+    let pages: Vec<&Line> = l
+        .iter()
+        .filter(|l| matches!(l.tone, Tone::Normal | Tone::Selected))
+        .collect();
+    assert_eq!(pages.len(), 8, "{l:?}");
+    // The longest label is "Settings" (8): every chevron two columns
+    // after it, behind the two-column cursor mark.
+    for p in &pages {
+        assert!(p.text.ends_with('>'), "{p:?}");
+        assert_eq!(p.text.chars().count(), 2 + 8 + 2 + 1, "{p:?}");
+    }
+    assert_eq!(pages[0].text, "> Player    >");
+    assert_eq!(pages[6].text, "  Settings  >");
+}
+
+#[test]
+fn descriptions_wrap_on_phrases_and_every_section_fits_one_line() {
+    assert_eq!(
+        layout::wrap_phrases(
+            "god mode, ammo, fly, noclip, give a weapon, teleport, hide the HUD",
+            COLS
+        ),
+        vec!["god mode, ammo, fly, noclip, give a weapon, teleport,", "hide the HUD"]
+    );
+    // A phrase end too early in the line loses to a plain space.
+    assert_eq!(
+        layout::wrap_phrases("a, bbbbbbb cccccc dddddd", 16),
+        vec!["a, bbbbbbb", "cccccc dddddd"]
+    );
+    assert_eq!(layout::wrap_phrases("short", COLS), vec!["short"]);
+    assert_eq!(layout::wrap_phrases("", COLS), Vec::<String>::new());
+    assert_eq!(layout::wrap_phrases("abcdefgh", 3), vec!["abc", "def", "gh"]);
+    for sec in crate::sources::all() {
+        assert!(
+            sec.about.chars().count() <= COLS,
+            "{}'s description wraps: {:?}",
+            sec.id,
+            sec.about
+        );
+    }
+}
+
+#[test]
+fn the_windows_notices_go_inside_the_open_menu_above_the_controls() {
+    let (s, _) = menu();
+    let notices = [
+        Line {
+            text: "Full-speed ready. Restart from debug menu > Game > Game code.".into(),
+            tone: Tone::Done,
+        },
+        Line {
+            text: "Editor \u{b7} edits blocked\nreopen the map".into(),
+            tone: Tone::Error,
+        },
+    ];
+    assert!(s.lines_with(&notices).is_none(), "closed: the window draws them");
+    s.key(Key::Toggle);
+    let l = s.lines_with(&notices).unwrap();
+    let n = l.len();
+    assert_eq!(l[n - 1].text, layout::fit(layout::CONTROLS, COLS));
+    assert_eq!(l[n - 2].tone, Tone::Rule);
+    assert_eq!(l[n - 3].text, "reopen the map");
+    assert_eq!(l[n - 4].text, "Editor \u{b7} edits blocked");
+    assert_eq!(l[n - 4].tone, Tone::Error);
+    assert_eq!(l[n - 5].tone, Tone::Done);
+    assert!(l[n - 5].text.starts_with("Full-speed ready."));
+    assert!(l.iter().all(|l| l.text.chars().count() <= COLS), "{l:?}");
+    // The title stays the first line, never covered.
+    assert_eq!(l[0].tone, Tone::Title);
+    // A long notice is held to three lines.
+    let long = [Line {
+        text: "word ".repeat(100),
+        tone: Tone::Hint,
+    }];
+    let l = s.lines_with(&long).unwrap();
+    assert_eq!(l.iter().filter(|l| l.text.starts_with("word")).count(), 3);
 }
 
 #[test]
