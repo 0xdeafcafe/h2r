@@ -27,6 +27,10 @@ pub const UI_FORMAT: wgpu::TextureFormat = Shading::Gamma.target_format();
 /// through the plain view, [`Shading::Gamma`]).
 pub fn encode_srgb(c: f64) -> f64 {
     let c = c.clamp(0.0, 1.0);
+    if c >= 1.0 {
+        // The curve's end in f64 rounds a hair under 1.
+        return 1.0;
+    }
     if c <= 0.003_130_8 {
         c * 12.92
     } else {
