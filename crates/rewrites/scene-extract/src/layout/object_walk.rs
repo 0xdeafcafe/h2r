@@ -6,8 +6,8 @@
 //! The geometry draw `0x0004d0b0` (an item's `+4`) reads four bits of the
 //! render record's `+0` in layer 3 (**Code**, docs/graphics/framescene.md,
 //! slice 3). A part is in the scene with the bits the native pass draws
-//! as [`PartFlags`]; the others refuse it, each by its own cause
-//! ([`Refusal`]).
+//! as [`PartFlags`]; a part whose flags' inputs do not read refuses, by
+//! its own cause ([`Refusal`]).
 //!
 //! - **Bit 14, stencil marking** ([`PartFlags::STENCIL_MARK`]). The
 //!   prologue `0x0004d640`, in layers 1 and 3, sets stencil mode 2 through
@@ -19,9 +19,10 @@
 //! - **Bit 9, strip topology** ([`PartFlags::STRIP`]). The whole-part
 //!   emitter `0x0004daa0` draws `5 + strip` (list or strip), `strip` being
 //!   bit 9 and the part's flag `8` (triangle list) clear (`0x0004d5e2`).
-//!   Without bit 9 it draws a list whatever the part's flag says; the
-//!   native models decode a part without the flag as a strip, so that case
-//!   refuses ([`Refusal::Topology`]).
+//!   Without bit 9 it draws a list whatever the part's flag says: such a
+//!   part is in the scene without the flag, and the native models draw a
+//!   strip part's indices as a list for it
+//!   (`native_render::object_program_gpu::LitPart::listed`).
 //! - **Bit 6, conditional stream ranges** ([`PartFlags::SUBPARTS`]). With
 //!   the record's `+0x14` (a pointer to a bitmask of visible subparts,
 //!   bit `s` in word `s >> 5`) and the section geometry's `+8` (its
@@ -109,8 +110,6 @@ pub enum Refusal {
     /// cannot be read: more than [`Subparts::MAX`], a negative first one,
     /// or a mask that does not read.
     Subparts,
-    /// No bit 9 on a part that is not a triangle list.
-    Topology,
     Other,
 }
 
@@ -119,7 +118,6 @@ pub enum Refusal {
 pub struct Causes {
     pub aux_state: usize,
     pub subparts: usize,
-    pub topology: usize,
 }
 
 impl Causes {
@@ -127,17 +125,16 @@ impl Causes {
         match why {
             Refusal::AuxState => self.aux_state += 1,
             Refusal::Subparts => self.subparts += 1,
-            Refusal::Topology => self.topology += 1,
             Refusal::Other => {}
         }
     }
 }
 
-/// The [`PartFlags`] of a part whose record has `flags` at `+0`, or the
-/// cause that refuses it: `triangle_list` the part's flag, `subparts`
-/// whether the record's subpart mask and the section's subpart count are
-/// both nonzero. Only the topology refuses.
-pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> Result<PartFlags, Refusal> {
+/// The [`PartFlags`] of a part whose record has `flags` at `+0`:
+/// `triangle_list` the part's flag, `subparts` whether the record's
+/// subpart mask and the section's subpart count are both nonzero. The
+/// emitter draws a strip only with bit 9 on a part that is not a list.
+pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> PartFlags {
     let mut out = PartFlags::NONE;
     if flags & RECORD_AUX_STATE != 0 {
         out |= PartFlags::AUX_DEPTH;
@@ -145,16 +142,13 @@ pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> Result<P
     if flags & RECORD_SUBPARTS != 0 && subparts {
         out |= PartFlags::SUBPARTS;
     }
-    if !triangle_list {
-        if flags & RECORD_STRIP == 0 {
-            return Err(Refusal::Topology);
-        }
+    if !triangle_list && flags & RECORD_STRIP != 0 {
         out |= PartFlags::STRIP;
     }
     if flags & RECORD_STENCIL_MARK != 0 {
         out |= PartFlags::STENCIL_MARK;
     }
-    Ok(out)
+    out
 }
 
 /// The subparts of a part (its first subpart `first` and count `count`,
@@ -327,7 +321,7 @@ fn read_part(
     aux_reads: &mut Option<bool>,
 ) -> Result<Part, Refusal> {
     let (part, flags, conditional) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
-    let flags = record_flags(flags, part.triangle_list, conditional.is_some())?;
+    let flags = record_flags(flags, part.triangle_list, conditional.is_some());
     if flags.contains(PartFlags::AUX_DEPTH)
         && !*aux_reads.get_or_insert_with(|| crate::layout::aux_depth::read(mem).is_some())
     {
@@ -340,10 +334,11 @@ fn read_part(
     Ok(Part { flags, subparts, ..part })
 }
 
-/// What an object item of a world layer draw other than 3 (`layer`, one
-/// of 1, 5, 7, 8 and 20; `item` its list entry, `record` its render
-/// record, `key` its key) makes the geometry draw `0x0004d0b0` do beyond
-/// its material, or why the scene cannot reproduce it (**Code**):
+/// What an object item of a layer draw (`layer`: one of the world layers
+/// 1, 5, 7, 8 and 20, or 3 for the first person's items, which the sorted
+/// walk does not read; `item` its list entry, `record` its render record,
+/// `key` its key) makes the geometry draw `0x0004d0b0` do beyond its
+/// material, or why the scene cannot reproduce it (**Code**):
 ///
 /// - Outside layer 3 the draw takes no lightmap (`0x0004d28b`: the page
 ///   and its coordinate stream only for layer 3), and in layer 5 it adds
@@ -409,10 +404,9 @@ pub fn layer_part(
     let named = |why: Refusal| match why {
         Refusal::AuxState => R::AuxState,
         Refusal::Subparts => R::Subparts,
-        Refusal::Topology => R::Topology,
         Refusal::Other => R::Unread,
     };
-    let mut out = record_flags(flags, triangle_list, conditional.is_some()).map_err(named)?;
+    let mut out = record_flags(flags, triangle_list, conditional.is_some());
     if !matches!(layer, 1 | 3) {
         out = PartFlags(out.0 & !PartFlags::STENCIL_MARK.0);
     }
@@ -765,7 +759,7 @@ mod tests {
         // A part that is not a triangle list draws as a strip only with
         // bit 9.
         mem.w(parts + 2 * PART_SIZE, 0);
-        assert_eq!(at(&mem, 7), Err(R::Topology));
+        assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)), "its indices as a list");
         mem.w(record, 3 << 29 | RECORD_STRIP);
         assert_eq!(at(&mem, 7), Ok((PartFlags::STRIP, None)));
         mem.w(record + objects::RECORD_MODEL, 0);
@@ -773,31 +767,28 @@ mod tests {
     }
 
     #[test]
-    fn a_records_flags_become_part_flags_or_name_their_refusal() {
+    fn a_records_flags_become_part_flags() {
         // Bit 14 marks; bit 9 makes a non-list part a strip.
-        assert_eq!(record_flags(0, true, false), Ok(PartFlags::NONE));
-        assert_eq!(record_flags(RECORD_STENCIL_MARK, true, false), Ok(PartFlags::STENCIL_MARK));
-        assert_eq!(record_flags(RECORD_STRIP, false, false), Ok(PartFlags::STRIP));
-        assert_eq!(record_flags(RECORD_STRIP, true, false), Ok(PartFlags::NONE), "a list part ignores bit 9");
+        assert_eq!(record_flags(0, true, false), PartFlags::NONE);
+        assert_eq!(record_flags(RECORD_STENCIL_MARK, true, false), PartFlags::STENCIL_MARK);
+        assert_eq!(record_flags(RECORD_STRIP, false, false), PartFlags::STRIP);
+        assert_eq!(record_flags(RECORD_STRIP, true, false), PartFlags::NONE, "a list part ignores bit 9");
         assert_eq!(
             record_flags(RECORD_STRIP | RECORD_STENCIL_MARK, false, false),
-            Ok(PartFlags::STRIP | PartFlags::STENCIL_MARK)
+            PartFlags::STRIP | PartFlags::STENCIL_MARK
         );
         // Without bit 9 the guest draws a strip part's indices as a list.
-        assert_eq!(record_flags(0, false, false), Err(Refusal::Topology));
+        assert_eq!(record_flags(0, false, false), PartFlags::NONE);
         // Bit 6 chooses subparts only when there is a mask and subparts to
         // choose.
-        assert_eq!(record_flags(RECORD_SUBPARTS, true, false), Ok(PartFlags::NONE));
-        assert_eq!(record_flags(RECORD_SUBPARTS, true, true), Ok(PartFlags::SUBPARTS));
-        assert_eq!(record_flags(RECORD_SUBPARTS | RECORD_STRIP, false, true), Ok(PartFlags::SUBPARTS | PartFlags::STRIP));
-        assert_eq!(record_flags(RECORD_SUBPARTS, false, true), Err(Refusal::Topology));
+        assert_eq!(record_flags(RECORD_SUBPARTS, true, false), PartFlags::NONE);
+        assert_eq!(record_flags(RECORD_SUBPARTS, true, true), PartFlags::SUBPARTS);
+        assert_eq!(record_flags(RECORD_SUBPARTS | RECORD_STRIP, false, true), PartFlags::SUBPARTS | PartFlags::STRIP);
+        assert_eq!(record_flags(RECORD_SUBPARTS, false, true), PartFlags::SUBPARTS);
         // Bit 11 draws with the view's auxiliary depth.
-        assert_eq!(record_flags(RECORD_AUX_STATE, true, false), Ok(PartFlags::AUX_DEPTH));
-        assert_eq!(
-            record_flags(RECORD_AUX_STATE | RECORD_SUBPARTS, true, true),
-            Ok(PartFlags::AUX_DEPTH | PartFlags::SUBPARTS)
-        );
-        assert_eq!(record_flags(RECORD_AUX_STATE, false, false), Err(Refusal::Topology));
+        assert_eq!(record_flags(RECORD_AUX_STATE, true, false), PartFlags::AUX_DEPTH);
+        assert_eq!(record_flags(RECORD_AUX_STATE | RECORD_SUBPARTS, true, true), PartFlags::AUX_DEPTH | PartFlags::SUBPARTS);
+        assert_eq!(record_flags(RECORD_AUX_STATE, false, false), PartFlags::AUX_DEPTH);
     }
 
     #[test]
@@ -854,11 +845,13 @@ mod tests {
         mem.w(list, 0);
         let strip = Part { flags: PartFlags::STRIP, triangle_list: false, ..part() };
         assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(strip) }]);
-        // The same part without bit 9: the guest draws it as a list.
+        // The same part without bit 9: in the scene unflagged, as the guest
+        // draws its indices as a list.
         with_record_bits(&mut mem, 0);
         let sorted = walk(&mem);
-        assert_eq!(sorted.entries, [Entry::Object { handle, part: None }]);
-        assert_eq!(sorted.causes, Causes { topology: 1, ..Causes::default() });
+        let listed = Part { triangle_list: false, ..part() };
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(listed) }]);
+        assert_eq!(sorted.causes, Causes::default());
         mem.w(list, 8 << 16);
 
         // Conditional ranges: the whole part without a mask, the visible

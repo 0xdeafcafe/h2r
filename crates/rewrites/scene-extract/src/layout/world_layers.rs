@@ -45,7 +45,7 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
         (1, 0x0002_bd5c) | (3, 0x0002_bd74) | (5, 0x0002_bd8c) | (2, 0x0002_bda8) => {
             Site::AlternateView
         }
-        (1, 0x0004_00ab) | (3, 0x0004_0136) | (8, 0x0004_01a7) | (7, 0x0004_0271) => {
+        (1, 0x0004_00ab) | (3, 0x0004_0136) | (8, 0x0004_01a7) | (20, 0x0004_020b) | (7, 0x0004_0271) => {
             Site::FirstPerson
         }
         _ => Site::Other,
@@ -226,6 +226,7 @@ mod tests {
         assert_eq!(layer_site(3, 0x0002_be4a), Site::Other);
         assert_eq!(layer_site(2, 0x0002_c060), Site::Scene);
         assert_eq!(layer_site(20, 0x0002_c010), Site::Scene, "after layer 8, before the object shadows");
+        assert_eq!(layer_site(20, 0x0004_020b), Site::FirstPerson, "the first person's, after its layer 8");
     }
 
     #[test]

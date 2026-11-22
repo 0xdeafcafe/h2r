@@ -20,7 +20,8 @@ use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{
-    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, lit_subparts, uniform,
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_listed, lit_model, lit_subparts,
+    uniform,
 };
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
@@ -1196,6 +1197,13 @@ fn lit_material(o: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
 /// scalar 21, `+0x48`).
 const SHADER_VALUES: u32 = 0x44;
 
+/// Whether `layer` is a world layer besides 3 whose passes the lit build
+/// compiles (`object_program_gpu::OBJECT_LAYERS`): their vertex programs
+/// are read with layer 3's.
+pub fn drawn_layer(layer: usize) -> bool {
+    native_render::object_program_gpu::OBJECT_LAYERS.iter().any(|&l| usize::from(l) == layer)
+}
+
 /// The lit parts of `loaded`'s drawn sections for `materials`
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
@@ -1238,6 +1246,14 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
                 .filter_map(|(k, p)| Some((k as u8, lit_subparts(&g.indices, &g.subparts, p)?)))
                 .collect(),
+            // A record without bit 9 draws a strip part as a list.
+            listed: g
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter_map(|(k, p)| Some((k as u8, lit_listed(&g.indices, p)?)))
+                .collect(),
         });
     }
     // The programs each section's classification takes, read first (the
@@ -1248,7 +1264,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
             .material
             .layers
             .iter()
-            .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
+            .filter(|l| l.lod == 0 && (l.layer == look::LIGHTMAP_LAYER || drawn_layer(l.layer)))
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
             .filter_map(|i| i.vertex_shader);
@@ -1569,6 +1585,7 @@ mod tests {
             indices: 0..3,
             implementations,
             subparts: None,
+            listed: None,
         };
         let mut empty = part(2, 5, [Some((0, 0)), None, None, None, None]);
         empty.indices = 0..0;

@@ -135,6 +135,9 @@ pub struct ObjectPass {
     /// the same part binds.
     pub words: Vec<u32>,
     pub options: shaders::vsh::VertexOptions,
+    /// A layer-5 PRT variant: what its PRT stream feeds
+    /// (`object_program_gpu::compile_layer_sections`); `None` otherwise.
+    pub prt: Option<crate::object_program_gpu::PrtInput>,
 }
 
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
@@ -209,7 +212,7 @@ fn object_pass_with(
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     let options = shaders::vsh::VertexOptions { provided_inputs: provided, input_fetch: fetch, ..Default::default() };
-    Ok(ObjectPass { program, default_final, implementation: imp.clone(), normalization, texaccum, words, options })
+    Ok(ObjectPass { program, default_final, implementation: imp.clone(), normalization, texaccum, words, options, prt: None })
 }
 
 /// Why objects' parts with `material` stay on D3D, or `None` when an
@@ -867,10 +870,14 @@ pub(crate) mod tests {
             state(R::AlphaBlendEnable, 1),
             state(R::SrcBlend, BlendFactor::One.xbox_value()),
             state(R::DestBlend, BlendFactor::One.xbox_value()),
+            // Its own blend op, so layer 3's state reads its blend.
+            state(R::BlendOp, 0x8006),
+            state(R::ZWriteEnable, 0),
         ];
         let fetch = [shaders::vsh::InputFetch::Float; 16];
         let pass = map::TagId(0xe000_0001);
-        assert!(object_pass(pass, &imp, &rigid_program(), WORLD, fetch, true).unwrap_err().contains("blends"), "layer 3's refuse it");
+        let e = object_pass(pass, &imp, &rigid_program(), WORLD, fetch, true).unwrap_err();
+        assert!(e.contains("blends"), "layer 3's refuse it: {e}");
         let p = object_layer_pass(pass, &imp, &rigid_program(), WORLD, fetch).unwrap();
         assert!(p.program.state.as_ref().unwrap().blend.is_some(), "the pipeline's blend");
         // Outside layer 3 the draw binds no lightmap page.

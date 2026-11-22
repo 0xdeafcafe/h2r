@@ -258,6 +258,14 @@ fn present_hook_copies_the_back_buffer() {
     assert_eq!(&px[..3], &[37, 81, 129]);
     assert!((126..=129).contains(&px[3]));
     assert_eq!(source.stats().published, 3);
+    // Flags 0 are the presents of frames the host made between the guest's
+    // (`d3d::interp`); a guest `Swap` presents with its own flags. The
+    // title's guest rate counts only the latter.
+    assert_eq!(source.stats().made, 3);
+    hook(&ctx, &store, argb, 4, None);
+    let s = source.stats();
+    assert_eq!((s.published, s.made), (4, 3));
+    assert_eq!(frame::MADE_FRAME_FLAGS, 0);
 
     // Put a mark at the centre of player three's quadrant so this checks
     // both the crop dimensions and translation of its texture coordinates.

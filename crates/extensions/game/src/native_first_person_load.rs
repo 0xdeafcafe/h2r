@@ -433,8 +433,30 @@ fn lit_parts(
                 .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
                 .map(|(index, part)| (index as u8, part.material, geometry.part_triangles(part)))
                 .collect(),
-            // First-person items draw whole parts (`plan` with no subparts).
-            subparts: HashMap::new(),
+            // A record with bit 6 may draw a choice of them
+            // (`frame_scene::Subparts`).
+            subparts: geometry
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
+                .filter_map(|(index, part)| {
+                    Some((
+                        index as u8,
+                        native_render::object_program_gpu::lit_subparts(&geometry.indices, &geometry.subparts, part)?,
+                    ))
+                })
+                .collect(),
+            // A record without bit 9 draws a strip part as a list.
+            listed: geometry
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
+                .filter_map(|(index, part)| {
+                    Some((index as u8, native_render::object_program_gpu::lit_listed(&geometry.indices, part)?))
+                })
+                .collect(),
         });
     }
 
@@ -445,7 +467,7 @@ fn lit_parts(
             .material
             .layers
             .iter()
-            .filter(|layer| layer.lod == 0 && layer.layer == look::LIGHTMAP_LAYER)
+            .filter(|layer| layer.lod == 0 && (layer.layer == look::LIGHTMAP_LAYER || crate::native_objects_glue::drawn_layer(layer.layer)))
             .flat_map(|layer| &layer.passes)
             .flat_map(|pass| &pass.implementations)
             .filter_map(|implementation| implementation.vertex_shader);

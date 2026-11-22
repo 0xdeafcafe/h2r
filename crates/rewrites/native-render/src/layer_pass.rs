@@ -49,7 +49,7 @@ use tags::shader::AnimatedProperty;
 use crate::object_lighting::{LIGHTING_SCALARS, LIGHTING_VECTORS, ShaderValues, scalar_input, vector_input};
 
 /// The layers the stage plans: the scene's 1, 5, 7, 8 and 20 and the
-/// first person's 1, 7 and 8.
+/// first person's 1, 7, 8 and 20.
 pub const LAYERS: [u8; 5] = [1, 5, 7, 8, 20];
 
 /// The scalar input the shader instance gives (`shad +0x44`).
