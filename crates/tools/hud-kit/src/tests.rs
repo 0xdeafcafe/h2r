@@ -200,6 +200,48 @@ fn templates_resolve_on_the_hud_editors_fixture_map() {
     assert!(t.art(&nope).unwrap_err().contains("no bitmap widget nope"));
 }
 
+/// The readout beside the superbounce HUD: every check passes for both
+/// in every mode but the glyphs (no fonts), no element of one meets one
+/// of the other, and the readout draws fullscreen only, bottom left.
+#[test]
+fn the_readout_passes_beside_the_superbounce_hud() {
+    use crate::huds::superbounce_readout::{self as readout, Readout};
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&Superbounce, &Readout], &Mode::ALL).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    let shot = |state: &str, mode: Mode| {
+        r.shots
+            .iter()
+            .find(|s| s.hud == readout::NAME && s.state == state && s.mode == mode)
+            .unwrap()
+    };
+    let drawn = |state: &str, mode: Mode| -> Vec<&str> {
+        shot(state, mode)
+            .elements
+            .iter()
+            .filter(|d| d.drawn)
+            .map(|d| d.id)
+            .collect()
+    };
+    assert_eq!(
+        drawn("falling-off-seam", Mode::Full),
+        [readout::FALL, readout::SPEED, readout::STEER]
+    );
+    assert_eq!(drawn("miss-too-slow", Mode::Full), [readout::INFO]);
+    assert!(drawn("idle", Mode::Full).is_empty());
+    for mode in [Mode::Half, Mode::Quarter] {
+        assert!(drawn("falling-off-seam", mode).is_empty(), "{mode:?}");
+        assert!(drawn("tagged", mode).is_empty(), "{mode:?}");
+    }
+    // Right of the tracker, under its top, left of the screen's middle
+    // third's far edge.
+    for id in [readout::FALL, readout::SPEED, readout::STEER] {
+        let d = shot("falling-off-seam", Mode::Full).element(id).unwrap();
+        let rect = d.rect.unwrap();
+        assert!(rect.x0 >= 138.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
+    }
+}
+
 /// The synthetic sheet draws: the superbounce HUD in every state and
 /// mode, every check passing but the glyphs (no fonts), and a picture
 /// and its JSON written to a folder.

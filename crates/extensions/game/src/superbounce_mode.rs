@@ -54,6 +54,7 @@ pub use crate::superbounce_charge::{
 use crate::superbounce_capsule::Room;
 use crate::superbounce_chain::{self as chain, Medals};
 use crate::superbounce_charge::{Tick, Tracker};
+use crate::superbounce_targets::Marks;
 
 /// The feature's name.
 pub const FEATURE: &str = "superbounce";
@@ -136,6 +137,15 @@ pub struct State {
     /// The unit's aim as a yaw, radians from +X toward +Y. The first-person
     /// camera looks along it.
     pub yaw: Option<f32>,
+    /// The body's velocity, world units a second.
+    pub velocity: Option<Vec3>,
+    /// The unit's aim, a unit vector in world space.
+    pub aim: Option<Vec3>,
+    /// The game tick the state was read on.
+    pub tick: Option<u32>,
+    /// The seam targets' navpoints and the tag
+    /// ([`crate::superbounce_targets`]).
+    pub marks: Marks,
     /// The charge meter: the phase of the recipe and its fill; `None` is
     /// hidden (not primed, and not crouched by a crouch spot).
     pub charge: Option<Charge>,
@@ -187,6 +197,10 @@ impl State {
         airborne: false,
         vz: None,
         yaw: None,
+        velocity: None,
+        aim: None,
+        tick: None,
+        marks: Marks::NONE,
         charge: None,
         verb: None,
         nav_target: None,
@@ -296,6 +310,13 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         airborne: s.position.map(|_| s.airborne),
         vz: s.vz.map(f64::from),
         yaw: s.yaw.map(f64::from),
+        velocity: s.velocity.map(v3),
+        options: options_reply(crate::superbounce_options::current()),
+        targets: wire::Targets {
+            count: crate::superbounce_targets::current().len(),
+            tag: s.marks.tagged.map(v3),
+            marked: s.marks.targets.iter().flatten().map(|m| v3(m.at)).collect(),
+        },
         charge: s.charge.map(|c| wire::Charge {
             phase: match c.phase {
                 ChargePhase::Near => wire::ChargePhase::Near,
@@ -364,6 +385,17 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             .collect(),
         standing_fits: s.standing_fits,
         medals: medals_reply(&s.medals),
+    }
+}
+
+/// `superbounce.state`'s `options` for `o`.
+pub fn options_reply(o: crate::superbounce_options::Options) -> agent_proto::superbounce::Options {
+    agent_proto::superbounce::Options {
+        targets: o.targets.name().into(),
+        velocity: o.velocity,
+        alignment: o.alignment,
+        miss_info: o.miss_info,
+        medals: o.medals,
     }
 }
 
@@ -816,6 +848,10 @@ struct Live {
     airborne: bool,
     vz: Option<f32>,
     yaw: Option<f32>,
+    /// The aim, a unit vector.
+    aim: Option<Vec3>,
+    /// The flashlight action is down.
+    flashlight: bool,
     /// World units a second.
     velocity: Option<Vec3>,
     /// The crouch request, unit flags bit 23.
@@ -871,6 +907,11 @@ fn read_live(m: &dyn GuestMemory) -> Live {
         (Some(x), Some(y)) if x != 0.0 || y != 0.0 => Some(y.atan2(x)),
         _ => None,
     };
+    let aim = (|| Some([f(UNIT_AIM)?, f(UNIT_AIM + 4)?, f(UNIT_AIM + 8)?]))()
+        .filter(|a: &Vec3| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] - 1.0).abs() < 0.1);
+    let flashlight = m
+        .u32(u.body.wrapping_add(crate::superbounce_view::UNIT_CONTROL_FLAGS))
+        .is_ok_and(|flags| flags & crate::superbounce_view::CONTROL_FLASHLIGHT != 0);
     // Bit 0 of the biped flags, as `world.object` reads `physics.airborne`.
     let airborne = u.kind == engine::view::objects::BIPED
         && m.u16(u.body.wrapping_add(BIPED_FLAGS))
@@ -881,6 +922,8 @@ fn read_live(m: &dyn GuestMemory) -> Live {
         airborne,
         vz,
         yaw,
+        aim,
+        flashlight,
         velocity,
         request,
         tick,
@@ -976,6 +1019,8 @@ fn reset() {
     crate::superbounce_assist::set_marked(None);
     crate::superbounce_view::reset();
     crate::superbounce_ghost::reset();
+    crate::superbounce_targets::reset();
+    crate::superbounce_options::set(crate::superbounce_options::Options::DEFAULT);
 }
 
 /// `superbounce.medal_test`: files a bounce at chain count `chain` (a
@@ -1016,7 +1061,15 @@ pub fn medal_test(
 fn decide(o: &hooks::Obs) {
     let on = {
         let guest = o.guest();
-        on_now(&*guest)
+        let on = on_now(&*guest);
+        // The HUD's pieces, as the variant's script options give them
+        // (docs/game/superbounce.md, "The HUD's options").
+        crate::superbounce_options::set(if on {
+            crate::superbounce_options::read(&*guest)
+        } else {
+            crate::superbounce_options::Options::DEFAULT
+        });
+        on
     };
     // The bots practise bounces instead of fighting while it is on
     // (docs/game/bots.md, "Practising bounces").
@@ -1028,6 +1081,7 @@ fn decide(o: &hooks::Obs) {
         lock(&OFF_SPOT).clear();
         *lock(&LOCAL) = None;
         crate::superbounce_ghost::reset();
+        crate::superbounce_targets::reset();
     }
 }
 
@@ -1112,6 +1166,29 @@ fn on_tick(o: &hooks::Obs) {
         }
         _ => step.nav_target,
     };
+    // The seam targets and the tag (docs/game/superbounce.md, "Targets"):
+    // a tagged seam the mode marks is the chosen strip; the mode's own
+    // navpoint is drawn on the ground only, and no target's goes on it.
+    let tag = crate::superbounce_targets::step(&crate::superbounce_targets::Input {
+        map: map.as_deref(),
+        scanned: &scanned_spots().1,
+        mode: crate::superbounce_options::current().targets,
+        position: live.position,
+        aim: live.aim,
+        down: live.flashlight,
+    });
+    let nav_target = crate::superbounce_targets::chosen(
+        nav_target,
+        landing.is_some(),
+        tag,
+        &spots,
+        live.position,
+    );
+    let marks = crate::superbounce_targets::marks(
+        live.position,
+        tag,
+        nav_target.filter(|_| !live.airborne).map(|n| n.at),
+    );
     // The assist steers onto the strip that is marked
     // (superbounce_assist::choose).
     crate::superbounce_assist::set_marked(
@@ -1174,6 +1251,10 @@ fn on_tick(o: &hooks::Obs) {
         airborne: live.airborne,
         vz: live.vz,
         yaw: live.yaw,
+        velocity: live.velocity,
+        aim: live.aim,
+        tick: live.tick,
+        marks,
         charge: step.charge,
         verb: step.verb,
         nav_target,
@@ -1255,8 +1336,6 @@ mod gpu {
     pub fn register(host: &mut crate::Host) {
         host.add_world_line_source(Arc::new(Lines));
         host.add_world_line_source(Arc::new(crate::superbounce_view::Source));
-        host.add_world_line_source(Arc::new(crate::superbounce_reticle::Source));
-        host.add_world_line_source(Arc::new(crate::superbounce_steps::Source));
         crate::superbounce_ghost::register(host);
     }
 
@@ -1734,5 +1813,40 @@ mod tests {
         assert_eq!(taken.len(), COLLECT_MAX);
         assert_eq!(taken[0].seq, 5, "the oldest go first");
         collect_awards(false);
+    }
+
+    /// The reply carries the velocity, the HUD's options and the seam
+    /// targets' marks.
+    #[test]
+    fn the_agent_reply_has_the_velocity_the_options_and_the_marks() {
+        use crate::superbounce_targets::Mark;
+        let mark = |x: f32| Mark {
+            at: [x, 0.0, 1.0],
+            distance: x,
+        };
+        let s = State {
+            active: true,
+            velocity: Some([1.0, 2.0, -3.0]),
+            marks: Marks {
+                tag: None,
+                targets: [Some(mark(4.0)), Some(mark(9.0))],
+                tagged: Some([4.0, 0.0, 1.0]),
+            },
+            ..State::EMPTY
+        };
+        let r = reply(&s);
+        assert_eq!(r.velocity, Some([1.0, 2.0, -3.0]));
+        assert_eq!(r.targets.tag, Some([4.0, 0.0, 1.0]));
+        assert_eq!(r.targets.marked, vec![[4.0, 0.0, 1.0], [9.0, 0.0, 1.0]]);
+        let o = options_reply(crate::superbounce_options::Options {
+            targets: crate::superbounce_options::TargetMode::All,
+            medals: false,
+            ..crate::superbounce_options::Options::DEFAULT
+        });
+        assert_eq!(o.targets, "all");
+        assert!(o.velocity && o.alignment && o.miss_info && !o.medals);
+        let bare = reply(&State::EMPTY);
+        assert_eq!((bare.velocity, bare.targets.tag), (None, None));
+        assert!(bare.targets.marked.is_empty());
     }
 }

@@ -62,6 +62,15 @@ pub fn script_asks_superbounce(script: Script) -> bool {
     header_of(script).is_some_and(|ir| asks_superbounce(&ir))
 }
 
+/// The superbounce HUD's options a record's script reference gives: the
+/// script's, read by name from the reference's option bits
+/// ([`crate::superbounce_options::Options::from_ir`]); the defaults when
+/// this machine lacks the script.
+pub fn superbounce_options(script: Script) -> crate::superbounce_options::Options {
+    use crate::superbounce_options::Options;
+    header_of(script).map_or(Options::DEFAULT, |ir| Options::from_ir(&ir, script.options))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +135,30 @@ mod tests {
             ..Ext::RETAIL
         };
         assert!(!crate::variant_ext::decide(plain, None, false).superbounce());
+    }
+
+    /// The built-in block's options are the defaults; a copy with a piece
+    /// off reads off, and a block naming no script reads the defaults.
+    #[test]
+    fn the_superbounce_blocks_options_reach_the_hud() {
+        use crate::superbounce_options::{Options, TargetMode};
+        let ext = crate::community_variants::superbounce_ext();
+        assert_eq!(superbounce_options(ext.script), Options::DEFAULT);
+        let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+        let bits = ir
+            .pack_options(&[
+                ("medals".into(), ::rules::ir::OptionValue::Bool(false)),
+                ("targets".into(), ::rules::ir::OptionValue::Name("all".into())),
+            ])
+            .unwrap();
+        let off = Script { options: bits, ..ext.script };
+        assert_eq!(
+            superbounce_options(off),
+            Options { medals: false, targets: TargetMode::All, ..Options::DEFAULT }
+        );
+        assert_eq!(superbounce_options(Script::default()), Options::DEFAULT);
+        assert_eq!(crate::variant_ext::decide(ext, None, false).script(), Some(ext.script));
+        assert_eq!(crate::variant_ext::Decision::Retail.script(), None);
     }
 
     #[test]

@@ -1842,6 +1842,18 @@ score the game; with it on, the script runs beside them ("The host
 runtime"), so its kill scoring adds to the lifted carrier's until
 Slayer's callbacks are answered in place.
 
+**Options the host reads.** After its scoring options the Superbounce
+script declares the HUD's pieces: `targets` (an enum, `common`, `likely`
+or `all`; default `likely`) and the bools `velocity`, `alignment`,
+`miss_info` and `medals`, all on. The script itself never reads them:
+they are in the record's option bits for the host, which looks each up
+by name (`Ir::option_value(bits, name)`, the value at the option's
+offset; `rules::header::superbounce_options`, into
+`superbounce_options::Options`) where it decides the mode is on
+([superbounce.md](superbounce.md#the-huds-options)). A variant turns a
+piece of the HUD off as it sets any option, and a script without them
+gets the defaults.
+
 ## Payoff
 
 The modes below that have a script are examples in

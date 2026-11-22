@@ -4,10 +4,14 @@
 use crate::model::Describe;
 
 pub mod superbounce;
+pub mod superbounce_readout;
 
 /// Every registered HUD.
 pub fn all() -> Vec<Box<dyn Describe>> {
-    vec![Box::new(superbounce::Superbounce)]
+    vec![
+        Box::new(superbounce::Superbounce),
+        Box::new(superbounce_readout::Readout),
+    ]
 }
 
 /// The registered HUD named `name`.

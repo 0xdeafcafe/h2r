@@ -80,6 +80,9 @@ pub struct Button {
 }
 
 impl Button {
+    /// The button up.
+    pub const UP: Button = Button { down: 0 };
+
     /// One tick: `down` is the flashlight action this tick.
     pub fn step(&mut self, down: bool) -> Option<Press> {
         if down {
@@ -1238,7 +1241,7 @@ pub fn current() -> Option<Arc<Frame>> {
 }
 
 /// The first local player's flashlight action.
-fn flashlight_down(m: &dyn GuestMemory) -> bool {
+pub(crate) fn flashlight_down(m: &dyn GuestMemory) -> bool {
     crate::skulls_custom::local_units(m)
         .ok()
         .and_then(|u| u.first().map(|u| u.body))

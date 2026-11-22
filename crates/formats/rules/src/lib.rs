@@ -118,6 +118,14 @@ mod tests {
             .pack_options(&given(&[("points", "4"), ("costs", "false"), ("mode", "wild")]))
             .unwrap();
         assert_eq!(bits, 3 | (1 << 4));
+        // A host reads them back by name, as the VM does.
+        assert_eq!(ir.option_value(bits, "points"), Some(4));
+        assert_eq!(ir.option_value(bits, "costs"), Some(0));
+        assert_eq!(ir.option_value(bits, "mode"), Some(1));
+        assert_eq!(ir.option_value(ir.default_options(), "points"), Some(1));
+        assert_eq!(ir.option_value(ir.default_options(), "costs"), Some(1));
+        assert_eq!(ir.option_value(ir.default_options(), "mode"), Some(0));
+        assert_eq!(ir.option_value(bits, "nope"), None);
         assert_eq!(
             ir.pack_options(&given(&[("nope", "1")])),
             Err(OptionError::Unknown("nope".into()))

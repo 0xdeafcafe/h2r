@@ -93,6 +93,33 @@ pub struct Nearest {
     pub edge: [[f64; 3]; 2],
 }
 
+/// `superbounce.state`'s `options`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Options {
+    /// Which seams are targets: `common`, `likely` or `all`.
+    pub targets: String,
+    /// The speed line.
+    pub velocity: bool,
+    /// The fall's bar and steer line.
+    pub alignment: bool,
+    /// Why a landing did not bounce.
+    pub miss_info: bool,
+    /// The medal lines and their announcer.
+    pub medals: bool,
+}
+
+/// `superbounce.state`'s `targets`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Targets {
+    /// Seams the `targets` option shows on this map.
+    pub count: usize,
+    /// The tagged seam's point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<[f64; 3]>,
+    /// The reachable seams with a navpoint, nearest first (two at most).
+    pub marked: Vec<[f64; 3]>,
+}
+
 /// `superbounce.state`'s result.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
@@ -127,6 +154,17 @@ pub struct State {
     /// the first-person camera's yaw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yaw: Option<f64>,
+    /// The local player's velocity, world units a second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<[f64; 3]>,
+    /// The HUD's pieces this game: the Superbounce script's options, as
+    /// the variant set them (docs/game/superbounce.md, "The HUD's
+    /// options").
+    #[serde(default)]
+    pub options: Options,
+    /// The seam targets (docs/game/superbounce.md, "Targets").
+    #[serde(default)]
+    pub targets: Targets,
     /// The charge meter; absent while hidden (not primed, and not crouched
     /// by a crouch spot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1231,6 +1269,19 @@ mod tests {
             airborne: Some(true),
             vz: Some(-4.5),
             yaw: None,
+            velocity: Some([1.0, 0.0, -4.5]),
+            options: Options {
+                targets: "likely".into(),
+                velocity: true,
+                alignment: true,
+                miss_info: false,
+                medals: true,
+            },
+            targets: Targets {
+                count: 12,
+                tag: None,
+                marked: vec![[4.0, 5.0, 6.0]],
+            },
             charge: Some(Charge {
                 phase: ChargePhase::Held,
                 fill: 0.5,
@@ -1307,6 +1358,12 @@ mod tests {
         assert_eq!(v["off_spot"][0]["launch"], 4.2);
         assert!(v["off_spot"][0].get("edge").is_none());
         assert_eq!(v["standing_fits"], false);
+        assert_eq!(v["velocity"][2], -4.5);
+        assert_eq!(v["options"]["targets"], "likely");
+        assert_eq!(v["options"]["miss_info"], false);
+        assert_eq!(v["targets"]["count"], 12);
+        assert_eq!(v["targets"]["marked"][0][1], 5.0);
+        assert!(v["targets"].get("tag").is_none());
         let bare = serde_json::to_value(State::default()).unwrap();
         for absent in [
             "charge",

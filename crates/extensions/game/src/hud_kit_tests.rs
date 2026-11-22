@@ -586,7 +586,7 @@ fn the_navpoint_is_a_scenario_point_of_ours() {
     m.fill(block, 2 * POINT_LEN, 0x5c).unwrap();
     let h = install_point(&mut m, POINTS).unwrap().unwrap();
     assert_eq!(h.index, 2);
-    assert_eq!(m.u32(scenario + 0x1e0).unwrap(), 3);
+    assert_eq!(m.u32(scenario + 0x1e0).unwrap(), 2 + KIT_POINTS);
     let copy = m.u32(scenario + 0x1e4).unwrap();
     assert_eq!(copy, POINTS.0 + POINT_HEADER_LEN);
     assert_eq!(m.u8(copy + 2 * POINT_LEN - 1).unwrap(), 0x5c);
@@ -595,7 +595,7 @@ fn the_navpoint_is_a_scenario_point_of_ours() {
     assert_eq!(m.u32(scenario + 0x1ec).unwrap(), 0x0055_d000);
     // Again: one copy.
     assert_eq!(install_point(&mut m, POINTS).unwrap().unwrap(), h);
-    assert_eq!(m.u32(scenario + 0x1e0).unwrap(), 3);
+    assert_eq!(m.u32(scenario + 0x1e0).unwrap(), 2 + KIT_POINTS);
     assert_eq!(m.u32(scenario + 0x1e4).unwrap(), copy);
     // The game's list: an empty slot, then an object navpoint of its own,
     // then two more empty slots.
@@ -630,6 +630,60 @@ fn the_navpoint_is_a_scenario_point_of_ours() {
         write_navpoint(&mut m, POINTS, 0, Some([0.0; 3])).unwrap(),
         Some(0)
     );
+}
+
+/// The kit has a point for every slot of a user's list: each of our
+/// navpoints keeps its own point and slot, takes the first slot the draw
+/// passes, leaves the game's alone, and is skipped on its own.
+#[test]
+fn four_navpoints_each_keep_a_point_and_a_slot() {
+    let mut m = memory();
+    let (scenario, block, list) = (0x0055_a000, 0x0055_b000, 0x0055_c000);
+    m.set_u32(SCENARIO, scenario).unwrap();
+    m.set_u32(scenario + 0x1e0, 2).unwrap();
+    m.set_u32(scenario + 0x1e4, block).unwrap();
+    m.fill(block, 2 * POINT_LEN, 0x5c).unwrap();
+    let h = install_point(&mut m, POINTS).unwrap().unwrap();
+    assert_eq!(h.index, 2);
+    let copy = m.u32(scenario + 0x1e4).unwrap();
+    for k in 0..KIT_POINTS * POINT_LEN {
+        assert_eq!(m.u8(copy + 2 * POINT_LEN + k).unwrap(), 0, "our points start empty");
+    }
+    m.set_u32(NAVPOINTS, list).unwrap();
+    for i in 0..4 {
+        m.set_u16(list + i * NAV_SLOT_LEN, u16::MAX).unwrap();
+    }
+    // The game has slot 1.
+    let theirs = list + NAV_SLOT_LEN;
+    m.set_u16(theirs, 3).unwrap();
+    m.set_u16(theirs + 2, 1).unwrap();
+    m.set_u32(theirs + 8, 0x1234_0005).unwrap();
+    let p = |k: u32| [k as f32, 10.0 + k as f32, 20.0 + k as f32];
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 0, Some(p(0))).unwrap(), Some(0));
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 1, Some(p(1))).unwrap(), Some(2));
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 2, Some(p(2))).unwrap(), Some(3));
+    // No slot is left for the fourth: it is not drawn, and takes no one's.
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 3, Some(p(3))).unwrap(), None);
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, KIT_POINTS, Some(p(9))).unwrap(), None);
+    assert_eq!(
+        game_draws(&mut m, 0).unwrap(),
+        vec![(0, Some(p(0))), (1, None), (2, Some(p(1))), (3, Some(p(2)))]
+    );
+    assert_eq!(m.u32(theirs + 8).unwrap(), 0x1234_0005, "the game's slot is kept");
+    // Each keeps its slot as it moves; one skipped frees its slot alone.
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 1, Some(p(5))).unwrap(), Some(2));
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 0, None).unwrap(), None);
+    assert_eq!(
+        game_draws(&mut m, 0).unwrap(),
+        vec![(1, None), (2, Some(p(5))), (3, Some(p(2)))]
+    );
+    // The fourth takes the slot the first gave up.
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 3, Some(p(3))).unwrap(), Some(0));
+    assert_eq!(game_draws(&mut m, 0).unwrap()[0], (0, Some(p(3))));
+    // The first point is `write_navpoint`'s.
+    assert_eq!(write_navpoint(&mut m, POINTS, 0, Some(p(0))).unwrap(), None, "no slot free");
+    assert_eq!(write_navpoint_n(&mut m, POINTS, 0, 3, None).unwrap(), None);
+    assert_eq!(write_navpoint(&mut m, POINTS, 0, Some(p(0))).unwrap(), Some(0));
 }
 
 /// On an empty point block (Ascension's) the game's draw still reads our
