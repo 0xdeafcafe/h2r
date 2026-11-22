@@ -294,6 +294,7 @@ max_wall_s = 600            # and after this long on the clock
 render_every = 0
 pace = "unpaced"
 components = true           # false: no state_components_v1 in the report (timing arms)
+detail = "full"             # "training": no components; sparse digests and a rolling digest
 bot_threads = 3             # bot think workers: a count, "auto" or "off"; unset: see below
 bot_pipeline = false        # true: thinks overlap the guest's tick (a different match)
 
@@ -428,19 +429,28 @@ match begins.
 The phantoms' action build is not in `bots_ms_per_tick`
 ([sim-headless-skips.md](../perf/sim-headless-skips.md)). At the remote
 gather each phantom's pad goes through retail's local action builder in
-a private copy of guest RAM (`bot_glue::retail_input`, `Builder::sample`).
+a private world (`bot_glue::retail_input`, `Builder::sample`): by default
+on live RAM itself, every store journaled and undone before the gather
+returns (`impl.sim.phantom-alias`); with `-impl.sim.phantom-alias`, or on
+a flat-RAM image, in a copy-on-write copy of guest RAM
+([sim-phantom-build.md](../perf/sim-phantom-build.md)).
 `wall.phantom_build_ms_per_tick` is the game-thread time of those builds
-per tick: the snapshot, the reverts between seats, the view's writes and
-the six guest calls of every seat. A film that replays its builds runs
-none. `wall.phantom_snapshot_ms_per_tick` is the part spent in
+per tick: every seat's setup writes, six guest calls and read back, with
+the undo on the alias path, or the snapshot and the reverts between seats
+on the view path. A film that replays its builds runs none.
+`wall.phantom_snapshot_ms_per_tick` is the part spent in
 `SecondExecutor::snapshot`, the two copy-on-write copies of guest RAM a
-build takes at a tick's first seat. `wall.phantom_snapshots_per_tick`
+view-path build takes at a tick's first seat. `wall.phantom_snapshots_per_tick`
 counts those snapshots; it is above 1 when a failed build or a seat reset
-starts a seat from live RAM again. `wall.phantom_snapshot_copy` says how
-they copied RAM (`runtime::CopyKind`): `remap` (a copy-on-write mapping
-of the same pages, macOS), `copy` (every byte), or `mixed`. All four count
-from the tick the match begins, as the costs above do, and a report has
-none of them when the run did not measure.
+starts a seat from live RAM again, and the alias path takes none.
+`wall.phantom_snapshot_copy` says how they copied RAM (`runtime::CopyKind`):
+`remap` (a copy-on-write mapping of the same pages, macOS), `copy` (every
+byte), or `mixed`. `wall.phantom_build_mismatches` is there only in check
+mode (`H2_PHANTOM_BUILD_CHECK=1`, which builds every seat on both paths):
+the seats whose outcome, action bytes or history differed between them,
+0 when they all agree. All of these count from the tick the match begins,
+as the costs above do, and a report has none of them when the run did not
+measure.
 
 The split of that build, per tick and by the same counters
 (`bot_glue::retail_input`, `sim_bench::metrics::PHANTOM_CALLS`), is in
@@ -529,6 +539,24 @@ what the match wrote over the base, so batches record memory per run.
 into guest RAM by NtReadFile since boot. Copied bytes include partial pages.
 The per-process memory of a Waterworks 2v2 sim run is in
 [notes/sim.md](notes/sim.md).
+
+The census and lean-report fields
+(`sim_bench::metrics::WallLean`, flattened into `wall`) say where a run's
+setup time, reads, memory and disk went. Each is left out when it was not
+measured, and an earlier report without them still loads.
+
+| Field | What |
+|---|---|
+| `setup` | seconds in each stage before the first counted tick: `boot_s` (process start to the first game tick at the main menu), `menu_s` (to the lobby being able to open: networking and the lobby subsystem), `lobby_s` (opening and filling the System Link squad), `copy_wait_s` (the first wait on a peer's map status, `peer N has map status ...`, to the start request being accepted), `load_s` (the start request to the game activating) and `bind_s` (game active to every phantom having a player and a unit). The six add up to `setup_s`. A stage a run skips reads 0; `copy_wait_s` includes any wait for players that follows the first map-status wait |
+| `reads` | per guest path, `mapped_bytes`, `copied_bytes`, `count` (mapped reads, plus one per backend read on the copy path) and `refused`, the first reason a mapped read of that path was refused (`Vfs::try_map_read`: `short read`, `writable handle`, `no immutable file region`, ...). The map is kept by `vfs::reads::ReadLog`, keyed by path, at most 4096 paths |
+| `heap_tags` | live Rust heap bytes by allocation tag at the end (`mem_watch::heap::totals`); only tags with live bytes |
+| `guest_pages_written_4k`, `guest_pages_written_16k` | guest RAM pages whose bytes differ between the tick after counting begins and the end, counted per 4 KiB page and per aligned 16 KiB group of four (the pages a 16 KiB-page host would own). Both are hashes of the whole 64 MiB (`sim_pages::hashes`), taken under `impl.sim.page-census` (on; `-impl.sim.page-census` leaves the fields out, for a timing arm). A page written back to its old bytes is not counted, and a tick jump takes the baseline again |
+| `data_dir_bytes` | the bytes of the regular files under the run's data directory at the end (symbolic links not followed) |
+
+The stage boundaries are the sim's own lobby observations
+(`sim_glue::hosted`) and the game's activation; `sim_bench::metrics::SetupClock`
+only moves forward, charging the time since the last boundary to the stage
+it leaves.
 
 ### 6.1 Sim stores: the map without the map
 
@@ -666,14 +694,20 @@ params = "tuning/aggressive.toml"
   `<map>[-<gametype>][-<skill>]-s<seed>`, with the game type and skill
   segments included when those axes are set. Separate mode appends the
   arm name. In either swap mode the second leg appends `-swapped`.
-- **Z:'s map cache.** A run's data directory starts with Z:'s cache slots
-  (`shared`, `single_player_shared`) cloned from the image's template in
-  `<image out>/sim-cache/utility/`, so its boot skips their copy. The
-  first run of a batch with no template makes it while the other workers
-  wait. N:'s slots (the main menu and the match's map) are copied on
-  every run, since every boot formats N:. Each run's status line says
-  `warm Z:` or `cold Z:`; `H2_SIM_CACHE_TEMPLATE=0` turns the template
-  off ([cache-slots.md](cache-slots.md#sim-batches-a-warm-z)).
+- **The map cache.** A run's data directory starts with Z:'s cache slots
+  (`shared`, `single_player_shared`) and the title's `preferences.dat`
+  cloned from the image's template in `<image out>/sim-cache/utility/`.
+  N:'s slots (the main menu and the match's map) come from the same
+  template: every boot formats N:, and the run's VFS clones them in
+  straight after the format (`H2_SIM_CACHE_SEED`, set by the batch). A
+  boot that finds them skips their copy, and the System Link lobby does
+  not wait for slot 3. The first run of each map that misses a part of the
+  template makes it while the batch's other runs of that map wait. Each
+  run's status line says `warm Z:` or `cold Z:` and how many N: slots
+  were seeded; `H2_SIM_CACHE_TEMPLATE=0` turns the whole template off
+  ([cache-slots.md](cache-slots.md#sim-batches-a-warm-n)). On a light
+  host the lobby's own background copy also runs several steps a frame
+  (`map-copy.lobby`), which is what a cold run waits on.
 - **Arms.** By default each run plays config A against config B in the
   same match: half the bots A, half B (2 v 2 with teams A and B in a team
   game; in free-for-all, alternating). That is the fairest comparison: the
@@ -696,6 +730,9 @@ params = "tuning/aggressive.toml"
   a run per skill and overrides each bot's skill. When the runs cover
   multiple skills, `compare.json` has `by_skill` and the table repeats
   per skill.
+- **Detail.** `detail = "training"` in the batch file sets every run's
+  `detail` (the match file's own is the default; see "Finding the first
+  differing state").
 - `h2 sim batch --dry-run` prints the runs and stops.
 
 ### Arm swaps
@@ -1212,9 +1249,12 @@ that a digest does. Each report also carries `state_components_v1`: the
 same ticks as `state_hashes_v1`, broken into named components with their
 values as text. The first row lists every component; each later row lists
 only those that changed (a component that goes away reads `-`). It is on in
-every `h2 sim run` unless the match file sets `components = false`, and is
+every `h2 sim run` unless the match file sets `components = false` or
+`detail = "training"`, and is
 bounded at 250,000 recorded values; a longer match keeps its first ticks and
-sets `truncated_after`. A timing arm that leaves it out still has
+sets `truncated_after`. The series is built by `sim_bench::diff::Recorder`:
+component names are interned once, the arena's block digests stay `u64` until
+the report is written, and a value is stored only when it changed. A timing arm that leaves it out still has
 `state_hashes_v1`, and `h2 sim diff` against it compares those digests
 and says that one report has no component breakdown.
 
@@ -1232,6 +1272,21 @@ That needs the 4 MiB read and hash each tick, so it stays behind
 `H2_FEATURES=impl.sim.arena-hash` (the same switch as the aggregate `arena`
 digest, which it replaces with a single pass). `arena_base` in the series is
 the guest address of block 0.
+
+`detail = "training"` (the match key, or the batch key, which overrides the
+match file's) is for runs that only need to know whether two plays agree. It
+records no components (`components = true` with it is refused), keeps one
+`state_hashes_v1` row a game second (`TRAINING_STRIDE`, 30 ticks, and the
+first tick), and adds `state_digest_v1`: `{ stride, ticks, digest }`, a
+digest rolled over every tick's gameplay (and arena) digests in order, a
+tick seen twice counting once. `h2 sim diff` compares two training reports at
+the ticks both sampled, then their rolling digests. If a sampled row differs
+it names that tick and the last tick the reports agreed at: the state parted
+somewhere in between. If every sampled row agrees but the rolling digests do
+not, it says the state parted between sampled ticks. Both say to rerun with
+`detail = "full"` to name the component. A training report against a full one
+compares the ticks they share and says the rolling digests were not
+compared; two training reports of different lengths say so too.
 
 `diff` replays both series and prints the first tick where any component
 differs, then those components sorted by name with both values; for an arena
@@ -1300,10 +1355,10 @@ and some conditional tactical or route outputs can still allocate.
 
 The brains can think off the game thread ([bots.md §5.5](../game/bots.md)):
 `H2_BOT_THREADS=auto` batches every phantom's think across workers, and
-`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. A
-single `h2 sim run` thinks batched on `min(phantoms, cores - 1)` workers
-unless told otherwise; `h2 sim batch` children stay serial, because the
-children already fill the cores. Per variable, an `H2_BOT_THREADS` or
+`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. Sims
+think serially unless told otherwise: on the quiet laptop four phantoms
+think 9% slower batched than serial in one Lockout match, with equal
+hashes ([notes](../perf/notes/sim-10x.md)). Per variable, an `H2_BOT_THREADS` or
 `H2_BOT_PIPELINE` already in the environment wins, then the match file's
 `bot_threads` and `bot_pipeline`, then that default
 (`crates/apps/cli/src/sim_cmd.rs`, `think_env`). The run's first log line

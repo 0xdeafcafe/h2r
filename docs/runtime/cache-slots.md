@@ -1,8 +1,8 @@
 # Campaign cache integration gate
 
 Status: Built.
-Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`, `crates/rewrites/engine/src/map_status.rs`, `crates/rewrites/sim-bridge/src/sim_status_poll.rs`, `crates/apps/cli/src/sim_cmd/cache_template.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc), `crates/rewrites/engine/tests/map_status_differential.rs` (needs `H2_XBE`), `sim_cmd::cache_template::tests`.
-Switches: `impl.sim.status-poll` ([The status poll](#the-status-poll), on by default), `H2_SIM_CACHE_TEMPLATE` ([Sim batches: a warm Z:](#sim-batches-a-warm-z), on by default).
+Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`, `crates/rewrites/engine/src/map_status.rs`, `crates/rewrites/sim-bridge/src/sim_status_poll.rs`, `crates/apps/cli/src/sim_cmd/cache_template.rs`, `crates/runtime/vfs/src/host.rs` (`seed`), `crates/platform/xapi/src/vfs_storage.rs` (`mount_cache`). Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc), `crates/rewrites/engine/tests/map_status_differential.rs` (needs `H2_XBE`), `sim_cmd::cache_template::tests`, `map_copy::tests`, `crates/platform/xapi/tests/cache_seed.rs`.
+Switches: `impl.sim.status-poll` ([The status poll](#the-status-poll), on by default), `map-copy.lobby` ([Copy speed on the loading screen](#copy-speed-on-the-loading-screen), on for light hosts), `H2_SIM_CACHE_TEMPLATE` ([Sim batches: a warm Z:](#sim-batches-a-warm-z), on by default).
 
 `crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
@@ -253,14 +253,28 @@ a job still running is left to the next frame). It stops when the machine
 is idle (`0x55bd04` is 0). The machine sees the same calls in the same
 order with the same job results, only with fewer frames drawn between
 them; the game's own flush loop `0x213fa0` steps it back to back with
-nothing drawn. The main loop's call (`0x12b571`) and the flush loop's are
-left alone. `H2_FEATURES=-map-copy.boot` uses the 16-step budget for all
-slots. The title still owns reads, checksums, invalidation, flushes and header
+nothing drawn. The flush loop's call is left alone.
+`H2_FEATURES=-map-copy.boot` uses the 16-step budget for all slots.
+
+**The main loop's copy.** The main loop steps the machine once a frame
+too, only while the job-done byte is set (the test at `0x12b564`, the
+call at `0x12b56c`, returning to `0x12b571`; it ignores the result). That
+is the copy the System Link lobby waits on while the match's map goes
+into slot 3: 1 MiB every two main-loop frames. On a light host (a sim or
+a dedicated host) the sub-feature `map-copy.lobby` answers that call the
+same way, with the 16-step budget: the same calls in the same order with
+the same job results, in fewer frames. The main loop calls the machine
+every frame, idle too; an idle machine gets the original call, and a copy
+that call starts is boosted from the next frame. It is on by default there
+(`profile_switches`, `crates/apps/boot/src/registration.rs`) and off
+elsewhere; `H2_FEATURES=-map-copy.lobby` is its A/B arm. The title still owns reads, checksums, invalidation, flushes and header
 publication in either mode.
 
 Tests (`map_copy::tests`, a synthetic copy machine and worker): the same
 bytes, checksum and step sequence in 3 frames instead of 42 for 21
-chunks; a slow worker; a job that outlasts its yields; idle; the plan.
+chunks; from the main loop's return address with `map-copy.lobby`, the
+same bytes, checksum and steps in 6 frames instead of 82 for 41 chunks;
+a slow worker; a job that outlasts its yields; idle; the plan.
 
 ## The status poll
 
@@ -323,6 +337,16 @@ kept warm.
 **What makes a map cached.** All of it is in files under the data root,
 and the boot reads it back:
 
+- **The preferences.** `z:\preferences.dat` (0x1fc bytes, signed) is
+  read at boot (`0x121350`) before the cache services start. A missing or
+  invalid file leaves the defaults (`0x121220`): language -1 at
+  `0x510838`, build 0 at `0x510a08`. The cache services (`0x2136c0`) then
+  compare those with the running language and build `0x2651`; on a
+  mismatch they delete `cache000.map` to `cache005.map` on both Z: and N:
+  (`0x2138f0`) and store the current values, which the main loop saves
+  to the file (`0x121120`). So a data directory with slot files but no
+  preferences file loses its slots at boot and copies every map again.
+
 - **The slot files.** Slot *n* is `cache%03d.map`: slots 0-1 on Z:
   (`disk/Partition5`), slots 2-5 on N: (`disk/Partition4`)
   ([xapi.md](xapi.md#the-second-cache-volume-n)). Each starts with the
@@ -350,14 +374,23 @@ main menu (slot 2), the multiplayer map (slot 3) and campaign levels
 (slots 4-5) are copied again on every boot, from any data directory.
 The map the System Link lobby waits for is in slot 3, on N:.
 
+**What the boot accepts.** After that check, `0x213970` opens each slot
+file with `OPEN_ALWAYS`. A file whose size is not its slot's capacity is
+resized and gets a zero header (and the first such file has the higher
+slots' files deleted). A file of the right size has its header read
+(`0x2149c0`) and checked by `0x122870`; only slot 1 is also checked
+against the DVD. Slots 2 to 5 on N: are taken as slot 0 on Z: is,
+so a valid slot file on N: after the format is used.
+
 **What a slot depends on.** The payload is the disc map's bytes. The
 header is the map's header with two edits: the path (copy state 4,
 `0x214343`) and a FILETIME at `+0x14c`, the guest's clock at the copy.
 The FILETIME orders eviction between campaign slots 4-5 and nothing
 else reads it. Nothing in Z:'s slots names the run, its seed, its
 session or its match. The boot checks slot 1 against the DVD (`+0x144`),
-and `0x2136c0` invalidates on language or build, so a template made by
-the same image from the same disc passes both.
+and `0x2136c0` invalidates on the language or build the preferences
+hold, so a template made by the same image from the same disc, carrying
+its preferences file, passes both.
 
 **What a warm Z: changes.** Only work before the match: a boot that
 finds slots 0-1 valid skips their copy, so the loading screen draws
@@ -371,37 +404,86 @@ and repeated runs give identical `state_hashes_v1`
 unchanged is inferred from this, not yet measured: an A/A `h2 sim diff`
 of a warm run against a cold one on the same seed checks it.
 
-**The template.** `h2 sim batch` and `h2 sim train` (`play_runs`) keep Z:'s finished slots per image in
-`<out>/sim-cache/utility/<key>/` (`disk/` the slot files, `metadata/`
-their records). The key hashes the image's build stamp
-(`<dylib>.stamp`), the disc's path, length and mtime, and the running
-`h2`'s, so a new build, disc or `h2` starts a new template; saving one
-removes the other keys'. It does not depend on the match's map: Z:
-holds the shared maps only.
+**The template.** `h2 sim batch` and `h2 sim train` (`play_runs`) keep
+the finished cache files per image in `<out>/sim-cache/utility/<key>/`, one directory a part, each
+with `disk/` (the files) and `metadata/` (their records):
+
+| Part | Files | Placed |
+|---|---|---|
+| `utility/` | Z:'s finished `cache000.map` and `cache001.map`, and `preferences.dat` | into the run's Z: before it boots |
+| `cache/mainmenu/` | N:'s `cache002.map` holding `d:\maps\mainmenu.map` | into N: after the boot's format ([a warm N:](#sim-batches-a-warm-n)) |
+| `cache/<map>/` | N:'s `cache003.map` holding `d:\maps\<map>.map` | the same |
+
+The key hashes the image's build stamp (`<dylib>.stamp`), the disc's
+path, length and mtime, and the running `h2`'s, so a new build, disc or
+`h2` starts a new template; saving any part removes the other keys'. The
+map is not in the key: each map's slot 3 is a part of its own. A Z: part
+is saved only with its preferences file, since without it the boot
+deletes the slots. A slot 3 part is saved only when its header names
+the run's map on the disc; a Map Pack map (a `t:\` path) has none.
 
 - **Populating a run.** Before a run boots, the batch puts the
-  template's slots with a valid header, and their records, into the run's
+  template's Z: files and their records into the run's
   `disk/Partition5` with `fclonefileat` (copy-on-write on APFS, so the
   runs share one copy's blocks). Where cloning fails it copies
   (`std::fs::copy`, which shares extents through `copy_file_range` on
   Linux filesystems that can) and the run's status line says
-  `copied, no clone`. A Z: that already has a slot file is left alone.
-  The run's other Z: files never enter the template.
-- **Making it.** The first run of a batch that finds no template claims
-  it; the batch's other workers wait for that run to finish rather than
-  copy Z: at once. If the run exits 0, its finished slots are staged in
-  `.staging-<key>-<pid>-<n>` and renamed to `<key>`, so concurrent
-  savers (two batches on one image) leave one whole template. A batch
-  claims once: if that run saves nothing, its other runs start cold.
+  `copied, no clone`. A Z: that already has one of those files is left
+  alone and never becomes the template. The run's other Z: files never
+  enter the template.
+- **Making it.** The first run of each map that finds a part of the
+  template missing claims that map; the batch's other runs of that map
+  wait for it to finish rather than copy the same maps at once. It uses
+  the parts that exist. If it exits 0, each missing part is staged in
+  `.staging-<key>-<pid>-<n>` and renamed into place, so concurrent savers
+  (two maps, or two batches on one image) leave one whole part. A batch
+  claims once a map: if that run saves nothing, the map's other runs go
+  on without.
 - **Cleanup.** The batch removes `<out>/runs/<id>/data` after each run
   and `h2 lab` removes every `runs/*/data`
   (`crates/apps/cli/src/lab/simbench.rs`, `remove_run_data`). The
   template is under the image's `--out`, not the batch's, and the run's
   copies are clones, so neither touches it.
 - **The switch.** `H2_SIM_CACHE_TEMPLATE=0` (or `off`, `false`, `no`)
-  makes every run copy Z: from the disc, the cold reference.
+  makes every run copy Z: and N: from the disc, the cold reference.
 
-N: stays cold: the main menu and the match's map are copied on every
-run, and the lobby still waits for slot 3. Keeping N: would mean not
-formatting it at boot, which retail always does.
+## Sim batches: a warm N:
+
+Every boot formats N: (`XMountCacheDrive`, `VfsStorage::mount_cache`),
+and the format stays. Straight after it, before the title opens anything
+on N:, the VFS clones the directories `vfs::Config::cache_seed` names
+into the empty partition (`Vfs::seed_device`, `HostBackend::seed`): each
+directory's `disk/` files and their `metadata/` records, with
+`fclonefileat` where it can (`vfs::clone_or_copy`). A sim batch names
+the template's `cache/mainmenu` and `cache/<map>` parts in
+`H2_SIM_CACHE_SEED` (joined as `PATH` is) on each child; the boot reads
+it on a light host. The boot then finds valid slot 2 and slot 3 headers
+([what the boot accepts](#sim-batches-a-warm-z)) and copies neither, and
+the System Link lobby's status for the match's map is 3 at once.
+
+The batch seeds N: only behind a warm Z:, and slot 3 only with slot 2:
+at boot the first slot file of the wrong size (an empty slot 0 or 2)
+makes `0x213970` delete every higher slot's file, a seeded one too.
+
+- **Exactness.** The guest reads the same payload bytes. The header's
+  FILETIME (`+0x14c`) is the producer's, and orders eviction between
+  campaign slots only. The preferences file is the producer's at its
+  exit: the language and build, plus menu-time values it saved (such as
+  the lobby's last map at `0x51098c`). A cold run starts from defaults.
+  That none of this reaches `state_hashes_v1` is not measured; an A/A
+  `h2 sim diff` of a warm run against a cold one on the same seed, with
+  `impl.sim.arena-hash`, checks it.
+- **Failure.** A seed that cannot be placed (a name already there, a
+  read error) formats the partition again and prints
+  `vfs: N: not seeded (...)`; the title finds an empty N: and copies, as
+  a cold run does. A file open on N: refuses the seed as it refuses the
+  format. A placed seed prints `vfs: N: seeded with <n> files`.
+- **Disk.** On APFS the seeded slots are clones of the template, so a
+  run's `disk/Partition4` adds no blocks until the guest writes it.
+
+Tests: `crates/platform/xapi/tests/cache_seed.rs` (a seeded N: holds the
+slots and records after its format, an unseeded one is empty, only N: is
+seeded, a failed seed leaves it empty); `cache_slots.rs` copies Lockout
+into slot 3, keeps it as a seed, formats and seeds N:, and reopens the
+slot with no disc read or payload write.
 

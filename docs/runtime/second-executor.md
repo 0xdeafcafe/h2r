@@ -1,9 +1,10 @@
 # A second executor
 
 Status: Built as a building block, tested on synthetic code; the
-pipelined-render prototype uses it.
-Code: `crates/runtime/runtime/src/executor.rs` (`SecondExecutor`), `crates/runtime/runtime/src/cow.rs`. Tests: `crates/recompiler/emit/tests/second_executor.rs`.
-Switch: `impl.render.pipelined_frame` (off), listed in [switches.md](switches.md).
+pipelined-render prototype runs on its snapshot, the phantoms' action build
+on its alias.
+Code: `crates/runtime/runtime/src/executor.rs` (`SecondExecutor`, `Alias`), `crates/runtime/runtime/src/cow.rs`, `crates/runtime/runtime/src/guest/journal.rs`. Tests: `crates/recompiler/emit/tests/second_executor.rs`, `executor.rs`.
+Switch: `impl.render.pipelined_frame` (off) and `impl.sim.phantom-alias` (on), listed in [switches.md](switches.md).
 
 It is the prerequisite for pipelined rendering
 ([pipelined-render.md](../graphics/pipelined-render.md), "The prototype"): run guest code on a second host
@@ -199,6 +200,57 @@ counts its accesses (`CallOutcome::accesses`, for the caller to charge to
 the game thread's clock at the join) and lets `cancel_handle()` stop it at
 the next safe point from another thread.
 
+## The alias and its journal
+
+A caller that wants a private world for a moment, and nothing of it
+afterwards, does not need a copy: `SecondExecutor::alias(main)` runs the
+executor on the main runtime's live RAM itself and puts back every byte
+when it closes. The phantoms' action build uses it
+([sim-phantom-build.md](../perf/sim-phantom-build.md)).
+
+- **Live RAM in place.** `Guest::alias_ram` (`guest/view.rs`) exchanges
+  the two Guests' RAM blocks: no mapping call, no copy. The executor's
+  Guest keeps its own mappings (copied from the live Guest's when its
+  layout moved since the last copy, as `cow_refresh` does), page table,
+  dispatch and context. `Alias::close`, or the alias's drop, gives the
+  block back (`Guest::end_alias`).
+- **The journal** (`guest/journal.rs`). Every fast page table entry that
+  allows writes has its write bit cleared, the way `crate::trap` arms a
+  page, so the first store to a page, from generated C or from Rust,
+  takes the checked slow path (`Guest::write_bytes_from`). There the
+  journal saves the physical page's 4 KB before the store lands and gives
+  the entry its write bit back; later stores to the page are inline. Pages
+  are keyed by physical page, so two virtual aliases of one page save it
+  once. A table rebuilt while the journal is on (a layout copy, the table
+  built at the first generated call) is armed as it is built
+  (`refresh_fast_range`), so no entry reaches C with its write bit set and
+  its page unsaved. Without a fast page table every store takes the slow
+  path, and the journal sees it there.
+- **Undo.** `SecondExecutor::undo` copies every saved page back, without
+  telling any write watch, and clears the reopened entries' write bits, so
+  the next round journals the same pages afresh. The armed state stays
+  across rounds; a full arm pass happens only when the layout is copied.
+  The alias undoes as it closes, on every path out: a returned call, a
+  faulted or refused one, a panic's unwinding.
+- **Isolation.** The alias holds the main runtime's memory guard from
+  `alias` to the end of the undo: no other host thread reads the bound
+  state and no guest code runs on the live side. The live Guest's write
+  watch sees nothing, because nothing is left changed. The alias does not
+  borrow the executor; `snapshot` takes the main guard, so it waits for
+  the alias to close.
+- **Clock.** `alias` starts the executor's time-stamp counter and guest
+  clock as `snapshot` does (the counter from the main runtime's, the
+  clock at its guest time); `alias_continued` runs them on from the last
+  run, as later calls on one snapshot do.
+- **Paged RAM only.** A flat-RAM module's stores are host instructions in
+  the window, which the journal cannot see: `alias` returns
+  `AliasError::FlatRam` and the caller keeps the snapshot path.
+
+The journal covers stores. A mapping change during an alias (fresh storage
+that `map_zeroed` zeroes) is not journaled; the executor makes none, since
+every kernel call is refused. A snapshot taken after an alias ends the
+journal (`cow_refresh`), so a view's stores are never journaled.
+
 ## 4. Tests and measurements
 
 Unit tests in `crates/runtime/runtime` (Rust stores only): `cow` (a copy keeps
@@ -229,6 +281,21 @@ and run through the real runtime:
 - `a_kernel_call_from_generated_code_is_refused`: an indirect call to a
   kernel import token from generated code ends the run with
   `Refused { ordinal: 128, name: "KeQuerySystemTime", return_pc }`.
+
+- `an_alias_runs_generated_stores_on_live_ram_and_undo_puts_every_byte_back`:
+  four rounds of a lifted function that stores to two data pages (one
+  store across them) and four more, run twice per round (the second run's
+  stores inline), then once more refused at a kernel call after its
+  stores; an undo in the middle of every other round. Every round
+  journals the same seven pages, live RAM is byte for byte as it was, and
+  the live Guest's write watch reports nothing.
+
+The alias's unit tests in `executor.rs`
+(`an_alias_stores_to_live_ram_in_place_and_undo_puts_every_byte_back`,
+`an_alias_undoes_on_a_panic`, `a_snapshot_after_an_alias_does_not_journal`)
+do the same with Rust stores, random in place and length, across a page
+boundary and through a second virtual mapping of one page, with and
+without a fast page table.
 
 No loom or TSAN: the two executors share no mutable runtime state by
 construction (section 1); the stress test is the evidence.
