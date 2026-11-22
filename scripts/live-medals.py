@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Redraw Live's own medals, and draw Incel, in the superbounce medals' style.
+"""Draw Incel, Live's own medal beside the bounce family, in the superbounce
+medals' style.
 
 A companion to `scripts/superbounce-medals.py`. The seven bounce medals are
 the approved set and are not redrawn: that script's drawing is copied below,
 unchanged, for its palette and for the reference row of the contact sheet
-(their pixels come out the same). Every other medal that is ours and not
-Halo 2's is drawn with the same light, palette, quantisation and marks: a
-24 by 24 disc shaded top to bottom and lit from the upper left, marks with a
-two-colour face, a dark edge and a drop shadow, the tier told by the count of
-marks and the disc's colour, a spiked rim for a top tier. Nothing is copied
+(their pixels come out the same). Incel is drawn with the same light,
+palette, quantisation and marks: a 24 by 24 disc shaded top to bottom and
+lit from the upper left, marks with a two-colour face, a dark edge and a
+drop shadow. Nothing is copied
 from a disc font or anyone's artwork: every picture is discs, polygons and
 strokes written out below. Halo 2's retail medals are left alone.
 
@@ -18,7 +18,7 @@ strokes written out below. Halo 2's retail medals are left alone.
     python3 scripts/live-medals.py --out DIR --hires
 
 The site's files are DIR/site/<id>.webp and @2x, copied over
-web/public/art/medals/ (web/public/art/ART.md, "Batch 06" and "Batch 08").
+web/public/art/medals/ (web/public/art/ART.md, "Batch 08").
 `--font-art` writes the medals the game draws as a glyph (a code point in
 `MEDALS`: Incel, U+E2A7) into the font's art file, after the marker line
 `FONT_MARK`, and keeps the superbounce medals above it, which
@@ -339,87 +339,6 @@ def disc_body(cols):
     return dict(shape=circle(SIZE / 2, SIZE / 2, 11.95), cols=cols, band=1.3)
 
 
-def rim_body(cols, rim, k=12):
-    """A disc in a spiked rim, as Bouncetacular's."""
-    return dict(shape=circle(SIZE / 2, SIZE / 2, 9.6), cols=cols, band=1.3, rim=rim, k=k)
-
-
-def gem(cx, cy, hw, hh):
-    return poly([(cx, cy - hh), (cx + hw, cy), (cx, cy + hh), (cx - hw, cy)])
-
-
-def gems(points, hw, hh, style):
-    """The chain medals' marks: one gem for each knockout of the chain."""
-    return [mark(gem(x, y, hw, hh), style, ew=0.55) for (x, y) in points]
-
-
-def flame_pts(cx, cy, s):
-    pts = [(0.4, -8.4), (3.0, -4.4), (5.0, -0.4), (4.6, 4.4), (2.4, 7.4), (0, 8.0),
-           (-2.6, 7.4), (-4.8, 4.4), (-4.8, 0.6), (-3.2, -2.6), (-1.8, -0.4), (-1.2, -4.6)]
-    return [(cx + x * s, cy + y * s) for x, y in pts]
-
-
-def flame(cx, cy, s, outer, inner):
-    """A flame and its heart."""
-    heart = [(0.2, 0.2), (2.0, 3.2), (1.4, 6.0), (0, 6.6), (-1.6, 6.0), (-2.2, 3.6)]
-    return [
-        mark(poly(flame_pts(cx, cy, s)), outer, ew=0.55),
-        mark(poly([(cx + x * s, cy + y * s) for x, y in heart]), inner, ew=0.0, shadow=False),
-    ]
-
-
-def star(cx, cy, ro, ri):
-    pts = []
-    for i in range(10):
-        a = -math.pi / 2 + i * math.pi / 5
-        r = ro if i % 2 == 0 else ri
-        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
-    return poly(pts)
-
-
-def curtains():
-    """A stage: its curtains drawn back under their rail, and the star of
-    the show."""
-    left = poly([(3.4, 6.0), (9.0, 6.0), (7.0, 12.0), (7.8, 19.6), (3.4, 17.6)])
-    right = poly([(20.6, 6.0), (15.0, 6.0), (17.0, 12.0), (16.2, 19.6), (20.6, 17.6)])
-    return [
-        mark(star(12, 13.6, 4.6, 2.3), M_YELLOW, ew=0.45),
-        mark(left, M_SIGN, ew=0.55),
-        mark(right, M_SIGN, ew=0.55),
-        mark(box(12, 5.4, 8.8, 1.3, 0.5), M_YELLOW, ew=0.45),
-    ]
-
-
-def last_word():
-    """A speech bubble: a line of words and its full stop."""
-    bubble = union(box(12, 10.4, 7.4, 5.4, 2.6), poly([(8.4, 14.6), (13.0, 14.6), (7.4, 20.0)]))
-    return [
-        mark(bubble, M_WHITE, ew=0.6),
-        mark(seg(7.8, 10.6, 12.2, 10.6, 1.5), M_DARK, ew=0.0, shadow=False),
-        mark(circle(15.8, 10.7, 1.6), M_SIGN, ew=0.0, shadow=False),
-    ]
-
-
-def payback():
-    """An arrow that goes out and comes back."""
-    th = 2.1
-    s = union(seg(9.0, 7.6, 14.6, 7.6, th),
-              inter(ring(14.6, 11.6, 4.0, th), lambda x, y: 14.6 - x),
-              seg(14.6, 15.6, 10.6, 15.6, th),
-              poly([(10.8, 11.8), (10.8, 19.4), (5.0, 15.6)]))
-    return [mark(s, M_SIGN, ew=0.5)]
-
-
-def orb():
-    """Untouchable: a shield's bubble, nothing through it."""
-    c = 12
-    return [
-        mark(circle(c, c, 6.6), M_ICE, ew=0.7),
-        mark(ring(c, c, 4.0, 1.1), M_WHITE, ew=0.0, shadow=False),
-        mark(circle(c - 2.0, c - 2.2, 1.2), M_WHITE, ew=0.0, shadow=False),
-    ]
-
-
 def teabag(cx, cy, s=1.0):
     """A teabag: the bag, its fold, and its string out to the tag."""
     bag = poly([(cx + x * s, cy + y * s) for x, y in
@@ -445,38 +364,7 @@ def incel():
     return dict(body=disc_body(CREAM), marks=teabag(10.8, 13.2, 1.1) + no_sign())
 
 
-NAVY = ((0.16, 0.24, 0.52), (0.42, 0.56, 0.86))
-TEAL_BODY = ((0.30, 0.62, 0.66), (0.66, 0.90, 0.90))
-
-
 def build(mid):
-    c = 12
-    if mid == "opening-act":
-        return dict(body=disc_body(NAVY), marks=curtains())
-    if mid == "last-word":
-        return dict(body=disc_body(CHARCOAL), marks=last_word())
-    if mid == "payback":
-        return dict(body=disc_body(BRONZE), marks=payback())
-    # The chain: a gem for each knockout, as the bounce chain counts chevrons.
-    if mid == "twofer":
-        return dict(body=disc_body(TEAL_BODY), marks=gems([(8.2, c), (15.8, c)], 3.2, 5.4, M_WHITE))
-    if mid == "hat-trick":
-        return dict(body=disc_body(LAVENDER), marks=gems([(c, 7.6), (7.6, 15.4), (16.4, 15.4)], 2.9, 4.2, M_PURPLE))
-    if mid == "full-house":
-        return dict(body=disc_body(GOLD),
-                    marks=gems([(8.0, 7.8), (16.0, 7.8), (8.0, 16.2), (16.0, 16.2)], 2.8, 3.7, M_BLUE))
-    if mid == "encore":
-        pts = [(8.0, 8.2), (16.0, 8.2), (c, c), (8.0, 15.8), (16.0, 15.8)]
-        return dict(body=rim_body(SKY, STEEL_RIM), marks=gems(pts, 2.3, 3.1, M_RED))
-    # The sprees: a flame, three, then the bubble nothing got through.
-    if mid == "hot-streak":
-        return dict(body=disc_body(RED), marks=flame(c, 12.2, 1.0, M_YELLOW, M_WHITE))
-    if mid == "wildfire":
-        marks = flame(6.6, 13.6, 0.62, M_RED, M_YELLOW) + flame(17.4, 13.6, 0.62, M_RED, M_YELLOW) \
-            + flame(c, 11.6, 0.86, M_RED, M_YELLOW)
-        return dict(body=disc_body(GOLD), marks=marks)
-    if mid == "untouchable":
-        return dict(body=rim_body(PALE_GOLD, GOLD_RIM), marks=orb())
     if mid == "incel":
         return incel()
     raise KeyError(mid)
@@ -487,16 +375,6 @@ def build(mid):
 # (web/src/lib/gameart.ts MEDAL_ALIASES) as (name, code point), the glyph's
 # code point if the game is to draw it.
 MEDALS = [
-    ("opening-act", "Opening Act", "first knockout of the game", "Opening act!", None, None),
-    ("last-word", "Last Word", "final knockout of the game", "Last word!", None, None),
-    ("payback", "Payback", "knocked out whoever just got you, within 10 s", "Payback!", None, None),
-    ("twofer", "Twofer", "2 knockouts, each within 4 s of the last", "Twofer!", ("double_kill", 0xE038), None),
-    ("hat-trick", "Hat Trick", "3 knockouts in a chain", "Hat trick!", ("triple_kill", 0xE039), None),
-    ("full-house", "Full House", "4 knockouts in a chain", "Full house!", ("killtacular", 0xE040), None),
-    ("encore", "Encore", "5 or more knockouts in a chain", "Encore!", ("kill_frenzy", 0xE041), None),
-    ("hot-streak", "Hot Streak", "5 knockouts without being knocked out", "Hot streak!", ("killing_spree", 0xE033), None),
-    ("wildfire", "Wildfire", "10 knockouts without being knocked out", "Wildfire!", ("running_riot", 0xE034), None),
-    ("untouchable", "Untouchable", "15 knockouts without being knocked out", "Untouchable!", ("rampage", 0xE035), None),
     ("incel", "Incel", "a whole game, no teabag given or taken", "Incel!", None, 0xE2A7),
 ]
 BOUNCE_IDS = {n.lower().replace("_", "-"): n for (_, n, _) in BOUNCE}

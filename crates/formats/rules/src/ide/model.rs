@@ -213,12 +213,12 @@ pub(crate) fn builtin_type(name: &str) -> Option<Ty> {
         "bool" => Ty::Bool,
         "player" => Ty::Player,
         "team" => Ty::Team,
-        "object" => Ty::Object,
+        "object" | "zone" => Ty::Object,
         "squad" => Ty::Squad,
         "timer" => Ty::Timer,
         "Class" | "class" => Ty::Class,
-        "tag" => Ty::Tag,
-        "label" => Ty::Label,
+        "tag" | "weapon" => Ty::Tag,
+        "label" | "objects" | "zones" | "spawns" => Ty::Label,
         "text" => Ty::Text,
         _ => return None,
     })
@@ -577,6 +577,12 @@ impl<'s> Model<'s> {
                         self.add_use(span, Use::Event(ev));
                     }
                 }
+                Item::Label(l) => {
+                    let span = self.name_after(l.pos, &l.name);
+                    let d = self.def(&l.name, DefKind::Label, span, T::Ty(Ty::Object));
+                    self.labels.insert(l.name.clone(), d);
+                    self.item_defs[i] = Some(d);
+                }
                 Item::Enum { .. } => {}
             }
         }
@@ -620,7 +626,7 @@ impl<'s> Model<'s> {
                     self.block(&f.body, &mut env, end);
                 }
                 Item::On {
-                    event, args, body, pos,
+                    event, args, body, pos, ..
                 } => {
                     let ev = Event::named(event);
                     let mut at = self.name_after(*pos, event).1;
@@ -659,7 +665,7 @@ impl<'s> Model<'s> {
 
     fn stmt(&mut self, s: &Stmt, env: &mut Env, end: usize) {
         match s {
-            Stmt::Let { name, value, pos } => {
+            Stmt::Let { name, value, pos, .. } => {
                 let ty = self.expr(value, env);
                 let span = self.name_after(*pos, name);
                 let d = self.def(name, DefKind::Local, span, ty);
@@ -669,6 +675,32 @@ impl<'s> Model<'s> {
             Stmt::Assign { target, value, .. } => {
                 self.expr(target, env);
                 self.expr(value, env);
+            }
+            Stmt::IfLet {
+                name,
+                value,
+                cond,
+                then,
+                els,
+                pos,
+            } => {
+                let ty = self.expr(value, env);
+                let span = self.ident_from(self.byte(*pos), name).unwrap_or((0, 0));
+                let start = cond.as_ref().map_or(value.pos, |c| c.pos);
+                let (_, close) = self.block_after(self.byte(start));
+                let mark = env.locals.len();
+                let d = self.def(name, DefKind::Local, span, ty);
+                self.defs[d].visible = Some((span.1, close));
+                env.locals.push(d);
+                if let Some(c) = cond {
+                    self.expr(c, env);
+                }
+                self.block(then, env, close);
+                env.locals.truncate(mark);
+                if !els.is_empty() {
+                    let (_, eclose) = self.block_after(close);
+                    self.block(els, env, eclose);
+                }
             }
             Stmt::Expr(e) => {
                 self.expr(e, env);
@@ -723,7 +755,6 @@ impl<'s> Model<'s> {
     fn skip_set(&self, i: usize) -> usize {
         let Some(t) = self.code.get(i) else { return i };
         match self.text(t) {
-            "objects" => i + 3,
             "pick" if self.is_punct(i + 1, "(") => self.partner(i + 1).map_or(i + 2, |c| c + 1),
             _ => i + 1,
         }
@@ -735,9 +766,12 @@ impl<'s> Model<'s> {
             SetBaseExpr::Players => Ty::Player,
             SetBaseExpr::Teams => Ty::Team,
             SetBaseExpr::Objectives => Ty::Object,
-            SetBaseExpr::Labelled(l) => {
-                let span = self.str_from(self.byte(set.pos));
-                self.label(l, span);
+            SetBaseExpr::Label(l) => {
+                let span = self.ident_from(self.byte(set.pos), l).unwrap_or_else(|| self.tok_at(set.pos));
+                match self.local(l, env) {
+                    Some(d) => self.add_ref(span, d),
+                    None => self.label(l, span),
+                }
                 Ty::Object
             }
             SetBaseExpr::Pick(inner, n) => {
@@ -848,10 +882,11 @@ impl<'s> Model<'s> {
                 self.expr(inner, env);
                 T::Ty(Ty::Text)
             }
-            ExprKind::Labelled(l) => {
-                let span = self.str_from(self.tok_at(e.pos).1);
+            ExprKind::Is(x, l, lpos) => {
+                self.expr(x, env);
+                let span = self.tok_at(*lpos);
                 self.label(l, span);
-                T::Ty(Ty::Label)
+                T::Ty(Ty::Bool)
             }
             ExprKind::Budget(_) => T::Ty(Ty::Int),
             ExprKind::Palette(p) => {
@@ -1147,5 +1182,6 @@ pub(crate) fn item_pos(item: &Item) -> Pos {
         | Item::Table { pos, .. }
         | Item::On { pos, .. } => *pos,
         Item::Fn(f) => f.pos,
+        Item::Label(l) => l.pos,
     }
 }

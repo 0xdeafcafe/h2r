@@ -745,6 +745,10 @@ fn run_configured(
         if !core.bots_on {
             anyhow::bail!("sim: the bots are off (H2_FEATURES or no XAPI); a match needs them");
         }
+        // With no nav worker, the run's verified spots and ghost runs
+        // still land in its data's bots directory, as a game's do
+        // (docs/runtime/sim.md, "Bounce practice").
+        bots::spots::set_verified_dir(bots::cache::dir(&opts.data_root));
         s.add_bots()?;
     }
     let _telemetry = core.telemetry;

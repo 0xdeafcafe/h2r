@@ -400,7 +400,7 @@ fn strip(faces: &[Face], p: &Joint, q: &Joint) -> Option<Spot> {
     let om = [(o.a[0] + o.b[0]) / 2.0, (o.a[1] + o.b[1]) / 2.0];
     let signed = dot2(perp, sub2(om, xy(c.a)));
     let gap = signed.abs();
-    if !(gap >= MIN_GAP && gap < 2.0 * RADIUS) {
+    if !(MIN_GAP..2.0 * RADIUS).contains(&gap) {
         return None;
     }
     // From the crease toward the other joint.

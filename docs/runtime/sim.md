@@ -316,6 +316,14 @@ aggression = 0.9
 reaction = 5
 ```
 
+`superbounce = true` (before the tables) turns the superbounce mode on
+for the match: the bots practise bounces instead of fighting
+([Bounce practice](#bounce-practice)). A `[drill]` table (with
+`superbounce = true`) makes them try one site only
+([The bounce drill](#the-bounce-drill)). A `[train]` table (with
+`superbounce = true`, and no `[drill]`) makes the run one shard of a
+bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)).
+
 ### Bot parameters from a file
 
 `sim::config::BotParams` (TOML or JSON) holds what a bot is tuned by:
@@ -340,7 +348,10 @@ reaction = 5
   sampled each tick. See [Bot navigation performance](#bot-navigation-performance)
   for the active intervals;
 - `aim_model`: `code` (the hand-written tracking, the default) or `net`
-  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays)).
+  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays));
+- `[bounce]`: the bounce route's numbers, each optional
+  (`sim::config::BounceParams`, held to a range each; the names and what
+  they move are in [bots.md, "Tuning the bounce"](../game/bots.md#tuning-the-bounce)).
 
 Anything left out keeps the built-in value. The bots crate takes them as
 `bots::tuning::Tuning` through `Brain::with_tuning`. The aim table and awareness are
@@ -884,6 +895,264 @@ uses the same comparison code as local batches for `compare.json` and
 as missing. `batch.json` carries the Live batch ID for Uplink. A failed
 host makes the command exit unsuccessfully after it writes the comparison.
 
+### Bounce practice
+
+A match with `superbounce = true` is a practice: every bot practises
+superbounces ([bots.md, "Practising bounces"](../game/bots.md#practising-bounces))
+and nobody fights. `sim_glue::Sim::add_bots` forces the superbounce mode
+on (`superbounce_mode::set_override`), installs the pair reader the
+route's prime reads (`sim_bots::install_pair_reader`), keeps the medal
+chain's awards for the sim (`superbounce_mode::collect_awards`) and turns
+the tally's bounce counting on. [sim-examples/superbounce-practice.toml](sim-examples/superbounce-practice.toml)
+is four legendary bots on Ascension for 18000 ticks (ten game minutes),
+unpaced and unrendered:
+
+```sh
+h2 sim run docs/runtime/sim-examples/superbounce-practice.toml
+h2 sim batch docs/runtime/sim-examples/superbounce-batch.toml --parallel 4
+```
+
+The map needs its nav mesh and its spot scan in `--data`'s `bots/`:
+`h2 bots nav <map>` writes both (the scan is `<map>.spots`, beside the
+mesh). Sim mode builds neither: the cached nav load
+(`bots::autonav::load_cached`) publishes the cached scan for the
+practice to pick sites from.
+
+The tally takes three things (`sim::bounce`, pure, tested):
+
+- the bots' practice events (`bots::mind::PracticeEvent`, drained by
+  `Metered` each tick): a route started, its word reached −3 (read or
+  assumed; at a crouch spot or already primed), the try ended (bounced as
+  the route saw it, or why not);
+- the medal chain's awards (`superbounce_chain::Award`, the ones the HUD
+  and Live get): a bounce with its count in the chain, and a Bounced
+  death, ending a chain;
+- every player's height each tick, for the launch: from the lowest of the
+  last four heights before a chain bounce to the top of the flight
+  (closed 0.1 under the top, or 150 ticks after).
+
+A try is **bounced** when the chain filed a bounce during it; the
+**bounce rate** is bounced tries over tries. The report gets a `bounce`
+block (`h2-sim-bounce/1`), the totals, a line per bot and a line per
+site (the stand point the try was at):
+
+```json
+"bounce": {
+  "format": "h2-sim-bounce/1",
+  "totals": { "attempts": 40, "primes": 31, "primes_read": 29, "armed": 0,
+              "practice_bounces": 14, "bounced_tries": 12, "bounce_rate": 0.3,
+              "chain_bounces": 17, "chains": { "1": 8, "2": 3 }, "best_chain": 3,
+              "bounced_deaths": 1, "launch": { "n": 17, "best": 6.1, "mean": 4.2 },
+              "why": { "too_slow": 9, "prime_failed": 6, "missed": 5 } },
+  "players": [ { "index": 0, "seat": 0, "name": "Bouncer 1", "arm": "base",
+                 "first_bounce_ticks": 812, "stats": { "...": "..." } } ],
+  "sites": [ { "site": [12.1, -3.4, 2.0], "stats": { "...": "..." } } ]
+}
+```
+
+(The numbers above show the shape, not a measurement.) `why` uses the
+practice's names: the route's errors (`prime_failed`, `pair_lost`,
+`no_route`, `no_drop`, `no_bounce`, `timeout`, `stalled`, and the walk's
+`no_path`, `goal_off_mesh`, `tail_stuck` and `path_lost_<check>_<leg>`)
+and the landing's results (`not_primed`, `missed`, `too_slow`). A walk's
+errors are `nav::RouteWalk`'s: `no_path` (no corridor without a
+teleporter or crouch-jump link), `goal_off_mesh` (the goal farther off
+the mesh than a last stretch reaches), `tail_stuck` (the last stretch to
+a goal off the mesh stopped getting nearer; a practice's walks end there
+instead, so it is not a practice reason in practice), and a walk the
+follower gave up on, planned again three times first: `path_lost_` and
+the check (`stuck`, `fell`, `jump`, `link`, `ended`) and the leg
+(`crouch`: to the crouch spot, `approach`: to the bounce's approach or
+launch floor, `nav`: another walk), such as `path_lost_stuck_approach`
+([bots.md, "Superbounce routes"](../game/bots.md#superbounce-routes)).
+The practice tries only sites a route reaches (a site paired with a
+crouch spot a walk reaches it from, and a walk from the bot to that
+crouch spot), so a site out of reach adds no try and no reason;
+`no_route` is a route that failed to plan from where the bot stood.
+`first_bounce_ticks` counts from the match's start to the bot's first
+chain bounce. The block is absent from a match without `superbounce`.
+
+A batch's comparison carries them per arm (`compare.json`'s `bounce`:
+the runs, the totals and each map's, pooled over every bot) and the
+columns `attempts`, `bounce_rate`, `primes`, `chain_bounces`,
+`launch_mean`, `launch_best`, `bounced_deaths` and `first_bounce_s` in
+its arm table. `compare.txt` adds a `bounce practice` table: per arm and
+map, tries, bounced, rate, primes, chain bounces, launch mean/best,
+Bounced deaths and the top three reasons.
+
+**Proofs and ghosts.** In sim mode boot sets the verified directory to
+the run's data `bots/` (`bots::spots::set_verified_dir`, which the nav
+worker sets in a game), so `<map>.verified` and `<map>.ghosts` are
+written as in a game. A superbounce batch run plays on copies of them:
+its `bots/` is a directory of its own, each shared file linked but those
+two, which are copied in (`sim_cmd::make_bounce_data`). So no run sees
+another's proofs (a proven site weighs more in the practice's pick) and
+every run of a sweep starts alike. The batch keeps
+`<out>/runs/<id>/harvest/start` (what the run began with) and
+`harvest/end` (what it ended with), even when it removes the data.
+`h2 sim harvest <results dir> [--data DIR] [--dry-run]` merges what each
+run added into `--data`'s `bots/` (`bots::harvest::harvest_run`): the
+verified entries it changed, merged as the game merges them, and every
+ghost run the shared file does not beat. A single `h2 sim run` writes to
+`--data`'s `bots/` itself.
+
+### The bounce drill
+
+A practice match with a `[drill]` tries one site, each try from a start
+near it with the word already at −3, so a run shows the final approach
+and the jump alone, apart from priming and the walk there:
+
+```toml
+superbounce = true
+[drill]
+site = [-10.62, 3.88, -3.19]   # the known site within 0.5 of this
+start = [-8.4, 2.5, -0.76]     # optional; unset: the site's approach
+```
+
+`sim::config::DrillConfig` (tested) refuses a drill without
+`superbounce = true`. `sim_glue::Sim::add_bots` hands it to the bots
+(`bots::drill::set`); each practising bot walks to the start, and
+standing there unprimed asks for its word
+([bots.md, "Practising bounces"](../game/bots.md#practising-bounces),
+"The drill"). A `before` on the game tick (`sim: drill word`) takes the
+asks (`bots::drill::take_arm_requests`) and writes −3 over each unit's
+level pair word (`live_telemetry::havok_agents::set_pair_word` on the
+pair `fixed_pair` finds), the write `havok.pair.set` makes
+([agent-api.md](agent-api.md#havokpairset)); a unit with no single
+level pair (asleep) is asked for again. The notes say `drill: the word
+was set to -3 at the start` once it has been. The tries go into the
+`bounce` block as any practice's; `primes` and `primes_read` stay 0 (they
+count primes at a crouch spot, and a drill's start is not one), and
+`armed` counts the tries that began with the word read at −3, so a
+drill's `armed` is its tries that got the word. A try that fails here failed in the approach or the jump:
+`pair_lost` is the word read as something else on the ground between the
+start and the jump.
+
+What to read in the run's log: `bots: bounce drill: site ...` once the
+bot has found the site (its aim and the start; a `no known site` before
+it is the spots still coming in), and a `bots: bounce try:` line per try
+with the last jump's takeoff, ground and vertical speed, word, air
+stick, touchdown and result
+([bots.md, "Practising bounces"](../game/bots.md#practising-bounces),
+"The try's line").
+
+[sim-examples/superbounce-ground-truth.toml](sim-examples/superbounce-ground-truth.toml)
+is one bot on Ascension drilling the measured spot from its takeoff, the
+recipe's running jump ([superbounce.md](../game/superbounce.md), "The
+forced crouch leaves state"), for 9000 ticks:
+
+```sh
+h2 sim run docs/runtime/sim-examples/superbounce-ground-truth.toml
+```
+
+### Sweeping the bounce tuning
+
+`h2 sim sweep <sweep file>` (`sim::sweep`, pure and tested; the CLI runs
+the batches) plays one batch per candidate `[bounce]` tuning and ranks
+them:
+
+```toml
+out = "results/bounce-sweep"      # relative to this file
+batch = "superbounce-batch.toml"  # its match has superbounce = true
+method = "coordinate"             # grid (default), random, coordinate
+samples = 24                      # random: draws
+rounds = 2                        # coordinate: passes over the axes
+seed = 0                          # random: the draws' seed
+min_attempts = 20                 # fewer tries: listed last, unranked
+[base]                            # optional: what every candidate starts from
+drift = 0.15
+[axes]                            # bounce fields and the values to try
+approach = [0.6, 0.8, 1.0]
+still_ticks = [2, 4, 8]
+```
+
+- **Candidates.** `c000` is the base, the control. `grid`: every
+  combination of the axes' values (at most 512). `random`: `samples`
+  draws, each axis uniform between its least and most value (whole
+  fields rounded). `coordinate`: from the base, one axis at a time, each
+  of its values with the other fields at the best so far, `rounds`
+  passes. A tuning that plays as one already listed (a field set to its
+  built-in value plays as the field left out; `sweep::same_play`) is not
+  played again.
+- **Each candidate** gets `<out>/candidates/<id>/batch.toml`: the sweep's
+  batch with its paths made absolute, its results beside it, and one arm,
+  named the id, whose tuning is arm A's with the candidate's `[bounce]`
+  over it. The CLI runs `h2 sim batch` on it; flags after the sweep file
+  (`--parallel`, `--disc`, `--out`, `--data`, `--tier`, `--pace`,
+  `--keep-data`) go to each batch.
+- **Ranking.** Candidates with at least `min_attempts` tries (default 10)
+  first, by bounce rate, then mean launch height, then tries, then id;
+  the rest after, unranked. `<out>/sweep.json` (`h2-sim-sweep/1`: every
+  candidate's tuning, runs, totals and per-map stats, and the best),
+  `sweep.csv` (a row a candidate, every bounce field a column) and
+  `sweep.md` (the top 20 as a table and the best's `[bounce]` block to
+  paste).
+- `--dry-run` writes the candidates' batch files and lists them (for
+  `coordinate`, the first pass from the base only).
+
+The winning numbers go into the game at one place,
+`bots::tuning::BOUNCE_DEFAULT` ([bots.md, "Tuning the bounce"](../game/bots.md#tuning-the-bounce)).
+The commands and the tables to fill are in
+[notes/2026-11-21-bot-bounce-sim.md](../game/notes/2026-11-21-bot-bounce-sim.md).
+
+### Training the bounce sites
+
+`h2 sim train <train file>` searches each bounce site's knobs
+([bounce-search.md](../game/bounce-search.md)) by playing the practice match
+as parallel runs, and reports what the sites learned. `sim::train` (pure and
+tested) plans the runs and builds the report; the CLI runs the processes.
+
+```toml
+out = "results/bounce-train"            # relative to this file
+match = "superbounce-train-match.toml"  # superbounce = true and the bots
+maps = ["ascension"]
+seed = 1        # the match's seed and the search's draws
+shards = 4      # runs a map; fixed here, not by --parallel
+budget = 120    # scored tries a site
+```
+
+- **Runs.** One run a map and shard, `<map>-shard<i>`, each the match
+  file's match with its own `[train] shard = i, shards = n, budget = b,
+  seed = s` (`sim::config::MatchConfig::train`, `sim::train::TrainConfig`).
+  A run owns the sites whose spot id modulo `shards` is its `shard`
+  (`sim::train::owns`), so the runs of a batch never fly the same site and
+  the result does not depend on `--parallel`. `[train]` is refused without
+  `superbounce = true`, with a `[drill]`, with `shard` not under `shards`
+  and with a budget of 0.
+- **The game side.** `Sim::add_bots` hands the table to the bots
+  (`bots::learn::set`). The word hook the drill uses (`sim: drill word`) runs
+  in a training match too, and the match ends as soon as every site of the
+  run's shard is closed (`bots::learn::done`, read each tick; the report's
+  end is `stopped`), or at `max_ticks`.
+- **Data.** Each run plays on its own copy of the map's `.learned`,
+  `.verified` and `.ghosts` (`make_bounce_data`), kept in
+  `runs/<id>/harvest/{start,end}`. Unless `--no-merge`, the runs' files are
+  merged into `--data`'s `bots/` at the end, as `h2 sim harvest` does it;
+  with it, `h2 sim harvest <out>` merges them later.
+  Z:'s cache slots come from the image's template as in a batch
+  (`play_runs`; [cache-slots.md](cache-slots.md#sim-batches-a-warm-z)).
+- **Flags.** `--map NAME` (repeatable) and `--budget N` go over the file's
+  values. `--dry-run` lists the runs and, from the map's `.spots` file, each
+  shard's sites. `--reopen` first turns the `dead` and `blocked` lines of
+  `--data`'s `.learned` back to `open`, their search restarted. `--status`
+  prints the report table from the runs' `.learned` copies (the running
+  run's own data, else what it kept, else the shared file), so it can run
+  while a batch plays. `--parallel`, `--disc`, `--out`, `--data`, `--tier`,
+  `--pace` and `--keep-data` are a batch's.
+- **Resuming.** Run the same command again: closed sites are skipped and
+  open ones carry on from their line.
+- **Report.** `<out>/train.json` (`h2-sim-train/1`: each map's sites,
+  states and tries, and a row a site with its state, `how`, tries, hits, the
+  centre's `n` and `ok`, `score`, `best`, `deaths`, `why`, the knobs set and
+  the search's cursor) and `train.md` (a heading a map, `map ascension: 166
+  sites: learned 41, ...; 9480 tries`, and a table a site with `rate` =
+  `ok / n`). Each run's lines are read from its own files and only the sites
+  of its shard are taken.
+
+`docs/runtime/sim-examples/superbounce-train.toml` and its match
+`superbounce-train-match.toml` are the example (eight bots, thirty minutes
+of game time a run).
+
 ## 8. Determinism
 
 What a sim run's result depends on, and what breaks reproducibility:
@@ -1245,7 +1514,9 @@ headers and blocks while those dependencies are being traced.
   offer from the shared data directory.
 - The match's pace replaces `H2_BOOT_REALTIME` (unpaced unless the match
   says otherwise).
-- Example match and batch files are in [sim-examples/](sim-examples/).
+- A superbounce batch run's `bots/` is its own, the verified and ghosts
+  files copied ([Bounce practice](#bounce-practice)).
+- Example match, batch and sweep files are in [sim-examples/](sim-examples/).
 
 ## Not verified
 
@@ -1262,6 +1533,10 @@ headers and blocks while those dependencies are being traced.
   the requested variant.
 - Phantom team assignments holding through respawns.
 - The end latch at the time or score limit ending a run.
+- The bounce practice in a sim run: that the cached scan reaches the
+  practice through `autonav::load_cached`, that an award's slot is the
+  report's player index, and that the practice events' ticks and the
+  tally's agree (so `first_bounce_ticks` is right).
 - The `guest_census` reads and the `wall.phantom_*` timers in a run: the
   array pointers and names come from the retail XBE, and the reads are
   tested over a fake guest only.
@@ -1276,3 +1551,13 @@ samples, limits and phantom tuning), `cargo test -p game sim_census` (the
 census reads over a fake guest and `sim.guest_census`'s answer), and `cargo
 test -p cli sim_cmd` (child arguments, per-run data, the results directory,
 the Z: template's key, saving, populating, gate and cleanup).
+The bounce practice: `cargo test -p sim-bench bounce` and `sweep` (the
+tally from synthetic events, the schema, the comparison, the sweep's
+candidates and ranking), `cargo test -p bots tuning`,
+`the_default_bounce_tuning_plays_as_no_tuning_does`,
+`the_practice_reports_each_route_it_starts` and `harvest`, `cargo test
+-p game sim_glue` (the `[bounce]` mapping and the events) and
+`superbounce_mode`, and `cargo test -p cli sim_cmd` (the run's own
+proofs). Training: `cargo test -p sim-bench train` (the `[train]` table, the
+plan and shard rule, the report from `.learned` lines) and `cargo test -p cli
+sim_cmd` (the arguments, `--reopen`).

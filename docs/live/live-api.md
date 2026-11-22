@@ -61,6 +61,7 @@ Event types so far (payload fields):
 | `game-<id>` | `Superbounce` | `tick`, `player` (a slot of the game), `chain` (the bounce's place in its chain, 1 and up), `monster` (true for a bounce that launches well above a normal one, the `monster-bounce` medal; absent reads as false, and a host leaves it out when false). Published by the host, for every player it watches, bots included ([superbounce.md](../game/superbounce.md#recording)). |
 | `game-<id>` | `Bounced` | `tick`, `player`, `chain` (the count of the chain it ended, 0 if none; absent reads as 0): a death falling out of or through the map while trying a bounce, beside its `PlayerKilled`. Published by the host. |
 | `game-<id>` | `Teabag` | `tick`, `player` (the crouching player's slot), `victim` (the slot of the player whose body it was; not `player`): a teabag. Published by the host, for every player it watches, bots included ([teabag.md](../game/teabag.md#recording)). |
+| `game-<id>` | `GameMedal` | `tick`, `player` (the earner's slot), `medal` (the id of one of Halo 2's own medals; anything else is 400): a medal the game itself awarded. Published by the host, for every award the game makes there, bots' included ([Medals](#medals)). |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -389,8 +390,8 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence; pending requests in and out for the player and admins only ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
-| `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
-| `GET /v1/games/{id}` | summary plus scoreboard, the last 50 kills, and the last 100 superbounces (`bounces`: `tick`, `player`, `chain`, `monster` when true, `position`, `at`) and bounce deaths (`bounced`: `tick`, `player`, `chain`, `position`, `at`), and the last 100 teabags (`teabags`: `tick`, `player`, `victim`, `position`, `at`), each oldest first and empty in a game with none; `joined_late`, the slots of players in the game who joined after its first kill (left out when none; [teabag.md](../game/teabag.md#the-medal)); 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?, medals?}` (`medals`: [Medals](#medals)); `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games/{id}` | summary plus scoreboard, the last 50 kills, and the last 100 superbounces (`bounces`: `tick`, `player`, `chain`, `monster` when true, `position`, `at`) and bounce deaths (`bounced`: `tick`, `player`, `chain`, `position`, `at`), and the last 100 teabags (`teabags`: `tick`, `player`, `victim`, `position`, `at`), each oldest first and empty in a game with none; `joined_late`, the slots of players in the game who joined after its first kill (left out when none; [teabag.md](../game/teabag.md#the-medal)); `medals` as in the summary; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/join` | `{session_id}` for the game's current reader. The value is null unless the running game's own custom lobby or linked co-op session is joinable. The game and lobby each follow their own visibility rules. Hidden games return 404 and responses are private and uncached. |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
@@ -401,6 +402,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
+| `GET /v1/accounts/{who}/medals` | `{xuid, medals: {id: count}, position}`: an account's medals over every game it played; `who` is a gamertag or XUID; 404 if unknown ([Medals](#medals)) |
 | `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus tunnel, game art, admins, log, invites; `started_at` and `uptime_s` on native servers only, the data directory only to this machine (live-admin.md §5) |
 | `GET /v1/admin/usage?days=` | admins only (`admin.read`): Live API requests and usage per UTC day, events by type, stored bytes ([Usage](#usage), below) |
 | `GET /v1/admin/usage/accounts?days=&sort=&limit=` | admins only (`admin.read`): the accounts using the most ([Usage](#usage)) |
@@ -638,13 +640,15 @@ UTC days, today included) or `all`; anything else is 400.
   "totals":   { "games": 41, "multiplayer": 33, "campaign": 8, "matchmaking": 20, "custom": 13,
                 "coop": 3, "kills": 1210, "deaths": 1302, "betrayals": 17, "suicides": 75,
                 "campaign_deaths": 40, "player_seconds": 302400, "legendary": 2,
-                "bounces": 6, "bounced": 1, "teabags": 3 },
+                "bounces": 6, "bounced": 1, "teabags": 3,
+                "medals": { "double-kill": 31, "killing-spree": 6, "superbounce": 5, "incel": 9 } },
   "last_24h": { ...the same counts, over the last 24 hours },
   "all_time": { ...the same counts, over the whole log },
   "players":  [ { "xuid": "...", "name": "Sneaky Pete", "games": 9, "multiplayer": 8, "campaign": 1,
                   "wins": 5, "kills": 120, "deaths": 88, "betrayals": 1, "best_spree": 9,
                   "seconds": 7200, "legendary": 1, "bounces": 4, "bounced": 0,
-                  "teabags_given": 1, "teabags_received": 2 } ],
+                  "teabags_given": 1, "teabags_received": 2,
+                  "medals": { "double-kill": 4, "incel": 2 } } ],
   "maps":      [ { "map": "lockout", "map_id": "...?", "campaign": false, "games": 12, "kills": 480 } ],
   "weapons":   [ { "weapon": "battle_rifle", "kills": 310 } ],
   "playlists": [ { "playlist": "Team Slayer", "games": 14 } ],
@@ -689,9 +693,67 @@ body's).
 A credited environmental death counts toward kills for the player and map.
 Weapon rankings omit falls, collisions, splatters, guardians, teleporters
 and explosions with no identified weapon.
+`medals` counts every medal by id on the day it was awarded
+([Medals](#medals)): everyone's in the totals, bots' included, and an
+account's in its row (`{}` for none).
 `activity` lists hours with any game starts or kills, within the window
 and at most 30 days back. Headshots are available on individual kills when
-reported. The summary has no headshot or medal totals.
+reported. The summary has no headshot totals.
+
+## Medals
+
+Live keeps every game's medals and serves them; the site counts none
+itself. There are two kinds, and nothing else:
+
+- **Halo 2's own**, which the game awards. The console that records the
+  game observes the game's award function and sends each award as a
+  `GameMedal` event, as the game names it
+  ([live-gamestate.md](live-gamestate.md#medals)). Only the host may send
+  one (403 for anyone else), and only for these ids (400 for any other):
+
+  | id | name | id | name |
+  |---|---|---|---|
+  | `double-kill` | Double Kill | `stick-it` | Stick It |
+  | `triple-kill` | Triple Kill | `killing-spree` | Killing Spree |
+  | `killtacular` | Killtacular | `running-riot` | Running Riot |
+  | `kill-frenzy` | Kill Frenzy | `rampage` | Rampage |
+  | `killtrocity` | Killtrocity | `berserker` | Berserker |
+  | `killimanjaro` | Killimanjaro | `overkill` | Overkill |
+  | `sniper-kill` | Sniper Kill | `flag-taken` | Flag Taken |
+  | `roadkill` | Roadkill | `flag-save` | Flag Save |
+  | `bonecracker` | Bonecracker | `flag-returned` | Flag Returned |
+  | `stealth-kill` | Stealth Kill | `bomb-planted` | Bomb Planted |
+  | `vehicle-kill` | Vehicle Kill | `bomb-save` | Bomb Save |
+  | `carjack` | Carjack | `bomb-diffused` | Bomb Diffused |
+
+  Live never works these out from kills.
+- **Our modes' own**, which Live works out from the mode's events: the
+  superbounce family (`superbounce`, `double-bounce`, `triple-bounce`,
+  `quad-bounce`, `chain-bounce`, `bouncetacular`, `monster-bounce` from
+  `Superbounce`, `bounced` from `Bounced`;
+  [superbounce.md](../game/superbounce.md#medals)), which only the
+  superbounce mode sends, and `incel` at a finished game's end from the
+  teabag watch's `Teabag`s ([teabag.md](../game/teabag.md#the-medal)).
+
+One projection decides them all, `live_proto::film::events::medals::Projection`,
+the same one a film's Tracker runs. Live's read model and stats summary
+run it over each game's events as they are applied, in both homes (the
+Worker runs the same `Live`), and a film's import gives the same medals as
+the events sent live. A seat taken again after a leave is a new
+participant.
+
+- **A game** (`GET /v1/games`, `GET /v1/games/{id}`): `medals`, a row for
+  each participant with any, in join order, bots included:
+  `[{player, name, xuid?, medals: {id: count}}]` (`player` is the slot;
+  left out when the game has none).
+- **The stats summary**: `medals` in the totals and in each account's row
+  ([Stats summary](#stats-summary)).
+- **An account**: `GET /v1/accounts/{who}/medals` is
+  `{xuid, medals: {id: count}, position}` over every game it played; a
+  bot's medals count in no account. Reads follow the stats summary's
+  visibility ([Co-op games](#co-op-games), "Stats").
+- **The stream**: `GameMedal` events stream like any game event; our
+  modes' medals are not events and reach a reader through the reads above.
 
 ## Clanker Training
 
@@ -1383,8 +1445,8 @@ player said neither). The player itself and admins always get the real
 values. Such a log event carries `redacted: true` in its data and an
 empty `jws`: its signature covers the real data, so it is withheld.
 
-**Stats.** `GET /v1/stats/summary` counts every game for admins. Everyone
-else gets the public summary: a Live co-op game linked to a session is
+**Stats.** `GET /v1/stats/summary` and `GET /v1/accounts/{who}/medals`
+count every game for admins. Everyone else gets the public fold: a Live co-op game linked to a session is
 left out while it runs and counted when it ends if it ended public. A
 friend who may see a friends-only game still gets the public summary.
 
@@ -1864,15 +1926,28 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
   words, grantable, known}]` with the lobby's plain words, and
   `unhostable`: the entries the script calls that no host can make yet on
-  the script's carrier.
+  the script's carrier, `labels` and `minimal`. `labels` is what a map
+  needs, one line for each label the script declares, in its table's order:
+  `{text, kind: "object" | "zone" | "spawn", min, max?, single, numbered,
+  range?: [lo, hi], per_team, needs}`, with `max` absent when the label
+  states no limit and `needs` the requirement in Forge's words (`exactly 1
+  zone labelled "goal"`). `minimal` is the smallest map that passes, as a
+  scenario's `map` lists things (`{label, object, number?, team?, class}`,
+  handles from 256); a page that merges it into a map gives the things
+  handles of its own.
 - A run's `scenario` is `{players: [{slot, team, lives, unit?}], teams,
-  variant, labelled: [{label, object, number?, placement?,
-  team?}], options,
+  variant, map: [{label, object, number?, placement?, team?, class?}],
+  options,
   seed, round_time, ticks, start, timeline: [{tick, events}]}`. `unit` is
   the object that is the player's unit, so `enter` and `leave` find its
-  player; `labelled` lists the objects `objects labelled` visits, each with
-  the `team` that `o.team` reads when it has one; a
-  `variant` field left out reads the stock record of the script's
+  player; `map` (`labelled` is its older name) lists the things `objects
+  labelled` visits, each with the `team` that `o.team` reads when it has
+  one and a `class` (`object`, `flag`, `volume` or `spawn`; the one its
+  label's kind suggests when absent). Without a `map` the run is played
+  on the script's minimal map; with one, the script's labels check it
+  first, and a run it fails answers `{ok: false, errors: [], map:
+  ["the map has no zone labelled \"goal\"; Siege needs exactly 1", ...]}`
+  and runs nothing. A `variant` field left out reads the stock record of the script's
   carrier. An event is `{type, ...}` with the handler's event name:
   `kill {victim, killer}`, `spawn`, `death`, `join`, `quit {player}`,
   `pickup`, `drop`, `press`, `edit {player, object}`, `bounce {player,

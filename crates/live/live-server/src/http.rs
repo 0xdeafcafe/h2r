@@ -393,6 +393,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             get(crate::ranks::player_ranks),
         )
         .route(
+            "/v1/accounts/{gamertag}/medals",
+            get(crate::stats::get_account_medals),
+        )
+        .route(
             "/v1/accounts/{gamertag}/ranks/{playlist}",
             get(crate::ranks::player_history),
         )

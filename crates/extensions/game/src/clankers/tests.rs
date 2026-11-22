@@ -89,6 +89,41 @@ fn the_driver_seats_that_many_phantoms() {
     assert!(ph.list().is_empty());
 }
 
+/// The page's bots sit only in a custom game's lobby: a co-op campaign
+/// lobby keeps its seats for people, and a matchmaking lobby's session is
+/// not one a phantom joins (docs/game/party-lobby.md, "Clankers by tab").
+#[test]
+fn the_page_bots_stand_down_outside_a_custom_lobby() {
+    use crate::lobby_tabs::RetailMode;
+    assert!(admits_page(RetailMode::Custom));
+    assert!(!admits_page(RetailMode::CoOp));
+    assert!(!admits_page(RetailMode::Matchmaking));
+    let ph = Phantoms::default();
+    let d = Driver::new(ph.clone());
+    d.apply(Want {
+        count: 15,
+        difficulty: 1,
+        ..Want::OFF
+    });
+    assert_eq!(ph.list().len(), 15);
+    assert!(d.set_lobby(RetailMode::Custom).is_empty(), "no change");
+    let log = d.set_lobby(RetailMode::CoOp);
+    assert!(ph.list().is_empty(), "no Clanker in the co-op lobby");
+    assert!(log[0].contains("co-op campaign"), "{log:?}");
+    // A count changed on the page while in co-op seats nobody.
+    d.apply(Want {
+        count: 4,
+        difficulty: 1,
+        ..Want::OFF
+    });
+    assert!(ph.list().is_empty());
+    assert!(d.set_lobby(RetailMode::Matchmaking)[0].contains("matchmaking"));
+    assert!(ph.list().is_empty());
+    // Back in a custom lobby the page's count is seated again.
+    d.set_lobby(RetailMode::Custom);
+    assert_eq!(ph.list().len(), 4);
+}
+
 #[test]
 fn the_roster_follows_the_store_as_the_count_changes() {
     let s = store();

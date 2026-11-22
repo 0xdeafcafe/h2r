@@ -1119,6 +1119,37 @@ impl Session {
         );
     }
 
+    /// The game awarded `medal`, one of its own
+    /// (`live_proto::film::events::medals::OFFICIAL`), to the player in
+    /// slot `player` at the engine's `tick`. The game's medal observer
+    /// calls it, through the telemetry hooks, for every award on the
+    /// console that records the game. The rules are those of
+    /// [`Session::superbounce`]: not after the end or in a cinematic, and
+    /// nothing for a slot that is not in the match or an id that is not
+    /// Halo 2's.
+    pub fn medal(&mut self, tick: u64, player: u32, medal: &str) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        if live_proto::film::events::medals::official(medal).is_none()
+            || !current.players.iter().any(|p| p.player.index == player)
+        {
+            return;
+        }
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::GAME_MEDAL,
+            live_proto::game::GameMedal {
+                tick,
+                player,
+                medal: medal.into(),
+            },
+        );
+    }
+
     pub(crate) fn end_without_scoreboard(&mut self, tick: Option<u64>) {
         if let Some(current) = &self.current {
             self.end(&Snapshot { tick: tick.unwrap_or(current.tick), ..Snapshot::default() });
@@ -2157,6 +2188,43 @@ mod tests {
         session.end(&snapshot(90, vec![player(0, 0), player(1, 0)]));
         session.take_output();
         session.teabag(95, 0, 1);
+        assert!(kinds(&mut session).is_empty());
+    }
+
+    /// The game's medal goes out as a `GameMedal` at the match's clock for
+    /// a player of the match; a stranger's slot, an id that is not Halo
+    /// 2's and anything after the end send nothing. The one sent is valid
+    /// for the server.
+    #[test]
+    fn game_medals_are_game_events_for_players_of_the_match() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0), player(1, 0)]);
+        session.take_output();
+        session.medal(40, 1, "double-kill");
+        session.medal(41, 5, "double-kill");
+        session.medal(42, 0, "twofer");
+        let events: Vec<_> = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) => Some(e),
+                Output::Frame(_) => None,
+            })
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, live_proto::game::GAME_MEDAL);
+        assert_eq!(
+            events[0].data,
+            serde_json::json!({"tick": 40, "player": 1, "medal": "double-kill"})
+        );
+        let roster = [player(0, 0).player, player(1, 0).player];
+        assert_eq!(
+            live_proto::game::validate(&events[0].kind, &events[0].data, &roster),
+            Ok(())
+        );
+        session.end(&snapshot(90, vec![player(0, 0), player(1, 0)]));
+        session.take_output();
+        session.medal(95, 0, "killing-spree");
         assert!(kinds(&mut session).is_empty());
     }
 

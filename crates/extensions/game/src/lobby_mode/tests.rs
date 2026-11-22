@@ -5,9 +5,9 @@ use engine::testing::FakeGuest;
 
 const CLANKERS: i16 = crate::clankers::ROW_ACTION;
 const FIREFIGHT: i16 = ff::ROW_ACTION;
-/// A custom game's list as the rows of ours leave it: Change Map, Change
-/// Rules, Quick Options, Clanker Options, Firefight Options, Switch To:
-/// Co-Op Game, Switch To: Matchmaking.
+/// A custom game's list as retail and the rows of ours build it: Change
+/// Map, Change Rules, Quick Options, Clanker Options, Firefight Options,
+/// Switch To: Co-Op Game, Switch To: Matchmaking.
 const CUSTOM: [i16; 7] = [
     CHANGE_MAP,
     CHANGE_RULES,
@@ -32,22 +32,25 @@ fn label(action: i16) -> &'static str {
         OPTIONS_ACTION => "Halo 1 Options...",
         CLANKERS => "Clanker Options...",
         FIREFIGHT => "Firefight Options...",
+        crate::clankermatch::CHANGE_PLAYLIST => CHANGE_PLAYLIST_LABEL,
         6 => "Switch To: Co-Op Game",
+        7 => "Switch To: Custom Game",
         8 => "Switch To: Matchmaking",
+        crate::clankermatch::SWITCH_ACTION => "Switch To: Clankermatch",
         _ => "?",
     }
 }
 
 fn page(mode: Mode, offer: Offer, actions: &[i16]) -> Vec<&'static str> {
     arrange(mode, offer, actions)
-        .expect("a custom game's list")
+        .unwrap_or_else(|| actions.to_vec())
         .into_iter()
         .map(label)
         .collect()
 }
 
-/// Game Setup in each mode: the mode's rows, with no Mode row (the mode
-/// strip picks the mode, `crate::lobby_tabs`).
+/// Game Setup in each mode: the mode's rows, with no Mode row and no
+/// Switch To row (the mode strip picks the mode, `crate::lobby_tabs`).
 #[test]
 fn game_setup_lists_the_rows_of_each_mode() {
     let table: [(Mode, &[&str]); 3] = [
@@ -59,8 +62,6 @@ fn game_setup_lists_the_rows_of_each_mode() {
                 "Quick Options...",
                 "Clanker Options...",
                 "Firefight Options...",
-                "Switch To: Co-Op Game",
-                "Switch To: Matchmaking",
             ],
         ),
         (
@@ -70,8 +71,7 @@ fn game_setup_lists_the_rows_of_each_mode() {
                 FORGE_MAP_LABEL,
                 "Change Rules...",
                 "Quick Options...",
-                "Switch To: Co-Op Game",
-                "Switch To: Matchmaking",
+                "Clanker Options...",
             ],
         ),
         (
@@ -81,8 +81,6 @@ fn game_setup_lists_the_rows_of_each_mode() {
                 "Firefight Options...",
                 "Quick Options...",
                 "Clanker Options...",
-                "Switch To: Co-Op Game",
-                "Switch To: Matchmaking",
             ],
         ),
     ];
@@ -94,13 +92,39 @@ fn game_setup_lists_the_rows_of_each_mode() {
         page(
             Mode::Forge,
             ALL,
-            &[CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, 6, 8]
+            &[CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, CLANKERS, 6, 8]
         )
         .as_slice()
     );
     assert_eq!(
         Opener::GAME_SETUP_FORGE.rows[Opener::GAME_SETUP_FORGE.focus],
         FORGE_MAP_LABEL
+    );
+    assert_eq!(
+        Opener::GAME_SETUP_FIREFIGHT.rows,
+        page(Mode::Multiplayer, ALL, &CUSTOM).as_slice()
+    );
+}
+
+/// Clanker Options is on Game Setup in CUSTOM GAMES, FORGE and FIREFIGHT
+/// (docs/game/party-lobby.md, "Clankers by tab").
+#[test]
+fn clanker_options_is_on_every_custom_tab() {
+    for tab in [
+        crate::lobby_tabs::Tab::CustomGames,
+        crate::lobby_tabs::Tab::Forge,
+        crate::lobby_tabs::Tab::Firefight,
+    ] {
+        let mode = tab.parts().mode;
+        assert!(shown(mode, CLANKERS), "{tab:?}");
+        assert!(
+            page(mode, ALL, &CUSTOM).contains(&"Clanker Options..."),
+            "{tab:?}"
+        );
+    }
+    assert_eq!(
+        Opener::GAME_SETUP_CLANKERS.rows[Opener::GAME_SETUP_CLANKERS.focus],
+        "Clanker Options..."
     );
 }
 
@@ -115,10 +139,10 @@ fn forge_mode_lists_change_map_and_forge_map() {
         "Forge Map follows Change Map"
     );
     assert!(at(CHANGE_RULES).is_some(), "the game type row stays");
-    assert_eq!(at(CLANKERS), None);
+    assert!(at(CLANKERS).is_some(), "Clanker Options stays");
     assert_eq!(at(FIREFIGHT), None);
     // Built again (the dialog opens anew), the rows are the same.
-    assert_eq!(arrange(Mode::Forge, ALL, &rows).unwrap(), rows);
+    assert_eq!(arrange(Mode::Forge, ALL, &rows), None);
     // A Halo 1 map's row is not the mode's to hide.
     let h1 = arrange(
         Mode::Forge,
@@ -132,26 +156,70 @@ fn forge_mode_lists_change_map_and_forge_map() {
     );
 }
 
+/// The Switch To rows go from every Game Setup list: the strip's tabs
+/// change the mode.
 #[test]
-fn a_lobby_with_no_mode_on_offer_or_no_change_map_is_retails() {
-    assert_eq!(arrange(Mode::Multiplayer, Offer::default(), &CUSTOM), None);
+fn arrange_drops_the_switch_to_rows() {
+    use crate::clankermatch::{CHANGE_PLAYLIST, SWITCH_ACTION};
+    // A custom game's list, with Clankermatch's row and kind 6's 9.
     assert_eq!(
-        arrange(Mode::Forge, ALL, &[CHANGE_RULES, QUICK_OPTIONS]),
-        None,
-        "a list without Change Map (matchmaking) is not a custom game's"
+        arrange(
+            Mode::Multiplayer,
+            ALL,
+            &[CHANGE_MAP, CHANGE_RULES, 9, SWITCH_ACTION, 6]
+        ),
+        Some(vec![CHANGE_MAP, CHANGE_RULES])
+    );
+    // A matchmaking lobby's list keeps Change Playlist.
+    assert_eq!(
+        arrange(Mode::Multiplayer, ALL, &[9, SWITCH_ACTION, 6]),
+        Some(vec![CHANGE_PLAYLIST])
+    );
+    assert_eq!(
+        page(Mode::Multiplayer, ALL, &[9, 6]),
+        [CHANGE_PLAYLIST_LABEL]
+    );
+    // The co-op lobby's list keeps its level and difficulty rows.
+    assert_eq!(
+        arrange(Mode::Multiplayer, ALL, &[2, 3, 7, 8, SWITCH_ACTION]),
+        Some(vec![2, 3])
+    );
+    // Our mode does not reach a list that is not a custom game's.
+    assert_eq!(
+        arrange(Mode::Firefight, ALL, &[CHANGE_RULES, 9, 6]),
+        Some(vec![CHANGE_RULES, CHANGE_PLAYLIST])
+    );
+    assert!(switches_mode(9, true) && !switches_mode(9, false));
+    for a in [6, 7, 8, SWITCH_ACTION] {
+        assert!(switches_mode(a, true) && switches_mode(a, false), "{a}");
+    }
+    assert!(!switches_mode(CLANKERS, true));
+}
+
+#[test]
+fn a_list_with_nothing_to_change_is_left_as_built() {
+    let plain = [CHANGE_MAP, CHANGE_RULES, QUICK_OPTIONS, CLANKERS, FIREFIGHT];
+    assert_eq!(arrange(Mode::Multiplayer, ALL, &plain), None);
+    // No mode besides Multiplayer on offer: the held mode is not applied,
+    // and the Switch To rows still go.
+    assert_eq!(arrange(Mode::Forge, Offer::default(), &plain), None);
+    assert_eq!(
+        arrange(Mode::Forge, Offer::default(), &CUSTOM),
+        Some(plain.to_vec())
     );
     let forge_only = Offer {
         forge: true,
         firefight: false,
     };
     assert!(
-        arrange(Mode::Forge, forge_only, &CUSTOM).is_some(),
+        arrange(Mode::Forge, forge_only, &plain).is_some(),
         "one mode besides Multiplayer is enough"
     );
 }
 
-/// No tab's Game Setup has a Mode row: the strip is the only way to pick
-/// the mode (docs/game/party-lobby.md, "The lobby by tab").
+/// No tab's Game Setup has a Mode row or a Switch To row: the strip is the
+/// only way to pick the mode (docs/game/party-lobby.md, "The lobby by
+/// tab").
 #[test]
 fn game_setup_has_no_mode_row() {
     for tab in [
@@ -161,17 +229,26 @@ fn game_setup_has_no_mode_row() {
     ] {
         let rows = page(tab.parts().mode, ALL, &CUSTOM);
         assert!(
-            rows.iter().all(|r| !r.contains("Mode")),
+            rows.iter()
+                .all(|r| !r.contains("Mode") && !r.starts_with("Switch To")),
             "{tab:?}: {rows:?}"
         );
         assert_eq!(rows[0], "Change Map...", "{tab:?}");
     }
-    assert!(
-        Opener::GAME_SETUP_FORGE
-            .rows
-            .iter()
-            .all(|r| !r.contains("Mode"))
-    );
+    for opener in [
+        Opener::GAME_SETUP,
+        Opener::GAME_SETUP_FIREFIGHT,
+        Opener::GAME_SETUP_FORGE,
+    ] {
+        assert!(
+            opener
+                .rows
+                .iter()
+                .all(|r| !r.contains("Mode") && !r.starts_with("Switch To")),
+            "{}",
+            opener.name
+        );
+    }
 }
 
 #[test]

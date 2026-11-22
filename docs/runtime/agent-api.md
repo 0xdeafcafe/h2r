@@ -2210,19 +2210,21 @@ or the game's UI state without UI watch. All are read-only except
 - **`ui.lobby.tabs`** (`h2 agent ui.lobby.tabs`, no parameters): the
   pregame lobby's mode strip ([party-lobby.md](../game/party-lobby.md)),
   read on a game boundary (`crates/extensions/game/src/lobby_tabs/strip.rs`).
-  The result is `{place, leader, selected, tabs, notice}`: `place` is
-  `split_screen`, `system_link` or `xbox_live`; `leader` is whether this
-  console leads the party (a member's strip has no glyphs and its bumpers
-  do nothing); `selected` is the tab the lobby is on. `tabs` lists the tabs
-  present in strip order, each `{tab, label, state, reason}` with `tab`
-  one of `matchmaking`, `custom_games`, `forge`, `firefight`, `co_op`,
-  `clankers`, `state` one of `selected`, `on`, `off`, and `reason` the
-  status-line sentence of a tab that cannot run here (else null).
+  The result is `{place, leader, selected, tabs, clanker, notice}`:
+  `place` is `split_screen`, `system_link` or `xbox_live`; `leader` is
+  whether this console leads the party (a member's strip has no glyphs
+  and its bumpers do nothing); `selected` is the tab the lobby is on.
+  `tabs` lists the tabs present in strip order, each `{tab, label, state,
+  reason}` with `tab` one of `multiplayer`, `custom_games`, `forge`,
+  `firefight`, `co_op`, `state` one of `selected`, `on`, `off`, and
+  `reason` the status-line sentence of a tab that cannot run here (else
+  null). `clanker` is, on MULTIPLAYER, whether the lobby's playlist is
+  one the server marks as a Clanker playlist (null on another tab).
   `notice` is the reason the status line shows after a bumper press, for
   four seconds, else null. It returns `UNAVAILABLE` when the pregame
   lobby is not the screen on top or its session cannot be read.
-  For example, a Split Screen lobby's MATCHMAKING entry is
-  `{"tab":"matchmaking","label":"MATCHMAKING","state":"off","reason":"Matchmaking needs Xbox Live."}`.
+  For example, a Split Screen lobby's MULTIPLAYER entry is
+  `{"tab":"multiplayer","label":"MULTIPLAYER","state":"off","reason":"Matchmaking needs Xbox Live."}`.
 
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
@@ -2964,6 +2966,22 @@ counts frames where the seated custom lobby's peer and player records matched
 the previous sample. Subtract two readings in the same session to get a
 window's mean cost (`Δtotal_ns / Δframes`) and cache hit fraction.
 
+The write counters show how often the roster work changes the session's
+membership, which makes the game rebuild what depends on it.
+`write_frames` counts frames that wrote the membership and moved its
+counters: a join, a removal, or a repair. One frame's repairs share one
+bump. `props_writes` counts phantom peer properties rewritten to follow
+this console's. `identity_writes` counts phantom names or looks written
+back into the session's player records. `team_moves` counts team
+rebalance moves. `props_diff_chunks` is a mask of the 8-byte chunks of
+the `0xc8`-byte peer properties that differed on any rewrite: bit `i`
+covers properties bytes `8i` to `8i + 7`, so bit 12 is the map status at
+`+0x60`. In a settled lobby `Δwrite_frames` stays near zero. If it grows
+with `Δframes`, the game is undoing a phantom write every frame. The log
+then says `bots: phantoms: the session's membership was rewritten on 30
+frames in a row (...)` once per run of such frames
+(`crates/live/bots/src/phantom.rs`, `churn_line`).
+
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.
 The full vector contains `radar_use`, `noob_combo`, `dual_wield`,
@@ -3020,14 +3038,28 @@ game, or assumed after the walk out because it could not be), `landing`
 `vz_out`, `miss`, `result` `bounce`, `not_primed`, `missed`, `too_slow`
 or `no_bounce`), `log` (each step and phase change, `{tick, step, what,
 at}`, the last 64) and, for a failed route, `error`: `timeout`, `no_map`,
-`no_path`, `goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`,
+`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_<check>_<leg>`
+(the follower's check and the walk's leg, [bots.md, "Superbounce
+routes"](../game/bots.md#superbounce-routes)), `prime_failed`, `pair_lost`,
 `no_bounce`, `no_drop`, `stalled`, `state` (an internal fault), `enemy`,
 `no_route`, `practice_off`, `died` or `map_changed`. While a route runs
 the bot fights and picks up nothing. While the superbounce mode is on the
 bots practise bounces instead of fighting, and `practice` gives the tally:
 `state` (`idle`, `route`, `waiting`), `site`, `attempts`, `bounces` and
 `spots` (each site's `stand`, `attempts`, `bounces` and `why`, by count)
-([bots.md](../game/bots.md#practising-bounces)).
+([bots.md](../game/bots.md#practising-bounces)). In a sim's training run
+([bounce-search.md](../game/bounce-search.md)) `practice.train` gives the
+round the bot flies: `site` (the stand its learned line keys), `stage`
+(`arms`, `shift`, `compass`, `scatter`), `axis` (in `compass`: `aim_along`,
+`aim_side`, `from_side`, `yaw`, `back`, `run`, `early`, `gain`, `letgo`,
+`drift`, `still`), `slot` (the try's, from 0) and `tries` (the site's
+scored tries). `knobs` is what the route's site is flown with, by the
+learned file's keys (`how`, `fx` `fy` `fz`, `ax` `ay`, `yaw`, `back`,
+`run`, `early`, `gain`, `letgo`, `drift`, `still`; only those set): its
+learned line's, or a training try's; `null` for the route's own. The
+types are `crates/extensions/agent-proto/src/bot_bounce.rs`
+(`LearnedKnobs`, `PracticeTrain`), filled in
+`crates/extensions/game/src/sim_bots.rs`.
 
 `superbounce.spots {map?, kind?}` lists the spots the bots know for a map
 (default the loaded one): `map`, `scanned` (the nav worker has made or
@@ -3037,11 +3069,16 @@ or `crouch`; `kind` in the request filters), `source` (`measured` or
 `scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift`,
 `score`, `width` (a slot's gap between its joints, a crouch band's
 widest), `need` (a slot's touchdown speed down, which `fall` is worked
-from), `status` (`proven` for a crouch spot at a measured priming place
+from; a measured spot with a recipe takeoff falls 2.43 from it), `status` (`proven` for a crouch spot at a measured priming place
 or one the map's verified file proved, `failed` for one it failed, else
 `likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
 `lip` (a crouch spot's edges overhead at `stand`, up to 8) and `shape`
-(`slot`, or `crease` for a single-crease bounce candidate).
+(`slot`, or `crease` for a single-crease bounce candidate). A bounce spot
+with a line in the map's learned file has `learned`: `state` (`open`,
+`learned`, `partial`, `dead`, `blocked`), `knobs` (as in
+`bots.bounce_status`), `tries`, `hits`, `n`, `ok`, `score`, `best` and,
+for a `dead` or `blocked` line, `why` (`SpotLearned`). A `dead` site is
+listed, but the bots leave it out unless it is proven.
 
 ```sh
 # a bot standing at x, sent to y over a ledge, bouncing on the way
@@ -3089,7 +3126,7 @@ ticks for the end): `state` (`none`, `loading`, `running`, `facing`,
 `step`, `phase`, `primed`, `position`, `distance` (left along the walk
 under way, else straight to the goal), `path` (the player, then the
 waypoints ahead, at most 32), `replans`, `replanned` (`strayed`,
-`stuck`, `path_lost`, `stalled`, `pair_lost`), `ticks` and, for a failed
+`stuck`, `path_lost_<check>_<leg>`, `stalled`, `pair_lost`), `ticks` and, for a failed
 drive, `error` (the route's reasons as in `bots.bounce_status`, `stuck`,
 `timeout`, `no_route`, `no_launch_floor`, a missing nav mesh, a changed
 map). `player.goto_cancel` stops it and lets go of the pad. The player
@@ -3668,7 +3705,7 @@ builds with the `rules` cargo feature; with the `rules` switch off
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors, last_reload?}` |
+| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors, last_reload?, blocked?, labelled?}` |
 | `rules.reload` (act) | `{ir_b64 \| source, mode?: auto \| in_place \| restart}` | `{mode: in_place \| restarted, hash, reasons, tick}` |
 
 `running` is false with the switch off, outside a multiplayer game, for
@@ -3690,6 +3727,19 @@ estimate. `pending` counts the calls waiting for the next tick boundary.
 `tick`, `call` (the entry's name) and `error`. `last_reload` is the
 last `rules.reload` on this run: its `mode` (`in_place`, `restarted` or
 `refused`), `hash`, `tick` and `reasons` (for a refusal, why).
+
+`blocked` lists every problem the host's start gate found with the map
+([rules-start-gate.md](../game/rules-start-gate.md)), in the check's
+order, while the block holds: the game was ended in its first tick (or,
+in a Forge session, the script does not run), until the next game
+starts. `labelled` is the map's labelled things as the host counted
+them, for a blocked script or a running one that declares labels: each
+with its `label`, `class` (`object`, `flag`, `volume` or `spawn`),
+`number`, `team` (the placement's designator), `id` (the placement id
+`zone.id` reads) and `declared` (the script declares that label). To
+check a map against a script, start a game with it and read
+`rules.state`; there is no separate census method, since the host's
+census is the loaded game's.
 
 `rules.reload` puts a new script into the running game
 ([rules-engine.md](../game/rules-engine.md#reloading-a-running-script);

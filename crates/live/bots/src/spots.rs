@@ -13,6 +13,10 @@
 //!   [`superbounce::verified`]): what `superbounce.verify` found when it
 //!   tried the spots in a game. A spot it proved is preferred, with the
 //!   offset that worked; one it failed is left out.
+//! - the map's learned file (`<map>.learned` beside them,
+//!   [`superbounce::learned`], docs/game/bounce-search.md): the knobs a
+//!   training run's search found for each bounce site ([`Site::knobs`]).
+//!   A site it found dead is left out unless a game run proved it.
 //!
 //! The scans of the maps the worker has seen sit in a process-wide table
 //! ([`publish`], [`scanned`]); a brain asks it for its map's ([`Known`]).
@@ -23,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use superbounce::learned::{self, Knobs};
 use superbounce::verified::{self, Entry};
 use superbounce::{Kind, Lip, MAX_LIP, Shape, Spot, Status};
 
@@ -45,6 +50,11 @@ pub const MEASURED_LAUNCH: f32 = 12.3;
 /// The touchdown speed the measured Ascension landing came in at (world
 /// units a second): docs/game/superbounce.md, "The forced crouch leaves state", the recipe, step 4.
 pub const MEASURED_NEED: f32 = 5.4;
+/// The fall onto a measured spot that has a takeoff (world units): the
+/// recipe's jump off the upper level (z -0.76) onto the patch (z -3.19),
+/// docs/game/superbounce.md, "The forced crouch leaves state". A standing
+/// jump falls 0 and lands at -3: never a bounce.
+pub const MEASURED_FALL: f32 = 2.43;
 /// The most a bounce site may need to fall onto it (world units) for a
 /// bot's standing jump to reach it.
 pub const STANDING_FALL: f32 = 0.5;
@@ -74,6 +84,12 @@ pub struct Site {
     pub aim: Option<Vec3>,
     /// The verified drop height over the strip (world units).
     pub height: Option<f32>,
+    /// What the map's learned file says of it
+    /// (docs/game/bounce-search.md): the knobs the route plays here
+    /// (none set: the route's own, `bounce_route::flown`), and its line's
+    /// state, `None` with no line.
+    pub knobs: Knobs,
+    pub line: Option<learned::State>,
 }
 
 impl Site {
@@ -89,6 +105,8 @@ impl Site {
                 spread: SCAN_SPREAD,
                 drift: s.drift,
                 source: "scan",
+                takeoff: None,
+                landing: None,
             },
             launch: s.launch,
             fall: s.fall,
@@ -97,30 +115,42 @@ impl Site {
             status: s.status,
             aim: None,
             height: None,
+            knobs: Knobs::default(),
+            line: None,
         })
     }
 
-    /// A measured spot as a site.
+    /// A measured spot as a site: a drop from its takeoff
+    /// ([`MEASURED_FALL`]) when it has one, else a standing jump, aimed
+    /// at its traced landing when it has one.
     pub fn measured(b: Bounce) -> Site {
         Site {
             bounce: b,
             launch: MEASURED_LAUNCH,
-            fall: 0.0,
+            fall: if b.takeoff.is_some() {
+                MEASURED_FALL
+            } else {
+                0.0
+            },
             need: MEASURED_NEED,
             width: SLOT_WIDTH,
             status: Status::Proven,
-            aim: None,
+            aim: b.landing,
             height: None,
+            knobs: Knobs::default(),
+            line: None,
         }
     }
 
     /// With what a verified entry about it says: its status, and where and
-    /// from how high the drop that worked landed.
+    /// from how high the drop that worked landed. A measured spot keeps
+    /// its traced landing as the aim: the middle of every traced bounce,
+    /// where an entry's is one landing, the origin a tick before contact.
     pub fn verified(mut self, e: Option<&Entry>) -> Site {
         if let Some(e) = e {
             self.status = e.status;
             if e.status == Status::Proven {
-                self.aim = Some(e.working());
+                self.aim = self.bounce.landing.or(Some(e.working()));
                 self.height = e.height;
                 if e.best > 0.0 {
                     self.launch = e.best;
@@ -130,13 +160,41 @@ impl Site {
         self
     }
 
-    /// A standing jump from the spot's `stand` reaches it.
-    pub fn standing(&self) -> bool {
-        self.fall <= STANDING_FALL && self.height.is_none()
+    /// With its line of the map's learned file: the knobs of an `open`,
+    /// `partial` or `learned` line ([`learned::knobs_for`]) and the line's
+    /// state.
+    pub fn learned(mut self, lines: &[learned::Entry]) -> Site {
+        self.knobs = learned::knobs_for(lines, self.bounce.stand);
+        self.line = learned::entry_for(lines, self.bounce.stand).map(|e| e.state);
+        self
     }
 
-    /// Where to land: the verified point, else `stand`.
+    /// A standing jump from the spot's `stand` reaches it. A learned `how`
+    /// says so first: `stand` is a standing jump, `runoff` and `jump` a
+    /// drop.
+    pub fn standing(&self) -> bool {
+        match self.knobs.how {
+            Some(h) => !h.is_drop(),
+            None => {
+                self.fall <= STANDING_FALL && self.height.is_none() && self.bounce.takeoff.is_none()
+            }
+        }
+    }
+
+    /// Where to land: the learned aim (`ax ay`), else the verified point,
+    /// else `stand`.
     pub fn target(&self) -> Vec3 {
+        let own = self.own_target();
+        match self.knobs.aim {
+            Some([x, y]) => [x, y, own[2]],
+            None => own,
+        }
+    }
+
+    /// Where to land without the learned line: the verified point, else
+    /// `stand`. A training try's miss is measured from it, so moving the
+    /// aim moves the miss (`learn::Try::from_leap`).
+    pub fn own_target(&self) -> Vec3 {
         self.aim.unwrap_or(self.bounce.stand)
     }
 
@@ -209,13 +267,32 @@ pub struct Known {
 
 impl Known {
     /// The spots of `map` (its short name, any case): measured, then
-    /// scanned ([`scanned`]), with its verified file ([`verified_for`]).
+    /// scanned ([`scanned`]), with its verified file ([`verified_for`])
+    /// and its learned file ([`learned_for`], [`Known::with_learned`]).
     pub fn for_map(map: &str) -> Known {
         Known::merge_verified(
             crate::glitches::bounces(map),
             &scanned(map),
             &verified_for(map),
         )
+        .with_learned(&learned_for(map))
+    }
+
+    /// With the map's learned file: each site gets its line's knobs
+    /// ([`Site::learned`]); a site whose line is `dead` is left out, as a
+    /// verified `failed` one is, unless it is proven (a measured spot, or
+    /// one a verified entry proved). A `blocked` line changes nothing.
+    pub fn with_learned(mut self, lines: &[learned::Entry]) -> Known {
+        if lines.is_empty() {
+            return self;
+        }
+        self.sites = self
+            .sites
+            .into_iter()
+            .map(|s| s.learned(lines))
+            .filter(|s| s.proven() || s.line != Some(learned::State::Dead))
+            .collect();
+        self
     }
 
     /// [`Known::merge_verified`] with no verified file.
@@ -234,7 +311,9 @@ impl Known {
         };
         let mut sites: Vec<Site> = measured
             .into_iter()
-            .map(|b| Site::measured(b).verified(verified::entry_for(ver, &probe(Kind::Bounce, b.stand))))
+            .map(|b| {
+                Site::measured(b).verified(verified::entry_for(ver, &probe(Kind::Bounce, b.stand)))
+            })
             .collect();
         let kept = sites.len();
         let mut scan: Vec<&Spot> = scan.iter().filter(|s| s.score >= MIN_SCORE).collect();
@@ -278,20 +357,29 @@ pub(crate) fn dist_xy(a: Vec3, b: Vec3) -> f32 {
 }
 
 /// One spot as the agent API lists it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Listed {
     /// `bounce` or `crouch`.
     pub kind: &'static str,
     /// `measured` or `scan`.
     pub source: &'static str,
     pub spot: Spot,
+    /// A bounce spot's line of the map's learned file, when it has one.
+    pub learned: Option<learned::Entry>,
 }
 
 /// Every spot of `map`: the measured ones first, then the scan, best
-/// first, each with its verified status (failed ones too). A measured
-/// spot's edge is the point it stands on, its score 1, its status proven.
+/// first, each with its verified status (failed ones too) and, a bounce
+/// spot, its learned line. A measured spot's edge is the point it stands
+/// on, its score 1, its status proven.
 pub fn listing(map: &str) -> Vec<Listed> {
     let ver = verified_for(map);
+    let lines = learned_for(map);
+    let line = |kind: Kind, stand: Vec3| {
+        (kind == Kind::Bounce)
+            .then(|| learned::entry_for(&lines, stand).cloned())
+            .flatten()
+    };
     let mut out: Vec<Listed> = crate::glitches::bounces(map)
         .into_iter()
         .map(|b| Listed {
@@ -301,7 +389,7 @@ pub fn listing(map: &str) -> Vec<Listed> {
                 kind: Kind::Bounce,
                 edge: [b.stand, b.stand],
                 stand: b.stand,
-                fall: 0.0,
+                fall: Site::measured(b).fall,
                 launch: MEASURED_LAUNCH,
                 drift: b.drift,
                 score: 1.0,
@@ -309,6 +397,7 @@ pub fn listing(map: &str) -> Vec<Listed> {
                 status: Status::Proven,
                 ..Spot::default()
             },
+            learned: line(Kind::Bounce, b.stand),
         })
         .collect();
     let mut scan: Vec<Spot> = scanned(map).as_ref().clone();
@@ -324,6 +413,7 @@ pub fn listing(map: &str) -> Vec<Listed> {
         },
         source: "scan",
         spot: *s,
+        learned: line(s.kind, s.stand),
     }));
     out
 }
@@ -345,8 +435,8 @@ struct Table {
 static TABLE: Mutex<Option<Table>> = Mutex::new(None);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Changes whenever [`publish`] stores a scan or [`store_verified`] a
-/// verified file: a brain compares it with the one it last read to know
+/// Changes whenever [`publish`] stores a scan, [`store_verified`] a
+/// verified file or [`store_learned`] a learned one: a brain compares it with the one it last read to know
 /// its map's spots may have changed.
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
@@ -378,6 +468,8 @@ struct Verified {
     /// Where the files are: the bots directory ([`set_verified_dir`]).
     dir: Option<PathBuf>,
     maps: HashMap<String, Arc<Vec<Entry>>>,
+    /// The learned files read from there ([`learned_for`]).
+    learned: HashMap<String, Arc<Vec<learned::Entry>>>,
 }
 
 static VERIFIED: Mutex<Option<Verified>> = Mutex::new(None);
@@ -395,6 +487,7 @@ pub fn set_verified_dir(dir: PathBuf) {
     if v.dir.as_ref() != Some(&dir) {
         v.dir = Some(dir);
         v.maps.clear();
+        v.learned.clear();
         GENERATION.fetch_add(1, Ordering::Release);
     }
 }
@@ -458,6 +551,95 @@ pub fn store_verified(map: &str, new: &[Entry]) -> std::io::Result<Option<PathBu
     v.get_or_insert_with(Verified::default)
         .maps
         .insert(key, Arc::new(merged));
+    GENERATION.fetch_add(1, Ordering::Release);
+    Ok(written)
+}
+
+// ---- the learned files ----
+
+/// `<map>.learned`, in the bots directory beside the verified files
+/// ([`crate::harvest::learned_file_name`]).
+pub fn learned_file_name(map: &str) -> String {
+    crate::harvest::learned_file_name(map)
+}
+
+/// Reads `map`'s learned file from `dir`; empty when there is none. A
+/// refused file (`learned::parse`) reads as an error naming the line.
+pub fn read_learned(dir: &Path, map: &str) -> Result<Vec<learned::Entry>, String> {
+    match std::fs::read_to_string(dir.join(learned_file_name(map))) {
+        Ok(text) => learned::parse(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// What `map`'s learned file says (any case): read once from the
+/// verified directory ([`set_verified_dir`]), as [`verified_for`] reads
+/// its file, then kept; empty with no directory or no file, and empty with
+/// one log line for a refused file (it is trained again from nothing).
+pub fn learned_for(map: &str) -> Arc<Vec<learned::Entry>> {
+    let key = map.to_ascii_lowercase();
+    let mut v = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
+    let v = v.get_or_insert_with(Verified::default);
+    if let Some(e) = v.learned.get(&key) {
+        return Arc::clone(e);
+    }
+    let entries = match &v.dir {
+        Some(dir) if !key.is_empty() => read_learned(dir, &key).unwrap_or_else(|why| {
+            eprintln!("bots: {key}'s learned file not read: {why}");
+            Vec::new()
+        }),
+        _ => Vec::new(),
+    };
+    let entries = Arc::new(entries);
+    v.learned.insert(key, Arc::clone(&entries));
+    entries
+}
+
+/// `old` with each of `lines` in place of the line about its site
+/// (`learned::replace`): a training run's lines are its search, further
+/// on.
+fn with_lines(old: &[learned::Entry], lines: &[learned::Entry]) -> Vec<learned::Entry> {
+    lines
+        .iter()
+        .fold(old.to_vec(), |all, l| learned::replace(&all, l.clone()))
+}
+
+/// Writes `map`'s learned file in `dir` (atomic) with `lines` in place of
+/// the lines about their sites, the others kept. The path and what it
+/// holds now.
+pub fn write_learned(
+    dir: &Path,
+    map: &str,
+    lines: &[learned::Entry],
+) -> std::io::Result<(PathBuf, Vec<learned::Entry>)> {
+    let key = map.to_ascii_lowercase();
+    let old = read_learned(dir, &key).unwrap_or_default();
+    let all = with_lines(&old, lines);
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(learned_file_name(&key));
+    crate::autonav::write_atomic(&path, learned::to_text(&all).as_bytes())?;
+    Ok((path, all))
+}
+
+/// A training run's round is over (docs/game/bounce-search.md,
+/// "Scheduling a batch"): `lines` replace the lines about their sites in
+/// `map`'s learned file, written (atomic) when there is a verified
+/// directory, and the [`generation`] is bumped so brains read their spots
+/// again. The path written, if any. A game never calls it.
+pub fn store_learned(map: &str, lines: &[learned::Entry]) -> std::io::Result<Option<PathBuf>> {
+    let key = map.to_ascii_lowercase();
+    let (written, all) = match verified_dir() {
+        Some(dir) if !key.is_empty() => {
+            let (path, all) = write_learned(&dir, &key, lines)?;
+            (Some(path), all)
+        }
+        _ => (None, with_lines(&learned_for(&key), lines)),
+    };
+    let mut v = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
+    v.get_or_insert_with(Verified::default)
+        .learned
+        .insert(key, Arc::new(all));
     GENERATION.fetch_add(1, Ordering::Release);
     Ok(written)
 }
@@ -559,7 +741,9 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
             if lip_len > MAX_LIP {
                 return None;
             }
-            let lip: Vec<[[f32; 3]; 2]> = (0..lip_len).map(|e| [v(18 + 6 * e), v(21 + 6 * e)]).collect();
+            let lip: Vec<[[f32; 3]; 2]> = (0..lip_len)
+                .map(|e| [v(18 + 6 * e), v(21 + 6 * e)])
+                .collect();
             let (kind, shape) = match c[0] {
                 0 => (Kind::Bounce, Shape::Slot),
                 1 => (Kind::Crouch, Shape::Slot),
@@ -603,7 +787,9 @@ pub fn write(dir: &Path, map: &str, stamp: Stamp, spots: &[Spot]) -> std::io::Re
 /// `stamp`.
 pub fn read(dir: &Path, map: &str, stamp: Stamp) -> Option<Vec<Spot>> {
     let bytes = std::fs::read(dir.join(file_name(map))).ok()?;
-    from_bytes(&bytes).filter(|(_, s)| *s == stamp).map(|(v, _)| v)
+    from_bytes(&bytes)
+        .filter(|(_, s)| *s == stamp)
+        .map(|(v, _)| v)
 }
 
 // ---- the scan ----

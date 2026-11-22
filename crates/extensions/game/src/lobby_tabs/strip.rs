@@ -30,8 +30,8 @@ use engine::points;
 use serde_json::{Value, json};
 
 use super::{
-    Avail, Dir, Facts, Look, NEXT, NEXT_GLYPH_ID, PREV, PREV_GLYPH_ID, Place, Present, RetailMode,
-    Tab, cells, glyph_on, look, row, seen_mode,
+    Avail, Dir, Facts, Look, NEXT_GLYPH_ID, PREV, PREV_GLYPH_ID, Place, Present, RetailMode, Tab,
+    cells, glyph_on, look, next_glyph, row, seen_mode,
 };
 use crate::layout_glue::ReadGm;
 use crate::list_class::{TEXT_BLOCK_SIZE, TextBlock};
@@ -134,7 +134,7 @@ impl Piece {
                 .find(|(t, _)| *t == tab)
                 .map(|(_, c)| c),
             Piece::Glyph(Dir::Prev, _) => Some(PREV),
-            Piece::Glyph(Dir::Next, _) => Some(NEXT),
+            Piece::Glyph(Dir::Next, _) => Some(next_glyph(&present.tabs())),
         }
     }
 
@@ -268,6 +268,9 @@ pub struct Shown {
     pub leader: bool,
     pub selected: Tab,
     pub row: Vec<(Tab, Avail)>,
+    /// On MULTIPLAYER, whether the lobby's playlist is a Clanker one
+    /// (`None` on any other tab, or with no playlist held).
+    pub clanker: Option<bool>,
 }
 
 impl Shown {
@@ -292,18 +295,22 @@ pub struct Reading {
     pub retail: RetailMode,
     /// The lobby's map carries the Firefight kit.
     pub kit_map: bool,
+    /// The lobby's playlist is a Clanker one (`None` with no playlist
+    /// held).
+    pub clanker: Option<bool>,
     pub facts: Facts,
 }
 
-/// The strip for `reading`, with `mode` the lobby's mode of ours and
-/// `clanker` the Clanker playlists' flag.
-pub fn shown(reading: &Reading, present: Present, mode: Mode, clanker: bool) -> Shown {
+/// The strip for `reading`, with `mode` the lobby's mode of ours.
+pub fn shown(reading: &Reading, present: Present, mode: Mode) -> Shown {
     let mode = seen_mode(reading.leader, mode, reading.kit_map);
+    let selected = Tab::of(reading.retail, mode);
     Shown {
         place: reading.place,
         leader: reading.leader,
-        selected: Tab::of(reading.retail, mode, clanker),
+        selected,
         row: row(present, reading.place, reading.facts),
+        clanker: reading.clanker.filter(|_| selected == Tab::Multiplayer),
     }
 }
 
@@ -318,10 +325,38 @@ pub fn place(networking: bool, class: Option<u32>) -> Option<Place> {
     }
 }
 
+/// The squad session's mode (`+0x49a4`), read by `0x64160` while the
+/// session is in states 3 to 8: 2 is a matchmaking lobby, the lobby kind 6
+/// of `0x19989d` (Game Setup's Change Playlist... list).
+pub const SQUAD_MODE: u32 = 0x49a4;
+pub const SQUAD_MATCHMAKING: u32 = 2;
+
+/// The squad session's mode as `0x64160` reads it: `None` unless
+/// networking is on and the squad session is in states 3 to 8.
+pub fn squad_mode(m: &dyn GuestMemory) -> Option<u32> {
+    if m.u8(lobby::NETWORKING).ok()? == 0 {
+        return None;
+    }
+    let s = m.u32(lobby::SESSION).ok().filter(|&s| s != 0)?;
+    let state = m.u32(s.checked_add(lobby::STATE)?).ok()?;
+    if !(3..=8).contains(&state) {
+        return None;
+    }
+    m.u32(s.checked_add(SQUAD_MODE)?).ok()
+}
+
 /// The retail lobby mode: matchmaking in a matchmaking life cycle (types 6
-/// and 7), co-op on a campaign session, else the custom game lobby.
-pub fn retail_mode(networking: bool, session_type: u32, campaign: bool) -> RetailMode {
-    if networking && lobby::matchmaking_type(session_type) {
+/// and 7) or on a squad session in matchmaking mode ([`squad_mode`]),
+/// co-op on a campaign session, else the custom game lobby.
+pub fn retail_mode(
+    networking: bool,
+    session_type: u32,
+    squad_mode: Option<u32>,
+    campaign: bool,
+) -> RetailMode {
+    if networking
+        && (lobby::matchmaking_type(session_type) || squad_mode == Some(SQUAD_MATCHMAKING))
+    {
         RetailMode::Matchmaking
     } else if campaign {
         RetailMode::CoOp
@@ -330,9 +365,32 @@ pub fn retail_mode(networking: bool, session_type: u32, campaign: bool) -> Retai
     }
 }
 
+/// The lobby's retail mode now, for the Clankers driver
+/// (`crate::clankers::admits_page`); `None` while it cannot be read.
+pub fn retail_now(m: &dyn GuestMemory) -> Option<RetailMode> {
+    let networking = m.u8(lobby::NETWORKING).ok()? != 0;
+    let session_type = m.u32(lobby::SESSION_TYPE).ok()?;
+    let campaign = crate::coop_probe::read_session(&ReadGm(m)).is_some_and(|s| s.is_campaign());
+    Some(retail_mode(
+        networking,
+        session_type,
+        squad_mode(m),
+        campaign,
+    ))
+}
+
+/// The lobby's playlist, when one is held (`LOBBY_HOPPER_HELD`).
+pub fn held_hopper(m: &dyn GuestMemory) -> Option<u32> {
+    use super::switch::{LOBBY_HOPPER, LOBBY_HOPPER_HELD};
+    (m.u8(LOBBY_HOPPER_HELD).ok()? != 0)
+        .then(|| m.u32(LOBBY_HOPPER).ok())
+        .flatten()
+        .filter(|&h| h != u32::MAX)
+}
+
 static LIVE: Mutex<Option<Arc<live_hle::Hle>>> = Mutex::new(None);
 
-/// The Live service the Clanker playlists come from (boot, with
+/// The Live service whose marks tell a Clanker playlist (boot, with
 /// Clankermatch on).
 pub fn set_live(hle: Option<Arc<live_hle::Hle>>) {
     *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = hle;
@@ -348,6 +406,7 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let leader = !networking || lobby::facts(m).ok()?.leader;
     let session_type = m.u32(lobby::SESSION_TYPE).ok()?;
     let campaign = crate::coop_probe::read_session(&ReadGm(m)).is_some_and(|s| s.is_campaign());
+    let retail = retail_mode(networking, session_type, squad_mode(m), campaign);
     let catalogue = crate::map_select::current();
     let map = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
     let kit_map = catalogue.as_ref().zip(map).is_some_and(|(c, id)| {
@@ -357,22 +416,26 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let kit_maps = catalogue
         .as_ref()
         .is_some_and(|c| !crate::lobby_start::kit_maps(c).is_empty());
-    let clanker_playlists = LIVE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .is_some_and(|h| !h.clanker_hoppers().hoppers.is_empty());
+    let clanker = (retail == RetailMode::Matchmaking)
+        .then(|| held_hopper(m))
+        .flatten()
+        .map(|h| {
+            LIVE.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|live| crate::clankermatch::is_clanker(h, &live.clanker_hoppers()))
+        });
     Some(Reading {
         place,
         leader,
-        retail: retail_mode(networking, session_type, campaign),
+        retail,
         kit_map,
+        clanker,
         facts: Facts {
-            // The playlist list is read with slice T5; until then a Live
-            // lobby's MATCHMAKING is taken as having one, and the switch
-            // to it is refused by name (`Reason::MatchmakingNotYet`).
-            playlists: place == Place::XboxLive,
-            clanker_playlists,
+            // The playlists are asked for by a switch to MULTIPLAYER
+            // (`switch::listed_hoppers`); until one finds none, a Live
+            // lobby's are taken as there.
+            playlists: place == Place::XboxLive && !super::switch::no_playlists_seen(),
             kit_maps,
             remote_members: crate::lobby_mode::remote_members(m) != Some(0),
         },
@@ -475,8 +538,8 @@ pub async fn update(cx: &Cx, screen: u32) -> Result<(), EntryError> {
         return Ok(());
     }
     let present = super::present();
-    let (mode, clanker) = (crate::lobby_start::mode(), crate::clankermatch::active());
-    let Some(state) = cx.read(|m| read(m).map(|r| shown(&r, present, mode, clanker))) else {
+    let mode = crate::lobby_start::mode();
+    let Some(state) = cx.read(|m| read(m).map(|r| shown(&r, present, mode))) else {
         return Ok(());
     };
     let Some(found) = cx.read(|m| find(m, screen)) else {
@@ -547,12 +610,7 @@ pub fn inspect(m: &dyn GuestMemory) -> Result<Value, &'static str> {
         return Err("the pregame lobby is not the screen on top");
     }
     let reading = read(m).ok_or("the lobby's session cannot be read")?;
-    let s = shown(
-        &reading,
-        super::present(),
-        crate::lobby_start::mode(),
-        crate::clankermatch::active(),
-    );
+    let s = shown(&reading, super::present(), crate::lobby_start::mode());
     Ok(json_of(&s, super::notice_now()))
 }
 
@@ -575,6 +633,7 @@ pub fn json_of(s: &Shown, notice: Option<super::Reason>) -> Value {
         "leader": s.leader,
         "selected": s.selected.name(),
         "tabs": tabs,
+        "clanker": s.clanker,
         "notice": notice.map(|r| r.text()),
     })
 }

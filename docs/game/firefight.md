@@ -497,7 +497,8 @@ page.
 Firefight is a tab of the party lobby's mode strip
 ([party-lobby.md](party-lobby.md), [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)),
 shown while the `firefight` feature is on and a settings store holds
-the choices, and dimmed with its reason while no kit map is installed.
+the choices, and dimmed while no kit map is installed, with the reason
+"No Firefight map is installed. Make one with h2 firefight kit."
 Selecting it sets the page's Firefight choice on and puts the lobby on
 a kit map; Game Setup then lists the Firefight rows, and the variant
 panel shows the wave set, the difficulty and the starting lives in
@@ -507,7 +508,7 @@ place of Quick Options' lines.
 |---|---|
 | **Change Map** | Opens the map select's Firefight category ([map-select.md](map-select.md)): the installed maps that carry the kit. The catalogue lists a kit package as `Firefight – <map>` (what `firefight-kit` names it, `lobby_start::is_kit_map`); the probe's `Firefight Probe – <map>` is not offered. With none installed the retail map list opens, and the log says why. |
 | **Firefight Options...** | Opens the Firefight page ([Game Setup](#game-setup)), the row after Change Map. |
-| **Quick Options**, **Switch To** | As in a Multiplayer lobby. |
+| **Quick Options**, **Clanker Options** | As in a Multiplayer lobby. |
 
 The game type row is hidden: the runtime starts the mode from the page's
 choices on a kit map ([The host runtime](#the-host-runtime)), and the

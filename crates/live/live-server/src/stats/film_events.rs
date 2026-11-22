@@ -1,5 +1,8 @@
 /// The same host events enter the real stats projection via each transport.
-/// Nonzero match-clock origin and film-clock origin need not coincide.
+/// Nonzero match-clock origin and film-clock origin need not coincide. The
+/// medals come out the same both ways: the game's own `GameMedal` and the
+/// bounce medals, which Live works out from the stats records and not
+/// from the film's `Medal` highlights.
 #[test]
 fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
     use live_proto::film::{events, stream};
@@ -32,6 +35,11 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
             json!({"tick":GUEST_START+32,"players":[
             {"index":0,"score":1,"kills":1,"deaths":0,"assists":0},
             {"index":2,"score":0,"kills":0,"deaths":0,"assists":1}],"teams":[{"team":0,"score":1}]}),
+        ),
+        (
+            33,
+            game::GAME_MEDAL,
+            json!({"tick":GUEST_START+33,"player":0,"medal":"sniper-kill"}),
         ),
         (
             40,
@@ -94,11 +102,17 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         player: 2,
         count: 1
     }));
+    // The game's award is a stats record and a highlight; a kill alone
+    // awards nothing.
     assert!(highlights.contains(&events::Event::Medal {
         player: 0,
-        earned_at: GUEST_START + 31,
-        medal: "opening-act".into()
+        earned_at: GUEST_START + 33,
+        medal: "sniper-kill".into()
     }));
+    assert!(!highlights.iter().any(|e| matches!(
+        e,
+        events::Event::Medal { earned_at, .. } if *earned_at == GUEST_START + 31
+    )));
     // A bounce's medals and a bounce death's are highlights; the bounces
     // themselves are stats records.
     assert!(highlights.contains(&events::Event::Medal {
@@ -150,5 +164,28 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         ),
         (1, 1)
     );
+    let medals = |pairs: &[(&str, u64)]| -> BTreeMap<String, u64> {
+        pairs.iter().map(|(m, n)| ((*m).to_owned(), *n)).collect()
+    };
+    assert_eq!(
+        expected.totals.medals,
+        medals(&[
+            ("sniper-kill", 1),
+            ("superbounce", 2),
+            ("double-bounce", 1),
+            ("monster-bounce", 1),
+            ("bounced", 1),
+        ])
+    );
+    assert_eq!(
+        row(&expected, A).medals,
+        medals(&[
+            ("sniper-kill", 1),
+            ("superbounce", 2),
+            ("double-bounce", 1),
+            ("monster-bounce", 1),
+        ])
+    );
+    assert_eq!(row(&expected, B).medals, medals(&[("bounced", 1)]));
     assert_eq!(film.stats.summary_at(Some(7), T0 + 100), expected);
 }

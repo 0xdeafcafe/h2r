@@ -54,7 +54,7 @@ const USAGE: &str = "usage:
     run --name TEXT [--level MAP] [--difficulty D] [--frames N] [--stats-from N] [--no-stats]
         [--replay NAME | --record NAME] [--film NAME] [--perf] [--env KEY=VALUE]...
         [--branch NAME | --rev REV | --current] [--no-sync] [--feature F]...
-        [--build-env KEY=VALUE]... [--fresh-data] [--note TEXT]
+        [--build-env KEY=VALUE]... [--fresh-data | --own-data] [--note TEXT]
         [--mem-limit SIZE] [--serve] [--wait [--to DIR]] [-- play flags]
                           start a run (building its image first unless cached);
                           prints the job id; --wait waits and fetches it;
@@ -96,6 +96,8 @@ const USAGE: &str = "usage:
                           host's checkout as lab/<name>
 
 --host defaults to $H2_LAB_HOST. LAN commands require pairing.
+--own-data plays on the host Mac's own data root, Live accounts and settings,
+as `h2 play` there would, instead of the lab's data/ (not with --fresh-data).
 A run builds the commit its branch points at (--branch, default this
 checkout's current branch, synced first unless --no-sync), with its features
 and build variables (H2_OPT, H2_PGO=use:NAME, ...), cached per commit and

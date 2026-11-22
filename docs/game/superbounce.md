@@ -656,7 +656,7 @@ for tuning these rules against a real map.
 ## The superbounce game type
 
 A built-in variant, Superbounce, for practising: Bounce Practice's
-rules (no score or time limit, 3 s respawn, no suicide penalty,
+rules (no score or time limit, 3 s respawn,
 overshields, damage resistance, a magnum, nothing on the map) plus a HUD
 and lines over the map. It is listed under **Tweakers**, the last row of
 the game type list (after Territories), and not under Slayer; underneath
@@ -670,18 +670,22 @@ on it and a saved copy of it name the script. The script is
 `crates/formats/rules/src/builtin/superbounce.rules`, compiled into the
 game: `list tweakers` files the variant under Tweakers and
 `requires hud.superbounce` turns the mode on
-([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). Its rules
-are Slayer's kill rule and points for bounces, which the script works out
-from what the medal chain files ([Medals](#medals)):
+([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). It scores
+bounces alone, which the script works out from what the medal chain
+files ([Medals](#medals)); a kill scores nothing:
 
 | Event | Points, by default | Option |
 |---|---|---|
 | a bounce | `bounce_points` (1) times its place in its chain, at most 6: a single 1, a double 2 (3 for the chain of two), the sixth and every bounce after it 6 | `bounce_points`, 0 to 5; 0 scores no bounce |
 | a Monster Bounce | twice the bounce's, after the cap: a Monster single 2, a Monster eighth of a chain 12 | `monster_double`, on |
-| a Bounced | −1, once: Slayer's suicide point while `suicide_costs` is on, else the Bounced penalty | `bounced_costs`, on |
-| a kill, a suicide | Slayer's: `kill_points` (1), −1 | `kill_points`, `suicide_costs` |
+| a Bounced | −1, once: the suicide point while `suicide_costs` is on, else the Bounced penalty | `bounced_costs`, on |
+| a suicide (a death with no killer, or by the player's own hand) | −1 | `suicide_costs`, on |
+| a kill | nothing | none |
 
 The cap is Bouncetacular's count, so a long chain cannot run away. A
+kill scores nothing, so the board counts bounces; a betrayal costs
+nothing either. The suicide point stays, so dying on purpose to reset a
+bounce attempt is not free. A
 Bounced is a death with no killer too, so while `suicide_costs` is on,
 `on kill` takes its point and `on bounced` takes none: a Bounced costs one
 point either way (supposed: that the game reports a fall out of the map as
@@ -1770,12 +1774,14 @@ they are shown, as kill medals are worked out from kills.
   is released before the consoles that send them. A game's snapshot
   serves its last 100 `bounces` (each with `monster` when true) and `bounced` beside its `kills`; the
   stats summary counts `bounces` and `bounced` in the totals and in an
-  account's row ([live-api.md](../live/live-api.md#stats-summary)). The
-  site derives the medals from them (`derive.ts`: `BounceMedalId`,
-  `MEDALS`, `bounceMedals` and `gameBounceMedals` beside `gameMedals`, and
-  `gameAwards` for both) for the carnage report, a game's preview, the
-  medal chest and the service record. A bot's bounces are in the game's
-  record and the summary's totals, and in no player's row.
+  account's row ([live-api.md](../live/live-api.md#stats-summary)). Live
+  projects the medals from them at ingest with the Tracker's projection
+  (`film::events::medals::Projection`) and serves them in the game's and
+  the account's `medals` ([live-api.md](../live/live-api.md#medals)). The
+  site reads those for the carnage report, a game's preview, the medal
+  chest and the service record; it does not count medals itself. A bot's
+  bounces are in the game's record and the summary's totals, and in no
+  player's row.
 - **The site's pictures.** A medal's badge is the art pack's file named
   after its id (`web/public/art/medals/<id>.webp` and `@2x`, original
   art, `web/public/art/ART.md`), or the game's own medal from the

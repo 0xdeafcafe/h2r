@@ -798,6 +798,13 @@ impl Live {
                         "event {i}: only the host reports teabags"
                     )));
                 }
+                // And the medals the game awards there (docs/live/live-api.md,
+                // "Medals"): a guest's game counts none.
+                game::GAME_MEDAL if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports the game's medals"
+                    )));
+                }
                 game::GAME_ENDED if !by_host => {
                     return Err(forbidden(format!(
                         "event {i}: only the host ends the game; a player leaves with PlayerLeft"

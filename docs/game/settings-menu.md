@@ -192,7 +192,9 @@ pixel budget. The explicit 5120x2880 option uses the full panel raster.
 
 In offline play, LOD Distance at 1x matches the render height. A higher
 multiplier retains model detail farther away. Retail uses 480-line
-distances at every resolution. Network and film readback policy is
+distances at every resolution. Menu model previews (Choose Profile, the
+Appearance page) always use retail detail
+([projected size and level of detail](../graphics/occlusion-culling.md#projected-size-and-level-of-detail)). Network and film readback policy is
 described in [determinism](../graphics/high-resolution.md#determinism).
 
 Pinned keeps corner-anchored HUD groups near the edges of each player's

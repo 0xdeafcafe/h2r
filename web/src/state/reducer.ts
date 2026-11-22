@@ -2,7 +2,7 @@
 // runs inside Solid's `produce` in the app and on plain objects in tests.
 
 import type {
-  AccountCreated, AccountSummary, BotIssued, BounceRecord, Bounced, BouncedRecord, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, InviteGrant, KillKind,
+  AccountCreated, AccountSummary, BotIssued, BounceRecord, Bounced, BouncedRecord, GameDetail, GameKindFields, GameEnded, GameMedal, GameMedalRow, GamePlayer, GameStarted, GameSummary, InviteGrant, KillKind,
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
   Superbounce, Teabag, TeabagRecord, WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
@@ -54,6 +54,12 @@ export interface Bounce {
   player: number;
   chain: number | null;
   monster?: true;
+}
+
+/** One of Halo 2's own medals as the stream reported it (`GameMedal`),
+ *  where it is in the log. */
+export interface MedalEvent extends GameMedal {
+  position: number;
 }
 
 /** A teabag from the `Teabag` event, where it is in the log. */
@@ -118,6 +124,16 @@ export interface GameState extends DedicatedHostFields {
   bounces: Bounce[];
   /** Teabags, in log order (a bot's included). */
   teabags: TeabagEntry[];
+  /** The game's medals by slot, counts by medal id (docs/live/live-api.md,
+   *  "Medals"): the server's, from the last game read, plus Halo 2's own
+   *  awards (`GameMedal`) streamed since. A slot taken again after a leave
+   *  adds to the same entry. */
+  medals: Record<number, Record<string, number>>;
+  /** The log position the last read's `medals` count up to (0 before one). */
+  medals_at: number;
+  /** `GameMedal` awards streamed past `medals_at`: a later read replaces
+   *  `medals` and adds back only those past its own position. */
+  medal_events: MedalEvent[];
   last_tick: number;
   first_position: number;
   /** Log positions of this game's events (for signature summaries). */
@@ -337,6 +353,9 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         kills: [],
         bounces: [],
         teabags: [],
+        medals: {},
+        medals_at: 0,
+        medal_events: [],
         last_tick: d.tick ?? 0,
         first_position: ev.position,
         positions: [ev.position],
@@ -386,6 +405,12 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const g = gameFor(s, ev);
       if (!g) break;
       addTeabag(g, { ...(ev.data as Teabag), position: ev.position, at: ev.at });
+      break;
+    }
+    case "GameMedal": {
+      const g = gameFor(s, ev);
+      if (!g) break;
+      addMedalEvent(g, { ...(ev.data as GameMedal), position: ev.position });
       break;
     }
     case "ScoreChanged": {
@@ -553,6 +578,37 @@ function addTeabag(g: GameState, t: TeabagRecord) {
   g.teabags.splice(i, 0, entry);
   if (entry.position > 0 && !g.positions.includes(entry.position)) g.positions.push(entry.position);
   g.last_tick = Math.max(g.last_tick, t.tick);
+}
+
+const bumpMedal = (g: GameState, slot: number, medal: string, n = 1) => {
+  const row = (g.medals[slot] ??= {});
+  row[medal] = (row[medal] ?? 0) + n;
+};
+
+/** Adds a streamed medal award, unless the last read already counts it (at
+ *  or before `medals_at`) or one at the same log position is there. */
+function addMedalEvent(g: GameState, m: MedalEvent) {
+  if (typeof m.player !== "number" || typeof m.medal !== "string" || !m.medal) return;
+  if (m.position <= g.medals_at || g.medal_events.some((x) => x.position === m.position)) return;
+  g.medal_events.push({ tick: m.tick, player: m.player, medal: m.medal, position: m.position });
+  bumpMedal(g, m.player, m.medal);
+  if (typeof m.tick === "number") g.last_tick = Math.max(g.last_tick, m.tick);
+}
+
+/** Takes a game read's medals (`rows`, read at log position `at`) in place
+ *  of what the game had: a read is the server's whole count, so the stream's
+ *  awards up to `at` are in it and only later ones are added back. A read
+ *  older than the one already taken is ignored. */
+function setServerMedals(g: GameState, rows: GameMedalRow[] | undefined, at: number) {
+  if (at < g.medals_at) return;
+  g.medals = {};
+  for (const r of rows ?? []) {
+    if (typeof r?.player !== "number" || !r.medals || typeof r.medals !== "object") continue;
+    for (const [id, n] of Object.entries(r.medals)) if (typeof n === "number" && n > 0) bumpMedal(g, r.player, id, n);
+  }
+  g.medals_at = at;
+  g.medal_events = g.medal_events.filter((e) => e.position > at);
+  for (const e of g.medal_events) bumpMedal(g, e.player, e.medal);
 }
 
 function ensureAccount(s: LiveState, xuid: Xuid, at: string): AccountState {
@@ -751,6 +807,9 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
       kills: [],
       bounces: [],
       teabags: [],
+      medals: {},
+      medals_at: 0,
+      medal_events: [],
       last_tick: det.last_tick ?? det.tick ?? 0,
       first_position: 0,
       positions: [],
@@ -785,6 +844,9 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
   for (const b of det.bounced ?? []) addBounce(g, b);
   for (const t of det.teabags ?? []) addTeabag(g, t);
   for (const i of det.joined_late ?? []) { const p = g.players[i]; if (p) p.late = true; }
+  // The server's medals so far; a read that carries no position counts up
+  // to what this state has seen.
+  setServerMedals(g, d.medals, det.position ?? s.position);
   // The snapshot may have brought the teams or the team flag.
   for (const k of g.kills) k.kind = settledKillKind(g, k);
 }

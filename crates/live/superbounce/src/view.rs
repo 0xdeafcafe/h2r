@@ -162,7 +162,7 @@ impl Geometry {
             .filter(|(_, (count, _))| *count == 1)
             .collect();
         // The map's order, not the hash's.
-        lone.sort_by(|a, b| a.0.cmp(&b.0));
+        lone.sort_by_key(|a| a.0);
         for (_, (_, edge)) in lone {
             let (min, max) = bounds2(edge.iter().map(|v| [v[0], v[1]]));
             g.outline_grid.insert(g.outline.len() as u32, min, max);
@@ -190,7 +190,7 @@ impl Geometry {
     /// so a higher floor is drawn over a lower one.
     pub fn local_map(&self, centre: Vec3, radius: f32) -> LocalMap {
         let mut out = LocalMap::default();
-        if !centre.iter().all(|v| v.is_finite()) || !(radius > 0.0) {
+        if !centre.iter().all(|v| v.is_finite()) || radius.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             return out;
         }
         let min = [centre[0] - radius, centre[1] - radius];

@@ -121,6 +121,11 @@ pub struct Game {
     /// they are in it: they earn no `incel` (docs/game/teabag.md, "The
     /// medal").
     pub joined_late: std::collections::BTreeSet<u32>,
+    /// Works the game's medals out of its events as they are applied
+    /// (docs/live/live-api.md, "Medals").
+    pub(crate) medal_projection: live_proto::film::events::medals::Projection,
+    /// Every medal so far, by participant (join order).
+    pub medals: BTreeMap<u32, game::PlayerMedals>,
     pub last_tick: Option<u64>,
     pub ended: Option<(GameEnded, String)>,
     pub(crate) recording: crate::replay_archive::Recording,
@@ -180,6 +185,29 @@ impl Game {
             teams: self.teams.clone(),
             map_id: g.map_id,
             skulls: g.skulls.clone(),
+            medals: self.medals.values().cloned().collect(),
+        }
+    }
+
+    /// Counts the medals game event `kind` with `data` awards: each to the
+    /// participant, named as the player in its slot is.
+    fn project_medals(&mut self, kind: &str, data: &serde_json::Value) {
+        for award in self.medal_projection.game_event(kind, data) {
+            let who = self
+                .players
+                .iter()
+                .chain(&self.started.game.players)
+                .find(|p| p.index == award.player);
+            let row = self
+                .medals
+                .entry(award.participant)
+                .or_insert_with(|| game::PlayerMedals {
+                    player: award.player,
+                    name: who.map(|p| p.name.clone()).unwrap_or_default(),
+                    xuid: who.and_then(|p| p.xuid),
+                    medals: BTreeMap::new(),
+                });
+            *row.medals.entry(award.medal.into()).or_default() += 1;
         }
     }
 
@@ -512,11 +540,14 @@ impl Model {
                 bounced: VecDeque::new(),
                 teabags: VecDeque::new(),
                 joined_late: Default::default(),
+                medal_projection: Default::default(),
+                medals: BTreeMap::new(),
                 last_tick: None,
                 ended: None,
                 recording: crate::replay_archive::Recording { position: e.position, next_version: e.version + 1, ..Default::default() },
                 last_activity: at,
             };
+            game.project_medals(&b.kind, &b.data);
             s.films.attach_standalone(&mut game);
             s.games_by_position.insert(e.position, id.clone());
             s.games.insert(id, game);
@@ -528,6 +559,7 @@ impl Model {
         let Some(g) = s.games.get_mut(id) else { return };
         g.recording.observe(e);
         g.last_activity = g.last_activity.max(at);
+        g.project_medals(&b.kind, &b.data);
         match b.kind.as_str() {
             crate::sim_runs::REPORT_STORED if g.started.game.sim.is_some() => {
                 g.sim_report = data::<crate::sim_runs::StoredReport>(e);

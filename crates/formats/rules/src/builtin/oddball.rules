@@ -13,6 +13,8 @@
 rules "Oddball" 1
 carrier oddball
 
+label oddball_spawn: objects
+
 option reset_seconds: int 5..60 = 30 "Ball reset" "Seconds a dropped ball lies before it returns"
 
 object var moved: bool = false
@@ -25,7 +27,7 @@ on round_start {
     for each players p { p.held = 0 }
     // Retail's init takes at most three type-4 spawns (0x2bc2e0).
     let balls = clamp(variant.oddball_ball_count, 1, 3)
-    for each objects labelled "oddball_spawn" s {
+    for each oddball_spawn s {
         if placed < balls {
             spawn_objective("objects/weapons/multiplayer/ball/ball", s, none)
             placed = placed + 1

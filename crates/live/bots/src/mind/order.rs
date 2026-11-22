@@ -11,10 +11,10 @@
 use input::host::HostPadState;
 
 use super::{Mind, Vec3};
-use crate::brain::{Me, Perception, Seen};
 use crate::bounce_route::{
-    self, Ask, Logged, Mode, OrderRun, Touchdown, Why, launch_floor, path_length,
+    self, Ask, Leap, Logged, Mode, OrderRun, Touchdown, Why, launch_floor, path_length,
 };
+use crate::brain::{Me, Perception, Seen};
 use crate::cache::MapData;
 use crate::glitches::prime::is_primed;
 
@@ -24,8 +24,14 @@ pub(super) struct Asked {
     pub to: Vec3,
     pub mode: Mode,
     pub show_off: bool,
-    /// A show-off's one site: the plan looks at no other.
+    /// A show-off's or a practice's one site: the plan looks at no other.
     pub site: Option<crate::spots::Site>,
+    /// A practice's crouch spot for its site (`mind::practice`, paired
+    /// once per site): the route primes there and nowhere else.
+    pub crouch: Option<crate::spots::Crouch>,
+    /// The walk alone, no bounce (a drill's walk to its start,
+    /// `mind::practice`).
+    pub plain: bool,
 }
 
 /// A route under way.
@@ -51,6 +57,7 @@ pub(super) struct Ended {
     landing: Option<Touchdown>,
     log: Vec<Logged>,
     site: Option<crate::spots::Site>,
+    flights: Vec<Leap>,
 }
 
 /// Where a bot's bounce route stands, for the agent.
@@ -82,6 +89,8 @@ pub struct OrderView {
     pub landing: Option<Touchdown>,
     /// What the route did, oldest first.
     pub log: Vec<Logged>,
+    /// Its jumps and drops, oldest first ([`OrderRun::flights`]).
+    pub flights: Vec<Leap>,
     /// The bounce the plan uses.
     pub site: Option<crate::spots::Site>,
     /// The practice loop's tally while the superbounce mode is on
@@ -99,6 +108,8 @@ impl Mind {
             mode,
             show_off: false,
             site: None,
+            crouch: None,
+            plain: false,
         });
     }
 
@@ -116,13 +127,30 @@ impl Mind {
     /// A route is asked for or under way, so the host should read the
     /// pair word ([`crate::set_pair_reader`]).
     pub fn wants_pair(&self) -> bool {
-        self.asked.is_some() || self.order.is_some()
+        self.asked.is_some() || self.order.is_some() || self.practice.drilling()
     }
 
     /// The pair word is at -3 now, as far as the route knows: the crouch
     /// button stays up until the bounce.
     pub fn primed(&self) -> bool {
         self.order.as_ref().is_some_and(|o| o.run.primed())
+    }
+
+    /// The route under way's priming once its word is at -3: whether that
+    /// was read from the game (else assumed), and whether the route primed
+    /// it itself (it has a prime step) rather than starting primed. `None`
+    /// before, after and with no route.
+    pub(super) fn route_primed(&self) -> Option<(bool, bool)> {
+        let o = self.order.as_ref()?;
+        o.run.primed().then(|| {
+            let own = o
+                .run
+                .plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, bounce_route::Step::Prime(_)));
+            (o.run.status().read, own)
+        })
     }
 
     /// The route, asked, under way or last over.
@@ -141,6 +169,7 @@ impl Mind {
             tries: 0,
             landing: None,
             log: Vec::new(),
+            flights: Vec::new(),
             site: None,
             practice: self.practice_view(),
         };
@@ -167,6 +196,7 @@ impl Mind {
                 tries: s.tries,
                 landing: s.landing,
                 log: o.run.log().to_vec(),
+                flights: o.run.flights(),
                 site: o.run.plan.site,
                 ..none
             };
@@ -182,6 +212,7 @@ impl Mind {
                 error: e.result.err(),
                 landing: e.landing,
                 log: e.log.clone(),
+                flights: e.flights.clone(),
                 site: e.site,
                 ..none
             },
@@ -237,6 +268,33 @@ impl Mind {
             mode: a.mode,
         };
         let plan = match a.site {
+            // A drill's walk to its start: the walk alone.
+            _ if a.plain => bounce_route::Plan {
+                steps: vec![bounce_route::Step::Nav { to: a.to }],
+                why: Why::Plain,
+                site: None,
+                cost: None,
+            },
+            // A practice's site: the route by it alone, priming at the
+            // crouch spot paired with it, over once down from the launch.
+            Some(site) if !a.show_off => {
+                let crouches = match a.crouch {
+                    Some(c) => vec![c],
+                    None => self.known.crouches.clone(),
+                };
+                let one = crate::spots::Known {
+                    sites: vec![site],
+                    crouches,
+                };
+                match bounce_route::plan_site(me.position, primed, site, &one, &walk, &ledge) {
+                    Some(plan) => plan,
+                    None => {
+                        self.stuck.blacklist(site.bounce.stand, p.tick);
+                        self.ended = Some(Ended::empty(a.to, a.mode, Why::Asked, Err("no_route")));
+                        return;
+                    }
+                }
+            }
             // A show-off looks at its one site.
             Some(site) => {
                 let one = crate::spots::Known {
@@ -257,7 +315,9 @@ impl Mind {
             return;
         }
         let seed = u64::from(p.tick) ^ 0xb0_0c5;
-        let mut run = OrderRun::new(plan, primed, p.tick, seed);
+        // A plain walk keeps no word: it neither primes nor needs one.
+        // Primed here is the word read at -3 (a drill's, set by the host).
+        let mut run = OrderRun::new(plan, primed && !a.plain, p.tick, seed).primed_read();
         run.show_off = a.show_off;
         self.order = Some(Ordered {
             run,
@@ -280,10 +340,15 @@ impl Mind {
             why: o.run.plan.why,
             steps: o.run.plan.steps.iter().map(|s| s.name()).collect(),
             result,
-            step: if result.is_ok() { status.steps } else { status.step },
+            step: if result.is_ok() {
+                status.steps
+            } else {
+                status.step
+            },
             landing: status.landing,
             log: o.run.log().to_vec(),
             site: o.run.plan.site,
+            flights: o.run.flights(),
         });
     }
 }
@@ -300,6 +365,7 @@ impl Ended {
             landing: None,
             log: Vec::new(),
             site: None,
+            flights: Vec::new(),
         }
     }
 }

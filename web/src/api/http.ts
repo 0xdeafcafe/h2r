@@ -1,6 +1,6 @@
 // REST helpers. Every URL derives from the chosen server target.
 
-import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireEvent, AccountSummary, PresenceEntry } from "./types";
+import type { AccountKeyEntry, AccountMedals, Frame, GameDetail, GameSummary, MapOutline, WireEvent, AccountSummary, PresenceEntry } from "./types";
 import type { SimDetail, SimFilter, SimFilterOptions, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
@@ -266,6 +266,11 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
       page<unknown>(await getJson(u("/coop/games", q), s, bearer === undefined ? await who() : bearer)),
     /** A player's level and experience per ranked playlist (docs/live/live-api.md "Ranks"); the raw body. */
     ranks: async (player: string, s?: AbortSignal) => getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/ranks"), s, await who()),
+    /** An account's medals over every game it played, all time
+     *  (docs/live/live-api.md "Medals"); `player` is a gamertag or XUID. 404
+     *  for no such account. */
+    accountMedals: async (player: string, s?: AbortSignal) =>
+      getJson<AccountMedals>(u("/accounts/" + encodeURIComponent(player) + "/medals"), s, await who()),
     /** How many players commended `player` (a gamertag or XUID), by kind
      *  (docs/live/live-api.md "Bans"); the raw body. Older servers answer 404. */
     commendations: async (player: string, s?: AbortSignal) =>

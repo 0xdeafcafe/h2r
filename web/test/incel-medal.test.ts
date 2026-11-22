@@ -1,9 +1,12 @@
-// The Incel medal (docs/game/teabag.md, "The medal"): the copy of the rule
-// in derive.ts, from a game's stream and from its snapshot, and the
-// teabags the reducer keeps.
+// The Incel medal (docs/game/teabag.md, "The medal"): its name and art, the
+// teabags and late joiners the reducer keeps from a game's stream and its
+// snapshot, and the server's award on the game. Live works the medal out;
+// the site only shows it.
 import { describe, expect, test } from "bun:test";
 import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
-import { MEDAL_BY_ID, countMedals, gameAwards, gameIncel } from "../src/state/derive";
+import { MEDAL_BY_ID, gameMedalCounts } from "../src/state/derive";
+import { PACK_MEDALS } from "../src/lib/art";
+import { medalKey } from "../src/lib/gameart";
 import { STATS_EVENT_KINDS, isStatsEvent } from "../src/stats/eventKinds";
 import { ev, resetPos } from "./helpers";
 
@@ -36,26 +39,27 @@ describe("the incel medal", () => {
     });
   });
 
-  test("goes at the end to who completed the game on neither side of a teabag, a bot included", () => {
+  test("has pack art and no game-art counterpart", () => {
+    expect(PACK_MEDALS.has("incel")).toBe(true);
+    expect(medalKey("incel")).toBeNull();
+  });
+
+  test("the stream's teabags and late joiners land on the game", () => {
     const g = world().games.g!;
     expect(g.teabags.map((t) => [t.tick, t.player, t.victim])).toEqual([[40, 0, 1]]);
     for (const t of g.teabags) expect(g.positions).toContain(t.position);
-    expect(gameIncel(g)).toEqual([{ medal: "incel", slot: 2, tick: 900 }, { medal: "incel", slot: 4, tick: 900 }]);
-    const awards = gameAwards(g);
-    for (const slot of [0, 1, 3, 5]) expect(countMedals(awards, new Set([slot])).get("incel")).toBeUndefined();
+    expect([0, 1, 2, 3, 4, 5].map((i) => g.players[i]!.late === true)).toEqual([false, false, false, false, false, true]);
   });
 
-  test("is not given in a game that did not finish, or before the end", () => {
-    expect(gameIncel(world("quit").games.g!)).toEqual([]);
-    expect(gameIncel(world("lost").games.g!)).toEqual([]);
-    resetPos();
-    const s = initialState();
-    applyEvents(s, [
-      ev("GameStarted", "game-h", { game_id: "h", map: "lockout", mode: "multiplayer", team_play: false, players: [
-        { index: 0, name: "a", xuid: A, team: 0 },
-      ] }),
-    ]);
-    expect(gameIncel(s.games.h!)).toEqual([]);
+  test("the award is the server's: a game read carries it", () => {
+    const s = world();
+    applyGameSnapshot(s, {
+      game_id: "g", map: "lockout", mode: "multiplayer", started_at: "2026-11-15T10:00:00.000Z", players: [],
+      medals: [{ player: 2, name: "Clanker 2", medals: { incel: 1 } }, { player: 4, name: "d", medals: { incel: 1 } }],
+    });
+    const g = s.games.g!;
+    expect(Object.fromEntries(gameMedalCounts(g))).toEqual({ incel: 2 });
+    for (const slot of [0, 1, 3, 5]) expect(gameMedalCounts(g, [slot]).get("incel")).toBeUndefined();
   });
 
   test("a snapshot carries the teabags and the late joiners", () => {
@@ -73,7 +77,8 @@ describe("the incel medal", () => {
     } as Parameters<typeof applyGameSnapshot>[1]);
     const g = s.games.k!;
     expect(g.teabags).toEqual([{ position: 7, at: "", tick: 50, player: 1, victim: 2 }]);
-    expect(gameIncel(g).map((a) => a.slot)).toEqual([0]);
+    expect(g.players[3]!.late).toBe(true);
+    expect(g.players[0]!.late).toBe(false);
   });
 
   test("teabags are stats events of game streams only", () => {

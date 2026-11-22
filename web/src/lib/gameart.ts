@@ -190,17 +190,20 @@ export function levelForExp(exp: number): number {
   return 50;
 }
 
-/** Our derived medals that mean the same as one of the game's. The rest
- *  (opening-act, last-word, payback) have no counterpart and keep the pack's
- *  art, and so do the superbounce medals: the disc has none, and their
- *  picture is new art (ART.md, "Batch 07"). */
+/** Halo 2's own medals (state/derive.ts) by the server's game-art name.
+ *  Vehicle Kill, Carjack, Flag Taken and Bomb Planted have none and show by
+ *  name; our modes' medals (the superbounce family, Incel) keep the pack's
+ *  art: the disc has none (ART.md, "Batch 07"). */
 const MEDAL_ALIASES: Record<string, string> = {
-  "twofer": "double_kill", "hat-trick": "triple_kill", "full-house": "killtacular", "encore": "kill_frenzy",
-  "hot-streak": "killing_spree", "wildfire": "running_riot", "untouchable": "rampage",
+  "double-kill": "double_kill", "triple-kill": "triple_kill", "killtacular": "killtacular", "kill-frenzy": "kill_frenzy",
+  "killtrocity": "killtrocity", "killimanjaro": "killimanjaro", "sniper-kill": "sniper_kill", "roadkill": "splatter",
+  "bonecracker": "bone_cracker", "stealth-kill": "assassin", "stick-it": "stick_it", "killing-spree": "killing_spree",
+  "running-riot": "running_riot", "rampage": "rampage", "berserker": "berserker", "overkill": "overkill",
+  "flag-save": "flag_carrier_kill", "bomb-save": "bomb_carrier_kill", "flag-returned": "flag_returned", "bomb-diffused": "bomb_returned",
 };
 
 export function medalKey(id: string): string | null {
-  const alias = MEDAL_ALIASES[id];
+  const alias = Object.hasOwn(MEDAL_ALIASES, id) ? MEDAL_ALIASES[id] : undefined;
   return alias ? `medal/${alias}` : null;
 }
 

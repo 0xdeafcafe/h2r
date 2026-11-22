@@ -185,16 +185,22 @@ impl hooks::Feature for Bots {
                     .as_ref()
                     .is_none_or(|s| !film::tape::Tap::replaying(s.as_ref()))
                 {
-                    crate::clankers::frame(f, || {
-                        let mem = rt.memory();
-                        // In the lobby this console hosts, its session
-                        // player's team (no player datum before a game, and a
-                        // stale one after); else its player's.
-                        let s = bots::phantom::session::lobby_host_team(&*mem)
-                            .ok()
-                            .flatten();
-                        s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
-                    });
+                    crate::clankers::frame(
+                        f,
+                        || {
+                            let mem = rt.memory();
+                            // In the lobby this console hosts, its session
+                            // player's team (no player datum before a game, and a
+                            // stale one after); else its player's.
+                            let s = bots::phantom::session::lobby_host_team(&*mem)
+                                .ok()
+                                .flatten();
+                            s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
+                        },
+                        // Co-op and matchmaking lobbies take none of the
+                        // Clanker Options bots (docs/game/party-lobby.md).
+                        || crate::lobby_tabs::strip::retail_now(&*rt.memory()),
+                    );
                 }
                 if let Some(session) = &film
                     && let Err(error) = session.bot_boundary()

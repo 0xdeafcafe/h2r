@@ -19,7 +19,7 @@ import { endedGames, isCampaign, liveGames, type GameState } from "../state/redu
 import { gameMapTitle } from "../state/maps";
 import { isHalo1Map, mapTitle } from "../state/gameart";
 import { difficultyName, gameTypeLine } from "../state/gametype";
-import { OUTCOME_WORDS, campaignOutcome, countMedals, gameAwards, MEDAL_BY_ID, type MedalId } from "../state/derive";
+import { OUTCOME_WORDS, campaignOutcome, medalName, topMedalCounts } from "../state/derive";
 import {
   DAYS, STATS_WINDOWS, alsoPopular, clanStandings, dailyGames, heatmap, missionOfTheWeek, nonZeroRows, hourName, hoursOf, kd, leaderboards, level, ofTheWeek, peak, shares,
   statsWindow, type Board, type StatsSummary, type StatsWindow, type Totals,
@@ -34,7 +34,7 @@ import WeaponIcon from "../components/WeaponIcon";
 import SkullIcon from "../components/SkullIcon";
 import MedalIcon from "../components/MedalIcon";
 import GametypeIcon from "../components/GametypeIcon";
-import { Crumbs, Derived, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
+import { Crumbs, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
 import { DidYouKnow, MapPreview, MapThumb, Pills, Who, fireteam, gameTitle } from "./Side";
 import { ScoreLine } from "./Games";
 import { ClanEmblem } from "./clanBits";
@@ -426,24 +426,17 @@ function Skulls(props: { sum: StatsSummary }) {
   );
 }
 
-/** Medals from the loaded multiplayer games in the window: derived here,
- *  since the events don't carry medals. */
-function TopMedals(props: { since: number }) {
-  const counts = createMemo(() => {
-    const total = new Map<MedalId, number>();
-    for (const g of endedGames(live.state, 500, "multiplayer")) {
-      if (Date.parse(g.started_at) < props.since) continue;
-      for (const [id, n] of countMedals(gameAwards(g))) total.set(id, (total.get(id) ?? 0) + n);
-    }
-    return [...total].sort((a, b) => b[1] - a[1]).slice(0, 6);
-  });
+/** The window's most earned medals, everyone's (bots included), as the
+ *  server counts them (`totals.medals`). */
+export function TopMedals(props: { sum: StatsSummary; label: string }) {
+  const counts = createMemo(() => topMedalCounts(props.sum.totals.medals, 6));
   return (
     <section class="s-sec">
-      <header><h3><Derived note="Counted in your browser from the multiplayer games this page has loaded; the server does not keep medals.">Top Medals</Derived></h3><small>from loaded games</small></header>
-      <Show when={counts().length} fallback={<p class="s-tod-empty">No medals earned in the loaded games.</p>}>
+      <header><h3>Top Medals</h3><small>{props.label}</small></header>
+      <Show when={counts().length} fallback={<p class="s-tod-empty">No medals earned in this window.</p>}>
         <ul class="s-home-medals">
           <For each={counts()}>
-            {([id, n]) => <li title={MEDAL_BY_ID[id].name}><MedalIcon id={id} size={30} /><span>{MEDAL_BY_ID[id].name}</span><b>{num(n)}</b></li>}
+            {([id, n]) => <li title={medalName(id)}><MedalIcon id={id} size={30} /><span>{medalName(id)}</span><b>{num(n)}</b></li>}
           </For>
         </ul>
       </Show>
@@ -528,7 +521,6 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
   const tips = createMemo(() => motdMessages(motd()));
   const accounts = createMemo(() => Object.values(live.state.accounts).filter((a) => !a.bot).length);
   const online = createMemo(() => Object.values(live.state.accounts).filter((a) => a.online).length);
-  const since = () => (sum()?.from ? Date.parse(sum()!.from!) : win() === "all" ? 0 : now() - 7 * 86_400_000);
   const mapRows = () => (sum()?.maps ?? []).slice(0, 6);
   const weaponRows = () => (sum()?.weapons ?? []).slice(0, 6);
   return (
@@ -630,7 +622,7 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
                     <GameTypes sum={s()} />
                     <div class="s-home-stack">
                       <Skulls sum={s()} />
-                      <TopMedals since={since()} />
+                      <TopMedals sum={s()} label={label()} />
                     </div>
                   </div>
                 </>

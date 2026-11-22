@@ -102,6 +102,7 @@ the final result through that directory.
 | `H2_MEM_HARD` | Process footprint at which the watchdog writes a report and exits. Defaults to the lesser of 16 GiB and 75% of physical RAM. Zero disables the hard limit. |
 | `H2_MEM_SAMPLE` | Mean allocation interval for Poisson stack sampling, in bytes or a binary size such as `1M`. Unset or zero disables sampled stacks. Live bytes and allocation counts per subsystem are always tracked in watched processes ([Finding a leak after the fact](agent-api.md#finding-a-leak-after-the-fact)). |
 | `H2_MEM_REPORT_DIR` | Directory for watchdog JSON reports and rotating memory flight recorders. Defaults to `logs/mem/` under the selected h2 data directory. |
+| `h2 lab run --own-data` | Play on the host Mac's own data root, settings and Live accounts, as `h2 play` there would, and keep its `H2_DATA`, `H2_LIVE_*` and `H2_CLOUD_SAVES`. Refused with `--fresh-data`. [Playing on your own data](lab.md#playing-on-your-own-data) |
 | `h2 lab run --mem-limit SIZE` | Cap on the game child's footprint, 12 GiB by default. [Memory limits and reports](lab.md#memory-limits-and-reports) |
 | `h2 lab host [install] --obj-cache-limit SIZE` | Size budget for the lab's shared object cache after each build attempt, 8 GiB by default. The host prunes the least recently used entries first. Zero retains no entries. |
 | `h2 lab host [install] --target-limit SIZE` | Size budget for the shared Cargo target directory, 32 GiB by default. The host clears an oversized target after the build. Zero retains no Cargo outputs. |

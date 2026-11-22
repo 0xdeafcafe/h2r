@@ -365,9 +365,11 @@ pub(crate) fn register_core_film(
     }
     // Rules scripts (docs/game/rules-engine.md, "The host runtime"): off
     // unless H2_FEATURES names `rules`. A Live host puts the script's hash
-    // on its session.
+    // on its session. A film replays a game whose host passed the start
+    // gate, so the gate does not run in Theater.
     #[cfg(feature = "rules")]
-    crate::rules::feature::install(features, i.live.clone()).context("installing rules scripts")?;
+    crate::rules::feature::install(features, i.live.clone(), film.is_some())
+        .context("installing rules scripts")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
         &crate::h1_flag::H1Flag,
@@ -838,10 +840,8 @@ pub(crate) fn register_late_for_profile(
     // OptiMatch playlists into the server's clanker hoppers and the rest.
     if i.allow_bot_add {
         crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
-        // The mode strip's CLANKERS tab: present with Clankermatch on, and
-        // on where the server lists a Clanker playlist.
-        let clankers = features.switches().feature(crate::clankermatch::FEATURE, true);
-        crate::lobby_tabs::set_present(|p| p.clankers = clankers);
+        // The mode strip reads the server's Clanker marks to say whether
+        // MULTIPLAYER's playlist is a Clanker one.
         crate::lobby_tabs::strip::set_live(i.live.clone());
     }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op

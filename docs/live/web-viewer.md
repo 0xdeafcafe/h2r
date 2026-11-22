@@ -36,12 +36,12 @@ any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
   header; a live game keeps its blips, drawn over the picture.
 - **Game-type icons** go by the words of the variant name (`gametypeKey`:
   slayer, ctf, assault, oddball, king of the hill, juggernaut, territories).
-- **Medals** (`medal/<alias>`): the derived medals that mean the same as
-  one of the game's use its picture (`medalKey`: twofer, hat-trick,
-  full-house, encore are the multi-kills; hot-streak, wildfire, untouchable
-  the sprees). Opening Act, Last Word and Payback have no counterpart and
-  keep the pack's, and the disc has no superbounce medal, so those keep the
-  pack's too (`medalKey` is null for them).
+- **Medals** (`medal/<alias>`): Halo 2's own medals use the game's
+  picture (`medalKey` maps the medal id to the art's name, as
+  `stealth-kill` to `assassin` and `flag-save` to `flag_carrier_kill`).
+  Vehicle Kill, Carjack, Flag Taken and Bomb Planted have no picture in
+  the art and show by name. The disc has no superbounce medal or Incel, so
+  those keep the pack's (`medalKey` is null for them).
 - **Weapons** (`weapon/<alias>`, by the words of the reported name,
   `weaponKey`) are single masks, used as a CSS mask so they take the page's
   tint like the SVG silhouettes, which every other weapon keeps.

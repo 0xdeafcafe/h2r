@@ -35,7 +35,7 @@ pub use look::AimTrace;
 use look::{Hand, angle_error};
 use pad::{Buttons, Feet, Fidget, Tap};
 pub use order::OrderView;
-pub use practice::{PracticeView, SpotTally};
+pub use practice::{EVENTS as PRACTICE_EVENTS, PracticeEvent, PracticeView, SpotTally};
 pub use route::{RouteMotion, RoutePad};
 
 /// How good a bot is (docs/game/bots.md, section 3.4).
@@ -1788,6 +1788,8 @@ impl Mind {
                     mode: crate::bounce_route::Mode::Fun,
                     show_off: true,
                     site: Some(site),
+                    crouch: None,
+                    plain: false,
                 });
                 return None;
             }

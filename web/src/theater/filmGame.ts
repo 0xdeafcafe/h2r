@@ -24,6 +24,9 @@ export function filmGame(id: string, front: FilmFront): GameState {
     started_at: new Date(front.started_ms).toISOString(),
     ended_at: new Date(front.started_ms + duration).toISOString(),
     players: [...players.values()],
+    // The film's own medal counts, by seat.
+    medals: summary.players.filter((p) => Object.keys(p.medals).length)
+      .map((p) => ({player: p.seat, name: p.name, xuid: p.xuid ?? null, medals: p.medals})),
   });
   const game = state.games[id]!;
   // A menu row gives a final score. Kills, deaths and assists belong to
