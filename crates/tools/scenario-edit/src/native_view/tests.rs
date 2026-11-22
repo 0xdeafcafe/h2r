@@ -174,7 +174,8 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     Some(pollster::block_on(adapter.request_device(&Default::default())).unwrap())
 }
 
-/// Draw `load` in `lighting` into a 64 by 64 viewport target and read
+/// Draw `load` in `lighting` into a 64 by 64 viewport target through the
+/// view the viewport's native passes write (`Shading::Gamma`) and read
 /// the centre pixel back.
 fn centre(
     device: &wgpu::Device,
@@ -201,7 +202,7 @@ fn centre(
         })
     };
     let color = target(
-        crate::render::COLOR_FORMAT,
+        crate::render::UI_FORMAT,
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
     );
     let depth = target(
@@ -214,7 +215,7 @@ fn centre(
         device,
         queue,
         &color.create_view(&Default::default()),
-        crate::render::COLOR_FORMAT,
+        crate::render::UI_FORMAT,
         &depth.create_view(&Default::default()),
         crate::render::DEPTH_FORMAT,
         [64, 64],
@@ -585,14 +586,14 @@ fn frame(
             view_formats: &[],
         })
     };
-    let color = target(crate::render::COLOR_FORMAT);
+    let color = target(crate::render::UI_FORMAT);
     let depth = target(crate::render::DEPTH_FORMAT);
     let mut world = NativeWorld::new(device, queue, load, lighting);
     world.render(
         device,
         queue,
         &color.create_view(&Default::default()),
-        crate::render::COLOR_FORMAT,
+        crate::render::UI_FORMAT,
         &depth.create_view(&Default::default()),
         crate::render::DEPTH_FORMAT,
         [64, 64],
@@ -778,6 +779,40 @@ fn the_viewport_draws_the_level_through_the_native_world() {
     vp.set_native(&device, &queue, &[]);
     assert!(!vp.has_native());
     assert_eq!(draw(&mut vp), empty);
+}
+
+/// The viewport keeps the native world's colours as the game writes
+/// them: the base look is the game's `t0 · t3` in gamma space on the
+/// stored bytes, so in Flat (white for the page) the floor is the base
+/// map's bytes exactly. Drawn through the target's sRGB view they were
+/// encoded a second time and came out pale (200, 60, 20 as about 229,
+/// 133, 79). Skipped without a wgpu adapter.
+#[test]
+fn the_viewport_keeps_the_native_worlds_colours_as_stored() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let (loads, errors) = read_all(&mut map, &mut files);
+    assert!(errors.is_empty(), "{errors:?}");
+    let half = crate::fixture::TEX_FLOOR / 2.0;
+    let camera = Camera {
+        target: [half, half, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 6.0,
+        ..Camera::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    vp.set_native(&device, &queue, &loads);
+    vp.set_lighting(&device, &queue, &loads, Lighting::Flat);
+    vp.render(&device, &queue, &camera, [64, 64]);
+    let px = read_centre(&device, &queue, vp.color_texture().unwrap());
+    let want = crate::fixture::TEX_BASE_RGBA;
+    assert!(
+        (0..3).all(|c| px[c].abs_diff(want[c]) <= 3),
+        "the floor {px:?}, the base map {want:?}"
+    );
 }
 
 /// Step 2: the viewport's own passes write the native depth rule, so a

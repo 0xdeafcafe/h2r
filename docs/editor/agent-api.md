@@ -89,7 +89,7 @@ What goes through actions, from both sides:
 | Select a pathfinding sector, bot polygon, bot link or spot | `SelectNav` (clears the placements, the volume and the surface), `FocusSelected` | a click on what a Navigation layer shows when no placement or volume is under the cursor | `nav.pick {kind, index, focus?}`, `nav.pick {..., select: true}` |
 | Add a trigger volume, make a kill volume, remove either | `AddVolume {frame, kill}` (with `kill`, the volume and a kill trigger naming it in one step), `RemoveVolume(kind, index)`; `Delete` on a selected volume | the Scene tab's Volumes menu, the inspector's Delete and a kill trigger's Remove, the Delete key | `volume.add`, `volume.remove` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
-| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
+| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, View > Halo 1 overlay | `view.layers` |
 | Choose what the level is drawn with | `SetLighting` | the toolbar's Lighting menu | `view.lighting` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
@@ -739,7 +739,8 @@ Notes on some:
   `lightmap of another BSP`, `lightmap does not decode`), the world's
   `triangles` by blend with `solid_triangles` and `lightmapped_triangles`,
   every material (`shader`, `template`, `blend`, `blend_from_passes`,
-  `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
+  `emissive`, `base`, `details`, and `mask`: the coverage mask a
+  see-through layer multiplies in, or null), the `sky` drawn and the `atmosphere`
   read from it (`sun` direction, colour and power; `fog` colour, density,
   start and opaque distance; `fallback_rgb`). `{"scene": false}` while
   the viewport shows the grey world (no art built). `native` is the
