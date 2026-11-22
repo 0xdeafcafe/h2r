@@ -13,7 +13,7 @@
 //!
 //! The screens are listed in the map's `wgtz` (`0x00148098` walks its
 //! screens block, comparing `wgit +4`): each `wgtz`'s block is laid out
-//! again past the pinned metadata (`TagSet::append_pinned_blocks`) with the
+//! again inside the tag (the `wgtz` is rebuilt as a block tree) with the
 //! old entries first, so retail screens are found as before.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -459,13 +459,23 @@ pub fn add_screens(original: &[u8], plan: &[Entry]) -> Result<Added> {
         for (k, id) in refs.iter().enumerate() {
             block.tag_ref(((old + k) * 8) as u32, *id);
         }
-        let (address, _) = set.append_pinned_blocks(&[block])?[0];
+        // The block lives inside the tag's own payload: the `wgtz` is
+        // rebuilt as a block tree (its root's tag references kept as they
+        // are, its screens block the grown one), so a decoder reading the
+        // tag finds the screens inside it. A block past the pinned
+        // metadata (`append_pinned_blocks`) is outside every tag.
         let tag = set.tag_mut(wgtz).context("a wgtz left the set")?;
-        let TagPayload::Pinned { bytes, .. } = &mut tag.payload else {
+        let TagPayload::Pinned { bytes, .. } = &tag.payload else {
             bail!("a wgtz is not pinned");
         };
-        bytes[WGTZ_SCREENS..WGTZ_SCREENS + 4].copy_from_slice(&((old + refs.len()) as u32).to_le_bytes());
-        bytes[WGTZ_SCREENS + 4..WGTZ_SCREENS + 8].copy_from_slice(&address.to_le_bytes());
+        let mut root = bytes.clone();
+        if root.len() < WGTZ_SCREENS + 8 {
+            bail!("a wgtz root is {} bytes", root.len());
+        }
+        root[WGTZ_SCREENS..WGTZ_SCREENS + 8].fill(0);
+        let mut root = Block::new(root);
+        root.block(WGTZ_SCREENS as u32, (old + refs.len()) as u32, block);
+        tag.payload = TagPayload::Built(root);
     }
     let (map, _) = set.build().context("building the map")?;
     Ok(Added {
