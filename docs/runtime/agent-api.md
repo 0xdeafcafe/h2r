@@ -952,7 +952,7 @@ tick, timed now:
 | `pulse_age`, `pulse_front` | seconds since the pulse left, and its ring's distance from the player in world units; absent without a pulse |
 | `grow` | the tracker's growth into the map, 0 to 1 |
 | `spots`, `marks`, `hidden`, `tested` | the spots the view knows, those marked in the world now, of those the ones behind a wall, and those with a line-of-sight answer |
-| `tracker` | `enabled` (the variant shows the tracker), `range` (world units) and `blips`: each `kind` (`bounce` or `crouch`), `proven`, `x` and `y` (right and ahead over the range; on the unit circle for a rim chevron), `level` (`same`, `above`, `below`), `rim` and `nav` |
+| `tracker` | `enabled` (the variant shows the tracker), `range` (world units) and `blips`, the next spot and then the one after it, at most two: each `kind` (`bounce` or `crouch`), `proven`, `x` and `y` (right and ahead over the range; on the unit circle when out of range), `level` (`same`, `above`, `below`), `rim` (out of range) and `nav` (the next spot) |
 | `map` | while held or shrinking: `floors`, `edges` and `pairs` drawn, and its `blips` over the map's 50 m |
 
 `superbounce.view_test {"mode": "pulse"|"hold"|"none"}` (access: act)

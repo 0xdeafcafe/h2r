@@ -1946,7 +1946,7 @@ the map-view set of 2026-11-21 (concepts 1, 3, 4 and 6).
 
 | Input | What shows |
 |---|---|
-| Nothing | Spots within the tracker's range are blips on it: a ring for a crouch spot, a filled diamond for a landing, a small chevron over or under one on a floor above or below, a ring round the navpoint's. The nearest 6 out of range are chevrons on the rim pointing at them. Hidden while the variant turns the tracker off. |
+| Nothing | Two blips on the tracker, drawn as the game's own are, filled dots: the next spot (the navpoint's) is a dot with a ring round it, and the spot after it, the landing a next crouch spot pairs with, a smaller, fainter dot. One out of the tracker's range sits on its rim, toward the spot. No other spot is on the tracker (`tracker_blips`, `TRACKER_MARKS`). Hidden while the variant turns the tracker off. |
 | Tap the flashlight | A scan pulse. A ring leaves the player at 40 units a second and crosses the tracker; each spot in the world lights as it passes, settles and is gone 4 s after it lit. |
 | Hold the flashlight | Every spot on the level is marked in the world: a small upright ring or diamond with its distance in metres (none past 40 m), dashed and dimmer when a wall is between it and the player, a chevron over or under it for a floor above or below, and a dashed line from each crouch spot to its landing. The tracker grows to twice its size into a map: the floors from the collision within 50 m and from 2.5 units below to 1.5 above the player's feet, their outline, the spots and pairs, every proven spot out of range on its rim, turned so ahead is up. Let go and it shrinks back. |
 

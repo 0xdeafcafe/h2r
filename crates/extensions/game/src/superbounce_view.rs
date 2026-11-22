@@ -11,8 +11,9 @@
 //!   or below, a dashed line from each crouch spot to its landing; and the
 //!   tracker grows into a map of the floors near the player ([`GROW`] times
 //!   its size, [`MAP_RANGE`] across), turned so ahead is up.
-//! - **Always:** spots in the tracker's range are blips on it, further ones
-//!   chevrons on its rim ([`blips`]).
+//! - **Always:** the next spot is a dot on the tracker with a ring round
+//!   it, and the one after it a smaller dot; out of range they sit on its
+//!   rim ([`tracker_blips`]).
 //!
 //! **The button** is the game's flashlight *action*, the unit control
 //! flag Halo 2 tests at `0x000c5115` ([`UNIT_CONTROL_FLAGS`],
@@ -205,8 +206,6 @@ pub const TRACKER_RADIUS: f32 = 41.5;
 /// game's blip disc is inside the tracker's frame by about this).
 pub const BLIP_RADIUS: f32 = 35.0;
 pub const RIM_RADIUS: f32 = 38.5;
-/// The most rim chevrons on the tracker: the nearest spots out of range.
-pub const RIM_MAX: usize = 6;
 /// `hudg +0x290`: the motion sensor's range, world units
 /// (`crates/formats/tags/src/defs/hudg.txt`, as the bots' radar reads it).
 pub const HUDG_RADAR_RANGE: u32 = 0x290;
@@ -249,7 +248,7 @@ pub fn place(at: Vec3, yaw: f32, p: Vec3) -> [f32; 2] {
 /// Which spots out of range get a rim chevron.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rim {
-    /// The nearest few ([`RIM_MAX`]): the tracker.
+    /// The nearest few.
     Nearest(usize),
     /// Every proven one: the map.
     Proven,
@@ -317,6 +316,48 @@ pub fn blips(at: Vec3, yaw: f32, range: f32, spots: &[ViewSpot], rim: Rim) -> Ve
         Rim::Proven => out.extend(far.filter(|b| b.proven)),
     }
     out
+}
+
+/// How many spots the tracker marks: the next one and the one after.
+pub const TRACKER_MARKS: usize = 2;
+
+/// The tracker's blips for a player at `at` looking along `yaw` (the
+/// tick's), `range` world units to the edge: the next spot (the
+/// navpoint's, [`ViewSpot::nav`]), then the one after it, the landing a
+/// next crouch spot pairs with. One out of range sits on the rim, toward
+/// it. None without a next spot.
+pub fn tracker_blips(at: Vec3, yaw: f32, range: f32, spots: &[ViewSpot]) -> Vec<Blip> {
+    if range.is_nan() || range <= 0.0 || !yaw.is_finite() {
+        return Vec::new();
+    }
+    let Some(next) = spots.iter().position(|s| s.nav) else {
+        return Vec::new();
+    };
+    let after = spots[next].pair.filter(|&i| i != next && i < spots.len());
+    [Some(next), after]
+        .into_iter()
+        .flatten()
+        .take(TRACKER_MARKS)
+        .map(|i| {
+            let s = &spots[i];
+            let p = place(at, yaw, s.stand);
+            let flat = p[0].hypot(p[1]);
+            let rim = flat > range;
+            Blip {
+                spot: i,
+                at: if rim {
+                    [p[0] / flat, p[1] / flat]
+                } else {
+                    [p[0] / range, p[1] / range]
+                },
+                kind: s.kind,
+                proven: s.proven,
+                level: s.level,
+                rim,
+                nav: i == next,
+            }
+        })
+        .collect()
 }
 
 /// The map round the player, in the tracker's terms: right and ahead
@@ -410,7 +451,7 @@ pub struct Frame {
     pub button: bool,
     pub test_hold: bool,
     pub sensor: Sensor,
-    /// The tracker's blips ([`Rim::Nearest`]).
+    /// The tracker's blips ([`tracker_blips`]).
     pub blips: Vec<Blip>,
     /// While held or shrinking back.
     pub map: Option<MapView>,
@@ -666,13 +707,7 @@ impl Ticker {
             self.pulse = None;
             frame.pulse = None;
         }
-        frame.blips = blips(
-            at,
-            yaw,
-            input.sensor.range,
-            &frame.spots,
-            Rim::Nearest(RIM_MAX),
-        );
+        frame.blips = tracker_blips(at, yaw, input.sensor.range, &frame.spots);
         if holding || grow.value(now) > 0.0 || grow.to > 0.0 {
             let local = geometry.local_map(at, MAP_RANGE);
             frame.map = Some(map_view(&local, at, yaw, &frame.spots));
@@ -776,10 +811,16 @@ pub fn metres(units: f32) -> String {
     format!("{} m", ((units * METRES_PER_UNIT).round() as i32).max(1))
 }
 
-/// A tracker figure's size, HUD pixels.
+/// A map figure's size, HUD pixels.
 pub const BLIP_SIZE: f32 = 2.5;
 /// The navpoint's ring round its blip.
 pub const NAV_RING: f32 = 4.5;
+/// The tracker's dots, HUD pixels: the next spot's radius, the one
+/// after's, that one's strength, and a dot's sides.
+pub const NEXT_DOT: f32 = 2.5;
+pub const AFTER_DOT: f32 = 1.8;
+pub const AFTER_ALPHA: f32 = 0.55;
+pub const DOT_SIDES: usize = 10;
 /// The pulse's ring on the tracker at its start.
 pub const PULSE_RING_ALPHA: f32 = 0.9;
 /// The map's background and floors.
@@ -904,7 +945,36 @@ fn scaled(c: [f32; 3], k: f32) -> [f32; 3] {
     c.map(|v| (v * k).clamp(0.0, 1.0))
 }
 
-/// A blip's figures at `p` (HUD pixels): ring or diamond, the floor's
+/// A tracker blip at `p` (HUD pixels), as the game's own blips are: a
+/// filled dot. The next spot's is [`NEXT_DOT`] in radius with a ring
+/// round it ([`NAV_RING`]); the one after is smaller and fainter.
+fn tracker_shapes(b: &Blip, p: [f32; 2], colour: [f32; 3], alpha: f32, out: &mut Vec<Shape>) {
+    let (radius, alpha) = if b.nav {
+        (NEXT_DOT, alpha)
+    } else {
+        (AFTER_DOT, alpha * AFTER_ALPHA)
+    };
+    if alpha <= MIN_ALPHA {
+        return;
+    }
+    out.push(Shape::Fill {
+        points: ring(p, radius, DOT_SIDES),
+        color: colour,
+        alpha,
+    });
+    if b.nav {
+        out.push(Shape::Path {
+            points: ring(p, NAV_RING, 12),
+            closed: true,
+            width: 1.0,
+            dashed: false,
+            color: colour,
+            alpha,
+        });
+    }
+}
+
+/// A map blip's figures at `p` (HUD pixels): ring or diamond, the floor's
 /// chevron, the navpoint's ring; a rim blip is a chevron pointing out.
 fn blip_shapes(b: &Blip, p: [f32; 2], colour: [f32; 3], alpha: f32, out: &mut Vec<Shape>) {
     let alpha = alpha * if b.proven { 1.0 } else { LIKELY };
@@ -1049,7 +1119,7 @@ impl View {
             for b in &f.blips {
                 let r = if b.rim { RIM_RADIUS } else { BLIP_RADIUS };
                 let p = [t.centre[0] + b.at[0] * r, t.centre[1] - b.at[1] * r];
-                blip_shapes(b, p, colour, 1.0 - g, &mut out);
+                tracker_shapes(b, p, colour, 1.0 - g, &mut out);
             }
         }
         let (centre, radius) = t.map(g);
