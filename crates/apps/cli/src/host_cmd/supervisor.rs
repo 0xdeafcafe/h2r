@@ -5,11 +5,13 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_proto::Client;
-use agent_proto::host_lobby::{OpenParams, OpenResult, Phase, StateResult};
+use agent_proto::host_lobby::{OpenParams, OpenResult, Phase, Player, StateResult};
 use agent_proto::method::{
     HOST_LOBBY_CLOSE as CLOSE, HOST_LOBBY_OPEN as OPEN, HOST_LOBBY_START as START,
     HOST_LOBBY_STATE as STATE, STATUS,
 };
+use agent_proto::sim::method::PLAYER_ADD;
+use agent_proto::sim::{AddParams, Identity, PlayerKind, SourceKind};
 use anyhow::{Context, Result, bail, ensure};
 use live_proto::hosts::{EndReason, HostLease, Transport};
 use serde_json::{Value, json};
@@ -293,6 +295,20 @@ fn drive(
     live.register(&endpoint)?;
     eprintln!("h2 host {}: joinable", lease.id);
     agent.set_timeout(Some(AGENT_TIMEOUT))?;
+    if !lease.bots.is_empty() && !stopping() {
+        let failures = add_phantoms(&lease.bots, |params| {
+            agent.call(PLAYER_ADD, params).map_err(anyhow::Error::from)
+        });
+        for failure in &failures {
+            eprintln!("h2 host {}: {failure:#}", lease.id);
+        }
+        eprintln!(
+            "h2 host {}: {} of {} leased bots added as phantoms",
+            lease.id,
+            lease.bots.len() - failures.len(),
+            lease.bots.len()
+        );
+    }
     play(
         game,
         &mut agent,
@@ -448,11 +464,9 @@ fn play(
                 Observation::ChildExited
             } else {
                 let state = lobby_state(state.context(STATE)?)?;
-                let players =
-                    u8::try_from(state.players.len()).context("invalid host player count")?;
                 Observation::Lobby {
                     phase: state.phase,
-                    players,
+                    players: humans(&state.players),
                     ready: state.ready,
                 }
             }
@@ -473,6 +487,54 @@ fn play(
 
 fn lobby_state(value: Value) -> Result<StateResult> {
     serde_json::from_value(value).context("decoding host.lobby.state")
+}
+
+/// The lobby's people: every player but the phantoms, whose session name
+/// carries the bot mark no person can type (`live_proto::bots::BOT_MARK`).
+/// The start rule, idle and empty ends and the reported counts are people.
+fn humans(players: &[Player]) -> u8 {
+    let people = players
+        .iter()
+        .filter(|p| !p.name.starts_with(live_proto::bots::BOT_MARK))
+        .count();
+    u8::try_from(people).unwrap_or(u8::MAX)
+}
+
+/// The `sim.player.add` request for leased bot `index` (from 0): a
+/// brain-driven phantom named as the lease names it, with the host-made
+/// xuid a System Link host gives its own bots
+/// (`live_proto::bots::local_xuid`, seat numbers from 1).
+fn phantom_params(index: usize, name: &str) -> Value {
+    let seat = u32::try_from(index + 1).unwrap_or(u32::MAX);
+    let params = AddParams {
+        kind: PlayerKind::Phantom,
+        source: SourceKind::Brain,
+        team: None,
+        steps: Vec::new(),
+        recording: None,
+        identity: Some(Identity {
+            xuid: live_proto::bots::local_xuid(seat).to_string(),
+            gamertag: name.to_owned(),
+        }),
+    };
+    serde_json::to_value(params).expect("sim.player.add params serialize")
+}
+
+/// Adds each leased bot through the child's `sim.player.add`. A refused
+/// add does not stop the others or the host: the lobby still takes
+/// people. Each failure comes back named, for the host log.
+fn add_phantoms(
+    bots: &[String],
+    mut add: impl FnMut(Value) -> Result<Value>,
+) -> Vec<anyhow::Error> {
+    bots.iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            add(phantom_params(index, name))
+                .with_context(|| format!("adding leased bot {name:?} as a phantom ({PLAYER_ADD})"))
+                .err()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -710,5 +772,81 @@ mod tests {
         assert_eq!(state.phase, Phase::Playing);
         assert_eq!(state.players.len(), 1);
         assert!(!state.ready);
+    }
+
+    #[test]
+    fn phantoms_are_not_people() {
+        let state = lobby_state(json!({
+            "phase": "lobby",
+            "players": [
+                {"slot": 0, "peer": 1, "name": "\u{2699} Sprocket Cog"},
+                {"slot": 1, "peer": 2, "name": "Guest"},
+                {"slot": 2, "peer": 3, "name": "\u{2699} Rivet Shim"}
+            ],
+            "ready": true
+        }))
+        .unwrap();
+        assert_eq!(humans(&state.players), 1);
+        assert_eq!(humans(&state.players[..1]), 0);
+        assert_eq!(humans(&[]), 0);
+
+        // Phantoms alone never start an open lobby; one person does, even
+        // with the bots filling every other seat.
+        let mut host = Lifecycle::new(120, 1800, 0);
+        let lobby = |players: &[Player]| Observation::Lobby {
+            phase: Phase::Lobby,
+            players: humans(players),
+            ready: true,
+        };
+        let secs = Duration::from_secs;
+        let bots_only = [state.players[0].clone(), state.players[2].clone()];
+        assert_eq!(host.observe(secs(1), secs(1), lobby(&bots_only)), Action::Wait);
+        assert_eq!(host.observe(secs(2), secs(2), lobby(&state.players)), Action::Start);
+        // Idle with only phantoms in it, a lobby ends as one with nobody.
+        let mut idle = Lifecycle::new(120, 1800, 0);
+        assert_eq!(
+            idle.observe(secs(121), secs(121), lobby(&bots_only)),
+            Action::End(EndReason::Idle)
+        );
+    }
+
+    #[test]
+    fn leased_bots_are_added_as_brain_phantoms_and_failures_are_named() {
+        let bots = ["Sprocket Cog".to_owned(), "Rivet Shim".to_owned(), "Gear Stud".to_owned()];
+        let mut sent = Vec::new();
+        let failures = add_phantoms(&bots, |params| {
+            sent.push(params.clone());
+            if params["identity"]["gamertag"] == "Rivet Shim" {
+                bail!("light host bots are off; start with --host-bots");
+            }
+            Ok(json!({"id": format!("sim.{}", sent.len())}))
+        });
+        assert_eq!(sent.len(), 3, "a refusal does not stop the next add");
+        assert_eq!(
+            sent[0],
+            json!({
+                "kind": "phantom",
+                "source": "brain",
+                "identity": {"xuid": "000e000000000001", "gamertag": "Sprocket Cog"}
+            })
+        );
+        for (index, params) in sent.iter().enumerate() {
+            let add: AddParams = serde_json::from_value(params.clone()).unwrap();
+            let identity = add.identity.unwrap();
+            assert_eq!(identity.gamertag, bots[index]);
+            let xuid = u64::from_str_radix(&identity.xuid, 16).unwrap();
+            assert_eq!(
+                live_proto::Xuid(xuid),
+                live_proto::bots::local_xuid(index as u32 + 1)
+            );
+            assert!(live_proto::bots::is_local_xuid(live_proto::Xuid(xuid)));
+        }
+        assert_eq!(failures.len(), 1);
+        let text = format!("{:#}", failures[0]);
+        assert!(text.contains("\"Rivet Shim\""), "{text}");
+        assert!(text.contains("sim.player.add"), "{text}");
+        assert!(text.contains("--host-bots"), "{text}");
+
+        assert!(add_phantoms(&[], |_| unreachable!()).is_empty());
     }
 }

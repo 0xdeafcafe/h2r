@@ -166,14 +166,16 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           upload a map package and publish it (docs/game/maps.md §5)
   maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
                           the map packages the server has
-  hosts start --map MAP [--variant VARIANT] [--max-players N]
+  hosts start --map MAP [--variant VARIANT] [--max-players N] [--bots N]
                  [--class small|large] [--region R] [--transport udp|tunnel]
                  [--no-launch] [--live URL] [--data DIR | --as GAMERTAG]
                           start a custom dedicated host as an admin
                           (docs/live/dedicated-host.md): launched on the
                           server's provider, or with --no-launch print
                           H2_LEASE, H2_HOST_LEASE_JSON, H2_TOKEN and H2_LIVE
-                          lines to eval before a manual docker run
+                          lines to eval before a manual docker run;
+                          --bots N seats N phantom bots (at most
+                          --max-players minus one)
   hosts list [--live URL] [--data DIR | --as GAMERTAG]
                           running and recent dedicated hosts with costs (JSON)
   hosts stop LEASE [--live URL] [--data DIR | --as GAMERTAG]

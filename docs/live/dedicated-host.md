@@ -376,14 +376,17 @@ key in `--data` (the operator, the default) or an admin account's key with
 
 ```sh
 h2 live hosts start --map lockout --variant 'Slayer' --max-players 8 \
-  [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
+  [--bots N] [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
   [--live URL] [--data DIR | --as GAMERTAG]
 ```
 
 Without `--no-launch` the server reserves the lease (budget,
 `LIVE_MAX_HOSTS` and cost rows all apply, exactly as for a match) and its
 configured provider starts the container; the command prints the lease
-JSON. With `--no-launch` no provider is started: the server records the
+JSON. `--bots N` (default 0, at most `--max-players` minus one, so one
+seat stays for a person) puts N Clanker names in the lease's `bots`; the
+host adds them to its lobby as phantoms ([`h2 host run`](#h2-host-run)).
+With `--no-launch` no provider is started: the server records the
 lease as `requested` and answers its host token, and the command prints
 shell lines a manual container run can `eval` — the only place the token
 is ever shown:
@@ -465,6 +468,17 @@ and `live: true`. Open returns the session ID acknowledged by Live. The
 supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
 start when the lobby is ready and has at least the reserved player count,
 or one player for an open lobby. Lease roster authorization belongs to Live.
+
+A non-sim lease with `bots` starts the child with `--host-bots`. Once the
+host is registered, the supervisor adds each leased bot through the
+child's `sim.player.add` as a brain-driven phantom named as the lease
+names it, with the host-made xuid `live_proto::bots::local_xuid(n)` for
+seat n from 1. A refused add is a named error in the host log; the other
+bots and the lobby carry on. Phantoms are not players to the supervisor:
+it counts only lobby players whose name lacks the bot mark (U+2699), so
+phantoms alone never start a match, keep a lobby from going idle, or
+appear in the reported player counts.
+[`add_phantoms`](../../crates/apps/cli/src/host_cmd/supervisor.rs)
 
 When the supervisor receives a TCP `H2_AGENT` address, the child also
 binds that address to the same agent. Both listeners share the same
