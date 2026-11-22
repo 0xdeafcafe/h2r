@@ -1,6 +1,6 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slices 1 to 4 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"). Time, constants, `match` and fixes are not built. "The built language" below is the language before slice 2, which the gap table describes.
+Status: Design, with slices 1 to 5 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); `time`, constants, `match`, the `carrier` enum and value functions ("Stronger typing"). The editor's fixes, hover and completion for them are not built. "The built language" below is the language before slice 2, which the gap table describes.
 Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
 Switch: none.
 
@@ -246,25 +246,32 @@ A check that cannot fail is a warning: `p is never none here`.
 
 ### Time
 
+**Code**, `lang/check.rs` (`time_arith`, `Cx::option`), `lang/lex.rs`
+(`time_ticks`), `lang/lower.rs`.
+
 `time` counts ticks. Literals: `5s`, `300t`, `1.5s` (a whole number of
 ticks at `caps::TICKS_PER_SECOND`, or an error). `seconds(n)` turns an
 `int` into `time`; `whole_seconds(t)` and `ticks(t)` turn `time` into
-`int`. `time` adds, subtracts and compares with `time`, multiplies and
-divides by `int`, and `time / time` is `int`. A `timer` reads and writes
-as `time`. A `time` option is declared in whole seconds, holds whole
-seconds in the record's option bits exactly as an `int` option of the
-same range does, and reads as `time`. The IR stores no unit for it: the
-compiler ends a `time` option's label with ` (seconds)` ("Capture time
-(seconds)"), and every variant editor shows the label.
+`int`. `time` adds, subtracts, takes `%` and compares with `time`,
+multiplies and divides by `int`, and `time / time` is `int`. `min`,
+`max` and `clamp` take all `int`s or all `time`s and give the same.
+`ticks_held`, `round_time_left` and `now` give `time`. A `timer` reads
+and writes as `time`. A `time` option is declared in whole seconds,
+holds whole seconds in the record's option bits exactly as an `int`
+option of the same range does, and reads as `time`: lowering multiplies
+the read by 30. The IR stores no unit for it: the compiler ends a `time`
+option's label with ` (seconds)` (`check::SECONDS_SUFFIX`, "Capture time
+(seconds)"), or the option's name when it has no label, and every
+variant editor shows the label.
 
 ```text
-// built (siege.rules, oddball.rules)
+// without time
 option capture_time: int 5..60 = 20
 if ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
 player var held: int = 0
 if p.held >= seconds(1) { score(p, 1) }
 
-// this design
+// with time (siege.rules, oddball.rules)
 option capture_time: time 5s..60s = 20s
 if ticks_held(zone, team 0) >= capture_time { open(phase + 1) }
 player var held: time = 0t
@@ -300,31 +307,47 @@ that tests a registered marker writes
 
 ### Enums and match
 
+**Code**, `Cx::match_stmt` in `lang/check.rs`; `Stmt::Match` in
+`lang/lower.rs`.
+
 ```text
-// built (vip.rules)
+// without match
 if victim.role == Role.vip { ... } else if enemy { score(killer, 1) }
 
-// this design
+// with match (vip.rules)
 match victim.role {
     Role.vip { uncrown(victim) }
-    Role.none { if enemy { score(killer, 1) } }
+    Role.none { if let k = killer and enemy(k, victim) { score(k, 1) } }
 }
 ```
 
-`match` takes an enum value and one arm per variant, or an `else` arm.
-It lowers to compares and forward jumps.
+`match` takes an enum value and one arm per variant, or an `else` arm
+for the rest. An arm may name several variants, comma-separated
+(`Mode.b, Mode.c { }`); a variant in two arms is an error. It lowers to
+compares and forward jumps.
 `match on Role has no arm for Role.guard. Add "Role.guard { }" or "else { }".`
-`variant.engine` is the built-in enum `carrier`:
-`variant.engine == carrier.assault`, not `== 9`.
+`variant.engine` is the built-in enum `carrier`, whose variants are the
+names of `caps::CARRIERS` and erase to their engine indices:
+`variant.engine == carrier.assault`. `variant.engine == 9` is an error,
+`a carrier is named, not numbered: write carrier.assault`. `match` takes
+a `carrier` too.
 
 ### Constants
 
-`const last_phase = 2`, `const hold = 20s`. A constant's value is an
-expression over literals, other constants, `len(table)` and `+ - * / %`,
-folded by the checker. Constants are allowed wherever a literal is: option ranges and defaults, initial values, table cells, label
-requirements. Folding makes these compile errors:
+**Code**, `Cx::eval_const` and `Cx::fold` in `lang/check.rs`.
 
-`ladder[12]: ladder has 12 rows, 0 to 11.` (a script error at run time in the built language)
+`const last_phase = 2`, `const hold = 20s`. A constant's value is an
+expression over `int` and `time` literals, other constants,
+`len(table)`, unary `-` and `+ - * / %` with the units of "Time",
+folded by the checker in 64 bits and checked against the `int` range.
+Constants are allowed wherever a literal is: option ranges and defaults,
+initial values, table cells, label requirements. A constant that refers
+to itself, or names anything but a constant, is a `decl` error. A
+constant index into a table or a numbered label is checked against its
+rows or numbers. Folding makes these compile errors (`const.range`,
+`const.zero`):
+
+`ladder[12]: ladder has 12 rows, 0 to 11.` (a script error at run time without constants)
 `capture[2] is outside "numbered 0..1".`
 `division by zero in the constant "step".`
 
@@ -332,9 +355,12 @@ requirements. Folding makes these compile errors:
 
 `fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team) or (not variant.team_play and a != b)`
 
-A value function is one expression, inlined at each call. A block
-function has no value. `koth.rules` and
-`territories.rules` each repeat that predicate twice.
+A value function states its type after `->` and is one expression
+after `=`, inlined at each call; its arguments are checked as a block
+function's are. A block function has no value: using one as a value is
+an error, as is calling a value function as a statement.
+`koth.rules` and `territories.rules` each declare `rival`, and
+`vip.rules` `enemy`.
 `rival takes a player, and lead may be none here.`
 
 ### let, options, variables, tables, sets
@@ -565,14 +591,14 @@ The 12 scripts in `crates/formats/rules/src/builtin`, the examples in
 rules-engine.md and the h2-rules skill, and the scripts in
 `crates/formats/rules/tests` are rewritten by hand in the slice that
 changes the form they use (slices 2 and 5). Their tests keep the calls
-and scores they expect, and the map texts they place. Siege, whose
-built text is quoted in the table at the top and under "Time":
+and scores they expect, and the map texts they place. Siege's labels
+and phases (`siege.rules`):
 
 ```text
 const last_phase = 2
 label barrier: objects numbered
-label attack: spawns numbered 0..2
-label defend: spawns numbered 0..2
+label attack: spawns numbered 0..last_phase
+label defend: spawns numbered 0..last_phase
 label capture: zones numbered 0..1 = "zone"
 label core: object
 label goal: zone
@@ -613,6 +639,8 @@ on enter(goal, o) {
 - New keywords: `label`, `const`, `match`, `is`. Type and kind words
   (`zone`, `time`, `weapon`, `objects`, `numbered`, `per`) are read by
   place and stay usable as names, so `let zone = ...` compiles.
+  `carrier` followed by `.` names a carrier; elsewhere it is the
+  script's `carrier` line.
 - A script declares at most 64 labels. A label's members are at most
   256. Each read of a label costs its `at most` in the worst-tick
   estimate, so a script that reads a set every tick declares one; the
@@ -637,7 +665,7 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | 2 (built) | The checker and labels | `lang/check.rs`, `lang/sig.rs`, `lang/types.rs` (new); `lang/ast.rs`, `lang/parse.rs`, `lang/lex.rs`, `lang/lower.rs`, `lang/mod.rs`; `builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/*`; the scripts in `docs/game/rules-engine.md` and `.claude/skills/h2-rules/*` | one test per diagnostic code for labels, `T?` and narrowing, `zone`, `weapon`, `is` and handlers by label; `sig` erases to `caps::ENTRIES`; a script with five errors reports five; every built-in compiles, verifies, fits the budget and passes its scenario tests | the string label forms are gone from the grammar and the tree; a built-in's label table carries its declarations; `lower.rs` makes no type decision | 1 |
 | 3 (built) | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
 | 4 (built) | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `sim.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
-| 5 | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
+| 5 (built) | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
 | 6 | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
 | 7 | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
 | 8 | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
