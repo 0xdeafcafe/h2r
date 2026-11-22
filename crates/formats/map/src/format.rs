@@ -287,4 +287,15 @@ impl RawPointer {
             offset: value & 0x3fff_ffff,
         })
     }
+    /// The pointer word: the file selector in the top two bits, the offset
+    /// (below 2^30) in the rest. The inverse of [`Self::decode`].
+    pub fn encode(self) -> u32 {
+        let file = match self.file {
+            ResourceFile::Local => 0,
+            ResourceFile::MainMenu => 1,
+            ResourceFile::Shared => 2,
+            ResourceFile::SinglePlayerShared => 3,
+        };
+        file << 30 | (self.offset & 0x3fff_ffff)
+    }
 }

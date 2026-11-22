@@ -188,6 +188,9 @@ pub struct Changes {
     /// Fixed-size replacements inside local raw blocks (the Modeling
     /// tool's in-place geometry writes).
     pub raw_patches: Vec<RawPatch>,
+    /// New raw blocks (the Modeling tool's grown sections), each with the
+    /// tag word that takes its raw pointer.
+    pub raw_appends: Vec<RawAppend>,
     /// Why the Modeling tool's edits cannot be saved, when they cannot: a
     /// save is then refused whole, before anything is written.
     pub geometry_refusal: Option<String>,
@@ -200,6 +203,7 @@ impl Changes {
             && self.tag_grown.is_empty()
             && self.strings.is_empty()
             && self.raw_patches.is_empty()
+            && self.raw_appends.is_empty()
             && self.geometry_refusal.is_none()
     }
 }
@@ -215,14 +219,30 @@ pub struct RawPatch {
     pub bytes: Vec<u8>,
 }
 
+/// New raw data for the map (`map::MapEditor::append_raw`) and the tag
+/// word that takes its raw pointer: a grown section's block, whose block
+/// info `+0` is the word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawAppend {
+    pub bytes: Vec<u8>,
+    /// Alignment in the file, a power of two up to 0x1000.
+    pub align: u32,
+    /// Where the pointer word is: the ordinary metadata (`None`) or a BSP
+    /// region.
+    pub pointer_space: Option<map::AddressSpace>,
+    pub pointer_address: u32,
+}
+
 /// What the Modeling tool hands the save (docs/editor/modeling-targets.md,
 /// "The session and the save"): tag patches in the ordinary metadata and
-/// BSP regions, raw block patches, or the reason it cannot be written.
+/// BSP regions, raw block patches, new raw blocks, or the reason it cannot
+/// be written.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GeometryChanges {
     pub patches: Vec<(u32, Vec<u8>)>,
     pub bsp_patches: Vec<BspPatch>,
     pub raw_patches: Vec<RawPatch>,
+    pub raw_appends: Vec<RawAppend>,
     pub refusal: Option<String>,
 }
 
@@ -712,6 +732,7 @@ impl Scenario {
             tag_grown: self.tag_grown.clone(),
             strings: self.tag_strings.clone(),
             raw_patches: self.geometry.raw_patches.clone(),
+            raw_appends: self.geometry.raw_appends.clone(),
             geometry_refusal: self.geometry.refusal.clone(),
             ..Changes::default()
         };

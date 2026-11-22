@@ -2603,6 +2603,67 @@ fn an_exact_pose_sets_the_eye_basis_roll_and_clip_planes() {
 }
 
 #[test]
+fn a_geometry_raw_append_saves_before_the_index_and_repoints_the_cluster() {
+    use crate::package::geometry_hash;
+    use crate::scenario::{GeometryChanges, RawAppend};
+    let src = fixture_with_textured_bsp_last();
+    let mut s = read(src.clone());
+    // The floor's block again, one byte of its last stream changed.
+    let len = {
+        let info = (src.len() - 0x2000) + TEX_SBSP + 0x180 + 0x28;
+        u32::from_le_bytes(src[info + 4..info + 8].try_into().unwrap()) as usize
+    };
+    let mut block = src[TEX_BLOCK_FILE..TEX_BLOCK_FILE + len].to_vec();
+    block[len - 5] ^= 0x10;
+    let pointer_address = META + (TEX_SBSP + 0x180 + 0x28) as u32;
+    s.set_geometry_changes(GeometryChanges {
+        raw_appends: vec![RawAppend {
+            bytes: block.clone(),
+            align: 0x200,
+            pointer_space: None,
+            pointer_address,
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert!(!s.changes().is_empty());
+    let out = write(&src, &s);
+    // The index and metadata moved down a page; the block sits where the
+    // index was, and the cluster names it.
+    assert_eq!(out.len(), src.len() + 0x1000);
+    let index = src.len() - 0x2200;
+    assert_eq!(&out[index..index + len], block.as_slice());
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    let render = tags::structure::StructureRender::read(&mut m, id(4)).unwrap();
+    let p = render.clusters[0].geometry.block.block.unwrap();
+    assert_eq!(p.offset as usize, index);
+    // The geometry hash (docs/game/maps.md §1) covers a BSP's cluster
+    // blocks only through a scenario entry with a file offset; this
+    // fixture's BSP is ordinary metadata (offset 0), so its hash is the
+    // same before and after. Retail BSPs have regions, and there the new
+    // block's bytes are hashed.
+    let before = geometry_hash(&mut open(src.clone())).unwrap();
+    assert_eq!(geometry_hash(&mut m).unwrap(), before);
+    // A refusal still stops the save; the map that cannot take raw data
+    // refuses the append by name.
+    let mut t = read(fixture_with_textured_bsp());
+    t.set_geometry_changes(GeometryChanges {
+        raw_appends: vec![RawAppend {
+            bytes: block,
+            align: 0x200,
+            pointer_space: None,
+            pointer_address,
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut sink = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(fixture_with_textured_bsp()), &t, &mut sink).unwrap_err();
+    assert!(e.to_string().contains("metadata"), "{e}");
+}
+
+#[test]
 fn geometry_raw_patches_save_with_the_map_and_a_refusal_refuses_the_save() {
     use crate::scenario::{GeometryChanges, RawPatch};
     let src = fixture_with_textured_bsp();
