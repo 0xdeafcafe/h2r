@@ -314,11 +314,12 @@ pub fn icon(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Opti
     }
     let h = usize::from(height.clamp(MIN_HEIGHT, MAX_HEIGHT));
     let (canvas, mono) = match (set, button) {
-        // Right bumper is Black and left is White, as crates/platform/input maps them.
-        (IconSet::Xbox360, Black) => (shoulder_pair(h, Side::Right, ["LB", "RB"], false), true),
-        (IconSet::Xbox360, White) => (shoulder_pair(h, Side::Left, ["LB", "RB"], false), true),
-        (IconSet::PlayStation, Black) => (shoulder_pair(h, Side::Right, ["L1", "R1"], false), true),
-        (IconSet::PlayStation, White) => (shoulder_pair(h, Side::Left, ["L1", "R1"], false), true),
+        // Right bumper is Black and left is White, as crates/platform/input maps
+        // them. Each is its own picture: a prompt names one bumper.
+        (IconSet::Xbox360, Black) => (shoulder(h, Side::Right, "RB"), true),
+        (IconSet::Xbox360, White) => (shoulder(h, Side::Left, "LB"), true),
+        (IconSet::PlayStation, Black) => (shoulder(h, Side::Right, "R1"), true),
+        (IconSet::PlayStation, White) => (shoulder(h, Side::Left, "L1"), true),
         (IconSet::PlayStation, LeftTrigger) => {
             (shoulder_pair(h, Side::Left, ["L2", "R2"], true), true)
         }
@@ -338,8 +339,8 @@ pub fn icon(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Opti
         (IconSet::Remote, DpadRight) => (clickpad(h, Pad::Right), true),
         (IconSet::Remote, B) => (chevron(h, false), true),
         (IconSet::Remote, Start) => (play_pause(h), true),
-        (IconSet::Steam, Black) => (shoulder_pair(h, Side::Right, ["LB", "RB"], false), true),
-        (IconSet::Steam, White) => (shoulder_pair(h, Side::Left, ["LB", "RB"], false), true),
+        (IconSet::Steam, Black) => (shoulder(h, Side::Right, "RB"), true),
+        (IconSet::Steam, White) => (shoulder(h, Side::Left, "LB"), true),
         (IconSet::Steam, Start) => (chevron(h, true), true),
         (IconSet::Steam, Back) => (chevron(h, false), true),
         (IconSet::Steam, DpadUp) => (clickpad(h, Pad::Up), true),
@@ -440,8 +441,43 @@ enum Side {
     Right,
 }
 
-/// Both bumpers side by side with one lit, the way the retail glyphs show the
-/// two triggers and the two sticks. Monochrome, so it takes the text colour.
+/// How wide one bumper is drawn.
+pub const BUMPER_WIDTH: u16 = 21;
+
+/// One bumper with its name: a solid bar whose outer shoulder is rounder
+/// than its other corners, the name cut out of it, so it reads at any text
+/// colour. Monochrome: it takes the colour of the text it sits in, as the
+/// retail trigger and stick pictures do. A prompt for the left bumper
+/// shows the left bumper alone, so two prompts side by side tell the two
+/// apart (docs/input/button-icons.md "What each set shows").
+fn shoulder(h: usize, side: Side, name: &str) -> Canvas {
+    let bw = f32::from(BUMPER_WIDTH);
+    let bh = 12.0f32.min(h as f32);
+    let y0 = ((h as f32 - bh) / 2.0).floor();
+    let (x1, y1) = (bw, y0 + bh);
+    let outer = match side {
+        Side::Left => round_rect(0.0, y0, x1 + 8.0, y1 + 8.0, 6.0),
+        Side::Right => round_rect(-8.0, y0, x1, y1 + 8.0, 6.0),
+    };
+    let shape = both(outer, round_rect(0.0, y0, x1, y1, 2.0));
+    let tx = (i32::from(BUMPER_WIDTH) - label::width(name)) / 2;
+    let ty = y0 as i32 + (bh as i32 - label::GLYPH_H) / 2;
+    let mut cut = Vec::new();
+    label::draw(name, tx, ty, |x, y| cut.push((x, y)));
+    let mut c = Canvas::new(usize::from(BUMPER_WIDTH), h);
+    c.fill(&shape, |px, py| {
+        if cut.contains(&(px.floor() as i32, py.floor() as i32)) {
+            white(0.0)
+        } else {
+            white(SOLID)
+        }
+    });
+    c
+}
+
+/// Both triggers side by side with one lit, the way the retail glyphs show
+/// the two triggers and the two sticks. Monochrome, so it takes the text
+/// colour.
 fn shoulder_pair(h: usize, lit: Side, labels: [&str; 2], trigger: bool) -> Canvas {
     const BW: f32 = 21.0;
     const GAP: f32 = 3.0;
