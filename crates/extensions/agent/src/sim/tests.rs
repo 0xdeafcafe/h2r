@@ -1289,7 +1289,9 @@ fn the_live_edit_probe_decides_which_live_games_take_edits() {
         let params = if name == method::OBJECT_DELETE {
             json!({"id": "bad"})
         } else {
-            json!({"block": "scenery", "was_count": 1, "count": 1})
+            // Not a block: a request past the gate answers at once instead of
+            // queueing for a tick this test never runs.
+            json!({"block": "nope", "was_count": 1, "count": 1})
         };
         let (h, q) = with_calls();
         let mut g = game();
