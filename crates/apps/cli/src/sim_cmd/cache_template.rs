@@ -18,8 +18,9 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 /// `0`, `off`, `false` or `no` turns the template off.
 pub const ENV: &str = "H2_SIM_CACHE_TEMPLATE";
@@ -271,13 +272,13 @@ impl Template {
             return Ok(Saved::NoSlots);
         }
         fs::create_dir_all(&self.root)?;
+        // Unique across processes (the pid) and threads (the counter).
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let staging = self.root.join(format!(
             ".staging-{}-{}-{}",
             self.key,
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let staged = (|| -> io::Result<bool> {
             let (sdisk, smeta) = (staging.join("disk"), staging.join("metadata"));
@@ -454,7 +455,7 @@ pub fn start<'a>(template: Option<&Template>, gate: &'a Gate, data: &Path) -> St
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("h2-sim-cache-{name}-{}", std::process::id()));

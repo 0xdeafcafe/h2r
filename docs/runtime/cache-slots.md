@@ -390,7 +390,7 @@ holds the shared maps only.
 - **Making it.** The first run of a batch that finds no template claims
   it; the batch's other workers wait for that run to finish rather than
   copy Z: at once. If the run exits 0, its finished slots are staged in
-  `.staging-<key>-<pid>-<nanos>` and renamed to `<key>`, so concurrent
+  `.staging-<key>-<pid>-<n>` and renamed to `<key>`, so concurrent
   savers (two batches on one image) leave one whole template. A batch
   claims once: if that run saves nothing, its other runs start cold.
 - **Cleanup.** The batch removes `<out>/runs/<id>/data` after each run
