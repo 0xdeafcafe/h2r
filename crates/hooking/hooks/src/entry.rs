@@ -1,4 +1,4 @@
-//! Async entries in the game: drives an [`engine::entry`] body on the
+//! Async entries in the game: drives an [`guest_layout::entry`] body on the
 //! runtime. Each guest call the body awaits is made with
 //! `ExecCtx::call_guest`; the body is parked in the continuation, and polled
 //! again with the callee's registers when it returns. Nothing is held across
@@ -21,8 +21,8 @@ pub const ASYNC_ENTRY: &str = "feature: async entry";
 /// The pipeline can move these callbacks with the suspended render stack.
 pub const RENDER_ENTRY: &str = "feature: portable render entry";
 
-use engine::entry::{self, Cx, EntryError, EntryFn, EntryFuture, Mem, Regs, Step};
-use engine::memory::GuestMemory;
+use guest_layout::entry::{self, Cx, EntryError, EntryFn, EntryFuture, Mem, Regs, Step};
+use guest_layout::memory::GuestMemory;
 use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, Runtime, TransferAbi};
 

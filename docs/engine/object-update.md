@@ -46,7 +46,8 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   code (`pose.rs` runs it), so it stays installed under
   `impl.sim.native_pose_matrix` for when this switch is off.
 - A body whose point another feature hooks too is guarded
-  (`Table::guard`, called by the plan installer through
+  (`Table::guard`, which each body's implementation registers with
+  `HookRef::when_shared` and the plan installer calls through
   `hooks::install::guard_shared_bodies`): `drive` hands calls into it to the
   runtime, so the point's chain runs its hooks around the body. The Halo
   1 health model's `before` and `after` on `OBJECT_DAMAGE_UPDATE` make

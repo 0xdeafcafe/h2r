@@ -9,7 +9,6 @@
 //! - [`tags`]: `tag_get_checked` and `tag_group_find` over the published
 //!   cache index.
 //! - [`datum`]: datum arrays (allocation, salts, lookup, iteration).
-//! - [`locale`]: localized-string lookup by packed StringID.
 //! - [`render`]: read-only views of the live lights and scene layers
 //!   (`docs/graphics/e3-lighting.md`, "Phase 0 findings").
 //! - [`light_constants`]: `0x0004a1e0`'s per-light globals block, computed
@@ -23,32 +22,27 @@
 //!   CRT's `fmod` and `pow`, bit for bit.
 //! - [`map_status`]: the map cache status `0x213f10`, answered from its
 //!   last result while nothing it reads has changed.
-//! - [`points`]: the one table of named guest functions and globals.
-//! - [`point_shapes`]: what each point expects at its address, checked
-//!   against the user's image at install.
-//! - [`view`]: typed views (`record!`, datum arrays, tags, players,
-//!   objects).
-//! - [`entry`]: async entries, Rust bodies that await guest calls.
-//! - [`testing`]: [`testing::FakeGuest`], sparse guest memory for tests.
-//! - [`abi`]: per-function calling-convention adapters and the table of
-//!   overridable addresses.
+//!
+//! Re-exported from `guest_layout` (docs/dev/crate-structure.md, S2):
+//! [`points`], the one table of named guest functions and globals;
+//! [`point_shapes`], what each point expects at its address; [`view`],
+//! typed views; [`entry`], async entries, Rust bodies that await guest
+//! calls; [`testing`], sparse guest memory for tests; [`locale`],
+//! localized-string lookup; and [`abi`], the per-function
+//! calling-convention adapters and the table of overridable addresses.
 //!
 //! Each function's recovered contract (registers, memory effects, failure
 //! paths, quirks reproduced on purpose) is in `docs/engine/`.
 
-pub mod abi;
 pub mod colour_pass;
 pub mod campaign_squad_pool;
-pub mod entry;
 pub mod function_eval;
 pub mod gel;
 pub mod glow;
 pub mod light_constants;
 pub mod light_passes;
-pub mod locale;
 pub mod map_status;
 pub mod objectives;
-pub mod point_shapes;
 pub mod render;
 pub mod render_loop;
 pub mod scene_list_math;
@@ -67,8 +61,6 @@ pub mod ui_model;
 pub mod ui_sprite;
 
 #[cfg(feature = "runtime-glue")]
-pub mod runtime_glue;
-#[cfg(feature = "runtime-glue")]
 pub mod sim_anim;
 #[cfg(feature = "runtime-glue")]
 pub mod sim_collision;
@@ -81,8 +73,12 @@ pub mod sim_objects;
 pub mod sim_physics;
 
 // The guest boundary and the named points live in guest-layout
-// (docs/dev/crate-structure.md, S2); these keep `engine::` paths.
-pub use guest_layout::{datum, handle, memory, points, sound, tags, testing, view};
+// (docs/dev/crate-structure.md, S2), with the async entries, the override
+// adapters, the locale table and the point shapes; these keep `engine::`
+// paths.
+pub use guest_layout::{abi, datum, entry, handle, locale, memory, point_shapes, points, sound, tags, testing, view};
+#[cfg(feature = "runtime-glue")]
+pub use guest_layout::runtime_glue;
 pub use guest_layout::{point_loc, point_ret, point_sig, record};
 
 pub use handle::DatumHandle;

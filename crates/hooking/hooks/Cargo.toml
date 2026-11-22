@@ -10,7 +10,9 @@ status = "in progress"
 
 [dependencies]
 runtime.workspace = true
-engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
+# The named points, the guest boundary, async entries and the override
+# adapters with their runtime registration (src/leaves.rs).
+guest-layout = { path = "../guest-layout", features = ["runtime-glue"] }
 timeline = { path = "../../runtime/timeline" }
 
 [dev-dependencies]

@@ -4,14 +4,14 @@ Hand-written Rust replacements for Halo 2 engine functions, installed behind the
 
 ## Where it sits
 
-`rewrites` domain. Depends on `guest-layout`, `sim-core`, `sim-anim`, `sim-collision`, `simd`, `x87` and, with `runtime-glue`, `runtime`. Used by `render-bridge`, `sim-bridge`, `hooks`, `game`, `agent`, `bots`, `h1campaign` and `boot`.
+`rewrites` domain. Depends on `guest-layout`, `sim-core`, `sim-anim`, `sim-collision`, `simd`, `x87` and, with `runtime-glue`, `runtime`. Used by `render-bridge`, `sim-bridge`, `scene-extract`, `game`, `agent`, `bots`, `h1campaign` and `boot`.
 
 ## Layout
 
 - `src/lib.rs`: the ported functions (tag lookup, datum arrays, locale, hs, squads, screen effects, lights).
 - `src/sim_native/`, `src/sim_objects/`, `src/sim_collision/`, `src/sim_physics/`, `src/sim_anim.rs`: the adapters that gather, call the sim crates and scatter.
 - `src/render_loop/`, `src/render.rs`: the render-loop ports.
-- `src/entry.rs`, `src/abi.rs`, `src/point_shapes.rs`, `src/runtime_glue.rs`: entry points and hook shapes, re-exported from `guest-layout`.
+- `entry`, `abi`, `locale`, `point_shapes`, `runtime_glue`: async entries, the override adapters and hook shapes, re-exported from `guest-layout` (`crates/hooking/guest-layout/src`).
 
 ## Features
 

@@ -242,9 +242,9 @@ Bink, unnamed D3D or DSound internals, or XAPI helpers named by hand.
 
 | crate | what | distinct | where | status |
 |---|---|---:|---|---|
-| engine | `OVERRIDES` (tag lookup, datum arrays, locale), each with its 1.0 LTCG convention | 22 | `crates/rewrites/engine/src/abi.rs:100-252` | nothing registers them yet (`engine/src/runtime_glue.rs:6`); they'd misbehave silently once something does |
-| engine | globals: tag index, tag entries, empty string | 3 | `engine/src/tags.rs:17,20`, `locale.rs:18` | same |
-| engine | datum array header (0x4c bytes, 15 fields) | 15 | `engine/src/datum.rs:20-81` | engine struct, probably the same across builds |
+| engine | `OVERRIDES` (tag lookup, datum arrays, locale), each with its 1.0 LTCG convention | 22 | `crates/hooking/guest-layout/src/abi.rs:100-255` | nothing registers them yet (`guest-layout/src/runtime_glue.rs`); they'd misbehave silently once something does |
+| engine | globals: tag index, tag entries, empty string | 3 | `guest-layout/src/tags.rs`, `guest-layout/src/locale.rs` | same |
+| engine | datum array header (0x4c bytes, 15 fields) | 15 | `guest-layout/src/datum.rs` | engine struct, probably the same across builds |
 | hs | catalog tables (functions, count, types, script kinds, externals) | 5 | `crates/formats/hs/src/catalog.rs:8-12` | **fail-closed**: checks title ID, entry, certificate version, builtin count and the dispatch instruction (`:53-57`) |
 | hs | native evaluator addresses plus argument, return and float-constant addresses | ~24 | `crates/formats/hs/src/vm/image.rs:65-107` | **fail-closed**: validated at `:133-170` |
 | hs | baked counts (911 builtins, 62 types, 0x41d externals, the thread size) | ~6 | `catalog.rs:67-112` | fail-closed through the catalog gate |
@@ -262,7 +262,7 @@ Bink, unnamed D3D or DSound internals, or XAPI helpers named by hand.
 
 | what | key | where | with an update XBE |
 |---|---|---|---|
-| dylib stamp | fnv64 of the XBE + generator hash + passes + codegen + ABI + cflags | `crates/runtime/recomp/src/lib.rs` (`build_stamp`) | rebuilds, never reuses (safe) |
+| dylib stamp | fnv64 of the XBE + generator hash + registered retail entries + passes + codegen + ABI + cflags | `crates/runtime/recomp/src/lib.rs` (`build_stamp`) | rebuilds, never reuses (safe) |
 | emit receipt | SHA-256 of the XBE + h2 binary + settings | `crates/apps/cli/src/emit_cache.rs:31-38` | safe |
 | fallback unread-target cache | fnv64 of the XBE + source hash | `crates/runtime/recomp/src/fallback.rs:503-513` | safe |
 | object cache | per-source fnv64 | `crates/recompiler/emit/src/compile.rs:292` | safe to share between images |
