@@ -249,6 +249,7 @@ the game has no window. Use `--note` for additional context.
 | (always, unless `--no-stats`) | `H2_FRAME_STATS=1`, `H2_FRAME_STATS_CSV=runs/<id>/frames.csv` |
 | (always) | `H2_AGENT=<root>/a/<id>.sock` (see [Driving a run](#driving-a-run-the-agent-api)) |
 | `--serve` | the same run with no frame limit (`--frames` is refused): it runs until `h2 lab stop`, for `lab agent` |
+| `--dedicated` | a headless System Link host instead of a game window (see [Dedicated System Link host](#dedicated-system-link-host)) |
 | `--replay NAME` | `H2_INPUT_REPLAY=recordings/NAME/input.bin`; level and difficulty from its manifest unless given |
 | `--record NAME` | `H2_INPUT_RECORD=recordings/NAME/input.bin` and its manifest |
 | `--film NAME` | `h2 play --film <data root>/films/NAME.h2film`: the run records a film into the film library its game plays from (see [Theater runs](#theater-runs)) |
@@ -469,6 +470,74 @@ For a comparison against timings taken with 480-line LOD choices, pass
 To measure the cost of retaining higher detail, keep the resolution fixed
 in two unrecorded offline runs and compare
 `--env H2_LOD_DISTANCE=retail` with `--env H2_LOD_DISTANCE=1`.
+
+## Dedicated System Link host
+
+`h2 lab run --dedicated` starts a dedicated System Link host on the lab
+Mac. A player on another Mac on the same LAN joins it from the System
+Link menu, and an agent drives it with `h2 lab agent` as it drives a
+`--serve` run. Code: `crates/apps/cli/src/lab/host/dedicated.rs` and the
+`Dedicated` request in `crates/apps/cli/src/lab/proto.rs`.
+
+```sh
+h2 lab run --host laptop --name "Join test" --dedicated --map lockout --variant slayer \
+    --max-players 8 [--host-bots] [--base-port PORT] [--branch NAME | --rev REV | --current]
+```
+
+The job builds or reuses the image like any run, then starts
+`h2 serve <disc> --system-link --host-light [--host-bots]` on it with
+`H2_HOST_LOBBY=1` ([Playerless lobby](../live/dedicated-host.md#playerless-lobby))
+and `H2_BOOT_REALTIME=1`. The host gets a data root of its own under
+`scratch/<id>/data`, removed when the job ends, and skips the Halo 1 and
+map pack imports. Its agent socket is the run socket at `<root>/a/<id>.sock`.
+The job has no frame limit and runs until `h2 lab stop <id>`, which ends
+it as `stopped`. `--wait` is refused, as are the game window's options
+(`--level`, `--frames`, `--replay`, `--record`, `--film`, `--perf`,
+`--serve`, `--fresh-data` and `h2 play` flags). `--env` takes the run
+allowlist.
+
+| Flag | Becomes |
+|---|---|
+| `--dedicated` | the host, sitting at the main menu with no local player |
+| `--map MAP` | once the host reaches the menu, the job calls `host.lobby.open {"map","variant","max_players","live":false}` and opens a joinable lobby |
+| `--variant NAME` | the lobby's game variant (default Slayer); needs `--map` |
+| `--max-players N` | the lobby's limit, 1 to 16 (default 8); needs `--map` |
+| `--host-bots` | `h2 serve --host-bots`: the host accepts phantoms |
+| `--base-port PORT` | the XNet base, 1024 to 65529 (default 3074) |
+
+XNet binds the IPv4 of the lab Mac's default route, as the XNet HLE picks
+its own, at the base port. The host uses UDP base through base+6, and the
+job refuses to start when another process holds one of them. The job's
+`system_link` field in `h2 lab status`, `h2 lab runs` and `meta.json`
+gives the address and port, and its notes say how to join. The job notes
+whether the lobby opened. A failed open leaves the host at the menu. Open it
+with `h2 lab agent <id> host.lobby.open '{...}'`.
+
+To join, start `h2 play` on another Mac on the same LAN from the same
+commit and choose System Link, then the host's game. A System Link
+broadcast goes to the sender's own base port, so both ends need the same
+base. 3074 is an unconfigured `h2 play`'s. With `--base-port`, start the
+joiner with `H2_XNET_ADDR=<its own LAN IPv4>:<port>`. If the default route
+is a VPN, the host binds the VPN's address and a LAN joiner can't see it.
+The macOS firewall may ask the lab Mac's user once to let the image's
+`h2` accept incoming connections.
+
+Drive the lobby through the agent API
+([`host.lobby`](agent-api.md#hostlobby)). Add a bot to a `--host-bots`
+host with [`sim.player.add`](agent-api.md#sim-simulated-players-and-direct-state):
+
+```sh
+h2 lab agent --host laptop <id> host.lobby.state '{}'
+h2 lab agent --host laptop <id> sim.player.add \
+    '{"kind":"phantom","identity":{"xuid":"0009000000000001","gamertag":"Clanker"},"source":"brain"}'
+h2 lab agent --host laptop <id> host.lobby.start '{}'
+h2 lab stop --host laptop <id>
+```
+
+The job takes the activity lock, queue place, [player
+consent](#player-consent-before-a-job) and [memory
+cap](#memory-limits-and-reports) like a run. A game window on the lab Mac
+can't join it at the same base: both would bind the same UDP ports.
 
 ## Sim benchmarks
 
