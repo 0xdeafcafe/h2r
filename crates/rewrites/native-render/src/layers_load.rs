@@ -536,7 +536,7 @@ fn compile_layer3<R: std::io::Read + std::io::Seek>(
         let selected = lib
             .selected_implementation(shader, selection, None, None)
             .map_err(|e| format!("material: {e}"))?;
-        look::unlit_bsp_pass(&selected, None).map_err(|r| format!("layer 3: {r:?}"))?
+        look::unlit_bsp_pass(&selected, &tags::material::EngineInputs::default(), None).map_err(|r| format!("layer 3: {r:?}"))?
     } else {
         let material = lib
             .material(shader, None)
