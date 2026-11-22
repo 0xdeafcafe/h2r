@@ -1,11 +1,24 @@
 //! The checker: one case per diagnostic code, every error reported (up to
 //! fifty), declared labels in the label table, handlers by label, `is`
-//! and `T?` narrowing, and the weapon tag group. See
-//! `docs/game/rules-language-types.md`, "Diagnostics".
+//! and `T?` narrowing, the weapon tag group, and time, constants, `match`
+//! and value functions. See `docs/game/rules-language-types.md`,
+//! "Stronger typing" and "Diagnostics".
 
 use rules::fake::FakeGame;
 use rules::ir::{LabelKind, TagGroup, label_flags};
 use rules::{Event, Input, Severity, Vm, builtin, compile, diagnose};
+
+/// Runs one tick of `src` with its default options and gives the global
+/// `name`.
+fn tick_global(src: &str, name: &str) -> Option<i32> {
+    let ir = compile(src).unwrap();
+    let options = ir.default_options();
+    let mut vm = Vm::new(ir, options, 0).unwrap();
+    let mut g = FakeGame::with_players(1);
+    vm.begin_tick(1);
+    vm.update(&mut g);
+    vm.global(name)
+}
 
 const HEAD: &str = "rules \"T\" 1\ncarrier slayer\n";
 
@@ -66,7 +79,7 @@ fn label_codes() {
     assert!(m.contains("Add \"numbered\""), "{m}");
     let m = error(
         &script("", "label cap: zones numbered 0..1\non tick { if let z = cap[2] { } }\n"),
-        "label.index",
+        "const.range",
     );
     assert!(m.contains("outside \"numbered 0..1\""), "{m}");
     let m = error(
@@ -336,4 +349,265 @@ on spawn(p) {
     let ir = compile(&src).unwrap();
     let groups: Vec<(&str, TagGroup)> = ir.tags.iter().map(|t| (t.path.as_str(), t.group)).collect();
     assert_eq!(groups, [("objects/a", TagGroup::Any), ("objects/b", TagGroup::Weapon)]);
+}
+
+// ---- time ----
+
+#[test]
+fn unit_codes() {
+    // The page's texts, word for word.
+    let m = error(
+        &script(
+            "",
+            "player var held: time = 0t\non tick { for each players p { if p.held >= 1 { score(p, 1) } } }\n",
+        ),
+        "unit.mix",
+    );
+    assert_eq!(m, "can't compare time with int in \"p.held >= 1\". Write 1s for a second or 30t for ticks.");
+    let m = error(
+        &script(
+            "",
+            "option wave_seconds: int 3..15 = 8\nglobal var wave: timer\non round_start { wave = wave_seconds }\n",
+        ),
+        "unit.mix",
+    );
+    assert_eq!(
+        m,
+        "wave is a timer and takes time; wave_seconds is an int. Write seconds(wave_seconds), or declare the option as time."
+    );
+    let m = error(&script("", "global var t: time = 0t\non tick { t = 0.01s }\n"), "unit.literal");
+    assert_eq!(m, "0.01s is not a whole number of ticks (30 a second).");
+    // A time option is declared in whole seconds.
+    let m = error(&script("", "option t: time 1s..10s = 1.5s\n"), "unit.literal");
+    assert!(m.contains("whole seconds"), "{m}");
+    // A time takes no bare int, and time * time has no meaning.
+    let m = error(&script("", "global var t: time = 0t\non tick { t = 5 }\n"), "unit.mix");
+    assert!(m.contains("Write 5s for seconds or 5t for ticks"), "{m}");
+    error(&script("", "global var t: time = 0t\non tick { t = t * t }\n"), "unit.mix");
+    let m = error(&script("", "global var n: int = 0\non tick { n = now() }\n"), "unit.mix");
+    assert!(m.contains("is time. Write whole_seconds("), "{m}");
+}
+
+#[test]
+fn time_counts_ticks() {
+    // The page's design text compiles.
+    let src = script(
+        "",
+        "label zone: zone
+option capture_time: time 5s..60s = 20s
+global var opened: bool = false
+player var held: time = 0t
+on tick {
+    if ticks_held(zone, team 0) >= capture_time { opened = true }
+    for each players p {
+        p.held = p.held + 1t
+        if p.held >= 1s { score(p, 1) }
+    }
+}
+",
+    );
+    assert!(diagnose(&src).ir.is_some(), "{:#?}", diagnose(&src).diagnostics);
+    for (expr, want) in [
+        ("90t / 1s", 3),
+        ("whole_seconds(95t)", 3),
+        ("ticks(2s)", 60),
+        ("ticks(max(1s, 2s) * 2 - 1.5s)", 75),
+        ("ticks(seconds(4) / 2)", 60),
+        ("ticks(-1t)", -1),
+    ] {
+        let src = script("", &format!("global var n: int = 0\non tick {{ n = {expr} }}\n"));
+        assert_eq!(tick_global(&src, "n"), Some(want), "{expr}");
+    }
+}
+
+#[test]
+fn a_time_option_is_held_as_an_int_option_and_labelled_in_seconds() {
+    let int = compile(&script("", "option hold: int 5..60 = 20 \"Capture time\"\n")).unwrap();
+    let time = compile(&script("", "option hold: time 5s..60s = 20s \"Capture time\"\n")).unwrap();
+    let (a, b) = (&int.options[0], &time.options[0]);
+    assert_eq!((a.ty, a.lo, a.hi, a.default, a.bits()), (b.ty, b.lo, b.hi, b.default, b.bits()));
+    assert_eq!(int.default_options(), time.default_options());
+    assert_eq!(int.strings[a.label as usize], "Capture time");
+    assert_eq!(time.strings[b.label as usize], "Capture time (seconds)");
+    // With no label, the name carries the unit.
+    let bare = compile(&script("", "option hold: time 5s..60s = 20s\n")).unwrap();
+    assert_eq!(bare.strings[bare.options[0].label as usize], "hold (seconds)");
+    // The record holds seconds; the script reads ticks.
+    let src = script("", "option hold: time 5s..60s = 20s\nglobal var t: time = 0t\non tick { t = hold }\n");
+    assert_eq!(tick_global(&src, "t"), Some(600));
+    // A constant stands where a literal does.
+    let src = script(
+        "",
+        "const hold = 20s\noption h: time 5s..60s = hold\nglobal var t: time = hold\non tick { t = t + h }\n",
+    );
+    assert_eq!(tick_global(&src, "t"), Some(1200));
+}
+
+// ---- constants ----
+
+#[test]
+fn const_codes() {
+    let rows: Vec<String> = (0..12).map(|i| format!("({i})")).collect();
+    let m = error(
+        &script(
+            "",
+            &format!(
+                "table ladder: (n: int) = [{}]\nglobal var x: int = 0\non tick {{ x = ladder[12].n }}\n",
+                rows.join(", ")
+            ),
+        ),
+        "const.range",
+    );
+    assert_eq!(m, "ladder[12]: ladder has 12 rows, 0 to 11.");
+    let m = error(
+        &script(
+            "",
+            "const last = 1\nconst over = last + 1\nlabel capture: zones numbered 0..last\non tick { if let z = capture[over] { } }\n",
+        ),
+        "const.range",
+    );
+    assert_eq!(m, "capture[2] is outside \"numbered 0..1\".");
+    let m = error(&script("", "const big = 2147483647 + 1\n"), "const.range");
+    assert!(m.contains("\"big\""), "{m}");
+    let m = error(&script("", "const step = 10 / (2 - 2)\n"), "const.zero");
+    assert_eq!(m, "division by zero in the constant \"step\".");
+    // A constant of a constant that refers back is refused, as is a name
+    // that is not a constant.
+    error(&script("", "const a = b\nconst b = a\n"), "decl");
+    error(&script("", "global var g: int = 0\nconst a = g\n"), "decl");
+}
+
+#[test]
+fn constants_fold_wherever_a_literal_stands() {
+    let src = script(
+        "",
+        "const last_phase = 2
+const hold = 20s
+const most = last_phase * 2
+table t: (n: int) = [(1), (2), (3)]
+const rows = len(t)
+label walls: objects at most most
+global var n: int = rows + last_phase
+global var h: time = hold
+on tick {
+    for each walls w { }
+    n = n + most
+    h = h + hold / 2
+}
+",
+    );
+    let ir = compile(&src).unwrap();
+    assert_eq!(ir.labels[0].max, 4);
+    assert_eq!(tick_global(&src, "n"), Some(5 + 4));
+    assert_eq!(tick_global(&src, "h"), Some(600 + 300));
+    // A let that shadows a constant is a warning.
+    warning(&script("", "const k = 1\non tick { let k = 2 }\n"), "name.shadow");
+}
+
+// ---- match ----
+
+#[test]
+fn match_codes() {
+    let src = script(
+        "",
+        "enum Role { none, vip, guard }
+player var role: Role = Role.none
+on spawn(p) {
+    match p.role {
+        Role.vip { score(p, 1) }
+        Role.none { }
+    }
+}
+",
+    );
+    let m = error(&src, "match.missing");
+    assert_eq!(m, "match on Role has no arm for Role.guard. Add \"Role.guard { }\" or \"else { }\".");
+    // An else arm covers the rest; a variant twice is refused.
+    assert!(compile(&src.replace("Role.none { }", "else { }")).is_ok());
+    error(&src.replace("Role.none { }", "Role.vip { }\n        else { }"), "decl");
+}
+
+#[test]
+fn match_runs_the_arm_of_the_value() {
+    let src = script(
+        "",
+        "enum Mode { a, b, c, d }
+global var m: Mode = Mode.c
+global var out: int = 0
+on tick {
+    match m {
+        Mode.a { out = 1 }
+        Mode.b, Mode.c { out = 2 }
+        else { out = 3 }
+    }
+}
+",
+    );
+    assert_eq!(tick_global(&src, "out"), Some(2));
+    assert_eq!(tick_global(&src.replace("= Mode.c", "= Mode.a"), "out"), Some(1));
+    assert_eq!(tick_global(&src.replace("= Mode.c", "= Mode.d"), "out"), Some(3));
+}
+
+#[test]
+fn variant_engine_is_the_carrier_enum() {
+    let src = script(
+        "",
+        "global var out: int = 0
+on tick {
+    if variant.engine == carrier.slayer { out = 1 }
+    match variant.engine {
+        carrier.ctf, carrier.assault { out = 2 }
+        else { }
+    }
+}
+",
+    );
+    assert!(compile(&src).is_ok(), "{:#?}", diagnose(&src).diagnostics);
+    let m = error(&src.replace("carrier.slayer", "2"), "type.mismatch");
+    assert!(m.contains("write carrier.slayer"), "{m}");
+    let m = error(&src.replace("else { }", ""), "match.missing");
+    assert!(m.contains("carrier.slayer"), "{m}");
+}
+
+// ---- value functions ----
+
+#[test]
+fn value_functions_are_inlined_and_checked() {
+    let src = script(
+        "",
+        "fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team) or (not variant.team_play and a != b)
+global var n: int = 0
+on kill(victim, killer) {
+    if let k = killer and rival(k, victim) { n = n + 1 }
+}
+",
+    );
+    assert!(compile(&src).is_ok(), "{:#?}", diagnose(&src).diagnostics);
+    let m = error(&src.replace("if let k = killer and rival(k, victim)", "if rival(killer, victim)"), "null.arg");
+    assert!(m.starts_with("rival takes a player, and killer may be none here."), "{m}");
+    let src = script(
+        "",
+        "fn twice(n: int) -> int = n * 2\nfn later(t: time) -> time = t + 1s\nglobal var x: int = 0\non tick { x = twice(21) + ticks(later(1t)) }\n",
+    );
+    assert_eq!(tick_global(&src, "x"), Some(42 + 31));
+    // A value function is used for its value; a block function has none.
+    error(&script("", "fn twice(n: int) -> int = n * 2\non tick { twice(1) }\n"), "type.mismatch");
+    error(&script("", "fn f(n: int) -> int { }\n"), "decl");
+    error(&script("", "fn f(n: int) = n\n"), "decl");
+}
+
+// ---- the built-ins ----
+
+#[test]
+fn the_builtins_use_time_constants_and_match() {
+    assert!(builtin::SIEGE.contains("option capture_time: time"));
+    assert!(builtin::SIEGE.contains("const last_phase"));
+    assert!(builtin::ODDBALL.contains("player var held: time"));
+    assert!(builtin::VIP.contains("match victim.role"));
+    assert!(builtin::KING.contains("fn rival(a: player, b: player) -> bool ="));
+    assert!(builtin::CTF.contains("carrier.assault"));
+    // A time option's label carries its unit in the blob.
+    let siege = compile(builtin::SIEGE).unwrap();
+    let labels: Vec<&str> = siege.options.iter().map(|o| siege.strings[o.label as usize].as_str()).collect();
+    assert_eq!(labels, ["Phase time (seconds)", "Capture time (seconds)", "Respawn wave (seconds)"]);
 }

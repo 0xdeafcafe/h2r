@@ -12,7 +12,7 @@ use rules::ir::Scope;
 use rules::scenario::{self, Scenario};
 use rules::sim;
 use rules::vm::TICK_BUDGET;
-use rules::{BuildError, Ir, Report, builtin};
+use rules::{Ir, Report, builtin};
 
 const USAGE: &str = "usage: h2 rules check <file.rules>
        h2 rules build <file.rules> -o <out.rir>
@@ -447,13 +447,26 @@ pub fn sim_text(label: &str, src: &str, args: &SimArgs) -> Result<SimOut, String
 }
 
 /// Compiles and verifies source. Errors are `label:line:col: message`
-/// lines.
+/// lines, one for every error the compile finds ([`rules::diagnose`]),
+/// then its warnings.
 fn compile(label: &str, src: &str) -> Result<(Ir, Report), String> {
-    rules::build(src).map_err(|e| match e {
-        BuildError::Compile(c) => format!("{label}:{}:{}: {}\n", c.line, c.col, c.message),
-        BuildError::Refused(r) => format!("{label}: refused: {r}\n"),
-        other => format!("{label}: refused: {other}\n"),
-    })
+    let compiled = rules::diagnose(src);
+    let Some(ir) = compiled.ir else {
+        let mut s = String::new();
+        for d in &compiled.diagnostics {
+            let _ = writeln!(s, "{}", diagnostic_line(label, d));
+        }
+        return Err(s);
+    };
+    let report = rules::verify(&ir).map_err(|r| format!("{label}: refused: {r}\n"))?;
+    Ok((ir, report))
+}
+
+/// One diagnostic as `label:line:col: message`, a warning's message
+/// starting `warning:`, its code at the end in brackets.
+fn diagnostic_line(label: &str, d: &rules::Diagnostic) -> String {
+    let kind = if d.is_error() { "" } else { "warning: " };
+    format!("{label}:{}:{}: {kind}{} [{}]", d.pos.line, d.pos.col, d.message, d.code)
 }
 
 /// The report `h2 rules check` prints for source that builds.
@@ -540,6 +553,9 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
         for e in bad {
             let _ = writeln!(s, "  {} ({})", caps::spelled(e), unhostable_words(e));
         }
+    }
+    for d in rules::diagnose(src).warnings() {
+        let _ = writeln!(s, "{}", diagnostic_line(label, d));
     }
     // Over the budget or the IR cap: the report, then the refusal.
     if let Err(e) = rules::fits(&ir, &report) {
@@ -791,6 +807,20 @@ on kill(victim, killer) {
         assert!(parts.next().unwrap().parse::<u32>().is_ok(), "{first}");
         assert!(parts.next().unwrap().parse::<u32>().is_ok(), "{first}");
         assert!(!parts.next().unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn check_prints_every_error_not_only_the_first() {
+        let err = check_text(
+            "x.rules",
+            "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\non death(v) { gone(v) }\n",
+        )
+        .unwrap_err();
+        let lines: Vec<&str> = err.lines().filter(|l| l.starts_with("x.rules:")).collect();
+        assert_eq!(lines.len(), 2, "{err}");
+        assert!(lines[0].starts_with("x.rules:3:"), "{err}");
+        assert!(lines[1].starts_with("x.rules:4:"), "{err}");
+        assert!(lines.iter().all(|l| l.ends_with("[name.unknown]")), "{err}");
     }
 
     #[test]

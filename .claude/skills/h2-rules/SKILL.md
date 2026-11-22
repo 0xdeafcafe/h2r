@@ -70,7 +70,7 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
 status; run it when unsure whether an entry exists or a host can make it.
 `h2 rules lsp` is a language server on stdin and stdout for files ending
 `.rules` (diagnostics, completion, hover, signature help, definitions,
-references, semantic tokens, outline, formatting).
+references, semantic tokens, outline, formatting, quick fixes, rename).
 
 ## Read the check report
 
@@ -238,8 +238,8 @@ h2 variants port my_record.bin --script my_mode.rules -o out/
   script rides engine M`.
 - `--name NAME` and `--description TEXT` replace the record's name and the
   input file's description (one input only). `--option key=value`, once
-  per option, sets a script option by name: an int, `true` or `false`, or
-  an enum value's name. An option the script does not declare, a value
+  per option, sets a script option by name: an int (whole seconds for a
+  `time` option), `true` or `false`, or an enum value's name. An option the script does not declare, a value
   out of range, or any option with `--script keep` is refused. Options
   left out take their defaults. A script over the budget is refused.
 - `--script builtin` (the default) attaches the record's engine's
@@ -342,9 +342,10 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 ## Pitfalls
 
 - **The verifier rejects the unbounded.** No `while`, no recursion, no
-  floats, no strings at run time, no backward jump. Functions are inlined,
-  return nothing, and see only their parameters, globals and options. A
-  `let` or parameter is not assigned again; options are read-only; a
+  floats, no strings at run time, no backward jump. Functions are inlined;
+  a block `fn` returns nothing, a value `fn f(a: T) -> R = expr` is one
+  expression, and both see only their parameters, globals, constants and
+  options. A `let` or parameter is not assigned again; options are read-only; a
   `timer` is a global only. A set (`players`, `teams`, `objectives`,
   a declared `objects` or `zones` label, `pick(set, n)`) appears only in
   `for each`, `count`, `first` and `pick`.

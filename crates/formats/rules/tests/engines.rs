@@ -179,6 +179,51 @@ on round_start {
     assert_eq!(vm.global("n"), Some(1));
 }
 
+/// Real object datums are salted handles at or above 2^31; 0xFFFF_FFFF is
+/// `none`. The VM keeps all 32 bits.
+#[test]
+fn salted_object_datums_round_trip_through_the_vm() {
+    const A: u32 = 0xE1A3_0012;
+    const B: u32 = 0x8000_0001;
+    let src = r#"
+rules "T" 1
+carrier slayer
+global var first_seen: object? = none
+global var carried: object? = none
+global var n: int = 0
+global var absent: bool = false
+object var hits: int = 0
+on round_start {
+    first_seen = first(objectives)
+    n = count(objectives o where o.carrier != none)
+    for each objectives o { o.hits = o.hits + 1 }
+}
+on pickup(p, o) {
+    carried = o
+    absent = (carried == none)
+}
+"#;
+    let (ir, _) = build(src).unwrap();
+    let mut g = FakeGame::with_players(2);
+    g.objectives.insert(A, Some(1));
+    g.objectives.insert(B, None);
+    let mut vm = Vm::new(ir, 0, 1).unwrap();
+    vm.begin_tick(1);
+    assert_eq!(vm.fire(&mut g, Input::RoundStart), Fired::Ran);
+    // Sorted by datum as unsigned: B (0x8000_0001) before A.
+    assert_eq!(vm.global("first_seen"), Some(B as i32));
+    assert_eq!(vm.global("n"), Some(1), "the carried salted ball is read");
+    assert_eq!(vm.ext().objects.get(&A).map(|r| r[0]), Some(1), "a record under the full datum");
+    assert_eq!(vm.ext().objects.get(&B).map(|r| r[0]), Some(1));
+    vm.fire(&mut g, Input::Pickup(0, A));
+    assert_eq!(vm.global("carried"), Some(A as i32));
+    assert_eq!(vm.global("absent"), Some(0));
+    // The host sees the same datum back.
+    vm.fire(&mut g, Input::Pickup(0, u32::MAX));
+    assert_eq!(vm.global("carried"), Some(-1), "0xFFFF_FFFF is none");
+    assert_eq!(vm.global("absent"), Some(1));
+}
+
 // ---- Oddball ----
 
 #[test]

@@ -20,17 +20,20 @@ carrier slayer
 teams 2
 requires objects.create, objects.delete, player.spawn, player.weapons
 
+// The core's phase; the phases before it each have a zone.
+const last_phase = 2
+
 // What the map supplies.
 label barrier: objects numbered
-label attack: spawns numbered 0..2
-label defend: spawns numbered 0..2
+label attack: spawns numbered 0..last_phase
+label defend: spawns numbered 0..last_phase
 label capture: zones numbered 0..1 = "zone"
 label core: object
 label goal: zone
 
-option phase_time: int 60..600 = 180 "Phase time" "Seconds the attackers have for each phase"
-option capture_time: int 5..60 = 20 "Capture time" "Seconds the attackers hold a zone to take it"
-option wave_seconds: int 3..15 = 8 "Respawn wave" "Seconds between respawn waves"
+option phase_time: time 60s..600s = 180s "Phase time" "How long the attackers have for each phase"
+option capture_time: time 5s..60s = 20s "Capture time" "How long the attackers hold a zone to take it"
+option wave_time: time 3s..15s = 8s "Respawn wave" "Time between respawn waves"
 
 table loadouts: (side: team, primary: weapon, secondary: weapon) = [
     (team 0, "objects/weapons/rifle/battle_rifle/battle_rifle", "objects/weapons/pistol/magnum/magnum"),
@@ -43,30 +46,30 @@ global var wave: timer
 
 fn open(n: int) {
     phase = n
-    clock = seconds(phase_time)
+    clock = phase_time
     for each barrier b where b.number < n { delete(b) }
     spawn_areas(team 0, attack, n)
     spawn_areas(team 1, defend, n)
-    if n == 2 { create("objects/weapons/multiplayer/assault_bomb/assault_bomb", core) }
+    if n == last_phase { create("objects/weapons/multiplayer/assault_bomb/assault_bomb", core) }
 }
 
 on round_start {
     open(0)
-    wave = seconds(wave_seconds)
+    wave = wave_time
 }
 
 on pickup(p, o) {
-    if phase == 2 and p.team == team 0 and not is_objective(o) { register_objective(o, team 0) }
+    if phase == last_phase and p.team == team 0 and not is_objective(o) { register_objective(o, team 0) }
 }
 
 on tick {
-    if phase < 2 {
-        if let zone = capture[phase] and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    if phase < last_phase {
+        if let zone = capture[phase] and ticks_held(zone, team 0) >= capture_time { open(phase + 1) }
     }
 }
 
 on enter(goal, o) {
-    if phase == 2 and is_objective(o) { end_round(team 0) }
+    if phase == last_phase and is_objective(o) { end_round(team 0) }
 }
 
 on timer(clock) { end_round(team 1) }
@@ -76,7 +79,7 @@ on death(p) { set_lives(p, 0) }
 
 on timer(wave) {
     for each players p where not p.alive { respawn(p) }
-    wave = seconds(wave_seconds)
+    wave = wave_time
 }
 
 on spawn(p) {

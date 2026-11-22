@@ -33,7 +33,8 @@ pub fn of(e: &Entry) -> Option<Sig> {
     match e.id {
         id::LABEL_OF => None,
         id::INSIDE => given(&[P, Z], Some(Type::Bool)),
-        id::TICKS_HELD => given(&[Z, T], Some(Type::Int)),
+        id::TICKS_HELD => given(&[Z, T], Some(Type::Time)),
+        id::ROUND_TIME_LEFT | id::NOW => given(&[], Some(Type::Time)),
         id::CARRIER_OF | id::PLAYER_OF => given(&[O], Some(P_)),
         id::OBJECT_TEAM => given(&[O], Some(T_)),
         id::END_ROUND => given(&[T_], None),

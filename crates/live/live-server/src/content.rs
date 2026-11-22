@@ -29,6 +29,11 @@
 //!   images, source, date) is an admin's `PUT /v1/mappacks/{id}` (a
 //!   server-signed `MapPackSet`), listed at `GET /v1/mappacks`, with each
 //!   map list page and each map that names it.
+//! - **Census**: a map's labelled placements and tags, which the hopper
+//!   gate (`admin::check_pairs`) checks a script against, are an admin's
+//!   `PUT /v1/maps/{map_id}/census` (a server-signed `MapCensusSet`, keyed
+//!   by the level id a hopper entry names). The answer lists the published
+//!   hopper entries the new census blocks.
 //! - **Moderation**: admins hide, delete and block blobs and packages,
 //!   switch an account's uploads off, and read reports. Hidden, deleted or
 //!   blocked content answers 410, and sessions on it are refused.
@@ -60,6 +65,7 @@ use live_proto::maps::{
     MAP_PACK_SET, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument, MapId, MapSummary, Moderated,
     PackInfo, PackListed, PackSet, Reported, Sha256, Standing, Target, UploadsSet, Who,
 };
+use live_proto::map_census::{CensusAnswer, CensusSet, MAP_CENSUS_SET, census_stream};
 use live_proto::sign::{MAX_EVENT_SKEW_S, SignedEvent, parse_time};
 use live_proto::{Author, ErrorCode, Gamertag, Page, Xuid, lxm, streams};
 use serde::{Deserialize, Serialize};
@@ -345,6 +351,9 @@ pub struct CatalogState {
     pub details: HashMap<MapId, Details>,
     /// Map packs' info (`MapPackSet`), by id.
     pub packs: BTreeMap<String, PackInfo>,
+    /// Maps' censuses (`MapCensusSet`) for the hopper gate, by the map id a
+    /// hopper entry names.
+    pub censuses: BTreeMap<u32, rules::labels::Census>,
 }
 
 impl CatalogState {
@@ -652,6 +661,18 @@ impl CatalogState {
                         }
                         None => {
                             self.packs.remove(&d.id);
+                        }
+                    }
+                }
+            }
+            MAP_CENSUS_SET => {
+                if let Ok(d) = serde_json::from_value::<CensusSet>(b.data.clone()) {
+                    match d.census {
+                        Some(c) => {
+                            self.censuses.insert(d.map_id, c);
+                        }
+                        None => {
+                            self.censuses.remove(&d.map_id);
                         }
                     }
                 }
@@ -1618,6 +1639,49 @@ impl Live {
         Ok((recorded[0].position, self.map_summary(&s, &id, p)))
     }
 
+    /// The census Live holds for the map id a hopper entry names.
+    pub fn map_census(&self, map_id: u32) -> Option<rules::labels::Census> {
+        self.catalog.read().censuses.get(&map_id).cloned()
+    }
+
+    /// `PUT /v1/maps/{map}/census`: an admin sets (or, with None, clears) a
+    /// map's census for the hopper gate (a server-signed `MapCensusSet`;
+    /// docs/game/rules-start-gate.md). `map_id` is the level id a hopper
+    /// entry names. The answer lists the published hopper entries on this
+    /// map that the new census blocks; the census is kept either way.
+    pub async fn set_census(
+        &self,
+        bearer: Option<&str>,
+        map_id: u32,
+        census: Option<rules::labels::Census>,
+    ) -> ApiResult<CensusAnswer> {
+        let by = self.moderator(bearer)?;
+        if let Some(c) = &census {
+            live_proto::map_census::validate(c).map_err(invalid)?;
+        }
+        let set = census.is_some();
+        let _guard = self.content_writes.lock().await;
+        let data = CensusSet {
+            map_id,
+            census,
+            by,
+        };
+        let event = self.server_event(
+            census_stream(map_id),
+            MAP_CENSUS_SET,
+            serde_json::to_value(&data).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        let blocked = crate::admin::blocked_by_census(self, map_id).await?;
+        Ok(CensusAnswer {
+            position: recorded[0].position,
+            map_id,
+            set,
+            blocked,
+        })
+    }
+
     /// The images `images` name are stored, served PNGs or JPEGs.
     async fn check_images(&self, images: &[maps::MapImage]) -> ApiResult<()> {
         for i in images {
@@ -2151,6 +2215,22 @@ pub(crate) async fn put_details(
     ))
 }
 
+pub(crate) async fn put_census(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(map): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let map_id: u32 = map
+        .parse()
+        .map_err(|_| invalid("a census is for a map id, a decimal number (30 is Zanzibar)"))?;
+    let bytes = body_text(body)?;
+    let census: Option<rules::labels::Census> =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("census: {e}")))?;
+    let answer = live.set_census(bearer(&headers), map_id, census).await?;
+    Ok(crate::http::json(StatusCode::OK, &answer))
+}
+
 pub(crate) async fn put_pack(
     State(live): Shared,
     headers: HeaderMap,
@@ -2304,6 +2384,50 @@ mod tests {
         }
         // A 68.2 MiB layer (Night Ops' delta over Containment) fits.
         assert!(68 * MIB + MIB / 4 <= d.layer_bytes);
+    }
+
+    /// The census event is applied by the projection both homes run (the
+    /// native server and the Worker feed the same `Catalog`): set, replaced,
+    /// then cleared.
+    #[test]
+    fn a_census_event_sets_replaces_and_clears_a_maps_census() {
+        use live_proto::sign::{EventBody, KeyPair};
+        let key = KeyPair::generate();
+        let mut position = 0;
+        let mut event = |data: CensusSet| {
+            position += 1;
+            let body = EventBody::new(
+                &key,
+                "server:h",
+                &census_stream(data.map_id),
+                MAP_CENSUS_SET,
+                serde_json::to_value(&data).unwrap(),
+                time::OffsetDateTime::now_utc(),
+            );
+            RecordedEvent {
+                position,
+                version: 0,
+                hash: String::new(),
+                jws: body.sign(&key).into(),
+                jws_index: None,
+                body,
+            }
+        };
+        let mut one = rules::labels::Census::default();
+        one.tags
+            .insert("weapons\\rifle".into(), rules::labels::ObjectType::Weapon);
+        let catalog = Catalog::default();
+        let set = |map_id, census| CensusSet {
+            map_id,
+            census,
+            by: None,
+        };
+        catalog.apply(&event(set(30, Some(one.clone()))));
+        assert_eq!(catalog.read().censuses.get(&30), Some(&one));
+        catalog.apply(&event(set(30, Some(Default::default()))));
+        assert_eq!(catalog.read().censuses[&30], Default::default());
+        catalog.apply(&event(set(30, None)));
+        assert!(catalog.read().censuses.is_empty());
     }
 
     #[test]

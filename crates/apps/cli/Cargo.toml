@@ -31,6 +31,8 @@ viewer = { path = "../../tools/viewer", optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 firefight-kit = { path = "../../tools/firefight-kit", optional = true }
 forge = { workspace = true, optional = true }
+# `h2 live maps census`: the start gate's census of a map file.
+forge-doc = { workspace = true, optional = true }
 forge-build = { workspace = true, optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../../tools/h1campaign", optional = true }
@@ -166,6 +168,7 @@ desktop = [
     "dep:scenario-edit",
     "dep:firefight-kit",
     "dep:forge",
+    "dep:forge-doc",
     "dep:forge-build",
     "dep:viewer",
     "dep:h1campaign",

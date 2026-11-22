@@ -14,7 +14,8 @@
 //! (docs/game/mod-credits.toml). `analyze` reports what a mod contains
 //! and `details` sets published packages' descriptions, screenshots,
 //! reports and map packs (crate::live_maps_details,
-//! docs/game/mod-details.toml).
+//! docs/game/mod-details.toml). `census` sets a map's census for the
+//! hopper gate (docs/game/rules-start-gate.md).
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -60,6 +61,17 @@ pub const USAGE: &str = "usage: h2 live maps <command>
                           your disc's map: tag classes, swaps, stats,
                           placements; --out writes the report for
                           details --contents
+  census MAP [--id N] [--file MAP.map] [--disc ISO] [--mappack ISO] [--clear]
+              [--server URL] [--as GAMERTAG | --data DIR]
+                          set a map's census for the hopper gate, as an
+                          admin (or the operator's key with --data): what
+                          the map holds that rules scripts require (labelled
+                          zones, objects and starting locations, and its
+                          tags), read from your own copy of the map: MAP is
+                          a retail map (zanzibar or its id 30), read from
+                          the disc, or --file a modded map under --id. Live
+                          then lists the published hopper entries it
+                          blocks; --clear drops the census
   details --file DETAILS.toml [--images DIR] [--contents DIR] [--dry-run]
                 [--server URL] [--as GAMERTAG] [--data DIR]
                           set published packages' descriptions, screenshots
@@ -288,6 +300,74 @@ pub fn run(mut args: Args) -> Result<()> {
             }
             Ok(())
         }
+        Some("census") => {
+            args = args.shift();
+            let server = args.take("--server")?;
+            let as_tag = args.take("--as")?;
+            let data = args.take("--data")?;
+            let id = args.take("--id")?;
+            let file = args.take("--file")?.map(std::path::PathBuf::from);
+            let disc = args.take("--disc")?;
+            let mappack = args.take("--mappack")?;
+            let clear = args.flag("--clear");
+            let [map] = args
+                .positional_for(USAGE)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("census takes one MAP\n\n{USAGE}"))?;
+            let (map_id, stem) = census_map(&map, id.as_deref())?;
+            let set = if clear {
+                None
+            } else {
+                let bytes = match &file {
+                    Some(f) => {
+                        std::fs::read(f).with_context(|| format!("reading {}", f.display()))?
+                    }
+                    None => {
+                        let stem = stem.context(
+                            "that map id is not a retail map's: name its file with --file",
+                        )?;
+                        let disc = match disc {
+                            Some(d) => std::path::PathBuf::from(d),
+                            None => crate::default_disc()?,
+                        };
+                        let mappack = mappack
+                            .map(std::path::PathBuf::from)
+                            .or_else(|| crate::mappack_cmd::discover(&disc));
+                        crate::live_mod_import::disc_map_bytes(&disc, mappack.as_deref(), &stem)?
+                    }
+                };
+                Some(census_of_map(bytes)?)
+            };
+            let client = Client::connect(server)?;
+            let signer = match data {
+                Some(d) => Signer::Operator(crate::live_cmd::operator(Some(d), &client)?),
+                None => {
+                    Signer::Account(pick_account(&client, &accounts_path()?, as_tag.as_deref())?)
+                }
+            };
+            let answer = census(&client, &signer, map_id, set.as_ref())?;
+            println!(
+                "map {}: census {}",
+                answer.map_id,
+                if answer.set { "set" } else { "cleared" }
+            );
+            for b in &answer.blocked {
+                println!(
+                    "blocked: playlist {} entry {} (map {}): {}",
+                    b.hopper,
+                    b.entry,
+                    b.map_id,
+                    b.problems.join("; ")
+                );
+            }
+            if !answer.blocked.is_empty() {
+                println!(
+                    "{} published hopper entries are blocked by this census; fix or remove them",
+                    answer.blocked.len()
+                );
+            }
+            Ok(())
+        }
         Some("details") => {
             args = args.shift();
             let server = args.take("--server")?;
@@ -495,6 +575,55 @@ pub(crate) fn apply_credits(
         out.push(format!("{}  {}: credited {say}", w.map_id, m.name));
     }
     Ok(out)
+}
+
+/// The map id a hopper entry names and, for a retail map, its file stem:
+/// `map` is a retail map's name (`zanzibar`, `ivory_tower`) or its id; `id`
+/// overrides the id (a map that is not retail's).
+fn census_map(map: &str, id: Option<&str>) -> Result<(u32, Option<String>)> {
+    use live_proto::hopper::defaults::RETAIL_MAPS;
+    let norm = |s: &str| s.to_ascii_lowercase().replace([' ', '_'], "");
+    let retail = match map.parse::<u32>() {
+        Ok(n) => RETAIL_MAPS.iter().find(|(m, _)| *m == n),
+        Err(_) => RETAIL_MAPS.iter().find(|(_, name)| norm(name) == norm(map)),
+    };
+    let stem = retail.map(|(_, name)| name.to_ascii_lowercase().replace(' ', "_"));
+    let id = match (id, retail) {
+        (Some(i), _) => i
+            .parse::<u32>()
+            .map_err(|_| anyhow::anyhow!("--id is a decimal map id"))?,
+        (None, Some((m, _))) => *m,
+        (None, None) => map.parse::<u32>().map_err(|_| {
+            anyhow::anyhow!("{map:?} is not a retail map's name or id; give its id with --id")
+        })?,
+    };
+    Ok((id, stem))
+}
+
+/// A map file's census: its netgame flags, starting locations and tags.
+fn census_of_map(bytes: Vec<u8>) -> Result<rules::labels::Census> {
+    use forge_doc::CensusOf;
+    let mut map = map::Map::from_reader(std::io::Cursor::new(bytes)).context("reading the map")?;
+    rules::labels::Census::of_file(&mut map, None)
+        .map_err(|e| anyhow::anyhow!("reading the map's census: {e}"))
+}
+
+/// `PUT /v1/maps/{map_id}/census`: sets the census (None clears it) and
+/// answers with the published hopper entries it blocks.
+pub(crate) fn census(
+    client: &Client,
+    signer: &Signer,
+    map_id: u32,
+    census: Option<&rules::labels::Census>,
+) -> Result<live_proto::map_census::CensusAnswer> {
+    let req = client
+        .agent
+        .put(&client.url(&format!("/maps/{map_id}/census")))
+        .set("content-type", "application/json");
+    let req = client.authorized(req, signer.token(client, lxm::CONTENT_MODERATE)?)?;
+    let body = serde_json::to_vec(&census)?;
+    let text = call(req, Some(&body)).with_context(|| format!("setting map {map_id}'s census"))?;
+    serde_json::from_str(&text).context("reading the server's answer")
 }
 
 fn print_published(answer: &MapAnswer) {
