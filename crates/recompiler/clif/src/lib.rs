@@ -264,7 +264,7 @@ mod tests {
                 errors: Vec::new(),
             },
             selectors: std::collections::BTreeSet::from([entry]),
-            entries: vec![(entry, EntryKind::Function)],
+            entries: vec![(entry, emit::EntryKind::Function)],
             resumes: Vec::new(),
             entry_exits: 0,
             loops: Default::default(),
