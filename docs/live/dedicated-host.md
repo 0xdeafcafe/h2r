@@ -401,6 +401,13 @@ docker run --rm --name h2host-smoke --platform linux/amd64 \
   h2host:local
 ```
 
+`h2 live hosts list` prints `GET /v1/admin/hosts` (running and recent
+hosts, each lease's state, end reason, boot time and cost, and the month's
+spend against the budget) with an `admin.read` token.
+`h2 live hosts stop LEASE` stops one host with reason `stopped`. Both take
+the same `--live`, `--data` and `--as` flags as `start`
+([CLI](../../crates/apps/cli/src/live_hosts.rs)).
+
 The manual container owns the same lifecycle as a launched one: it
 registers its endpoint with the token (moving the lease straight from
 `requested` to `joinable` — no provider boot event exists to wait for),
