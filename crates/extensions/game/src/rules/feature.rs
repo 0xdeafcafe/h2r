@@ -130,7 +130,6 @@ fn manifest() -> hooks::Manifest {
         "Rules scripts: the VM of a script game on the authoritative machine",
     )
     .doc("docs/game/rules-engine.md")
-    .off_by_default()
 }
 
 /// Whether the `rules` feature is on under `switches`.
@@ -374,7 +373,7 @@ pub fn local_blob(prefix: [u8; 8]) -> Option<Vec<u8>> {
 }
 
 /// Why `rules.state` has no runtime to answer from.
-pub const OFF: &str = "the rules feature is off (H2_FEATURES=rules turns it on)";
+pub const OFF: &str = "the rules feature is off (H2_FEATURES=-rules turned it off)";
 
 /// The agent API's view of the runtime ([`agent::rules::Source`]). Without
 /// the feature it answers that it is off.

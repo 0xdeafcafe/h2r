@@ -383,8 +383,8 @@ pub(crate) fn register_core_film(
         )
         .context("installing the party lobby")?;
     }
-    // Rules scripts (docs/game/rules-engine.md, "The host runtime"): off
-    // unless H2_FEATURES names `rules`. A Live host puts the script's hash
+    // Rules scripts (docs/game/rules-engine.md, "The host runtime"): on
+    // unless H2_FEATURES turns `rules` off. A Live host puts the script's hash
     // on its session. A film replays a game whose host passed the start
     // gate, so the gate does not run in Theater.
     #[cfg(feature = "rules")]

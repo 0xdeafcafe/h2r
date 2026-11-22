@@ -2,7 +2,7 @@
 
 Status: Design, partly built: the `rules` formats crate runs on a fake game in tests and in the web workbench, and the host runtime on invented guest memory in tests only. Decisions by the user, 2026-11-21.
 Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM); `crates/extensions/game/src/rules` (the host runtime). Tests: `cargo test -p rules`, `cargo test -p game rules::`.
-Switch: `rules` in `H2_FEATURES`, off by default ([switches.md](../runtime/switches.md)); the `rules` cargo feature of `game` and `boot` compiles it in.
+Switch: `rules` in `H2_FEATURES`, on by default (`-rules` turns it off) ([switches.md](../runtime/switches.md)); the `rules` cargo feature of `game` and `boot` compiles it in.
 
 One scriptable engine runs every multiplayer game type. A game type is a
 script compiled to a small verified IR, plus option values in the variant

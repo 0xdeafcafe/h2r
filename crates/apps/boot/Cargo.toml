@@ -104,8 +104,8 @@ perf = ["dep:perf", "game/perf"]
 # maps.test.* on the agent: test maps built from recipes (test_maps.rs,
 # docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
 test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit"]
-# The rules host runtime (docs/game/rules-engine.md); H2_FEATURES=rules
-# turns it on.
+# The rules host runtime (docs/game/rules-engine.md); on at run time
+# unless H2_FEATURES=-rules.
 rules = ["game/rules"]
 
 [dev-dependencies]

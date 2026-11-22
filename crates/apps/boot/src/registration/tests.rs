@@ -18,8 +18,8 @@ use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer, the engine leaves,
 /// Forge, the actor capture, Firefight and the creature probe are on by
-/// default; only the diagnostics, the rules scripts (off by default) and
-/// `impl.engine=on` are spelled out).
+/// default; only the diagnostics and `impl.engine=on` are spelled out;
+/// `rules`, on by default too, stays named).
 pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight,rules";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
@@ -498,10 +498,10 @@ fn the_biggest_plans_leave_room_in_the_guest_arena() {
     }
 }
 
-/// The rules runtime is off by default, and `rules` puts it in the plan.
+/// The rules runtime is on by default, and `-rules` takes it out of the plan.
 #[cfg(feature = "rules")]
 #[test]
-fn the_rules_runtime_is_planned_only_when_named() {
+fn the_rules_runtime_is_planned_unless_turned_off() {
     let has = |switches: &str| {
         plan(&Case::full(switches))
             .unwrap()
@@ -509,9 +509,10 @@ fn the_rules_runtime_is_planned_only_when_named() {
             .iter()
             .any(|f| f.id == crate::rules::feature::FEATURE && f.off.is_none())
     };
-    assert!(!has(""));
+    assert!(has(""));
     assert!(has("rules"));
     assert!(has(ALL_ON));
+    assert!(!has("-rules"));
 }
 
 /// With the rules runtime on, the carrier engine's scoring and role-making
@@ -519,7 +520,7 @@ fn the_rules_runtime_is_planned_only_when_named() {
 /// while a script runs (`rules::scoring`); off, none of them is hooked.
 #[cfg(feature = "rules")]
 #[test]
-fn the_rules_runtime_answers_the_carriers_scoring_only_when_named() {
+fn the_rules_runtime_answers_the_carriers_scoring_unless_turned_off() {
     const SCORING: [&str; 4] = ["JUGGERNAUT_KILL", "JUGGERNAUT_TICK", "SCORE_ADD", "SLAYER_KILL"];
     let befores = |switches: &str| {
         let plan = plan(&Case::full(switches)).unwrap();
@@ -540,7 +541,8 @@ fn the_rules_runtime_answers_the_carriers_scoring_only_when_named() {
     let want: Vec<_> = SCORING.iter().map(|&p| (p, "before")).collect();
     assert_eq!(befores("rules"), want);
     assert_eq!(befores(ALL_ON), want);
-    assert!(befores("").is_empty());
+    assert_eq!(befores(""), want);
+    assert!(befores("-rules").is_empty());
 }
 
 /// The features `run_hosted_with_live` adds around `register_core` and
