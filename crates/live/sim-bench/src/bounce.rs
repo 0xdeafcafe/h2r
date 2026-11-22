@@ -35,9 +35,11 @@ pub const SAME_Z: f32 = 0.5;
 pub const LAUNCH_FALL: f32 = 0.1;
 /// ... or this long (ticks) after the bounce.
 pub const LAUNCH_TICKS: u32 = 150;
-/// The heights kept before a bounce, to find its touchdown (the award can
-/// come a tick after the touchdown).
-pub const RECENT: usize = 4;
+/// The heights kept before a bounce, to find its touchdown: the award
+/// comes when the landing's launch window closes,
+/// [`crate::drops::LAUNCH_TICKS`] after the touchdown, so the touchdown
+/// and the tick before it are kept with the window.
+pub const RECENT: usize = crate::drops::LAUNCH_TICKS as usize + 2;
 
 /// One event, as the glue reads it.
 #[derive(Clone, Debug, PartialEq)]

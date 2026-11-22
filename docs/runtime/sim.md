@@ -1188,7 +1188,8 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   the fall, the drop starting `lead` units back against the push, once
   from each side in `from`; without it the seat falls straight. `seats`
   (1 to 15, default 15) is the seat count when the file lists no
-  `[[bot]]`, `bounce_vz` (default 3) the launch that counts as a bounce,
+  `[[bot]]`, `bounce_vz` (default 3.5, `sim::drops::BOUNCE_VZ`, the
+  game's landing classifier's too) the launch that counts as a bounce,
   `settle_ticks`, `fall_ticks` and `after_ticks` (240, 300, 15) the
   phases' limits, `retries` (2) how often a setup failure is tried again,
   `out` the results directory (default `results/<file stem>` beside the
@@ -1221,7 +1222,8 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   row keeps the pairs' agents and words before the write.
 - **Outcomes.** A touchdown is the vertical speed coming back over -0.5
   after falling faster than -1. `bounced`: the best vertical speed of the
-  touchdown tick and the 3 after reached `bounce_vz`; the record gives the
+  touchdown tick and the 3 after (`sim::drops::LAUNCH_TICKS`, the game's
+  landing window too) reached `bounce_vz`; the record gives the
   launch speed and height (apex minus the touchdown's low point, the rest
   estimated ballistically if the apex comes after `after_ticks`).
   Otherwise the touchdown tick's prime decides: the pairs read the tick

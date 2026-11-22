@@ -44,6 +44,7 @@ use superbounce::verified::Entry;
 use superbounce::{Kind, Spot, Status, Vec3};
 
 use crate::superbounce_chain::{Award, CLEAR_FROM, SLOTS, Seen, TELEPORT};
+use crate::superbounce_charge::LAUNCH_TICKS;
 use crate::superbounce_font::Look;
 
 // ---- the control ----
@@ -170,7 +171,7 @@ pub struct Sample {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Flight {
     spot: Vec3,
-    /// The bounce tick's place in the buffer.
+    /// The touchdown tick's place in the buffer.
     touchdown: usize,
     launch: f32,
 }
@@ -188,9 +189,10 @@ fn distance(a: Vec3, b: Vec3) -> f32 {
 }
 
 impl Track {
-    /// Where the player was at the last tick.
-    pub fn last_at(&self) -> Option<Vec3> {
-        self.buf.back().map(|s| s.at)
+    /// Where the player was `n` ticks before the last.
+    pub fn at_back(&self, n: usize) -> Option<Vec3> {
+        let i = self.buf.len().checked_sub(n + 1)?;
+        Some(self.buf[i].at)
     }
 
     /// The facing at the last tick.
@@ -213,7 +215,10 @@ impl Track {
     }
 
     /// One tick: `s` is the player's (`None` without a unit), `bounce` the
-    /// spot's `stand` when the chain filed a bounce this tick. A teleport,
+    /// spot's `stand` when the chain filed a bounce this tick: the chain
+    /// files it when its launch window closes, [`LAUNCH_TICKS`] after the
+    /// touchdown, so the flight is counted from that many ticks back, its
+    /// launch the best vertical speed since. A teleport,
     /// a new unit or a gap in the ticks starts the track again. Returns
     /// the run once a bounce reaches its top.
     pub fn step(
@@ -240,11 +245,18 @@ impl Track {
         self.buf.push_back(s);
         let i = self.buf.len() - 1;
         if let Some(spot) = bounce {
-            if self.flight.is_none() && i > 0 {
+            let window = LAUNCH_TICKS as usize;
+            if self.flight.is_none() && i > window {
+                let touchdown = i - window;
+                let launch = self
+                    .buf
+                    .range(touchdown..)
+                    .map(|s| s.vz)
+                    .fold(f32::NEG_INFINITY, f32::max);
                 self.flight = Some(Flight {
                     spot,
-                    touchdown: i,
-                    launch: s.vz,
+                    touchdown,
+                    launch,
                 });
             }
             return None;
@@ -1000,8 +1012,13 @@ pub fn tick(
                 && !a.medals.is_empty()
                 && !a.medals.contains(&Medal::Bounced)
         });
+        // The chain files a bounce when its window closes: the origin
+        // judged is the tick before the touchdown, LAUNCH_TICKS before the
+        // last one kept.
         let bounce = if bounced {
-            track.last_at().and_then(|p| spot_at(spots, p))
+            track
+                .at_back(LAUNCH_TICKS as usize)
+                .and_then(|p| spot_at(spots, p))
         } else {
             None
         };

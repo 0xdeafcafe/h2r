@@ -503,7 +503,7 @@ impl Run {
                     let result = superbounce_charge::classify(
                         &self.spot, prev.word, prev.pos, speed_in, vz_out,
                     );
-                    v.ok = result == LandingResult::Bounce && vz_out > BOUNCE_VZ;
+                    v.ok = result == LandingResult::Bounce && vz_out >= BOUNCE_VZ;
                     v.contact_tick = Some(tick);
                     v.speed_in = Some(speed_in);
                     v.vz_out = Some(vz_out);

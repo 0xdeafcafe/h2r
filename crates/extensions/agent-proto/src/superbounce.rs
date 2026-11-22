@@ -155,9 +155,16 @@ pub struct State {
     /// a strip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landing: Option<Predicted>,
-    /// The last landing within 0.5 of a strip, filed at touchdown.
+    /// The last landing within 0.5 of a strip, or primed bounce anywhere,
+    /// filed when its launch window (the touchdown tick and the 3 after)
+    /// closes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_landing: Option<Landing>,
+    /// The local player's last bounces no marked strip accounts for (none
+    /// within 0.5, or the origin outside the catch of the one there is),
+    /// oldest first, at most 16 this game: seams to harvest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_spot: Vec<OffSpot>,
     /// Whether the standing capsule fits at the player's origin (the
     /// mode's capsule test against the scanned collision); absent before
     /// the scan is ready.
@@ -359,7 +366,8 @@ pub struct Predicted {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LandingResult {
-    /// The vertical speed came out over 8 units/s.
+    /// The launch (the best vertical speed of the touchdown tick and the
+    /// 3 after) reached 3.5 units/s: by a strip, or primed anywhere.
     Bounce,
     /// The word was not -3 on the tick before.
     NotPrimed,
@@ -371,14 +379,31 @@ pub enum LandingResult {
     NoBounce,
 }
 
-/// A landing filed at touchdown.
+/// A landing, filed when its launch window closes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Landing {
     pub result: LandingResult,
-    /// The game tick it was filed on.
+    /// The game tick of the touchdown.
     pub tick: u32,
     /// The origin on the tick before touchdown, world units.
     pub at: [f64; 3],
+}
+
+/// A primed bounce no marked strip accounts for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OffSpot {
+    /// The game tick of the touchdown.
+    pub tick: u32,
+    /// The origin on the tick before touchdown, world units.
+    pub at: [f64; 3],
+    /// The collision edge of the scanned bounce spot within 0.5 of `at`,
+    /// marked or not; absent with none that near.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<[[f64; 3]; 2]>,
+    /// The vertical speed in, units/s (positive).
+    pub speed_in: f64,
+    /// The launch, units/s up.
+    pub launch: f64,
 }
 
 // ---- superbounce.set ----
@@ -1233,6 +1258,13 @@ mod tests {
                 tick: 6753,
                 at: [1.0, 2.0, -3.0],
             }),
+            off_spot: vec![OffSpot {
+                tick: 7000,
+                at: [4.0, 5.0, 6.0],
+                edge: None,
+                speed_in: 6.0,
+                launch: 4.2,
+            }],
             standing_fits: Some(false),
             medals: Medals {
                 players: vec![MedalPlayer {
@@ -1272,6 +1304,8 @@ mod tests {
         assert_eq!(v["landing"]["locked"], true);
         assert_eq!(v["nav_target"]["fall"], 0.0);
         assert_eq!(v["last_landing"]["result"], "not_primed");
+        assert_eq!(v["off_spot"][0]["launch"], 4.2);
+        assert!(v["off_spot"][0].get("edge").is_none());
         assert_eq!(v["standing_fits"], false);
         let bare = serde_json::to_value(State::default()).unwrap();
         for absent in [
@@ -1282,6 +1316,7 @@ mod tests {
             "takeoff",
             "landing",
             "last_landing",
+            "off_spot",
             "standing_fits",
         ] {
             assert!(bare.get(absent).is_none(), "{absent}");

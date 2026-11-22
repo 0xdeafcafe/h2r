@@ -556,9 +556,11 @@ pub fn drop_trial(spot: usize, s: &Spot, across: f32, along: f32, height: f32) -
 pub const IN_TICKS: u32 = 60;
 pub const CROUCH_FIRST_MAX: u32 = 20;
 pub const RELEASE_TICKS: u32 = 6;
-/// Ticks a teleport is waited for, and the landing read after contact.
+/// Ticks a teleport is waited for.
 pub const TELEPORT_TICKS: u32 = 30;
-pub const AFTER_TICKS: u32 = 3;
+/// Ticks after contact read for the launch: the landing classifier's
+/// window (`superbounce_charge::LAUNCH_TICKS`), the sim's too.
+pub const AFTER_TICKS: u32 = crate::superbounce_charge::LAUNCH_TICKS;
 
 /// A guess at the batch's length in game ticks: each trial at its most.
 pub fn estimate(plan: &Plan) -> u64 {

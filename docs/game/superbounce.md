@@ -1237,7 +1237,7 @@ read, the scanner's rules and the world overlay. The numbers are in
 The scanner's part (the stricter crouch rule, the strip's edge and the
 one catch) is built in `crates/live/superbounce`. The state is built:
 `superbounce_mode::State` carries `charge`, `verb`,
-`nav_target`, `landing`, `last_landing`, `still_ticks` and
+`nav_target`, `landing`, `last_landing`, `off_spot`, `still_ticks` and
 `standing_fits` (Code: `crates/extensions/game/src/superbounce_charge.rs`
 for the tracker and the landing classifier,
 `superbounce_capsule.rs` for the capsule test, `superbounce_assist.rs`'s
@@ -1427,18 +1427,40 @@ under them.
   far outside the edge's catch it lands (0 when caught), and it is
   `locked` when it is `OnSlot` and `speed` is at least `need`
   (`superbounce_charge::Predicted`).
-- **What happened.** On the tick a primed or unprimed player touches
-  down within 0.5 of a strip the mode files the landing: `bounce` when
-  the vertical speed comes out over 8 units/s, else the first of
-  `not primed` (the word was not −3 on the tick before), `missed` (the
-  origin was outside the edge's catch), `too slow` (the speed in was under
-  `need`), `no bounce`. A touchdown is a tick whose previous tick was
+- **What happened.** A touchdown is a tick whose previous tick was
   airborne and falling at 1 unit/s or more and which has stopped falling
   (over −0.5), launched, or landed; the origin tested is the previous
-  tick's, before the contact moves it. A bounce flashes the strip once
-  and the others dim it for a second. The HUD says it in the
-  notification list, and `superbounce.state` returns the last landing as
-  `last_landing`: the outcome, the game tick and the origin.
+  tick's, before the contact moves it. The launch is the best vertical
+  speed of the touchdown tick and the 3 after
+  (`superbounce_charge::LAUNCH_TICKS`, `Pending`): the push can show a
+  tick or two after the contact, with the touchdown tick itself near 0.
+  The landing is judged and filed when that window closes
+  (`superbounce_charge::judge`), so the HUD, the steps and the medals
+  only ever see the settled verdict. Within 0.5 of a strip it is
+  `bounce` when the launch reaches 3.5 units/s
+  (`superbounce_charge::BOUNCE_VZ`), else the first of `not primed` (the
+  word was not −3 on the tick before), `missed` (the origin was outside
+  the edge's catch), `too slow` (the speed in was under `need`), `no
+  bounce`. Off every strip a primed launch that reaches 3.5 is a
+  `bounce` all the same, and any other touchdown there files nothing.
+  3.5 is the sim's seam drops' `bounce_vz`, the one value both use
+  (`sim_bench::drops::BOUNCE_VZ`): over a standing jump's launch, 3.08
+  (`bots::bounce_route::JUMP_VZ`), so a hop on landing is not a bounce,
+  and under every measured bounce, which launch at 4 and over
+  ([Covered seams](#covered-seams)). The HUD says it in the notification list, and
+  `superbounce.state` returns the last landing as `last_landing`: the
+  outcome, the touchdown's game tick and the origin.
+- **Off-spot bounces.** A primed bounce no marked strip accounts for
+  (none within 0.5, or the origin outside the catch of the one there
+  is) is a seam the marks don't know yet. The mode keeps the first local
+  player's last 16 of the game (`superbounce_mode::OFF_SPOT_MAX`) on
+  `superbounce.state`'s `off_spot`: the touchdown's tick, the origin, the
+  edge of the bounce spot within 0.5 (the marked strip's, else the
+  nearest of the whole scan, proven or not; absent with none), the speed
+  in and the launch. They are for harvesting: the verified file is
+  keyed by a scanned spot and written by runs that try it
+  ([Verifying spots](#verifying-spots)), so one bounce in play proves
+  nothing there.
 
 ### Floor marks
 
@@ -1652,7 +1674,7 @@ written again each tick there is a pair. Contact is the first tick the
 vertical speed is back over −0.5 after falling faster than −1; the speed
 in is the tick before's, the speed out the best of the contact tick and
 the three after. The landing is classified as the HUD's are
-(`superbounce_charge::classify`): `bounce` (out over 8 units/s),
+(`superbounce_charge::classify`): `bounce` (out at 3.5 units/s or more),
 `not_primed`, `missed`, `too_slow` or `no_bounce`; `no_touchdown` when
 it never lands within `fall_ticks` (120). `prime` `none` is the control:
 a strip that launches with it is not a superbounce.
@@ -1718,7 +1740,9 @@ such player has a track of its last minute of ticks: the origin, the
 aim's yaw, the vertical speed, the airborne bit, the level pair's word
 and the crouch request (unit flags bit 23). A teleport (more than 3
 units in a tick), a new unit or a gap in the ticks starts it again.
-When the chain files a bounce ([Medals](#medals)), the track follows the
+When the chain files a bounce ([Medals](#medals)), 3 ticks after its
+touchdown as its launch window closes, the track counts the flight from
+the touchdown (its launch the best vertical speed since), follows the
 climb to its top (the first tick not rising, or 90 ticks) and makes the
 run:
 
@@ -1730,7 +1754,8 @@ run:
 - each tick is a frame: the origin, the facing, and flags for the
   crouch request, the jump's take-off (off the ground at 1 unit/s up or
   more, before the bounce), airborne and primed;
-- the spot is the strip within 0.5 of the touchdown origin, its `stand`.
+- the spot is the strip within 0.5 of the touchdown origin, its `stand`;
+  a bounce with no strip that near makes no run.
 
 The inputs come from the unit, not the pad, so every seat is recorded
 the same way: the crouch request is the crouch the game acted on (a
@@ -1848,18 +1873,24 @@ Sixteen pair reads a tick at most, only while the mode is on.
   −0.5), launched, or landed. Here it counts anywhere on the map, by a
   strip or not.
 - **A bounce** is a touchdown the landing classifier files as `bounce`
-  (within 0.5 of a strip, out at over 8 units/s,
-  `superbounce_charge::strip_landing`), with the word at −3 on the tick
-  before. Every measured bounce had the word ([the touchdown
-  tick](#the-touchdown-tick-trace-stepped): 0 of 4 without it), and the
-  test keeps an explosion or a lift beside a strip from counting.
-  The bounce names its strip, the nearest within 0.5
+  once its launch window closes ([Landings](#landings): the best
+  vertical speed of the touchdown tick and the 3 after reaches 3.5
+  units/s, `superbounce_charge::judge`), with the word at −3 on the
+  tick before. The chain holds each touchdown that could be one
+  (primed, or in a live chain) for that window, so the medal comes 3
+  ticks after the contact. Every measured bounce had the word ([the
+  touchdown tick](#the-touchdown-tick-trace-stepped): 0 of 4 without
+  it), and the test keeps an explosion or a lift from counting. It
+  counts wherever it happened: off a marked strip or not. A bounce by a
+  strip names it, the nearest within 0.5
   (`superbounce_charge::landing_spot`), by `superbounce_chain::spot_id`,
   and a running rules script hears it as `on bounce`
-  ([the game type](#the-superbounce-game-type)).
-- **A Monster Bounce** is a bounce whose vertical speed comes out over
-  16 units/s (`superbounce_chain::MONSTER_VZ`), the speed the landing
-  classifier reads (`strip_landing`'s `vz`). Every measured launch was
+  ([the game type](#the-superbounce-game-type)). A bounce off every
+  strip earns its medals and is recorded with no strip (`Award::spot`
+  `None`); a script does not hear it, as it has no strip id to give.
+- **A Monster Bounce** is a bounce whose launch comes out over
+  16 units/s (`superbounce_chain::MONSTER_VZ`), the launch the landing
+  classifier reads (`Pending::launch`). Every measured launch was
   under it: 7.97 to 13.22 over the six traced bounces
   ([Traces](#traces-trace)) and 12.31 to 12.45 with the word set
   ([the pair word](#the-pair-word-trace-lab-playback)); 16 is about a
@@ -1880,8 +1911,8 @@ Sixteen pair reads a tick at most, only while the mode is on.
   - a touchdown that is not a bounce (a plain landing, or a caught
     one, which leaves the airborne bit set);
   - a tick with the airborne bit clear, from the third tick after the
-    bounce on (`CLEAR_FROM`; a soft landing at the top of the flight is
-    no touchdown);
+    bounce's touchdown on, the tick its window closes (`CLEAR_FROM`; a
+    soft landing at the top of the flight is no touchdown);
   - the player's unit changing or going (a death, a respawn, a
     vehicle), or its origin moving more than 3 units in a tick
     (`TELEPORT`: a teleporter, `sim.state.set`);
