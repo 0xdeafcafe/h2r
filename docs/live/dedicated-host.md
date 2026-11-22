@@ -1,6 +1,6 @@
 # Running Halo 2 as a dedicated host
 
-**Partially feasible.** A Mac can run the native title without a window. The question is whether Halo 2 will keep that machine in charge when every player is remote. Its simulation chooses the host by machine identity, but its normal lobby starts through a local player. The dedicated-host spike provides `h2 serve --system-link` for the first real client join. The join and zero-local-player lifecycle still need a game run.
+**Partially feasible.** Zero-local-player matches run on Cloudflare hosts: an all-phantom sim lease boots from the private bundle, plays to `match_over` and reports ([measurements](notes/host-halving.md)). A remote human joining a dedicated host still needs a game run, on a Mac with `h2 lab run --dedicated` and on a Cloudflare host through the tunnel. Halo 2's simulation chooses the host by machine identity, but its normal lobby starts through a local player; the host lobby below supplies that start without one.
 
 Live would choose and reserve the machine. The native game would run the match. With that arrangement every player has a network path to the authority, including the player who used to host. Fairness improves by removing that player's zero-network-delay advantage. Latency improves for a given player only if the new route and server perform better.
 
