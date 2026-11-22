@@ -37,6 +37,10 @@ pub struct DecoratorLook {
     /// its input semantics (register `v<i>` reads `semantics[i]`).
     pub microcode: Vec<u8>,
     pub semantics: Vec<u16>,
+    /// The pass sets no `CULLMODE`: it draws with the cull and winding
+    /// the device holds at the layer-3 call
+    /// (`decorators_gpu::DrawKey::cull`).
+    pub inherits_cull: bool,
 }
 
 /// The pass of `material` at detail level `lod`, layer `layer`, pass
@@ -60,10 +64,8 @@ pub fn decorator_look(
         return Err("engine-driven texture stage states".into());
     }
     // A pass that leaves the cull to the device draws as the draws before
-    // it left it: not known here.
-    if !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode) {
-        return Err("the pass inherits the device's cull".into());
-    }
+    // it left it: the device's at the layer-3 call, read at the ask.
+    let inherits_cull = !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
     let look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
     if look.textures.contains(&Stage::Lightmap) {
         return Err("a stage samples a lightmap".into());
@@ -71,7 +73,7 @@ pub fn decorator_look(
     let state = pass_state(&imp.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
-    Ok(DecoratorLook { look, state, microcode, semantics })
+    Ok(DecoratorLook { look, state, microcode, semantics, inherits_cull })
 }
 
 /// A decorator pass translated for one set's stream.
@@ -92,6 +94,8 @@ pub struct DecoratorProgram {
     pub state: PassState,
     /// The registers the set's stream supplies, in vertex-buffer order.
     pub declaration: Vec<Element>,
+    /// [`DecoratorLook::inherits_cull`].
+    pub inherits_cull: bool,
 }
 
 /// The pixel shader as the draw has it: `TwoSidedLighting` on
@@ -162,6 +166,7 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         pixel: t.pixel,
         state: look.state,
         declaration,
+        inherits_cull: look.inherits_cull,
     })
 }
 
@@ -263,7 +268,7 @@ pub(crate) mod tests {
 
     /// Semantic 0 (a three-float position) in `v0`.
     pub(crate) fn decorator(extra: Option<O>) -> DecoratorLook {
-        DecoratorLook { look: look(), state: state(), microcode: code(extra), semantics: vec![0] }
+        DecoratorLook { look: look(), state: state(), microcode: code(extra), semantics: vec![0], inherits_cull: false }
     }
 
     pub(crate) fn stream() -> Vec<StreamElement> {

@@ -496,7 +496,7 @@ mod tests {
         b.push_layer(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0, inputs: Default::default() }).unwrap();
         let world = LayerItem {
             slot: 0, key, owner: LayerOwner::Cluster(3), model: u32::MAX, rows: 0..0, lighting: None,
-            flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None,
+            flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None, prt: None,
         };
         b.push_layer_item(world.clone(), &[]).unwrap();
         b.push_layer_item(LayerItem { slot: 1, ..world }, &[]).unwrap();

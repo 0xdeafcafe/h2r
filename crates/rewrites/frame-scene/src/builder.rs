@@ -662,7 +662,7 @@ mod tests {
         };
         let entry = |slot, owner| LayerItem {
             slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None,
-            flags: crate::PartFlags::NONE, subparts: None, refusal: None,
+            flags: crate::PartFlags::NONE, subparts: None, refusal: None, prt: None,
         };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());

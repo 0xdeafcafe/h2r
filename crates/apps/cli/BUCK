@@ -20,6 +20,7 @@ crate_tree(
         ":src",
         "//:deploy",
         "//:docs",
+        "//:editors",
         "//:web",
     ],
 )
@@ -30,6 +31,7 @@ crate_tree(
         ":all",
         "//:deploy",
         "//:docs",
+        "//:editors",
         "//:web",
     ],
 )

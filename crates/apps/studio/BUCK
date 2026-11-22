@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/apps/app-icon:app-icon",
         "//crates/apps/boot:boot",
+        "//crates/apps/live-mirror:live-mirror",
         "//crates/apps/studio-proto:studio-proto",
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/formats/content:content",
@@ -68,7 +69,6 @@ workspace_library(
         "//crates/tools/h1objects:h1objects",
         "//crates/tools/hopper-edit:hopper-edit",
         "//crates/tools/hud-edit:hud-edit",
-        "//crates/apps/live-mirror:live-mirror",
         "//crates/tools/scenario-edit:scenario-edit",
         "//third-party/rust:ab_glyph",
         "//third-party/rust:anyhow",
@@ -106,6 +106,7 @@ workspace_test(
     deps = [
         "//crates/apps/app-icon:app-icon",
         "//crates/apps/boot:boot",
+        "//crates/apps/live-mirror:live-mirror",
         "//crates/apps/studio-proto:studio-proto",
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/extensions/agent:agent",
@@ -134,7 +135,6 @@ workspace_test(
         "//crates/tools/h1objects:h1objects",
         "//crates/tools/hopper-edit:hopper-edit",
         "//crates/tools/hud-edit:hud-edit",
-        "//crates/apps/live-mirror:live-mirror",
         "//crates/tools/scenario-edit:scenario-edit",
         "//third-party/rust:ab_glyph",
         "//third-party/rust:anyhow",
@@ -172,6 +172,7 @@ workspace_binary(
     deps = [
         "//crates/apps/app-icon:app-icon",
         "//crates/apps/boot:boot",
+        "//crates/apps/live-mirror:live-mirror",
         "//crates/apps/studio-proto:studio-proto",
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/formats/content:content",
@@ -199,7 +200,6 @@ workspace_binary(
         "//crates/tools/h1objects:h1objects",
         "//crates/tools/hopper-edit:hopper-edit",
         "//crates/tools/hud-edit:hud-edit",
-        "//crates/apps/live-mirror:live-mirror",
         "//crates/tools/scenario-edit:scenario-edit",
         "//third-party/rust:ab_glyph",
         "//third-party/rust:anyhow",
@@ -238,6 +238,7 @@ workspace_test(
     deps = [
         "//crates/apps/app-icon:app-icon",
         "//crates/apps/boot:boot",
+        "//crates/apps/live-mirror:live-mirror",
         "//crates/apps/studio-proto:studio-proto",
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/extensions/agent:agent",
@@ -266,7 +267,6 @@ workspace_test(
         "//crates/tools/h1objects:h1objects",
         "//crates/tools/hopper-edit:hopper-edit",
         "//crates/tools/hud-edit:hud-edit",
-        "//crates/apps/live-mirror:live-mirror",
         "//crates/tools/scenario-edit:scenario-edit",
         "//third-party/rust:ab_glyph",
         "//third-party/rust:anyhow",

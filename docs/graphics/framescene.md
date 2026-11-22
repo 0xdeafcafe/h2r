@@ -7,8 +7,9 @@ page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
 census and the layer draws of the structure's static items and the
-objects' items (layers 1, 7, 8 and 20; the first person's 1, 7 and 8)
-from the plan, on by default, are built, and its
+objects' items (layers 1, 7, 8 and 20, and layer 5's whose model has
+no PRT block; the first person's 1, 7 and 8) from the plan, on by
+default, are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
@@ -861,8 +862,15 @@ commits. The three parts are built.
   mark only in layers 1 and 3, where the prologue `0x0004d640` sets a
   stencil mode) and chosen subparts, or a named cause the scene cannot
   reproduce it (`LayerObjectRefusal`: a fade byte, the shader's flag
-  bit 0, an argument the pass setup takes, layer 5's own stream, a
-  topology, subparts or auxiliary state that do not read);
+  bit 0, an argument the pass setup takes, layer 5's PRT stream left as
+  the draws before it left it, a topology, subparts or auxiliary state
+  that do not read). In layer 5 an object item whose model has a PRT
+  block carries what the draw adds for it (`frame_scene::PrtStream`,
+  read by `scene_extract::layout::prt`, research points in its module
+  notes): the stream's type, stride and the guest address of the item's
+  section's vertices at the object's level, and the constants from
+  `c[68]` on (the object's entry's vector, a fixed vector, then its
+  coefficients);
   the pass keeps the stencil-off flags and whether the texture
   accumulation target binds. Another build callback, or a record, owner
   or rows that do not read, is the pass's remainder. The first person
@@ -970,14 +978,16 @@ to the guest's draws (**Code**):
     `FogProgram`), all or nothing per material and layer, and each
     material is resolved once with its instance's properties and input
     scales; `GpuWorld::set_layer` holds one `fog_gpu::FogSet` per layer.
-    The object models compile their materials' passes of layers 1, 7, 8
-    and 20 at load with their layer-3 passes
+    The object models compile their materials' passes of layers 1, 5,
+    7, 8 and 20 at load with their layer-3 passes
     (`object_program_gpu::lit_model`, `object_program::object_layer_pass`:
     over the same buffers, the pass's blend kept for its pipeline, no
     lightmap stage, since outside layer 3 the geometry draw binds no
     lightmap page or stream, `0x0004d28b`), per pass the
     implementations that compile (`LitLayerPart`, `LitLayerPass`; what
-    does not compile is `LitBuild::layer_refused`); the scene's models
+    does not compile is `LitBuild::layer_refused`, among it a layer-5
+    program that reads a constant from `c[68]` on, which only the PRT
+    stream's draw sets); the scene's models
     (`native_objects_glue`) and the first person's
     (`native_first_person_glue`) both build them.
     Before a scene view's layer draw (`layer_site` is `Site::Scene`), and
@@ -989,8 +999,9 @@ to the guest's draws (**Code**):
     placement's, its draw is static (no animation, no per-draw inputs:
     what the compiled programs hold) and the layer's set draws its part
     with its shader. An object item is drawn when extraction names no
-    cause, the layer is one of 1, 7, 8 and 20, its model is resident in
-    the caller's set, and each of its material's passes in the layer
+    cause, the draw adds no PRT stream for it (layer 5), its model is
+    resident in the caller's set, and each of its material's passes in
+    the layer
     plans (`LitObjects::plan_layer_item`, `plan_layer_part`: per pass
     the implementation it draws for the item, the per-object constants
     from the item's lighting, the pass's defaults and the item's rows,
@@ -999,6 +1010,16 @@ to the guest's draws (**Code**):
     no texture accumulation target; the device must draw W-buffered over
     the whole target, as layer 3's objects. An item toggling the
     auxiliary state is refused (its values are read at layer 3).
+    Skipping an item's guest draw must leave the device as drawing it
+    would, as layer 3's walk requires of the parts it skips
+    (`layer_pass::skip_holds`): each draw sets its pass's render-state
+    list without comparing (`0x0001a170`), and a pass switch and the
+    next layer's setup (`0x00016b10`) restore the cached
+    implementation's restore list, so a structure or object item is
+    taken only when every state of both lists already holds at the call
+    and its pass has no engine-driven render state. The first shader
+    begin's fixed states and cleared texture caches (`0x0001bbf0`) are
+    redone by the first one the guest keeps, or by the next layer's.
     `layer_pass::clear_layer_prefix` clears the layer's bit on the run of
     such items from the list's first, since the native pass records
     before the guest's draw; one external pass draws them, run by run in
@@ -1018,15 +1039,19 @@ to the guest's draws (**Code**):
     (`ALWAYS`, reference 0, `REPLACE` on pass), takes that state in its
     pipelines and its reference in its packets, and the pass reports a
     depth-stencil write when a draw writes. Everything else keeps its D3D
-    draws and so the indexed-draw admission: layer 5's object items,
-    animated or per-draw items, and every item after the first one the
+    draws and so the indexed-draw admission: layer 5's object items with
+    a PRT stream, animated or per-draw items, and every item after the
+    first one the
     stage cannot draw. Each ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
     `layer_plan_fp<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,
-    `object_fade` and the rest), `object_layer` (layer 5),
+    `object_fade` and the rest), `object_prt` (layer 5's PRT stream),
+    `object_layer` (a layer outside `object_program_gpu::OBJECT_LAYERS`),
+    `object_state` and `state` (an object or a structure item whose pass
+    would change a render state the device holds: `skip_holds`),
     `object_models` (the caller's models are not resident or their
     palettes changed), `object_viewport`, `object_w_buffer`,
     `object_model` (the item's model is not uploaded), `object_plan`
@@ -1074,6 +1099,12 @@ to the guest's draws (**Code**):
     for the objects,
     `a_world_layers_object_item_carries_its_records_flags_or_names_why_not`
     (`scene_extract::layout::object_walk`),
+    `layer_5_reads_the_objects_constants_and_its_sections_stream_at_its_level`,
+    `a_model_without_a_prt_block_adds_nothing` and
+    `a_draw_that_leaves_its_stream_or_constants_as_they_were_is_named`
+    (`scene_extract::layout::prt`),
+    `a_skipped_pass_holds_only_when_every_state_it_sets_and_restores_already_holds`
+    (`native_render::layer_pass`),
     `a_world_layers_draw_keeps_its_blend_and_inherits_what_it_leaves`
     (`native_render::object_state`),
     `a_world_layers_pass_keeps_its_blend_and_cannot_sample_the_lightmap`

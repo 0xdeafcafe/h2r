@@ -376,6 +376,7 @@ pub fn plan_without_game(
             flags: frame_scene::PartFlags::NONE,
             subparts: None,
             refusal: None,
+            prt: None,
         };
         let fogged = data
             .words

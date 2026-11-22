@@ -20,7 +20,6 @@ crate_tree(
         ":src",
         "//:Cargo.lock",
         "//crates/formats/xbe:src",
-        "//crates/hooking/guest-layout:src",
         "//crates/recompiler/analyze:src",
         "//crates/recompiler/clif:src",
         "//crates/recompiler/emit:src",
@@ -38,7 +37,6 @@ crate_tree(
         ":all",
         "//:Cargo.lock",
         "//crates/formats/xbe:src",
-        "//crates/hooking/guest-layout:src",
         "//crates/recompiler/analyze:src",
         "//crates/recompiler/clif:src",
         "//crates/recompiler/emit:src",
@@ -78,7 +76,6 @@ workspace_library(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/formats/xiso:xiso",
-        "//crates/hooking/guest-layout:guest-layout",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/clif:clif",
         "//crates/recompiler/emit:emit",
