@@ -355,7 +355,10 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
   (`LightInputs`, from `LightGlobals`); the host resolves the material
   with them (`ShaderLibrary::material`) and `light_look` takes the
   chosen implementation of layer 12 or 13, refusing passes that read
-  inputs nobody supplies, animated ones, engine-driven states, and
+  inputs nobody supplies, animated ones, engine-driven states from a
+  source other than the instance's scalar 21
+  (`engine_states::apply_static`, which puts the rest over the pass's
+  own), and
   engine textures but 1 (`Normalization`, bound as a cube), 9
   (`Attenuation`, a volume) and 10 (`Gel`, 2D): a pass sampling the
   shadow maps (13, 8) keeps its D3D draws. `compile_light` translates
@@ -447,7 +450,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 ## Rules and limits
 
 - On the resolved-draw path only structure geometry is drawn natively, and models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole group of layer 12 or 13, structure and model entries alike, is drawn from the scene with no handler.
-- A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state or an unsupplied constant keeps its D3D passes (`light_look`).
+- A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state from a source other than the instance's scalar 21 or an unsupplied constant keeps its D3D passes (`light_look`).
 - The visible-light gather at `0x00031c80`, the object-model lights, the object-shadow call `0x00032350`'s lights and the first-person lights (`0x000404b0`) run in the guest. The first-person records at `0x004c6b00` would need writing before the gather can be skipped.
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 

@@ -372,8 +372,10 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
   top byte; a colour packs each channel times 255, rounded and wrapped
   to a byte, red at bit 16. `native_render::engine_states::apply` maps
   the values onto a native pass's states (each render value after the
-  static list, each stage value into its `StageStates` field); no draw
-  calls it.
+  static list, each stage value into its `StageStates` field), and
+  `apply_static` for the passes translated once at the load (decorators,
+  the world's layer 3, lights, screen effects, fog), which take only the
+  instance's scalar 21 as a source.
 - **Engine input semantics** (which scalar or vector is time, camera, light
   colour and so on) are not named, apart from the root-fed ones.
 - **Persistent state.** The engine keeps texture slots, constant banks and the

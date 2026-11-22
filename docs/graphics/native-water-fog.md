@@ -59,7 +59,9 @@ the cached pipelines with their own uniforms and sampled textures.
   colour is `SET_FOG_COLOR` and its factor the fog unit's, both device
   state at the layer). It refuses what layer 3 refuses — per-draw
   engine inputs, engine textures other than the lightmap, animated
-  passes, engine-driven render or stage states, a definition without
+  passes, engine-driven states from a source other than the instance's
+  scalar 21 or a driven fog colour with the fog on
+  (`engine_states::apply_static`), a definition without
   its own final combiner (D3D builds one from the fog and specular
   states), bump-env/BRDF modes, border addressing — but
   not the fog register: the pass supplies it. The pipeline state must

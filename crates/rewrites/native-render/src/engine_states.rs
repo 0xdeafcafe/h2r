@@ -26,11 +26,17 @@
 //!   see the driven values;
 //! - `BUMPENV*`: no field; inert while the program has no bump texture
 //!   mode, which `pixel_parity` refuses.
+//!
+//! The passes translated once at the load (decorators, the world's layer
+//! 3, lights, screen effects, fog) take [`apply_static`], whose sources
+//! are the instance's own inputs only.
 
 use gfx::state::RenderStateType;
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
 use std::collections::HashMap;
-use tags::material::{EngineInputs, EngineState, EngineStateKind, EngineStateSource, ResolvedImplementation, engine_states};
+use tags::material::{
+    EngineInputs, EngineState, EngineStateKind, EngineStateSource, INSTANCE_SCALARS, ResolvedImplementation, engine_states,
+};
 use tags::shader::{RenderStateValue, StageStates};
 
 /// `D3DRS_FOGCOLOR`'s 5849 slot (`ANIMATED_RENDER_STATES`).
@@ -67,6 +73,9 @@ pub enum EngineStateRefusal {
     Stage { stage: u8 },
     /// `FOGCOLOR` driven with fog on.
     FogColour,
+    /// A source that is not the same for every draw of the material
+    /// ([`apply_static`]).
+    PerDraw { state: u8, stage: Option<u8> },
 }
 
 /// The bits of its state a value writes: a scalar into a colour its top
@@ -118,6 +127,26 @@ pub fn apply(imp: &ResolvedImplementation, inputs: &EngineInputs) -> Result<Engi
     Ok(EngineApplied { render_states, stage_states })
 }
 
+/// [`apply`] for a pass translated once at the load, its states the same
+/// for every draw of the material: each source must be an input the
+/// shader instance supplies (`INSTANCE_SCALARS`, in `inputs` from
+/// `EngineInputs::for_shader`) that the implementation reads, so
+/// `0x0001ae70` fills its slot. Any other source is an input the draw
+/// supplies (time, lights, the object), which changes per draw, or a slot
+/// the context holds from an earlier draw; a colour source is a vector
+/// input, and the instance supplies none.
+pub fn apply_static(imp: &ResolvedImplementation, inputs: &EngineInputs) -> Result<EngineApplied, EngineStateRefusal> {
+    let (render, stage) = engine_states(imp).ok_or(EngineStateRefusal::Undecoded)?;
+    let fixed = |s: &EngineState| match s.source {
+        EngineStateSource::Scalar(n) => n < 64 && INSTANCE_SCALARS & imp.input_reads.scalars & (1u64 << n) != 0,
+        EngineStateSource::Colour(_) => false,
+    };
+    if let Some(s) = render.iter().chain(&stage).find(|s| !fixed(s)) {
+        return Err(EngineStateRefusal::PerDraw { state: s.state, stage: s.stage });
+    }
+    apply(imp, inputs)
+}
+
 /// Whether `states` leave fog on (`FOGENABLE`; unset, the default off,
 /// as `pass_state` reads it).
 fn fog_on(states: &[RenderStateValue]) -> bool {
@@ -130,7 +159,7 @@ fn fog_on(states: &[RenderStateValue]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use map::TagId;
     use tags::material::{InputReads, Origin, Register};
@@ -138,7 +167,7 @@ mod tests {
 
     /// A synthetic implementation with `render` static states and
     /// `stages` stage records.
-    fn implementation(render: Vec<RenderStateValue>, stages: usize) -> ResolvedImplementation {
+    pub(crate) fn implementation(render: Vec<RenderStateValue>, stages: usize) -> ResolvedImplementation {
         let stage = StageStates {
             address_u: 1,
             address_v: 1,
@@ -172,7 +201,7 @@ mod tests {
             input_reads: InputReads::default(),
             vector_bindings: Vec::new(),
             scalar_bindings: Vec::new(),
-            vertex_constants: vec![Register { index: 18, value: [0.0; 4], written: 0xf, origin: Origin::Engine }],
+            vertex_constants: vec![Register { index: 18, value: [0.0; 4], written: 0xf, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
             engine_render_states: Vec::new(),
@@ -243,5 +272,25 @@ mod tests {
         assert_eq!(apply(&imp, &inputs()), Err(EngineStateRefusal::Slot { state: 6, stage: Some(1) }));
         imp.engine_stage_states = vec![b([4, 0, 1, 0])];
         assert_eq!(apply(&imp, &inputs()), Err(EngineStateRefusal::Undecoded));
+    }
+
+    /// At the load only the instance's scalar 21, read by the
+    /// implementation, is the same for every draw.
+    #[test]
+    fn a_static_pass_takes_only_the_instance_scalar() {
+        let rs = |state, value| RenderStateValue { state, value };
+        let mut imp = implementation(vec![rs(0x3d, 1)], 0);
+        imp.input_reads.scalars = 1 << 21;
+        let mut e = EngineInputs::default();
+        e.scalars[21] = 33.0;
+        imp.engine_render_states = vec![b([2, 1, 0, 21])];
+        assert_eq!(apply_static(&imp, &e).unwrap().render_states.last(), Some(&rs(0x3d, 33)));
+        imp.input_reads.scalars = 0;
+        assert_eq!(apply_static(&imp, &e), Err(EngineStateRefusal::PerDraw { state: 0x3d, stage: None }), "a slot 0x0001ae70 leaves");
+        imp.input_reads.scalars = 1 << 21 | 1 << 3;
+        imp.engine_render_states = vec![b([2, 1, 0, 3])];
+        assert_eq!(apply_static(&imp, &e), Err(EngineStateRefusal::PerDraw { state: 0x3d, stage: None }), "a draw's input");
+        imp.engine_render_states = vec![b([6, 0, 0, 0])];
+        assert!(matches!(apply_static(&imp, &e), Err(EngineStateRefusal::PerDraw { .. })), "a vector");
     }
 }
