@@ -39,8 +39,8 @@ pub(crate) mod tests {
             .put_u32(points::PLAYER_GLOBALS.base, locals)
             .put_u16(engine + STATE, PLAYING)
             .put_u32(engine + REQUESTED_STATE, u32::from(PLAYING));
-        for user in 0..super::LOCAL_USER_COUNT {
-            m.put_u32(locals + super::LOCAL_MAP + 4 * user, u32::MAX);
+        for user in 0..crate::guest::LOCAL_USER_COUNT {
+            m.put_u32(locals + crate::guest::LOCAL_MAP + 4 * user, u32::MAX);
         }
     }
 
