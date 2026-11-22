@@ -349,8 +349,10 @@ holds is a refused call, recorded. A run playing a film back makes none
 (`GuestGame`'s `film`), as "Films and Theater" says. The game side is
 `crates/extensions/game/src/rules/world/bots.rs`: it resolves `bot_go`'s
 and `bot_hold`'s zone through the census's labelled things and the
-scenario's netgame flags, with a fixed radius of 4 world units while no
-zone's capture volume is read.
+scenario's netgame flags: the centre is the mean of the zone's members'
+positions, the reach the farthest member's distance from it and at
+least 4 world units (`bots::objective::DEFEND_RADIUS`) while no zone's
+capture volume is read.
 
 | Script | Entry | Backed by | Status |
 |---|---|---|---|
