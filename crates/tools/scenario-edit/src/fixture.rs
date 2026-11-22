@@ -240,7 +240,8 @@ pub fn metadata_last(mut b: Vec<u8>) -> Vec<u8> {
     let copy = b[index..index + len].to_vec();
     b.extend(copy);
     put(&mut b, 0x10, moved as u32);
-    put(&mut b, 8, b.len() as u32);
+    let len = b.len() as u32;
+    put(&mut b, 8, len);
     b
 }
 
