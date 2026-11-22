@@ -272,8 +272,8 @@ fn the_scenario_file_holds_the_match() {
     let m = sim::simulate(builtin::CTF, &setup(4, 2, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
-    assert_eq!(file.labelled, m.scenario.labelled);
-    assert!(file.labelled.iter().any(|l| l.team == Some(1)));
+    assert_eq!(file.map, m.scenario.map);
+    assert!(file.map.iter().flatten().any(|l| l.team == Some(1)));
     let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
@@ -330,7 +330,7 @@ fn a_seated_score_limit_ends_the_run() {
 
 #[test]
 fn a_player_entering_a_labelled_object_is_inside_it() {
-    let src = "rules \"Pad\" 1\ncarrier slayer\non tick {\n    for each objects labelled \"pad\" z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
+    let src = "rules \"Pad\" 1\ncarrier slayer\nlabel pad: zones\non tick {\n    for each pad z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
     let zone = |tick, enter: bool, slot: u8| Step {
         tick,
         input: if enter {
@@ -341,7 +341,7 @@ fn a_player_entering_a_labelled_object_is_inside_it() {
     };
     let s = Scenario {
         players: seats(2),
-        labelled: vec![ScenarioLabel { label: "pad".into(), object: 7, number: 0, placement: None, team: None }],
+        map: Some(vec![ScenarioLabel { number: Some(0), ..ScenarioLabel::new("pad", 7) }]),
         ticks: 10,
         start: true,
         // Player 0 stands on it for ticks 1 to 3; player 1 dies on it.
@@ -362,7 +362,7 @@ fn a_spawned_objective_is_carried_by_who_picks_it_up() {
     let ball = workbench::SPAWNED_BASE;
     let s = Scenario {
         players: seats(2),
-        labelled: vec![ScenarioLabel { label: "oddball_spawn".into(), object: 40, number: 0, placement: None, team: None }],
+        map: Some(vec![ScenarioLabel { number: Some(0), ..ScenarioLabel::new("oddball_spawn", 40) }]),
         variant: BTreeMap::from([("oddball_ball_count".to_string(), 1)]),
         ticks: 100,
         start: true,

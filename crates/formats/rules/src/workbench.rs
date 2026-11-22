@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::caps;
 use crate::fake::{FakeGame, FakePlayer};
-use crate::ir::{self, Event, Handler, Ir, Op, Scope};
+use crate::ir::{self, Event, Handler, Ir, LabelDef, LabelKind, Op, Scope};
+use crate::labels;
 use crate::scenario::{self, ScenarioLabel};
 use crate::ty::{MAX_LABELLED, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty};
 use crate::vm::{self, Arg, ErrorKind, Fired, Input, ScriptError, Vm, Warning};
@@ -66,6 +67,58 @@ pub struct CapLine {
     pub known: bool,
 }
 
+/// One label the script declares, as "What a map needs" lists it: read
+/// from the IR's label table, in table order.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct LabelLine {
+    /// The label's text: what the map calls it.
+    pub text: String,
+    /// `object`, `zone` or `spawn`.
+    pub kind: &'static str,
+    /// The fewest members a map holds.
+    pub min: u16,
+    /// The most; absent when the label states no limit.
+    pub max: Option<u16>,
+    /// At most one member, a single's `object?`.
+    pub single: bool,
+    /// Every member has a number.
+    pub numbered: bool,
+    /// The numbers a numbered label's members take, both inclusive.
+    pub range: Option<(i32, i32)>,
+    /// One member for each team in play.
+    pub per_team: bool,
+    /// The requirement in Forge's words ([`labels::describe`]).
+    pub needs: String,
+}
+
+fn label_line(def: &LabelDef) -> LabelLine {
+    LabelLine {
+        text: def.text.clone(),
+        kind: match def.kind {
+            LabelKind::Object => "object",
+            LabelKind::Zone => "zone",
+            LabelKind::Spawn => "spawn",
+        },
+        min: def.min,
+        max: def.bounded().then_some(def.max),
+        single: def.single(),
+        numbered: def.numbered(),
+        range: def.range().map(|r| (*r.start(), *r.end())),
+        per_team: def.per_team(),
+        needs: labels::describe(def),
+    }
+}
+
+/// The teams a script's own `teams` header puts in play for its minimal
+/// map: 0 up to its count, else 0 and 1.
+fn header_teams(ir: &Ir) -> Vec<u8> {
+    if ir.header.teams >= 2 {
+        (0..ir.header.teams.min(MAX_TEAMS as u8)).collect()
+    } else {
+        vec![0, 1]
+    }
+}
+
 /// What a compiled script costs and declares.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckReport {
@@ -83,6 +136,13 @@ pub struct CheckReport {
     /// Entries the script calls that no host can make yet, in first-call
     /// order, each once.
     pub unhostable: Vec<&'static str>,
+    /// The labels the script declares, in table order: what a map needs.
+    pub labels: Vec<LabelLine>,
+    /// The smallest map that passes [`labels::check`] ([`labels::minimal`]
+    /// for the header's teams, or 0 and 1), as the things a scenario's
+    /// `map` lists. Their handles start at [`scenario::MAP_BASE`]; a page
+    /// that merges them into a map gives them handles of its own.
+    pub minimal: Vec<ScenarioLabel>,
 }
 
 /// A script checked: compiled, verified and measured.
@@ -260,6 +320,8 @@ pub fn check(src: &str) -> Check {
         ir_limit: ir::MAX_IR_BYTES,
         capabilities: capabilities(&ir),
         unhostable: unhostable_all(&ir),
+        labels: ir.labels.iter().map(label_line).collect(),
+        minimal: scenario::things_of(&labels::minimal(&ir, &header_teams(&ir)), scenario::MAP_BASE),
     };
     Check {
         ok: errors.is_empty(),
@@ -299,8 +361,10 @@ pub struct Scenario {
     /// Retail record fields (`team_play`, `score_limit`, ...); the rest
     /// read the stock record of the script's carrier.
     pub variant: BTreeMap<String, i32>,
-    /// Labelled objects the map holds.
-    pub labelled: Vec<ScenarioLabel>,
+    /// The map: the things the game holds that a script labels. None
+    /// takes [`labels::minimal`] ([`scenario::resolve_map`]); a map is
+    /// checked against the script's labels before the run.
+    pub map: Option<Vec<ScenarioLabel>>,
     /// The packed option bits; None for every option's default.
     pub options: Option<u32>,
     pub seed: u64,
@@ -393,6 +457,9 @@ pub enum RunError {
     Script(Vec<Problem>),
     /// The scenario is out of bounds.
     Scenario(String),
+    /// The scenario's map fails the script's labels: each problem's text
+    /// ([`labels::check`]). Nothing runs.
+    Map(Vec<String>),
 }
 
 fn validate(s: &Scenario) -> Result<(), String> {
@@ -418,10 +485,11 @@ fn validate(s: &Scenario) -> Result<(), String> {
             return Err(format!("team {t} is out of range (0..{MAX_TEAMS})"));
         }
     }
-    if s.labelled.len() > MAX_LABELLED {
+    let map = s.map.as_deref().unwrap_or_default();
+    if map.len() > MAX_LABELLED {
         return Err(format!("a scenario labels at most {MAX_LABELLED} objects"));
     }
-    for l in &s.labelled {
+    for l in map {
         if l.label.is_empty() || l.label.len() > ir::MAX_LABEL_BYTES {
             return Err(format!(
                 "object {}'s label is 1 to {} bytes",
@@ -743,7 +811,9 @@ impl Runner {
             round_time_left: scenario.round_time.max(0),
             ..FakeGame::default()
         };
-        scenario::label_all(&mut g, &scenario.labelled);
+        let things = scenario::resolve_map(vm.ir(), scenario.map.as_deref(), &g.teams)
+            .map_err(RunError::Map)?;
+        scenario::label_all(&mut g, &things);
         for seat in &scenario.players {
             g.players.insert(
                 seat.slot,
@@ -1060,6 +1130,60 @@ mod tests {
         assert!(last.ran.contains(&"timer(left)".to_string()));
         assert!(last.globals.contains(&("n".to_string(), "1".to_string())));
         assert!(t.last_tick < 100);
+    }
+
+    /// A Siege-shaped script, built from a table so this test reads no
+    /// built-in's source.
+    fn siege_ir() -> Ir {
+        use crate::ir::label_flags::*;
+        let mut ir = crate::build(crate::builtin::SLAYER).unwrap().0;
+        ir.header.name = "Siege".into();
+        ir.labels = vec![
+            LabelDef { text: "goal".into(), kind: LabelKind::Zone, min: 1, max: 1, flags: SINGLE, lo: 0, hi: 0 },
+            LabelDef { text: "capture".into(), kind: LabelKind::Zone, min: 0, max: 256, flags: NUMBERED | RANGE, lo: 0, hi: 1 },
+            LabelDef { text: "flag_spawn".into(), kind: LabelKind::Zone, min: 0, max: 16, flags: PER_TEAM, lo: 0, hi: 0 },
+        ];
+        crate::verify(&ir).unwrap();
+        ir
+    }
+
+    #[test]
+    fn the_report_lists_what_a_map_needs() {
+        let lines: Vec<LabelLine> = siege_ir().labels.iter().map(label_line).collect();
+        assert_eq!(lines[0].kind, "zone");
+        assert_eq!((lines[0].min, lines[0].max, lines[0].single), (1, Some(1), true));
+        assert_eq!(lines[0].needs, "exactly 1 zone labelled \"goal\"");
+        assert_eq!(lines[1].range, Some((0, 1)));
+        assert!(lines[1].numbered && lines[1].max.is_none());
+        assert!(lines[2].per_team && lines[2].max == Some(16));
+        // The plain Slayer declares none.
+        let c = check(crate::builtin::SLAYER).report.unwrap();
+        assert!(c.labels.is_empty() && c.minimal.is_empty());
+    }
+
+    #[test]
+    fn the_minimal_list_satisfies_the_labels_it_comes_with() {
+        let ir = siege_ir();
+        let things = scenario::things_of(&labels::minimal(&ir, &header_teams(&ir)), scenario::MAP_BASE);
+        assert_eq!(things.len(), 1 + 2 + 2);
+        assert!(scenario::resolve_map(&ir, Some(&things), &[0, 1]).is_ok());
+        assert!(things.iter().all(|t| t.object >= scenario::MAP_BASE));
+    }
+
+    #[test]
+    fn a_map_that_misses_a_label_is_a_problem_and_no_run() {
+        let ir = siege_ir();
+        let mut s = slayer_scenario();
+        s.map = Some(vec![ScenarioLabel::new("goal", 40)]);
+        let Err(RunError::Map(problems)) = Runner::new(ir.clone(), &s, Keep::Totals) else {
+            panic!("started")
+        };
+        assert_eq!(problems.len(), 4);
+        assert_eq!(problems[0], "no zone labelled \"capture\" has the number 0; Siege needs 0 and 1");
+        // No map: the minimal one.
+        s.map = None;
+        let r = Runner::new(ir, &s, Keep::Totals).unwrap();
+        assert_eq!(r.game.labelled["capture"].len(), 2);
     }
 
     #[test]

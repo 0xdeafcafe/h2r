@@ -184,9 +184,16 @@ error (`scenario: unknown field ...`) and every field is optional.
 - `variant`: record fields by name (`{"team_play": 1, "score_limit":
   25}`); a field left out reads the stock record of the script's carrier
   (a Slayer carrier is free-for-all, score limit 25, time limit 480).
-- `labelled`: `[{"label": "hill", "object": 40, "number": 1}]`, the
-  objects `objects labelled "hill"` visits (`placement` orders them; the
-  object's handle when absent).
+- `map`: `[{"label": "hill", "object": 40, "number": 1, "class":
+  "volume"}]`, what the game holds that the script labels, and what
+  the members of the script's `label hill: ...`
+  visit (`placement` orders them; the
+  object's handle when absent; `team` is what `o.team` reads). `class`
+  is `object`, `flag`, `volume` or `spawn`, the one the label's kind
+  suggests when absent. With no `map` the run uses the smallest map the
+  script's labels accept (handles from 256); with one, a label it fails
+  stops the run, `h2 rules run` prints `map: <problem>` for each, and
+  `h2 rules check` lists what a map needs. `labelled` is the old name.
 - `round_time_left` counts down one a tick to 0.
 - Events: `{"kill": {"victim": 1, "killer": 0}}` (omit `killer` for a
   death with no killer), `{"spawn": 1}`, `{"death": 1}`, `{"join": 2}`,
@@ -266,7 +273,7 @@ client address, refilled at 2 a second (429 past it).
 | `GET /v1/variants/{id}`, `/{id}/h2variant`, `GET /v1/variants?author=`; `DELETE /v1/variants/{id}` | read; delete by author | read, download, remove |
 
 Live's run scenario is `{players: [{slot, team, lives, unit}], teams,
-variant: {field: n}, labelled: [{label, object, number, placement}],
+variant: {field: n}, map: [{label, object, number, placement, team, class}],
 options, seed, round_time, ticks, start, timeline: [{tick, events}]}`,
 with each event `{type: "kill", victim, killer}`, `{type: "spawn",
 player}`, `enter {zone, object}`, `squad_dead {squad}`, `actor_kill
@@ -278,7 +285,10 @@ lists only ticks in which something happened, with `ran`, `calls`,
 `globals`, `players`, and the run's `scores`; `cut` says it stopped early
 (past 12,000,000 ops), and `limit` that the variant's `score_limit` or
 `time_limit` ended the game (only limits the scenario's `variant` sets
-end a run). A labelled object may name its `team`, which `o.team` reads.
+end a run). A map thing may name its `team`, which `o.team` reads. A run
+whose map fails the script's labels answers `{ok: false, errors: [],
+map: [text]}`; the check's `report.labels` and `report.minimal` say what
+a map needs.
 
 `options` in `from-script` and `bundle` maps an option's name to a number,
 a bool or an enum value's name; an omitted one takes its default; an
@@ -336,8 +346,8 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   return nothing, and see only their parameters, globals and options. A
   `let` or parameter is not assigned again; options are read-only; a
   `timer` is a global only. A set (`players`, `teams`, `objectives`,
-  `objects labelled "x"`, `pick(set, n)`) appears only in `for each`,
-  `count`, `first` and `pick`.
+  a declared `objects` or `zones` label, `pick(set, n)`) appears only in
+  `for each`, `count`, `first` and `pick`.
 - **Determinism.** The same IR, options, seed and inputs give the same
   calls on every machine. Draw randomness only with `random(n)` or
   `pick(set, n)` (a SplitMix64 stream seeded from the match seed and the
@@ -361,8 +371,8 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
   entry that is not `named` or VM-only: `set_team`, `give`, `message`,
   `spawn_areas`, `reset_objective`, `role_traits`, `inside`, `ticks_held`,
-  `label_number`, `label_of`, `zone_id`, `set_loadout`, `take`, `create`,
-  `register_objective`, `spawn_objective`, `object_team`, `player_of`.
+  `label_number`, `zone_id`, `set_loadout`, `take`, `create`,
+  `register_objective`, `spawn_objective`, `player_of`.
   `check` lists these as unhostable. The host runtime also, today, delivers
   only `init`, `kill`, `timer` and `tick`; reads only scores, kills,
   deaths, `alive`, `team_of`, `lives`, `round_time_left` and
@@ -381,8 +391,17 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 - **Syntax.** A statement ends at a newline, `;` or `}`. Keep a call's `(`
   and an index's `[` on the same line as the name. `else` may follow a `}`
   on the next line. Comments are `//`.
-- **Tags and labels** are string literals checked against the map when the
-  game loads the script. `h2 rules check` does not find a typo in one.
+- **Tags** are string literals checked against the map when the game
+  loads the script; `h2 rules check` does not find a typo in one.
+  **Labels** are declared (`label goal: zone`, `label barrier: objects
+  at least 1`), so a misspelt label is a check error with the nearest
+  name offered, and a map that breaks a declaration does not start.
+- **`T?`.** The killer of `on kill`, `first(...)` and `o.carrier` may be
+  `none`: use them as a `player` only after `if killer != none`, in the
+  `else` of `killer == none`, or through `if let k = killer`. A handle
+  global that starts as `none` is declared `player?`. The checker finds
+  every error (up to 50, each with a code, `rules::diagnose`); `h2 rules
+  check` prints the first.
 
 ## Report what you did
 

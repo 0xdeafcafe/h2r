@@ -1448,8 +1448,8 @@ mod tests {
 
     #[test]
     fn a_labelled_set_visits_at_most_its_label_max() {
-        let src = "rules \"Bound\" 1\ncarrier slayer\nglobal var n: int = 0\n\
-                   on tick { for each objects labelled \"crate\" o { n = n + 1 } }\n";
+        let src = "rules \"Bound\" 1\ncarrier slayer\nlabel crate: objects\nglobal var n: int = 0\n\
+                   on tick { for each crate o { n = n + 1 } }\n";
         let run = |max: Option<u16>, placed: u32| {
             let (mut ir, _) = crate::build(src).unwrap();
             assert_eq!(ir.labels[0].max as usize, MAX_LABELLED);

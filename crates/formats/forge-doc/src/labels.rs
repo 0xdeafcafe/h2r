@@ -14,9 +14,21 @@
 //! A document with a label op is format 2 ([`FORMAT_LABELS`](crate::FORMAT_LABELS)).
 //! One with none stays format 1, so every older document keeps its bytes and
 //! its identity.
+//!
+//! The census (below) is the start gate's view of a map: each labelled
+//! thing with its class, number and team, and the object type of each tag
+//! (`rules::labels::Census`; docs/game/rules-start-gate.md, "The check").
+//! It has two builders with one result, [`CensusOf::of_file`] and
+//! [`CensusOf::of_game`], over one function, [`labelled`].
+use std::collections::BTreeMap;
+use std::io::{Read, Seek};
+
+use rules::labels::{Census, Class, Member, ObjectType};
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockKind, Endpoint, OpId, Refusal, Result};
+use crate::{
+    BlockKind, Edit, Endpoint, FieldWrite, ForgeDoc, OpId, Placement, Refusal, Result, Value,
+};
 
 /// The most bytes a label's text takes.
 pub const MAX_LABEL_BYTES: usize = 32;
@@ -126,4 +138,350 @@ pub(crate) fn check_op(target: &Endpoint, label: Option<&Label>) -> Result<()> {
         _ => {}
     }
     label.map_or(Ok(()), Label::check)
+}
+
+// ---- the census ----
+
+/// The netgame flags a census looks at, at most (the engine's own walk,
+/// `engine::objectives::NETGAME_FLAG_LIMIT`).
+pub const CENSUS_FLAG_LIMIT: u32 = 512;
+/// The entries of any other block a census counts, at most: a label names
+/// an entry by an index of at most `i16::MAX`.
+pub const CENSUS_ENTRY_LIMIT: u32 = i16::MAX as u32 + 1;
+
+/// The type and team fields of one netgame flag (`scnr+0x118`, `+0x10` and
+/// `+0x12`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FlagRow {
+    pub kind: u16,
+    pub team: u16,
+}
+
+/// What a census reads of a map before its Forge document: each block's
+/// count, the netgame flags' type and team, each starting location's team
+/// (`scnr+0x100`, `+0x10`), and the object type of each tag the map names
+/// by path. A map file gives all of it ([`rows_of_file`]); the running
+/// game gives every part but the tags, whose paths are only in the file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MapRows {
+    pub counts: BTreeMap<BlockKind, u32>,
+    pub flags: Vec<FlagRow>,
+    pub starts: Vec<i16>,
+    pub tags: BTreeMap<String, ObjectType>,
+}
+
+/// One labelled thing of a map, after its Forge document: the block and
+/// final index of its placement, its label, what it is and its team.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelledThing {
+    pub block: BlockKind,
+    pub index: u32,
+    pub label: Label,
+    pub class: Class,
+    /// The placement's team designator, 0 to 7: a flag's or a starting
+    /// location's team field. Neutral (8) and none (-1) are `None`.
+    pub team: Option<u8>,
+}
+
+/// A team field as a census member's team: designators 0 to 7; neutral (8),
+/// none (-1) and anything else are no team.
+pub fn designator(v: i64) -> Option<u8> {
+    u8::try_from(v).ok().filter(|&t| t < 8)
+}
+
+/// Every labelled thing of the map `rows` describes, after `doc`, in block
+/// then final index order. A netgame flag takes its own label from the
+/// document, else its type's built-in one ([`builtin_label`]); a starting
+/// location or an object placement is labelled only by the document.
+/// Starting equipment is not a placement a script can find and is left
+/// out. `rows` are the map before the document: its placement ops are
+/// replayed over the flag and starting-location rows, so an added or
+/// swap-removed entry keeps its fields.
+pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledThing>> {
+    let mut flags = rows.flags.clone();
+    let mut starts = rows.starts.clone();
+    let mut labels = Labels::default();
+    if let Some(doc) = doc {
+        for op in &doc.ops {
+            if let Edit::Placement(p) = &op.edit {
+                replay_row(&mut flags, &mut starts, p);
+            }
+        }
+        labels = doc.labels(&rows.counts)?;
+    }
+    let own = |block: BlockKind, index: u32| {
+        labels
+            .active
+            .iter()
+            .find(|l| l.block == block && l.index == index)
+            .map(|l| l.label.clone())
+    };
+    let mut out = Vec::new();
+    for (i, f) in flags.iter().enumerate() {
+        let index = i as u32;
+        if let Some(label) = own(BlockKind::NetgameFlags, index).or_else(|| builtin_label(f.kind)) {
+            out.push(LabelledThing {
+                block: BlockKind::NetgameFlags,
+                index,
+                label,
+                class: Class::Flag,
+                team: designator(i64::from(f.team)),
+            });
+        }
+    }
+    for l in &labels.active {
+        let (class, team) = match l.block {
+            BlockKind::NetgameFlags | BlockKind::StartingEquipment => continue,
+            BlockKind::StartingLocations => (
+                Class::Spawn,
+                starts
+                    .get(l.index as usize)
+                    .and_then(|&t| designator(i64::from(t))),
+            ),
+            _ => (Class::Object, None),
+        };
+        out.push(LabelledThing {
+            block: l.block,
+            index: l.index,
+            label: l.label.clone(),
+            class,
+            team,
+        });
+    }
+    out.sort_by_key(|t| (t.block, t.index));
+    Ok(out)
+}
+
+fn int(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(n) => Some(*n),
+        _ => None,
+    }
+}
+
+fn write_flag(f: &mut FlagRow, w: &FieldWrite) {
+    match (w.field.as_str(), int(&w.value)) {
+        ("type", Some(n)) => f.kind = n as u16,
+        ("team", Some(n)) => f.team = n as u16,
+        _ => {}
+    }
+}
+
+fn write_start(t: &mut i16, w: &FieldWrite) {
+    if let ("team", Some(n)) = (w.field.as_str(), int(&w.value)) {
+        *t = n as i16;
+    }
+}
+
+/// One placement op over the rows a census reads: an add copies its `like`
+/// entry (or starts from zeros) and takes its field writes, a remove swaps
+/// the last entry in, a set writes the field. Only `type` and `team` are
+/// read; other fields and blocks are not a census's.
+fn replay_row(flags: &mut Vec<FlagRow>, starts: &mut Vec<i16>, p: &Placement) {
+    match p {
+        Placement::Add {
+            block: BlockKind::NetgameFlags,
+            like,
+            fields,
+        } => {
+            let mut f = like
+                .and_then(|i| flags.get(i as usize).copied())
+                .unwrap_or_default();
+            fields.iter().for_each(|w| write_flag(&mut f, w));
+            flags.push(f);
+        }
+        Placement::Add {
+            block: BlockKind::StartingLocations,
+            like,
+            fields,
+        } => {
+            let mut t = like
+                .and_then(|i| starts.get(i as usize).copied())
+                .unwrap_or_default();
+            fields.iter().for_each(|w| write_start(&mut t, w));
+            starts.push(t);
+        }
+        Placement::Remove {
+            block: BlockKind::NetgameFlags,
+            index,
+        } if (*index as usize) < flags.len() => {
+            flags.swap_remove(*index as usize);
+        }
+        Placement::Remove {
+            block: BlockKind::StartingLocations,
+            index,
+        } if (*index as usize) < starts.len() => {
+            starts.swap_remove(*index as usize);
+        }
+        Placement::Set {
+            block: BlockKind::NetgameFlags,
+            index,
+            write,
+        } => {
+            if let Some(f) = flags.get_mut(*index as usize) {
+                write_flag(f, write);
+            }
+        }
+        Placement::Set {
+            block: BlockKind::StartingLocations,
+            index,
+            write,
+        } => {
+            if let Some(t) = starts.get_mut(*index as usize) {
+                write_start(t, write);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The census of labelled things and tags: the start gate's view of a map
+/// (`rules::labels::check`).
+pub fn census(things: &[LabelledThing], tags: &BTreeMap<String, ObjectType>) -> Census {
+    let mut census = Census {
+        labels: BTreeMap::new(),
+        tags: tags.clone(),
+    };
+    for t in things {
+        census
+            .labels
+            .entry(t.label.text.clone())
+            .or_default()
+            .push(Member {
+                class: t.class,
+                number: t.label.number,
+                team: t.team,
+            });
+    }
+    census
+}
+
+/// The two builders of a census, with one result: from a map file and the
+/// lobby's Forge document, and from the running game's scenario and the
+/// session's document (docs/game/rules-start-gate.md, "The check"). A
+/// trait, since [`Census`] is the `rules` crate's: with it in scope they
+/// read `Census::of_file` and `Census::of_game`.
+pub trait CensusOf: Sized {
+    /// The census of the map file `map` with `doc` applied.
+    fn of_file<R: Read + Seek>(map: &mut map::Map<R>, doc: Option<&ForgeDoc>) -> Result<Self>;
+    /// The census of the loaded scenario's rows (the game reads them from
+    /// guest memory) with the session's document applied.
+    fn of_game(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Self>;
+}
+
+impl CensusOf for Census {
+    fn of_file<R: Read + Seek>(map: &mut map::Map<R>, doc: Option<&ForgeDoc>) -> Result<Self> {
+        let rows = rows_of_file(map)?;
+        Ok(census(&labelled(&rows, doc)?, &rows.tags))
+    }
+
+    fn of_game(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Self> {
+        Ok(census(&labelled(rows, doc)?, &rows.tags))
+    }
+}
+
+/// The object type of a tag group, for a census's tags.
+pub fn object_type(group: &[u8; 4]) -> Option<ObjectType> {
+    Some(match group {
+        b"bipd" => ObjectType::Biped,
+        b"vehi" => ObjectType::Vehicle,
+        b"weap" => ObjectType::Weapon,
+        b"eqip" => ObjectType::Equipment,
+        b"garb" => ObjectType::Garbage,
+        b"proj" => ObjectType::Projectile,
+        b"scen" => ObjectType::Scenery,
+        b"mach" => ObjectType::Machine,
+        b"ctrl" => ObjectType::Control,
+        b"lifi" => ObjectType::LightFixture,
+        b"ssce" => ObjectType::SoundScenery,
+        b"bloc" => ObjectType::Crate,
+        b"crea" => ObjectType::Creature,
+        _ => return None,
+    })
+}
+
+fn map_error(e: impl std::fmt::Display) -> Refusal {
+    Refusal::invalid("map", e.to_string())
+}
+
+fn le_u32(b: &[u8], at: usize) -> Result<u32> {
+    b.get(at..at + 4)
+        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+        .ok_or_else(|| map_error("the scenario is too short for its blocks"))
+}
+
+/// A block of the scenario root `root` (at `space`), its entries' bytes;
+/// at most `limit` of them.
+fn read_block<R: Read + Seek>(
+    map: &mut map::Map<R>,
+    root: &[u8],
+    space: map::AddressSpace,
+    kind: BlockKind,
+    limit: u32,
+) -> Result<Vec<Vec<u8>>> {
+    let def = map::scenario_layout::block(kind);
+    let count = le_u32(root, def.offset as usize)?.min(limit);
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let address = le_u32(root, def.offset as usize + 4)?;
+    let len = count * def.stride;
+    let at = space.translate(address, len).map_err(map_error)?;
+    let bytes = map.read_file_range(at, u64::from(len)).map_err(map_error)?;
+    Ok(bytes
+        .chunks_exact(def.stride as usize)
+        .map(<[u8]>::to_vec)
+        .collect())
+}
+
+fn u16_at(e: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([e[at], e[at + 1]])
+}
+
+/// The rows of a map file: each block's count from the scenario root, the
+/// netgame flags' and starting locations' fields, and the path of every
+/// object definition in the script's spelling (`/` between parts).
+pub fn rows_of_file<R: Read + Seek>(map: &mut map::Map<R>) -> Result<MapRows> {
+    let scnr = map
+        .scenario()
+        .ok_or_else(|| map_error("the map has no scenario"))?;
+    let id = scnr.id;
+    let loc = scnr
+        .location
+        .ok_or_else(|| map_error("the scenario has no payload"))?;
+    let root = map.read_tag_bytes(id).map_err(map_error)?;
+    let mut rows = MapRows::default();
+    for def in map::scenario_layout::BLOCKS {
+        let count = le_u32(&root, def.offset as usize)?;
+        rows.counts.insert(def.kind, count.min(CENSUS_ENTRY_LIMIT));
+    }
+    rows.flags = read_block(map, &root, loc.space, BlockKind::NetgameFlags, CENSUS_FLAG_LIMIT)?
+        .iter()
+        .map(|e| FlagRow {
+            kind: u16_at(e, 0x10),
+            team: u16_at(e, 0x12),
+        })
+        .collect();
+    rows.starts = read_block(
+        map,
+        &root,
+        loc.space,
+        BlockKind::StartingLocations,
+        CENSUS_ENTRY_LIMIT,
+    )?
+    .iter()
+    .map(|e| u16_at(e, 0x10) as i16)
+    .collect();
+    rows.counts
+        .insert(BlockKind::NetgameFlags, rows.flags.len() as u32);
+    rows.counts
+        .insert(BlockKind::StartingLocations, rows.starts.len() as u32);
+    for tag in map.tags() {
+        if let (Some(ty), Some(name)) = (object_type(&tag.group.0), tag.name.as_deref())
+            && !name.is_empty()
+        {
+            rows.tags.insert(name.replace('\\', "/"), ty);
+        }
+    }
+    Ok(rows)
 }
