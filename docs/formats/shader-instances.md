@@ -370,7 +370,10 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
   the vector inputs): an integer state rounds the scalar, a float state
   takes its bits, a colour state from a scalar puts it times 255 in the
   top byte; a colour packs each channel times 255, rounded and wrapped
-  to a byte, red at bit 16. No draw applies them.
+  to a byte, red at bit 16. `native_render::engine_states::apply` maps
+  the values onto a native pass's states (each render value after the
+  static list, each stage value into its `StageStates` field); no draw
+  calls it.
 - **Engine input semantics** (which scalar or vector is time, camera, light
   colour and so on) are not named, apart from the root-fed ones.
 - **Persistent state.** The engine keeps texture slots, constant banks and the
