@@ -76,6 +76,14 @@ unsafe extern "C" fn no_fast_memory(_: *mut ExecCtxOpaque) -> *mut runtime::ffi:
     std::ptr::null_mut()
 }
 
+/// The Cranelift fast tier's own helpers, in `h2clif_install_v1` order
+/// (docs/lifter/cranelift-tier.md section 3.9): the SSE operations, by the
+/// interpreter's code (`ir::interp::sse_helper`). A clang module has no
+/// such installer.
+pub fn clif_helpers() -> [*const std::ffi::c_void; 1] {
+    [ir::interp::sse_helper as *const std::ffi::c_void]
+}
+
 /// crates/recompiler/x87's helpers in `h2x87bridge_install` order (emit's
 /// `X87_BRIDGE_SYMBOLS`, which the test below checks).
 macro_rules! x87_helpers {

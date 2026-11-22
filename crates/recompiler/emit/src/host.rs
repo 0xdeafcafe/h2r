@@ -879,7 +879,8 @@ pub struct Generated {
 }
 
 impl Generated {
-    /// Load a host dylib built with [`BRIDGE`] linked in.
+    /// Load a host dylib built with [`BRIDGE`] linked in, or a Cranelift
+    /// fast-tier module (its bridge object exports the same installers).
     ///
     /// # Safety
     /// The library must be a module produced by this crate for this host.
@@ -923,6 +924,14 @@ impl Generated {
                 lib.get(b"h2x87bridge_install").map_err(|e| e.to_string())?;
             let fns = x87_helpers();
             install_x87(fns.as_ptr(), fns.len() as u32);
+            // A Cranelift fast-tier module's own helpers (crates/recompiler/clif's
+            // bridge object): the SSE operations, by the interpreter's code.
+            if let Ok(install_clif) =
+                lib.get::<unsafe extern "C" fn(*const *const c_void, u32)>(b"h2clif_install_v1")
+            {
+                let fns = [ir::interp::sse_helper as *const c_void];
+                install_clif(fns.as_ptr(), fns.len() as u32);
+            }
             let module: libloading::Symbol<*const GenModule> =
                 lib.get(b"h2gen_module").map_err(|e| e.to_string())?;
             let m = &**module;

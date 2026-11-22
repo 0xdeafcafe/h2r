@@ -1,8 +1,9 @@
 //! The Cranelift tier against the IR interpreter and the C tier: every
 //! synthetic fixture of emit's differential test (shared source, no game
 //! data) from the same random states, ending the same way with the same
-//! CPU state and memory in all three. Needs `h2abi.h` and clang, for the
-//! C tier and for linking the Cranelift module.
+//! CPU state and memory in all three. Needs `h2abi.h` and clang for the C
+//! tier; the Cranelift module itself needs only the linker, and loads in
+//! emit's test host through its bridge object's `h2bridge_install_v3`.
 
 #[path = "../../emit/tests/common/mod.rs"]
 mod common;
@@ -13,10 +14,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use differential_harness::*;
-use emit::host::{BRIDGE, CpuAbi, Ctx, Generated};
+use emit::host::{CpuAbi, Ctx, Generated};
 use ir::IrFunction;
 
-fn build_clif(owners: &[emit::Owner], header: &Path, name: &str) -> Generated {
+fn build_clif(owners: &[emit::Owner], name: &str) -> Generated {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     let dylib = dir.join(emit::compile::Arch::host().module_file_name());
     // Cranelift's IR verifier on: invalid IR (an extend to its own width)
@@ -25,7 +26,7 @@ fn build_clif(owners: &[emit::Owner], header: &Path, name: &str) -> Generated {
     // concurrently.
     unsafe { std::env::set_var("H2_CLIF_VERIFY", "1") };
     let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let r = clif::build_dylib(owners, &dir, header, &[("bridge.c", BRIDGE)], &dylib, jobs).unwrap_or_else(|e| panic!("{e}"));
+    let r = clif::build_dylib(owners, &dir, &dylib, jobs).unwrap_or_else(|e| panic!("{e}"));
     eprintln!("clif: {r:?}");
     // SAFETY: linked just now from this crate's objects for this host.
     unsafe { Generated::load(&dylib) }.unwrap()
@@ -45,7 +46,7 @@ fn three_way(name: &str, fixtures: &[(&'static str, Asm)]) -> Option<BTreeMap<&'
         .collect();
     let owners = emit::plan(funcs.iter().map(|(_, f)| f.clone()).collect());
     let c = common::build(&owners, &header, &format!("{name}-c"));
-    let cl = build_clif(&owners, &header, &format!("{name}-clif"));
+    let cl = build_clif(&owners, &format!("{name}-clif"));
 
     let mut ends: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
     let mut failures = Vec::new();
