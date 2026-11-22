@@ -12,17 +12,21 @@ impl Mind {
         seen: &[Seen],
         map: Option<&MapData>,
     ) -> (Option<Goal>, Intent) {
-        let goal = p.objective.as_ref().and_then(|o| {
-            objective::plan(
-                o,
-                &me,
-                if o.game == objective::Game::Juggernaut {
-                    seen
-                } else {
-                    &p.others
-                },
-                p.teams,
-            )
+        // An outside order (rules-world-api.md, "Bots") is the goal while
+        // it stands, in place of the objective's.
+        let goal = self.decisions.ordered_goal(p).or_else(|| {
+            p.objective.as_ref().and_then(|o| {
+                objective::plan(
+                    o,
+                    &me,
+                    if o.game == objective::Game::Juggernaut {
+                        seen
+                    } else {
+                        &p.others
+                    },
+                    p.teams,
+                )
+            })
         });
         // Once a tick: a repeated frame returns the last pad before this.
         if let Some(map) = map {

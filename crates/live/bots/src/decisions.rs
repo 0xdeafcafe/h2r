@@ -11,7 +11,7 @@ use personality::Mood;
 pub use personality::{MoodView, Personality};
 use radio::{Call, Voice};
 
-use crate::brain::{Me, Perception, Seen, Vec3};
+use crate::brain::{Me, Order, Perception, Seen, Vec3};
 use crate::cache::MapData;
 use crate::emote::Kill;
 use crate::mind::{EYE, Skill};
@@ -61,6 +61,10 @@ pub struct Decisions {
     last_shield: Option<f32>,
     hit: Option<u32>,
     withdrew: Option<u32>,
+    /// An outside order a rules script gave this bot
+    /// (docs/game/rules-world-api.md, "Bots"): the bot's goal while it
+    /// stands. It survives a death; only `bot_free` clears it.
+    order: Option<Order>,
 }
 
 impl Decisions {
@@ -83,6 +87,7 @@ impl Decisions {
             last_shield: None,
             hit: None,
             withdrew: None,
+            order: None,
         }
     }
 
@@ -95,6 +100,23 @@ impl Decisions {
             personality: self.personality,
             mood: self.mood(),
         }
+    }
+
+    /// Gives the bot an outside order, or frees it (`None`)
+    /// (docs/game/rules-world-api.md, "Bots").
+    pub fn set_order(&mut self, order: Option<Order>) {
+        self.order = order;
+    }
+
+    /// The outside order this bot plays to, if one stands.
+    pub fn order(&self) -> Option<Order> {
+        self.order
+    }
+
+    /// The goal the outside order asks, when one stands and its target has
+    /// a living unit.
+    pub(crate) fn ordered_goal(&self, p: &Perception) -> Option<Goal> {
+        self.order.and_then(|o| o.goal(&p.others))
     }
 
     pub(crate) fn advance_mood(&mut self, tick: u32) {

@@ -950,3 +950,24 @@ fn temperament_patience_holds_an_angle_and_changes_radio_cadence() {
     patient.step(&p, None);
     assert_eq!(patient.doing, Doing::Chase(ps[1].position));
 }
+
+#[test]
+fn an_outside_order_is_the_goal_until_freed() {
+    let mut d = Decisions::new(1);
+    let scene = scene(0, 1, &[player(0, 0, 1.0, 1.0), player(1, 1, 7.0, 8.0)]);
+    assert_eq!(d.ordered_goal(&scene), None);
+    // `bot_follow`: the goal is the followed player's position.
+    d.set_order(Some(Order::Follow(1)));
+    assert_eq!(d.order(), Some(Order::Follow(1)));
+    assert_eq!(d.ordered_goal(&scene), Some(Goal::Escort([7.0, 8.0, 0.0])));
+    // `bot_hold`: a zone, whatever the roster.
+    d.set_order(Some(Order::Hold([3.0, 4.0, 0.0], 2.0)));
+    assert_eq!(
+        d.ordered_goal(&scene),
+        Some(Goal::Hold([3.0, 4.0, 0.0], 2.0))
+    );
+    // `bot_free`: the objective's goal (none here) is what's left.
+    d.set_order(None);
+    assert_eq!(d.order(), None);
+    assert_eq!(d.ordered_goal(&scene), None);
+}

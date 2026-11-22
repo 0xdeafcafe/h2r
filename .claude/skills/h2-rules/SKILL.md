@@ -376,7 +376,7 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 - **Order.** `score`, `end_round`, `set_lives`, `respawn` and the other
   `Now` actions are made where the handler runs. The `Queued` ones
   (`create`, `delete`, `place_squad`, `hunt`, `erase_squad`, `forge_*`,
-  `spawn_objective`, `reset_objective`, `ff_*`) are made in order at the
+  `spawn_objective`, `reset_objective`, `ff_*`, `bot_*`) are made in order at the
   next tick boundary, and a read never sees a queued call. `h2 rules caps`
   does not print the order; `crates/formats/rules/src/caps.rs` does.
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
@@ -387,8 +387,10 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   `check` lists these as unhostable. The host runtime also, today, delivers
   only `init`, `kill`, `timer` and `tick`; reads only scores, kills,
   deaths, `alive`, `team_of`, `lives`, `round_time_left` and
-  `is_objective`; makes only `score`, `end_round`, `set_lives` and
-  `respawn`; reads only `variant.team_play`, `score_limit`, `time_limit`
+  `is_objective`; makes only `score`, `end_round`, `set_lives`,
+  `respawn`, `role_traits`, `reset_objective` and the `bot_*` orders
+  (a `bot_*` order to a seat no phantom holds is a refused call);
+  reads only `variant.team_play`, `score_limit`, `time_limit`
   and `lives`; and refuses Forge labels and any `grant`. Calls land at the
   next tick boundary, and a mode 2 script on a lifted carrier does not
   replace the carrier's own scoring. The one script playable today is
