@@ -660,12 +660,15 @@ at 3× plays smoothly at 3× near its live edge. A finished run's replay opens
 at 8× and its speed menu goes from 0.25× to 16×. The training page shows
 measured simulation speed. Use `--pace realtime` for normal game speed.
 
-Pick a batch (the **Batch** filter, or a batch heading in the list) to
-watch the whole batch at once. Above the results table, a grid has one map
-tile per run (`web/src/admin/SimWatch.tsx`). The tiles are ordered by map,
-then seed, then tuning arms, so the arms played on one map and seed sit
-side by side. Each tile shows the map, seed, arms by team, game clock and
-score, and opens the run's page when clicked.
+Above the results table, the page watches the runs it lists
+(`web/src/admin/SimWatch.tsx`). With no batch picked, it draws them as
+**One map**, described below. Pick a batch (the **Batch** filter, or a
+batch heading in the list) to watch it as a grid with one map tile per
+run, or switch the batch to **One map** with the **Grid** / **One map**
+switch in the replay controls. The grid's tiles are ordered by map, then
+seed, then tuning arms, so the arms played on one map and seed sit side by
+side. Each tile shows the map, seed, arms by team, game clock and score,
+and opens the run's page when clicked.
 
 - **Finished runs** replay on one shared clock, in sync from each run's
   first frame. **Speed** picks 1×, 4×, 8× or 16× (8× to start). **Pause**,
@@ -681,6 +684,29 @@ score, and opens the run's page when clicked.
 
 The maps are the stats site's small map renderers on the shared animation
 frame loop. A tile off screen draws nothing.
+
+**One map** draws every run on a map together in one large viewer, titled
+with the map and its run count. A page that lists runs on several maps has
+a viewer per map; the **Map** filter leaves one. The viewer uses the map's
+top view when the server has one, else its outline. Every run plays on the
+same clock and controls as the tiles, each at its own tick: finished runs
+replay their recordings, and running runs stream live under the same six
+slots, shared by the viewers on screen. Runs that wait for their recording
+are left out, with a note.
+
+Each run has its own colour from a fixed palette, in tile order, and its
+players and death marks are drawn in that colour instead of the team's. The
+viewer merges the runs' frames and rosters into one frame and one roster
+(`mergeFrames` and `mergeRosters` in `web/src/admin/batchWatch.ts`). Each
+run's players are keyed `slot * 1000 + index`, so players from different
+runs never meet, and the merged roster gives them the run's colour. The
+map renderers are the same as the tiles'.
+
+A legend beside the viewer has a row per run with its colour, seed, arms,
+live score and a link to the run. Pointing at a row, or at the run's row in
+the results table, draws that run at full strength and dims the others
+(their roster colour and marks turn translucent). Clicking a legend row
+holds the highlight; clicking it again lets go.
 
 Each batch streams at most two matches at once. Other running matches appear
 in the list with replay available after the match. They buffer packed
