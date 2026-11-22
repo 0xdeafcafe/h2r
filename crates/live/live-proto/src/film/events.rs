@@ -849,11 +849,12 @@ mod tests {
                 .map(|(_, m)| m.as_str())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(2), ["superbounce", "double-bounce"]);
-        assert_eq!(ids(4), ["superbounce", "quad-bounce"]);
-        assert_eq!(ids(5), ["superbounce", "chain-bounce"]);
-        assert_eq!(ids(6), ["superbounce", "bouncetacular"]);
-        assert_eq!(ids(7), ["superbounce"]);
+        assert_eq!(ids(1), ["superbounce", "superbounce"]);
+        assert_eq!(ids(2), ["double-bounce"]);
+        assert_eq!(ids(4), ["quad-bounce"]);
+        assert_eq!(ids(5), ["chain-bounce"]);
+        assert_eq!(ids(6), ["bouncetacular"]);
+        assert_eq!(ids(7), ["bouncetacular"]);
 
         let death = tracker
             .event(
@@ -892,12 +893,12 @@ mod tests {
         assert_eq!(
             rows[0].medals,
             BTreeMap::from([
-                ("superbounce".into(), 8),
+                ("superbounce".into(), 2),
                 ("double-bounce".into(), 1),
                 ("triple-bounce".into(), 1),
                 ("quad-bounce".into(), 1),
                 ("chain-bounce".into(), 1),
-                ("bouncetacular".into(), 1),
+                ("bouncetacular".into(), 2),
                 ("bounced".into(), 1),
             ])
         );
@@ -981,7 +982,7 @@ mod tests {
                 other => panic!("unexpected {other:?}"),
             })
             .collect();
-        assert_eq!(medals, ["superbounce", "double-bounce", "monster-bounce"]);
+        assert_eq!(medals, ["double-bounce", "monster-bounce"]);
         let wire: Value = serde_json::from_slice(&records[0].encode().unwrap()).unwrap();
         assert_eq!(
             wire,
@@ -998,7 +999,7 @@ mod tests {
         assert_eq!(
             rows[0].medals,
             BTreeMap::from([
-                ("superbounce".into(), 2),
+                ("superbounce".into(), 1),
                 ("double-bounce".into(), 1),
                 ("monster-bounce".into(), 1),
             ])

@@ -177,6 +177,11 @@ pub struct MedalPlayer {
     pub chain: u32,
     /// Whether its next bounce adds to that chain.
     pub live: bool,
+    /// The player's bounces this game, counted from the bounces, not the
+    /// medals: a bounce files one chain medal, and `superbounce` is only
+    /// the first of a chain.
+    #[serde(default)]
+    pub bounces: u32,
     /// Each medal id's total this game (`superbounce`, `double-bounce`,
     /// `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`,
     /// `bounced`, `monster-bounce`).
@@ -1063,8 +1068,9 @@ mod tests {
                     player: 5,
                     chain: 2,
                     live: true,
+                    bounces: 2,
                     counts: [
-                        ("superbounce".to_owned(), 2),
+                        ("superbounce".to_owned(), 1),
                         ("double-bounce".to_owned(), 1),
                     ]
                     .into_iter()
@@ -1074,7 +1080,7 @@ mod tests {
                     player: 5,
                     tick: 6800,
                     chain: 2,
-                    medals: vec!["superbounce".into(), "double-bounce".into()],
+                    medals: vec!["double-bounce".into()],
                     strips: Some(1),
                 }],
             },
@@ -1082,7 +1088,8 @@ mod tests {
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["medals"]["players"][0]["counts"]["double-bounce"], 1);
         assert_eq!(v["medals"]["players"][0]["live"], true);
-        assert_eq!(v["medals"]["recent"][0]["medals"][1], "double-bounce");
+        assert_eq!(v["medals"]["players"][0]["bounces"], 2);
+        assert_eq!(v["medals"]["recent"][0]["medals"][0], "double-bounce");
         // An older reply without medals reads as none.
         let mut old = v.clone();
         old.as_object_mut().unwrap().remove("medals");
@@ -1216,11 +1223,11 @@ mod tests {
         let r = MedalTest {
             player: 0,
             chain: 2,
-            medals: vec!["superbounce".into(), "double-bounce".into()],
+            medals: vec!["double-bounce".into()],
             line: Some("\u{e2a1} Double bounce!".into()),
         };
         let v = serde_json::to_value(&r).unwrap();
-        assert_eq!(v["medals"][1], "double-bounce");
+        assert_eq!(v["medals"][0], "double-bounce");
     }
 
     #[test]

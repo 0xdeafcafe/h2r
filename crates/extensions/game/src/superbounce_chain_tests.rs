@@ -72,33 +72,35 @@ fn bounces(n: usize) -> Vec<PlayerTick> {
 }
 
 #[test]
-fn the_medals_at_each_count_each_tier_once() {
+fn the_medals_at_each_count_one_medal_a_bounce() {
     assert!(bounce_medals(0).is_empty());
     assert_eq!(bounce_medals(1), &[Superbounce]);
-    assert_eq!(bounce_medals(2), &[Superbounce, DoubleBounce]);
-    assert_eq!(bounce_medals(3), &[Superbounce, TripleBounce]);
-    assert_eq!(bounce_medals(4), &[Superbounce, QuadBounce]);
-    assert_eq!(bounce_medals(5), &[Superbounce, ChainBounce]);
-    assert_eq!(bounce_medals(6), &[Superbounce, Bouncetacular]);
-    assert_eq!(bounce_medals(7), &[Superbounce]);
-    assert_eq!(bounce_medals(40), &[Superbounce]);
-    // A chain of seven: seven Superbounces and each tier once.
-    let mut all: Vec<Medal> = (1..=7).flat_map(|n| bounce_medals(n).to_vec()).collect();
-    all.sort();
-    assert_eq!(all.iter().filter(|m| **m == Superbounce).count(), 7);
-    for tier in [
-        DoubleBounce,
-        TripleBounce,
-        QuadBounce,
-        ChainBounce,
-        Bouncetacular,
+    assert_eq!(bounce_medals(2), &[DoubleBounce]);
+    assert_eq!(bounce_medals(3), &[TripleBounce]);
+    assert_eq!(bounce_medals(4), &[QuadBounce]);
+    assert_eq!(bounce_medals(5), &[ChainBounce]);
+    assert_eq!(bounce_medals(6), &[Bouncetacular]);
+    // Past the top tier it repeats, as Killimanjaro does.
+    assert_eq!(bounce_medals(7), &[Bouncetacular]);
+    assert_eq!(bounce_medals(40), &[Bouncetacular]);
+    // A chain of eight: Superbounce once, each tier once, and
+    // Bouncetacular on the 6th, 7th and 8th.
+    let all: Vec<Medal> = (1..=8).flat_map(|n| bounce_medals(n).to_vec()).collect();
+    assert_eq!(all.len(), 8);
+    for (medal, n) in [
+        (Superbounce, 1),
+        (DoubleBounce, 1),
+        (TripleBounce, 1),
+        (QuadBounce, 1),
+        (ChainBounce, 1),
+        (Bouncetacular, 3),
     ] {
-        assert_eq!(all.iter().filter(|m| **m == tier).count(), 1, "{tier:?}");
+        assert_eq!(all.iter().filter(|m| **m == medal).count(), n, "{medal:?}");
     }
     assert!(!all.contains(&Bounced));
     // The line shows the highest.
     assert_eq!(highest(bounce_medals(5)), Some(ChainBounce));
-    assert_eq!(highest(bounce_medals(7)), Some(Superbounce));
+    assert_eq!(highest(bounce_medals(7)), Some(Bouncetacular));
     // The ids are the film's and Live's.
     let ids: Vec<&str> = medals_by_id().into_iter().map(|(id, _)| id).collect();
     assert_eq!(
@@ -116,12 +118,9 @@ fn the_medals_at_each_count_each_tier_once() {
     );
     // A Monster earns its medal beside the bounce's own, last, so its
     // line is the one shown.
-    assert_eq!(bounce_medals_with(2, false), [Superbounce, DoubleBounce]);
-    assert_eq!(
-        bounce_medals_with(2, true),
-        [Superbounce, DoubleBounce, Monster]
-    );
-    assert_eq!(bounce_medals_with(9, true), [Superbounce, Monster]);
+    assert_eq!(bounce_medals_with(2, false), [DoubleBounce]);
+    assert_eq!(bounce_medals_with(2, true), [DoubleBounce, Monster]);
+    assert_eq!(bounce_medals_with(9, true), [Bouncetacular, Monster]);
     assert!(bounce_medals_with(0, true).is_empty());
     assert_eq!(highest(&bounce_medals_with(6, true)), Some(Monster));
 }
@@ -146,7 +145,7 @@ fn a_launch_over_the_monster_speed_is_a_monster_bounce() {
     assert_eq!(events.len(), 2, "{events:?}");
     assert!(matches!(events[0], Event::Bounce { monster: false, strips: 1, .. }));
     assert!(matches!(events[1], Event::Bounce { monster: true, chain: 2, .. }));
-    assert_eq!(events[1].medals(), [Superbounce, DoubleBounce, Monster]);
+    assert_eq!(events[1].medals(), [DoubleBounce, Monster]);
     assert_eq!(events[1].strips(), Some(1));
     // Just at the speed is not over it.
     let mut c = Chain::default();
@@ -161,7 +160,7 @@ fn a_launch_over_the_monster_speed_is_a_monster_bounce() {
     let mut m = Medals::new();
     let a = m.test(0, Some(0), 10, 3, false, true);
     assert!(a.monster());
-    assert_eq!(a.medals, [Superbounce, TripleBounce, Monster]);
+    assert_eq!(a.medals, [TripleBounce, Monster]);
     assert!(!m.test(0, Some(0), 11, 4, false, false).monster());
 }
 
@@ -173,10 +172,12 @@ fn bounces_with_no_ground_between_count_up() {
     assert_eq!(counts, [1, 2, 3, 4, 5, 6, 7]);
     assert!(events.iter().all(|e| matches!(e, Event::Bounce { .. })));
     assert!(c.live());
-    // Four and six earn their tiers; seven Superbounce alone.
-    assert_eq!(events[3].medals(), [Superbounce, QuadBounce]);
-    assert_eq!(events[5].medals(), [Superbounce, Bouncetacular]);
-    assert_eq!(events[6].medals(), [Superbounce]);
+    // One medal a bounce: the first Superbounce, then each tier, and the
+    // seventh Bouncetacular again.
+    assert_eq!(events[0].medals(), [Superbounce]);
+    assert_eq!(events[3].medals(), [QuadBounce]);
+    assert_eq!(events[5].medals(), [Bouncetacular]);
+    assert_eq!(events[6].medals(), [Bouncetacular]);
 }
 
 /// Each bounce names its strip by the strip's geometry, the id a rules
@@ -391,12 +392,13 @@ fn every_player_has_a_chain_bots_too() {
     // The seq counts up over the game.
     let seqs: Vec<u64> = awards.iter().map(|a| a.seq).collect();
     assert!(seqs.windows(2).all(|w| w[1] > w[0]));
-    // The records: three Superbounces, a Double, a Triple each; nothing
-    // for the player who stood.
+    // The records: three bounces, a Superbounce, a Double and a Triple
+    // each; nothing for the player who stood.
     for slot in [0, 5] {
         let r = &m.records()[&slot];
         assert_eq!((r.chain, r.live), (3, true));
-        assert_eq!(r.counts[&Superbounce], 3);
+        assert_eq!(r.bounces, 3);
+        assert_eq!(r.counts[&Superbounce], 1);
         assert_eq!(r.counts[&DoubleBounce], 1);
         assert_eq!(r.counts[&TripleBounce], 1);
     }
@@ -414,7 +416,7 @@ fn the_test_award_is_a_real_bounces_and_recent_keeps_eight() {
     let a = m.test(0, Some(0), 10, 5, false, false);
     assert_eq!(
         (a.chain, a.medals.clone()),
-        (5, vec![Superbounce, ChainBounce])
+        (5, vec![ChainBounce])
     );
     assert_eq!(a.user, Some(0));
     assert!(m.chain(0).unwrap().live());
