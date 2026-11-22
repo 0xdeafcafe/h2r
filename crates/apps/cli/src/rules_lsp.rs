@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn a_typed_space_completes_only_where_a_word_wants_one() {
         let mut s = Server::default();
-        let src = "rules \"T\" 1\ncarrier \nlabel goal: zone\non enter(goal, o) {\n    if o is \n    \n}\n";
+        let src = "rules \"T\" 1\ncarrier \nlabel goal: zone\nlabel ball: objects\non enter(goal, o) {\n    if o is \n    \n}\n";
         open(&mut s, src);
         let typed = |line: u32, character: u32| {
             let mut p = at(line, character);
@@ -639,13 +639,14 @@ mod tests {
         };
         let v = result(s.handle(req(1, "textDocument/completion", typed(1, 8))));
         assert!(v.as_array().unwrap().iter().any(|i| i["label"] == "slayer"), "{v}");
-        let v = result(s.handle(req(2, "textDocument/completion", typed(4, 12))));
-        assert!(v.as_array().unwrap().iter().any(|i| i["label"] == "goal"), "{v}");
+        // `o` is an object: the object label fits, the zone label does not.
+        let v = result(s.handle(req(2, "textDocument/completion", typed(5, 12))));
+        assert!(v.as_array().unwrap().iter().any(|i| i["label"] == "ball"), "{v}");
         // A space at the start of a statement asks for nothing; asked for
         // (Ctrl+Space), the same place completes.
-        let v = result(s.handle(req(3, "textDocument/completion", typed(5, 4))));
+        let v = result(s.handle(req(3, "textDocument/completion", typed(6, 4))));
         assert_eq!(v, json!([]));
-        let v = result(s.handle(req(4, "textDocument/completion", at(5, 4))));
+        let v = result(s.handle(req(4, "textDocument/completion", at(6, 4))));
         assert!(!v.as_array().unwrap().is_empty());
     }
 
