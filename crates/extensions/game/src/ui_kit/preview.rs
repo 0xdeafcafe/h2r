@@ -196,6 +196,43 @@ fn glyph_advance(font: &font::Font<'_>, prev: Option<char>, c: char) -> i32 {
         .map_or(0, |r| k + i32::from(r.x_offset) + i32::from(r.advance))
 }
 
+/// The emblem bitmaps a lobby's cells draw through `ui_small_emblem`:
+/// 32 by 32 images with the emblem in their top-left 19 by 19.
+const EMBLEM_FOREGROUND: &str = r"ui\global_bitmaps\emblems\foreground_small";
+const EMBLEM_BACKGROUND: &str = r"ui\global_bitmaps\emblems\background_small";
+
+/// An emblem from its two layers in `colours` (the foreground's two,
+/// then the background's two). Each layer is two masks, one in red and
+/// one in blue (`emblem_rules` in `crates/apps/cli/src/live_art.rs`,
+/// docs/live/live-api.md): a
+/// layer's colour is its first colour by red plus its second by blue,
+/// and the foreground covers the background by the larger of its masks.
+/// A pixel no mask covers is clear: the art fills only a corner of its
+/// image. `None` when the layers differ in size.
+fn emblem(bg: &Image, fg: &Image, colours: [[u8; 3]; 4]) -> Option<Image> {
+    if (bg.width, bg.height) != (fg.width, fg.height) {
+        return None;
+    }
+    let [fa, fb, ba, bb] = colours;
+    let mut rgba = Vec::with_capacity(bg.rgba.len());
+    for (b, f) in bg.rgba.chunks_exact(4).zip(fg.rgba.chunks_exact(4)) {
+        let (br, bm) = (u32::from(b[0]), u32::from(b[2]));
+        let (fr, fm) = (u32::from(f[0]), u32::from(f[2]));
+        let keep = 255 - fr.max(fm);
+        for c in 0..3 {
+            let under = ((u32::from(ba[c]) * br + u32::from(bb[c]) * bm) / 255).min(255);
+            let over = u32::from(fa[c]) * fr + u32::from(fb[c]) * fm;
+            rgba.push(((over + under * keep) / 255).min(255) as u8);
+        }
+        rgba.push(br.max(bm).max(fr).max(fm) as u8);
+    }
+    Some(Image {
+        width: bg.width,
+        height: bg.height,
+        rgba,
+    })
+}
+
 /// `img` in colour `tint`: each pixel's colour scaled by it, as the game
 /// draws a white bar in a player's colour.
 fn tinted(img: &Image, tint: [u8; 3]) -> Image {
@@ -957,6 +994,18 @@ impl Disc {
     /// the moved widgets where they are, and the stand-in text for a
     /// string ID the screen's table has none for.
     pub fn render_retail_edited(&self, r: &Retail<'_>, edits: &RetailEdits) -> Result<Canvas> {
+        self.render_retail_layer(r, edits, true)
+    }
+
+    /// [`Disc::render_retail_edited`]; with `over`, a screen whose sample
+    /// names the screen it opens over is drawn on that screen's picture
+    /// in place of the game shell background.
+    fn render_retail_layer(
+        &self,
+        r: &Retail<'_>,
+        edits: &RetailEdits,
+        over: bool,
+    ) -> Result<Canvas> {
         let parts = self.retail_parts(r.tag)?;
         let mut pane = parts
             .screen
@@ -991,14 +1040,45 @@ impl Disc {
                 .or_else(|| (r.text)(id))
                 .or_else(|| state.text(widget, id))
         };
-        let g = self.geometry(ListPlace::Controls)?;
+        // The header and footer are in the screen's own header layout.
+        let layout = screen.header_layout();
+        let (hl, header_font) = (
+            self.shared.header_layouts[layout],
+            self.shared.header_fonts[layout],
+        );
+        let header_colour = [
+            self.shared.header_color[1],
+            self.shared.header_color[2],
+            self.shared.header_color[3],
+        ];
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
-        let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
-        for p in &self.background.panes {
-            self.draw_blocks(&mut c, p.bitmaps.iter());
-        }
+        let under = state
+            .sample
+            .and_then(|s| s.over.as_deref())
+            .filter(|_| over);
+        let mut c = match under {
+            // A dialog: the screen it opened over, in that screen's state.
+            Some(tag) => self.render_retail_layer(
+                &Retail {
+                    tag,
+                    pane: 0,
+                    text: &|_| None,
+                    cells: &[],
+                    footer: None,
+                },
+                &RetailEdits::default(),
+                false,
+            )?,
+            None => {
+                let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
+                for p in &self.background.panes {
+                    self.draw_blocks(&mut c, p.bitmaps.iter());
+                }
+                c
+            }
+        };
         // The pane's bitmaps the state shows, lowest render depth first.
-        let mut blocks: Vec<(&tui::BitmapBlock, retail_sample::Shown)> = pane
+        let mut blocks: Vec<(&tui::BitmapBlock, retail_sample::Shown<'_>)> = pane
             .bitmaps
             .iter()
             .enumerate()
@@ -1010,30 +1090,38 @@ impl Disc {
             .collect();
         blocks.sort_by_key(|(b, _)| b.render_depth_bias);
         for (b, shown) in blocks {
-            if let Some(img) = self.shown_image(b, shown) {
+            let img = self.shown_image(b, shown);
+            if let (Some(stem), None) = (shown.level, &img) {
+                bail!(
+                    "the sample for {} names a map with no picture in the disc's level list: {stem}",
+                    r.tag
+                );
+            }
+            if let Some(img) = img {
                 c.image(&img, i32::from(b.top_left.x), i32::from(b.top_left.y), 255);
             }
         }
         if screen.flags & tui::Screen::NO_HEADER == 0
             && let Some(h) = lookup("title", header)
         {
-            c.text(
+            c.text_boxed(
                 &self.fonts,
-                g.header_font,
+                header_font,
                 &h,
-                g.header,
+                hl.header,
                 0,
-                rgb(g.header_colour),
+                rgb(header_colour),
+                255,
             );
         }
         if let Some(f) = r.footer.clone().or_else(|| state.footer()) {
             c.text(
                 &self.fonts,
-                g.header_font,
+                header_font,
                 &f,
-                g.footer,
+                hl.secondary,
                 1,
-                rgb(g.header_colour),
+                rgb(header_colour),
             );
         }
         for (i, b) in pane.buttons.iter().enumerate() {
@@ -1108,7 +1196,7 @@ impl Disc {
             .iter()
             .map(|text| retail_sample::Cell {
                 text: text.clone(),
-                blocks: BTreeMap::new(),
+                ..Default::default()
             })
             .collect();
         let (cells, plain) = if named_cells.is_empty() {
@@ -1149,6 +1237,23 @@ impl Disc {
                         );
                     }
                 }
+                // The player's emblem, in each of the skin's shader
+                // bitmaps. The game places one as it does an item's
+                // bitmap: its rectangle moved up by its own height.
+                if let Some(e) = cell.emblem.as_ref().filter(|_| !plain) {
+                    let img = self
+                        .emblem_image(e)
+                        .with_context(|| format!("the sample for {}", r.tag))?;
+                    for b in &skin.shader_bitmaps {
+                        let h = (i32::from(b.rect.top) - i32::from(b.rect.bottom)).abs();
+                        c.image(
+                            &img,
+                            ox + i32::from(b.rect.left),
+                            oy + i32::from(b.rect.top) + h,
+                            255,
+                        );
+                    }
+                }
                 if let Some(t) = skin.text_blocks.first() {
                     let at = Rect {
                         top: (i32::from(t.rect.top) + oy) as i16,
@@ -1171,10 +1276,36 @@ impl Disc {
         Ok(c)
     }
 
-    /// Bitmap block `b`'s picture as a state shows it: the image the
-    /// state picks (else the block's own), in the state's colour.
-    fn shown_image(&self, b: &tui::BitmapBlock, shown: retail_sample::Shown) -> Option<Image> {
-        let img = self.image(b.bitmap, shown.image.unwrap_or(b.image))?;
+    /// Emblem `e` in the disc's small emblem art, coloured ([`emblem`]).
+    fn emblem_image(&self, e: &retail_sample::Emblem) -> Result<Image> {
+        let layer = |tag: &str, index: i16| -> Result<Image> {
+            let id = self
+                .map
+                .borrow_mut()
+                .tag(map::TagQuery::NameInGroup(tag, tui::BITMAP))?
+                .id;
+            let r = tui::TagRef {
+                group: tui::BITMAP,
+                id: Some(id),
+            };
+            self.image(r, index)
+                .with_context(|| format!("{tag} has no image {index}"))
+        };
+        let bg = layer(EMBLEM_BACKGROUND, e.background)?;
+        let fg = layer(EMBLEM_FOREGROUND, e.foreground)?;
+        emblem(&bg, &fg, e.colours).context("the emblem's two layers differ in size")
+    }
+
+    /// Bitmap block `b`'s picture as a state shows it: the map picture
+    /// or the image the state picks (else the block's own), in the
+    /// state's colour.
+    fn shown_image(&self, b: &tui::BitmapBlock, shown: retail_sample::Shown<'_>) -> Option<Image> {
+        let img = match shown.level {
+            Some(stem) => self.art(&Art::Level {
+                stem: stem.to_owned(),
+            })?,
+            None => self.image(b.bitmap, shown.image.unwrap_or(b.image))?,
+        };
         Some(match shown.tint {
             Some(t) => tinted(&img, t),
             None => img,
@@ -1266,10 +1397,11 @@ impl Disc {
         if screen.flags & tui::Screen::NO_HEADER == 0
             && let Some(h) = lookup("title", header)
         {
+            let layout = screen.header_layout();
             w.push(text(
                 "title".into(),
-                edges(g.header),
-                g.header_font,
+                edges(self.shared.header_layouts[layout].header),
+                self.shared.header_fonts[layout],
                 Justify::Left,
                 h,
                 rgb(g.header_colour),
@@ -2509,5 +2641,43 @@ mod edit_tests {
         };
         assert_eq!(px(336 + 10, 8 + 22 + 10), 80);
         assert_eq!(px(664 + 10, 8 + 22 + 10), 160);
+    }
+}
+
+#[cfg(test)]
+mod emblem_tests {
+    use super::{Image, emblem};
+
+    fn px(pixels: &[[u8; 4]]) -> Image {
+        Image {
+            width: pixels.len() as u32,
+            height: 1,
+            rgba: pixels.concat(),
+        }
+    }
+
+    /// Red picks a layer's first colour and blue its second; the
+    /// foreground covers the background by its masks; a pixel no mask
+    /// covers is clear.
+    #[test]
+    fn an_emblem_is_its_two_layers_in_four_colours() {
+        let (fa, fb, ba, bb) = ([240, 240, 240], [20, 20, 20], [176, 44, 40], [44, 84, 176]);
+        // Background: first colour, second colour, first, none.
+        let bg = px(&[[255, 255, 0, 0], [0, 0, 255, 255], [255, 255, 0, 0], [0, 0, 0, 0]]);
+        // Foreground: none, none, all of its first colour, none.
+        let fg = px(&[[0, 0, 0, 0], [0, 0, 0, 0], [255, 255, 0, 0], [0, 0, 0, 0]]);
+        let e = emblem(&bg, &fg, [fa, fb, ba, bb]).unwrap();
+        let at = |i: usize| &e.rgba[i * 4..i * 4 + 4];
+        assert_eq!(at(0), [176, 44, 40, 255]);
+        assert_eq!(at(1), [44, 84, 176, 255]);
+        assert_eq!(at(2), [240, 240, 240, 255], "the foreground covers it");
+        assert_eq!(at(3)[3], 0, "outside the art nothing is drawn");
+        // Half a foreground mask lets half the background through.
+        let half = emblem(&px(&[[255, 255, 0, 0]]), &px(&[[0, 0, 128, 128]]), [fa, fb, ba, bb]);
+        let half = half.unwrap();
+        assert!(half.rgba[0] > 20 && half.rgba[0] < 176, "{:?}", half.rgba);
+        assert_eq!(half.rgba[3], 255);
+        // Layers of different sizes are not an emblem.
+        assert!(emblem(&bg, &px(&[[0, 0, 0, 0]]), [fa, fb, ba, bb]).is_none());
     }
 }

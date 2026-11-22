@@ -18,27 +18,46 @@ tokens:
 # The leader's legend.
 footer: { string: button_key_squad_leader_teams_disabled }
 
+# Each player: the name, the bars in the team's colour, the rank and the
+# emblem (an image of each emblem bitmap; the foreground's two colours,
+# then the background's two).
 cells:
   - text: Kestrel
     blocks:
       ui\screens\game_shell\pregame_lobby\item_background: { tint: [176, 44, 40] }
       ui\list_skins\profile_picker2\item_background: { tint: [176, 44, 40] }
       ui\global_bitmaps\rank_icons_sm: { image: 14 }
+    emblem:
+      foreground: 12
+      background: 5
+      colours: [[236, 236, 236], [28, 28, 28], [176, 44, 40], [240, 190, 40]]
   - text: Marlow
     blocks:
       ui\screens\game_shell\pregame_lobby\item_background: { tint: [176, 44, 40] }
       ui\list_skins\profile_picker2\item_background: { tint: [176, 44, 40] }
       ui\global_bitmaps\rank_icons_sm: { image: 9 }
+    emblem:
+      foreground: 20
+      background: 1
+      colours: [[240, 190, 40], [28, 28, 28], [176, 44, 40], [110, 110, 110]]
   - text: Quillon
     blocks:
       ui\screens\game_shell\pregame_lobby\item_background: { tint: [44, 84, 176] }
       ui\list_skins\profile_picker2\item_background: { tint: [44, 84, 176] }
       ui\global_bitmaps\rank_icons_sm: { image: 21 }
+    emblem:
+      foreground: 5
+      background: 12
+      colours: [[236, 236, 236], [110, 180, 230], [44, 84, 176], [28, 28, 28]]
   - text: Ibis
     blocks:
       ui\screens\game_shell\pregame_lobby\item_background: { tint: [44, 84, 176] }
       ui\list_skins\profile_picker2\item_background: { tint: [44, 84, 176] }
       ui\global_bitmaps\rank_icons_sm: { image: 4 }
+    emblem:
+      foreground: 1
+      background: 20
+      colours: [[246, 150, 170], [28, 28, 28], [44, 84, 176], [126, 150, 60]]
 
 panes:
   # A custom game.
@@ -58,6 +77,10 @@ panes:
       text.6: { text: "Team Play: On" }
       # One per player slot, lit while that player talks.
       ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+      # The tag's picture is the one for a map with none; the game puts
+      # the chosen map's here. The map's name above is made up, so the
+      # picture is another map's.
+      ui\screens\game_shell\pregame_lobby\unknown_map: { level: lockout }
   # Co-op.
   1:
     blocks:
@@ -65,6 +88,10 @@ panes:
       game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
       view_postgame: { hide: true }
       ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+      # One bar per player slot, under the table's cells. An empty slot
+      # shows none, as in the custom game's pane, where the tag parks
+      # them off screen.
+      ui\screens\game_shell\pregame_lobby\item_background: { hide: true }
   # Matchmaking.
   2:
     blocks:
@@ -72,3 +99,4 @@ panes:
       game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
       view_postgame: { hide: true }
       ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+      ui\screens\game_shell\pregame_lobby\item_background: { hide: true }

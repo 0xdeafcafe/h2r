@@ -5,6 +5,9 @@
 # from the disc when the picture is drawn.
 screen: ui\screens\game_shell\pregame_lobby\squad_settings_dialog
 
+# The lobby is still drawn under the dialog.
+over: ui\screens\game_shell\pregame_lobby\pregame_lobby
+
 tokens:
   e41f: SYSTEM LINK        # the network the party is on
   e408: Glasshouse         # the map
@@ -13,6 +16,12 @@ footer: { string: key_offline }
 
 panes:
   0:
+    blocks:
+      # The panel under the map's name. The tag's bitmap is another
+      # screen's art; the game puts the focused row's picture here (the
+      # map's for Change Map). The map's name is made up, so the picture
+      # is another map's.
+      ui\screens\game_shell\xbox_live\xbox_live_main_menu\xbox_live: { level: lockout }
     lists:
       0:
         focus: 0

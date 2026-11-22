@@ -532,7 +532,15 @@ bit 0 set (`0x2b0a48`; shader bitmaps have their own test, `0x2b12ba`, not
 read). An item's bitmap covers its point's `y` up to `y` plus its
 height (Y up), so the Controls skin's items are 26 units apart (its row
 bar), as the game draws them, and the default skin's 22
-(docs/game/ui-screens.md "Item spacing").
+(docs/game/ui-screens.md "Item spacing"). `0x2bacbc` places an item's
+children at a point: for each of the skin's bitmaps (`+0x24`, `0x38`
+bytes each) and then each of its shader bitmaps (`+0x2c`, `0x24` bytes
+each) it takes the widget's rectangle (`0x22e9c6`), adds the
+rectangle's own height (top minus bottom, as a magnitude) to its top
+and bottom, adds the point, and writes it back (`+0x20`). A shader
+bitmap's rectangle is so moved up by its height like a bitmap's. Its
+loop over the skin's text blocks (`+0x1c`, through `0x2baeb1`) is not
+read.
 Anything the tag draws under a list does not move with it, so a screen
 whose hint text sits under its list needs its tag adjusted, as
 `custom_games::extend_tag` does for the Xbox Live menu.

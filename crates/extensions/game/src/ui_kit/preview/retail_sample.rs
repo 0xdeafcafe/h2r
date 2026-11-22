@@ -44,6 +44,24 @@ pub struct Fill {
     /// The colour the game draws the bitmap in (a player's, a team's).
     #[serde(default)]
     pub tint: Option<[u8; 3]>,
+    /// The game puts a map's picture here in place of the block's
+    /// bitmap: the map file's name without `.map`. The picture is read
+    /// from the disc's level list when drawn.
+    #[serde(default)]
+    pub level: Option<String>,
+}
+
+/// A player's emblem: an image of each of the disc's two emblem bitmaps
+/// and the four colours they are drawn in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Emblem {
+    /// The image of the foreground bitmap.
+    pub foreground: i16,
+    /// The image of the background bitmap.
+    pub background: i16,
+    /// The foreground's two colours, then the background's two.
+    pub colours: [[u8; 3]; 4],
 }
 
 /// One filled cell of the screen's tables (a player in a lobby).
@@ -55,6 +73,9 @@ pub struct Cell {
     /// The cell skin's bitmaps, by `bitmap.N` or by bitmap tag path.
     #[serde(default)]
     pub blocks: BTreeMap<String, Fill>,
+    /// The emblem the cell skin's shader bitmap shows; none draws none.
+    #[serde(default)]
+    pub emblem: Option<Emblem>,
 }
 
 /// The rows the game's code gives a list.
@@ -86,6 +107,8 @@ pub struct PaneSample {
 struct Doc {
     screen: String,
     #[serde(default)]
+    over: Option<String>,
+    #[serde(default)]
     tokens: BTreeMap<String, String>,
     #[serde(default)]
     footer: Option<Fill>,
@@ -100,6 +123,9 @@ struct Doc {
 pub struct RetailSample {
     /// The screen tag's path.
     pub screen: String,
+    /// The screen this one opens over (a dialog's opener), drawn under
+    /// it in its own sample state.
+    pub over: Option<String>,
     /// What each substitution unit reads as.
     pub tokens: BTreeMap<char, String>,
     /// The button legend in the footer.
@@ -146,6 +172,7 @@ impl RetailSample {
         }
         Ok(RetailSample {
             screen: d.screen,
+            over: d.over,
             tokens,
             footer: d.footer,
             cells: d
@@ -154,6 +181,7 @@ impl RetailSample {
                 .map(|c| Cell {
                     text: c.text,
                     blocks: keyed(c.blocks),
+                    emblem: c.emblem,
                 })
                 .collect(),
             panes: d
@@ -224,10 +252,22 @@ pub struct Strings<'a> {
 
 /// How a bitmap block is drawn in a state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Shown {
+pub struct Shown<'a> {
     /// The image to draw in place of the block's own.
     pub image: Option<i16>,
     pub tint: Option<[u8; 3]>,
+    /// The map whose picture is drawn in place of the block's bitmap.
+    pub level: Option<&'a str>,
+}
+
+impl<'a> Shown<'a> {
+    fn of(f: &'a Fill) -> Self {
+        Shown {
+            image: f.image,
+            tint: f.tint,
+            level: f.level.as_deref(),
+        }
+    }
 }
 
 /// One pane of a screen in a state: the tag's strings and the sample's
@@ -288,13 +328,10 @@ impl State<'_> {
 
     /// How bitmap `widget` (`bitmap.N`), whose bitmap tag is `tag`, is
     /// drawn; `None` when the state hides it.
-    pub fn bitmap(&self, widget: &str, tag: Option<&str>) -> Option<Shown> {
+    pub fn bitmap(&self, widget: &str, tag: Option<&str>) -> Option<Shown<'_>> {
         match self.fill(widget, tag) {
             Some(f) if f.hide => None,
-            Some(f) => Some(Shown {
-                image: f.image,
-                tint: f.tint,
-            }),
+            Some(f) => Some(Shown::of(f)),
             None => Some(Shown::default()),
         }
     }
@@ -346,17 +383,14 @@ impl State<'_> {
 }
 
 /// How a cell's skin bitmap is drawn: [`State::bitmap`] for a [`Cell`].
-pub fn cell_bitmap(cell: &Cell, widget: &str, tag: Option<&str>) -> Option<Shown> {
+pub fn cell_bitmap<'a>(cell: &'a Cell, widget: &str, tag: Option<&str>) -> Option<Shown<'a>> {
     let f = cell
         .blocks
         .get(&key(widget))
         .or_else(|| cell.blocks.get(&key(tag?)));
     match f {
         Some(f) if f.hide => None,
-        Some(f) => Some(Shown {
-            image: f.image,
-            tint: f.tint,
-        }),
+        Some(f) => Some(Shown::of(f)),
         None => Some(Shown::default()),
     }
 }
@@ -376,6 +410,10 @@ cells:
     blocks:
       ui\bars\row: { tint: [200, 40, 40] }
       bitmap.3: { image: 12 }
+    emblem:
+      foreground: 7
+      background: 2
+      colours: [[240, 240, 240], [20, 20, 20], [176, 44, 40], [44, 84, 176]]
   - text: Marlow
     blocks:
       ui/art/rank: { hide: true }
@@ -387,6 +425,7 @@ panes:
       text.4: { text: 'Score to win: 50' }
       UI\Art\Speaker: { hide: true }
       ui\art\icons: { image: 3 }
+      ui\art\unknown_map: { level: glasshouse }
     lists:
       0:
         focus: 1
@@ -483,11 +522,16 @@ panes:
             st.bitmap("bitmap.5", Some(r"ui\art\icons")),
             Some(Shown {
                 image: Some(3),
-                tint: None
+                ..Shown::default()
             })
         );
         assert_eq!(st.bitmap("bitmap.6", Some(r"ui\art\frame")), Some(Shown::default()));
         assert_eq!(st.bitmap("bitmap.7", None), Some(Shown::default()));
+        // A map's picture in place of the block's own bitmap.
+        assert_eq!(
+            st.bitmap("bitmap.8", Some(r"ui\art\unknown_map")).unwrap().level,
+            Some("glasshouse")
+        );
     }
 
     #[test]
@@ -520,8 +564,8 @@ panes:
         assert_eq!(
             cell_bitmap(&cells[0], "bitmap.0", Some(r"ui\bars\row")),
             Some(Shown {
-                image: None,
-                tint: Some([200, 40, 40])
+                tint: Some([200, 40, 40]),
+                ..Shown::default()
             })
         );
         assert_eq!(
@@ -530,6 +574,10 @@ panes:
         );
         assert_eq!(cell_bitmap(&cells[1], "bitmap.3", Some(r"ui\art\rank")), None);
         assert_eq!(cell_bitmap(&cells[1], "bitmap.0", None), Some(Shown::default()));
+        let e = cells[0].emblem.as_ref().expect("the first cell has an emblem");
+        assert_eq!((e.foreground, e.background), (7, 2));
+        assert_eq!(e.colours[2], [176, 44, 40]);
+        assert_eq!(cells[1].emblem, None);
     }
 
     #[test]
@@ -541,6 +589,13 @@ panes:
         )
         .unwrap();
         assert_eq!(state(Some(&bad), 0).missing(), ["no_such"]);
+    }
+
+    #[test]
+    fn a_dialog_names_the_screen_it_opens_over() {
+        let s = RetailSample::parse("screen: a\\dialog\nover: a\\lobby\n").unwrap();
+        assert_eq!(s.over.as_deref(), Some(r"a\lobby"));
+        assert_eq!(RetailSample::parse(LOBBY).unwrap().over, None);
     }
 
     #[test]

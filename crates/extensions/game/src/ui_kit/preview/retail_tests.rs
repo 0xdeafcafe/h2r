@@ -3,7 +3,7 @@
 //! `H2_UI_PREVIEW_DIR` set the pictures are written there.
 
 use super::retail_sample::{self, TOKENS};
-use super::{Disc, Retail, RetailPlaces};
+use super::{Canvas, Disc, Retail, RetailEdits, RetailPlaces};
 use crate::ui_kit::view::{Kind, View};
 
 const LOBBY: &str = r"ui\screens\game_shell\pregame_lobby\pregame_lobby";
@@ -157,7 +157,105 @@ fn a_long_text_is_broken_to_its_rect_in_the_discs_fonts() {
     assert!(d.fonts.lines_drawn(w.2, r.height()) >= lines.len(), "all of it shows");
 }
 
-fn write(c: &super::Canvas, file: &str) {
+/// The colours in `c`'s pixels `x0..x1` by `y0..y1`.
+fn colours(c: &Canvas, x: std::ops::Range<u32>, y: std::ops::Range<u32>) -> Vec<[u8; 3]> {
+    let mut v = Vec::new();
+    for py in y {
+        for px in x.clone() {
+            let i = ((py * c.width + px) * 4) as usize;
+            v.push([c.rgba[i], c.rgba[i + 1], c.rgba[i + 2]]);
+        }
+    }
+    v
+}
+
+fn distinct(mut v: Vec<[u8; 3]>) -> usize {
+    v.sort_unstable();
+    v.dedup();
+    v.len()
+}
+
+/// The title is in the screen's own header layout, and the layout's
+/// rectangle holds one line of its font: the lobby's and Game Setup's
+/// are different layouts.
+#[test]
+fn a_title_is_in_its_screens_own_header_layout() {
+    let Some(d) = disc() else { return };
+    let title = |tag: &str| {
+        let v = d.retail_view(&pick(tag, 0), &RetailPlaces::new()).unwrap();
+        let w = v.widget("title").unwrap_or_else(|| panic!("{tag} has no title")).clone();
+        let Kind::Text { text, font, .. } = &w.kind else {
+            panic!("{tag}: the title is not a text");
+        };
+        let r = w.rect();
+        assert_eq!(d.fonts.wrap(*font, text, r.width()).len(), 1, "{tag}: {text:?} in {}", r.width());
+        assert!(
+            d.fonts.lines_drawn(*font, r.height()) >= 1,
+            "{tag}: a rectangle {} high draws no line of font {font}",
+            r.height()
+        );
+        w.rect
+    };
+    let (lobby, setup) = (title(LOBBY), title(SETUP));
+    assert_ne!(lobby, setup, "each on its own layout");
+    assert!(setup[0] < lobby[0], "the dialog's title is the lower: {setup:?} {lobby:?}");
+}
+
+/// An empty player slot draws nothing in any pane: the co-op and
+/// matchmaking panes' slot bars are hidden as the custom game's are
+/// parked.
+#[test]
+fn an_empty_slot_draws_nothing_in_any_pane() {
+    let Some(d) = disc() else { return };
+    let shots: Vec<_> = (0..3).map(|p| d.render_retail(&pick(LOBBY, p)).unwrap()).collect();
+    // The sixth slot's bar: its point is (113, 65), 168 by 19, between
+    // the fourth player and the help text.
+    let slot = |c: &Canvas| colours(c, 440..590, 178..192);
+    assert_eq!(slot(&shots[1]), slot(&shots[0]), "co-op");
+    assert_eq!(slot(&shots[2]), slot(&shots[0]), "matchmaking");
+}
+
+/// A player's emblem is drawn in the cell's shader bitmap: left of the
+/// first player's name, pixels in the sample's emblem colours.
+#[test]
+fn a_cells_emblem_is_drawn_in_its_colours() {
+    let Some(d) = disc() else { return };
+    let sample = retail_sample::for_screen(LOBBY).unwrap().expect("the lobby has a sample");
+    let e = sample.cells[0].emblem.as_ref().expect("the first player has an emblem");
+    let shot = d.render_retail(&pick(LOBBY, 0)).unwrap();
+    // The table's anchor is (113, 137) and the shader bitmap's rectangle
+    // [6 -20 -26 12], moved up by its height: the emblem's 19 by 19 is
+    // at pixels (413, 65).
+    let slot = colours(&shot, 413..432, 65..84);
+    let n = slot.iter().filter(|p| e.colours.contains(p)).count();
+    assert!(n > 30, "{n} pixels in the emblem's colours");
+}
+
+/// The lobby's map picture and Game Setup's panel show a map's picture,
+/// and Game Setup is drawn over the lobby.
+#[test]
+fn a_dialog_is_drawn_over_its_opener_with_its_map_picture() {
+    let Some(d) = disc() else { return };
+    let setup = pick(SETUP, 0);
+    let with = d.render_retail(&setup).unwrap();
+    let alone = d.render_retail_layer(&setup, &RetailEdits::default(), false).unwrap();
+    assert!(with.rgba != alone.rgba, "the lobby shows around the dialog");
+    // The panel's point is (27, 68): its picture starts at pixels
+    // (347, 172).
+    let panel = distinct(colours(&with, 357..547, 182..360));
+    assert!(panel > 100, "the panel has a picture: {panel} colours");
+    // The panel's own bitmap decodes too (its first image has art).
+    let parts = d.retail_parts(SETUP).unwrap();
+    let own = parts.screen.panes[0]
+        .bitmaps
+        .iter()
+        .filter(|b| super::on_screen_point(b.top_left))
+        .map(|b| (b.top_left, b.image, d.image(b.bitmap, b.image).map(|i| (i.width, i.height))))
+        .collect::<Vec<_>>();
+    assert!(own.iter().all(|b| b.2.is_some()), "every pane bitmap decodes: {own:?}");
+}
+
+fn write(c: &Canvas, file: &str) {
     if let Some(dir) = std::env::var_os("H2_UI_PREVIEW_DIR").map(std::path::PathBuf::from) {
         std::fs::create_dir_all(&dir).unwrap();
         c.write_png(&dir.join(file)).unwrap();

@@ -1373,7 +1373,7 @@ repeated, and named by a string of ours.
 
 ## Retail screens in a believable state
 
-Status: Built, not compiled or run in the editor yet.
+Status: Built. Not measured against the game (see "The fidelity loop").
 Code: `crates/extensions/game/src/ui_kit/preview.rs`
 (`Disc::render_retail_edited`, `Disc::retail_view_edited`,
 `Canvas::text_boxed`),
@@ -1420,9 +1420,10 @@ panes:
 
 | Key | What it says |
 |---|---|
+| `over` | the screen tag this one opens over (a dialog's opener). That screen's pane 0 is drawn first, in its own sample state, in place of the game shell background |
 | `tokens` | what each substitution unit reads as, for every pane |
 | `footer` | the legend in the header layout's second rectangle |
-| `cells` | the tables' filled cells: `text` is the cell skin's first text block, `blocks` its bitmaps. A cell with no entry is not drawn |
+| `cells` | the tables' filled cells: `text` is the cell skin's first text block, `blocks` its bitmaps, `emblem` the player's emblem. A cell with no entry is not drawn |
 | `panes.N.blocks` | what the game does to a block of pane `N` |
 | `panes.N.lists.M` | the rows the game's code gives list `M`, and the focused one, drawn on the list's skin from its anchor as a screen of ours lays its rows |
 
@@ -1437,6 +1438,22 @@ widget id wins. What it takes:
 | `text: "..."` | the game writes text of its own making there |
 | `image: N` | the image of the block's bitmap the game picks (a rank, a game type's icon) |
 | `tint: [r, g, b]` | the colour the game draws the bitmap in (a player's colour on a white bar) |
+| `level: stem` | the game puts a map's picture there in place of the block's bitmap (the lobby's map picture). `stem` is the map file's name without `.map`; the picture is the one the disc's level list gives that map (`Disc::art`, `Art::Level`). A map with no picture fails the render |
+
+A cell's `emblem` is `{ foreground: N, background: M, colours: [...] }`:
+an image of each of the disc's small emblem bitmaps
+(`ui\global_bitmaps\emblems\foreground_small`, `background_small`) and
+four colours, the foreground's two and then the background's two. It is
+drawn in each shader bitmap of the cell's skin. The game moves a skin
+item's shader bitmap up by its own height, as it does an item's bitmap
+(docs/formats/ui.md "Screen and list classes (code, not tags)"), so the lobby's 32 by 32 rectangle has its
+top on the bar's top. The art is the top-left 19 by 19 of its 32 by 32
+image, which is the bar's height. Each layer is two masks, red and blue
+(`emblem_rules` in `crates/apps/cli/src/live_art.rs`): the layer's
+colour is its first colour by red plus its second by blue, and the
+foreground covers the background by the larger of its masks
+(`preview.rs` `emblem`). A pixel no mask covers is left clear. That last
+rule is the preview's own: the `ui_small_emblem` shader is not read.
 
 Rules:
 
@@ -1450,6 +1467,11 @@ Rules:
   outright still shows.
 - **One pane.** The picture is pane `Retail::pane`'s blocks alone; a
   sample's `panes.N` applies to that pane only.
+- **The title and the legend are in the screen's own header layout**
+  (`Screen::header_layout`, the shared globals' four layouts): the
+  lobby's title and Game Setup's are in different rectangles.
+- **A dialog is drawn over its opener** when its sample names one with
+  `over`, one level deep: the opener's own `over` is not followed.
 - **The editor's edits come first.** A stand-in for a string set with
   `ui.set_string` is drawn ahead of the sample, then `Retail::text`'s
   answer, then the sample, then the tag's own string.
@@ -1460,9 +1482,17 @@ Rules:
   hidden block, with no text, so the editor can still select and move
   it.
 
-Not drawn: a cell skin's shader bitmaps (the player emblem, which the
-game draws through `ui_small_emblem` with the player's colours) and model
-scenes.
+Not drawn: model scenes, and a shader bitmap of a cell with no `emblem`.
+
+Not traced: which code hides the lobby's per-slot bars and speaker
+icons, and when it shows the help text under the player column. The
+lobby's update (`0x24fd..`) looks up text widgets 1, 3, 4, 0x2a and 0x2d
+and bitmaps 2 and 4 only. The sample hides the co-op and matchmaking
+panes' slot bars, as the custom game's pane parks them off screen.
+Game Setup's panel bitmap is another screen's art; the tag preloads
+`difficulty_options` and `mp_games`, and the code that swaps the
+panel's picture per focused row is not read, so the sample's `level`
+stands in for it.
 
 ## The fidelity loop
 
