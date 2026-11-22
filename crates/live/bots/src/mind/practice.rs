@@ -643,7 +643,31 @@ pub fn site_in(
         base,
         run_off: tune.run_off_speed,
         need: s.need,
+        control: false,
     }
+}
+
+/// The known sites as a training board takes them ([`site_in`]), a V's
+/// arm twice (docs/game/bounce-search.md, "Vs: the mirror and its
+/// control"): from the mirror side its spot records, then once from its
+/// own side ([`Site::same_side`]) as the control, so the training can
+/// confirm or refute the mirror.
+pub fn sites_in(
+    sites: &[Site],
+    ledge: crate::bounce_route::Ledge,
+    tune: &crate::tuning::BounceTuning,
+) -> Vec<SiteIn> {
+    let mut out = Vec::with_capacity(sites.len());
+    for s in sites {
+        out.push(site_in(s, ledge, tune));
+        if s.arm.is_some() {
+            out.push(SiteIn {
+                control: true,
+                ..site_in(&s.same_side(), ledge, tune)
+            });
+        }
+    }
+    out
 }
 
 // ---- the claims: which bot practises where ----
@@ -1581,12 +1605,7 @@ impl Mind {
             }
             let tune = crate::tuning::bounce().sane();
             let ledge = |s: &Site| launch_floor(m, s);
-            let sites = self
-                .known
-                .sites
-                .iter()
-                .map(|s| site_in(s, &ledge, &tune))
-                .collect();
+            let sites = sites_in(&self.known.sites, &ledge, &tune);
             let lines = crate::spots::learned_for(&tr.map);
             *g = Some(learn::Board::new(&tr.map, run, sites, &lines));
         }
@@ -1623,10 +1642,14 @@ impl Mind {
         self.practice.training.held = Some(i);
         let next = on_board(self.practice.learn_board, |b| {
             let s = &b.sites().get(i)?.search;
-            Some((s.setup().at, s.next_slot(&self.practice.training.done)))
+            Some((
+                s.setup().at,
+                s.setup().control,
+                s.next_slot(&self.practice.training.done),
+            ))
         })
         .flatten();
-        let Some((at, next)) = next else {
+        let Some((at, control, next)) = next else {
             self.train_let_go();
             self.practice_idle(me, tick, PAUSE_MIN);
             return None;
@@ -1643,6 +1666,8 @@ impl Mind {
             .iter()
             .find(|s| s.bounce.stand == at)
             .copied()
+            // A control flies the arm from its own side.
+            .map(|s| if control { s.same_side() } else { s })
         else {
             self.train_try(Try::void("no_site"));
             self.practice_idle(me, tick, 1);

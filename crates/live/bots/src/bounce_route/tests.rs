@@ -1796,6 +1796,7 @@ fn a_training_loop_flies_the_boards_knobs_folds_its_tries_and_writes_the_file() 
         base: own.knobs(Some(RUN_OFF_FROM)),
         run_off: tune.run_off_speed,
         need: s.need,
+        control: false,
     };
     let train = Train {
         shard: 0,

@@ -353,6 +353,13 @@ pub struct Entry {
     pub deaths: u32,
     /// A `dead` or `blocked` line's reason.
     pub why: Option<String>,
+    /// A control line (`control=1`): a V's arm flown from its own side,
+    /// not the mirror side its spot is approached from
+    /// (docs/game/bounce-search.md, "Vs: the mirror and its control"). It
+    /// is a site of its own beside the arm's line at the same `at`, and
+    /// evidence only: [`entry_for`], [`knobs_for`] and [`apply`] never
+    /// take it.
+    pub control: bool,
     /// The cursor: the stage, the next axis of the pass (in `shift`, the
     /// shift rounds flown), how often the steps have halved, whether this
     /// pass has moved the centre, whether the scatter has run.
@@ -391,7 +398,16 @@ fn near(a: Vec3, b: Vec3) -> bool {
 /// The site's id: FNV-1a 64 of `"<map> <x> <y> <z>"`, the site's `stand`
 /// printed as the file prints it. It shards a batch and seeds its draws.
 pub fn spot_id(map: &str, stand: Vec3) -> u64 {
-    let text = format!("{map} {}", key(stand));
+    fnv(&format!("{map} {}", key(stand)))
+}
+
+/// A control site's id ([`Entry::control`]): [`spot_id`]'s text with
+/// ` control` after it, so the arm and its control are two sites.
+pub fn control_id(map: &str, stand: Vec3) -> u64 {
+    fnv(&format!("{map} {} control", key(stand)))
+}
+
+fn fnv(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {
         h ^= u64::from(b);
@@ -408,10 +424,15 @@ fn num(v: f32, places: usize) -> String {
         .unwrap_or_else(|_| format!("{v:.places$}"))
 }
 
-/// A site's position as the file prints it: what two lines are matched by
-/// when merged.
+/// A site's position as the file prints it.
 fn key(at: Vec3) -> String {
     format!("{} {} {}", num(at[0], 3), num(at[1], 3), num(at[2], 3))
+}
+
+/// What two lines are matched by when merged: the position, and whether
+/// it is a control ([`Entry::control`]).
+fn site_key(e: &Entry) -> (String, bool) {
+    (key(e.at), e.control)
 }
 
 /// One line of the file, with no newline.
@@ -424,6 +445,9 @@ pub fn line(e: &Entry) -> String {
         o.push('=');
         o.push_str(&v);
     };
+    if e.control {
+        kv("control", "1".into());
+    }
     if let Some(h) = k.how {
         kv("how", h.name().into());
     }
@@ -653,6 +677,7 @@ fn parse_line(l: &str) -> Result<Entry, String> {
                     return Err(format!("shrink={} is over {MAX_SHRINK}", e.shrink));
                 }
             }
+            "control" => e.control = flag()?,
             "moved" => e.moved = flag()?,
             "scattered" => e.scattered = flag()?,
             _ => return Err(format!("unknown key {k:?}")),
@@ -699,12 +724,25 @@ fn parse_line(l: &str) -> Result<Entry, String> {
 }
 
 /// The line about the site standing at `stand`, the nearest when several
-/// match.
+/// match. Never a control line ([`control_for`]).
 pub fn entry_for(entries: &[Entry], stand: Vec3) -> Option<&Entry> {
-    entries.iter().filter(|e| e.is_of(stand)).min_by(|a, b| {
-        let d = |e: &Entry| (e.at[0] - stand[0]).hypot(e.at[1] - stand[1]);
-        d(a).total_cmp(&d(b)).then_with(|| order(a, b))
-    })
+    nearest_line(entries, stand, false)
+}
+
+/// The control line ([`Entry::control`]) about the arm standing at
+/// `stand`, the nearest when several match.
+pub fn control_for(entries: &[Entry], stand: Vec3) -> Option<&Entry> {
+    nearest_line(entries, stand, true)
+}
+
+fn nearest_line(entries: &[Entry], stand: Vec3, control: bool) -> Option<&Entry> {
+    entries
+        .iter()
+        .filter(|e| e.control == control && e.is_of(stand))
+        .min_by(|a, b| {
+            let d = |e: &Entry| (e.at[0] - stand[0]).hypot(e.at[1] - stand[1]);
+            d(a).total_cmp(&d(b)).then_with(|| order(a, b))
+        })
 }
 
 /// The map's learned lines applied to scanned `spots`: the sim's measured
@@ -719,18 +757,24 @@ pub fn entry_for(entries: &[Entry], stand: Vec3) -> Option<&Entry> {
 ///
 /// A line belongs to one spot: of the bounce spots it is about
 /// ([`Entry::is_of`]), the one whose target line passes nearest its aim
-/// (with no aim, the one standing nearest it). Ascension's slot (target
+/// (with no aim, the one standing nearest it); between spots on one edge
+/// (a groove V's bottom line and its arms), the one standing nearest the
+/// line's `at`. Ascension's slot (target
 /// y 4.000) and its crease candidate (y 3.800) are both within reach of
 /// the line at y 3.88; its aim, y 3.985, is on the slot's seam, so the
-/// slot takes it and the crease stays where it is.
+/// slot takes it and the crease stays where it is. Control lines are
+/// never applied.
 pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
     if entries.is_empty() {
         return;
     }
     let before: Vec<Spot> = spots.to_vec();
-    let owner = |e: &Entry, s: &Spot| match e.knobs.aim {
-        Some(aim) => segment_xy(s.edge, aim),
-        None => (e.at[0] - s.stand[0]).hypot(e.at[1] - s.stand[1]),
+    let owner = |e: &Entry, s: &Spot| {
+        let at = (e.at[0] - s.stand[0]).hypot(e.at[1] - s.stand[1]);
+        match e.knobs.aim {
+            Some(aim) => (segment_xy(s.edge, aim), at),
+            None => (at, 0.0),
+        }
     };
     for (i, s) in spots.iter_mut().enumerate() {
         if s.kind != Kind::Bounce {
@@ -793,13 +837,13 @@ pub fn rank(a: &Entry, b: &Entry) -> Ordering {
 }
 
 /// `old` with `new` merged in: of the lines about one site (one printed
-/// `x y z`), the better ([`rank`]) is kept whole; the lines sorted as
+/// `x y z`, a control apart from the arm's own line), the better ([`rank`]) is kept whole; the lines sorted as
 /// [`to_text`] writes them. The same in any order, and merging twice adds
 /// nothing.
 pub fn merge(old: &[Entry], new: &[Entry]) -> Vec<Entry> {
-    let mut best: Vec<(String, Entry)> = Vec::new();
+    let mut best: Vec<((String, bool), Entry)> = Vec::new();
     for e in old.iter().chain(new) {
-        let k = key(e.at);
+        let k = site_key(e);
         match best.iter_mut().find(|(bk, _)| *bk == k) {
             Some((_, b)) => {
                 if rank(e, b) == Ordering::Greater {
@@ -815,11 +859,11 @@ pub fn merge(old: &[Entry], new: &[Entry]) -> Vec<Entry> {
 }
 
 /// `entries` with `line` in place of every line about its site (one
-/// printed `x y z`), sorted: what a run writes after a round (the same
+/// printed `x y z`, a control apart), sorted: what a run writes after a round (the same
 /// search, further on, so it replaces the old line outright).
 pub fn replace(entries: &[Entry], line: Entry) -> Vec<Entry> {
-    let k = key(line.at);
-    let mut out: Vec<Entry> = entries.iter().filter(|e| key(e.at) != k).cloned().collect();
+    let k = site_key(&line);
+    let mut out: Vec<Entry> = entries.iter().filter(|e| site_key(e) != k).cloned().collect();
     out.push(line);
     out.sort_by(order);
     out

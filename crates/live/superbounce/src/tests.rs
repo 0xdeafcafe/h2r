@@ -1599,9 +1599,11 @@ fn a_v_targets_its_bottom_line_and_ranks_over_every_single_crease() {
     polys.extend(shift(crease_at(0.0, 0.0, 2.0, 40.0), [50.0, 50.0, 0.0]));
     let spots = scan(&polys);
     let b: Vec<&Spot> = spots.iter().filter(|s| s.kind == Kind::Bounce).collect();
-    assert_eq!(b.len(), 3, "{b:?}");
+    // The V's three (its bottom line and two arms), then the two creases.
+    assert_eq!(b.len(), 5, "{b:?}");
     let v = b[0];
     assert_eq!(v.shape, Shape::Vee, "{b:?}");
+    assert!(v.arm.is_none(), "{v:?}");
     // The groove's bottom line is the target, the aim on it.
     for p in v.edge {
         assert!(p[1].abs() < 1e-3 && p[2].abs() < 1e-3, "{:?}", v.edge);
@@ -1613,7 +1615,8 @@ fn a_v_targets_its_bottom_line_and_ranks_over_every_single_crease() {
     // A candidate, ranked first; the flat-meets-ramp creases are plain
     // creases under it.
     assert!(v.candidate() && v.score > 0.9, "{}", v.score);
-    assert!(b[1..].iter().all(|s| s.shape == Shape::Crease && s.score <= 0.6 + 1e-5));
+    assert!(b[1..3].iter().all(|s| s.shape == Shape::Vee && s.arm.is_some()));
+    assert!(b[3..].iter().all(|s| s.shape == Shape::Crease && s.score <= 0.6 + 1e-5));
     assert_eq!((v.need, v.fall), (0.0, 0.0));
     // A flat floor at a ramp's foot is no V, and neither is a ramp
     // steepening (both rising the same way).
@@ -1622,4 +1625,40 @@ fn a_v_targets_its_bottom_line_and_ranks_over_every_single_crease() {
         shift(crease_at(0.0, 0.0, 2.0, 35.0), [0.0, -1.0, 10f32.to_radians().tan()])[1].clone(),
     ];
     assert!(scan(&kink).iter().all(|s| s.shape != Shape::Vee), "{:?}", scan(&kink));
+}
+
+#[test]
+fn a_v_is_three_spots_on_exact_edges_its_arms_approached_from_the_mirror_side() {
+    let spots = scan(&vee());
+    let v: Vec<&Spot> = spots.iter().filter(|s| s.shape == Shape::Vee).collect();
+    assert_eq!(v.len(), 3, "{spots:?}");
+    // The bottom line, and an arm on each ramp: all three on the joint's
+    // own two vertices, to the float, and all candidates.
+    let bottom = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
+    for s in &v {
+        let mut e = s.edge;
+        if e[0][0] > e[1][0] {
+            e.swap(0, 1);
+        }
+        assert_eq!(e, bottom, "{s:?}");
+        assert!(s.candidate(), "{s:?}");
+    }
+    let arms: Vec<_> = v.iter().filter_map(|s| s.arm.map(|a| (s, a))).collect();
+    assert_eq!(arms.len(), 2, "{v:?}");
+    let ((sa, a), (sb, b)) = (arms[0], arms[1]);
+    // Each arm aims on its own ramp, across the bottom line.
+    assert!(sa.stand[1] * sb.stand[1] < 0.0, "{sa:?} {sb:?}");
+    for (s, arm) in [(sa, a), (sb, b)] {
+        assert!(crate::catch_miss(s.edge, [s.stand[0], s.stand[1]]) == 0.0);
+        // Approached from the far side of the bottom line: the arm's aim
+        // is not on its approach side, the other arm's is.
+        assert!(!arm.approached_from([s.stand[0], s.stand[1]]), "{arm:?}");
+        assert!(arm.from[1] * s.stand[1] < 0.0, "{arm:?} {s:?}");
+        // It drifts across onto its ramp.
+        assert!(s.drift[1] * s.stand[1] > 0.0, "{s:?}");
+    }
+    // The mirror: one arm's approach side is the other's opposite.
+    assert!((a.from[0] + b.from[0]).abs() < 1e-6 && (a.from[1] + b.from[1]).abs() < 1e-6);
+    assert!(a.approached_from([sb.stand[0], sb.stand[1]]));
+    assert_eq!(a.same_side().from, b.from);
 }

@@ -197,6 +197,8 @@ pub fn entry_for<'a>(entries: &'a [Entry], spot: &Spot) -> Option<&'a Entry> {
 /// Ascension's entry (standing at y 3.88, landing at y 3.976) is within
 /// reach of both the slot on its seam (y 4.000) and the crease candidate
 /// (y 3.800); its landing is on the seam, so it proves the slot alone.
+/// Between spots on one edge (a groove V's bottom line and its two arms,
+/// `vee.rs`), the one whose aim is nearest the landing.
 pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
     if entries.is_empty() {
         return;
@@ -204,7 +206,10 @@ pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
     let before = spots.to_vec();
     let off = |e: &Entry, s: &Spot| {
         let w = e.working();
-        segment_xy(s.edge, [w[0], w[1]])
+        (
+            segment_xy(s.edge, [w[0], w[1]]),
+            (w[0] - s.stand[0]).hypot(w[1] - s.stand[1]),
+        )
     };
     for (i, s) in spots.iter_mut().enumerate() {
         if let Some(e) = entry_for(entries, s) {

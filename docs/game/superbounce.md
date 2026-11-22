@@ -623,14 +623,48 @@ crease candidate on y −26.70. The window sill over the crease's end
 (x 5.20 to 5.40) covers too little of its 4.2 to drop it as
 [covered](#covered-seams).
 
-**Vs.** Two ramps meeting at the bottom, each tilted over 5° and
-rising away from the joint (their horizontal normals point at it from
-either side), are a V (`Shape::Vee`, `shape` `vee`): Sanctuary's
-(`deltatap`) bounces. The groove's bottom line is the target and the aim
-is on its middle. A V is a candidate like a crease, ranked over every
-other single crease: 0.5, plus 0.25 × its length fit, plus 0.2 × its
-crease fit, at most 0.95. A ramp steepening (both floors rising the same
-way) and a flat floor at a ramp's foot are plain creases. Sanctuary,
+**Vs.** Two shapes are a V (`Shape::Vee`, `shape` `vee`):
+
+- **A groove**: two ramps meeting at the bottom, each tilted over 5° and
+  rising away from the joint (their horizontal normals point at it from
+  either side), Sanctuary's (`deltatap`) bounces. It scores 0.5, plus
+  0.25 × its length fit, plus 0.2 × its crease fit, at most 0.95, over
+  every other single crease. A ramp steepening (both floors rising the
+  same way) and a flat floor at a ramp's foot are plain creases.
+- **Converging creases**: two single creases (or grooves) that share an
+  end vertex, the tip, at an opening under 90° (`vee::OPEN_DOT`) and not
+  one line carried on: the Zanzibar V. A crease is an arm of one V at
+  most, the most acute pair first. Its parts score 0.5, plus 0.45 × the
+  two creases' mean fit (a crease's score over its 0.3 floor, out of
+  0.3), and at least either crease's own.
+
+The landing that counts mirrors the approach: played at Zanzibar, a
+player coming in from one side of the V lands on the arm across the
+bisector, not on the tip. So a V is three targets, each a candidate on
+its own collision edge (`crates/live/superbounce/src/vee.rs`, `parts`):
+
+| Part | `edge` | `stand` | `drift` | `arm` |
+|---|---|---|---|---|
+| tip (converging) | the tip vertex twice | on it | in from the opening, toward the tip | none |
+| bottom line (groove) | the bottom line's two vertices | its middle | across, onto the flatter floor | none |
+| arm (converging) | the crease's own two vertices | its middle | across the bisector onto the arm | set |
+| arm (groove) | the bottom line's two vertices | 0.05 across it onto the ramp (`vee::ARM_STAND`, inside the catch) | onto its ramp | set |
+
+An arm's `arm` (`superbounce::Arm`) records the V's bisector, through
+`pivot` (the tip, or the bottom line's middle) along `bisector` (into
+the opening; a groove's along its bottom line), and `from`, the side the
+arm is approached from: the half-plane on the far side of the bisector
+(`Arm::approached_from`). The two arms' `from` are mirrors of each
+other. `h2 superbounce scan` prints it (`arm, approached from (x, y)
+of (pivot)`, and `arm` in `--json`), and `<map>.spots` stores it.
+
+The sim's training flies each arm from its `from` side and once from its
+own side as a control, to confirm or refute the mirror
+([bounce-search.md, "Vs: the mirror and its control"](bounce-search.md#vs-the-mirror-and-its-control)).
+In play, once an arm is proven, the mode marks the arm across the
+bisector from the player: a player on side A is marked arm B
+(`superbounce::facing`, `superbounce_mode::for_player`). Before any
+proof no part is marked, as no candidate is. Sanctuary,
 Turf and Warlock are Multiplayer Map Pack maps, not on the retail disc:
 their scans need the map pack's `.map` files (`deltatap.map`), and no
 `deltatap.spots` exists until `h2 bots nav deltatap` runs on them.
@@ -1039,7 +1073,13 @@ view and the fall assist agree):
   is marked at the line's aim ([Bounce](#bounce)), not proved by it;
 - on a map with no proved strip, the scan's two-joint slots are marked
   and its [single creases and Vs](#single-creases) are not: they are
-  candidates for the sim's training (`Spot::candidate`).
+  candidates for the sim's training (`Spot::candidate`);
+- a proven V's arm is marked only for a player on the side it is
+  approached from, the far side of the V's bisector from the arm
+  (`superbounce_mode::for_player`, each tick at the player's position):
+  the arm across from the player, the mirror of their approach
+  ([Vs](#single-creases)). The medals still judge every player's
+  landings on every marked spot.
 
 `superbounce.verify` and the bots still see every spot.
 

@@ -24,6 +24,7 @@ fn learned_line() -> Entry {
         best: 20.9,
         deaths: 1,
         why: None,
+        control: false,
         stage: Stage::Compass,
         axis: 2,
         shrink: 1,
@@ -51,6 +52,7 @@ fn dead_line() -> Entry {
         best: 0.0,
         deaths: 0,
         why: Some("budget".into()),
+        control: false,
         stage: Stage::Compass,
         axis: 1,
         shrink: 2,
@@ -412,4 +414,34 @@ fn a_line_belongs_to_the_spot_whose_target_its_aim_is_on() {
     assert_eq!(spots[0].stand, [-10.45, 3.985, -3.19]);
     assert_eq!(spots[1], crease);
     assert!(spots[1].candidate());
+}
+
+#[test]
+fn a_control_line_is_a_site_of_its_own_and_never_steers_a_spot() {
+    let arm = learned_line();
+    let control = Entry {
+        control: true,
+        knobs: Knobs {
+            aim: Some([-10.60, 3.70]),
+            ..arm.knobs
+        },
+        ..learned_line()
+    };
+    // It round-trips with its flag, after the position.
+    let text = line(&control);
+    assert!(text.starts_with("bounce learned -10.620 3.880 -3.190 control=1 how="), "{text}");
+    assert_eq!(parse_line(&text).unwrap(), control.canonical());
+    assert!(!parse_line(&line(&arm)).unwrap().control);
+    // Two sites at one `at`: merging and replacing keep both.
+    assert_eq!(merge(&[arm.clone()], &[control.clone()]).len(), 2);
+    assert_eq!(replace(&[arm.clone()], control.clone()).len(), 2);
+    assert_ne!(spot_id("ascension", arm.at), control_id("ascension", arm.at));
+    // Only the arm's own line is found for the spot, and applied.
+    let both = [control.clone(), arm.clone()];
+    assert_eq!(entry_for(&both, arm.at), Some(&arm));
+    assert_eq!(control_for(&both, arm.at), Some(&control));
+    let mut spots = vec![scanned_slot()];
+    apply(&mut spots, &[control.clone()]);
+    assert_eq!(spots[0], scanned_slot());
+    assert_eq!(knobs_for(&[control], arm.at), Knobs::default());
 }

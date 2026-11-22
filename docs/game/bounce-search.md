@@ -180,6 +180,10 @@ running jump from its launch floor: the nav floor nearest over the
 target at the speed model's 2.43 drop (`bounce_route::launch_floor`),
 when there is one.
 
+- **Vs.** A V's arm (`Site::arm`, [superbounce.md,
+  "Vs"](superbounce.md#single-creases)) is on the board twice
+  (`mind::practice::sites_in`); see [Vs: the mirror and its
+  control](#vs-the-mirror-and-its-control).
 - **Shards.** A run owns the sites whose spot id modulo `shards` is its
   `shard`. Runs of one batch never fly the same site, so their files merge
   without conflict and the result does not depend on `--parallel`.
@@ -207,6 +211,33 @@ runs.
 closed sites are skipped, open ones carry on from their line's cursor
 (`stage`, `axis`, `shrink`, `moved`, `scattered`, `tries`). Running the
 same command again continues; nothing else is kept between batches.
+
+### Vs: the mirror and its control
+
+The landing on a V mirrors the approach: a player coming in from one
+side of the V's bisector lands on the arm across it. Each arm's spot
+records that side (`superbounce::Arm::from`), and the board flies the
+arm twice:
+
+- **The mirror**: the arm as the scan gives it. Its standing approach is
+  behind it along its drift, which points across the bisector onto the
+  arm, so the walk ends on the far side; its launch floor is looked for
+  half `LEDGE_REACH` that way, within half the reach, and a floor on the
+  arm's own side is none (`bounce_route::launch_floor`, a void
+  `no_launch_floor` try). Its id and line are the arm's own.
+- **The control**: the same arm from its own side (`Site::same_side`:
+  `from` and the drift turned round, the mirror's learned knobs dropped),
+  flown as a site of its own (`SiteIn::control`). Its id is
+  `learned::control_id`, FNV-1a 64 of `"<map> <x> <y> <z> control"`, and
+  its line is a control line (`control=1`), merged and replaced apart
+  from the arm's line at the same position. A control line is evidence
+  only: `entry_for`, `knobs_for` and `learned::apply` never take it, so
+  it never steers play or moves a spot's aim.
+
+The arm's line against its control's says whether the mirror holds: the
+mirror bouncing and the control not confirms it; the control bouncing as
+well refutes it. A V's tip or bottom line is one site, flown as any
+other.
 
 ### How the route uses a line
 
@@ -275,6 +306,9 @@ state  = "open" | "learned" | "partial" | "dead" | "blocked"
 
 - `x y z` is the site's `stand` as the scan gave it; a line is about the
   bounce spot within `verified::MATCH` and `MATCH_Z` of it.
+- **`control=1`**, first after the position when set: a V arm's control
+  line ([Vs: the mirror and its control](#vs-the-mirror-and-its-control)),
+  a site of its own beside the arm's line at the same `x y z`.
 - **Knob keys**: the table in "The knobs". One left out is the route's
   own. `to_text` writes every knob the line's `how` uses.
 - **Evidence keys**: `tries` (scored tries), `hits` (of them, bounced),

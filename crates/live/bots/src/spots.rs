@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use superbounce::learned::{self, Knobs};
 use superbounce::verified::{self, Entry};
-use superbounce::{Kind, Lip, MAX_LIP, Shape, Spot, Status};
+use superbounce::{Arm, Kind, Lip, MAX_LIP, Shape, Spot, Status};
 
 use crate::brain::Vec3;
 use crate::cache::Stamp;
@@ -91,6 +91,11 @@ pub struct Site {
     /// the sim's training flies it, a route or a show-off does not until
     /// it is proved ([`Site::plays`]).
     pub candidate: bool,
+    /// A V's arm (`superbounce::Arm`): the side of the V's bisector it is
+    /// approached from, the mirror side; the training also flies it from
+    /// its own side as a control ([`Site::same_side`]). `None` for every
+    /// other site.
+    pub arm: Option<Arm>,
 }
 
 impl Site {
@@ -119,6 +124,7 @@ impl Site {
             knobs: Knobs::default(),
             line: None,
             candidate: s.candidate(),
+            arm: s.arm,
         })
     }
 
@@ -141,7 +147,36 @@ impl Site {
             knobs: Knobs::default(),
             line: None,
             candidate: false,
+            arm: None,
         }
+    }
+
+    /// A V's arm approached from its own side instead of the mirror: the
+    /// training's control (docs/game/bounce-search.md, "Vs: the mirror
+    /// and its control"). The approach side and the drift turn round, and
+    /// the learned knobs go (they are the mirror's: the control's search
+    /// keeps its own line). Any other site as it is.
+    pub fn same_side(self) -> Site {
+        let Some(a) = self.arm else {
+            return self;
+        };
+        let d = self.bounce.drift;
+        Site {
+            bounce: Bounce {
+                drift: [-d[0], -d[1]],
+                ..self.bounce
+            },
+            knobs: Knobs::default(),
+            line: None,
+            arm: Some(a.same_side()),
+            ..self
+        }
+    }
+
+    /// Whether `xy` is on the side this site is approached from: anywhere
+    /// but a V's arm's other side.
+    pub fn approached_from(&self, xy: [f32; 2]) -> bool {
+        self.arm.is_none_or(|a| a.approached_from(xy))
     }
 
     /// With what a verified entry about it says: its status, and where and
@@ -667,17 +702,21 @@ pub fn store_learned(map: &str, lines: &[learned::Entry]) -> std::io::Result<Opt
 
 /// A spots file's first bytes and format version.
 pub const MAGIC: &[u8; 4] = b"H2SP";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 const HEADER: usize = 4 + 4 + 4 + 8 + 4;
 /// Kind (0 a slot, 1 crouch, 2 a single crease, 3 a V, 4 a busy point),
-/// status and lip count bytes, then the floats: edge, stand, fall,
-/// launch, drift, score, need, out, and [`MAX_LIP`] lip edges.
-const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 2 + 6 * MAX_LIP;
-const SPOT_BYTES: usize = 3 + 4 * SPOT_FLOATS;
+/// status, lip count and arm (0 none, 1 a V's arm) bytes, then the
+/// floats: edge, stand, fall, launch, drift, score, need, out,
+/// [`MAX_LIP`] lip edges, and the arm's pivot, bisector and approach side
+/// (zero for none).
+const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 2 + 6 * MAX_LIP + 3 + 2 + 2;
+const SPOT_BYTES: usize = 4 + 4 * SPOT_FLOATS;
+/// The first arm float.
+const ARM_AT: usize = 17 + 6 * MAX_LIP;
 
 /// The scanner's version. **Bump it whenever `superbounce`'s scan changes
 /// what it finds**: every file made by another version is scanned again.
-pub const SCAN: u32 = 6;
+pub const SCAN: u32 = 7;
 
 /// The stamp of a map's spots file: the nav generator and the scan
 /// version, for the map with `fingerprint`.
@@ -715,6 +754,8 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             Status::Failed => 2,
         });
         o.push(s.lip.len() as u8);
+        o.push(u8::from(s.arm.is_some()));
+        let arm = s.arm.unwrap_or_default();
         let mut lip = [[[0.0f32; 3]; 2]; MAX_LIP];
         lip[..s.lip.len()].copy_from_slice(s.lip.edges());
         let floats = s
@@ -726,7 +767,10 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             .chain(&s.drift)
             .chain([&s.score, &s.need])
             .chain(&s.out)
-            .chain(lip.iter().flatten().flatten());
+            .chain(lip.iter().flatten().flatten())
+            .chain(&arm.pivot)
+            .chain(&arm.bisector)
+            .chain(&arm.from);
         for f in floats {
             o.extend_from_slice(&f.to_le_bytes());
         }
@@ -756,7 +800,7 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
     let spots = body
         .chunks_exact(SPOT_BYTES)
         .map(|c| {
-            let f = |k: usize| f32::from_le_bytes(c[3 + 4 * k..7 + 4 * k].try_into().unwrap());
+            let f = |k: usize| f32::from_le_bytes(c[4 + 4 * k..8 + 4 * k].try_into().unwrap());
             let v = |k: usize| [f(k), f(k + 1), f(k + 2)];
             let lip_len = usize::from(c[2]);
             if lip_len > MAX_LIP {
@@ -791,6 +835,15 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
                 need: f(14),
                 out: [f(15), f(16)],
                 lip: Lip::new(&lip),
+                arm: match c[3] {
+                    0 => None,
+                    1 => Some(Arm {
+                        pivot: v(ARM_AT),
+                        bisector: [f(ARM_AT + 3), f(ARM_AT + 4)],
+                        from: [f(ARM_AT + 5), f(ARM_AT + 6)],
+                    }),
+                    _ => return None,
+                },
             })
         })
         .collect::<Option<Vec<_>>>()?;

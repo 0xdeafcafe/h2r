@@ -946,3 +946,55 @@ fn a_training_bot_at_its_start_asks_for_the_word_with_no_drill_set() {
     assert!(asked, "never asked for the word");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn training_plans_each_arm_from_the_mirror_side_and_once_from_its_own() {
+    // A V's +y arm, 0.3 off the bisector (y 0): approached from -y,
+    // drifting +y onto it.
+    let arm = superbounce::Arm {
+        pivot: [10.0, 0.0, 0.0],
+        bisector: [1.0, 0.0],
+        from: [0.0, -1.0],
+    };
+    let base = site([12.0, 0.3, 0.0], Status::Likely);
+    let s = Site {
+        bounce: Bounce {
+            drift: [0.0, 1.0],
+            ..base.bounce
+        },
+        candidate: true,
+        arm: Some(arm),
+        ..base
+    };
+    let plain = site([0.0, 0.0, 0.0], Status::Likely);
+    let m = map();
+    let ledge = |x: &Site| launch_floor(&m, x);
+    let tune = crate::tuning::BOUNCE_DEFAULT;
+    let ins = sites_in(&[plain, s], &ledge, &tune);
+    // The plain site once; the arm twice, the control second.
+    assert_eq!(ins.len(), 3, "{ins:?}");
+    assert_eq!(
+        ins.iter().map(|i| i.control).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+    assert_eq!((ins[1].at, ins[2].at), (s.bounce.stand, s.bounce.stand));
+    // The mirror walks in from -y, across the bisector; the control from
+    // the arm's own side, +y.
+    let from = s.bounce.from();
+    assert!(from[1] < 0.0 && s.approached_from([from[0], from[1]]), "{from:?}");
+    let own = s.same_side();
+    let back = own.bounce.from();
+    assert!(back[1] > 0.0 && own.approached_from([back[0], back[1]]), "{back:?}");
+    assert!(!s.approached_from([back[0], back[1]]));
+    assert_eq!(own.arm.map(|a| a.from), Some([0.0, 1.0]));
+    // Both are on a training board, as two sites.
+    let train = Train {
+        shard: 0,
+        shards: 1,
+        budget: 60,
+        seed: 1,
+    };
+    let b = learn::Board::new("zanzibar", train, ins, &[]);
+    assert_eq!(b.sites().len(), 3);
+    assert_eq!(b.sites().iter().filter(|h| h.search.setup().control).count(), 1);
+}

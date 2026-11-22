@@ -17,7 +17,9 @@
 //! one, a flat floor meeting a 17.6° ramp along y −26.70, with no second
 //! joint (docs/game/superbounce.md, "Single creases"). Two ramps meeting
 //! at the bottom, a V ([`Shape::Vee`], Sanctuary's), are single creases
-//! too, ranked high, with the groove's bottom line as the target.
+//! too, ranked high, with the groove's bottom line as the target. A V,
+//! and two creases converging on a tip, are three targets: the bottom line
+//! or tip, and each arm, approached from the mirror side (`vee.rs`).
 //! Candidates are for the sim's training to test; play shows them only
 //! once proved. A seam with structure over it nearer than a launch climbs
 //! ([`covered`]) is no spot at all. A floor vertex where many edges meet
@@ -30,7 +32,7 @@ use crate::{BounceExplain, CreaseNote, Kind, RADIUS, Shape, Spot, Vec3};
 
 /// Two polygon edges are one joint when both ends of one are this close
 /// to the other's line.
-const JOIN_TOL: f32 = 0.01;
+pub(crate) const JOIN_TOL: f32 = 0.01;
 /// Edges and joint overlaps shorter than this are ignored.
 const MIN_EDGE: f32 = 0.02;
 /// Collinear edges: their directions' dot at least this.
@@ -158,6 +160,8 @@ pub(crate) fn bounces(faces: &[Face]) -> Vec<Spot> {
             s.score = s.score.max(MONSTER_SCORE + 0.05 * more);
         }
     }
+    // Each V is three targets: its arms and its tip or bottom line.
+    let mut out = crate::vee::parts(out);
     out.sort_by(|a, b| b.score.total_cmp(&a.score));
     out.truncate(MAX_BOUNCES);
     out
@@ -251,7 +255,7 @@ pub(crate) fn explain(faces: &[Face], at: Vec3, r: f32) -> BounceExplain {
 ///
 /// Two ramps meeting at the bottom, each tilted over 5° and rising away
 /// from the joint, are a V ([`Shape::Vee`]): the groove's bottom line is
-/// the target, and it scores 0.5, plus 0.25 × its length fit, plus 0.2 ×
+/// one target (its arms are added by `vee::parts`), and it scores 0.5, plus 0.25 × its length fit, plus 0.2 ×
 /// its crease fit, at most 0.95, over every other single crease (the
 /// user's Sanctuary bounces are Vs).
 fn crease(faces: &[Face], j: &Joint) -> Result<Spot, String> {

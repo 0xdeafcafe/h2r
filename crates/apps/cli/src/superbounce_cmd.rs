@@ -287,7 +287,15 @@ fn line(s: &Spot) -> String {
                 measured(s.need, 1),
                 s.drift[0],
                 s.drift[1]
-            )
+            );
+            if let Some(a) = s.arm {
+                out += &format!(
+                    "  arm, approached from ({:.2}, {:.2}) of {}",
+                    a.from[0],
+                    a.from[1],
+                    v3(a.pivot)
+                );
+            }
         }
         Kind::Crouch => {
             out += &format!(
@@ -330,6 +338,11 @@ fn to_json(s: &Spot) -> serde_json::Value {
         "lip": s.lip.edges(),
         "shape": s.shape.name(),
         "candidate": s.candidate(),
+        "arm": s.arm.map(|a| serde_json::json!({
+            "pivot": a.pivot,
+            "bisector": a.bisector,
+            "from": a.from,
+        })),
     })
 }
 

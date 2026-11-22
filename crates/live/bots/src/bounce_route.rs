@@ -48,8 +48,12 @@ pub const LEDGE_OVER: f32 = 2.5;
 /// [`LEDGE_OVER`] above it. A site with no measured drop
 /// ([`Site::drop_known`]) takes the speed model's drop instead, the one
 /// that touches down at the threshold every seam shares
-/// (`superbounce::speed::fall`), for the training's drops to try. The
-/// [`Ledge`] a plan is made with.
+/// (`superbounce::speed::fall`), for the training's drops to try. A V's
+/// arm ([`Site::arm`]) is dropped onto from the side it is approached
+/// from: the search is moved half its reach that way, with half the
+/// reach, and a floor on the arm's own side is none (docs/game/
+/// bounce-search.md, "Vs: the mirror and its control"). The [`Ledge`] a
+/// plan is made with.
 pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
     let t = s.target();
     let height = if s.drop_known() {
@@ -57,10 +61,18 @@ pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
     } else {
         superbounce::speed::fall()
     };
-    let over = [t[0], t[1], t[2] + height];
+    let (shift, reach) = match s.arm {
+        Some(a) => (
+            [a.from[0] * LEDGE_REACH / 2.0, a.from[1] * LEDGE_REACH / 2.0],
+            LEDGE_REACH / 2.0,
+        ),
+        None => ([0.0, 0.0], LEDGE_REACH),
+    };
+    let over = [t[0] + shift[0], t[1] + shift[1], t[2] + height];
     m.nav
-        .nearest(over, LEDGE_REACH, LEDGE_OVER, LEDGE_UNDER)
+        .nearest(over, reach, LEDGE_OVER, LEDGE_UNDER)
         .map(|(_, p)| p)
+        .filter(|p| s.approached_from([p[0], p[1]]))
 }
 
 /// Where a drop onto `s` is taken from: the learned launch point

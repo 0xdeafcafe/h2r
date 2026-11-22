@@ -527,6 +527,9 @@ pub fn verified(spot: &Spot) -> bool {
 /// - Strips before that: the scan's two-joint slots. A single crease, V
 ///   or busy point is a candidate (`Spot::candidate`) for the sim's
 ///   training only, so it is left out until a game run proves it.
+///
+/// A proven V's arm is marked only for a player on the side it is
+/// approached from: [`for_player`] narrows these each tick.
 pub fn marked(all: &[Spot]) -> Vec<Spot> {
     let proved = all.iter().any(|s| s.kind == Kind::Bounce && verified(s));
     all.iter()
@@ -538,6 +541,19 @@ pub fn marked(all: &[Spot]) -> Vec<Spot> {
         })
         .copied()
         .collect()
+}
+
+/// The marked spots as the player standing at `at` is given them: a
+/// proven V's arm only from the far side of its bisector, so the arm
+/// marked is the one across from the player, the mirror of their approach
+/// (`superbounce::facing`; docs/game/superbounce.md, "Vs"). Nothing else
+/// changes; with no V arm among them, `spots` itself.
+pub fn for_player(spots: &Arc<Vec<Spot>>, at: Option<Vec3>) -> Arc<Vec<Spot>> {
+    if spots.iter().any(|s| s.arm.is_some()) {
+        Arc::new(superbounce::facing(spots, at))
+    } else {
+        Arc::clone(spots)
+    }
 }
 
 fn request_scan(key: ScanKey) -> ScanView {
@@ -641,9 +657,12 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
 
 /// The spots of the current scan that are marked ([`marked`]): the map's
 /// verified file applied, the failed spots and the unproved creases left
-/// out.
+/// out, and a V's arm only for a player across from it ([`for_player`],
+/// at the last tick's position).
 pub fn current_spots() -> Arc<Vec<Spot>> {
-    Arc::clone(&lock(scans()).spots)
+    let at = lock(&STATE).position;
+    let spots = Arc::clone(&lock(scans()).spots);
+    for_player(&spots, at)
 }
 
 /// Every spot of the current scan with its verified status, failed ones
@@ -962,10 +981,13 @@ fn on_tick(o: &hooks::Obs) {
     };
     let map = key.as_ref().map(|k| k.map.clone());
     let view = key.map(request_scan);
-    let (spots, room, scan) = match view {
+    let (every, room, scan) = match view {
         Some(v) => (v.spots, v.room, v.status),
         None => (Arc::default(), Arc::default(), ScanState::Idle),
     };
+    // What the player is given: a proven V's arm only from across its
+    // bisector. The medals judge every player's landings on all of them.
+    let spots = for_player(&every, live.position);
     let nearest = live.position.and_then(|p| {
         superbounce::nearest(&spots, p).map(|(s, d)| Near {
             distance: d,
@@ -1044,7 +1066,7 @@ fn on_tick(o: &hooks::Obs) {
     let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
     let (awards, medals) = {
         let mut m = lock(&MEDALS);
-        let awards = m.step(tick, &players, &spots);
+        let awards = m.step(tick, &players, &every);
         (awards, m.view())
     };
     keep_awards(&awards);
@@ -1293,6 +1315,63 @@ mod tests {
         run[0].status = Status::Proven;
         assert_eq!(xs(&marked(&run)), [1.0, 2.0, 4.0, 5.0]);
         assert!(marked(&[]).is_empty());
+    }
+
+    #[test]
+    fn with_a_proven_arm_a_player_on_one_side_is_marked_the_arm_across() {
+        use superbounce::{Arm, Shape, Status};
+        // A V on its tip at the origin, opening along +x: arm A at +y,
+        // approached from -y; arm B at -y, approached from +y.
+        let arm = |y: f32, status: Status| Spot {
+            kind: Kind::Bounce,
+            edge: [[0.0, 0.0, 0.0], [4.0, y, 0.0]],
+            stand: [2.0, y / 2.0, 0.01],
+            shape: Shape::Vee,
+            status,
+            arm: Some(Arm {
+                pivot: [0.0, 0.0, 0.0],
+                bisector: [1.0, 0.0],
+                from: [0.0, -y.signum()],
+            }),
+            ..Spot::default()
+        };
+        let tip = Spot {
+            edge: [[0.0; 3]; 2],
+            stand: [0.0, 0.0, 0.01],
+            arm: None,
+            ..arm(1.0, Status::Likely)
+        };
+        // Nothing proven: nothing of the V is marked, from either side.
+        let scan = vec![arm(1.0, Status::Likely), arm(-1.0, Status::Likely), tip];
+        let none = Arc::new(marked(&scan));
+        assert!(for_player(&none, Some([1.0, 1.0, 0.0])).is_empty());
+        assert!(for_player(&none, Some([1.0, -1.0, 0.0])).is_empty());
+        // Both arms proven: the player on side A (+y) is marked arm B
+        // (-y), and the other way round.
+        let proven = Arc::new(marked(&[
+            arm(1.0, Status::Proven),
+            arm(-1.0, Status::Proven),
+            tip,
+        ]));
+        assert_eq!(proven.len(), 2);
+        let on_a = for_player(&proven, Some([1.0, 0.5, 0.0]));
+        assert_eq!(on_a.len(), 1, "{on_a:?}");
+        assert_eq!(on_a[0].edge[1][1], -1.0);
+        let on_b = for_player(&proven, Some([1.0, -0.5, 0.0]));
+        assert_eq!(on_b.len(), 1, "{on_b:?}");
+        assert_eq!(on_b[0].edge[1][1], 1.0);
+        // Only arm A proven: a player on A's own side is marked none of
+        // the V; across from it, A.
+        let one = Arc::new(marked(&[
+            arm(1.0, Status::Proven),
+            arm(-1.0, Status::Likely),
+            tip,
+        ]));
+        assert!(for_player(&one, Some([1.0, 0.5, 0.0])).is_empty());
+        assert_eq!(for_player(&one, Some([1.0, -0.5, 0.0])).len(), 1);
+        // No V arm among the spots: the same list.
+        let plain = Arc::new(vec![tip]);
+        assert!(Arc::ptr_eq(&for_player(&plain, Some([0.0; 3])), &plain));
     }
 
     fn near(distance: f32) -> Near {

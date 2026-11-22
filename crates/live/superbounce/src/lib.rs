@@ -8,7 +8,9 @@
 //! parallel joints, at least one a concave crease, targeted on the
 //! collision edge the pinch sits on; single creases; and busy vertices,
 //! where many floor edges meet; the last two are candidates for the sim's
-//! training). The scan is pure: it takes the
+//! training; a V and a pair of creases converging on a tip are three
+//! candidates each, the two arms and the tip or bottom line, `vee.rs`).
+//! The scan is pure: it takes the
 //! collision surfaces and returns spots. Reading them out of a `.map`
 //! is [`scan_map`].
 //!
@@ -24,7 +26,10 @@ mod read;
 mod scan;
 pub mod speed;
 pub mod verified;
+mod vee;
 pub mod view;
+
+pub use vee::facing;
 
 /// A point in world units.
 pub type Vec3 = [f32; 3];
@@ -144,10 +149,13 @@ pub enum Shape {
     /// and no speed (docs/game/superbounce.md, "Bounce", "Single
     /// creases"). Not marked for play until proved.
     Crease,
-    /// Two ramps meeting at the bottom, a V (Sanctuary's): a single crease
-    /// whose two floors both tilt and rise away from it. The groove's
-    /// bottom line is the target. A candidate like [`Shape::Crease`],
-    /// ranked over every other single crease.
+    /// A V: two ramps meeting at the bottom (Sanctuary's), a single
+    /// crease whose two floors both tilt and rise away from it, or two
+    /// creases converging on a tip (Zanzibar's). Each is three spots: the
+    /// groove's bottom line or the tip (`arm` none), and each arm (`arm`
+    /// set, approached from the mirror side, [`Arm`]). Candidates like
+    /// [`Shape::Crease`], ranked over every other single crease
+    /// (docs/game/superbounce.md, "Vs").
     Vee,
     /// A busy point: one floor vertex where many collision edges meet,
     /// coplanar triangulation edges counted too. The vertex itself is the
@@ -165,6 +173,43 @@ impl Shape {
             Shape::Crease => "crease",
             Shape::Vee => "vee",
             Shape::Busy => "busy",
+        }
+    }
+}
+
+/// A V's arm: the side of the V's bisector it is approached from. The
+/// landing arm mirrors the approach: a player coming in from one side of
+/// the V lands on the arm across the bisector, not on the tip
+/// (docs/game/superbounce.md, "Vs").
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Arm {
+    /// A point on the bisector: the converging creases' tip, or the middle
+    /// of a groove's bottom line.
+    pub pivot: Vec3,
+    /// The bisector's horizontal direction (unit): from the tip into the
+    /// V's opening; a groove's along its bottom line.
+    pub bisector: [f32; 2],
+    /// Unit, horizontal, square to the bisector: toward the half-plane the
+    /// arm is approached from, the far side of the bisector from the arm
+    /// (the mirror side).
+    pub from: [f32; 2],
+}
+
+impl Arm {
+    /// Whether `xy` is on the side this arm is approached from: in front
+    /// of the bisector along [`Arm::from`], the bisector itself counted.
+    pub fn approached_from(&self, xy: [f32; 2]) -> bool {
+        let d = [xy[0] - self.pivot[0], xy[1] - self.pivot[1]];
+        d[0] * self.from[0] + d[1] * self.from[1] >= 0.0
+    }
+
+    /// The same arm approached from its own side: the control the sim's
+    /// training flies once beside the mirror (docs/game/bounce-search.md,
+    /// "Vs: the mirror and its control").
+    pub fn same_side(self) -> Arm {
+        Arm {
+            from: [-self.from[0], -self.from[1]],
+            ..self
         }
     }
 }
@@ -217,6 +262,9 @@ pub struct Spot {
     /// Bounce: a two-joint slot, a single crease, a V or a busy point.
     /// Crouch spots: `Slot`.
     pub shape: Shape,
+    /// A V's arm: the side it is approached from. `None` for every other
+    /// spot, a V's tip or bottom line among them.
+    pub arm: Option<Arm>,
 }
 
 impl Spot {

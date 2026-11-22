@@ -302,6 +302,10 @@ pub struct Setup {
     pub run_off: f32,
     /// The site's `need` (0 unknown).
     pub need: f32,
+    /// A V's arm flown from its own side, not the mirror: the control
+    /// (docs/game/bounce-search.md, "Vs: the mirror and its control").
+    /// Its id is [`learned::control_id`] and its line a control line.
+    pub control: bool,
 }
 
 /// The route's built-in values, for a base knob the caller left unset.
@@ -449,6 +453,7 @@ impl Search {
             }
             None => Entry {
                 at: setup.at,
+                control: setup.control,
                 ..Entry::default()
             },
         };
@@ -1127,7 +1132,8 @@ pub fn in_shard(spot: u64, shard: u32, shards: u32) -> bool {
 }
 
 /// A bounce site as the board takes it: what [`Setup`] needs besides the
-/// batch's numbers.
+/// batch's numbers. A V's arm comes twice: from the mirror side, and once
+/// from its own as the control ([`SiteIn::control`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SiteIn {
     pub at: Vec3,
@@ -1135,6 +1141,8 @@ pub struct SiteIn {
     pub base: Knobs,
     pub run_off: f32,
     pub need: f32,
+    /// The arm's control: flown from the arm's own side ([`Setup::control`]).
+    pub control: bool,
 }
 
 /// One site on the board.
@@ -1158,11 +1166,17 @@ pub struct Board {
 
 impl Board {
     /// The sites of `train`'s shard, each from its line of `learned` when
-    /// it has one.
+    /// it has one. A line goes to the site standing nearest it: a groove
+    /// V's bottom line and its arms, 0.05 apart, each keep their own.
     pub fn new(map: &str, train: Train, sites: Vec<SiteIn>, learned: &[Entry]) -> Board {
+        let ats: Vec<(Vec3, bool)> = sites.iter().map(|s| (s.at, s.control)).collect();
         let mut held: Vec<Held> = Vec::new();
         for s in sites {
-            let spot = spot_id(map, s.at);
+            let spot = if s.control {
+                learned::control_id(map, s.at)
+            } else {
+                spot_id(map, s.at)
+            };
             if !in_shard(spot, train.shard, train.shards)
                 || held.iter().any(|h| h.search.setup.spot == spot)
             {
@@ -1177,9 +1191,20 @@ impl Board {
                 base: s.base,
                 run_off: s.run_off,
                 need: s.need,
+                control: s.control,
             };
+            let line = if s.control {
+                learned::control_for(learned, s.at)
+            } else {
+                learned::entry_for(learned, s.at)
+            };
+            let line = line.filter(|l| {
+                let d = |p: Vec3| (p[0] - l.at[0]).hypot(p[1] - l.at[1]);
+                let mine = d(s.at);
+                !ats.iter().any(|&(o, c)| c == s.control && d(o) < mine)
+            });
             held.push(Held {
-                search: Search::new(setup, learned::entry_for(learned, s.at)),
+                search: Search::new(setup, line),
                 claim: None,
                 rounds: 0,
             });
@@ -1266,10 +1291,11 @@ impl Board {
         };
         let p = h.search.setup.at;
         format!(
-            "site ({:.2}, {:.2}, {:.2}) round {} {}",
+            "site ({:.2}, {:.2}, {:.2}){} round {} {}",
             p[0],
             p[1],
             p[2],
+            if h.search.setup.control { " control" } else { "" },
             h.rounds,
             f.describe()
         )
