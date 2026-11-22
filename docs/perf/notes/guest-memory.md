@@ -18,7 +18,12 @@ Notes that cite entries: [menu-budget.md](menu-budget.md),
 
 Three generated-code switches and one x87 experiment, all off when this
 was written; `H2_VIEW_CHARGE` has been on by default since feddd0402
-(2026-11-20). The C ones are in `cflags_for`'s list, so they are in the
+(2026-11-20). `H2_ENTRY_GATE`, `H2_DIRTY_INLINE`, `H2_DIRECT_GATE`,
+`H2_DIRECT_COUNT`, `H2_RAM_PAGE_CACHE`, `H2_X87_TOP` and the
+`H2_VIEW_CHARGE=0` path were removed on 2026-11-22, with
+`dirty_store_benchmark` and the `image_*_code_size` benchmarks that only
+compared them (see [not-adopted.md](not-adopted.md)); the commands below
+for those no longer exist. The C ones are in `cflags_for`'s list, so they are in the
 object cache key and the boot stamp: set them identically for `h2 build`
 and `h2 run`.
 

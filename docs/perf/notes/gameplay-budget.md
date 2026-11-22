@@ -798,7 +798,7 @@ that precision; compare `fps` with the feature off to see the cost.
 
 Whether the front-end could run one frame behind the simulation on its
 own thread, and the `render-census` feature that measures which pages
-the two share, are in [pipelined-render.md](../../graphics/pipelined-render.md).
+the two share, are in [pipelined-render.md](../../graphics/notes/pipelined-render.md).
 
 ### What scales with draws on the render thread (2026-11-17)
 

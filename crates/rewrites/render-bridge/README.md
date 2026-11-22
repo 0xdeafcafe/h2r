@@ -1,6 +1,6 @@
 # render-bridge
 
-The guest side of the native renderer: the stage hooks, admissions, the pipelined render and the frame step that builds the scene. It is the `rewrites` crate that uses `hooking` for rendering.
+The guest side of the native renderer: the stage hooks, admissions and the frame step that builds the scene. It is the `rewrites` crate that uses `hooking` for rendering.
 
 ## Where it sits
 
@@ -10,7 +10,6 @@ The guest side of the native renderer: the stage hooks, admissions, the pipeline
 
 - `src/lib.rs`: the install entry point.
 - `src/native_*.rs`, `src/native_*/`: one admission and hook set per stage (world, objects, lights, shadows, particles, HUD).
-- `src/pipeline_render.rs`, `src/pipeline_scene.rs`, `src/pipeline_snapshot.rs`: the pipelined render.
 - `src/scene_step.rs`: the frame step's scene.
 - `src/render_census.rs`, `src/entry_census.rs`, `src/render_timing.rs`: diagnostics.
 

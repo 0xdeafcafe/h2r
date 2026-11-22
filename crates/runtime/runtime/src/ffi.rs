@@ -12,7 +12,7 @@ mod memory;
 pub use mem_block::H2Mem;
 pub(crate) use mem_block::MemBlock;
 pub use memory::{FastAccess, MemoryGuard, h2abi_v1_fast_acquire, h2abi_v1_fast_release};
-pub(crate) use memory::{Memory, MemoryShared, OwnedFastAccess, release_lent_gate, sync_accesses};
+pub(crate) use memory::{Memory, MemoryShared, OwnedFastAccess, sync_accesses};
 
 use crate::{
     CpuAbi, Dispatch, ExecCtx, GuestFn, TransferAbi,

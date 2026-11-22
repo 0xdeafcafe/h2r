@@ -1,15 +1,14 @@
 # A second executor
 
 Status: Built as a building block, tested on synthetic code; the
-pipelined-render prototype runs on its snapshot, the phantoms' action build
-on its alias.
+phantoms' action build runs on its alias.
 Code: `crates/runtime/runtime/src/executor.rs` (`SecondExecutor`, `Alias`), `crates/runtime/runtime/src/cow.rs`, `crates/runtime/runtime/src/guest/journal.rs`. Tests: `crates/recompiler/emit/tests/second_executor.rs`, `executor.rs`.
-Switch: `impl.render.pipelined_frame` (off) and `impl.sim.phantom-alias` (on), listed in [switches.md](switches.md).
+Switch: `impl.sim.phantom-alias` (on), listed in [switches.md](switches.md).
 
-It is the prerequisite for pipelined rendering
-([pipelined-render.md](../graphics/pipelined-render.md), "The prototype"): run guest code on a second host
-thread, at the same time as the game thread, against a copy-on-write
-snapshot of guest RAM.
+It runs guest code on a second host thread, at the same time as the game
+thread, against a copy-on-write snapshot of guest RAM. A render front-end
+one frame behind the simulation was built on it and removed
+([notes/pipelined-render.md](../graphics/notes/pipelined-render.md)).
 
 Today one host thread runs every guest thread. A guest thread is a CPU
 state and an `ExecCtx`, and the kernel's cooperative scheduler
@@ -142,8 +141,8 @@ Why not the alternatives: RAM is not file-backed (no memfd/shm), so
 `mmap(MAP_PRIVATE)` of a shared object would mean moving the live RAM to
 one first, which changes the live path for every build. `vm_copy` would
 work too but needs a destination allocated first; remap does both.
-Software COW through the fast page table (pipelined-render.md) races a
-sim write against a render read of the same page; host COW has no race.
+Software COW through the fast page table races a
+sim write against a second executor's read of the same page; host COW has no race.
 
 **With a flat-RAM image** (module feature 16,
 [contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)
@@ -315,55 +314,3 @@ The live path: the only change on it is `Guest`'s RAM field, a
 transfer: 41.1 (16 callees), 41.7 (256), 45.0 (1,024), 53.8 (4,096; median
 92.9, the machine was busy), against 39.2, 40.4, 42.2, 45.4 in
 docs/perf/guest-memory.md, within the noise of a shared machine.
-
-## What remains before the render front-end can run on it
-
-Items 1-5 and 7 are built in the prototype (pipelined-render.md, "The
-prototype"); the executor gained what they needed:
-`SecondExecutor::refused_cpu` (the CPU at a refused call, so the main
-context can make it and carry the run on through the resume points;
-tested on lifted code), `resume` (carry a refused run on on the
-executor after someone else made the call: a return to the call's
-return address with the result in the CPU, the view and continuations
-as they were), `last_accesses`, `revert` (undo the view's change
-to a range before the hand-back), `share_watch` with
-`Guest::adopt_watch` (item 4), and `ExecCtx::charge_accesses` (item 5).
-Items 6 and 8 are open.
-
-1. **The launch point.** An override at `render_frame_and_present`
-   (`0x00223240`) that joins render `k-1`, calls `snapshot`, and hands
-   `call(cpu, 0x00223240, [])` to a long-lived render host thread with a
-   copy of the entry CPU state, then returns to the game as the original
-   would (pipelined-render.md, "Design"). Nothing here starts a thread;
-   the caller owns it.
-2. **The allowlist.** Which HLE the render front-end reaches: D3D entries
-   (the device has its own lock, but the sim must make no D3D calls while
-   a render runs: `sim_d3d_hits`), and the kernel calls the census or an
-   HLE-call count per scope finds (time reads, critical sections). Allowed
-   kernel calls need executor-safe handlers (answer time from the
-   snapshot's frozen clock, no waits), not the kernel's own, which are
-   single-threaded; today every kernel call is refused, which ends the
-   run with its name, the signal to fall back to a serial render.
-3. **Hand-back policy.** `written()` lists every page; the join needs the
-   census's split: drop the stack, copy `rw` pages, merge `ww` pages
-   (`hand_back` does the byte merge), and decide the `rs_core` pages.
-   `HandBack::conflicts` is the count to watch.
-4. **Write-watch subscribers on the live side.** `hand_back` reports the
-   merged pages to the live Guest's watch (D3D's resource barrier sees
-   them), but the view's own D3D-side subscriptions (if D3D runs on the
-   executor) are the view Guest's, not the live one's: the D3D layer's
-   dirty tracking has to be told which Guest it is reading.
-5. **Logical time.** `CallOutcome::accesses` has to be charged to the
-   game thread's clock at the join (the kernel's `take_slice_spent`
-   path), at a fixed point, so the schedule stays deterministic
-   (pipelined and serial runs are not lockstep-compatible).
-6. **Cost on the real working set.** About 1 ms of snapshot a frame and
-   2.8 us per 16 KB host page the sim writes during a render (section 4):
-   the census's `sim_written` decides whether that eats the 6-8 ms
-   pipelining saves. The base copy could be dropped (diff against nothing
-   and copy pages whole) if the merge is not needed. A layout change (a
-   map or protect) rebuilds the view's page table (8 MB).
-7. **Quiescence.** Snapshots, checkpoints and the agent API's pause must
-   join a running executor first (docs/runtime/snapshots.md).
-8. **Timeline phases.** Phase accounting is per host thread; render-timing
-   and frame stats have to fold the render thread's in.

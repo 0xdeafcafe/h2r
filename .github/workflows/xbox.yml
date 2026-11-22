@@ -1,0 +1,95 @@
+name: Xbox
+
+# What of the Xbox UWP app (crates/apps/uwp-host, platform/xbox,
+# docs/runtime/xbox.md) builds without the owner's disc: h2uwp.exe, the
+# app, for x86_64-pc-windows-msvc with the static CRT and /APPCONTAINER as
+# platform/xbox/build.sh links it, and the uwp-host tests (manifest, package
+# images, app-container API tables).
+#
+# The package does not build here: h2game.dll (the game module lifted and
+# compiled from the disc), disc/ and bootcache/ come from the disc, which
+# never enters CI, and build.sh signs the package with a certificate kept
+# off the repository. Nothing is packed or signed.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xbox-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: ""
+
+jobs:
+  uwp:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          lfs: true # the package images
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          $channel = (Select-String -Path rust-toolchain.toml -Pattern '^channel\s*=\s*"(.+)"').Matches[0].Groups[1].Value
+          rustup toolchain install $channel --profile minimal --target x86_64-pc-windows-msvc
+          "RUSTUP_TOOLCHAIN=$channel" >> $env:GITHUB_ENV
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+      # clang, llvm-nm and llvm-readobj: the build scripts' C and the
+      # app-container API check.
+      - name: Install LLVM 22
+        shell: pwsh
+        run: |
+          $bin = "$env:ProgramFiles\LLVM\bin"
+          if (!(Test-Path "$bin\clang.exe") -or ((& "$bin\clang.exe" --version)[0] -notmatch 'clang version 22\.')) {
+            $url = 'https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-win64.exe'
+            $installer = "$env:RUNNER_TEMP\llvm.exe"
+            curl.exe -fLsS --retry 3 $url -o $installer
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $result = Start-Process $installer -ArgumentList '/S' -Wait -PassThru
+            if ($result.ExitCode) { exit $result.ExitCode }
+          }
+          & "$bin\clang.exe" --version
+          $bin >> $env:GITHUB_PATH
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+        with:
+          shared-key: xbox
+          cache-on-failure: true
+      # The link line of platform/xbox/build.sh, on a Windows host: the
+      # static CRT (an Xbox has no desktop vcruntime140.dll), the app
+      # container, and the delay-loaded opengl32 and gdi32 that wgpu's
+      # unused GL backend imports. The Mac build adds -Zbuild-std because
+      # Homebrew's Rust ships no Windows std; the rustup toolchain has it.
+      - name: Build h2uwp.exe
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static -C link-arg=/APPCONTAINER
+        run: >-
+          cargo rustc --locked --release --target x86_64-pc-windows-msvc
+          -p uwp-host --bin h2uwp --
+          -C link-arg=/DELAYLOAD:opengl32.dll -C link-arg=/DELAYLOAD:gdi32.dll
+          -C link-arg=delayimp.lib
+      - name: Run the uwp-host tests
+        run: cargo test --locked -p uwp-host
+      # The imports of h2uwp.exe against the OneCoreUAP umbrella library
+      # that the console's app container exports. Advisory: the check was
+      # written against the Mac build, and this build's std has not been
+      # through it.
+      - name: Check the app-container imports
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $lib = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" -Recurse -Filter OneCoreUAP.Lib |
+            Where-Object { $_.FullName -match '\\um\\x64\\' } | Sort-Object FullName | Select-Object -Last 1
+          if (-not $lib) { throw "no OneCoreUAP.Lib in the Windows SDK" }
+          cargo run --locked -q -p uwp-host --example apicheck -- $lib.FullName -- target\x86_64-pc-windows-msvc\release\h2uwp.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

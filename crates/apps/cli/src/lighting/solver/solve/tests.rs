@@ -36,7 +36,7 @@ fn sun() -> Source {
 
 #[test]
 fn recovers_fitted_light_and_shadow_at_each_stored_mip() {
-    let roof = crate::split::scene::test_roof(ROOF_EDGE, 2.0);
+    let roof = crate::lighting::solver::scene::test_roof(ROOF_EDGE, 2.0);
     let mut fits = FitSamples::default();
     let mut pages = Vec::new();
     for (width, height, fill) in [(8, 4, [22, 13, 45]), (4, 2, [9, 41, 32])] {
@@ -91,7 +91,7 @@ fn recovers_fitted_light_and_shadow_at_each_stored_mip() {
 
 #[test]
 fn fitted_slope_resists_an_unrelated_edge_and_play_fills_from_both_sides() {
-    let roof = crate::split::scene::test_roof(ROOF_EDGE, 2.0);
+    let roof = crate::lighting::solver::scene::test_roof(ROOF_EDGE, 2.0);
     let trace = trace(8, 4, &floor(), &sun(), &roof).unwrap();
     let fill = [12, 36, 7];
     let mut retail: Vec<_> = (0..32)
@@ -124,7 +124,7 @@ fn fitted_slope_resists_an_unrelated_edge_and_play_fills_from_both_sides() {
 
 #[test]
 fn unmodelled_dark_patch_clamps_only_the_baked_closure_contribution() {
-    let roof = crate::split::scene::test_roof(ROOF_EDGE, 2.0);
+    let roof = crate::lighting::solver::scene::test_roof(ROOF_EDGE, 2.0);
     let trace = trace(8, 1, &floor(), &sun(), &roof).unwrap();
     let fill = [12, 34, 5];
     let mut retail: Vec<_> = (0..8).map(|i| forward(fill, area_visible(i, 8))).collect();
@@ -140,7 +140,7 @@ fn unmodelled_dark_patch_clamps_only_the_baked_closure_contribution() {
 
 #[test]
 fn vertex_split_traces_the_sun_disc_and_preserves_unselected_records() {
-    let roof = crate::split::scene::test_roof(ROOF_EDGE, 2.0);
+    let roof = crate::lighting::solver::scene::test_roof(ROOF_EDGE, 2.0);
     let sun = Source::sky([0., 0., 1.], 0.08).unwrap();
     let fill = [17, 27, 13];
     // Two rows well inside/outside the shadow with a receiver exactly
@@ -173,7 +173,7 @@ fn vertex_split_traces_the_sun_disc_and_preserves_unselected_records() {
 
 #[test]
 fn adjacent_uv_charts_do_not_create_a_shadow_pair_or_fill_across_a_seam() {
-    let roof = crate::split::scene::test_roof(ROOF_EDGE, 2.0);
+    let roof = crate::lighting::solver::scene::test_roof(ROOF_EDGE, 2.0);
     let mut left = floor();
     for tri in &mut left {
         for uv in &mut tri.uv {

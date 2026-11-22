@@ -95,8 +95,8 @@ Typed access comes from the signature: `Obs::arg_u32(name)`,
 [Calling code that is still recompiled](#calling-code-that-is-still-recompiled)).
 A hook marked `HookRef::context_only` acts only on the registers, stack and
 memory of the context it runs on, so a chain made only of such hooks may run
-on the pipelined render thread (`Chain::render_thread`,
-[pipelined-render.md](../graphics/pipelined-render.md)). A hook may declare
+on a second executor (`Chain::render_thread`,
+[second-executor.md](../runtime/second-executor.md)). A hook may declare
 resume sites (`resumes`, `generated_resumes`) for an implementation that
 re-enters at base-image return addresses.
 

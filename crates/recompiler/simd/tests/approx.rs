@@ -45,7 +45,7 @@ fn table_matches_measured_intel_table() {
 /// release mode, so opt-in: `cargo test --release -p simd --test approx --
 /// --ignored`.
 #[test]
-#[ignore]
+#[ignore = "slow: opt in with --release"]
 fn every_input_matches_intel() {
     let (mut r, mut s) = (FNV0, FNV0);
     for x in 0..=u32::MAX {

@@ -495,7 +495,7 @@ fn the_picker_lists_halo_1_then_halo_2_then_the_rest() {
 /// read as before. Writes nothing.
 /// `H2_DISC=disc/halo2.iso cargo test -p boot --lib campaigns -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "needs the disc (H2_DISC)"]
 fn real_disc_lists_take_both_campaigns() {
     let disc = PathBuf::from(std::env::var("H2_DISC").expect("H2_DISC"));
     let mut iso =

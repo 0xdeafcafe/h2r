@@ -2742,7 +2742,7 @@ fn scenario_objects_are_shared_meshes_under_a_scenario_node() {
 /// `$H2_GEOMETRY_CHECK/base_maps.txt` (else `CHECK_DIR`), changed ones
 /// first. Do not commit what it writes.
 #[test]
-#[ignore]
+#[ignore = "needs the disc (H2_DISC)"]
 fn base_maps_on_the_disc() {
     use std::fmt::Write as _;
     let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {

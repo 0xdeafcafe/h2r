@@ -396,7 +396,7 @@ under a second. Keys and emblem colouring are in
   and geometry ([live-art.md](live-art.md)).
 - **`h2 live assets check [--out DIR]`** exits 0 when the directory holds art
   from this `h2`'s extractor and 1 when it is missing or older, so a script
-  knows when to extract again (`deploy/live/setup.sh` does).
+  knows when to extract again.
 - **Map names and pictures on the site.** Wherever a map is named, the
   site reads the disc's name from `catalog.json` (Halo 2's multiplayer maps
   and campaign levels), then the manifest's `maps.<stem>.name` (converted

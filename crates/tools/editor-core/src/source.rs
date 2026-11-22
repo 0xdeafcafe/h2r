@@ -1,6 +1,5 @@
-//! Where maps come from: the user's own disc image (an XISO, as
-//! `crates/tools/viewer/src/disc.rs` reads it; the logic is copied here so the
-//! editor does not depend on the viewer binary crate), a loose `.map`
+//! Where maps come from: the user's own disc image (an XISO,
+//! read here), a loose `.map`
 //! file, or a folder of `.map` files (an extracted `maps` directory).
 //! Read-only; nothing is copied anywhere.
 
