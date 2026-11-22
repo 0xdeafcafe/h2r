@@ -1,8 +1,8 @@
 # Campaign cache integration gate
 
 Status: Built.
-Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc).
-Switch: none.
+Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`, `crates/rewrites/engine/src/map_status.rs`, `crates/rewrites/sim-bridge/src/sim_status_poll.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc), `crates/rewrites/engine/tests/map_status_differential.rs` (needs `H2_XBE`).
+Switch: `impl.sim.status-poll` ([The status poll](#the-status-poll), off by default).
 
 `crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
@@ -261,3 +261,54 @@ publication in either mode.
 Tests (`map_copy::tests`, a synthetic copy machine and worker): the same
 bytes, checksum and step sequence in 3 frames instead of 42 for 21
 chunks; a slow worker; a job that outlasts its yields; idle; the plan.
+
+## The status poll
+
+A static read of the 1.0 XBE, and a memo of its answer under
+`impl.sim.status-poll` (off by default; `crates/rewrites/engine/src/map_status.rs`,
+the hooks in `crates/rewrites/sim-bridge/src/sim_status_poll.rs`, registered
+on light hosts).
+
+- **The poll.** `0x163680` (called by `0x163820`) picks the map to load
+  next. Each call asks the status `0x213f10` about scenario paths held in
+  `0x4687fc`, `0x468800`, `0x468804` and `0x468808` (the main menu's is
+  `scenarios\ui\mainmenu\mainmenu`): two to five calls, each from the same
+  stack depth with the same paths, every frame of a game.
+- **The status.** `0x213f10` (EAX a C string) returns 3 when a slot holds
+  the path (`0x214a60`, case-insensitive over the six resident paths at
+  `0x557cb4`, stride `0x804`), 4 when a copy request names it and its state
+  at `+0x104` is 3 or more (`0x214060`, exact compare over eight requests
+  of `0x108` bytes at `0x55acac`), 2 when the first queued path
+  (`0x55bd21`) matches and `0x55bf24` is not -1 (`0x213e30`), 1 when the
+  second (`0x55bf28`) matches and `0x55c028` is not -1 (`0x213e90`), else 0.
+  Each step normalises its side again with `0x214db0`: the name after the
+  last `\` (a `t:\` or `w:\` path whole), cut at the first `.`, lowercased,
+  then `sprintf` to `d:\maps\%s.map` (`%s.map` for `t:\` and `w:\`). One
+  answer costs two to seven `sprintf` calls and their CRT string compares.
+- **What it reads and writes.** Besides the path: the six slot paths, the
+  request block, the bytes `0x55bd21` to `0x55c02b`, and the CRT locale
+  handle `0x480ce8` (`tolower`, `0x321846`, reads tables only when it is
+  not 0). It writes only its own stack below the entry ESP, preserves EBX,
+  ESI, EDI and EBP, and leaves EAX, ECX, EDX and the arithmetic flags,
+  whose last writer is `add esp, 100h`.
+
+`engine::map_status::Cache` keys an answer on the entry ESP, the path
+pointer, the path's bytes (at most 240, so every compare ends inside the
+blocks), and a copy of everything else listed above. A `before` hook on
+`MAP_STATUS` returns the kept EAX, ECX, EDX and arithmetic flags on a hit;
+on a miss the original runs and an `after` hook keeps its answer if the
+path and the blocks still read as they did at the entry. Any change to a
+read byte is a miss, so the copy machine, `map_slots` and a loaded
+snapshot need no notice. A longer path, a queued path with no NUL in its
+block, or a locale other than C runs the original every time; the first
+such call prints one line. Not reproduced: the original's stores to the
+dead stack, and the continuation token the `after` hook's shadow call
+leaves at the entry ESP during a miss.
+
+Tests: `map_status::tests` and `sim_status_poll::tests` (synthetic guest
+memory: keys, every block, a change during the call, bypasses, the plan);
+`map_status_differential` (needs `H2_XBE`): the status and the frame poll
+against the lifted original over seeded slots, requests and queues, each
+case run seeded (a miss), with fresh dead-stack garbage (a hit) and after
+one changed byte, comparing every register and every store outside the
+dead stack.
