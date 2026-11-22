@@ -267,7 +267,7 @@ index (`+0x44`):
 
 | Record | What runs |
 |---|---|
-| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a built-in (`rules::builtin`, compiled once at first use), else the game-variant store's (source `local`), else Live's by the full hash a store bundle names for the prefix (below); a System Link game takes a built-in or the store's, never Live's |
+| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a compiled-in script (a port or an example of `rules::builtin`, compiled once at first use, `runtime::compiled_in`), else the game-variant store's (source `local`), else Live's by the full hash a store bundle names for the prefix (below); a System Link game takes a built-in or the store's, never Live's |
 | mode 0 | the built-in of the record's engine when the engine is in `runtime::PORTED`, which is empty: nothing runs, and Slayer stays lifted until its port passes parity |
 | mode 1 | nothing: Firefight's own feature runs it |
 | any other | refused: "script mode `n` is unknown to this build" |
@@ -372,8 +372,9 @@ runtime over invented guest memory with fake engine callees: the
 built-in Slayer starting from a record and setting the record, a kill
 making a `SCORE_ADD` call at the next boundary, a suicide's negative
 score, a machine that is not the authority, a refusal for an unknown
-hash and for System Link, refusals by entry and by event, a bounce
-reaching `on bounce` and scoring at the next boundary, another
+hash and for System Link, refusals by entry and by event, the
+compiled-in Superbounce example found by its prefix, a bounce reaching
+`on bounce` and scoring at the next boundary, another
 engine's record, a record with no mode, the record removed at the game's
 end, a reverted record resuming the VM, a stored script running with no
 Live client and on System Link, a Live variant's script fetched by its
@@ -454,8 +455,18 @@ script.
 ## The language
 
 A source file is a header, options, variables, functions and handlers.
-The header names the script, its version, its carrier, its teams and the
-capabilities it requires: `requires player.weapons, hud.message`.
+The header names the script, its version, its carrier, its teams, the
+game type list row its variants are filed under and the capabilities it
+requires: `requires player.weapons, hud.message`.
+
+**The list row.** `list tweakers` files a variant naming the script
+under Tweakers, our row after Territories
+([community-gametypes.md](community-gametypes.md#tweakers)); with no
+`list` line it is under its carrier's game type. `tweakers` is the only
+name (`ir::List::NAMED`); any other is refused by name ("unknown list
+slayer: a list is tweakers"), and a second `list` line is refused too.
+The IR header carries it as one byte, `ir::List`, which a blob with
+any other value fails to decode by ("the header's list").
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
 distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (a global variable that
@@ -666,8 +677,8 @@ type's handlers run first.
 ## The IR and the VM
 
 **Shape.** The blob is: a header (magic, IR version, API version,
-carrier, team requirement, and the required capabilities by name, at
-most 32, "Roles, powers and capabilities"); a string table; an option table (type,
+name, version, carrier, team requirement, list row, and the required
+capabilities by name, at most 32, "Roles, powers and capabilities"); a string table; an option table (type,
 range, default, label); a slot table (scope, type, initial value); a
 label table and a tag-path table; constant tables; a handler table
 (event, argument slots); and code. Code is a register bytecode with typed ops:
@@ -861,6 +872,7 @@ plain words each:
 | `objects.create`, `objects.delete`, `objects.move` | makes, removes and moves objects | no |
 | `ai.squads` | places and commands AI | no |
 | `hud.message` | shows messages | no |
+| `hud.superbounce` | shows the superbounce guide: a priming HUD, marks over the map and bounce medals | no |
 | `firefight.director` | runs Firefight rounds, waves, lives and scores | no |
 | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |
 
@@ -1398,22 +1410,28 @@ bounces only in a game where the mode is on; and the mode is
 presentation-only (a film's hook digest leaves it out), so a script that
 scores bounces is not yet a parity game.
 
-**The Superbounce game type as a script** is
+**The Superbounce game type is a script**,
 `crates/formats/rules/src/builtin/superbounce.rules`, an example
-(`builtin::examples`): `carrier slayer`, Slayer's kill rule with its two
-options, and `bounce_points` (0 to 5, default 0), points for each
-bounce, so by default it scores as the community variant does. Its record
-settings (no limits, overshields, a magnum) stay the variant record's.
-Two things the language does not have yet move the rest of the variant
-onto it, and the game reads both through `rules::header`:
+(`builtin::examples`): `carrier slayer`, `list tweakers`,
+`requires hud.superbounce`, Slayer's kill rule with its two options, and
+`bounce_points` (0 to 5, default 0), points for each bounce, so by
+default it scores as Slayer does. The built-in Superbounce variant's
+record names it (mode 2, its hash prefix and default options,
+`community_variants::superbounce_ext`); its other settings (no limits,
+overshields, a magnum) are the record's. The game reads the header
+through `rules::header`:
 
 | Header | What it turns on | Game side |
 |---|---|---|
-| `requires hud.superbounce`, a capability `rules::caps` lacks | the superbounce mode: HUD, marks, priming, medals | `header::asks_superbounce` reads `requires`; `superbounce_mode` is on when the running script asks (`feature::running_asks_superbounce`), as well as by the flag, the name and the switches |
-| `list tweakers`, a header line | a place under Tweakers ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::lists_tweakers`, false for every header; `community_variants::is_tweaker` asks it of a mode 2 block's script through `header::block_is_tweaker` |
+| `requires hud.superbounce`, a capability that gates no entry | the superbounce mode: HUD, marks, priming, medals | `header::script_asks_superbounce` over the block's script reference, in `variant_ext::Decision::superbounce`, so a guest that applies its host's block turns the mode on too, and the mode needs no running script |
+| `list tweakers` | a place under Tweakers ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::lists_tweakers`; `community_variants::is_tweaker` asks it of a mode 2 block's script through `header::block_is_tweaker` |
 
-Until both exist the Superbounce variant stays a Slayer record with the
-flag, and no script turns the mode on or lists under Tweakers.
+Both find the script by the record's prefix among the compiled-in
+scripts (`runtime::compiled_in`) and in the game-variant store. With the
+`rules` feature off the HUD still turns on and Slayer's lifted rules
+score the game; with it on, the script runs beside them ("The host
+runtime"), so its kill scoring adds to the lifted carrier's until
+Slayer's callbacks are answered in place.
 
 ## Payoff
 
@@ -1424,8 +1442,10 @@ rather than by engine: `infection.rules`, `gun_game.rules`,
 `superbounce.rules`. Each compiles, verifies and fits a tick
 (`tests/engines.rs`), and each header names the entries a host cannot
 make yet. VIP, Bounce Practice and Superbounce call none. VIP waits on
-the match edit log; Bounce Practice on the host runtime's `round_start`
-and `set_gravity`; Superbounce on the header lines above. Prop Hunt has
+the match edit log, and Bounce Practice on the host runtime's
+`round_start` and `set_gravity`. Superbounce runs. The examples are
+compiled into the game, so a record names one by its hash prefix with
+no store or fetch; a record with no mode never runs one. Prop Hunt has
 no script.
 
 - **Race.** Halo 1's race track points are dropped at conversion

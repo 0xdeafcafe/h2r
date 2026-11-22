@@ -1750,8 +1750,9 @@ it ends when the bot sees an enemy.
 
 #### Practising bounces
 
-While the superbounce mode is on (the Superbounce variant, the variant's
-superbounce flag, `H2_SUPERBOUNCE=1` or `superbounce.set`; the game calls
+While the superbounce mode is on (the Superbounce variant, a variant whose
+script requires `hud.superbounce`, the variant's superbounce flag,
+`H2_SUPERBOUNCE=1` or `superbounce.set`; the game calls
 `bots::set_practice` from `superbounce_mode`, and each brain follows it
 at its next sample) a bot fights no one: it picks no target, shoots,
 throws and melees nothing, and being shot changes nothing. Its whole pad

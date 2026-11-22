@@ -450,6 +450,8 @@ fn superbounce_scores_slayers_kills_and_bounces_only_when_asked() {
     assert!(report.fits());
     assert_eq!(ir.header.name, "Superbounce");
     assert_eq!(ir.header.carrier, 2);
+    assert_eq!(ir.header.list, rules::ir::List::Tweakers);
+    assert_eq!(ir.header.requires, ["hud.superbounce"]);
     // The default: a bounce is counted and scores nothing; a kill and a
     // suicide score as Slayer's.
     let mut g = FakeGame::with_players(2);

@@ -20,8 +20,7 @@
 //! - `GAME_END`, an observer after: the record is removed.
 //!
 //! The superbounce mode's tick observer feeds it each bounce its medal
-//! chain files ([`bounces`]), and asks whether the running script wants
-//! the mode ([`running_asks_superbounce`]).
+//! chain files ([`bounces`]).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -79,7 +78,7 @@ pub fn to_fetch(m: &dyn GuestMemory, scripts: &crate::game_variants::GameScripts
         return None;
     }
     let p = script.prefix;
-    let built = runtime::builtins().iter().any(|b| b.id.0[..8] == p);
+    let built = runtime::compiled_in(p).is_some();
     (!built && scripts.local(p).is_none()).then_some(p)
 }
 
@@ -289,17 +288,6 @@ pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) 
     if let Some(s) = SHARED.get() {
         s.lock().bounces(m, awards);
     }
-}
-
-/// Whether the running script asks for the superbounce mode
-/// ([`super::header::asks_superbounce`]); false without the feature or a
-/// running script.
-pub fn running_asks_superbounce() -> bool {
-    SHARED.get().is_some_and(|s| {
-        s.lock()
-            .running()
-            .is_some_and(|r| super::header::asks_superbounce(r.vm.ir()))
-    })
 }
 
 /// Why `rules.state` has no runtime to answer from.

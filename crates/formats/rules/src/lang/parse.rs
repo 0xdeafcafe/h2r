@@ -13,7 +13,7 @@ use crate::ir::Scope;
 const MAX_DEPTH: u32 = 64;
 
 pub(crate) const KEYWORDS: &[&str] = &[
-    "rules", "carrier", "teams", "requires", "option", "palette", "enum", "global", "var",
+    "rules", "carrier", "teams", "list", "requires", "option", "palette", "enum", "global", "var",
     "table", "fn", "on", "if", "else", "for", "each", "where", "let", "and", "or", "not", "true",
     "false", "none", "labelled", "text", "budget",
 ];
@@ -42,6 +42,7 @@ pub fn parse_recovering(tokens: &[Token]) -> (Script, Vec<CompileError>) {
                 pos: Pos { line: 1, col: 1 },
                 carrier: None,
                 teams: None,
+                list: None,
                 requires: Vec::new(),
                 items: Vec::new(),
             }
@@ -82,7 +83,7 @@ impl<'a> Parser<'a> {
             return true;
         }
         matches!(&self.peek().tok, Tok::Ident(s) if matches!(s.as_str(),
-            "rules" | "carrier" | "teams" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "on"))
+            "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "on"))
     }
 
     /// Recovery from a bad declaration: on to the next line that starts
@@ -274,6 +275,7 @@ impl<'a> Parser<'a> {
             pos,
             carrier: None,
             teams: None,
+            list: None,
             requires: Vec::new(),
             items: Vec::new(),
         };
@@ -332,6 +334,11 @@ impl<'a> Parser<'a> {
                 return Err(CompileError::at(pos, "teams is given twice"));
             }
             script.teams = Some((self.int()?, pos));
+        } else if self.eat_word("list") {
+            if script.list.is_some() {
+                return Err(CompileError::at(pos, "the list is named twice"));
+            }
+            script.list = Some((self.word()?, pos));
         } else if self.eat_word("requires") {
             loop {
                 let at = self.pos();

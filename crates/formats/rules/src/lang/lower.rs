@@ -231,6 +231,14 @@ impl<'s> Cx<'s> {
                 n as u8
             }
         };
+        let list = match &script.list {
+            None => List::GameType,
+            Some((name, lpos)) => List::named(name).ok_or_else(|| {
+                let names: Vec<&str> = List::NAMED.iter().filter_map(|l| l.name()).collect();
+                let names = names.join(", ");
+                CompileError::at(*lpos, format!("unknown list {name}: a list is {names}"))
+            })?,
+        };
         for (name, rpos) in &script.requires {
             if caps::capability(name, caps::API_VERSION).is_none() {
                 return err(*rpos, format!("unknown capability {name}"));
@@ -310,6 +318,7 @@ impl<'s> Cx<'s> {
                 version,
                 carrier,
                 teams,
+                list,
                 requires: self.requires.clone(),
             },
             strings: std::mem::take(&mut self.strings),

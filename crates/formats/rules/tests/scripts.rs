@@ -630,3 +630,21 @@ on tick {
         ]
     );
 }
+
+#[test]
+fn a_list_line_files_the_script_under_a_named_row() {
+    use rules::ir::List;
+    let plain = compile("rules \"X\" 1\ncarrier slayer\n").unwrap();
+    assert_eq!(plain.header.list, List::GameType);
+    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist tweakers\n").unwrap();
+    assert_eq!(listed.header.list, List::Tweakers);
+    assert_ne!(plain.id(), listed.id());
+    assert!(
+        compile_error("rules \"X\" 1\ncarrier slayer\nlist slayer\n")
+            .contains("unknown list slayer: a list is tweakers")
+    );
+    assert!(
+        compile_error("rules \"X\" 1\ncarrier slayer\nlist tweakers\nlist tweakers\n")
+            .contains("the list is named twice")
+    );
+}

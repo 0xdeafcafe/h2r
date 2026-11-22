@@ -43,6 +43,11 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("objects.move", "moves objects", false),
     cap("ai.squads", "places and commands AI", false),
     cap("hud.message", "shows messages", false),
+    cap(
+        "hud.superbounce",
+        "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
+        false,
+    ),
     cap("firefight.director", "runs Firefight rounds, waves, lives and scores", false),
     cap("forge.move", "lets players move objects during the match", true),
     cap("forge.delete", "lets players remove objects during the match", true),
@@ -468,6 +473,20 @@ mod tests {
             }
             assert_eq!(a.grantable, a.name.starts_with("forge."));
         }
+    }
+
+    /// `hud.superbounce` gates no entry: a host turns its superbounce mode
+    /// on for a script that declares it, and every kind of game takes it.
+    #[test]
+    fn hud_superbounce_is_a_declared_host_feature() {
+        let c = capability("hud.superbounce", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        assert!(ENTRIES.iter().all(|e| e.cap != Some(c.name)));
+        let req = vec![c.name.to_string()];
+        assert_eq!(
+            crate::policy::eligible(&req, API_VERSION),
+            ["custom", "hopper", "ranked"]
+        );
     }
 
     #[test]

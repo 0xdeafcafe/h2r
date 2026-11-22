@@ -140,7 +140,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// One built-in script, compiled once: its engine index, blob and hash.
+/// One built-in script, compiled once: its engine index (an example's
+/// carrier), blob and hash.
 pub struct Builtin {
     pub engine: u8,
     pub blob: Vec<u8>,
@@ -168,6 +169,36 @@ pub fn builtins() -> &'static [Builtin] {
         }
         out
     })
+}
+
+/// Every example script (`rules::builtin::examples`), compiled once, each
+/// with its carrier as `engine`. A record names one by its prefix, as any
+/// script; they are not ports, so a record with no mode never runs one.
+pub fn examples() -> &'static [Builtin] {
+    static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut out = Vec::new();
+        for &(name, src) in ::rules::builtin::examples() {
+            match ::rules::compile(src) {
+                Ok(ir) => out.push(Builtin {
+                    engine: ir.header.carrier,
+                    blob: ir.encode(),
+                    id: ir.id(),
+                }),
+                Err(e) => eprintln!("rules: the example {name} script does not compile: {e}"),
+            }
+        }
+        out
+    })
+}
+
+/// The compiled-in script whose hash starts with `prefix`: a port
+/// ([`builtins`]) or an example ([`examples`]).
+pub fn compiled_in(prefix: [u8; 8]) -> Option<&'static Builtin> {
+    builtins()
+        .iter()
+        .chain(examples())
+        .find(|b| b.id.0[..8] == prefix)
 }
 
 /// Where a running blob came from.
@@ -569,8 +600,7 @@ impl Runtime {
         let script = Ext::in_effect(&block).script;
         let found = match script.mode {
             Mode::Rules => {
-                let builtin = builtins().iter().find(|b| b.id.0[..8] == script.prefix);
-                match builtin {
+                match compiled_in(script.prefix) {
                     Some(b) => Ok((b.blob.clone(), Source::Builtin)),
                     None => match (self.local)(script.prefix) {
                         Some(blob) => Ok((blob, Source::Local)),

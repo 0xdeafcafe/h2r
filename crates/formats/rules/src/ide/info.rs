@@ -256,6 +256,7 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "rules" => "The header: `rules \"Name\" version`.",
         "carrier" => "The retail engine the script rides: `carrier slayer`.",
         "teams" => "In the header, the team count (1 to 8): `teams 2`. In a set, every team.",
+        "list" => "The game type list row a variant of the script is filed under: `list tweakers`. With no `list` line it is under its carrier's game type.",
         "requires" => "The capabilities the script declares: `requires player.weapons, hud.message`. The lobby shows them in plain words.",
         "option" => "A row of the variant editor: `option name: int 1..5 = 1 \"Label\" \"Description\"`. An int, a bool or an enum, read-only in handlers.",
         "palette" => "A named list of tag paths: `palette \"x\" = [\"objects/...\"]`. `palette \"x\"` is a `grant` argument.",

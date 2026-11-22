@@ -20,7 +20,7 @@ export const LANGUAGE_ID = "h2rules";
 
 /** Declaration and statement words the parser reserves. */
 export const KEYWORDS = [
-  "rules", "carrier", "teams", "requires", "option", "palette", "enum", "global", "var", "table", "fn", "on",
+  "rules", "carrier", "teams", "list", "requires", "option", "palette", "enum", "global", "var", "table", "fn", "on",
   "labelled", "text", "budget",
 ] as const;
 export const CONTROL = ["if", "else", "for", "each", "where", "let"] as const;
@@ -53,6 +53,7 @@ export const CAP_WORDS: Readonly<Record<string, string>> = {
   "objects.move": "moves objects",
   "ai.squads": "places and commands AI",
   "hud.message": "shows messages",
+  "hud.superbounce": "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
   "forge.move": "lets players move objects during the match",
   "forge.delete": "lets players remove objects during the match",
   "forge.place": "lets players place objects during the match",
@@ -576,6 +577,7 @@ export function eventSnippet(e: EventDef): string {
 export const DECLARATIONS: readonly InsertItem[] = [
   { label: "requires", detail: "requires cap, cap", words: "the capabilities the script asks for", snippet: `requires ${ph(1, "player.weapons")}` },
   { label: "teams", detail: "teams n", words: "how many teams the game type has", snippet: `teams ${ph(1, "2")}` },
+  { label: "list", detail: "list tweakers", words: "the game type list row its variants are filed under", snippet: "list tweakers" },
   { label: "option", detail: "option name: int lo..hi = default \"Label\" \"Description\"", words: "a row the variant editor shows", snippet: `option ${ph(1, "name")}: ${ph(2, "int")} ${ph(3, "1..5")} = ${ph(4, "1")} "${ph(5, "Label")}" "${ph(6, "Description")}"` },
   { label: "option (on or off)", detail: "option name: bool = true \"Label\" \"Description\"", words: "a switch the variant editor shows", snippet: `option ${ph(1, "name")}: bool = ${ph(2, "true")} "${ph(3, "Label")}" "${ph(4, "Description")}"` },
   { label: "global var", detail: "global var name: type = init", words: "one value for the whole game (64 slots)", snippet: `global var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },

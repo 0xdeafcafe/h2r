@@ -7,8 +7,9 @@
 //! superbounce flag ([`variants::ext::Ext::superbounce`], through
 //! [`crate::variant_ext::Decision::superbounce`]), or is the built-in
 //! "Superbounce" variant ([`crate::community_variants`], which has no field
-//! for the flag, so it is told by name), or the running rules script asks
-//! for it ([`crate::rules::feature::running_asks_superbounce`]), or
+//! for the flag, so it is told by name), or the rules script the block
+//! names requires `hud.superbounce` (through the same decision,
+//! [`crate::rules::header::script_asks_superbounce`]), or
 //! `H2_SUPERBOUNCE=1` forces it.
 //!
 //! **Each tick** (a tick observer, only while on) it reads the first local
@@ -702,7 +703,6 @@ fn on_now(m: &dyn GuestMemory) -> bool {
     forced()
         || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
         || variant_name(m).is_some_and(|n| is_superbounce_name(&n))
-        || crate::rules::feature::running_asks_superbounce()
 }
 
 /// The local player's word, position and motion.

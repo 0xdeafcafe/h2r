@@ -231,6 +231,7 @@ fn empty_script() -> Script {
         pos: Pos { line: 1, col: 1 },
         carrier: None,
         teams: None,
+        list: None,
         requires: Vec::new(),
         items: Vec::new(),
     }

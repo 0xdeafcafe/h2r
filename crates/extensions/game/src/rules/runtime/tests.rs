@@ -233,17 +233,17 @@ fn award(slot: u8, spot: Option<u32>) -> crate::superbounce_chain::Award {
 fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
     let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
     assert_eq!(host_refusal(&ir), None, "the host delivers on bounce");
-    let (blob, id) = (ir.encode(), ir.id());
+    let id = ir.id();
     let store = Local::default();
-    let s = shared(
-        &store,
-        Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())),
-    );
+    // An example is compiled in: found by its prefix, never fetched.
+    let s = shared(&store, Box::new(no_fetch));
     // Bounce points 2 (raw 2 at bit 4); kill points 1, suicides free.
     let (m, datums) = guest(block(prefix(&id), 2 << 4), SLAYER);
     s.lock().start(&m, false);
     let state = s.lock().state();
     assert!(state.running, "{state:?}");
+    assert_eq!(state.source.as_deref(), Some("builtin"));
+    assert_eq!(s.lock().hash(), Some(id.to_string()));
     // A Bounced is no bounce; the bounce off strip 77 is.
     s.lock().bounces(&m, &[award(0, None), award(1, Some(77))]);
     {
@@ -394,6 +394,17 @@ fn a_record_with_no_mode_runs_nothing_while_no_engine_is_ported() {
     assert!(!state.running);
     assert_eq!(state.refused.as_deref(), Some("the record names no script"));
     assert_eq!(store.bytes(), None);
+}
+
+#[test]
+fn examples_are_found_by_prefix_and_never_by_engine() {
+    for e in examples() {
+        assert!(std::ptr::eq(compiled_in(prefix(&e.id)).unwrap(), e));
+        assert!(builtins().iter().all(|b| b.id != e.id));
+    }
+    assert_eq!(examples().len(), ::rules::builtin::examples().len());
+    assert!(std::ptr::eq(compiled_in(prefix(&slayer().id)).unwrap(), slayer()));
+    assert!(compiled_in([9; 8]).is_none());
 }
 
 #[test]

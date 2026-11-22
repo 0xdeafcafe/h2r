@@ -1,19 +1,18 @@
 // Superbounce: Slayer's rules with the superbounce mode's guide (the HUD,
-// the marks over the map, priming and the medals), as the community
-// variant Superbounce plays them. Its record settings (no score or time
-// limit, 3 s respawn, overshields, a magnum, nothing on the map) are the
-// variant record's, not the script's. A bounce scores nothing unless the
-// variant asks; the medals and chains are the host's.
+// the marks over the map, priming and the medals), which the host turns
+// on for `requires hud.superbounce`. `list tweakers` files its variants
+// under Tweakers. Its record settings (no score or time limit, 3 s
+// respawn, overshields, a magnum, nothing on the map) are the variant
+// record's, not the script's. A bounce scores nothing unless the variant
+// asks; the medals and chains are the host's.
 // docs/game/superbounce.md, "The superbounce game type", and
 // docs/game/rules-engine.md, "Firefight, AI and bounces".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
-// Waiting on the language: the header line `list tweakers` (the
-// Tweakers row) and the capability `requires hud.superbounce` (the mode's
-// HUD, marks and medals). Until both exist the community variant's flag
-// turns the mode on and its name files it under Tweakers.
 rules "Superbounce" 1
 carrier slayer
+list tweakers
+requires hud.superbounce
 
 option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
 option suicide_costs: bool = true "Suicide penalty" "A suicide costs a point"

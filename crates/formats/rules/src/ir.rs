@@ -68,8 +68,55 @@ pub struct Header {
     pub carrier: u8,
     /// Teams the script needs; 0 is any.
     pub teams: u8,
+    /// Where the game type list files a variant of the script (`list`).
+    pub list: List,
     /// Capability names, the most the script can ever do.
     pub requires: Vec<String>,
+}
+
+/// Where the game type list files a variant of a script: under its
+/// carrier's game type (no `list` line), or under a row the header names
+/// (`list tweakers`). See `docs/game/rules-engine.md`, "The language".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum List {
+    #[default]
+    GameType,
+    /// The Tweakers row, after Territories.
+    Tweakers,
+}
+
+impl List {
+    /// The names a `list` line takes.
+    pub const NAMED: &'static [List] = &[List::Tweakers];
+
+    fn code(self) -> u8 {
+        match self {
+            List::GameType => 0,
+            List::Tweakers => 1,
+        }
+    }
+
+    fn from_code(c: u8) -> Option<List> {
+        Some(match c {
+            0 => List::GameType,
+            1 => List::Tweakers,
+            _ => return None,
+        })
+    }
+
+    /// The name a `list` line gives; `None` for [`List::GameType`], which
+    /// has no line.
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            List::GameType => None,
+            List::Tweakers => Some("tweakers"),
+        }
+    }
+
+    /// The list a `list` line names.
+    pub fn named(name: &str) -> Option<List> {
+        List::NAMED.iter().copied().find(|l| l.name() == Some(name))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -471,6 +518,7 @@ impl Ir {
         w.u16(h.version);
         w.u8(h.carrier);
         w.u8(h.teams);
+        w.u8(h.list.code());
         w.len(h.requires.len());
         for r in &h.requires {
             w.str(r);
@@ -556,6 +604,11 @@ impl Ir {
         let version = r.u16("the header")?;
         let carrier = r.u8("the header")?;
         let teams = r.u8("the header")?;
+        let list = r.u8("the header")?;
+        let list = List::from_code(list).ok_or(DecodeError::Invalid {
+            what: "the header's list",
+            value: list as u32,
+        })?;
         let n = r.len("the requires list")?;
         let mut requires = Vec::with_capacity(n.min(64));
         for _ in 0..n {
@@ -568,6 +621,7 @@ impl Ir {
             version,
             carrier,
             teams,
+            list,
             requires,
         };
         let strings = r.strs("the string table")?;
@@ -1301,6 +1355,7 @@ pub(crate) mod tests {
                 version: 1,
                 carrier: 2,
                 teams: 0,
+                list: List::Tweakers,
                 requires: vec!["forge.move".into()],
             },
             strings: vec!["kill_points".into(), "elite".into()],
@@ -1377,6 +1432,32 @@ pub(crate) mod tests {
         let bytes = ir.encode();
         assert_eq!(Ir::decode(&bytes), Ok(ir.clone()));
         assert_eq!(Ir::decode(&bytes).unwrap().encode(), bytes);
+    }
+
+    #[test]
+    fn the_list_round_trips_and_an_unknown_one_is_refused() {
+        let mut ir = sample();
+        for list in [List::GameType, List::Tweakers] {
+            ir.header.list = list;
+            let bytes = ir.encode();
+            assert_eq!(Ir::decode(&bytes).unwrap().header.list, list);
+        }
+        assert_ne!(sample().id(), ir.id(), "the list is part of the hash");
+        // The list byte follows the name, version, carrier and teams.
+        let mut bytes = sample().encode();
+        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2 + 1 + 1;
+        assert_eq!(bytes[at], 1);
+        bytes[at] = 7;
+        assert_eq!(
+            Ir::decode(&bytes),
+            Err(DecodeError::Invalid {
+                what: "the header's list",
+                value: 7
+            })
+        );
+        assert_eq!(List::named("tweakers"), Some(List::Tweakers));
+        assert_eq!(List::named("slayer"), None);
+        assert_eq!(List::GameType.name(), None);
     }
 
     #[test]

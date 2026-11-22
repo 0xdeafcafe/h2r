@@ -662,27 +662,36 @@ and lines over the map. It is listed under **Tweakers**, the last row of
 the game type list (after Territories), and not under Slayer; underneath
 it is a Slayer variant ([community-gametypes.md](community-gametypes.md#tweakers)).
 Its entry in `crates/extensions/game/src/community_variants.rs` is
-`Category::Tweakers(SUPERBOUNCE_EXT)`, and `crate::tweakers` writes that
-extension block into its built-in record, so a game on it and a saved
-copy of it carry the flag. The mode is on when the variant's extension
-block has the superbounce flag (bit 2 of `+0x10f`,
+`Category::Tweakers(Tweak::Superbounce)`: its record's extension block
+names the Superbounce rules script (mode 2, the script's hash prefix and
+default options, `community_variants::superbounce_ext`), and
+`crate::tweakers` writes that block into its built-in record, so a game
+on it and a saved copy of it name the script. The script is
+`crates/formats/rules/src/builtin/superbounce.rules`, compiled into the
+game: `list tweakers` files the variant under Tweakers and
+`requires hud.superbounce` turns the mode on
+([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). Its rules
+are Slayer's kill rule, and points for a bounce when the variant asks,
+none by default.
+
+The mode is on when the variant's extension block names a rules script
+that requires `hud.superbounce` (`rules::header::script_asks_superbounce`,
+in `variant_ext::Decision::superbounce`, with or without the `rules`
+feature, on a guest that applies its host's block too), when the block
+has the superbounce flag (bit 2 of `+0x10f`,
 [game-options.md](game-options.md)), when the active variant's name is
 the built-in Superbounce's (a fallback for a game whose block did not
-arrive), when the running rules script requires `hud.superbounce`
-(`rules::header::asks_superbounce`; the capability is not in
-`rules::caps` yet, so no script does), or with `H2_SUPERBOUNCE=1`
-([switches](../runtime/switches.md)). An agent can
-force it on or off in any game with `superbounce.set`
+arrive or is not applied, as in a System Link game, where no machine
+applies the block), or with
+`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). The built-in
+sets no flag; the flag stays a field of the block that a hand-made
+variant may set. An agent can force it on or off in any game with
+`superbounce.set`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
 
-**As a rules script.** The game type's rules are also a script,
-`crates/formats/rules/src/builtin/superbounce.rules` (Slayer's kill rule,
-and points for a bounce when the variant asks, none by default). Each
-bounce the medal chain files goes to a running rules script as
+Each bounce the medal chain files goes to a running rules script as
 `on bounce(p, spot)`, `spot` the strip's id (`superbounce_chain::spot_id`).
-The variant moves onto the script once the language has the header lines
-it waits on ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
 
 **State.** On or off is decided when a game starts and again every 30
 ticks (so a guest's late host block counts); off, a tick costs a counter
@@ -1559,7 +1568,7 @@ Sixteen pair reads a tick at most, only while the mode is on.
   The bounce names its strip, the nearest within 0.5
   (`superbounce_charge::landing_spot`), by `superbounce_chain::spot_id`,
   and a running rules script hears it as `on bounce`
-  ([As a rules script](#the-superbounce-game-type)).
+  ([the game type](#the-superbounce-game-type)).
 - **The chain** is a count per player. A bounce while the chain is live
   adds one; a bounce while it is not makes it 1. Each bounce makes the
   chain live. It stops being live at the first of:
