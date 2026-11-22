@@ -67,6 +67,8 @@ fn position(program: &Microcode) -> Position {
     }
 }
 
+// `Microcode`'s interior cache takes no part in its Hash or Eq.
+#[allow(clippy::mutable_key_type)]
 fn classify(
     draw: &ResolvedDraw,
     at: SlotAt,
@@ -119,6 +121,9 @@ impl ReplayFrame {
     /// view proved.
     pub fn classify_cameras<'a>(&mut self, views: impl IntoIterator<Item = (ViewKey, &'a Camera)>) {
         let views: Vec<_> = views.into_iter().filter_map(ViewBlock::from_view).collect();
+        // `Microcode` hashes and compares its program words; its interior cache
+        // never takes part, so it is a sound key.
+        #[allow(clippy::mutable_key_type)]
         let mut programs = HashMap::new();
         for (at, op) in &mut self.ops {
             if let ReplayOp::Draw { draw, camera, .. } = op {

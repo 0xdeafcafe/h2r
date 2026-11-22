@@ -633,18 +633,15 @@ impl Editor {
                             .map(|info| resident_base(g, info))
                             .transpose()?
                             .flatten();
-                        match now {
-                            Some(base) => {
-                                let addr = base + offset;
-                                if read_bytes(g, addr, len as u32)? == new {
-                                    g.write_bytes(addr, &old, 1).map_err(fault)?;
-                                    restored = true;
-                                } else {
-                                    why = Some("the resident copy changed since; the overlay was put back");
-                                }
+                        // Paged out since (None): the next page-in reads the restored file view.
+                        if let Some(base) = now {
+                            let addr = base + offset;
+                            if read_bytes(g, addr, len as u32)? == new {
+                                g.write_bytes(addr, &old, 1).map_err(fault)?;
+                                restored = true;
+                            } else {
+                                why = Some("the resident copy changed since; the overlay was put back");
                             }
-                            // Paged out since: the next page-in reads the restored file view.
-                            None => {}
                         }
                     }
                     let r = owner.refresh(false);

@@ -25,26 +25,6 @@ pub mod summary;
 // and keep their paths here.
 pub use frame_types::{camera, carried};
 
-#[cfg(test)]
-pub(crate) mod test_camera {
-    use crate::RenderCamera;
-
-    /// A camera at (1, 2, 3) looking down +x, z up, 640x480, 70 degrees
-    /// (the same as `frame_types::camera`'s tests use).
-    pub fn camera() -> RenderCamera {
-        RenderCamera {
-            position: [1.0, 2.0, 3.0],
-            forward: [1.0, 0.0, 0.0],
-            up: [0.0, 0.0, 1.0],
-            fov: 70f32.to_radians(),
-            projection_xy: None,
-            viewport: [0, 0, 480, 640],
-            near: 0.0625,
-            far: 1024.0,
-        }
-    }
-}
-
 pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
 pub use carried::{
@@ -65,3 +45,23 @@ pub use scene::{
     Subparts, ViewKind, WorldState,
 };
 pub use summary::summary_hash;
+
+#[cfg(test)]
+pub(crate) mod test_camera {
+    use crate::RenderCamera;
+
+    /// A camera at (1, 2, 3) looking down +x, z up, 640x480, 70 degrees
+    /// (the same as `frame_types::camera`'s tests use).
+    pub fn camera() -> RenderCamera {
+        RenderCamera {
+            position: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 70f32.to_radians(),
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.0625,
+            far: 1024.0,
+        }
+    }
+}

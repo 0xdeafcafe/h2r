@@ -433,7 +433,7 @@ on kill(victim, killer) {
 
     #[test]
     fn a_swap_clears_a_stopped_script() {
-        let mut vm = Vm::new(ir(BASE), 1, 0).unwrap();
+        let vm = Vm::new(ir(BASE), 1, 0).unwrap();
         let mut ext = vm.ext().clone();
         ext.stopped = Some(crate::ScriptError {
             tick: 1,

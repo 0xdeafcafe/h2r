@@ -1491,7 +1491,7 @@ mod tests {
             clip_near(
                 &square[..2]
                     .iter()
-                    .map(|p| *p)
+                    .copied()
                     .chain([[0.5, 1.0, 1.0, 1.0]])
                     .collect::<Vec<_>>()
             )
