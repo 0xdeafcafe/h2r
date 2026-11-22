@@ -317,6 +317,17 @@ The reason line's timer is not saved.
   in each place and on each tab it can be on, and a member's
   (`lobby_tabs::preview`): the widgets the update shows, at their cells,
   in the lobby's font and colours, without the retail pane under them.
+- **Designs**: `h2 ui preview design.lobby-tabs.a --state all` (and
+  `.b`, `.c`) draws a design for the strip over the game shell, so the
+  header band shows (`lobby_tabs::designs`): a window of three tabs with
+  the bumpers at the band's ends; the selected tab as the lobby's header
+  with a legend naming the tab each bumper moves to; all five tabs in
+  the lobby's text case with the bumpers beside the player count. Each
+  page's states are every tab selected in turn, the widest (`longest`),
+  a Split Screen lobby (`unavailable`), a member's console (`member`)
+  and a run with only retail's two tabs (`two-tabs`). The band has 338
+  units for a line of text (x -270 to +68); `lobby_tabs::designs::tests`
+  hold every design to it for every set of tabs.
 
 ## Slices
 

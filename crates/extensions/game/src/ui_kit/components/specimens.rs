@@ -12,7 +12,7 @@ use crate::ui_kit::spec::{PaneText, ScreenSpec};
 use crate::ui_kit::view::{Justify, Kind, Layer, Opener, Widget};
 
 /// Every specimen and layout page, as `NAMES` lists them.
-pub const PAGES: [&str; 29] = [
+pub const PAGES: [&str; 32] = [
     "design.title",
     "design.body",
     "design.panel-text",
@@ -29,6 +29,9 @@ pub const PAGES: [&str; 29] = [
     "design.cells",
     "design.art",
     "design.focus",
+    "design.lobby-tabs.a",
+    "design.lobby-tabs.b",
+    "design.lobby-tabs.c",
     "layout.list",
     "layout.list.description",
     "layout.list.panel-edge",
@@ -414,6 +417,10 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
                 hud_text("hud.line", "hud.text", [176, -264, 156, -100], "Line"),
             ],
         )),
+        // The lobby strip's designs (`crate::lobby_tabs::designs`).
+        _ if crate::lobby_tabs::designs::PAGES.contains(&name) => {
+            crate::lobby_tabs::designs::states(name)?
+        }
         _ => return None,
     })
 }

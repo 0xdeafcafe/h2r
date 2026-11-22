@@ -27,7 +27,8 @@
 //!
 //! The strip drawn on the lobby and read by the agent API is [`strip`],
 //! the bumpers [`input`] and the switch [`switch`]; its preview (`h2 ui
-//! preview lobby.tabs`) is [`preview`].
+//! preview lobby.tabs`) is [`preview`]. [`designs`] holds the designs for
+//! the strip as specimen pages (`design.lobby-tabs.*`).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -41,6 +42,7 @@ use crate::ui_kit::input::Glyph;
 /// The strip's texts: the labels, the two glyphs, the reasons.
 pub const IDS: Family = ids::family("lobby tabs");
 
+pub mod designs;
 pub mod input;
 pub mod preview;
 pub mod strip;

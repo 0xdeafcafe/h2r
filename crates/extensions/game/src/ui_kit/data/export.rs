@@ -269,7 +269,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
     let first = &states[0].1;
     let all = || states.iter().map(|(_, s)| s);
     let (kind, layout) = kind_and_layout(first);
-    let (backing, opener) = if first.hud.is_some() || first.transparent && first.dialog.is_none() {
+    let (backing, opener) = if first.transparent && (first.hud.is_some() || first.dialog.is_none()) {
         (Some("none".to_string()), None)
     } else if let Some(u) = &first.underlay {
         if crate::ui_kit::screens::NAMES.contains(&u.name.as_str()) {

@@ -1926,7 +1926,9 @@ impl From<'_> {
             View {
                 screen: s.name.clone(),
                 state: state.into(),
-                backing: Backing::None,
+                // Over a live picture, or (a specimen of widgets that sit
+                // on the shell's bands) over the game shell.
+                backing: if s.transparent { Backing::None } else { Backing::GameShell },
                 widgets: hud.widgets.clone(),
                 focus: None,
                 list: None,

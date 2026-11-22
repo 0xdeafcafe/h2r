@@ -77,6 +77,12 @@ its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
 (`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
 them.
 
+A `Hud` whose spec is not `transparent` is drawn over the game shell
+instead of a live picture (`preview::From::view`): widgets that sit on
+the shell's header and footer bands, such as the pregame lobby's mode
+strip (`design.lobby-tabs.*`, [party-lobby.md](party-lobby.md)). Its doc
+says `backing: shell`.
+
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
 in-game Controller Settings host (Properties, Tool settings, Forge

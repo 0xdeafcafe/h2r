@@ -239,3 +239,48 @@ components:
     font: body
     colour: hint_blue
     justify: right
+  tab.selected:
+    role: "the lobby strip's selected mode: white, as a focused row's text"
+    font: body
+    colour: white
+    justify: centre
+  tab.on:
+    role: "a mode of the lobby strip the bumpers can move to: the header's blue"
+    font: body
+    colour: hint_blue
+    justify: centre
+  tab.off:
+    role: "a mode of the lobby strip that can't run in this lobby: the lobby's value blue"
+    font: body
+    colour: pale_blue
+    justify: centre
+  tab.header:
+    role: "the lobby strip's selected mode as the lobby's header, in the header's font and place"
+    font: title
+    colour: hint_blue
+    justify: left
+  tab.prompt:
+    role: "a bumper and the mode it moves to, at the band's right end: glyph, space, WORDS"
+    font: body
+    colour: hint_blue
+    justify: right
+  tab.prompt.off:
+    role: "a bumper and the mode that way that can't run in this lobby"
+    font: body
+    colour: pale_blue
+    justify: right
+  tab.glyph:
+    role: "a bumper's glyph beside the lobby strip, a mode to move to that way"
+    font: body
+    colour: white
+    justify: centre
+  tab.glyph.off:
+    role: "a bumper's glyph with no mode to move to that way"
+    font: body
+    colour: pale_blue
+    justify: centre
+  tab.count:
+    role: "the lobby's player count beside the strip, as the lobby's tag places it"
+    font: body
+    colour: pale_blue
+    justify: right

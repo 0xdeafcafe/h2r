@@ -1,0 +1,47 @@
+screen: design.lobby-tabs.a
+kind: hud
+layout: none
+backing: shell
+states:
+  multiplayer:
+    focus: 0
+  custom-games:
+    focus: 0
+  forge:
+    focus: 0
+  firefight:
+    focus: 0
+  co-op:
+    focus: 0
+  longest:
+    focus: 0
+  unavailable:
+    focus: 0
+  member:
+    focus: 0
+  two-tabs:
+    focus: 0
+widgets:
+  prompt.prev:
+    text: "< "
+    at: [-270, 200]
+    size: [34, 20]
+  prompt.next:
+    text: " >"
+    at: [34, 200]
+    size: [34, 20]
+  tab.multiplayer:
+    text: "MULTIPLAYER"
+  tab.custom_games:
+    text: "CUSTOM GAMES"
+  tab.forge:
+    text: "FORGE"
+  tab.firefight:
+    text: "FIREFIGHT"
+  tab.co_op:
+    text: "CO-OP"
+  count:
+    component: tab.count
+    text: "4 player(s) in party"
+    at: [85, 199]
+    size: [195, 20]

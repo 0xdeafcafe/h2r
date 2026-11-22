@@ -1,0 +1,36 @@
+screen: design.lobby-tabs.b
+kind: hud
+layout: none
+backing: shell
+states:
+  multiplayer:
+    focus: 0
+  custom-games:
+    focus: 0
+  forge:
+    focus: 0
+  firefight:
+    focus: 0
+  co-op:
+    focus: 0
+  longest:
+    focus: 0
+  unavailable:
+    focus: 0
+  member:
+    focus: 0
+  two-tabs:
+    focus: 0
+widgets:
+  tab.selected:
+    component: tab.header
+    text: "{tab_selected}"
+  prompt.prev:
+    text: "{prompt_prev}"
+  prompt.next:
+    text: "{prompt_next}"
+  count:
+    component: tab.count
+    text: "4 player(s) in party"
+    at: [85, 199]
+    size: [195, 20]

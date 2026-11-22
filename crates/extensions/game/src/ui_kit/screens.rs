@@ -278,7 +278,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 71] = [
+pub const NAMES: [&str; 74] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -337,6 +337,9 @@ pub const NAMES: [&str; 71] = [
     "design.cells",
     "design.art",
     "design.focus",
+    "design.lobby-tabs.a",
+    "design.lobby-tabs.b",
+    "design.lobby-tabs.c",
     "layout.list",
     "layout.list.description",
     "layout.list.panel-edge",
