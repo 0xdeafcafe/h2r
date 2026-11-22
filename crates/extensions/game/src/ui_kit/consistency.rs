@@ -372,6 +372,11 @@ fn list_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
                     if panel.is_some() { "panel" } else { "screen" }
                 ),
             );
+        }
+    }
+}
+
+
 /// The inputs a glyph can stand for.
 const INPUTS: [Input; 10] = [
     Input::Up,
@@ -717,11 +722,9 @@ mod tests {
     fn each_allowance_names_a_screen_and_a_reason() {
         for (rule, screen, why) in ALLOWED {
             assert!(
-                ["palette", "font", "place", "legend", "case", "pitch", "fit", "empty", "items", "scroll"]
-                    .contains(rule),
                 [
-                    "palette", "font", "place", "legend", "case", "pitch", "fit", "empty", "button",
-                    "handled", "arrows",
+                    "palette", "font", "place", "legend", "case", "pitch", "fit", "empty", "items",
+                    "scroll", "button", "handled", "arrows",
                 ]
                 .contains(rule),
                 "{rule}"
