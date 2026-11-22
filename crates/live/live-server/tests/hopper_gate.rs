@@ -88,11 +88,11 @@ async fn a_blocked_pair_is_refused_and_a_good_one_publishes() {
     let r = h
         .call(Method::PUT, DOC, &[operator(&h, lxm::TITLES_WRITE)], edit())
         .await;
-    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&r.body));
     assert!(
-        r.error().contains("playlist 1 entry 1") && r.error().contains("no census for map 30"),
+        String::from_utf8_lossy(&r.body).contains("playlist 1 entry 1") && String::from_utf8_lossy(&r.body).contains("no census for map 30"),
         "{}",
-        r.error()
+        String::from_utf8_lossy(&r.body)
     );
 
     // Only an admin sets a census, and it is a map id.
@@ -106,7 +106,7 @@ async fn a_blocked_pair_is_refused_and_a_good_one_publishes() {
             census.clone(),
         )
         .await;
-    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", String::from_utf8_lossy(&r.body));
     let r = h
         .call(
             Method::PUT,
@@ -115,7 +115,7 @@ async fn a_blocked_pair_is_refused_and_a_good_one_publishes() {
             census.clone(),
         )
         .await;
-    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&r.body));
 
     // A census with no zone: kept, and the answer lists the published
     // entry it blocks.
@@ -127,7 +127,7 @@ async fn a_blocked_pair_is_refused_and_a_good_one_publishes() {
             census,
         )
         .await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
     let a = r.json();
     assert_eq!(a["set"], true);
     assert_eq!(a["blocked"].as_array().unwrap().len(), 1, "{a}");
@@ -140,8 +140,8 @@ async fn a_blocked_pair_is_refused_and_a_good_one_publishes() {
     let r = h
         .call(Method::PUT, DOC, &[operator(&h, lxm::TITLES_WRITE)], edit())
         .await;
-    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
-    assert!(r.error().contains("territory"), "{}", r.error());
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&r.body));
+    assert!(String::from_utf8_lossy(&r.body).contains("territory"), "{}", String::from_utf8_lossy(&r.body));
 
     // A census the map satisfies: nothing blocked, and the edit publishes.
     let good = serde_json::to_string(&minimal(&ir, &[0, 1])).unwrap();
@@ -153,12 +153,12 @@ async fn a_blocked_pair_is_refused_and_a_good_one_publishes() {
             good,
         )
         .await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
     assert_eq!(r.json()["blocked"], json!([]));
     let r = h
         .call(Method::PUT, DOC, &[operator(&h, lxm::TITLES_WRITE)], edit())
         .await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
     let published = HopperFile::parse(&h.get(FILE).await.body).unwrap();
     assert_eq!(published.text(0).unwrap().title, "Territories 4v4");
 
@@ -171,7 +171,7 @@ async fn a_blocked_pair_is_refused_and_a_good_one_publishes() {
             "null",
         )
         .await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
     assert_eq!(r.json()["set"], false);
     assert_eq!(r.json()["blocked"].as_array().unwrap().len(), 1);
 }

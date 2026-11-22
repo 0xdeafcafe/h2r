@@ -316,7 +316,7 @@ object count, byte rate and capture timings.
 | `session.wait` | `{until, timeout_ticks?, timeout_ms?}` | `{at, ticks}` once every field of `until` holds |
 | `session.subscribe` | `{events: ["phase","map","bsp","pause"]}` | then `event` notifications: `phase {from,to}`, `map {from,to}`, `bsp {from,to}`, `paused`, `resumed {why: request, timeout or released}` |
 | `session.takeover_info` | none | `{window, pid}`, whether the game has a window and its process id |
-| `session.request_takeover` | `{requester, operation, revision, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt |
+| `session.request_takeover` | `{requester, name, operation, builds_image, source, level, own_data, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt |
 | `session.takeover_status` | `{id}` | `{decision}` for the request |
 | `features.list` | none | `{at, plan}`: the feature plan text the game printed at start |
 
@@ -344,11 +344,17 @@ from a headless agent. Windowed player runs register
 replays and lockstep runs report the window without offering a prompt.
 The request
 uses the usual agent action access, so an unrelated connection holding
-control can block it. `operation` is `"build"` or `"run"`, `revision`
-names the branch, commit or installed image, and `estimate_seconds` is
-an estimate, with zero for an unknown duration. `timeout_seconds` is
-wall-clock time from acceptance, from 1 to 3600. The game shortens the
-requester and revision for display. A second request returns `BUSY`
+control can block it. `name` is the job's name. `operation` is
+`"build"`, `"run"` or `"sim"`, and `builds_image` says the job builds the
+image first. `source` is `{"kind": "branch", "name", "commit"}`,
+`{"kind": "rev", "rev", "commit"}` or `{"kind": "current", "commit"}`
+(the installed image; `commit` may be null). `level` is the run's level
+or null, and `own_data` says the run plays on the player's own data.
+`estimate_seconds` is an estimate, with zero for an unknown duration.
+`timeout_seconds` is wall-clock time from acceptance, from 1 to 3600.
+The request is refused with `INVALID_PARAMS` without a requester, a name
+or a source. The game shortens the requester, name, level and source for
+display. A second request returns `BUSY`
 while a prompt is queued or open.
 
 The status result is `pending`, `allowed`, `declined`, `timed_out` or

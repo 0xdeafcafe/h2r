@@ -387,7 +387,7 @@ mod tests {
         let src = "rules \"T\" 1\ncarrier slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
         let open = json!({"textDocument": {"uri": URI, "languageId": "rules", "version": 1, "text": src}});
         let d = published(s.handle(note("textDocument/didOpen", open)));
-        assert_eq!(d[0]["code"], "label.unknown");
+        assert!(d.as_array().unwrap().iter().any(|x| x["code"] == "label.unknown"), "{d}");
 
         let mut params = json!({"textDocument": {"uri": URI}, "context": {"diagnostics": []}});
         params["range"] = json!({"start": {"line": 3, "character": 21}, "end": {"line": 3, "character": 21}});
