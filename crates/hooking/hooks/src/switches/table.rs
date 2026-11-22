@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 41;
+pub const BUDGET: usize = 42;
 
 use Initial::{Group, Off, On};
 
@@ -100,6 +100,8 @@ pub const TABLE: &[Switch] = &[
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
+    sw("impl.sim.page-census", On, "sim", "2026-11-22",
+        "the guest page census in the report (docs/perf/sim-light.md, L1): a timing arm turns it off; deleted when the page figures are measured for good"),
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),

@@ -1945,6 +1945,11 @@ fn run_configured(
         let reads = k.vfs().map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_read_bytes())
             .unwrap_or_default();
         s.note_memory(cow, reads);
+        let path_reads = k
+            .vfs()
+            .map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_path_reads())
+            .unwrap_or_default();
+        s.note_lean(&loaded.runtime.memory(), path_reads, &opts.data_root);
     }
     let sim_upload_result = match &sim_mode {
         Some(_) if replaying => Ok(()),

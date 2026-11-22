@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::clock::SpeedMeter;
+use crate::config::Detail;
 
 /// The report's format tag.
 pub const FORMAT: &str = "h2-sim-report/1";
@@ -375,6 +376,9 @@ pub struct Wall {
     /// or `mixed`. `None` with no snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phantom_snapshot_copy: Option<String>,
+    /// The census and lean-report fields ([`WallLean`]).
+    #[serde(flatten)]
+    pub lean: WallLean,
 }
 
 /// The phantoms' action build on the game thread, as running totals
@@ -651,6 +655,10 @@ pub struct Report {
     /// (`h2 sim diff`, [`crate::diff`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_components_v1: Option<crate::diff::StateComponents>,
+    /// A training-detail report's rolling digest over every tick
+    /// ([`crate::config::Detail`], [`crate::diff::StateDigest`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_digest_v1: Option<crate::diff::StateDigest>,
     pub game_seconds: f64,
     pub wall: Wall,
     pub players: Vec<PlayerReport>,
@@ -798,6 +806,9 @@ pub struct Tally {
     last: Option<TickSample>,
     hashes: Vec<(u32, u64, Option<u64>)>,
     components: crate::diff::Recorder,
+    /// How much state the run records ([`Detail`]).
+    detail: Detail,
+    rolling: Rolling,
     resets: u32,
     /// `(attacker, victim)` → the first and the latest tick of the fight's
     /// hits, for the time to kill.
@@ -813,8 +824,10 @@ impl Tally {
     /// The game started (or restarted): everything so far is dropped.
     pub fn start(&mut self, tick: u32) {
         let resets = self.resets;
+        let detail = self.detail;
         *self = Tally::default();
         self.resets = resets;
+        self.detail = detail;
         self.started = Some(tick);
     }
 
@@ -853,6 +866,7 @@ impl Tally {
             last_tick: cursor.last_tick,
             ticks: cursor.ticks,
             resets: cursor.resets,
+            detail: self.detail,
             ..Default::default()
         };
         Ok(())
@@ -925,6 +939,19 @@ impl Tally {
         let tick = sample.tick;
         self.tick_owned(sample);
         let entry = (tick, gameplay, arena);
+        if self.detail == Detail::Training {
+            self.rolling.observe(entry);
+            // Sparse rows: the first, then every `TRAINING_STRIDE`th tick.
+            let sampled = self.hashes.is_empty() || tick % TRAINING_STRIDE == 0;
+            if let Some(last) = self.hashes.last_mut()
+                && last.0 == tick
+            {
+                *last = entry;
+            } else if sampled {
+                self.hashes.push(entry);
+            }
+            return;
+        }
         if let Some(last) = self.hashes.last_mut()
             && last.0 == tick
         {
@@ -932,6 +959,16 @@ impl Tally {
         } else {
             self.hashes.push(entry);
         }
+    }
+
+    /// How much state this run records. Set it before the first tick; it
+    /// survives [`Tally::start`].
+    pub fn set_detail(&mut self, detail: Detail) {
+        self.detail = detail;
+    }
+
+    pub fn detail(&self) -> Detail {
+        self.detail
     }
 
     /// Record the per-component state for the tick just given to
@@ -942,7 +979,24 @@ impl Tally {
         arena_base: Option<u32>,
         components: impl IntoIterator<Item = (String, String)>,
     ) {
-        self.components.record(tick, arena_base, components);
+        if self.detail == Detail::Full {
+            self.components.record(tick, arena_base, components);
+        }
+    }
+
+    /// [`Tally::tick_components`] with the arena's block digests as `u64`s
+    /// (`arena.00`, `arena.01`, ...): no text is made for an unchanged one.
+    pub fn tick_components_blocks(
+        &mut self,
+        tick: u32,
+        arena_base: Option<u32>,
+        components: impl IntoIterator<Item = (String, String)>,
+        arena_blocks: &[u64],
+    ) {
+        if self.detail == Detail::Full {
+            self.components
+                .record_split(tick, arena_base, components, arena_blocks);
+        }
     }
 
     /// The guest census read after game tick `tick` (the tick just given
@@ -1192,6 +1246,7 @@ impl Tally {
                 })
                 .collect(),
             state_components_v1: self.components.finish(),
+            state_digest_v1: self.rolling.report(),
             game_seconds: speed.game_seconds(),
             wall: Wall {
                 setup_s: speed.setup_s,
@@ -1211,6 +1266,7 @@ impl Tally {
                 phantom_snapshot_ms_per_tick: None,
                 phantom_snapshots_per_tick: None,
                 phantom_snapshot_copy: None,
+                lean: WallLean::default(),
             },
             players,
             kills: self.kills.clone(),
@@ -1220,6 +1276,188 @@ impl Tally {
             guest_census: self.census(),
             notes,
         }
+    }
+}
+
+// ---- census and lean reports (docs/perf/sim-light.md, lane L1) ----
+
+/// In a [`Detail::Training`] run, one `state_hashes_v1` row in this many
+/// ticks (one a game second), and the first.
+pub const TRAINING_STRIDE: u32 = 30;
+
+fn fmix(mut h: u64) -> u64 {
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    h ^ (h >> 33)
+}
+
+/// A digest rolled over every tick's `(tick, gameplay, arena)` digests in
+/// order. A tick observed again replaces itself (as `state_hashes_v1` does),
+/// so the latest observation waits in `pending` until the next tick folds it.
+#[derive(Clone, Debug, Default)]
+struct Rolling {
+    acc: u64,
+    folded: u64,
+    pending: Option<(u32, u64, Option<u64>)>,
+}
+
+fn fold(acc: u64, (tick, gameplay, arena): (u32, u64, Option<u64>)) -> u64 {
+    let h = fmix(acc ^ u64::from(tick));
+    let h = fmix(h ^ gameplay);
+    fmix(h ^ arena.unwrap_or(0).rotate_left(1) ^ u64::from(arena.is_some()))
+}
+
+impl Rolling {
+    fn observe(&mut self, entry: (u32, u64, Option<u64>)) {
+        match self.pending {
+            Some(p) if p.0 != entry.0 => {
+                self.acc = fold(self.acc, p);
+                self.folded += 1;
+                self.pending = Some(entry);
+            }
+            _ => self.pending = Some(entry),
+        }
+    }
+
+    fn report(&self) -> Option<crate::diff::StateDigest> {
+        let last = self.pending?;
+        Some(crate::diff::StateDigest {
+            stride: TRAINING_STRIDE,
+            ticks: self.folded + 1,
+            digest: format!("{:016x}", fold(self.acc, last)),
+        })
+    }
+}
+
+/// Seconds spent in each stage of getting from the process start to the
+/// first counted tick (`wall.setup`); they add up to `wall.setup_s` once the
+/// match is counting. A stage a run never goes through reads 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SetupPhases {
+    /// Process start to the first game tick at the main menu.
+    pub boot_s: f64,
+    /// The main menu to the lobby being able to open (networking, lobby
+    /// subsystem).
+    pub menu_s: f64,
+    /// Opening and filling the System Link squad, up to the first wait on a
+    /// peer's map copy.
+    pub lobby_s: f64,
+    /// From the first wait on a peer's map status to the start request
+    /// being accepted.
+    pub copy_wait_s: f64,
+    /// The start request to the game activating (the map load).
+    pub load_s: f64,
+    /// The game active to the first counted tick: every phantom has a
+    /// player and a unit.
+    pub bind_s: f64,
+}
+
+/// A stage of [`SetupPhases`], in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SetupStage {
+    Boot,
+    Menu,
+    Lobby,
+    CopyWait,
+    Load,
+    Bind,
+    Done,
+}
+
+/// Times the stages: [`SetupClock::enter`] moves forward only, and charges
+/// the time since the last move to the stage it leaves.
+#[derive(Clone, Copy, Debug)]
+pub struct SetupClock {
+    stage: SetupStage,
+    since: std::time::Instant,
+    spent: SetupPhases,
+}
+
+impl SetupClock {
+    /// In [`SetupStage::Boot`] from `start`.
+    pub fn new(start: std::time::Instant) -> SetupClock {
+        SetupClock {
+            stage: SetupStage::Boot,
+            since: start,
+            spent: SetupPhases::default(),
+        }
+    }
+
+    fn charge(&mut self, now: std::time::Instant) {
+        let s = now.saturating_duration_since(self.since).as_secs_f64();
+        match self.stage {
+            SetupStage::Boot => self.spent.boot_s += s,
+            SetupStage::Menu => self.spent.menu_s += s,
+            SetupStage::Lobby => self.spent.lobby_s += s,
+            SetupStage::CopyWait => self.spent.copy_wait_s += s,
+            SetupStage::Load => self.spent.load_s += s,
+            SetupStage::Bind => self.spent.bind_s += s,
+            SetupStage::Done => {}
+        }
+        self.since = now;
+    }
+
+    /// Start `stage` at `now`. Going back, or to the stage already in, does
+    /// nothing.
+    pub fn enter(&mut self, stage: SetupStage, now: std::time::Instant) {
+        if stage > self.stage {
+            self.charge(now);
+            self.stage = stage;
+        }
+    }
+
+    /// The time in each stage, the running one counted to `now`.
+    pub fn phases(&self, now: std::time::Instant) -> SetupPhases {
+        let mut c = *self;
+        c.charge(now);
+        c.spent
+    }
+}
+
+/// One path's reads in `wall.reads`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadStat {
+    pub mapped_bytes: u64,
+    pub copied_bytes: u64,
+    /// Reads served (a copy of one request in chunks counts each chunk).
+    pub count: u64,
+    /// Why the first mapped read of this path was refused, when one was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+}
+
+/// The `wall` fields of the census and the lean reports. Flattened into
+/// [`Wall`], so they read as `wall.setup`, `wall.reads` and so on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WallLean {
+    /// Where the setup time went ([`SetupPhases`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<SetupPhases>,
+    /// What the guest read, by path.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reads: BTreeMap<String, ReadStat>,
+    /// Live Rust heap bytes by allocation tag at the end
+    /// (`mem_watch::heap::totals`); absent when no tag is counted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub heap_tags: BTreeMap<String, u64>,
+    /// Guest RAM pages (4 KiB) whose bytes differ between the first
+    /// counted tick and the end (`impl.sim.page-census`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_pages_written_4k: Option<u64>,
+    /// The same, counted in aligned 16 KiB groups of pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_pages_written_16k: Option<u64>,
+    /// The run's data directory's bytes at the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir_bytes: Option<u64>,
+}
+
+impl Report {
+    /// Fills `wall`'s census and lean fields.
+    pub fn set_lean(&mut self, lean: WallLean) {
+        self.wall.lean = lean;
     }
 }
 
@@ -1921,5 +2159,167 @@ mod tests {
         assert_eq!(v["wall"]["footprint_mib"], 143);
         let back: Report = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn the_lean_fields_round_trip_and_old_reports_still_load() {
+        let mut report = Tally::new().report(Finish::bare(End::Stopped));
+        // Nothing set, nothing written: an old consumer sees the old shape.
+        let plain = serde_json::to_value(&report).unwrap();
+        for key in [
+            "setup",
+            "reads",
+            "heap_tags",
+            "guest_pages_written_4k",
+            "guest_pages_written_16k",
+            "data_dir_bytes",
+        ] {
+            assert!(plain["wall"].get(key).is_none(), "{key}");
+        }
+        assert!(plain.get("state_digest_v1").is_none());
+        let lean = WallLean {
+            setup: Some(SetupPhases {
+                boot_s: 1.5,
+                menu_s: 2.0,
+                lobby_s: 3.0,
+                copy_wait_s: 4.0,
+                load_s: 5.0,
+                bind_s: 0.25,
+            }),
+            reads: BTreeMap::from([(
+                "\\Device\\Harddisk0\\maps\\lockout.map".to_string(),
+                ReadStat {
+                    mapped_bytes: 0,
+                    copied_bytes: 4096,
+                    count: 3,
+                    refused: Some("short read".into()),
+                },
+            )]),
+            heap_tags: BTreeMap::from([("guest.ram".to_string(), 64 << 20)]),
+            guest_pages_written_4k: Some(2100),
+            guest_pages_written_16k: Some(900),
+            data_dir_bytes: Some(1 << 30),
+        };
+        report.set_lean(lean.clone());
+        let v = serde_json::to_value(&report).unwrap();
+        // They sit in `wall`, beside the fields they join.
+        assert_eq!(v["wall"]["setup"]["copy_wait_s"], 4.0);
+        assert_eq!(v["wall"]["guest_pages_written_16k"], 900);
+        assert_eq!(v["wall"]["data_dir_bytes"], 1u64 << 30);
+        assert_eq!(v["wall"]["setup_s"], 0.0);
+        let key = "\\Device\\Harddisk0\\maps\\lockout.map";
+        assert_eq!(v["wall"]["reads"][key]["refused"], "short read");
+        assert_eq!(v["wall"]["reads"][key]["count"], 3);
+        let back: Report = serde_json::from_value(v).unwrap();
+        assert_eq!(back.wall.lean, lean);
+        assert_eq!(back, report);
+        // A wall block from before any of it parses with them empty.
+        let old = serde_json::json!({
+            "setup_s": 1.0, "match_s": 2.0, "process_s": 3.0,
+            "speedup": 4.0, "process_speedup": 5.0, "ms_per_tick": 6.0,
+            "guest_written_pages": 7, "guest_pages": 16384
+        });
+        let wall: Wall = serde_json::from_value(old).unwrap();
+        assert_eq!(wall.lean, WallLean::default());
+        assert_eq!(wall.guest_written_pages, Some(7));
+    }
+
+    #[test]
+    fn the_setup_clock_charges_each_stage_and_only_moves_forward() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut c = SetupClock::new(t0);
+        c.enter(SetupStage::Menu, at(10));
+        c.enter(SetupStage::Menu, at(11)); // already there: no charge
+        c.enter(SetupStage::Lobby, at(13));
+        c.enter(SetupStage::Menu, at(14)); // never back
+        c.enter(SetupStage::Load, at(20)); // skipping the copy wait
+        c.enter(SetupStage::Bind, at(25));
+        let p = c.phases(at(26)); // the running stage counts to now
+        assert_eq!(
+            (p.boot_s, p.menu_s, p.lobby_s, p.copy_wait_s, p.load_s, p.bind_s),
+            (10.0, 3.0, 7.0, 0.0, 5.0, 1.0)
+        );
+        c.enter(SetupStage::Done, at(27));
+        let p = c.phases(at(99)); // done: nothing more accrues
+        assert_eq!(p.bind_s, 2.0);
+        assert_eq!(p.boot_s + p.menu_s + p.lobby_s + p.load_s + p.bind_s, 27.0);
+    }
+
+    fn training_tally() -> Tally {
+        let mut t = Tally::new();
+        t.set_detail(Detail::Training);
+        t.start(0);
+        t
+    }
+
+    fn feed(t: &mut Tally, ticks: impl IntoIterator<Item = u32>, salt: u64) {
+        for tick in ticks {
+            t.tick_hashed(
+                TickSample { tick, ..Default::default() },
+                u64::from(tick) ^ salt,
+                None,
+            );
+            t.tick_components(tick, None, [("x".to_string(), tick.to_string())]);
+        }
+    }
+
+    #[test]
+    fn a_training_tally_keeps_sparse_rows_a_rolling_digest_and_no_components() {
+        let mut t = training_tally();
+        feed(&mut t, 1..=100, 0);
+        let r = t.report(Finish::bare(End::TickLimit));
+        let rows: Vec<u32> = r.state_hashes_v1.iter().map(|h| h.tick).collect();
+        assert_eq!(rows, [1, 30, 60, 90]);
+        assert!(r.state_components_v1.is_none());
+        let d = r.state_digest_v1.clone().unwrap();
+        assert_eq!((d.ticks, d.stride, d.digest.len()), (100, TRAINING_STRIDE, 16));
+        // Deterministic, and every tick matters, even between the sampled ones.
+        let again = |salt_at: Option<u32>| {
+            let mut t = training_tally();
+            for tick in 1..=100 {
+                let salt = if Some(tick) == salt_at { 1 } else { 0 };
+                feed(&mut t, [tick], salt);
+            }
+            t.report(Finish::bare(End::TickLimit)).state_digest_v1.unwrap().digest
+        };
+        assert_eq!(again(None), d.digest);
+        assert_ne!(again(Some(45)), d.digest);
+        // A rewind starts the series again, in the same detail.
+        feed(&mut t, [5000], 0);
+        let r = t.report(Finish::bare(End::TickLimit));
+        assert_eq!(t.detail(), Detail::Training);
+        assert_eq!(r.state_digest_v1.unwrap().ticks, 1);
+        // It survives the JSON round trip.
+        let back: Report = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back.state_digest_v1.map(|d| d.ticks), Some(1));
+    }
+
+    #[test]
+    fn a_tick_seen_twice_counts_once_in_the_rolling_digest() {
+        let mut once = training_tally();
+        feed(&mut once, 1..=4, 0);
+        let mut twice = training_tally();
+        feed(&mut twice, 1..=3, 0);
+        feed(&mut twice, [4], 9); // a stale view of tick 4 ...
+        feed(&mut twice, [4], 0); // ... replaced by the latest
+        let (a, b) = (
+            once.report(Finish::bare(End::TickLimit)),
+            twice.report(Finish::bare(End::TickLimit)),
+        );
+        assert_eq!(a.state_digest_v1, b.state_digest_v1);
+        assert_eq!(b.state_digest_v1.unwrap().ticks, 4);
+    }
+
+    #[test]
+    fn a_full_tally_has_dense_rows_and_no_digest() {
+        let mut t = Tally::new();
+        t.start(0);
+        feed(&mut t, 1..=40, 0);
+        let r = t.report(Finish::bare(End::TickLimit));
+        assert_eq!(r.state_hashes_v1.len(), 40);
+        assert!(r.state_digest_v1.is_none());
+        assert_eq!(r.state_components_v1.unwrap().ticks.len(), 40);
     }
 }

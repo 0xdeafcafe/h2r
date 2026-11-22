@@ -775,3 +775,41 @@ fn think_and_component_keys() {
     assert!(ok("bot_threads = \"many\"").unwrap_err().contains("bot_threads"));
     assert!(ok("bot_threads = 99").unwrap_err().contains("at most 32"));
 }
+
+#[test]
+fn the_detail_key_is_full_or_training() {
+    let ok = |extra: &str| {
+        let text = format!("map = \"lockout\"\n{extra}\n[[bot]]\n");
+        resolve(parse_match(&text, false).unwrap(), &no_files)
+    };
+    // Unset is full, as before the key existed.
+    assert_eq!(ok("").unwrap().config.detail(), Detail::Full);
+    assert_eq!(ok("").unwrap().config.detail, None);
+    assert_eq!(ok("detail = \"full\"").unwrap().config.detail(), Detail::Full);
+    let m = ok("detail = \"Training\"").unwrap();
+    assert_eq!(m.config.detail(), Detail::Training);
+    // The run's own report says which it was, by name.
+    assert_eq!(m.resolved_json()["detail"], "training");
+    assert!(ok("").unwrap().resolved_json().get("detail").is_none());
+    assert!(ok("detail = \"sparse\"").unwrap_err().contains("\"full\" or \"training\""));
+    // A training report has no components to ask for.
+    assert!(
+        ok("detail = \"training\"\ncomponents = true")
+            .unwrap_err()
+            .contains("no components")
+    );
+    assert!(ok("detail = \"training\"\ncomponents = false").is_ok());
+    assert_eq!(Detail::parse(" TRAINING ").unwrap().name(), "training");
+}
+
+#[test]
+fn a_batch_detail_applies_to_every_run_over_the_match_files() {
+    let matched = "map = 'lockout'\ndetail = 'full'\n[[bot]]\n[[bot]]\n";
+    let b = batch(BATCH, matched).unwrap();
+    assert!(b.runs.iter().all(|r| r.config.detail.as_deref() == Some("full")));
+    let b = batch(&format!("detail = \"training\"\n{BATCH}"), matched).unwrap();
+    assert!(!b.runs.is_empty());
+    assert!(b.runs.iter().all(|r| r.config.detail() == Detail::Training));
+    let e = batch(&format!("detail = \"nope\"\n{BATCH}"), matched).unwrap_err();
+    assert!(e.contains("detail"), "{e}");
+}
