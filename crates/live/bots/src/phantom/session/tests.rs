@@ -187,6 +187,28 @@ fn only_the_host_of_a_running_multiplayer_game_takes_phantoms() {
 }
 
 #[test]
+fn only_the_distributed_server_of_a_running_multiplayer_game_serves_it() {
+    let g = hosted();
+    assert!(serves_game(&g));
+    // A distributed client (world mode 5) runs the same game options mode.
+    let mut client = hosted();
+    client.put_u32(SIM + SIM_MODE, 5);
+    assert!(!serves_game(&client));
+    // The main menu after the game: options mode 3, no multiplayer.
+    let mut menu = hosted();
+    menu.put_u32(GAME + guest::OPTIONS, 3);
+    assert!(!serves_game(&menu));
+    // No game loaded.
+    let mut none = hosted();
+    none.put_u32(points::GAME_TIME.base, 0);
+    assert!(!serves_game(&none));
+    // No simulation world.
+    let mut no_sim = hosted();
+    no_sim.put_u32(SIM_GLOBALS, 0);
+    assert!(!serves_game(&no_sim));
+}
+
+#[test]
 fn a_peer_is_written_as_the_join_path_writes_it() {
     let mut g = hosted();
     g.put(S + PEERS + PEER_SIZE, &[0xaa; PEER_SIZE as usize]); // stale bytes
