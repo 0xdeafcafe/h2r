@@ -193,7 +193,9 @@ same reads, in the same order.
 - A pass stays on the D3D path when it has engine-driven render or
   stage states, samples a lightmap, computes anything per draw, reads a
   constant the stage does not set (it sets `c[0..18]`, `c[53]` and the
-  pass's own), or its set's stream supplies one of `v11..v15`.
+  pass's own), or its set's stream supplies one of `v11..v15`. What the
+  lightmap and engine-driven states would need is in
+  [notes/decorator-stages.md](notes/decorator-stages.md).
 - A palettized stage bitmap is expanded at load through the palette its
   stage holds then, as the world's are; a view whose stage palettes
   differ stays on the D3D path.
