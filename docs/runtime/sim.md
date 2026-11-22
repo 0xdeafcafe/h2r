@@ -442,6 +442,20 @@ of the same pages, macOS), `copy` (every byte), or `mixed`. All four count
 from the tick the match begins, as the costs above do, and a report has
 none of them when the run did not measure.
 
+The split of that build, per tick and by the same counters
+(`bot_glue::retail_input`, `sim_bench::metrics::PHANTOM_CALLS`), is in
+the same block:
+
+| Field | What |
+|---|---|
+| `phantom_setup_ns_per_tick` | nanoseconds in the setup writes: the view's globals, the pad and the seat's history |
+| `phantom_call_ns_per_tick` | nanoseconds in each guest call, keyed by role: `bind` (`0x1872d0`), `look_rates` (`0x190c34`), `camera` (`0x1557c0`), `input` (`0x124c00`), `remap` (`0x217c40`), `builder` (`0x186ab0`) |
+| `phantom_call_accesses_per_tick` | guest accesses of each call (`CallOutcome::accesses`), keyed the same way |
+| `phantom_revert_ns_per_tick` | nanoseconds in `written` plus `revert`, the reset between seats of a tick |
+| `phantom_read_ns_per_tick` | nanoseconds reading the action and history back |
+| `phantom_pages_written_per_seat` | pages a seat wrote, a mean over the seats that were reverted (a tick's last seat is not); absent when none were |
+| `phantom_minor_faults_per_tick` | minor page faults inside `Builder::sample`, the process's `getrusage` `ru_minflt` delta, so faults on other threads in that window count too |
+
 The `guest_census` block (`crates/extensions/game/src/sim_census.rs`)
 counts the presentation-side state a headless match still holds. The
 tick observer reads it once a tick, from the tick the match begins:

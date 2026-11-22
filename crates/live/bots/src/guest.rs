@@ -13,6 +13,7 @@ use engine::view::{objects, players};
 use crate::brain::{Me, Perception, Seen};
 pub(crate) mod intel;
 pub mod pickups;
+pub(crate) mod round;
 mod radar;
 
 pub type R<T> = Result<T, MemFault>;

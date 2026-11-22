@@ -219,6 +219,26 @@ simulation. After uplink delivery the same retail reader, layout mapper
 and action builder run in the phantom's private local-user view. See
 §5.1, “The action from a pad”, for the fields and timing.
 
+#### Multiplayer round start (Built)
+
+The retail engine can already be in round state 1 while the local view is
+black. Map startup writes the fade alpha at `0x1585a4` and publishes
+state 1 at `0x1585f4`. The engine reduces the alpha during its tick and
+draws the overlay while it is positive (`0x15c4cc` and `0x1599b0`). The
+player action consumer also honours the shared input-disable byte at
+`[0x4e8c20]+6` (`0x14d765`).
+
+`bots::guest::round::playing` is true once the published and requested
+states are 1 and shared input is enabled. The phantom gather hook
+(`Phantoms::slot_action`) returns no action and clears the seat's input
+queue, uplink and source while it is false, so a delayed action from the
+last round cannot arrive in the next. The opening fade itself stays
+with `guest::match_opening_fading`: the phantom keeps observing and
+sends a neutral pad while the first local view is black, and a respawn
+fade later in the round does not close the round. A dedicated host has
+no local view and uses the engine state and input byte. The gate reads
+the same engine fields on retail and converted maps.
+
 ### 2.3 Views (traced)
 
 `render_game_views` `0x2234e0` takes its view count from `[0x4e8c20]+8`,

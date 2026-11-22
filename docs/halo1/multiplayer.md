@@ -248,6 +248,11 @@ limit its shots. The Halo 2 sandbox uses Coagulation's shotgun, with an
 endpoint. The ignored `weapon_range_disc` test reads both discs and both
 installed sandboxes through the live bot's weapon profile reader.
 
+The same round gate applies to both sandboxes and retail Halo 2 maps:
+phantoms clear their queued input while the round is closed. The gate
+and retail XBE addresses are in
+[Bots](../game/bots.md#multiplayer-round-start-built).
+
 ## Placements plan (**Built** as `h1convert::placements`)
 
 `plan_map` turns a Halo 1 map's multiplayer parts into Halo 2 sandbox

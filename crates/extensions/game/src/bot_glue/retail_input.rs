@@ -24,6 +24,37 @@ static SNAPSHOT_NS: AtomicU64 = AtomicU64::new(0);
 /// Snapshots that remapped guest RAM, and that copied it.
 static SNAPSHOTS_REMAPPED: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOTS_COPIED: AtomicU64 = AtomicU64::new(0);
+/// The per-seat split of [`BUILD_NS`] (docs/runtime/sim.md §6): the setup
+/// writes, each guest call (`sim_bench::metrics::PHANTOM_CALLS` order)
+/// with its guest accesses, `written` plus `revert`, and the read back.
+static SETUP_NS: AtomicU64 = AtomicU64::new(0);
+static CALL_NS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static CALL_ACCESSES: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static REVERT_NS: AtomicU64 = AtomicU64::new(0);
+static READ_NS: AtomicU64 = AtomicU64::new(0);
+/// Pages the reverted seats had written, and how many seats that is.
+static PAGES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+static PAGES_SEATS: AtomicU64 = AtomicU64::new(0);
+/// Minor faults the process took inside [`Builder::sample`].
+static MINOR_FAULTS: AtomicU64 = AtomicU64::new(0);
+
+fn add(counter: &AtomicU64, n: u64) {
+    counter.fetch_add(n, Ordering::Relaxed);
+}
+
+fn load6(counters: &[AtomicU64; 6]) -> [u64; 6] {
+    std::array::from_fn(|i| counters[i].load(Ordering::Relaxed))
+}
+
+/// The process's minor page faults so far (`getrusage`).
+fn minor_faults() -> u64 {
+    // SAFETY: `getrusage` fills a zeroed `rusage` we own.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return 0;
+    }
+    usage.ru_minflt.max(0) as u64
+}
 
 fn elapsed_ns(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
@@ -37,6 +68,14 @@ pub(crate) fn build_costs() -> sim_bench::metrics::PhantomCosts {
         snapshot_ns: SNAPSHOT_NS.load(Ordering::Relaxed),
         remapped: SNAPSHOTS_REMAPPED.load(Ordering::Relaxed),
         copied: SNAPSHOTS_COPIED.load(Ordering::Relaxed),
+        setup_ns: SETUP_NS.load(Ordering::Relaxed),
+        call_ns: load6(&CALL_NS),
+        call_accesses: load6(&CALL_ACCESSES),
+        revert_ns: REVERT_NS.load(Ordering::Relaxed),
+        read_ns: READ_NS.load(Ordering::Relaxed),
+        pages_written: PAGES_WRITTEN.load(Ordering::Relaxed),
+        pages_seats: PAGES_SEATS.load(Ordering::Relaxed),
+        minor_faults: MINOR_FAULTS.load(Ordering::Relaxed),
     }
 }
 
@@ -140,9 +179,11 @@ pub(super) async fn gather(
         if refresh {
             builder.tick = None;
         }
+        let faults = minor_faults();
         let started = Instant::now();
         let outcome = builder.sample(main, cpu, seat);
         BUILD_NS.fetch_add(elapsed_ns(started), Ordering::Relaxed);
+        add(&MINOR_FAULTS, minor_faults().saturating_sub(faults));
         if let Some(film) = film {
             let (kind, outputs) = match &outcome {
                 Ok(None) => (0, vec![]),
@@ -278,12 +319,18 @@ impl Builder {
             self.tick = Some(s.tick);
         } else {
             // Each seat sees the same world, even when the search wrote scratch globals.
-            for page in self.exec.written() {
+            let started = Instant::now();
+            let pages = self.exec.written();
+            for page in &pages {
                 self.exec.revert(page.physical, runtime::guest::PAGE_SIZE);
             }
+            add(&REVERT_NS, elapsed_ns(started));
+            add(&PAGES_WRITTEN, pages.len() as u64);
+            add(&PAGES_SEATS, 1);
         }
         let work = self.workspace;
         let ctrl;
+        let setup_started = Instant::now();
         {
             let mut m = self.exec.runtime().memory();
             let users = m.u32(0x4e8c20)?;
@@ -330,23 +377,35 @@ impl Builder {
                 m.set_u32(ctrl, u32::MAX)?;
             }
         }
+        add(&SETUP_NS, elapsed_ns(setup_started));
         // The COW view includes the calling game thread's stack and FS. The
         // guest calls can push below the gather frame without touching it.
         let stack = cpu.esp;
-        let call = |exec: &mut SecondExecutor, addr, eax, ecx, args: &[u32]| -> Result<u32> {
+        // `role` indexes `sim_bench::metrics::PHANTOM_CALLS`.
+        let call = |exec: &mut SecondExecutor,
+                    role: usize,
+                    addr,
+                    eax,
+                    ecx,
+                    args: &[u32]|
+         -> Result<u32> {
             let mut regs = CpuAbi {
                 esp: stack,
                 eax,
                 ecx,
                 ..cpu
             };
-            exec.call(&mut regs, addr, args)?;
+            let started = Instant::now();
+            let outcome = exec.call(&mut regs, addr, args);
+            add(&CALL_NS[role], elapsed_ns(started));
+            add(&CALL_ACCESSES[role], outcome?.accesses);
             Ok(regs.eax)
         };
-        call(&mut self.exec, 0x1872d0, 0, s.unit.raw(), &[])?; // bind/reset control if unit changed
-        call(&mut self.exec, 0x190c34, 0, 0, &[])?; // profile -> look rates and Default layout
+        call(&mut self.exec, 0, 0x1872d0, 0, s.unit.raw(), &[])?; // bind/reset control if unit changed
+        call(&mut self.exec, 1, 0x190c34, 0, 0, &[])?; // profile -> look rates and Default layout
         let director = call(
             &mut self.exec,
+            2,
             0x1557c0,
             s.unit.raw(),
             0,
@@ -363,16 +422,18 @@ impl Builder {
         // Exactly the reader's milliseconds, including the fractional tick over time.
         let ms = |t: u64| (t as f64 * f64::from(s.dt) * 1000.).round() as u64;
         let elapsed = ms(u64::from(s.tick) + 1).saturating_sub(ms(u64::from(s.tick))) as u32;
-        call(&mut self.exec, 0x124c00, 0, 0, &[elapsed])?;
-        call(&mut self.exec, 0x217c40, 0, 0, &[])?;
+        call(&mut self.exec, 3, 0x124c00, 0, 0, &[elapsed])?;
+        call(&mut self.exec, 4, 0x217c40, 0, 0, &[])?;
         let out = work + 0x40;
         call(
             &mut self.exec,
+            5,
             0x186ab0,
             0,
             0,
             &[s.player.raw(), s.dt.to_bits(), s.dt.to_bits(), out],
         )?;
+        let read_started = Instant::now();
         let m = self.exec.runtime().memory();
         let action = m.read(out)?;
         self.history.insert(
@@ -384,6 +445,7 @@ impl Builder {
                 latch: m.u8(0x51ebcc)?,
             },
         );
+        add(&READ_NS, elapsed_ns(read_started));
         Ok(action)
     }
 }
