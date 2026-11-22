@@ -115,6 +115,11 @@ impl SetKind {
 pub enum Type {
     Int,
     Fixed,
+    /// A duration or a tick count, in ticks (`5s`, `300t`).
+    Time,
+    /// The built-in enum of carrier engines (`carrier.assault`), which
+    /// `variant.engine` reads as.
+    Carrier,
     Bool,
     Squad,
     Class,
@@ -138,7 +143,7 @@ impl Type {
     /// The IR type; a set has none (its argument is a `Label` constant).
     pub fn erase(self) -> Option<Ty> {
         Some(match self {
-            Type::Int => Ty::Int,
+            Type::Int | Type::Time | Type::Carrier => Ty::Int,
             Type::Fixed => Ty::Fixed,
             Type::Bool => Ty::Bool,
             Type::Squad => Ty::Squad,
@@ -156,11 +161,12 @@ impl Type {
     }
 
     /// The front-end type an IR type reads as where no signature says
-    /// more: a handle that is never `none`. `timer` reads as `int`; a
+    /// more: a handle that is never `none`. `timer` reads as `time`; a
     /// label is not a value.
     pub fn from_ir(t: Ty) -> Option<Type> {
         Some(match t {
-            Ty::Int | Ty::Timer => Type::Int,
+            Ty::Int => Type::Int,
+            Ty::Timer => Type::Time,
             Ty::Fixed => Type::Fixed,
             Ty::Bool => Type::Bool,
             Ty::Player => Type::PLAYER,
@@ -229,7 +235,7 @@ impl Type {
     }
 
     /// The type a word names, with `?` for `optional`: `int`, `fixed`,
-    /// `bool`, `player`, `team`, `object`, `zone`, `squad`, `class`
+    /// `time`, `bool`, `player`, `team`, `object`, `zone`, `squad`, `class`
     /// (`Class`), `tag`, `weapon`, `text`, the set words `objects`,
     /// `zones` and `spawns`, or a declared enum. `timer` is a variable's
     /// type, not a value's, and is the caller's to read. `None` for an
@@ -238,6 +244,7 @@ impl Type {
         let t = match word {
             "int" => Type::Int,
             "fixed" => Type::Fixed,
+            "time" => Type::Time,
             "bool" => Type::Bool,
             "player" => Type::PLAYER,
             "team" => Type::TEAM,
@@ -266,6 +273,8 @@ impl Type {
         match self {
             Type::Int => "int".into(),
             Type::Fixed => "fixed".into(),
+            Type::Time => "time".into(),
+            Type::Carrier => "carrier".into(),
             Type::Bool => "bool".into(),
             Type::Squad => "squad".into(),
             Type::Class => "Class".into(),
@@ -307,6 +316,12 @@ mod tests {
         assert_eq!(Type::Set(SetKind::Spawns).ir(), Ty::Label);
         assert_eq!(Type::named("zone", true, &[]), Some(Type::ZONE.optional()));
         assert_eq!(Type::named("int", true, &[]), None);
+        assert_eq!(Type::named("time", false, &[]), Some(Type::Time));
+        assert_eq!(Type::Time.erase(), Some(Ty::Int));
+        assert_eq!(Type::Carrier.erase(), Some(Ty::Int));
+        assert_eq!(Type::from_ir(Ty::Timer), Some(Type::Time));
+        assert!(!Type::Time.fits(Type::Int));
+        assert!(!Type::Int.fits(Type::Time));
         assert_eq!(Type::named("Role", false, &["Role".into()]), Some(Type::Enum(0)));
         assert_eq!(Type::ZONE.optional().name(&[]), "zone?");
     }
