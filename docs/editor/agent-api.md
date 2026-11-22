@@ -739,7 +739,8 @@ Notes on some:
   `lightmap of another BSP`, `lightmap does not decode`), the world's
   `triangles` by blend with `solid_triangles` and `lightmapped_triangles`,
   every material (`shader`, `template`, `blend`, `blend_from_passes`,
-  `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
+  `emissive`, `base`, `details`, and `mask`: the coverage mask a
+  see-through layer multiplies in, or null), the `sky` drawn and the `atmosphere`
   read from it (`sun` direction, colour and power; `fog` colour, density,
   start and opaque distance; `fallback_rgb`). `{"scene": false}` while
   the viewport shows the grey world (no art built). `native` is the

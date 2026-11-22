@@ -339,6 +339,45 @@ pub fn detail_plan(
     }
 }
 
+/// Whether a blend takes a coverage mask ([`Look::mask`]): the layers
+/// that blend by their picture's alpha or add it. Solid surfaces' masks
+/// are specular or change-colour masks, not coverage, and water's
+/// passes are not reproduced.
+pub fn masks(blend: Blend) -> bool {
+    matches!(blend, Blend::Alpha | Blend::Additive)
+}
+
+/// Whether a bitmap reads as a coverage mask by its tag name: named
+/// `mask` and not an engine bitmap (Coagulation's
+/// `coag_cloudcover_mask`, the sun volume's `ascension_sun_volume_mask`).
+pub fn is_coverage_mask(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let last = lower.rsplit('\\').next().unwrap_or(&lower);
+    last.contains("mask") && !is_engine_bitmap(&lower)
+}
+
+/// The mask that covers a see-through base map `base`: in the first
+/// implementation that samples `base`, the first other stage whose
+/// bitmap `is_mask`, at that stage's scale. The cloud templates multiply
+/// it in, colour and alpha (`two_alpha_clouds`: mask in stage 1, tile in
+/// stage 2, `t1 * t2` in RGB and alpha; h1convert's
+/// `shad::program::clouds` rebuilds the same pass). A cloud tile with no
+/// alpha of its own (Coagulation's, `Y8`) drawn without it covers the
+/// whole sky. `None` when no such stage is sampled with `base`.
+pub fn mask_plan(
+    implementations: &[[StageBinding; 4]],
+    base: TagId,
+    is_mask: impl Fn(TagId) -> bool,
+) -> Option<(TagId, [f32; 2])> {
+    let stages = implementations
+        .iter()
+        .find(|stages| stages.iter().any(|s| s.bitmap == Some(base)))?;
+    stages.iter().find_map(|s| {
+        let b = s.bitmap.filter(|&b| b != base && is_mask(b))?;
+        Some((b, s.scale.unwrap_or([1.0, 1.0])))
+    })
+}
+
 /// The [`Look`] of a base map (`texture`) drawn by `plan`: its scale, and
 /// each detail map that decodes (`texture_of`) in order.
 pub fn look_of(
@@ -601,13 +640,18 @@ pub struct Layer {
 
 /// How a shader draws, as the viewport reproduces it: its base map at a
 /// scale of the texture coordinates, times each detail map at its own
-/// scale, doubled (the game's `t0 * t1 x2` combiners, in gamma space).
+/// scale, doubled (the game's `t0 * t1 x2` combiners, in gamma space),
+/// times its coverage mask, if it has one, in colour and alpha.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     /// Index into [`Scene::textures`]; `None` draws untextured grey.
     pub texture: Option<usize>,
     pub scale: [f32; 2],
     pub details: [Option<Layer>; MAX_DETAILS],
+    /// A see-through layer's coverage ([`mask_plan`]): multiplied into
+    /// the base map in RGB and alpha at its own scale, as the cloud
+    /// passes multiply their mask and tile (`two_alpha_clouds`).
+    pub mask: Option<Layer>,
     /// Self-illuminated ([`template_emits`]): drawn as it is, unshaded.
     pub emissive: bool,
 }
@@ -619,6 +663,7 @@ impl Look {
             texture,
             scale: [1.0, 1.0],
             details: [None; MAX_DETAILS],
+            mask: None,
             emissive: false,
         }
     }
@@ -633,6 +678,8 @@ pub struct Batch {
     pub scale: [f32; 2],
     /// Detail maps multiplied in ([`Look::details`]).
     pub details: [Option<Layer>; MAX_DETAILS],
+    /// The coverage mask multiplied in ([`Look::mask`]).
+    pub mask: Option<Layer>,
     /// [`Look::emissive`].
     pub emissive: bool,
     /// The lightmap page lighting it, an index into [`Scene::textures`];
@@ -650,6 +697,7 @@ impl Batch {
             texture: self.texture,
             scale: self.scale,
             details: self.details,
+            mask: self.mask,
             emissive: self.emissive,
         }
     }
@@ -706,6 +754,7 @@ impl Mesh {
                     texture: look.texture,
                     scale: look.scale,
                     details: look.details,
+                    mask: look.mask,
                     emissive: look.emissive,
                     lightmap,
                     blend,
@@ -833,6 +882,8 @@ pub struct MaterialInfo {
     pub base: Option<String>,
     /// Detail maps multiplied in.
     pub details: usize,
+    /// The coverage mask multiplied in ([`Look::mask`]), when one decoded.
+    pub mask: Option<String>,
 }
 
 /// One scenario BSP's lighting, for `view.stats` and the log.
@@ -1678,6 +1729,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
             emissive: false,
             base: None,
             details: 0,
+            mask: None,
         };
         let look = match shader_bitmaps(self.map, shader) {
             Ok((template, bitmaps)) => {
@@ -1712,6 +1764,13 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                     _ => Look::plain(texture),
                 };
                 look.emissive = emissive;
+                if let Some(base) = base.filter(|_| look.texture.is_some() && masks(blend))
+                    && let Some((mask, scale)) = self.mask_plan(shader, base, &bitmaps)
+                    && let Some(texture) = self.texture(mask, false, false)
+                {
+                    look.mask = Some(Layer { texture, scale });
+                    info.mask = name_of(&*self.map, mask);
+                }
                 info.template = template;
                 info.blend = blend;
                 info.emissive = emissive;
@@ -1756,6 +1815,35 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 .and_then(|t| t.name.as_deref())
                 .is_some_and(is_detail_map)
         })
+    }
+
+    /// The coverage mask of a shader's base map `base` and its scale:
+    /// [`mask_plan`] over its resolved material, else the first of its
+    /// own `bitmaps` named as a mask ([`is_coverage_mask`]) at scale 1.
+    fn mask_plan(
+        &mut self,
+        shader: TagId,
+        base: TagId,
+        bitmaps: &[TagId],
+    ) -> Option<(TagId, [f32; 2])> {
+        let library = self
+            .library
+            .get_or_insert_with(|| tags::material::ShaderLibrary::read(&mut *self.map).ok());
+        let material = library.as_mut().and_then(|l| l.material(shader, None).ok());
+        let map = &*self.map;
+        let is_mask = |id: TagId| {
+            map.tag(id)
+                .ok()
+                .and_then(|t| t.name.as_deref())
+                .is_some_and(is_coverage_mask)
+        };
+        match material {
+            Some(m) => mask_plan(&stage_bindings(&m), base, is_mask),
+            None => bitmaps
+                .iter()
+                .find(|&&b| b != base && is_mask(b))
+                .map(|&b| (b, [1.0, 1.0])),
+        }
     }
 
     fn texture(&mut self, bitmap: TagId, cutout: bool, clamp: bool) -> Option<usize> {
@@ -3047,6 +3135,7 @@ mod tests {
                     }),
                     None
                 ],
+                mask: None,
                 emissive: false,
             }
         );
@@ -3074,6 +3163,72 @@ mod tests {
         assert_eq!(detail_plan(&imps, bump, |_| true), DetailPlan::default());
         // No base texture: no details either.
         assert_eq!(look_of(None, &plan, |_| Some(5)), Look::plain(None));
+    }
+
+    /// Coagulation's sky: the cloud shader (`two_alpha_clouds`) samples
+    /// its cover mask and its cloud tile in one pass, and the sun volume
+    /// (`one_add_illum_detail`) its volume mask and its beams tile. The
+    /// tile is the base map (the mask is not a diffuse name); the mask
+    /// covers it at its stage's scale. Only the layers that blend by
+    /// alpha or add take one, and engine bitmaps are never masks.
+    #[test]
+    fn a_see_through_layer_takes_its_coverage_mask() {
+        let (tile, mask, white, other) = (TagId(0x20), TagId(0x21), TagId(0x22), TagId(0x23));
+        let names = |id: TagId| match id.0 {
+            0x20 => "scenarios\\skies\\multi\\halo\\coagulation\\bitmaps\\coag_cloudtile",
+            0x21 => "scenarios\\skies\\multi\\halo\\coagulation\\bitmaps\\coag_cloudcover_mask",
+            0x22 => "shaders\\default_bitmaps\\bitmaps\\color_white",
+            _ => "invented\\bitmaps\\other",
+        };
+        assert_eq!(bitmap_role(names(tile)), BitmapRole::Diffuse);
+        assert_eq!(bitmap_role(names(mask)), BitmapRole::Other);
+        assert!(is_coverage_mask(names(mask)));
+        assert!(is_coverage_mask(
+            "scenarios\\skies\\multi\\ascension\\bitmaps\\ascension_sun_volume_mask"
+        ));
+        assert!(!is_coverage_mask(names(tile)));
+        assert!(!is_coverage_mask(
+            "shaders\\default_bitmaps\\bitmaps\\alpha_mask"
+        ));
+        let stage = |bitmap: Option<TagId>, s: Option<f32>| StageBinding {
+            bitmap,
+            scale: s.map(|s| [s, s]),
+        };
+        let imps = [[
+            stage(None, None),
+            stage(Some(mask), None),
+            stage(Some(tile), Some(4.0)),
+            stage(Some(white), None),
+        ]];
+        let is_mask = |id: TagId| is_coverage_mask(names(id));
+        assert_eq!(mask_plan(&imps, tile, is_mask), Some((mask, [1.0, 1.0])));
+        let scaled = [[
+            stage(Some(tile), Some(4.0)),
+            stage(Some(mask), Some(0.5)),
+            stage(None, None),
+            stage(None, None),
+        ]];
+        assert_eq!(mask_plan(&scaled, tile, is_mask), Some((mask, [0.5, 0.5])));
+        // No mask sampled with the base map, or the base map not sampled.
+        let plain = [[
+            stage(Some(tile), None),
+            stage(Some(other), None),
+            stage(None, None),
+            stage(None, None),
+        ]];
+        assert_eq!(mask_plan(&plain, tile, is_mask), None);
+        assert_eq!(mask_plan(&imps, other, is_mask), None);
+        // The blends that take one.
+        let takes: Vec<Blend> = Blend::ALL.into_iter().filter(|&b| masks(b)).collect();
+        assert_eq!(takes, [Blend::Alpha, Blend::Additive]);
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\two_alpha_clouds"),
+            Blend::Alpha
+        );
+        assert_eq!(
+            template_blend("shaders\\shader_templates\\transparent\\one_add_illum_detail"),
+            Blend::Additive
+        );
     }
 
     #[test]
