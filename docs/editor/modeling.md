@@ -32,16 +32,10 @@ Tests: `crates/tools/mesh-edit/tests`,
 `crates/tools/collision-build/src/{build,coll,merge}_tests.rs`,
 `crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
 tests in `crates/formats/map/src/tests.rs`,
-<<<<<<< HEAD
-`a_geometry_raw_append_*` and `a_geometry_grown_block_*` in
-`crates/tools/scenario-edit/src/tests.rs`,
-the `geometry_*` and `doc_undo_on_the_map_*` tests in
-=======
-`a_geometry_raw_append_*` and `bitmap_changes_*` in
+`a_geometry_raw_append_*`, `a_geometry_grown_block_*` and `bitmap_changes_*` in
 `crates/tools/scenario-edit/src/tests.rs`,
 `crates/platform/assets/src/encode_tests.rs`, the write tests in
 `crates/apps/studio/src/api/tests/bitmaps_tests.rs`, the `geometry_*` and `doc_undo_on_the_map_*` tests in
->>>>>>> worktree-agent-a58a8148d66406dd2
 `crates/apps/studio/src/api/tests.rs`.
 Switch: none in the environment. Two session switches in the Edit menu: **Allow growing full blocks** (the existing one) and **Allow unverified geometry writes** (off by default).
 

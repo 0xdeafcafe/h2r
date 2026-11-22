@@ -12,10 +12,11 @@ pub mod method {
     /// The current bytes inside one loaded tag: `{at, len, epoch}` →
     /// `{at, holds_bytes}` (numeric address, bytes in hex).
     pub const EDIT_READ: &str = "edit.read";
-    /// Field writes, and raw writes and evictions, at one boundary under one
-    /// journal id: `{writes, raw?: [{owner, offset, bytes, was?}], evict?:
-    /// [owner], label?, epoch, confirm_peers?}` (docs/runtime/agent-api.md,
-    /// "Raw edits").
+    /// Field writes, raw writes, evictions and block moves at one boundary
+    /// under one journal id: `{writes, raw?: [{owner, offset, bytes, was?}],
+    /// evict?: [owner], moves?: [{root, stride, count, capacity?, bytes,
+    /// was}], label?, epoch, confirm_peers?}` (docs/runtime/agent-api.md,
+    /// "Raw edits" and "Block moves").
     pub const EDIT_BATCH: &str = "edit.batch";
     /// An extent past the end of a map file, for a grown raw block:
     /// `{file?, bytes, align?, epoch}` → `{id, pointer, len}`.
@@ -26,6 +27,10 @@ pub mod method {
     /// What the raw overlay holds: `{entries, bytes, appended,
     /// appended_bytes, owners}`.
     pub const EDIT_OVERLAY: &str = "edit.overlay";
+    /// The edit arena: `{base, len, mapped, used, largest_free,
+    /// physical_free, physical_floor, moves}` (docs/runtime/agent-api.md,
+    /// "Block moves").
+    pub const EDIT_ARENA: &str = "edit.arena";
     /// The loaded map's tags: `{"group"?: "shad", "name"?: "<substring>",
     /// "limit"?: 200}` → `{"scenario", "names", "total", "tags": [{"tag",
     /// "group", "name", "address", "size", "defined"}]}`.
@@ -68,6 +73,7 @@ pub mod method {
         EDIT_RAW_APPEND,
         EDIT_STAGE_PUT,
         EDIT_OVERLAY,
+        EDIT_ARENA,
         EDIT_TAGS,
         EDIT_GET,
         EDIT_SET,

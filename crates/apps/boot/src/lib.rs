@@ -1218,7 +1218,7 @@ fn run_configured(
                 Some((vfs.map_id(&path)?, vfs.content_base_name(name)?))
             });
         }
-        hot_glue::install(
+        let arena = hot_glue::install(
             &a.agent,
             &loaded.runtime,
             maps(),
@@ -1235,6 +1235,10 @@ fn run_configured(
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+            // world.placement.edit grows blocks into edit.batch's arena.
+            if let Some(calls) = sim.calls() {
+                agent::sim::calls::lock(&calls).set_arena(arena);
+            }
         }
         // world.* results name their tags the same way.
         a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
