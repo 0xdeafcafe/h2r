@@ -209,7 +209,7 @@ struct Overlaid {
     name: String,
 }
 
-impl assets::ResourceOverlay for Overlaid {
+impl assets::resource::ResourceOverlay for Overlaid {
     fn apply(&self, offset: u64, buf: &mut [u8]) {
         let served = buf.len();
         self.overlay.apply(&self.name, offset, buf, served);
