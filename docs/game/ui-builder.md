@@ -1164,14 +1164,20 @@ Status: Partly built. The code uses `ui_kit::data` (`ScreenDoc`, `load`,
 `parse`, `to_yaml`, `with_screens`), which arrives with the YAML screens,
 and it has not been compiled or run in the editor yet.
 Code: `crates/apps/studio/src/app/ui_screens/edit.rs` (`edit/ours.rs`,
-`edit/retail.rs`), `crates/apps/studio/src/ui/ui_screens/edit.rs`,
+`edit/retail.rs`, `edit/retail_tag.rs`),
+`crates/apps/studio/src/ui/ui_screens/edit.rs`,
 `crates/apps/studio/src/ui/ui_screens/transport.rs`,
 `crates/apps/studio/src/api/ui_edit.rs`,
+`crates/apps/studio/src/api/ui_retail.rs`,
 `crates/extensions/game/src/ui_kit/preview.rs` (`Disc::retail_view`,
 `RetailPlaces`, `retail_field`, `filmstrip`),
+`crates/extensions/game/src/ui_kit/preview/retail_edit.rs`
+(`RetailEdits`, `RetailBlocks`, `parked`),
 `crates/extensions/game/src/ui_kit/animation.rs` (`Transition`).
-Tests: `app::ui_screens::edit::tests`, the `ui_edit` tests in
-`crates/apps/studio/src/api/tests.rs`, `ui_kit::preview::edit_tests`.
+Tests: `app::ui_screens::edit::tests`,
+`app::ui_screens::edit::retail_tag::tests`, the `ui_edit` and
+`ui_retail` tests in `crates/apps/studio/src/api/tests.rs`,
+`ui_kit::preview::edit_tests`, `ui_kit::preview::retail_edit::tests`.
 
 The UI Screens tool edits the picture it shows: click a widget to select
 it, drag it, resize it, or double-click a text to retype it. The agent
@@ -1220,8 +1226,10 @@ pick:
   patches the user's map. Nothing disc-derived goes in the repository. The
   map open in the editor must be `mainmenu`. Otherwise the sink refuses
   and says so. The picture is drawn from the disc, then the edited fields
-  are read back as `RetailPlaces` (widget id to rect) and applied before
-  drawing (`Disc::render_retail_with`).
+  are read back as `RetailPlaces` (widget id to rect) and the pane's
+  text, button and bitmap blocks as `RetailBlocks`, and applied before
+  drawing (`Disc::render_retail_edited`). "Retail tag edits" has the
+  edits past a rect.
 
 **What can be edited, and the refusals.** A refusal is an error that
 names the owner. It is never a silent no-op.
@@ -1236,7 +1244,7 @@ names the owner. It is never a silent no-op.
 | a widget with no YAML entry (`row.N.value`, `description`, `status`, `cell.N.*`) | refused: Rust fills it, and the refusal names the kind of value | — |
 | a text with `{slots}` | the template is edited, and its slots must stay as they are (the refusal names a slot that went or came) | — |
 | a legend made of `prompts` | text refused: edit its prompts | — |
-| any retail text | — | refused: retail strings live in the map's localized string table (`unic`), which the editor does not write |
+| any retail text | — | text refused: retail strings live in the map's localized string table (`unic`), which the editor does not write. Its string ID is set with `ui.set_string` |
 | `title` of a retail screen | — | refused: the header rectangle is the shared `wigl` header layout's |
 
 **Undo.** Edits are undo steps of the editor's Undo and Redo while the UI
@@ -1298,9 +1306,12 @@ its save. Rects are `[top, left, bottom, right]` in UI units.
 | `ui.move` | `{id, dx, dy}` | `{widget, findings, sink, dirty}` |
 | `ui.set_rect` | `{id, rect}` | `{widget, findings, sink, dirty}` |
 | `ui.set_text` | `{id, text}` | `{widget, findings, sink, dirty}` |
+| `ui.hide` | `{id}` (retail) | `{hidden, widget: null, findings, sink, dirty}` |
+| `ui.duplicate` | `{id, rect?, grow?}` (retail) | `{copy, of, widget, findings, sink, dirty}` |
+| `ui.set_string` | `{id, string, shows?}` (retail) | `{string, widget, findings, sink, dirty}` |
 | `ui.revert` | `{id?}` (none: the whole screen) | `{line, edits}` |
 | `ui.undo`, `ui.redo` | `{}` | `{done, can_undo, can_redo, edits}` |
-| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_dirty, checkout, changed_on_disk}` |
+| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_blocks: {tag: {added, edited, header}}, stand_ins: {string: text}, retail_dirty, checkout, changed_on_disk}` |
 | `ui.save` | `{}` | ours `{sink, written: [path]}`; retail `{sink, save}` (`doc.save`'s answer) |
 | `ui.animate` | `{phase: open\|close, frames?: 1..32 (5), out?}` | `{path, width, height, frames: [{t, tick, x, w}]}` |
 
@@ -1309,6 +1320,56 @@ shown, a rect whose top is below its bottom or right left of its left,
 and a phase that is neither `open` nor `close` answer `INVALID_PARAMS`.
 `ui.animate` and the default output path follow `ui.render`: under
 `studio/ui/` in the cache directory, never inside a Git checkout.
+
+### Retail tag edits
+
+Status: Built, not compiled or run in the editor yet.
+Code: `crates/apps/studio/src/app/ui_screens/edit/retail_tag.rs`,
+`crates/apps/studio/src/api/ui_retail.rs`,
+`crates/extensions/game/src/ui_kit/preview/retail_edit.rs`,
+`crates/formats/tags/src/ui.rs` (`TextBlock::from_element`,
+`Button::from_element`, `BitmapBlock::from_element`).
+
+A retail screen takes three edits past a rect. Each is a write of its
+`wgit` tag in the open `mainmenu` map's tag document, one undo step,
+saved with the map as a patch. They are for changing a retail screen
+with its own parts: a line of text the screen already has, moved or
+repeated, and named by a string of ours.
+
+| Edit | Tag write | Refused for |
+|---|---|---|
+| Hide (`ui.hide {id}`, the Selected section's Hide) | the block's rect to top and bottom 9999 with its left and right kept, or a bitmap's `top_left` to `9999, 9999`: where the disc parks its own spare blocks (`preview::parked`) | a button (it keeps its place in the focus order wherever its rect is), a list, a table, the title (the tag's `no_header` flag hides it) |
+| Copy (`ui.duplicate {id, rect?, grow?}`, Duplicate) | one element appended to `text_blocks`, `buttons` or `bitmaps`, then the copied element's bytes written into it | a list, a table, the title; a full block while Edit > Allow growing full blocks is off |
+| Set string (`ui.set_string {id, string, shows?}`) | the string ID field: the screen's `header` for `title`, a text block's `text`, a button's `label`. A name the map lacks is added to it (`TagDoc::set_string`) | a bitmap, a list, a table; a name that is not lowercase letters, digits and `_` |
+
+- **A copy goes to the end of its block.** The game's code finds a
+  pane's widgets by block index (the lobby's panel update reads text
+  blocks 4 to 8), so no block before the copy changes its index. The
+  copy's widget id is its index: `text.48` in a pane that had 48 text
+  blocks. `ui.duplicate` answers it as `copy`.
+- **A hidden block is still built.** The game makes a widget for every
+  block of the pane and draws nothing of one parked off screen, as it
+  does for the disc's spares. `ui.revert {id}` shows it again.
+- **A string of ours has no text in the map.** The localized text of a
+  retail string is in the map's `unic` table, which the editor does not
+  write. A string ID added by `ui.set_string` names a slot: the game's
+  code answers it at run time (a text set on the widget, or our string
+  table). The picture draws the stand-in given as `shows` for that
+  string name (`UiEdit::stand_ins`, `RetailEdits::texts`). The stand-in
+  is the tool's: it is in `ui.edits` and is not saved.
+- **The picture follows the document.** The pane's text, button and
+  bitmap blocks and the header string ID are read back whole from the
+  tag document after every edit, undo and pick
+  (`App::ui_retail_read_blocks`, `RetailBlocks::decode`) and drawn in
+  place of the disc's (`RetailEdits::apply`). An edit saved with the map
+  shows when the map is opened again.
+- **Revert** (`ui.revert`) writes a block's element back as the loaded
+  map has it, puts the title's string ID back and removes a copy; a
+  copy removed from the middle moves the copies after it down one.
+- **Pane 0 only.** The tool shows and edits pane 0 of a retail screen
+  (`edit::retail::PANE`). A screen with more panes, as the pregame lobby
+  has for its three retail modes, takes the same edit on each pane it
+  should show on.
 
 ## The fidelity loop
 

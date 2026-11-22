@@ -324,15 +324,16 @@ impl UiScreens {
         })
     }
 
-    /// A retail screen as the disc has it, with the widgets the map's tag
-    /// document moved ([`edit::retail`]) where they are now.
+    /// A retail screen as the disc has it, with the edits of the map's
+    /// tag document ([`edit::retail`], [`edit::retail_tag`]): widgets
+    /// moved, blocks hidden or copied, string IDs set.
     fn draw_retail(&mut self, tag: &str) -> Result<Shot> {
         let rev = self.rev;
-        let places = self.edit.places.get(tag).cloned().unwrap_or_default();
+        let edits = self.edit.retail_edits(tag);
         let d = self.disc().context("retail screens need the disc")?;
         let r = edit::retail_pick(tag);
-        let canvas = d.render_retail_with(&r, &places)?;
-        let retail_view = Some(d.retail_view(&r, &places)?);
+        let canvas = d.render_retail_edited(&r, &edits)?;
+        let retail_view = Some(d.retail_view_edited(&r, &edits)?);
         Ok(Shot {
             canvas,
             view: None,

@@ -5,7 +5,9 @@
 //! edit is the window's undo step and save (docs/game/ui-builder.md
 //! "Editing in the editor", docs/editor/agent-api.md). Each edit answers
 //! with the widget as it is now and the checks' findings on the edited
-//! view; `ui.render` after it draws it.
+//! view; `ui.render` after it draws it. A retail screen's tag edits past
+//! a rect (`ui.hide`, `ui.duplicate`, `ui.set_string`) are
+//! [`super::ui_retail`]'s.
 
 use std::path::PathBuf;
 
@@ -23,7 +25,7 @@ use crate::app::{Action, Pick, ToolKind};
 #[derive(Default)]
 pub struct UiEdit;
 
-const fn def(
+pub(super) const fn def(
     name: &'static str,
     summary: &'static str,
     params: &'static str,
@@ -40,7 +42,7 @@ const fn def(
     }
 }
 
-const EDITED: &str = r#"{"widget":"{id,rect,pixels,kind,...}","findings":"[{text,ids}]","sink":"ours|retail","dirty":"boolean"}"#;
+pub(super) const EDITED: &str = r#"{"widget":"{id,rect,pixels,kind,...}","findings":"[{text,ids}]","sink":"ours|retail","dirty":"boolean"}"#;
 
 /// Rects are `[top, left, bottom, right]` in UI units (640 by 480, origin
 /// at the centre, Y up), as `ui.widgets` gives them.
@@ -68,7 +70,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::UI_SET_TEXT,
-        "Give a static text a new text (our screens: `text` in the YAML, its {slots} kept); dynamic values and retail strings are refused with their owner",
+        "Give a static text a new text (our screens: `text` in the YAML, its {slots} kept); dynamic values and retail strings are refused with their owner (a retail text takes a string ID: ui.set_string)",
         r#"{"id":"string","text":"string"}"#,
         EDITED,
         r#"{"id":"title","text":"Edited"}"#,
@@ -96,9 +98,9 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::UI_EDITS,
-        "The edits: the sink of the screen shown, each edited screen's file and YAML, the retail widgets moved, what is unsaved, the checkout",
+        "The edits: the sink of the screen shown, each edited screen's file and YAML, the retail widgets moved, the retail blocks added or edited, the stand-in texts, what is unsaved, the checkout",
         "{}",
-        r#"{"sink":"ours|retail|null","selected":"string|null","ours":"[{screen,file,yaml}]","ours_dirty":"boolean","retail":"{tag: {id: rect}}","retail_dirty":"boolean","checkout":"string|null","changed_on_disk":"[string]"}"#,
+        r#"{"sink":"ours|retail|null","selected":"string|null","ours":"[{screen,file,yaml}]","ours_dirty":"boolean","retail":"{tag: {id: rect}}","retail_blocks":"{tag: {added: [id], edited: [id], header: boolean}}","stand_ins":"{string: text}","retail_dirty":"boolean","checkout":"string|null","changed_on_disk":"[string]"}"#,
         "null",
     ),
     def(
@@ -130,7 +132,7 @@ impl Provider for UiEdit {
     }
 }
 
-fn need_pick(app: &App) -> Result<Sink, agent_proto::RpcError> {
+pub(super) fn need_pick(app: &App) -> Result<Sink, agent_proto::RpcError> {
     app.ui_screens.pick.as_ref().map(Sink::of).ok_or_else(|| {
         err(
             code::NO_DOCUMENT,
@@ -140,7 +142,7 @@ fn need_pick(app: &App) -> Result<Sink, agent_proto::RpcError> {
 }
 
 /// Runs `a`; its refusal or failure as the API's error.
-fn edit(app: &mut App, a: EditAction) -> Result<Vec<String>, agent_proto::RpcError> {
+pub(super) fn edit(app: &mut App, a: EditAction) -> Result<Vec<String>, agent_proto::RpcError> {
     app.perform(Action::SetTool(ToolKind::UiScreens), false)
         .map_err(refused)?;
     app.perform(Action::UiEdit(a), false).map_err(refused)
@@ -159,7 +161,7 @@ fn findings(app: &mut App) -> Value {
 }
 
 /// What an edit answers: the widget now, the findings, the sink, unsaved.
-fn edited(app: &mut App, id: &str) -> Reply {
+pub(super) fn edited(app: &mut App, id: &str) -> Reply {
     let sink = need_pick(app)?;
     let widget = app.ui_screens.edit_widget_json(id).unwrap_or(Value::Null);
     let dirty = match sink {
@@ -174,7 +176,7 @@ fn edited(app: &mut App, id: &str) -> Reply {
     }))
 }
 
-fn rect(p: &P, k: &str) -> Result<[i16; 4], agent_proto::RpcError> {
+pub(super) fn rect(p: &P, k: &str) -> Result<[i16; 4], agent_proto::RpcError> {
     let bad = || {
         err(
             code::INVALID_PARAMS,

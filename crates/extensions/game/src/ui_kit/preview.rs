@@ -28,6 +28,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use map::TagId;
 use tags::ui::{self as tui, MapSource, Rect, UiTag};
 
+mod retail_edit;
+pub use retail_edit::{
+    PARKED, RetailBlocks, RetailEdits, parked, retail_block, retail_copy_id, retail_string_field,
+};
+
 use crate::ui_kit::dialog::{self, DialogGeometry, dialog_view};
 use crate::ui_kit::spec::{self, Finding, ListPlace, Room, RowSpec, ScreenSpec};
 use crate::ui_kit::view::{
@@ -842,6 +847,14 @@ impl Disc {
     /// [`Disc::render_retail`] with the widgets in `places` moved there
     /// (the editor's edits of the tag, read back from its document).
     pub fn render_retail_with(&self, r: &Retail<'_>, places: &RetailPlaces) -> Result<Canvas> {
+        self.render_retail_edited(r, &RetailEdits::placed(places))
+    }
+
+    /// [`Disc::render_retail`] as the editor's edits of the tag leave it
+    /// (`retail_edit`): the edited pane's blocks in place of the disc's,
+    /// the moved widgets where they are, and the stand-in text for a
+    /// string ID the screen's table has none for.
+    pub fn render_retail_edited(&self, r: &Retail<'_>, edits: &RetailEdits) -> Result<Canvas> {
         let parts = self.retail_parts(r.tag)?;
         let mut pane = parts
             .screen
@@ -849,10 +862,10 @@ impl Disc {
             .get(r.pane)
             .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?
             .clone();
-        place_retail(&mut pane, places);
+        let header = edits.apply(&mut pane, parts.screen.header.0);
         let screen = &parts.screen;
         let skins = &parts.skins;
-        let lookup = |id: u32| parts.text(r, id);
+        let lookup = |id: u32| edits.text(id).or_else(|| parts.text(r, id));
         let g = self.geometry(ListPlace::Controls)?;
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
         let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
@@ -864,7 +877,7 @@ impl Disc {
             pane.bitmaps.iter().filter(|b| on_screen_point(b.top_left)),
         );
         if screen.flags & tui::Screen::NO_HEADER == 0
-            && let Some(h) = lookup(screen.header.0)
+            && let Some(h) = lookup(header)
         {
             c.text(
                 &self.fonts,
@@ -968,6 +981,13 @@ impl Disc {
     /// table's its cells at their spacing: a handle to move, not a
     /// measured extent.
     pub fn retail_view(&self, r: &Retail<'_>, places: &RetailPlaces) -> Result<View> {
+        self.retail_view_edited(r, &RetailEdits::placed(places))
+    }
+
+    /// [`Disc::retail_view`] as the editor's edits of the tag leave it
+    /// ([`Disc::render_retail_edited`]): a block the tag gained is a
+    /// widget by its index like any other, and a parked one is absent.
+    pub fn retail_view_edited(&self, r: &Retail<'_>, edits: &RetailEdits) -> Result<View> {
         let parts = self.retail_parts(r.tag)?;
         let mut pane = parts
             .screen
@@ -975,7 +995,8 @@ impl Disc {
             .get(r.pane)
             .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?
             .clone();
-        place_retail(&mut pane, places);
+        let header = edits.apply(&mut pane, parts.screen.header.0);
+        let lookup = |id: u32| edits.text(id).or_else(|| parts.text(r, id));
         let screen = &parts.screen;
         let g = self.geometry(ListPlace::Controls)?;
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
@@ -1019,7 +1040,7 @@ impl Disc {
             });
         }
         if screen.flags & tui::Screen::NO_HEADER == 0
-            && let Some(h) = parts.text(r, screen.header.0)
+            && let Some(h) = lookup(header)
         {
             w.push(text(
                 "title".into(),
@@ -1031,7 +1052,7 @@ impl Disc {
             ));
         }
         for (i, b) in pane.buttons.iter().enumerate() {
-            let s = parts.text(r, b.string.0).unwrap_or_default();
+            let s = lookup(b.string.0).unwrap_or_default();
             w.push(text(
                 format!("button.{i}"),
                 edges(b.rect),
@@ -1045,7 +1066,7 @@ impl Disc {
             if !on_screen_rect(&t.rect) {
                 continue;
             }
-            let s = parts.text(r, t.string.0).unwrap_or_default();
+            let s = lookup(t.string.0).unwrap_or_default();
             w.push(text(
                 format!("text.{i}"),
                 edges(t.rect),

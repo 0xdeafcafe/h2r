@@ -861,3 +861,58 @@ fn two_valid_wigl_tags_fail_the_map_check() {
     assert_eq!(c.groups[&SHARED_GLOBALS].failures, 0);
     assert_eq!(c.failures, ["map has 2 wigl tags, expected exactly 1"]);
 }
+
+#[test]
+fn elements_decode_from_their_bytes_alone() {
+    let put16 = |b: &mut [u8], o: usize, v: i16| b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+    let put32 = |b: &mut [u8], o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+
+    let mut t = [0u8; TextBlock::SIZE];
+    put32(&mut t, 0, 2);
+    put16(&mut t, 0xa, 4);
+    for (i, v) in [172i16, -258, 152, 75].into_iter().enumerate() {
+        put16(&mut t, 0x1c + 2 * i, v);
+    }
+    put32(&mut t, 0x24, 0x0c00_1814);
+    let text = TextBlock::from_element(&t).unwrap();
+    assert_eq!(text.font, 4);
+    assert_eq!(justification(text.flags), justification(2));
+    assert_eq!(
+        text.rect,
+        Rect {
+            top: 172,
+            left: -258,
+            bottom: 152,
+            right: 75
+        }
+    );
+    // The string ID is the stored value: nothing resolves it here.
+    assert_eq!(text.string, StringId(0x0c00_1814));
+    assert_eq!(TextBlock::from_element(&t[..TextBlock::SIZE - 1]), None);
+
+    let mut b = [0u8; BitmapBlock::SIZE];
+    put16(&mut b, 0xa, 1);
+    put16(&mut b, 0xc, -279);
+    put16(&mut b, 0xe, 174);
+    put32(&mut b, 0x18, BITMAP.as_u32());
+    put32(&mut b, 0x1c, 0xe123_0042);
+    let bitmap = BitmapBlock::from_element(&b).unwrap();
+    assert_eq!(bitmap.image, 1);
+    assert_eq!(bitmap.top_left, Point { x: -279, y: 174 });
+    assert_eq!(bitmap.bitmap.id, Some(TagId(0xe123_0042)));
+    put32(&mut b, 0x1c, u32::MAX);
+    assert_eq!(BitmapBlock::from_element(&b).unwrap().bitmap.id, None);
+
+    let mut k = [0u8; Button::SIZE];
+    put16(&mut k, 0x1c, 173);
+    put16(&mut k, 0x1e, -274);
+    put16(&mut k, 0x20, 153);
+    put16(&mut k, 0x22, -118);
+    put32(&mut k, 0x28, u32::MAX);
+    put32(&mut k, 0x30, 0x0a00_0428);
+    let button = Button::from_element(&k).unwrap();
+    assert_eq!(button.rect.left, -274);
+    assert_eq!(button.bitmap.id, None);
+    assert_eq!(button.string, StringId(0x0a00_0428));
+    assert_eq!(Button::from_element(&[]), None);
+}

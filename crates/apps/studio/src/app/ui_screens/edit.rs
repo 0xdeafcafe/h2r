@@ -6,7 +6,9 @@
 //!   (`assets/ui/screens/<name>.yaml`, `boot::ui_kit::data`), saved into
 //!   the checkout the editor was started from.
 //! - [`retail`]: the disc's screens, `wgit` tags of `mainmenu.map`, edited
-//!   through the map's tag document and saved with the map.
+//!   through the map's tag document and saved with the map. [`retail_tag`]
+//!   has its edits past a rect: a block hidden, a block copied, a string
+//!   ID set.
 //!
 //! Every edit goes through [`EditAction`] ([`crate::app::Action::UiEdit`]),
 //! so the window and the agent API make the same edits and the same undo
@@ -14,12 +16,13 @@
 
 pub mod ours;
 pub mod retail;
+pub mod retail_tag;
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 use boot::ui_kit::animation::{AnimatedView, Phase, Transition};
-use boot::ui_kit::preview::{self, Canvas, RetailPlaces};
+use boot::ui_kit::preview::{self, Canvas, RetailBlocks, RetailEdits, RetailPlaces};
 use boot::ui_kit::view::{View, Widget};
 
 use super::{Pick, UiScreens};
@@ -55,6 +58,21 @@ pub enum EditAction {
     },
     /// Give a text widget a text.
     SetText { id: String, text: String },
+    /// Park a retail text or bitmap off screen, as the disc's spare
+    /// blocks are ([`retail_tag`]).
+    Hide { id: String },
+    /// Append a copy of a retail text, button or bitmap block to its
+    /// block; the copy is selected ([`retail_tag`]).
+    Duplicate { id: String },
+    /// Set the string ID of a retail title, text or button to the string
+    /// named `string` (added to the map when it has none). `shows` is the
+    /// stand-in text the picture draws for that string
+    /// ([`retail_tag`]).
+    SetString {
+        id: String,
+        string: String,
+        shows: Option<String>,
+    },
     /// Put a widget (or, with none, the whole screen) back as last loaded
     /// or saved, as one undo step.
     Revert(Option<String>),
@@ -100,8 +118,30 @@ pub struct UiEdit {
     pub(super) retail_base: BTreeMap<String, View>,
     /// Retail widgets moved in the map's tag document, by tag.
     pub(super) places: BTreeMap<String, RetailPlaces>,
+    /// Each edited retail screen's pane blocks as the map's tag document
+    /// has them, by tag ([`retail_tag`]); none while they are the disc's.
+    pub(super) blocks: BTreeMap<String, RetailBlocks>,
+    /// What differs from the loaded map in each retail screen, by tag.
+    pub(super) changes: BTreeMap<String, retail_tag::Changes>,
+    /// Stand-in texts by string ID name: what the picture draws for a
+    /// string the game's code answers at run time. Not saved.
+    pub stand_ins: BTreeMap<String, String>,
+    /// [`UiEdit::stand_ins`] by the string IDs the open map gives them.
+    pub(super) texts: BTreeMap<u32, String>,
     /// Why the last edit did nothing, if it didn't.
     pub last_error: Option<String>,
+}
+
+impl UiEdit {
+    /// Retail screen `tag`'s edits as the picture takes them: the moved
+    /// widgets, the edited pane's blocks and the stand-in texts.
+    pub(super) fn retail_edits(&self, tag: &str) -> RetailEdits {
+        RetailEdits {
+            places: self.places.get(tag).cloned().unwrap_or_default(),
+            blocks: self.blocks.get(tag).cloned(),
+            texts: self.texts.clone(),
+        }
+    }
 }
 
 /// A retail screen as the tool draws it: pane [`retail::PANE`], the tag's
@@ -316,6 +356,33 @@ impl App {
                 self.ui_screens.rest_for_edit();
                 self.ui_change(&pick, &id, Change::Text(text), false)
             }
+            EditAction::Hide { id } => {
+                let tag = retail_tag::retail_only(&pick, "hiding a widget")?;
+                self.ui_screens.rest_for_edit();
+                let widget = self.ui_screens.edit_widget(&id)?;
+                let line = self.ui_retail_hide(tag, &widget)?;
+                if self.ui_screens.edit.selected.as_deref() == Some(id.as_str()) {
+                    self.ui_screens.edit.selected = None;
+                }
+                self.ui_screens.redraw();
+                Ok(Some(line))
+            }
+            EditAction::Duplicate { id } => {
+                let tag = retail_tag::retail_only(&pick, "copying a widget")?;
+                self.ui_screens.rest_for_edit();
+                let widget = self.ui_screens.edit_widget(&id)?;
+                let (copy, line) = self.ui_retail_copy(tag, &widget)?;
+                self.ui_screens.edit.selected = Some(copy);
+                self.ui_screens.redraw();
+                Ok(Some(line))
+            }
+            EditAction::SetString { id, string, shows } => {
+                let tag = retail_tag::retail_only(&pick, "setting a string ID")?;
+                self.ui_screens.rest_for_edit();
+                let line = self.ui_retail_set_string(tag, &id, &string, shows)?;
+                self.ui_screens.redraw();
+                Ok(Some(line))
+            }
             EditAction::Revert(id) => {
                 let line = match (sink, &pick) {
                     (Sink::Ours, Pick::Native { screen, .. }) => {
@@ -449,13 +516,24 @@ impl App {
             .filter(|(_, p)| !p.is_empty())
             .map(|(tag, p)| (tag.clone(), serde_json::json!(p)))
             .collect();
+        let blocks: serde_json::Map<String, serde_json::Value> = self
+            .ui_screens
+            .edit
+            .changes
+            .iter()
+            .filter(|(_, c)| !c.is_empty())
+            .map(|(tag, c)| (tag.clone(), c.json()))
+            .collect();
+        let edited = !retail.is_empty() || !blocks.is_empty();
         serde_json::json!({
             "sink": sink,
             "selected": self.ui_screens.edit.selected,
             "ours": self.ui_screens.edit.ours.edits_json(),
             "ours_dirty": self.ui_screens.edit.ours.dirty(),
             "retail": retail,
-            "retail_dirty": !retail.is_empty() && self.session.is_dirty(),
+            "retail_blocks": blocks,
+            "stand_ins": self.ui_screens.edit.stand_ins,
+            "retail_dirty": edited && self.session.is_dirty(),
             "checkout": self.ui_screens.edit.ours.checkout_path().map(|p| p.display().to_string()),
             "changed_on_disk": self.ui_screens.edit.ours.changed_on_disk(),
         })

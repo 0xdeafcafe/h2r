@@ -1147,6 +1147,11 @@ impl App {
                 if let Err(e) = self.ui_screens.select(pick) {
                     self.error(format!("{e:#}"));
                 }
+                // A retail screen shows the open menu map's edits of its
+                // tag, saved ones too.
+                if let Some(Pick::Retail(tag)) = self.ui_screens.pick.clone() {
+                    self.ui_retail_picked(&tag);
+                }
             }
             Action::UiBrowse(at) => {
                 self.sync_ui_disc();
