@@ -102,6 +102,16 @@ impl DialogBase {
             DialogBase::ValuePicker => Some(PICKER_HELP_TEXT),
         }
     }
+    /// Which of the base pane's text blocks [`DialogBase::help`] is, where
+    /// the copy reads its render depth bias from
+    /// ([`crate::ui_kit::dialog_tag::description_bias`]): Quick Options'
+    /// help line is its text block 0. `None` where it isn't traced.
+    pub fn help_block(self) -> Option<u32> {
+        match self {
+            DialogBase::QuickOptions => Some(0),
+            DialogBase::Large | DialogBase::ValuePicker => None,
+        }
+    }
     /// The base pane's bitmaps (by block index) that are the retail
     /// dialog's content rather than its backing, left out of ours:
     /// Quick Options' game type picture beside the variant's name.

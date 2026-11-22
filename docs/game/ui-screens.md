@@ -29,11 +29,12 @@ String ids come from one registry, `ui_kit::ids::FAMILIES`, checked at compile t
 `ui_kit::input::Input::from_event` is the one place an event is read. The screen's event slot (screen slot 10) is handed an event whose kind word (`+0`) is a direction or a button: the controller update raises kind 1 up, 2 left, 3 down and 4 right (d-pad or left stick), first when pushed and then every 250 ms while held. Buttons are kind 5 with the button in `+8` (A 0, B 1, X 2, Y 3, Start 12, Back 13), raised only on the frame the button goes down. Directions never arrive as buttons 8 to 11.
 
 - **The opener's press.** The press that opens a screen can be seen again by it. `input::OpenerGuard` drops a confirm that comes within 50 ms of opening (`input::OPENER_GUARD`).
+- **The closing press.** A closing screen keeps its window until it is freed, and the dispatcher gives the first window holding a screen every press. A press on a closing screen of ours goes to the screen beneath it (`lifecycle::while_closing`), except one within 50 ms of the close starting (`lifecycle::CLOSE_GUARD`), which is the closing press seen again and is dropped. The lobby takes input as soon as a dialog of ours starts closing (docs/game/ui-builder.md "Behaviour").
 - **Glyphs.** Prompts are `Glyph`s, not raw code points (U+E100 A, U+E101 B, U+E102 X, U+E103 Y, U+E108 to U+E10B the d-pad, U+E10C Start, U+E10D Back). `input::footer_legend` lays them out as retail's footers do (below).
 
 ## Lifecycle
 
-`ui_kit::lifecycle` opens a screen with `0x149f1e(player mask, loader)` and closes one with `0x14800c` (EAX the screen's slot `+0x78`, ECX its window `+0x74`), as the generic back handler closes on B. The close starts the out transition; the stack frees the screen when that ends, calling the destructor (screen slot 0) first.
+`ui_kit::lifecycle` opens a screen with `0x149f1e(player mask, loader)` and closes one with `0x14800c` (EAX the screen's slot `+0x78`, ECX its window `+0x74`), as the generic back handler closes on B. The close starts the out transition; the stack frees the screen when that ends, calling the destructor (screen slot 0) first. A screen of ours comes in within 333 ms and goes out within 200 ms (`lifecycle::cap_transition`, `animation::OPEN_TICKS` and `CLOSE_TICKS`; docs/game/ui-builder.md "Transitions").
 
 Anything that must run on the screen underneath (a retail press, a level start) waits for the destructor: `lifecycle::AfterClose`, which `Then::CloseThen` uses for every kit screen. Running it while the page is still closing lets the closing page's teardown undo it (the skulls page's difficulty press stored the difficulty and the teardown reset it, so Start seemed stuck).
 

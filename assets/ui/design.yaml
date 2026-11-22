@@ -77,7 +77,7 @@ components:
     at: [39, -30]
     size: [221, 103]
   description.settings:
-    role: "a settings dialog's help line, above its list (Quick Options')"
+    role: "a settings dialog's help line beside its picture, above its list (Quick Options'): the focused row's one line, never empty, drawn over the panel"
     font: body
     colour: pale_blue
     justify: left

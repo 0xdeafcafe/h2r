@@ -1721,6 +1721,17 @@ pub async fn row_text(
     lines: Option<Arc<Lines>>,
 ) -> Result<Ret, EntryError> {
     let item = cx.arg(0)?;
+    // A screen of ours comes in and goes out within the kit's budgets
+    // (`ui_kit::lifecycle::cap_transition`); asked at each draw, as the
+    // screen's transition words are set once it is drawn. One opening
+    // again at an address a closed one had is not that one.
+    {
+        use crate::ui_kit::{animation::Transition, lifecycle};
+        let screen = cx.entry().ecx.wrapping_sub(ui::LIST);
+        if let Ok(Some(Transition::Open)) = cx.write(|m| lifecycle::cap_transition(m, screen)) {
+            lifecycle::forget_closing(screen);
+        }
+    }
     let live = rows.live_text();
     if !live.writes.is_empty() {
         cx.write(|m| -> Result<(), MemFault> {
@@ -1938,7 +1949,13 @@ pub async fn event(
     event_with(cx, original, action, &ACTION_BUTTONS, buttons, sideways).await
 }
 
-/// [`event`] with the buttons that run the action given.
+/// [`event`] with the buttons that run the action given. While the
+/// screen closes, a press is the screen beneath's
+/// (docs/game/ui-builder.md "Behaviour", `ui_kit::lifecycle::while_closing`):
+/// the closing press itself is dropped, every later one handed down, so
+/// the lobby takes input from the moment the close starts. A press that
+/// closes the screen starts the close's clock and holds the close to the
+/// kit's budget (`ui_kit::lifecycle::cap_transition`).
 pub async fn event_with(
     cx: Cx,
     original: u32,
@@ -1947,8 +1964,45 @@ pub async fn event_with(
     buttons: Option<Buttons>,
     sideways: Option<Arc<dyn Rows>>,
 ) -> Result<Ret, EntryError> {
+    use crate::ui_kit::lifecycle;
     let screen = cx.entry().ecx;
     let ev = cx.arg(0)?;
+    let now = std::time::Instant::now();
+    // A screen whose state can't be read is taken as not closing.
+    match cx.read(|m| lifecycle::while_closing(m, screen, now)).unwrap_or(None) {
+        Some(Some(to)) => {
+            let eax = lifecycle::hand_down(&cx, to, ev).await?;
+            return Ok(Ret::new(eax, 4));
+        }
+        Some(None) => return Ok(Ret::new(1, 4)),
+        None => {}
+    }
+    let r = event_on(cx.clone(), screen, ev, original, action, action_buttons, buttons, sideways)
+        .await?;
+    cx.write(|m| {
+        if m
+            .u8(screen + lifecycle::SCREEN_STATE)
+            .is_ok_and(|s| s & lifecycle::STATE_OUT != 0)
+        {
+            lifecycle::started_closing(screen, now);
+            let _ = lifecycle::cap_transition(m, screen);
+        }
+    });
+    Ok(r)
+}
+
+/// [`event_with`] on a screen that is not closing.
+#[allow(clippy::too_many_arguments)]
+async fn event_on(
+    cx: Cx,
+    screen: u32,
+    ev: u32,
+    original: u32,
+    action: Option<Action>,
+    action_buttons: &[u32],
+    buttons: Option<Buttons>,
+    sideways: Option<Arc<dyn Rows>>,
+) -> Result<Ret, EntryError> {
     let (kind, button) =
         cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(ev)?, m.u32(ev + 8)?)) })?;
     if let Some(buttons) = &buttons
@@ -2180,7 +2234,20 @@ pub async fn setup_pane_footer(
             animation: motion.pane,
             ..d.block
         };
-        cx.write(|m| m.write(d.at, &block.bytes()))?;
+        let mut bytes = block.bytes();
+        // On a dialog's copy, over the base's backing
+        // (`dialog_tag::description_bias`): at bias 0 the panel covers it.
+        let bias = cx.read(|m| {
+            m.u32(screen)
+                .ok()
+                .and_then(|vt| dialog_tag::served_description_bias(m, vt).ok().flatten())
+        });
+        if let Some(bias) = bias {
+            let at = dialog_tag::TEXT_BIAS as usize;
+            bytes[at..at + 2].copy_from_slice(&bias.to_le_bytes());
+            eprintln!("{name}: description at render depth bias {bias}, over the dialog's backing");
+        }
+        cx.write(|m| m.write(d.at, &bytes))?;
         let widget = cx
             .call(
                 GuestCall::new(points::PANE_TEXT_ADD.base)
@@ -4577,6 +4644,60 @@ mod tests {
         assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
         assert_eq!(run.result, Ok(Ret::new(7, 4)));
         assert_eq!(ran.load(Ordering::SeqCst), 0, "B is not Start");
+    }
+
+    /// The lobby taking input as a dialog of ours closes: a press on the
+    /// closing dialog (window 1) goes to Game Setup beneath it (window 3)
+    /// through Game Setup's own event slot, once the close guard has
+    /// passed; the press that closed it is dropped, and neither reaches
+    /// the dialog's own handler.
+    #[test]
+    fn a_press_while_a_dialog_closes_goes_to_the_screen_beneath() {
+        use crate::ui_kit::lifecycle as lc;
+        use std::time::{Duration, Instant};
+        const EVENT: u32 = 0x0061_0000;
+        const BENEATH: u32 = 0x0062_0000;
+        const BENEATH_VTABLE: u32 = 0x0063_0000;
+        const HANDLER: u32 = 0x0077_7000;
+        let slot = crate::ui_watch::SHARED;
+        let w3 = crate::ui_watch::channel(3, slot).unwrap();
+        let run_with = |closed_ago: Duration| {
+            let mut g = guest();
+            g.map(SCREEN, 0x1000)
+                .map(BENEATH, 0x1000)
+                .map(BENEATH_VTABLE, 0x100)
+                .map(0x0054_d000, 0x1000);
+            g.put_u32(EVENT, BUTTON_EVENT).put_u32(EVENT + 8, 0);
+            g.put_u32(STACK + 4, EVENT);
+            g.put_u8(SCREEN + lc::SCREEN_STATE, lc::STATE_OUT)
+                .put_u32(SCREEN + lc::SCREEN_WINDOW, 1)
+                .put_u32(SCREEN + lc::SCREEN_SLOT, slot)
+                .put_u16(SCREEN + 8, 1);
+            g.put_u32(BENEATH, BENEATH_VTABLE)
+                .put_u16(BENEATH + 8, 1)
+                .put_u32(BENEATH_VTABLE + 4 * SCREEN_EVENT_SLOT, HANDLER);
+            g.put_u32(w3 + 8, BENEATH).put_u32(w3 + 0x34, BENEATH);
+            lc::forget_closing(SCREEN);
+            lc::started_closing(SCREEN, Instant::now().checked_sub(closed_ago).unwrap());
+            let f = move |cx| -> EntryFuture { Box::pin(event(cx, 0x2300ea, None, None, None)) };
+            let regs = Regs {
+                esp: STACK,
+                ecx: SCREEN,
+                ..Default::default()
+            };
+            let run = testing::run(&f, g, regs, |_, _| Regs {
+                eax: 9,
+                ..Default::default()
+            });
+            lc::forget_closing(SCREEN);
+            run
+        };
+        let run = run_with(Duration::from_millis(500));
+        assert_eq!(run.calls, [Gc::new(HANDLER).ecx(BENEATH).args([EVENT])]);
+        assert_eq!(run.result, Ok(Ret::new(9, 4)));
+        let run = run_with(Duration::ZERO);
+        assert_eq!(run.calls, [], "the closing press is dropped");
+        assert_eq!(run.result, Ok(Ret::new(1, 4)));
     }
 
     /// A class's own event hook comes first: a handled event stops there
