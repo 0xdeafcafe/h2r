@@ -251,6 +251,7 @@ pub mod symbol_kind {
     pub const ENUM: u8 = 10;
     pub const FUNCTION: u8 = 12;
     pub const VARIABLE: u8 = 13;
+    pub const CONSTANT: u8 = 14;
     pub const ARRAY: u8 = 18;
     pub const ENUM_MEMBER: u8 = 22;
     pub const STRUCT: u8 = 23;

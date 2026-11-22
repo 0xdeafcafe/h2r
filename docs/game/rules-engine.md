@@ -299,21 +299,61 @@ than the record's, when it calls an entry no host can make on its carrier
 (`verify::unhostable`, `caps::Entry::hostable_on`: `role_traits` is made
 only on Juggernaut and `reset_objective` only on Oddball, so a script on
 another carrier is refused as "the script calls role_traits, which a host
-makes only on juggernaut, and the script rides slayer"), or when it needs what this runtime does not do
-yet (`runtime::host_refusal`): an event other than `init`, `kill`,
+makes only on juggernaut, and the script rides slayer"). Then the start
+gate checks the map's labels (`Runtime::gate`, `rules/census.rs`;
+[rules-start-gate.md](rules-start-gate.md)), unless the run plays a film:
+a map that lacks or breaks a label or tag the script needs blocks the
+game (`Status::Blocked`, below), and no rules play, the carrier's
+included. Last, a script is refused when it needs what this runtime does
+not do yet (`runtime::host_refusal`): an event other than `init`, `kill`,
 `timer`, `tick`, `bounce` and `bounced`; a read other than the scores,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
-`is_objective` and `carrier_of`; an action other than `score`,
+`is_objective`, `carrier_of` and the label reads (`label_number`,
+`label_of`, `zone_id`, `object_team`); an action other than `score`,
 `end_round`, `set_lives`, `respawn`, `role_traits` and
 `reset_objective`; a
 variant field other than `team_play`, `score_limit`, `time_limit` and
-`lives`, whose record offsets are not traced; a `grant`; a Forge label.
+`lives`, whose record offsets are not traced; a `grant`.
 Then the VM starts with the record's option bits and seed 0 (as
 Firefight's, until the session carries one), `on init` runs, and its
 state becomes the `RULES` record. **A refused script is logged
 ("refused, the game plays the carrier engine's own rules: ...") and kept
 with its reason for `rules.state`, and the game plays as the record's
 own engine.** Nothing runs with a call stubbed out.
+
+**A blocked start.** `Status::Blocked` keeps the full hash and every
+problem's text, which `rules.state` lists as `blocked`. No VM is made and
+no record is set; `rules: blocked, the game does not start: ...` is
+logged; the first tick boundary asks `GAME_ENGINE_AUTHORITATIVE` and, on
+the authority, makes one `end_round` (`firefight::guest::end_game`), so
+the game ends in its first tick. A machine that is not the authority goes
+idle and ends nothing. In a Forge session (the lobby's mode is Forge,
+`lobby_start::Mode::Forge`) the block refuses the script and does not end
+the game. The block holds until the next start, and
+`feature::blocked()` reads it for the lobby's verdict. An in-place
+reload (`Runtime::swap`) is checked against the census the game started
+with, and refused with the problems.
+
+**Label reads.** `rules/census.rs` reads the loaded scenario's rows
+(each block's count, the netgame flags' type and team at `scnr+0x118`,
+the starting locations' team at `scnr+0x100`) and builds the labelled
+things with `forge_doc::labelled`: each flag with its type's built-in
+label, and what the session's Forge document labels. At a game's start a
+session has no document (a Forge session loads its draft at its first
+tick), so the host's things are the flags' built-in labels. The script
+holds a labelled thing by a handle of our own, `0x4000_0000` with the
+placement id (the block's number times 65,536 plus the final index): a
+flag has no object datum. `objects labelled` visits the things with the
+label (not starting locations); `o.number` is the label's number (0 when
+none); `zone.label` is the script's label of that text; `zone.id` the
+placement id; `o.team` a flag's team through its designator
+(`E+0x10 + 2d`), or an objective record's `+4` on CTF and Assault, with
+neutral as `none`. `inside`, the zone tests behind `on enter` and
+`on leave`, and `ticks_held` stay refused: no zone has a volume a host
+can test. Forge trigger volumes are not in the document, and no netgame
+flag's capture volume is traced outside the engines' own occupancy
+(King's mask `K+0x1a8` for the hill in play, Territories' site bytes
+`T+0x95+8p`), which answers only on its own carrier.
 
 A Live host (`variant_ext::part`) puts the running blob's full hash on
 its session at every start (`Hle::set_session_rules`, none when no
@@ -442,7 +482,13 @@ never on a guest or for a refused script), `role_traits` making the
 role setter's call (none for a player already in that state, and a
 refusal by carrier on Slayer), `reset_objective` making Oddball's ball
 return with each refusal named, and the objective set and its carriers
-read from the registry. Boot's registration tests check that the
+read from the registry; and the start gate (`runtime/tests/gate.rs`): a
+map that lacks a label blocks the game with every problem, no VM and one
+`end_round` at the first boundary, a map that has it starts, a film
+skips the check, a Forge session refuses without ending, a machine that
+is not the authority ends nothing, an unreadable census blocks a script
+with labels, a swap the map lacks a label for is refused, and the label
+reads answer from the labelled flags. Boot's registration tests check that the
 feature's four scoring `before`s are in the plan only with the feature
 on.
 
@@ -586,10 +632,14 @@ The IR header carries it as one byte, `ir::List`, which a blob with
 any other value fails to decode by ("the header's list").
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
-distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (a global variable that
-counts ticks down, then fires `on timer`), and `enum` types a script declares.
-`player`, `team` and `object` values may be `none`. A `table` is constant
-rows of typed columns, indexed by `int`. There are no floats and no
+distances), `bool`, `player`, `team`, `object`, `zone` (an object with a
+volume: a Forge trigger volume, or a netgame flag with its capture
+volume), `squad`, `tag` (a tag path), `weapon` (a tag path that must be a
+weapon's), `timer` (a global variable that counts ticks down, then fires
+`on timer`), and `enum` types a script declares. A zone is an object and
+a weapon is a tag; nothing else converts. A handle that may be `none` is
+`T?` (`player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`); a `T`
+never is. A `table` is constant rows of typed columns, indexed by `int`. There are no floats and no
 strings at run time: text is a string-table index with typed arguments.
 An `int` indexes a table's rows; a value of the first column's type
 finds the first row holding it (`points[class]`), and a key no row holds
@@ -598,14 +648,62 @@ reads the columns' zero values. A row out of range is a script error.
 **Expressions and control.** Ordinary expressions with precedence and
 parentheses (`a = b + c * 2`), `if` / `else if` / `else`, `and` binding
 tighter than `or`; both short-circuit. A statement ends at a line break,
-`;` or `}`. A `let` or a parameter is not assigned again. These are the
-things the ReachVariantTool dialect lacks ("Prior art").
+`;` or `}`. A `let` or a parameter is not assigned again; a `let` may
+state its type (`let heir: player? = none`), and `let x = none` with no
+type is refused. These are the things the ReachVariantTool dialect lacks
+("Prior art").
+
+**`T?` and narrowing.** A value that may be `none` is a `T?`: the killer
+of `on kill`, `first(...)`, `o.carrier`, `o.team`, `player_of(o)`, a
+label's member by number or team, and a handle column read by key. A
+variable of a handle type that starts as `none` is declared `T?`
+(`global var juggernaut: player? = none`). A `T?` goes where a `T` is
+wanted only where a check proves it is not `none`: inside
+`if killer != none { ... }`, in the `else` of `killer == none`, through
+`and`, `or` and `not` (`killer == none or killer == victim` leaves
+`killer` a `player` in the `else`), and as the name `if let` binds
+(`if let k = killer and k != victim { score(k, 1) }`, the name holding
+in the condition after `and` and in the block). A check narrows a `let`,
+a parameter, a loop member and a handler argument; a global is never
+narrowed, as another handler may change it.
+
+**Checking.** The checker (`crates/formats/rules/src/lang/check.rs`)
+reads the whole script before anything is lowered and reports every
+error it finds, up to 50, in source order, each with a code
+(`null.arg`, `label.unknown`), and the warnings (`label.unused`,
+`zone.delete`). Lowering (`lang/lower.rs`) runs on a script with no
+error and makes no type decision. The codes are those of
+[rules-language-types.md](rules-language-types.md#diagnostics-and-the-editor).
 
 **Variables** are declared, named and scoped:
 `global|player|team|object var name: type = init`. The compiler assigns
 slots and enforces the budget (256 global, 64 per player, 32 per team, 32
-per labelled object, at most 256 labelled objects). A scoped variable is
-read through its owner: `p.infected`, `t.captures`.
+per object, at most 256 objects of a label). A scoped variable is read
+through its owner: `p.infected`, `t.captures`.
+
+**Labels.** A script declares the Forge labels it reads, and the map
+supplies them: `label <name>: <kind> [requirements] [= "map text"]`. The
+kind is `object` or `zone` (one value; `object?` or `zone?` when the map
+may have none), or `objects`, `zones` or `spawns` (a set; `spawns` are
+starting locations, passed to `spawn_areas` and never visited). A set
+may require `at least n`, `at most n`, `exactly n` or `n..m` members,
+`numbered` (every member has a number) or `numbered a..b` (each number
+in the range has a member and no other number appears), and `per team`
+(each team in play has a member of its own). The map text is the
+label's name unless `= "..."` gives it
+(`label capture: zones numbered 0..1 = "zone"`). The declarations fill
+the IR's label table in declaration order, which the start gate checks
+a map against ([rules-language-types.md](rules-language-types.md#labels)).
+
+A label is a typed name. `core` (declared `object`) is an `object`;
+`for each barrier b` visits a set; `capture[n]` is the member numbered
+`n` and `flag_spawn[t]` the member of team `t`, each a `zone?`, or a
+`zone` when `n` is a constant inside the declared `numbered a..b`;
+`count(checkpoint)` counts one; `x is goal` tests that `x` is a member,
+and makes `x` a `zone` where it holds. A set label is passed where a set
+is taken (`spawn_areas(team 0, attack, n)`, a `fn` parameter declared
+`zones`). There is no string label: a label is declared or it is an
+error, with the nearest declared name offered.
 
 **Handlers.** `on init`, `on round_start`, `on tick`,
 `on kill(victim, killer)`, `on spawn(p)`, `on death(p)`,
@@ -617,21 +715,31 @@ read through its owner: `p.infected`, `t.captures`.
 chain, 1 for a single bounce; `monster` a Monster Bounce),
 `on bounced(p)` (a fall out of the map during a bounce),
 `on edit(p, o)` (a granted power was used),
-`on join(p)`, `on quit(p)`, `on round_end`. A handler names every
-argument of its event, in order: `on bounce(p, spot)` is refused with
-the arguments it takes. A handler runs to completion.
+`on join(p)`, `on quit(p)`, `on round_end`. A handler names its event's
+arguments in order and may leave out trailing ones (`on bounce(p, spot)`);
+naming more is refused with what the event gives. The killer of
+`on kill`, `on actor_kill` and `on actor_assist`, and the assist, are
+`player?`; the zone of `on enter`, `on leave` and `on bounce` is a
+`zone`. A label in the zone's place (or the object's place of
+`on pickup`, `on drop`, `on press` and `on edit`) picks the handler's
+things: `on enter(goal, o)` runs for the goal only, and
+`on enter(capture z, o)` for a capture zone, which it names `z`. The
+handlers of one event, by label or not, are one IR handler and run in
+source order. A handler runs to completion.
 
 **Loops** are `for each` over a finite set only: `players`, `teams`,
 `objectives` (the objective registry's objects, at most 8, by object
-handle) and `objects labelled "x"`, each with an optional `where`. A set
+handle) and a declared label's set (`for each barrier b`), each with an
+optional `where`. A set
 passed to `count`, `first` or `pick` may name its member for the `where`
 (`count(players p where p.team == t)`). There is no
 `while`, no recursion, and functions are inlined, so every handler has a
 static worst-case op count, which the compiler prints.
 
 **Names, not datums.** Engine things are named by tag path
-(`"objects/weapons/..."`, checked against the map at load) or by Forge
-label. A script never sees a datum index or an address.
+(`"objects/weapons/..."`, checked against the map at load, a path used
+as a `weapon` against the weapon group) or by a Forge label the script
+declares. A script never sees a datum index or an address.
 
 **Options** a script declares are the rows a variant editor shows for
 it: `option name: type range = default`, with a label and a description
@@ -720,6 +828,7 @@ requires ai.squads
 
 table waves: (class: Class, per_player: int, min: int, max: int, gap: int) = [ ... ]
 table points: (class: Class, score: int) = [ ... ]
+label ff_drop: objects
 global var wave: int = 0
 global var lives: int = 7
 global var next: timer = 150
@@ -727,14 +836,14 @@ global var next: timer = 150
 on timer(next) {
     let w = waves[wave]
     let s = squad(wave % 16)
-    place_squad(s, w.class, clamp(count(players) * w.per_player, w.min, w.max), labelled "ff_drop")
+    place_squad(s, w.class, clamp(count(players) * w.per_player, w.min, w.max), ff_drop)
     hunt(s)
 }
 on squad_dead(s) {
     wave = wave + 1
     if wave == len(waves) { end_round(team 0) } else { next = waves[wave - 1].gap }
 }
-on actor_kill(killer, class) { score(killer, points[class].score) }
+on actor_kill(killer, class) { if killer != none { score(killer, points[class].score) } }
 on death(p) {
     if lives > 0 { lives = lives - 1; respawn(p) }
     else if count(players where alive) == 0 { end_round(none) }
@@ -744,6 +853,13 @@ on death(p) {
 ### Phases: attack and defend
 
 ```text
+label barrier: objects numbered
+label attack: spawns numbered 0..2
+label defend: spawns numbered 0..2
+label capture: zones numbered 0..1 = "zone"
+label core: object
+label goal: zone
+
 option phase_time: int 60..600 = 180
 option capture_time: int 5..60 = 20
 
@@ -753,19 +869,20 @@ global var clock: timer
 fn open(n: int) {
     phase = n
     clock = seconds(phase_time)
-    for each objects labelled "barrier" b where b.number < n { delete(b) }
-    spawn_areas(team 0, "attack", n)
-    spawn_areas(team 1, "defend", n)
-    if n == 2 { create("<core tag path>", first(objects labelled "core")) }
+    for each barrier b where b.number < n { delete(b) }
+    spawn_areas(team 0, attack, n)
+    spawn_areas(team 1, defend, n)
+    if n == 2 { create("<core tag path>", core) }
 }
 on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
-    let zone = first(objects labelled "zone" z where z.number == phase)
-    if phase < 2 and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    if phase < 2 {
+        if let zone = capture[phase] and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    }
 }
-on enter(zone, o) {
-    if phase == 2 and zone.label == "goal" and is_objective(o) { end_round(team 0) }
+on enter(goal, o) {
+    if phase == 2 and is_objective(o) { end_round(team 0) }
 }
 on timer(clock) { end_round(team 1) }
 ```
@@ -919,12 +1036,12 @@ Reads:
 | team play, score and time limits, type area | variant record `V` (`variants::record`, [live-gamestate.md](../live/live-gamestate.md)) | named |
 | `round_time_left()`: the round start tick against the time limit | `E+0x70` (`ROUND_START_TICK`, likely) and `V` | named |
 | objects: tag, position, parent | object datum (`guest-layout` `object.rs`) | named |
-| objects by label; `zone.label`, `zone.id`, `o.number` | Forge labels | not built |
+| objects by label; `zone.label`, `zone.id`, `o.number` | the host's labelled things (`rules/census.rs`): netgame flags in guest memory and the session's Forge document | named |
 | `is_objective(o)`; objective records (object, team, carrier); `o.carrier` (`carrier_of`); `for each objectives` | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
-| `o.team` (`object_team`): an objective's team, or a flag placement's team through its designator | record `+4`; `E+0x10` (bots.md section 3.7) | traced |
+| `o.team` (`object_team`): an objective's team, or a flag placement's team through its designator | record `+4` (CTF, Assault); `E+0x10` (`engine::objectives::DESIGNATOR_TEAMS`, bots.md section 3.7) | named |
 | `player_of(o)`: the player whose unit an object is | unit `+0x13c` (bots.md section 3.7) | traced |
-| `inside(p, zone)`: a living unit inside a labelled volume, a territory marker's capture volume, or a hill corner's hill | zone tests, as below | not built |
-| zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built |
+| `inside(p, zone)`: a living unit inside a labelled volume, a territory marker's capture volume, or a hill corner's hill | zone tests, as below | not built: no zone has a volume a host can test ("The host runtime", "Label reads") |
+| zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built: Forge trigger volumes are not in the document, and no flag's capture volume is traced |
 | netgame flags by type and team | `scnr+0x118` (`engine::objectives`); query `0x19ec40` | named; traced |
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
 | events of the tick | hooks on `PLAYER_KILLED` `0x15ce70`, `PLAYER_SPAWN` `0x14f2e0`; `SimRead::events` once sim-rewrite section 7 exists | named; not built |
@@ -1217,9 +1334,9 @@ Tooling:
     capabilities on a `requires` line and as the second argument of
     `grant`, `revoke` and `granted`; types after `:`; after a `.`, the
     `variant` fields, an enum's variants, a table row's columns, or a
-    player's, team's or object's variables and built-in fields; labels
-    after `labelled`, palettes after `palette`, and sets after `each`
-    and in `count`, `first` and `pick`. In a body it offers the locals
+    player's, team's or object's variables and built-in fields;
+    palettes after `palette`, and sets, the declared labels among them,
+    after `each` and in `count`, `first` and `pick`. In a body it offers the locals
     in scope, the script's globals, options, tables, enums and
     functions, every API entry and language built-in as a snippet, and
     the statements. Each item's documentation is the hover text.
@@ -1289,8 +1406,10 @@ Tooling:
   (`slot`, `team`, `alive`, `score`, `lives`, and `unit`, the object
   that is the player's unit), `teams`, `variant` (record fields by name;
   each one left out reads the stock record of the script's carrier,
-  `fake::stock_variant`), `labelled` (`label`, `object`, `number`,
-  `placement`: what `objects labelled` visits and `o.number` reads),
+  `fake::stock_variant`), `map` (the things the game holds that a script
+  labels: `label`, `object`, `number`, `placement`, `team` and `class`,
+  below; what a declared label's set visits and `o.number` reads;
+  `labelled` is its older name),
   `round_time_left`, and `ticks`, each with `events` of `kill`
   (`victim`, `killer`), `spawn`, `death`, `join`, `quit`, `enter` and
   `leave` (`zone`, `object`), `press`, `pickup`, `drop` and
@@ -1362,8 +1481,22 @@ Game Types**. The layout, its states and its copy are described in
   the lobby's words, Control) whose rows insert a snippet at the caret;
   the events and the API come from the completion route at a blank
   top-level line and a blank statement, over a list the page keeps.
+- **The map.** A scenario's `map` (`scenario::ScenarioLabel`) lists
+  things: `label` (text), `object` (the handle), `number?`, `placement?`,
+  `team?` and `class?`, one of `object`, `flag`, `volume` or `spawn`.
+  A thing with no `class` takes the one its label's kind suggests in the
+  script's label table: a volume for a zone label, a starting location
+  for a spawn label, an object for any other label and for a label the
+  script does not declare. A scenario with no `map` runs on
+  `labels::minimal(ir, teams)`: things numbered from `scenario::MAP_BASE`
+  (0x100) in label order, with `teams` the scenario's, or 0 and 1. A
+  scenario with a `map` is checked first, by `scenario::resolve_map`
+  (`labels::check` over `scenario::census_of`); a problem is
+  `RunError::Map` with the check's text, and nothing runs. An empty `map`
+  is a map with nothing on it, not an absent one. See
+  [rules-start-gate.md](rules-start-gate.md#the-check) for the texts.
 - **Run.** `workbench::run` steps a scenario (seated players with their
-  units, variant fields, labelled objects, options, seed, round time,
+  units, variant fields, the map, options, seed, round time,
   and a list of events by tick) over `fake::FakeGame`, through the same
   `scenario::step` that `h2 rules run` takes. Each tick: the queue is
   flushed, the tick's events fire in order, then `update` runs timers
@@ -1406,7 +1539,12 @@ Game Types**. The layout, its states and its copy are described in
   respawns players itself, players walking into and out of the labelled
   objects the script names, objectives picked up and dropped, and
   `bounce`, `edit`, `press`, `actor_kill`, `actor_assist` and
-  `squad_dead` only for a script with that handler. The seed fixes the
+  `squad_dead` only for a script with that handler. The objects it
+  walks into are the things of the script's minimal map
+  (`labels::minimal` for the match's teams, a free-for-all match reading
+  teams 0 and 1), apart from starting locations: each label has its
+  count, its numbers and a member for each team it asks for, so a
+  generated match is never a blocked one. The seed fixes the
   whole match. The match stops when the script ends the round, a limit
   is reached, the script fails, or 4,096 events or 36,000 ticks pass.
   Its output is a `workbench::Scenario` and the trace of running it;
@@ -1606,8 +1744,9 @@ scores bounces is not yet a parity game.
 **The Superbounce game type is a script**,
 `crates/formats/rules/src/builtin/superbounce.rules`, an example
 (`builtin::examples`): `carrier slayer`, `list tweakers`,
-`requires hud.superbounce`, Slayer's kill rule with its two options, and
-three bounce options: `bounce_points` (0 to 5, default 1), times the
+`requires hud.superbounce`, no kill rule (a kill scores nothing), and
+four options: `suicide_costs` (default on), a point off for a death with
+no killer or by the player's own hand; `bounce_points` (0 to 5, default 1), times the
 bounce's place in its chain up to 6; `bounced_costs` (default on), a
 point off for a Bounced; and `monster_double` (default on), a Monster
 Bounce's points doubled after the cap
@@ -1684,8 +1823,10 @@ The phased mode is the check that the API is wide enough:
 
 A prerequisite. `crates/formats/forge-doc` has teleporter and device
 links (`links.rs`) and labels (`labels.rs`) to tell a script which
-placement is which. Status: the document side is built; the `RulesExt`
-table and `objects labelled` are not.
+placement is which. Status: the document side is built, and the host
+reads labelled things (`rules/census.rs`, "The host runtime"); the
+`RulesExt` table a script's declared labels read is not, since the
+host's table is rebuilt from the map at each start.
 
 **Design.** A label is a string of at most 32 bytes plus an optional
 number (`"checkpoint" 3`, `"hill" 0`). It is a field of a placement in
@@ -1693,9 +1834,10 @@ the Forge document, set through the same edit log as any other field, so
 it has no scenario bytes and costs nothing in a session that runs no
 script. At map load the labels become a table in `RulesExt`: label,
 number, placement id, and the object's datum once it exists. Scripts
-read it through `objects labelled`. Retail maps with no Forge document
-get labels from a built-in table per netgame flag type, so
-`objects labelled "ctf_flag_spawn"` works on every map.
+read it through the labels they declare ("The language"). Retail maps
+with no Forge document get labels from a built-in table per netgame flag
+type, so `label flag_spawn: zones = "ctf_flag_spawn"` works on every
+map.
 
 **Built.** `Forge::Label { target, label }` sets or clears a label on
 a placement named as a link names one (`Endpoint`: a base entry by

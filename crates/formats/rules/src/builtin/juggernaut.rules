@@ -15,12 +15,12 @@ carrier juggernaut
 option kill_points: int 1..5 = 1 "Juggernaut kill points" "Points for each kill the Juggernaut makes"
 option take_points: int 0..3 = 0 "Takeover points" "Points for killing the Juggernaut"
 
-global var juggernaut: player = none
+global var juggernaut: player? = none
 
 fn crown(p: player) {
-    if juggernaut != none { role_traits(juggernaut, false) }
+    if let j = juggernaut { role_traits(j, false) }
     juggernaut = p
-    if p != none { role_traits(p, true) }
+    role_traits(p, true)
 }
 
 on round_start {

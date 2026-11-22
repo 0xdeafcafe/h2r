@@ -22,9 +22,9 @@ pub struct Token {
     pub nl: bool,
 }
 
-pub(crate) static PUNCT: [&str; 23] = [
+pub(crate) static PUNCT: [&str; 24] = [
     "..", "==", "!=", "<=", ">=", "{", "}", "(", ")", "[", "]", ",", ":", ";", ".", "=", "<", ">",
-    "+", "-", "*", "/", "%",
+    "+", "-", "*", "/", "%", "?",
 ];
 
 /// The longest string literal, in bytes.

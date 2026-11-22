@@ -18,7 +18,8 @@ use serde::Serialize;
 
 use crate::caps::{self, id};
 use crate::fake::FakeGame;
-use crate::ir::{Event, Ir, Op};
+use crate::ir::{Event, Ir, LabelKind, Op};
+use crate::labels::{self, Class};
 use crate::scenario::{self as file, ScenarioLabel};
 use crate::vm::{self, Input};
 use crate::workbench::{
@@ -44,13 +45,9 @@ const KILL_ODDS: u64 = 8 * TPS as u64 * 100;
 const RESPAWN_SECONDS: u32 = 5;
 /// The first declared object, the first bounce spot and the first edited
 /// object.
-const OBJECT_BASE: u32 = 0x100;
-/// The most labelled objects a match places.
-const MAX_OBJECTS: usize = 64;
+const OBJECT_BASE: u32 = file::MAP_BASE;
 const SPOT_BASE: u32 = 0x200;
 const EDIT_BASE: u32 = 0x300;
-/// Labels with one object a team; any other label gets three, numbered.
-const TEAM_WORDS: [&str; 5] = ["spawn", "return", "flag", "bomb", "base"];
 /// Actor classes an `on actor_kill` is reported with, when the script
 /// names one of them.
 const CLASSES: [&str; 8] = ["grunt", "jackal", "elite", "hunter", "brute", "drone", "flood", "sentinel"];
@@ -318,31 +315,38 @@ fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
     v
 }
 
-/// The labelled objects the script names: one a team for a label that
-/// reads as a team's (`ctf_flag_spawn`), three numbered 0 to 2 for any
-/// other (`hill_corner`, `checkpoint`).
+/// The map a match is played on: [`labels::minimal`] for the script's label
+/// table, so each label has its kind, its count, its numbers and a member
+/// for each team the label asks for, and the match is never a blocked one.
+/// A label the minimal map leaves empty (`objects`, `at most n`) gets a
+/// member for each team in play, numbered in turn when it is numbered, so the match plays what the label is
+/// for: an Oddball map with no ball spawn, or a CTF map with no team's
+/// flag spawn, scores nothing. A free-for-all match has teams 0 and 1,
+/// which only a `per team` label reads.
 fn objects(ir: &Ir, teams: u8) -> Vec<ScenarioLabel> {
-    let mut out = Vec::new();
-    for label in ir.labels.iter().map(|l| &l.text) {
-        if label.is_empty() {
-            continue;
-        }
-        let per_team = TEAM_WORDS.iter().any(|w| label.contains(w));
-        let count = if per_team { teams.max(2) } else { 3 };
-        for n in 0..count {
-            if out.len() >= MAX_OBJECTS {
-                return out;
-            }
-            out.push(ScenarioLabel {
-                label: label.clone(),
-                object: OBJECT_BASE + out.len() as u32,
-                number: i32::from(n),
-                placement: None,
-                team: per_team.then_some(n),
-            });
-        }
+    let in_play: Vec<u8> = if teams >= 2 { (0..teams).collect() } else { vec![0, 1] };
+    let mut census = labels::minimal(ir, &in_play);
+    for def in ir.labels.iter().filter(|d| d.max >= 1) {
+        census.labels.entry(def.text.clone()).or_insert_with(|| {
+            let class = match def.kind {
+                LabelKind::Object => Class::Object,
+                LabelKind::Zone => Class::Volume,
+                LabelKind::Spawn => Class::Spawn,
+            };
+            let first = def.range().map_or(0, |r| *r.start());
+            in_play
+                .iter()
+                .take(def.max as usize)
+                .enumerate()
+                .map(|(i, &t)| labels::Member {
+                    class,
+                    number: def.numbered().then_some(first + i as i32),
+                    team: Some(t),
+                })
+                .collect()
+        });
     }
-    out
+    file::things_of(&census, OBJECT_BASE)
 }
 
 // ---------- the director ----------
@@ -382,7 +386,14 @@ impl Director {
         let wants = Wants::of(ir);
         let field = |name: &str| scenario.variant.get(name).copied().unwrap_or(0);
         let mut d = Director {
-            objects: scenario.labelled.clone(),
+            // A starting location is no place to stand in.
+            objects: scenario
+                .map
+                .iter()
+                .flatten()
+                .filter(|o| o.class_in(ir) != Class::Spawn)
+                .cloned()
+                .collect(),
             bots: Vec::new(),
             // Apart from the VM's own stream, which the match seed also
             // starts.
@@ -778,7 +789,7 @@ fn opening(ir: &Ir, setup: &Setup) -> (Scenario, u8) {
                 unit: Some(unit_of(slot)),
             })
             .collect(),
-        labelled: objects(ir, teams),
+        map: Some(objects(ir, teams)),
         teams: if teams >= 2 { (0..teams).collect() } else { Vec::new() },
         variant,
         options: None,
@@ -1198,7 +1209,7 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
             .collect(),
         teams: (!s.teams.is_empty()).then(|| s.teams.clone()),
         variant: s.variant.clone(),
-        labelled: s.labelled.clone(),
+        map: s.map.clone(),
         round_time_left: s.round_time,
         ticks,
     };
@@ -1209,18 +1220,46 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
 mod tests {
     use super::*;
 
+    /// A script with a label table of each kind, built from `LabelDef`s so
+    /// the test reads no built-in's source.
+    fn labelled_ir() -> Ir {
+        use crate::ir::label_flags::*;
+        use crate::ir::{LabelDef, LabelKind};
+        let mut ir = crate::compile(crate::builtin::SLAYER).unwrap();
+        ir.labels = vec![
+            LabelDef { text: "goal".into(), kind: LabelKind::Zone, min: 1, max: 1, flags: SINGLE, lo: 0, hi: 0 },
+            LabelDef { text: "checkpoint".into(), kind: LabelKind::Zone, min: 0, max: 256, flags: NUMBERED | RANGE, lo: 0, hi: 2 },
+            LabelDef { text: "home".into(), kind: LabelKind::Zone, min: 0, max: 16, flags: PER_TEAM, lo: 0, hi: 0 },
+            LabelDef { text: "start".into(), kind: LabelKind::Spawn, min: 2, max: 256, flags: 0, lo: 0, hi: 0 },
+            LabelDef::objects("barrier"),
+        ];
+        crate::verify(&ir).unwrap();
+        ir
+    }
+
     #[test]
-    fn a_label_gets_objects_by_its_name() {
-        let ir = crate::compile(crate::builtin::CTF).unwrap();
+    fn a_match_is_played_on_the_minimal_map() {
+        let ir = labelled_ir();
         let o = objects(&ir, 2);
-        let spawns: Vec<&ScenarioLabel> = o.iter().filter(|o| o.label == "ctf_flag_spawn").collect();
-        assert_eq!(spawns.len(), 2);
-        assert_eq!(spawns[1].team, Some(1));
-        let ir = crate::compile(crate::builtin::KING).unwrap();
-        let o = objects(&ir, 0);
-        assert_eq!(o.len(), 3);
-        assert_eq!((o[2].number, o[2].team), (2, None));
+        let of = |label: &str| o.iter().filter(|t| t.label == label).collect::<Vec<_>>();
+        assert_eq!(of("goal").len(), 1);
+        assert_eq!(of("checkpoint").iter().map(|t| t.number).collect::<Vec<_>>(), [Some(0), Some(1), Some(2)]);
+        assert_eq!(of("home").iter().map(|t| t.team).collect::<Vec<_>>(), [Some(0), Some(1)]);
+        assert_eq!(of("start").len(), 2);
+        assert!(of("start").iter().all(|t| t.class == Some(Class::Spawn)));
+        // A label the minimal map leaves empty gets one for each team.
+        assert_eq!(of("barrier").iter().map(|t| t.team).collect::<Vec<_>>(), [Some(0), Some(1)]);
         assert!(o.iter().all(|x| x.object >= OBJECT_BASE));
+        // Four teams: a home for each.
+        assert_eq!(objects(&ir, 4).iter().filter(|t| t.label == "home").count(), 4);
+        // Free for all reads teams 0 and 1.
+        assert_eq!(objects(&ir, 0).iter().filter(|t| t.label == "home").count(), 2);
+        // And it passes the check it is played under.
+        for teams in [0u8, 2, 4] {
+            let map = objects(&ir, teams);
+            let ids: Vec<u8> = if teams >= 2 { (0..teams).collect() } else { vec![0, 1] };
+            assert_eq!(file::resolve_map(&ir, Some(&map), &ids), Ok(map));
+        }
     }
 
     #[test]

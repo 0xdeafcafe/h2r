@@ -43,7 +43,6 @@ pub(crate) fn complete(m: &Model, off: usize) -> Vec<CompletionItem> {
         t.k == K::Str && t.s < off && (off < t.e || (off == t.e && !scan::closed(m.src, t)))
     }) {
         return match si.checked_sub(1).map(|j| m.text(&m.code[j])) {
-            Some("labelled") => labels(m, false),
             Some("palette") => palettes(m, false),
             _ => Vec::new(),
         };
@@ -96,9 +95,6 @@ pub(crate) fn complete(m: &Model, off: usize) -> Vec<CompletionItem> {
     if ptext == ":" {
         return types(m);
     }
-    if ptext == "labelled" {
-        return labels(m, true);
-    }
     if ptext == "palette" && depth > 0 {
         return palettes(m, true);
     }
@@ -107,7 +103,9 @@ pub(crate) fn complete(m: &Model, off: usize) -> Vec<CompletionItem> {
             .and_then(|j| j.checked_sub(1))
             .is_some_and(|k| matches!(m.text(&m.code[k]), "count" | "first" | "pick"));
     if ptext == "each" || set_call {
-        return sets();
+        let mut out = sets();
+        out.extend(labels(m));
+        return out;
     }
     if depth == 0 {
         if line_start {
@@ -366,19 +364,12 @@ fn types(m: &Model) -> Vec<CompletionItem> {
     out
 }
 
-fn labels(m: &Model, quoted: bool) -> Vec<CompletionItem> {
+fn labels(m: &Model) -> Vec<CompletionItem> {
     m.defs
         .iter()
         .enumerate()
         .filter(|(_, d)| d.kind == DefKind::Label)
-        .map(|(d, def)| {
-            let insert = if quoted {
-                format!("\"{}\"", def.name)
-            } else {
-                def.name.clone()
-            };
-            item(&def.name, kind::VALUE, "label", info::def_markdown(m, d), insert, PLAIN_TEXT)
-        })
+        .map(|(d, def)| item(&def.name, kind::VALUE, "label", info::def_markdown(m, d), def.name.clone(), PLAIN_TEXT))
         .collect()
 }
 
@@ -404,14 +395,6 @@ fn sets() -> Vec<CompletionItem> {
         plain("players", kind::KEYWORD, "set", doc("players")),
         plain("teams", kind::KEYWORD, "set", doc("teams")),
         plain("objectives", kind::KEYWORD, "set", doc("objectives")),
-        item(
-            "objects labelled",
-            kind::SNIPPET,
-            "set",
-            doc("objects"),
-            "objects labelled \"${1:label}\"",
-            SNIPPET,
-        ),
         item(
             "pick",
             kind::FUNCTION,
@@ -574,7 +557,7 @@ fn expression(m: &Model, off: usize) -> Vec<CompletionItem> {
             SNIPPET,
         ));
     }
-    for w in ["true", "false", "none", "not", "and", "or", "team", "text", "labelled"] {
+    for w in ["true", "false", "none", "not", "and", "or", "team", "text", "is"] {
         out.push(plain(w, kind::KEYWORD, "", info::keyword_doc(w).unwrap_or("")));
     }
     out.push(plain(

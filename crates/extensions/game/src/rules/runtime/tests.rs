@@ -15,6 +15,8 @@ use crate::rules::feature::Shared;
 
 /// The carrier's own scoring, `role_traits` and the objectives on the host.
 mod hosted;
+/// The start gate and the label reads.
+mod gate;
 
 const GAME_GLOBALS: u32 = 0x1000_0000;
 const GAME_TIME: u32 = 0x1000_2000;
@@ -244,8 +246,16 @@ fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
     let store = Local::default();
     // An example is compiled in: found by its prefix, never fetched.
     let s = shared(&store, Box::new(no_fetch));
-    // Bounce points 2 (raw 2 at bit 4); kill points 1, suicides free.
-    let (m, datums) = guest(block(prefix(&id), 2 << 4), SLAYER);
+    // Bounce points 2, every penalty off.
+    use ::rules::ir::OptionValue::{Bool, Int};
+    let bits = ir
+        .pack_options(&[
+            ("bounce_points".into(), Int(2)),
+            ("suicide_costs".into(), Bool(false)),
+            ("bounced_costs".into(), Bool(false)),
+        ])
+        .unwrap();
+    let (m, datums) = guest(block(prefix(&id), bits), SLAYER);
     s.lock().start(&m, false);
     let state = s.lock().state();
     assert!(state.running, "{state:?}");
@@ -282,8 +292,8 @@ fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
 
 /// A host award reaches `on bounce` with its chain's count and whether it
 /// was a Monster, and a Bounced reaches `on bounced`: with Superbounce's
-/// default options but the suicide penalty off (bit 3, so the Bounced
-/// penalty is the one that takes the point), a double scores 2, a Monster
+/// default options but the suicide penalty off (so the Bounced penalty is
+/// the one that takes the point), a double scores 2, a Monster
 /// single 2, a Bounced -1.
 #[test]
 fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
@@ -292,7 +302,8 @@ fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
     let id = ir.id();
     let store = Local::default();
     let s = shared(&store, Box::new(no_fetch));
-    let (m, _) = guest(block(prefix(&id), ir.default_options() & !(1 << 3)), SLAYER);
+    let bits = ir.pack_options(&[("suicide_costs".into(), ::rules::ir::OptionValue::Bool(false))]).unwrap();
+    let (m, _) = guest(block(prefix(&id), bits), SLAYER);
     s.lock().start(&m, false);
     assert!(s.lock().state().running);
     let mut monster = award(0, Some(80), 1);
@@ -400,7 +411,7 @@ fn a_script_the_host_cannot_run_is_refused_by_the_entry_or_event_it_names() {
 
 #[test]
 fn a_ranked_game_refuses_a_script_that_grants_edits_by_the_capability() {
-    let src = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+    let src = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
     let ir = ::rules::compile(src).unwrap();
     let blob = ir.encode();
     let id = ir.id();
@@ -547,7 +558,7 @@ use crate::game_variants::GameScripts;
 use crate::game_variants::store::{Origin, Store as VariantStore};
 use live_hle::game_variants::LiveVariant;
 
-const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { score(killer, 2) }\n";
+const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { if killer != none { score(killer, 2) } }\n";
 
 type Answer = Box<dyn Fn(&str, std::time::Duration) -> Result<Vec<u8>, String> + Send + Sync>;
 

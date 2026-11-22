@@ -143,7 +143,9 @@ fn every_builtin_reaches_an_end() {
     let m = end(builtin::INFECTION, 8, 0);
     assert_eq!(m.end, End::Script);
     assert!(matches!(m.winner, Winner::Team(_)));
-    let m = end(builtin::SIEGE, 8, 0);
+    // Siege's attackers take the generated map's zones, and each one
+    // restarts the phase clock: a long round lets the last one run out.
+    let m = sim::simulate(builtin::SIEGE, &Setup { length: Some(1200), ..setup(8, 0, 1) }).unwrap();
     assert_eq!((m.end, m.winner), (End::Script, Winner::Team(1)));
     // Somebody scores in the modes that score.
     for src in [builtin::ODDBALL, builtin::KING, builtin::TERRITORIES, builtin::CTF, builtin::RACE] {
@@ -269,11 +271,12 @@ fn the_scenario_file_holds_the_match() {
     assert_eq!(scores, m.trace.scores);
 
     // Labelled objects with their teams, and the events past the engine's.
-    let m = sim::simulate(builtin::CTF, &setup(4, 2, 2)).unwrap();
+    const BASES: &str = "rules \"Bases\" 1\ncarrier slayer\nlabel bases: zones per team\non tick {\n    for each bases b { }\n}\n";
+    let m = sim::simulate(BASES, &setup(4, 2, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
-    assert_eq!(file.labelled, m.scenario.labelled);
-    assert!(file.labelled.iter().any(|l| l.team == Some(1)));
+    assert_eq!(file.map, m.scenario.map);
+    assert!(file.map.iter().flatten().any(|l| l.team == Some(1)));
     let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
@@ -330,7 +333,7 @@ fn a_seated_score_limit_ends_the_run() {
 
 #[test]
 fn a_player_entering_a_labelled_object_is_inside_it() {
-    let src = "rules \"Pad\" 1\ncarrier slayer\non tick {\n    for each objects labelled \"pad\" z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
+    let src = "rules \"Pad\" 1\ncarrier slayer\nlabel pad: zones\non tick {\n    for each pad z {\n        for each players p where inside(p, z) { score(p, 1) }\n    }\n}\n";
     let zone = |tick, enter: bool, slot: u8| Step {
         tick,
         input: if enter {
@@ -341,7 +344,7 @@ fn a_player_entering_a_labelled_object_is_inside_it() {
     };
     let s = Scenario {
         players: seats(2),
-        labelled: vec![ScenarioLabel { label: "pad".into(), object: 7, number: 0, placement: None, team: None }],
+        map: Some(vec![ScenarioLabel { number: Some(0), ..ScenarioLabel::new("pad", 7) }]),
         ticks: 10,
         start: true,
         // Player 0 stands on it for ticks 1 to 3; player 1 dies on it.
@@ -362,7 +365,7 @@ fn a_spawned_objective_is_carried_by_who_picks_it_up() {
     let ball = workbench::SPAWNED_BASE;
     let s = Scenario {
         players: seats(2),
-        labelled: vec![ScenarioLabel { label: "oddball_spawn".into(), object: 40, number: 0, placement: None, team: None }],
+        map: Some(vec![ScenarioLabel { number: Some(0), ..ScenarioLabel::new("oddball_spawn", 40) }]),
         variant: BTreeMap::from([("oddball_ball_count".to_string(), 1)]),
         ticks: 100,
         start: true,

@@ -35,6 +35,24 @@ export interface Problem { line: number; col: number; message: string }
 export interface HandlerCost { event: string; worst_ops: number }
 export interface SlotUse { scope: string; used: number; limit: number }
 export interface CapLine { name: string; words: string; grantable: boolean; known: boolean }
+/** One label a script declares, as "What a map needs" lists it. */
+export interface LabelLine {
+  /** What the map calls it. */
+  text: string;
+  kind: "object" | "zone" | "spawn";
+  min: number;
+  /** Null when the label states no limit. */
+  max: number | null;
+  single: boolean;
+  numbered: boolean;
+  /** The numbers a numbered label takes, both inclusive. */
+  range: [number, number] | null;
+  per_team: boolean;
+  /** The requirement in Forge's words. */
+  needs: string;
+}
+/** What a map holds, as a scenario's `map` lists it. */
+export interface MapThing { label: string; object: number; number: number | null; team: number | null; class: "object" | "flag" | "volume" | "spawn" | null }
 export interface CheckReport {
   worst_tick_ops: number;
   budget: number;
@@ -46,6 +64,10 @@ export interface CheckReport {
   ir_limit: number;
   capabilities: CapLine[];
   unhostable: string[];
+  /** The labels the script declares: what a map needs. */
+  labels: LabelLine[];
+  /** The smallest map that passes. */
+  minimal: MapThing[];
 }
 /** An option a script declares (`option kill_points: int 1..5 = 1 ...`),
  *  as the check lists it when the server sends them. */
@@ -127,6 +149,23 @@ export function parseProblems(v: unknown): Problem[] {
   return arr(v).map(obj).map((p) => ({ line: Math.max(0, Math.floor(num(p.line))), col: Math.max(0, Math.floor(num(p.col))), message: str(p.message) || "error" }));
 }
 
+const CLASSES = ["object", "flag", "volume", "spawn"] as const;
+const readMapThing = (v: unknown): MapThing => {
+  const o = obj(v);
+  const cls = CLASSES.find((c) => c === o.class) ?? null;
+  return { label: str(o.label), object: num(o.object), number: typeof o.number === "number" ? o.number : null, team: typeof o.team === "number" ? o.team : null, class: cls };
+};
+const readLabelLine = (v: unknown): LabelLine => {
+  const l = obj(v), range = arr(l.range);
+  const kind = l.kind === "zone" || l.kind === "spawn" ? l.kind : "object";
+  return {
+    text: str(l.text), kind, min: num(l.min), max: typeof l.max === "number" ? l.max : null,
+    single: l.single === true, numbered: l.numbered === true,
+    range: range.length === 2 && range.every((x) => typeof x === "number") ? [range[0] as number, range[1] as number] : null,
+    per_team: l.per_team === true, needs: str(l.needs),
+  };
+};
+
 function parseReport(v: unknown): CheckReport | null {
   if (!v || typeof v !== "object") return null;
   const r = obj(v);
@@ -141,6 +180,8 @@ function parseReport(v: unknown): CheckReport | null {
     ir_limit: num(r.ir_limit) || 64 * 1024,
     capabilities: arr(r.capabilities).map(obj).map((c) => ({ name: str(c.name), words: str(c.words), grantable: c.grantable === true, known: c.known !== false })),
     unhostable: strs(r.unhostable),
+    labels: arr(r.labels).map(readLabelLine),
+    minimal: arr(r.minimal).map(readMapThing),
   };
 }
 
@@ -507,7 +548,8 @@ const readObjects = (v: unknown): ScenarioObject[] | undefined => {
 /** A scenario as the server sends one (a generated match's, in
  *  `POST /v1/rules/run`'s shape) as a draft the page shows and edits. */
 export function draftOfWire(v: unknown): ScenarioDraft {
-  const b = obj(v), variant = readVariant(b.variant), objects = readObjects(b.labelled);
+  // The server names the map `map`; `labelled` is its older name.
+  const b = obj(v), variant = readVariant(b.variant), objects = readObjects(b.map ?? b.labelled);
   const events = arr(b.timeline).map(obj).flatMap((t) => arr(t.events).map((e) => readEvent(e, whole(t.tick, 0)))).filter((e): e is ScenarioEvent => e !== null);
   const last = events.reduce((m, e) => Math.max(m, e.tick), 0);
   return {
@@ -572,15 +614,16 @@ export interface Trace {
   worst_tick_ops?: number;
   scores: Array<{ slot: number; score: number }>;
 }
-/** A run whose script did not build. */
-export interface RunFailed { ok: false; errors: Problem[] }
+/** A run whose script did not build, or whose map the script's labels
+ *  refuse (`map`: each problem's text; nothing ran). */
+export interface RunFailed { ok: false; errors: Problem[]; map?: string[] }
 
 const vars = (v: unknown): TraceVar[] => arr(v).map(obj).map((x) => ({ name: str(x.name), value: str(x.value) }));
 
 /** `POST /v1/rules/run`'s answer. */
 export function parseTrace(body: unknown): Trace | RunFailed {
   const b = obj(body);
-  if (b.ok !== true && Array.isArray(b.errors)) return { ok: false, errors: parseProblems(b.errors) };
+  if (b.ok !== true && Array.isArray(b.errors)) return { ok: false, errors: parseProblems(b.errors), ...(strs(b.map).length ? { map: strs(b.map) } : {}) };
   return {
     ok: b.ok === true,
     hash: str(b.hash),

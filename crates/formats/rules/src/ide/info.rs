@@ -268,7 +268,9 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "global" | "var" => "A variable: `global|player|team|object var name: type = init`.",
         "player" => "A player, or `none`. `player var` declares a variable of each player.",
         "team" => "A team, or `none`; `team 0` is a team value. `team var` declares a variable of each team.",
-        "object" => "An object handle, or `none`. `object var` declares a variable of each labelled object.",
+        "object" => "An object handle, or `none` as `object?`. `object var` declares a variable of each object.",
+        "zone" => "An object with a volume: a Forge trigger volume, or a netgame flag. A zone is an object.",
+        "weapon" => "A tag path that must be a weapon's. A weapon is a tag.",
         "table" => "Constant rows of typed columns: `table t: (k: int, v: int) = [(0, 1)]`; `t[i].v` reads a cell.",
         "fn" => "A function: inlined at each call. It has no value and does not recurse.",
         "on" => "A handler: `on kill(victim, killer) { ... }`. It runs to completion.",
@@ -280,11 +282,12 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "not" => "Boolean negation.",
         "true" | "false" => "A `bool`.",
         "none" => "No player, team, object or tag.",
-        "labelled" => "A Forge label: `labelled \"x\"`. `objects labelled \"x\"` is a set.",
+        "label" => "A Forge label the map supplies: `label goal: zone`, `label barrier: objects numbered`.",
+        "is" => "Whether an object is a member of a label: `o is goal`.",
         "text" => "A message: `text \"...\"`, or a string-table index.",
         "budget" => "A grant's uses: `budget 20`.",
         "players" => "The set of players, by slot.",
-        "objects" => "`objects labelled \"x\"`: the objects with a Forge label, by placement.",
+        "objects" | "zones" | "spawns" => "A label's kind: `label barrier: objects`. A set of placements is a declared label.",
         "objectives" => "The objective registry's objects, at most 8, by handle.",
         "variant" => "The retail variant record: `variant.<field>` reads a field.",
         _ => return None,
@@ -357,7 +360,7 @@ pub(crate) fn def_markdown(m: &Model, d: usize) -> String {
             let uses = m.refs.iter().filter(|r| r.def == d).count();
             format!(
                 "{}\nA Forge label, used {uses} {} in this script.",
-                code_block(&format!("labelled \"{name}\"")),
+                code_block(&format!("label {name}")),
                 if uses == 1 { "time" } else { "times" }
             )
         }
@@ -840,6 +843,12 @@ pub(crate) fn symbols(m: &Model) -> Vec<Symbol> {
                 f.name.clone(),
                 d.map_or_else(String::new, |d| format!("fn {}", fn_signature(m, d).0)),
                 symbol_kind::FUNCTION,
+                Vec::new(),
+            ),
+            Item::Label(l) => (
+                l.name.clone(),
+                format!("label: {}{}", l.kind.name, if l.kind.optional { "?" } else { "" }),
+                symbol_kind::CONSTANT,
                 Vec::new(),
             ),
             Item::On { event, args, .. } => {
