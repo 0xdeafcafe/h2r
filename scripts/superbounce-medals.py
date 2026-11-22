@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Draw the four superbounce medal glyphs (docs/game/hud-kit.md, "The medals").
+"""Draw the superbounce medal glyphs (docs/game/hud-kit.md, "The medals").
 
-Writes the art as data, `crates/formats/font/src/medals/art.rs`: four
+Writes the art as data, `crates/formats/font/src/medals/art.rs`:
 24 x 24 ARGB 4444 pictures that `font::medals` adds to the HUD message fonts.
 The pictures are drawn here from discs, polygons and gradients in the manner
 of Halo 2's multi-kill medals (a shaded disc lit from the upper left, the tier
@@ -11,10 +11,17 @@ nothing is copied from a disc font or anyone's artwork. New art is a new
 
     python3 scripts/superbounce-medals.py            # write art.rs
     python3 scripts/superbounce-medals.py --preview DIR [--h2 BIN] [--disc ISO]
+    python3 scripts/superbounce-medals.py --rs FILE --art DIR [--only id,id]
 
 `--preview` also writes a sheet (each glyph at its size and 8 times, and a
 mock notification line beside a retail one, drawn by `h2 font`) to DIR. It
 needs Pillow; writing art.rs needs nothing outside the standard library.
+
+`--art` writes each medal's files to DIR as `scripts/live-medals.py` does
+(Pillow again): game/<id>.png (24 by 24, ARGB 4444), big/<id>.png (8 times),
+site/<id>.webp and @2x (64 and 128), hires/<id>-512.png and -256.png (the
+drawing sampled again at 512, and halved: web/art-source/medals/), and
+sheet.png, every bounce medal side by side. `--only` keeps a few ids.
 """
 
 import argparse
@@ -36,6 +43,7 @@ MEDALS = [
     (0xE2A4, "CHAIN_BOUNCE", "Chain bounce!"),
     (0xE2A5, "BOUNCETACULAR", "Bouncetacular!"),
     (0xE2A6, "BOUNCED", "Bounced!"),
+    (0xE2A8, "MONSTER_BOUNCE", "Monster bounce!"),
 ]
 
 # Each medal: the disc from its top to its bottom (the retail discs are
@@ -43,6 +51,8 @@ MEDALS = [
 # strip's colour, the chevrons as rows top first (a count of chevrons in
 # each row: the tier, as a multi-kill disc counts its stars), and for the
 # top tier a spiked rim. `BOUNCED` is a fall through a broken strip.
+# `MONSTER_BOUNCE` is the Superbounce's one chevron launched past the top
+# of its disc, off two seams that fan out in a V from one point.
 STYLE = {
     # Slate blue, one pale chevron.
     "SUPERBOUNCE": dict(
@@ -80,7 +90,21 @@ STYLE = {
         top=(0.50, 0.12, 0.12), bottom=(0.86, 0.36, 0.28),
         face=((1.0, 0.94, 0.45), (0.98, 0.58, 0.08)), edge=(0.30, 0.10, 0.0),
         strip=(0.24, 0.04, 0.04), rows=[], fall=True),
+    # Hot orange in a spiked crimson rim; the Superbounce's pale chevron,
+    # taller and out past the disc's top, over a V of seams.
+    "MONSTER_BOUNCE": dict(
+        top=(1.0, 0.34, 0.10), bottom=(1.0, 0.80, 0.26),
+        face=((0.92, 1.0, 1.0), (0.40, 0.84, 0.98)), edge=(0.04, 0.18, 0.36),
+        strip=(0.40, 0.05, 0.02), rows=[], monster=True,
+        rim=((1.0, 0.46, 0.20), (0.52, 0.05, 0.04))),
 }
+
+# The Monster Bounce's marks: its chevron (centre x, tip y, half width,
+# height, thickness), whose tip stands above the disc on the rim, and the
+# seams (the point they fan from, the half width and height of the fan, a
+# seam's thickness).
+MONSTER_MARK = (SIZE / 2, 2.7, 6.2, 8.6, 3.2)
+MONSTER_SEAMS = (SIZE / 2, 20.3, 3.3, 6.6, 1.4)
 
 
 def mix(a, b, t):
@@ -142,6 +166,16 @@ def chevrons(rows, disc_r):
     return out
 
 
+def mark_face(p, x, y, d, tip, h, th):
+    """A chevron's colour at (x, y), `d` inside it: its face from top to
+    bottom, and its dark edge."""
+    lo, hi = min(tip, tip + h) - th / 2, max(tip, tip + h) + th / 2
+    face = mix(p["face"][0], p["face"][1], clamp((y - lo) / (hi - lo)))
+    if d > -min(0.75, th * 0.3):
+        face = mix(face, p["edge"], 0.8)
+    return face
+
+
 def sample(name, x, y):
     """Straight RGBA (0..1) of the picture at (x, y), in pixels."""
     p = STYLE[name]
@@ -164,6 +198,15 @@ def sample(name, x, y):
             if r < disc_r + 0.6:
                 col = mix(col, (0.2, 0.12, 0.05), 0.55)
     if r > disc_r:
+        if p.get("monster"):
+            # The chevron's tip, past the disc: over the rim, and alone
+            # above it.
+            mx, tip, hw, h, th = MONSTER_MARK
+            d = chevron_dist(x, y, mx, tip, hw, h, th)
+            if d < 0:
+                return (*mark_face(p, x, y, d, tip, h, th), 1.0)
+            if col and chevron_dist(x - 0.6, y - 0.8, mx, tip, hw, h, th) < 0:
+                col = mix(col, mix(p["rim"][1], (0, 0, 0), 0.4), 0.25)
         return (*col, 1.0) if col else (0.0, 0.0, 0.0, 0.0)
     t = clamp((y - (cy - disc_r)) / (2 * disc_r))
     col = mix(p["top"], p["bottom"], t ** 1.3)
@@ -184,6 +227,16 @@ def sample(name, x, y):
             if y < sy + 0.6:
                 col = mix(p["strip"], p["bottom"], 0.6)
         marks = [(cx, cy + 7.6, 5.8, -8.0, 3.0)]
+    elif p.get("monster"):
+        # Two seams from one point low on the disc, fanning up and out: a
+        # V, lit along its upper edge as the strip is along its lower.
+        sx, sy, sw, sh, sth = MONSTER_SEAMS
+        d = chevron_dist(x, y, sx, sy, sw, -sh, sth)
+        if d < 0:
+            col = p["strip"]
+            if chevron_dist(x, y + 0.6, sx, sy, sw, -sh, sth) >= 0:
+                col = mix(p["strip"], p["bottom"], 0.7)
+        marks = [MONSTER_MARK]
     else:
         sy, sh, sw = strip(disc_r)
         if abs(dx) <= sw and sy <= y <= sy + sh:
@@ -198,11 +251,7 @@ def sample(name, x, y):
     for (mx, tip, hw, h, th) in marks:
         d = chevron_dist(x, y, mx, tip, hw, h, th)
         if d < 0:
-            lo, hi = min(tip, tip + h) - th / 2, max(tip, tip + h) + th / 2
-            face = mix(p["face"][0], p["face"][1], clamp((y - lo) / (hi - lo)))
-            if d > -min(0.75, th * 0.3):
-                face = mix(face, p["edge"], 0.8)
-            col = face
+            col = mark_face(p, x, y, d, tip, h, th)
     return (*col, 1.0)
 
 
@@ -286,6 +335,101 @@ def to_image(pic):
     return im
 
 
+def medal_id(name):
+    return name.lower().replace("_", "-")
+
+
+HIRES = 512
+HIRES_SS = 3
+
+
+def draw_hires(name):
+    """The same drawing sampled at 512 by 512, 3 by 3 samples a pixel, 8
+    bits a channel: straight RGBA bytes, as `scripts/live-medals.py --hires`
+    draws it. Not the 24-pixel picture enlarged."""
+    k = SIZE / HIRES
+    n2 = HIRES_SS * HIRES_SS
+    out = bytearray()
+    for py in range(HIRES):
+        for px in range(HIRES):
+            ar = ag = ab = aa = 0.0
+            for sy in range(HIRES_SS):
+                yy = (py + (sy + 0.5) / HIRES_SS) * k
+                for sx in range(HIRES_SS):
+                    r, g, b, a = sample(name, (px + (sx + 0.5) / HIRES_SS) * k, yy)
+                    if a:
+                        ar += r
+                        ag += g
+                        ab += b
+                        aa += 1.0
+            if aa:
+                out += bytes((int(round(clamp(ar / aa) * 255)), int(round(clamp(ag / aa) * 255)),
+                              int(round(clamp(ab / aa) * 255)), int(round(aa / n2 * 255))))
+            else:
+                out += bytes(4)
+    return bytes(out)
+
+
+def site_images(im):
+    """The art pack's two pictures, as web/public/art/ART.md's Batch 07
+    makes them: the glyph 5 times (120) centred on 128, and that
+    box-filtered to 60 on 64."""
+    from PIL import Image
+    up = im.resize((SIZE * 5, SIZE * 5), Image.NEAREST)
+    two = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+    two.alpha_composite(up, (4, 4))
+    one = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    one.alpha_composite(up.resize((60, 60), Image.BOX), (2, 2))
+    return one, two
+
+
+def art(out_dir, pics, only):
+    """The medals' files, laid out as `scripts/live-medals.py --out` lays
+    out Live's, and sheet.png: every bounce medal at its size, 8 times and
+    at the site's sizes, and those of `only` at 256 from the hi-res."""
+    from PIL import Image, ImageDraw
+    for sub in ("game", "big", "site", "hires"):
+        os.makedirs(os.path.join(out_dir, sub), exist_ok=True)
+    imgs = {name: to_image(pic) for (_, name, _), pic in zip(MEDALS, pics)}
+    names = [n for (_, n, _) in MEDALS if not only or medal_id(n) in only]
+    halves = {}
+    for name in names:
+        mid, im = medal_id(name), imgs[name]
+        im.save(os.path.join(out_dir, "game", f"{mid}.png"))
+        im.resize((SIZE * 8, SIZE * 8), Image.NEAREST).save(os.path.join(out_dir, "big", f"{mid}.png"))
+        one, two = site_images(im)
+        one.save(os.path.join(out_dir, "site", f"{mid}.webp"), lossless=True)
+        two.save(os.path.join(out_dir, "site", f"{mid}@2x.webp"), lossless=True)
+        big = Image.frombytes("RGBA", (HIRES, HIRES), draw_hires(name))
+        half = big.convert("RGBa").resize((256, 256), Image.BOX).convert("RGBA")
+        big.save(os.path.join(out_dir, "hires", f"{mid}-512.png"), optimize=True)
+        half.save(os.path.join(out_dir, "hires", f"{mid}-256.png"), optimize=True)
+        halves[name] = half
+    bg, ink = (28, 30, 38, 255), (235, 235, 240, 255)
+    z, pad = 8, 16
+    cell = SIZE * z + pad
+    w = pad + len(MEDALS) * cell
+    h = pad * 6 + 14 + SIZE + SIZE * z + 64 + 128 + (256 + pad if halves else 0)
+    out = Image.new("RGBA", (max(w, pad + len(halves) * (256 + pad)), h), bg)
+    dr = ImageDraw.Draw(out)
+    for i, (_, name, line) in enumerate(MEDALS):
+        x, y, im = pad + i * cell, pad, imgs[name]
+        dr.text((x, y), line, fill=ink)
+        y += 14 + pad
+        out.alpha_composite(im, (x, y))
+        y += SIZE + pad
+        out.alpha_composite(im.resize((SIZE * z, SIZE * z), Image.NEAREST), (x, y))
+        y += SIZE * z + pad
+        one, two = site_images(im)
+        out.alpha_composite(one, (x, y))
+        out.alpha_composite(two, (x, y + 64 + pad))
+    for i, name in enumerate(halves):
+        out.alpha_composite(halves[name], (pad + i * (256 + pad), h - 256 - pad))
+    path = os.path.join(out_dir, "sheet.png")
+    out.save(path)
+    return path
+
+
 def h2_line(h2, disc, font, text, out):
     cmd = [h2, "font", disc, font, text, "--glyph-colors", "--color", "FFFFFF",
            "--out", out, "--force"]
@@ -330,6 +474,7 @@ def preview(out_dir, pics, h2, disc):
                     "CHAIN_BOUNCE": (0xE041, "Killtacular!"),
                     "BOUNCETACULAR": (0xE042, "Killtrocity!"),
                     "BOUNCED": (0xE043, "Killimanjaro!"),
+                    "MONSTER_BOUNCE": (0xE042, "Killtrocity!"),
                 }[name]
                 retail = chr(glyph) + " " + words_r
                 b = os.path.join(tmp, "retail.png")
@@ -363,6 +508,8 @@ def main():
     ap.add_argument("--preview")
     ap.add_argument("--h2")
     ap.add_argument("--disc", default=os.environ.get("H2_DISC"))
+    ap.add_argument("--art", help="a directory for the game, big, site and hires files and sheet.png")
+    ap.add_argument("--only", help="with --art: the ids to write, comma separated")
     a = ap.parse_args()
     pics = [[argb4444(p) for p in draw(name)] for (_, name, _) in MEDALS]
     os.makedirs(os.path.dirname(a.rs), exist_ok=True)
@@ -370,6 +517,8 @@ def main():
     print(a.rs)
     if a.preview:
         print(preview(a.preview, pics, a.h2, a.disc))
+    if a.art:
+        print(art(a.art, pics, a.only.split(",") if a.only else None))
 
 
 if __name__ == "__main__":
