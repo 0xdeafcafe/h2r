@@ -194,9 +194,24 @@ and list.
 `AnimatedView` captures the resting widget bounds and opacity once.
 `seek(Phase)` reuses those buffers and computes the same pose for the same
 tick. The builder samples a page slide and fade, staggered rows and
-selection, and a modal fade. These samples use representative timing.
-The game plays the native curves from the active map. Both paths move the
-text with the other widgets on its track.
+selection, and a modal fade. The game plays the native curves from the
+active map. Both paths move the text with the other widgets on its track.
+
+**How long.** A page of ours opens in 10 ticks (333 ms) and closes in
+6 (200 ms) at the builder's 30 ticks a second (`animation::OPEN_TICKS`,
+`CLOSE_TICKS`; `Transition::ticks`). Closing is quicker than opening: a
+page leaves as soon as it is dismissed. The game holds a screen of ours
+to the same lengths, whatever the retail tracks it borrows ask for
+(`Transition::millis`, `lifecycle::cap_transition`): a screen's
+transition is its delay (`+0x44`) and length (`+0x54`) in milliseconds
+from its start (`+0x4c`), with state bit 0 set while it comes in and
+bit 1 while it goes out (`+0x42`), and the window frees a closing
+screen once they have passed. Row text (asked at every draw) holds an
+opening or closing screen of ours to its budget, and so do a close
+through `dialog_tag::close` and a press that closes one; a transition is
+only ever shortened (`lifecycle::capped`). So the editor's animation
+player (`ui.animate`, the **Transition** selector) ends where the game
+does.
 
 Use `--animation in:6`, `--animation rest`, `--animation out:4` or
 `--animation all` to append the sampled phase to each PNG and JSON name.
@@ -571,9 +586,9 @@ value column); and the focused row's description goes in a text block
 equal to Quick Options' help line (`dialog::QUICK_HELP_TEXT`, held to the
 tag's text block 0 by the disc test), which `KitScreen::dialog` and the
 Halo 1 class use unless told otherwise. A description is one line there,
-52 units at most (retail's is 51). The variant-name line stays out; the
-game type picture is retail's content and stays out of the base, and a
-page shows the focused row's icon there ("A page's header"). The pages'
+52 units at most (retail's is 51). The variant-name line and the game
+type picture are retail's content and stay out of the base; a page shows
+the focused row's label and icon there ("A page's header"). The pages'
 titles are in capitals, as Quick Options' header is.
 
 The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
@@ -637,8 +652,10 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
    Quick Options says "Temporarily change settings...", the legend in the
    same footer place.
 3. The d-pad moves and changes rows; the lobby beneath doesn't move.
-4. B closes the dialog (stderr shows no close by slot), and the lobby
-   takes input again at once. Open it again: it opens the same way.
+4. B closes the dialog (stderr shows no close by slot) within a fifth
+   of a second, and the lobby takes input again at once: a press while
+   the dialog is still fading reaches Game Setup ("Behaviour"). Open it
+   again: it opens the same way.
 5. The title is ours (slot 18 sets it on the header after the pane is
    built, as on every class); note it if it reads "Quick Options".
 
@@ -793,8 +810,35 @@ sack, flag, bomb, four squares, banner of three stars, question mark.
 
 (Halo 1's Assets row, on the campaign's Game Options page, has
 `SPARTAN`.) Each line is 52 characters at most, inside the 494-unit
-help line on the kit's measure and in the disc's font 1. The white
-variant-name line stays empty: the title bar already names the page.
+help line on the kit's measure and in the disc's font 1.
+
+The white variant-name line beside the icon names the focused row: its
+label (on a value row the label alone, the value staying in the row), so
+the name line and the pale-blue help line beneath it together describe
+the focused row. The block is Quick Options' text block 1
+(`dialog::QUICK_NAME_TEXT`, `DialogBase::name_line`, held to the tag by
+the disc test; design token `name.settings`). A class with the base's
+picture writes it after the frame's block (`list_class` `NAME_BLOCK`) and
+makes its widget in `setup_pane_footer`; `row_text` sets it through
+`Rows::name` each time the focus moves, with the description.
+`KitScreen` names the row's own label slot, the Halo 1 class the option's
+name string. The spec carries it as `ScreenSpec::name_line`, and the view
+draws the focused row's label there as the `name` widget
+(`ScreenSpec::name_text`). The test
+`ui_kit::screens::tests::the_name_line_follows_focus_in_every_state_of_each_options_page`
+holds it to the focused row in every state of each page.
+
+**Drawn over the panel.** The draw sorts a pane's widgets by depth, then
+render depth bias, then type, text (6) before bitmap (8)
+(docs/formats/ui.md "What a screen, pane and widget are"). A text block
+at bias 0 over `fs_dialog` at bias 0 or more is drawn first, and the panel
+covers it, while the picture (bias 3) shows. On a dialog's copy the description block, and the name line with it, takes
+`dialog_tag::description_bias`: the base's own help line's bias (Quick
+Options' text block 0, `DialogBase::help_block`) and one more than every
+backing bitmap the copy keeps. stderr says `<name>: description at render
+depth bias N, over the dialog's backing` as the page opens. The
+consistency rule `empty` keeps every row's line and label in the spec,
+so neither line stands empty in the preview either ("Consistency").
 
 **The picker's copy.** A on a row opens the value picker, whose
 description says what the option does and what each choice means in a
@@ -817,9 +861,11 @@ drawn.
 
 From a custom game lobby (on a Halo 1 map for Halo 1 Options), Game
 Setup: open Clanker Options. At its top left, left of the help line,
-the Spartan icon where Quick Options shows its game type, and "Bots
-join this game..." in the help line. Move down: the icon and the line
-change with each row (Count's four squares, Difficulty's skull, and so
+the Spartan icon where Quick Options shows its game type, "Clankers" in
+white in the name line beside the icon's upper half, and "Bots join this
+game..." in the help line beside its lower half, both over the panel.
+Move down: the icon, the name and the line change with each row (Count's
+four squares and "Count", Difficulty's skull and "Difficulty", and so
 on), the icon never moving from its place. A on a row: the value
 picker's right side explains the option. Halo 1 Options: Sandbox's bomb
 and HUD's helmet. Open Quick Options to compare the places.
@@ -953,6 +999,22 @@ locked), the co-op screens (Start starts or readies, Invite a Friend opens
 the friends list), the account menu, and every screen taking every input
 in every state with its spec still passing the kit's checks.
 
+**Closing.** A closing screen still holds its window, and the input
+dispatcher (`0x147dbe`) gives every press to the first window holding a
+screen, so until the window freed a closing dialog of ours the lobby
+under it took no input. A press on a closing screen of ours
+(`list_class::event_with`, state bit 1) is the screen beneath's
+(`lifecycle::while_closing`): the next screen down its own window's list
+(the value picker's page), else the first screen of the first lower
+window on its slot (Game Setup under a dialog), with a controller in
+common and not closing itself. A press inside `lifecycle::CLOSE_GUARD`
+(50 ms, the opener guard's reading) of the close starting is the
+closing press seen again and is dropped; every later one goes down
+through that screen's own event slot (`lifecycle::hand_down`). The
+tests `lifecycle::tests::the_screen_beneath_is_the_next_down_the_list_then_the_next_window`
+and `list_class::tests::a_press_while_a_dialog_closes_goes_to_the_screen_beneath`
+hold it.
+
 Rules the tables hold:
 
 - **An error clears on the next edit** (`CodeEntry::error`), and shows again with the next answer, the same error included.
@@ -1076,6 +1138,7 @@ named state without a disc and holds it to the design system:
 | `case` | a dialog's, a code entry's and a picker's title in capitals (`DYNAMIC` titles aside) |
 | `pitch` | a list's rows its skin's row height apart (`row_controls`, `row_default`) |
 | `fit` | a title and a legend fit their rectangles |
+| `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title. A page with a name line (`ScreenSpec::name_line`) names the focused row there in every state |
 
 `consistency::ALLOWED` is the short list of findings that stand, each
 with its reason (the sign-in dialog's title carries the gamertag as
@@ -1218,8 +1281,10 @@ The kit defines two transitions, **Open** (`Phase::In`) and **Close**
 (`Phase::Out`). Focus moves and page changes play the skin's native
 tracks in game, and the builder does not sample them. The transport plays,
 pauses and loops one transition, and you can scrub its timeline by tick.
-The speed runs from 0.25 to 2 times, at the builder's representative 30
-ticks a second (`animation::TICKS_PER_SECOND`). An optional onion skin
+The speed runs from 0.25 to 2 times, at the builder's 30 ticks a second
+(`animation::TICKS_PER_SECOND`); at 1 times an open plays its 333 ms
+and a close its 200 ms, the lengths the game holds a screen of ours to
+("Transitions"). An optional onion skin
 outlines the widgets two ticks before and after. `ui.animate {phase,
 frames?, out?}` writes a filmstrip PNG, the frames side by side at half
 size, each labelled with its time (`preview::filmstrip`), and returns
@@ -1268,8 +1333,9 @@ A game run has to show:
 - draw order: our dialog on top of the screen beneath, and the footer widget keeping our legend (`0x2300cf` may refill it from the tag);
 - alpha 0 hiding a widget, and tint changes taking effect while the screen is up;
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2` draw as opaque as the preview shows;
-- the native animation timing and the panel, rows and selection in both directions on the game shell and paused game;
-- input timing: key repeat, the opener-press guard, and the keyboard's return;
+- the native animation timing and the panel, rows and selection in both directions on the game shell and paused game, and what holding a screen's delay and length to the kit's budgets does to its widgets (a quicker track, or the screen freed before its tracks end);
+- input timing: key repeat, the opener-press guard, the close guard and a closing dialog's presses reaching the screen beneath, and the keyboard's return;
+- a dialog's description drawn over its backing at `dialog_tag::description_bias`;
 - that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
 - the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.
 

@@ -858,6 +858,55 @@ mod tests {
         }
     }
 
+    /// Quick Options' white name line beside the icon names the focused
+    /// row on each of our settings dialogs, in every state each page
+    /// offers and as the focus moves through its rows: the row's label
+    /// (a value row's label, its value staying in the row), white, in
+    /// Quick Options' name block above the help line.
+    #[test]
+    fn the_name_line_follows_focus_in_every_state_of_each_options_page() {
+        use crate::ui_kit::dialog::QUICK_NAME_TEXT;
+        use crate::ui_kit::view::{Kind, Widget};
+        let from = crate::ui_kit::preview::From::Synthetic;
+        for name in QUICK_PAGES {
+            let states = live(name).unwrap_or_else(|| panic!("{name}: live")).specs();
+            assert!(!states.is_empty(), "{name}: its states");
+            for (state, s) in states {
+                assert_eq!(
+                    s.name_line,
+                    Some(QUICK_NAME_TEXT.into()),
+                    "{name} [{state}]: Quick Options' name line"
+                );
+                assert!(!s.rows.is_empty(), "{name} [{state}]");
+                for (row, r) in s.rows.iter().enumerate() {
+                    let focused = ScreenSpec {
+                        focus: row,
+                        ..s.clone()
+                    };
+                    let (v, _) = from.draw(&focused, &state).unwrap();
+                    let w = v
+                        .widget("name")
+                        .unwrap_or_else(|| panic!("{name} [{state}] row {row}: no name line"));
+                    assert_eq!(
+                        w.text(),
+                        Some(r.label.trim()),
+                        "{name} [{state}] row {row}: the focused row's label"
+                    );
+                    let (label, _) = r.cells(s.style);
+                    assert_eq!(label.trim(), r.label.trim(), "{name}: the label alone");
+                    let Kind::Text { font, .. } = &w.kind else {
+                        panic!("{name}: the name line is text");
+                    };
+                    assert_eq!(*font, QUICK_NAME_TEXT.font, "{name}");
+                    let help = v.widget("description").map(|d: &Widget| d.rect);
+                    if let Some(help) = help {
+                        assert!(w.rect[2] >= help[0], "{name}: above the help line");
+                    }
+                }
+            }
+        }
+    }
+
     /// A mod's page is the pregame lobby's layout, drawn from `from`: its
     /// one row (the action) where the lobby's buttons are, the lobby's
     /// panels under it, the body and status on them, the map's picture
@@ -1160,6 +1209,18 @@ mod tests {
                 help.flags & 3,
                 1,
                 "left-justified, as TextBlock::bytes writes"
+            );
+            // The variant-name line, where a page of ours names its
+            // focused row.
+            let name = &pane.text_blocks[1];
+            let r = name.rect;
+            let q = crate::ui_kit::dialog::QUICK_NAME_TEXT;
+            assert_eq!([r.top, r.left, r.bottom, r.right], q.rect);
+            assert_eq!((name.font, name.animation.0), (q.font, q.animation));
+            assert!(
+                name.text_color.iter().all(|c| (c - 1.0).abs() < 0.02),
+                "white: {:?}",
+                name.text_color
             );
             let list = &pane.lists[0];
             assert_eq!(list.skin, QUICK_LIST.skin);

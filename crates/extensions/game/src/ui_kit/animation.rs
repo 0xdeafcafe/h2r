@@ -1,5 +1,6 @@
-//! Tick-driven transition samples for the UI builder. The game uses the
-//! native pane and list tracks selected by the same page preference.
+//! Tick-driven transition samples for the UI builder. The game plays the
+//! native pane and list tracks selected by the same page preference, held
+//! to the same open and close lengths ([`OPEN_TICKS`], [`CLOSE_TICKS`]).
 
 use std::fmt;
 
@@ -57,13 +58,28 @@ pub const SAMPLES: [Phase; 5] = [
     Phase::Out(14),
 ];
 
-const ENTER_TICKS: u32 = 12;
-const LEAVE_TICKS: u32 = 9;
-const ROW_TICKS: u32 = 7;
-const STAGGER_TICKS: usize = 6;
+/// How long a page of ours takes to open and to close, in the builder's
+/// ticks: the kit's budgets. The game holds a screen of ours to the same
+/// time ([`Transition::millis`], `crate::ui_kit::lifecycle::cap_transition`),
+/// so the editor's animation player ends where the game does. Closing is
+/// quicker than opening: a page leaves as soon as it is dismissed.
+pub const OPEN_TICKS: u32 = 10;
+pub const CLOSE_TICKS: u32 = 6;
 
-/// The builder's ticks per second: representative, as its curves are
-/// (the game plays the map's native tracks at their own rate).
+// The parts of each: the pane's fade and slide, and each row's after a
+// stagger of one tick per visible slot (capped), the selection a tick
+// after its row coming in and a tick before it going out.
+const ENTER_TICKS: u32 = OPEN_TICKS;
+const ROW_ENTER_TICKS: u32 = 6;
+const STAGGER_ENTER: usize = 3;
+const LEAVE_TICKS: u32 = CLOSE_TICKS;
+const ROW_LEAVE_TICKS: u32 = 4;
+const STAGGER_LEAVE: usize = 2;
+const _: () = assert!(STAGGER_ENTER as u32 + ROW_ENTER_TICKS + 1 <= OPEN_TICKS);
+const _: () = assert!(STAGGER_LEAVE as u32 + ROW_LEAVE_TICKS <= CLOSE_TICKS);
+
+/// The builder's ticks per second, which [`Transition::millis`] turns the
+/// budgets into the game's milliseconds with.
 pub const TICKS_PER_SECOND: u32 = 30;
 
 /// A transition the builder samples: a page opening ([`Phase::In`]) or
@@ -98,13 +114,20 @@ impl Transition {
 
     /// Ticks from its start until every part has settled: the pane's
     /// track, or the last staggered row and the selection after it,
-    /// whichever is longer.
+    /// whichever is longer ([`OPEN_TICKS`], [`CLOSE_TICKS`]).
     pub fn ticks(self) -> u32 {
-        let stagger = STAGGER_TICKS as u32 + ROW_TICKS;
         match self {
-            Transition::Open => ENTER_TICKS.max(stagger + 1),
-            Transition::Close => LEAVE_TICKS.max(stagger),
+            Transition::Open => ENTER_TICKS.max(STAGGER_ENTER as u32 + ROW_ENTER_TICKS + 1),
+            Transition::Close => LEAVE_TICKS.max(STAGGER_LEAVE as u32 + ROW_LEAVE_TICKS),
         }
+    }
+
+    /// Its length in the game, in milliseconds: the most a screen of ours
+    /// spends coming in or going out (`crate::ui_kit::lifecycle::cap_transition`
+    /// holds the screen's delay and length to it). The same time as
+    /// [`Transition::ticks`] at [`TICKS_PER_SECOND`].
+    pub fn millis(self) -> u32 {
+        self.ticks() * 1000 / TICKS_PER_SECOND
     }
 
     /// Its pose `tick` ticks in (past the end it stays settled).
@@ -193,12 +216,16 @@ impl Frame {
             Phase::In(_) | Phase::Rest => slot,
             Phase::Out(_) => self.rows.saturating_sub(1).saturating_sub(slot),
         };
-        let delay = ordinal.min(STAGGER_TICKS) as u32;
+        let stagger = match self.phase {
+            Phase::In(_) | Phase::Rest => STAGGER_ENTER,
+            Phase::Out(_) => STAGGER_LEAVE,
+        };
+        let delay = ordinal.min(stagger) as u32;
         let delay = match self.phase {
             Phase::In(_) | Phase::Rest => delay + u32::from(selected),
             Phase::Out(_) => delay.saturating_sub(u32::from(selected)),
         };
-        let row = visibility(self.phase, delay, ROW_TICKS, ROW_TICKS);
+        let row = visibility(self.phase, delay, ROW_ENTER_TICKS, ROW_LEAVE_TICKS);
         Pose {
             alpha: mix_alpha(self.pane.alpha, row),
             ..self.pane
@@ -426,6 +453,27 @@ mod tests {
         assert_eq!(Transition::Open.frames(1), vec![0]);
         assert!(Transition::Close.frames(0).is_empty());
         assert_eq!(Transition::seconds(TICKS_PER_SECOND), 1.0);
+    }
+
+    /// The budgets the game holds a screen of ours to: closing quicker
+    /// than opening, and both quick (a third of a second to open, a fifth
+    /// to close). The editor's player plays the same lengths.
+    #[test]
+    fn closing_is_quicker_than_opening_and_both_are_the_games_lengths() {
+        assert_eq!(Transition::Open.ticks(), OPEN_TICKS);
+        assert_eq!(Transition::Close.ticks(), CLOSE_TICKS);
+        assert_eq!(Transition::Open.millis(), 333);
+        assert_eq!(Transition::Close.millis(), 200);
+        assert!(Transition::Close.millis() * 3 <= Transition::Open.millis() * 2);
+        for t in Transition::ALL {
+            let seconds = Transition::seconds(t.ticks());
+            assert!((seconds * 1000.0 - t.millis() as f32).abs() < 1.0, "{t:?}");
+        }
+        // Gone at the end of the close: nothing of the page still drawn.
+        let end = Frame::new(TransitionStyle::Default, true, 11, Phase::Out(CLOSE_TICKS));
+        for part in [Part::Pane, Part::Row(0), Part::Row(10), Part::Selection(5)] {
+            assert_eq!(end.pose(part).alpha, 0, "{part:?}");
+        }
     }
 
     #[test]

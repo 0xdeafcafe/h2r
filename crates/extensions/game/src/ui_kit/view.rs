@@ -693,6 +693,17 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             rgb(d.colour),
         ));
     }
+    if let (Some(n), Some(t)) = (s.name_line, s.name_text()) {
+        let [top, left, bottom, right] = n.rect;
+        w.push(text(
+            "name".into(),
+            rect(top, left, bottom, right),
+            n.font,
+            0,
+            t,
+            rgb(n.colour),
+        ));
+    }
     if let Some(f) = s.footer_text() {
         w.push(text(
             "legend".into(),

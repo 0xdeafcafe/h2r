@@ -10,7 +10,7 @@ use dear_imgui_wgpu::ExternalTextureId;
 use boot::ui_kit::input::Input;
 
 use crate::app::ui_screens::browse::{self, Browse, Folder, Item, Root};
-use crate::app::{Action, App, Pick, UiScreens};
+use crate::app::{Action, App, Pick};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 

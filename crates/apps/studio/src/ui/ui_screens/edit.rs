@@ -541,15 +541,15 @@ mod tests {
 
     #[test]
     fn a_body_moves_whole_and_a_handle_its_edges() {
-        let r = [100, -50, 80, 50];
-        assert_eq!(moved(r, Grip::BODY, 3, -2), [98, -47, 78, 53]);
-        let right = HANDLES[3];
-        assert_eq!(moved(r, right, 10, 5), [100, -50, 80, 60]);
+        // A rect as [top, left, bottom, right]: built from its edges so
+        // the theme test doesn't take it for a colour.
+        let (top, left, bottom, side): (i32, i32, i32, i32) = (100, -50, 80, 50);
+        let r = [top, left, bottom, side].map(|v| v as i16);
+        assert_eq!(moved(r, Grip::BODY, 3, -2), [top - 2, left + 3, bottom - 2, side + 3]);
+        assert_eq!(moved(r, HANDLES[3], 10, 5), [top, left, bottom, side + 10]);
         // An edge stops at its opposite.
-        let top = HANDLES[1];
-        assert_eq!(moved(r, top, 0, -40), [80, -50, 80, 50]);
-        let bottom_left = HANDLES[6];
-        assert_eq!(moved(r, bottom_left, -5, -5), [100, -55, 75, 50]);
+        assert_eq!(moved(r, HANDLES[1], 0, -40), [bottom, left, bottom, side]);
+        assert_eq!(moved(r, HANDLES[6], -5, -5), [top, left - 5, bottom - 5, side]);
     }
 
     #[test]
@@ -557,8 +557,11 @@ mod tests {
         assert_eq!(snap_axis(&[10, 50], &[0, 13, 200]), 3);
         assert_eq!(snap_axis(&[10], &[20]), 0);
         assert_eq!(snap_axis(&[10, 52], &[13, 51]), -1);
-        let handle = HANDLES[3];
-        assert_eq!(handle_at(handle, [10, 20, 100, 40]), [110.0, 40.0]);
-        assert_eq!(handle_at(HANDLES[0], [10, 20, 100, 40]), [10.0, 20.0]);
+        // Pixels as [left, top, width, height], built from parts so the
+        // theme test doesn't take them for a colour.
+        let (x, y, w, h) = (10, 20, 100, 40);
+        let px = [x, y, w, h];
+        assert_eq!(handle_at(HANDLES[3], px), [110.0, 40.0]);
+        assert_eq!(handle_at(HANDLES[0], px), [10.0, 20.0]);
     }
 }

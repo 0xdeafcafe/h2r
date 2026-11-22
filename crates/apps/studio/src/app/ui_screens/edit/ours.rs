@@ -38,8 +38,9 @@ fn baked(screen: &str) -> Result<ScreenDoc, String> {
         .ok_or_else(|| format!("{screen}: the screen has no doc"))
 }
 
-fn parse(text: &str) -> Result<ScreenDoc, String> {
-    ScreenDoc::parse("edited", text, data::design()).map_err(|e| e.to_string())
+/// Screen `screen`'s doc from its file's text.
+fn parse(screen: &str, text: &str) -> Result<ScreenDoc, String> {
+    ScreenDoc::parse(screen, text, data::design()).map_err(|e| e.to_string())
 }
 
 fn to_yaml(doc: &ScreenDoc) -> String {
@@ -196,6 +197,11 @@ pub fn apply(screen: &str, doc: &mut ScreenDoc, w: &Widget, change: &Change) -> 
             Ok(())
         }
         Change::Rect([top, left, bottom, right]) => {
+            if matches!(id, "title" | "legend") {
+                return Err(format!(
+                    "refused: {id} sits where the header layout puts it (`layout:` in {SCREENS_DIR}/{screen}.yaml)"
+                ));
+            }
             if id.starts_with("row.") {
                 return Err(format!(
                     "refused: {id} sits where the list's layout puts it (`layout:` in {SCREENS_DIR}/{screen}.yaml)"
@@ -285,7 +291,7 @@ impl Ours {
                 let text = std::fs::read_to_string(&path)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 self.read.insert(screen.to_owned(), Self::mtime(&path));
-                return parse(&text).map_err(|e| format!("{}: {e}", path.display()));
+                return parse(screen, &text).map_err(|e| format!("{}: {e}", path.display()));
             }
         }
         self.read.insert(screen.to_owned(), None);

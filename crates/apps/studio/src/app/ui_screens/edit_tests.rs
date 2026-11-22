@@ -92,12 +92,12 @@ fn a_text_edit_shows_undoes_and_reverts() {
 fn a_drag_is_one_step_and_moves_the_widget() {
     let t = Temp::new("move");
     let mut app = app(&t);
-    let [top, left, bottom, right] = widget(&mut app, "title").rect;
+    let [top, left, bottom, right] = widget(&mut app, "description").rect;
     for _ in 0..3 {
         edit(
             &mut app,
             EditAction::Move {
-                id: "title".into(),
+                id: "description".into(),
                 dx: 2,
                 dy: -1,
                 merge: true,
@@ -106,12 +106,25 @@ fn a_drag_is_one_step_and_moves_the_widget() {
         .unwrap();
     }
     edit(&mut app, EditAction::Seal).unwrap();
+    // The title sits where the header layout puts it: it can't move.
+    assert!(
+        edit(
+            &mut app,
+            EditAction::Move {
+                id: "title".into(),
+                dx: 1,
+                dy: 0,
+                merge: false,
+            },
+        )
+        .is_err()
+    );
     assert_eq!(
-        widget(&mut app, "title").rect,
+        widget(&mut app, "description").rect,
         [top - 3, left + 6, bottom - 3, right + 6]
     );
     app.dispatch(Action::Undo);
-    assert_eq!(widget(&mut app, "title").rect, [top, left, bottom, right]);
+    assert_eq!(widget(&mut app, "description").rect, [top, left, bottom, right]);
     assert!(!app.can_undo(), "the drag was one step");
 }
 
@@ -125,14 +138,14 @@ fn checks_run_on_the_edited_view() {
             .unwrap()
             .findings
             .iter()
-            .any(|f| f.ids.iter().any(|i| i == "title"))
+            .any(|f| f.ids.iter().any(|i| i == "description"))
     };
     assert!(!named(&mut app));
     // Past the title-safe area's top (204) and left (-272).
     edit(
         &mut app,
         EditAction::SetRect {
-            id: "title".into(),
+            id: "description".into(),
             rect: [236, -316, 212, 24],
             merge: false,
         },
