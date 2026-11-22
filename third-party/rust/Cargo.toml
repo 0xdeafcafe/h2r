@@ -54,6 +54,7 @@ http-body-util = { version = "=0.1.5", default-features = false, features = ["de
 hyper-util = { version = "=0.1.21", default-features = false, features = ["client", "client-legacy", "client-proxy", "default", "http1", "http2", "server", "server-auto", "service", "tokio"] }
 iced-x86 = { version = "=1.22.0", default-features = false, features = ["block_encoder", "code_asm", "decoder", "encoder", "instr_info", "intel", "lazy_static", "op_code_info", "std"] }
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+indexmap = { version = "=2.14.2", default-features = false, features = ["default", "serde", "std"] }
 libc = { version = "=0.2.191", default-features = false, features = ["default", "extra_traits", "std"] }
 libloading = { version = "=0.8.9", default-features = false }
 libm = { version = "=0.2.16", default-features = false, features = ["arch", "default"] }
@@ -80,6 +81,7 @@ s3s = { version = "=0.17.0", default-features = false }
 s3s-fs = { version = "=0.17.0", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["alloc", "default", "derive", "rc", "serde_derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["default", "float_roundtrip", "raw_value", "std"] }
+serde_yaml_ng = { version = "=0.10.0", default-features = false }
 sha1 = { version = "=0.10.7", default-features = false, features = ["default", "std"] }
 sha2-0_10 = { version = "=0.10.9", package = "sha2", default-features = false, features = ["asm", "default", "sha2-asm", "std"] }
 sha2-0_11 = { version = "=0.11.1", package = "sha2", default-features = false, features = ["alloc", "default", "oid"] }
