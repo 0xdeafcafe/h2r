@@ -352,7 +352,7 @@ fn train_md_is_a_table_a_map() {
     let first: Vec<&str> = lines[2].split_whitespace().collect();
     assert_eq!(
         &first[3..],
-        [
+        &[
             "learned", "runoff", "64", "19", "12", "8", "0.67", "1.214", "20.9", "1"
         ][..]
     );
