@@ -18,10 +18,6 @@ pub struct Capability {
     pub grantable: bool,
     /// The API version that added it.
     pub since: u16,
-    /// The carriers (retail engine indices, [`CARRIERS`]) a host makes the
-    /// call on; `None` for every carrier. The engine routine behind such an
-    /// entry is one engine's own (`role_traits` sets Juggernaut's role mask).
-    pub hosts: Option<&'static [u8]>,
 }
 
 impl Entry {
@@ -137,6 +133,10 @@ pub struct Entry {
     pub status: Status,
     /// The API version that added it.
     pub since: u16,
+    /// The carriers (retail engine indices, [`CARRIERS`]) a host makes the
+    /// call on; `None` for every carrier. The engine routine behind such an
+    /// entry is one engine's own (`role_traits` sets Juggernaut's role mask).
+    pub hosts: Option<&'static [u8]>,
 }
 
 const fn read(id: u16, name: &'static str, args: &'static [Ty], result: Ty, status: Status) -> Entry {

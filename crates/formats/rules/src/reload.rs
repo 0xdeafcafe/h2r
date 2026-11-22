@@ -200,7 +200,10 @@ fn moved(old: &Ir, new: &Ir, ty: Ty, v: i32, fallback: i32) -> i32 {
     };
     match ty {
         Ty::Text | Ty::Class => find(&old.strings, &new.strings),
-        Ty::Tag => find(&old.tags, &new.tags),
+        Ty::Tag => {
+            let paths = |ir: &Ir| -> Vec<String> { ir.tags.iter().map(|t| t.path.clone()).collect() };
+            find(&paths(old), &paths(new))
+        }
         _ => v,
     }
 }
