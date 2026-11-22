@@ -137,6 +137,7 @@ impl Studio {
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
         app.poll_cards();
+        app.poll_bot_nav();
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
@@ -1298,6 +1299,7 @@ pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
                     | Action::ToggleSelect(_)
                     | Action::SelectVolume(_)
                     | Action::SelectSurface(_)
+                    | Action::SelectNav(_)
             )
         {
             app.dispatch(Action::SetTool(ToolKind::Scenario));

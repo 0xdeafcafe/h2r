@@ -1306,6 +1306,15 @@ impl ListClass {
     pub fn dialog_base(&self) -> Option<crate::ui_kit::dialog::DialogBase> {
         self.dialog
     }
+    /// The description text block the class builds: its own, or, for a class
+    /// that has a panel and no description (a dialog's body), the panel's
+    /// first text block, so the pane set-up runs and makes the panel. No
+    /// row names a string for that widget ([`Rows::description`] is `None`),
+    /// so it stays empty.
+    fn description_block(&self) -> Option<TextBlock> {
+        self.description
+            .or_else(|| self.panel.texts.first().map(|t| t.block))
+    }
     /// With a picture beside the description, tinted per focused row
     /// ([`Rows::tint`]). Only a class with a description shows one.
     pub fn picture(mut self, spec: PictureSpec) -> Self {
@@ -1331,7 +1340,8 @@ impl ListClass {
     /// backings (made before the texts) and text blocks whose strings
     /// [`Rows::panel_text`] names, set when the screen opens and again
     /// with the description (a mod's page: docs/game/maps.md "A mod's
-    /// page"). Only a class with a description shows them. At most
+    /// page"). Only a class with a description or a text of its own shows
+    /// them ([`ListClass::description_block`]). At most
     /// [`MAX_PANEL_ART`] and [`MAX_PANEL_TEXTS`].
     pub fn panel(mut self, panel: Panel) -> Self {
         assert!(
@@ -2407,7 +2417,8 @@ impl hooks::Feature for ListClass {
         set_push_request(tables + PUSH_BLOCK);
         let name = self.id;
         let animation = self.animation;
-        let shown = self.description.map(|_| Arc::new(Shown::default()));
+        let description_block = self.description_block();
+        let shown = description_block.map(|_| Arc::new(Shown::default()));
         // The loader needs every address, so the entries are made first and
         // the loader reads them from a cell filled at the end.
         let cell = Arc::new(std::sync::OnceLock::<Entries>::new());
@@ -2479,8 +2490,7 @@ impl hooks::Feature for ListClass {
             None => 0,
         };
 
-        let description = self
-            .description
+        let description = description_block
             .zip(shown)
             .map(|(block, shown)| Description {
                 at: tables + DESCRIPTION_BLOCK,
@@ -3962,6 +3972,35 @@ mod tests {
         let plan = r.build(&hooks::Base).unwrap();
         assert_eq!(plan.entries.len(), 5);
         assert_eq!(class.loader(), plan.entries[0].addr);
+    }
+
+    /// A dialog's body is a panel text with no description: the class
+    /// builds the description block from it, or the pane set-up never
+    /// makes the panel and the body is not drawn.
+    #[test]
+    fn a_panel_text_without_a_description_still_gets_the_pane_set_up() {
+        let block = TextBlock {
+            rect: [72, -243, -43, 255],
+            font: 1,
+            colour: [1.0; 3],
+            animation: 0,
+        };
+        let panel = Panel {
+            art: Vec::new(),
+            texts: vec![PanelText {
+                block,
+                right: false,
+                bias: 0,
+            }],
+        };
+        let plain = ListClass::with_rows("plain", "plain", Arc::new(Described));
+        assert_eq!(plain.description_block(), None);
+        let with_panel = ListClass::with_rows("body", "body", Arc::new(Described)).panel(panel);
+        assert_eq!(with_panel.description_block(), Some(block));
+        let described = ListClass::with_rows("both", "both", Arc::new(Described))
+            .panel(with_panel.panel_of().clone())
+            .description(TextBlock { font: 2, ..block });
+        assert_eq!(described.description_block().map(|b| b.font), Some(2));
     }
 
     const ENTRIES: u32 = 0x0080_0000;

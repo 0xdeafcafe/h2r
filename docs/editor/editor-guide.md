@@ -346,6 +346,36 @@ ancestor. **Back** and **Forward** restore the tag and field you were
 viewing. Alt+Left, Alt+Right and the mouse's back and forward buttons
 step through the same history.
 
+### See invisible walls and where bots walk
+
+Click **Show** above the viewport (or open **Layers** in the Scene tab).
+Each row turns one layer on or off. These layers start off:
+
+- **Collision only** (under Collision): the invisible walls, in red. The
+  other Collision rows show all of the level's collision.
+- **AI pathfinding** (under Navigation): the floor Halo 2's own AI walks
+  on, as tinted patches with their edges. Campaign levels have it;
+  multiplayer maps from the disc don't, so the row counts 0.
+- **Bot nav mesh**: where the Clankers walk, in blue, with their links
+  between patches coloured by move: walks blue, drops orange, jumps
+  yellow, crouch-jumps purple, teleporters cyan and lifts green. An
+  arrowhead marks a one-way link, such as a drop you can't climb back up.
+- **Bot superbounce spots**: the superbounce and crouch spots the bots
+  know, each a post coloured by what is known about it: green proven,
+  red dead, dull red failed, yellow-green learned, amber still training,
+  pink a guess. A diamond round a spot means a ghost run of it is kept.
+
+**Navigation** turns on the level, the invisible walls and all three
+navigation layers in one click. The first time a bot layer shows for a
+map, the editor reads the bots' saved mesh; if the map has none yet it
+builds one, which can take a moment on a big map (the Log says when it
+is ready).
+
+Click a patch, link or spot to select it. The inspector shows what it
+is: a pathfinding patch's number, flags and neighbours, a bot link's
+move and ends, or a spot's state and how its training and test runs
+went. **F** frames it.
+
 ### Move a weapon spawn and play it
 
 1. Click the map in the **Maps** list.

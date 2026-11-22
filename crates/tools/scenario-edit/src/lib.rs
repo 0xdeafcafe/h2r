@@ -45,6 +45,7 @@ pub mod geometry;
 pub mod layers;
 pub mod layout;
 pub mod native_view;
+pub mod nav_view;
 pub mod object_collision;
 pub mod package;
 pub mod recipe;
