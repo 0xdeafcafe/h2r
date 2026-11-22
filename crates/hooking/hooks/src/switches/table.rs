@@ -103,8 +103,8 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
-    sw("impl.sim.status-poll", Off, "sim", "2026-11-22",
-        "the map status poll answered from its last result (docs/perf/sim-10x.md, B2): on once `h2 sim diff` on against off prints nothing, then deleted"),
+    sw("impl.sim.status-poll", On, "sim", "2026-11-22",
+        "the map status poll answered from its last result (docs/perf/sim-10x.md, B2): deleted with its off path once a release has run with it on"),
     // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),

@@ -2,7 +2,7 @@
 
 Status: Built.
 Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`, `crates/rewrites/engine/src/map_status.rs`, `crates/rewrites/sim-bridge/src/sim_status_poll.rs`. Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc), `crates/rewrites/engine/tests/map_status_differential.rs` (needs `H2_XBE`).
-Switch: `impl.sim.status-poll` ([The status poll](#the-status-poll), off by default).
+Switch: `impl.sim.status-poll` ([The status poll](#the-status-poll), on by default).
 
 `crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
@@ -265,7 +265,7 @@ chunks; a slow worker; a job that outlasts its yields; idle; the plan.
 ## The status poll
 
 A static read of the 1.0 XBE, and a memo of its answer under
-`impl.sim.status-poll` (off by default; `crates/rewrites/engine/src/map_status.rs`,
+`impl.sim.status-poll` (on by default; `crates/rewrites/engine/src/map_status.rs`,
 the hooks in `crates/rewrites/sim-bridge/src/sim_status_poll.rs`, registered
 on light hosts).
 
