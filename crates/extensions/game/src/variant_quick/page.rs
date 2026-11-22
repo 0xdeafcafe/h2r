@@ -537,7 +537,11 @@ impl hooks::Feature for SetupRow {
                     }
                 }
             })
-            .after_feature(h1row::ROW_FEATURE);
+            .after_feature(crate::clankers::ROW_FEATURE)
+            .after_feature(crate::clankermatch::SWITCH_FEATURE)
+            .after_feature(h1row::ROW_FEATURE)
+            .after_feature(crate::firefight::options::ROW_FEATURE)
+            .after_feature(crate::lobby_mode::FEATURE);
 
         let (changes, dialog) = (Arc::clone(&self.changes), Arc::clone(&self.dialog));
         b.raw()

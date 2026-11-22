@@ -225,12 +225,12 @@ fn a_slot_row_is_its_bindings_and_an_empty_slot_is_not_drawn() {
         }
     };
     let rows = (0..3)
-        .map(|n| format!("  row.{n}:
+        .map(|n| format!(r#"  row.{n}:
     kind: pick
     text: "{{label}}"
     help: "{{help}}"
     bind: q.{n}
-"))
+"#))
         .collect::<String>();
     let binds = slot(2)(slot(1)(slot(0)(Bindings::new())));
     let p = built("", &rows, None, binds);
@@ -271,23 +271,22 @@ fn a_slot_row_is_its_bindings_and_an_empty_slot_is_not_drawn() {
 /// lone slot is the name binding's, read as it is drawn.
 #[test]
 fn a_slot_and_a_bound_name_attach_or_name_their_field() {
-    let slot_row = "  row.0:
+    let slot_row = r#"  row.0:
     kind: pick
     text: "{label}"
     help: "{help}"
     bind: q.0
-";
+"#;
     let empty = || Bindings::new().slot("q.0", || None, || Err("none".into()));
     assert_eq!(error_at("", slot_row, None, Bindings::new().pick("q.0", String::new, || Err("x".into()))), "rows.row.0.bind");
-    let half = slot_row.replace(""{help}"", ""What it does."");
+    let half = slot_row.replace(r#""{help}""#, r#""What it does.""#);
     assert_eq!(error_at("", &half, None, empty()), "rows.row.0.help");
-    let fixed = slot_row.replace(""{label}"", ""Fixed"").replace(""{help}"", ""What it does."");
+    let fixed = slot_row.replace(r#""{label}""#, r#""Fixed""#).replace(r#""{help}""#, r#""What it does.""#);
     assert_eq!(error_at("", &fixed, None, empty()), "rows.row.0.bind", "a slot binding on a fixed row");
     // The name.
     let named = |binds: Bindings| {
-        let yaml = format!("{}{slot_row}", head("")).replace("name: "Name"", "name: "{variant}"");
-        let d = ScreenDoc::parse("kit.dialog", &yaml, design()).unwrap_or_else(|e| panic!("{e}
-{yaml}"));
+        let yaml = format!("{}{slot_row}", head("")).replace(r#"name: "Name""#, r#"name: "{variant}""#);
+        let d = ScreenDoc::parse("kit.dialog", &yaml, design()).unwrap_or_else(|e| panic!("{e}\n{yaml}"));
         from_doc("kit-dialog", "kit.dialog", ids::family("kit.dialog"), &d, None, binds)
     };
     match named(empty()) {
