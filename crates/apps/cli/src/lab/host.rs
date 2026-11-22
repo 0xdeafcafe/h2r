@@ -46,6 +46,8 @@ pub struct HostConfig {
     pub cargo: PathBuf,
     pub obj_cache_limit: u64,
     pub target_limit: u64,
+    /// Free bytes the lab disk keeps; zero turns the floor off.
+    pub disk_floor: u64,
     /// Always 1: the lab runs one build or game at a time. Kept so
     /// `--max-jobs 1` and status's `max_jobs` keep their meaning.
     pub max_jobs: usize,
@@ -94,6 +96,9 @@ pub struct Meta {
     pub signal: Option<i32>,
     pub peak_footprint_bytes: Option<u64>,
     pub last_footprint_bytes: Option<u64>,
+    /// Free bytes on the lab disk when the job started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_free_bytes_at_start: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) postmortem: Option<Summary>,
     pub error: Option<String>,
@@ -671,6 +676,9 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
                 "active": active,
                 "jobs_active": jobs_active,
                 "max_jobs": cfg.max_jobs,
+                // The lab root's volume; null when it can't be read.
+                "disk": build_cache::disk(&cfg.root),
+                "disk_floor_bytes": cfg.disk_floor,
                 "queued": inner.queue.iter().map(|p| &p.id).collect::<Vec<_>>(),
                 // The queue waits while the player's game is open.
                 "held_for_player": held,
@@ -699,6 +707,7 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
         Request::Build(b) => start(sh, Job::Build(b), requester),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
         Request::Stop { id } => stop(sh, &id),
+        Request::Clean { all } => clean(sh, all),
         Request::Agent {
             id,
             args,
@@ -1076,6 +1085,9 @@ fn execute(sh: &Arc<Shared>, pending: Pending) {
     } = &pending;
     let id = id.as_str();
     let t = Instant::now();
+    sh.update(id, |m| {
+        m.disk_free_bytes_at_start = build_cache::disk(&sh.cfg.root).map(|d| d.free_bytes);
+    });
     let watch = player::Watch::new(takeover_request(
         job,
         commit.as_deref(),
@@ -2101,6 +2113,12 @@ fn ensure_image(
     let src = cfg.dir("src/current");
     build_cache::ensure_dir(&build_cache::target_dir(cfg))?;
     build_cache::ensure_dir(&build_cache::obj_cache_dir(cfg))?;
+    build_cache::ensure_free(
+        cfg,
+        &dir,
+        &mut || build_cache::disk(&cfg.root).map(|d| d.free_bytes),
+        &mut w,
+    )?;
     let _building = build_cache::lock_variant(&dir)?;
     match build_cache::stamped_commit(&dir) {
         Some(last) => writeln!(
@@ -2209,6 +2227,52 @@ fn wait(sh: &Shared, id: &str, timeout: Option<Duration>) -> Result<Value> {
         };
         inner = sh.cv.wait_timeout(inner, left).unwrap().0;
     }
+}
+
+/// `h2 lab clean`: the disk floor's prune run on request, or with `all`
+/// everything but a running job's files and the host's own binary. While a
+/// job is active only finished runs go: its image, caches and checkout are
+/// in use.
+fn clean(sh: &Arc<Shared>, all: bool) -> Result<Value> {
+    let cfg = &sh.cfg;
+    let before = build_cache::disk(&cfg.root);
+    let lock = {
+        let inner = sh.inner.lock().unwrap();
+        if inner.activity.is_none() {
+            // Held to the end: a job admitted meanwhile is refused as busy.
+            Some(activity_lock(&cfg.root)?)
+        } else {
+            None
+        }
+    };
+    let goal = match (&lock, all) {
+        (None, _) => build_cache::Goal::Runs,
+        (Some(_), false) => build_cache::Goal::Default,
+        (Some(_), true) => build_cache::Goal::All,
+    };
+    let mut log = Vec::new();
+    let freed = build_cache::reclaim(
+        cfg,
+        goal,
+        None,
+        &mut || build_cache::disk(&cfg.root).map(|d| d.free_bytes),
+        &mut log,
+    )?;
+    drop(lock);
+    Ok(json!({
+        "all": all,
+        "freed_bytes": freed.total(),
+        "freed": freed,
+        "skipped": lock_skipped(goal),
+        "disk_before": before,
+        "disk_after": build_cache::disk(&cfg.root),
+        "log": String::from_utf8_lossy(&log).lines().collect::<Vec<_>>(),
+    }))
+}
+
+fn lock_skipped(goal: build_cache::Goal) -> Option<&'static str> {
+    (goal == build_cache::Goal::Runs)
+        .then_some("a job is active: only finished runs were removed; its image, caches and checkout are in use")
 }
 
 fn stop(sh: &Arc<Shared>, id: &str) -> Result<Value> {
@@ -2391,6 +2455,7 @@ mod tests {
             cargo: "cargo".into(),
             obj_cache_limit: 0,
             target_limit: 0,
+            disk_floor: 0,
             max_jobs: 1,
             lan: None,
             managed: false,

@@ -501,6 +501,7 @@ fn launch_args(cfg: &HostConfig) -> Result<Vec<String>> {
     for (flag, value, default) in [
         ("--target-limit", cfg.target_limit, super::build_cache::DEFAULT_TARGET_LIMIT),
         ("--obj-cache-limit", cfg.obj_cache_limit, super::build_cache::DEFAULT_OBJECT_LIMIT),
+        ("--disk-floor", cfg.disk_floor, super::build_cache::DEFAULT_DISK_FLOOR),
     ] {
         if value != default {
             args.extend([flag.into(), value.to_string()]);
@@ -894,6 +895,7 @@ mod tests {
             cargo: "/opt/tool chain/cargo".into(),
             obj_cache_limit: super::super::build_cache::DEFAULT_OBJECT_LIMIT,
             target_limit: super::super::build_cache::DEFAULT_TARGET_LIMIT,
+            disk_floor: super::super::build_cache::DEFAULT_DISK_FLOOR,
             max_jobs: DEFAULT_MAX_JOBS,
             grace: Duration::from_secs(5),
             takeover: super::super::takeover::Config::default(),

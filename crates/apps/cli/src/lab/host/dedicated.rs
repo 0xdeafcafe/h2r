@@ -284,6 +284,7 @@ mod tests {
             cargo: "cargo".into(),
             obj_cache_limit: 0,
             target_limit: 0,
+            disk_floor: 0,
             max_jobs: 1,
             lan: None,
             managed: false,
