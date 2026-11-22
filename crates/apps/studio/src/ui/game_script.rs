@@ -175,7 +175,7 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
     }
     if ui.is_item_hovered() {
         ui.tooltip_text(
-            "Save the script to a file and open it in your editor:\nh2 script-edit, $VISUAL, $EDITOR, VS Code, Zed or the default text editor.\nEach save there comes back here, and into the paired game\nwhile Reload on save is ticked.",
+            "Save the script to a file and open it in your editor: VS Code or Zed\nwith the rules extension (h2 rules editors install), else $VISUAL,\n$EDITOR, VS Code, Zed or the default text editor.\nEach save there comes back here, and into the paired game\nwhile Reload on save is ticked.",
         );
     }
     ui.same_line();
@@ -259,7 +259,15 @@ fn open_in_editor(app: &mut App) {
     match app.rules.prepare_external(&root) {
         Ok(path) => {
             app.rules.launched = Some(rules_edit::launch(rules_edit::editor_launches_here(&path)));
-            app.info(format!("Opening {} in your editor", path.display()));
+            let extension = ["code", "zed"].into_iter().any(rules_edit::extension_installed_here);
+            if extension {
+                app.info(format!("Opening {} in your editor", path.display()));
+            } else {
+                app.info(format!(
+                    "Opening {} in your editor. For checks, completion and hover there, run h2 rules editors install",
+                    path.display()
+                ));
+            }
         }
         Err(why) => app.error(format!("Not opened in an editor: {why}")),
     }

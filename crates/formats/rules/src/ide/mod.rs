@@ -1,6 +1,7 @@
 //! Language intelligence for the rules language: diagnostics with their
 //! fixes, code actions, completion, hover, signature help, definitions,
-//! references, rename, semantic tokens, the outline and a formatter.
+//! references, highlights, rename, semantic tokens, the outline, folding
+//! ranges and a formatter (whole or by range).
 //!
 //! Pure over source text, like the rest of the crate: Live's
 //! `POST /v1/rules/ide`, `h2 rules lsp` and the web editor share it.
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 mod complete;
 mod fix;
+mod fold;
 mod format;
 mod info;
 mod model;
@@ -25,7 +27,7 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
-pub use format::format;
+pub use format::{format, format_range};
 
 /// A place in the source: a 0-based line and a UTF-16 column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -312,6 +314,58 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
+/// LSP's `DocumentHighlightKind` numbers this module uses.
+pub mod highlight_kind {
+    pub const READ: u8 = 2;
+    pub const WRITE: u8 = 3;
+}
+
+/// A use of the name at a place, in the same document: LSP's
+/// `DocumentHighlight`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Highlight {
+    pub range: Range,
+    /// A [`highlight_kind`] number: [`highlight_kind::WRITE`] for the
+    /// declaration and an assignment, [`highlight_kind::READ`] otherwise.
+    pub kind: u8,
+}
+
+/// What a rename at a place would rename: LSP's `prepareRename` answer
+/// `{range, placeholder}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PrepareRename {
+    /// The name under the place.
+    pub range: Range,
+    /// The name as declared.
+    pub placeholder: String,
+}
+
+/// LSP's `FoldingRangeKind` names.
+pub mod fold_kind {
+    pub const COMMENT: &str = "comment";
+    pub const REGION: &str = "region";
+}
+
+/// A span of whole lines an editor can fold: LSP's `FoldingRange`. The
+/// start line stays visible; the lines after it, through `end_line`,
+/// fold away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoldingRange {
+    pub start_line: u32,
+    pub end_line: u32,
+    /// A [`fold_kind`] name, or none for a bracketed block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<&'static str>,
+}
+
+/// The byte offset in `src` of an LSP position (UTF-16 columns); past
+/// the end of a line is its end, past the last line the end of `src`.
+/// The language server applies incremental changes with it.
+pub fn offset(src: &str, pos: Position) -> usize {
+    model::LineIndex::new(src).offset(pos)
+}
+
 /// Reads `src` once and hands the analysis to `f`.
 fn with<R>(src: &str, f: impl FnOnce(&model::Model) -> R) -> R {
     let parsed = model::read(src);
@@ -374,6 +428,26 @@ pub fn definition(src: &str, pos: Position) -> Vec<Location> {
 /// Every use of the name at `pos`, its declaration first.
 pub fn references(src: &str, pos: Position) -> Vec<Location> {
     with(src, |m| info::references(m, m.li.offset(pos)))
+}
+
+/// Every use of the name at `pos`, in source order, each marked as a
+/// write (the declaration, an assignment) or a read.
+pub fn highlights(src: &str, pos: Position) -> Vec<Highlight> {
+    with(src, |m| info::highlights(m, m.li.offset(pos)))
+}
+
+/// The name a rename at `pos` would rename, or why there is none: no
+/// name there, or a palette (named by its string).
+pub fn prepare_rename(src: &str, pos: Position) -> Result<PrepareRename, String> {
+    with(src, |m| fix::prepare_rename(m, m.li.offset(pos)))
+}
+
+/// The foldable spans: each bracketed block, table or list over more
+/// than one line, each run of two or more comment lines, and each
+/// `// region` ... `// endregion` pair. Sorted by start line, one per
+/// start line (the longest).
+pub fn folding_ranges(src: &str) -> Vec<FoldingRange> {
+    with(src, fold::folding_ranges)
 }
 
 /// Every comment, literal, keyword, name and operator, classified, in

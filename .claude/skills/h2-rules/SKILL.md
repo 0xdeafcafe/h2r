@@ -1,6 +1,6 @@
 ---
 name: h2-rules
-description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
+description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp/editors, the VS Code and Zed extensions, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
 ---
 
 # Write, test and ship a game type script
@@ -70,7 +70,14 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
 status; run it when unsure whether an entry exists or a host can make it.
 `h2 rules lsp` is a language server on stdin and stdout for files ending
 `.rules` (diagnostics, completion, hover, signature help, definitions,
-references, semantic tokens, outline, formatting, quick fixes, rename).
+references, highlights, semantic tokens, outline, folding, formatting,
+quick fixes, rename). A person edits scripts in VS Code or Zed through
+it: `h2 rules editors install` installs the VS Code extension and prints
+the Zed steps, and `h2 rules editors status` says what is installed and
+whether the server starts
+([docs/editor/rules-editors.md](../../../docs/editor/rules-editors.md)).
+The extensions live in `editors/`; their tests and packaging run in CI
+(`.github/workflows/editors.yml`), not in a lane.
 
 ## Read the check report
 
@@ -303,7 +310,10 @@ account publishes at most 200. Full reference:
 
 Studio's **Game type script** window (a tab beside the Variants tool's
 settings) edits one `.rules` file with colouring, problems, completion,
-hover and the check report. Agents drive the same state over the editor
+hover and the check report. **Open in editor** saves it and opens the file
+in VS Code or Zed when one has the rules extension (else `$VISUAL`,
+`$EDITOR`, `code`, `zed`, `open -t`); each save there comes back into
+Studio, and into the paired game while Reload on save is ticked. Agents drive the same state over the editor
 socket (`h2 studio`, [docs/editor/agent-api.md](../../../docs/editor/agent-api.md)):
 
 ```sh
