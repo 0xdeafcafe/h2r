@@ -298,14 +298,24 @@ impl Editor {
         Ok(out)
     }
 
-    /// Whether `[addr, addr + len)` belongs to tag `e`: inside its
-    /// allocation, or inside an arena extent holding one of its blocks.
-    fn owns(&self, e: &index::Entry, addr: u32, len: u32) -> bool {
-        let held = self.arena.as_ref().map(|a| arena::lock(a));
-        admits(held.as_deref(), e, addr, len)
+    /// Whether `[addr, addr + len)` lies in the edit arena's window but
+    /// no extent of `tag` holds it any more: the block it was in has been
+    /// moved back or freed, so the bytes are free arena memory. Addresses
+    /// outside the window are never freed: a path write lands wherever
+    /// the tag's block pointers lead, which need not be inside the tag
+    /// entry's own allocation.
+    fn freed(&self, tag: u32, addr: u32, len: u32) -> bool {
+        self.arena.as_ref().is_some_and(|a| {
+            let h = arena::lock(a);
+            let end = u64::from(h.base()) + u64::from(h.len());
+            addr >= h.base()
+                && u64::from(addr) < end
+                && h.containing(addr, len).is_none_or(|x| x.tag != tag)
+        })
     }
 
-    /// The loaded tag `[addr, addr + len)` belongs to (see [`Self::owns`]).
+    /// The loaded tag `[addr, addr + len)` belongs to: inside its
+    /// allocation, or inside an arena extent holding one of its blocks.
     fn holder(
         &self,
         g: &Guest,
@@ -757,8 +767,7 @@ impl Editor {
                 "no change {id} (edit.changes lists them)"
             )));
         }
-        let idx = index::index(g).ok();
-        let scenario = idx.map(|i| i.scenario);
+        let scenario = index::index(g).ok().map(|i| i.scenario);
         let mut reverted = Vec::new();
         let mut dropped = Vec::new();
         let mut protected = Vec::new();
@@ -787,14 +796,12 @@ impl Editor {
             // A field in a moved block that has since moved back: its
             // bytes are free arena memory now.
             let (tag, addr, len) = (c.tag, c.addr, c.new_bytes.len() as u32);
-            let owned = idx
-                .and_then(|idx| index::by_datum(g, &idx, tag).ok())
-                .is_some_and(|e| self.owns(&e, addr, len));
+            let freed = self.freed(tag, addr, len);
             let c = &mut self.journal[index];
-            if !owned {
+            if freed {
                 dropped.push(json!({"id": c.id, "at": c.addr, "tag": format!("{:#010x}", c.tag),
                     "path": c.path, "holds_bytes": null,
-                    "why": "its block is no longer in its tag or the edit arena"}));
+                    "why": "its block is no longer in the edit arena"}));
                 self.journal.remove(index);
                 continue;
             }
