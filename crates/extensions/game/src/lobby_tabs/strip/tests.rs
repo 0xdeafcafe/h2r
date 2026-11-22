@@ -94,7 +94,7 @@ fn one_look_shows_per_tab() {
             .collect();
         let want = match tab {
             Tab::Forge => Look::Selected,
-            Tab::CustomGames | Tab::CoOp => Look::On,
+            Tab::CustomGames | Tab::CoOp | Tab::Firefight => Look::On,
             _ => Look::Off,
         };
         assert_eq!(shown, [want], "{tab:?}");
