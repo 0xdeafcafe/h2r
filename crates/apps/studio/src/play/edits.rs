@@ -86,7 +86,7 @@ pub(super) struct Edits {
     loaded: Option<std::sync::Arc<HashSet<TagId>>>,
     /// World, placement, tag and raw document revisions, and whether the
     /// diff could send.
-    last_diff: Option<(u64, u64, u64, u64, bool)>,
+    pub(super) last_diff: Option<(u64, u64, u64, u64, bool)>,
     pub(super) checksum: Option<u32>,
     name: Option<String>,
     pub(super) world: Option<u64>,
