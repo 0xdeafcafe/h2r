@@ -411,7 +411,11 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
             u16_at(icon, tf::OFFSETS[0]) as i16,
             u16_at(icon, tf::OFFSETS[0] + 2) as i16
         ),
-        (118, -1)
+        // Fullscreen, the icon is beside the tracker with the pill.
+        (
+            superbounce::PILL_FULL.0 + superbounce::ICON_AT.0,
+            superbounce::PILL_FULL.1 + superbounce::ICON_AT.1
+        )
     );
     assert_eq!(u32_at(icon, tf::STRING), 7, "the frag count's string");
     // The blocks the runtime appends: the records end to end.
