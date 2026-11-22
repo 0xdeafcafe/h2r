@@ -1,0 +1,348 @@
+//! World marks (docs/game/hud-kit.md, "World marks"): elements of a HUD
+//! that lie on the level's geometry, not on the screen. A
+//! [`Kind::WorldMark`](crate::model::Kind::WorldMark) element has a
+//! [`Shape`]; where it lies, which way it is turned and how big it is are
+//! its [`Pose`], which the runtime gives each tick as it gives a navpoint
+//! its point, and the preview takes from the HUD's samples
+//! (`Describe::world`).
+//!
+//! [`edges`] turns a shape at a pose into line segments in world space.
+//! The game's runtime hands them to the window's world-line pass and the
+//! preview projects them onto its canvas, so both draw the same lines.
+//! Everything here is flat on the floor, [`LIFT`] above the pose's point.
+
+/// A world point: X, Y, and Z up.
+pub type Vec3 = [f32; 3];
+/// One line segment.
+pub type Edge = [Vec3; 2];
+
+/// Marks sit this far above their point, clear of the floor they lie on.
+pub const LIFT: f32 = 0.02;
+/// Segments of a pipper's ring.
+pub const PIPPER_SEGMENTS: usize = 12;
+/// A pipper's centre cross: each arm this fraction of the ring's radius.
+pub const PIPPER_CROSS: f32 = 0.3;
+/// A bracket's corner arms: this fraction of the box's shorter half.
+pub const BRACKET_ARM: f32 = 0.5;
+/// How many closure ticks a [`Shape::Ticks`] draws.
+pub const TICKS: usize = 3;
+/// The drawn part of each tick's slot of the run; the rest is the gap to
+/// the next.
+pub const TICK_DUTY: f32 = 0.55;
+/// The lock's red (docs/game/superbounce.md, "Lock-on"): the one colour a
+/// world mark has beside the user's HUD colour, as the game's reticle is
+/// red over a target in range. [`Style::Lock`](crate::model::Style::Lock)
+/// draws in it.
+pub const LOCK_RED: [f32; 3] = [1.0, 0.275, 0.196];
+
+/// What a world mark draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Shape {
+    /// An impact marker: a small ring of radius `half[0]` round the point
+    /// with a cross at its centre.
+    Pipper,
+    /// The four corner brackets of a box round the point, `half[0]` along
+    /// the pose's heading and `half[1]` across it.
+    Bracket,
+    /// An arrow centred on the point, pointing along the heading,
+    /// `half[0]` each way; its head's wings are `half[1]` out.
+    Arrow,
+    /// [`TICKS`] short dashes from the point along the heading, over a
+    /// run of `half[0]`: closure cues, shorter as the run closes.
+    Ticks,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 4] = [Shape::Pipper, Shape::Bracket, Shape::Arrow, Shape::Ticks];
+
+    /// The name the JSON and the findings use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Shape::Pipper => "pipper",
+            Shape::Bracket => "bracket",
+            Shape::Arrow => "arrow",
+            Shape::Ticks => "ticks",
+        }
+    }
+}
+
+/// Where a world mark lies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose {
+    /// The point on the geometry.
+    pub at: Vec3,
+    /// The heading, flat (X and Y): a bracket's long side, an arrow's and
+    /// the ticks' direction. It need not be a unit; no direction is +X.
+    pub along: [f32; 2],
+    /// The size, world units: what each [`Shape`] says of it.
+    pub half: [f32; 2],
+    /// 0 to 1: how strongly it draws (its lines' alpha), for a mark that
+    /// fades in and out.
+    pub strength: f32,
+}
+
+impl Pose {
+    /// At `at`, heading +X, full strength.
+    pub const fn at(at: Vec3, half: [f32; 2]) -> Pose {
+        Pose {
+            at,
+            along: [1.0, 0.0],
+            half,
+            strength: 1.0,
+        }
+    }
+    pub const fn heading(mut self, along: [f32; 2]) -> Pose {
+        self.along = along;
+        self
+    }
+    pub const fn strength(mut self, strength: f32) -> Pose {
+        self.strength = strength;
+        self
+    }
+
+    /// Why the pose cannot be drawn, if it cannot: a number that is not
+    /// finite, a negative size, a strength outside 0 to 1.
+    pub fn fault(&self) -> Option<String> {
+        let finite = self
+            .at
+            .iter()
+            .chain(&self.along)
+            .chain(&self.half)
+            .all(|v| v.is_finite());
+        if !finite || !self.strength.is_finite() {
+            Some("a number that is not finite".into())
+        } else if self.half.iter().any(|h| *h < 0.0) {
+            Some(format!("a negative size {:?}", self.half))
+        } else if !(0.0..=1.0).contains(&self.strength) {
+            Some(format!("strength {} outside 0 to 1", self.strength))
+        } else {
+            None
+        }
+    }
+}
+
+/// `v` as a unit; +X for no direction.
+pub fn unit(v: [f32; 2]) -> [f32; 2] {
+    let len = v[0].hypot(v[1]);
+    if len > 1e-6 && len.is_finite() {
+        [v[0] / len, v[1] / len]
+    } else {
+        [1.0, 0.0]
+    }
+}
+
+fn offset(p: Vec3, d: [f32; 2], by: f32) -> Vec3 {
+    [p[0] + d[0] * by, p[1] + d[1] * by, p[2]]
+}
+
+/// The line segments of `shape` at `pose`, in world space, flat and
+/// [`LIFT`] above the pose's point. None for a pose with a
+/// [`Pose::fault`], or with no size.
+///
+/// - [`Shape::Pipper`]: [`PIPPER_SEGMENTS`] ring edges, then the cross's
+///   two.
+/// - [`Shape::Bracket`]: eight edges, two arms at each corner running
+///   toward the middle, [`BRACKET_ARM`] of the shorter half long.
+/// - [`Shape::Arrow`]: the shaft, then the head's two wings, each from
+///   its wing to the tip.
+/// - [`Shape::Ticks`]: [`TICKS`] dashes, the first starting at the point,
+///   each [`TICK_DUTY`] of a third of the run.
+pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
+    if pose.fault().is_some() {
+        return Vec::new();
+    }
+    let c = [pose.at[0], pose.at[1], pose.at[2] + LIFT];
+    let u = unit(pose.along);
+    let n = [-u[1], u[0]];
+    let [a, b] = pose.half;
+    match shape {
+        Shape::Pipper => {
+            if a <= 0.0 {
+                return Vec::new();
+            }
+            let point = |i: usize| {
+                let t = std::f32::consts::TAU * (i % PIPPER_SEGMENTS) as f32
+                    / PIPPER_SEGMENTS as f32;
+                [c[0] + a * t.cos(), c[1] + a * t.sin(), c[2]]
+            };
+            let mut out: Vec<Edge> = (0..PIPPER_SEGMENTS)
+                .map(|i| [point(i), point(i + 1)])
+                .collect();
+            let arm = a * PIPPER_CROSS;
+            out.push([offset(c, u, -arm), offset(c, u, arm)]);
+            out.push([offset(c, n, -arm), offset(c, n, arm)]);
+            out
+        }
+        Shape::Bracket => {
+            if a <= 0.0 || b <= 0.0 {
+                return Vec::new();
+            }
+            let arm = BRACKET_ARM * a.min(b);
+            let mut out = Vec::with_capacity(8);
+            for su in [-1.0f32, 1.0] {
+                for sn in [-1.0f32, 1.0] {
+                    let corner = offset(offset(c, u, su * a), n, sn * b);
+                    out.push([corner, offset(corner, u, -su * arm)]);
+                    out.push([corner, offset(corner, n, -sn * arm)]);
+                }
+            }
+            out
+        }
+        Shape::Arrow => {
+            if a <= 0.0 {
+                return Vec::new();
+            }
+            let tip = offset(c, u, a);
+            let tail = offset(c, u, -a);
+            // The head is as long as its wings are out, at most the shaft.
+            let neck = offset(tip, u, -b.min(2.0 * a));
+            vec![
+                [tail, tip],
+                [offset(neck, n, b), tip],
+                [offset(neck, n, -b), tip],
+            ]
+        }
+        Shape::Ticks => {
+            if a <= 0.0 {
+                return Vec::new();
+            }
+            let slot = a / TICKS as f32;
+            (0..TICKS)
+                .map(|i| {
+                    let from = slot * i as f32;
+                    [offset(c, u, from), offset(c, u, from + slot * TICK_DUTY)]
+                })
+                .collect()
+        }
+    }
+}
+
+/// How far (X and Y) the lines of `shape` at `pose` reach from the pose's
+/// point: the radius the check holds [`edges`] to.
+pub fn reach(shape: Shape, pose: &Pose) -> f32 {
+    let [a, b] = pose.half;
+    match shape {
+        Shape::Pipper | Shape::Ticks => a,
+        Shape::Bracket | Shape::Arrow => a.hypot(b),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    fn length(e: &Edge) -> f32 {
+        (e[1][0] - e[0][0]).hypot(e[1][1] - e[0][1])
+    }
+
+    /// A pipper is a closed ring of its radius round the point, lifted
+    /// off the floor, with a cross at its centre.
+    #[test]
+    fn a_pipper_is_a_ring_with_a_cross() {
+        let pose = Pose::at([2.0, 3.0, 1.0], [0.06, 0.0]);
+        let e = edges(Shape::Pipper, &pose);
+        assert_eq!(e.len(), PIPPER_SEGMENTS + 2);
+        for (i, seg) in e[..PIPPER_SEGMENTS].iter().enumerate() {
+            for p in seg {
+                assert!(close((p[0] - 2.0).hypot(p[1] - 3.0), 0.06), "{p:?}");
+                assert!(close(p[2], 1.0 + LIFT));
+            }
+            assert_eq!(seg[1], e[(i + 1) % PIPPER_SEGMENTS][0], "the ring closes");
+        }
+        for seg in &e[PIPPER_SEGMENTS..] {
+            assert!(close(length(seg), 2.0 * 0.06 * PIPPER_CROSS));
+            let mid = [(seg[0][0] + seg[1][0]) / 2.0, (seg[0][1] + seg[1][1]) / 2.0];
+            assert!(close(mid[0], 2.0) && close(mid[1], 3.0));
+        }
+    }
+
+    /// A bracket's corners are the box's, turned with the heading: along
+    /// +Y the long side runs in Y.
+    #[test]
+    fn a_bracket_turns_with_its_heading() {
+        let pose = Pose::at([0.0, 0.0, 0.0], [0.3, 0.1]).heading([0.0, 2.0]);
+        let e = edges(Shape::Bracket, &pose);
+        assert_eq!(e.len(), 8);
+        let arm = BRACKET_ARM * 0.1;
+        for pair in e.chunks(2) {
+            let corner = pair[0][0];
+            assert_eq!(corner, pair[1][0]);
+            assert!(close(corner[0].abs(), 0.1), "across is X: {corner:?}");
+            assert!(close(corner[1].abs(), 0.3), "along is Y: {corner:?}");
+            for seg in pair {
+                assert!(close(length(seg), arm));
+                // Every arm runs toward the middle.
+                assert!(seg[1][0].abs() <= corner[0].abs() + 1e-6);
+                assert!(seg[1][1].abs() <= corner[1].abs() + 1e-6);
+            }
+        }
+        // Along +X the box is the other way round.
+        let flat = edges(Shape::Bracket, &Pose::at([0.0; 3], [0.3, 0.1]));
+        assert!(close(flat[0][0][0].abs(), 0.3) && close(flat[0][0][1].abs(), 0.1));
+    }
+
+    /// An arrow's shaft runs through the point along the heading and its
+    /// wings meet at the tip.
+    #[test]
+    fn an_arrow_points_along_its_heading() {
+        let pose = Pose::at([1.0, 1.0, 0.0], [0.1, 0.04]).heading([0.0, -1.0]);
+        let e = edges(Shape::Arrow, &pose);
+        assert_eq!(e.len(), 3);
+        let tip = e[0][1];
+        assert!(close(tip[0], 1.0) && close(tip[1], 0.9), "{tip:?}");
+        assert!(close(e[0][0][1], 1.1), "the tail is behind the point");
+        for wing in &e[1..] {
+            assert_eq!(wing[1], tip);
+            assert!(close((wing[0][0] - 1.0).abs(), 0.04));
+            assert!(close(wing[0][1], 0.94), "the head is as long as its wings are out");
+        }
+    }
+
+    /// The ticks start at the point, run toward the heading and end
+    /// inside the run; a shorter run gives shorter ticks, and none at 0.
+    #[test]
+    fn the_ticks_shrink_with_the_run() {
+        let at = |run: f32| Pose::at([0.0; 3], [run, 0.0]).heading([1.0, 0.0]);
+        let far = edges(Shape::Ticks, &at(0.6));
+        assert_eq!(far.len(), TICKS);
+        assert!(close(far[0][0][0], 0.0));
+        for (i, t) in far.iter().enumerate() {
+            assert!(close(t[0][0], 0.2 * i as f32));
+            assert!(close(length(t), 0.2 * TICK_DUTY));
+            assert!(t[1][0] <= 0.6);
+        }
+        let near = edges(Shape::Ticks, &at(0.15));
+        assert!(length(&near[0]) < length(&far[0]) / 3.9);
+        assert!(edges(Shape::Ticks, &at(0.0)).is_empty());
+    }
+
+    /// Every shape's lines stay within its reach of the point, and a
+    /// pose with a fault draws nothing.
+    #[test]
+    fn every_shape_stays_within_its_reach() {
+        let pose = Pose::at([5.0, -2.0, 0.5], [0.3, 0.12]).heading([0.6, 0.8]);
+        for shape in Shape::ALL {
+            let e = edges(shape, &pose);
+            assert!(!e.is_empty(), "{shape:?}");
+            let r = reach(shape, &pose);
+            for p in e.iter().flatten() {
+                let d = (p[0] - 5.0).hypot(p[1] + 2.0);
+                assert!(d <= r + 1e-4, "{shape:?}: {d} over {r}");
+                assert!(close(p[2], 0.5 + LIFT));
+            }
+            for bad in [
+                Pose { at: [f32::NAN, 0.0, 0.0], ..pose },
+                Pose { half: [-0.1, 0.1], ..pose },
+                Pose { strength: 1.5, ..pose },
+            ] {
+                assert!(bad.fault().is_some());
+                assert!(edges(shape, &bad).is_empty(), "{shape:?}");
+            }
+        }
+        assert_eq!(unit([0.0, 0.0]), [1.0, 0.0]);
+    }
+}

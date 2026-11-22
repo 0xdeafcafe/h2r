@@ -24,7 +24,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use hud_kit_core::huds::superbounce_readout::{
     self as rd, Fall, Miss, Next, Readout, Speed, Steer, View,
 };
+use hud_kit_core::huds::superbounce_guide as guide_marks;
+use hud_kit_core::huds::superbounce_segments::{self as segs, Segments};
 use hud_kit_core::model::Values;
+use hud_kit_core::world::Pose;
 use superbounce::Spot;
 
 use crate::hud_kit::{self, Handle};
@@ -152,6 +155,8 @@ pub fn kinds(m: crate::superbounce_options::TargetMode) -> rd::Kinds {
 ///   targets to (`superbounce_targets::Switch`), over the other lines.
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
+/// - The approach guide: the state's `guide`, with `approach_guide`.
+/// - The charge segments: [`segments`], with `charge_segments`.
 pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
     let metres =
         |m: Option<crate::superbounce_targets::Mark>| m.map(|m| m.distance * METRES_PER_UNIT);
@@ -166,7 +171,31 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
         kinds: s.switched.map(kinds),
         tag: metres(s.marks.tag),
         targets: s.marks.targets.map(metres),
+        guide: s.guide.filter(|_| o.approach_guide).map(|g| g.view()),
+        segments: segments(s).filter(|_| o.charge_segments),
     }
+}
+
+/// The charge segments for `s` (docs/game/hud-kit.md, "The charge
+/// segments"): the mode's charge as its stage and how many are lit,
+/// once the map is scanned and has a spot; `None`, hidden, before that
+/// and on a map with none. In the air too: primed is worth seeing on the
+/// way down.
+pub fn segments(s: &State) -> Option<Segments> {
+    let ready = matches!(s.scan, mode::ScanState::Ready) && s.bounce + s.crouch > 0;
+    ready.then(|| segs::segments(crate::superbounce_hud::charge(s)))
+}
+
+/// The approach guide's marks' poses for `s` under `o`: each of
+/// `guide_marks::MARKS` with its pose, `None` for one with nothing to
+/// lie on.
+pub fn guide_poses(s: &State, o: Options) -> [(&'static str, Option<Pose>); 4] {
+    let poses = s
+        .guide
+        .filter(|_| o.approach_guide)
+        .map(|g| guide_marks::poses(&g.layout()))
+        .unwrap_or_default();
+    guide_marks::MARKS.map(|id| (id, poses.iter().find(|(i, _)| *i == id).map(|(_, p)| *p)))
 }
 
 /// The values with the mode off: every element hidden.
@@ -306,6 +335,9 @@ impl Live {
             for id in [rd::TAG, rd::TARGET_1, rd::TARGET_2] {
                 self.handle.navpoint_at(id, None);
             }
+            for id in guide_marks::MARKS {
+                self.handle.world_mark(id, None);
+            }
             return;
         };
         if let (Some(tick), Some(vz)) = (s.tick, s.vz) {
@@ -315,8 +347,12 @@ impl Live {
         let info = self.info.step(&s, self.ticks, |l| {
             miss(l, &mode::current_spots(), history.before(l.tick))
         });
-        let v = view(&s, crate::superbounce_options::current(), info);
+        let o = crate::superbounce_options::current();
+        let v = view(&s, o, info);
         self.handle.publish(rd::values(&v));
+        for (id, pose) in guide_poses(&s, o) {
+            self.handle.world_mark(id, pose);
+        }
         self.handle.navpoint_at(rd::TAG, s.marks.tag.map(|m| m.at));
         for (id, m) in rd::TARGETS.iter().zip(s.marks.targets) {
             self.handle.navpoint_at(id, m.map(|m| m.at));

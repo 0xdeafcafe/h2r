@@ -1,6 +1,6 @@
 # hud-kit
 
-HUD elements of ours drawn by Halo 2's own HUD: a feature describes its HUD as kit elements (texts, meters, icons, pointers, and the message, prompt, training and navpoint channels), the kit compiles them to the game's `nhdt` widget records, and an offline preview draws them over the retail player HUD with the checks a layout must pass.
+HUD elements of ours drawn by Halo 2's own HUD: a feature describes its HUD as kit elements (texts, meters, icons, pointers, the message, prompt, training and navpoint channels, and marks lying on the level's geometry), the kit compiles them to the game's `nhdt` widget records, and an offline preview draws them over the retail player HUD with the checks a layout must pass.
 
 ## Where it sits
 
@@ -13,8 +13,8 @@ HUD elements of ours drawn by Halo 2's own HUD: a feature describes its HUD as k
 - `src/templates.rs`: `hud_kit_core`'s resolver over the HUD editor's model and renderer, with the `hudg`'s arrows.
 - `src/compile.rs`: `hud_kit_core`'s compiled records as a `hud_edit` HUD, for the preview.
 - `src/source.rs`, `src/synthetic.rs`: the disc and the invented map the preview draws from, and the retail state words the sheet draws at.
-- `src/preview.rs`: the 640 by 480 preview, its PNG and JSON, and the sheet.
-- `src/check.rs`: the ten checks.
+- `src/preview.rs`: the 640 by 480 preview, its PNG and JSON, and the sheet; world marks are drawn from each state's sample scene.
+- `src/check.rs`: the eleven checks.
 
 ## Tests
 

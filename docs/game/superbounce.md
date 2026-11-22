@@ -772,7 +772,11 @@ at 0.3 to 1.3 units/s. A landing in the catch that comes down slower
 along the drift than 0.3, still or against it, wants a push that way
 (`superbounce_assist::wants_drift`, `DRIFT_MIN`): the readout's steer
 line says `(arrow) Drift` in place of `On seam`. It is a hint, not a
-verdict: the lock and the landing's result do not read it.
+verdict: the lock and the landing's result do not read it. The
+[approach guide](#the-approach-guide)'s arrow is a looser hint still,
+lit by any speed along the drift: the seam drops with a carried
+velocity bounced from 0.1 units/s
+([notes/2026-11-22-seam-drop-depth.md](notes/2026-11-22-seam-drop-depth.md)).
 
 #### Covered seams
 
@@ -991,10 +995,11 @@ bounce spot is the one with the nearest edge.
 **The HUD.** Drawn by Halo 2's own HUD through the HUD kit
 ([hud-kit.md](hud-kit.md), "The superbounce HUD on the kit"), for the
 first local player, in one block at the bottom left beside the motion
-tracker: a short grenade-style pill, lit while primed, with the `^` icon
-where a pill's count is; under it a charge meter cut from the energy
-sword's battery strip, filled by the time the charge has left; over it
-Assault's red arming bar, filled by the recipe's steps, with a short
+tracker: nine charge segments round the tracker's left, bottom and
+right sides, cut from the energy sword's battery strip, which fill a
+side for each of the recipe's steps and wipe back as the charge runs
+out ("The charge segments" in hud-kit.md); Assault's red arming bar
+over the readout's rows, filled by the recipe's steps, with a short
 ending when primed
 ("The arming bar" in hud-kit.md); "Charging..." and "Primed!" in the
 notification list, as Assault's "Bomb is arming..." and "Bomb armed!";
@@ -1110,10 +1115,10 @@ view and the fall assist agree):
 
 **In the air.** While the player is airborne the screen is the
 readout's and the motion tracker's. The
-HUD kit's superbounce elements keep the pill, the notification and the
-medal line and drop the charge strip, the arming bar, the prompt line,
+HUD kit's superbounce elements keep the notification and the
+medal line and drop the arming bar, the prompt line,
 the navpoint and the tutorial step (`superbounce_hud::in_air`); the
-readout's target navpoints stay. The
+readout's target navpoints and charge segments stay. The
 world keeps the chosen strip's rings and line and the lock-on, and no
 label. The mode draws no prompt over a strip:
 `crates/extensions/game/src/superbounce_prompts.rs` keeps `prompt_for`'s
@@ -1252,6 +1257,115 @@ cannot be changed until its draw record is decoded. The variant's
 `second_bounce` [option](#the-huds-options) turns all of it off.
 `superbounce.state` has the ranked seams as `targets.second`.
 
+### The approach guide
+
+A pipper and a box on the seam the player is going for, drawn on the
+geometry so the line-up is seen and not guessed. They are four world
+marks of the readout HUD, built in the HUD kit
+([hud-kit.md](hud-kit.md#the-approach-guide)); the rules are
+`crates/extensions/game/src/superbounce_guide.rs`, pure, run by the mode
+each tick (`superbounce_guide::guide`, into the state's `guide`).
+
+| Mark | Where | Says |
+|---|---|---|
+| the pipper, a small ring with a cross | where the player's path touches down, on the seam's floor | on the ground, where a jump now would land; in the air, the landing itself |
+| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, red, `Will bounce` |
+| the ticks, three dashes | from the pipper toward the box | how far off the landing is: they shorten as the two close and go when the landing is caught |
+| the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit while the player moves that way |
+
+**Which seam** (`superbounce_guide::target`). The seam a fall is
+predicted onto (the state's `landing`); else, while primed, the chosen
+strip (the mode's navpoint); else the nearest of the tagged seam and the
+target navpoints' seams within 6 units ([Targets](#targets)).
+
+**When** (`superbounce_guide::strength`). At full strength while primed,
+at any distance, and within 4 units of the seam's landing point when not
+primed; from 4 to 6 units it fades out. The pipper shows only while the
+landing is within 3 units of the seam's point: the floor it is predicted
+on is the seam's own, which says nothing further out. The marks are
+fullscreen only, as the readout is, and the variant's `approach_guide`
+[option](#the-huds-options) turns them off.
+
+**The impact** (`superbounce_guide::impact`). The body's free flight is
+stepped a game tick at a time under the sim's fall model
+(`sim_bench::drops::fall_model`): each tick the fall speed gains
+4.171 / 30 units/s and the body moves its velocity over 30. The flight
+ends on the last tick whose next would be at or under the height the
+seam stops the body at (`Seam::contact`): that tick's row is the **last
+free row**, its place is the pipper's and its fall speed is the
+touchdown speed. A test steps a drop from each of the fall model's
+heights and gets the model's row and speed. On the ground the flight is
+a jump from where the player stands: their horizontal velocity kept,
+3.08 units/s up (`bots::bounce_route::JUMP_VZ`). Positions are the
+body's bounding-sphere centre, as the mode's state and the drops'
+records have it. The surface is the seam's alone: its floor, 0.03 over
+the edge's height (`FALL_CLEARANCE`), and by the edge the far face
+below. No other geometry is probed, so a landing on something else on
+the way is not seen, which is why the pipper stays by the seam.
+
+**Lined up** (`superbounce_guide::caught`). The last free row is within
+the seam's catch of its edge (`superbounce::catch_miss`), either side:
+the pipper is inside the box.
+
+**Depth** (`superbounce_guide::depth`). A landing in the catch bounces
+or not by how low the last free row ends over the seam: low enough, and
+the next tick goes deep into it
+([notes/2026-11-22-seam-drop-depth.md](notes/2026-11-22-seam-drop-depth.md)).
+The rule is in the seam's own frame, so it reads any seam with a drift:
+with `past` the row's place past the edge along the drift (negative
+before it) and `over` its height over the edge, the row is **deep** when
+
+```text
+over − 0.75 × past < 0.445
+```
+
+and it is in the **landing window** when `past` is −0.07 to −0.01. The
+three numbers are Ascension's proven seam's, measured there and nowhere
+else (`SEAM_SLOPE`, `DEPTH_CUT`, `LANDING_WINDOW`): the note's cut
+`z − 0.75·y < −5.755` and window y 3.93 to 3.99, against that seam's
+edge at y 4.0 and z −3.2. The fall's tick phase sets the row's height,
+and the phase is fixed once the body is in the air, so the depth is
+known before the touchdown; about half the phases are deep. The seam
+stops the body 0.135 under the cut (`DEPTH_BAND`), which is what makes a
+row the last free one by the edge; that number is inferred from the
+note's lowest and highest last free rows, not measured on its own.
+
+**The call** (`superbounce_guide::call`), what the box says:
+
+| Call | When | The box |
+|---|---|---|
+| off line | no landing by the seam, or one outside the catch | dim |
+| lined up | the landing is in the catch, and nothing below applies | lit |
+| too shallow | airborne, primed, touching down at 5.2 units/s or faster, in the catch, and not deep | lit, `Too shallow` |
+| will bounce | the same, deep, and in the landing window | red, `Will bounce`, the pipper red with it |
+
+On the ground the call stops at lined up: the landing is a jump's from
+this very place, and its phase moves with every step. Under 5.2 units/s
+(`DEPTH_SPEED`, just under the note's slowest drop) and on a seam with
+no drift there is no call either. A fall that is deep but outside the
+landing window is lined up, not promised. The drift is not in the call:
+the note's bounces came at drifts of 0.1 to 0.8 units/s, so the arrow is
+a hint, lit by any speed the drift's way (`drift_lit`).
+
+Fullscreen, while the guide is on a seam the [lock-on](#lock-on)'s
+brackets are not drawn (`superbounce_world::lock_shown`): the guide's
+box is on the seam in their place, and its red is the lock's red. In
+split screen the lock-on's brackets are drawn.
+
+`superbounce.state` returns the guide as `guide`: the seam's point, the
+call, the pipper, the last free row with its ticks and speed, `caught`,
+`deep` with the margin under the cut and the row's place past the edge,
+the speed along the drift and the fade. On the ground `deep` is the
+depth of a jump from where the player stands, an estimate that is not
+on the box.
+
+Supposed, until a lab run: that the cut and the window hold on seams
+other than Ascension's and above 5.39 units/s, the fastest drop
+measured; that a jump leaves the ground at 3.08 units/s with the run's
+speed kept; and where the seam stops the body (`DEPTH_BAND`). A
+`superbounce.state` poll through a fall beside `sim.drops`' last free
+row for the same drop checks the row and the call.
+
 ### The HUD's options
 
 Which pieces of the HUD a game shows is the variant's: they are options
@@ -1269,6 +1383,8 @@ unless a variant turns it off:
 | `miss_info` | bool, on | no miss row |
 | `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](#medals)) |
 | `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
+| `approach_guide` | bool, on | no pipper, box, ticks or drift arrow on the seam ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
+| `charge_segments` | bool, on | no segments round the motion tracker ([hud-kit.md](hud-kit.md), "The charge segments"); priming is the arming bar, the prompt line and the notifications |
 
 The host reads them by name where it decides the mode is on, at a game's
 start and every 30 ticks (`superbounce_options::read`): the active
@@ -1413,9 +1529,9 @@ lab run.
 
 What the mode shows about the three steps of a bounce: getting the
 charge, keeping it, and landing it. The HUD parts (the arming bar, the
-meter under the pill, the prompt line, the notifications, the navpoint)
-are in [hud-kit.md](hud-kit.md), "The charge meter" and "The arming
-bar"; this is the state they
+charge segments, the prompt line, the notifications, the navpoint)
+are in [hud-kit.md](hud-kit.md), "The charge meter", "The arming
+bar" and "The charge segments"; this is the state they
 read, the scanner's rules and the world overlay. The numbers are in
 [notes/superbounce-spots.md](notes/superbounce-spots.md).
 
@@ -1682,8 +1798,11 @@ crouch under the shard) or a turn before the jump.
 ### Lock-on
 
 While primed, airborne and falling onto a predicted landing, the crease
-is a target (`superbounce_world::lock_box`, `brackets`): four corner
-brackets on the floor round the point of the crease nearest the
+is a target (`superbounce_world::lock_box`, `brackets`), in split screen
+and with the variant's `approach_guide` option off; fullscreen with the
+option on, the [approach guide](#the-approach-guide)'s box is on the
+seam in its place (`superbounce_world::lock_shown`). The lock-on is
+four corner brackets on the floor round the point of the crease nearest the
 landing, 0.3 along it and 0.2 across when closed. They open by 1.5 per
 unit the landing misses the edge's catch by (at most 0.9 wider) and move toward
 the landing by half the miss (at most 0.5), so they close in as the

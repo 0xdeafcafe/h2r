@@ -2,11 +2,10 @@
 //! values each state gives (docs/game/hud-kit.md, "States").
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, ARM, CHARGE, LOW_CHARGE, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
-    MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PILL, PILL_ICON, PROMPT, PROMPT_CHARGE_AGAIN,
+    self as sb, ARM, LOW_CHARGE, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
+    MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PROMPT, PROMPT_CHARGE_AGAIN,
     PROMPT_HELD, PROMPT_KEEP_MOVING, PROMPT_NEAR, PROMPT_UNDER, Phase, Scan, Target, Verb,
 };
-use hud_kit_core::model::{Pulse, Style};
 use hud_kit_core::motion::Motion;
 
 use super::*;
@@ -102,16 +101,13 @@ fn the_recipe_steps_give_their_verbs_and_fills() {
     let values = sb::values(&view(&held, None));
     assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_HELD);
     // The recipe is on the arming bar, eased to each step's fill; the
-    // strip under the pill waits for primed.
+    // charge itself is the readout's segments'.
     let arm = values.get(ARM).unwrap();
     assert_eq!(
         (arm.shown, arm.fill, arm.motion),
         (true, 2.0 / 3.0, Motion::Ease)
     );
-    assert!(!values.get(CHARGE).unwrap().shown);
-    // Not primed: the pill is inactive, which the runtime does not draw
-    // yet.
-    assert_eq!(values.get(PILL).unwrap().style, Style::Inactive);
+    assert_eq!(view(&held, None).charge.map(|c| c.phase), Some(Phase::Held));
 }
 
 /// Tick to tick through the view: the steps ease, leaving early runs
@@ -181,15 +177,21 @@ fn primed_lights_the_pill_and_drains_the_meter() {
     assert!((m - METRES_PER_UNIT).abs() < 1e-4, "{m}");
     assert_eq!(sb::values(&v).get(NAVPOINT).unwrap().text, "3");
     let values = sb::values(&v);
-    assert_eq!(values.get(PILL).unwrap().style, Style::Normal);
-    assert_eq!(values.get(CHARGE).unwrap().fill, 0.25);
+    assert_eq!(
+        v.charge,
+        Some(sb::Charge {
+            phase: Phase::Primed,
+            fill: 0.25
+        })
+    );
     assert!(!values.get(PROMPT).unwrap().shown);
 }
 
-/// The prompt line's warning starts at the tick the icon starts to flash:
-/// 19 still ticks, half the fill.
+/// The prompt line's warning starts at the tick the charge segments start
+/// to flash: 19 still ticks, half the fill.
 #[test]
-fn the_warning_lines_up_with_the_icons_flash() {
+fn the_warning_lines_up_with_the_segments_flash() {
+    use hud_kit_core::huds::superbounce_segments::{Stage, segments};
     assert_eq!(
         1.0 - WARN_STILL_TICKS as f32 / SLEEP_TICKS as f32,
         LOW_CHARGE
@@ -205,10 +207,7 @@ fn the_warning_lines_up_with_the_icons_flash() {
     assert_eq!(v.verb, Some(Verb::KeepMoving));
     let values = sb::values(&v);
     assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_KEEP_MOVING);
-    assert_eq!(
-        values.get(PILL_ICON).unwrap().style,
-        Style::Flash(Pulse::TimeWarning)
-    );
+    assert_eq!(segments(v.charge).stage, Stage::Warning);
     // A tick before: no warning, and no flash.
     let before = State {
         charge: charge(
@@ -218,9 +217,9 @@ fn the_warning_lines_up_with_the_icons_flash() {
         verb: None,
         ..s
     };
-    let values = sb::values(&view(&before, None));
-    assert!(!values.get(PROMPT).unwrap().shown);
-    assert_eq!(values.get(PILL_ICON).unwrap().style, Style::Normal);
+    let v = view(&before, None);
+    assert!(!sb::values(&v).get(PROMPT).unwrap().shown);
+    assert_eq!(segments(v.charge).stage, Stage::Primed);
 }
 
 /// A loss says why in the message, and the prompt line asks for a new
@@ -255,7 +254,7 @@ fn a_loss_says_why_and_asks_for_a_new_charge() {
         // The reason is the notification's; the prompt line asks for a
         // new charge.
         assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_CHARGE_AGAIN);
-        assert_eq!(values.get(CHARGE).unwrap().fill, 0.0);
+        assert_eq!(v.charge.map(|c| c.phase), Some(Phase::Lost));
     }
 }
 

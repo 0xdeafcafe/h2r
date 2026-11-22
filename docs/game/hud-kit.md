@@ -363,6 +363,9 @@ pub struct Element {
     /// Word D bits that hide it (as a retail widget's `hide_when_d`): ours
     /// gives way while the game draws a retail widget in its place.
     pub hide_when_d: u16,
+    /// Pixels it may sit outside the HUD frame, in the screen's margin
+    /// (the `frame` check); 0 for all but the charge segments.
+    pub outside: i16,
 }
 
 pub enum Kind {
@@ -379,6 +382,7 @@ pub enum Kind {
     Prompt { longest: &'static str },
     Training { longest: &'static str },
     Navpoint { longest: &'static str },
+    WorldMark { shape: Shape, longest: &'static str },
 }
 
 /// Anchor and offsets in HUD pixels, per screen mode. `None` hides the
@@ -412,7 +416,7 @@ pub enum Art {
 }
 pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
 pub enum PillPart { Body, End }       // the pill's first PILL_BODY (20) pixels, its last PILL_END (7)
-pub enum Style { Normal, Dim, Inactive, Flash(Pulse) }
+pub enum Style { Normal, Dim, Inactive, Flash(Pulse), Lock } // Lock: a world mark's red, alone
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
 pub struct Value {
@@ -429,6 +433,9 @@ pub trait Describe {
     fn states(&self) -> Vec<(&'static str, Values)>;
     /// Why the HUD is not drawn on a campaign map, if it is not.
     fn multiplayer_only(&self) -> Option<&'static str> { None }
+    /// The sample poses of the HUD's world marks in a state, for the
+    /// preview and the checks.
+    fn world(&self, _state: &str) -> Vec<(&'static str, Pose)> { Vec::new() }
 }
 ```
 
@@ -498,8 +505,9 @@ of shown, fill or motion is stamped from the fill the old value was
 showing then (0 if it was not showing); the same value again keeps its
 stamp and its `from`. Text and style alone are no change.
 
-Four more elements are not widgets. They are channels into the game's
-message, training and navpoint parts, one text each:
+Five more elements are not widgets. Four are channels into the game's
+message, training and navpoint parts, one text each, and the fifth is a
+world mark, drawn by the window ("World marks"):
 
 | Element | What the player sees | Through |
 |---|---|---|
@@ -507,6 +515,7 @@ message, training and navpoint parts, one text each:
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
 | `Navpoint` | the game's arrow pointing down at a point of the world, its waypoint marker above, a whole number above that | the navpoint list (`0x0024da7d`, below in "The navpoint"), the number the kit's |
+| `WorldMark` | lines lying on the level's geometry, a label over them | the window's world-line pass (`hud_kit_world`, below in "World marks") |
 
 Their texts are UTF-16 with the font's button glyphs or action tokens.
 A channel, like a widget, shows only in the screen modes its place has:
@@ -524,13 +533,77 @@ copies 63). A sender with no HUD of its own, such as a rules script's `message`
 ([rules-world-api.md](rules-world-api.md#the-show-channel)), queues the
 same line through `hud_kit::notify(user, text)`.
 
+### World marks
+
+A world mark is an element of a HUD that lies on the level's geometry
+and not on the screen: a landing marker, a box round a place to land in.
+It is in the `Hud` with the widgets and the channels, so a state shows
+or hides it, styles it and gives it a label like any other element, and
+the checks and the preview cover it. `hud_kit_core::world` has its
+shapes and its pose:
+
+```rust
+pub enum Shape { Pipper, Bracket, Arrow, Ticks }
+
+pub struct Pose {
+    pub at: Vec3,          // the point on the geometry
+    pub along: [f32; 2],   // the heading, flat: a bracket's long side, an arrow's way
+    pub half: [f32; 2],    // the size, world units
+    pub strength: f32,     // 0 to 1: the lines' alpha, for a mark that fades
+}
+```
+
+| Shape | Lines | `half` |
+|---|---|---|
+| `Pipper` | a ring of 12 segments with a cross at its centre | the ring's radius, unused |
+| `Bracket` | the four corner brackets of a box, each arm half the box's shorter half | along the heading, across it |
+| `Arrow` | a shaft and a head's two wings, pointing along the heading | half the length, the wings' reach |
+| `Ticks` | three dashes from the point along the heading | the run they take, unused |
+
+`world::edges(shape, &pose)` gives the line segments in world space,
+flat and 0.02 above the pose's point. The game and the preview draw the
+same segments: the game through the window's world-line pass, from each
+view's camera, under the HUD and with no depth test
+([superbounce.md](superbounce.md#the-superbounce-game-type), the pass
+the mode's own marks use); the preview projected onto its canvas ("The
+preview and the checks").
+
+A mark is drawn in the user's HUD colour. `Dim` halves its alpha and
+`Inactive` greys it, as for a widget, and the pose's strength scales the
+alpha again. One more style is a world mark's alone: `Lock`, the
+lock-on's red (`world::LOCK_RED`, the colour the superbounce lock-on
+draws its brackets in, [superbounce.md](superbounce.md#lock-on)), for a
+mark that says "this will work" as the game's reticle is red over a
+target in range. The `world` check refuses `Lock` on any other kind. The
+value's text is the mark's label, centred over its point in the HUD font
+(`model::WORLD_FONT`); `longest` is the widest label any state gives it.
+
+A pose is the runtime's, each tick, as a navpoint's point is:
+`Handle::world_mark(id, Option<Pose>)`. For the preview and the checks a
+HUD gives sample poses per state, `Describe::world(state)`: world units
+in a scene of the state's own. A mark shows only in the screen modes its
+place has, like a channel: `Element::channel` gives it `Place::GAME`,
+fullscreen only.
+
+`crates/extensions/game/src/hud_kit_world.rs` is the game's side: a
+world-line source (`hud_kit_world::register`, windowed hosts) that each
+present takes the marks to draw now (`hud_kit::world_marks_now(mode)`:
+the world mark elements of the registered HUDs whose value is shown,
+that have a pose and whose place has the screen mode) and gives the
+pass their lines (`hud_kit_world::lines`: 2.5 pixels wide at 1080p with
+a glow, the label 0.25 over the point). With no pose set it costs one
+atomic load (`hud_kit::any_world_marks`). Nothing is written to guest
+memory.
+
 ### The runtime (`crates/extensions/game/src/hud_kit.rs`)
 
 A feature registers its `Describe` once (`hud_kit::register`, which
 returns a `Handle`), then publishes a `Values` whenever its state changes
-(`Handle::publish`) and the world point of each of its navpoints
+(`Handle::publish`), the world point of each of its navpoints
 (`Handle::navpoint` for its first, `Handle::navpoint_at(id, point)` for
-any). The feature `hud-kit` does the rest:
+any) and the pose of each of its world marks
+(`Handle::world_mark(id, pose)`, "World marks"). The feature `hud-kit`
+does the rest:
 
 1. **Install**, before `GAME_ACTIVATE` and after `hud_swap`: the loaded
    map is opened through `native_map::open` (builds with the `gpu`
@@ -712,11 +785,20 @@ the HUD's navpoints), so two shown at once draw apart; in a split
 frame, whose stack would leave the frame's top at the sample, it moves
 the point down until the stack fits (S: that the game keeps a navpoint
 inside its waypoint area, the safe bounds less `hudg +0xec`..`+0xf8`).
+A world mark is drawn from its HUD's sample pose for the state
+(`Describe::world`): the scene's origin is on the floor ahead, 0.22 of
+the frame's height under its centre (`preview::WORLD_SAMPLE`), a world
+unit is 130 HUD pixels across in a fullscreen frame, and the view is
+oblique, +X to the right and +Y up the screen at half scale
+(`preview::project`). It is the mark's lines in a sample view, not the
+game's camera: it shows the shapes, the styles and the label, and that
+they stay clear of the rest.
 
 `preview` writes `<hud>-<state>-<mode>.png` and a `.json` with every
 element's id, kind, rectangle, the rectangle it may take in any state
 (`reserved`: a text's at its `longest`), text, style, fill, angle, font,
-whether it is drawn and why not, and the findings of that state and
+whether it is drawn and why not, a world mark's shape, pose, segment
+count and bounds (`world`), and the findings of that state and
 mode; by default every state, fullscreen. `preview` fails on a glyphs
 or drawn finding, and, from the disc, when the glyph check could not
 run; its other findings are printed. `sheet` writes every HUD x
@@ -754,7 +836,7 @@ the check, the elements and the state and mode:
 |---|---|
 | fit | every state's text of a text widget is no wider than its `longest`, and the `longest` stays inside the frame's width and meets no other element but the one it is `over` |
 | glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5, a navpoint's number in font 6): not record 0, not the record U+FFFF reads, and no copy of either's bitmap (`font::Font::has_glyph`; MSLCD-14 maps `.`, `-` and `~` to a copy of its box) |
-| frame | every rectangle, reserved or drawn, is inside the HUD frame and the screen; an element may sit `FRAME_SLACK` (1) pixel outside the frame, as the tracker and the shield meter do (x 47, the frame's left 48) |
+| frame | every rectangle, reserved or drawn, is inside the HUD frame and the screen; an element may sit `FRAME_SLACK` (1) pixel outside the frame, as the tracker and the shield meter do (x 47, the frame's left 48), or its own `Element::outside` when that is more (the charge segments, left of and under the tracker) |
 | retail | no widget element's opaque pixels meet a retail widget's at any `HudState` of the sheet (plain, overshield, plasma grenades, zoomed), and no widget element's rectangle meets the reserved rectangles (`PROMPT_LINE`, `TRAINING_BOX`, `H1_HEALTH`, `RETICLE`); the channels are the game's own text and are not checked against them |
 | own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over` |
 | one layout | every state has a value for every element and for nothing else, and every element id is used once |
@@ -762,6 +844,7 @@ the check, the elements and the state and mode:
 | prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding |
+| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Lock` is on world marks alone. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
 
 The synthetic source has no fonts, so it skips the glyph check and says
 so, and its retail check is against the flat boxes, not the disc's art.
@@ -776,13 +859,14 @@ the preview's JSON, with `render.frame` for the pixels.
 `crates/rewrites/hud-kit-core/src/huds/superbounce.rs` describes it:
 the elements, `View` (what the HUD shows of `superbounce_mode`'s state),
 `values(&View)`, the preview's states and the tutorial's step machine.
-It is multiplayer only (`Describe::multiplayer_only`): a campaign
-player HUD has no grenade row, and the disc test skips campaign maps for
-it by that reason. It is shown to the first
-local player. It is made only of things Halo 2 draws already: a grenade
-pill (its art, drawn beside the motion tracker), a navpoint and the
-training box. Launch and drop are not on the
-HUD: they are on the strips' labels in the world and in the agent API.
+It is multiplayer only (`Describe::multiplayer_only`): the disc test
+skips campaign maps for it by that reason. It is shown to the first
+local player. It is made only of things Halo 2 draws already: Assault's
+arming bar, the prompt line, the notification list, a navpoint and the
+training box. The priming indicator, the charge segments round the
+motion tracker, is the readout's ("The charge segments"). Launch and
+drop are not on the HUD: they are on the strips' labels in the world and
+in the agent API.
 
 ```sh
 h2 hud preview superbounce --state all --out DIR      # the disc's lockout
@@ -792,41 +876,23 @@ h2 hud preview superbounce --state all --synthetic --out DIR
 
 ### The pill
 
+The kit can put a pill of its own in the grenade row. No registered HUD
+has one: the superbounce HUD's priming indicator is the readout's
+charge segments. The pieces are held under test by `huds::pill_block`
+(`crates/rewrites/hud-kit-core/src/huds/pill_block.rs`), a HUD of the
+kit's own tests that is not registered (`huds::all`) and is never
+compiled into a map.
+
 | Element | Kind | Place | Art |
 |---|---|---|---|
-| `sb.pill` | Icon | fullscreen (90, 340) from the top-left anchor (`PILL_FULL`): screen (138, 376), beside the motion tracker; half and quarter `Origin::NextGrenadePill` | `Art::GrenadePill(Body)`: the frag pill's first 20 pixels |
-| `sb.pill.end` | Icon | the pill's plus (20, 0), every mode | `Art::GrenadePill(End)`: the frag pill's last 7 pixels |
-| `sb.pill.icon` | Text, `Hud`, centred, over `sb.pill` | fullscreen the pill's plus (12, −1) (`ICON_AT`); half and quarter `Origin::NextGrenadeCount` | the text template (the frag count's shader and string); `^` in font 6 |
+| `pb.pill` | Icon | fullscreen (90, 340) from the top-left anchor (`PILL_FULL`): screen (138, 376), beside the motion tracker; half and quarter `Origin::NextGrenadePill` | `Art::GrenadePill(Body)`: the frag pill's first 20 pixels |
+| `pb.pill.end` | Icon | the pill's plus (20, 0), every mode | `Art::GrenadePill(End)`: the frag pill's last 7 pixels |
+| `pb.pill.icon` | Text, `Hud`, centred, over `pb.pill` | fullscreen the pill's plus (12, −1) (`ICON_AT`); half and quarter `Origin::NextGrenadeCount` | the text template (the frag count's shader and string); `^` in font 6 |
+| `pb.charge` | Meter | the pill's plus (0, 21) in every mode, 2 pixels under it | `Art::StripMeterEnd(27)`, the battery strip's last 27 columns ("The charge meter") |
 
-Fullscreen the pill is the middle of one block at the bottom left, right
-of the motion tracker, with the arming bar over it, the charge meter
-under it and the readout's rows beside it ("The superbounce readout"):
-
-```text
-  x 47     130 138       171                 278
-   .---.       [====== sb.arm ===============]            y 355
-  /     \      (^ )      (arrow) 7.2 m/s      sbr.speed   y 376
- | track |     [###]     [#####   ] 0.40 m    sbr.fall    y 397
-  \     /                Too slow: 12.4 of 16.5 m/s       y 418
-   '---'                                                  y 444
-```
-
-The block's place is the bottom left's, written from the top-left
-anchor (the fullscreen frame is 408 high, `FRAME_HEIGHT`): the host's
-HUD fit moves the left corners' groups to a wide window's left edge
-together, so the block stays beside the tracker
-([high-resolution.md](../graphics/high-resolution.md), "HUD and UI"),
-where a centre-anchored widget would stay mid-screen.
-
-**Split screen.** A half or quarter frame has no room beside the
-tracker: under the prompt line's box the `retail` check leaves 17 rows.
-There the pill is where it fits, the grenade row's next pill, with the
-meter under it and the icon where a third count would be
-(`Place::split_from`, `Origin::NextGrenadePill` and
-`Origin::NextGrenadeCount`), and the arming bar is above the frame's
-centre ("The arming bar"). A widget has one anchor for its three
-offsets, and the row's is the top left, which is why the fullscreen
-place is written from it. The readout is fullscreen only.
+A widget has one anchor for its three offsets, and the grenade row's is
+the top left, so a pill's fullscreen place is written from it
+(`Place::split_from`).
 
 The grenade row is read from the player's `nhdt`
 (`templates::GrenadeRow`): the frag pill is the first bitmap widget
@@ -844,7 +910,7 @@ to the frag count, 53, is the pills' step too, so a pill is 103 - 53 =
 Per screen mode the next pill's top left is the frag pill's plus the
 step, (106, 0) from the anchor, and the next count is the frag count
 plus the step, (118, -1) (`Origin::NextGrenadePill`,
-`Origin::NextGrenadeCount`): the superbounce pill's place in split
+`Origin::NextGrenadeCount`): a kit pill's place in split
 screen. A row whose pill widgets are at two offsets, or whose sprite is
 not one size in every mode, is a named error.
 
@@ -857,14 +923,9 @@ screen x 138 to 165 fullscreen (x 154 to 181 in the grenade row), both
 cropped from the frag pill's part of the panel (`GrenadeRow::crop`). The
 icon sits where a pill's count does, pill x 12.
 
-The icon is `^`, the chevron of `conduit-13` (font 6, the counts'
-font). The font's arrows (U+2191, U+25B2, U+21E7) are its missing box
-(D: `h2 font conduit-13`), and its d-pad glyph U+E108 is swapped for the
-bound key's picture on the other input sets
-([button-icons.md](../input/button-icons.md)). No disc bitmap reads as
-"up" at a count's size: `hud_waypoints`' chevrons and `default_arrow`
-(15 by 24) and `hud_multiplayer`'s triangle (32 by 16) are bigger than
-the pill (D: `h2 bitmap`). Which to use is open (Design, "Not verified").
+The block's states are the superbounce HUD's, by name
+(`pill_block::values`), so the two styles of a bitmap no registered HUD
+gives one are drawn by the preview:
 
 | State | Pill and icon |
 |---|---|
@@ -873,17 +934,12 @@ the pill (D: `h2 bitmap`). Which to use is open (Design, "Not verified").
 | scanning | `Dim`: half alpha |
 | no strips, scan failed | hidden |
 
-While the charge is about to go (the meter below at half or under:
-19 still ticks of 38, the tick the prompt line says "Keep moving or lose
-the charge"), the icon is `Flash(TimeWarning)`, the timer's warning
-record.
-
 ### The charge meter
 
-`sb.charge` is a `Meter` under the pill: how long the charge has left,
-primed, and the empty strip of a loss. How far the player is through
-priming is on the arming bar (below, "The arming bar"). The preview
-draws it in every state; the runtime is in "The runtime, for this HUD".
+A charge is shown twice. How far the player is through priming is on
+the arming bar (below, "The arming bar") and on the readout's charge
+segments; how long a primed charge has left, and the empty ring of a
+loss, are on the segments ("The charge segments").
 
 **What a charge is.** The engine has no charge amount. The pair word is
 0 through the whole crouch and −3 from the first tick of the stand-up; it
@@ -891,16 +947,16 @@ does not step ([superbounce-spots.md](notes/superbounce-spots.md), "The
 pair word around a forced crouch"). What does change by degrees is the
 player's place in the recipe, and after it the time a still body has
 before it sleeps and the pair is rebuilt at 0. The arming bar shows the
-first and the strip the second, and nothing invented:
+first and the segments both, and nothing invented:
 
-| Phase | When (`superbounce_mode`'s state) | Arming bar | Strip | Pill and icon |
-|---|---|---|---|---|
-| hidden | not primed, and not crouched within 1.5 units of a crouch spot | hidden; run out if a step came before | hidden | inactive |
-| near | crouched within 1.5 of a crouch spot, the standing capsule fits | 0, the empty bar | hidden | inactive |
-| under | crouched, the standing capsule does not fit, crouch held | 1/3 | hidden | inactive |
-| held | crouch let go and the request still set: the forced crouch | 2/3 | hidden | inactive, the icon `Flash(Help)` |
-| primed | the word is −3 | the ending, then hidden | 1 less the still ticks over 38 | lit |
-| lost | the word left −3 | the blink | 0 for one second, then hidden | inactive |
+| Phase | When (`superbounce_mode`'s state) | Arming bar | Segments lit, of 9 |
+|---|---|---|---|
+| hidden | not primed, and not crouched within 1.5 units of a crouch spot | hidden; run out if a step came before | none |
+| near | crouched within 1.5 of a crouch spot, the standing capsule fits | 0, the empty bar | none |
+| under | crouched, the standing capsule does not fit, crouch held | 1/3 | 3, the left side |
+| held | crouch let go and the request still set: the forced crouch | 2/3 | 6, the left side and the bottom; the right side `Flash(Help)` |
+| primed | the word is −3 | the ending, then hidden | 9 times 1 less the still ticks over 38; at half or under, `Flash(TimeWarning)` |
+| lost | the word left −3 | the blink | none; the nine blink and go |
 
 "The standing capsule fits" is the engine's own answer for `held` (the
 request stays set with the button up only while it does not fit), and
@@ -918,24 +974,24 @@ shader; the widget has no fill or colour field
 ([the research](notes/2026-11-21-h2-custom-hud-mods.md)). The kit's
 `Art::StripMeter` is that: the energy sword's battery strip and its
 shader, which lights the texels whose blue is below `hud_input1`
-([health.md](../halo1/health.md)). The strip is 92 by 8 and the pill is
-27 wide, so the meter is the strip's last 27 columns, cropped as the
-pill is cropped from the frag pill (`Art::StripMeterEnd(27)`, a crop of
-`Art::StripMeter`'s template).
+([health.md](../halo1/health.md)). The strip is 92 by 8.
+`Art::StripMeterEnd(n)` is its last `n` columns, a crop of
+`Art::StripMeter`'s template: 64 for the readout's fall bar, 9 for a
+charge segment, 27 for the test pill block's strip.
 
 | Field | Value |
 |---|---|
 | `input_1`..`input_4` | 0; the input hook answers `hud_input1` |
 | the four show and four hide words | 0; the gate hook shows it |
 | the three thresholds | 0 |
-| `anchor` | the grenade row's (top left) |
+| `anchor` | the element's |
 | `bitmap`, `shader` | the strip meter template's |
 | `sequence_full`, `_half`, `_quarter` | the template's (0) |
-| `offset_*` | the pill's plus (0, 21) in every mode: 2 pixels under the pill, screen (138, 397) to (165, 405) fullscreen |
+| `offset_*` | the element's place |
 | `registration_*` | (0, 0) |
 | `effects` | empty |
 | `special` | 0 (not 5: the shield meter's type takes the inputs over) |
-| crop, in `Compiled` | columns 65 to 92 of 92 |
+| crop, in `Compiled` | columns 92 − `n` to 92 of 92 |
 
 A cropped meter shows only part of the strip's blue ramp, so the hook
 gives `hud_input1 = b0 + fill × (b1 − b0)`, with `b0` and `b1` the blue
@@ -943,10 +999,6 @@ of the crop's first and last columns, read from the strip's texels when
 the templates resolve (on the disc the ramp runs from column 13 to the
 right edge, V [health.md](../halo1/health.md)). The colours are the
 shader's own, the ammunition counters'. Nothing of ours tints it.
-
-The checks treat it as any widget: `fit` and `retail` against the
-grenade panel above it (2 pixels clear) and the prompt line below (y 96);
-`modes` with the pill, which it shares every screen mode with.
 
 **The prompts and messages.** The recipe's verbs go on the game's own
 prompt line, with the bound button drawn by the game, and the results in
@@ -984,14 +1036,14 @@ Assault's pair, "Bomb is arming..." and "Bomb armed!" (V:
 `sb.arm` is Assault's bomb arming bar, reused: how far the player is
 through the recipe, then a short ending when primed. Halo 2 draws it
 low in the middle while a bomb carrier arms; ours is the same widget's
-art at the bottom left, right of the motion tracker and over the pill
-and the readout's speed row, so nothing of the superbounce HUD sits
+art at the bottom left, right of the motion tracker and over the
+readout's rows, so nothing of the superbounce HUD sits
 mid-screen.
 
 | Field | Value |
 |---|---|
 | element | `Element::meter("sb.arm", Art::Widget { hud: HudRef::Named("ui\\hud\\scoreboard"), name: "bomb_defusal" }, ..)`, `hidden_on_d(0x400)` |
-| place | anchor top left, (160, 325) fullscreen (`ARM_FULL`, x 138 to 278, y 355 to 368: 8 above the pill); the retail widget's is centre, (0, 110) (V, `RETAIL_ARM_FULL`); (272, 67) half and (129, 67) quarter (`ARM_SPLIT`, `ARM_QUARTER`, below); registration (0.5, 0.5) |
+| place | anchor top left, (160, 325) fullscreen (`ARM_FULL`, x 138 to 278, y 355 to 368: 8 above the readout's first row); the retail widget's is centre, (0, 110) (V, `RETAIL_ARM_FULL`); (272, 67) half and (129, 67) quarter (`ARM_SPLIT`, `ARM_QUARTER`, below); registration (0.5, 0.5) |
 | art | the scoreboard `nhdt`'s bitmap widget `bomb_defusal`: `ui\hud\bitmaps\new_hud\bomb_meter`, a capsule 140 by 13 (sequence 0) and 86 by 9 (sequence 1, split screen), its blue rising 4 to 253 left to right; the shader `ui\hud\shaders\bomb_defusal_meter` on `widget_legacy_meter`, red `6d2323` to `cf6767` where the texel's blue is below `hud_input1`, white for the outline (V) |
 | input | uncropped, so `hud_input1` is the fill itself |
 | crop, ramp | none |
@@ -1030,7 +1082,7 @@ The bar follows the charge's phase each tick
 | lost | 0 | `Blink`: the empty bar three times in 500 ms, beside the loss's notification, then gone |
 | no charge after the ending, the run out or the blink | as it was | the same: its curve has hidden it |
 
-The pill lights and the strip under it fills on the primed tick itself;
+The charge segments are all lit on the primed tick itself;
 "Primed!" is in the list a tick later. Without the effects hook
 (`hud_kit::EFFECTS_SEEN` unset) the ending is the plain one: the sweep
 and the blink, gone at 430 ms. The bar is silent. Two reds mean two
@@ -1163,32 +1215,35 @@ target.
 
 ### States
 
-| State | Pill and icon | Strip | Arming bar | Prompt, message | Navpoint | Tutorial |
-|---|---|---|---|---|---|---|
-| `not-primed` | inactive | hidden | hidden | | crouch spot, "12" | |
-| `near` | inactive | hidden | 0, ease | Hold (crouch) and walk under; Charging... | crouch spot, "1" | |
-| `under` | inactive | hidden | 1/3, ease | Let go of (crouch) | crouch spot, "1" | |
-| `held` | inactive, icon `Flash(Help)` | hidden | 2/3, ease | Walk out to stand up | crouch spot, "1" | |
-| `primed-ending` | lit | 1 | 1, ending | Primed! | strip, "3" | |
-| `left-early` | inactive | hidden | 0, run out | | crouch spot, "12" | |
-| `primed-full` | lit | 1 | hidden | Primed! | strip, "3" | |
-| `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | hidden | | strip, "3" | |
-| `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | hidden | Keep moving or lose the charge | strip, "3" | |
-| `lost` | inactive | 0 | 0, blink | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
-| `lost-stood-still` | inactive | 0 | 0, blink | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
-| `lost-crouched` | inactive | 0 | 0, blink | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
-| `bounced` | lit | 1 | hidden | (medal) Superbounce! | strip, "3" | |
-| `medal-double` | lit | 1 | hidden | (medal) Double bounce! | strip, "3" | |
-| `medal-triple` | lit | 1 | hidden | (medal) Triple bounce! | strip, "3" | |
-| `medal-quad` | lit | 1 | hidden | (medal) Quad bounce! | strip, "3" | |
-| `medal-chain` | lit | 1 | hidden | (medal) Chain bounce! | strip, "3" | |
-| `medal-bouncetacular` | lit | 1 | hidden | (medal) Bouncetacular! | strip, "3" | |
-| `medal-bounced` | inactive | hidden | hidden | (medal) Bounced! | crouch spot, "12" | |
-| `medal-monster` | lit | 1 | hidden | (medal) Monster bounce! | strip, "3" | |
-| `scanning` | dim | hidden | hidden | | hidden | |
-| `no-strips` | hidden | hidden | hidden | | hidden | |
-| `tutorial-1` | inactive | hidden | hidden | | crouch spot | step 1 |
-| `tutorial-2`, `-3`, `-4` | lit | 1 | hidden | Primed! | strip | steps 2 to 4 |
+| State | Arming bar | Prompt, message | Navpoint | Tutorial |
+|---|---|---|---|---|
+| `not-primed` | hidden | | crouch spot, "12" | |
+| `near` | 0, ease | Hold (crouch) and walk under; Charging... | crouch spot, "1" | |
+| `under` | 1/3, ease | Let go of (crouch) | crouch spot, "1" | |
+| `held` | 2/3, ease | Walk out to stand up | crouch spot, "1" | |
+| `primed-ending` | 1, ending | Primed! | strip, "3" | |
+| `left-early` | 0, run out | | crouch spot, "12" | |
+| `primed-full` | hidden | Primed! | strip, "3" | |
+| `primed-draining` | hidden | | strip, "3" | |
+| `primed-still-warning` | hidden | Keep moving or lose the charge | strip, "3" | |
+| `lost` | 0, blink | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
+| `lost-stood-still` | 0, blink | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
+| `lost-crouched` | 0, blink | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
+| `bounced` | hidden | (medal) Superbounce! | strip, "3" | |
+| `medal-double` | hidden | (medal) Double bounce! | strip, "3" | |
+| `medal-triple` | hidden | (medal) Triple bounce! | strip, "3" | |
+| `medal-quad` | hidden | (medal) Quad bounce! | strip, "3" | |
+| `medal-chain` | hidden | (medal) Chain bounce! | strip, "3" | |
+| `medal-bouncetacular` | hidden | (medal) Bouncetacular! | strip, "3" | |
+| `medal-bounced` | hidden | (medal) Bounced! | crouch spot, "12" | |
+| `medal-monster` | hidden | (medal) Monster bounce! | strip, "3" | |
+| `scanning` | hidden | | hidden | |
+| `no-strips` | hidden | | hidden | |
+| `tutorial-1` | hidden | | crouch spot | step 1 |
+| `tutorial-2`, `-3`, `-4` | hidden | Primed! | strip | steps 2 to 4 |
+
+The charge segments in each of these are the readout's, by the state's
+charge ("The charge segments").
 
 `bounced` and the seven `medal-` states are the eight medals, one line
 each, with the glyph in its own colours as the game's font draw leaves
@@ -1230,12 +1285,11 @@ With the mode off every element is hidden. The tutorial's step machine
 watches primed, the nearest bounce spot in metres and a bounce landing
 newer than the last it saw (`superbounce_hud::watch`).
 
-What shows in the game: the pill and its icon while primed (`Inactive`
-not drawn), the arming bar through the recipe, the charge meter while
-primed, the prompt verbs, the navpoint (the game's arrow and marker, no
-number) and, when asked for, the tutorial's training text, and in the
-notification list "Charging...", "Primed!", a loss's reason and the
-medals.
+What shows in the game: the arming bar through the recipe, the prompt
+verbs, the navpoint (the game's arrow and marker, no number) and, when
+asked for, the tutorial's training text, and in the notification list
+"Charging...", "Primed!", a loss's reason and the medals. The charge
+itself is on the readout's segments.
 `superbounce.state` has a loss's reason as `lost_reason` and the medals
 as `medals`.
 
@@ -1286,36 +1340,42 @@ tutorial's step waits.
 ## The superbounce readout
 
 A second HUD on the kit, `superbounce-readout`
-(`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): three
-rows right of the motion tracker and the charge pill ("The pill") and
-three navpoints, for the first
-local player while the superbounce mode is on. Nothing of it is in the
-middle of the screen. It is a HUD of its own because it is fullscreen
+(`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): nine
+charge segments round the motion tracker ("The charge segments"), three
+rows right of them,
+three navpoints and the approach guide's four world marks ("The
+approach guide"), for the first
+local player while the superbounce mode is on. Nothing of it is a panel
+in the middle of the screen: the guide is on the geometry. It is a HUD of its own because it is fullscreen
 only: a half or quarter frame has no three rows free under the prompt
 line's box, and the `modes` check wants every widget of one HUD in the
 same screen modes.
 
 ```text
-  x 47     130 138  171
-   .---.
-  /     \   pill   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
- | track |  meter  [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
-  \     /          Too slow: 12.4 of 16.5 m/s        sbr.info    y 418
-   '---'                                                         y 444
+ x 34  47     130 134  149
+        .---.
+   =   /     \   =   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
+   =  | track |  =   [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
+   =   \     /   =   Too slow: 12.4 of 16.5 m/s        sbr.info    y 418
+        '---'                                                      y 444
+        = = =                                          sbr.seg.4 to .6   y 447
 ```
 
 | Element | Kind | Place, from the frame's bottom left (48, 444) | Shows |
 |---|---|---|---|
-| `sbr.speed` | text, font 6 | (123, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
-| `sbr.fall` | meter, the battery strip's last 64 columns | (123, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
-| `sbr.steer` | text, font 6 | (193, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)) |
-| `sbr.info` | text, font 6 | (123, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)). For two seconds after the player switches the kinds of seam shown, `Targets: common`, `Targets: likely` or `Targets: all` in place of either ([superbounce.md](superbounce.md#targets)) |
+| `sbr.seg.1` to `sbr.seg.9` | meter, the battery strip's last 9 columns | round the tracker ("The charge segments") | how far the player is through priming, and how long the charge has left |
+| `sbr.speed` | text, font 6 | (101, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
+| `sbr.fall` | meter, the battery strip's last 64 columns | (101, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
+| `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)) |
+| `sbr.info` | text, font 6 | (101, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)). For two seconds after the player switches the kinds of seam shown, `Targets: common`, `Targets: likely` or `Targets: all` in place of either ([superbounce.md](superbounce.md#targets)) |
 | `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
 | `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
+| `sbr.guide.box`, `sbr.guide.pipper`, `sbr.guide.ticks`, `sbr.guide.drift` | world mark | on the seam the player is going for | the approach guide ("The approach guide") |
 
 Speeds are metres a second and distances metres (a world unit is
 3.048 m). The rows are 21 pixels apart, a line of font 6, the last
-ending 5 above the frame's foot.
+ending 5 above the frame's foot. They start at screen x 149, 6 right of
+the segments' right side (`SEGMENTS_GAP`).
 
 ```sh
 h2 hud preview superbounce-readout --state all --out DIR
@@ -1323,13 +1383,26 @@ h2 hud preview superbounce-readout --state all --out DIR
 
 The preview's states are `idle`, `moving`, `falling-off-seam`,
 `falling-on-seam`, `falling-wants-drift`, the four `miss-` lines, `targets`, `second-bounce`,
-`second-bounce-lined-up`, `targets-switched` and `tagged`.
+`second-bounce-lined-up`, `targets-switched`, `tagged`, the guide's
+five (`guide-approach`, `guide-lined-up`, `guide-falling-caught`,
+`guide-too-shallow` and `guide-off-line`) and the segments' eight:
+`segments-idle`, `segments-near`, `segments-under`, `segments-held`,
+`segments-primed`, `segments-draining`, `segments-warning` and
+`segments-lost`. `idle` has no ring, as with the variant's
+`charge_segments` off; every other state has the empty one.
 
 `h2 hud preview superbounce-all` draws both HUDs in one frame, for the
 preview only and fullscreen only, as the readout is
-(`huds::superbounce_all`, `huds::previews`): fifteen moments of a run, each a state of the superbounce HUD beside one of the
-readout's (`MOMENTS`), the last three the second bounce's ranked seams,
-its line-up and the line after a switch of the kinds of seam shown.
+(`huds::superbounce_all`, `huds::previews`): twenty-five moments of a run, each a state of the superbounce HUD beside one of the
+readout's (`MOMENTS`), the thirteenth to the fifteenth the second
+bounce's ranked seams, its line-up and the line after a switch of the
+kinds of seam shown, the sixteenth to the twentieth the approach
+guide's (the walk up, lined up, falling and caught, falling too shallow,
+and off the line), and the last five the priming states the others
+lack: near, held, the primed ending, the warning and the loss. A
+moment's segments are its superbounce state's charge
+(`superbounce_all::segments_of`), so every moment shows the ring as the
+game would.
 
 **The runtime.** `crates/extensions/game/src/superbounce_readout.rs`
 registers it after the superbounce HUD, so that HUD's navpoint is the
@@ -1344,6 +1417,8 @@ through `superbounce_readout::view`:
 | `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances |
 | `switched` (`superbounce_targets::Switch`, for 60 ticks after a double tap of the flashlight) | the switch's line (`kinds`), over the ranked line and the miss line |
 | `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
+| `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`) and its marks' poses (`guide_poses`, `Handle::world_mark`) |
+| `charge`, `scan`, the spot counts | the charge segments (`superbounce_readout::segments`): the charge's stage, once the scan is ready and the map has a spot |
 
 The miss line's numbers are worked out beside the tracker's verdict:
 the seam is the one the landing was by
@@ -1357,13 +1432,118 @@ is not known is not shown.
 A piece the variant's script options turn off is left out of the view
 ([superbounce.md](superbounce.md#the-huds-options)): `velocity` the
 speed line, `alignment` the bar and the steer line, `miss_info` the miss
-line. With the mode off every element is hidden.
+line, `approach_guide` the guide's marks, `charge_segments` the
+segments. With the mode off every element is hidden.
+
+### The charge segments
+
+The priming indicator
+(`crates/rewrites/hud-kit-core/src/huds/superbounce_segments.rs`): nine
+short meters round the motion tracker's left, bottom and right sides,
+three a side, 4 pixels (`GAP`) clear of its rim (`rects::TRACKER`,
+(47, 360) to (130, 443)), so they are apart from the ring and off the
+tracker's blips. They fill down the left side, along the bottom and up
+the right as the recipe's steps are done, and wipe back the other way
+as the charge runs out.
+
+```text
+        .---.
+  1 =  /     \  = 9
+  2 = | track | = 8
+  3 =  \     /  = 7
+        '---'
+       =  =  =
+       4  5  6
+```
+
+| Segments | Screen, top left | From the frame's bottom left (48, 444) |
+|---|---|---|
+| `sbr.seg.1` to `.3`, the left side, top to bottom | x 34; y 384, 403, 422 | (−14, −60), (−14, −41), (−14, −22) |
+| `sbr.seg.4` to `.6`, the bottom, left to right | x 60, 84, 108; y 447 | (12, 3), (36, 3), (60, 3) |
+| `sbr.seg.7` to `.9`, the right side, bottom to top | x 134; y 422, 403, 384 | (86, −22), (86, −41), (86, −60) |
+
+**Art.** Each is `Art::StripMeterEnd(9)`: the last 9 columns of the
+energy sword's battery strip, 9 by 8, with the strip's own shader and
+colours ("The charge meter"). No art of ours is in it, and every segment
+lies flat: a side is a ladder of three, not a turned strip. Each is a
+meter, so the segment at the edge of the fill is part lit and the wipe
+is smooth.
+
+**Outside the frame.** The tracker's rim is on the HUD frame's left
+edge and its foot (x 47 against the frame's 48, y 443 against 444), so
+the left side and the bottom are in the screen's margin: 14 pixels left
+of the frame and 11 under it, inside the 640 by 480 screen. The elements
+say so (`Element::outside(14)`, `superbounce_segments::OUTSIDE`) and the
+`frame` check holds them to it.
+
+**Stages.** `superbounce_segments::segments` maps the mode's charge
+(`superbounce_charge::ChargePhase`, as `superbounce::Phase`) onto a
+stage and a count of lit segments:
+
+| Stage | Charge (`ChargePhase`, `still_ticks`) | Lit | Look |
+|---|---|---|---|
+| `Idle` | none: not primed, and not by a crouch spot | 0 | the empty ring |
+| `Near` | `Near`: crouched within 1.5 of a crouch spot, the standing capsule fits | 0 | the empty ring; the arming bar is up at 0 |
+| `Under` | `Under`: under the lip, crouch held | 3 | the left side |
+| `Held` | `Held`: crouch let go, the forced crouch | 6 | the left side and the bottom; the right side, the next to light, `Flash(Help)` |
+| `Primed` | `Primed`, fewer than 19 still ticks: over half the charge left | 9 × (1 − `still_ticks` / 38) | all nine moving; standing still wipes them from the right side's top, 4.2 ticks a segment |
+| `Warning` | `Primed`, 19 still ticks or more: `LOW_CHARGE`, the tick the prompt says "Keep moving or lose the charge" | as `Primed`, 4.5 or under | the lit ones `Flash(TimeWarning)`, the timer's warning record |
+| `Lost` | `Lost`: the word left −3, for one second | 0 | all nine empty in `Flash(TimeExpired)`, `Motion::Blink`: three blinks in 500 ms, then gone until the charge's `Lost` ends |
+
+Every stage but `Lost` eases to its fill (`Motion::Ease`, 200 ms), so a
+step lights its side as one sweep and moving again refills the ring.
+The segments show once the scan is ready and the map has a spot, on the
+ground and in the air: primed is worth seeing on the way down.
+
+**Split screen.** The segments are the readout's, fullscreen only: in a
+half or quarter frame the tracker is smaller and the grenade row, the
+prompt line's box and the frame's edge leave no ring round it. There
+priming is the arming bar, the prompt line's verbs and the
+notifications.
+
+```sh
+h2 hud preview superbounce-readout --state segments-held --out DIR
+h2 hud preview superbounce-all --state 24-charge-warning --out DIR
+```
+
+### The approach guide
+
+Four world marks of the readout
+(`crates/rewrites/hud-kit-core/src/huds/superbounce_guide.rs`) on the
+seam the player is going for, so the line-up is read off the geometry.
+What they mean, the prediction and the depth rule are in
+[superbounce.md](superbounce.md#the-approach-guide); this is how they
+are built.
+
+```text
+            ^          sbr.guide.drift: the way to drift, lit when moving that way
+      .-          -.
+      |   seam's   |   sbr.guide.box: 0.6 along the edge, the catch (0.2) across,
+      '-  point   -'   centred on the seam's landing point
+          - - -        sbr.guide.ticks: from the pipper toward the box
+           (+)         sbr.guide.pipper: where the path touches down
+```
+
+| Element | Shape | Pose | Values |
+|---|---|---|---|
+| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Lock` with `Will bounce` (`box_value`, `Call`) |
+| `sbr.guide.pipper` | `Pipper` | at the predicted landing on the seam's floor, radius 0.06 | shown while a landing is predicted by the seam; `Lock` with the box |
+| `sbr.guide.ticks` | `Ticks` | from the pipper's ring toward the box's centre, over the distance between them, 0.6 at most (`ticks_run`) | shown while the landing is not caught; under a run of 0.02 it has no pose |
+| `sbr.guide.drift` | `Arrow` | 0.06 outside the box on the drift's side, pointing along the drift | `Normal` while the player moves the drift's way, `Dim` when not; hidden on a seam with no drift |
+
+`Guide` is what the marks show and `Layout` where they lie;
+`poses(&Layout)` gives each mark's pose, for the runtime and for the
+preview's five samples alike (`samples`: the seam's point at the scene's
+origin, its edge along +X, its drift away from the viewer). Every pose
+carries the guide's fade as its strength. The marks are fullscreen only,
+as the readout is.
 
 ## Interfaces
 
 - A feature calls `hud_kit::register(describe) -> Handle`, then
-  `Handle::publish(values)`, and `Handle::navpoint(Option<point>)` or
-  `Handle::navpoint_at(id, Option<point>)` for its navpoints. A
+  `Handle::publish(values)`, `Handle::navpoint(Option<point>)` or
+  `Handle::navpoint_at(id, Option<point>)` for its navpoints, and
+  `Handle::world_mark(id, Option<pose>)` for its world marks. A
   `Prompt` or `Training` element's shown text is the channel's text.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
   `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,
@@ -1382,7 +1562,9 @@ line. With the mode off every element is hidden.
   repository. An `Art` is a reference; a colour is an address or a tag
   field.
 - A HUD may use only the styles above. A new colour is a new retail
-  source, named in "Colours", not a constant of ours.
+  source, named in "Colours", not a constant of ours. The one constant
+  is `world::LOCK_RED`, a world mark's `Lock`: the window draws world
+  marks, not the game's HUD, and it is the lock-on's red.
 - A kit widget is drawn only while the game draws the HUD.
 - Fullscreen first: an element without split-screen offsets is hidden in
   split screen.
@@ -1447,13 +1629,14 @@ particular:
   offset is read as the arrow's length plus one and more not read), the
   outline's art and place, and whether the HUD shader multiplies the
   green arrow's texels by the HUD colour or takes only their alpha.
-- The pill's icon: `^` reads as a stray caret. The choices are a flipped
-  `hud_waypoints` chevron or `default_arrow` beside the pill (not in it),
-  a pill with no icon, or new art (not the kit's to make).
-- Where the "x" of a retail pill starts (about x 22, from the disc
-  bitmap by eye) and so whether 20 pixels of body is clear of it in
-  every sequence, and which retail widget draws an unselected grenade's
-  pill (the `Inactive` look greys the lit one instead).
+- The charge segments: what the strip's shader draws of an unlit
+  segment, and so whether the empty ring reads as a ring or as nothing;
+  that a 9-column crop of the ramp fills evenly; that the host's HUD fit
+  keeps widgets in the screen's margin, left of and under the frame, on
+  a pinned wide window; that the half-size tracker of a split frame is
+  where the segments are not; and the nine more widgets against the
+  `nhdt`'s widget count. The `Held` and `Warning` flashes draw as
+  `Normal` until the colour hook is in.
 - The charge meter: that a cropped strip fills as the remap says (the
   blue ramp between the crop's columns is taken as even), what the
   shader draws of the unlit part, and the strip's sequence in split
@@ -1489,6 +1672,12 @@ particular:
   fades with the line, and where a fifth line in four slots goes
   (decoding 6). That the preview's text draw keeps a coloured glyph's
   colours.
+- World marks: that the world-line pass draws the kit's source beside
+  the mode's own, the marks' width, glow and label size in a game, and
+  how a mark reads on a slope or behind geometry (the pass has no depth
+  test, and a mark is flat). The preview's sample view is not the
+  game's camera, so the `world` check's frame rule says nothing of the
+  game.
 - The sheet's retail states draw the player's `nhdt` alone: no weapon's
   HUD is drawn with it, so the retail check does not see the weapon
   panels or the reticle's art (the reticle is a reserved rectangle).

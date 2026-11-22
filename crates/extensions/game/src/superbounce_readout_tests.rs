@@ -491,3 +491,102 @@ fn the_line_up_is_to_the_landing_point_and_wants_the_seams_drift() {
     r.caught = false;
     assert!(matches!(line_up(&r, 0.0).steer, Steer::Off { .. }));
 }
+
+/// The approach guide's marks are the state's guide, with the variant's
+/// option: what they show in the view, and where each lies.
+#[test]
+fn the_approach_guide_is_the_states_with_its_option() {
+    use crate::superbounce_guide::{Body, guide};
+    use hud_kit_core::huds::superbounce_guide::{BOX, Call, DRIFT, MARKS, PIPPER, TICKS};
+    use hud_kit_core::model::Style;
+    let spot = Spot {
+        drift: [1.0, 0.0],
+        ..seam()
+    };
+    let mut s = on();
+    assert_eq!(view(&s, Options::DEFAULT, None).guide, None);
+    assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(_, p)| p.is_none()));
+    // Primed on the ground a unit before the seam: the box on its landing
+    // point, the pipper where a jump from here comes down, ticks between
+    // them, the arrow unlit.
+    let body = Body {
+        position: [9.0, 0.0, 2.03],
+        velocity: [0.0; 3],
+        airborne: false,
+        primed: true,
+    };
+    s.guide = guide(&body, &spot);
+    let v = view(&s, Options::DEFAULT, None).guide.unwrap();
+    assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, true, true, Some(false)));
+    let values = rd::values(&view(&s, Options::DEFAULT, None));
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true; 4]);
+    assert_eq!(values.get(BOX).unwrap().style, Style::Dim);
+    let poses = guide_poses(&s, Options::DEFAULT);
+    assert_eq!(poses.map(|(id, _)| id), MARKS);
+    assert!(poses.iter().all(|(_, p)| p.is_some()));
+    let at = |id: &str| poses.iter().find(|(i, _)| *i == id).unwrap().1.unwrap().at;
+    assert_eq!(at(BOX), [10.0, 0.0, 2.0]);
+    assert_eq!(at(PIPPER), [9.0, 0.0, 2.0]);
+    assert!(at(TICKS)[0] > 9.0 && at(TICKS)[0] < 10.0 && at(DRIFT)[0] > 10.0);
+    // The variant's option takes all of it away.
+    let off = Options {
+        approach_guide: false,
+        ..Options::DEFAULT
+    };
+    assert_eq!(view(&s, off, None).guide, None);
+    assert!(guide_poses(&s, off).iter().all(|(_, p)| p.is_none()));
+    let values = rd::values(&view(&s, off, None));
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [false; 4]);
+}
+
+/// The charge segments are the mode's charge, stage for stage, once the
+/// map is scanned and has a spot, with the variant's option.
+#[test]
+fn the_charge_segments_are_the_modes_charge() {
+    use crate::superbounce_mode::{Charge, ChargePhase};
+    use hud_kit_core::huds::superbounce_segments::{IDS, Stage};
+    let charge = |phase, fill| Some(Charge { phase, fill, lost: None });
+    let mut s = State {
+        bounce: 2,
+        ..on()
+    };
+    // Not primed, by no crouch spot: the empty ring.
+    let ring = segments(&s).unwrap();
+    assert_eq!((ring.stage, ring.lit), (Stage::Idle, 0.0));
+    for (phase, fill, stage, lit) in [
+        (ChargePhase::Near, 0.0, Stage::Near, 0.0),
+        (ChargePhase::Under, 1.0 / 3.0, Stage::Under, 3.0),
+        (ChargePhase::Held, 2.0 / 3.0, Stage::Held, 6.0),
+        (ChargePhase::Primed, 1.0, Stage::Primed, 9.0),
+        (ChargePhase::Primed, 0.5, Stage::Warning, 4.5),
+        (ChargePhase::Lost, 0.0, Stage::Lost, 0.0),
+    ] {
+        s.charge = charge(phase, fill);
+        let g = segments(&s).unwrap();
+        assert_eq!((g.stage, g.lit), (stage, lit), "{phase:?} {fill}");
+    }
+    // In the view, and in the values: all nine, lit as the stage says.
+    s.charge = charge(ChargePhase::Held, 2.0 / 3.0);
+    let v = view(&s, Options::DEFAULT, None);
+    assert_eq!(v.segments.map(|g| g.stage), Some(Stage::Held));
+    let values = rd::values(&v);
+    let fills = IDS.map(|id| {
+        let x = values.get(id).unwrap();
+        (x.shown, x.fill)
+    });
+    assert_eq!(fills[..6], [(true, 1.0); 6]);
+    assert_eq!(fills[6..], [(true, 0.0); 3]);
+    // The variant's option hides them.
+    let off = Options {
+        charge_segments: false,
+        ..Options::DEFAULT
+    };
+    assert_eq!(view(&s, off, None).segments, None);
+    let values = rd::values(&view(&s, off, None));
+    assert!(IDS.iter().all(|id| !values.get(id).unwrap().shown));
+    // Before the scan is ready, and on a map with no spot, nothing.
+    let none = State { bounce: 0, crouch: 0, ..s.clone() };
+    assert_eq!(segments(&none), None);
+    let scanning = State { scan: ScanState::Scanning, ..s };
+    assert_eq!(segments(&scanning), None);
+}

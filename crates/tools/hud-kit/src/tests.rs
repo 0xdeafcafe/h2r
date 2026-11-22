@@ -11,7 +11,9 @@ use scenario_edit::MapSource;
 
 use crate::check::{self, Check};
 use crate::compile::AsHudEdit;
+use crate::huds::pill_block::{self, PillBlock};
 use crate::huds::superbounce::{self, Superbounce};
+use crate::huds::superbounce_segments as segs;
 use crate::model::*;
 use crate::preview;
 use crate::templates;
@@ -119,17 +121,17 @@ fn one_layout_per_hud() {
     assert!(v.layout_problems(&hud).is_empty());
     v.0.retain(|(id, _)| *id != superbounce::NAVPOINT);
     v.0.push(("sb.nope", Value::shown()));
-    v.0.push((superbounce::PILL_ICON, Value::shown()));
+    v.0.push((superbounce::ARM, Value::shown()));
     let p = v.layout_problems(&hud);
     assert!(p.contains(&"sb.navpoint has no value".to_owned()), "{p:?}");
-    assert!(p.contains(&"sb.pill.icon has 2 values".to_owned()), "{p:?}");
+    assert!(p.contains(&"sb.arm has 2 values".to_owned()), "{p:?}");
     assert!(
         p.contains(&"sb.nope is not an element of superbounce".to_owned()),
         "{p:?}"
     );
     let mut twice = hud.clone();
     twice.elements.push(twice.elements[0].clone());
-    assert_eq!(twice.problems(), ["sb.pill is named twice"]);
+    assert_eq!(twice.problems(), ["sb.arm is named twice"]);
     let mut src = synthetic();
     let t = src.templates(&twice);
     assert!(compile(&twice, &t).is_err());
@@ -223,22 +225,27 @@ fn the_readout_passes_beside_the_superbounce_hud() {
             .map(|d| d.id)
             .collect()
     };
+    // The charge segments' ring is drawn in every state but `idle`,
+    // after the bar.
+    let with_ring = |before: &[&'static str], after: &[&'static str]| -> Vec<&'static str> {
+        before.iter().chain(&segs::IDS).chain(after).copied().collect()
+    };
     assert_eq!(
         drawn("falling-off-seam", Mode::Full),
-        [readout::FALL, readout::SPEED, readout::STEER]
+        with_ring(&[readout::FALL], &[readout::SPEED, readout::STEER])
     );
-    assert_eq!(drawn("miss-too-slow", Mode::Full), [readout::INFO]);
+    assert_eq!(drawn("miss-too-slow", Mode::Full), with_ring(&[], &[readout::INFO]));
     assert!(drawn("idle", Mode::Full).is_empty());
     for mode in [Mode::Half, Mode::Quarter] {
         assert!(drawn("falling-off-seam", mode).is_empty(), "{mode:?}");
         assert!(drawn("tagged", mode).is_empty(), "{mode:?}");
     }
-    // Right of the tracker and the pill, under its top, left of the middle
-    // third's far edge.
+    // Right of the tracker and the charge segments, under its top, left of
+    // the middle third's far edge.
     for id in [readout::FALL, readout::SPEED, readout::STEER] {
         let d = shot("falling-off-seam", Mode::Full).element(id).unwrap();
         let rect = d.rect.unwrap();
-        assert!(rect.x0 >= 171.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
+        assert!(rect.x0 >= 149.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
     }
 }
 
@@ -265,8 +272,9 @@ fn the_combined_preview_draws_no_part_of_the_block_alone() {
         .iter()
         .find(|s| s.mode == Mode::Full && s.state == "3-primed-targets")
         .unwrap();
-    for id in [superbounce::PILL, superbounce::CHARGE] {
-        assert!(full.element(id).unwrap().drawn, "{id}");
+    for id in segs::IDS {
+        let d = full.element(id).unwrap();
+        assert!(d.drawn && d.fill == Some(1.0), "{id}");
     }
 }
 
@@ -329,52 +337,12 @@ fn the_synthetic_sheet_draws_and_passes() {
         .filter(|d| d.drawn)
         .map(|d| d.id)
         .collect();
-    assert_eq!(
-        drawn,
-        [
-            superbounce::PILL,
-            superbounce::PILL_END,
-            superbounce::PILL_ICON,
-            superbounce::NAVPOINT
-        ]
-    );
-    let at = |id| s.element(id).unwrap().rect.unwrap().pixels();
-    // Fullscreen the pill is at the bottom left, right of the tracker and
-    // under the arming bar, placed from the top-left anchor (48, 36): cut
-    // from the frag pill, the body its first 20 pixels, the end its last
-    // 7 against the body, the panel's height.
-    let left = 48 + i32::from(superbounce::PILL_FULL.0);
-    let top = 36 + i32::from(superbounce::PILL_FULL.1);
+    // Not primed, nothing of this HUD but the navpoint: the charge is the
+    // readout's segments'.
+    assert_eq!(drawn, [superbounce::NAVPOINT]);
     assert_eq!(
         crate::rects::BOTTOM_LEFT[1],
         36 + superbounce::FRAME_HEIGHT
-    );
-    let h = i32::from(synthetic::PANEL_SIZE.1);
-    let (body, end) = (i32::from(PILL_BODY), i32::from(PILL_END));
-    assert_eq!((left, top), (138, 376));
-    assert_eq!(at(superbounce::PILL), [left, top, left + body, top + h]);
-    assert_eq!(
-        at(superbounce::PILL_END),
-        [left + body, top, left + body + end, top + h]
-    );
-    // The icon where a pill's count is in its pill, by the count's own
-    // rule (centred: half its width, rounded down, left of the point).
-    let icon = s.element(superbounce::PILL_ICON).unwrap().rect.unwrap();
-    let point = [
-        (left + i32::from(superbounce::ICON_AT.0)) as f32,
-        (top + i32::from(superbounce::ICON_AT.1)) as f32,
-    ];
-    assert_eq!(
-        superbounce::ICON_AT,
-        (
-            synthetic::COUNTS[1].0 - synthetic::PANEL_AT.0,
-            synthetic::COUNTS[1].1 - synthetic::PANEL_AT.1
-        )
-    );
-    let size = render::text_size(None, Font::Hud.engine(), superbounce::ICON_TEXT);
-    assert_eq!(
-        icon,
-        place::text_rect(point, size, Justify::Centre as u16)
     );
     // The navpoint at the sample point, right of and above the centre:
     // the arrow's tip on the point, everything else above it.
@@ -393,8 +361,8 @@ fn the_synthetic_sheet_draws_and_passes() {
             .any(|p| p.drawn && p.rect.unwrap().pixels() == [47, 360, 130, 443])
     );
     assert!(s.retail.iter().any(|p| p.drawn && p.name == "frag_pill"));
-    // In split screen the tutorial is hidden and says why; the pill and
-    // the navpoint show.
+    // In split screen the tutorial is hidden and says why; the navpoint
+    // shows.
     let half = |state: &str| {
         r.shots
             .iter()
@@ -404,23 +372,6 @@ fn the_synthetic_sheet_draws_and_passes() {
     let d = half("tutorial-1").element(superbounce::TUTORIAL).unwrap();
     assert!(!d.drawn && d.hidden.as_deref() == Some("no half screen offset"));
     let h = half("primed-full");
-    assert!(h.element(superbounce::PILL).unwrap().drawn);
-    // In split screen the pill is the grenade row's next: one count step
-    // past the frag pill, under the frame's top-left corner.
-    let (sx, sy) = (
-        synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0,
-        synthetic::COUNTS[0].1 - synthetic::COUNTS[1].1,
-    );
-    let hf = Frame::for_mode(Mode::Half);
-    let split = h.element(superbounce::PILL).unwrap().rect.unwrap().pixels();
-    assert_eq!(
-        [split[0], split[1]],
-        [
-            i32::from(hf.left + synthetic::PANEL_AT.0 + sx + sx),
-            i32::from(hf.top + synthetic::PANEL_AT.1 + sy)
-        ]
-    );
-    assert!(h.element(superbounce::CHARGE).unwrap().drawn);
     assert!(h.element(superbounce::NAVPOINT).unwrap().drawn);
     // In every split frame the navpoint's stack stays inside the frame
     // (the sample is moved down, as the game keeps a navpoint in its
@@ -459,7 +410,7 @@ fn the_synthetic_sheet_draws_and_passes() {
     assert!(std::fs::read(&png).unwrap().starts_with(b"\x89PNG"));
     assert!(png.ends_with("superbounce-not-primed-full.png"));
     let back: serde_json::Value = serde_json::from_slice(&std::fs::read(&js).unwrap()).unwrap();
-    assert_eq!(back["elements"][0]["id"], "sb.pill");
+    assert_eq!(back["elements"][0]["id"], "sb.arm");
     assert_eq!(back["source"], "synthetic");
     let _ = std::fs::remove_dir_all(&dir);
     let inside = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out");
@@ -520,19 +471,160 @@ fn the_json_rectangles_are_the_compiled_bytes() {
         }
     }
     let states = Superbounce.states().len();
-    assert_eq!(
-        compared,
-        5 * states,
-        "the pill's two parts, the charge meter, the arming bar and the icon in every state"
-    );
+    assert_eq!(compared, states, "the arming bar in every state");
 }
 
-/// The pill is lit primed (its texels as they are, the icon in the kit
-/// text colour), greyed not primed and faded while scanning.
+/// The kit's pill block (`huds::pill_block`) on the synthetic map:
+/// fullscreen the pill is beside the tracker, cut from the frag pill
+/// (the body its first 20 pixels, the end its last 7 against the body,
+/// the panel's height) with its icon where a pill's count is; in split
+/// screen it is the grenade row's next pill.
+#[test]
+fn the_pill_block_is_beside_the_tracker_and_in_the_grenade_row() {
+    let mut src = synthetic();
+    let r = check::hud(&mut src, &PillBlock, &Mode::ALL).unwrap();
+    let shot = |state: &str, mode: Mode| {
+        r.shots
+            .iter()
+            .find(|s| s.state == state && s.mode == mode)
+            .unwrap()
+    };
+    let s = shot("not-primed", Mode::Full);
+    let drawn: Vec<_> = s.elements.iter().filter(|d| d.drawn).map(|d| d.id).collect();
+    assert_eq!(
+        drawn,
+        [pill_block::PILL, pill_block::PILL_END, pill_block::PILL_ICON]
+    );
+    let at = |id| s.element(id).unwrap().rect.unwrap().pixels();
+    let left = 48 + i32::from(pill_block::PILL_FULL.0);
+    let top = 36 + i32::from(pill_block::PILL_FULL.1);
+    let h = i32::from(synthetic::PANEL_SIZE.1);
+    let (body, end) = (i32::from(PILL_BODY), i32::from(PILL_END));
+    assert_eq!((left, top), (138, 376));
+    assert_eq!(at(pill_block::PILL), [left, top, left + body, top + h]);
+    assert_eq!(
+        at(pill_block::PILL_END),
+        [left + body, top, left + body + end, top + h]
+    );
+    // The icon where a pill's count is in its pill, by the count's own
+    // rule (centred: half its width, rounded down, left of the point).
+    let icon = s.element(pill_block::PILL_ICON).unwrap().rect.unwrap();
+    let point = [
+        (left + i32::from(pill_block::ICON_AT.0)) as f32,
+        (top + i32::from(pill_block::ICON_AT.1)) as f32,
+    ];
+    assert_eq!(
+        pill_block::ICON_AT,
+        (
+            synthetic::COUNTS[1].0 - synthetic::PANEL_AT.0,
+            synthetic::COUNTS[1].1 - synthetic::PANEL_AT.1
+        )
+    );
+    let size = render::text_size(None, Font::Hud.engine(), pill_block::ICON_TEXT);
+    assert_eq!(
+        icon,
+        place::text_rect(point, size, Justify::Centre as u16)
+    );
+    // In split screen the pill is the grenade row's next: one count step
+    // past the frag pill, under the frame's top-left corner.
+    let h = shot("primed-full", Mode::Half);
+    assert!(h.element(pill_block::PILL).unwrap().drawn);
+    let (sx, sy) = (
+        synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0,
+        synthetic::COUNTS[0].1 - synthetic::COUNTS[1].1,
+    );
+    let hf = Frame::for_mode(Mode::Half);
+    let split = h.element(pill_block::PILL).unwrap().rect.unwrap().pixels();
+    assert_eq!(
+        [split[0], split[1]],
+        [
+            i32::from(hf.left + synthetic::PANEL_AT.0 + sx + sx),
+            i32::from(hf.top + synthetic::PANEL_AT.1 + sy)
+        ]
+    );
+    assert!(h.element(pill_block::CHARGE).unwrap().drawn);
+}
+
+/// The charge segments on the synthetic sheet: nine pieces of the
+/// strip's end round the tracker's rim and off it, outside the HUD
+/// frame by what they are let and no finding for it; lit as the stage
+/// says.
+#[test]
+fn the_charge_segments_draw_round_the_tracker() {
+    use crate::huds::superbounce_readout::Readout;
+    assert_eq!(
+        segs::TRACKER.map(i32::from),
+        crate::rects::TRACKER.pixels(),
+        "the rim the segments are placed round"
+    );
+    assert_eq!(
+        [segs::CORNER.0, segs::CORNER.1],
+        crate::rects::BOTTOM_LEFT
+    );
+    let mut src = synthetic();
+    let r = check::hud(&mut src, &Readout, &[Mode::Full]).unwrap();
+    let on_segments: Vec<_> = r
+        .findings
+        .iter()
+        .filter(|f| f.elements.iter().any(|e| e.starts_with("sbr.seg.")))
+        .collect();
+    assert!(on_segments.is_empty(), "{on_segments:#?}");
+    let shot = |state: &str| r.shots.iter().find(|s| s.state == state).unwrap();
+    let frame = Frame::for_mode(Mode::Full);
+    let rim = crate::rects::TRACKER;
+    for (id, (x, y)) in segs::IDS.into_iter().zip(segs::AT) {
+        let d = shot("segments-primed").element(id).unwrap();
+        let rect = d.rect.unwrap();
+        assert!(d.drawn, "{id}");
+        assert_eq!(
+            rect.pixels(),
+            [i32::from(x), i32::from(y), i32::from(x) + 9, i32::from(y) + 8],
+            "{id}"
+        );
+        assert!(rect.intersect(&rim).is_none(), "{id} is over the tracker");
+    }
+    // The left side and the bottom are outside the frame.
+    let first = shot("segments-primed").element(segs::IDS[0]).unwrap().rect.unwrap();
+    let foot = shot("segments-primed").element(segs::IDS[4]).unwrap().rect.unwrap();
+    assert!(first.x0 < f32::from(frame.left) && foot.y1 > f32::from(frame.bottom));
+    let fills = |state: &str| -> Vec<Option<f32>> {
+        segs::IDS
+            .iter()
+            .map(|id| shot(state).element(id).unwrap().fill)
+            .collect()
+    };
+    assert_eq!(fills("segments-under")[..4], [Some(1.0), Some(1.0), Some(1.0), Some(0.0)]);
+    assert_eq!(fills("segments-held")[5..7], [Some(1.0), Some(0.0)]);
+    assert_eq!(fills("segments-primed"), [Some(1.0); 9]);
+    assert_eq!(fills("segments-lost"), [Some(0.0); 9]);
+    assert!(segs::IDS.iter().all(|id| !shot("idle").element(id).unwrap().drawn));
+}
+
+/// An element let outside the HUD frame may sit that far out and no
+/// further; one that is not let out may not sit outside at all.
+#[test]
+fn an_element_is_outside_the_frame_only_by_what_it_is_let() {
+    let strip = |id, x: i16, by: i16| {
+        Element::meter(id, Art::StripMeterEnd(9), bl(x, -100)).outside(by)
+    };
+    let frame = |elements| {
+        let r = findings(&case(elements, &[]));
+        r.of(Check::Frame).map(|f| f.text.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(frame(vec![strip("a", -14, 14)]), Vec::<String>::new());
+    assert_eq!(frame(vec![strip("a", 0, 0)]), Vec::<String>::new());
+    let out = frame(vec![strip("a", -15, 14)]);
+    assert!(out.len() == 1 && out[0].contains("more than its 14 outside"), "{out:?}");
+    let out = frame(vec![strip("a", -14, 0)]);
+    assert!(out.len() == 1 && out[0].contains("leaves the HUD frame"), "{out:?}");
+}
+
+/// The pill block's pill is lit primed (its texels as they are, the icon
+/// in the kit text colour), greyed not primed and faded while scanning.
 #[test]
 fn styles_change_the_pill() {
     let mut src = synthetic();
-    let r = check::hud(&mut src, &Superbounce, &[Mode::Full]).unwrap();
+    let r = check::hud(&mut src, &PillBlock, &[Mode::Full]).unwrap();
     let px = |state: &str, id: &str, dx: f32, dy: f32| {
         let s = r.shots.iter().find(|s| s.state == state).unwrap();
         let rect = s.element(id).unwrap().rect.unwrap();
@@ -543,11 +635,11 @@ fn styles_change_the_pill() {
     };
     let sat = |p: [u8; 3]| p.iter().max().unwrap() - p.iter().min().unwrap();
     // The pill's right end, clear of the icon.
-    let pill = |state| px(state, superbounce::PILL_END, 2.0, 8.0);
+    let pill = |state| px(state, pill_block::PILL_END, 2.0, 8.0);
     let (lit, off, dim) = (pill("primed-full"), pill("not-primed"), pill("scanning"));
     assert!(sat(off) * 2 < sat(lit), "greyed: {off:?} against {lit:?}");
     assert_ne!(dim, lit, "faded");
-    let icon = |state| px(state, superbounce::PILL_ICON, 1.0, 4.0);
+    let icon = |state| px(state, pill_block::PILL_ICON, 1.0, 4.0);
     assert_eq!(icon("primed-full"), render::TEXT_COLOUR[..3]);
     assert_ne!(icon("not-primed"), icon("primed-full"));
     assert_ne!(icon("scanning"), icon("primed-full"));
@@ -755,7 +847,7 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
 #[test]
 fn the_next_pill_is_cut_from_the_frag_pill() {
     let mut src = synthetic();
-    let hud = superbounce::hud();
+    let hud = pill_block::hud();
     let t = src.templates(&hud);
     let row = t.row.as_ref().unwrap();
     let (w, sw) = (f32::from(synthetic::PANEL_SIZE.0), f32::from(synthetic::PILL_WIDTH));
@@ -768,11 +860,11 @@ fn the_next_pill_is_cut_from_the_frag_pill() {
     assert_eq!(body.crop, Some([53.0 / w, 73.0 / w, 0.0, 1.0]));
     assert_eq!(end.crop, Some([96.0 / w, 1.0, 0.0, 1.0]));
     let c = compile(&hud, &t).unwrap();
-    assert_eq!(c.widget(superbounce::PILL_END).unwrap().crop, end.crop);
-    assert_eq!(c.widget(superbounce::PILL_ICON).unwrap().crop, None);
+    assert_eq!(c.widget(pill_block::PILL_END).unwrap().crop, end.crop);
+    assert_eq!(c.widget(pill_block::PILL_ICON).unwrap().crop, None);
     // The frag pill's red rises with its x: the body starts at its x 0,
     // the end at its x 43 and rises to 49.
-    let r = check::hud(&mut src, &Superbounce, &[Mode::Full]).unwrap();
+    let r = check::hud(&mut src, &PillBlock, &[Mode::Full]).unwrap();
     let s = r.shots.iter().find(|s| s.state == "primed-full").unwrap();
     let red = |id, dx: f32| {
         let e = s.element(id).unwrap().rect.unwrap();
@@ -780,9 +872,9 @@ fn the_next_pill_is_cut_from_the_frag_pill() {
         s.canvas.rgba[((y * s.canvas.width + x) * 4) as usize]
     };
     let (b0, e0, e6) = (
-        red(superbounce::PILL, 0.0),
-        red(superbounce::PILL_END, 0.0),
-        red(superbounce::PILL_END, 6.0),
+        red(pill_block::PILL, 0.0),
+        red(pill_block::PILL_END, 0.0),
+        red(pill_block::PILL_END, 6.0),
     );
     assert!(b0 < e0 && e0 < e6, "{b0} {e0} {e6}");
 }
@@ -805,7 +897,7 @@ fn a_crop_is_its_part_of_the_frag_pill() {
     assert_eq!(row.crop(PillPart::End), [43.0 / 103.0, 50.0 / 103.0, 0.0, 1.0]);
 }
 
-/// The charge meter: the strip's last 27 columns, 2 pixels under the
+/// The pill block's strip: the strip's last 27 columns, 2 pixels under the
 /// pill's bottom (21 under its top) and in line with its left edge, in
 /// every mode; the fill goes through the strip's blue ramp (the runtime's
 /// `hud_input1`), so a full meter shows every column and an empty one
@@ -813,10 +905,10 @@ fn a_crop_is_its_part_of_the_frag_pill() {
 #[test]
 fn the_charge_meter_is_the_strips_end_under_the_pill() {
     let mut src = synthetic();
-    let hud = superbounce::hud();
+    let hud = pill_block::hud();
     let t = src.templates(&hud);
     let c = compile(&hud, &t).unwrap();
-    let w = c.widget(superbounce::CHARGE).unwrap();
+    let w = c.widget(pill_block::CHARGE).unwrap();
     let strip = 92.0;
     assert_eq!(w.crop, Some([65.0 / strip, 1.0, 0.0, 1.0]));
     // The synthetic strip's blue is 0 to column 13, then rises 1/78 a
@@ -826,16 +918,16 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
     assert!(b1 > 1.0, "the last column's blue plus a step: {b1}");
     assert_eq!(w.input(0.0), b0);
     assert_eq!(w.input(1.0), b1);
-    let r = check::hud(&mut src, &Superbounce, &Mode::ALL).unwrap();
+    let r = check::hud(&mut src, &PillBlock, &Mode::ALL).unwrap();
     for s in &r.shots {
-        let pill = s.element(superbounce::PILL).unwrap().rect;
-        let charge = s.element(superbounce::CHARGE).unwrap();
+        let pill = s.element(pill_block::PILL).unwrap().rect;
+        let charge = s.element(pill_block::CHARGE).unwrap();
         let (Some(p), Some(m)) = (pill, charge.rect) else {
             continue;
         };
         assert_eq!(
             [m.x0, m.y0, m.width(), m.height()],
-            [p.x0, p.y0 + f32::from(superbounce::CHARGE_DOWN), 27.0, 8.0],
+            [p.x0, p.y0 + f32::from(pill_block::CHARGE_DOWN), 27.0, 8.0],
             "{} {:?}",
             s.state,
             s.mode
@@ -846,7 +938,7 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
             .iter()
             .find(|s| s.state == state && s.mode == Mode::Full)
             .unwrap()
-            .element(superbounce::CHARGE)
+            .element(pill_block::CHARGE)
             .unwrap()
             .clone()
     };
@@ -860,8 +952,8 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
 }
 
 /// The arming bar is the scoreboard's `bomb_defusal`, uncropped (its
-/// `hud_input1` the fill), at the bottom left over the pill; drawn in the
-/// recipe's states at their fills.
+/// `hud_input1` the fill), at the bottom left over the readout's rows;
+/// drawn in the recipe's states at their fills.
 #[test]
 fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
     let mut src = synthetic();
@@ -885,21 +977,13 @@ fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
     let corner = frame.anchor_point(1).unwrap();
     let rect = arm("held").rect.unwrap();
     assert_eq!([rect.width(), rect.height()], [140.0, 13.0]);
-    // Bottom left with the readout, above the pill and the speed row.
+    // Bottom left with the readout, above the speed row (y 376) and the
+    // charge segments' right side.
     let (x, y) = superbounce::ARM_FULL;
     assert_eq!(rect.x0 + rect.width() / 2.0, corner[0] + f32::from(x));
     assert_eq!(rect.y0 + rect.height() / 2.0, corner[1] + f32::from(y));
-    let pill = r
-        .shots
-        .iter()
-        .find(|s| s.state == "held")
-        .unwrap()
-        .element(superbounce::PILL)
-        .unwrap()
-        .rect
-        .unwrap();
-    assert_eq!(rect.x0, pill.x0);
-    assert!(rect.y1 <= pill.y0, "{rect:?} {pill:?}");
+    assert_eq!(rect.x0, 138.0);
+    assert!(rect.y1 <= 376.0 && rect.y1 + 16.0 <= f32::from(segs::AT[8].1), "{rect:?}");
     assert!(arm("held").drawn && arm("near").drawn && arm("primed-ending").drawn);
     assert_eq!(arm("under").fill, Some(superbounce::FILL_UNDER));
     assert_eq!(arm("held").fill, Some(superbounce::FILL_HELD));
@@ -949,4 +1033,211 @@ fn the_prompt_and_message_carry_the_steps_and_landings() {
         get("bounced", superbounce::MEDAL).text,
         superbounce::Medal::Superbounce.line()
     );
+}
+
+/// A test HUD with world marks: its states and their sample poses.
+struct WorldCase {
+    hud: Hud,
+    states: Vec<(&'static str, Values)>,
+    poses: Vec<(&'static str, hud_kit_core::world::Pose)>,
+}
+
+impl Describe for WorldCase {
+    fn hud(&self) -> Hud {
+        self.hud.clone()
+    }
+    fn states(&self) -> Vec<(&'static str, Values)> {
+        self.states.clone()
+    }
+    fn world(&self, _: &str) -> Vec<(&'static str, hud_kit_core::world::Pose)> {
+        self.poses.clone()
+    }
+}
+
+/// The world check: a mark a state shows needs a sample pose without a
+/// fault that draws lines inside the frame; a pose names a world mark;
+/// the lock's red is a world mark's alone. A sound case passes, and its
+/// mark claims no rectangle, so nothing overlaps it.
+#[test]
+fn the_world_check_fires_on_marks_built_to_break_it() {
+    use hud_kit_core::world::{Pose, Shape};
+    let mark = |id, shape| Element::channel(id, Kind::WorldMark { shape, longest: "" });
+    let text = |id| Element::text(id, Font::Hud, Justify::Start, "AB", bl(10, -150));
+    let case = |elements: Vec<Element>, values: Vec<(&'static str, Value)>, poses| {
+        let hud = Hud {
+            name: "world",
+            elements,
+        };
+        WorldCase {
+            hud,
+            states: vec![("s", Values(values))],
+            poses,
+        }
+    };
+    let world = |c: &WorldCase| -> Vec<String> {
+        check::hud(&mut synthetic(), c, &[Mode::Full])
+            .unwrap()
+            .of(Check::World)
+            .map(|f| f.text.clone())
+            .collect()
+    };
+    let pose = Pose::at([0.0; 3], [0.3, 0.1]);
+    // Sound: a bracket at the scene's origin.
+    let sound = case(
+        vec![mark("b", Shape::Bracket), text("t")],
+        vec![("b", Value::shown()), ("t", Value::text("AB"))],
+        vec![("b", pose)],
+    );
+    let r = check::hud(&mut synthetic(), &sound, &[Mode::Full]).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    let b = r.shots[0].element("b").unwrap();
+    assert!(b.drawn && b.rect.is_none() && b.reserved.is_none());
+    let w = b.world.as_ref().unwrap();
+    assert_eq!((w.shape, w.edges), (Shape::Bracket, 8));
+    // No pose.
+    let c = case(vec![mark("b", Shape::Bracket)], vec![("b", Value::shown())], vec![]);
+    assert_eq!(world(&c), ["b is shown with no sample pose"]);
+    // A pose with a fault.
+    let c = case(
+        vec![mark("b", Shape::Bracket)],
+        vec![("b", Value::hidden())],
+        vec![("b", Pose { strength: 2.0, ..pose })],
+    );
+    assert_eq!(world(&c), ["b's pose has strength 2 outside 0 to 1"]);
+    // A pose with no size draws nothing.
+    let c = case(
+        vec![mark("b", Shape::Bracket)],
+        vec![("b", Value::shown())],
+        vec![("b", Pose::at([0.0; 3], [0.0, 0.0]))],
+    );
+    assert_eq!(world(&c), ["b is shown and its bracket draws no lines"]);
+    // A sample far outside the frame.
+    let c = case(
+        vec![mark("b", Shape::Bracket)],
+        vec![("b", Value::shown())],
+        vec![("b", Pose::at([9.0, 0.0, 0.0], [0.3, 0.1]))],
+    );
+    assert!(world(&c)[0].starts_with("b's sample leaves the HUD frame"), "{:?}", world(&c));
+    // A pose for a text, and for nothing.
+    let c = case(
+        vec![text("t")],
+        vec![("t", Value::text("AB"))],
+        vec![("t", pose), ("nope", pose)],
+    );
+    assert_eq!(
+        world(&c),
+        ["a pose for t, which is a text", "a pose for nope, which is not an element"]
+    );
+    // The lock's red on a text.
+    let c = case(
+        vec![text("t")],
+        vec![("t", Value::text("AB").styled(Style::Lock))],
+        vec![],
+    );
+    assert_eq!(world(&c), ["t is a text in the lock's red, a world mark's alone"]);
+}
+
+/// The approach guide in the readout's preview: each moment draws the
+/// marks it shows where the sample scene puts them, and the checks pass.
+/// On the approach the pipper is outside the box with ticks between; in
+/// a caught fall it is inside, the box is in the lock's red and says so.
+#[test]
+fn the_approach_guide_draws_in_its_moments() {
+    use crate::huds::superbounce_guide as guide;
+    use crate::huds::superbounce_readout::{self as readout, Readout};
+    let mut src = synthetic();
+    let r = check::hud(&mut src, &Readout, &Mode::ALL).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    let shot = |state: &str, mode: Mode| {
+        r.shots
+            .iter()
+            .find(|s| s.hud == readout::NAME && s.state == state && s.mode == mode)
+            .unwrap()
+    };
+    let bounds = |state: &str, id: &str| {
+        let d = shot(state, Mode::Full).element(id).unwrap();
+        assert!(d.drawn, "{state} {id}");
+        d.world.as_ref().unwrap().bounds.unwrap()
+    };
+    let drawn = |state: &str, id: &str| shot(state, Mode::Full).element(id).unwrap().drawn;
+    // The box is round the scene's origin in every moment.
+    let frame = shot("guide-approach", Mode::Full).frame;
+    let origin = preview::project(&frame, [0.0; 3]);
+    for (state, _, _) in guide::samples() {
+        let b = bounds(state, guide::BOX);
+        assert!(b.contains_point(origin), "{state}: {b:?} {origin:?}");
+        assert!(drawn(state, guide::PIPPER) && drawn(state, guide::DRIFT), "{state}");
+        // Fullscreen only, as the readout is.
+        for mode in [Mode::Half, Mode::Quarter] {
+            for id in guide::MARKS {
+                assert!(!shot(state, mode).element(id).unwrap().drawn, "{state} {id}");
+            }
+        }
+    }
+    // The approach: the pipper below the box on the screen (nearer the
+    // viewer), ticks between them.
+    let (b, p, t) = (
+        bounds("guide-approach", guide::BOX),
+        bounds("guide-approach", guide::PIPPER),
+        bounds("guide-approach", guide::TICKS),
+    );
+    assert!(p.y0 > b.y1, "{p:?} {b:?}");
+    assert!(t.y1 <= p.y1 && t.y0 >= b.y0, "{t:?} between {b:?} and {p:?}");
+    // Caught: no ticks, the pipper inside the box, the call above it.
+    for (state, label, style) in [
+        ("guide-falling-caught", guide::WILL_BOUNCE, Style::Lock),
+        ("guide-too-shallow", guide::TOO_SHALLOW, Style::Normal),
+    ] {
+        assert!(!drawn(state, guide::TICKS), "{state}");
+        let d = shot(state, Mode::Full).element(guide::BOX).unwrap();
+        assert_eq!((d.text.as_deref(), d.style), (Some(label), style), "{state}");
+        let (b, p) = (bounds(state, guide::BOX), bounds(state, guide::PIPPER));
+        assert!(b.x0 <= p.x0 && p.x1 <= b.x1 && p.y1 <= b.y1 + 1.0, "{state}: {p:?} in {b:?}");
+    }
+    // The arrow is past the box, up the screen: the drift is away.
+    let (b, a) = (
+        bounds("guide-lined-up", guide::BOX),
+        bounds("guide-lined-up", guide::DRIFT),
+    );
+    assert!(a.y1 <= b.y0 + 2.0, "{a:?} {b:?}");
+    // The lock's red is drawn red: the box's top-left corner pixel.
+    let s = shot("guide-falling-caught", Mode::Full);
+    let corner = preview::project(&frame, [-guide::BOX_ALONG, guide::BOX_ACROSS, 0.02]);
+    let at = ((corner[1].round() as u32 * s.canvas.width + corner[0].round() as u32) * 4) as usize;
+    let px = &s.canvas.rgba[at..at + 3];
+    assert!(px[0] > px[1] && px[0] > px[2], "{px:?}");
+    // The other states draw no mark.
+    for id in guide::MARKS {
+        assert!(!drawn("falling-on-seam", id), "{id}");
+    }
+}
+
+/// The preview's world sample is an oblique view of the floor: +X goes
+/// right, depth and height go up the screen, and a split frame draws it
+/// smaller.
+#[test]
+fn the_world_sample_is_an_oblique_view() {
+    let full = Frame {
+        top: 48,
+        left: 48,
+        bottom: 444,
+        right: 592,
+    };
+    let o = preview::project(&full, [0.0; 3]);
+    assert_eq!(o, [320.0, 246.0 + preview::WORLD_SAMPLE[1] * 396.0]);
+    let x = preview::project(&full, [1.0, 0.0, 0.0]);
+    assert_eq!([x[0] - o[0], x[1] - o[1]], [preview::WORLD_SCALE, 0.0]);
+    let y = preview::project(&full, [0.0, 1.0, 0.0]);
+    assert_eq!(y[0], o[0]);
+    assert!((o[1] - y[1] - preview::WORLD_SCALE * preview::WORLD_TILT).abs() < 1e-3);
+    let z = preview::project(&full, [0.0, 0.0, 1.0]);
+    assert!((o[1] - z[1] - preview::WORLD_SCALE).abs() < 1e-3);
+    let half = Frame {
+        top: 18,
+        left: 48,
+        bottom: 216,
+        right: 592,
+    };
+    let (ho, hx) = (preview::project(&half, [0.0; 3]), preview::project(&half, [1.0, 0.0, 0.0]));
+    assert!((hx[0] - ho[0] - preview::WORLD_SCALE / 2.0).abs() < 1e-3);
 }

@@ -12,7 +12,8 @@ The HUD kit's shared core: the element model (`Hud`, its elements and their stat
 - `src/templates.rs`: what a compiled element takes from the map, the grenade row included, resolved through a `MapView`.
 - `src/map_file.rs`: a `MapView` over an open map file and its resources (the runtime's).
 - `src/records.rs`: elements to widget record bytes.
-- `src/huds/`: the HUDs the kit knows (superbounce, with its tutorial's step machine).
+- `src/world.rs`: world marks, elements that lie on the level's geometry: their shapes, poses and line segments.
+- `src/huds/`: the HUDs the kit knows (superbounce, with its tutorial's step machine; its readout, with the charge segments and the approach guide), and `pill_block`, a HUD of the kit's tests alone.
 
 ## Tests
 

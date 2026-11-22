@@ -816,3 +816,56 @@ fn a_notification_the_game_cannot_keep_is_refused() {
         text: "Bounced!".into()
     }));
 }
+
+/// A world mark draws while its value is shown, it has a pose and its
+/// place has the screen mode; it carries its value's style and label.
+#[test]
+fn a_world_mark_draws_shown_posed_and_in_its_mode() {
+    use hud_kit_core::world::{Pose, Shape};
+    let mark = |id, shape| Element::channel(id, Kind::WorldMark { shape, longest: "Go" });
+    let mut split = mark("w.split", Shape::Pipper);
+    split.at = Place::GAME.split((0, 0), (0, 0));
+    let hud = Hud {
+        name: "w",
+        elements: vec![
+            mark("w.box", Shape::Bracket),
+            mark("w.hidden", Shape::Arrow),
+            mark("w.unposed", Shape::Ticks),
+            split,
+            Element::channel("w.nav", Kind::Navpoint { longest: "9" }),
+        ],
+    };
+    let mut values = Values::default();
+    values.set("w.box", Value::text("Go").styled(Style::Lock));
+    values.set("w.hidden", Value::hidden());
+    values.set("w.unposed", Value::shown());
+    values.set("w.split", Value::shown().styled(Style::Dim));
+    values.set("w.nav", Value::text("9"));
+    let pose = Pose::at([1.0, 2.0, 3.0], [0.3, 0.1]);
+    let marks = [
+        ("w.box", pose),
+        ("w.hidden", pose),
+        ("w.split", pose.strength(0.5)),
+        ("w.nav", pose),
+    ];
+    let full = world_marks_of(&hud, &values, &marks, Mode::Full);
+    assert_eq!(full.iter().map(|m| m.id).collect::<Vec<_>>(), ["w.box", "w.split"]);
+    assert_eq!(
+        full[0],
+        MarkNow {
+            id: "w.box",
+            shape: Shape::Bracket,
+            pose,
+            style: Style::Lock,
+            label: "Go".into(),
+        }
+    );
+    assert_eq!((full[1].style, full[1].pose.strength), (Style::Dim, 0.5));
+    // Fullscreen only unless the place says otherwise.
+    for mode in [Mode::Half, Mode::Quarter] {
+        let split = world_marks_of(&hud, &values, &marks, mode);
+        assert_eq!(split.iter().map(|m| m.id).collect::<Vec<_>>(), ["w.split"]);
+    }
+    // The lock's red is not a style the widget hooks draw.
+    assert!(!draws(Style::Lock));
+}

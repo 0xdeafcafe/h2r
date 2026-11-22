@@ -164,6 +164,10 @@ pub struct State {
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     pub landing: Option<Predicted>,
+    /// The approach guide on the seam the player is going for
+    /// ([`crate::superbounce_guide`]); `None` when it is not shown, and
+    /// with the variant's `approach_guide` option off.
+    pub guide: Option<crate::superbounce_guide::Guide>,
     /// The last landing within 0.5 of a strip, or primed bounce anywhere,
     /// filed when its launch window closes; kept until the next one or the
     /// game's end.
@@ -208,6 +212,7 @@ impl State {
         nav_target: None,
         takeoff: None,
         landing: None,
+        guide: None,
         last_landing: None,
         off_spot: Vec::new(),
         still_ticks: 0,
@@ -382,6 +387,7 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             miss: f64::from(p.miss()),
             locked: p.locked(),
         }),
+        guide: s.guide.as_ref().map(guide_reply),
         last_landing: s.last_landing.map(|l| wire::Landing {
             result: match l.result {
                 LandingResult::Bounce => wire::LandingResult::Bounce,
@@ -418,6 +424,35 @@ pub fn options_reply(o: crate::superbounce_options::Options) -> agent_proto::sup
         miss_info: o.miss_info,
         medals: o.medals,
         second_bounce: o.second_bounce,
+        approach_guide: o.approach_guide,
+        charge_segments: o.charge_segments,
+    }
+}
+
+/// `superbounce.state`'s `guide` for `g`.
+pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbounce::Guide {
+    use hud_kit_core::huds::superbounce_guide::Call;
+    let v3 = |v: Vec3| v.map(f64::from);
+    agent_proto::superbounce::Guide {
+        seam: v3(g.seam.point),
+        call: match g.call {
+            Call::OffLine => "off_line",
+            Call::LinedUp => "lined_up",
+            Call::TooShallow => "too_shallow",
+            Call::WillBounce => "will_bounce",
+        }
+        .into(),
+        jump: g.jump,
+        impact: g.pipper().map(v3),
+        row: g.impact.map(|i| v3(i.row)),
+        ticks: g.impact.map(|i| i.ticks),
+        speed: g.impact.map(|i| f64::from(i.speed)),
+        caught: g.caught(),
+        deep: g.depth.map(|d| d.deep()),
+        depth: g.depth.map(|d| f64::from(d.margin)),
+        past: g.depth.map(|d| f64::from(d.past)),
+        across: g.across.map(f64::from),
+        strength: f64::from(g.strength),
     }
 }
 
@@ -1256,6 +1291,47 @@ fn on_tick(o: &hooks::Obs) {
         _ => [None; RANKED],
     };
     let marks = crate::superbounce_second::over(marks, &second);
+    // The approach guide, on the seam the player is going for
+    // (docs/game/superbounce.md, "The approach guide").
+    let guide = match (live.position, live.velocity) {
+        (Some(position), Some(velocity))
+            if crate::superbounce_options::current().approach_guide =>
+        {
+            let is_primed = live.word.is_some_and(primed);
+            let seams: Vec<Vec3> = marks
+                .tagged
+                .into_iter()
+                .chain(marks.tag.map(|m| m.at))
+                .chain(marks.targets.iter().flatten().map(|m| m.at))
+                .collect();
+            crate::superbounce_guide::target(
+                position,
+                is_primed,
+                landing.map(|l| l.stand),
+                nav_target
+                    .filter(|n| n.kind == NavKind::Strip)
+                    .map(|n| n.at),
+                &seams,
+            )
+            .and_then(|at| {
+                let shown = crate::superbounce_targets::current();
+                let spot = crate::superbounce_guide::spot_at(
+                    spots.iter().chain(shown.iter().map(|t| &t.spot)),
+                    at,
+                )?;
+                crate::superbounce_guide::guide(
+                    &crate::superbounce_guide::Body {
+                        position,
+                        velocity,
+                        airborne: live.airborne,
+                        primed: is_primed,
+                    },
+                    spot,
+                )
+            })
+        }
+        _ => None,
+    };
     // The bots' and the verifier's bounces kept as ghost runs, and the
     // ghost the player asks for (docs/game/superbounce.md, "Ghost runs").
     {
@@ -1299,6 +1375,7 @@ fn on_tick(o: &hooks::Obs) {
         nav_target,
         takeoff,
         landing,
+        guide,
         last_landing: step.last_landing,
         off_spot,
         still_ticks: step.still_ticks,
@@ -1376,6 +1453,8 @@ mod gpu {
         host.add_world_line_source(Arc::new(Lines));
         host.add_world_line_source(Arc::new(crate::superbounce_view::Source));
         crate::superbounce_ghost::register(host);
+        // The approach guide's marks are the HUD kit's.
+        crate::hud_kit_world::register(host);
     }
 
     impl WorldLineSource for Lines {
@@ -1389,7 +1468,10 @@ mod gpu {
             let callouts = crate::superbounce_world::frame(guest, &s, &spots);
             // The lock-on eases by the wall clock between this tick's
             // capture and the next (docs/game/superbounce.md, "Lock-on").
-            let lock = LockMarks::capture(guest, &s, Instant::now());
+            // Fullscreen the approach guide's box is on the seam in its
+            // place.
+            let full = matches!(crate::hud_kit::mode(guest), Ok(hud_kit_core::Mode::Full));
+            let lock = LockMarks::capture(guest, &s, full, Instant::now());
             (!callouts.is_empty() || lock.is_some())
                 .then(|| Arc::new(Sample { callouts, lock }) as Arc<dyn ImageMarks>)
         }
