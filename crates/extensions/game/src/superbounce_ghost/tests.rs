@@ -270,7 +270,7 @@ fn each_present_draws_the_figure_where_the_run_is_then() {
         let now = started + Duration::from_secs_f32(dt);
         let mut anchors = Vec::new();
         let shown = sample.visit(&|| now, &mut |l| {
-            if l.label.is_none() && !l.dashed && l.edges.len() > RING_SEGMENTS {
+            if l.label.is_none() && !l.dashed && !l.edges.is_empty() {
                 anchors.push(l.anchor[0]);
             }
         });
@@ -290,24 +290,18 @@ fn each_present_draws_the_figure_where_the_run_is_then() {
 }
 
 #[test]
-fn the_marks_are_a_trail_a_ring_a_figure_and_the_pressed_buttons() {
+fn the_marks_are_one_faint_figure_and_no_trail() {
     let g = straight(31);
-    // Just after the jump at tick 3: its A over where it was pressed.
-    let m = marks(&g, 5.0 / 30.0, None, &look());
-    assert_eq!(m.len(), 4);
-    assert!(m[0].dashed && m[0].edges.len() == 15, "every second tick");
-    assert_eq!(m[1].edges.len(), RING_SEGMENTS);
-    assert_eq!(m[1].anchor, g.landing());
-    assert_eq!(m[2].edges.len(), 27 + 8 + 4 + 1);
-    assert!((m[2].anchor[0] - 5.0).abs() < 1e-3);
-    assert_eq!(m[3].label.as_deref(), Some("\u{e100}"));
-    assert_eq!(m[3].style.label_face, LabelFace::Hud);
-    assert!((m[3].anchor[0] - 3.0).abs() < 1e-3);
-    // A second after it the glyph has gone.
-    assert_eq!(marks(&straight(61), 1.5, None, &look()).len(), 3);
-    // Without the HUD font the button is a letter.
-    assert_eq!(press_text(Button::Jump, false), "A");
-    assert_eq!(press_text(Button::Crouch, true), "\u{e110}");
+    // Just after the jump at tick 3: the figure alone, no trail, no ring,
+    // no button glyph.
+    let m = marks(&g, 5.0 / 30.0, None);
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].edges.len(), 27 + 8 + 4 + 1);
+    assert!((m[0].anchor[0] - 5.0).abs() < 1e-3);
+    assert!(!m[0].dashed && m[0].label.is_none());
+    assert_eq!(m[0].style.alpha, FIGURE_ALPHA);
+    assert!(m[0].style.alpha < 0.5 && m[0].style.glow.is_none());
+    assert_eq!(marks(&straight(61), 1.5, None).len(), 1);
     // The figure stands as tall as the capsule; crouched, as the crouched one.
     let pose = pose_at(&g, 0.0).unwrap();
     let top = |e: &[[Vec3; 2]]| e.iter().flatten().map(|p| p[2]).fold(0.0f32, f32::max);
@@ -471,4 +465,28 @@ fn the_agent_lists_a_run_with_its_presses() {
     let buttons: Vec<&str> = r.presses.iter().map(|p| p.button.as_str()).collect();
     assert_eq!(buttons, ["crouch", "jump"]);
     assert_eq!(r.at, [5.0, 0.0, 0.0]);
+}
+
+#[test]
+fn ghosts_are_off_by_default_and_only_the_chosen_strips_run_is_offered() {
+    use hooks::Feature;
+    // The switch: off unless asked for.
+    let m = SuperbounceGhost.manifest();
+    assert_eq!(m.id, FEATURE);
+    assert!(!m.default_on);
+    assert!(!enabled());
+    // Two runs, at two spots.
+    let mut a = straight(31);
+    a.spot = [1.0, 0.0, 0.0];
+    let mut b = straight(31);
+    b.spot = [9.0, 0.0, 0.0];
+    let ghosts = [a, b];
+    // Off: none, whatever is chosen.
+    assert!(showable(&ghosts, Some([9.0, 0.0, 0.0]), false).is_empty());
+    // On: the chosen strip's alone, and none with no strip chosen or one
+    // that has no run.
+    assert_eq!(showable(&ghosts, Some([9.0, 0.1, 0.0]), true), [1]);
+    assert_eq!(showable(&ghosts, Some([1.0, 0.0, 0.0]), true), [0]);
+    assert!(showable(&ghosts, None, true).is_empty());
+    assert!(showable(&ghosts, Some([5.0, 0.0, 0.0]), true).is_empty());
 }

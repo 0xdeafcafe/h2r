@@ -1,29 +1,27 @@
 //! The superbounce marks drawn on the map (docs/game/superbounce.md,
-//! "Floor marks" and "Lock-on"): one clear marker on the next spot, in
-//! the HUD's colour, its label in the HUD's font ([`Look`]).
+//! "Floor marks" and "Lock-on"): one marker, on the one spot the player
+//! is going for, in the HUD's colour, its label in the HUD's font
+//! ([`Look`]). No other spot is drawn.
 //!
-//! - **The marker**: a bold ring on the floor with the footprint ring in
-//!   it and a pin standing over it, the label at the pin's top. It is on
-//!   the next spot only: not primed, the crouch spot the navpoint is over
-//!   (`Crouch`, with an approach arrow); primed on the ground, the
-//!   take-off for the chosen strip (`Jump (A)`, with an arrow toward the
-//!   landing; where it is comes from the map's floor, [`takeoff`]), or
-//!   with no take-off the chosen strip (`Land, 3 m`, the drop); in a fall,
-//!   the chosen strip, with the strip's own line through the ring.
-//! - **The other spots** of the kind to go to next: a small faint ring
-//!   each, the nearest few. The other kind is not drawn.
-//! - **The lock-on**, while primed and falling: corner brackets round the
-//!   crease that close in as the predicted landing nears it, red and
-//!   `Locked` within the slot at the speed it needs ([`lock_box`]). They
-//!   ease by the wall clock ([`Ease`]), so they move as smoothly at 120
-//!   frames a second as at 30; the rules behind them run per guest tick.
+//! - **Not primed**: the crouch spot the navpoint is over, once the
+//!   player is within [`NEAR_RANGE`] of it (`Crouch`, with an approach
+//!   arrow). Further away, nothing.
+//! - **Primed**: the chosen strip (the navpoint's, which the fall assist
+//!   steers onto): a bold ring with the footprint ring in it and the
+//!   strip's own line through it. On the ground a pin stands over it with
+//!   `Land, 3 m` (the drop).
+//! - **The lock-on**, while primed and falling: the slot's outline, corner
+//!   brackets round the crease that close in as the predicted landing
+//!   nears it, red and `Locked` within the slot at the speed it needs
+//!   ([`lock_box`]). They ease by the wall clock ([`Ease`]), so they move
+//!   as smoothly at 120 frames a second as at 30; the rules behind them
+//!   run per guest tick.
 //!
 //! The builders are pure: [`ring`], [`arrowhead`], [`strip_bar`],
 //! [`brackets`], [`lock_box`] and [`takeoff`] make geometry, [`figures`]
-//! puts a frame's together from the nearest spots ([`Item`]) and the
-//! player's [`Scene`], and [`frame`] reads both from the mode and adds
-//! the airborne prompts (`crate::superbounce_prompts`). What the scanner
-//! and the mode's state give is read in one place, [`contract`].
+//! puts a frame's together from the target spot ([`Item`]) and the
+//! player's [`Scene`], and [`frame`] reads both from the mode. What the
+//! scanner and the mode's state give is read in one place, [`contract`].
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -34,10 +32,8 @@ use superbounce::{Kind, Spot, Vec3};
 
 use crate::superbounce_charge::HIGH_SLACK;
 use crate::superbounce_font::{self as hud, Look};
-use crate::superbounce_mode::{DIM, FADE_FAR, FADE_NEAR, MAX_LINES, NavKind, State};
-use crate::superbounce_prompts::{
-    self as prompts, Callout, FLAT_FALL, LABEL_RAISE, TAKEOFF_BACK, whole_metres,
-};
+use crate::superbounce_mode::{DIM, FADE_FAR, FADE_NEAR, NavKind, State};
+use crate::superbounce_prompts::{Callout, FLAT_FALL, LABEL_RAISE, TAKEOFF_BACK, whole_metres};
 
 /// The biped's capsule radius: the footprint ring.
 pub const CAPSULE_RADIUS: f32 = 0.175;
@@ -60,22 +56,12 @@ pub const CLIMB: f32 = 0.5;
 pub const MARK_RADIUS: f32 = 0.35;
 pub const PIN_FOOT: f32 = 0.3;
 pub const PIN_TOP: f32 = 1.2;
-/// The other spots of the kind to go to next: at most this many, within
-/// this distance of the player, each a ring of this radius at this
-/// strength.
-pub const OTHERS: usize = 6;
-pub const OTHER_RANGE: f32 = 15.0;
-pub const OTHER_RADIUS: f32 = 0.1;
-pub const OTHER_ALPHA: f32 = 0.3;
+/// Not primed, the next crouch spot is marked once the player is within
+/// this of it; running about further away, nothing is drawn in the world.
+pub const NEAR_RANGE: f32 = 6.0;
 /// The strip's line through the landing marker: half its length along the
 /// edge (at most half the edge).
 pub const CREASE_HALF: f32 = 0.26;
-/// The take-off's arrow toward the landing: this far out from its centre,
-/// and its size.
-pub const ARROW_OUT: f32 = MARK_RADIUS + 0.15;
-pub const ARROW_SIZE: f32 = 0.14;
-/// Within this horizontal distance of the take-off, its marker pulses.
-pub const TAKEOFF_NEAR: f32 = 0.15;
 /// The take-off search: the step out from the strip, how far it looks,
 /// and how far above the player's feet a floor still counts.
 pub const TAKEOFF_STEP: f32 = 0.05;
@@ -174,8 +160,6 @@ pub struct Scene {
     /// The stand point of the spot the navpoint is over: a crouch spot
     /// while not primed, the chosen strip while primed.
     pub next: Option<Vec3>,
-    /// Where to jump from for it.
-    pub takeoff: Option<Vec3>,
 }
 
 /// What the scanner's spots and the mode's state carry, read in one
@@ -260,14 +244,6 @@ fn offset(p: Vec3, d: [f32; 2], by: f32) -> Vec3 {
 
 fn up(p: Vec3, by: f32) -> Vec3 {
     [p[0], p[1], p[2] + by]
-}
-
-fn middle([a, b]: [Vec3; 2]) -> Vec3 {
-    [
-        (a[0] + b[0]) / 2.0,
-        (a[1] + b[1]) / 2.0,
-        (a[2] + b[2]) / 2.0,
-    ]
 }
 
 /// A flat ring of `radius` round `centre`, [`LIFT`] above it, as
@@ -588,14 +564,12 @@ pub fn strip_bar(centre: Vec3, along: [f32; 2], half: f32) -> Vec<[Vec3; 2]> {
 }
 
 /// The chosen strip: the marker with the strip's line through it. On the
-/// ground with no take-off to go to first it has its pin and `Land, 3 m`;
-/// with one it waits, with neither. In a fall the lock speaks: no pin, no
-/// label, and red while the lock holds.
+/// ground it has its pin and `Land, 3 m`. In the air it has neither: the
+/// lock speaks, and it is red while the lock holds.
 fn landing_figure(out: &mut Vec<Callout>, s: &Strip, scene: &Scene, look: &Look) {
     let locked = scene.landing.is_some_and(|l| l.locked);
     let colour = if locked { RED } else { look.colour };
-    let waits = !scene.airborne && scene.takeoff.is_some();
-    let label = (scene.landing.is_none() && !waits).then(|| {
+    let label = (!scene.airborne).then(|| {
         if s.fall > FLAT_FALL {
             format!("Land, {} m", whole_metres(s.fall))
         } else {
@@ -610,28 +584,6 @@ fn landing_figure(out: &mut Vec<Callout>, s: &Strip, scene: &Scene, look: &Look)
         colour,
         bold(look, 3.0, 1.0),
     ));
-}
-
-/// The take-off: the marker with `Jump (A)`, pulsing once the player is
-/// on it, and one arrow toward the landing at `land` where the landing is
-/// clear of it.
-fn takeoff_figure(out: &mut Vec<Callout>, at: Vec3, land: Vec3, scene: &Scene, look: &Look) {
-    let pulse = (horizontal(scene.at, at) <= TAKEOFF_NEAR).then_some(Pulse {
-        period: 0.4,
-        depth: 0.6,
-    });
-    let label = format!("Jump {}", look.a_button());
-    marker(out, at, look.colour, Some(label), true, pulse, look);
-    if let Some(u) = flat_unit([land[0] - at[0], land[1] - at[1]])
-        && horizontal(at, land) - MARK_RADIUS >= ARROW_OUT + ARROW_SIZE
-    {
-        out.push(callout(
-            arrowhead(offset(at, u, ARROW_OUT), u, ARROW_SIZE),
-            at,
-            look.colour,
-            bold(look, 2.5, 0.9),
-        ));
-    }
 }
 
 /// The crouch spot to go to: the marker with `Crouch`, and an approach
@@ -668,115 +620,71 @@ fn crouch_figure(out: &mut Vec<Callout>, c: &Crouch, phase: Option<Phase>, look:
     }
 }
 
-/// Another spot of the kind to go to next: a small faint ring.
-fn other_figure(out: &mut Vec<Callout>, at: Vec3, alpha: f32, look: &Look) {
-    out.push(callout(
-        ring_of(at, OTHER_RADIUS, false, 12),
-        at,
-        look.colour,
-        style(look, 1.5, alpha * OTHER_ALPHA),
-    ));
-}
-
-/// The marks for one frame: one marker, on the next spot, and little
-/// else. `items` are the spots near, nearest first.
+/// The marks for one frame: one marker, on the one spot the player is
+/// going for, and nothing else. `items` are the candidates.
 ///
-/// - Not primed, the next spot is the crouch spot the navpoint is over
-///   (`scene.next`): the marker, `Crouch` and its approach arrow. The
-///   charge's phase shows on it within [`PHASE_RANGE`].
-/// - Primed on the ground, it is the take-off for the chosen strip: the
-///   marker, `Jump (A)` and an arrow toward the landing; the chosen strip
-///   waits with its ring and line. With no take-off the chosen strip is
-///   the next spot: the marker and `Land, 3 m`.
-/// - In a fall it is the chosen strip, with no pin or label: the lock-on
-///   is the [`Ease`]'s, drawn per present ([`lock_callouts`]).
-/// - The other spots of the kind to go to next (crouch spots while not
-///   primed, strips while primed) are small faint rings: the [`OTHERS`]
-///   nearest within [`OTHER_RANGE`]. The other kind is not drawn.
+/// - Not primed, it is the crouch spot the navpoint is over
+///   (`scene.next`), once the player is within [`NEAR_RANGE`] of it: the
+///   marker, `Crouch` and its approach arrow. The charge's phase shows on
+///   it within [`PHASE_RANGE`]. Further away, nothing.
+/// - Primed, it is the chosen strip (`scene.chosen`): the marker and its
+///   line, with `Land, 3 m` on the ground. In a fall the slot's outline is
+///   the [`Ease`]'s, drawn per present ([`lock_callouts`]).
+/// - No other spot is drawn, whatever its kind.
 pub fn figures(items: &[Item], scene: &Scene, look: &Look) -> Vec<Callout> {
     let mut out = Vec::new();
-    let mut others = 0;
-    let mut other = |out: &mut Vec<Callout>, at: Vec3, alpha: f32| {
-        if others < OTHERS && distance3(scene.at, at) <= OTHER_RANGE {
-            others += 1;
-            other_figure(out, at, alpha, look);
-        }
-    };
     for item in items {
         match item {
-            Item::Strip(s) if scene.chosen == Some(s.stand) => {
+            Item::Strip(s) if scene.primed && scene.chosen == Some(s.stand) => {
                 landing_figure(&mut out, s, scene, look);
+                return out;
             }
-            Item::Crouch(c) if !scene.primed && scene.next == Some(c.stand) => {
+            Item::Crouch(c)
+                if !scene.primed
+                    && scene.next == Some(c.stand)
+                    && distance3(scene.at, c.stand) <= NEAR_RANGE =>
+            {
                 let phase = scene
                     .phase
                     .filter(|_| horizontal(scene.at, c.stand) <= PHASE_RANGE);
                 crouch_figure(&mut out, c, phase, look);
-            }
-            Item::Strip(s) if scene.primed => {
-                let alpha = strip_strength(true, high_enough(scene.at[2], s));
-                other(&mut out, s.stand, alpha);
-            }
-            Item::Crouch(c) if !scene.primed => {
-                other(&mut out, c.stand, crouch_strength(c.proven, false));
+                return out;
             }
             _ => {}
         }
     }
-    if scene.primed
-        && !scene.airborne
-        && let (Some(at), Some(land)) = (scene.takeoff, scene.chosen)
-    {
-        takeoff_figure(&mut out, at, land, scene, look);
-    }
     out
 }
 
-/// The `max` spots nearest `at` (by their edges' middle), nearest first.
-pub fn nearest(spots: &[Spot], at: Vec3, max: usize) -> Vec<&Spot> {
-    let mut near: Vec<(f32, &Spot)> = spots
+/// The spots a frame may mark, of `spots`: the chosen strip while primed,
+/// else the crouch spot at `next`. At most one of each.
+pub fn targets(
+    spots: &[Spot],
+    primed: bool,
+    chosen: Option<Vec3>,
+    next: Option<Vec3>,
+) -> Vec<Item> {
+    let strip = spots
         .iter()
-        .map(|s| (distance3(middle(s.edge), at), s))
-        .collect();
-    let by_distance = |a: &(f32, &Spot), b: &(f32, &Spot)| a.0.total_cmp(&b.0);
-    if near.len() > max {
-        near.select_nth_unstable_by(max, by_distance);
-        near.truncate(max);
-    }
-    near.sort_by(by_distance);
-    near.into_iter().map(|(_, s)| s).collect()
+        .find(|sp| primed && sp.kind == Kind::Bounce && chosen == Some(sp.stand))
+        .map(|sp| Item::Strip(contract::strip(sp)));
+    let crouch = spots
+        .iter()
+        .find(|sp| !primed && sp.kind == Kind::Crouch && next == Some(sp.stand))
+        .map(|sp| Item::Crouch(contract::crouch(sp)));
+    strip.into_iter().chain(crouch).collect()
 }
 
 /// Everything the mode draws on the map this frame but the lock-on: the
-/// marks for the [`MAX_LINES`] nearest spots (and the chosen strip
-/// whatever its distance) and, primed in the air with the fall assist on,
-/// its prompts. Nothing without a position.
+/// one target's marker ([`figures`]). Nothing without a position.
 pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout> {
-    use crate::superbounce_assist as assist;
     let Some(at) = s.position else {
         return Vec::new();
     };
     let look = hud::look(guest);
     let primed = s.primed();
     let chosen = contract::chosen(s);
-    let mut near = nearest(spots, at, MAX_LINES);
-    if let Some(c) = chosen
-        && !near
-            .iter()
-            .any(|sp| sp.kind == Kind::Bounce && sp.stand == c)
-        && let Some(sp) = spots
-            .iter()
-            .find(|sp| sp.kind == Kind::Bounce && sp.stand == c)
-    {
-        near.push(sp);
-    }
-    let items: Vec<Item> = near
-        .into_iter()
-        .map(|sp| match sp.kind {
-            Kind::Bounce => Item::Strip(contract::strip(sp)),
-            Kind::Crouch => Item::Crouch(contract::crouch(sp)),
-        })
-        .collect();
+    let next = s.nav_target.map(|n| n.at);
     let falling = s.vz.is_some_and(|v| v < 0.0);
     let scene = Scene {
         at,
@@ -786,39 +694,9 @@ pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout>
         phase: contract::phase(s),
         landing: contract::landing(s).filter(|_| primed && s.airborne && falling),
         chosen,
-        next: s.nav_target.map(|n| n.at),
-        takeoff: s.takeoff.filter(|_| primed),
+        next,
     };
-    let mut out = figures(&items, &scene, &look);
-    // In the air, the assist's prompts (with the assist on: `Hold X`,
-    // `Guiding`); on the ground the floor marks say where to jump and land.
-    let body = (primed && s.airborne)
-        .then(|| assist::read_body(guest, assist::PORT))
-        .flatten();
-    if let Some(body) = &body {
-        let on = assist::opted_in();
-        // The strip the tap steers onto: the same choice, with the strip
-        // it is on now kept.
-        let target = on
-            .then(|| assist::choose_now(body, assist::report().target))
-            .and_then(|c| {
-                let plan = c.plan?;
-                let spot = spots
-                    .iter()
-                    .find(|sp| sp.kind == Kind::Bounce && sp.stand == plan.target)?;
-                Some((spot, plan.reach))
-            });
-        out.extend(prompts::callouts(
-            spots,
-            body,
-            true,
-            target.as_ref().map(|(sp, reach)| (*sp, reach)),
-            assist::assisting(),
-            on,
-            &look,
-        ));
-    }
-    out
+    figures(&targets(spots, primed, chosen, next), &scene, &look)
 }
 
 /// The lock-on's target box this tick: primed, airborne and falling onto
@@ -907,7 +785,6 @@ mod tests {
             landing: None,
             chosen: None,
             next: None,
-            takeoff: None,
         }
     }
 
@@ -1019,6 +896,8 @@ mod tests {
     /// Not primed: one marker, on the crouch spot the navpoint is over;
     /// the other crouch spots are small faint rings, the strips are not
     /// drawn.
+    /// Not primed: one marker, on the crouch spot the navpoint is over,
+    /// and nothing of any other spot.
     #[test]
     fn not_primed_the_marker_is_on_the_next_crouch_spot_alone() {
         let next = crouch(1.0, true);
@@ -1033,8 +912,8 @@ mod tests {
             ..scene()
         };
         let out = figures(&items, &s, &LOOK);
-        // The marker (ring, footprint, pin), its arrow, and two others.
-        assert_eq!(out.len(), 3 + 1 + 2);
+        // The marker (ring, footprint, pin) and its arrow.
+        assert_eq!(out.len(), 3 + 1);
         assert_eq!(labels(&out), ["Crouch"]);
         let bold = rings(&out, next.stand, MARK_RADIUS);
         assert_eq!(bold.len(), 1);
@@ -1046,19 +925,27 @@ mod tests {
         assert_eq!(pin.edges.len(), 1);
         let [foot, top] = pin.edges[0];
         assert!(close(foot[2], PIN_FOOT) && close(top[2], PIN_TOP));
-        assert!(close(foot[0], 1.0) && close(top[0], 1.0));
         assert!(pin.anchor[2] > PIN_TOP && pin.label.is_some());
-        // The others: small, faint, a likely one fainter; nothing of the
-        // strip.
-        let a = rings(&out, [2.0, 0.0, 0.0], OTHER_RADIUS);
-        let b = rings(&out, [3.0, 0.0, 0.0], OTHER_RADIUS);
-        assert_eq!((a.len(), b.len()), (1, 1));
-        assert_eq!(a[0].style.alpha, OTHER_ALPHA);
-        assert_eq!(b[0].style.alpha, LIKELY * OTHER_ALPHA);
+        // Every line is the next spot's: nothing at the others.
+        assert!(out.iter().all(|c| horizontal(c.anchor, next.stand) < 1.0));
         assert!(out.iter().all(|c| c.color == LOOK.colour));
-        // With no next spot (none on the map), no marker.
-        let none = figures(&items[..1], &scene(), &LOOK);
-        assert_eq!((none.len(), labels(&none).len()), (1, 0));
+        // With no next spot, nothing at all.
+        assert!(figures(&items, &scene(), &LOOK).is_empty());
+    }
+
+    /// Running about unprimed away from the next spot, the world is bare.
+    #[test]
+    fn unprimed_and_far_from_the_spot_nothing_is_drawn() {
+        let next = crouch(1.0, true);
+        let items = [Item::Crouch(next.clone()), Item::Strip(strip(1.5, 1.0))];
+        let at = |x: f32| Scene {
+            at: [x, 0.0, 0.0],
+            next: Some(next.stand),
+            ..scene()
+        };
+        assert!(!figures(&items, &at(1.0 + NEAR_RANGE - 0.1), &LOOK).is_empty());
+        assert!(figures(&items, &at(1.0 + NEAR_RANGE + 0.1), &LOOK).is_empty());
+        assert!(figures(&items, &at(40.0), &LOOK).is_empty());
     }
 
     #[test]
@@ -1091,113 +978,101 @@ mod tests {
         assert!(at(Some(Phase::Under), 3.0)[0].style.pulse.is_none());
     }
 
+    /// Primed: the chosen strip and no other, however many are near.
     #[test]
-    fn only_the_nearest_few_others_are_drawn_and_none_far_away() {
-        let items: Vec<Item> = (0..OTHERS + 4)
-            .map(|i| Item::Crouch(crouch(1.0 + i as f32, true)))
-            .collect();
-        let out = figures(&items, &scene(), &LOOK);
-        assert_eq!(out.len(), OTHERS);
-        assert!(close(out[0].edges[0][0][0], 1.0 + OTHER_RADIUS));
-        let far = [Item::Crouch(crouch(OTHER_RANGE + 1.0, true))];
-        assert!(figures(&far, &scene(), &LOOK).is_empty());
-        // Primed, crouch spots are not drawn at all, and strips are the
-        // others: one the floor is too low for is fainter.
-        let primed = Scene {
-            primed: true,
-            at: [0.0, 0.0, 0.5],
-            ..scene()
-        };
-        assert!(figures(&items, &primed, &LOOK).is_empty());
-        let strips = [Item::Strip(strip(2.0, 0.4)), Item::Strip(strip(4.0, 1.0))];
-        let out = figures(&strips, &primed, &LOOK);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].style.alpha, OTHER_ALPHA);
-        assert_eq!(out[1].style.alpha, CLIMB * OTHER_ALPHA);
-        assert!(labels(&out).is_empty());
-        // Not primed, strips are not drawn.
-        assert!(figures(&strips, &scene(), &LOOK).is_empty());
-    }
-
-    /// Primed on the ground the next spot is the take-off: its marker says
-    /// `Jump (A)` and the chosen strip waits with its ring and line. With
-    /// no take-off the strip's marker says `Land, 3 m`.
-    #[test]
-    fn primed_the_marker_is_on_the_takeoff_then_on_the_landing() {
+    fn primed_only_the_chosen_strip_is_marked() {
         let chosen = strip(3.0, 1.0);
+        let items = [
+            Item::Strip(strip(2.0, 0.4)),
+            Item::Strip(chosen),
+            Item::Strip(strip(4.0, 1.0)),
+            Item::Crouch(crouch(1.0, true)),
+        ];
         let s = Scene {
             primed: true,
             at: [0.0, 0.0, 1.0],
             chosen: Some(chosen.stand),
             next: Some(chosen.stand),
-            takeoff: Some([1.0, 0.0, 1.0]),
             ..scene()
         };
-        let out = figures(&[Item::Strip(chosen)], &s, &LOOK);
-        assert_eq!(labels(&out), ["Jump \u{e100}"]);
-        // The strip: ring, footprint, its line. The take-off: ring,
-        // footprint, pin, arrow.
-        assert_eq!(out.len(), 3 + 4);
-        assert_eq!(rings(&out, chosen.stand, MARK_RADIUS).len(), 1);
-        assert_eq!(out[2].edges.len(), 1);
-        let [a, b] = out[2].edges[0];
-        assert!(close(a[0], 3.0) && close(b[0], 3.0) && a[1] < b[1]);
-        assert_eq!(rings(&out, [1.0, 0.0, 1.0], MARK_RADIUS).len(), 1);
-        assert!(out.iter().all(|c| c.color == LOOK.colour));
-        // The arrow points at the landing (+X), outside the ring.
-        let [wing, tip] = out[6].edges[0];
-        assert!(tip[0] > wing[0] && wing[0] > 1.0 + MARK_RADIUS);
-        // Not on the take-off: still; on it, the ring pulses.
-        assert!(out[3].style.pulse.is_none());
-        let on = Scene {
-            at: [1.05, 0.0, 1.0],
-            ..s
-        };
-        assert!(
-            figures(&[Item::Strip(chosen)], &on, &LOOK)[3]
-                .style
-                .pulse
-                .is_some()
-        );
-        // A take-off beside the landing has no arrow.
-        let beside = Scene {
-            takeoff: Some([2.8, 0.0, 0.0]),
-            ..s
-        };
-        let out = figures(&[Item::Strip(strip(3.0, 0.0))], &beside, &LOOK);
-        assert_eq!(out.len(), 3 + 3);
-        // No take-off found: the strip is the next spot, with its pin.
-        let alone = Scene { takeoff: None, ..s };
-        let out = figures(&[Item::Strip(chosen)], &alone, &LOOK);
-        assert_eq!(labels(&out), ["Land, 3 m"]);
+        let out = figures(&items, &s, &LOOK);
+        // Ring, footprint, pin, the strip's line.
         assert_eq!(out.len(), 4);
-        let flat = figures(&[Item::Strip(strip(3.0, 0.0))], &alone, &LOOK);
-        assert_eq!(labels(&flat), ["Land"]);
-        // In a fall there is no take-off and the lock speaks, not `Land`:
-        // ring, footprint and line.
+        assert_eq!(labels(&out), ["Land, 3 m"]);
+        assert_eq!(rings(&out, chosen.stand, MARK_RADIUS).len(), 1);
+        assert!(out.iter().all(|c| horizontal(c.anchor, chosen.stand) < 0.5));
+        let [a, b] = out[3].edges[0];
+        assert!(close(a[0], 3.0) && close(b[0], 3.0) && a[1] < b[1]);
+        let flat = Scene {
+            chosen: Some([5.0, 0.0, 0.0]),
+            ..s
+        };
+        assert_eq!(
+            labels(&figures(&[Item::Strip(strip(5.0, 0.0))], &flat, &LOOK)),
+            ["Land"]
+        );
+        // No strip chosen: nothing, though strips are near. Not primed: no
+        // strip either.
+        let none = Scene { chosen: None, ..s };
+        assert!(figures(&items, &none, &LOOK).is_empty());
+        let unprimed = Scene { primed: false, ..s };
+        assert!(figures(&items, &unprimed, &LOOK).is_empty());
+        // In the air there is no pin and no label: ring, footprint and
+        // line; the lock-on is the slot's outline.
         let air = Scene {
             airborne: true,
             falling: true,
             landing: Some(landing([3.0, 0.0, 0.0], 0.0, false)),
             ..s
         };
-        let out = figures(&[Item::Strip(chosen)], &air, &LOOK);
+        let out = figures(&items, &air, &LOOK);
         assert_eq!(out.len(), 3);
         assert!(labels(&out).is_empty());
+        let rising = Scene {
+            airborne: true,
+            ..s
+        };
+        assert!(labels(&figures(&items, &rising, &LOOK)).is_empty());
         // Locked: the mark is red.
         let locked = Scene {
             landing: Some(landing([3.0, 0.0, 0.0], 0.0, true)),
             ..air
         };
         assert!(
-            figures(&[Item::Strip(chosen)], &locked, &LOOK)
+            figures(&items, &locked, &LOOK)
                 .iter()
                 .all(|c| c.color == RED)
         );
     }
 
-    /// The box closes round the crease as the miss goes to 0, opens with
-    /// it up to a limit, and moves toward the landing; red only locked.
+    /// A frame's candidates are one spot: the chosen strip while primed,
+    /// else the next crouch spot.
+    #[test]
+    fn a_frame_has_one_target() {
+        let spot = |kind, x: f32| Spot {
+            kind,
+            stand: [x, 0.0, 0.0],
+            edge: [[x, -0.5, 0.0], [x, 0.5, 0.0]],
+            ..Spot::default()
+        };
+        let spots = [
+            spot(Kind::Bounce, 1.0),
+            spot(Kind::Bounce, 2.0),
+            spot(Kind::Crouch, 3.0),
+            spot(Kind::Crouch, 4.0),
+        ];
+        let at = |x: f32| Some([x, 0.0, 0.0]);
+        let t = targets(&spots, true, at(2.0), at(2.0));
+        assert!(matches!(&t[..], [Item::Strip(s)] if s.stand[0] == 2.0));
+        let t = targets(&spots, false, None, at(4.0));
+        assert!(matches!(&t[..], [Item::Crouch(c)] if c.stand[0] == 4.0));
+        // Primed, the crouch spots are not candidates; unprimed, the
+        // strips are not; with no target there is none.
+        assert!(targets(&spots, true, None, at(3.0)).is_empty());
+        assert!(targets(&spots, false, at(1.0), at(1.0)).is_empty());
+        assert!(targets(&spots, false, None, None).is_empty());
+    }
+
     #[test]
     fn the_lock_closes_in_as_the_landing_nears_the_crease() {
         let on = lock_box(&landing([0.0, 0.2, 0.0], 0.0, true));

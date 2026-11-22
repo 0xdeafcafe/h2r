@@ -610,3 +610,30 @@ fn the_tutorial_counts_game_ticks_not_presents_or_wall_time() {
     assert!((limit..=limit + 1).contains(&after), "after {after} ticks");
     assert_eq!(t.step(), Some(4));
 }
+
+#[test]
+fn in_the_air_the_hud_keeps_the_pill_and_the_lines_and_drops_the_rest() {
+    let full = View {
+        primed: true,
+        charge: Some(sb::Charge {
+            phase: Phase::Primed,
+            fill: 1.0,
+        }),
+        arm: arm_for(Some(Phase::Held)),
+        verb: Some(Verb::KeepMoving),
+        nav: Some((Target::Strip, 3.0)),
+        note: Some((Note::Primed, 7)),
+        medal: None,
+        tutorial: Some(2),
+        ..View::idle()
+    };
+    assert!(full.arm.is_some());
+    let v = in_air(full.clone());
+    assert_eq!(
+        (v.charge, v.arm, v.verb, v.nav, v.tutorial),
+        (None, None, None, None, None)
+    );
+    assert!(v.primed);
+    assert_eq!(v.note, full.note);
+    assert_eq!(v.scan, full.scan);
+}
