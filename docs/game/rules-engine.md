@@ -649,7 +649,12 @@ A `time` option is declared in whole seconds (`option capture_time: time
 5s..60s = 20s`), takes the bits of an `int` option of the same range,
 and its label ends ` (seconds)`. `variant` fields stay `int`. A handle that may be `none` is
 `T?` (`player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`); a `T`
-never is. A `table` is constant rows of typed columns, indexed by `int`. There are no floats and no
+never is. An `object` value is the engine's whole 32-bit datum: a real
+object is a salted handle (salt in the high 16 bits, bit 15 set), so it is
+at or above 2^31 and reads negative as an `int` register; `none` is
+`0xFFFFFFFF` (`ty::NONE`, -1), and a labelled thing without an object uses
+`0x4000_0000` plus its placement id (`ty::object_id`/`object_value` convert).
+A `table` is constant rows of typed columns, indexed by `int`. There are no floats and no
 strings at run time: text is a string-table index with typed arguments.
 An `int` indexes a table's rows; a value of the first column's type
 finds the first row holding it (`points[class]`), and a key no row holds

@@ -12,8 +12,9 @@ const JUGGERNAUT: i32 = 7;
 const ODDBALL: i32 = 3;
 const JUGGERNAUT_GLOBALS: u32 = 0x1005_0000;
 const ODDBALL_GLOBALS: u32 = 0x1005_1000;
-/// An objective object's salted datum.
-const BALL: u32 = 0x0002_0005;
+/// An objective object's salted datum: the salt is the high 16 bits and
+/// has bit 15 set, so the datum is at or above 2^31 like every real one.
+const BALL: u32 = 0xE1A3_0012;
 
 /// A runtime whose fetch answers `src`'s blob, and the blob's hash.
 fn hosting(store: &Local, src: &str) -> (Arc<Shared>, Sha256) {
@@ -205,6 +206,32 @@ fn reset_objective_returns_an_oddball_through_the_engines_ball_return() {
             GuestCall::new(points::GAME_TICK.base),
         ]
     );
+    assert!(s.lock().state().errors.is_empty(), "{:?}", s.lock().state().errors);
+}
+
+#[test]
+fn a_carried_salted_objective_is_visited_and_its_carrier_read() {
+    let store = Local::default();
+    let (s, id) = hosting(&store, RETURN);
+    let (mut m, datums) = oddball_guest(block(prefix(&id), 0), TICK, None);
+    m.put_u32(
+        ENGINE + engine::objectives::OBJECTIVES + engine::objectives::RECORD_PLAYER,
+        datums[0],
+    );
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running);
+    let work = s.lock().pre_tick(&m).unwrap();
+    drive(&s, m, work, true);
+    let (mut m, datums) = oddball_guest(block(prefix(&id), 0), TICK + 1, None);
+    m.put_u32(
+        ENGINE + engine::objectives::OBJECTIVES + engine::objectives::RECORD_PLAYER,
+        datums[0],
+    );
+    s.lock().post_tick(&m);
+    // The carried ball was visited, its carrier read as a player, and no
+    // return was queued.
+    let queued = s.lock().pre_tick(&m).map(|w| w.calls);
+    assert!(queued.as_ref().is_none_or(|c| c.is_empty()), "a carried ball is not returned: {queued:?}");
     assert!(s.lock().state().errors.is_empty(), "{:?}", s.lock().state().errors);
 }
 
