@@ -97,6 +97,13 @@ Draw order: `0x002353a5` collects up to 256 widgets and sorts them with
 `0x002356d8` by depth (`+0x60`, the Z of the animated offset, copied by `0x0022e9aa`; values within 0.001 tie),
 then by render depth bias, then by widget type, ascending.
 
+Under a screen whose lower window holds a screen (a dialog over its
+opener), the window stack's render (`0x0023029a`, the stacks' render
+slot `0x00234f8c`) first fills the whole screen (`0x00147cdb`) with the
+shared globals' colour at `+0x6c`, its alpha times the screen's
+transition fraction, and calls `0x00235756`; then it draws the screen's
+widgets. No dialog tag carries that backdrop.
+
 ### Coordinates
 
 Rectangles are four `i16` values in wire order **top, left, bottom, right**.
@@ -278,7 +285,7 @@ nonzero `+0x28` index fall outside it and `0x0022facd` skips them.
 | 10 | text colour, three floats (r, g, b) | E |
 | 1c | rectangle | E |
 | 24 | bitmap (`bitm`) | E `0x00253ea8`, `0x00254173`; V |
-| 2c | bitmap offset (point) from the rectangle | E `0x00253ea8` |
+| 2c | bitmap offset (point) from the rectangle's top-left: x is added to the left, y subtracted from the top (`subss` at `0x00253fb0`), so a negative y raises the art | E `0x00253ea8` |
 | 30 | label string ID | E; V |
 | 34 | `i16` render depth bias | E |
 | 38 | flags: bits 0, 1 copied to the item | E |
@@ -406,6 +413,7 @@ arithmetic instead and returns `None` for a skipped cell or a result outside
 |---|---|---|
 | 4c | float applied to flag-8 text blocks | E `0x00253765` |
 | 50 | meter fill colour (a, r, g, b) | E `0x002b07e2` |
+| 6c | overlay colour (a, r, g, b): the backdrop under a dialog (Draw order above) | E `0x0023029a` |
 | 88 | block, element layout not reviewed; populated on the disc | E `0x0023661f` reads it; raw, untrusted |
 | 90 | sixteen UI sound references (`snd!`) | E `0x00236299`; V |
 | 110 | bitmap (`bitm`) | E `0x00236235`; V |
@@ -421,7 +429,7 @@ arithmetic instead and returns `None` for a skipped cell or a result outside
 | 168 | header text colour (a, r, g, b) | E `0x0022fda6` |
 | 178 | four header layouts, 16 bytes each: header rectangle, second rectangle | E `0x0022fda6`, `0x0022ff53` |
 | 1b8 | looping sound (`lsnd`) | E `0x00235b46`; V |
-| 00–4b, 60–87, 1c0 | — | raw |
+| 00–4b, 60–6b, 7c–87, 1c0 | — | raw |
 
 The three raw blocks are nonempty in all 30 `wigl` tags, so they cannot
 use the empty-block guard. They are kept as untrusted `Block` descriptors:

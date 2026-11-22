@@ -203,6 +203,16 @@ or an id under `root` when both are given. It answers `{browse, tiles,
 states}`; an unknown folder is `INVALID_PARAMS`, retail without a disc
 `FAILED`. `ui.pick` shows the picture again.
 
+`ui.pick {screen, state?}` shows one of our screens in a state (default
+its first); `ui.pick {retail, sample?}` shows a retail screen by tag
+name, in its plain sample state or the sample variant `sample` names
+(`variant:` in `assets/ui/retail-samples/`, docs/game/ui-builder.md
+"Retail screens in a believable state"). It answers `{pick, summary}`;
+`pick` is `{screen, state}` or `{retail}`, with `sample` when one is
+named. An unknown screen or state, a `sample` the screen has no variant
+of (the message lists the ones it has), or a `sample` with `screen` is
+`INVALID_PARAMS`.
+
 `ui.sheet {folder?, root?, states?, columns?, out?}` writes that grid to
 one labelled contact-sheet PNG (default: the grid shown; `states` draws
 every state of our screens, not only each one's first; `columns` defaults

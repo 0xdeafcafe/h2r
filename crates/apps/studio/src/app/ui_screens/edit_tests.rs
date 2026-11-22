@@ -297,7 +297,7 @@ fn a_filmstrip_spans_the_transition() {
 fn retail_edits_need_the_disc_and_the_menu_map() {
     let mut app = App::new();
     app.dispatch(Action::SetTool(ToolKind::UiScreens));
-    app.dispatch(Action::UiPick(Pick::Retail(r"ui\screens\x".into())));
+    app.dispatch(Action::UiPick(Pick::retail(r"ui\screens\x")));
     let e = edit(
         &mut app,
         EditAction::Move {

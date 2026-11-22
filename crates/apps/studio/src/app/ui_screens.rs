@@ -29,8 +29,20 @@ pub mod edit;
 pub enum Pick {
     /// One of our screens ([`screens::NAMES`]) in a named state.
     Native { screen: String, state: String },
-    /// A retail screen of `mainmenu.map`, by tag name, as the disc has it.
-    Retail(String),
+    /// A retail screen of `mainmenu.map`, by tag name, as the disc has it,
+    /// in its plain sample state or the sample variant `sample` names
+    /// (`boot::ui_kit::preview::retail_sample::for_screen_variant`).
+    Retail { tag: String, sample: Option<String> },
+}
+
+impl Pick {
+    /// Retail screen `tag` in its plain sample state.
+    pub fn retail(tag: impl Into<String>) -> Pick {
+        Pick::Retail {
+            tag: tag.into(),
+            sample: None,
+        }
+    }
 }
 
 /// One finding of the layout checks, with the widgets it names.
@@ -178,7 +190,7 @@ impl UiScreens {
                 }
                 self.live = Some(live);
             }
-            Pick::Retail(_) => self.live = None,
+            Pick::Retail { .. } => self.live = None,
         }
         self.pick = Some(pick);
         self.gallery.at = None;
@@ -248,7 +260,7 @@ impl UiScreens {
             self.rev += 1;
             let shot = match pick {
                 Pick::Native { state, .. } => self.draw_native(&state),
-                Pick::Retail(tag) => self.draw_retail(&tag),
+                Pick::Retail { tag, sample } => self.draw_retail(&tag, sample.as_deref()),
             };
             match shot {
                 Ok(s) => self.shot = Some(s),
@@ -327,11 +339,11 @@ impl UiScreens {
     /// A retail screen as the disc has it, with the edits of the map's
     /// tag document ([`edit::retail`], [`edit::retail_tag`]): widgets
     /// moved, blocks hidden or copied, string IDs set.
-    fn draw_retail(&mut self, tag: &str) -> Result<Shot> {
+    fn draw_retail(&mut self, tag: &str, sample: Option<&str>) -> Result<Shot> {
         let rev = self.rev;
         let edits = self.edit.retail_edits(tag);
         let d = self.disc().context("retail screens need the disc")?;
-        let r = edit::retail_pick(tag);
+        let r = edit::retail_pick(tag, sample);
         let canvas = d.render_retail_edited(&r, &edits)?;
         let retail_view = Some(d.retail_view_edited(&r, &edits)?);
         Ok(Shot {
@@ -394,7 +406,7 @@ impl UiScreens {
                     format!("{stem}-{}", self.animation)
                 }
             }
-            Pick::Retail(tag) => tag.replace(['\\', '/'], "_"),
+            Pick::Retail { tag, .. } => tag.replace(['\\', '/'], "_"),
         };
         let phase = self.animation;
         let mut written = Vec::new();
@@ -579,7 +591,7 @@ mod tests {
             .find(|n| n.ends_with("main_menu"))
             .cloned()
             .unwrap_or_else(|| retail[0].clone());
-        s.select(Pick::Retail(main)).unwrap();
+        s.select(Pick::retail(main)).unwrap();
         assert!(s.shot().unwrap().view.is_none());
         assert!(s.press(Input::A).is_none(), "nothing to step");
     }

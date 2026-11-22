@@ -594,7 +594,8 @@ pub struct Button {
     /// +0x10, text colour (r, g, b).
     pub text_color: [f32; 3],
     pub rect: Rect,
-    /// +0x24, optional bitmap drawn at `rect` top-left plus `bitmap_offset`.
+    /// +0x24, optional bitmap drawn at `rect` top-left moved by
+    /// `bitmap_offset`: x added, y subtracted (`0x00253fb0`).
     pub bitmap: TagRef,
     pub bitmap_offset: Point,
     /// +0x30, label, resolved through the screen's `unic` tag.
@@ -1220,6 +1221,14 @@ impl SharedGlobals {
     /// zero or an index past the list (the engine then skips it, `0x0022facd`).
     pub fn shape_group(&self, index: u16) -> Option<&ShapeGroup> {
         self.shape_groups.get(usize::from(index).checked_sub(1)?)
+    }
+    /// +0x6c, the colour a window stack fills the whole screen with under
+    /// a screen whose lower window holds one (a dialog over its opener),
+    /// as (a, r, g, b): `0x0023029a` scales its alpha by the screen's
+    /// transition fraction and fills with `0x00147cdb`. In
+    /// [`SharedGlobals::unknown_060`] at 12 to 28.
+    pub fn overlay_color(&self) -> [f32; 4] {
+        f32s(&self.unknown_060, 0x6c - 0x60)
     }
 }
 const SHARED: &str = "SharedGlobals";

@@ -320,6 +320,7 @@ pub const NAMES: [&str; 72] = [
     "kit.picker",
     "kit.picker.game",
     FORGE_MAP_PICKER,
+    MODE_PICKER,
     crate::custom_games::browser_filters::SCREEN,
     crate::lobby_tabs::preview::NAME,
     "design.title",
@@ -356,6 +357,11 @@ pub const NAMES: [&str; 72] = [
 /// The value picker as the Forge Map row opens it, with two saved maps
 /// (`crate::lobby_mode::forge_map_pick`).
 pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
+
+/// The value picker of the lobby's modes, over the lobby: a sample for
+/// the mode choice's concepts (docs/game/ui-builder.md "The value
+/// picker"). No row of the game opens it.
+pub const MODE_PICKER: &str = "kit.picker.mode";
 
 /// Every named state of screen `name` for the preview sheet: a list's
 /// first, middle and last row focused; the sign-in prompt's pages
@@ -449,14 +455,33 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
     .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
-/// The lobby's picker's sample ([`FORGE_MAP_PICKER`]): New with two saved
-/// maps, the second held. Its choice writes no file.
+/// The lobby's pickers' samples: [`FORGE_MAP_PICKER`], New with two
+/// saved maps, the second held; [`MODE_PICKER`], the four modes the
+/// lobby's tabs name, Custom Games held. Their choices write nothing.
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
     match name {
         FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
             Ok(vec!["Castle Keep".into(), "Lockout Towers".into()]),
             Some("Lockout Towers"),
         )),
+        MODE_PICKER => {
+            use crate::lobby_tabs::Tab;
+            const MODES: [Tab; 4] = [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight];
+            let values = MODES.iter().map(|t| t.label().to_owned()).collect();
+            Some(
+                crate::ui_kit::picker::Pick::new(
+                    "Game Mode",
+                    values,
+                    1,
+                    "Choose what this lobby plays.",
+                    Arc::new(|i: usize| match MODES.get(i) {
+                        Some(t) => format!("lobby mode: {}", t.label()),
+                        None => format!("mode {i} is not in the list"),
+                    }),
+                )
+                .over(crate::ui_kit::view::Opener::LOBBY),
+            )
+        }
         _ => None,
     }
 }
@@ -641,7 +666,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             ));
             list(ListPage::new(p.class(), described(&p)))
         }
-        FORGE_MAP_PICKER => {
+        FORGE_MAP_PICKER | MODE_PICKER => {
             crate::ui_kit::picker::offer_list(lobby_pick_sample(name)?)?;
             let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
             list(ListPage::new(p.class(), described(&p)))
@@ -654,6 +679,28 @@ pub fn list_page(name: &str) -> Option<ListPage> {
 mod tests {
     use super::*;
     use crate::ui_kit::spec::{Finding, check_fallback};
+
+    /// The mode picker's sample: the four modes in the lobby tabs' order
+    /// and labels, Custom Games held, over the lobby; its states draw.
+    #[test]
+    fn the_mode_picker_lists_the_four_modes_with_custom_games_held() {
+        use crate::lobby_tabs::Tab;
+        let p = lobby_pick_sample(MODE_PICKER).expect("the mode picker has a sample");
+        assert_eq!(p.title, "GAME MODE");
+        assert_eq!(
+            p.values,
+            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight].map(Tab::label)
+        );
+        assert_eq!(p.values[p.current], Tab::CustomGames.label());
+        assert_eq!(p.opener, crate::ui_kit::view::Opener::LOBBY);
+        assert_eq!(p.description, "Choose what this lobby plays.");
+        assert!(NAMES.contains(&MODE_PICKER));
+        let s = sample(MODE_PICKER).expect("the mode picker opens");
+        assert_eq!(s.rows.len(), 4);
+        let states = states(MODE_PICKER).unwrap();
+        let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["focus-0", "focus-2", "focus-3"]);
+    }
 
     /// The kit's legend is the skulls page's own, glyph for glyph, and the
     /// description the page serves is the described one.
@@ -1057,6 +1104,7 @@ mod tests {
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
                 | FORGE_MAP_PICKER
+                | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
                 | "forge.objects" | "forge.tools" | "forge.link" | "forge.question",
                 Issue::Contrast { id, .. }

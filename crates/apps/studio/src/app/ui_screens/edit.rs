@@ -95,7 +95,7 @@ impl Sink {
     pub fn of(pick: &Pick) -> Sink {
         match pick {
             Pick::Native { .. } => Sink::Ours,
-            Pick::Retail(_) => Sink::Retail,
+            Pick::Retail { .. } => Sink::Retail,
         }
     }
     pub fn name(self) -> &'static str {
@@ -145,14 +145,17 @@ impl UiEdit {
 }
 
 /// A retail screen as the tool draws it: pane [`retail::PANE`], the tag's
-/// own texts, no cells, no footer.
-pub(super) fn retail_pick(tag: &str) -> preview::Retail<'_> {
+/// own texts, no cells, no footer, in the sample variant `sample` names
+/// (none: the plain sample).
+pub(super) fn retail_pick<'a>(tag: &'a str, sample: Option<&'a str>) -> preview::Retail<'a> {
     preview::Retail {
         tag,
         pane: retail::PANE,
         text: &no_text,
         cells: &[],
         footer: None,
+        rows: None,
+        sample,
     }
 }
 
@@ -220,7 +223,7 @@ impl UiScreens {
     /// [`retail::PANE`]).
     pub(super) fn retail_base_view(&mut self, tag: &str) -> Result<View, String> {
         let d = self.disc().ok_or("retail screens need the disc")?;
-        d.retail_view(&retail_pick(tag), &RetailPlaces::new())
+        d.retail_view(&retail_pick(tag, None), &RetailPlaces::new())
             .map_err(|e| format!("{tag}: {e:#}"))
     }
 
@@ -388,7 +391,7 @@ impl App {
                     (Sink::Ours, Pick::Native { screen, .. }) => {
                         self.ui_screens.edit.ours.revert(screen, id.as_deref())?
                     }
-                    (_, Pick::Retail(tag)) => self.ui_retail_revert(tag, id.as_deref())?,
+                    (_, Pick::Retail { tag, .. }) => self.ui_retail_revert(tag, id.as_deref())?,
                     _ => unreachable!("the sink follows the pick"),
                 };
                 self.ui_screens.redraw();
@@ -447,7 +450,7 @@ impl App {
                     .ours
                     .change(screen, &widget, change, merge)?
             }
-            Pick::Retail(tag) => self.ui_retail_change(tag, &widget, change, merge)?,
+            Pick::Retail { tag, .. } => self.ui_retail_change(tag, &widget, change, merge)?,
         };
         self.ui_screens.edit.selected = Some(id.to_owned());
         self.ui_screens.redraw();
@@ -463,7 +466,7 @@ impl App {
                 let s = &mut self.ui_screens.edit.ours;
                 if undo { s.undo() } else { s.redo() }
             }
-            Some(Pick::Retail(tag)) => {
+            Some(Pick::Retail { tag, .. }) => {
                 self.sync_tags();
                 let r = if undo {
                     self.tags.undo()
@@ -493,7 +496,7 @@ impl App {
                 let s = &self.ui_screens.edit.ours;
                 if redo { s.can_redo() } else { s.can_undo() }
             }
-            Some(Pick::Retail(_)) => {
+            Some(Pick::Retail { .. }) => {
                 if redo {
                     self.tags.can_redo()
                 } else {

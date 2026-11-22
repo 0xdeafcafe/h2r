@@ -3,8 +3,8 @@
 //! `H2_UI_PREVIEW_DIR` set the pictures are written there.
 
 use super::retail_sample::{self, TOKENS};
-use super::{Canvas, Disc, Retail, RetailEdits, RetailPlaces};
-use crate::ui_kit::view::{Kind, View};
+use super::{Canvas, Disc, Retail, RetailBlocks, RetailEdits, RetailPlaces, Source};
+use crate::ui_kit::view::{Backing, Kind, View};
 
 const LOBBY: &str = r"ui\screens\game_shell\pregame_lobby\pregame_lobby";
 const SETUP: &str = r"ui\screens\game_shell\pregame_lobby\squad_settings_dialog";
@@ -33,6 +33,8 @@ fn pick(tag: &str, pane: usize) -> Retail<'_> {
         text: &no_text,
         cells: &[],
         footer: None,
+        rows: None,
+        sample: None,
     }
 }
 
@@ -244,15 +246,184 @@ fn a_dialog_is_drawn_over_its_opener_with_its_map_picture() {
     // (347, 172).
     let panel = distinct(colours(&with, 357..547, 182..360));
     assert!(panel > 100, "the panel has a picture: {panel} colours");
-    // The panel's own bitmap decodes too (its first image has art).
+    // The tag alone draws nothing there: the panel block's image is 8,
+    // past `xbox_live`'s eight images (0 to 7). The game's code picks the
+    // picture per focused row; the sample's `level` stands in for it.
     let parts = d.retail_parts(SETUP).unwrap();
-    let own = parts.screen.panes[0]
+    let b = parts.screen.panes[0]
         .bitmaps
         .iter()
-        .filter(|b| super::on_screen_point(b.top_left))
-        .map(|b| (b.top_left, b.image, d.image(b.bitmap, b.image).map(|i| (i.width, i.height))))
-        .collect::<Vec<_>>();
-    assert!(own.iter().all(|b| b.2.is_some()), "every pane bitmap decodes: {own:?}");
+        .find(|b| {
+            b.bitmap.id.and_then(|id| parts.bitmaps.get(&id)).is_some_and(|t| t.ends_with(r"\xbox_live"))
+        })
+        .expect("the panel block draws xbox_live");
+    assert_eq!(b.image, 8, "the panel block's image");
+    assert!(d.image(b.bitmap, 8).is_none(), "xbox_live has no image 8");
+}
+
+/// The first of `rows` in which `a` and `b` differ in pixel columns
+/// `x`.
+fn first_row_differing(
+    a: &Canvas,
+    b: &Canvas,
+    x: std::ops::Range<u32>,
+    rows: std::ops::Range<u32>,
+) -> Option<u32> {
+    rows.into_iter()
+        .find(|&y| colours(a, x.clone(), y..y + 1) != colours(b, x.clone(), y..y + 1))
+}
+
+/// A button's art is drawn with its offset's y subtracted from the
+/// rect's top (`0x253fb0`): the lobby's (-12, -5) puts the frame's top
+/// edge above the label, not through it.
+#[test]
+fn a_buttons_art_is_raised_by_its_offset() {
+    let Some(d) = disc() else { return };
+    let parts = d.retail_parts(LOBBY).unwrap();
+    let pane = &parts.screen.panes[0];
+    let blocks = |buttons: Vec<tags::ui::Button>| RetailBlocks {
+        header: parts.screen.header.0,
+        text_blocks: pane.text_blocks.clone(),
+        buttons,
+        bitmaps: pane.bitmaps.clone(),
+    };
+    let r = pick(LOBBY, 0);
+    let full = d.render_retail_layer(&r, &RetailEdits::default(), false).unwrap();
+    // The buttons' art alone: their labels blanked.
+    let art_only = RetailEdits {
+        texts: pane.buttons.iter().map(|b| (b.string.0, String::new())).collect(),
+        ..RetailEdits::default()
+    };
+    let art = d.render_retail_layer(&r, &art_only, false).unwrap();
+    // Neither: no buttons.
+    let none = RetailEdits {
+        blocks: Some(blocks(Vec::new())),
+        ..RetailEdits::default()
+    };
+    let bare = d.render_retail_layer(&r, &none, false).unwrap();
+    let art_top = first_row_differing(&art, &bare, 60..200, 55..100).expect("the art is drawn");
+    let label_top = first_row_differing(&full, &art, 60..200, 55..100).expect("the label is drawn");
+    assert!(art_top < label_top, "the art's top row {art_top}, the label's {label_top}");
+    write(&full, "retail-lobby-buttons.png");
+}
+
+/// The sum of `c`'s colour channels in pixels `x` by `y`.
+fn brightness(c: &Canvas, x: std::ops::Range<u32>, y: std::ops::Range<u32>) -> u64 {
+    colours(c, x, y)
+        .iter()
+        .map(|p| p.iter().map(|v| u64::from(*v)).sum::<u64>())
+        .sum()
+}
+
+/// A dialog of ours over its opener: the opener drawn as a retail screen
+/// in its sample state (no substitution unit in its texts), then dimmed
+/// by the shared globals' overlay colour.
+#[test]
+fn a_picker_is_drawn_over_its_opener_dimmed_and_without_units() {
+    let Some(d) = disc() else { return };
+    let spec = crate::ui_kit::screens::sample(crate::ui_kit::picker::GAME_NAME).unwrap();
+    let v = d.view(&spec, "sample").unwrap();
+    let Backing::Over(o) = v.backing else {
+        panic!("kit.picker.game is not over an opener: {:?}", v.backing);
+    };
+    let opener = d.opener_view(&o).unwrap();
+    for view in [&v, &opener] {
+        for (id, text) in texts(view) {
+            assert!(
+                !text.chars().any(|c| TOKENS.contains(&c)),
+                "{} {id} shows a unit: {text:?}",
+                view.screen
+            );
+        }
+    }
+    // The opener's rows (Game Setup's list, from (-250, 90)) are darker
+    // under the dialog than in the opener alone.
+    let alone = d.opener_drawn(&o).expect("the opener is drawn");
+    let mut under = Canvas::new(640, 480, [0, 0, 0, 255]);
+    Source::backing(&d, &mut under, Backing::Over(o));
+    let (rows_x, rows_y) = (70..300, 150..250);
+    let (lit, dimmed) = (
+        brightness(&alone.1, rows_x.clone(), rows_y.clone()),
+        brightness(&under, rows_x, rows_y),
+    );
+    assert!(dimmed < lit, "under the dialog {dimmed}, alone {lit}");
+    write(&alone.1, "opener-game-setup-clankers.png");
+    write(&d.render(&spec).unwrap(), "kit-picker-game.png");
+}
+
+/// The dim layer is the disc's overlay colour: 85% of (0, 20, 44), the
+/// synthetic source's constant.
+#[test]
+fn the_dim_layer_is_the_discs_overlay_colour() {
+    let Some(d) = disc() else { return };
+    let mut c = Canvas::new(640, 480, [0, 0, 0, 0]);
+    d.dim(&mut c);
+    assert_eq!(c.rgba[..4], super::SYNTHETIC_DIM);
+}
+
+/// Game Setup's Switch To variant draws its seven rows; the plain draw
+/// is the plain sample's, and a name the screen has no sample for fails
+/// with the names it has.
+#[test]
+fn a_named_sample_variant_draws_its_own_rows() {
+    let Some(d) = disc() else { return };
+    let plain = d.render_retail(&pick(SETUP, 0)).unwrap();
+    let switch = d
+        .render_retail(&Retail {
+            sample: Some("switch-to"),
+            ..pick(SETUP, 0)
+        })
+        .unwrap();
+    assert!(plain.rgba != switch.rgba, "the variant's rows differ");
+    // All seven rows read in the disc's table, ours between Quick
+    // Options and Co-Op.
+    let parts = d.retail_parts(SETUP).unwrap();
+    let (table, name, named) = parts.strings();
+    let state = retail_sample::State {
+        sample: retail_sample::for_screen_variant(SETUP, "switch-to").unwrap(),
+        pane: 0,
+        strings: retail_sample::Strings {
+            text: &table,
+            name: &name,
+            named: &named,
+        },
+    };
+    assert!(state.missing().is_empty(), "{:?}", state.missing());
+    let (rows, focus) = state.rows(0).expect("the variant gives the list rows");
+    assert_eq!(rows.len(), 7, "{rows:?}");
+    assert_eq!((rows[3].as_str(), rows[4].as_str()), ("Switch To: Forge", "Switch To: Firefight"));
+    assert_eq!(focus, 0);
+    write(&switch, "retail-game-setup-switch-to.png");
+    let e = d
+        .render_retail(&Retail {
+            sample: Some("no-such"),
+            ..pick(SETUP, 0)
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("no-such") && e.contains("switch-to"), "{e}");
+}
+
+/// Without a disc: a variant is looked up by name, and an unknown one is
+/// refused with the screen's names.
+#[test]
+fn an_unknown_sample_variant_is_refused_with_the_names() {
+    let found = super::sample_of(&Retail {
+        sample: Some("switch-to"),
+        ..pick(SETUP, 0)
+    })
+    .unwrap()
+    .expect("Game Setup's variant");
+    assert_eq!(found.variant.as_deref(), Some("switch-to"));
+    let plain = super::sample_of(&pick(SETUP, 0)).unwrap().expect("the plain sample");
+    assert_eq!(plain.variant, None);
+    let e = super::sample_of(&Retail {
+        sample: Some("no-such"),
+        ..pick(SETUP, 0)
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("switch-to"), "{e}");
 }
 
 fn write(c: &Canvas, file: &str) {

@@ -94,9 +94,9 @@ not full screens. They sit over whatever is beneath (the title screen, the
 main menu, in game) the way the game's own dialogs do, in the large dialog
 layout of `error_dialog_large` and `dialog_live_password` (header layout
 2, about 536 wide): that dialog's own `dialog1`/`dialog2` panel art, the
-digit cells and the legend. What the game's dialogs draw behind the panel
-(a dim layer or nothing) is copied from the retail dialog tags, read off
-them rather than assumed. A modal may cover the logo, as retail dialogs
+digit cells and the legend. The retail dialog tags draw nothing behind
+the panel; the window stack's render dims the screen under a dialog
+("A dialog is an overlay on its opener", below). A modal may cover the logo, as retail dialogs
 do, so for a modal the reserved-area check ignores what the panel covers.
 Everything in it must still sit inside the panel and inside the safe
 area. The preview draws a modal over the screen that opened it (its
@@ -339,10 +339,10 @@ digit sits over each cell. The cursor's cell and digit are lit; the
 others are dimmed (the frame and row alphas). The status line (Checking...,
 the error) sits above the legend, and the legend is in layout 2's second
 rectangle. The view's backing is `Backing::Over(opener)`, the
-`DialogSpec`'s `Opener`. On the disc, the preview draws the opener
-(`Disc::opener_view`) and then the dialog over it, with nothing between
-them, as the tags have nothing there. Synthetic previews draw the
-opener's rows as boxes and text blocks.
+`DialogSpec`'s `Opener`. On the disc, the preview draws the opener as a
+retail screen, dims it (`Disc::dim`) and draws the dialog over it.
+Synthetic previews draw the opener's rows as boxes and text blocks, then
+the same dim in a fixed colour (`preview::SYNTHETIC_DIM`, the disc's).
 
 **The modal's checks.** `Rules::panel` is set for a dialog spec
 (`DialogGeometry::area`, the panel's and corners' box,
@@ -372,19 +372,43 @@ and Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
 **A dialog is an overlay on its opener.** A retail dialog sits over whatever was open when
 it opened, drawn as it was: not always the main menu, and with nothing
-hidden and no dim layer. So a `DialogSpec` names its `Opener`: the
-opener's screen tag, the pane shown, its list's rows (the game's code
-fills them) and the focused row. `Disc::opener_view` makes it a `View`:
-the game shell, the pane's bitmaps and texts in the screen's own
-strings, its header, and its rows on its own list skin with the focused
-row lit (`view_of`'s list). The preview draws that under the dialog. The
-openers:
+hidden. So a `DialogSpec` names its `Opener`: the opener's screen tag,
+the pane shown, its list's rows (the game's code fills them) and the
+focused row. The preview draws the opener as a retail screen in its
+sample state (`Disc::render_retail_layer` with `Retail::rows`, "Retail
+screens in a believable state"): units substituted, texts wrapped, the
+opener's rows on its own list skin with the focused row lit.
+`Disc::opener_view` makes the same opener a `View` (its pane's bitmaps,
+its header and its texts as the sample state reads them, its rows) for
+the over-opener notes.
+
+The game dims the opener. Every window stack's render slot is
+`0x234f8c` (vtables `0x4599a8`, `0x4599dc`, `0x459a08`; `0x459a34`
+reaches it through `0x23583e`). For each of the stack's screens,
+`0x23029a` asks whether a lower window holds a screen (windows 1, 3, 2,
+4, 5 from the top, tested with `0x1490ec`; the screen's virtual `+0x6c`
+can opt out). If one does, it adds the screen's transition fraction
+(`0x230374`, clamped to 1) and fills the whole screen (`0x147cdb`) with
+the shared globals' colour at `wigl +0x6c` (a, r, g, b), its alpha
+times the fraction, then calls `0x235756` with the fraction, and only
+then draws the stack's own widgets. On the disc the colour is (0.85,
+0.0, 0.0784, 0.1725): 85% of (0, 20, 44). So under a window-3 dialog
+(Game Setup) or a window-1 dialog the opener is drawn in full and then
+dimmed 85%: the lobby's PREGAME LOBBY strip above the frame shows at
+15%. `Disc::dim` draws that fill at rest (fraction 1), from
+`SharedGlobals::overlay_color`. Not drawn: `0x235756` calls `0x211a0`,
+not read, probably a blur, so the picture's opener is sharper than the
+game's.
+
+The openers:
 
 - `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
   the list hooks show them: Campaign, Xbox Live, Split Screen, System
   Link, THEATER, Settings).
 - `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
   on Quickmatch, with our five rows.
+- `Opener::LOBBY` (`lobby` in a screen doc): the pregame lobby's custom
+  game pane in its sample state, with no rows.
 
 On the disc, the code pages' legend sits over the main menu's Xbox Live
 and Split Screen rows. Over the Xbox Live menu, the title and body sit
@@ -721,6 +745,14 @@ changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).
+
+`kit.picker.mode` (`screens::MODE_PICKER`) is the picker of the lobby's
+modes, a sample that no row of the game opens: GAME MODE, with
+MULTIPLAYER, CUSTOM GAMES, FORGE and FIREFIGHT as its rows (the lobby
+tabs' labels, `lobby_tabs::Tab::label`), CUSTOM GAMES held, "Choose
+what this lobby plays." on the right, over the dimmed lobby
+(`Opener::LOBBY`). Its choice only logs. The concepts for choosing a
+lobby's mode pick it to show the list their button or prompt opens.
 
 **Strings are in guest memory before the screen is built.** `TEXT_SET`
 (`0x253b1a`) copies the string as it sets it: it resolves the id into a
@@ -1420,7 +1452,8 @@ panes:
 
 | Key | What it says |
 |---|---|
-| `over` | the screen tag this one opens over (a dialog's opener). That screen's pane 0 is drawn first, in its own sample state, in place of the game shell background |
+| `variant` | the state's name among the screen's samples. A file without one is the screen's plain sample, the one every caller draws; a file with one is drawn only when a caller names it (`Retail::sample`, `ui.pick {retail, sample}`). Two files for one screen and variant, or two plain ones, fail to load |
+| `over` | the screen tag this one opens over (a dialog's opener). That screen's pane 0 is drawn first, in its own plain sample state, in place of the game shell background, then dimmed as the game dims it ("A dialog is an overlay on its opener") |
 | `tokens` | what each substitution unit reads as, for every pane |
 | `footer` | the legend in the header layout's second rectangle |
 | `cells` | the tables' filled cells: `text` is the cell skin's first text block, `blocks` its bitmaps, `emblem` the player's emblem. A cell with no entry is not drawn |
@@ -1471,7 +1504,13 @@ Rules:
   (`Screen::header_layout`, the shared globals' four layouts): the
   lobby's title and Game Setup's are in different rectangles.
 - **A dialog is drawn over its opener** when its sample names one with
-  `over`, one level deep: the opener's own `over` is not followed.
+  `over`, one level deep: the opener's own `over` is not followed. The
+  opener is dimmed by the shared globals' overlay colour (`Disc::dim`).
+- **A variant is named.** `assets/ui/retail-samples/` holds
+  `squad_settings_dialog.switch-to.yaml`, Game Setup with retail's
+  Switch To rows and two of ours (Switch To: Forge, Switch To:
+  Firefight) between Quick Options and Co-Op: seven rows. The plain
+  `squad_settings_dialog.yaml` is what every other caller draws.
 - **The editor's edits come first.** A stand-in for a string set with
   `ui.set_string` is drawn ahead of the sample, then `Retail::text`'s
   answer, then the sample, then the tag's own string.
@@ -1489,8 +1528,10 @@ icons, and when it shows the help text under the player column. The
 lobby's update (`0x24fd..`) looks up text widgets 1, 3, 4, 0x2a and 0x2d
 and bitmaps 2 and 4 only. The sample hides the co-op and matchmaking
 panes' slot bars, as the custom game's pane parks them off screen.
-Game Setup's panel bitmap is another screen's art; the tag preloads
-`difficulty_options` and `mp_games`, and the code that swaps the
+Game Setup's panel bitmap is another screen's art, and its image index
+is out of range: the block's image (`+0xa`) is 8 and `xbox_live` has
+images 0 to 7, so the tag alone draws nothing there. The tag preloads
+`difficulty_options` and `mp_games`, and the code that picks the
 panel's picture per focused row is not read, so the sample's `level`
 stands in for it.
 

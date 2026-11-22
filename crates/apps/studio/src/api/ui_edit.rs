@@ -308,7 +308,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 None => {
                     let stem = match app.ui_screens.pick.as_ref().expect("picked") {
                         Pick::Native { screen, state } => format!("{screen}-{state}"),
-                        Pick::Retail(tag) => tag.replace(['\\', '/'], "_"),
+                        Pick::Retail { tag, .. } => tag.replace(['\\', '/'], "_"),
                     };
                     studio_proto::output_dir()
                         .join("ui")

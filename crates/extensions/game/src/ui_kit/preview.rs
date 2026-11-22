@@ -723,6 +723,20 @@ impl Disc {
         Ok(spec::check(s, &room))
     }
 
+    /// The layer the game draws between a dialog and its opener: the
+    /// whole screen filled with the shared globals' overlay colour
+    /// ([`tui::SharedGlobals::overlay_color`], `wigl +0x6c`; on the disc
+    /// 85% of (0, 20, 44)). The window stack's render (`0x234f8c`) draws
+    /// it under a screen whose lower window holds one (`0x23029a`, fill
+    /// `0x147cdb`), at its alpha times the screen's transition fraction:
+    /// at rest, its own alpha. The blur it calls next (`0x235756`) is not
+    /// drawn.
+    pub fn dim(&self, c: &mut Canvas) {
+        let [a, r, g, b] = self.shared.overlay_color();
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        c.fill(WHOLE_SCREEN, [byte(r), byte(g), byte(b), byte(a)]);
+    }
+
     /// A screen's bitmap blocks, lowest render depth first.
     fn draw_blocks<'a>(&self, c: &mut Canvas, blocks: impl Iterator<Item = &'a tui::BitmapBlock>) {
         let mut v: Vec<&tui::BitmapBlock> = blocks.collect();
@@ -740,41 +754,25 @@ impl Disc {
     /// rows ([`Opener::rows`]) on its skin with [`Opener::focus`] lit, as
     /// [`view_of`] draws a list. Blocks parked off screen are left out.
     pub fn opener_view(&self, o: &Opener) -> Result<View> {
-        let (screen, strings) = {
-            let mut m = self.map.borrow_mut();
-            let id = m.tag(map::TagQuery::NameInGroup(o.tag, tui::SCREEN))?.id;
-            let mut src = MapSource::new(&mut m);
-            let UiTag::Screen(screen) = src.decode_tag(id)?.tag else {
-                bail!("{} is not a screen", o.tag);
-            };
-            drop(src);
-            let pane = screen
-                .panes
-                .get(o.pane)
-                .with_context(|| format!("{} has no pane {}", o.tag, o.pane))?;
-            let ids: Vec<u32> = pane
-                .text_blocks
-                .iter()
-                .map(|t| t.string.0)
-                .chain([screen.header.0])
-                .collect();
-            let mut strings = HashMap::new();
-            if let Some(u) = screen.strings.id {
-                let loc = tags::localization::Localization::read(&mut m)?;
-                let unic = loc.unic(&mut m, u)?;
-                for id in ids {
-                    if let Ok(Some(t)) = loc.text_in(
-                        &unic,
-                        tags::localization::StringId(id),
-                        tags::localization::Language::English,
-                    ) {
-                        strings.insert(id, t);
-                    }
-                }
-            }
-            (screen, strings)
+        let parts = self.retail_parts(o.tag)?;
+        let screen = &parts.screen;
+        let pane = screen
+            .panes
+            .get(o.pane)
+            .with_context(|| format!("{} has no pane {}", o.tag, o.pane))?;
+        // The texts as the opener's sample state has them, as
+        // `retail_view_edited` reads them: units substituted, hidden
+        // blocks left out.
+        let (table, name, named) = parts.strings();
+        let state = retail_sample::State {
+            sample: retail_sample::for_screen(o.tag).map_err(|e| anyhow!(e))?,
+            pane: o.pane,
+            strings: retail_sample::Strings {
+                text: &table,
+                name: &name,
+                named: &named,
+            },
         };
-        let pane = &screen.panes[o.pane];
         let on_screen = |top: i16, left: i16| top.abs() < 1000 && left.abs() < 1000;
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
         let mut w = Vec::new();
@@ -816,14 +814,14 @@ impl Disc {
         };
         let layout = screen.header_layout();
         if screen.flags & tui::Screen::NO_HEADER == 0
-            && let Some(h) = strings.get(&screen.header.0)
+            && let Some(h) = state.text("title", screen.header.0).filter(|s| !s.is_empty())
         {
             w.push(text(
                 "opener.title".into(),
                 self.shared.header_layouts[layout].header,
                 self.shared.header_fonts[layout],
                 0,
-                h.clone(),
+                h,
                 rgb([
                     self.shared.header_color[1],
                     self.shared.header_color[2],
@@ -832,7 +830,9 @@ impl Disc {
             ));
         }
         for (i, t) in pane.text_blocks.iter().enumerate() {
-            if let Some(s) = strings.get(&t.string.0).filter(|s| !s.is_empty())
+            if let Some(s) = state
+                .text(&format!("text.{i}"), t.string.0)
+                .filter(|s| !s.is_empty())
                 && on_screen(t.rect.top, t.rect.left)
             {
                 w.push(text(
@@ -840,7 +840,7 @@ impl Disc {
                     t.rect,
                     t.font,
                     tui::justification(t.flags),
-                    s.clone(),
+                    s,
                     rgb(t.text_color),
                 ));
             }
@@ -878,14 +878,30 @@ impl Disc {
         })
     }
 
-    /// [`Disc::opener_view`] and its picture, made once per opener.
+    /// [`Disc::opener_view`] and its picture, made once per opener. The
+    /// picture is the opener drawn as a retail screen
+    /// ([`Disc::render_retail_layer`], in its sample state: units
+    /// substituted, texts wrapped) with [`Opener::rows`] on its first
+    /// list; the view is kept for the over-opener notes.
     fn opener_drawn(&self, o: &Opener) -> Option<Drawn> {
         if let Some(d) = self.openers.borrow().get(o) {
             return d.clone();
         }
-        let d = self.opener_view(o).ok().map(|v| {
-            let c = render_view_where(&v, self, &|_| true, false);
-            std::sync::Arc::new((v, c))
+        let d = self.opener_view(o).ok().and_then(|v| {
+            let r = Retail {
+                tag: o.tag,
+                pane: o.pane,
+                text: &|_| None,
+                cells: &[],
+                footer: None,
+                rows: Some((o.rows, o.focus)),
+                sample: None,
+            };
+            let c = self
+                .render_retail_layer(&r, &RetailEdits::default(), false)
+                .map_err(|e| eprintln!("ui preview: opener {}: {e:#}", o.name))
+                .ok()?;
+            Some(std::sync::Arc::new((v, c)))
         });
         self.openers.borrow_mut().insert(*o, d.clone());
         d
@@ -1018,7 +1034,7 @@ impl Disc {
         let skins = &parts.skins;
         let (table, name, named) = parts.strings();
         let state = retail_sample::State {
-            sample: retail_sample::for_screen(r.tag).map_err(|e| anyhow!(e))?,
+            sample: sample_of(r)?,
             pane: r.pane,
             strings: retail_sample::Strings {
                 text: &table,
@@ -1057,18 +1073,25 @@ impl Disc {
             .and_then(|s| s.over.as_deref())
             .filter(|_| over);
         let mut c = match under {
-            // A dialog: the screen it opened over, in that screen's state.
-            Some(tag) => self.render_retail_layer(
-                &Retail {
-                    tag,
-                    pane: 0,
-                    text: &|_| None,
-                    cells: &[],
-                    footer: None,
-                },
-                &RetailEdits::default(),
-                false,
-            )?,
+            // A dialog: the screen it opened over, in that screen's state,
+            // dimmed as the window stack dims it ([`Disc::dim`]).
+            Some(tag) => {
+                let mut c = self.render_retail_layer(
+                    &Retail {
+                        tag,
+                        pane: 0,
+                        text: &|_| None,
+                        cells: &[],
+                        footer: None,
+                        rows: None,
+                        sample: None,
+                    },
+                    &RetailEdits::default(),
+                    false,
+                )?;
+                self.dim(&mut c);
+                c
+            }
             None => {
                 let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
                 for p in &self.background.panes {
@@ -1129,11 +1152,15 @@ impl Disc {
             if state.hidden(&id, b.string.0) {
                 continue;
             }
+            // The button draw (`0x253ea8`) adds the offset's x to the
+            // rect's left and subtracts its y from the rect's top
+            // (`0x253fb0`, `subss`): the lobby's (-12, -5) puts the art's
+            // top 5 units above the label's.
             if let Some(img) = self.image(b.bitmap, 0) {
                 c.image(
                     &img,
                     i32::from(b.rect.left) + i32::from(b.bitmap_offset.x),
-                    i32::from(b.rect.top) + i32::from(b.bitmap_offset.y),
+                    i32::from(b.rect.top) - i32::from(b.bitmap_offset.y),
                     255,
                 );
             }
@@ -1149,10 +1176,17 @@ impl Disc {
                 );
             }
         }
-        // A list's rows are the game's code's: the sample's, on the
-        // list's skin from its anchor, as a screen of ours lays its rows.
+        // A list's rows are the game's code's: the caller's for the
+        // first list ([`Retail::rows`]), else the sample's, on the list's
+        // skin from its anchor, as a screen of ours lays its rows.
         for (i, l) in pane.lists.iter().enumerate() {
-            let Some((rows, focus)) = state.rows(i) else {
+            let given = r
+                .rows
+                .filter(|(rows, _)| i == 0 && !rows.is_empty())
+                .map(|(rows, focus)| {
+                    (rows.iter().map(|t| (*t).to_owned()).collect::<Vec<String>>(), focus)
+                });
+            let Some((rows, focus)) = given.or_else(|| state.rows(i)) else {
                 continue;
             };
             let place = ListPlace::Moved {
@@ -1338,7 +1372,7 @@ impl Disc {
         let header = edits.apply(&mut pane, parts.screen.header.0);
         let (table, name, named) = parts.strings();
         let state = retail_sample::State {
-            sample: retail_sample::for_screen(r.tag).map_err(|e| anyhow!(e))?,
+            sample: sample_of(r)?,
             pane: r.pane,
             strings: retail_sample::Strings {
                 text: &table,
@@ -1498,6 +1532,31 @@ pub struct Retail<'a> {
     pub cells: &'a [String],
     /// The footer's legend; None takes the sample's.
     pub footer: Option<String>,
+    /// The first list's rows and its focused row, ahead of the sample's
+    /// (an [`Opener`]'s); None, or no rows, takes the sample's.
+    pub rows: Option<(&'a [&'a str], usize)>,
+    /// The sample's variant by name (`variant:` in its file,
+    /// [`retail_sample::for_screen_variant`]); None takes the screen's
+    /// plain sample. A name the screen has no sample for fails the draw.
+    pub sample: Option<&'a str>,
+}
+
+/// The sample `r` is drawn in: its variant, or the screen's plain one.
+fn sample_of(r: &Retail<'_>) -> Result<Option<&'static retail_sample::RetailSample>> {
+    let Some(name) = r.sample else {
+        return retail_sample::for_screen(r.tag).map_err(|e| anyhow!(e));
+    };
+    match retail_sample::for_screen_variant(r.tag, name).map_err(|e| anyhow!(e))? {
+        Some(s) => Ok(Some(s)),
+        None => {
+            let names = retail_sample::variants(r.tag).map_err(|e| anyhow!(e))?;
+            bail!(
+                "{} has no sample named {name:?} (its samples: {})",
+                r.tag,
+                if names.is_empty() { "none".to_owned() } else { names.join(", ") }
+            )
+        }
+    }
 }
 
 /// A decoded retail screen: its tag, its string table and its tables'
@@ -1544,6 +1603,18 @@ impl RetailParts {
         .flatten()
     }
 }
+
+/// The 640 by 480 screen in UI units.
+const WHOLE_SCREEN: Rect = Rect {
+    top: 240,
+    left: -320,
+    bottom: -240,
+    right: 320,
+};
+
+/// The dim layer under a dialog without a disc: the disc's overlay
+/// colour ([`Disc::dim`]), 85% of (0, 20, 44).
+pub const SYNTHETIC_DIM: [u8; 4] = [0, 20, 44, 217];
 
 /// Blocks parked off screen (9999) are the game's spares.
 fn on_screen_rect(r: &Rect) -> bool {
@@ -1771,6 +1842,7 @@ impl Source for Disc {
                 if let Some(d) = self.opener_drawn(&o) {
                     c.blit(&d.1, 0, 0);
                 }
+                self.dim(c);
             }
         }
     }
@@ -1877,6 +1949,8 @@ impl Source for SyntheticSource {
                     }
                 }
             }
+            // The dim layer, in the disc's colour ([`Disc::dim`]).
+            c.fill(WHOLE_SCREEN, SYNTHETIC_DIM);
             return;
         }
         if b == Backing::GameShell {

@@ -4158,7 +4158,7 @@ fn ui_edits_need_a_screen_and_retail_needs_the_disc() {
     // A retail screen without the disc draws nothing, so has no widget to
     // edit; nor a filmstrip.
     app.dispatch(Action::SetTool(crate::app::ToolKind::UiScreens));
-    app.dispatch(Action::UiPick(crate::app::Pick::Retail(r"ui\screens\x".into())));
+    app.dispatch(Action::UiPick(crate::app::Pick::retail(r"ui\screens\x")));
     assert_eq!(
         code_of(api.call(&mut app, m::UI_MOVE, json!({"id": "text.0", "dx": 1, "dy": 0}))),
         code::INVALID_PARAMS
@@ -4222,7 +4222,7 @@ fn ui_retail_tag_edits_refuse_our_screens_and_need_the_disc() {
     );
     // A retail screen without the disc has no widget to hide or copy, and
     // a string ID needs the menu map open.
-    app.dispatch(Action::UiPick(crate::app::Pick::Retail(r"ui\screens\x".into())));
+    app.dispatch(Action::UiPick(crate::app::Pick::retail(r"ui\screens\x")));
     assert_eq!(
         code_of(api.call(&mut app, m::UI_HIDE, hide.clone())),
         code::INVALID_PARAMS
@@ -4668,5 +4668,42 @@ fn nav_bots_builds_the_mesh_when_there_is_no_cache() {
     assert!(
         !t.path("data").join("bots").join("fixture.0.bots").exists(),
         "the build is not written"
+    );
+}
+
+#[test]
+fn ui_pick_names_a_retail_screens_sample_variant() {
+    let t = Temp::new("ui-pick-sample");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let setup = r"ui\screens\game_shell\pregame_lobby\squad_settings_dialog";
+    let r = call(
+        &mut api,
+        &mut app,
+        m::UI_PICK,
+        json!({"retail": setup, "sample": "switch-to"}),
+    );
+    assert_eq!(r["pick"], json!({"retail": setup, "sample": "switch-to"}));
+    assert_eq!(
+        app.ui_screens.pick,
+        Some(crate::app::Pick::Retail {
+            tag: setup.into(),
+            sample: Some("switch-to".into()),
+        })
+    );
+    // Without a name: the plain sample.
+    let r = call(&mut api, &mut app, m::UI_PICK, json!({"retail": setup}));
+    assert_eq!(r["pick"], json!({"retail": setup}));
+    // A name the screen has no sample for is refused with its names.
+    let e = api
+        .call(&mut app, m::UI_PICK, json!({"retail": setup, "sample": "no-such"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS, "{e}");
+    assert!(e.message.contains("switch-to"), "{e}");
+    assert_eq!(app.ui_screens.pick, Some(crate::app::Pick::retail(setup)), "nothing changed");
+    // A sample is a retail screen's: not one of ours.
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_PICK, json!({"screen": "kit.example", "sample": "switch-to"}))),
+        code::INVALID_PARAMS
     );
 }

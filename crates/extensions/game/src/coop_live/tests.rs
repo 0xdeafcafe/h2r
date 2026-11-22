@@ -1237,6 +1237,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &host,
                 cells: &players,
                 footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
         (
@@ -1247,6 +1249,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &guest,
                 cells: &players,
                 footer: Some("\u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
         (
@@ -1257,6 +1261,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &none,
                 cells: &[],
                 footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
         (
@@ -1267,6 +1273,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &none,
                 cells: &[],
                 footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
     ];

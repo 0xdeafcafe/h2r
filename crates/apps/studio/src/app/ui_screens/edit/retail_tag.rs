@@ -52,7 +52,7 @@ const BLOCKS: [(&str, &str); 3] = [
 /// The retail screen of `pick`, or the refusal for one of ours.
 pub fn retail_only<'a>(pick: &'a Pick, what: &str) -> Result<&'a str, String> {
     match pick {
-        Pick::Retail(tag) => Ok(tag),
+        Pick::Retail { tag, .. } => Ok(tag),
         Pick::Native { screen, .. } => Err(format!(
             "refused: {what} is an edit of a retail screen's tag; {screen} is ours, and its \
              widgets come from its YAML and its Rust"
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn the_tag_edits_are_of_retail_screens_only() {
-        let retail = Pick::Retail(r"ui\screens\x".into());
+        let retail = Pick::retail(r"ui\screens\x");
         assert_eq!(retail_only(&retail, "hiding a widget"), Ok(r"ui\screens\x"));
         let ours = Pick::Native {
             screen: "kit.example".into(),
@@ -462,7 +462,7 @@ mod tests {
         use crate::app::{Action, ToolKind};
         let mut app = App::new();
         app.dispatch(Action::SetTool(ToolKind::UiScreens));
-        app.dispatch(Action::UiPick(Pick::Retail(r"ui\screens\x".into())));
+        app.dispatch(Action::UiPick(Pick::retail(r"ui\screens\x")));
         // No disc: no picture, so no widget to hide or copy.
         for a in [
             EditAction::Hide { id: "text.0".into() },

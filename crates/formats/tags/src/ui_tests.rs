@@ -587,6 +587,24 @@ fn string_list_errors_carry_field_context() {
 }
 
 #[test]
+fn shared_globals_overlay_colour_is_four_floats_at_6c() {
+    let mut m = Mem::new();
+    let root = m.alloc(SharedGlobals::SIZE);
+    let mut refs: Vec<usize> = (0..16).map(|i| 0x90 + i * 8).collect();
+    refs.extend([0x110, 0x118, 0x140, 0x148, 0x150, 0x1b8]);
+    null_refs(&mut m, root, &refs);
+    for (i, v) in [0.85, 0.0, 0.0784, 0.1725].into_iter().enumerate() {
+        m.f32(root, 0x6c + i * 4, v);
+    }
+    m.f32(root, 0x68, 9.0);
+    m.f32(root, 0x7c, 9.0);
+    let UiTag::SharedGlobals(g) = decode(&mut m, SHARED_GLOBALS, root).unwrap().tag else {
+        panic!()
+    };
+    assert_eq!(g.overlay_color(), [0.85, 0.0, 0.0784, 0.1725]);
+}
+
+#[test]
 fn shared_globals_accessors_check_ranges() {
     let skin = TagRef {
         group: SKIN,

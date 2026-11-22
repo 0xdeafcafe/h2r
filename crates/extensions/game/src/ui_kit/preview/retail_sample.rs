@@ -8,7 +8,8 @@
 //! the substitution units in the strings (U+E408 to U+E45E, the table at
 //! `0x470200` walked by `0x22d2ee`). A [`RetailSample`] stands in for that
 //! code: one state of one screen, in `assets/ui/retail-samples/`, keyed by
-//! the screen tag's path. [`State`] answers the renderer from it.
+//! the screen tag's path and, for a screen's other states, a variant's
+//! name. [`State`] answers the renderer from it.
 //!
 //! Without a sample, a string that holds a substitution unit is not
 //! drawn: the unit has no glyph, and what the game would write there is
@@ -107,6 +108,8 @@ pub struct PaneSample {
 struct Doc {
     screen: String,
     #[serde(default)]
+    variant: Option<String>,
+    #[serde(default)]
     over: Option<String>,
     #[serde(default)]
     tokens: BTreeMap<String, String>,
@@ -123,6 +126,9 @@ struct Doc {
 pub struct RetailSample {
     /// The screen tag's path.
     pub screen: String,
+    /// The state's name among the screen's samples; none is the screen's
+    /// plain sample, the one every caller gets unless it names another.
+    pub variant: Option<String>,
     /// The screen this one opens over (a dialog's opener), drawn under
     /// it in its own sample state.
     pub over: Option<String>,
@@ -170,8 +176,12 @@ impl RetailSample {
                 return Err("a block has both string and text".to_owned());
             }
         }
+        if d.variant.as_deref().is_some_and(|v| v.trim().is_empty()) {
+            return Err("variant: an empty name".to_owned());
+        }
         Ok(RetailSample {
             screen: d.screen,
+            variant: d.variant,
             over: d.over,
             tokens,
             footer: d.footer,
@@ -205,24 +215,62 @@ impl RetailSample {
 /// (`build.rs`, `ui_docs`), or the first file that does not read.
 pub fn all() -> Result<&'static [RetailSample], String> {
     static ALL: OnceLock<Result<Vec<RetailSample>, String>> = OnceLock::new();
-    ALL.get_or_init(|| {
-        crate::ui_kit::data::baked::RETAIL_SAMPLES
-            .iter()
-            .map(|(name, text)| {
-                RetailSample::parse(text)
-                    .map_err(|e| format!("assets/ui/retail-samples/{name}.yaml: {e}"))
-            })
-            .collect()
-    })
-    .as_ref()
-    .map(Vec::as_slice)
-    .map_err(Clone::clone)
+    ALL.get_or_init(|| parse_all(crate::ui_kit::data::baked::RETAIL_SAMPLES))
+        .as_ref()
+        .map(Vec::as_slice)
+        .map_err(Clone::clone)
 }
 
-/// Screen tag `tag`'s sample, if it has one.
+/// The sample files `files` (name, text), or the first that does not
+/// read: a file that fails to parse, or a second sample of a screen and
+/// variant another file has.
+fn parse_all(files: &[(&str, &str)]) -> Result<Vec<RetailSample>, String> {
+    let mut out: Vec<RetailSample> = Vec::new();
+    for (name, text) in files {
+        let at = format!("assets/ui/retail-samples/{name}.yaml");
+        let s = RetailSample::parse(text).map_err(|e| format!("{at}: {e}"))?;
+        let variant = s.variant.as_deref().map(key);
+        if out
+            .iter()
+            .any(|o| key(&o.screen) == key(&s.screen) && o.variant.as_deref().map(key) == variant)
+        {
+            return Err(match &s.variant {
+                Some(v) => format!("{at}: {} has two samples named {v}", s.screen),
+                None => format!("{at}: {} has two plain samples", s.screen),
+            });
+        }
+        out.push(s);
+    }
+    Ok(out)
+}
+
+/// Screen tag `tag`'s plain sample (no variant), if it has one.
 pub fn for_screen(tag: &str) -> Result<Option<&'static RetailSample>, String> {
     let want = key(tag);
-    Ok(all()?.iter().find(|s| key(&s.screen) == want))
+    Ok(all()?.iter().find(|s| key(&s.screen) == want && s.variant.is_none()))
+}
+
+/// Screen tag `tag`'s sample named `variant`, if it has one.
+pub fn for_screen_variant(
+    tag: &str,
+    variant: &str,
+) -> Result<Option<&'static RetailSample>, String> {
+    let (want, name) = (key(tag), key(variant));
+    Ok(all()?.iter().find(|s| {
+        key(&s.screen) == want && s.variant.as_deref().is_some_and(|v| key(v) == name)
+    }))
+}
+
+/// The names of screen tag `tag`'s variants, sorted.
+pub fn variants(tag: &str) -> Result<Vec<&'static str>, String> {
+    let want = key(tag);
+    let mut v: Vec<&'static str> = all()?
+        .iter()
+        .filter(|s| key(&s.screen) == want)
+        .filter_map(|s| s.variant.as_deref())
+        .collect();
+    v.sort_unstable();
+    Ok(v)
 }
 
 /// `s` with each substitution unit replaced from `tokens`, or `None` when
@@ -609,15 +657,84 @@ panes:
         );
     }
 
-    /// Every sample in the checkout reads, and names a screen once.
+    /// Every sample in the checkout reads, and names a screen and variant
+    /// once.
     #[test]
     fn the_baked_samples_read() {
         let all = all().unwrap();
         let mut seen = std::collections::BTreeSet::new();
         for s in all {
-            assert!(seen.insert(key(&s.screen)), "{} has two samples", s.screen);
-            assert_eq!(for_screen(&s.screen.replace('\\', "/")).unwrap(), Some(s));
+            assert!(
+                seen.insert((key(&s.screen), s.variant.clone())),
+                "{} {:?} has two samples",
+                s.screen,
+                s.variant
+            );
+            let tag = s.screen.replace('\\', "/");
+            let found = match &s.variant {
+                None => for_screen(&tag).unwrap(),
+                Some(v) => for_screen_variant(&tag, v).unwrap(),
+            };
+            assert_eq!(found, Some(s));
         }
         assert_eq!(for_screen(r"ui\no\such\screen").unwrap(), None);
+    }
+
+    /// A screen's variant is a sample of its own: the plain lookup never
+    /// returns it, the named one does, and an unknown name finds none.
+    #[test]
+    fn a_variant_is_found_by_its_name_alone() {
+        let files = [
+            ("a", "screen: ui\\dialog\nfooter: { text: plain }\n"),
+            ("a.wide", "screen: ui\\dialog\nvariant: wide\nfooter: { text: wide }\n"),
+        ];
+        let all = parse_all(&files).unwrap();
+        assert_eq!(all[0].variant, None);
+        assert_eq!(all[1].variant.as_deref(), Some("wide"));
+        // The baked set has Game Setup's Switch To rows as a variant.
+        let setup = r"ui\screens\game_shell\pregame_lobby\squad_settings_dialog";
+        let plain = for_screen(setup).unwrap().expect("Game Setup has a sample");
+        assert_eq!(plain.variant, None);
+        let switch = for_screen_variant(setup, "switch-to").unwrap().expect("the variant");
+        assert_eq!(switch.variant.as_deref(), Some("switch-to"));
+        assert_eq!(switch.panes[&0].lists[&0].rows.len(), 7, "seven rows");
+        assert_eq!(plain.panes[&0].lists[&0].rows.len(), 5, "the plain sample's five");
+        assert_eq!(variants(setup).unwrap(), ["switch-to"]);
+        assert_eq!(for_screen_variant(setup, "no-such").unwrap(), None);
+    }
+
+    /// A screen's plain draw is its plain file alone, whatever variants it
+    /// has: the sample every caller gets without a name is the parse of
+    /// `squad_settings_dialog.yaml`, so its render is byte for byte the
+    /// one it was without `squad_settings_dialog.switch-to.yaml`.
+    #[test]
+    fn the_plain_sample_is_its_file_alone() {
+        let setup = r"ui\screens\game_shell\pregame_lobby\squad_settings_dialog";
+        let (_, text) = crate::ui_kit::data::baked::RETAIL_SAMPLES
+            .iter()
+            .find(|(n, _)| *n == "squad_settings_dialog")
+            .expect("the plain file is baked");
+        let file = RetailSample::parse(text).unwrap();
+        assert_eq!(for_screen(setup).unwrap(), Some(&file));
+        let without: Vec<(&str, &str)> = crate::ui_kit::data::baked::RETAIL_SAMPLES
+            .iter()
+            .copied()
+            .filter(|(n, _)| !n.contains('.'))
+            .collect();
+        let alone = parse_all(&without).unwrap();
+        assert_eq!(alone.iter().find(|s| key(&s.screen) == key(setup)), Some(&file));
+    }
+
+    /// Two files for one screen and variant do not read, nor two plain
+    /// ones; one of each does.
+    #[test]
+    fn a_second_sample_of_a_screen_and_variant_fails() {
+        let plain = "screen: ui\\dialog\n";
+        let wide = "screen: ui\\dialog\nvariant: wide\n";
+        assert!(parse_all(&[("a", plain), ("b", wide)]).is_ok());
+        let e = parse_all(&[("a", wide), ("b", wide)]).unwrap_err();
+        assert!(e.contains("b.yaml") && e.contains("wide"), "{e}");
+        assert!(parse_all(&[("a", plain), ("b", "screen: UI/Dialog\n")]).is_err());
+        assert!(RetailSample::parse("screen: x\nvariant: ''\n").is_err());
     }
 }

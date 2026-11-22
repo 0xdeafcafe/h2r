@@ -352,6 +352,7 @@ pub fn opener_named(name: &str) -> Option<crate::ui_kit::view::Opener> {
         "game-setup.clankers" => Opener::GAME_SETUP_CLANKERS,
         "game-setup.firefight" => Opener::GAME_SETUP_FIREFIGHT,
         "game-setup.forge" => Opener::GAME_SETUP_FORGE,
+        "lobby" => Opener::LOBBY,
         "xbox-live-menu" => Opener::XBOX_LIVE_MENU,
         _ => return None,
     })

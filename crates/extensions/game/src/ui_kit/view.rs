@@ -62,12 +62,12 @@ pub enum Backing {
     /// The game shell's background screen (screen 5), as under every
     /// settings screen.
     GameShell,
-    /// A modal's: the screen that opened it, as it was, with nothing
-    /// between it and the panel. A dialog is an overlay on whatever was
-    /// open (the user, 2026-11-18, from a retail screenshot): no retail
-    /// dialog tag has a dim layer or any widget outside its panel and
-    /// corners (docs/game/ui-builder.md "Screen kinds"). The preview draws
-    /// the [`Opener`] there.
+    /// A modal's: the screen that opened it, as it was, dimmed. A dialog
+    /// is an overlay on whatever was open: no retail dialog tag has a
+    /// widget outside its panel and corners, and the window stack's
+    /// render fills the screen with the shared globals' overlay colour
+    /// under it (docs/game/ui-builder.md "A dialog is an overlay on its
+    /// opener"). The preview draws the [`Opener`] there, then the dim.
     Over(Opener),
 }
 
@@ -153,6 +153,17 @@ impl Opener {
         ],
         focus: 1,
         ..Opener::GAME_SETUP
+    };
+    /// The pregame lobby's custom game pane (`pregame_lobby`, pane 0) in
+    /// its sample state (`assets/ui/retail-samples/pregame_lobby.yaml`):
+    /// what the lobby's mode picker opens over (`kit.picker.mode`). It
+    /// has no list rows.
+    pub const LOBBY: Opener = Opener {
+        name: "lobby",
+        tag: r"ui\screens\game_shell\pregame_lobby\pregame_lobby",
+        pane: 0,
+        rows: &[],
+        focus: 0,
     };
     /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the
     /// list hooks show them (docs/live/live-custom-games.md "Rows").
