@@ -650,6 +650,15 @@ mod tests {
     #[test]
     fn the_wrapper_comes_from_the_environment_then_the_nearest_config() {
         let root = scratch("wrapper");
+        // Cargo reads every ancestor's .cargo before the home one, so a real
+        // config above the scratch dir (a $TMPDIR under the user's home)
+        // would win; the lookup order is only checkable without one.
+        if root.ancestors().skip(1).any(|a| {
+            a.join(".cargo/config.toml").exists() || a.join(".cargo/config").exists()
+        }) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
         let src = root.join("lab/src/current");
         fs::create_dir_all(&src).unwrap();
         let home = root.join("home");
