@@ -1178,6 +1178,7 @@ across = { from = -0.12, to = 0.12, step = 0.02 } # or a list
 along = 5             # points along each edge
 repeats = 1
 approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
+# carry = [[0.0, 0.0], [1.5, 0.0]]  # or touchdown velocities, not with approach
 ```
 
 - **The table.** Every key is optional. `heights` (world units of the
@@ -1186,7 +1187,11 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   of 0.02; `along` to 5 points an edge (a point target has one);
   `repeats` to 1. `approach` pushes the stick at `stick` of full through
   the fall, the drop starting `lead` units back against the push, once
-  from each side in `from`; without it the seat falls straight. `seats`
+  from each side in `from`; without it the seat falls straight. `carry`
+  is a list of horizontal velocities (world X and Y, units/s, each finite
+  and at most 3 long) a straight drop touches down with, each drop once
+  with each; it defaults to `[[0, 0]]`, the plumb drop, and is refused
+  beside `approach` (`drops: carry and approach: one or the other`). `seats`
   (1 to 15, default 15) is the seat count when the file lists no
   `[[bot]]`, `bounce_vz` (default 3.5, `sim::drops::BOUNCE_VZ`, the
   game's landing classifier's too) the launch that counts as a bounce,
@@ -1232,6 +1237,24 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   large when something pushed the body sideways. An approach drop's
   horizontal motion is its held stick's and is left alone (no `level`,
   no `drift_fixed`).
+- **Carrying.** A drop with a non-zero `carry` writes the carry instead
+  of 0 on each fall row, so the touchdown tick runs from exactly that
+  horizontal velocity. The drop starts back along the carry by its
+  travel, the carry times the rows the fall covers past the first 5
+  (`sim::drops::carry_travel`): the fall model (`sim::drops::fall_model`,
+  fitted to the control's rows: rows 1 to 5 barely move, then the speed
+  is 0.234 units/s gaining 4.171/30 a row) puts the touchdown on the last
+  row still more than 0.03 over the floor, so 4.5 lands from row 46 at
+  5.935, 5.5 from row 51 at 6.630 and 3.65 from row 42 at 5.378. The rest
+  point is under the start, lifted by the travel's length as well as the
+  across offset. Until the body falls faster than -1 the carry is
+  written unchecked; from then on the first row whose horizontal velocity
+  is more than 0.05 off the carry (`sim::drops::CARRY_TOLERANCE`: the body
+  was hit) or that is on the ground stops the writes for the rest of the
+  drop, and the record's `carry_cut` is that row. A row's `fixed` is how
+  far off the carry it was; a carried drop's `drift_fixed` counts the
+  rows from falling on. `[drops.control]` takes one `carry` (default
+  `[0, 0]`).
 - **Outcomes.** A touchdown is the vertical speed coming back over -0.5
   after falling faster than -1. `bounced`: the best vertical speed of the
   touchdown tick and the 3 after (`sim::drops::LAUNCH_TICKS`, the game's
@@ -1254,12 +1277,13 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   bounce: <outcome>` (the outcomes and reasons seen), the report is still
   written, and `h2 sim drops` exits with that error. Another map needs
   `[drops.control] point = [x,y,z]` (with optional `heights`, `edge`,
-  `drift`) or `no_control = true`.
+  `drift`, `carry`) or `no_control = true`.
 - **Records.** Each drop's record (`sim::drops::Record`) gives the target
-  id and shape, point, height, across and along offsets, side, seat,
-  attempts, release tick, outcome and reason, the touchdown (tick,
-  position, velocity, speed, contacts), the launch, whether the prime
-  held, `drift_fixed`, the words of the fall run-length, and the first
+  id and shape, point, height, across and along offsets, side, carry,
+  seat, attempts, release tick, outcome and reason, the touchdown (tick,
+  position, velocity, speed, contacts), `aim_miss` (the touchdown's X and
+  Y from the point), the launch, whether the prime held, `drift_fixed`,
+  `carry_cut`, the words of the fall run-length, and the first
   tick of each event. The control's drops and the first drop of each outcome keep
   every row from the arm on. They are the report's `drops` block.
 - **Sharding.** Targets are split over the runs by their drop counts
@@ -1270,7 +1294,8 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   drops; a row a target with its rate, catch half-width (the furthest
   touchdown from the edge that bounced), slowest bounced touchdown, best
   launch, its own launch fit, its largest `drift_fixed` and a cell a
-  height and across offset; the drop with the largest `drift_fixed`
+  height, across offset and carry (`drops.md`'s columns name a non-zero
+  carry as `c x,y`); the drop with the largest `drift_fixed`
   over every run; and the three model numbers. `catch` is the catch half-width over every
   target (`superbounce::CATCH`). `bounce_speed` is the slowest touchdown
   that bounced beside the fastest that didn't (`BOUNCE_SPEED`). `gain` is
