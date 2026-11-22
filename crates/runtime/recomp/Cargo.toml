@@ -10,7 +10,6 @@ anyhow.workspace = true
 xbe.workspace = true
 xiso.workspace = true
 analyze.workspace = true
-guest-layout = { path = "../../hooking/guest-layout" }
 lift.workspace = true
 # The lifted original for shadow checks (fallback.rs, docs/engine/shadow-exec.md).
 lifted = { path = "../lifted" }
@@ -25,6 +24,11 @@ libloading = "0.8"
 rustc-hash = "2"
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# The retail render entries the composition root registers, for the
+# discovery test in src/lib.rs (register_retail_entries).
+guest-layout = { path = "../../hooking/guest-layout" }
 
 [features]
 # The Cranelift fast tier and the clang build (tier.rs, `build`).

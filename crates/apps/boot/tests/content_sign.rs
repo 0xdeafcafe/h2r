@@ -32,6 +32,7 @@ fn the_guest_accepts_content_the_import_signs() {
         runtime::load_xbe_with(&bytes, &runtime::loader::LoadOptions::halo2()).unwrap();
     let _kernel = kernel::Kernel::for_image(&mut loaded).unwrap();
     let rt = loaded.runtime;
+    boot::register_image_entries();
     boot::fallback::init(&bytes, &[], &[]).unwrap();
     boot::fallback::set_recovery(true);
     boot::fallback::start_analysis(&rt);

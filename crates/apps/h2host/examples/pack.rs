@@ -132,6 +132,7 @@ fn build_module(iso: &Path, out: &Path, gen_dir: &Path, platform: Platform) -> R
         std::env::set_var("H2_EMIT_TARGET", platform.emit_target());
         std::env::set_var("H2_BOOT_CACHE", &cache);
     }
+    boot::register_image_entries();
     let xbe = boot::read_xbe(iso)?;
     let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
     let lib = boot::build(&xbe, gen_dir, jobs)?;

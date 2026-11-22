@@ -20,6 +20,7 @@ fn memmove_sweep_through_the_fallback() {
     let bytes = std::fs::read(path).unwrap();
     let loaded = runtime::load_xbe_with(&bytes, &runtime::loader::LoadOptions::halo2()).unwrap();
     let rt = loaded.runtime;
+    boot::register_image_entries();
     boot::fallback::init(&bytes, &[], &[]).unwrap();
     boot::fallback::set_recovery(true);
     boot::fallback::start_analysis(&rt);
