@@ -532,7 +532,7 @@ fn a_reshaped_image_is_appended_and_reads_back_through_the_decoder() {
             m::BITMAP_RESHAPE,
             json!({"bitmap": "floor", "width": 7, "format": "dxt1"})
         )),
-        code::REFUSED
+        code::INVALID_PARAMS
     );
     let out = t.path("reshaped.map");
     call(

@@ -854,6 +854,32 @@ impl App {
     }
 }
 
+/// The pixels a layer changed since it was read, as one tight rectangle
+/// per changed tile (the bounding box of the differing pixels), so a
+/// block is re-encoded only where a pixel really changed.
+pub(crate) fn tight_changes(l: &bitmap_edit::Layer) -> Vec<Rect> {
+    let mut out = Vec::new();
+    for (tx, ty) in l.changed_tiles() {
+        let r = l.canvas.tile_rect(tx, ty);
+        let (_, now) = l.canvas.read_rect(r);
+        let (_, was) = l.source.read_rect(r);
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        for (i, (a, b)) in now.chunks_exact(4).zip(was.chunks_exact(4)).enumerate() {
+            if a != b {
+                let (x, y) = (r.x + i as u32 % r.w, r.y + i as u32 / r.w);
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+        if x1 > x0 {
+            out.push(Rect::new(x0, y0, x1 - x0, y1 - y0));
+        }
+    }
+    out
+}
+
 /// An image's layers as RGBA planes in `(face, slice)` order, resampled to
 /// the new size when `reshape` has one, and the volume depth.
 fn plane_data(
@@ -916,13 +942,10 @@ fn plan_for(
     let dirty: Vec<Dirty> = layers
         .iter()
         .flat_map(|l| {
-            l.changed_tiles().into_iter().map(move |(tx, ty)| {
-                let r = l.canvas.tile_rect(tx, ty);
-                Dirty {
-                    face: l.id.face,
-                    slice: l.id.slice,
-                    rect: PixelRect::new(r.x, r.y, r.w, r.h),
-                }
+            tight_changes(l).into_iter().map(move |r| Dirty {
+                face: l.id.face,
+                slice: l.id.slice,
+                rect: PixelRect::new(r.x, r.y, r.w, r.h),
             })
         })
         .collect();

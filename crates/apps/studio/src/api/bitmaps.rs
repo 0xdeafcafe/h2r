@@ -655,9 +655,9 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                     .iter()
                     .filter(|x| x.id.image == l.image)
                     .flat_map(|x| {
-                        x.changed_tiles()
+                        crate::app::textures::tight_changes(x)
                             .into_iter()
-                            .map(move |(tx, ty)| (x.id, x.canvas.tile_rect(tx, ty)))
+                            .map(move |r| (x.id, r))
                     })
                     .collect(),
             };
