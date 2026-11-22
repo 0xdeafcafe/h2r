@@ -2157,7 +2157,7 @@ pub fn rest_frames(nodes: &[RestNode]) -> Vec<Mat4> {
 /// marker of each group): header `+0x58` is a block of marker groups (0xc:
 /// string-ID name, block of markers); a marker is 0x24 bytes with its node
 /// at `+2`, translation `+4` and rotation `+0x10`, relative to the node
-/// (docs/live/live-art.md, "Markers").
+/// (docs/live/live-art.md, "Scripted spawns").
 pub fn marker_frames<R: Read + Seek>(
     map: &mut Map<R>,
     mode: TagId,

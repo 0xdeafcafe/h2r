@@ -15,7 +15,7 @@ use serde::Serialize;
 /// Matrices are column-major (`m[column][row]`), as WGSL's `mat4x4`.
 pub type Mat4 = [[f32; 4]; 4];
 
-/// A view's camera ([`crate::View::camera`]).
+/// A view's camera (`frame_scene::View::camera`).
 pub type Camera = RenderCamera;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]

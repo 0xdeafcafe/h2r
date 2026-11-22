@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 use gfx::D3DFormat;
 use gfx::surface::{SurfaceId, SurfaceKind};
 

@@ -389,7 +389,6 @@ const STEP: f32 = 0.15;
 
 /// Draws one view: `w`×`h` straight-alpha RGBA. With `cutaway`, roofs and
 /// ceilings over walkable space are cut away ([`Cutaway`]).
-#[allow(clippy::too_many_arguments)]
 pub fn render(
     mesh: &LevelMesh,
     frame: &Bounds,
@@ -671,7 +670,6 @@ pub fn gbuffer(
     (depth, normal)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn shade(
     depth: &[f32],
     normal: &[[i8; 4]],

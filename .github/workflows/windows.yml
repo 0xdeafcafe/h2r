@@ -32,6 +32,9 @@ jobs:
           $channel = (Select-String -Path rust-toolchain.toml -Pattern '^channel\s*=\s*"(.+)"').Matches[0].Groups[1].Value
           rustup toolchain install $channel --profile minimal --target x86_64-pc-windows-msvc
           "RUSTUP_TOOLCHAIN=$channel" >> $env:GITHUB_ENV
+          $env:RUSTUP_TOOLCHAIN = $channel
+          rustc -V
+          cargo -V
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
@@ -49,7 +52,7 @@ jobs:
           }
           & "$bin\clang.exe" --version
           $bin >> $env:GITHUB_PATH
-      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           cache-on-failure: true
       - name: Check workspace and tests

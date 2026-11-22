@@ -537,7 +537,7 @@ impl LevelCollision {
         self.surfaces
             .iter()
             .enumerate()
-            .filter(|(_, s)| shown(*s))
+            .filter(|(_, s)| shown(s))
             .filter_map(|(i, s)| s.hit(ray).map(|t| (t, i)))
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }

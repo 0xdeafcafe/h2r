@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use content::{Sha256, store::default_data_root};
-use forge::look::census::Disc as _;
 use forge::look::census::{self, Census, Described, MapInfo};
 use map::{CacheType, FourCC, TagId, TagQuery};
 
@@ -159,10 +158,10 @@ impl census::Disc for Hashed<'_> {
         Ok(self.maps.clone())
     }
     fn bipeds(&self, map: &MapInfo) -> Result<Vec<String>, String> {
-        self.source.bipeds(map)
+        census::Disc::bipeds(&self.source, map)
     }
     fn describe(&self, map: &MapInfo, tag: &str) -> Result<Described, String> {
-        self.source.describe(map, tag)
+        census::Disc::describe(&self.source, map, tag)
     }
 }
 

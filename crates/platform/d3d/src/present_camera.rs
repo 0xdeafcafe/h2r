@@ -3,7 +3,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-pub use frame_scene::RenderCamera as Camera;
+pub use frame_types::RenderCamera as Camera;
 
 pub type Payload = Arc<dyn Any + Send + Sync>;
 

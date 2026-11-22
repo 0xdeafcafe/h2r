@@ -690,6 +690,8 @@ pub struct PrimeFail {
 pub type FailBoard = Mutex<Vec<PrimeFail>>;
 
 /// The process's failed primes: every bot of the game's.
+// Tests give each run its own board instead (`fail_board`).
+#[cfg_attr(test, allow(dead_code))]
 pub static PRIME_FAILS: FailBoard = Mutex::new(Vec::new());
 
 #[cfg(not(test))]

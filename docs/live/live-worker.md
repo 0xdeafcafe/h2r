@@ -77,15 +77,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 `h2-live-server`'s environment names where it has them
 (`crates/live/live-worker/src/settings.rs`).
 
-| Name | Kind | Meaning |
-|---|---|---|
-| `H2_LIVE_ID` | variable | The server id: the host in every author id. It must stay what the machine's server had. |
-| `H2_LIVE_SERVER_KEY` | secret | The server's key, base64 as in `server.key`. |
-| `H2_LIVE_PUBLIC_URL` | variable | The URL clients use, shown in discovery. Default `https://<id>`. |
-| `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
-| `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
-| `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
-| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there and `/art/emblem/*` reads its manifest and masks. With it unset, both paths return 404 and the web app uses its own art pack. |
+The variables and secrets are listed under Live Worker settings in [switches.md](../runtime/switches.md#live-worker-settings).
 
 A missing id or key, or a bad value, fails the hub's start. The request then
 answers 500 with the reason; the hub never runs as some other server.
@@ -196,7 +188,7 @@ same receipt.
 
 These are wall times from a single local run with Durable Object storage and
 emulated R2. The full-match size and browser CPU measurements use the seeded
-multiplayer and campaign recordings. [Telemetry measurements](../engine/live-telemetry.md#finished-replay-archives)
+multiplayer and campaign recordings. [Telemetry measurements](notes/2026-11-19-telemetry-precision.md#finished-replay-archives)
 
 ## Slice 2 results
 
@@ -585,7 +577,7 @@ large share of the day's requests.
    - The operator log endpoints, with writes held while a copy goes in ([Migrating the current data](#migrating-the-current-data)).
    - `store copy` takes `https://HOST` as a source or a destination, signing with the server key.
    - Blobs go to R2 through the `s3://` path.
-   - Rehearsed against `wrangler dev` with a read-only copy of the real log ([Rehearsal](#rehearsal-2026-11-18)).
+   - Rehearsed against `wrangler dev` with a read-only copy of the real log ([Rehearsal](#rehearsal)).
 8. **Staging, then cutover.** [Deploy](#deploy), then the [Cutover runbook](#cutover-runbook).
 
 ## Deploy
@@ -622,7 +614,7 @@ passes this config to Wrangler and removes its temporary copy on exit.
    `~/.cargo` are not touched. The first run installs it.
 2. **Web.** `bun install --frozen-lockfile` and `bun run build` into
    `web/dist`, the Worker's static assets.
-3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build`.
+3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build` (build output).
 4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
    says to run `bunx wrangler@4 login`.
 5. **Host image.** The tag is a hash of the Dockerfile, the entrypoint
@@ -803,25 +795,11 @@ h2 live store copy --from postgres://localhost/h2live \
 - **Back out:** `--from https://… --to postgres://…`, for a rollback.
 - **Blobs** (content, cloud saves) go straight to R2 over its S3 API: `--from-blobs DIR --to-blobs s3://BUCKET`, with `H2_LIVE_S3_ENDPOINT`, `H2_LIVE_S3_ACCESS_KEY_ID` and `H2_LIVE_S3_SECRET_ACCESS_KEY`. A blob already there at the same size is skipped.
 
-### Rehearsal (2026-11-18)
+### Rehearsal
 
-The source was a read-only copy of the real log: Postgres to a SQLite file
-in scratch, 6264 events (92 MB, the largest JWS 18 KB, well under a
-Durable Object row's 2 MB), copied in 22.5 s. The destination was the
-Worker under `wrangler dev`, with id `live.forbes.red` and a dev key.
-
-| Step | Result |
-|---|---|
-| Copy, killed after 1500 events | the hub at 1500, nothing of its own written (held) |
-| Run again | carried on at 1501: 4764 events in 4 s; verified at 6264 |
-| Public reads against live.forbes.red (also at 6264) | `/v1/accounts`, `/v1/games?state=ended`, `/v1/teams`, `/v1/maps`, `/v1/sessions`: identical. `/v1/stats/summary`: identical except the order of tied map variants. That order was not deterministic; the map id now breaks the tie (`stats.rs`). |
-| Back out to a fresh SQLite file | 6264 events in 16 s; every position and hash the same as the source |
-| `--release` | the hub writes again |
-| Blobs, the Mac's data dir to a directory | 10 files, 4.2 MB; a second run copied nothing |
-| Cold start on that log, hub restarted | 1.38 s to replay 6264 events (`server-timing: start;dur=1376`) |
-
-The first attempt, without the hold, failed exactly as described above.
-That is why the hold exists.
+The copy, resume, back-out and hold behaviour above was rehearsed on a
+read-only copy of the real log; the steps and timings are in
+[the Worker rehearsal note](notes/2026-11-18-worker-rehearsal.md).
 
 ### Staging rehearsal (the user's step)
 

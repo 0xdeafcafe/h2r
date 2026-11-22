@@ -327,7 +327,6 @@ impl<'a> Walk<'a> {
         refs
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn element(
         &mut self,
         tag: &crate::app::tag_doc::TagEntry,

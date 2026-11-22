@@ -2,7 +2,7 @@
 //! source may be the imported guest allocation, a scaled image, or a
 //! legacy E3 shadow with a grid the private baseline cannot reproduce.
 
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 use gfx::raster::RenderScale;
 use gfx::surface::SurfaceId;
 use std::collections::HashMap;

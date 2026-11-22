@@ -29,33 +29,33 @@ crate_tree(
 )
 
 workspace_library(
-    name = "live-mirror",
-    crate = "live_mirror",
-    crate_root = "crates/tools/live-mirror/src/lib.rs",
-    description = "The editor's live object and player stream, sample store and interpolation",
+    name = "tag-names",
+    crate = "tag_names",
+    crate_root = "crates/formats/tag-names/src/lib.rs",
+    description = "",
     features = [],
-    manifest = "crates/tools/live-mirror",
-    package = "live-mirror",
+    manifest = "crates/formats/tag-names",
+    package = "tag-names",
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
-        "//crates/extensions/agent-proto:agent-proto",
-        "//third-party/rust:serde_json",
+        "//crates/formats/tags:tags",
+        "//third-party/rust:quick-xml",
     ],
 )
 
 workspace_test(
     name = "unit-tests",
-    crate = "live_mirror",
-    crate_root = "crates/tools/live-mirror/src/lib.rs",
-    description = "The editor's live object and player stream, sample store and interpolation",
+    crate = "tag_names",
+    crate_root = "crates/formats/tag-names/src/lib.rs",
+    description = "",
     features = [],
-    manifest = "crates/tools/live-mirror",
-    package = "live-mirror",
+    manifest = "crates/formats/tag-names",
+    package = "tag-names",
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/extensions/agent-proto:agent-proto",
-        "//third-party/rust:serde_json",
+        "//crates/formats/tags:tags",
+        "//third-party/rust:quick-xml",
     ],
 )

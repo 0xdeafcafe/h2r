@@ -11,9 +11,6 @@
 //! Fields nobody could explain are kept as raw words.
 //!
 //! The module is hand-written and self-contained, like [`crate::sound`].
-// Block strides are runtime values of the layout tables; `chunks_exact` with a
-// named stride constant reads better than `as_chunks` here.
-#![allow(clippy::chunks_exact_to_as_chunks)]
 use crate::anim_sample::AnimationClip;
 use crate::sound::ResourceReader;
 use crate::{Error, Result, wire::StringId, wire::TagReference};

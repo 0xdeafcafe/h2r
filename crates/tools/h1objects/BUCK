@@ -43,6 +43,7 @@ workspace_library(
         "//crates/formats/map:map",
         "//crates/formats/mopp:mopp",
         "//crates/formats/tags:tags",
+        "//crates/formats/xbe:xbe",
         "//crates/tools/h1-assets:h1-assets",
         "//crates/tools/h1convert:h1convert",
         "//crates/tools/h1map:h1map",

@@ -31,10 +31,15 @@ A package may depend on its own domain and the domains in the `uses`
 list in `scripts/crate-domains.toml`. The check applies to normal and
 build dependencies. Tests can use dev-dependencies from other domains.
 
-The `guest_free` list imposes a tighter boundary. For example,
-`frame-scene` and `native-render` consume typed frame data. The runtime
-and hook dependencies sit in `render-bridge`. The rules file lists each
-dependency exception and the condition for removing it.
+The `guest_free` lists impose a tighter boundary: a guest-free crate
+may use `formats`, `platform` and other guest-free crates in any domain.
+For example, `frame-scene` and `native-render` consume typed frame data,
+and `background` and `timeline` are guest-free runtime utilities. The
+runtime and hook dependencies sit in `render-bridge`; `scene-extract`,
+which reads guest offsets, is not guest-free. The types `d3d` and
+`frame-scene` share sit below both in `crates/platform/frame-types`.
+The rules file lists each dependency exception and the condition for
+removing it.
 
 ### The check
 
@@ -58,7 +63,10 @@ names the markers and script slots the converters and the game's
 ### S2. `guest-layout` takes `engine`'s guest boundary and points
 
 `crates/hooking/guest-layout` owns the guest's typed layouts and hook
-points. `crates/rewrites/engine` re-exports the paths its callers use.
+points, the async entries, the override adapters and their runtime
+registration, the locale table and the point shapes. `hooks` depends on
+it, not on `engine`. `crates/rewrites/engine` re-exports the paths its
+callers use.
 
 ### S3. `hooks` gives away what is not the hook engine
 
@@ -69,7 +77,9 @@ implementation switches. The render and simulation bridges are
 ### S4. `recomp` out of `boot`
 
 `crates/runtime/recomp` builds, selects and loads game modules.
-`crates/apps/boot` supplies the services those modules run against.
+`crates/apps/boot` supplies the services those modules run against, and
+registers the retail image's hooked render sites with the builder
+(`boot::register_image_entries`), so `recomp` names no hook point.
 
 ### S5. `boot` keeps the root
 
@@ -91,7 +101,12 @@ their named hook points. See [the feature engine](../engine/feature-engine.md).
 `crates/tools/xtask` owns the local check and test workflow.
 [Build speed](build-speed.md) describes its inputs, test tiers and
 shared ledger. CI jobs are defined in
-[.github/workflows/ci.yml](../../.github/workflows/ci.yml).
+[.github/workflows/ci.yml](../../.github/workflows/ci.yml): the `repo checks`
+job runs `crate-graph.py layers --check`, `crate-table.py --check` and
+`docs-check.py` with python3 alone, and the macOS and Linux jobs run
+the pinned compiler from `rust-toolchain.toml`
+(`scripts/ci/install-rust.sh`), clippy with `-D warnings` on macOS and
+`cargo check --tests` on Linux.
 
 ## The crate table
 

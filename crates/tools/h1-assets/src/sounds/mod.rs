@@ -19,8 +19,6 @@
 //! Layouts and evidence: `docs/halo1/sounds.md`. No game data is in
 //! this crate or its tests; real maps are read only by `#[ignore]` tests.
 #![forbid(unsafe_code)]
-// Strides here are format constants; indexed loops mirror the eleven blocks.
-#![allow(clippy::chunks_exact_to_as_chunks, clippy::needless_range_loop)]
 
 pub mod audit;
 pub mod class;

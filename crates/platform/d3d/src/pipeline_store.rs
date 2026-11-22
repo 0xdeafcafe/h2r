@@ -214,7 +214,7 @@ pub fn select(
         if out.len() >= cap {
             break;
         }
-        if maps.iter().any(|m| *m == s.map.as_deref())
+        if maps.contains(&s.map.as_deref())
             && !taken.contains(&s.program)
             && wanted(s.program)
         {

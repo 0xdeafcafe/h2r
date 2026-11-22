@@ -26,3 +26,12 @@ __pycache__/
 /.direnv/
 /devenv.local.nix
 /.buckconfig.devenv
+# Machine droppings and tool output.
+.DS_Store
+.wrangler/
+node_modules/
+# A literal "$TMPDIR" directory made by an agent script that did not expand it.
+/$TMPDIR/
+/docs/runtime/sim-examples/results/
+# Stale wrangler output from before the crate moved to crates/live/live-worker.
+/crates/live-worker/

@@ -13,4 +13,7 @@ flate2 = "1"
 xiso.workspace = true
 xbe.workspace = true
 # The import manifest's SHA-256 of each copied map.
-sha2 = "0.10"
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

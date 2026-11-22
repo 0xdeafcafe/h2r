@@ -411,9 +411,7 @@ impl Bitmap {
         } else {
             self.redo.pop()?
         };
-        let Some(l) = self.layers.iter_mut().find(|l| l.id == step.layer) else {
-            return None;
-        };
+        let l = self.layers.iter_mut().find(|l| l.id == step.layer)?;
         let now = std::mem::replace(&mut l.canvas, step.canvas);
         let dirty = l.canvas.changed_rect(&now);
         let tiles = l.canvas.changed_tiles(&now);

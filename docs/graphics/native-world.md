@@ -73,7 +73,9 @@ world is resident and no refresh is running, and a worker applies it
   with a log line and the texture keeps its pixels until the map reloads.
 
 The refresh covers the layer-3 world. The fog, water, layers, lights and
-decorators keep the textures they loaded, and the editor's preview
+decorators keep the textures they loaded, E3's sun receivers
+(`native_render::sun_casters::SunWorld`) keep the geometry they loaded
+until the world reloads, and the editor's preview
 (`GpuWorld::set_section_vertices`) moves vertices without recomputing
 bounds.
 

@@ -19,3 +19,6 @@ mopp = { path = "../../formats/mopp" }
 # A `coll` BSP opens as a kernel mesh and compiles back from one.
 mesh-edit = { path = "../mesh-edit" }
 thiserror.workspace = true
+
+[lints]
+workspace = true

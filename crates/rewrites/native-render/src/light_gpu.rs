@@ -573,7 +573,6 @@ impl LightSet {
     /// Resolve pipelines and texture groups (made once, kept) before
     /// taking the run's resident uniform slot. `None` when any draw cannot
     /// be issued.
-    #[allow(clippy::too_many_arguments)]
     fn prepare<'a>(
         &mut self,
         device: &wgpu::Device,
@@ -643,7 +642,6 @@ impl LightSet {
     /// and `indices`. Pipelines and texture groups are the passes' own,
     /// made once; the uniforms take the submission's resident slot.
     /// Refuses the whole run when any draw cannot be issued exactly.
-    #[allow(clippy::too_many_arguments)]
     pub fn draws(&mut self, target: &LightTarget<'_>,
         vertices: &wgpu::Buffer, indices: &wgpu::Buffer,
         view: &ViewInputs, scissor: [u32; 4], draws: &[LightDraw<'_>],

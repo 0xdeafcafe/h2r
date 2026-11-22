@@ -16,3 +16,6 @@ iced-x86 = { version = "1", default-features = false, features = ["std", "decode
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[lints]
+workspace = true

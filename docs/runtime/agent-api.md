@@ -1292,10 +1292,14 @@ lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
 receivers compared with the Sharp edge, `lights_shadowed` the tiles (one
 per shadowed light of the guest's) and `tiles_refused` the shadow maps
 left at the guest's size. The display on the guest's live attachments
-draws no tiles. The other stages and counters are zero: the lights lit
-are still the guest's, and no game frame hands the renderer sun casters
-yet (`e3.sun_tiles`, `e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The guest's light selections are in
-`render.scene.views`.
+draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
+own choice of lights from the scene's candidates (e3-lighting.md,
+"Lights: which, and how many"): the lights it chose, and the candidates
+its cap of 16 left out. The lights drawn are still the guest's, so
+`e3.lights` has no draws. The sun's stages and counters are zero: no
+game frame hands the renderer sun casters yet (`e3.sun_tiles`,
+`e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The
+guest's light selections are in `render.scene.views`.
 Retail graph draws omit `e3`.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2

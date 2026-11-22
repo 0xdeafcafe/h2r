@@ -1,13 +1,13 @@
 # `locale_string_id_find` (0x1a02d0) and `locale_string_id_exists` (0x1a0310)
 
-Status: Built. Code: `crates/rewrites/engine/src/locale.rs`, adapters in
-`crates/rewrites/engine/src/abi.rs`. Tests: `crates/rewrites/engine/tests/differential.rs`.
+Status: Built. Code: `crates/hooking/guest-layout/src/locale.rs`, adapters in
+`crates/hooking/guest-layout/src/abi.rs`. Tests: `crates/rewrites/engine/tests/differential.rs`.
 Switch: `impl.engine.locale` (on by default;
 [switches.md](../runtime/switches.md)).
 
 Recovered from `h2 disasm` of the retail XBE (`03215919…935d`).
-Names are assigned. Rust: `crates/rewrites/engine/src/locale.rs`; adapters in
-`crates/rewrites/engine/src/abi.rs`.
+Names are assigned. Rust: `crates/hooking/guest-layout/src/locale.rs`; adapters in
+`crates/hooking/guest-layout/src/abi.rs`.
 
 ## Locale record
 

@@ -1899,7 +1899,6 @@ impl Backend for GfxBackend {
         self.gpu_depth_aliases && self.ctx.caps.depth32_stencil8
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,
         depth: SurfaceId,

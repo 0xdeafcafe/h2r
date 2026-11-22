@@ -418,6 +418,8 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 fn main() -> Result<()> {
     #[cfg(feature = "dhat-heap")]
     let _heap = dhat::Profiler::new_heap();
+    // Before any command builds, stamps or analyses the image.
+    boot::register_image_entries();
     // Live presence says which build this is (docs/game/game-options.md 3).
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);

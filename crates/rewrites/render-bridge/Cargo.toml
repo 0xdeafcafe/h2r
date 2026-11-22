@@ -27,3 +27,6 @@ scene-extract = { path = "../scene-extract", optional = true }
 
 [dev-dependencies]
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
+
+[lints]
+workspace = true

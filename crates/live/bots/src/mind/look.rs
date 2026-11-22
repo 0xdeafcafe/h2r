@@ -269,7 +269,6 @@ impl Hand {
     /// same wandering error, laid out as the network's inputs. The error
     /// returned is what the hand believes; [`steer`](Self::steer) runs the
     /// network when it is handed that error back.
-    #[allow(clippy::too_many_arguments)]
     fn track_net(
         &mut self,
         skill: Skill,

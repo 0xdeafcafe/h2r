@@ -89,8 +89,8 @@ mod tests {
 
     #[test]
     fn the_band_and_strip_sit_above_the_tracker_and_apart() {
-        assert!(SHIELD_BAND.y0 < TRACKER.y0 && SHIELD_BAND.y1 > TRACKER.y0);
-        assert!(H1_HEALTH.y1 <= SHIELD_BAND.y0);
+        const { assert!(SHIELD_BAND.y0 < TRACKER.y0 && SHIELD_BAND.y1 > TRACKER.y0) };
+        const { assert!(H1_HEALTH.y1 <= SHIELD_BAND.y0) };
         assert!(H1_HEALTH.intersect(&SHIELD_BAND).is_none());
         let f = Frame::FULLSCREEN;
         assert_eq!([f.left, f.bottom], BOTTOM_LEFT);

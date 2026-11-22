@@ -310,6 +310,113 @@ fn a_box_on_a_plane_casts_a_hard_shadow() {
     assert!((7..=9).contains(&first), "the edge is at x = -3: {row:?}");
 }
 
+/// A structure part as a receiver: its mesh from the loaded world, with
+/// the sphere around its bounds.
+fn world_receiver<'a>(
+    part: &native_render::sun_casters::WorldPart,
+    mesh: &'a SunMesh,
+) -> SunReceiver<'a> {
+    SunReceiver {
+        mesh,
+        centre: part.centre,
+        radius: part.radius,
+    }
+}
+
+/// The world of `a_box_shadows_the_structure_it_stands_on`: cluster 0's
+/// part 0 the ground, and placement 3's part 0 a unit platform at z = 0.5
+/// centred on (-2, 0), placed by a quarter turn and a move.
+fn structure() -> native_render::world::World {
+    use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+    let quad = |lo: f32, hi: f32| SectionInput {
+        positions: vec![[lo, lo, 0.0], [hi, lo, 0.0], [hi, hi, 0.0], [lo, hi, 0.0]],
+        uvs: vec![[0.0; 2]; 4],
+        normals: vec![[0.0, 0.0, 1.0]; 4],
+        parts: vec![PartInput {
+            material: 0,
+            transparent: false,
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        }],
+        ..Default::default()
+    };
+    let mut b = WorldBuilder::new();
+    b.add_section(
+        Owner::Cluster(0),
+        &quad(-4.0, 4.0),
+        &Placement::IDENTITY,
+        None,
+    );
+    let platform = Placement {
+        scale: 1.0,
+        basis: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        position: [-2.0, 0.0, 0.5],
+    };
+    b.add_section(Owner::Instance(3), &quad(-0.5, 0.5), &platform, None);
+    b.finish()
+}
+
+/// A 2x2x2 box on a cluster's ground beside a placement's platform, under
+/// a 45-degree sun. Its tile shades the structure as it shades objects:
+/// the ground for x in `(-3, -1)` where the platform does not cover it,
+/// and the platform, which lies inside the shadow at its height (it ends
+/// at x = -2.5 there), with the up-facing gate. Up-sun ground and the
+/// box's lit top stay lit.
+#[test]
+fn a_box_shadows_the_structure_it_stands_on() {
+    use native_render::sun_casters::{SunWorld, WorldReceivers};
+    use native_render::world::Owner;
+    let Some(ctx) = test_gpu() else { return };
+    let world = SunWorld::new(&structure());
+    let ground = world.part(Owner::Cluster(0), 0).expect("the ground part");
+    let platform = world.part(Owner::Instance(3), 0).expect("the platform part");
+    assert_eq!(platform.centre, [-2.0, 0.0, 0.5]);
+    let upload = |p: &native_render::sun_casters::WorldPart| {
+        SunMesh::new(
+            &ctx.device,
+            &p.mesh.positions,
+            &p.mesh.normals,
+            &p.mesh.indices,
+        )
+        .unwrap()
+    };
+    let (ground_mesh, platform_mesh) = (upload(&ground), upload(&platform));
+    let mut boxed = Geometry::default();
+    boxed.cuboid([-1.0, -1.0, 0.0], [1.0, 1.0, 2.0]);
+    let box_mesh = boxed.mesh(&ctx);
+    let mut shadows = SunShadows::new(&ctx.device, ATLAS);
+    let (pixels, work) = render(
+        &ctx,
+        &mut shadows,
+        &[boxed.caster(1, SUN_45, 1)],
+        &[(1, &box_mesh)],
+        &[
+            world_receiver(&ground, &ground_mesh),
+            world_receiver(&platform, &platform_mesh),
+            receiver(&boxed, &box_mesh),
+        ],
+        GREY,
+    );
+    assert_eq!(work.sun_tiles, 1);
+    assert_eq!(work.receiver_draws, 3, "the ground, the platform and the box");
+    // Row 28 is y = 0.44, inside the platform's y in (-0.5, 0.5).
+    assert_eq!(px(&pixels, 4, 28), GREY, "ground up-sun of the shadow");
+    let ground_shade = px(&pixels, 10, 28);
+    assert!(
+        near(ground_shade[0], SHADED_45, 3),
+        "the cluster's ground in shadow at x = -2.7: {ground_shade:?}"
+    );
+    let platform_shade = px(&pixels, 16, 28);
+    assert!(
+        near(platform_shade[0], SHADED_45, 3),
+        "the placement's platform in shadow at x = -1.9: {platform_shade:?}"
+    );
+    assert_eq!(platform_shade[3], 255, "alpha is kept");
+    assert_eq!(px(&pixels, 32, 28), GREY, "the box's lit top");
+    assert_eq!(px(&pixels, 48, 28), GREY, "ground down-sun of the box");
+    // Row 12 is y = 2.44: the ground beside the shadow.
+    assert_eq!(px(&pixels, 16, 12), GREY, "ground beside the shadow");
+}
+
 /// An L lying on its side: a slab x in `[-2, 2]`, z in `[0, 0.5]`, and a
 /// wall on its +x end up to z = 3. The wall shades the slab's top for x
 /// in `(-1.5, 1)`; the slab's top beyond, and the wall's top, stay lit.

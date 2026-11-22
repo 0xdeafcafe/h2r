@@ -1934,7 +1934,6 @@ fn next_text(
 /// (zeroed, the item
 /// constructor, then the local player) when it is not a child yet, else just
 /// move it back to the end (the original re-appends the retail items).
-#[allow(clippy::too_many_arguments)]
 fn add_items(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,

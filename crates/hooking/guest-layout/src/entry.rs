@@ -13,8 +13,8 @@
 //! guard is held across an await, and the future is `Send + 'static`.
 //!
 //! ```
-//! use engine::entry::{self, Cx, GuestCall, Ret};
-//! use engine::testing::FakeGuest;
+//! use guest_layout::entry::{self, Cx, GuestCall, Ret};
+//! use guest_layout::testing::FakeGuest;
 //!
 //! // A thiscall body that asks the guest for a length and returns twice it.
 //! let f = |cx: Cx| -> entry::EntryFuture {

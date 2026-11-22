@@ -13,11 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-sha2 = "0.10"
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # Decoding the package images (platform/xbox/Assets) in the manifest tests.
-png = "0.18"
+png = { workspace = true }
 
 # The app itself: Windows only, so the Mac tests stay light.
 [target.'cfg(windows)'.dependencies]
@@ -45,3 +45,6 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Console",
 ] }
+
+[lints]
+workspace = true

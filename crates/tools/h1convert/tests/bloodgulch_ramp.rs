@@ -641,7 +641,8 @@ fn blue_base_ramp_sections() {
     assert!(ramp.iter().all(|r| r.1 == ramp[0].1), "{ramp:?}");
     let slope = ramp[0].2.acos().to_degrees();
     println!("ramp surface {}: slope {slope:.1} degrees", ramp[0].1);
-    assert!(ramp[0].2 > 0.7071 && ramp[0].2 > 0.6428, "{slope}");
+    // Walkable: under 45 degrees (the normal's z above 1/sqrt 2).
+    assert!(slope < 45.0, "{slope}");
 }
 
 /// The character-physics words side by side: Halo 1's cyborg (`bipd`

@@ -87,7 +87,6 @@ fn bounce_rows() -> [(&'static str, Value); 2] {
     ]
 }
 
-#[allow(clippy::too_many_arguments)]
 fn fixture_with(
     id: &str,
     new: Option<game::NewGame>,

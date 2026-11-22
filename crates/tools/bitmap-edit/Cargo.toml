@@ -15,7 +15,10 @@ status = "in progress"
 # the PNG codec.
 [dependencies]
 serde.workspace = true
-png = "0.18"
+png = { workspace = true }
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[lints]
+workspace = true

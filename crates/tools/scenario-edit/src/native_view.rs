@@ -633,12 +633,12 @@ fn base_set(
     let mut parts: Vec<layers_load::Part> = Vec::new();
     for (d, key) in base_parts(load, layer3.map(|l| &l.data)) {
         let slot = keys.slot(key)?;
-        if !programs.contains_key(&slot) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = programs.entry(slot) {
             let passes = match key {
                 PassKey::Base { .. } => base.get(&key),
                 PassKey::Layer3(m) => layer3.and_then(|l| l.data.programs.get(&m)),
             };
-            programs.insert(slot, passes.ok_or("a part has no pass")?.clone());
+            entry.insert(passes.ok_or("a part has no pass")?.clone());
         }
         parts.push((
             (d.owner, d.part),
@@ -793,7 +793,6 @@ impl NativeWorld {
     }
 
     /// Records `layers`' draws that this world uploaded, in that order.
-    #[allow(clippy::too_many_arguments)]
     fn encode_layers(
         &mut self,
         layers: &[u8],
@@ -833,7 +832,6 @@ impl NativeWorld {
     /// ([`LAYERS_BEFORE`], [`LAYERS_AFTER`]) where they were uploaded,
     /// with the camera's view constants (`ViewInputs::from_camera`).
     /// Returns what the frustum kept.
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -1254,7 +1252,6 @@ impl NativeObjects {
     /// Clear what `clear` names, then draw the placements over what
     /// `color` and `depth` hold, seen by `camera`, with the world pass's
     /// depth rule. Returns how many (object, part) draws were made.
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,

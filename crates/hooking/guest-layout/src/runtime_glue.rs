@@ -4,8 +4,8 @@
 //! Built with `--features runtime-glue`. Uses `ExecCtx::memory`,
 //! `Guest::read_bytes`/`write_bytes` and `Dispatch::register_override`
 //! with a `(cpu, ctx, selector)` handler. [`register_all`] has no caller;
-//! the `feature` crate's `engine-leaves` feature places the same adapters
-//! through the plan (`impl.engine`, off by default).
+//! `hooks::leaves` places the same adapters through the plan
+//! (`impl.engine`, off by default).
 //!
 //! Each handler holds one memory guard for the whole call, so the Rust body
 //! sees a consistent guest, and releases it before returning the transfer.

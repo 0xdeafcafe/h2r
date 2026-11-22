@@ -28,3 +28,6 @@ required-features = ["playback"]
 [[test]]
 name = "avfoundation"
 required-features = ["playback"]
+
+[lints]
+workspace = true

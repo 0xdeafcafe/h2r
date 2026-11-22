@@ -403,7 +403,7 @@ mod tests {
 
     use super::*;
     use crate::builder::{InstanceInput, SceneBuilder};
-    use crate::camera::tests::camera;
+    use crate::test_camera::camera;
     use crate::node::NodeMatrix;
     use crate::object::ItemKey;
     use crate::scene::{InstanceKey, SceneId, Stamp, ViewKey, ViewKind};

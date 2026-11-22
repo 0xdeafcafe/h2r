@@ -28,8 +28,9 @@ use engine::points;
 use engine::sim_objects::{self as objects, Table, damage};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
-/// The switch, without its `impl.` prefix.
-pub const OBJECTS: &str = hooks::install::SIM_OBJECTS;
+/// The switch, without its `impl.` prefix, and the label of the bodies'
+/// implementations.
+pub const OBJECTS: &str = "sim.native.objects";
 
 pub fn on(switches: &hooks::Switches) -> bool {
     switches.implementation(OBJECTS, false)
@@ -78,7 +79,12 @@ fn install_table(b: &mut Builder, table: &'static Table) {
                 original(cpu, ctx, pc, site)
             })
             .resumes(body.sites)
-            .context_only();
+            .context_only()
+            // Another feature hooks this point too: calls go through the
+            // chain (`hooks::install::guard_shared_bodies`).
+            .when_shared(move |entry| {
+                table.guard(entry);
+            });
     }
 }
 
@@ -221,7 +227,7 @@ mod tests {
         registry.add(&Installs(&T)).unwrap();
         registry.add(&HooksDamage).unwrap();
         let plan = registry.build(&Base).unwrap();
-        hooks::install::guard_shared_bodies(&T, plan.chains.values());
+        hooks::install::guard_shared_bodies(plan.chains.values());
         assert!(T.guarded(points::OBJECT_DAMAGE_UPDATE.base));
         assert!(!T.guarded(points::OBJECTS_PRE_PHYSICS.base));
 
@@ -231,7 +237,7 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&Installs(&U)).unwrap();
         let plan = registry.build(&Base).unwrap();
-        hooks::install::guard_shared_bodies(&U, plan.chains.values());
+        hooks::install::guard_shared_bodies(plan.chains.values());
         assert!(!U.guarded(points::OBJECT_DAMAGE_UPDATE.base));
     }
 

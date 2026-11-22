@@ -519,6 +519,8 @@ impl LitObjects {
     /// its stage and the channels stored biased there.
     fn image_textures(&self, bitmap: map::TagId, image: u32) -> Vec<(wgpu::Texture, usize, [bool; 4])> {
         let want = crate::look::Stage::Bitmap { bitmap, image };
+        // `wgpu::Texture` hashes and compares by its id, not its interior state.
+        #[allow(clippy::mutable_key_type)]
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         let mut models: Vec<_> = self.models.iter().collect();
@@ -753,7 +755,6 @@ impl LitObjects {
     /// target takes `texaccum`, its stages' coordinates in that level's
     /// guest texels. Refuses the whole run (the caller keeps every
     /// original) when any draw cannot be issued exactly.
-    #[allow(clippy::too_many_arguments)]
     pub fn draws(
         &mut self,
         device: &wgpu::Device,
@@ -2206,7 +2207,7 @@ mod tests {
         input.parts[0].implementations[0] = Some((1, 0));
         assert!(!input.valid_draw_references());
         input.parts[0].implementations[0] = Some((0, 0));
-        input.parts[0].subparts = Some(SubpartRanges { first: 0, ranges: vec![1..4] });
+        input.parts[0].subparts = Some(SubpartRanges { first: 0, ranges: std::iter::once(1..4).collect() });
         assert!(!input.valid_draw_references());
         input.parts[0].subparts = None;
         input.parts[0].indices = 2..4;

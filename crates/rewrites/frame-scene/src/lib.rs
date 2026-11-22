@@ -5,11 +5,10 @@
 //! frame's ticks ([`SceneBuilder`]), sealed, and published as an
 //! `Arc<FrameScene>`. This crate knows neither the guest nor the GPU, so
 //! the editor and the viewer can build scenes too. `scene_extract` fills
-//! it from guest memory; `native_render` draws it.
+//! it from guest memory; `native_render` draws it. The camera, the carried
+//! part and the view and instance keys are `frame_types`', re-exported.
 
 pub mod builder;
-pub mod camera;
-pub mod carried;
 pub mod decorator;
 pub mod late;
 pub mod layer;
@@ -20,6 +19,11 @@ pub mod node;
 pub mod object;
 pub mod scene;
 pub mod summary;
+
+// The render camera and the carried part are shared with the guest's
+// device (`d3d`), which sits below this crate: they live in `frame_types`
+// and keep their paths here.
+pub use frame_types::{camera, carried};
 
 pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
@@ -41,3 +45,23 @@ pub use scene::{
     Subparts, ViewKind, WorldState,
 };
 pub use summary::summary_hash;
+
+#[cfg(test)]
+pub(crate) mod test_camera {
+    use crate::RenderCamera;
+
+    /// A camera at (1, 2, 3) looking down +x, z up, 640x480, 70 degrees
+    /// (the same as `frame_types::camera`'s tests use).
+    pub fn camera() -> RenderCamera {
+        RenderCamera {
+            position: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 70f32.to_radians(),
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.0625,
+            far: 1024.0,
+        }
+    }
+}
