@@ -717,6 +717,42 @@ pub fn description_answer(ret: u32, n: u32) -> Option<u32> {
     }
 }
 
+/// `built_in_variant` in `mainmenu.map`'s strings, "Built-in Variant
+/// (cannot edit)": the line the variant pickers (`mp_variant_select` and
+/// `mp_variant_select_lobby`, their widget text at `+0x1a0`) show under a
+/// built-in. Every entry of the list is a built-in to the game, so we
+/// answer it with where the focused one comes from ([`origin_text`]).
+pub const BUILT_IN_LINE_ID: u32 = 0x1000_01dc;
+
+/// The description number the variant list last asked for (`0x19fd00`
+/// from `0x2ca1fd`): the focused entry's. `u32::MAX` before any.
+static FOCUSED_DESCRIPTION: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Where a built-in with description number `n` comes from: the store's
+/// (94 to 100, [`crate::game_variants::inject::DESCRIPTION_BASE`]), ours
+/// (80 to 93) or retail's (0 to 38, and anything else).
+pub fn origin_text(n: u32) -> &'static str {
+    use crate::game_variants::inject;
+    if (inject::DESCRIPTION_BASE..=inject::SHARED_DESCRIPTION).contains(&n) {
+        "Downloaded Content"
+    } else if description_for(n).is_some() {
+        "Community Classic"
+    } else {
+        "Bungie Original"
+    }
+}
+
+/// The text for [`BUILT_IN_LINE_ID`]: the focused entry's origin, once
+/// the list has asked for a description.
+fn built_in_line(id: u32) -> Option<String> {
+    if id != BUILT_IN_LINE_ID {
+        return None;
+    }
+    let n = FOCUSED_DESCRIPTION.load(std::sync::atomic::Ordering::Relaxed);
+    (n != u32::MAX).then(|| origin_text(n).into())
+}
+
 /// The UTF-16 the lookup writes: at most 0xff units and a NUL.
 pub fn utf16_buffer(s: &str) -> Vec<u8> {
     let mut units: Vec<u16> = s.encode_utf16().take(0xff).collect();
@@ -916,6 +952,7 @@ fn register_strings(
         });
         if let Some(t) = status
             .or_else(|| text(cpu.edi))
+            .or_else(|| built_in_line(cpu.edi))
             .or_else(|| crate::game_variants::inject::text(cpu.edi))
             .or_else(|| crate::variant_options::text(cpu.edi))
             .or_else(|| crate::hud_kit::text(cpu.edi))
@@ -1062,13 +1099,18 @@ pub fn install_with_live(
         }
         if let Some(o) = numbers {
             d.register_override(NUMBER_STRING_ID, DESCRIPTIONS_HOOK, move |cpu, ctx, _| {
+                let mem = ctx.runtime().memory();
+                let ret = mem.u32(cpu.esp)?;
+                if ret == LIST_DESCRIPTION_RETURN {
+                    FOCUSED_DESCRIPTION.store(cpu.ecx, std::sync::atomic::Ordering::Relaxed);
+                }
                 if cpu.ecx >= DESCRIPTION_BASE {
-                    let mem = ctx.runtime().memory();
-                    if let Some(id) = description_answer(mem.u32(cpu.esp)?, cpu.ecx) {
+                    if let Some(id) = description_answer(ret, cpu.ecx) {
                         cpu.eax = id;
                         return mem.ret(cpu, 0);
                     }
                 }
+                drop(mem);
                 Ok(o.invoke(cpu, ctx, NUMBER_STRING_ID))
             });
             d.mark_context_only(NUMBER_STRING_ID);
@@ -1081,6 +1123,20 @@ pub fn install_with_live(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn the_built_in_line_names_the_focused_entrys_origin() {
+        for n in [0, 38] {
+            assert_eq!(origin_text(n), "Bungie Original");
+        }
+        for n in [DESCRIPTION_BASE, DESCRIPTION_BASE + VARIANTS.len() as u32 - 1] {
+            assert_eq!(origin_text(n), "Community Classic");
+        }
+        for n in [94, 99, 100] {
+            assert_eq!(origin_text(n), "Downloaded Content");
+        }
+        assert_eq!(built_in_line(name_id(0)), None);
+    }
 
     #[test]
     fn dedicated_host_status_uses_the_retail_matchmaking_status_strings() {

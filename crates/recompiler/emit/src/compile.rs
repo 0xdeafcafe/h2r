@@ -1294,9 +1294,141 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
     temporary.publish(out).map_err(err)
 }
 
+/// The linker [`link_objects`] runs for `arch`, found on the `PATH`-style
+/// list `path`: `ld` for the Apple targets, `ld.lld` (else `ld`) for
+/// Linux, `lld-link` for Windows ([`windows_tool`]). Never a C compiler
+/// or its driver.
+pub fn linker(arch: Arch, path: Option<OsString>) -> Result<PathBuf, Error> {
+    let names: &[&str] = match arch {
+        Arch::X86_64Windows => return windows_tool("lld-link"),
+        Arch::X86_64Linux => &["ld.lld", "ld"],
+        Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios => &["ld"],
+    };
+    names
+        .iter()
+        .find_map(|n| resolve_on_path(n, path.clone()))
+        .ok_or_else(|| err(format!("no linker on PATH for {} (looked for {})", arch.name(), names.join(", "))))
+}
+
+/// The linker arguments [`link_objects`] passes for `arch`: `objects`
+/// into the module `out`, written at `temporary`. `sdk` is the Apple
+/// SDK's path (for `-lSystem`); `exports` the symbols a Windows DLL
+/// exports, `(name, is data)`. The objects need no C runtime: everything
+/// they call is in them or reached through tables the host installs.
+pub fn link_args(
+    arch: Arch,
+    sdk: Option<&str>,
+    objects: &[PathBuf],
+    exports: &[(&str, bool)],
+    out: &Path,
+    temporary: &Path,
+) -> Vec<OsString> {
+    fn os(s: &str) -> OsString {
+        s.into()
+    }
+    let objs = objects.iter().map(|p| p.as_os_str().to_owned());
+    match arch {
+        Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios => {
+            let (platform, min) = match arch {
+                Arch::Arm64Tvos => ("tvos", TVOS_DEPLOYMENT_TARGET),
+                Arch::Arm64Ios => ("ios", IOS_DEPLOYMENT_TARGET),
+                // Arch::triple's macos11.
+                _ => ("macos", "11.0"),
+            };
+            let cpu = if arch == Arch::X86_64 { "x86_64" } else { "arm64" };
+            let mut v: Vec<OsString> =
+                ["-dylib", "-arch", cpu, "-platform_version", platform, min, min].into_iter().map(os).collect();
+            if let Some(sdk) = sdk {
+                v.extend(["-syslibroot", sdk, "-lSystem"].into_iter().map(os));
+            }
+            v.push(os("-install_name"));
+            v.push(arch.install_name(out));
+            v.push(os("-o"));
+            v.push(temporary.as_os_str().to_owned());
+            v.extend(objs);
+            v
+        }
+        Arch::X86_64Linux => {
+            let mut v: Vec<OsString> = ["-shared", "-z", "noexecstack", "-soname"].into_iter().map(os).collect();
+            v.push(arch.install_name(out));
+            v.push(os("-o"));
+            v.push(temporary.as_os_str().to_owned());
+            v.extend(objs);
+            v
+        }
+        Arch::X86_64Windows => {
+            // No CRT, so no DllMain: the module only holds code and tables.
+            let mut v = windows_link_args(None, temporary, objects);
+            v.push(os("/noentry"));
+            for (name, data) in exports {
+                v.push(format!("/export:{name}{}", if *data { ",DATA" } else { "" }).into());
+            }
+            v
+        }
+    }
+}
+
+/// Link `objects` into the module `out` for `arch` with the platform's
+/// linker alone ([`linker`], found on `path`, `PATH` when `None`): the
+/// Cranelift fast tier's link, which compiles no C. The Apple targets
+/// also run `xcrun` once for the SDK's path.
+pub fn link_objects(
+    arch: Arch,
+    objects: &[PathBuf],
+    exports: &[(&str, bool)],
+    out: &Path,
+    path: Option<OsString>,
+) -> Result<(), Error> {
+    let path = path.or_else(|| std::env::var_os("PATH"));
+    let ld = linker(arch, path)?;
+    let sdk = match arch {
+        Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios => Some(sdk_path(arch.sdk().unwrap_or("macosx"))?),
+        Arch::X86_64Linux | Arch::X86_64Windows => None,
+    };
+    let temporary = Temporary::new(out).map_err(err)?;
+    let args = link_args(arch, sdk.as_deref(), objects, exports, out, temporary.path());
+    let o = if arch.is_windows() {
+        run_coff_tool("lld-link", &args, out)?
+    } else {
+        Command::new(&ld).args(&args).output().map_err(|e| err(format!("running {}: {e}", ld.display())))?
+    };
+    if !o.status.success() {
+        return Err(err(format!(
+            "linking {} with {}: {}{}",
+            out.display(),
+            ld.display(),
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        )));
+    }
+    temporary.require_nonempty().map_err(err)?;
+    temporary.publish(out).map_err(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_object_link_runs_a_linker_and_compiles_nothing() {
+        let objects = [PathBuf::from("/o/a.o"), PathBuf::from("/o/b.o")];
+        let out = Path::new("/out/libh2game.dylib");
+        for arch in [Arch::Arm64, Arch::X86_64, Arch::Arm64Tvos, Arch::X86_64Linux, Arch::X86_64Windows] {
+            let args = link_args(arch, Some("/sdk"), &objects, &[("h2gen_module", true)], out, Path::new("/out/t"));
+            let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            for a in &args {
+                assert!(!matches!(a.as_str(), "-c" | "-x" | "-target"), "{}: compiler flag {a} in {args:?}", arch.name());
+                assert!(!a.ends_with(".c"), "{}: C source {a} in {args:?}", arch.name());
+            }
+            assert!(objects.iter().all(|o| args.contains(&o.display().to_string())), "{}: {args:?}", arch.name());
+        }
+        // The linker is looked up by its own name, never through clang.
+        let empty = std::env::temp_dir().join(format!("h2-no-tools-{}", std::process::id()));
+        let none = linker(Arch::Arm64, Some(empty.clone().into_os_string())).unwrap_err().0;
+        assert!(none.contains("ld") && !none.contains("clang"), "{none}");
+        let none = linker(Arch::X86_64Linux, Some(empty.into_os_string())).unwrap_err().0;
+        assert!(none.contains("ld.lld"), "{none}");
+    }
 
     fn identity(env: &[(&str, &str)], version: &str) -> String {
         let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();

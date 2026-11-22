@@ -78,9 +78,17 @@ every game font carries ([button-icons.md](../input/button-icons.md) on the
 `button-icons` branch lists the range). Built-in content is told apart from
 saved content by bit 21 of its content handle (tested at `0x148a2c` and
 `0x217300`), not by its name. A built-in can be played and copied but not
-edited or deleted: the game says "Built-in Variant (cannot edit)", refuses
-deletion, and Edit first asks for a name for a copy. A copy is written as a
-normal saved variant.
+edited or deleted: the game refuses deletion, and Edit first asks for a
+name for a copy. A copy is written as a normal saved variant.
+
+Under a focused built-in, the variant pickers (`mp_variant_select` and
+`mp_variant_select_lobby`) show the string `0x100001dc`, retail's
+"Built-in Variant (cannot edit)". The string hook answers it with the
+focused entry's origin, read from the description number the list last
+asked `0x19fd00` for (from `0x2ca1fd`): "Bungie Original" for retail's
+0 to 38, "Community Classic" for ours (80 to 93) and "Downloaded Content"
+for the store's (94 to 100). `community_variants::origin_text` holds the
+mapping.
 
 So a variant added to the tag block before `0x149f88` reads it is a
 built-in in every respect, including the lock and copy-on-edit. The icon is

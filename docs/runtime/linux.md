@@ -83,7 +83,7 @@ h2 play halo2.iso --out ~/h2/boot --tier clang
 
 A current stamp loads the module and compiles nothing. `--tier clang`
 makes a stale module stop with clang's error rather than start the
-Cranelift fast tier, which also links through clang. The stamp does not
+Cranelift fast tier, which needs no C compiler, only `ld.lld` or `ld`. The stamp does not
 record `H2_LINUX_SYSROOT`, so a module built against the sysroot also
 loads in a desktop `h2`.
 

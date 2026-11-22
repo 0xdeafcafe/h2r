@@ -245,17 +245,11 @@ pub fn build_fast_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::com
     let t = Instant::now();
     let owners = emit::plan(funcs);
     eprintln!("plan: {:.1}s", t.elapsed().as_secs_f64());
-    let r = clif::build_dylib(
-        &owners,
-        &dir,
-        &crate::install_abi_header(&dir.join("src"))?,
-        &[("h2boot_bridge.c", crate::BRIDGE), ("h2boot_bridge_x87.c", crate::BRIDGE_X87)],
-        &lib,
-        jobs,
-    )
-    .map_err(anyhow::Error::msg)?;
+    // No C compiler: the shards, the registry and the bridge are all
+    // Cranelift objects, linked by the platform's linker.
+    let r = clif::build_dylib(&owners, &dir, &lib, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
-        "cranelift: {} owners in {} shards, {:.1}s compiling, {:.1}s writing, {:.1}s C parts and link, {:.1} MB of objects -> {}",
+        "cranelift: {} owners in {} shards, {:.1}s compiling, {:.1}s writing, {:.1}s linking, {:.1} MB of objects -> {}",
         r.owners,
         r.shards,
         r.compile_secs,

@@ -577,6 +577,12 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         > = lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();
         install_x87(fns.as_ptr(), fns.len() as u32);
+        // A fast-tier module's own helpers (clif's bridge object).
+        type InstallHelpers = unsafe extern "C" fn(*const *const std::ffi::c_void, u32);
+        if let Ok(install_clif) = lib.get::<InstallHelpers>(b"h2clif_install_v1") {
+            let fns = shim::clif_helpers();
+            install_clif(fns.as_ptr(), fns.len() as u32);
+        }
         let module: libloading::Symbol<*const runtime::H2GenModule> = lib.get(b"h2gen_module")?;
         let m = &**module;
         if m.abi_version != runtime::cpu::ABI_VERSION {
