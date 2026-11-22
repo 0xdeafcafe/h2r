@@ -145,6 +145,62 @@ pub struct RunReq {
     /// Driven through the agent API (`h2 lab agent`) until `stop`: the game
     /// never stops by itself, so `frames` can't be set (docs/runtime/lab.md).
     pub serve: bool,
+    /// A dedicated System Link host instead of a game window: headless
+    /// `h2 serve --system-link --host-light` until `stop`, driven through
+    /// `h2 lab agent` like a `serve` run (docs/runtime/lab.md, "Dedicated
+    /// System Link host"). Absent is never sent, so an ordinary run is the
+    /// same bytes an older host expects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dedicated: Option<Dedicated>,
+}
+
+/// What a dedicated System Link host job starts with
+/// (`h2 lab run --dedicated`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Dedicated {
+    /// `h2 serve --host-bots`: the host accepts phantoms (`sim.player.add`).
+    pub bots: bool,
+    /// Open a System Link lobby on this map once the host is at the menu
+    /// (`host.lobby.open`). Absent leaves the host at the menu.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+    /// The lobby's game variant (default Slayer). Needs `map`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    /// The lobby's player limit, 1 to 16 (default
+    /// [`DEDICATED_MAX_PLAYERS`]). Needs `map`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_players: Option<u8>,
+    /// XNet base UDP port (default [`DEDICATED_BASE_PORT`]); the host uses
+    /// base through base+6.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_port: Option<u16>,
+}
+
+/// The XNet base port of a dedicated host: an unconfigured `h2 play`'s, so
+/// a joiner on another Mac sees its System Link broadcasts. Broadcasts go
+/// to the sender's own base, so both ends must share it.
+pub const DEDICATED_BASE_PORT: u16 = 3074;
+
+/// A dedicated host's lobby limit when `--max-players` is not given.
+pub const DEDICATED_MAX_PLAYERS: u8 = 8;
+
+impl Dedicated {
+    pub fn base_port(&self) -> u16 {
+        self.base_port.unwrap_or(DEDICATED_BASE_PORT)
+    }
+
+    /// The `host.lobby.open` parameters, when the job opens a lobby.
+    pub fn lobby(&self) -> Option<agent_proto::host_lobby::OpenParams> {
+        Some(agent_proto::host_lobby::OpenParams {
+            map: self.map.clone()?,
+            variant: self.variant.clone(),
+            synchronous: false,
+            max_players: self.max_players.unwrap_or(DEDICATED_MAX_PLAYERS),
+            live: false,
+        })
+    }
 }
 
 /// One arm of a sim benchmark: a name (a path component, it names the
@@ -513,6 +569,9 @@ pub fn window_title(id: &str, name: &str, commit: &str) -> String {
 
 pub fn validate_run(r: &RunReq) -> Result<()> {
     job_name(&r.name)?;
+    if let Some(d) = &r.dedicated {
+        validate_dedicated(r, d)?;
+    }
     ensure!(
         !(r.serve && r.frames.is_some()),
         "a --serve run never stops by itself; --frames can't be set (h2 lab stop ends it)"
@@ -569,6 +628,53 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
         ensure!(n.len() <= 1024, "note over 1024 bytes");
     }
     validate_build(&r.build)
+}
+
+/// A dedicated host is `h2 serve`, not `h2 play`: none of a game window's
+/// options apply, and it never stops by itself.
+fn validate_dedicated(r: &RunReq, d: &Dedicated) -> Result<()> {
+    for (set, flag) in [
+        (r.level.is_some(), "--level"),
+        (r.difficulty.is_some(), "--difficulty"),
+        (r.frames.is_some(), "--frames"),
+        (r.stats_from.is_some(), "--stats-from"),
+        (r.replay.is_some(), "--replay"),
+        (r.record.is_some(), "--record"),
+        (r.film.is_some(), "--film"),
+        (r.perf, "--perf"),
+        (r.serve, "--serve"),
+        (r.fresh_data, "--fresh-data"),
+        (!r.args.is_empty(), "h2 play flags"),
+    ] {
+        ensure!(
+            !set,
+            "a --dedicated host takes no {flag}: it is a headless h2 serve that runs until \
+             `h2 lab stop`, with a data root of its own (--map opens its lobby)"
+        );
+    }
+    if let Some(m) = &d.map {
+        check_level(m)?;
+    }
+    if let Some(v) = &d.variant {
+        ensure!(
+            !v.trim().is_empty() && v.chars().count() <= 64 && !v.chars().any(char::is_control),
+            "--variant must be a game variant name of at most 64 characters"
+        );
+    }
+    if let Some(n) = d.max_players {
+        ensure!((1..=16).contains(&n), "--max-players is 1 to 16");
+    }
+    ensure!(
+        d.map.is_some() || (d.variant.is_none() && d.max_players.is_none()),
+        "--variant and --max-players set up the lobby --map opens"
+    );
+    if let Some(p) = d.base_port {
+        ensure!(
+            (1024..=65529).contains(&p),
+            "--base-port is 1024 to 65529 (the host uses base through base+6)"
+        );
+    }
+    Ok(())
 }
 
 /// One uploaded sim file's key: a relative `/` path of plain components,
@@ -1116,6 +1222,102 @@ mod tests {
         assert_eq!(v["film"], "f");
     }
 
+    #[test]
+    fn a_dedicated_request_parses_and_opens_its_lobby() {
+        let Request::Run(r) = run(
+            r#"{"cmd":"run","name":"Join test","dedicated":{"bots":true,"map":"lockout",
+            "variant":"Team Slayer","max_players":4,"base_port":31000},
+            "env":{"H2_FEATURES":"x"},"build":{"rev":"master","env":{"H2_OPT":"2"}}}"#,
+        )
+        .unwrap() else {
+            panic!()
+        };
+        let d = r.dedicated.as_ref().unwrap();
+        assert!(d.bots);
+        assert_eq!(d.base_port(), 31000);
+        let open = d.lobby().unwrap();
+        assert_eq!(open.map, "lockout");
+        assert_eq!(open.variant.as_deref(), Some("Team Slayer"));
+        assert_eq!(open.max_players, 4);
+        assert!(!open.live && !open.synchronous);
+        assert_eq!(
+            serde_json::to_value(&open).unwrap(),
+            serde_json::json!({"map":"lockout","variant":"Team Slayer","max_players":4,"live":false})
+        );
+
+        // The bare form: the menu, the default base, no lobby.
+        let Request::Run(r) = run(r#"{"cmd":"run","name":"Join test","dedicated":{}}"#).unwrap()
+        else {
+            panic!()
+        };
+        let d = r.dedicated.unwrap();
+        assert_eq!(d.base_port(), DEDICATED_BASE_PORT);
+        assert!(d.lobby().is_none());
+        let open = Dedicated {
+            map: Some("lockout".into()),
+            ..Dedicated::default()
+        }
+        .lobby()
+        .unwrap();
+        assert_eq!(open.max_players, DEDICATED_MAX_PLAYERS);
+        assert!(open.variant.is_none());
+    }
+
+    #[test]
+    fn a_dedicated_request_refuses_window_options_and_bad_lobbies() {
+        let refused = |extra: &str, dedicated: &str| {
+            run(&format!(
+                r#"{{"cmd":"run","name":"Join test"{extra},"dedicated":{dedicated}}}"#
+            ))
+            .unwrap_err()
+            .to_string()
+        };
+        for extra in [
+            r#","level":"lockout""#,
+            r#","frames":10"#,
+            r#","stats_from":10"#,
+            r#","replay":"a""#,
+            r#","record":"a""#,
+            r#","film":"a""#,
+            r#","perf":true"#,
+            r#","serve":true"#,
+            r#","fresh_data":true"#,
+            r#","args":["--no-audio"]"#,
+        ] {
+            assert!(
+                refused(extra, "{}").contains("--dedicated host takes no"),
+                "{extra}"
+            );
+        }
+        assert!(refused("", r#"{"map":"../x"}"#).contains("level"));
+        assert!(refused("", r#"{"variant":"slayer"}"#).contains("--map opens"));
+        assert!(refused("", r#"{"max_players":4}"#).contains("--map opens"));
+        assert!(refused("", r#"{"map":"lockout","max_players":0}"#).contains("1 to 16"));
+        assert!(refused("", r#"{"map":"lockout","max_players":17}"#).contains("1 to 16"));
+        assert!(refused("", r#"{"map":"lockout","variant":"a\u0007b"}"#).contains("--variant"));
+        assert!(refused("", r#"{"map":"lockout","variant":" "}"#).contains("--variant"));
+        assert!(refused("", r#"{"base_port":80}"#).contains("--base-port"));
+        assert!(refused("", r#"{"base_port":65530}"#).contains("--base-port"));
+        assert!(refused("", r#"{"socket":"/tmp/x"}"#).contains("unknown field"));
+        // The environment is the run allowlist, as for any run.
+        assert!(
+            refused(r#","env":{"H2_XNET_ADDR":"1.2.3.4:5"}"#, "{}").contains("not a run variable")
+        );
+    }
+
+    /// An ordinary run serializes without the field, so an older host
+    /// (which refuses unknown fields) still accepts it.
+    #[test]
+    fn a_request_without_a_dedicated_host_omits_the_field() {
+        let v = serde_json::to_value(RunReq::default()).unwrap();
+        assert!(v.get("dedicated").is_none());
+        let v = serde_json::to_value(RunReq {
+            dedicated: Some(Dedicated::default()),
+            ..RunReq::default()
+        })
+        .unwrap();
+        assert_eq!(v["dedicated"], serde_json::json!({"bots": false}));
+    }
 
     fn sim_value() -> serde_json::Value {
         serde_json::json!({
