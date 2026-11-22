@@ -967,6 +967,7 @@ mod tests {
             })
         }
         fn backing(&self, _c: &mut Canvas, _b: crate::ui_kit::view::Backing) {}
+        fn backdrop(&self, _c: &mut Canvas) {}
         fn text(&self, _: &mut Canvas, _: i16, _: &str, _: Rect, _: Justify, _: [u8; 3], _: u8) {}
         fn list_of(&self, _: i16, _: u16) -> Option<Option<crate::ui_kit::view::ListAt>> {
             Some(None)

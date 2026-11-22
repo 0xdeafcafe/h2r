@@ -79,9 +79,7 @@ them.
 
 A `Hud` whose spec is not `transparent` is drawn over the game shell
 instead of a live picture (`preview::From::view`): widgets that sit on
-the shell's header and footer bands, such as the pregame lobby's mode
-strip (`lobby.tabs`, [party-lobby.md](party-lobby.md)). Its doc
-says `backing: shell`.
+the shell's header and footer bands. Its doc says `backing: shell`.
 
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
@@ -100,9 +98,9 @@ not full screens. They sit over whatever is beneath (the title screen, the
 main menu, in game) the way the game's own dialogs do, in the large dialog
 layout of `error_dialog_large` and `dialog_live_password` (header layout
 2, about 536 wide): that dialog's own `dialog1`/`dialog2` panel art, the
-digit cells and the legend. What the game's dialogs draw behind the panel
-(a dim layer or nothing) is copied from the retail dialog tags, read off
-them rather than assumed. A modal may cover the logo, as retail dialogs
+digit cells and the legend. The retail dialog tags draw nothing behind
+the panel; the window stack's render dims the screen under a dialog
+("A dialog is an overlay on its opener", below). A modal may cover the logo, as retail dialogs
 do, so for a modal the reserved-area check ignores what the panel covers.
 Everything in it must still sit inside the panel and inside the safe
 area. The preview draws a modal over the screen that opened it (its
@@ -374,10 +372,14 @@ digit sits over each cell. The cursor's cell and digit are lit; the
 others are dimmed (the frame and row alphas). The status line (Checking...,
 the error) sits above the legend, and the legend is in layout 2's second
 rectangle. The view's backing is `Backing::Over(opener)`, the
-`DialogSpec`'s `Opener`. On the disc, the preview draws the opener
-(`Disc::opener_view`) and then the dialog over it, with nothing between
-them, as the tags have nothing there. Synthetic previews draw the
-opener's rows as boxes and text blocks.
+`DialogSpec`'s `Opener`. On the disc, the preview draws the opener as a
+retail screen, then the game's backdrop over it (`Source::backdrop`:
+the overlay colour's fill and the blur, below), then the dialog.
+Synthetic previews draw the opener's rows as boxes and text blocks, then
+the same backdrop with the fill's colour fixed
+(`preview::SYNTHETIC_DIM`, the disc's). A dialog drawn over a screen of
+ours (a view's `underlay`, as `layout.dialog.over-screen` is) gets the
+same backdrop over that screen (`render_composite`).
 
 **The modal's checks.** `Rules::panel` is set for a dialog spec
 (`DialogGeometry::area`, the panel's and corners' box,
@@ -407,19 +409,53 @@ and Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
 **A dialog is an overlay on its opener.** A retail dialog sits over whatever was open when
 it opened, drawn as it was: not always the main menu, and with nothing
-hidden and no dim layer. So a `DialogSpec` names its `Opener`: the
-opener's screen tag, the pane shown, its list's rows (the game's code
-fills them) and the focused row. `Disc::opener_view` makes it a `View`:
-the game shell, the pane's bitmaps and texts in the screen's own
-strings, its header, and its rows on its own list skin with the focused
-row lit (`view_of`'s list). The preview draws that under the dialog. The
-openers:
+hidden. So a `DialogSpec` names its `Opener`: the opener's screen tag,
+the pane shown, its list's rows (the game's code fills them) and the
+focused row. The preview draws the opener as a retail screen in its
+sample state (`Disc::render_retail_layer` with `Retail::rows`, "Retail
+screens in a believable state"): units substituted, texts wrapped, the
+opener's rows on its own list skin with the focused row lit.
+`Disc::opener_view` makes the same opener a `View` (its pane's bitmaps,
+its header and its texts as the sample state reads them, its rows) for
+the over-opener notes.
+
+The game dims the opener. Every window stack's render slot is
+`0x234f8c` (vtables `0x4599a8`, `0x4599dc`, `0x459a08`; `0x459a34`
+reaches it through `0x23583e`). For each of the stack's screens,
+`0x23029a` asks whether a lower window holds a screen (windows 1, 3, 2,
+4, 5 from the top, tested with `0x1490ec`; the screen's virtual `+0x6c`
+can opt out). If one does, it adds the screen's transition fraction
+(`0x230374`, clamped to 1) and fills the whole screen (`0x147cdb`) with
+the shared globals' colour at `wigl +0x6c` (a, r, g, b), its alpha
+times the fraction, then calls `0x235756` with the fraction, and only
+then draws the stack's own widgets. On the disc the colour is (0.85,
+0.0, 0.0784, 0.1725): 85% of (0, 20, 44). So under a window-3 dialog
+(Game Setup) or a window-1 dialog the opener is drawn in full and then
+dimmed 85%: the lobby's PREGAME LOBBY strip above the frame shows at
+15%.
+
+`0x235756` then blurs the screen with the Kawase blur `0x211a0`
+(`engine::glow::blur`): `3.75 * fraction` steps (`[0x0045de14]`), so at
+rest four draws with fractions 1, 1, 1 and 0.75. The first draw's scale
+is 1.0 and each next one's is 1.25 times it; a draw's spread is its
+fraction times its scale (1, 1.25, 1.5625, 1.465). Each draw makes every
+pixel the mean of four bilinear taps, tap `k` moved by the spread times
+0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for `k & 2`, else times
+-0.5 (`[0x0045dbc4]`), with the sampler clamped at the edges
+(`native_render::glow::quad`). `Disc::backdrop` draws both at rest
+(fraction 1): the fill from `SharedGlobals::overlay_color`, then
+`preview::backdrop::blur` on the 640 by 480 canvas.
+
+The openers:
 
 - `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
   the list hooks show them: Campaign, Xbox Live, Split Screen, System
   Link, THEATER, Settings).
 - `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
-  on Quickmatch, with our five rows.
+  on Quickmatch, with its nine rows
+  ([live-custom-games.md](../live/live-custom-games.md) §5).
+- `Opener::LOBBY` (`lobby` in a screen doc): the pregame lobby's custom
+  game pane in its sample state, with no rows.
 
 On the disc, the code pages' legend sits over the main menu's Xbox Live
 and Split Screen rows. Over the Xbox Live menu, the title and body sit
@@ -874,6 +910,15 @@ changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).
+
+`kit.picker.mode` (`screens::MODE_PICKER`) is the picker of the lobby's
+modes, a sample that no row of the game opens: GAME MODE, with
+Multiplayer, Custom Games, Forge and Firefight as its rows (the lobby
+tabs' labels in title case, `lobby_tabs::Tab::title_case`), Custom
+Games held and focused when it opens (its first state is `focus-1`),
+"Choose what this lobby plays." on the right, over the lobby under the
+backdrop (`Opener::LOBBY`). Its choice only logs. The concepts for choosing a
+lobby's mode pick it to show the list their button or prompt opens.
 
 **Strings are in guest memory before the screen is built.** `TEXT_SET`
 (`0x253b1a`) copies the string as it sets it: it resolves the id into a
@@ -1389,14 +1434,20 @@ Status: Partly built. The code uses `ui_kit::data` (`ScreenDoc`, `load`,
 `parse`, `to_yaml`, `with_screens`), which arrives with the YAML screens,
 and it has not been compiled or run in the editor yet.
 Code: `crates/apps/studio/src/app/ui_screens/edit.rs` (`edit/ours.rs`,
-`edit/retail.rs`), `crates/apps/studio/src/ui/ui_screens/edit.rs`,
+`edit/retail.rs`, `edit/retail_tag.rs`),
+`crates/apps/studio/src/ui/ui_screens/edit.rs`,
 `crates/apps/studio/src/ui/ui_screens/transport.rs`,
 `crates/apps/studio/src/api/ui_edit.rs`,
+`crates/apps/studio/src/api/ui_retail.rs`,
 `crates/extensions/game/src/ui_kit/preview.rs` (`Disc::retail_view`,
 `RetailPlaces`, `retail_field`, `filmstrip`),
+`crates/extensions/game/src/ui_kit/preview/retail_edit.rs`
+(`RetailEdits`, `RetailBlocks`, `parked`),
 `crates/extensions/game/src/ui_kit/animation.rs` (`Transition`).
-Tests: `app::ui_screens::edit::tests`, the `ui_edit` tests in
-`crates/apps/studio/src/api/tests.rs`, `ui_kit::preview::edit_tests`.
+Tests: `app::ui_screens::edit::tests`,
+`app::ui_screens::edit::retail_tag::tests`, the `ui_edit` and
+`ui_retail` tests in `crates/apps/studio/src/api/tests.rs`,
+`ui_kit::preview::edit_tests`, `ui_kit::preview::retail_edit::tests`.
 
 The UI Screens tool edits the picture it shows: click a widget to select
 it, drag it, resize it, or double-click a text to retype it. The agent
@@ -1445,8 +1496,10 @@ pick:
   patches the user's map. Nothing disc-derived goes in the repository. The
   map open in the editor must be `mainmenu`. Otherwise the sink refuses
   and says so. The picture is drawn from the disc, then the edited fields
-  are read back as `RetailPlaces` (widget id to rect) and applied before
-  drawing (`Disc::render_retail_with`).
+  are read back as `RetailPlaces` (widget id to rect) and the pane's
+  text, button and bitmap blocks as `RetailBlocks`, and applied before
+  drawing (`Disc::render_retail_edited`). "Retail tag edits" has the
+  edits past a rect.
 
 **What can be edited, and the refusals.** A refusal is an error that
 names the owner. It is never a silent no-op.
@@ -1464,7 +1517,7 @@ names the owner. It is never a silent no-op.
 | a widget with no YAML entry (`row.N.value`, `description`, `status`, `cell.N.*`) | refused: Rust fills it, and the refusal names the kind of value | — |
 | a text with `{slots}` | the template is edited, and its slots must stay as they are (the refusal names a slot that went or came) | — |
 | a legend made of `prompts` | text refused: edit its prompts | — |
-| any retail text | — | refused: retail strings live in the map's localized string table (`unic`), which the editor does not write |
+| any retail text | — | text refused: retail strings live in the map's localized string table (`unic`), which the editor does not write. Its string ID is set with `ui.set_string` |
 | `title` of a retail screen | — | refused: the header rectangle is the shared `wigl` header layout's |
 
 **Undo.** Edits are undo steps of the editor's Undo and Redo while the UI
@@ -1526,9 +1579,12 @@ its save. Rects are `[top, left, bottom, right]` in UI units.
 | `ui.move` | `{id, dx, dy}` | `{widget, findings, sink, dirty}` |
 | `ui.set_rect` | `{id, rect}` | `{widget, findings, sink, dirty}` |
 | `ui.set_text` | `{id, text}` | `{widget, findings, sink, dirty}` |
+| `ui.hide` | `{id}` (retail) | `{hidden, widget: null, findings, sink, dirty}` |
+| `ui.duplicate` | `{id, rect?, grow?}` (retail) | `{copy, of, widget, findings, sink, dirty}` |
+| `ui.set_string` | `{id, string, shows?}` (retail) | `{string, widget, findings, sink, dirty}` |
 | `ui.revert` | `{id?}` (none: the whole screen) | `{line, edits}` |
 | `ui.undo`, `ui.redo` | `{}` | `{done, can_undo, can_redo, edits}` |
-| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_dirty, checkout, changed_on_disk}` |
+| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_blocks: {tag: {added, edited, header}}, stand_ins: {string: text}, retail_dirty, checkout, changed_on_disk}` |
 | `ui.save` | `{}` | ours `{sink, written: [path]}`; retail `{sink, save}` (`doc.save`'s answer) |
 | `ui.animate` | `{phase: open\|close, frames?: 1..32 (5), out?}` | `{path, width, height, frames: [{t, tick, x, w}]}` |
 
@@ -1537,6 +1593,189 @@ shown, a rect whose top is below its bottom or right left of its left,
 and a phase that is neither `open` nor `close` answer `INVALID_PARAMS`.
 `ui.animate` and the default output path follow `ui.render`: under
 `studio/ui/` in the cache directory, never inside a Git checkout.
+
+### Retail tag edits
+
+Status: Built, not compiled or run in the editor yet.
+Code: `crates/apps/studio/src/app/ui_screens/edit/retail_tag.rs`,
+`crates/apps/studio/src/api/ui_retail.rs`,
+`crates/extensions/game/src/ui_kit/preview/retail_edit.rs`,
+`crates/formats/tags/src/ui.rs` (`TextBlock::from_element`,
+`Button::from_element`, `BitmapBlock::from_element`).
+
+A retail screen takes three edits past a rect. Each is a write of its
+`wgit` tag in the open `mainmenu` map's tag document, one undo step,
+saved with the map as a patch. They are for changing a retail screen
+with its own parts: a line of text the screen already has, moved or
+repeated, and named by a string of ours.
+
+| Edit | Tag write | Refused for |
+|---|---|---|
+| Hide (`ui.hide {id}`, the Selected section's Hide) | the block's rect to top and bottom 9999 with its left and right kept, or a bitmap's `top_left` to `9999, 9999`: where the disc parks its own spare blocks (`preview::parked`) | a button (it keeps its place in the focus order wherever its rect is), a list, a table, the title (the tag's `no_header` flag hides it) |
+| Copy (`ui.duplicate {id, rect?, grow?}`, Duplicate) | one element appended to `text_blocks`, `buttons` or `bitmaps`, then the copied element's bytes written into it | a list, a table, the title; a full block while Edit > Allow growing full blocks is off |
+| Set string (`ui.set_string {id, string, shows?}`) | the string ID field: the screen's `header` for `title`, a text block's `text`, a button's `label`. A name the map lacks is added to it (`TagDoc::set_string`) | a bitmap, a list, a table; a name that is not lowercase letters, digits and `_` |
+
+- **A copy goes to the end of its block.** The game's code finds a
+  pane's widgets by block index (the lobby's panel update reads text
+  blocks 4 to 8), so no block before the copy changes its index. The
+  copy's widget id is its index: `text.48` in a pane that had 48 text
+  blocks. `ui.duplicate` answers it as `copy`.
+- **A hidden block is still built.** The game makes a widget for every
+  block of the pane and draws nothing of one parked off screen, as it
+  does for the disc's spares. `ui.revert {id}` shows it again.
+- **A string of ours has no text in the map.** The localized text of a
+  retail string is in the map's `unic` table, which the editor does not
+  write. A string ID added by `ui.set_string` names a slot: the game's
+  code answers it at run time (a text set on the widget, or our string
+  table). The picture draws the stand-in given as `shows` for that
+  string name (`UiEdit::stand_ins`, `RetailEdits::texts`). The stand-in
+  is the tool's: it is in `ui.edits` and is not saved.
+- **The picture follows the document.** The pane's text, button and
+  bitmap blocks and the header string ID are read back whole from the
+  tag document after every edit, undo and pick
+  (`App::ui_retail_read_blocks`, `RetailBlocks::decode`) and drawn in
+  place of the disc's (`RetailEdits::apply`). An edit saved with the map
+  shows when the map is opened again.
+- **Revert** (`ui.revert`) writes a block's element back as the loaded
+  map has it, puts the title's string ID back and removes a copy; a
+  copy removed from the middle moves the copies after it down one.
+- **Pane 0 only.** The tool shows and edits pane 0 of a retail screen
+  (`edit::retail::PANE`). A screen with more panes, as the pregame lobby
+  has for its three retail modes, takes the same edit on each pane it
+  should show on.
+
+## Retail screens in a believable state
+
+Status: Built. Not measured against the game (see "The fidelity loop").
+Code: `crates/extensions/game/src/ui_kit/preview.rs`
+(`Disc::render_retail_edited`, `Disc::retail_view_edited`,
+`Canvas::text_boxed`),
+`crates/extensions/game/src/ui_kit/preview/retail_sample.rs`,
+`crates/extensions/game/src/ui_kit/preview/text_layout.rs`,
+`assets/ui/retail-samples/`.
+
+A retail screen's tag lays out every block the game might show. The
+pregame lobby's pane has the two buttons the leader gets and, in the
+same place, the line everyone else gets; a status line whose own string
+is for a party with no session; sixteen speaker icons; six empty lines
+for the variant's options; a table of sixteen player cells. The game's
+code picks among them, writes the empty ones, replaces the substitution
+units in the strings (docs/formats/ui.md "Substitution units") and adds
+the rows of a list. A picture of the tag alone shows all of it at once,
+with a square for every unit.
+
+So the picture is drawn in a **sample state**: a file in
+`assets/ui/retail-samples/` that stands in for the game's code on one
+screen. `render_retail` and `retail_view` look the sample up by the
+screen tag's path; every caller gets it (the UI Screens tool's picture,
+its thumbnails, `ui.render`).
+
+```yaml
+screen: ui\screens\game_shell\pregame_lobby\pregame_lobby
+tokens:                       # substitution unit (hex) to what it reads as
+  e416: Kestrel
+  e425: "4"
+footer: { string: button_key_squad_leader_teams_disabled }
+cells:                        # the tables' filled cells, first cell first
+  - text: Kestrel
+    blocks:
+      ui\global_bitmaps\rank_icons_sm: { image: 14 }
+panes:
+  0:
+    blocks:
+      party_leader: { hide: true }
+      game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
+      text.4: { text: "Score to Win: 50" }
+      ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+    lists:
+      0: { focus: 0, rows: [{ string: change_map }] }
+```
+
+| Key | What it says |
+|---|---|
+| `variant` | the state's name among the screen's samples. A file without one is the screen's plain sample, the one every caller draws; a file with one is drawn only when a caller names it (`Retail::sample`, `ui.pick {retail, sample}`). Two files for one screen and variant, or two plain ones, fail to load |
+| `over` | the screen tag this one opens over (a dialog's opener). That screen's pane 0 is drawn first, in its own plain sample state, in place of the game shell background, then dimmed as the game dims it ("A dialog is an overlay on its opener") |
+| `tokens` | what each substitution unit reads as, for every pane |
+| `footer` | the legend in the header layout's second rectangle |
+| `cells` | the tables' filled cells: `text` is the cell skin's first text block, `blocks` its bitmaps, `emblem` the player's emblem. A cell with no entry is not drawn |
+| `panes.N.blocks` | what the game does to a block of pane `N` |
+| `panes.N.lists.M` | the rows the game's code gives list `M`, and the focused one, drawn on the list's skin from its anchor as a screen of ours lays its rows |
+
+A block is named by its widget id (`text.4`, `button.0`, `bitmap.21`,
+`title`), by the name of its string, or by its bitmap's tag path; a
+widget id wins. What it takes:
+
+| Field | Meaning |
+|---|---|
+| `hide: true` | the game does not show the block in this state. A hidden button's art goes with its text |
+| `string: name` | the game writes another string of the screen's own table there. The text is read from the disc when the picture is drawn |
+| `text: "..."` | the game writes text of its own making there |
+| `image: N` | the image of the block's bitmap the game picks (a rank, a game type's icon) |
+| `tint: [r, g, b]` | the colour the game draws the bitmap in (a player's colour on a white bar) |
+| `level: stem` | the game puts a map's picture there in place of the block's bitmap (the lobby's map picture). `stem` is the map file's name without `.map`; the picture is the one the disc's level list gives that map (`Disc::art`, `Art::Level`). A map with no picture fails the render |
+
+A cell's `emblem` is `{ foreground: N, background: M, colours: [...] }`:
+an image of each of the disc's small emblem bitmaps
+(`ui\global_bitmaps\emblems\foreground_small`, `background_small`) and
+four colours, the foreground's two and then the background's two. It is
+drawn in each shader bitmap of the cell's skin. The game moves a skin
+item's shader bitmap up by its own height, as it does an item's bitmap
+(docs/formats/ui.md "Screen and list classes (code, not tags)"), so the lobby's 32 by 32 rectangle has its
+top on the bar's top. The art is the top-left 19 by 19 of its 32 by 32
+image, which is the bar's height. Each layer is two masks, red and blue
+(`emblem_rules` in `crates/apps/cli/src/live_art.rs`): the layer's
+colour is its first colour by red plus its second by blue, and the
+foreground covers the background by the larger of its masks
+(`preview.rs` `emblem`). A pixel no mask covers is left clear. That last
+rule is the preview's own: the `ui_small_emblem` shader is not read.
+
+Rules:
+
+- **Nothing of the disc is in a sample.** The names, numbers and options
+  are made up. A retail string is named by `string:`, never quoted. A
+  sample that names a string the screen's table lacks fails the render
+  with the names (`State::missing`).
+- **Without a sample, the game's blocks are hidden.** A string that holds
+  a substitution unit is not drawn, nor is one with a unit the sample
+  has no text for (`retail_sample::substitute`). What the tag says
+  outright still shows.
+- **One pane.** The picture is pane `Retail::pane`'s blocks alone; a
+  sample's `panes.N` applies to that pane only.
+- **The title and the legend are in the screen's own header layout**
+  (`Screen::header_layout`, the shared globals' four layouts): the
+  lobby's title and Game Setup's are in different rectangles.
+- **A dialog is drawn over its opener** when its sample names one with
+  `over`, one level deep: the opener's own `over` is not followed. The
+  opener is under the game's backdrop: the shared globals' overlay
+  colour, then the blur (`Disc::backdrop`).
+- **A variant is named.** `assets/ui/retail-samples/` holds
+  `squad_settings_dialog.switch-to.yaml`, Game Setup with retail's
+  Switch To rows and two of ours (Switch To: Forge, Switch To:
+  Firefight) between Quick Options and Co-Op: seven rows. The plain
+  `squad_settings_dialog.yaml` is what every other caller draws.
+- **The editor's edits come first.** A stand-in for a string set with
+  `ui.set_string` is drawn ahead of the sample, then `Retail::text`'s
+  answer, then the sample, then the tag's own string.
+- **Text is laid out as the game does** (docs/formats/ui.md "Text
+  layout"): broken at the rectangle's width, justified line by line,
+  and the lines under the rectangle's bottom left out.
+- **The view keeps every block.** `retail_view` has a widget for a
+  hidden block, with no text, so the editor can still select and move
+  it.
+
+Not drawn: model scenes, and a shader bitmap of a cell with no `emblem`.
+
+Not traced: which code hides the lobby's per-slot bars and speaker
+icons, and when it shows the help text under the player column. The
+lobby's update (`0x24fd..`) looks up text widgets 1, 3, 4, 0x2a and 0x2d
+and bitmaps 2 and 4 only. The sample hides the co-op and matchmaking
+panes' slot bars, as the custom game's pane parks them off screen.
+Game Setup's panel bitmap is another screen's art, and its image index
+is out of range: the block's image (`+0xa`) is 8 and `xbox_live` has
+images 0 to 7, so the tag alone draws nothing there. The tag preloads
+`difficulty_options` and `mp_games`, and the code that picks the
+panel's picture per focused row is not read, so the sample's `level`
+stands in for it.
 
 ## The fidelity loop
 

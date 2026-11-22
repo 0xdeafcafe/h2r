@@ -96,7 +96,7 @@ pub fn pick_crumbs(ui: &Ui, app: &mut App) -> bool {
     };
     let (root, name, current) = match &pick {
         Pick::Native { screen, state } => (Root::Ours, screen.clone(), format!("{screen} / {state}")),
-        Pick::Retail(tag) => (
+        Pick::Retail { tag, .. } => (
             Root::Retail,
             tag.clone(),
             tag.rsplit('\\').next().unwrap_or(tag).to_owned(),

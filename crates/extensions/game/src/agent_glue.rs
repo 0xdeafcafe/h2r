@@ -814,7 +814,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
                 "ui.lobby.tabs takes no parameters",
             ));
         }
-        ctx.read_guest(crate::lobby_tabs::strip::inspect)?
+        ctx.read_guest(crate::lobby_tabs::header::inspect)?
             .map_err(|why| RpcError::new(code::UNAVAILABLE, why))
     });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {

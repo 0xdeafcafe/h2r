@@ -39,7 +39,7 @@ use crate::ui_kit::view::{Art, Justify, Opener};
 
 /// Texts that are a player's or a map's even where the samples show one
 /// value: `(screen, widget)`.
-pub const DYNAMIC: [(&str, &str); 8] = [
+pub const DYNAMIC: [(&str, &str); 9] = [
     ("mods.detail", "title"),
     ("mods.pack", "title"),
     ("theater.film", "title"),
@@ -47,6 +47,7 @@ pub const DYNAMIC: [(&str, &str); 8] = [
     ("kit.picker", "title"),
     ("kit.picker.game", "title"),
     ("kit.picker.forge-map", "title"),
+    ("kit.picker.mode", "title"),
     // The card's profile line: the bot's, live.
     (crate::clanker_card::SCREEN, "description"),
 ];
@@ -190,6 +191,7 @@ fn opener_name(o: &Opener) -> Option<&'static str> {
         "game-setup.clankers",
         "game-setup.firefight",
         "game-setup.forge",
+        "lobby",
         "xbox-live-menu",
     ]
     .into_iter()

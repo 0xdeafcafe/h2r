@@ -463,6 +463,17 @@ pub fn selected(
             if ui.button(format!("{} Revert widget", icon::UNDO)) {
                 actions.push(Action::UiEdit(EditAction::Revert(Some(w.id.clone()))));
             }
+            if sink == Sink::Retail {
+                // Tag edits past a rect (app::ui_screens::edit::retail_tag);
+                // a refusal names the owner in the log.
+                if ui.button("Hide##ui-sel-hide") {
+                    actions.push(Action::UiEdit(EditAction::Hide { id: w.id.clone() }));
+                }
+                ui.same_line();
+                if ui.button("Duplicate##ui-sel-duplicate") {
+                    actions.push(Action::UiEdit(EditAction::Duplicate { id: w.id.clone() }));
+                }
+            }
         }
     }
     if ui.button(format!("{} Revert screen", icon::UNDO)) {

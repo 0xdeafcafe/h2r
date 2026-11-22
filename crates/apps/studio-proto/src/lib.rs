@@ -166,6 +166,9 @@ pub mod method {
     pub const UI_EDITS: &str = "ui.edits";
     pub const UI_SAVE: &str = "ui.save";
     pub const UI_ANIMATE: &str = "ui.animate";
+    pub const UI_HIDE: &str = "ui.hide";
+    pub const UI_DUPLICATE: &str = "ui.duplicate";
+    pub const UI_SET_STRING: &str = "ui.set_string";
 
     pub const PAIR_LIST: &str = "pair.list";
     pub const PAIR_STATUS: &str = "pair.status";

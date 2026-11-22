@@ -50,7 +50,7 @@ fn page(mode: Mode, offer: Offer, actions: &[i16]) -> Vec<&'static str> {
 }
 
 /// Game Setup in each mode: the mode's rows, with no Mode row and no
-/// Switch To row (the mode strip picks the mode, `crate::lobby_tabs`).
+/// Switch To row (the GAME MODE picker picks the mode, `crate::lobby_tabs`).
 #[test]
 fn game_setup_lists_the_rows_of_each_mode() {
     let table: [(Mode, &[&str]); 3] = [
@@ -156,8 +156,8 @@ fn forge_mode_lists_change_map_and_forge_map() {
     );
 }
 
-/// The Switch To rows go from every Game Setup list: the strip's tabs
-/// change the mode.
+/// The Switch To rows go from every Game Setup list: the GAME MODE picker
+/// changes the mode.
 #[test]
 fn arrange_drops_the_switch_to_rows() {
     use crate::clankermatch::{CHANGE_PLAYLIST, SWITCH_ACTION};
@@ -217,9 +217,9 @@ fn a_list_with_nothing_to_change_is_left_as_built() {
     );
 }
 
-/// No tab's Game Setup has a Mode row or a Switch To row: the strip is the
-/// only way to pick the mode (docs/game/party-lobby.md, "The lobby by
-/// tab").
+/// No mode's Game Setup has a Mode row or a Switch To row: the GAME MODE
+/// picker is the only way to pick the mode (docs/game/party-lobby.md, "The
+/// lobby by mode").
 #[test]
 fn game_setup_has_no_mode_row() {
     for tab in [
@@ -521,10 +521,10 @@ fn a_snapshot_keeps_the_lobbys_mode() {
     assert!(load_state(&[1, 9]).is_err(), "no mode 9");
 }
 
-/// The strip has its own hook on the panel update, inside
+/// The header has its own hook on the panel update, inside
 /// `lobby-options`'s, and keeps it with that feature off.
 #[test]
-fn the_strip_has_its_own_panel_hook_inside_lobby_options() {
+fn the_header_has_its_own_panel_hook_inside_lobby_options() {
     let panel = |switches: &str| -> String {
         let mut r = hooks::Registry::new(hooks::Switches::parse(switches).unwrap());
         let store = Arc::new(Store::defaults(&ff::DEFS));
@@ -552,7 +552,7 @@ fn the_strip_has_its_own_panel_hook_inside_lobby_options() {
         on.find("lobby-options:").unwrap(),
         on.find("party-lobby:").unwrap(),
     );
-    assert!(theirs < ours, "the strip sits inside lobby-options: {on}");
+    assert!(theirs < ours, "the header sits inside lobby-options: {on}");
     let off = panel("lobby-options=off");
     assert!(off.contains("party-lobby:"), "{off}");
     assert!(!off.contains("lobby-options:"), "{off}");

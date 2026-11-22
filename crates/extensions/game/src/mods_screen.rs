@@ -2236,8 +2236,8 @@ fn reader(repo: std::sync::Weak<Repo>) {
 }
 
 /// Builds the repository, its screens and texts, and starts the reader.
-/// Live off (no HLE or no map gate): nothing, and the Live menu keeps
-/// Content Download's Map Pack dialog.
+/// Live off (no HLE or no map gate): nothing, and the Live menu's Mods
+/// row opens the Map Pack dialog.
 pub fn install(
     registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,

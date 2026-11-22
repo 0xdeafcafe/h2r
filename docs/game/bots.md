@@ -285,8 +285,10 @@ it occupies row 4, after System Link, and Settings moves to row 5.
 
 - Screen `0xba`, list "xbox live menu list" `0x458c80`.
 - Rows: Quickmatch 0, OptiMatch 1, Clankermatch 2, then Co-op Campaign 3
-  (directly above Custom Game), Custom Game 4 (retail row 2, moved), Custom
-  Game Browser 5, Content Download 6 (rows close up by one without co-op).
+  (directly above Custom Games), Custom Games 4, Forge 5, Firefight 6
+  (each retail row 2's press, the lobby in its mode), Custom Game
+  Browser 7, Mods 8 (retail's Content Download). Rows close up by one
+  without co-op. Seven show at once; the list scrolls.
 - `crates/extensions/game/src/custom_games.rs` adds our rows: row text `0x230f36`, row
   chosen `0x230f92`, last row `0x510a18`.
 
@@ -3858,30 +3860,35 @@ the playlist's player limit.
 
 **The row.** The Live menu's extra rows come from `custom_games.rs`'s
 hooks: list count, add items, pane, row text `0x230f36` and row chosen
-`0x230f92`. Clankermatch is row 2, right after OptiMatch; the rest move
-down one:
+`0x230f92`. Clankermatch is row 2, right after OptiMatch:
 
 | Row | What | Press |
 |---|---|---|
 | 0 | Quickmatch | retail |
 | 1 | OptiMatch | retail |
 | 2 | **Clankermatch** (ours, pane 4) | retail row 1's press, `clankermatch::active` set |
-| 3 | Co-op Campaign (ours, pane 6; with Live), directly above Custom Game | co-op |
-| 4 | Custom Game (retail row 2, moved) | retail row 2's press; text `0x0b000421`, pane 2 |
-| 5 | Custom Game Browser (ours, pane 5) | the Live browser |
-| 6 | Content Download (retail row 3, moved) | Mods screen or the Map Pack dialog |
+| 3 | Co-op Campaign (ours, pane 6; with Live), directly above Custom Games | co-op |
+| 4 | Custom Games (ours, pane 7) | retail row 2's press, CUSTOM GAMES asked for |
+| 5 | Forge (ours, pane 8; with `forge`) | retail row 2's press, FORGE asked for |
+| 6 | Firefight (ours, pane 9; with `firefight`) | retail row 2's press, FIREFIGHT asked for |
+| 7 | Custom Game Browser (ours, pane 5) | the Live browser |
+| 8 | Mods (retail's Content Download, row 3, moved and renamed; pane 3) | Mods screen or the Map Pack dialog |
 
-Without the co-op row (`H2_NO_COOP_ROW=1`) the rows after Clankermatch close
-up: Custom Game 3, the browser 4, Content Download 5
-(`custom_games::row_kind_with`). `h2 bots test` drives Custom Game at row 4.
+A row that is off leaves the list and the rows under it close up
+(`custom_games::Menu::layout`): without the co-op row
+(`H2_NO_COOP_ROW=1`) Custom Games is 3 and Mods 7. The lobby switches to
+the mode a row asks for at its first panel update
+([party-lobby.md](party-lobby.md), "The modes"). `h2 bots test` drives
+Custom Games at row 4.
 
 A moved retail row's press rewrites the press record's row (`[[esp+8]]`)
 to its retail row and runs the original, as the co-op row does; after it
 returns, the cursor row `0x510a18` is set to the row shown (the retail
 press stored the retail row there). The browser's and co-op's presses
-store their rows too (`custom_games::remember_row`, rows 0 to 5). The
-menu restores its cursor only to rows 0 to 3 (`0x231195`: `cmp eax,4;
-jge`), so for rows 4 and 5 a `before` on the menu's build `0x00231170`
+store their rows too (`custom_games::remember_row`, rows 0 to 7; Mods
+opens over the menu and stores none). The menu restores its cursor only
+to rows 0 to 3 (`0x231195`: `cmp eax,4; jge`), so for rows 4 to 7 a
+`before` on the menu's build `0x00231170`
 (`engine::points::LIVE_MENU_CURSOR`, vtable `0x00458b48` slot
 `0x00458bec`, thiscall, no arguments, plain `ret`) does the build itself:
 `[0x54e7bc] = -1`, `byte [0x54e7b8] = 0`, `0x22ee92(screen,
@@ -3975,11 +3982,11 @@ opening the clanker playlists` and `clankermatch: the playlists are the
 clanker hoppers` at the press. The party lobby's Game Setup then drops
 every Switch To row, this one with retail's (`lobby_mode::arrange`, the
 constructor's outermost `after`, so it runs once this row is added):
-the mode strip changes mode, and its MULTIPLAYER tab is the one
+the GAME MODE picker changes mode, and its MULTIPLAYER mode is the one
 matchmaking lobby. There, action 9 reads Change Playlist... and lists
 the clanker and the human hoppers on one page (`clankermatch::Scope::All`),
 so the playlist picked is the Clanker or non-Clanker choice
-([party-lobby.md](party-lobby.md#the-tabs)).
+([party-lobby.md](party-lobby.md#the-modes)).
 
 ### 8.4 Search and lobby (built: the empty search)
 
@@ -4308,15 +4315,16 @@ signed in on port 0, Clankers page off. `h2 bots test --clankermatch`
 (§13.1) covers the lobby and match transitions. Observe the in-game
 actions in step 8 separately.
 
-1. The Xbox Live menu shows seven rows (six without co-op): Quickmatch,
-   OptiMatch, Clankermatch, Co-op Campaign, Custom Game, Custom Game
-   Browser, Content Download. They fit above the hints, none scrolls,
-   and each shows its own help pane (Clankermatch: "Matchmaking against
-   bots..."; Custom Game its retail one).
-2. Custom Game still opens the custom game lobby; back lands on Custom
-   Game. Custom Game Browser opens as before, and back from it lands on
-   Custom Game Browser (`custom games: opening the browser`); the same
-   for Co-op Campaign. Content Download opens as before.
+1. The Xbox Live menu has nine rows (eight without co-op): Quickmatch,
+   OptiMatch, Clankermatch, Co-op Campaign, Custom Games, Forge,
+   Firefight, Custom Game Browser, Mods. Seven show above the hints and
+   the list scrolls to the rest; each shows its own help pane
+   (Clankermatch: "Matchmaking against bots...").
+2. Custom Games opens the custom game lobby; back lands on Custom
+   Games. Forge and Firefight open it in their mode. Custom Game Browser
+   opens as before, and back from it lands on Custom Game Browser
+   (`custom games: opening the browser`); the same for Co-op Campaign.
+   Mods opens as Content Download did.
 3. OptiMatch lists the eight human playlists and no Clanker one.
 4. Clankermatch lists only Clanker Slayer, Clanker Teams and Clanker
    Doubles (the log: `clankermatch: the playlists are the clanker
@@ -5279,8 +5287,8 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      `crates/extensions/game/src/bot_glue.rs`). See §5 for peer admission
      and §9.1 for the Live roster. The page's bots sit only in a custom
      game's lobby (retail mode 2: the party lobby's CUSTOM GAMES, FORGE
-     and FIREFIGHT tabs, `clankers::admits_page`). In the co-op and the
-     matchmaking lobby they stand down and come back on a custom tab
+     and FIREFIGHT modes, `clankers::admits_page`). In the co-op and the
+     matchmaking lobby they stand down and come back in a custom mode
      (`Driver::set_lobby`, [party-lobby.md](party-lobby.md#clankers-by-tab)).
    - **Nav meshes early.** A map picked in the lobby's map list with
      Clankers on, or Clankers coming on after a map was picked, asks

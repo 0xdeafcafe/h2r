@@ -18,8 +18,8 @@ group wgit 0x68 align 4
       0xc unknown 0x4
       0x10 f32[3] text_color -- E text colour r, g, b; ui.rs:586
       0x1c i16[4] rect -- E top, left, bottom, right in UI units, Y up (0x002bafa4); ui.rs:588
-      0x24 tagref bitmap groups=bitm -- E 0x00253ea8: drawn at rect top-left plus bitmap_offset; V; ui.rs:589
-      0x2c i16[2] bitmap_offset -- E 0x00253ea8: x, y from the rect top-left; ui.rs:591
+      0x24 tagref bitmap groups=bitm -- E 0x00253ea8: drawn at rect top-left moved by bitmap_offset; V; ui.rs:589
+      0x2c i16[2] bitmap_offset -- E 0x00253ea8: x added to the rect left, y subtracted from its top (0x00253fb0); ui.rs:591
       0x30 string label -- E label, resolved through the screen unic; V; ui.rs:592
       0x34 i16 render_depth_bias -- E draw-order key after depth (0x002356d8); ui.rs:594
       0x36 unknown 0x2

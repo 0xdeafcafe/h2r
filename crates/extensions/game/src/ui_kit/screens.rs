@@ -310,8 +310,8 @@ pub const NAMES: [&str; 73] = [
     "kit.picker",
     "kit.picker.game",
     FORGE_MAP_PICKER,
+    MODE_PICKER,
     crate::custom_games::browser_filters::SCREEN,
-    crate::lobby_tabs::preview::NAME,
     "design.title",
     "design.body",
     "design.panel-text",
@@ -347,6 +347,10 @@ pub const NAMES: [&str; 73] = [
 /// (`crate::lobby_mode::forge_map_pick`).
 pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
 
+/// The GAME MODE picker X opens in the pregame lobby, over the lobby
+/// (docs/game/party-lobby.md, "Changing mode"; `crate::lobby_tabs::picker`).
+pub const MODE_PICKER: &str = "kit.picker.mode";
+
 /// Every named state of screen `name` for the preview sheet: a list's
 /// first, middle and last row focused; the sign-in prompt's pages
 /// ([`crate::ui_kit::page::Page::states`]).
@@ -381,10 +385,6 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
-        // The party lobby's mode strip (`crate::lobby_tabs::strip`).
-        crate::lobby_tabs::preview::NAME => {
-            Some(Box::new(Driven::new(crate::lobby_tabs::preview::TabsPage)))
-        }
         "account" => Some(Box::new(Driven::new(AccountPage))),
         "mods" | "mods.pack" | "mods.detail" => {
             use crate::mods_screen::spec::{Sample, preview::Preview};
@@ -450,14 +450,33 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
     .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
-/// The lobby's picker's sample ([`FORGE_MAP_PICKER`]): New with two saved
-/// maps, the second held. Its choice writes no file.
+/// The lobby's pickers' samples: [`FORGE_MAP_PICKER`], New with two
+/// saved maps, the second held; [`MODE_PICKER`], the GAME MODE picker X
+/// opens (`crate::lobby_tabs::picker::pick`) for the leader of an Xbox
+/// Live custom game lobby with every mode on, Custom Games held. Their
+/// choices write nothing.
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
     match name {
         FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
             Ok(vec!["Castle Keep".into(), "Lockout Towers".into()]),
             Some("Lockout Towers"),
         )),
+        MODE_PICKER => {
+            use crate::lobby_tabs::{Facts, Place, Present, Tab, header::Shown, row};
+            let facts = Facts {
+                playlists: true,
+                live_co_op: true,
+                remote_members: false,
+            };
+            let shown = Shown {
+                place: Place::XboxLive,
+                leader: true,
+                selected: Tab::CustomGames,
+                row: row(Present::ALL, Place::XboxLive, facts),
+                clanker: None,
+            };
+            Some(crate::lobby_tabs::picker::pick(&shown, Present::ALL))
+        }
         _ => None,
     }
 }
@@ -645,6 +664,15 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
             list(ListPage::new(p.class(), described(&p)))
         }
+        // The held value first, so the picker opens on it; then the
+        // first and last.
+        MODE_PICKER => {
+            let pick = lobby_pick_sample(name)?;
+            let at = [pick.current, 0, pick.values.len().saturating_sub(1)];
+            crate::ui_kit::picker::offer_list(pick)?;
+            let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
+            list(ListPage::new(p.class(), described(&p)).with_states(&at))
+        }
         _ => None,
     }
 }
@@ -653,6 +681,31 @@ pub fn list_page(name: &str) -> Option<ListPage> {
 mod tests {
     use super::*;
     use crate::ui_kit::spec::{Finding, check_fallback};
+
+    /// The GAME MODE picker's sample is the picker X opens: the four modes
+    /// in title case, Custom Games held, over the lobby; its states draw.
+    #[test]
+    fn the_mode_picker_lists_the_four_modes_with_custom_games_held() {
+        use crate::lobby_tabs::Tab;
+        let p = lobby_pick_sample(MODE_PICKER).expect("the mode picker has a sample");
+        assert_eq!(p.title, "GAME MODE");
+        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge", "Firefight"]);
+        assert_eq!(
+            p.values,
+            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight].map(Tab::title_case)
+        );
+        assert_eq!(p.values[p.current], "Custom Games");
+        assert_eq!(p.opener, crate::ui_kit::view::Opener::LOBBY);
+        assert_eq!(p.description, "Choose what this lobby plays.");
+        assert!(NAMES.contains(&MODE_PICKER));
+        let s = sample(MODE_PICKER).expect("the mode picker opens");
+        assert_eq!(s.rows.len(), 4);
+        assert_eq!(s.focus, 1, "it opens on the held value");
+        let states = states(MODE_PICKER).unwrap();
+        let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["focus-1", "focus-0", "focus-3"], "the held value first");
+        assert_eq!(states[0].1.focus, p.current);
+    }
 
     /// The kit's legend is the skulls page's own, glyph for glyph, and the
     /// description the page serves is the described one.
@@ -1019,6 +1072,7 @@ mod tests {
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
                 | FORGE_MAP_PICKER
+                | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
                 | "forge.objects" | "forge.tools" | "forge.link" | "forge.question",
                 Issue::Contrast { id, .. }

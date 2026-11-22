@@ -182,9 +182,10 @@ It never stops the game from starting: a problem is printed as
 passes through. With `--fresh-data` the data dir is emptied at every launch,
 so every launch installs again (about 430 MB).
 
-Without the ISO, the Xbox Live menu's "Content Download" row opens a dialog
-saying where to put it (`mappack.iso` next to `halo2.iso`, then start the
-game): `boot::custom_games` ([live-custom-games.md](../live/live-custom-games.md)).
+Without the mod repository (no Live or no map gate), the Xbox Live menu's
+Mods row (retail's Content Download) opens a dialog saying where to put
+the ISO (`mappack.iso` next to `halo2.iso`, then start the game):
+`game::custom_games` ([live-custom-games.md](../live/live-custom-games.md)).
 
 ## 5. `h2 import-mappack`
 

@@ -257,8 +257,8 @@ pub(crate) fn register_core_film(
     features
         .add(&crate::loaded_map::LoadedMap)
         .map_err(|e| anyhow::anyhow!("loaded map: {e}"))?;
-    // The party privacy as the Live session's visibility, and the Live
-    // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
+    // The party privacy as the Live session's visibility (the Live menu's
+    // rows are registered with the layouts above;
     // docs/live/live-custom-games.md).
     custom_games::install_privacy(rt, i.live.as_ref(), i.settings.as_ref())
         .context("installing the Live game visibility")?;
@@ -351,7 +351,7 @@ pub(crate) fn register_core_film(
         crate::firefight::options::install(features, store)
             .context("installing the Firefight options page")?;
     }
-    // The party lobby: its mode strip and Multiplayer, Forge and
+    // The party lobby: its GAME MODE picker and Multiplayer, Forge and
     // Firefight as modes of the lobby (docs/game/party-lobby.md). It has
     // no switch. It is in every run a settings store is opened for, as
     // Game Setup's other rows of ours are.
@@ -360,10 +360,10 @@ pub(crate) fn register_core_film(
             forge: crate::forge_glue::enabled(features.switches()),
             firefight: firefight_on,
         };
-        // The mode strip's FORGE and FIREFIGHT tabs, with their features
-        // (docs/game/party-lobby.md, "Where each tab runs"). CO-OP is
-        // retail's co-op lobby and always on the strip; co-op over Xbox
-        // Live (`coop_live`, below) is read when the lobby is on Live.
+        // The FORGE and FIREFIGHT modes, with their features
+        // (docs/game/party-lobby.md, "Where each mode runs"). CO-OP is
+        // retail's co-op lobby and always present; co-op over Xbox Live
+        // (`coop_live`, below) is read when the lobby is on Live.
         crate::lobby_tabs::set_present(|p| {
             p.forge = offer.forge;
             p.firefight = offer.firefight;
@@ -837,9 +837,9 @@ pub(crate) fn register_late_for_profile(
     // OptiMatch playlists into the server's clanker hoppers and the rest.
     if i.allow_bot_add {
         crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
-        // The mode strip reads the server's Clanker marks to say whether
+        // The lobby reads the server's Clanker marks to say whether
         // MULTIPLAYER's playlist is a Clanker one.
-        crate::lobby_tabs::strip::set_live(i.live.clone());
+        crate::lobby_tabs::header::set_live(i.live.clone());
     }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op
     // row the player chose, past the four rows retail restores.

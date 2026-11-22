@@ -52,7 +52,9 @@ fn main() {
 
 /// `$OUT_DIR/ui_baked.rs`: `assets/ui/design.yaml` and every
 /// `assets/ui/screens/*.yaml`, each `include_str!`d, so the game carries
-/// our screens' presentation with no file read (ui_kit::data::baked).
+/// our screens' presentation with no file read (ui_kit::data::baked), and
+/// every `assets/ui/retail-samples/*.yaml` for the previews of the retail
+/// screens.
 fn ui_docs() {
     let root = Path::new("../../../assets/ui");
     let screens = root.join("screens");
@@ -79,6 +81,25 @@ fn ui_docs() {
     out.push_str("pub const SCREENS: &[(&str, &str)] = &[\n");
     for n in &names {
         let p = abs(&screens.join(format!("{n}.yaml")));
+        println!("cargo:rerun-if-changed={p}");
+        out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
+    }
+    out.push_str("];\n");
+    // The retail screens' sample states (ui_kit::preview::retail_sample).
+    let samples = root.join("retail-samples");
+    println!("cargo:rerun-if-changed={}", samples.display());
+    let mut names: Vec<String> = std::fs::read_dir(&samples)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
+        .collect();
+    names.sort();
+    out.push_str("pub const RETAIL_SAMPLES: &[(&str, &str)] = &[\n");
+    for n in &names {
+        let p = abs(&samples.join(format!("{n}.yaml")));
         println!("cargo:rerun-if-changed={p}");
         out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
     }

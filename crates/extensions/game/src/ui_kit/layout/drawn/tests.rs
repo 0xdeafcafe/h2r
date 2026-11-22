@@ -184,6 +184,7 @@ impl Source for Wide {
         })
     }
     fn backing(&self, _c: &mut Canvas, _b: Backing) {}
+    fn backdrop(&self, _c: &mut Canvas) {}
     #[allow(clippy::too_many_arguments)]
     fn text(&self, c: &mut Canvas, font: i16, t: &str, r: Rect, j: Justify, rgb: [u8; 3], alpha: u8) {
         SyntheticSource.text(c, font, t, r, j, rgb, alpha);
