@@ -52,6 +52,10 @@ jobs:
         run: |
           channel=$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)
           rustup toolchain install "$channel" --profile minimal --target x86_64-unknown-linux-gnu
+          # Pin the job to that toolchain, so rustup never installs
+          # rust-toolchain.toml's clippy and rustfmt here: on the runner that
+          # install collides with the image's own cargo-fmt.
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
           python3 -m venv "$RUNNER_TEMP/zig"
           "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.24.1 ziglang==0.17.1
           printf '#!/bin/sh\nexec "%s" -m ziglang "$@"\n' "$RUNNER_TEMP/zig/bin/python3" > "$RUNNER_TEMP/zig/bin/zig"
