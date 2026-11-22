@@ -48,7 +48,6 @@ const FOOTER_ID: u32 = 4;
 /// answers. The safe answer is row 0, the initial focus, including when a
 /// button is held.
 struct Form {
-    ask: Ask,
     screen: &'static str,
     class: &'static str,
     labels: &'static [&'static str],
@@ -77,7 +76,6 @@ struct Form {
 // keep their contrast (measured at this anchor), and row 1's cap ends at
 // -57, well above the footer.
 const START: Form = Form {
-    ask: Ask::Start,
     screen: SCREEN,
     class: "lab-takeover-dialog",
     labels: &["Not now", "Close and start"],
@@ -90,7 +88,6 @@ const START: Form = Form {
 // The start question with Start alongside has three rows under the same
 // three-line body, so it takes the running question's anchor, -35.
 const ALONGSIDE: Form = Form {
-    ask: Ask::Start,
     screen: ALONGSIDE_SCREEN,
     class: "lab-takeover-alongside-dialog",
     labels: &["Not now", "Start alongside", "Close and start"],
@@ -103,7 +100,6 @@ const ALONGSIDE: Form = Form {
 // At -35 row 0's cap tops out at -2, 17 under the body, the labels keep
 // their contrast, and row 2's cap ends at -80, above the footer's -83.
 const RUNNING: Form = Form {
-    ask: Ask::Running,
     screen: RUNNING_SCREEN,
     class: "lab-running-dialog",
     labels: &["Finish this one", "Keep running", "Stop and pause"],
