@@ -191,6 +191,16 @@ pub mod method {
     pub const MESH_OPS: &str = "mesh.ops";
     pub const MESH_APPLY: &str = "mesh.apply";
 
+    // The Textures tool (docs/editor/modeling.md, "Texture editing").
+    pub const BITMAP_LIST: &str = "bitmap.list";
+    pub const BITMAP_READ: &str = "bitmap.read";
+    pub const BITMAP_EXPORT: &str = "bitmap.export";
+    pub const BITMAP_IMPORT: &str = "bitmap.import";
+    pub const BITMAP_PAINT: &str = "bitmap.paint";
+    pub const BITMAP_FILL: &str = "bitmap.fill";
+    pub const BITMAP_ADJUST: &str = "bitmap.adjust";
+    pub const BITMAP_PIXELS: &str = "bitmap.pixels";
+
     // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
     pub const SCRIPT_LIST: &str = "script.list";
     pub const SCRIPT_SOURCE: &str = "script.source";

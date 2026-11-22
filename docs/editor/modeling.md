@@ -2,12 +2,13 @@
 
 Status: Partly built. The mesh kernel (slice 1), the in-place
 geometry path (slices 2 and 3, for clusters, instanced definitions and
-`mode` sections) and the collision compiler with `coll` BSPs as meshes
-(slice 8, the crate only) are implemented; the Modeling window is a
-section of the map inspector with buttons, not yet the gizmo, overlays
-and keymap below. A `coll` BSP is not yet a `geometry-edit` target, so
-the window, `geometry.*` and the map's save do not reach it. Grown
-writes, structure collision, markers and the Textures tool are designs.
+`mode` sections), the collision compiler with `coll` BSPs as meshes
+(slice 8, the crate only) and the Textures tool (slice 5, painting and
+exporting in memory without writing the tag) are implemented; the
+Modeling window is a section of the map inspector with buttons, not yet
+the gizmo, overlays and keymap below. A `coll` BSP is not yet a
+`geometry-edit` target, so the window, `geometry.*` and the map's save do
+not reach it. Grown writes, structure collision and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/formats/tags/src/geometry_write.rs`,
@@ -271,7 +272,12 @@ new raw block; behind Allow unverified geometry writes until a game run
 has loaded one) and **grown blocks** (a tag block with more elements;
 behind Allow growing full blocks as well).
 
-## Texture editing (proposed `bitmap-edit`)
+## Texture editing (`bitmap-edit`)
+
+Status: built in memory (`crates/tools/bitmap-edit`, `app/textures.rs`,
+`ui/textures.rs`, `api/bitmaps.rs`). Edits are not written to the tag
+until the encoders of slice 6. The live preview is the canvas; the 3D
+viewport does not show them yet. P8 pages open read-only.
 
 - **Decode.** `assets::bitmap::decode_image` gives every level, face and
   slice of an image as RGBA8. The canvas keeps the source's stored bytes
@@ -424,7 +430,7 @@ namespace (player models and looks) is separate and unchanged.
 | `mesh.set_material {material}`, `mesh.uv {matrix \| project}` | |
 | `mesh.ops {target}` | the op log |
 | `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed |
-| `bitmap.list {name?, used_by?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class |
+| `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class |
 | `bitmap.export {bitmap, image?, mip?, out}`, `bitmap.import {bitmap, image?, path, rect?}` | PNG out and in |
 | `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, erase?}` | one stroke through pixel points, one undo step |
 | `bitmap.fill {bitmap, image?, at \| rect, color, tolerance?}` | |

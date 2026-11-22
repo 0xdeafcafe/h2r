@@ -19,6 +19,13 @@ impl Agent {
         self.lock().live_session = Some(probe);
     }
 
+    /// Boot installs this beside [`Agent::set_live_session_probe`]: the
+    /// live stream still refuses every Live game, edits refuse only what
+    /// the probe names (matchmaking, a client, an unreadable session).
+    pub fn set_live_edit_probe(&self, probe: crate::exec::LiveEditProbe) {
+        self.lock().live_edit = Some(probe);
+    }
+
     /// The `camera` layer's source: the views of the last sealed frame
     /// scene (the game's scene glue). Without one, `live.subscribe` lists
     /// `camera` under `refused`.

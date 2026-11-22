@@ -1,0 +1,21 @@
+[package]
+name = "bitmap-edit"
+description = "The Textures tool's canvas of h2-editor: tiled RGBA8 layers with shared-tile undo snapshots, brush, fill and adjust tools, resampling, PNG in and out and dirty-rectangle tracking (docs/editor/modeling.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["editor/modeling.md"]
+status = "in progress"
+
+# No crate of the workspace: the canvas knows nothing of Halo formats.
+# `serde` makes `BitmapOp` a value agents and the op log carry; `png` is
+# the PNG codec.
+[dependencies]
+serde.workspace = true
+png = "0.18"
+
+[dev-dependencies]
+serde_json.workspace = true

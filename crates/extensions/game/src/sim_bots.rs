@@ -449,6 +449,12 @@ impl Bots for SimBots {
         bots::phantom::player(bots::phantom::PhantomHandle(handle))
     }
 
+    /// Every phantom on the books that has a player: clankers the lobby added
+    /// as well as those `sim.player.add` made.
+    fn joined_phantoms(&self) -> u32 {
+        bots::phantom::list().iter().filter(|p| p.player.is_some()).count() as u32
+    }
+
     fn brain_view(&self, bot: Bot) -> Option<BotBrain> {
         bots::phantom::global()
             .brain_view(bots::phantom::PhantomHandle(bot.handle))
