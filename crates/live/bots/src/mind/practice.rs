@@ -9,13 +9,15 @@
 //! once a map with the crouch spot to prime at for it
 //! ([`crate::bounce_route::pair_site`]: a walk from the crouch spot reaches
 //! the bounce's approach), and a pick checks the one walk from the bot to
-//! that crouch spot. A site with no reachable crouch spot, or whose
-//! approach a walk cannot reach, is never tried. A crouch spot or a site
-//! whose tries keep failing on the way to it (or, a crouch spot, in its
-//! prime) is given up for a while ([`CROUCH_STRIKES`], [`SITE_STRIKES`],
-//! [`GIVE_UP_TICKS`]); strikes lapse ([`STRIKE_TICKS`]), a proven crouch
-//! spot is never given up, and when nothing is left to try everything
-//! given up comes back.
+//! that crouch spot. A crouch spot no walk from the bot reaches is set
+//! aside for a while and its sites pair again without it. A site with no
+//! reachable crouch spot, or whose approach a walk cannot reach, is never
+//! tried. A crouch spot or a site whose tries keep failing on the way to
+//! it (or, a crouch spot, in its prime) is given up for a while
+//! ([`CROUCH_STRIKES`], [`SITE_STRIKES`], [`GIVE_UP_TICKS`]); a failed
+//! prime counts for every bot on the map ([`PRIME_FAILS`]); strikes lapse
+//! ([`STRIKE_TICKS`]), a proven crouch spot is never given up, and when
+//! nothing is left to try everything given up comes back.
 //!
 //! In a drill ([`crate::drill`], a sim's `[drill]`) the bot tries one site
 //! only: it walks to the drill's start, the host sets its word to -3, and
@@ -71,7 +73,8 @@ pub const REACH_QUERIES: usize = 4;
 /// ticks.
 pub const PAIRING_PAUSE: u32 = 2;
 /// A site the bot has no walk to from where it stood is passed over for
-/// this long (ticks), not tried.
+/// this long (ticks), not tried; a crouch spot it has no walk to is set
+/// aside as long, and its sites pair again without it.
 pub const OUT_OF_REACH_TICKS: u32 = 600;
 /// A crouch spot whose tries failed this many times on the walk to it or
 /// in the prime is given up for the map: its sites pair again without it.
@@ -180,6 +183,12 @@ pub struct Practice {
     pairs_for: u64,
     /// Sites with no walk from where the bot last looked, until the tick.
     out_of_reach: Vec<([u32; 3], u32)>,
+    /// Crouch spots with no walk to their start from where the bot last
+    /// looked, until the tick: no site pairs with them meanwhile.
+    crouch_out: Vec<([u32; 3], u32)>,
+    /// Where every bot's failed primes are counted: [`PRIME_FAILS`], or a
+    /// test's own.
+    fails: &'static FailBoard,
     /// The crouch spot the route under way primes at.
     route_crouch: Option<Crouch>,
     /// Failed tries by the crouch spot (its stand) and by the site, with
@@ -231,16 +240,20 @@ struct NothingWhy {
     no_approach: u32,
     /// No crouch spot within reach whose walk gets to it.
     no_crouch: u32,
+    /// Crouch spots set aside: no walk from the bot reaches them.
+    unreached: usize,
 }
 
 impl std::fmt::Display for NothingWhy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} sites, {} crouch spots; sites with no crouch spot to prime at {}, \
-             no approach {}, no walk to them {}, resting {}, given up {}, too far {}",
+            "{} sites, {} crouch spots ({} no walk reaches from here); sites with no \
+             crouch spot to prime at {}, no approach {}, no walk to them {}, resting {}, \
+             given up {}, too far {}",
             self.sites,
             self.crouches,
+            self.unreached,
             self.no_crouch,
             self.no_approach,
             self.no_walk,
@@ -329,6 +342,8 @@ impl Practice {
             pairs: HashMap::new(),
             pairs_for: 0,
             out_of_reach: Vec::new(),
+            crouch_out: Vec::new(),
+            fails: fail_board(),
             route_crouch: None,
             crouch_strikes: HashMap::new(),
             site_strikes: HashMap::new(),
@@ -362,6 +377,20 @@ impl Practice {
     fn is_gone(&self, c: &Crouch) -> bool {
         let k = stand_key(c.stand);
         self.gone.iter().any(|(g, _)| *g == k)
+    }
+
+    /// No walk from the bot reached `c`'s start a moment ago.
+    fn is_out(&self, c: &Crouch) -> bool {
+        let k = stand_key(c.stand);
+        self.crouch_out.iter().any(|(o, _)| *o == k)
+    }
+
+    /// Drops every pairing with the crouch spot whose stand is `k`: those
+    /// sites pair again.
+    fn unpair(&mut self, k: [u32; 3]) {
+        self.pairs.retain(
+            |_, v| !matches!(v, Ok(Pairing { crouch: Some(c), .. }) if stand_key(c.stand) == k),
+        );
     }
 
     fn record(&mut self, stand: Vec3, bounced: bool, why: Option<&'static str>) {
@@ -449,6 +478,85 @@ pub fn claimed_by_other(board: &Board, owner: u64, stand: Vec3, tick: u32) -> bo
     let v = board.lock().unwrap_or_else(|e| e.into_inner());
     v.iter()
         .any(|c| c.owner != owner && c.key == k && fresh(c, tick))
+}
+
+// ---- failed primes: every bot's ----
+
+/// A crouch spot whose prime failed (`prime_failed`), on a map, as every
+/// bot's practice counts it: the geometry that refuses one bot's forced
+/// crouch refuses them all, so one bot's failures count toward the others
+/// giving it up ([`CROUCH_STRIKES`]).
+#[derive(Clone, Copy, Debug)]
+pub struct PrimeFail {
+    /// The map and spots ([`Practice::pairs_for`]).
+    map: u64,
+    key: [u32; 3],
+    /// Failures, each within [`STRIKE_TICKS`] of the one before, and the
+    /// tick of the last.
+    count: u32,
+    tick: u32,
+}
+
+/// The bots' failed primes.
+pub type FailBoard = Mutex<Vec<PrimeFail>>;
+
+/// The process's failed primes: every bot of the game's.
+pub static PRIME_FAILS: FailBoard = Mutex::new(Vec::new());
+
+#[cfg(not(test))]
+fn fail_board() -> &'static FailBoard {
+    &PRIME_FAILS
+}
+
+/// In tests each practice counts on a board of its own (the tests run
+/// side by side); a test of the sharing hands two the same.
+#[cfg(test)]
+fn fail_board() -> &'static FailBoard {
+    let own: &'static mut FailBoard = Box::leak(Box::default());
+    own
+}
+
+/// Counts a failed prime at the crouch spot `key` on `map` at `tick`; the
+/// count, every bot's.
+fn fail_prime(board: &FailBoard, map: u64, key: [u32; 3], tick: u32) -> u32 {
+    let mut v = board.lock().unwrap_or_else(|e| e.into_inner());
+    let i = match v.iter().position(|f| f.map == map && f.key == key) {
+        Some(i) => i,
+        None => {
+            v.push(PrimeFail {
+                map,
+                key,
+                count: 0,
+                tick,
+            });
+            v.len() - 1
+        }
+    };
+    let f = &mut v[i];
+    if tick.wrapping_sub(f.tick) > STRIKE_TICKS {
+        f.count = 0;
+    }
+    f.count += 1;
+    f.tick = tick;
+    f.count
+}
+
+/// The crouch spots on `map` whose primes failed often enough to give up
+/// ([`CROUCH_STRIKES`]) within [`GIVE_UP_TICKS`] of `tick`, with the tick
+/// they come back.
+fn failed_primes(board: &FailBoard, map: u64, tick: u32) -> Vec<([u32; 3], u32)> {
+    let v = board.lock().unwrap_or_else(|e| e.into_inner());
+    v.iter()
+        .filter(|f| f.map == map && f.count >= CROUCH_STRIKES)
+        .filter(|f| tick.wrapping_sub(f.tick) < GIVE_UP_TICKS)
+        .map(|f| (f.key, f.tick.wrapping_add(GIVE_UP_TICKS)))
+        .collect()
+}
+
+/// Forgets `map`'s failed primes: everything given up comes back.
+fn forgive_primes(board: &FailBoard, map: u64) {
+    let mut v = board.lock().unwrap_or_else(|e| e.into_inner());
+    v.retain(|f| f.map != map);
 }
 
 /// The weight of practising at `s` from `at`: higher is better, before
@@ -554,6 +662,7 @@ impl Mind {
         if self.practice.pairs_for != for_map {
             self.practice.pairs.clear();
             self.practice.out_of_reach.clear();
+            self.practice.crouch_out.clear();
             self.practice.crouch_strikes.clear();
             self.practice.site_strikes.clear();
             self.practice.gone.clear();
@@ -563,14 +672,29 @@ impl Mind {
         self.practice
             .out_of_reach
             .retain(|&(_, until)| !reached(tick, until));
-        // What was given up comes back in time; a crouch spot back pairs
-        // again.
-        let gone = self.practice.gone.len();
+        // What was given up or set aside comes back in time; a crouch spot
+        // back pairs again.
+        let (gone, out) = (self.practice.gone.len(), self.practice.crouch_out.len());
         self.practice
             .gone
             .retain(|&(_, until)| !reached(tick, until));
-        if self.practice.gone.len() != gone {
+        self.practice
+            .crouch_out
+            .retain(|&(_, until)| !reached(tick, until));
+        if self.practice.gone.len() != gone || self.practice.crouch_out.len() != out {
             self.practice.pairs.clear();
+        }
+        // A crouch spot other bots' primes failed at is given up here too.
+        for (k, until) in failed_primes(self.practice.fails, for_map, tick) {
+            let likely = self
+                .known
+                .crouches
+                .iter()
+                .any(|c| stand_key(c.stand) == k && !c.proven());
+            if likely && !self.practice.gone.iter().any(|(g, _)| *g == k) {
+                self.practice.gone.push((k, until));
+                self.practice.unpair(k);
+            }
         }
         self.practice
             .given_up
@@ -613,6 +737,8 @@ impl Mind {
         let walk = |a: Vec3, b: Vec3| path_length(m, a, b);
         let ledge = |s: &Site| launch_floor(m, s);
         let (mut paired, mut walks) = (0, 0);
+        // A crouch spot found out of reach this pick: its sites pair again.
+        let mut repair = false;
         for (_, s) in ranked {
             let k = stand_key(s.bounce.stand);
             let pairing = match self.practice.pairs.get(&k) {
@@ -623,7 +749,7 @@ impl Mind {
                     }
                     paired += 1;
                     let practice = &self.practice;
-                    let usable = |c: &Crouch| !practice.is_gone(c);
+                    let usable = |c: &Crouch| !practice.is_gone(c) && !practice.is_out(c);
                     let p = pair_site(&s, &self.known, &walk, &ledge, &usable);
                     self.practice.pairs.insert(k, p);
                     p
@@ -649,12 +775,26 @@ impl Mind {
                 return Pick::Site(s, crouch);
             }
             why.no_walk += 1;
-            self.practice
-                .out_of_reach
-                .push((k, tick.wrapping_add(OUT_OF_REACH_TICKS)));
+            let until = tick.wrapping_add(OUT_OF_REACH_TICKS);
+            match crouch {
+                // Out of reach is the crouch spot, not the site (a proven
+                // one on a floor no walk climbs to, Zanzibar's): set it
+                // aside and pair its sites again with another.
+                Some(c) => {
+                    let ck = stand_key(c.stand);
+                    self.practice.crouch_out.push((ck, until));
+                    self.practice.unpair(ck);
+                    repair = true;
+                }
+                None => self.practice.out_of_reach.push((k, until)),
+            }
+        }
+        if repair {
+            return Pick::Later;
         }
         // Never nothing for what was given up: it all comes back.
         if !self.practice.gone.is_empty() || !self.practice.given_up.is_empty() {
+            forgive_primes(self.practice.fails, for_map);
             let p = &mut self.practice;
             p.gone.clear();
             p.given_up.clear();
@@ -663,6 +803,7 @@ impl Mind {
             p.pairs.clear();
             return Pick::Later;
         }
+        why.unreached = self.practice.crouch_out.len();
         if self.practice.said_nothing != for_map {
             // The proven crouch spots, which pair first: whether a walk
             // reaches each one's start from here and from its stand.
@@ -718,8 +859,10 @@ impl Mind {
     /// approach against the site. One that has failed often enough
     /// ([`CROUCH_STRIKES`], [`SITE_STRIKES`]), each strike within
     /// [`STRIKE_TICKS`] of the one before, is given up for
-    /// [`GIVE_UP_TICKS`]; a proven crouch spot never is. A landing that
-    /// did not bounce counts against neither.
+    /// [`GIVE_UP_TICKS`]; a proven crouch spot never is. A failed prime
+    /// counts on every bot's board too ([`PRIME_FAILS`]): the most of the
+    /// two counts gives it up. A landing that did not bounce counts against
+    /// neither.
     fn practice_strike(
         &mut self,
         site: Site,
@@ -747,13 +890,15 @@ impl Mind {
         let p = &mut self.practice;
         if crouch_leg && let Some(c) = p.route_crouch {
             let k = stand_key(c.stand);
-            let n = strike(&mut p.crouch_strikes, k);
+            let mut n = strike(&mut p.crouch_strikes, k);
+            if why == "prime_failed" {
+                n = n.max(fail_prime(p.fails, p.pairs_for, k, tick));
+            }
             if n >= CROUCH_STRIKES && !c.proven() && !p.is_gone(&c) {
                 p.gone.push((k, until));
                 p.crouch_strikes.remove(&k);
                 // Its sites pair again, without it.
-                p.pairs
-                    .retain(|_, v| !matches!(v, Ok(Pairing { crouch: Some(c), .. }) if stand_key(c.stand) == k));
+                p.unpair(k);
             }
         }
         if site_leg {

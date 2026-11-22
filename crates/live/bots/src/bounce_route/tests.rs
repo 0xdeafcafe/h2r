@@ -1524,3 +1524,179 @@ fn a_goal_under_the_ramp_beside_it_is_walked_to_on_the_ramp() {
     }
     panic!("never arrived: {at:?}");
 }
+
+// ---- the approach to a crouch spot ----
+
+/// A square floor polygon at z 0.
+fn quad(x0: f32, y0: f32, x1: f32, y1: f32) -> Poly {
+    Poly::new(vec![
+        [x0, y0, 0.0],
+        [x1, y0, 0.0],
+        [x1, y1, 0.0],
+        [x0, y1, 0.0],
+    ])
+}
+
+/// Plays `steps` from `at` with a body that walks as asked, except that
+/// it never crosses x 4 between y 0 and 4 (a rail the mesh lacks); the
+/// route's end, where the body got to, and the log.
+fn play_railed(
+    map: &MapData,
+    steps: Vec<Step>,
+    mut at: Vec3,
+    ticks: u32,
+) -> (Option<Result<(), &'static str>>, Vec3, Vec<&'static str>) {
+    let plan = Plan {
+        steps,
+        why: Why::Asked,
+        site: None,
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, false, 0, 1);
+    for tick in 0..ticks {
+        let o = run.step(map, at, tick, None);
+        if o.done.is_some() {
+            return (o.done, at, run.log().iter().map(|l| l.what).collect());
+        }
+        let step = 5.0 * o.motion.speed / 30.0;
+        let to = [
+            at[0] + o.motion.dir[0] * step,
+            at[1] + o.motion.dir[1] * step,
+        ];
+        let crosses = (at[0] <= 4.0) != (to[0] <= 4.0);
+        if !(crosses && (0.0..=4.0).contains(&to[1])) {
+            at = [to[0], to[1], 0.0];
+        }
+    }
+    (None, at, run.log().iter().map(|l| l.what).collect())
+}
+
+#[test]
+fn a_walk_to_a_crouch_spot_goes_round_a_drop_it_cannot_make() {
+    // A floor (A) with a drop link across a gap to the goal's (B), and the
+    // long way round by C, D and E. Ascension's ramp: a drop link over a
+    // rail the mesh lacks, which the bot pushed at for the rest of the
+    // match, every try ending path_lost_jump_crouch.
+    use crate::nav::{Edge, Kind};
+    let polys = vec![
+        quad(0.0, 0.0, 4.0, 4.0),  // A
+        quad(6.0, 0.0, 10.0, 4.0), // B
+        quad(0.0, 4.0, 4.0, 8.0),  // C
+        quad(4.0, 6.0, 10.0, 8.0), // D
+        quad(6.0, 4.0, 10.0, 6.0), // E
+    ];
+    let link = |from: u32, to: u32, a: [f32; 2], b: [f32; 2], kind| Edge {
+        from,
+        to,
+        a: [a[0], a[1], 0.0],
+        b: [b[0], b[1], 0.0],
+        kind,
+    };
+    let both = |x: u32, y: u32, a, b| [link(x, y, a, b, Kind::Walk), link(y, x, a, b, Kind::Walk)];
+    let mut edges = vec![link(0, 1, [4.0, 0.0], [4.0, 4.0], Kind::Drop)];
+    edges.extend(both(0, 2, [0.0, 4.0], [4.0, 4.0]));
+    edges.extend(both(2, 3, [4.0, 6.0], [4.0, 8.0]));
+    edges.extend(both(3, 4, [6.0, 6.0], [10.0, 6.0]));
+    edges.extend(both(4, 1, [6.0, 4.0], [10.0, 4.0]));
+    let map = MapData {
+        nav: NavMesh::new(polys, edges),
+        ..MapData::default()
+    };
+    let to = [8.0, 2.0, 0.0];
+    // The short way is the drop.
+    let first = RouteWalk::new(&map, [1.0, 2.0, 0.0], to, false, 0).unwrap();
+    assert!(
+        first.follower().path.iter().any(|w| w.kind == Kind::Drop),
+        "{:?}",
+        first.follower().path
+    );
+    let steps = vec![
+        Step::Walk { to, crouch: false },
+        Step::Prime(Crouch::at(to)),
+    ];
+    let (done, at, log) = play_railed(&map, steps, [1.0, 2.0, 0.0], 3000);
+    assert_eq!(done, Some(Ok(())), "at {at:?}: {log:?}");
+    // Lost once at the drop, then planned round it.
+    let lost: Vec<_> = log.iter().filter(|w| w.starts_with("path_lost")).collect();
+    assert_eq!(lost, [&"path_lost_jump"], "{log:?}");
+}
+
+/// A low ceiling (z 0.6, under the standing capsule's 0.725) over x 3 to
+/// 5 of a flat floor.
+fn low_ceiling_map() -> MapData {
+    let ceiling = [
+        [3.0, -2.0, 0.6],
+        [5.0, -2.0, 0.6],
+        [5.0, 2.0, 0.6],
+        [3.0, 2.0, 0.6],
+    ];
+    MapData {
+        walls: crate::los::Walls::from_polygons([&ceiling[..]]),
+        ..flat_map()
+    }
+}
+
+/// Plays `steps` from the origin with a body that walks as asked; the
+/// route's end and every motion of its first step (a walk).
+fn play_walk(
+    map: &MapData,
+    steps: Vec<Step>,
+    ticks: u32,
+) -> (Option<Result<(), &'static str>>, Vec<RouteMotion>) {
+    let plan = Plan {
+        steps,
+        why: Why::Asked,
+        site: None,
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, false, 0, 1);
+    let mut at = [0.0f32; 3];
+    let mut walk = Vec::new();
+    for tick in 0..ticks {
+        let o = run.step(map, at, tick, None);
+        if o.done.is_some() {
+            return (o.done, walk);
+        }
+        if run.status().step == 0 {
+            walk.push(o.motion);
+        }
+        let step = 5.0 * o.motion.speed / 30.0;
+        at[0] += o.motion.dir[0] * step;
+        at[1] += o.motion.dir[1] * step;
+    }
+    (None, walk)
+}
+
+#[test]
+fn a_walk_to_a_crouch_spot_ducks_under_a_low_ceiling_rather_than_stopping() {
+    // Midship and Lockout: the walk to a crouch spot's start stood still
+    // at a low ceiling (the headroom check), jumped, and was lost:
+    // path_lost_stuck_crouch.
+    let map = low_ceiling_map();
+    let to = [8.0, 0.0, 0.0];
+    let (done, walk) = play_walk(
+        &map,
+        vec![
+            Step::Walk { to, crouch: false },
+            Step::Prime(Crouch::at(to)),
+        ],
+        600,
+    );
+    assert_eq!(done, Some(Ok(())));
+    assert!(walk.iter().any(|m| m.crouch), "crouched under the ceiling");
+    assert!(
+        !walk[0].crouch && !walk.last().unwrap().crouch,
+        "stood up past it"
+    );
+    let still = walk.iter().filter(|m| m.speed == 0.0).count();
+    assert_eq!(still, 0, "never stood still on the way");
+    // A walk to a bounce's approach never crouches: past the prime a
+    // crouch loses the word.
+    let s = site(8.8, 0.0, 12.3);
+    let (_, walk) = play_walk(
+        &map,
+        vec![Step::Walk { to, crouch: false }, Step::Bounce(s)],
+        200,
+    );
+    assert!(!walk.is_empty() && walk.iter().all(|m| !m.crouch));
+}

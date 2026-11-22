@@ -1776,7 +1776,10 @@ the rest themselves), and fails a walk to a goal (`tail_stuck`). A goal
 farther off is `goal_off_mesh`. Within 0.5 units of its goal on its
 last leg a walk does not stop for the standing capsule's headroom
 ahead (`nav::route::END_HEADROOM`): the probes reach past the goal, under
-the lip a crouch spot's start stands beside.
+the lip a crouch spot's start stands beside. A walk to a crouch spot's
+start (`RouteWalk::ducking`) does not stop for headroom at all: under a
+ceiling the standing body does not fit it crouches and walks on, since
+the prime crouches next anyway. Other walks stop there, standing.
 
 **A lost walk.** When the follower gives a walk up, the route plans the
 walk again from where the bot is, 3 times a step
@@ -1786,7 +1789,13 @@ naming the check and the leg (`bounce_route::lost_on`):
 nearer in 30 ticks, a jump, and no nearer in 30 more), `fell` (its
 waypoint above it past 1.2 units plus the distance), `jump` (stuck at a
 jump or drop link), `link` (a lift, teleporter, elevator or crouch jump
-that did not carry it) or `ended` (no waypoint left). The leg is
+that did not carry it) or `ended` (no waypoint left). A walk lost at a
+jump or drop link (`jump`: a rail or lip the mesh lacks) is planned
+again around it: every later walk of the route skips a jump, drop or
+crouch-jump link within 0.5 units sideways (`nav::route::AVOID_REACH`)
+and 1 unit in height of where it gave up (`RouteWalk::failed_link`,
+`RouteWalk::new_avoiding`), so it takes another way down or fails
+`no_path` rather than pushing at the same link. The leg is
 `crouch` (to a crouch spot's start), `approach` (to a bounce's approach
 or a drop's launch floor) or `nav` (any other walk). The planner measures walks the way a walk is
 taken (`bounce_route::path_length`, `nav::walk_length`): no teleporter
@@ -1877,7 +1886,12 @@ approach, proven first and then the shortest walk. A site with no approach (a dr
 launch) or no crouch spot a walk reaches it from is never tried (a
 primed bot needs no crouch spot). A paired site is picked when the walk
 from the bot to its crouch spot's start (primed: to its approach)
-exists; one with none is passed over for 600 ticks. A pick makes at
+exists; one with none is passed over for 600 ticks
+(`practice::OUT_OF_REACH_TICKS`). When the walk that fails is the one
+to the paired crouch spot's start, the crouch spot is what is out of
+reach (a floor a walk drops down from to the site but none climbs to
+from the bot): it is set aside for the same 600 ticks, its sites pair
+again without it, and the pick looks again 2 ticks later. A pick makes at
 most 4 pairings and 4 of those walks, and with more to look at picks
 again 2 ticks later. A practice try is therefore never spent finding
 out that a site is out of reach: `no_route` is a site whose route
@@ -1893,14 +1907,19 @@ against the site. Strikes lapse: one more than 3600 ticks (2 min,
 crouch spot with 2 (`practice::CROUCH_STRIKES`) is given up and the
 sites paired with it pair again without it; a site with 3
 (`practice::SITE_STRIKES`) is given up. Either comes back after 5400
-ticks (3 min, `practice::GIVE_UP_TICKS`). A proven crouch spot
+ticks (3 min, `practice::GIVE_UP_TICKS`). A failed prime also counts
+for every bot on the map (`practice::PRIME_FAILS`, by the crouch spot,
+lapsing the same way): the geometry that refuses one bot's crouch
+refuses them all, so a crouch spot whose primes failed twice between
+the bots is given up by each of them. A proven crouch spot
 (`superbounce::PROVEN`, or verified) is never given up. When a pick
 finds nothing while something is given up, everything given up comes
 back at once and the pick looks again: giving up never leaves a map
 with nothing to try. A landing that did not bounce counts against
 neither. A pick that finds nothing says why once a map in the log
 (`bots: bounce practice: nothing to try: ...`: the sites and crouch
-spots known, and how many sites had no crouch spot to prime at, no
+spots known, how many crouch spots are set aside as out of reach, and
+how many sites had no crouch spot to prime at, no
 approach, no walk to them, were resting, given up or too far).
 
 **The drill.** A sim match's `[drill]` ([sim.md, "The bounce

@@ -214,3 +214,33 @@ Changed after this, in the next commit on `sb6-bottrain`:
 - A measured spot keeps its traced landing as the aim when a verified drop is merged in (`Site::verified`).
 - A flight's vertical speed is read over 10 ticks from the press (`TAKEOFF_TICKS`).
 - The drop tests' body is the drill's: the measured ground-speed map, a jump 5 ticks after the press, and the air stick driving the speed toward 1.2 times the stick.
+
+## 2026-11-22: batch 4, the failures before the jump
+
+The batch (`superbounce-batch.toml`, four bots a run, four maps by three seeds, 18000 ticks), run by the coordinator on `sb6-bottrain` into `docs/runtime/sim-examples/results/bounce-practice/` (its log is the coordinator's `bounce-sims/batch4.log`). The run records no commit; the fixes below branch from `4317badaf`.
+
+| Map | Tries | Bounces | Primes | Top reasons |
+|---|---:|---:|---:|---|
+| ascension | 187 | 13 | 102 | path_lost_jump_crouch 95, pair_lost 25, missed 20 |
+| lockout | 173 | 0 | 101 | pair_lost 52, prime_failed 44, path_lost_stuck_crouch 34 |
+| midship | 185 | 0 | 109 | path_lost_stuck_crouch 69, pair_lost 48, missed 22 |
+| zanzibar | 0 | 0 | 0 | — |
+| (all) | 545 | 13 | 312 | pair_lost 125, path_lost_stuck_crouch 105, path_lost_jump_crouch 95 |
+
+All 13 bounces are Ascension's measured drop. Most failures come before the jump, on the walk to the crouch spot or in the prime. The causes below come from the runs' `report.json` (`state_components_v1`: position, velocity, crouch and unit flags by tick), the `bots: bounce try:` lines and the maps' nav files (`H2BT`/`H2NV`, polys, edges and wall triangles). The reading was done with one-off Python that isn't kept.
+
+- **path_lost_jump_crouch (Ascension, 95).** Three bots (s1 p0, s1 p2, s2 p0) were trapped on the ramp, mesh polys 1543 and 1544, near (−17.9, 1.3, 2.9). The walk down to their crouch spot took the Drop link 1543→1604 at the ramp's y = 1.2 edge. A rail the mesh lacks stands there: the bodies sit at y 1.285 to 1.385 against it. Each replan (3 a step) planned the same drop, and every try did the same, about 30 tries a bot for the rest of the match. 92 of the 95 ended at the route's step 0.
+- **path_lost_stuck_crouch (midship 69, lockout 34).** The pattern is spells of exactly zero speed, with four jumps about 60 ticks apart. That is the follower's stuck, jump and replan cycle, and it happens at the same places, for example midship (11.12, 5.56, −0.29), (8.73, 7.04), (7.45, 7.20) and (8.03, 10.62). The walk's headroom check (`moves::headroom`) stops a standing walk before a low ceiling near the crouch spot, more than 0.5 from the goal (`END_HEADROOM` only covers the last 0.5). Not every case is proven: lockout's (5.98, −9.12) shows small speeds that are not zero, which fits a body rubbing a wall instead.
+- **pair_lost (125).** Every one is at a standing site with 8 or more standing jumps (the try line keeps the last 8), all taken off at ground speed 0. The word is lost in the jump loop: in 64 of 125 it was unread at takeoff, and the rest landed `not_primed` after 1 to 3 jumps. It was never lost between the prime and the first takeoff, so the approach does not cause it. The hypothesis is that a jump straight up with no sideways speed lets the body sleep, while the drill's drops (sideways speed) kept −3 across a landing. Standing sites bounced 0 times. Nothing in the approach changes this. A standing-site drill is the experiment to run.
+- **prime_failed (lockout 44).** lockout-s1 p1 at the crouch spot near (8.715, −2.915, −5.89): the crouched body stops against walls at x = 8.715 and y = −2.915 and never gets within the stand's reach. When it lets go of crouch, unit flag bit 23 clears within 6 ticks: standing fits there, so nothing forces the crouch. In the game this scanned spot does not prime. Each bot found that out for itself, 2 strikes each.
+- **Zanzibar (0 tries).** The practice's log line: "157 sites, 12 crouch spots; ... no crouch spot 46, no approach 3, no walk to them 108". For the proven crouch spot at (8.04, −2.52, 4.51), a walk reaches its stand's site but no walk reaches its start from the bots. `pair_site` checks the walk from the crouch spot to the approach, which drops down from that floor, so the sites paired with it. The bots' walk to the crouch spot then failed, and the pick marked each site out of reach rather than the crouch spot. The proven crouch spots pair first, and a proven one is never given up, so all 108 sites stayed out of reach.
+
+Changed after this, on `sb9-approach`:
+
+- A walk lost at a jump or drop link is planned again around it: later walks of the route skip a jump, drop or crouch-jump link within 0.5 units sideways and 1 unit in height of where it gave up (`RouteWalk::failed_link`, `RouteWalk::new_avoiding`, `nav::route::AVOID_REACH`, `OrderRun::avoid`). Test: `a_walk_to_a_crouch_spot_goes_round_a_drop_it_cannot_make`.
+- A walk to a crouch spot's start crouches under a ceiling the standing body does not fit, instead of stopping (`RouteWalk::ducking`). Walks on other legs still stop. Test: `a_walk_to_a_crouch_spot_ducks_under_a_low_ceiling_rather_than_stopping`.
+- A failed prime counts for every bot on the map (`practice::PRIME_FAILS`), so a crouch spot whose primes failed twice between the bots is given up by each of them. Test: `a_crouch_spot_whose_primes_fail_for_two_bots_is_given_up_by_both`.
+- When the walk to a paired crouch spot fails, the crouch spot is set aside for 600 ticks (`OUT_OF_REACH_TICKS`), not the site, and its sites pair again without it. The nothing-to-try line counts the crouch spots set aside. Test: `a_crouch_spot_no_walk_reaches_is_set_aside_and_its_site_paired_with_another`.
+- `pair_lost` is unchanged.
+
+What to look for in the next batch: Ascension's `path_lost_jump_crouch` should mostly go, and the bots on the ramp at (−18, 1.3) should take another way down or fail `no_path`. There should be fewer `path_lost_stuck_crouch` on midship, and the ones left (lockout's (5.98, −9.12)) are a different cause. Each bot should log fewer `prime_failed` at a scanned spot that doesn't prime. Zanzibar should try sites. If it still tries none, its nothing-to-try line shows how many crouch spots are set aside.

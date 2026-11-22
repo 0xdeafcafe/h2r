@@ -91,11 +91,27 @@ fn skipped(kind: Kind, crouch: bool) -> bool {
     kind == Kind::Teleporter || (!crouch && kind == Kind::CrouchJump)
 }
 
-/// The corridor a [`RouteWalk`] from `at` to `goal` follows.
-fn walk_path(map: &MapData, at: V3, goal: V3, crouch: bool) -> Option<Vec<Waypoint>> {
+/// A jump or drop link this near (XY, world units) a point a walk gave up
+/// at ([`RouteWalk::failed_link`]) is not taken again by that route.
+pub const AVOID_REACH: f32 = 0.5;
+/// ...and this near in height.
+const AVOID_UP: f32 = 1.0;
+
+/// Whether `e` is a jump or drop link near one of `avoid`.
+fn avoided(e: &super::Edge, avoid: &[V3]) -> bool {
+    matches!(e.kind, Kind::Jump | Kind::Drop | Kind::CrouchJump)
+        && avoid.iter().any(|p| {
+            crate::stuck::segment_dist_xy(e.a, e.b, *p) <= AVOID_REACH
+                && (e.a[2].min(e.b[2]) - AVOID_UP..=e.a[2].max(e.b[2]) + AVOID_UP).contains(&p[2])
+        })
+}
+
+/// The corridor a [`RouteWalk`] from `at` to `goal` follows, never over a
+/// jump or drop link near one of `avoid`.
+fn walk_path(map: &MapData, at: V3, goal: V3, crouch: bool, avoid: &[V3]) -> Option<Vec<Waypoint>> {
     let mut path = map
         .nav
-        .path_avoiding(at, goal, &|e| skipped(e.kind, crouch))?;
+        .path_avoiding(at, goal, &|e| skipped(e.kind, crouch) || avoided(e, avoid))?;
     // A paired traversal can finish a little way short of its exit.
     // Give the follower a final precise walking target in that case.
     if let [.., entry, exit] = path.as_slice()
@@ -118,7 +134,7 @@ fn walk_path(map: &MapData, at: V3, goal: V3, crouch: bool) -> Option<Vec<Waypoi
 /// plans is what a walk can do.
 pub fn walk_length(map: &MapData, at: V3, goal: V3, crouch: bool, tolerance: f32) -> Option<f32> {
     let goal = floor_goal(map, goal);
-    let path = walk_path(map, at, goal, crouch)?;
+    let path = walk_path(map, at, goal, crouch, &[])?;
     let end = path.last()?.at;
     if !arrived(end, goal, tolerance) && !tail_ok(map, end, goal) {
         return None;
@@ -152,6 +168,9 @@ pub struct RouteWalk {
     /// A last stretch that stops getting nearer ends the walk where the
     /// body got to ([`RouteWalk::ending_near`]), rather than failing.
     near: bool,
+    /// Under a ceiling the standing body does not fit, crouch and walk on
+    /// rather than stop ([`RouteWalk::ducking`]).
+    duck: bool,
 }
 
 impl RouteWalk {
@@ -166,8 +185,22 @@ impl RouteWalk {
         crouch: bool,
         tick: u32,
     ) -> Result<Self, &'static str> {
+        Self::new_avoiding(map, at, goal, crouch, tick, &[])
+    }
+
+    /// [`RouteWalk::new`], over no jump or drop link within
+    /// [`AVOID_REACH`] of one of `avoid`: links a walk of the same route
+    /// gave up at ([`RouteWalk::failed_link`]).
+    pub fn new_avoiding(
+        map: &MapData,
+        at: V3,
+        goal: V3,
+        crouch: bool,
+        tick: u32,
+        avoid: &[V3],
+    ) -> Result<Self, &'static str> {
         let goal = floor_goal(map, goal);
-        let path = walk_path(map, at, goal, crouch).ok_or("no_path")?;
+        let path = walk_path(map, at, goal, crouch, avoid).ok_or("no_path")?;
         let tail = path
             .last()
             .filter(|end| !arrived(end.at, goal, TAIL_EPS) && tail_ok(map, end.at, goal))
@@ -182,7 +215,27 @@ impl RouteWalk {
             crouch,
             tail,
             near: false,
+            duck: false,
         })
+    }
+
+    /// The same, crouching under a ceiling the standing body does not fit
+    /// (the headroom check) instead of stopping there: for a walk to a
+    /// crouch spot's start, whose prime crouches next anyway, and which
+    /// often runs under the lip it primes at.
+    pub fn ducking(mut self) -> Self {
+        self.duck = true;
+        self
+    }
+
+    /// Where the walk gave up at a jump or drop link it did not make
+    /// (`path_lost_jump`): the edge's point it walked to, for the walk
+    /// planned again to avoid ([`RouteWalk::new_avoiding`]). `None` when
+    /// its waypoint is no jump or drop.
+    pub fn failed_link(&self) -> Option<V3> {
+        let w = self.follower.path.get(self.follower.next)?;
+        matches!(w.kind, Kind::Jump | Kind::Drop)
+            .then(|| self.follower.behind().map_or(w.at, |b| b.at))
     }
 
     /// The same, with a last stretch that stops getting nearer ending the
@@ -261,11 +314,14 @@ impl RouteWalk {
         let moving = steer.dir != [0.0; 2];
         let ending = self.follower.next + 1 >= self.follower.path.len()
             && dist_xy(at, self.goal) <= END_HEADROOM;
-        let clear = crouch
+        let mut clear = crouch
             || steer.jump
             || self.follower.committed()
             || ending
             || moves::headroom(map, at, steer.dir);
+        // A walk to a crouch spot ducks under the low ceiling ahead.
+        let crouch = crouch || (self.duck && moving && !clear);
+        clear |= crouch;
         Ok(Some(RouteMotion {
             dir: steer.dir,
             speed: if moving && clear {
