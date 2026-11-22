@@ -68,6 +68,9 @@ pub(crate) struct Case {
     /// window (so no drawing, takeover or return to the menu) and no
     /// non-player Live features.
     pub light: bool,
+    /// The dedicated lobby (`H2_HOST_LOBBY=1` on a light host with an
+    /// agent), added as `host_lobby::install` does.
+    pub host_lobby: bool,
 }
 
 impl Case {
@@ -89,6 +92,7 @@ impl Case {
             live: false,
             takeover: false,
             light: false,
+            host_lobby: false,
         }
     }
 
@@ -304,6 +308,11 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
     }
     if let Some(a) = &late.agent {
         crate::host_metrics::install(&mut features, &a.agent, case.light).unwrap();
+        if case.light && case.host_lobby {
+            features
+                .add(&crate::host_lobby::planned_feature(live.clone()))
+                .unwrap();
+        }
     }
     #[cfg(feature = "gpu")]
     if windowed && !lockstep_on {
@@ -606,6 +615,50 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
     assert!(!no_forge.features.iter().any(|f| f.id == "forge"));
 }
 
+/// The feature set `h2 serve --system-link --host-light` plans with
+/// `H2_HOST_LOBBY=1`: the core and late registrations, the light skips and
+/// `sim-frame`, the host metrics and the dedicated lobby. A production boot
+/// refused this plan (the lobby and the map select both hook the game tick
+/// with no order) while every other plan test passed, because none added the
+/// lobby. Every switch set, with and without Live, settings, a VFS and bots.
+#[test]
+fn the_light_host_with_the_dedicated_lobby_plans_with_no_refusal() {
+    let mut failures = Vec::new();
+    let native_off = format!("{ALL_ON},{NATIVE_OFF}");
+    for switches in ["", ALL_ON, native_off.as_str(), "host-light-native"] {
+        for bits in 0u32..(1 << 4) {
+            let mut case = Case::full(switches);
+            case.light = true;
+            case.takeover = false;
+            case.host_lobby = true;
+            case.live = bits & 1 != 0;
+            case.settings = bits & 2 != 0;
+            case.vfs = bits & 4 != 0;
+            case.xapi = bits & 8 != 0;
+            if let Err(e) = plan(&case) {
+                failures.push(e);
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} cases refused:\n{}",
+        failures.len(),
+        dedup(failures).join("\n")
+    );
+    let mut case = Case::full("");
+    case.light = true;
+    case.takeover = false;
+    case.host_lobby = true;
+    let planned = plan(&case).unwrap();
+    for id in ["host-lobby", crate::map_select::FEATURE] {
+        assert!(
+            planned.features.iter().any(|f| f.id == id),
+            "the light host plan has no {id}"
+        );
+    }
+}
+
 /// Where boot registers features outside `register_core` and
 /// `register_late` (`lib.rs`, `run_hosted_with_live`), with the plan test
 /// that covers each, or why none can. Boot's `&mut features` and
@@ -635,10 +688,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
     ),
     ("register_viewer_skips", "Case::light"),
     ("host_metrics::install", "Case::agent"),
-    (
-        "host_lobby::install",
-        "not covered: env-only (H2_HOST_LOBBY) and needs the run options",
-    ),
+    ("host_lobby::install", "Case::host_lobby"),
     ("Sim::install_with_film", "not covered: needs a sim session"),
     (
         "Attract::install",
