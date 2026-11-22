@@ -548,6 +548,124 @@ fn with_everything_given_up_it_all_comes_back_rather_than_nothing() {
     assert!(mind.practice.gone.is_empty());
 }
 
+#[test]
+fn a_crouch_spot_no_walk_reaches_is_set_aside_and_its_site_paired_with_another() {
+    // Zanzibar: every site paired first with a proven crouch spot on a
+    // floor a walk drops from but never climbs to, so the walk from the
+    // bot to it failed and no site was ever tried. The main floor (x -40
+    // to 15, z 0) and a high one (x 15 to 25, z 2) that drops onto it.
+    let main = Poly::new(vec![
+        [-40.0, -40.0, 0.0],
+        [15.0, -40.0, 0.0],
+        [15.0, 40.0, 0.0],
+        [-40.0, 40.0, 0.0],
+    ]);
+    let high = Poly::new(vec![
+        [15.0, -5.0, 2.0],
+        [25.0, -5.0, 2.0],
+        [25.0, 5.0, 2.0],
+        [15.0, 5.0, 2.0],
+    ]);
+    let drop = crate::nav::Edge {
+        from: 1,
+        to: 0,
+        a: [15.0, -5.0, 2.0],
+        b: [15.0, 5.0, 2.0],
+        kind: crate::nav::Kind::Drop,
+    };
+    let m = MapData {
+        nav: NavMesh::new(vec![main, high], vec![drop]),
+        ..MapData::default()
+    };
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let up = Crouch {
+        status: Status::Proven,
+        ..Crouch::at([22.0, 0.0, 2.0])
+    };
+    let near = Crouch::at([3.0, 0.0, 0.0]);
+    let mut mind = Mind::new(Skill::Normal, 45);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![up, near],
+    };
+    // Proven, it pairs first: a walk from it drops to the site.
+    let walk = |a: Vec3, b: Vec3| path_length(&m, a, b);
+    let ledge = |s: &Site| launch_floor(&m, s);
+    let paired = pair_site(&s, &mind.known, &walk, &ledge, &|_: &Crouch| true).unwrap();
+    assert_eq!(paired.crouch, Some(up));
+    assert_eq!(walk([0.0; 3], prime_start(&up)), None);
+    let pick = (0..10).find_map(|tick| match mind.pick_practice([0.0; 3], tick, Some(&m)) {
+        Pick::Site(p, c) => Some((p, c)),
+        Pick::Later => None,
+        Pick::Nothing => panic!("nothing at tick {tick}"),
+    });
+    assert_eq!(
+        pick,
+        Some((s, Some(near))),
+        "paired again with the one in reach"
+    );
+    // Set aside for a while, not given up: from elsewhere a walk may
+    // reach it.
+    assert!(mind.practice.is_out(&up));
+    assert!(mind.practice.gone.is_empty());
+}
+
+#[test]
+fn a_crouch_spot_whose_primes_fail_for_two_bots_is_given_up_by_both() {
+    let m = map();
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let near = Crouch::at([9.0, 1.0, 0.0]);
+    let other = Crouch::at([4.0, 0.0, 0.0]);
+    // Two bots counting failed primes on one board.
+    let two = |seed: u64| -> Vec<Mind> {
+        let board: &'static mut FailBoard = Box::leak(Box::default());
+        let board: &'static FailBoard = board;
+        (0..2)
+            .map(|n| {
+                let mut mind = Mind::new(Skill::Normal, seed + n);
+                mind.known = Known {
+                    sites: vec![s],
+                    crouches: vec![near, other],
+                };
+                mind.practice.fails = board;
+                mind
+            })
+            .collect()
+    };
+    let steps = ["walk_crouched", "prime", "walk", "bounce", "fly"];
+    // Each bot fails once at `near`, at `step` for `why`; then what each
+    // pairs the site with.
+    let after_one_each = |bots: &mut Vec<Mind>, step: usize, why: &'static str| {
+        for mind in bots.iter_mut() {
+            let Pick::Site(_, crouch) = mind.pick_practice([0.0; 3], 0, Some(&m)) else {
+                panic!("a pick");
+            };
+            assert_eq!(crouch, Some(near));
+            mind.practice.route_crouch = crouch;
+            mind.practice_strike(s, &steps, step, Some(why));
+        }
+        bots.iter_mut()
+            .map(|mind| match mind.pick_practice([0.0; 3], 9, Some(&m)) {
+                Pick::Site(_, crouch) => crouch,
+                other => panic!("a pick, not {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    // A failed prime: neither failed twice itself, but the second was the
+    // spot's second, so both give it up.
+    let mut bots = two(46);
+    assert_eq!(
+        after_one_each(&mut bots, 1, "prime_failed"),
+        [Some(other); 2]
+    );
+    // A walk that failed on the way to it counts for the bot alone.
+    let mut bots = two(48);
+    assert_eq!(
+        after_one_each(&mut bots, 0, "path_lost_stuck_crouch"),
+        [Some(near); 2]
+    );
+}
+
 // ---- the drill ----
 
 #[test]

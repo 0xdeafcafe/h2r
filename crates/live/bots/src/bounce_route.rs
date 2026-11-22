@@ -1418,6 +1418,9 @@ pub struct OrderRun {
     reprimes: u32,
     /// The walk under way planned again ([`WALK_REPLANS`]).
     replans: u32,
+    /// The jump and drop links its walks gave up at
+    /// ([`RouteWalk::failed_link`]): no walk of the route takes them again.
+    avoid: Vec<Vec3>,
     drops: u32,
     seed: u64,
     watch: Watch,
@@ -1461,6 +1464,7 @@ impl OrderRun {
             last: None,
             reprimes: 0,
             replans: 0,
+            avoid: Vec::new(),
             drops: 0,
             seed,
             watch: Watch::default(),
@@ -1761,23 +1765,36 @@ impl OrderRun {
         speed: f32,
         near: bool,
     ) -> Result<Option<RouteMotion>, &'static str> {
-        if matches!(self.state, State::Fresh) {
-            let w = RouteWalk::new(map, at, to, crouch, tick)?;
+        // A walk to a crouch spot's start ducks under a low ceiling: the
+        // prime crouches next anyway.
+        let duck = self.leg() == Leg::Crouch;
+        let begin = |avoid: &[Vec3]| -> Result<RouteWalk, &'static str> {
+            let w = RouteWalk::new_avoiding(map, at, to, crouch, tick, avoid)?;
+            let w = if duck { w.ducking() } else { w };
             // A walk to a prime's start or a bounce's approach: the next
             // step steers the rest of the way itself.
-            self.state = State::Walk(if near { w.ending_near() } else { w });
+            Ok(if near { w.ending_near() } else { w })
+        };
+        if matches!(self.state, State::Fresh) {
+            self.state = State::Walk(begin(&self.avoid)?);
         }
         let State::Walk(w) = &mut self.state else {
             return Err("state");
         };
-        match w.step(map, at, tick, tolerance, speed) {
+        let out = w.step(map, at, tick, tolerance, speed);
+        let link = match out {
+            Err("path_lost_jump") => w.failed_link(),
+            _ => None,
+        };
+        match out {
             Err(lost) if lost.starts_with("path_lost") => {
                 if self.replans < WALK_REPLANS {
-                    // Plan the walk again from here.
+                    // Plan the walk again from here, around a jump or drop
+                    // link it could not make (a rail the mesh lacks).
                     self.replans += 1;
                     self.note(tick, lost, at);
-                    let w = RouteWalk::new(map, at, to, crouch, tick)?;
-                    self.state = State::Walk(if near { w.ending_near() } else { w });
+                    self.avoid.extend(link);
+                    self.state = State::Walk(begin(&self.avoid)?);
                     return Ok(Some(RouteMotion::default()));
                 }
                 Err(lost_on(lost, self.leg()))
