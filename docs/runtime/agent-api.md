@@ -31,6 +31,7 @@ connection to hold `session.claim`.
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
+| `world.placement.edit` | act | [Placement edits](#placement-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
 | `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
@@ -2742,8 +2743,8 @@ is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
 | `render.toggle` | act | none, `{name, on}` | lists, sets (`on: null` resets) a toggle |
 
 All three edit writes check the session at the game boundary. Co-op, clients,
-external Live, film playback and unknown sessions refuse writes. A System Link
-host with remote peers requires `confirm_peers` equal to the current total peer
+matchmade or other-hosted Live games, film playback and unknown sessions
+refuse writes. A System Link or Live custom game host with remote peers requires `confirm_peers` equal to the current total peer
 count. A client can pass `known_epoch:null` to `edit.map` to include the loaded
 tag datums in `loaded`, then send its cached epoch to receive the table only
 after a cut. An epoch pins a write or field read to the map reported by `edit.map`.
@@ -3466,8 +3467,10 @@ exclude these object edits.
 
 These methods share the tick and session checks of `sim.state.set` and
 the peer-count confirmation of `edit.batch` (`confirm_peers` on a System
-Link host with other machines). An unknown multiplayer peer count or an
-external Live session refuses the request before queueing. Send the
+Link host with other machines). An unknown multiplayer peer count, a Live
+matchmade game or a Live game another console hosts refuses the request
+before queueing (a Live custom game this console hosts is a host like a
+System Link one). Send the
 `epoch` from `edit.map` to pin a request to that edit session. At dispatch
 and again on the game thread before the engine call, a stale `epoch`
 returns `INVALID_REQUEST` with “the map epoch changed”, as for a tag
@@ -3522,6 +3525,77 @@ the id at execution, so a removed object or reused slot returns
   The placement builder's index flow is known. Calling it with a full
   scenario record requires its register and stack conventions.
   [Placement index evidence](../live/live-telemetry.md)
+
+### Placement edits
+
+`world.placement.edit` is one transaction on one scenario placement block,
+at one tick boundary. The editor computes it from its document diff, so an
+add, a remove and their undos are the same call (design:
+[realtime-edits.md](../editor/realtime-edits.md), "Placements"). It takes the
+session, epoch, identity and `confirm_peers` checks of
+[Object edits](#object-edits). Code:
+`crates/extensions/agent/src/sim/calls/placement/edit.rs`; wire types in
+`crates/extensions/agent-proto/src/sim/edits.rs`.
+
+| Param | Meaning |
+|---|---|
+| `block` | A `placement::BLOCKS` name (`scenery`, `vehicles`, `weapons`, `equipment`, `machines`, `controls`, `crates`, `creatures`), or `sound_scenery`, `starting_locations`, `netgame_flags`, `netgame_equipment`, `starting_equipment` |
+| `was_count`, `count` | The root count the edit started from and the count after it |
+| `records` | `[{index, bytes, was?}]`: the record at `index` of the new numbering, exactly one stride in hex. `was` is the slot's current bytes in hex, or `{hash}`, their FNV-1a 64 as 16 hex digits |
+| `names` | `[{name, placement}]`: point scenario object name `name` at `placement` (-1: none); object blocks only |
+| `delete` | `[index]` in the old numbering: delete the live objects of these entries |
+| `relink` | `[{from, to}]`: give the live objects of old entry `from` the placement index `to` |
+| `create` | `[index]` in the new numbering: make an object for the entry; object blocks only |
+
+The result is `{at, count, capacity, deleted, relinked, created}`, where
+`deleted` and `relinked` are object ids and `created` is
+`[{index, object?, linked, created, why?}]`. `moved` is reserved for a block
+that grew into the edit arena; it is absent until the arena exists.
+
+- **Order.** The host checks everything first: the block's root count
+  equals `was_count`, each record's `was` equals the slot's bytes, each name
+  exists and is of the block's type, and no object to delete or relink is
+  held or attached. A count that disagrees or a stale record answers
+  `MISMATCH` (`data.count`, or `data.records: [{index}]`) with nothing
+  changed. Then it deletes the occupants of `delete`, rewrites the placement
+  index of the occupants of `relink`, writes the records, the name
+  repoints and the count, and creates the objects of `create`. A respawn
+  preview of a deleted entry is deleted with it, and one of a relinked entry
+  follows it.
+- **Room.** A block holds as many records as the map loaded it with. The
+  host records that count at the block's first edit of a map activation.
+  A removed entry's slot stays in the block, so an add after a remove reuses
+  it. A `count` past the room answers `REFUSED` with `data.need` and
+  `data.capacity`; the edit arena that would move the block is not built.
+  `count` past the block's per-type limit (`map::scenario_layout`)
+  answers `REFUSED` with `data.limit`.
+- **Linked creation.** An object is made by the placement-data and
+  `object_new` sequence of `world.object.respawn`, with the entry's
+  placement index written into the placement data at `+0x10` before the
+  call, so the object carries its placement as a loaded one does.
+  `linked` is read back from the made object. The honoured record is the
+  one respawn honours: an unnamed entry with zero placement flags, default
+  scale and zero type-specific fields. Any other record is written and its
+  index comes back `created: false` with the reason; it shows after a
+  reload.
+- **Blocks the engine walks itself.** Starting locations, netgame
+  equipment, netgame flags and starting equipment take records and a count
+  only; `create`, `delete`, `relink` and `names` are invalid for them.
+- **Count changes with other people.** A transaction that changes the count
+  is refused when the session is a System Link host with other people in
+  it: a client checks the placement index of a network object creation
+  against its own count. Phantom bots do not count. Each is a machine with
+  one player in the session's peer count, so the people are the session's
+  peers less the host and the phantoms that have joined
+  (`Bots::joined_phantoms`). The refusal's `data` carries `people`, `peers`
+  and `phantoms`. A transaction that leaves the count alone (a move, a
+  relink) is not refused for peers. A Live custom game this console hosts
+  follows the same rule. Matchmaking, a client and an unreadable Live session
+  are refused before any method runs, by the Live edit check
+  (`agent_glue::live_edit_refusal`, installed with `Agent::set_live_edit_probe`);
+  without that probe every Live game is refused.
+- **Not reverted by `edit.revert`.** Objects were made and deleted: the
+  editor sends the inverse transaction.
 
 ### Phantom backend
 

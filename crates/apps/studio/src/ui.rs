@@ -19,6 +19,7 @@ pub mod scripts;
 pub mod tags;
 mod ui_screens;
 mod hud;
+mod textures;
 mod variants;
 /// The game type script window (`app::rules_edit`).
 mod game_script;
@@ -85,6 +86,7 @@ pub struct Studio {
     playlists: playlists::PlaylistsUi,
     pub ui_screens: ui_screens::UiScreensUi,
     pub hud: hud::HudUi,
+    pub textures: textures::TexturesUi,
     inspector: inspector::InspectorState,
     modeling: modeling::ModelingPanel,
     /// Play and pair (the Game panel; `crate::play`).
@@ -123,6 +125,7 @@ impl Studio {
             playlists: playlists::PlaylistsUi::default(),
             ui_screens: ui_screens::UiScreensUi::default(),
             hud: hud::HudUi::default(),
+            textures: textures::TexturesUi::default(),
             inspector: inspector::InspectorState::default(),
             modeling: modeling::ModelingPanel::default(),
             play: play::PlayUi::default(),
@@ -213,6 +216,7 @@ impl Studio {
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
             ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
             ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
+            ToolKind::Textures => self.textures_windows(ui, app, gpu, &mut actions),
         }
         self.play.window(ui, app, &self.keys.game);
         self.previous_tool = Some(app.tool);
@@ -288,7 +292,7 @@ impl Studio {
                         actions.push(Action::HudSaveAs(p));
                     }
                 }
-                ToolKind::Playlists | ToolKind::UiScreens => {}
+                ToolKind::Playlists | ToolKind::UiScreens | ToolKind::Textures => {}
             }
         }
         if cmd && ui.is_key_pressed(Key::Q) {
@@ -584,6 +588,7 @@ impl Studio {
                     actions.push(Action::HudSaveAs(p));
                 }
             }
+            ToolKind::Textures => textures::file_menu(ui, app, self.dialogs, actions),
             ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             ToolKind::Variants => {
                 menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
@@ -691,6 +696,19 @@ impl Studio {
             .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
         ui.window(&keys.inspector)
             .build(|| hud::inspector(ui, app, st, fonts, self.dialogs, actions));
+    }
+
+    fn textures_windows(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
+        let fonts = &self.fonts;
+        let st = &mut self.textures;
+        let keys = &self.keys.textures;
+        ui.window(&keys.list)
+            .build(|| textures::list(ui, app, st, actions));
+        ui.window(&keys.center)
+            .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
+            .build(|| textures::canvas(ui, app, st, fonts, gpu, actions));
+        ui.window(&keys.inspector)
+            .build(|| textures::inspector(ui, app, st, self.dialogs, actions));
     }
 
     fn tags_window(
@@ -1141,6 +1159,7 @@ impl Studio {
                 ToolKind::Hud => "The HUD map".to_owned(),
                 ToolKind::Tags => "The map's tags".to_owned(),
                 ToolKind::Scripts => "The map's scripts".to_owned(),
+                ToolKind::Textures => "The map's bitmaps".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
@@ -1184,7 +1203,7 @@ impl Studio {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts | ToolKind::Textures => {}
             }
             ui.same_line();
             if ui.button("Discard") {

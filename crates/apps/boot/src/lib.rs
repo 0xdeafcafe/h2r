@@ -1216,6 +1216,7 @@ fn run_configured(
             && _live.as_ref().is_some_and(|h| h.config().server_url.is_some())
         {
             a.agent.set_live_session_probe(agent_glue::remote_live_game);
+            a.agent.set_live_edit_probe(agent_glue::live_edit_refusal);
         }
         #[cfg(feature = "desktop-runtime")]
         if let Some(vfs) = k.vfs() {
