@@ -138,7 +138,8 @@ An `on` handler names its arguments in order; the count must match.
 | `on squad_dead(s)` | squad | |
 | `on actor_kill(killer, class)` | player, Class | |
 | `on actor_assist(killer, assist, class)` | player, player, Class | after its kill |
-| `on bounce(p, spot)` | player, object | needs the bounce detector, not built |
+| `on bounce(p, spot, chain, monster)` | player, object, int, bool | `chain` is its place in its chain (1 a single bounce); `monster` a Monster Bounce |
+| `on bounced(p)` | player | a fall out of the map during a bounce |
 | `on edit(p, o)` | player, object | a granted power was used |
 
 A handler runs to completion. `on timer` handlers run in slot order, then

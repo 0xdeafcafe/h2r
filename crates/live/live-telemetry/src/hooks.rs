@@ -487,15 +487,17 @@ impl Telemetry {
     }
 
     /// A bounce off a superbounce crease by the player in slot `player`,
-    /// `chain` bounces into its chain, at the guest's game tick
-    /// (docs/game/superbounce.md, "Recording"). The superbounce mode calls
-    /// it on the console that records the game; the session sends it as a
-    /// `Superbounce` game event and the film records it with its medals.
-    pub fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32) {
+    /// `chain` bounces into its chain, a Monster when `monster`, at the
+    /// guest's game tick (docs/game/superbounce.md, "Recording"). The
+    /// superbounce mode calls it on the console that records the game; the
+    /// session sends it as a `Superbounce` game event and the film records
+    /// it with its medals.
+    pub fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32, monster: bool) {
         self.bounce_work(guest, |tick| Work::Superbounce {
             tick,
             player,
             chain,
+            monster,
         });
     }
 

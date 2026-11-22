@@ -18,8 +18,12 @@ pub const BOUNCETACULAR: &str = "bouncetacular";
 /// A death falling out of or through the map while trying a bounce (a
 /// `Bounced` event).
 pub const BOUNCED: &str = "bounced";
-/// The bounce medal ids: the chain's, lowest first, then `bounced`.
-pub const BOUNCE_MEDALS: [&str; 7] = [
+/// A bounce that launches well above a normal one (a `Superbounce` event
+/// with `monster`), beside its chain's medals.
+pub const MONSTER_BOUNCE: &str = "monster-bounce";
+/// The bounce medal ids: the chain's, lowest first, then `bounced`, then
+/// `monster-bounce`.
+pub const BOUNCE_MEDALS: [&str; 8] = [
     SUPERBOUNCE,
     DOUBLE_BOUNCE,
     TRIPLE_BOUNCE,
@@ -27,6 +31,7 @@ pub const BOUNCE_MEDALS: [&str; 7] = [
     CHAIN_BOUNCE,
     BOUNCETACULAR,
     BOUNCED,
+    MONSTER_BOUNCE,
 ];
 
 /// Completed a game without teabagging or getting teabagged
@@ -99,6 +104,17 @@ pub fn bounce_medals(chain: u32) -> &'static [&'static str] {
         6 => &[SUPERBOUNCE, BOUNCETACULAR],
         _ => &[SUPERBOUNCE],
     }
+}
+
+/// The medals of a bounce at `chain` that is a Monster when `monster`:
+/// [`bounce_medals`], then [`MONSTER_BOUNCE`] last for a Monster. A count
+/// of 0 is no bounce, Monster or not. The site keeps a copy (`bounceMedals`
+/// in web/src/state/derive.ts).
+pub fn bounce_medals_with(chain: u32, monster: bool) -> impl Iterator<Item = &'static str> {
+    bounce_medals(chain)
+        .iter()
+        .copied()
+        .chain((monster && chain > 0).then_some(MONSTER_BOUNCE))
 }
 
 #[derive(Default)]
@@ -179,11 +195,18 @@ impl Tally {
         }
     }
 
-    /// A bounce at `chain`: each medal of [`bounce_medals`], reported at
-    /// the bounce's tick as well as added to the menu totals.
-    pub fn bounce_with(&mut self, player: u32, chain: u32, mut report: impl FnMut(&'static str)) {
+    /// A bounce at `chain`, a Monster when `monster`: each medal of
+    /// [`bounce_medals_with`], reported at the bounce's tick as well as
+    /// added to the menu totals.
+    pub fn bounce_with(
+        &mut self,
+        player: u32,
+        chain: u32,
+        monster: bool,
+        mut report: impl FnMut(&'static str),
+    ) {
         let p = self.players.entry(player).or_default();
-        for &medal in bounce_medals(chain) {
+        for medal in bounce_medals_with(chain, monster) {
             p.award(medal, &mut report);
         }
     }
@@ -248,7 +271,37 @@ mod tests {
                 "chain-bounce",
                 "bouncetacular",
                 "bounced",
+                "monster-bounce",
             ]
+        );
+    }
+
+    /// A Monster gives its chain's medals, then `monster-bounce` last.
+    #[test]
+    fn a_monster_bounce_adds_its_medal_after_the_chain_medals() {
+        let with = |chain, monster| bounce_medals_with(chain, monster).collect::<Vec<_>>();
+        assert_eq!(with(2, true), [SUPERBOUNCE, DOUBLE_BOUNCE, MONSTER_BOUNCE]);
+        assert_eq!(with(1, true), [SUPERBOUNCE, MONSTER_BOUNCE]);
+        assert_eq!(with(9, true), [SUPERBOUNCE, MONSTER_BOUNCE]);
+        assert_eq!(with(0, true), [] as [&str; 0]);
+        for chain in 0..=8 {
+            assert_eq!(with(chain, false), bounce_medals(chain), "{chain}");
+        }
+        let mut tally = Tally::default();
+        let mut reported = Vec::new();
+        tally.bounce_with(2, 1, false, |m| reported.push(m));
+        tally.bounce_with(2, 2, true, |m| reported.push(m));
+        assert_eq!(
+            reported,
+            [SUPERBOUNCE, SUPERBOUNCE, DOUBLE_BOUNCE, MONSTER_BOUNCE]
+        );
+        assert_eq!(
+            tally.counts(2, true),
+            BTreeMap::from([
+                (SUPERBOUNCE.into(), 2),
+                (DOUBLE_BOUNCE.into(), 1),
+                (MONSTER_BOUNCE.into(), 1),
+            ])
         );
     }
 
@@ -259,9 +312,9 @@ mod tests {
         let mut tally = Tally::default();
         let mut reported = Vec::new();
         for chain in 1..=8 {
-            tally.bounce_with(4, chain, |m| reported.push(m));
+            tally.bounce_with(4, chain, false, |m| reported.push(m));
         }
-        tally.bounce_with(4, 1, |m| reported.push(m));
+        tally.bounce_with(4, 1, false, |m| reported.push(m));
         tally.bounced_with(4, |m| reported.push(m));
         assert_eq!(reported.iter().filter(|&&m| m == SUPERBOUNCE).count(), 9);
         assert_eq!(reported.last(), Some(&BOUNCED));

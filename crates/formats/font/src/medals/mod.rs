@@ -1,5 +1,5 @@
 //! The superbounce medal glyphs (docs/game/hud-kit.md, "The medals"):
-//! seven medals of our own, and Incel's (docs/game/teabag.md), added to
+//! eight medals of our own, and Incel's (docs/game/teabag.md), added to
 //! the HUD message fonts at spare private-use code points so a
 //! notification line can start with one, as a retail multi-kill line
 //! starts with its medal.
@@ -34,10 +34,12 @@ pub const BOUNCED: u16 = 0xe2a6;
 /// U+E2A7: Incel, a game completed without teabagging or getting
 /// teabagged: a teabag under a red no sign. No HUD line shows it yet.
 pub const INCEL: u16 = 0xe2a7;
+/// U+E2A8: Monster Bounce, a bounce that launches well above a normal one.
+pub const MONSTER_BOUNCE: u16 = 0xe2a8;
 
 /// Every medal and its picture: the chain's tiers in order, then Bounced,
-/// then Incel.
-pub const MEDALS: [(u16, &[u16; 576]); 8] = [
+/// then Incel, then Monster Bounce.
+pub const MEDALS: [(u16, &[u16; 576]); 9] = [
     (SUPERBOUNCE, &art::SUPERBOUNCE),
     (DOUBLE_BOUNCE, &art::DOUBLE_BOUNCE),
     (TRIPLE_BOUNCE, &art::TRIPLE_BOUNCE),
@@ -46,6 +48,7 @@ pub const MEDALS: [(u16, &[u16; 576]); 8] = [
     (BOUNCETACULAR, &art::BOUNCETACULAR),
     (BOUNCED, &art::BOUNCED),
     (INCEL, &art::INCEL),
+    (MONSTER_BOUNCE, &art::MONSTER_BOUNCE),
 ];
 
 /// The fonts that get the medals: the two HUD message fonts, the ones the

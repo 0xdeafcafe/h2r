@@ -139,7 +139,7 @@ pub const MESSAGE_NO_BOUNCE: &str = "No bounce.";
 pub const MESSAGE_LONGEST: &str = MESSAGE_LOST_STOOD_STILL;
 
 /// A superbounce medal (docs/game/superbounce.md, "Medals"): the chain's
-/// tiers, then Bounced. Which bounce earns which is the chain's rule
+/// tiers, then Bounced, then Monster Bounce. Which bounce earns which is the chain's rule
 /// (`game::superbounce_chain::bounce_medals`); this is how each shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Medal {
@@ -157,10 +157,14 @@ pub enum Medal {
     Bouncetacular,
     /// A fall out of the map during a bounce.
     Bounced,
+    /// A bounce that launches well above a normal one, given with the
+    /// bounce's Superbounce and chain medal. Last, so it is the line a
+    /// Monster shows.
+    Monster,
 }
 
 /// Every medal, in [`Medal`]'s order.
-pub const MEDALS: [Medal; 7] = [
+pub const MEDALS: [Medal; 8] = [
     Medal::Superbounce,
     Medal::DoubleBounce,
     Medal::TripleBounce,
@@ -168,13 +172,14 @@ pub const MEDALS: [Medal; 7] = [
     Medal::ChainBounce,
     Medal::Bouncetacular,
     Medal::Bounced,
+    Medal::Monster,
 ];
 
 /// Each medal's glyph in the HUD message fonts: new art added at spare
 /// private-use code points by the font rewrite (`font::medals`,
 /// docs/game/hud-kit.md, "The medals"). New art changes the pictures, not
 /// these.
-pub const MEDAL_GLYPHS: [(Medal, char); 7] = [
+pub const MEDAL_GLYPHS: [(Medal, char); 8] = [
     (Medal::Superbounce, '\u{e2a0}'),
     (Medal::DoubleBounce, '\u{e2a1}'),
     (Medal::TripleBounce, '\u{e2a2}'),
@@ -182,10 +187,11 @@ pub const MEDAL_GLYPHS: [(Medal, char); 7] = [
     (Medal::ChainBounce, '\u{e2a4}'),
     (Medal::Bouncetacular, '\u{e2a5}'),
     (Medal::Bounced, '\u{e2a6}'),
+    (Medal::Monster, '\u{e2a8}'),
 ];
 
 /// The widest medal line: the most characters.
-pub const MEDAL_LONGEST: &str = "\u{e2a5} Bouncetacular!";
+pub const MEDAL_LONGEST: &str = "\u{e2a8} Monster bounce!";
 
 impl Medal {
     /// The id the film, Live and the agent API use (the canonical list is
@@ -199,6 +205,7 @@ impl Medal {
             Medal::ChainBounce => "chain-bounce",
             Medal::Bouncetacular => "bouncetacular",
             Medal::Bounced => "bounced",
+            Medal::Monster => "monster-bounce",
         }
     }
 
@@ -217,6 +224,7 @@ impl Medal {
             Medal::ChainBounce => "Chain bounce!",
             Medal::Bouncetacular => "Bouncetacular!",
             Medal::Bounced => "Bounced!",
+            Medal::Monster => "Monster bounce!",
         }
     }
 
@@ -767,6 +775,7 @@ pub fn views() -> Vec<(&'static str, View)> {
                 ..not_primed.clone()
             },
         ),
+        ("medal-monster", medal(Medal::Monster, 13)),
         (
             "missed",
             View {
@@ -1080,6 +1089,7 @@ mod tests {
             ("medal-chain", Medal::ChainBounce),
             ("medal-bouncetacular", Medal::Bouncetacular),
             ("medal-bounced", Medal::Bounced),
+            ("medal-monster", Medal::Monster),
         ] {
             assert_eq!(medal(s).map(|x| x.0), Some(m.line()), "{s}");
         }
@@ -1099,7 +1109,7 @@ mod tests {
             );
             assert_eq!(Medal::from_id(m.id()), Some(m));
         }
-        assert_eq!(MEDAL_LONGEST, Medal::Bouncetacular.line());
+        assert_eq!(MEDAL_LONGEST, Medal::Monster.line());
     }
 
     /// No state carries a launch or drop number; the X button is only in
@@ -1166,6 +1176,7 @@ mod tests {
                 "medal-chain",
                 "medal-bouncetacular",
                 "medal-bounced",
+                "medal-monster",
                 "missed",
                 "scanning",
                 "no-strips",

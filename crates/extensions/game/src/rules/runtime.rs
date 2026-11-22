@@ -18,8 +18,8 @@
 //!   authority drops the script and its record.
 //! - [`Runtime::kill`] at `PLAYER_KILLED`'s entry: `on kill`.
 //! - [`Runtime::bounces`] after each game tick, from the superbounce
-//!   mode's medal chain: `on bounce`, each bounce on the tick its chain
-//!   files it.
+//!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
+//!   Bounced on the tick its chain files it.
 //! - [`Runtime::post_tick`] after each game tick: timers, then `on tick`.
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
 //!
@@ -75,6 +75,7 @@ pub const DELIVERED: &[Event] = &[
     Event::Timer,
     Event::Tick,
     Event::Bounce,
+    Event::Bounced,
 ];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
@@ -785,25 +786,47 @@ impl Runtime {
     }
 
     /// A superbounce by player `player` off the strip `spot`
-    /// (`superbounce_chain::spot_id`): `on bounce`, with its calls kept
-    /// for the next tick boundary.
-    pub fn bounce(&mut self, m: &dyn GuestMemory, player: u8, spot: u32) {
+    /// (`superbounce_chain::spot_id`), the `chain`th of its chain, a
+    /// Monster with `monster`: `on bounce`, with its calls kept for the
+    /// next tick boundary.
+    pub fn bounce(&mut self, m: &dyn GuestMemory, player: u8, spot: u32, chain: u32, monster: bool) {
         self.run(m, |vm, g| {
-            vm.fire(g, Input::Bounce(player, spot));
+            vm.fire(
+                g,
+                Input::Bounce {
+                    player,
+                    spot,
+                    chain,
+                    monster,
+                },
+            );
         });
     }
 
-    /// One tick's medal awards (`superbounce_chain::Medals::step`): each
-    /// bounce as [`Runtime::bounce`], in order. A Bounced and a medal test
-    /// name no strip and are not bounces.
+    /// Player `player` fell out of the map during a bounce: `on bounced`,
+    /// with its calls kept for the next tick boundary.
+    pub fn bounced(&mut self, m: &dyn GuestMemory, player: u8) {
+        self.run(m, |vm, g| {
+            vm.fire(g, Input::Bounced(player));
+        });
+    }
+
+    /// One tick's medal awards (`superbounce_chain::Medals::step`), in
+    /// order: each bounce as [`Runtime::bounce`] with its chain's count
+    /// and whether it was a Monster, each Bounced as [`Runtime::bounced`].
+    /// A medal test's awards never come here (`superbounce_mode` steps
+    /// only the chain's own).
     pub fn bounces(
         &mut self,
         m: &dyn GuestMemory,
         awards: &[crate::superbounce_chain::Award],
     ) {
+        use hud_kit_core::huds::superbounce::Medal;
         for a in awards {
             if let Some(spot) = a.spot {
-                self.bounce(m, a.slot, spot);
+                self.bounce(m, a.slot, spot, a.chain, a.monster());
+            } else if a.medals.contains(&Medal::Bounced) {
+                self.bounced(m, a.slot);
             }
         }
     }

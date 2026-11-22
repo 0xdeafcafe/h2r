@@ -94,7 +94,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |
-| `on enter(z, o)`, `on leave(z, o)`, `on bounce(p, spot)` | `zone, object`; `player, zone` |
+| `on enter(z, o)`, `on leave(z, o)`, `on bounce(p, spot, chain, monster)` | `zone, object`; `player, zone, int, bool` |
 | `on actor_kill(killer, class)`, `on actor_assist(killer, assist, class)` | the players are `player?` |
 
 Every other parameter and event argument is non-null: a loop member, a

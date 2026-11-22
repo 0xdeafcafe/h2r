@@ -690,7 +690,7 @@ with `INVALID_PARAMS`) answers from the state the
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
 | `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
 | `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
-| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular` and `bounced` |
+| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
@@ -711,17 +711,21 @@ h2 agent superbounce.set '{"on":true}'
 `superbounce.medal_test {"chain": N}` or `{"bounced": true}` (access: act)
 files a bounce at chain count `N` (1 and up), or a Bounced, for the first
 local player with a unit, by the chain's rule
-(`superbounce_chain::bounce_medals`). The chain is left at `N` and live,
+(`superbounce_chain::bounce_medals_with`); `"monster": true` with `chain`
+files it as a Monster Bounce. The chain is left at `N` and live,
 as after a real bounce; a Bounced ends it. The award reaches the HUD (its
 medal line and notification) and `superbounce.state`'s `medals` as a real
 one does. The answer is `{"player", "chain", "medals", "line"}`: the slot,
 the count, the ids filed and the HUD's line (the highest medal's glyph and
 words). It refuses with the mode off, with no local player, with `chain`
-0, or with both or neither of `chain` and `bounced`.
+0, with both or neither of `chain` and `bounced`, or with `monster` and
+`bounced`.
 
 ```sh
 h2 agent superbounce.medal_test '{"chain":6}'
 # {"player":0,"chain":6,"medals":["superbounce","bouncetacular"],"line":"\ue2a5 Bouncetacular!"}
+h2 agent superbounce.medal_test '{"chain":2,"monster":true}'
+# {"player":0,"chain":2,"medals":["superbounce","double-bounce","monster-bounce"],"line":"\ue2a8 Monster bounce!"}
 h2 agent superbounce.medal_test '{"bounced":true}'
 ```
 

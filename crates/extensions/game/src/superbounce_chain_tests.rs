@@ -110,9 +110,59 @@ fn the_medals_at_each_count_each_tier_once() {
             "quad-bounce",
             "chain-bounce",
             "bouncetacular",
-            "bounced"
+            "bounced",
+            "monster-bounce"
         ]
     );
+    // A Monster earns its medal beside the bounce's own, last, so its
+    // line is the one shown.
+    assert_eq!(bounce_medals_with(2, false), [Superbounce, DoubleBounce]);
+    assert_eq!(
+        bounce_medals_with(2, true),
+        [Superbounce, DoubleBounce, Monster]
+    );
+    assert_eq!(bounce_medals_with(9, true), [Superbounce, Monster]);
+    assert!(bounce_medals_with(0, true).is_empty());
+    assert_eq!(highest(&bounce_medals_with(6, true)), Some(Monster));
+}
+
+/// A bounce that comes out over `MONSTER_VZ` is a Monster; the measured
+/// launches (+12 here, as Ascension's) are not. Both count in the chain.
+#[test]
+fn a_launch_over_the_monster_speed_is_a_monster_bounce() {
+    let monster = || {
+        let mut v = vec![
+            falling(STRIP),
+            tick(STRIP, MONSTER_VZ + 2.0, false),
+            tick(STRIP, MONSTER_VZ + 1.8, false),
+        ];
+        v.extend((0..10).map(|i| tick(STRIP, MONSTER_VZ - i as f32, true)));
+        v
+    };
+    let mut c = Chain::default();
+    let mut ticks = bounce_and_fly();
+    ticks.extend(monster());
+    let events = run(&mut c, &ticks);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(matches!(events[0], Event::Bounce { monster: false, strips: 1, .. }));
+    assert!(matches!(events[1], Event::Bounce { monster: true, chain: 2, .. }));
+    assert_eq!(events[1].medals(), [Superbounce, DoubleBounce, Monster]);
+    assert_eq!(events[1].strips(), Some(1));
+    // Just at the speed is not over it.
+    let mut c = Chain::default();
+    let at = [
+        falling(STRIP),
+        tick(STRIP, MONSTER_VZ, false),
+        tick(STRIP, MONSTER_VZ - 0.2, false),
+    ];
+    let got = run(&mut c, &at);
+    assert!(matches!(got[..], [Event::Bounce { monster: false, .. }]), "{got:?}");
+    // The award carries it; the medal test files one on asking.
+    let mut m = Medals::new();
+    let a = m.test(0, Some(0), 10, 3, false, true);
+    assert!(a.monster());
+    assert_eq!(a.medals, [Superbounce, TripleBounce, Monster]);
+    assert!(!m.test(0, Some(0), 11, 4, false, false).monster());
 }
 
 #[test]
@@ -169,7 +219,9 @@ fn a_bounce_names_its_strip_by_a_stable_id() {
         .collect();
     assert_eq!(awards.len(), 1);
     assert_eq!((awards[0].slot, awards[0].spot), (3, Some(id)));
-    assert_eq!(m.test(3, None, 99, 2, false).spot, None);
+    assert_eq!(awards[0].strips, Some(1));
+    let t = m.test(3, None, 99, 2, false, false);
+    assert_eq!((t.spot, t.strips), (None, None));
 }
 
 #[test]
@@ -359,7 +411,7 @@ fn every_player_has_a_chain_bots_too() {
 #[test]
 fn the_test_award_is_a_real_bounces_and_recent_keeps_eight() {
     let mut m = Medals::new();
-    let a = m.test(0, Some(0), 10, 5, false);
+    let a = m.test(0, Some(0), 10, 5, false, false);
     assert_eq!(
         (a.chain, a.medals.clone()),
         (5, vec![Superbounce, ChainBounce])
@@ -367,11 +419,11 @@ fn the_test_award_is_a_real_bounces_and_recent_keeps_eight() {
     assert_eq!(a.user, Some(0));
     assert!(m.chain(0).unwrap().live());
     assert_eq!(m.records()[&0].chain, 5);
-    let b = m.test(0, Some(0), 11, 0, true);
+    let b = m.test(0, Some(0), 11, 0, true, false);
     assert_eq!(b.medals, [Bounced]);
     assert!(!m.chain(0).unwrap().live());
     for i in 0..10 {
-        m.test(1, None, 20 + i, 1, false);
+        m.test(1, None, 20 + i, 1, false, false);
     }
     assert_eq!(m.recent().count(), RECENT);
     assert_eq!(m.recent().last().unwrap().tick, 29);
@@ -382,8 +434,9 @@ fn the_test_award_is_a_real_bounces_and_recent_keeps_eight() {
 struct Calls(std::cell::RefCell<Vec<(&'static str, u32, u32)>>);
 
 impl Recorder for Calls {
-    fn superbounce(&self, _: &runtime::Guest, player: u32, chain: u32) {
-        self.0.borrow_mut().push(("superbounce", player, chain));
+    fn superbounce(&self, _: &runtime::Guest, player: u32, chain: u32, monster: bool) {
+        let kind = if monster { "monster" } else { "superbounce" };
+        self.0.borrow_mut().push((kind, player, chain));
     }
     fn bounced(&self, _: &runtime::Guest, player: u32, chain: u32) {
         self.0.borrow_mut().push(("bounced", player, chain));
@@ -399,6 +452,7 @@ fn award_of(slot: u8, chain: u32, medals: Vec<Medal>) -> Award {
         chain,
         medals,
         spot: None,
+        strips: None,
     }
 }
 
@@ -414,6 +468,7 @@ fn every_award_is_recorded_once_by_its_kind() {
     let awards = [
         award_of(0, 1, bounce_medals(1).to_vec()),
         award_of(3, 6, bounce_medals(6).to_vec()),
+        award_of(4, 2, bounce_medals_with(2, true)),
         award_of(2, 4, vec![Bounced]),
         award_of(5, 0, vec![Bounced]),
     ];
@@ -423,6 +478,7 @@ fn every_award_is_recorded_once_by_its_kind() {
         vec![
             ("superbounce", 0, 1),
             ("superbounce", 3, 6),
+            ("monster", 4, 2),
             ("bounced", 2, 4),
             ("bounced", 5, 0),
         ]

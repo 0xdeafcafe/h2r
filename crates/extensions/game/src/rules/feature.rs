@@ -279,8 +279,8 @@ pub fn install(
 }
 
 /// One tick's superbounce awards (`superbounce_chain::Medals::step`), as
-/// the running script's `on bounce` ([`Runtime::bounces`]). Nothing
-/// without the feature.
+/// the running script's `on bounce` and `on bounced`
+/// ([`Runtime::bounces`]). Nothing without the feature.
 pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) {
     if awards.is_empty() {
         return;

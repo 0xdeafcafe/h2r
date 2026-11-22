@@ -253,10 +253,13 @@ pub enum Event {
     /// A second player who damaged a killed actor in its last five
     /// seconds (`firefight::director::Kill::assist`).
     ActorAssist,
+    /// A fall out of the map during a bounce: the superbounce medal chain's
+    /// Bounced (`superbounce_chain::Event::Bounced`).
+    Bounced,
 }
 
 impl Event {
-    pub const ALL: [Event; 20] = [
+    pub const ALL: [Event; 21] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -277,6 +280,7 @@ impl Event {
         Event::Quit,
         Event::RoundEnd,
         Event::ActorAssist,
+        Event::Bounced,
     ];
 
     pub fn code(self) -> u8 {
@@ -310,6 +314,7 @@ impl Event {
             Event::Quit => "quit",
             Event::RoundEnd => "round_end",
             Event::ActorAssist => "actor_assist",
+            Event::Bounced => "bounced",
         }
     }
 
@@ -322,10 +327,13 @@ impl Event {
     pub fn args(self) -> &'static [Ty] {
         match self {
             Event::Kill => &[Ty::Player, Ty::Player],
-            Event::Spawn | Event::Death | Event::Join | Event::Quit => &[Ty::Player],
-            Event::Pickup | Event::Drop | Event::Press | Event::Edit | Event::Bounce => {
-                &[Ty::Player, Ty::Object]
+            Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced => {
+                &[Ty::Player]
             }
+            Event::Pickup | Event::Drop | Event::Press | Event::Edit => &[Ty::Player, Ty::Object],
+            // The chain's count (1 for a single bounce, 2 for a double) and
+            // whether it was a Monster Bounce.
+            Event::Bounce => &[Ty::Player, Ty::Object, Ty::Int, Ty::Bool],
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
             Event::SquadDead => &[Ty::Squad],
             Event::ActorKill => &[Ty::Player, Ty::Class],
@@ -347,6 +355,7 @@ impl Event {
             | Event::Drop
             | Event::Press
             | Event::Bounce
+            | Event::Bounced
             | Event::Edit
             | Event::Join
             | Event::Quit

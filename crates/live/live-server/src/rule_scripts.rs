@@ -308,9 +308,17 @@ enum WireEvent {
         player: u8,
         object: u32,
     },
+    /// `chain` is the bounce's place in its chain, 1 when absent.
     Bounce {
         player: u8,
         object: u32,
+        #[serde(default = "one")]
+        chain: u32,
+        #[serde(default)]
+        monster: bool,
+    },
+    Bounced {
+        player: u8,
     },
     Edit {
         player: u8,
@@ -355,7 +363,18 @@ impl From<WireEvent> for Input {
             WireEvent::Pickup { player, object } => Input::Pickup(player, object),
             WireEvent::Drop { player, object } => Input::Drop(player, object),
             WireEvent::Press { player, object } => Input::Press(player, object),
-            WireEvent::Bounce { player, object } => Input::Bounce(player, object),
+            WireEvent::Bounce {
+                player,
+                object,
+                chain,
+                monster,
+            } => Input::Bounce {
+                player,
+                spot: object,
+                chain,
+                monster,
+            },
+            WireEvent::Bounced { player } => Input::Bounced(player),
             WireEvent::Edit { player, object } => Input::Edit(player, object),
             WireEvent::Enter { zone, object } => Input::Enter { zone, object },
             WireEvent::Leave { zone, object } => Input::Leave { zone, object },
@@ -378,6 +397,10 @@ struct WireTick {
 
 fn yes() -> bool {
     true
+}
+
+fn one() -> u32 {
+    1
 }
 
 /// `POST /v1/rules/run`'s scenario.

@@ -80,6 +80,10 @@ fn yes() -> bool {
     true
 }
 
+fn one() -> u32 {
+    1
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioTick {
@@ -121,11 +125,19 @@ pub enum ScenarioEvent {
         player: u8,
         object: u32,
     },
+    /// A superbounce off strip `object`: `chain` is its place in its
+    /// chain (1, a single bounce, when absent), `monster` a Monster Bounce.
     Bounce {
         player: u8,
         #[serde(default)]
         object: u32,
+        #[serde(default = "one")]
+        chain: u32,
+        #[serde(default)]
+        monster: bool,
     },
+    /// A fall out of the map during a bounce: the Bounced medal.
+    Bounced(u8),
     Edit {
         player: u8,
         object: u32,
@@ -159,7 +171,18 @@ impl ScenarioEvent {
             ScenarioEvent::Press { player, object } => Input::Press(player, object),
             ScenarioEvent::Pickup { player, object } => Input::Pickup(player, object),
             ScenarioEvent::Drop { player, object } => Input::Drop(player, object),
-            ScenarioEvent::Bounce { player, object } => Input::Bounce(player, object),
+            ScenarioEvent::Bounce {
+                player,
+                object,
+                chain,
+                monster,
+            } => Input::Bounce {
+                player,
+                spot: object,
+                chain,
+                monster,
+            },
+            ScenarioEvent::Bounced(p) => Input::Bounced(p),
             ScenarioEvent::Edit { player, object } => Input::Edit(player, object),
             ScenarioEvent::SquadDead(s) => Input::SquadDead(s),
             ScenarioEvent::ActorKill { killer, class } => Input::ActorKill { killer, class },
@@ -395,7 +418,8 @@ on kill(victim, killer) {
                 "ticks":[{"events":[{"kill":{"victim":1,"killer":0}},{"spawn":1},{"press":{"player":0}},
                     {"bounce":{"player":0}},{"edit":{"player":0,"object":5}},
                     {"actor_kill":{"killer":0,"class":"elite"}},
-                    {"actor_assist":{"killer":0,"assist":1,"class":"elite"}}]}]}"#,
+                    {"actor_assist":{"killer":0,"assist":1,"class":"elite"}},
+                    {"bounce":{"player":1,"object":9,"chain":3,"monster":true}},{"bounced":1}]}]}"#,
         )
         .unwrap();
         assert_eq!(s.seed, 7);
@@ -418,6 +442,26 @@ on kill(victim, killer) {
                 class: "elite".into()
             }
         );
+        // A bounce is a single, normal one unless it says otherwise.
+        assert_eq!(
+            s.ticks[0].events[3].input(),
+            Input::Bounce {
+                player: 0,
+                spot: 0,
+                chain: 1,
+                monster: false
+            }
+        );
+        assert_eq!(
+            s.ticks[0].events[7].input(),
+            Input::Bounce {
+                player: 1,
+                spot: 9,
+                chain: 3,
+                monster: true
+            }
+        );
+        assert_eq!(s.ticks[0].events[8].input(), Input::Bounced(1));
         assert!(serde_json::from_str::<Scenario>(r#"{"nope":1}"#).is_err());
     }
 
