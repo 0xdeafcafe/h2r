@@ -1416,7 +1416,7 @@ mod tests {
         h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
         h.frames(&mut app, 2).unwrap();
         let mut api = crate::api::Api::new();
-        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        let _weap = format!("{:#010x}", tag_tests::weap_id().0);
         let header = |api: &mut crate::api::Api, h: &Headless, app: &mut App| {
             let view = api.call(app, m::TAG_VIEW, serde_json::json!({})).unwrap();
             let drawn = h.studio.tags.header.clone();

@@ -634,7 +634,8 @@ fn the_light_host_with_the_dedicated_lobby_plans_with_no_refusal() {
     // map-select installs only once boot prepared the map catalogue, a
     // process-wide set this test does not make: it would leak into the
     // other plan tests, whose small guest arena it fills.
-    for id in ["host-lobby"] {
+    {
+        let id = "host-lobby";
         assert!(
             planned.features.iter().any(|f| f.id == id),
             "the light host plan has no {id}"

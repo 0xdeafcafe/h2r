@@ -814,7 +814,7 @@ impl Cx<'_, '_> {
             Kind::TagRef { groups } => self.reference(r, groups, le(&b, 4, 4) as u32),
             Kind::Datum { groups } => self.reference(r, groups, le(&b, 0, 4) as u32),
             Kind::Word => {
-                let mut v = le(&b, 0, 4) as u64;
+                let mut v = le(&b, 0, 4);
                 if Drag::<u64, _>::new("##v")
                     .range(0, 0xffff_ffff)
                     .display_format(fmt_hex("0x%08llx"))
