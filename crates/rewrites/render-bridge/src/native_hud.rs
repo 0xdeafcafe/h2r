@@ -111,6 +111,14 @@ pub trait Host: Send + Sync {
         false
     }
 
+    /// The UI walk is about to draw `widget` (a validated sorted item):
+    /// true when the host has drawn it itself, in order, so the game's
+    /// draw is skipped (the Skulls page's model picture,
+    /// docs/game/skulls.md "The model picture").
+    fn replace_widget(&self, _mem: &mut dyn GuestMemory, _widget: u32) -> bool {
+        false
+    }
+
     fn enter_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32, _eligible: bool) {}
 
     fn leave_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32) {}

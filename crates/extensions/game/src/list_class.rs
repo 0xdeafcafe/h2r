@@ -165,6 +165,12 @@ pub trait Rows: Send + Sync {
     fn tint(&self, _row: i16) -> Option<[f32; 3]> {
         None
     }
+    /// The skull the native renderer draws in place of the picture for
+    /// row `row` (`crate::skulls_model`, docs/game/skulls.md "The model
+    /// picture"); `None` leaves the game's picture.
+    fn model_picture(&self, _row: i16) -> Option<crate::skulls_model::Look> {
+        None
+    }
     /// The picture's bitmap for row `row`, a `bitm` datum handle of the
     /// loaded map, for a class with a picture ([`ListClass::picture`]);
     /// `None` leaves it. The bitmap widget reads its block's reference
@@ -1855,6 +1861,11 @@ pub async fn row_text(
                     cx.write(|m| set_picture(m, picture, datum))?;
                 }
             }
+            if let Some(picture) = shown.picture(screen) {
+                let look = focused.and_then(|r| rows.model_picture(r));
+                let block = cx.read(|m| m.u32(picture.wrapping_add(WIDGET_BLOCK)).ok());
+                crate::skulls_model::note(screen, picture, block, look);
+            }
         }
     }
     Ok(Ret::new(0, 8))
@@ -2021,6 +2032,7 @@ pub async fn destructor(cx: Cx, original: u32, on_free: OnFree) -> Result<Ret, E
     let r = cx
         .call(GuestCall::new(original).ecx(screen).args([flags]))
         .await?;
+    crate::skulls_model::forget(screen);
     on_free(cx.clone(), screen).await?;
     Ok(Ret::new(r.eax, 4))
 }

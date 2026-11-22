@@ -34,7 +34,9 @@
 //! **The picture.** Both screens show the difficulty screen's Legendary
 //! skull ([`PICTURE`], the game's own bitmap) right of the list, tinted
 //! gold or silver for the focused skull's tier and dimmed while it is
-//! locked ([`tint`]), with the description under it.
+//! locked ([`tint`]), with the description under it. With the native
+//! renderer on, `crate::skulls_model` draws the focused skull's model in
+//! its place ([`Rows::model_picture`](crate::list_class::Rows::model_picture)).
 
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -703,6 +705,20 @@ impl Rows for SkullsScreen {
         };
         Some(tint(ABOUT.get(index)?.tier, state))
     }
+    /// The focused skull for the model picture: which one, and whether the
+    /// profile has collected it (a locked one is drawn as a silhouette).
+    fn model_picture(&self, row: i16) -> Option<crate::skulls_model::Look> {
+        let r = usize::try_from(row).ok()?;
+        let (skull, state) = match self.mode() {
+            Mode::Multiplayer => (crate::skulls_mp::MP.get(r)?.index, self.mp_state(r)),
+            Mode::Campaign => {
+                let i = self.skull(row)?;
+                (i, self.state(i))
+            }
+        };
+        ABOUT.get(skull)?;
+        Some(crate::skulls_model::Look { skull, collected: state != State::Locked })
+    }
 }
 
 const _: () = assert!(TOTAL as u32 <= LABELS.end - LABELS.start);
@@ -1132,6 +1148,34 @@ mod tests {
         skulls::record_pickup(&st, &names(&["Chief"]), 6);
         assert_eq!(mp.tint(1), Some(tint(Gold, State::Off)));
         assert_eq!(mp.tint(crate::skulls_mp::MP.len() as i16), None);
+    }
+
+    /// The model picture follows the focus: each skull row shows its own
+    /// skull, with its own glyph once collected and none while locked;
+    /// Start Level and the options show the game's picture.
+    #[test]
+    fn the_model_picture_swaps_its_glyph_with_the_focus() {
+        use crate::skulls_model::Look;
+        let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
+        let s = SkullsScreen::new(Arc::clone(&st));
+        s.open("Chief".into());
+        assert_eq!(s.model_picture(0), None, "Start Level");
+        let (a, b) = (ORDER[0], ORDER[1]);
+        let (row_a, row_b) = (s.row_of_skull(a).unwrap(), s.row_of_skull(b).unwrap());
+        assert_eq!(s.model_picture(row_a), Some(Look { skull: a, collected: false }));
+        assert!(s.model_picture(row_a).unwrap().glyph().is_none(), "locked: no glyph");
+        skulls::record_pickup(&st, &names(&["Chief"]), a);
+        skulls::record_pickup(&st, &names(&["Chief"]), b);
+        let (on_a, on_b) = (s.model_picture(row_a).unwrap(), s.model_picture(row_b).unwrap());
+        assert_eq!((on_a.skull, on_b.skull), (a, b));
+        assert!(on_a.collected && on_b.collected);
+        assert_ne!(on_a.glyph(), on_b.glyph(), "moving the focus changes the glyph");
+        assert_eq!(on_a.glyph(), crate::skull_glyphs::glyph(a));
+        assert_eq!(s.model_picture(s.count() as i16), None);
+        let mp = SkullsScreen::multiplayer(Arc::clone(&st));
+        mp.open("Chief".into());
+        let first = crate::skulls_mp::MP[0].index;
+        assert_eq!(mp.model_picture(0).map(|l| l.skull), Some(first));
     }
 
     /// The layout is the campaign level select's (screen 11, read with

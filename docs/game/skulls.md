@@ -1,8 +1,8 @@
 # Campaign skulls per profile
 
 Status: Built. Pickup tracking, per-profile storage and the campaign-start apply (`boot::skulls`, the settings store's per-profile values) are seen working. The Skulls page between the difficulty and the level (`boot::skulls_screen`, `boot::skulls_menu`, our own list class with the level select's layout, "Menu" below) is tested offline; "Not verified" lists what only a run shows.
-Code: `crates/extensions/game/src/skulls.rs`, `skulls_screen.rs`, `skulls_menu.rs`, `skulls_mp.rs`, `skulls_custom.rs`. Tests: in those files.
-Switch: feature ids `skulls`, `skulls-page`, `skulls-screen`, `skulls-mp`, `skulls-mp-row`, `skulls-mp-screen`, `skulls-custom` (`H2_FEATURES=<id>=off`), and `H2_SKULLS_REVEAL`; listed in [switches.md](../runtime/switches.md).
+Code: `crates/extensions/game/src/skulls.rs`, `skulls_screen.rs`, `skulls_menu.rs`, `skulls_mp.rs`, `skulls_custom.rs`, `skulls_model.rs` (and `skulls_model/gpu.rs`), `skull_glyphs.rs`, `crates/rewrites/native-render/src/showcase.rs`, `showcase_gpu.rs`. Tests: in those files and `crates/rewrites/native-render/tests/showcase_gpu.rs`.
+Switch: feature ids `skulls`, `skulls-page`, `skulls-screen`, `skulls-mp`, `skulls-mp-row`, `skulls-mp-screen`, `skulls-custom`, `skulls-model` (`H2_FEATURES=<id>=off`), and `H2_SKULLS_REVEAL`; listed in [switches.md](../runtime/switches.md).
 
 The ask: a skull a player has picked up is remembered on their profile, and
 when they start a new campaign (alone or in co-op) they can pick which of
@@ -194,8 +194,14 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
   collected skulls offer Left and Right Change, A Select and B Back. A
   locked skull offers B Back. `skulls_menu::SkullsScreen::focused_footer`
   supplies the matching legend as focus moves.
-- **Right column**: the skull picture, gold or silver for the focused
-  skull's tier and dimmed (to 60%) while it is locked, and under it the
+- **Right column**: the picture, and under it the description. With the
+  native renderer on, the picture is the focused skull's own model
+  picture ("The model picture" below): Halo 2's skull model from the disc,
+  lit and swaying, gold or silver bone, with that skull's glyph on its
+  forehead, or a dark silhouette with no glyph while it is locked. Without
+  the native renderer, with `skulls-model` off, or until the model has
+  loaded, it is the difficulty screen's skull bitmap, tinted gold or
+  silver for the tier and dimmed (to 60%) while locked. The
   description: for a skull its tier, what it does, where it is found and
   whether only on Legendary; for an option both choices; for Start Level
   what it does.
@@ -206,7 +212,8 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
   gets the rows past six as item widgets of ours, linked by the "add items" hook
   (`list_class::extra_items`, `layout_glue`), as the Controls screen's own
   added rows are.
-- **Going back**: the picture and the description fade with the page.
+- **Going back**: the picture and the description fade with the page
+  (the model picture takes the picture widget's alpha).
   They carry the level select's own animations (as its tag stores them:
   picture 13, description 11, `skulls_menu::PICTURE_ANIMATION`,
   `DESCRIPTION_ANIMATION`; checked against the disc).
@@ -355,6 +362,103 @@ measures every skull name and state in the retail row font.
   skulls. The game also has `difficulty_lobby` (screen 1,
   another list); if co-op reaches that one, it has no page (not checked
   in game; "Not verified").
+
+### The model picture
+
+With the native renderer on, both Skulls screens draw the focused skull
+as a small 3D picture in the picture box, as Halo 3's skull picker does,
+from data on the user's own disc (`boot::skulls_model`, feature
+`skulls-model`, on by default).
+
+- **The model** is the retail campaign skull weapon,
+  `objects\weapons\multiplayer\ball\head_sp` (`head` on High Charity),
+  the tag our hidden skulls already create (`skulls_custom::SKULL_TAGS`,
+  "Hidden collectables"). It is not in `mainmenu.map`, so the first ask
+  starts a background load that opens the campaign maps in
+  `skulls_model::gpu::MAPS` (Cairo Station first) and takes the first that
+  has the tag as a `weap`. Its render model is read as the native objects
+  read one (`native_render::model_load::load_object_model`: the `hlmt`'s
+  default variant, highest detail level), with its first material's base
+  map. Nothing is copied into the repository. The log says which map and
+  tag it used, or why none loaded; until then, or after a failure, the
+  page keeps the game's picture. To check the tag on a disc:
+  `h2 tags 01b_spacestation | grep ball` lists it under `weap`.
+- **The look** (`native_render::showcase`, `showcase.wgsl`): the opaque
+  parts at rest, in their own target with a transparent background,
+  framed so the bounding sphere fills 92% of the height. A warm key from
+  above left, a cool fill from the right, a soft bounce from below, a
+  little specular and a cool rim. The base map's brightness is multiplied
+  by the bone colour, gold (`GOLD_BONE`) or silver (`SILVER_BONE`) by the
+  skull's tier. The model sways 32 degrees either way over nine seconds
+  (`showcase::sway`), from the moment the page first shows it; a focus
+  change keeps the sway going.
+- **The glyph** is pressed into the forehead: a decal projected along the
+  model's forward axis (+x) onto the front of the upper head (70% up the
+  bounds, 19% of the smaller of width and height in radius, only where
+  the surface faces forward). It darkens the surface to 30% inside the
+  strokes, takes away specular and most of the rim there, and lights a
+  thin lip under each stroke, so it reads as an engraving.
+- **Locked**: a skull the profile has not collected is a silhouette. The
+  model's shape is filled near black with a faint rim and no texture, and
+  no glyph is drawn, so nothing about it is given away; the description
+  stays its collection hint.
+- **Where it goes**: the picture box (`PICTURE_BOX`, `[177 39 -30 259]`)
+  in the UI's 640 by 480 units, the UI's height filling the target's and
+  centred across (`skulls_model::guest_rect`), scaled into the target's
+  texels. The picture is drawn at 1.5 times the box's texels (at most
+  1024) and filtered down. It is multiplied by the picture widget's alpha
+  (`+0x64`), so it fades with the page. The widget's slide offset is not
+  read, so the model fades in place.
+- **How it joins the page**: at each row text the list class notes the
+  screen's picture widget, its block and the focused row's look
+  (`Rows::model_picture`, `skulls_model::note`); the screen's destructor
+  forgets it. The native UI walk asks its host at each sorted widget
+  whether it draws the widget itself (`native_hud::Host::replace_widget`,
+  [native-post-hud.md](../graphics/native-post-hud.md)). For the noted
+  widget with the same block and a loaded model, the host queues the
+  picture's pass at that point in the walk (`Device::external_pass_now`)
+  and the game's bitmap draw is skipped. Any other widget, or no model,
+  draws as the game does.
+
+**Glyphs.** Our own line art, one per skull, a simple sign for the
+effect; none copies a Halo game's skull symbols. They are vector data in
+`boot::skull_glyphs` (lines, arcs and dots in a box from -1 to 1, a stroke
+0.14 wide), rasterised at run time to a 64 by 64 coverage mask.
+
+| n | Skull | Glyph |
+|---|---|---|
+| 0 | Envy | a ring whose right half has faded to dots |
+| 1 | Grunt Birthday Party | eight rays round a small ring |
+| 2 | Assassins | a diamond with its corners missing, a point inside |
+| 3 | Thunderstorm | two rank chevrons under a point |
+| 4 | Famine | a ring filled only in its lower part |
+| 5 | I Would Have Been Your Daddy | a speech ring with three dots and a tail |
+| 6 | Blind | an eye struck through |
+| 7 | Ghost | a plumb line hanging still |
+| 8 | Black Eye | a shield's arc over a cross |
+| 9 | Catch | a dashed throw and where it lands |
+| 10 | Sputnik | a body, an orbit and its satellite |
+| 11 | Iron | a loop that comes round to its start |
+| 12 | Mythic | three nested rings |
+| 13 | Angry | three chevrons pressing forward |
+| 14 | Bandana | two rings joined |
+| 15 | Acrophobia | an arrow rising on two wings |
+| 16 | Low Gravity | a ball floating over the ground |
+| 17 | Fall Damage | an arrow striking the ground and cracking it |
+| 18 | Unlimited Ammo | three rounds standing on a line |
+| 19 | Unlimited Grenades | a banded sphere with its pin |
+| 20 | Invincible | a shield with a spine |
+
+Tests (synthetic, no disc data): every skull has a glyph, no two alike,
+each inside its box and rasterised the same every time
+(`skull_glyphs::tests`); a locked look has no glyph and the focus picks
+each skull's own (`skulls_model::tests`,
+`skulls_menu::tests::the_model_picture_swaps_its_glyph_with_the_focus`);
+the placement, sway and uniform (`native_render::showcase::tests`); and
+on a headless GPU, an invented sphere: the glyph darkens the forehead and
+no pixel outside it, another glyph marks it differently, a silhouette is
+dark with no glyph, the tint colours the bone and the composite stays in
+its rectangle (`crates/rewrites/native-render/tests/showcase_gpu.rs`).
 
 ## Gold and silver
 
@@ -874,6 +978,13 @@ Only a game run shows these.
   the list is full width less the picture, scrolls past 13 rows, and the
   picture and description fade with the page. Whether co-op reaching
   `difficulty_lobby` (screen 1) needs a page.
+- The model picture: that the skull weapon's model loads from the disc
+  (the log line names the map), faces +x with its forehead where the
+  decal goes, and looks right lit and tinted; that the picture widget
+  reaches the sorted widget call and is replaced there; that `+0x64` is
+  the widget's fading alpha; that the UI's 640 by 480 units map to the
+  target as `guest_rect` assumes on a wide target; and that both copies
+  of a scaled target draw it.
 - The multiplayer Skulls row in the variant editor: its pane, B back to the
   editor, and the screen on a lobby's own stack (window 3).
 - Multiplayer: the host's Low Gravity is applied on every machine and a
