@@ -541,8 +541,9 @@ impl Live {
     }
 
     /// A bundle for a script: the script's own variant
-    /// (`portable::record_for`: the carrier's stock record, the script's
-    /// `settings` written, its name and the script reference with the
+    /// (`portable::record_for_named`: the carrier's stock record, the
+    /// script's `settings` written, the request's name and the script
+    /// reference with the
     /// given option values). The description is the request's, or the
     /// script's `about` when the request gives none.
     pub fn bundle_for_script(
@@ -556,7 +557,7 @@ impl Live {
             .map_err(|e| invalid(format!("the script does not load: {e}")))?;
         // The route's own option refusals come first, in its words.
         attach.options = Some(pack_options(&ir, options)?);
-        let v = portable::record_for(&ir, &option_values(options)).map_err(refused)?;
+        let v = portable::record_for_named(&ir, name, &option_values(options)).map_err(refused)?;
         let description = if description.trim().is_empty() {
             ir.header.about.as_str()
         } else {

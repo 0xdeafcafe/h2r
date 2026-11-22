@@ -214,7 +214,7 @@ pub fn score_setting(carrier: u8) -> Option<u32> {
     }
 }
 
-// ---- the named values (the symbolic enums of `community_variants.rs`) ----
+// ---- the named values a script writes for an enumerated setting ----
 
 /// Starting and secondary weapons (settings 89 and 94). 1 is no weapon,
 /// for the starting weapon one of our added choices (`variants::extra`).

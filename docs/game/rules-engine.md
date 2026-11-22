@@ -1841,10 +1841,11 @@ port is proven per built-in variant of its engine, on at least three
 maps, with phantom seats filling the roster.
 
 **Variants.** The 39 retail built-ins and the 14 community variants
-(thirteen classics and Superbounce, `community_variants::VARIANTS`)
-keep their records, byte for byte: each has no mode and runs its
+differ: each retail record keeps its bytes, has no mode and runs its
 engine's built-in script once the port has passed parity ("A record with
-no mode"). Its settings are already option values in the record. Rules
+no mode"). The community variants (`rules::builtin::LISTED`) are built
+from their scripts by `variants::portable::record_for`, and each record
+names its script (mode 2, [rules-variants.md](rules-variants.md)). Rules
 that were honour rules ([community-gametypes.md](community-gametypes.md),
 Zombies' team switch) become script variants of their own. To travel as
 a game variant file, a record is ported with `variants::portable::port`
@@ -1949,9 +1950,10 @@ point off for a Bounced; and `monster_double` (default on), a Monster
 Bounce's points doubled after the cap
 ([superbounce.md](superbounce.md#the-superbounce-game-type) has the
 table). The built-in Superbounce variant's
-record names it (mode 2, its hash prefix and default options,
-`community_variants::superbounce_ext`); its other settings (no limits,
-overshields, a magnum) are the record's. The game reads the header
+record names it (mode 2, its hash prefix and default options); the
+record comes from `record_for` on the script, written into the built-in
+entry at list load (`community_variants::write_blocks`), and its other
+settings (no limits, overshields, a magnum) are the script's `settings`. The game reads the header
 through `rules::header`:
 
 | Header | What it turns on | Game side |

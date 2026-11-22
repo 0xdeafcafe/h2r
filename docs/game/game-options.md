@@ -216,14 +216,14 @@ changes, and `variant options: gravity A -> B` on each write.
 ### Bounce Practice's magnum and Bumper Cars
 
 Bounce Practice is a community built-in
-(`community_variants::VARIANTS`, Slayer). It starts with a magnum and
-nothing else (`StartingWeapon(Some(Weapon::Magnum))`,
-`SecondaryWeapon(None)`), and its description says so. Both
+(`bounce_practice.rules`, Slayer, listed in `rules::builtin::LISTED`). It
+starts with a magnum and nothing else (`starting_weapon = magnum`,
+`secondary_weapon = none` in its `settings`), and its description says so. Both
 are retail choices, so `usable()` keeps it on every disc. Glitch Hunt
 keeps its sword and rockets.
 
-The "None" start also makes **Bumper Cars** possible: a
-Slayer built-in with no weapons, no grenades, nothing on the map, Warthogs
+The "None" start also makes **Bumper Cars** possible
+(`bumper_cars.rules`): a Slayer built-in with no weapons, no grenades, nothing on the map, Warthogs
 and Ghosts and nothing else to drive, 25 points. Its unarmed start is one
 of our choices, so `usable()` keeps it only when the option lists carry
 ours (`variant_options`); without them it would be left out with a log
@@ -249,9 +249,8 @@ line, as any variant with a value the game doesn't offer is.
   options" string family (`0x00ffe100..`, answered by the community
   string hook). A definition already pointing into the page is skipped; one
   that doesn't fit stays retail.
-- `community_variants`: `StartingWeapon` takes `Option<Weapon>`; Bounce
-  Practice has the magnum; Bumper Cars is the thirteenth variant
-  (description number 92).
+- `community_variants::entries`: builds each listed script's entry;
+  Bounce Practice has the magnum; Bumper Cars is description number 52.
 
 ### The options to add
 

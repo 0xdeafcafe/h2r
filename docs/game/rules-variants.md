@@ -1,6 +1,6 @@
 # Game variants defined by their rules script
 
-Status: Design. Nothing here is built; the code it replaces is the hand-written table `community_variants::VARIANTS`.
+Status: Partly built. Slices 1 to 7 and 11 are in; 8 (the Quick Options panel), 9, 10 and 12 are not.
 Code: `crates/formats/rules/src/settings.rs` (new, the settings a script may name), `crates/formats/rules/src/ir.rs` (the IR's settings and quick marks), `crates/formats/variants/src/portable.rs` (`record_for`, a script's record), `crates/extensions/game/src/community_variants.rs` (the built-in entries), `crates/extensions/game/src/variant_quick.rs` (new, the lobby's Quick Options). Tests: named per slice under "Slices".
 Switch: `variant-quick` (on by default), to be listed in [switches.md](../runtime/switches.md). The built-in entries stay under the existing features (`tweakers`, `rules`, `lobby-options`).
 
