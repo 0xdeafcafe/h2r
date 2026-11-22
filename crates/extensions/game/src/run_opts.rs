@@ -138,6 +138,9 @@ pub struct Host {
     /// The watermark's active-cheats line, which the debug menu glue keeps
     /// filled from `cheat.list` (docs/runtime/debug-menu.md).
     pub cheat_line: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    /// This start's game code (tier, module, background build), for
+    /// `game.code` (crate::game_code).
+    pub game_code: Option<Arc<crate::game_code::GameCode>>,
     /// Shared with the registered debug-view world-line producer on a windowed run.
     pub debug_views: Option<Arc<agent::debug_views::DebugViews>>,
     /// The window consumer for the paired-editor plate and focus requests.

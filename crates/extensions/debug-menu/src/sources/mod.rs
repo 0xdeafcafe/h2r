@@ -75,6 +75,11 @@ pub mod method {
     pub const MAPS_TEST_LIST: &str = "maps.test.list";
     pub const MAPS_TEST_LOAD: &str = "maps.test.load";
     pub const GAME_MENU: &str = "game.menu";
+    /// `{}`: which game code runs (full-speed clang module or the slower
+    /// fast tier), its module, and clang's background build.
+    pub const GAME_CODE: &str = "game.code";
+    /// `{}`: start the game again so it runs the full-speed module.
+    pub const GAME_CODE_RESTART: &str = "game.code.restart";
 }
 
 /// The settings tables the Video page lists.

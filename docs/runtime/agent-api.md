@@ -67,6 +67,7 @@ connection to hold `session.claim`.
 | `edit.set`, `edit.batch`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `game.menu` | act | [Returning to the main menu](#returning-to-the-main-menu) |
+| `game.code`, `game.code.restart` | read, act | [Game code](#game-code-full-speed-or-the-slower-start) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `live.matchmaking.trace` | read | [Matchmaking transitions](#matchmaking-transitions) |
@@ -1824,6 +1825,38 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 - Seeks and cache hits are not counted (the kernel's file I/O counts bytes
   and the host time of each file call: `read_bytes` and `file_io_us`).
 
+## Game code: full speed or the slower start
+
+`game.code` (read, no params) says which game code this start of `h2 play`
+runs ([cranelift-tier.md](../lifter/cranelift-tier.md)): clang's
+full-speed module, or the Cranelift fast tier while clang builds the
+full-speed one in the background. Host method,
+`crates/extensions/game/src/game_code.rs`; `h2 play` supplies it, other
+hosts don't have it.
+
+```json
+{"tier": "fast", "full_speed": false,
+ "module": "/…/h2boot/…/fast/libh2game.dylib",
+ "stamp": "<the module stamp's first line>",
+ "background": {"state": "building", "log": "/…/clang-build.log",
+                "elapsed_s": 230, "typical_s": 900,
+                "step": "emit: 2.6s, 18662 owners"},
+ "restart": {"ok": false, "why": "the full-speed version is still building"}}
+```
+
+`background.state` is `building`, `ready`, `failed` (from the log: its
+`clang (…): N compiled` summary line, or an `Error:` line), or `none` when
+this start began no background build (it already runs clang's module, or
+`--tier` forced one). `elapsed_s` is the log's age; `typical_s` is the
+estimate the banner counts down from; `step` is the log's last line.
+
+`game.code.restart` (act, no params) starts `h2 play` again in this
+process: the same executable and arguments by `exec`, with the
+pid-named agent socket freed first, so the new start finds clang's module
+current and runs it. Unsaved progress is lost. It is refused
+(`UNAVAILABLE`, with `restart.why`'s text) unless this start runs the fast
+tier, the background build is ready and clang's module exists.
+
 ## Returning to the main menu
 
 `game.menu` (act, no params) leaves the running campaign or multiplayer
@@ -2784,7 +2817,7 @@ Tag names come from the map file the game loaded ([`world`](#world-what-is-in-th
 
 The in-game debug menu is a client of this API ([debug-menu.md](debug-menu.md));
 the methods it added beside the agent's own are in
-`crates/extensions/debug-menu/src/sources.rs` (`method`).
+`crates/extensions/debug-menu/src/sources/mod.rs` (`method`).
 
 | Method | Access | Params | Does |
 |---|---|---|---|

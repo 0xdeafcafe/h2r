@@ -55,6 +55,7 @@ pub mod rules;
 pub mod fov_row;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
+pub mod game_code;
 pub mod game_menu;
 pub mod game_setup_help;
 pub mod h1_recordings;
