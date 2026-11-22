@@ -765,7 +765,7 @@ fn a_host_shows_and_advertises_its_guests_report() {
 // ---- the Live menu ----
 
 #[test]
-fn the_live_menu_puts_co_op_above_custom_game_and_content_download_last() {
+fn the_live_menu_puts_co_op_above_custom_games_and_mods_last() {
     use crate::custom_games::*;
 
     let with_coop = [
@@ -773,32 +773,31 @@ fn the_live_menu_puts_co_op_above_custom_game_and_content_download_last() {
         (Row::Retail, Pane::Retail),
         (Row::Clankermatch, Pane::Show(CLANKERMATCH_PANE)),
         (Row::Coop, Pane::Show(COOP_PANE)),
-        (Row::CustomGame, Pane::Show(2)),
+        (Row::CustomGames, Pane::Show(CUSTOM_GAMES_PANE)),
+        (Row::Forge, Pane::Show(FORGE_PANE)),
+        (Row::Firefight, Pane::Show(FIREFIGHT_PANE)),
         (Row::Browser, Pane::Show(BROWSER_PANE)),
-        (Row::Download, Pane::Show(3)),
+        (Row::Mods, Pane::Show(3)),
     ];
-    let without_coop = [
-        (Row::Retail, Pane::Retail),
-        (Row::Retail, Pane::Retail),
-        (Row::Clankermatch, Pane::Show(CLANKERMATCH_PANE)),
-        (Row::CustomGame, Pane::Show(2)),
-        (Row::Browser, Pane::Show(BROWSER_PANE)),
-        (Row::Download, Pane::Show(3)),
-    ];
+    let without_coop: Vec<_> = with_coop
+        .iter()
+        .copied()
+        .filter(|(r, _)| *r != Row::Coop)
+        .collect();
 
     for (coop, count, expected) in [
-        (true, 7, with_coop.as_slice()),
-        (false, 6, without_coop.as_slice()),
+        (true, 9, with_coop.as_slice()),
+        (false, 8, without_coop.as_slice()),
     ] {
-        let menu = Menu { coop };
+        let menu = Menu { coop, ..Menu::ALL };
         assert_eq!(menu.rows(), count);
         assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), count);
         assert_eq!(menu.count(LIST_NAME, count), count, "not twice");
-        assert_eq!(menu.visible(), count);
+        assert_eq!(menu.visible(), VISIBLE_ITEMS, "seven show; the rest scroll");
         for (row, &(kind, pane)) in expected.iter().enumerate() {
             assert_eq!(menu.row_kind(row as i16), kind, "co-op {coop}, row {row}");
             assert_eq!(
-                menu.pane_of(row as i16, count),
+                menu.pane_of(row as i16, ALL_PANES),
                 pane,
                 "co-op {coop}, row {row}"
             );
@@ -806,8 +805,8 @@ fn the_live_menu_puts_co_op_above_custom_game_and_content_download_last() {
         assert_eq!(menu.row_kind(count as i16), Row::Retail, "past the last row");
     }
 
-    let menu = Menu { coop: true };
-    assert_eq!(COOP_ROW + 1, CUSTOM_GAME_ROW, "co-op directly above Custom Game");
+    let menu = Menu::ALL;
+    assert_eq!(COOP_ROW + 1, CUSTOM_GAMES_ROW, "co-op directly above Custom Games");
     assert_eq!(menu.pane_of(COOP_ROW, 6), Pane::Keep, "no co-op pane");
     assert_eq!(menu.pane_of(COOP_ROW, 4), Pane::Keep);
     let ids: Vec<u32> = strings().iter().map(|(i, _)| *i).collect();
@@ -1237,6 +1236,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &host,
                 cells: &players,
                 footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
         (
@@ -1247,6 +1248,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &guest,
                 cells: &players,
                 footer: Some("\u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
         (
@@ -1257,6 +1260,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &none,
                 cells: &[],
                 footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
         (
@@ -1267,6 +1272,8 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
                 text: &none,
                 cells: &[],
                 footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+                rows: None,
+                sample: None,
             },
         ),
     ];

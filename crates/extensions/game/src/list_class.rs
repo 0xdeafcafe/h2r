@@ -160,13 +160,6 @@ pub trait Rows: Send + Sync {
     fn description(&self, _row: i16) -> Option<u32> {
         None
     }
-    /// The name line's string id for row `row` (the row's label beside the
-    /// page's picture, above the description: Quick Options' variant-name
-    /// line), for a dialog class with its base's picture; set with the
-    /// description as the focus moves. `None` leaves it.
-    fn name(&self, _row: i16) -> Option<u32> {
-        None
-    }
     /// A focus- or state-dependent footer slot, refreshed with the description.
     fn focused_footer(&self, _row: Option<i16>) -> Option<u32> {
         None
@@ -203,17 +196,11 @@ pub trait Rows: Send + Sync {
     }
     /// The image of its bitmap the picture shows, set once as the screen
     /// opens ([`set_image`]), for a class with a picture
-    /// ([`ListClass::picture`]): a page's own icon in Quick Options'
-    /// game type picture (`crate::ui_kit::dialog::QUICK_PICTURE`). The
-    /// widget's constructor starts it at image 0. `None` leaves it.
+    /// ([`ListClass::picture`]): a settings dialog's icon in Quick
+    /// Options' game type picture (`crate::ui_kit::dialog::QUICK_PICTURE`),
+    /// the same in every state. The widget's constructor starts it at
+    /// image 0. `None` leaves it.
     fn picture_image(&self) -> Option<u16> {
-        None
-    }
-    /// The image of its bitmap the picture shows while row `row` has the
-    /// focus ([`set_image`] as the focus moves), for a class with a
-    /// picture: each row's own icon in Quick Options' game type picture
-    /// (the Clankers and Halo 1 Options pages). `None` leaves it.
-    fn row_image(&self, _row: i16) -> Option<u16> {
         None
     }
     /// Text that changes while the screen is up, asked at each row text:
@@ -989,7 +976,7 @@ const TAG_SOURCE: u32 = 0x1fc;
 pub const TAG_COPY_SIZE: u32 =
     SCREEN_ROOT_SIZE + PANE_SIZE + LIST_BLOCK_SIZE + KEPT_BITMAPS * BITMAP_BLOCK_SIZE;
 const _: () = assert!(TAG_SOURCE + 4 <= TAG_COPY && TAG_COPY + TAG_COPY_SIZE <= 0x1000);
-const _: () = assert!(NAME_BLOCK + TEXT_BLOCK_SIZE <= TAG_SOURCE);
+const _: () = assert!(FRAME_BLOCK + BITMAP_BLOCK_SIZE <= TAG_SOURCE);
 
 /// Writes a copy of the retail screen's first pane and list at `at`.
 /// A layout picks the list skin, anchor, visible count and retained bitmaps.
@@ -1263,8 +1250,6 @@ struct ShownEntry {
     screen: u32,
     widget: u32,
     picture: Option<(u32, u32)>, // widget and opening bitmap datum
-    /// The name line's widget, 0 for none.
-    name: u32,
     row: Option<i16>,
     /// The panel texts' widgets, in [`ListClass::panel`]'s order (0 for
     /// one that could not be made).
@@ -1287,7 +1272,6 @@ impl Shown {
             screen,
             widget,
             picture: None,
-            name: 0,
             row: None,
             panel: Vec::new(),
         });
@@ -1301,21 +1285,6 @@ impl Shown {
         if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
             e.picture = Some((widget, original));
         }
-    }
-    /// Screen `screen`'s name line widget is `widget` (after its
-    /// description widget was set).
-    pub fn set_name(&self, screen: u32, widget: u32) {
-        if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
-            e.name = widget;
-        }
-    }
-    /// Screen `screen`'s name line widget.
-    pub fn name(&self, screen: u32) -> Option<u32> {
-        self.lock()
-            .iter()
-            .find(|e| e.screen == screen)
-            .map(|e| e.name)
-            .filter(|&w| w != 0)
     }
     /// Screen `screen`'s panel text widgets are `widgets`.
     pub fn set_panel(&self, screen: u32, widgets: Vec<u32>) {
@@ -1368,8 +1337,6 @@ const PICTURE_BLOCK: u32 = 0x140;
 const _: () = assert!(PICTURE_BLOCK >= DESCRIPTION_BLOCK + TEXT_BLOCK_SIZE);
 /// Where the frame's bitmap block goes, after the picture's.
 const FRAME_BLOCK: u32 = PICTURE_BLOCK + BITMAP_BLOCK_SIZE;
-/// Where the name line's text block goes, after the frame's.
-const NAME_BLOCK: u32 = FRAME_BLOCK + BITMAP_BLOCK_SIZE;
 /// Where [`push`] builds its request (0x20 bytes), at the end of the page.
 const PUSH_BLOCK: u32 = 0x1000 - 0x20;
 const _: () = assert!(PUSH_BLOCK >= FRAME_BLOCK + BITMAP_BLOCK_SIZE);
@@ -1397,10 +1364,6 @@ pub struct Description {
     /// at `frame_at` ([`ListClass::frame`]).
     pub frame: Option<PictureSpec>,
     pub frame_at: u32,
-    /// The name line beside the picture ([`crate::ui_kit::dialog::DialogBase::name_line`]),
-    /// its block written at `name_at`.
-    pub name: Option<TextBlock>,
-    pub name_at: u32,
     /// The class's panel ([`ListClass::panel`]): its art, its texts, the
     /// rows that name the texts' strings, and where their blocks go.
     pub panel: Panel,
@@ -2141,9 +2104,6 @@ pub async fn row_text(
             // it through `0x230134` into the widget), so a slot of ours
             // set here is written before it is named.
             let description = focused.and_then(|r| rows.description(r));
-            let name = shown
-                .name(screen)
-                .and_then(|w| focused.and_then(|r| rows.name(r)).map(|id| (w, id)));
             let footer = rows.focused_footer(focused);
             cx.write(|m| {
                 rows.write_texts(m)?;
@@ -2171,33 +2131,12 @@ pub async fn row_text(
                 )
                 .await?;
             }
-            if let Some((name_widget, id)) = name {
-                cx.call(
-                    GuestCall::new(points::TEXT_SET.base)
-                        .edi(name_widget)
-                        .esi(screen)
-                        .args([id]),
-                )
-                .await?;
-            }
             if let (Some(picture), Some(tint), Some(_)) = (
                 shown.picture(screen),
                 focused.and_then(|r| rows.tint(r)),
                 moved,
             ) {
                 cx.write(|m| set_tint(m, picture, tint))?;
-            }
-            if let (Some(picture), Some(image), Some(_)) = (
-                shown.picture(screen),
-                focused.and_then(|r| rows.row_image(r)),
-                moved,
-            ) {
-                if !cx.write(|m| set_image(m, picture, image))? {
-                    once(
-                        &PICTURE_MISSING,
-                        &format!("list class: the picture has no image {image}"),
-                    );
-                }
             }
             if let Some((picture, original)) = shown.picture_block(screen) {
                 let datum = focused
@@ -2653,34 +2592,7 @@ pub async fn setup_pane_footer(
                 };
                 add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
             }
-            if let Some(block) = d.name {
-                // The name line beside the picture, at the description's
-                // bias: over the backing too. Row text names its string.
-                let mut bytes = TextBlock {
-                    animation: motion.pane,
-                    ..block
-                }
-                .bytes();
-                if let Some(bias) = bias {
-                    let at = dialog_tag::TEXT_BIAS as usize;
-                    bytes[at..at + 2].copy_from_slice(&bias.to_le_bytes());
-                }
-                cx.write(|m| m.write(d.name_at, &bytes))?;
-                let widget = cx
-                    .call(
-                        GuestCall::new(points::PANE_TEXT_ADD.base)
-                            .ebx(screen)
-                            .args([0, d.name_at]),
-                    )
-                    .await?
-                    .eax;
-                if widget == 0 {
-                    eprintln!("{name}: no name line text (no memory for the widget)");
-                } else {
-                    d.shown.set_name(screen, widget);
-                }
-            }
-            add_panel(&cx, screen, &d, name, motion).await?;
+            add_panel(&cx, screen, &d, name, motion, bias).await?;
         }
     }
     Ok(Ret::new(r.eax, 4))
@@ -2688,13 +2600,18 @@ pub async fn setup_pane_footer(
 
 /// The class's panel ([`ListClass::panel`]): its art as bitmap widgets
 /// (backings first), then each text block a text widget with its string
-/// set ([`Rows::panel_text`], the rows' texts written first).
+/// set ([`Rows::panel_text`], the rows' texts written first). On a
+/// dialog's copy (`bias` is the description's, `dialog_tag::description_bias`)
+/// each text is drawn at that bias at least, over the base's backing: at a
+/// lower one the panel covers it (a settings dialog's header lines over
+/// Quick Options' `fs_dialog`).
 async fn add_panel(
     cx: &Cx,
     screen: u32,
     d: &Description,
     name: &str,
     motion: dialog_tag::PaneTracks,
+    bias: Option<i16>,
 ) -> Result<(), EntryError> {
     if d.panel.art.is_empty() && d.panel.texts.is_empty() {
         return Ok(());
@@ -2712,13 +2629,17 @@ async fn add_panel(
     }
     let texts_at = d.panel_at + MAX_PANEL_ART as u32 * BITMAP_BLOCK_SIZE;
     let mut widgets = Vec::with_capacity(d.panel.texts.len());
+    if let Some(bias) = bias.filter(|b| d.panel.texts.iter().any(|t| t.bias < *b)) {
+        eprintln!("{name}: panel texts at render depth bias {bias} at least, over the dialog's backing");
+    }
     for (i, t) in d.panel.texts.iter().enumerate() {
         let at = texts_at + i as u32 * TEXT_BLOCK_SIZE;
         let block = TextBlock {
             animation: motion.pane,
             ..t.block
         };
-        cx.write(|m| m.write(at, &PanelText { block, ..*t }.bytes()))?;
+        let bias = bias.map_or(t.bias, |b| t.bias.max(b));
+        cx.write(|m| m.write(at, &PanelText { block, bias, ..*t }.bytes()))?;
         let widget = cx
             .call(
                 GuestCall::new(points::PANE_TEXT_ADD.base)
@@ -2941,11 +2862,6 @@ impl hooks::Feature for ListClass {
                 picture_at: tables + PICTURE_BLOCK,
                 frame: self.frame,
                 frame_at: tables + FRAME_BLOCK,
-                name: self
-                    .picture
-                    .and(self.dialog)
-                    .and_then(|base| base.name_line()),
-                name_at: tables + NAME_BLOCK,
                 panel: self.panel.clone(),
                 panel_at: tables + PANEL_BLOCKS,
                 rows: Some(Arc::clone(&rows)),
@@ -4222,9 +4138,6 @@ mod tests {
         fn description(&self, row: i16) -> Option<u32> {
             (0..15).contains(&row).then_some(0x200 + row as u32)
         }
-        fn name(&self, row: i16) -> Option<u32> {
-            (0..15).contains(&row).then_some(0x300 + row as u32)
-        }
         fn tint(&self, row: i16) -> Option<[f32; 3]> {
             (row == 3).then_some([0.5, 0.25, 1.0])
         }
@@ -4308,8 +4221,6 @@ mod tests {
             picture_at: 0,
             frame: None,
             frame_at: 0,
-            name: None,
-            name_at: 0,
             panel: Panel::default(),
             panel_at: 0,
             rows: None,
@@ -4414,73 +4325,6 @@ mod tests {
         // Nothing focused: nothing set; focus back on row 3 sets it again.
         assert_eq!(draw(u32::MAX).calls, item_calls);
         assert_eq!(draw(DatumHandle::new(0x8001, 3).raw()).calls.len(), 4);
-    }
-
-    /// A class with a name line: the focused row's name is set with its
-    /// description, each time the focus moves.
-    #[test]
-    fn row_text_sets_the_name_line_with_the_description() {
-        const ITEM: u32 = 0x0060_0000;
-        let list = SCREEN + ui::LIST;
-        let shown = Arc::new(Shown::default());
-        shown.set_widget(SCREEN, 0x9000);
-        assert_eq!(shown.name(SCREEN), None, "no name line yet");
-        shown.set_name(SCREEN, 0x9100);
-        assert_eq!(shown.name(SCREEN), Some(0x9100));
-        let rows: Arc<dyn Rows> = Arc::new(Described);
-        let draw = |focused: u32| {
-            let mut g = guest();
-            g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
-            g.map(ITEM, Item::SIZE);
-            Item::at(ITEM)
-                .set_row(&mut g, Some(DatumHandle::new(0x8001, 9)))
-                .unwrap();
-            let f = {
-                let (s, shown) = (Arc::clone(&rows), Arc::clone(&shown));
-                move |cx| -> EntryFuture {
-                    Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown)), None))
-                }
-            };
-            let regs = Regs {
-                esp: STACK,
-                ecx: list,
-                ..Default::default()
-            };
-            testing::run(&f, g, regs, move |c, _| Regs {
-                eax: match c.target {
-                    t if t == points::ITEM_TEXT.base => 0x7000,
-                    t if t == points::LIST_FOCUSED_ROW.base => focused,
-                    _ => 0,
-                },
-                ..Default::default()
-            })
-        };
-        let item_calls = [
-            Gc::new(points::ITEM_TEXT.base).ecx(ITEM).args([6, 0, 0]),
-            Gc::new(points::TEXT_SET.base)
-                .edi(0x7000)
-                .esi(ITEM)
-                .args([0x109]),
-            Gc::new(points::LIST_FOCUSED_ROW.base).eax(list),
-        ];
-        for row in [3u32, 7] {
-            let mut want = item_calls.to_vec();
-            want.push(
-                Gc::new(points::TEXT_SET.base)
-                    .edi(0x9000)
-                    .esi(SCREEN)
-                    .args([0x200 + row]),
-            );
-            want.push(
-                Gc::new(points::TEXT_SET.base)
-                    .edi(0x9100)
-                    .esi(SCREEN)
-                    .args([0x300 + row]),
-            );
-            assert_eq!(draw(DatumHandle::new(0x8001, row).raw()).calls, want, "row {row}");
-        }
-        // The same focus: neither line is set again.
-        assert_eq!(draw(DatumHandle::new(0x8001, 7).raw()).calls, item_calls);
     }
 
     #[test]
@@ -4808,8 +4652,6 @@ mod tests {
             picture_at: TABLES + PICTURE_BLOCK,
             frame: None,
             frame_at: TABLES + FRAME_BLOCK,
-            name: None,
-            name_at: 0,
             panel: Panel::default(),
             panel_at: 0,
             rows: Some(Arc::new(Described)),
@@ -4878,8 +4720,6 @@ mod tests {
             picture_at: TABLES + PICTURE_BLOCK,
             frame: Some(frame),
             frame_at: TABLES + FRAME_BLOCK,
-            name: None,
-            name_at: 0,
             panel: Panel::default(),
             panel_at: 0,
             rows: None,
@@ -4982,8 +4822,6 @@ mod tests {
                 picture_at: 0,
                 frame: None,
                 frame_at: 0,
-                name: None,
-                name_at: 0,
                 panel: Panel {
                     art: vec![PictureSpec {
                         animation: 0,

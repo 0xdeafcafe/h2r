@@ -61,7 +61,7 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | Kind | Built from | Header | Use |
 |---|---|---|---|
 | `List` | the Controls tag (`KitScreen`) | header layout 0 | settings-style lists over the game shell |
-| `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (Clankers, Halo 1 options), questions, errors |
+| `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (the shared settings dialog, "The settings dialog"), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
 | `Hud` | text and art widgets over the running game (`ScreenSpec::hud`) | supplied by the tool | the Forge monitor strip, reticle and controls |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
@@ -79,9 +79,7 @@ them.
 
 A `Hud` whose spec is not `transparent` is drawn over the game shell
 instead of a live picture (`preview::From::view`): widgets that sit on
-the shell's header and footer bands, such as the pregame lobby's mode
-strip (`lobby.tabs`, [party-lobby.md](party-lobby.md)). Its doc
-says `backing: shell`.
+the shell's header and footer bands. Its doc says `backing: shell`.
 
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
@@ -100,9 +98,9 @@ not full screens. They sit over whatever is beneath (the title screen, the
 main menu, in game) the way the game's own dialogs do, in the large dialog
 layout of `error_dialog_large` and `dialog_live_password` (header layout
 2, about 536 wide): that dialog's own `dialog1`/`dialog2` panel art, the
-digit cells and the legend. What the game's dialogs draw behind the panel
-(a dim layer or nothing) is copied from the retail dialog tags, read off
-them rather than assumed. A modal may cover the logo, as retail dialogs
+digit cells and the legend. The retail dialog tags draw nothing behind
+the panel; the window stack's render dims the screen under a dialog
+("A dialog is an overlay on its opener", below). A modal may cover the logo, as retail dialogs
 do, so for a modal the reserved-area check ignores what the panel covers.
 Everything in it must still sit inside the panel and inside the safe
 area. The preview draws a modal over the screen that opened it (its
@@ -374,10 +372,14 @@ digit sits over each cell. The cursor's cell and digit are lit; the
 others are dimmed (the frame and row alphas). The status line (Checking...,
 the error) sits above the legend, and the legend is in layout 2's second
 rectangle. The view's backing is `Backing::Over(opener)`, the
-`DialogSpec`'s `Opener`. On the disc, the preview draws the opener
-(`Disc::opener_view`) and then the dialog over it, with nothing between
-them, as the tags have nothing there. Synthetic previews draw the
-opener's rows as boxes and text blocks.
+`DialogSpec`'s `Opener`. On the disc, the preview draws the opener as a
+retail screen, then the game's backdrop over it (`Source::backdrop`:
+the overlay colour's fill and the blur, below), then the dialog.
+Synthetic previews draw the opener's rows as boxes and text blocks, then
+the same backdrop with the fill's colour fixed
+(`preview::SYNTHETIC_DIM`, the disc's). A dialog drawn over a screen of
+ours (a view's `underlay`, as `layout.dialog.over-screen` is) gets the
+same backdrop over that screen (`render_composite`).
 
 **The modal's checks.** `Rules::panel` is set for a dialog spec
 (`DialogGeometry::area`, the panel's and corners' box,
@@ -407,19 +409,53 @@ and Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
 **A dialog is an overlay on its opener.** A retail dialog sits over whatever was open when
 it opened, drawn as it was: not always the main menu, and with nothing
-hidden and no dim layer. So a `DialogSpec` names its `Opener`: the
-opener's screen tag, the pane shown, its list's rows (the game's code
-fills them) and the focused row. `Disc::opener_view` makes it a `View`:
-the game shell, the pane's bitmaps and texts in the screen's own
-strings, its header, and its rows on its own list skin with the focused
-row lit (`view_of`'s list). The preview draws that under the dialog. The
-openers:
+hidden. So a `DialogSpec` names its `Opener`: the opener's screen tag,
+the pane shown, its list's rows (the game's code fills them) and the
+focused row. The preview draws the opener as a retail screen in its
+sample state (`Disc::render_retail_layer` with `Retail::rows`, "Retail
+screens in a believable state"): units substituted, texts wrapped, the
+opener's rows on its own list skin with the focused row lit.
+`Disc::opener_view` makes the same opener a `View` (its pane's bitmaps,
+its header and its texts as the sample state reads them, its rows) for
+the over-opener notes.
+
+The game dims the opener. Every window stack's render slot is
+`0x234f8c` (vtables `0x4599a8`, `0x4599dc`, `0x459a08`; `0x459a34`
+reaches it through `0x23583e`). For each of the stack's screens,
+`0x23029a` asks whether a lower window holds a screen (windows 1, 3, 2,
+4, 5 from the top, tested with `0x1490ec`; the screen's virtual `+0x6c`
+can opt out). If one does, it adds the screen's transition fraction
+(`0x230374`, clamped to 1) and fills the whole screen (`0x147cdb`) with
+the shared globals' colour at `wigl +0x6c` (a, r, g, b), its alpha
+times the fraction, then calls `0x235756` with the fraction, and only
+then draws the stack's own widgets. On the disc the colour is (0.85,
+0.0, 0.0784, 0.1725): 85% of (0, 20, 44). So under a window-3 dialog
+(Game Setup) or a window-1 dialog the opener is drawn in full and then
+dimmed 85%: the lobby's PREGAME LOBBY strip above the frame shows at
+15%.
+
+`0x235756` then blurs the screen with the Kawase blur `0x211a0`
+(`engine::glow::blur`): `3.75 * fraction` steps (`[0x0045de14]`), so at
+rest four draws with fractions 1, 1, 1 and 0.75. The first draw's scale
+is 1.0 and each next one's is 1.25 times it; a draw's spread is its
+fraction times its scale (1, 1.25, 1.5625, 1.465). Each draw makes every
+pixel the mean of four bilinear taps, tap `k` moved by the spread times
+0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for `k & 2`, else times
+-0.5 (`[0x0045dbc4]`), with the sampler clamped at the edges
+(`native_render::glow::quad`). `Disc::backdrop` draws both at rest
+(fraction 1): the fill from `SharedGlobals::overlay_color`, then
+`preview::backdrop::blur` on the 640 by 480 canvas.
+
+The openers:
 
 - `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
   the list hooks show them: Campaign, Xbox Live, Split Screen, System
   Link, THEATER, Settings).
 - `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
-  on Quickmatch, with our five rows.
+  on Quickmatch, with its nine rows
+  ([live-custom-games.md](../live/live-custom-games.md) §5).
+- `Opener::LOBBY` (`lobby` in a screen doc): the pregame lobby's custom
+  game pane in its sample state, with no rows.
 
 On the disc, the code pages' legend sits over the main menu's Xbox Live
 and Split Screen rows. Over the Xbox Live menu, the title and body sit
@@ -583,8 +619,9 @@ rows, the way the game's own settings dialogs are. The target look is the lobby'
 | `Large` | 240, `error_dialog_large` | layout 2 | skin 0 (one text), 2 rows at (-235, 30) | `dialog1`/`dialog2` and corners | yes |
 
 Quick Options' help line (`QUICK_HELP`, above the list) is where a
-settings dialog's description goes; its game type picture (bitmap 1) is
-the retail dialog's content and is left out (`content_bitmaps`). A
+settings dialog says what the window is for; its game type picture
+(bitmap 1) is the retail dialog's content and is left out
+(`content_bitmaps`). A
 row's value goes in the skin's value column on Quick Options and after
 the label on the large dialog (`DialogBase::style`). The disc test holds
 `DialogGeometry::fallback_for` to the disc for both.
@@ -613,23 +650,20 @@ Round  50`.
 So a page on `DialogBase::QuickOptions` takes all of it:
 `write_base_tag` copies Quick Options' root (header layout 1), pane
 (animation 31), `fs_dialog` and list block (skin, anchor, flags,
-animation); the rows show `ValueStyle::Setting` (the value alone in the
-value column); and the focused row's description goes in a text block
-equal to Quick Options' help line (`dialog::QUICK_HELP_TEXT`, held to the
-tag's text block 0 by the disc test), which `KitScreen::dialog` and the
-Halo 1 class use unless told otherwise. A description is one line there,
-52 units at most (retail's is 51). The variant-name line and the game
-type picture are retail's content and stay out of the base; a page shows
-the focused row's label and icon there ("A page's header"). The pages'
+animation); and the rows show `ValueStyle::Setting` (the value alone in
+the value column). The variant-name line and the game type picture are
+retail's content and stay out of the base. A settings dialog of ours
+puts its own header there, the same in every state, and the focused
+row's help in a block under the rows ("The settings dialog"). The pages'
 titles are in capitals, as Quick Options' header is.
 
 The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
-holds both pages to that (dialog base, list place, value style, help
-block, one-line helps, capital title, footer) and draws each beside the
-kit's Quick Options sample (`kit.dialog`): every panel, title, row bar,
-label, value, help-line and legend widget the sample has is at the same
-rectangle, with the same art or font and justification. The disc test
-repeats that drawing on the disc's geometry.
+holds every settings page to that (dialog base, list place, value style,
+header blocks, help block, capital title, footer) and draws each beside
+the kit's Quick Options sample (`kit.dialog`): every panel, title, row
+bar, label, value, header, help and legend widget the sample has is at
+the same rectangle, with the same art or font and justification. The
+disc test repeats that drawing on the disc's geometry.
 
 **Preview.** `DialogSpec` carries `base` and `rows` (and a `body`, empty
 for a rows-only dialog). `dialog_view` draws the base's panel and header
@@ -677,12 +711,12 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
    doesn't have Quick Options loaded; try `Large`.
 2. On screen: `fs_dialog` over the lobby, the header at the top left,
    the rows as Quick Options' (label left, value right) from (-254, 87),
-   no game type picture. Compare with `kit.dialog` in the sheet, and with
+   the page's icon in the game type picture. Compare with `kit.dialog` in the sheet, and with
    the lobby's own Quick Options side by side: the same row bars and
    focus highlight, the same two blues, the value alone ("Normal", not
-   "< Normal >"), the focused row's description in the one line where
-   Quick Options says "Temporarily change settings...", the legend in the
-   same footer place.
+   "< Normal >"), the window's line where Quick Options says
+   "Temporarily change settings...", the focused row's help under the
+   rows, the legend in the same footer place.
 3. The d-pad moves and changes rows; the lobby beneath doesn't move.
 4. B closes the dialog (stderr shows no close by slot) within a fifth
    of a second, and the lobby takes input again at once: a press while
@@ -690,6 +724,126 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
    again: it opens the same way.
 5. The title is ours (slot 18 sets it on the header after the pane is
    built, as on every class); note it if it reads "Quick Options".
+
+## The settings dialog
+
+Every settings page of ours is one component, `ui_kit::settings`, built
+from its doc (`assets/ui/screens/<name>.yaml`, `layout: settings`) and
+the doc's `settings:` block. It keeps one rule:
+
+- **Top:** static per screen. The icon, the name and a line about the
+  window come from the `settings:` block and do not change with focus.
+- **Bottom:** the focused setting's help, under the rows.
+- **Picker:** a setting's value picker says that setting's help: the
+  row's `explain`, else its `help`.
+
+| Part | Widget id | Place | Source |
+|---|---|---|---|
+| Title | `title` | layout 1 header `[190 -253 170 30]` | the doc |
+| Icon | `art.0` | Quick Options' picture `[166 -267 126 -227]`, `mp_games2` image N | `settings.icon` |
+| Name | `header.name` | `[163 -224 143 0]`, white, font 1, one line | `settings.name` |
+| About | `header.about` | `[143 -224 123 270]`, pale blue, font 1, one line | `settings.about`, else `settings.caller.help` |
+| Rows | `row.N.*` | skin 2 at (-254, 87), 26 apart, at most 8 (`spacing.settings_rows`) | the doc's rows |
+| Help | `description` | `[-133 -244 -173 246]`, pale blue, font 1, two lines | the focused row's `help` |
+| Legend | `legend` | layout 1 footer `[-178 -200 -198 259]` | the rows and `settings.actions` |
+
+`design.yaml` places the name, the about and the help
+(`components.settings.name`, `settings.about`, `settings.help`); a
+settings doc gives no `description`, `legend`, `header.*` or `art.*`
+widget. The name is Quick Options' variant-name block
+(`dialog::QUICK_NAME_TEXT`). The about block is Quick Options' help
+line, one line (`dialog::SETTINGS_ABOUT_TEXT`): a row's cap rises 33
+above its item's anchor, so row 0's reaches y 120, under the help
+line's bottom at 123, and a second line would sit on it. The list is
+Quick Options' own at (-254, 87). The help block sits between the last
+row and the legend, its left on the row labels' left
+(`dialog::SETTINGS_HELP_TEXT`). The disc test holds the name to the
+tag's text block 1 and the about to its text block 0.
+
+**The doc.**
+
+```yaml
+settings:
+  host: menu
+  icon: spartan
+  name: "Bots in this game"
+  caller:
+    label: "Clanker Options..."
+    help: "Add bots: how many, how well they play and which team."
+rows:
+  row.0:
+    kind: value
+    text: "Clankers"
+    help: "Bots join this game and show in the lobby."
+    setting: clankers.enabled
+    explain: "Clankers are bots that play this game with you. On adds them to the lobby like any other player. Off plays without them."
+```
+
+- `host`: `menu`, Quick Options' tag (`DialogBase::QuickOptions`). The
+  schema names `game`, the in-game host; the kit has no game host and
+  refuses it by name (`settings.host`).
+- `icon`: one of `dialog::icon::NAMES`.
+- `name`: what the window changes.
+- `about`: what the window is for. A page opened from a row elsewhere
+  (Game Setup's) gives `caller` instead, the opening row's `label` and
+  `help`; the about line is that help, so the row and the window say the
+  same thing. A doc gives one or the other.
+- `actions`: extra buttons, `{ button, words, bind }`: the button one of
+  X, Y, Start or Back, the words in capitals.
+- Rows: `kind` is `value`, `pick`, `open` or `action`, and every row has
+  its `help`. A `value` row is over a setting of the store (`setting:`,
+  its choices from the setting's `Def`, `values:` naming them) or a
+  binding (`bind:`); a `pick` or `action` row names a binding; an `open`
+  row names the screen it opens. `explain` is the picker's text; the
+  help is when it is unset.
+
+`data::ScreenDoc::validate` makes each rule a named error at its field.
+
+**The Rust.** A page's Rust is its bindings alone:
+
+```rust
+pub fn page(store: Arc<Store>) -> KitScreen {
+    settings::screen(FEATURE, SCREEN, IDS, Some(store), Bindings::new())
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+```
+
+`settings::Bindings` registers a row's behaviour by name (`value`,
+`pick`, `action`). A binding no row names, a row naming no registered
+binding, an unknown setting and a `values` list of the wrong length are
+named errors. `settings::legend` derives the legend: `CHANGE` when a row
+is a value row, then `SELECT` and `BACK`, then the extra buttons
+(`KitScreen::extra`).
+
+**In the game.** The header is the class's picture and panel: the icon
+is `ListClass::picture(QUICK_PICTURE)` showing `Rows::picture_image`, set
+once as the widget is made; the name and the about are panel texts
+(`Rows::panel_text`), drawn at the description's depth bias at least
+(`dialog_tag::description_bias`) so `fs_dialog` does not cover them.
+Nothing row-indexed reaches them: a focus move names the same panel ids
+with the same strings, and the focused row's help goes through
+`Rows::description`.
+
+**The pages.** `clankers`, `firefight`, `h1-options`, `browser.filters`
+and the kit's `kit.dialog`, with the specimens `layout.dialog.settings`
+and `design.row.setting`. `settings::NOT_SHARED` lists the screens with
+settings rows that are not the shared dialog, each with why:
+`variant-more-options` (a page of retail's variant editor), the skulls
+pages (the level select with the skull's picture), `forge.properties`
+and `forge.settings` (Forge pages on the in-game Controller Settings
+host, screen 200), and the kit's other examples. Forge's pages have no
+icon: `mp_games2` is in `mainmenu.map` only. One arrives with map
+injection, when the tag and its art are generated into the shared maps.
+
+The tests are `ui_kit::settings::tests`
+(`every_settings_list_is_the_shared_dialog_or_says_why`,
+`the_top_is_the_same_under_every_focus`,
+`the_bottom_is_the_focused_rows_help`, `a_rows_picker_carries_its_help`,
+`a_setting_row_reads_and_writes_its_def`, `the_legend_follows_the_rows`),
+the consistency rule `settings` ("Consistency") and
+`data::tests::a_settings_doc_round_trips_and_its_rules_name_their_field`.
+The retail measurements behind the places are in
+[notes/2026-11-22-retail-settings-dialogs.md](notes/2026-11-22-retail-settings-dialogs.md).
 
 ## The value picker
 
@@ -721,13 +875,13 @@ on `low_level_settings` and `kit.picker.game` on the large dialog with
 the same list, skin and description block; `list_class::open` takes the
 second in a game. A row sets the process-wide `Pick` (title, values,
 held value, description, its setter) and opens `kit.picker`. The
-description is the row's explanation (`Row::explain`,
-`ChoiceRow::explain`, `OptionRow::explain`; "A page's header"), else
-its description:
-
-- `KitScreen` value rows (`Row::value`, so every `ChoiceRow`): the
-  Clankers page, the kit's examples;
-- the Halo 1 Options screen's two rows (`h1_options::pick`).
+description is the row's explanation (`Row::explain`), else its
+description. On a settings dialog both come from the doc (a row's
+`explain`, else its `help`), and the kit titles a pick row's picker by
+the row and gives it that text, whatever the binding's pick says
+("The settings dialog"). `KitScreen` value rows (`Row::value`, so every
+`ChoiceRow` and every `setting:` row) open it: the settings pages and
+the kit's examples.
 
 A on a value sets it through the row's own setter (the settings store:
 saved, its change callbacks run) and closes; B closes and changes
@@ -756,6 +910,15 @@ changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).
+
+`kit.picker.mode` (`screens::MODE_PICKER`) is the picker of the lobby's
+modes, a sample that no row of the game opens: GAME MODE, with
+Multiplayer, Custom Games, Forge and Firefight as its rows (the lobby
+tabs' labels in title case, `lobby_tabs::Tab::title_case`), Custom
+Games held and focused when it opens (its first state is `focus-1`),
+"Choose what this lobby plays." on the right, over the lobby under the
+backdrop (`Opener::LOBBY`). Its choice only logs. The concepts for choosing a
+lobby's mode pick it to show the list their button or prompt opens.
 
 **Strings are in guest memory before the screen is built.** `TEXT_SET`
 (`0x253b1a`) copies the string as it sets it: it resolves the id into a
@@ -795,9 +958,10 @@ From a custom game lobby, Game Setup, Clanker Options:
 
 ## A page's header
 
-The Clanker Options and Halo 1 Options pages
-have Quick Options' header at their top: its picture and its one line
-of help, both for the row that has the focus.
+A settings dialog's header is the window's, the same in every state
+("The settings dialog"): Quick Options' picture showing the page's
+icon, its variant-name line saying what the window changes, and its
+help line saying what the window is for.
 
 **Quick Options'** (see the table in "Quick Options inside"): bitmap
 block 1, `mp_games2.bitm` at (-267, 166), depth 3, animation 31, the
@@ -807,100 +971,69 @@ variant's name in white `[163 -224 143 0]`; text block 0, the help line
 constructor (`0x2b01eb`) zeroes its image index (`+0x88`) whatever its
 block holds; code sets it after (`0x2b0a14`).
 
-`KitScreen::header(icon)` (the Clankers page) and the Halo 1 Options
-class do the same:
-
-- the help line (`QUICK_HELP_TEXT`, already the pages' description
-  block) shows the focused row's one line (`Rows::description`, a slot
-  per row); the value picker A opens says more (below);
-- the picture is Quick Options' block 1, copied and placed as Quick
-  Options has it (`dialog::QUICK_PICTURE`, through `ListClass::picture`),
-  so every row's icon sits where Quick Options' own does. Its image is
-  the first row's icon once the widget is made (`Rows::picture_image`)
-  and the focused row's each time the focus moves (`Rows::row_image`,
-  both through `list_class::set_image`). `KitScreen::header`'s `icon` is
-  for a row without one (`Row::icon`). Quick Options' own copy of the
-  block stays out of the base (`content_bitmaps`), so only ours shows
-  there.
+The icon is Quick Options' block 1, copied and placed as Quick Options
+has it (`dialog::QUICK_PICTURE`, through `ListClass::picture`), so the
+icon sits where Quick Options' own does. Its image is the doc's
+`settings.icon`, set once the widget is made (`Rows::picture_image`,
+through `list_class::set_image`); nothing sets it after. Quick Options'
+own copy of the block stays out of the base (`content_bitmaps`), so
+only ours shows there.
 
 `dialog::icon` names all eleven `mp_games2` icons by what they show:
 Spartan, crown on a hill, lightning bolt, skull, helmet in a sunburst,
 sack, flag, bomb, four squares, banner of three stars, question mark.
 
-| Page | Row | Icon | Line in the help line |
+| Page | Icon | Name | About |
 |---|---|---|---|
-| Clankers | Clankers | `SPARTAN` | Bots join this game and show in the lobby. |
-| Clankers | Count | `SQUARES` | How many bots join, up to 15. |
-| Clankers | Difficulty | `SKULL` | How well they play. Mixed varies it around Normal. |
-| Clankers | Teams | `FLAG` | Which team they join in a team game. |
-| Clankers | Aggression | `BOMB` | How eagerly they push into a fight. |
-| Clankers | Aim style | `HELMET` | Steady tracks smoothly; Twitchy flicks. |
-| Clankers | Taunts | `CROWN` | Whether they taunt after a kill. |
-| Clankers | Glitches | `LIGHTNING` | Whether they BXR, sword fly and super bounce. |
-| Halo 1 Options | Sandbox | `BOMB` | Weapons, vehicles and health, from the next game. |
-| Halo 1 Options | HUD | `HELMET` | Shields, health, motion tracker and ammo counter. |
+| Clankers | `spartan` | Bots in this game | Add bots: how many, how well they play and which team. |
+| Firefight | `skull` | Firefight rules | Fight waves of enemies: set the waves, difficulty and lives. |
+| Halo 1 Options | `helmet` | This Halo 1 map | Play this Halo 1 map with Halo 1's weapons and HUD, or Halo 2's. |
+| Game filters | `squares` | Custom games list | Show only the games that match these filters. |
 
-(Halo 1's Assets row, on the campaign's Skulls page, has
-`SPARTAN`.) Each line is 52 characters at most, inside the 494-unit
-help line on the kit's measure and in the disc's font 1.
-
-The white variant-name line beside the icon names the focused row: its
-label (on a value row the label alone, the value staying in the row), so
-the name line and the pale-blue help line beneath it together describe
-the focused row. The block is Quick Options' text block 1
-(`dialog::QUICK_NAME_TEXT`, `DialogBase::name_line`, held to the tag by
-the disc test; design token `name.settings`). A class with the base's
-picture writes it after the frame's block (`list_class` `NAME_BLOCK`) and
-makes its widget in `setup_pane_footer`; `row_text` sets it through
-`Rows::name` each time the focus moves, with the description.
-`KitScreen` names the row's own label slot, the Halo 1 class the option's
-name string. The spec carries it as `ScreenSpec::name_line`, and the view
-draws the focused row's label there as the `name` widget
-(`ScreenSpec::name_text`). The test
-`ui_kit::screens::tests::the_name_line_follows_focus_in_every_state_of_each_options_page`
-holds it to the focused row in every state of each page.
+The first three pages open from Game Setup, so their about line is the
+Game Setup row's help (`settings.caller.help`): the row and the window
+always agree.
 
 **Drawn over the panel.** The draw sorts a pane's widgets by depth, then
 render depth bias, then type, text (6) before bitmap (8)
 (docs/formats/ui.md "What a screen, pane and widget are"). A text block
 at bias 0 over `fs_dialog` at bias 0 or more is drawn first, and the panel
-covers it, while the picture (bias 3) shows. On a dialog's copy the description block, and the name line with it, takes
-`dialog_tag::description_bias`: the base's own help line's bias (Quick
-Options' text block 0, `DialogBase::help_block`) and one more than every
-backing bitmap the copy keeps. stderr says `<name>: description at render
-depth bias N, over the dialog's backing` as the page opens. The
-consistency rule `empty` keeps every row's line and label in the spec,
-so neither line stands empty in the preview either ("Consistency").
+covers it, while the picture (bias 3) shows. On a dialog's copy the help
+block and the header's panel texts take `dialog_tag::description_bias`:
+the base's own help line's bias (Quick Options' text block 0,
+`DialogBase::help_block`) and one more than every backing bitmap the
+copy keeps. stderr says `<name>: description at render depth bias N,
+over the dialog's backing` and `<name>: panel texts at render depth bias
+N at least, over the dialog's backing` as the page opens. The
+consistency rule `empty` holds the header lines and the help to saying
+something in every state ("Consistency").
 
 **The picker's copy.** A on a row opens the value picker, whose
 description says what the option does and what each choice means in a
-few short sentences: `ChoiceRow::explain` (a kit value row's
-`Row::explain`) and `h1_options::OptionRow::explain`, 200 characters at
-most, so it fits the picker's description block (235 by 154 units, ten
-lines of font 1).
+few short sentences: the row's `explain`, 200 UTF-16 units at most
+(`settings::EXPLAIN_UNITS`), so it fits the picker's description block
+(235 by 154 units, ten lines of font 1).
 
-The spec carries each row's icon as `RowSpec::art`
-(`dialog::quick_icon`), and `ScreenSpec::shown_art` adds the focused
-row's to the screen's own art, which `dialog_view` draws; the help line
-is the focused row's description (`ScreenSpec::help` is unset). The disc
-test holds `QUICK_PICTURE` to the tag's block, checks `mp_games2`'s
-eleven icons are 40 high and 40 or 41 wide, and measures every row's
-line in the help line's font; `our_settings_dialogs_are_quick_options_inside`
-checks, for each row focused, its line, its icon and where the icon is
-drawn.
+The spec carries the icon as the screen's art (`ScreenSpec::art`,
+`dialog::quick_icon`) and the name and the about as its texts
+(`ScreenSpec::texts`, ids `header.name` and `header.about`), the same at
+every focus; `RowSpec::art` is for pages whose art follows the focus
+(Theater's library). The disc test holds `QUICK_PICTURE` to the tag's
+block, checks `mp_games2`'s eleven icons are 40 high and 40 or 41 wide,
+and measures each page's name and about (one line each) and every
+row's help (two lines at most) in the disc's font 1.
 
 ### Its game run
 
 From a custom game lobby (on a Halo 1 map for Halo 1 Options), Game
-Setup: open Clanker Options. At its top left, left of the help line,
-the Spartan icon where Quick Options shows its game type, "Clankers" in
-white in the name line beside the icon's upper half, and "Bots join this
-game..." in the help line beside its lower half, both over the panel.
-Move down: the icon, the name and the line change with each row (Count's
-four squares and "Count", Difficulty's skull and "Difficulty", and so
-on), the icon never moving from its place. A on a row: the value
-picker's right side explains the option. Halo 1 Options: Sandbox's bomb
-and HUD's helmet. Open Quick Options to compare the places.
+Setup: open Clanker Options. At its top left, the Spartan icon where
+Quick Options shows its game type, "Bots in this game" in white beside
+the icon's upper half, and "Add bots: how many..." in pale blue
+beneath it, both over the panel. Move down: the icon, the name and the
+about stay as they are; the help under the rows changes with each row.
+A on a row: the value picker's title is the row's name and its right
+side explains the option. Halo 1 Options: the helmet. Open Quick Options
+to compare the places.
 
 ## Game Setup's picture and description
 
@@ -928,9 +1061,13 @@ actions sets text 2 to our description and the picture to our image:
 
 | Row | Picture | Description |
 |---|---|---|
-| Clanker Options... | image 1, the roster no retail row uses | `clankers::ROW_HELP`, a slot of the page's (`KitScreen::row_help`) |
-| Firefight Options... | image 6, Switch To: Custom Game's | `firefight::options::ROW_HELP`, a slot of the page's (`KitScreen::row_help`) |
-| Halo 1 Options... | image 2, Quick Options' own | `h1_options::ROW_HELP` (`ROW_HELP_ID`, served with the other Halo 1 strings) |
+| Clanker Options... | image 1, the roster no retail row uses | `settings.caller.help` of `clankers.yaml`, a slot of the page's (`KitScreen::row_help`) |
+| Firefight Options... | image 6, Switch To: Custom Game's | `settings.caller.help` of `firefight.yaml`, a slot of the page's (`KitScreen::row_help`) |
+| Halo 1 Options... | image 2, Quick Options' own | `settings.caller.help` of `h1-options.yaml`, a slot of the page's (`KitScreen::row_help`) |
+
+The row's label is `settings.caller.label` (`KitScreen::row_label`), and
+the same help is the page's about line, so the row and the window it
+opens say the same thing.
 
 Texts 3 and 4 stay empty, as retail leaves them for a row with no value.
 
@@ -1146,7 +1283,9 @@ A screen's presentation is data in `assets/ui/`; its Rust is behaviour
   code's cursor), `widgets` keyed by view id (`component`, `text` with
   `{slot}` templates Rust fills, `at`, `size`, a legend's `prompts` such
   as `[[A, "SELECT"], [B, "BACK"]]`, cells' `digits` and `gap_after`, an
-  art widget's `art`), and fixed `rows` (`row.0: {text, ...}`).
+  art widget's `art`), and fixed `rows` (`row.0: {text, ...}`). A
+  settings dialog has a `settings:` block and its rows' `help`,
+  `setting`, `bind`, `explain` and `open` ("The settings dialog").
 
 Both are baked into the game at compile time (`build.rs` writes
 `ui_baked.rs`, `ui_kit::data::baked`) and parsed once a process, the first
@@ -1157,7 +1296,8 @@ through the explicit `data::reload` (validated first) until
 
 A doc that names what doesn't exist (a component, a glyph, a layout for
 its kind, an opener, a slot that isn't closed, a value row's current value
-past its values) is a `DataError` naming the file and the field
+past its values, an icon, a setting) or breaks a settings dialog's rules
+is a `DataError` naming the file and the field
 (`assets/ui/screens/t.yaml widgets.title.component: ...`), never a quiet
 fallback; a screen without a doc is one too (`data::require`). The tests
 load every doc, so a bad one fails them by name.
@@ -1169,7 +1309,8 @@ comments. A load and a save with no edit gives the file's bytes.
 **Which screens draw from their docs.** `data::FROM_DOC` lists them: the
 kit screens (`KitScreen::new(feature, name, ids)` reads the title, the
 legend, the kind, layout and opener, the description block, `scrolls`
-and the fixed rows' labels; docs/game/ui-screens.md "Adding a screen").
+and the fixed rows' labels; docs/game/ui-screens.md "Adding a screen"),
+and the settings dialogs (`settings::screen`, "The settings dialog").
 Every other screen's doc is written from its Rust and held to it: the
 equivalence test (`data::tests::each_state_drawn_from_its_doc_is_the_view_rust_drew`)
 draws each state of each screen from its Rust alone and with its doc laid
@@ -1190,13 +1331,15 @@ line), is a lone slot (`{title}`) Rust fills. Rows are written for the
 screens whose rows are fixed (`data::export::FIXED_ROWS`, the specimen
 and layout pages). On a screen drawn from its doc the converter applies
 the design system's rules too (`data::export::house_rules`: a dialog's
-title in capitals); the others are fixed in their Rust. Run it after a
+title in capitals); the others are fixed in their Rust. A doc with a
+`settings:` block is its own source: the converter writes it back as it
+loaded it. Run it after a
 change to a screen's Rust, then the tests.
 
 ## The design system
 
 `ui_kit::components` puts a screen together from the components:
-`Screen::list`, `level_select`, `moved`, `settings`, `large`,
+`Screen::list`, `level_select`, `moved`, `large`,
 `message`, `code_entry`, `picker` and `hud`, with `row`, `legend`,
 `legend_on_panel`, `description`, `help`, `text`, `art`, `status`,
 `scrolls` and `over`; `build()` derives the inputs its rows and legend
@@ -1208,8 +1351,10 @@ A `disabled` row is its label alone, with nothing where a value goes, and
 never pressed; its help line says why. On the level select's one-text
 skin a `pick` row's value is in its label (`row.pick-inline`, the skulls
 pages' rows). `legend::well_formed` is the legend's format: each
-prompt's glyphs two spaces apart, one space, its words in capitals,
-prompts two spaces apart.
+prompt's glyphs three spaces apart, one space, its words in capitals,
+prompts two spaces apart. The settings dialog is the `settings`
+component, built from its doc by `ui_kit::settings` ("The settings
+dialog"), its specimen `layout.dialog.settings`.
 
 A component's `pattern` names the Halo 2 pattern its widgets keep, and its
 `ids` the widget ids it draws (`button.*`, a prefix and a star); the
@@ -1229,8 +1374,7 @@ catalogue as `ui.components` (docs/editor/agent-api.md).
 placeholder copy so each reads as a template: `layout.list`,
 `layout.list.description`, `layout.list.panel-edge`,
 `layout.list.level-select`, `layout.list.texts`,
-`layout.dialog.settings`, `layout.dialog.settings.header`,
-`layout.dialog.large`, `layout.dialog.message`,
+`layout.dialog.settings`, `layout.dialog.large`, `layout.dialog.message`,
 `layout.dialog.over-screen`, `layout.code-entry`, `layout.picker` and
 `layout.hud` (`ui_kit::components::specimens::PAGES`). A new screen
 starts from the one it looks like.
@@ -1251,14 +1395,17 @@ named state without a disc and holds it to the design system:
 | `fit` | a title and a legend fit their rectangles |
 | `items` | a list's item widgets are the rows it lays out (`list_class::item_widgets`), so no row is on a widget never placed, and no list draws more rows than it lays out ("Item count") |
 | `scroll` | a scroll arrow shows only on a list with more rows than it lays out, inside a dialog's panel or, on a screen, inside the screen and the title-safe area's height ("Scroll arrows") |
-| `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title. A page with a name line (`ScreenSpec::name_line`) names the focused row there in every state |
+| `empty` | a settings dialog's header lines and its help under the rows say something in every state, and so does any dialog's description area above its list; a page with nothing to say there has no description block, so its rows sit under the title |
+| `settings` | a settings dialog drawn at every focus, not only its named states: its top (title, icon, name, about) the same at every focus; the about saying something and no row's label, help or explain; the help under the rows the focused row's `help`, two lines at most, below the last row and above the legend ("The settings dialog"). That A opens a picker saying the row's help is `settings::tests::a_rows_picker_carries_its_help`: the drive presses nothing, since a press sets the process's pick |
+| `help` | a screen with value rows has no page-wide line (`ScreenSpec::help`) where the focused row's help belongs |
 | `button` | a text whose component has `pattern: button` (its `ids` name the widgets: the lobby's `button.*`) is drawn on a list skin's art or a row's (`Art::Skin` or the `Under` layer under at least half its ink), as retail draws its buttons, never as bare text |
 | `handled` | every prompt the legend shows (the focused row's, else the page's) is an input the page takes (HUDs aside) |
 | `arrows` | no text draws a value between arrows (`< All >`, or an arrow alone): a value is chosen in the picker A opens |
 
 `consistency::view_findings(spec, view)` runs the rules that read one view
-(all but `place`), which `ui_kit::findings::of_state` adds to a state's
-findings.
+(all but `place` and `settings`), which `ui_kit::findings::of_state` adds
+to a state's findings; `consistency::settings_check(name)` runs the
+`settings` rule on one screen.
 
 `consistency::ALLOWED` is the short list of findings that stand, each
 with its reason (the sign-in dialog's title carries the gamertag as
@@ -1287,14 +1434,20 @@ Status: Partly built. The code uses `ui_kit::data` (`ScreenDoc`, `load`,
 `parse`, `to_yaml`, `with_screens`), which arrives with the YAML screens,
 and it has not been compiled or run in the editor yet.
 Code: `crates/apps/studio/src/app/ui_screens/edit.rs` (`edit/ours.rs`,
-`edit/retail.rs`), `crates/apps/studio/src/ui/ui_screens/edit.rs`,
+`edit/retail.rs`, `edit/retail_tag.rs`),
+`crates/apps/studio/src/ui/ui_screens/edit.rs`,
 `crates/apps/studio/src/ui/ui_screens/transport.rs`,
 `crates/apps/studio/src/api/ui_edit.rs`,
+`crates/apps/studio/src/api/ui_retail.rs`,
 `crates/extensions/game/src/ui_kit/preview.rs` (`Disc::retail_view`,
 `RetailPlaces`, `retail_field`, `filmstrip`),
+`crates/extensions/game/src/ui_kit/preview/retail_edit.rs`
+(`RetailEdits`, `RetailBlocks`, `parked`),
 `crates/extensions/game/src/ui_kit/animation.rs` (`Transition`).
-Tests: `app::ui_screens::edit::tests`, the `ui_edit` tests in
-`crates/apps/studio/src/api/tests.rs`, `ui_kit::preview::edit_tests`.
+Tests: `app::ui_screens::edit::tests`,
+`app::ui_screens::edit::retail_tag::tests`, the `ui_edit` and
+`ui_retail` tests in `crates/apps/studio/src/api/tests.rs`,
+`ui_kit::preview::edit_tests`, `ui_kit::preview::retail_edit::tests`.
 
 The UI Screens tool edits the picture it shows: click a widget to select
 it, drag it, resize it, or double-click a text to retype it. The agent
@@ -1343,8 +1496,10 @@ pick:
   patches the user's map. Nothing disc-derived goes in the repository. The
   map open in the editor must be `mainmenu`. Otherwise the sink refuses
   and says so. The picture is drawn from the disc, then the edited fields
-  are read back as `RetailPlaces` (widget id to rect) and applied before
-  drawing (`Disc::render_retail_with`).
+  are read back as `RetailPlaces` (widget id to rect) and the pane's
+  text, button and bitmap blocks as `RetailBlocks`, and applied before
+  drawing (`Disc::render_retail_edited`). "Retail tag edits" has the
+  edits past a rect.
 
 **What can be edited, and the refusals.** A refusal is an error that
 names the owner. It is never a silent no-op.
@@ -1355,11 +1510,14 @@ names the owner. It is never a silent no-op.
 | a text block `text.N`, a button `button.N` | — | rect (`panes[0].text_blocks[N].rect`, `buttons[N].rect`) |
 | a bitmap `bitmap.N`, a list `list.N`, a table `table.N` | — | move only (`top_left`, `anchor`): the image or skin sets the size |
 | a row label `row.N.label` | text (`rows.row.N.text`) | — |
+| a settings dialog's `header.name`, `header.about` | text (`settings.name`; `settings.about`, or `settings.caller.help` when the page takes its about from its caller) | — |
+| a settings dialog's `description` | text: the help of the row it shows (`rows.row.N.help`) | — |
+| a settings dialog's `header.*`, `art.*`, `description`, moved | refused: `design.yaml` `components.settings.*` places it | — |
 | any row widget, moved | refused: rows sit where the list's `layout` puts them | — |
 | a widget with no YAML entry (`row.N.value`, `description`, `status`, `cell.N.*`) | refused: Rust fills it, and the refusal names the kind of value | — |
 | a text with `{slots}` | the template is edited, and its slots must stay as they are (the refusal names a slot that went or came) | — |
 | a legend made of `prompts` | text refused: edit its prompts | — |
-| any retail text | — | refused: retail strings live in the map's localized string table (`unic`), which the editor does not write |
+| any retail text | — | text refused: retail strings live in the map's localized string table (`unic`), which the editor does not write. Its string ID is set with `ui.set_string` |
 | `title` of a retail screen | — | refused: the header rectangle is the shared `wigl` header layout's |
 
 **Undo.** Edits are undo steps of the editor's Undo and Redo while the UI
@@ -1421,9 +1579,12 @@ its save. Rects are `[top, left, bottom, right]` in UI units.
 | `ui.move` | `{id, dx, dy}` | `{widget, findings, sink, dirty}` |
 | `ui.set_rect` | `{id, rect}` | `{widget, findings, sink, dirty}` |
 | `ui.set_text` | `{id, text}` | `{widget, findings, sink, dirty}` |
+| `ui.hide` | `{id}` (retail) | `{hidden, widget: null, findings, sink, dirty}` |
+| `ui.duplicate` | `{id, rect?, grow?}` (retail) | `{copy, of, widget, findings, sink, dirty}` |
+| `ui.set_string` | `{id, string, shows?}` (retail) | `{string, widget, findings, sink, dirty}` |
 | `ui.revert` | `{id?}` (none: the whole screen) | `{line, edits}` |
 | `ui.undo`, `ui.redo` | `{}` | `{done, can_undo, can_redo, edits}` |
-| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_dirty, checkout, changed_on_disk}` |
+| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_blocks: {tag: {added, edited, header}}, stand_ins: {string: text}, retail_dirty, checkout, changed_on_disk}` |
 | `ui.save` | `{}` | ours `{sink, written: [path]}`; retail `{sink, save}` (`doc.save`'s answer) |
 | `ui.animate` | `{phase: open\|close, frames?: 1..32 (5), out?}` | `{path, width, height, frames: [{t, tick, x, w}]}` |
 
@@ -1432,6 +1593,189 @@ shown, a rect whose top is below its bottom or right left of its left,
 and a phase that is neither `open` nor `close` answer `INVALID_PARAMS`.
 `ui.animate` and the default output path follow `ui.render`: under
 `studio/ui/` in the cache directory, never inside a Git checkout.
+
+### Retail tag edits
+
+Status: Built, not compiled or run in the editor yet.
+Code: `crates/apps/studio/src/app/ui_screens/edit/retail_tag.rs`,
+`crates/apps/studio/src/api/ui_retail.rs`,
+`crates/extensions/game/src/ui_kit/preview/retail_edit.rs`,
+`crates/formats/tags/src/ui.rs` (`TextBlock::from_element`,
+`Button::from_element`, `BitmapBlock::from_element`).
+
+A retail screen takes three edits past a rect. Each is a write of its
+`wgit` tag in the open `mainmenu` map's tag document, one undo step,
+saved with the map as a patch. They are for changing a retail screen
+with its own parts: a line of text the screen already has, moved or
+repeated, and named by a string of ours.
+
+| Edit | Tag write | Refused for |
+|---|---|---|
+| Hide (`ui.hide {id}`, the Selected section's Hide) | the block's rect to top and bottom 9999 with its left and right kept, or a bitmap's `top_left` to `9999, 9999`: where the disc parks its own spare blocks (`preview::parked`) | a button (it keeps its place in the focus order wherever its rect is), a list, a table, the title (the tag's `no_header` flag hides it) |
+| Copy (`ui.duplicate {id, rect?, grow?}`, Duplicate) | one element appended to `text_blocks`, `buttons` or `bitmaps`, then the copied element's bytes written into it | a list, a table, the title; a full block while Edit > Allow growing full blocks is off |
+| Set string (`ui.set_string {id, string, shows?}`) | the string ID field: the screen's `header` for `title`, a text block's `text`, a button's `label`. A name the map lacks is added to it (`TagDoc::set_string`) | a bitmap, a list, a table; a name that is not lowercase letters, digits and `_` |
+
+- **A copy goes to the end of its block.** The game's code finds a
+  pane's widgets by block index (the lobby's panel update reads text
+  blocks 4 to 8), so no block before the copy changes its index. The
+  copy's widget id is its index: `text.48` in a pane that had 48 text
+  blocks. `ui.duplicate` answers it as `copy`.
+- **A hidden block is still built.** The game makes a widget for every
+  block of the pane and draws nothing of one parked off screen, as it
+  does for the disc's spares. `ui.revert {id}` shows it again.
+- **A string of ours has no text in the map.** The localized text of a
+  retail string is in the map's `unic` table, which the editor does not
+  write. A string ID added by `ui.set_string` names a slot: the game's
+  code answers it at run time (a text set on the widget, or our string
+  table). The picture draws the stand-in given as `shows` for that
+  string name (`UiEdit::stand_ins`, `RetailEdits::texts`). The stand-in
+  is the tool's: it is in `ui.edits` and is not saved.
+- **The picture follows the document.** The pane's text, button and
+  bitmap blocks and the header string ID are read back whole from the
+  tag document after every edit, undo and pick
+  (`App::ui_retail_read_blocks`, `RetailBlocks::decode`) and drawn in
+  place of the disc's (`RetailEdits::apply`). An edit saved with the map
+  shows when the map is opened again.
+- **Revert** (`ui.revert`) writes a block's element back as the loaded
+  map has it, puts the title's string ID back and removes a copy; a
+  copy removed from the middle moves the copies after it down one.
+- **Pane 0 only.** The tool shows and edits pane 0 of a retail screen
+  (`edit::retail::PANE`). A screen with more panes, as the pregame lobby
+  has for its three retail modes, takes the same edit on each pane it
+  should show on.
+
+## Retail screens in a believable state
+
+Status: Built. Not measured against the game (see "The fidelity loop").
+Code: `crates/extensions/game/src/ui_kit/preview.rs`
+(`Disc::render_retail_edited`, `Disc::retail_view_edited`,
+`Canvas::text_boxed`),
+`crates/extensions/game/src/ui_kit/preview/retail_sample.rs`,
+`crates/extensions/game/src/ui_kit/preview/text_layout.rs`,
+`assets/ui/retail-samples/`.
+
+A retail screen's tag lays out every block the game might show. The
+pregame lobby's pane has the two buttons the leader gets and, in the
+same place, the line everyone else gets; a status line whose own string
+is for a party with no session; sixteen speaker icons; six empty lines
+for the variant's options; a table of sixteen player cells. The game's
+code picks among them, writes the empty ones, replaces the substitution
+units in the strings (docs/formats/ui.md "Substitution units") and adds
+the rows of a list. A picture of the tag alone shows all of it at once,
+with a square for every unit.
+
+So the picture is drawn in a **sample state**: a file in
+`assets/ui/retail-samples/` that stands in for the game's code on one
+screen. `render_retail` and `retail_view` look the sample up by the
+screen tag's path; every caller gets it (the UI Screens tool's picture,
+its thumbnails, `ui.render`).
+
+```yaml
+screen: ui\screens\game_shell\pregame_lobby\pregame_lobby
+tokens:                       # substitution unit (hex) to what it reads as
+  e416: Kestrel
+  e425: "4"
+footer: { string: button_key_squad_leader_teams_disabled }
+cells:                        # the tables' filled cells, first cell first
+  - text: Kestrel
+    blocks:
+      ui\global_bitmaps\rank_icons_sm: { image: 14 }
+panes:
+  0:
+    blocks:
+      party_leader: { hide: true }
+      game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
+      text.4: { text: "Score to Win: 50" }
+      ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+    lists:
+      0: { focus: 0, rows: [{ string: change_map }] }
+```
+
+| Key | What it says |
+|---|---|
+| `variant` | the state's name among the screen's samples. A file without one is the screen's plain sample, the one every caller draws; a file with one is drawn only when a caller names it (`Retail::sample`, `ui.pick {retail, sample}`). Two files for one screen and variant, or two plain ones, fail to load |
+| `over` | the screen tag this one opens over (a dialog's opener). That screen's pane 0 is drawn first, in its own plain sample state, in place of the game shell background, then dimmed as the game dims it ("A dialog is an overlay on its opener") |
+| `tokens` | what each substitution unit reads as, for every pane |
+| `footer` | the legend in the header layout's second rectangle |
+| `cells` | the tables' filled cells: `text` is the cell skin's first text block, `blocks` its bitmaps, `emblem` the player's emblem. A cell with no entry is not drawn |
+| `panes.N.blocks` | what the game does to a block of pane `N` |
+| `panes.N.lists.M` | the rows the game's code gives list `M`, and the focused one, drawn on the list's skin from its anchor as a screen of ours lays its rows |
+
+A block is named by its widget id (`text.4`, `button.0`, `bitmap.21`,
+`title`), by the name of its string, or by its bitmap's tag path; a
+widget id wins. What it takes:
+
+| Field | Meaning |
+|---|---|
+| `hide: true` | the game does not show the block in this state. A hidden button's art goes with its text |
+| `string: name` | the game writes another string of the screen's own table there. The text is read from the disc when the picture is drawn |
+| `text: "..."` | the game writes text of its own making there |
+| `image: N` | the image of the block's bitmap the game picks (a rank, a game type's icon) |
+| `tint: [r, g, b]` | the colour the game draws the bitmap in (a player's colour on a white bar) |
+| `level: stem` | the game puts a map's picture there in place of the block's bitmap (the lobby's map picture). `stem` is the map file's name without `.map`; the picture is the one the disc's level list gives that map (`Disc::art`, `Art::Level`). A map with no picture fails the render |
+
+A cell's `emblem` is `{ foreground: N, background: M, colours: [...] }`:
+an image of each of the disc's small emblem bitmaps
+(`ui\global_bitmaps\emblems\foreground_small`, `background_small`) and
+four colours, the foreground's two and then the background's two. It is
+drawn in each shader bitmap of the cell's skin. The game moves a skin
+item's shader bitmap up by its own height, as it does an item's bitmap
+(docs/formats/ui.md "Screen and list classes (code, not tags)"), so the lobby's 32 by 32 rectangle has its
+top on the bar's top. The art is the top-left 19 by 19 of its 32 by 32
+image, which is the bar's height. Each layer is two masks, red and blue
+(`emblem_rules` in `crates/apps/cli/src/live_art.rs`): the layer's
+colour is its first colour by red plus its second by blue, and the
+foreground covers the background by the larger of its masks
+(`preview.rs` `emblem`). A pixel no mask covers is left clear. That last
+rule is the preview's own: the `ui_small_emblem` shader is not read.
+
+Rules:
+
+- **Nothing of the disc is in a sample.** The names, numbers and options
+  are made up. A retail string is named by `string:`, never quoted. A
+  sample that names a string the screen's table lacks fails the render
+  with the names (`State::missing`).
+- **Without a sample, the game's blocks are hidden.** A string that holds
+  a substitution unit is not drawn, nor is one with a unit the sample
+  has no text for (`retail_sample::substitute`). What the tag says
+  outright still shows.
+- **One pane.** The picture is pane `Retail::pane`'s blocks alone; a
+  sample's `panes.N` applies to that pane only.
+- **The title and the legend are in the screen's own header layout**
+  (`Screen::header_layout`, the shared globals' four layouts): the
+  lobby's title and Game Setup's are in different rectangles.
+- **A dialog is drawn over its opener** when its sample names one with
+  `over`, one level deep: the opener's own `over` is not followed. The
+  opener is under the game's backdrop: the shared globals' overlay
+  colour, then the blur (`Disc::backdrop`).
+- **A variant is named.** `assets/ui/retail-samples/` holds
+  `squad_settings_dialog.switch-to.yaml`, Game Setup with retail's
+  Switch To rows and two of ours (Switch To: Forge, Switch To:
+  Firefight) between Quick Options and Co-Op: seven rows. The plain
+  `squad_settings_dialog.yaml` is what every other caller draws.
+- **The editor's edits come first.** A stand-in for a string set with
+  `ui.set_string` is drawn ahead of the sample, then `Retail::text`'s
+  answer, then the sample, then the tag's own string.
+- **Text is laid out as the game does** (docs/formats/ui.md "Text
+  layout"): broken at the rectangle's width, justified line by line,
+  and the lines under the rectangle's bottom left out.
+- **The view keeps every block.** `retail_view` has a widget for a
+  hidden block, with no text, so the editor can still select and move
+  it.
+
+Not drawn: model scenes, and a shader bitmap of a cell with no `emblem`.
+
+Not traced: which code hides the lobby's per-slot bars and speaker
+icons, and when it shows the help text under the player column. The
+lobby's update (`0x24fd..`) looks up text widgets 1, 3, 4, 0x2a and 0x2d
+and bitmaps 2 and 4 only. The sample hides the co-op and matchmaking
+panes' slot bars, as the custom game's pane parks them off screen.
+Game Setup's panel bitmap is another screen's art, and its image index
+is out of range: the block's image (`+0xa`) is 8 and `xbox_live` has
+images 0 to 7, so the tag alone draws nothing there. The tag preloads
+`difficulty_options` and `mp_games`, and the code that picks the
+panel's picture per focused row is not read, so the sample's `level`
+stands in for it.
 
 ## The fidelity loop
 
@@ -1455,7 +1799,8 @@ A game run has to show:
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2` draw as opaque as the preview shows;
 - the native animation timing and the panel, rows and selection in both directions on the game shell and paused game, and what holding a screen's delay and length to the kit's budgets does to its widgets (a quicker track, or the screen freed before its tracks end);
 - input timing: key repeat, the opener-press guard, the close guard and a closing dialog's presses reaching the screen beneath, and the keyboard's return;
-- a dialog's description drawn over its backing at `dialog_tag::description_bias`;
+- a dialog's description drawn over its backing at `dialog_tag::description_bias`, and a settings dialog's header lines at that bias too;
+- a settings dialog's one-line about and two-line help in the game's font: the help clear of the eighth row and the legend;
 - that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
 - the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.
 

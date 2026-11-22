@@ -1,15 +1,17 @@
-//! What a switch does (docs/game/party-lobby.md, "Switching"), in this
-//! order: the start state checked (no switch while the game loads or counts
-//! down, nor once a search has hosted its lobby), every refusal the switch
-//! can meet checked before anything changes, our parts set ([`set_ours`]:
-//! the lobby's mode, the `firefight` setting held on for FIREFIGHT), the
-//! retail lobby mode set when it differs ([`to_custom`], [`to_co_op`],
-//! [`to_matchmaking`]), then the map put inside the tab's category through
-//! `LOBBY_SET_MAP` ([`map_for`]).
+//! What a switch does (docs/game/party-lobby.md, "Switching"): the GAME
+//! MODE picker's pick and the Xbox Live menu's Custom Games, Forge and
+//! Firefight rows ([`run_to`]). In this order: the start state checked (no switch while
+//! the game loads or counts down, nor once a search has hosted its lobby),
+//! every refusal the switch can meet checked before anything changes, our
+//! parts set ([`set_ours`]: the lobby's mode, the `firefight` setting held
+//! on for FIREFIGHT), the retail lobby mode set when it differs
+//! ([`to_custom`], [`to_co_op`], [`to_matchmaking`]), then the map put
+//! inside the mode's category through `LOBBY_SET_MAP` ([`map_for`]).
 //!
-//! **The retail routines** are the game's own, run from the lobby's input
-//! handler with no Game Setup open, less the dialog close each press ends
-//! with (read from the XBE, 2026-11-22, static):
+//! **The retail routines** are the game's own, run from the picker's
+//! action or the lobby's panel update with no Game Setup open, less the
+//! dialog close each press ends with (read from the XBE, 2026-11-22,
+//! static):
 //!
 //! - CUSTOM GAMES, FORGE, FIREFIGHT from another mode: Switch To: Custom
 //!   Game's press (`0x2bba66`, Game Setup action 7).
@@ -17,7 +19,7 @@
 //!   action 6), and on Xbox Live `coop_live` armed as the Co-op Campaign
 //!   row arms it (`coop_live::Lobby::host_retail`).
 //! - MULTIPLAYER: the OptiMatch playlist press (`0x2b2181`) for the
-//!   playlist the tab opens on ([`opening_hopper`]): the last one this
+//!   playlist the mode opens on ([`opening_hopper`]): the last one this
 //!   profile played when it is listed, else the first listed. The
 //!   playlists are listed on one page, ordinary and Clanker ones
 //!   ([`Scope::All`]).
@@ -59,7 +61,7 @@ pub const LOBBY_DIFFICULTY_HOLD: u32 = 0x0014_8d42;
 pub const CO_OP_CLEARED: u32 = 0x0054_e7cc;
 /// The byte that gates Switch To: Co-Op Game: set, the press raises error
 /// `0x32` and changes nothing. Its meaning is not traced
-/// (docs/live/live-coop.md §11.1); the tab refuses the same way.
+/// (docs/live/live-coop.md §11.1); the switch refuses the same way.
 pub const CO_OP_GATE: u32 = 0x0054_d5a0;
 /// The playlist press's call after `LOBBY_MODE_SET(3)`. No arguments.
 pub const MATCHMAKING_COMMIT: u32 = 0x0006_3fb0;
@@ -73,7 +75,7 @@ pub const LOBBY_HOPPER_HELD: u32 = 0x0054_e7b8;
 pub const LOBBY_HOPPER: u32 = 0x0054_e7bc;
 /// The hoppers the playlist list asks about (`HOPPER_LISTED`, 0..16).
 pub const HOPPERS: u32 = 16;
-/// The local player whose saved playlist the tab opens on, and who the
+/// The local player whose saved playlist MULTIPLAYER opens on, and who the
 /// choice is saved for: the first, the party leader's own profile.
 pub const LEADER_PLAYER: u32 = 0;
 
@@ -88,7 +90,7 @@ pub fn install(scratch: u32) {
 
 // ---- the plan ----
 
-/// What a switch to a tab sets.
+/// What a switch to a mode sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Plan {
     pub to: Tab,
@@ -112,7 +114,7 @@ pub fn plan(from: Tab, to: Tab) -> Plan {
 
 /// The map `LOBBY_SET_MAP` puts the lobby on for `to` from its map
 /// `current` (its list id), with `catalogue` the map list: `None` when the
-/// lobby's own is inside the tab's category or the tab takes any map, else
+/// lobby's own is inside the mode's category or the mode takes any map, else
 /// the category's first; or why there is none.
 ///
 /// FIREFIGHT never refuses: with no map that carries the kit installed (or
@@ -189,7 +191,7 @@ pub fn set_ours(plan: &Plan, store: Option<&Store>) -> Result<(), Reason> {
 
 static NO_PLAYLISTS: AtomicBool = AtomicBool::new(false);
 
-/// Whether the last switch to MULTIPLAYER found no playlist listed: the tab
+/// Whether the last switch to MULTIPLAYER found no playlist listed: the mode
 /// is then off with its reason until the party leaves the lobby.
 pub fn no_playlists_seen() -> bool {
     NO_PLAYLISTS.load(Ordering::Relaxed)
@@ -290,7 +292,62 @@ static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 pub fn in_flight() -> Option<String> {
     IN_FLIGHT
         .load(Ordering::SeqCst)
-        .then(|| "a mode strip switch's guest calls are in flight".to_owned())
+        .then(|| "a lobby mode switch's guest calls are in flight".to_owned())
+}
+
+/// What a switch to `to` does from the lobby `shown`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// Nothing: a member's, or the lobby is in that mode already.
+    Nothing,
+    /// The mode is off here: its reason on the status line.
+    Refuse(Reason),
+    /// The switch from the lobby's mode.
+    Switch { from: Tab, to: Tab, place: Place },
+}
+
+/// A switch to `to` asked for in the lobby `shown`: the leader's only, to
+/// a mode present and on here.
+pub fn ask(shown: &super::header::Shown, to: Tab) -> Ask {
+    if !shown.leader || shown.selected == to {
+        return Ask::Nothing;
+    }
+    match shown.avail(to) {
+        None => Ask::Nothing,
+        Some(super::Avail::Off(r)) => Ask::Refuse(r),
+        Some(super::Avail::On) => Ask::Switch {
+            from: shown.selected,
+            to,
+            place: shown.place,
+        },
+    }
+}
+
+/// The switch to `to` from the lobby as it stands now, with `present` the
+/// modes present ([`ask`], then [`run`]): a refusal goes to the status
+/// line.
+pub async fn run_to(
+    cx: &Cx,
+    to: Tab,
+    present: super::Present,
+    store: Option<Arc<Store>>,
+) -> Result<(), EntryError> {
+    let read = |m: &dyn engine::memory::GuestMemory| {
+        super::header::read(m)
+            .map(|r| super::header::shown(&r, present, crate::lobby_start::mode()))
+    };
+    let Some(shown) = cx.read(read) else {
+        eprintln!("lobby tabs: a switch to {} with the lobby unreadable", to.label());
+        return Ok(());
+    };
+    match ask(&shown, to) {
+        Ask::Nothing => Ok(()),
+        Ask::Refuse(r) => {
+            notice(r);
+            Ok(())
+        }
+        Ask::Switch { from, to, place } => run(cx, from, to, place, store).await,
+    }
 }
 
 /// Runs the switch from `from` to `to` on the leader's console, in a lobby
@@ -336,7 +393,7 @@ async fn run_inner(
     let plan = plan(from, to);
     let catalogue = crate::map_select::current();
     let current = cx.read(|m| m.u32(crate::h1_options_row::LOBBY_MAP).ok());
-    // Every refusal before anything changes. A tab of the custom lobby
+    // Every refusal before anything changes. A mode of the custom lobby
     // entered from another mode is checked against its whole category: the
     // custom setup picks the map it lands on.
     let probe = if plan.retail.is_some() { None } else { current };

@@ -48,6 +48,7 @@ mod tags;
 mod ui_kit;
 mod ui_browse;
 mod ui_edit;
+mod ui_retail;
 mod ui_screens;
 mod variants;
 mod view;
@@ -528,8 +529,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::UI_PICK,
-        "Show a screen in a state (default: its first), or a retail screen by tag",
-        r#"{"screen?":"string","state?":"string","retail?":"string"}"#,
+        "Show a screen in a state (default: its first), or a retail screen by tag (with a named sample variant)",
+        r#"{"screen?":"string","state?":"string","retail?":"string","sample?":"string"}"#,
         r#"{"pick":"any","summary":"string|null"}"#,
         r#"{"screen":"$SCREEN"}"#,
     ),

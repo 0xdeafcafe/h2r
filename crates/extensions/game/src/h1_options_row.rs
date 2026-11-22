@@ -1,7 +1,10 @@
-//! The "Halo 1 Options" row on a multiplayer custom game's Game Setup
+//! The "Halo 1 Options..." row on a multiplayer custom game's Game Setup
 //! dialog, next to its map and game type, while the lobby's map is a
-//! converted Halo 1 map; and the screen it opens (`crate::h1_options`,
-//! docs/halo1/multiplayer.md "Halo 1 options").
+//! converted Halo 1 map; and the page it opens (`crate::h1_options::page`,
+//! docs/halo1/multiplayer.md "Halo 1 options"). The row's text and its
+//! Game Setup description are the page's caller (`settings.caller` in
+//! `assets/ui/screens/h1-options.yaml`), written from the page's own text
+//! slots, as the Clankers row's are.
 //!
 //! **The row.** The Game Setup dialog (screen 23, `squad_settings_dialog`)
 //! builds its list in `0x2bb4d2` (ESI the handler): a datum array "squad
@@ -40,8 +43,9 @@ use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 
-use crate::h1_options::{self, OptionsScreen};
-use crate::list_class::{self, ListClass};
+use crate::h1_options;
+use crate::list_class::{self, Rows};
+use crate::ui_kit::screen::KitScreen;
 
 /// The row's feature (`features.h1-options-row` switches it).
 pub const ROW_FEATURE: &str = "h1-options-row";
@@ -70,31 +74,6 @@ pub const OPTIONS_ACTION: i16 = 10;
 /// A widget's type (`+4`; 0 a screen) and parent (`+0x10`).
 const WIDGET_TYPE: u32 = 4;
 const WIDGET_PARENT: u32 = 0x10;
-
-/// The screen's class: a dialog on the lobby's Quick Options
-/// ([`h1_options::DIALOG`], docs/game/ui-builder.md "The Dialog kind"),
-/// inside as well as out: Quick Options' tag copied with its own list (its
-/// `setting_lists` skin, a name and a choice per row, where Quick Options
-/// has it), Quick Options' header (the focused row's icon in its game
-/// type picture, the row's one line in the help line), and the legend in
-/// its footer.
-/// Left and right step a row, A opens the value picker; B closes it.
-pub fn class(screen: Arc<OptionsScreen>) -> ListClass {
-    let base = h1_options::DIALOG;
-    let mut c = ListClass::with_rows(SCREEN_FEATURE, h1_options::SCREEN, screen)
-        .dialog(base)
-        .sideways()
-        .footer(h1_options::FOOTER_ID);
-    if let Some(help) = base.help() {
-        c = c.description(help);
-    }
-    // Quick Options' header: the focused row's icon in its game type
-    // picture (`OptionsScreen::row_image`).
-    if let Some(picture) = base.picture() {
-        c = c.picture(picture);
-    }
-    c
-}
 
 /// Whether a Game Setup list with these actions, on a lobby whose map is
 /// `map` (`Some` name when it is a converted map), gets our row.
@@ -270,9 +249,10 @@ pub fn screen_of(m: &dyn GuestMemory, widget: u32) -> Option<u32> {
     None
 }
 
-/// The row on the Game Setup dialog.
+/// The row on the Game Setup dialog, and the page its press opens.
 pub struct SetupRow {
     pub data_root: PathBuf,
+    pub page: Arc<KitScreen>,
 }
 
 fn once(seen: &AtomicBool, what: &str) {
@@ -281,22 +261,29 @@ fn once(seen: &AtomicBool, what: &str) {
     }
 }
 
-fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
-    let (item, action) = {
-        let mem = c.ctx.runtime().memory();
+fn row_text(c: &mut Call, page: &KitScreen, seen: &AtomicBool) -> Result<Flow, GuestFault> {
+    let rt = Arc::clone(c.ctx.runtime());
+    let (item, id) = {
+        let mut mem = rt.memory();
         let item = mem.u32(c.cpu.esp + 4).ok();
         let action = item
             .and_then(|i| mem.u32(i + 0x70).ok())
             .and_then(|row| row_action(&*mem, c.cpu.ecx, row));
-        (item, action)
-    };
-    let (Some(item), Some(OPTIONS_ACTION)) = (item, action) else {
-        return Ok(Flow::Continue);
+        let Some(item) = item.filter(|_| action == Some(OPTIONS_ACTION)) else {
+            return Ok(Flow::Continue);
+        };
+        // The row's own text ("Halo 1 Options..."), from the page's slot
+        // after its footer, written before it is drawn.
+        let id = page.row_label_id();
+        if let Err(e) = page.write_texts(&mut *mem) {
+            eprintln!("h1 options: the row's text: {e:?}");
+        }
+        (item, id)
     };
     once(seen, "h1 options: Game Setup row text");
     c.answer_async(move |cx| -> EntryFuture {
         Box::pin(async move {
-            list_class::draw_texts(&cx, item, vec![(0, h1_options::ROW_LABEL_ID)]).await?;
+            list_class::draw_texts(&cx, item, vec![(0, id)]).await?;
             Ok(Ret::new(0, 8))
         })
     })
@@ -415,10 +402,11 @@ impl hooks::Feature for SetupRow {
             Ok(())
         });
         let seen = Arc::new(AtomicBool::new(false));
+        let page = Arc::clone(&self.page);
         b.raw().before(
             &SQUAD_SETTINGS_ROW_TEXT,
             "the Halo 1 Options row's text",
-            move |c| row_text(c, &seen),
+            move |c| row_text(c, &page, &seen),
         );
         b.raw().before(
             &SQUAD_SETTINGS_ROW_CHOSEN,
@@ -431,6 +419,14 @@ impl hooks::Feature for SetupRow {
         }));
         Ok(())
     }
+}
+
+/// The Halo 1 Options page over a store at its defaults, for the tests
+/// that put the row on a plan.
+#[cfg(test)]
+pub(crate) fn test_page() -> Arc<KitScreen> {
+    let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+    Arc::new(h1_options::page(store))
 }
 
 #[cfg(test)]
@@ -518,6 +514,7 @@ mod tests {
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&SetupRow {
             data_root: std::env::temp_dir(),
+            page: test_page(),
         })
         .unwrap();
         let text = r.build(&hooks::Base).unwrap().text();

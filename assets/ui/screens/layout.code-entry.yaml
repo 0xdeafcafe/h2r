@@ -23,4 +23,4 @@ widgets:
     gap_after: 2
   legend:
     component: legend
-    prompts: [[[Up, Down], "DIGIT"], [[Left, Right], "MOVE"], [A, "DONE"], [B, "CANCEL"]]
+    prompts: [[[Up, Down], "DIGIT"], [[Left, Right], "MOVE"], [A, "DONE"], [B, "BACK"]]

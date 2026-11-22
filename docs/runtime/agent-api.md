@@ -44,6 +44,7 @@ connection to hold `session.claim`.
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.reload`, `superbounce.tune` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.medal_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
@@ -1053,6 +1054,48 @@ an index the map has no run at, or (to play one) without the
 h2 agent superbounce.ghosts
 h2 agent superbounce.ghost_show '{"spot":0}'
 h2 agent superbounce.ghost_show '{"stop":true}'
+```
+
+`superbounce.reload {map?}` (access: act) re-reads a map's `<map>.spots`,
+`.learned`, `.verified` and `.ghosts` from the bots directory, for the
+loaded map without `map`, and republishes them the way a map load does,
+with no restart: the bots' spot table and its generation (the brains read
+their spots again), and the mode's own copy of the loaded map's spots,
+which its marks, HUD, assist and tracker read. The `.spots` file is taken
+when it is the current scanner's (its map fingerprint is not checked); a
+missing, damaged or other-version one leaves the scan as it was, and
+`spots_file` says so. The mode keeps its own scan of the loaded BSP, so a
+changed `.spots` reaches the bots and a changed `.verified` or `.learned`
+reaches everything. The call runs on the game thread at a tick boundary.
+The answer is `map`, `dir`, `spots_file` (`read`, `absent` or
+`unread: <why>`), `before` and `after` (the scan as the bots keep it with
+the files applied: `total`, `crouch`, `slot`, `crease`, `vee`, `busy`,
+`likely`, `proven`, `failed` and `marked`), `verified_entries`,
+`learned_entries`, `ghosts_before`, `ghosts_after` and `mode_updated`.
+Refused with no map and no `map`, or with no bots directory. Game side:
+`crates/extensions/game/src/superbounce_reload.rs`,
+`bots::spots::reload_in`.
+
+`superbounce.tune {bounce_speed?, catch?, launch_gain?}` (access: act)
+sets live overrides of the model's constants: the touchdown speed every
+seam needs (`superbounce::speed::BOUNCE_SPEED`, above 0), the catch
+(`superbounce::CATCH`, world units, 0 up to but not including 1) and the
+launch gained per unit/s over the threshold (`speed::EXCESS_GAIN`, 0 or
+more). A key left out stays as it is and `null` clears its override. Every
+key is checked before any is applied, and an unknown key is refused. The
+model reads each constant through one accessor
+(`superbounce::speed::bounce_speed`, `excess_gain` and
+`superbounce::catch`, over `superbounce::tune`), so an override reaches
+the scan's `need`, the launch, the landing verdict, the assist and the
+bots at once. Overrides live in memory only and are gone with the
+process. The answer is `bounce_speed`, `catch` and `launch_gain`, each
+`{value, source}` with `source` `default` or `override`.
+
+```sh
+h2 agent superbounce.reload
+h2 agent superbounce.reload '{"map":"zanzibar"}'
+h2 agent superbounce.tune '{"bounce_speed":5.0,"catch":0.15}'
+h2 agent superbounce.tune '{"bounce_speed":null,"catch":null,"launch_gain":null}'
 ```
 
 ## `profile`: where a frame goes
@@ -2466,20 +2509,21 @@ or the game's UI state without UI watch. All are read-only except
   For example, `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
 
 - **`ui.lobby.tabs`** (`h2 agent ui.lobby.tabs`, no parameters): the
-  pregame lobby's mode strip ([party-lobby.md](../game/party-lobby.md)),
-  read on a game boundary (`crates/extensions/game/src/lobby_tabs/strip.rs`).
-  The result is `{place, leader, selected, tabs, clanker, notice}`:
+  pregame lobby's modes ([party-lobby.md](../game/party-lobby.md)),
+  read on a game boundary (`crates/extensions/game/src/lobby_tabs/header.rs`).
+  The result is `{place, leader, selected, header, tabs, clanker, notice}`:
   `place` is `split_screen`, `system_link` or `xbox_live`; `leader` is
-  whether this console leads the party (a member's strip has no glyphs
-  and its bumpers do nothing); `selected` is the tab the lobby is on.
-  `tabs` lists the tabs present in strip order, each `{tab, label, state,
-  reason}` with `tab` one of `multiplayer`, `custom_games`, `forge`,
-  `firefight`, `co_op`, `state` one of `selected`, `on`, `off`, and
-  `reason` the status-line sentence of a tab that cannot run here (else
-  null). `clanker` is, on MULTIPLAYER, whether the lobby's playlist is
-  one the server marks as a Clanker playlist (null on another tab).
-  `notice` is the reason the status line shows after a bumper press, for
-  four seconds, else null. It returns `UNAVAILABLE` when the pregame
+  whether this console leads the party (a member has no prompt line and
+  its X is retail's); `selected` is the mode the lobby is in, and
+  `header` the text the lobby's update gives its header (`CUSTOM GAMES`,
+  `FORGE`, ...). `tabs` lists the modes present, each `{tab, label,
+  state, reason}` with `tab` one of `multiplayer`, `custom_games`,
+  `forge`, `firefight`, `co_op`, `state` one of `selected`, `on`, `off`,
+  and `reason` the status-line sentence of a mode that cannot run here
+  (else null). `clanker` is, in MULTIPLAYER, whether the lobby's
+  playlist is one the server marks as a Clanker playlist (null in
+  another mode). `notice` is the reason the status line shows after a
+  pick of a mode that is off, for four seconds, else null. It returns `UNAVAILABLE` when the pregame
   lobby is not the screen on top or its session cannot be read.
   For example, a Split Screen lobby's MULTIPLAYER entry is
   `{"tab":"multiplayer","label":"MULTIPLAYER","state":"off","reason":"Matchmaking needs Xbox Live."}`.
@@ -2529,10 +2573,11 @@ requires a rendering check. [Transition reader](../../crates/extensions/game/src
 `ui.press` accepts `{target, action, row?, phase?}`. Copy the token from
 the latest audit. Actions are `up`, `down`, `left`, `right`, `choose` (A),
 `back` (B), `friends` (Y), `open_live_menu` (A on the Live players
-screen in mode 3), and `tab_prev` (White) and `tab_next` (Black), the
-pregame lobby's mode strip bumpers, refused with `GONE` on any other
-screen ([party-lobby.md](../game/party-lobby.md#switching); read the
-result with `ui.lobby.tabs`). Move focus, audit again, then send `choose` with the
+screen in mode 3), and `change_mode` (X in the pregame lobby: the GAME
+MODE picker, for the party leader), refused with `GONE` on any other
+screen ([party-lobby.md](../game/party-lobby.md#changing-mode); the
+picker is then a kit dialog in `ui.audit`, and `ui.lobby.tabs` reads
+the mode a pick switches to). Move focus, audit again, then send `choose` with the
 observed row. A changed owner, row or requested phase invalidates the
 press. The XAPI tap checks the target again when the game reads the pad.
 A successful result contains `{delivered:true, target, action, row,

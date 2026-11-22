@@ -143,6 +143,9 @@ From the measuring and drawing routines (`0x13ef40`, `0x13f0e0`, `0x13f700`):
   start of an inline markup escape (`0x13fbd0`) and `0xe000..0xe3ff` as the
   private-use icon range.
 
+Where a line breaks in a rectangle, and which lines are drawn, is in
+[ui.md](ui.md) ("Text layout").
+
 `render` implements line breaks (`\r`, `\n`, `\r\n`), kerning, per-glyph
 offsets and alpha blending. Not implemented: markup escapes, tab stops, alignment
 tokens, icons, and the per-draw scale factor the engine

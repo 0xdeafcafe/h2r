@@ -9,7 +9,7 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
-use super::{FilterPage, RETAIL_FOOTER, RETAIL_TITLE, TEXTS, current, lock};
+use super::{Browser, CHROME, RETAIL_FOOTER, RETAIL_TITLE, current, lock};
 use crate::custom_games::{BROWSER_EVENT, browser_is_live};
 use crate::layout_glue::{Gm, ReadGm};
 use crate::list_class;
@@ -17,7 +17,7 @@ use crate::ui_back;
 use crate::ui_kit::dialog_tag;
 use crate::ui_kit::input::{Glyph, Input, Prompt, footer_legend};
 use crate::ui_kit::lifecycle::SCREEN_STATE;
-use crate::ui_kit::screen::SLOT_LEN;
+use crate::ui_kit::screen::{SLOT_LEN, SlotTexts};
 use crate::ui_watch::{ACTIVE, SHARED, channel};
 
 const BROWSER_WINDOW: u32 = 5;
@@ -153,18 +153,18 @@ impl Chrome {
         }
     }
 
-    async fn draw(self, cx: &Cx, page: &FilterPage) -> Result<(), EntryError> {
+    async fn draw(self, cx: &Cx, texts: &SlotTexts) -> Result<(), EntryError> {
         let ids = [
             (
                 Screen::at(self.screen).header(),
-                page.texts.set(RETAIL_TITLE, &self.title()),
+                texts.set(RETAIL_TITLE, &self.title()),
             ),
             (
                 self.screen + list_class::FOOTER,
-                page.texts.set(RETAIL_FOOTER, &self.footer.text()),
+                texts.set(RETAIL_FOOTER, &self.footer.text()),
             ),
         ];
-        cx.write(|m| page.texts.write(m))?;
+        cx.write(|m| texts.write(m))?;
         for (widget, id) in ids {
             cx.call(
                 GuestCall::new(points::TEXT_SET.base)
@@ -178,7 +178,21 @@ impl Chrome {
     }
 }
 
-pub(super) struct Presentation(pub Arc<FilterPage>);
+/// The retail browser's header and footer while Live browses: its own
+/// texts (the "browser chrome" family), over the filters in force.
+pub(super) struct Presentation {
+    browser: Arc<Browser>,
+    texts: Arc<SlotTexts>,
+}
+
+impl Presentation {
+    pub(super) fn new(browser: Arc<Browser>) -> Self {
+        Presentation {
+            browser,
+            texts: Arc::new(SlotTexts::new(CHROME)),
+        }
+    }
+}
 
 impl Feature for Presentation {
     fn manifest(&self) -> Manifest {
@@ -190,21 +204,21 @@ impl Feature for Presentation {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let page = Arc::clone(&self.0);
-        let bytes = TEXTS.len * SLOT_LEN;
+        let texts = Arc::clone(&self.texts);
+        let bytes = CHROME.len * SLOT_LEN;
         let base = b.guest_alloc(bytes.next_multiple_of(0x1000), Permissions::RW)?;
-        page.texts.base.store(base, Ordering::SeqCst);
+        texts.base.store(base, Ordering::SeqCst);
         b.locale()
-            .source(super::SCREEN, move |id| page.texts.address(id));
+            .source("browser.chrome", move |id| texts.address(id));
 
         let drawn = Arc::new(Mutex::new(None));
-        let restore = Arc::clone(&self.0);
+        let restore = Arc::clone(&self.texts);
         let restore_drawn = Arc::clone(&drawn);
         b.snapshot(SnapshotPolicy::section_forbid_while(
             || None,
             Vec::new,
             move |_, _| {
-                restore.texts.rewrite_all();
+                restore.rewrite_all();
                 *lock(&restore_drawn) = None;
                 Ok(())
             },
@@ -224,7 +238,7 @@ impl Feature for Presentation {
             )
             .optional();
 
-        let page = Arc::clone(&self.0);
+        let (browser, texts) = (Arc::clone(&self.browser), Arc::clone(&self.texts));
         b.raw()
             .before(
                 &points::UI_SYNC_NETWORK_SCREEN,
@@ -235,9 +249,8 @@ impl Feature for Presentation {
                         *lock(&drawn) = None;
                         return Ok(Flow::Continue);
                     };
-                    let filters = page.browser.active_count();
-                    let (matching, supported) = page
-                        .browser
+                    let filters = browser.active_count();
+                    let (matching, supported) = browser
                         .hle()
                         .map_or((None, None), |h| h.browser_result());
                     let chrome = Chrome {
@@ -253,14 +266,14 @@ impl Feature for Presentation {
                         // Leave the nested call to the retail reconciler.
                         *last = Some(chrome);
                     }
-                    let page = Arc::clone(&page);
+                    let texts = Arc::clone(&texts);
                     c.answer_async(move |cx| {
                         Box::pin(async move {
                             let ret = cx
                                 .call(GuestCall::new(points::UI_SYNC_NETWORK_SCREEN.base))
                                 .await?;
                             if cx.read(|m| active_browser(&ReadGm(m))) == Some(screen) {
-                                chrome.draw(&cx, &page).await?;
+                                chrome.draw(&cx, &texts).await?;
                             }
                             Ok(Ret::new(ret.eax, 0))
                         })

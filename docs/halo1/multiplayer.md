@@ -983,10 +983,13 @@ too.
 
 ## Halo 1 options (**Built**, tests only: `boot::h1_options`, `boot::h1_options_row`)
 
-The per-game Halo 1 or Halo 2 choices, as rows of one list
-(`h1_options::OptionRow`: a two-choice setting, its label and what each
-choice means). Adding an option is a setting in `setting_defs` (choices
-1 Halo 1, 2 Halo 2), a row, and a switch in `h1_options::switch`.
+The per-game Halo 1 or Halo 2 choices (`h1_options::OptionRow`: a
+two-choice setting, its label and what each choice means). On the
+multiplayer page the rows are `setting:` rows of its doc,
+`assets/ui/screens/h1-options.yaml`; on the campaign's Skulls page they
+are the skulls page's rows. Adding an option is a setting in
+`setting_defs` (choices 1 Halo 1, 2 Halo 2), an `OptionRow`, a row of
+the doc for a multiplayer option, and a switch in `h1_options::switch`.
 
 | Row | Setting | Where | Switch |
 |---|---|---|---|
@@ -1003,17 +1006,19 @@ choice means). Adding an option is a setting in `setting_defs` (choices
   package's `h2recomp-map.toml` names an `h1_` map
   (`h1_options_row::converted_map_name`). Only custom lobbies have Change
   Map (action 0), so only they get the row. Choosing it opens the
-  options screen (`h1-options`, a list class of ours) on the dialog's own
-  window and slot, the way the skulls row opened its page. The screen is
-  the lobby's Quick Options inside and out (`h1_options::DIALOG`,
-  docs/game/ui-builder.md "The Dialog kind"): its panel, its header
-  ("HALO 1 OPTIONS"), its `setting_lists` list with each row's name left
-  and its choice alone in the value column ("Sandbox  Halo 1"), the
-  focused row's one-line help (`OptionRow::help`) in Quick Options' help
-  line and its icon (`OptionRow::icon`: Sandbox a bomb, HUD a helmet) in
-  Quick Options' game type picture, and the legend in its footer. Left
-  or right changes a row; A opens the value picker, which explains the
-  option and both choices (`OptionRow::explain`); B backs out.
+  options screen (`h1-options`, the shared settings dialog,
+  `h1_options::page`) on the dialog's own window and slot, the way the
+  skulls row opened its page. The screen is the lobby's Quick Options
+  inside and out (docs/game/ui-builder.md "The settings dialog"): its
+  panel, its header ("HALO 1 OPTIONS"), its `setting_lists` list with
+  each row's name left and its choice alone in the value column
+  ("Sandbox  Halo 1"), and the legend in its footer. Its top is the same
+  at every focus: the helmet in Quick Options' game type picture, "This
+  Halo 1 map", and the Game Setup row's help ("Play this Halo 1
+  map with Halo 1's weapons and HUD, or Halo 2's."). The
+  focused row's help is under the rows. Left or right changes a row; A
+  opens the value picker, which explains the option and both choices
+  (the row's `explain`); B backs out.
 - **Campaign:** a Halo 1 level's Skulls page (after the difficulty,
   docs/game/skulls.md "The page") lists Assets and HUD under Start
   Level, above the skulls, and opens even with no skull collected.

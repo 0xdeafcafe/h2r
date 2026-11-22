@@ -10,14 +10,45 @@ states:
     focus: 2
   focus-4:
     focus: 4
+settings:
+  host: menu
+  icon: skull
+  name: "Firefight rules"
+  caller:
+    label: "Firefight Options..."
+    help: "Fight waves of enemies: set the waves, difficulty and lives."
 widgets:
   title:
     component: title
     text: "FIREFIGHT"
-  description:
-    component: description
-    at: [-224, 143]
-    size: [494, 20]
-  legend:
-    component: legend
-    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: value
+    text: "Firefight"
+    help: "Fight waves of enemies on a Firefight map."
+    setting: firefight.enabled
+    explain: "On starts Firefight when the map carries its kit: waves of enemies, shared lives and a score. Off plays the game's own rules."
+  row.1:
+    kind: value
+    text: "Wave set"
+    help: "Which set of waves you fight."
+    setting: firefight.waveset
+    explain: "Holdout is steady, with lives to spare. Attrition sends more enemies and gives fewer lives. Last Stand sends the most and gives the fewest."
+  row.2:
+    kind: value
+    text: "Difficulty"
+    help: "How much a kill scores, by difficulty."
+    setting: firefight.difficulty
+    explain: "Harder difficulties score more for each kill: Easy 75%, Normal 100%, Heroic 125% and Legendary 150%."
+  row.3:
+    kind: value
+    text: "Starting lives"
+    help: "How many lives the team starts with."
+    setting: firefight.lives
+    explain: "The shared pool of lives. Each death takes one, and each round adds a few more. Default uses the wave set's own pool."
+  row.4:
+    kind: value
+    text: "Skulls"
+    help: "Whether each round switches on a skull."
+    setting: firefight.skulls
+    explain: "Each round switches on another skull, which makes the fight harder and scores a little more. Off keeps every round plain."

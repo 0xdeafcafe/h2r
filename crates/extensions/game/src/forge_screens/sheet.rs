@@ -627,9 +627,12 @@ pub fn settings(rotation_snap: usize) -> Sheet {
     }
 }
 
-/// A row of Forge options: its label and the screen it opens.
+/// A row of Forge options: its label, its help (what it opens, for the
+/// help block under the rows when the page is the shared settings dialog,
+/// docs/game/ui-builder.md "The settings dialog") and the screen it opens.
 pub struct OptionDef {
     pub label: &'static str,
+    pub description: &'static str,
     pub opens: Kind,
 }
 
@@ -639,10 +642,12 @@ pub struct OptionDef {
 pub const OPTIONS: &[OptionDef] = &[
     OptionDef {
         label: "Tool settings...",
+        description: "Rotation snap and the other tool settings.",
         opens: Kind::Settings,
     },
     OptionDef {
         label: "Controls",
+        description: "Every Forge control, with its button.",
         opens: Kind::Controls,
     },
 ];
@@ -655,7 +660,7 @@ pub fn options() -> Sheet {
         body: String::new(),
         rows: OPTIONS
             .iter()
-            .map(|o| SheetRow::new(o.label, Act::Open(o.opens)))
+            .map(|o| SheetRow::new(o.label, Act::Open(o.opens)).describe(o.description))
             .collect(),
         focus: 0,
     }

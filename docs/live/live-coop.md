@@ -1051,10 +1051,10 @@ screens, the session plumbing, the text and the web stay.
 ### 10.1 What a player sees
 
 **Host.** Xbox Live menu: Quickmatch, OptiMatch, Clankermatch, **Co-op
-Campaign**, Custom Game, Custom Game Browser, Content Download. The list still has five item
-widgets, so with six rows it scrolls: Content Download comes into view
-below the fifth row. Co-op Campaign has its own pane (the Custom Game
-picture, our help text). It opens the co-op screen:
+Campaign**, Custom Games, Forge, Firefight, Custom Game Browser, Mods
+([live-custom-games.md](live-custom-games.md) §5). Seven rows show and
+the list scrolls to the rest. Co-op Campaign has its own pane (the
+Custom Game picture, our help text). It opens the co-op screen:
 
 | row | value | press |
 |---|---|---|
@@ -1229,10 +1229,10 @@ Checklist (stderr lines in brackets):
 1. Both: sign in to Live. stderr: `coop-live: N campaign levels (M named)`
    (N about 15 on the retail disc; 0 means the disc read failed and the
    Level row says None).
-2. Host: Xbox Live menu. Co-op Campaign sits directly above Custom Game (row 3).
+2. Host: Xbox Live menu. Co-op Campaign sits directly above Custom Games (row 3).
    Moving onto Co-op Campaign shows the Custom Game
-   picture and our help line. [`custom games: xbox live menu tag has 6
-   panes and room for 5 rows`]
+   picture and our help line. [`custom games: xbox live menu tag has 10
+   panes and shows 7 of 9 rows`]
 3. Host: Co-op Campaign. The screen shows Level, Difficulty, Invite a
    Friend, Status, Ping (`-` for now), Start. [`coop-live: hosting a co-op
    campaign`]. Step the
@@ -1792,8 +1792,8 @@ without a press. The three parts of 12.5:
 | Game | Path |
 |---|---|
 | every game | No press until the main menu, which the coop-test data reaches by itself about 19 s after the agent socket is up (presses START, A, B only if it hasn't a minute after the first chance). Main menu: DOWN, A (Xbox Live). That opens the players' screen `0x1e` in mode 3; A there opens the Live menu. If what opened says the cursor was on another row (`0xee` for Campaign, mode 1 for Split Screen, mode 2 for System Link), the driver presses B and moves to Xbox Live. The guests come back to Xbox Live a second time with A, corrected the same way |
-| host | Live menu (`0xba`): from the restored row to row 3 (Co-op Campaign, directly above Custom Game), A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 5, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
-| guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 5 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
+| host | Live menu (`0xba`): from the restored row to row 3 (Co-op Campaign, directly above Custom Game), A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 7, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
+| guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 7 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
 | late guest | As a guest, but the browser fallback waits until 120 s after the host invited it, so it joins in progress |
 
 **What the first runs showed** (2026-11-18, 083611 and 092343, with

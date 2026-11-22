@@ -37,9 +37,19 @@ pub mod method {
     /// [`super::MedalTest`]).
     pub const MEDAL_TEST: &str = super::MEDAL_TEST;
 
+    /// Re-reads a map's spot files into the running game
+    /// ([`super::ReloadParams`], [`super::Reload`]).
+    pub const RELOAD: &str = super::RELOAD;
+
+    /// Live overrides of the model's constants ([`super::TuneParams`],
+    /// [`super::Tune`]).
+    pub const TUNE: &str = super::TUNE;
+
     pub const ALL: &[&str] = &[
         STATE,
         SET,
+        RELOAD,
+        TUNE,
         SPOTS,
         MEDAL_TEST,
         super::ASSIST,
@@ -389,6 +399,105 @@ pub struct SetParams {
 pub struct Set {
     /// The override now: `on`, `off` or `game`.
     pub mode: String,
+}
+
+// ---- superbounce.reload ----
+
+/// `superbounce.reload`: re-reads a map's `<map>.spots`, `.learned`,
+/// `.verified` and `.ghosts` from the bots directory and republishes them
+/// to the mode, its marks, HUD, assist and tracker, and the bots. An act.
+pub const RELOAD: &str = "superbounce.reload";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReloadParams {
+    /// The map's short name; default the loaded map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+}
+
+/// A tally of spots, as the bots know a map's (the scan with its
+/// verified and learned files applied).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotCounts {
+    pub total: usize,
+    /// Crouch spots.
+    pub crouch: usize,
+    /// Bounce spots by shape: slots (two joints), single creases, Vs and
+    /// busy points.
+    pub slot: usize,
+    pub crease: usize,
+    pub vee: usize,
+    pub busy: usize,
+    /// All spots by status.
+    pub likely: usize,
+    pub proven: usize,
+    pub failed: usize,
+    /// How many the mode marks and steers onto.
+    pub marked: usize,
+}
+
+/// `superbounce.reload`'s result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reload {
+    pub map: String,
+    /// The bots directory the files were read from.
+    pub dir: String,
+    /// `read`, `absent` or `unread: <why>` (the scan stays as it was).
+    pub spots_file: String,
+    pub before: SpotCounts,
+    pub after: SpotCounts,
+    /// Lines of the verified and learned files now kept.
+    pub verified_entries: usize,
+    pub learned_entries: usize,
+    pub ghosts_before: usize,
+    pub ghosts_after: usize,
+    /// The mode's own copy of the loaded map's spots was refreshed (the
+    /// map is the loaded one and its scan is ready).
+    pub mode_updated: bool,
+}
+
+// ---- superbounce.tune ----
+
+/// `superbounce.tune`: live overrides of the model's constants. An act.
+pub const TUNE: &str = "superbounce.tune";
+
+/// Absent leaves a key as it is; `null` clears its override.
+fn set_or_clear<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<f32>>, D::Error> {
+    Option::<f32>::deserialize(d).map(Some)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TuneParams {
+    /// The touchdown speed every seam needs (`superbounce::speed::BOUNCE_SPEED`),
+    /// above 0.
+    #[serde(default, deserialize_with = "set_or_clear", skip_serializing_if = "Option::is_none")]
+    pub bounce_speed: Option<Option<f32>>,
+    /// The catch (`superbounce::CATCH`), world units, 0 up to (not
+    /// including) 1.
+    #[serde(default, deserialize_with = "set_or_clear", skip_serializing_if = "Option::is_none")]
+    pub catch: Option<Option<f32>>,
+    /// Launch gained per unit/s over the threshold
+    /// (`superbounce::speed::EXCESS_GAIN`), 0 or more.
+    #[serde(default, deserialize_with = "set_or_clear", skip_serializing_if = "Option::is_none")]
+    pub launch_gain: Option<Option<f32>>,
+}
+
+/// One constant in effect.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tuned {
+    pub value: f32,
+    /// `default` or `override`.
+    pub source: String,
+}
+
+/// `superbounce.tune`'s result: the values in effect.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tune {
+    pub bounce_speed: Tuned,
+    pub catch: Tuned,
+    pub launch_gain: Tuned,
 }
 
 // ---- superbounce.spots ----
@@ -1255,6 +1364,8 @@ mod tests {
             [
                 method::STATE,
                 method::SET,
+                method::RELOAD,
+                method::TUNE,
                 method::SPOTS,
                 MEDAL_TEST,
                 ASSIST,
@@ -1266,6 +1377,25 @@ mod tests {
                 GHOST_SHOW,
             ]
         );
+    }
+
+    #[test]
+    fn reload_and_tune_params_refuse_unknown_keys_and_tell_null_from_absent() {
+        assert!(serde_json::from_value::<ReloadParams>(serde_json::json!({"mapp": "x"})).is_err());
+        let r: ReloadParams = serde_json::from_value(serde_json::json!({"map": "zanzibar"})).unwrap();
+        assert_eq!(r.map.as_deref(), Some("zanzibar"));
+        let t: TuneParams =
+            serde_json::from_value(serde_json::json!({"launch_gain": null, "catch": 0.2})).unwrap();
+        assert_eq!((t.launch_gain, t.catch, t.bounce_speed), (Some(None), Some(Some(0.2)), None));
+        let v = serde_json::to_value(&t).unwrap();
+        assert!(v["launch_gain"].is_null() && v.get("bounce_speed").is_none());
+        assert!(serde_json::from_value::<TuneParams>(serde_json::json!({"nope": 1})).is_err());
+        let out = Tune {
+            bounce_speed: Tuned { value: 5.4, source: "default".into() },
+            ..Tune::default()
+        };
+        let value = serde_json::to_value(&out).unwrap()["bounce_speed"]["value"].as_f64().unwrap();
+        assert!((value - 5.4).abs() < 1e-6, "{value}");
     }
 
     #[test]

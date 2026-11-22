@@ -184,7 +184,7 @@ impl UiScreens {
                         tiles: items
                             .into_iter()
                             .map(|i| Tile {
-                                pick: Pick::Retail(i.name.clone()),
+                                pick: Pick::retail(i.name.clone()),
                                 label: i.label.clone(),
                                 name: i.name.clone(),
                             })
@@ -313,7 +313,7 @@ fn render_thumb(disc: Option<&Disc>, pick: &Pick) -> Result<(Canvas, Vec<String>
                 .collect();
             Ok((shrink(preview::render_view(&view, src)), found, true))
         }
-        Pick::Retail(tag) => {
+        Pick::Retail { tag, sample } => {
             let d = disc.context("retail screens need the disc")?;
             let canvas = d.render_retail(&Retail {
                 tag,
@@ -321,6 +321,8 @@ fn render_thumb(disc: Option<&Disc>, pick: &Pick) -> Result<(Canvas, Vec<String>
                 text: &|_| None,
                 cells: &[],
                 footer: None,
+                rows: None,
+                sample: sample.as_deref(),
             })?;
             Ok((shrink(canvas), Vec::new(), false))
         }
@@ -426,7 +428,7 @@ mod tests {
     fn head(t: &Tile) -> String {
         match &t.pick {
             Pick::Native { screen, .. } => screen.split('.').next().unwrap().to_owned(),
-            Pick::Retail(_) => String::new(),
+            Pick::Retail { .. } => String::new(),
         }
     }
 
@@ -520,7 +522,7 @@ mod tests {
     #[test]
     fn a_failed_screen_is_remembered_and_a_new_disc_forgets() {
         let mut s = UiScreens::default();
-        let bad = [native("nope", "x"), Pick::Retail("a\\b".into())];
+        let bad = [native("nope", "x"), Pick::retail("a\\b")];
         assert_eq!(s.draw_thumbs(&bad, Duration::from_secs(60)), 2);
         assert!(s.gallery.thumb(&bad[0]).unwrap().error.is_some());
         assert!(s.gallery.thumb(&bad[1]).unwrap().canvas.is_none());

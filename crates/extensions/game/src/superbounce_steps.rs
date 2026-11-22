@@ -139,7 +139,7 @@ pub fn need(s: &State) -> Option<f32> {
     Some(if n.fall.is_finite() && n.fall > 0.0 {
         superbounce::speed::touchdown(n.fall)
     } else {
-        superbounce::speed::BOUNCE_SPEED
+        superbounce::speed::bounce_speed()
     })
 }
 

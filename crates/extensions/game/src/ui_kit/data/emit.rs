@@ -7,12 +7,14 @@
 //! (screen, kind, layout, ids, glyphs) plain, every text double-quoted,
 //! numbers and pairs in flow (`[12, -40]`), prompts as
 //! `[[A, "SELECT"], [[Left, Right], "CHANGE"]]`, art as
-//! `{ screen: 11, pane: 0, index: 1, image: 0 }`. No comments: a save
-//! can't keep them.
+//! `{ screen: 11, pane: 0, index: 1, image: 0 }`, a settings dialog's
+//! actions one flow map a line
+//! (`- { button: X, words: "CLEAR FILTERS", bind: browser.clear }`). No
+//! comments: a save can't keep them.
 
 use std::fmt::Write;
 
-use super::{Glyphs, RowDoc, ScreenDoc, WidgetDoc};
+use super::{Glyphs, RowDoc, ScreenDoc, SettingsDoc, WidgetDoc};
 
 /// `s` double-quoted, YAML-escaped.
 pub(super) fn quoted(s: &str) -> String {
@@ -105,11 +107,51 @@ fn row(out: &mut String, id: &str, r: &RowDoc) {
     if let Some(h) = &r.help {
         let _ = writeln!(out, "    help: {}", quoted(h));
     }
+    if let Some(k) = &r.setting {
+        let _ = writeln!(out, "    setting: {}", key(k));
+    }
+    if let Some(b) = &r.bind {
+        let _ = writeln!(out, "    bind: {}", key(b));
+    }
+    if let Some(e) = &r.explain {
+        let _ = writeln!(out, "    explain: {}", quoted(e));
+    }
     if let Some(o) = &r.open {
         let _ = writeln!(out, "    open: {}", key(o));
     }
     if let Some(m) = r.max_chars {
         let _ = writeln!(out, "    max_chars: {m}");
+    }
+}
+
+fn settings(out: &mut String, st: &SettingsDoc) {
+    out.push_str("settings:\n");
+    let _ = writeln!(out, "  host: {}", key(&st.host));
+    if let Some(i) = &st.icon {
+        let _ = writeln!(out, "  icon: {}", key(i));
+    }
+    if let Some(n) = &st.name {
+        let _ = writeln!(out, "  name: {}", quoted(n));
+    }
+    if let Some(a) = &st.about {
+        let _ = writeln!(out, "  about: {}", quoted(a));
+    }
+    if let Some(c) = &st.caller {
+        out.push_str("  caller:\n");
+        let _ = writeln!(out, "    label: {}", quoted(&c.label));
+        let _ = writeln!(out, "    help: {}", quoted(&c.help));
+    }
+    if !st.actions.is_empty() {
+        out.push_str("  actions:\n");
+        for a in &st.actions {
+            let _ = writeln!(
+                out,
+                "    - {{ button: {}, words: {}, bind: {} }}",
+                a.button,
+                quoted(&a.words),
+                key(&a.bind)
+            );
+        }
     }
 }
 
@@ -139,6 +181,9 @@ pub fn to_yaml(doc: &ScreenDoc) -> String {
                 let _ = writeln!(out, "    cursor: {c}");
             }
         }
+    }
+    if let Some(st) = &doc.settings {
+        settings(&mut out, st);
     }
     if !doc.widgets.is_empty() {
         out.push_str("widgets:\n");

@@ -5,8 +5,10 @@
 //! focused, the setting's description on the right, and `(A) SELECT
 //! (B) CANCEL` in the footer. A sets the focused value through the row's
 //! own setter (the settings store, so it is saved and its change
-//! callbacks run) and closes; B closes and changes nothing. Left and right
-//! on the row itself still step, as a shortcut.
+//! callbacks run) and closes; a pick with an action of its own
+//! ([`Pick::after`], the lobby's mode switch) runs it once closed. B closes
+//! and changes nothing. Left and right on the row itself still step, as a
+//! shortcut.
 //!
 //! **Retail's.** The dialog is `low_level_settings` (screen 223,
 //! `ui\screens\game_shell\settings_screen\variant_settings\
@@ -95,6 +97,10 @@ pub struct Pick {
     pub opener: Opener,
     /// Stores value `i`; what to log.
     pub set: Arc<dyn Fn(usize) -> String + Send + Sync>,
+    /// Run once a value is set and the picker has closed, with the guest
+    /// (the lobby's mode switch, `crate::lobby_tabs::picker::after`):
+    /// what a value does that needs the game's own routines.
+    pub after: Option<Action>,
 }
 
 impl std::fmt::Debug for Pick {
@@ -125,10 +131,17 @@ impl Pick {
             details: Vec::new(),
             opener: Opener::MAIN_MENU,
             set,
+            after: None,
         }
     }
     pub fn over(mut self, opener: Opener) -> Pick {
         self.opener = opener;
+        self
+    }
+    /// What runs once a value is set and the picker has closed
+    /// ([`Pick::after`]).
+    pub fn after(mut self, after: Action) -> Pick {
+        self.after = Some(after);
         self
     }
     /// A line per value ([`Pick::details`]).
@@ -313,6 +326,9 @@ impl Picker {
         if self.chosen.swap(false, Ordering::SeqCst) {
             eprintln!("{}: chosen; closing", self.name);
             crate::ui_kit::dialog_tag::close(cx, screen).await?;
+            if let Some(after) = current().and_then(|p| p.after) {
+                after(cx.clone(), screen).await?;
+            }
         }
         Ok(())
     }

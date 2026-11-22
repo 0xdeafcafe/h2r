@@ -68,7 +68,7 @@ pub const ROW_ID: u32 = IDS.id(2);
 pub const GRAVITY_DESCRIPTION_ID: u32 = IDS.id(3);
 const GRAVITY_LABELS: u32 = 4;
 pub const TITLE: &str = "More Options";
-pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
+pub const PROMPT: &str = "\u{e10a}   \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
 pub const GRAVITY_DESCRIPTION: &str = "Gravity for everyone, as a share of the game's. Low Gravity halves it again. \
      Not on System Link.";
 

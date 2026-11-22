@@ -25,6 +25,7 @@ pub mod learned;
 mod read;
 mod scan;
 pub mod speed;
+pub mod tune;
 pub mod verified;
 mod vee;
 pub mod view;
@@ -60,7 +61,13 @@ pub const CATCH: f32 = 0.1;
 /// `edge`: 0 within [`CATCH`] of the segment, the hit side of the verdict.
 /// A busy point's edge is one vertex twice: the catch is a disc round it.
 pub fn catch_miss(edge: [Vec3; 2], xy: [f32; 2]) -> f32 {
-    (geom::segment_xy(edge, xy) - CATCH).max(0.0)
+    (geom::segment_xy(edge, xy) - catch()).max(0.0)
+}
+
+/// The catch in effect: [`CATCH`], or the live override
+/// (`superbounce.tune`, [`tune`]).
+pub fn catch() -> f32 {
+    tune::CATCH.get()
 }
 
 /// What a spot is.

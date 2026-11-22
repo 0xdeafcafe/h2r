@@ -206,7 +206,7 @@ impl hooks::Feature for Bots {
                         },
                         // Co-op and matchmaking lobbies take none of the
                         // Clanker Options bots (docs/game/party-lobby.md).
-                        || crate::lobby_tabs::strip::retail_now(&*rt.memory()),
+                        || crate::lobby_tabs::header::retail_now(&*rt.memory()),
                         // Why a Clankermatch lobby sits (docs/game/bots.md
                         // §8.4): the host update's checks, read the same way.
                         || match bots::lobby::match_wait::read(&*rt.memory()).ok()? {

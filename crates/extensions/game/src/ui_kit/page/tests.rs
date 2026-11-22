@@ -570,7 +570,7 @@ fn halo1_options_page() {
                 "focus-0",
                 &[Right],
                 vec![E::Stepped(
-                    "h1 options: right on row 0: h1 options: multiplayer.halo1_sandbox -> Halo 2"
+                    "h1-options: right on row 0: multiplayer.halo1_sandbox -> Halo 2 Sandbox"
                         .into(),
                 )],
                 "focus 0 Sandbox = Halo 2",

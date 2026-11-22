@@ -204,21 +204,35 @@ pub(crate) fn register_core_film(
     // Options row while its map is a converted Halo 1 map.
     if let Some(store) = i.settings.as_ref() {
         h1_options::install_switches(store);
-        let screen = Arc::new(h1_options::OptionsScreen { store: Arc::clone(store) });
-        let class = h1_options_row::class(screen);
-        if let Err(e) = features.add(&class) {
+        // The page (the shared settings dialog, its texts a feature of
+        // their own) and the Game Setup row that opens it.
+        let page = Arc::new(h1_options::page(Arc::clone(store)));
+        if let Err(e) = features.add(&crate::ui_kit::screen::KitTexts(Arc::clone(&page))) {
+            eprintln!("h1 options texts: {e}");
+        }
+        if let Err(e) = features.add(&page.class()) {
             eprintln!("h1 options: {e}");
         }
         features
-            .add(&h1_options_row::SetupRow { data_root: i.data_root.to_path_buf() })
+            .add(&h1_options_row::SetupRow {
+                data_root: i.data_root.to_path_buf(),
+                page: Arc::clone(&page),
+            })
             .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
         // The value picker A opens on a setting row, and our Game Setup
         // rows' picture and description (docs/game/ui-builder.md).
         crate::ui_kit::picker::install(features).context("installing the value picker")?;
+        // The row's description on Game Setup: the page's caller help,
+        // from the page's own slot.
         game_setup_help::register(
             h1_options_row::OPTIONS_ACTION,
             game_setup_help::image::QUICK_OPTIONS,
-            Arc::new(|_: &mut dyn engine::memory::GuestMemory| Some(h1_options::ROW_HELP_ID)),
+            Arc::new(move |m: &mut dyn engine::memory::GuestMemory| {
+                use crate::list_class::Rows;
+                let id = page.row_help_id()?;
+                page.write_texts(m).ok()?;
+                Some(id)
+            }),
         );
         game_setup_help::install(features).context("installing the Game Setup help")?;
     }
@@ -247,8 +261,8 @@ pub(crate) fn register_core_film(
     features
         .add(&crate::loaded_map::LoadedMap)
         .map_err(|e| anyhow::anyhow!("loaded map: {e}"))?;
-    // The party privacy as the Live session's visibility, and the Live
-    // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
+    // The party privacy as the Live session's visibility (the Live menu's
+    // rows are registered with the layouts above;
     // docs/live/live-custom-games.md).
     custom_games::install_privacy(rt, i.live.as_ref(), i.settings.as_ref())
         .context("installing the Live game visibility")?;
@@ -341,7 +355,7 @@ pub(crate) fn register_core_film(
         crate::firefight::options::install(features, store)
             .context("installing the Firefight options page")?;
     }
-    // The party lobby: its mode strip and Multiplayer, Forge and
+    // The party lobby: its GAME MODE picker and Multiplayer, Forge and
     // Firefight as modes of the lobby (docs/game/party-lobby.md). It has
     // no switch. It is in every run a settings store is opened for, as
     // Game Setup's other rows of ours are.
@@ -350,10 +364,10 @@ pub(crate) fn register_core_film(
             forge: crate::forge_glue::enabled(features.switches()),
             firefight: firefight_on,
         };
-        // The mode strip's FORGE and FIREFIGHT tabs, with their features
-        // (docs/game/party-lobby.md, "Where each tab runs"). CO-OP is
-        // retail's co-op lobby and always on the strip; co-op over Xbox
-        // Live (`coop_live`, below) is read when the lobby is on Live.
+        // The FORGE and FIREFIGHT modes, with their features
+        // (docs/game/party-lobby.md, "Where each mode runs"). CO-OP is
+        // retail's co-op lobby and always present; co-op over Xbox Live
+        // (`coop_live`, below) is read when the lobby is on Live.
         crate::lobby_tabs::set_present(|p| {
             p.forge = offer.forge;
             p.firefight = offer.firefight;
@@ -827,9 +841,9 @@ pub(crate) fn register_late_for_profile(
     // OptiMatch playlists into the server's clanker hoppers and the rest.
     if i.allow_bot_add {
         crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
-        // The mode strip reads the server's Clanker marks to say whether
+        // The lobby reads the server's Clanker marks to say whether
         // MULTIPLAYER's playlist is a Clanker one.
-        crate::lobby_tabs::strip::set_live(i.live.clone());
+        crate::lobby_tabs::header::set_live(i.live.clone());
     }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op
     // row the player chose, past the four rows retail restores.

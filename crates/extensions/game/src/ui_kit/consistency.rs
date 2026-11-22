@@ -26,12 +26,22 @@
 //! - **scroll**: a scroll arrow shows only on a list that scrolls (more
 //!   rows than it lays out), inside the dialog's panel, or on a screen
 //!   inside the screen and the title-safe area's height.
-//! - **empty**: a dialog's description area above its list (Quick
-//!   Options' help line, beside the page's picture) says something in
-//!   every state: the focused row's line or the page's help. An area left
-//!   empty is dead space between the title and the rows; a page with
-//!   nothing to say there has no description block, and its rows sit
-//!   under the title.
+//! - **empty**: a settings dialog's header lines (its name and what the
+//!   window is for, beside its icon) and its help under the rows say
+//!   something in every state, and so does any dialog's description area
+//!   above its list. An area left empty is dead space; a page with
+//!   nothing to say there has no description block.
+//! - **settings**: a settings dialog (a doc with a `settings:` block,
+//!   docs/game/ui-builder.md "The settings dialog"), drawn at every focus
+//!   and not only its named states: its top (title, icon, name, about) is
+//!   the same at every focus; the about line says something and is no
+//!   row's label, help or explain; the block under the rows is the
+//!   focused row's help, two lines at most, below the last row and above
+//!   the legend. That a row's picker says its help is
+//!   `crate::ui_kit::settings::tests::a_rows_picker_carries_its_help`:
+//!   the drive presses nothing, since a press sets the process's pick.
+//! - **help**: a screen with value rows has no page-wide line
+//!   (`ScreenSpec::help`) where the focused row's help belongs.
 //!
 //! The pattern rules, from Halo 2's own screens:
 //!
@@ -231,10 +241,10 @@ fn view_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Findin
     }
 }
 
-/// The empty rule on `v` (spec `s`): a dialog's description block that
-/// sits above its first row is drawn with text, and the page's picture
-/// (Quick Options' game type picture) has its line beside it; a name
-/// line (`ScreenSpec::name_line`) names the focused row.
+/// The empty rule on `v` (spec `s`): a settings dialog's header lines
+/// (`header.*`, beside its icon) and its help block are drawn with text,
+/// and so is any dialog's description block that sits above its first
+/// row.
 fn empty_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
     let art: Vec<String> = v
         .widgets
@@ -258,38 +268,184 @@ fn empty_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
             text,
         });
     };
-    if let Some(n) = s.name_line
-        && !says("name")
-    {
-        flag(
-            "name",
-            format!(
-                "the name line beside the picture ({:?}) says nothing: name the focused row",
-                n.rect
-            ),
-        );
+    let header: Vec<&crate::ui_kit::spec::PaneText> =
+        s.texts.iter().filter(|t| t.id.starts_with("header.")).collect();
+    for t in &header {
+        if !says(&t.id) {
+            flag(
+                &t.id,
+                format!("the header's {} ({:?}) says nothing: say what the window is for", t.id, t.rect),
+            );
+        }
     }
     let (Some(d), Some(_)) = (s.description, &s.dialog) else {
         return;
     };
-    let Some(first_row) = v
+    let first_row = v
         .widgets
         .iter()
         .filter(|w| w.id.starts_with("row.") && w.id.ends_with(".label") && w.alpha > 0)
         .map(|w| w.rect[0])
-        .max()
-    else {
-        return;
-    };
+        .max();
     let [_, _, bottom, _] = d.rect;
-    if bottom >= first_row && !says("description") {
+    let above = first_row.is_some_and(|top| bottom >= top);
+    if (above || !header.is_empty()) && !says("description") {
         flag(
             "description",
             format!(
-                "the description area above the list ({:?}) says nothing: give the focused row a line, or drop the block so the rows sit under the title",
+                "the description block ({:?}) says nothing: give the focused row its help, or drop the block",
                 d.rect
             ),
         );
+    }
+}
+
+/// `t` with its runs of white space one space: a block's text as the
+/// view wraps it, compared with the doc's.
+fn words(t: &str) -> String {
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The settings rule on screen `name`, the settings dialog of doc `doc`,
+/// from spec `base` (its first state), drawn at every focus.
+fn settings_findings(name: &str, doc: &data::ScreenDoc, base: &ScreenSpec) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let rows: Vec<&data::RowDoc> = (0..doc.rows.len())
+        .map_while(|i| doc.rows.get(&format!("row.{i}")))
+        .collect();
+    let from = From::Synthetic;
+    let mut first: Option<Vec<Widget>> = None;
+    for (i, r) in rows.iter().enumerate() {
+        let state = format!("focus-{i}");
+        let s = ScreenSpec {
+            focus: i,
+            ..base.clone()
+        };
+        let Ok(v) = from.view(&s, &state) else {
+            continue;
+        };
+        let mut flag = |ids: Vec<String>, text: String| {
+            out.push(Finding {
+                screen: name.into(),
+                state: state.clone(),
+                ids,
+                rule: "settings",
+                text,
+            });
+        };
+        let top: Vec<Widget> = v
+            .widgets
+            .iter()
+            .filter(|w| w.id == "title" || w.id.starts_with("art.") || w.id.starts_with("header."))
+            .cloned()
+            .collect();
+        if first.is_none() {
+            let about = v.widget("header.about").and_then(Widget::text).map(words).unwrap_or_default();
+            if about.is_empty() {
+                flag(vec!["header.about".into()], "the header says nothing about the window".into());
+            } else if let Some(r) = rows.iter().find(|r| {
+                [Some(&r.text), r.help.as_ref(), r.explain.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|t| words(t) == about)
+            }) {
+                flag(
+                    vec!["header.about".into()],
+                    format!("the about line is row {:?}'s text: say what the window is for", r.text),
+                );
+            }
+            first = Some(top);
+        } else if let Some(f) = &first
+            && *f != top
+        {
+            let mut ids: Vec<String> = f
+                .iter()
+                .filter(|w| !top.contains(w))
+                .chain(top.iter().filter(|w| !f.contains(w)))
+                .map(|w| w.id.clone())
+                .collect();
+            ids.dedup();
+            flag(ids, "the top changes with the focus: it is the window's, the same at every focus".into());
+        }
+        let help = r.help.as_deref().unwrap_or_default();
+        let Some(d) = v.widget("description") else {
+            flag(vec!["description".into()], format!("no help under the rows for row {:?}", r.text));
+            continue;
+        };
+        let shown = d.text().unwrap_or_default();
+        if words(shown) != words(help) {
+            flag(
+                vec!["description".into()],
+                format!("the help under the rows says {shown:?}, not row {:?}'s help {help:?}", r.text),
+            );
+        }
+        let lines = shown.lines().count();
+        if lines > 2 {
+            flag(vec!["description".into()], format!("row {:?}'s help is {lines} lines; two fit", r.text));
+        }
+        let last = v
+            .widgets
+            .iter()
+            .filter(|w| w.id.starts_with("row.") && w.alpha > 0)
+            .map(|w| w.rect[2])
+            .min();
+        if let Some(bottom) = last
+            && d.rect[0] > bottom
+        {
+            flag(
+                vec!["description".into()],
+                format!("the help block's top {} is above the last row's bottom {bottom}", d.rect[0]),
+            );
+        }
+        if let Some(l) = v.widget("legend")
+            && d.rect[2] < l.rect[0]
+        {
+            flag(
+                vec!["description".into(), "legend".into()],
+                format!("the help block's bottom {} is below the legend's top {}", d.rect[2], l.rect[0]),
+            );
+        }
+    }
+    out
+}
+
+/// The settings rule over the settings dialogs of `names`.
+fn settings_rules(names: &[&str], out: &mut Vec<Finding>) {
+    for name in names {
+        let Ok(doc) = data::require(name) else {
+            continue;
+        };
+        if doc.settings.is_none() {
+            continue;
+        }
+        if let Some((_, base)) = states(name).into_iter().next() {
+            out.extend(settings_findings(name, &doc, &base));
+        }
+    }
+}
+
+/// The settings rule's findings on screen `name` alone, without the rest
+/// of the drive: none when it is no settings dialog.
+pub fn settings_check(name: &str) -> Vec<Finding> {
+    let mut out = Vec::new();
+    settings_rules(&[name], &mut out);
+    out.retain(|f| !allowed(f));
+    out
+}
+
+/// The help rule on spec `s` (view `v`): with a value row, no page-wide
+/// line in the focused row's help's place.
+fn help_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
+    use crate::ui_kit::spec::RowKind;
+    let values = s.rows.iter().any(|r| matches!(r.kind, RowKind::Value { .. }));
+    if let (true, Some(h)) = (values, &s.help) {
+        out.push(Finding {
+            screen: v.screen.clone(),
+            state: v.state.clone(),
+            ids: vec!["description".into()],
+            rule: "help",
+            text: format!("a page-wide line ({h:?}) where the focused row's help belongs"),
+        });
     }
 }
 
@@ -580,8 +736,13 @@ pub fn check(screen: Option<&str>) -> Report {
         checked += 1;
         view_rules(design, s, v, &mut findings);
         empty_rules(s, v, &mut findings);
+        help_rules(s, v, &mut findings);
         list_rules(s, v, &mut findings);
         pattern_rules(design, s, v, &mut findings);
+    }
+    match screen {
+        Some(n) => settings_rules(&[n], &mut findings),
+        None => settings_rules(&NAMES, &mut findings),
     }
     let mut placed = Vec::new();
     place_rules(&all, &mut placed);
@@ -593,7 +754,8 @@ pub fn check(screen: Option<&str>) -> Report {
     Report { findings, checked }
 }
 
-/// The rules that read one view alone (all but **place**) on spec `s`
+/// The rules that read one view alone (all but **place** and
+/// **settings**) on spec `s`
 /// drawn as `v`, without what [`ALLOWED`] excuses: what a preview prints
 /// for one state.
 pub fn view_findings(s: &ScreenSpec, v: &View) -> Vec<Finding> {
@@ -601,6 +763,7 @@ pub fn view_findings(s: &ScreenSpec, v: &View) -> Vec<Finding> {
     let mut out = Vec::new();
     view_rules(design, s, v, &mut out);
     empty_rules(s, v, &mut out);
+    help_rules(s, v, &mut out);
     pattern_rules(design, s, v, &mut out);
     out.retain(|f| !allowed(f));
     out
@@ -724,7 +887,7 @@ mod tests {
             assert!(
                 [
                     "palette", "font", "place", "legend", "case", "pitch", "fit", "empty", "items",
-                    "scroll", "button", "handled", "arrows",
+                    "scroll", "settings", "help", "button", "handled", "arrows",
                 ]
                 .contains(rule),
                 "{rule}"
@@ -742,11 +905,12 @@ mod tests {
         assert!(one.findings.iter().all(|f| f.screen == "kit.example"));
     }
 
-    /// The Firefight page with its rows' lines gone (the help line drawn
-    /// empty above the list, beside the page's picture) is found, on
-    /// every state; with them it is not.
+    /// The Firefight page with its rows' help gone (the block under the
+    /// rows drawn empty) is found, on every state; with it it is not. An
+    /// empty header line beside the icon is found too, on every settings
+    /// dialog.
     #[test]
-    fn an_empty_description_area_above_the_list_is_found() {
+    fn an_empty_help_or_header_line_is_found() {
         let all = views(&["firefight"]);
         assert!(!all.is_empty());
         for (s, v) in &all {
@@ -760,28 +924,81 @@ mod tests {
             assert_eq!(out[0].rule, "empty");
             assert!(out[0].ids.contains(&"art.0".to_string()), "{:?}", out[0].ids);
         }
-        // The name line beside the picture: an empty one is found too,
-        // on every options page that has one.
-        let named = views(&["firefight", "clankers", "h1-options"]);
-        assert!(named.iter().any(|(s, _)| s.name_line.is_some()));
-        for (s, v) in named.iter().filter(|(s, _)| s.name_line.is_some()) {
-            let mut out = Vec::new();
-            empty_rules(s, v, &mut out);
-            assert!(out.is_empty(), "{} [{}]: {out:?}", v.screen, v.state);
-            let mut unnamed = v.clone();
-            unnamed.widgets.retain(|w| w.id != "name");
-            empty_rules(s, &unnamed, &mut out);
-            assert_eq!(out.len(), 1, "{} [{}]: {out:?}", v.screen, v.state);
-            assert_eq!(out[0].rule, "empty");
-            assert_eq!(out[0].ids[0], "name");
+        let headed = views(&["firefight", "clankers", "h1-options", "browser.filters"]);
+        assert!(!headed.is_empty());
+        for (s, v) in &headed {
+            for id in ["header.name", "header.about"] {
+                assert!(s.texts.iter().any(|t| t.id == id), "{} [{}]: {id}", v.screen, v.state);
+                let mut out = Vec::new();
+                let mut gone = v.clone();
+                gone.widgets.retain(|w| w.id != id);
+                empty_rules(s, &gone, &mut out);
+                assert_eq!(out.len(), 1, "{} [{}]: {out:?}", v.screen, v.state);
+                assert_eq!(out[0].rule, "empty");
+                assert_eq!(out[0].ids[0], id);
+            }
         }
         // A list's description under its rows (the Controls list's) is
-        // not a header area: an empty one there is not this rule's.
+        // not a dialog's: an empty one there is not this rule's.
         let (s, mut v) = views(&["kit.example"]).into_iter().next().unwrap();
         v.widgets.retain(|w| w.id != "description");
         let mut out = Vec::new();
         empty_rules(&s, &v, &mut out);
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// Every settings dialog keeps the rule at every focus; a help under
+    /// the rows that is not the focused row's, and an about line that is
+    /// a row's label, are found.
+    #[test]
+    fn a_settings_dialog_is_held_to_its_rows_at_every_focus() {
+        let mut seen = 0;
+        for name in NAMES {
+            let Ok(doc) = data::require(name) else {
+                continue;
+            };
+            if doc.settings.is_none() {
+                continue;
+            }
+            seen += 1;
+            let (_, base) = states(name).into_iter().next().expect("a state");
+            let out = settings_findings(name, &doc, &base);
+            assert!(out.is_empty(), "{name}: {out:?}");
+        }
+        assert!(seen >= 5, "{seen} settings dialogs");
+        let doc = data::require("firefight").unwrap();
+        let (_, base) = states("firefight").into_iter().next().unwrap();
+        let mut other = (*doc).clone();
+        other.rows.get_mut("row.1").unwrap().help = Some("Some other row's help.".into());
+        let out = settings_findings("firefight", &other, &base);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!((out[0].rule, out[0].state.as_str()), ("settings", "focus-1"));
+        assert_eq!(out[0].ids, ["description"]);
+        let mut labelled = (*doc).clone();
+        let about = labelled.settings.as_ref().unwrap().about().to_string();
+        labelled.rows.get_mut("row.0").unwrap().text = about;
+        let out = settings_findings("firefight", &labelled, &base);
+        assert!(
+            out.iter().any(|f| f.ids == ["header.about"] && f.text.contains("row")),
+            "{out:?}"
+        );
+    }
+
+    /// A page-wide line on a screen with value rows is found; the screens
+    /// as drawn have none.
+    #[test]
+    fn a_page_wide_line_over_value_rows_is_found() {
+        let (s, v) = views(&["kit.dialog"]).into_iter().next().unwrap();
+        let mut out = Vec::new();
+        help_rules(&s, &v, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        let lined = ScreenSpec {
+            help: Some("Change these.".into()),
+            ..s
+        };
+        help_rules(&lined, &v, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].rule, "help");
     }
 
     /// A screen drifting from its kind is found: a title in the wrong

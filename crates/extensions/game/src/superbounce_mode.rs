@@ -556,6 +556,35 @@ pub fn for_player(spots: &Arc<Vec<Spot>>, at: Option<Vec3>) -> Arc<Vec<Spot>> {
     }
 }
 
+/// The loaded map's name, once the mode has asked for its scan.
+pub(crate) fn current_map() -> Option<String> {
+    lock(scans()).current.as_ref().map(|k| k.map.clone())
+}
+
+/// Applies the bots' files to the mode's scan of `map` now, when `map`
+/// is the current one and its scan is ready (`superbounce.reload`;
+/// otherwise the tick does it on the generation change). Whether it did.
+pub(crate) fn refresh(map: &str) -> bool {
+    let mut s = lock(scans());
+    let Some(key) = s.current.clone().filter(|k| k.map.eq_ignore_ascii_case(map)) else {
+        return false;
+    };
+    let Some((raw, _)) = s.cache.get(&key).cloned() else {
+        return false;
+    };
+    let (all, shown) = with_verified(&key.map, &raw);
+    s.scanned = all;
+    s.spots = shown;
+    s.verified_at = bots::spots::generation();
+    true
+}
+
+/// `map`'s scan as the bots keep it with its verified and learned files
+/// applied, and the ones the mode marks.
+pub(crate) fn applied(map: &str) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
+    with_verified(map, &bots::spots::scanned(map))
+}
+
 fn request_scan(key: ScanKey) -> ScanView {
     let mut s = lock(scans());
     // A verified file written (or read) since: apply it again.

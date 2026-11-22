@@ -10,32 +10,30 @@ states:
     focus: 1
   long:
     focus: 2
+settings:
+  host: menu
+  icon: question
+  name: "Name"
+  about: "What this window is for."
 widgets:
   title:
     component: title
     text: "SETTINGS"
-  description:
-    component: description
-    at: [-224, 143]
-    size: [494, 20]
-  legend:
-    component: legend
-    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
 rows:
   row.0:
-    kind: pick
+    kind: value
     text: "Setting Row"
     values: ["On", "Off"]
     current: 0
     help: "What the setting does."
   row.1:
-    kind: pick
+    kind: value
     text: "Second Setting Row"
     values: ["Easy", "Normal", "Heroic", "Legendary"]
     current: 1
     help: "What the second setting does."
   row.2:
-    kind: pick
+    kind: value
     text: "A Longer Setting Row"
     values: ["Off", "On"]
     current: 0

@@ -12,8 +12,8 @@
 //! each row. A `before` on it answers "not listed" for a hopper outside
 //! the [`Scope`] the opening press set: Clankermatch only the server's
 //! clanker hoppers (`live_hle::Hle::clanker_hoppers`), OptiMatch only the
-//! others, and the party lobby's MULTIPLAYER tab both on one page
-//! (docs/game/party-lobby.md, "The tabs"). A hopper it lets through
+//! others, and the party lobby's MULTIPLAYER mode both on one page
+//! (docs/game/party-lobby.md, "The modes"). A hopper it lets through
 //! still goes to the game's own check.
 //!
 //! **Quickmatch** searches the playlist the player last picked in
@@ -38,10 +38,11 @@
 //! clanker hoppers; its press sets [`active`] and runs that same press, so
 //! the party goes to the clanker playlists. Retail's row sets
 //! [`Scope::Players`] first, so it always lists the human ones. In a
-//! matchmaking lobby (the party lobby's MULTIPLAYER tab) action 9 is
+//! matchmaking lobby (the party lobby's MULTIPLAYER mode) action 9 is
 //! Change Playlist... ([`CHANGE_PLAYLIST`]), and its press lists every
 //! hopper ([`Scope::All`]). The party lobby's Game Setup drops both
-//! Switch To rows (`crate::lobby_mode::arrange`): the strip changes mode.
+//! Switch To rows (`crate::lobby_mode::arrange`): the GAME MODE picker
+//! changes mode.
 //!
 //! **The fill.** While this console hosts a clanker hopper's lobby, the
 //! Clankers driver (`crate::clankers`) asks Live for the playlist's roster
@@ -74,8 +75,8 @@ pub enum Scope {
     /// The clanker ones: the Xbox Live menu's Clankermatch row and "Switch
     /// To: Clankermatch".
     Clankers,
-    /// Both, on one page: the party lobby's MULTIPLAYER tab and its Change
-    /// Playlist... row (docs/game/party-lobby.md, "The tabs").
+    /// Both, on one page: the party lobby's MULTIPLAYER mode and its Change
+    /// Playlist... row (docs/game/party-lobby.md, "The modes").
     All,
 }
 
@@ -667,6 +668,7 @@ mod tests {
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&h1row::SetupRow {
             data_root: std::env::temp_dir(),
+            page: crate::h1_options_row::test_page(),
         })
         .unwrap();
         let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));

@@ -411,11 +411,11 @@ Halo Infinite's that fit, and looks like Halo 2. Three pages hold it:
 - [notes/forge-prior-art.md](notes/forge-prior-art.md): what the three
   retail Forges do, with sources.
 
-**Entering Forge.** Forge is a tab of the party lobby's mode strip
+**Entering Forge.** Forge is a mode of the party lobby
 ([party-lobby.md](party-lobby.md)), beside Custom Games and Firefight,
 in Split Screen, in a hosted System Link game and in an Xbox Live
-custom game (forge-firefight-ui.md, "The lobbies"). On the tab Game
-Setup has
+custom game, which the Xbox Live menu's Forge row opens in it
+(forge-firefight-ui.md, "The lobbies"). In Forge Game Setup has
 **Change Map...** (the original maps), **Forge Map...** (New, or a
 draft saved under `<data>/forge`, `forge::saved_names`) and the game
 type, which picks the goals the session edits. Start Game is the
@@ -442,8 +442,8 @@ at, hold Y deletes, B cancels, RT held turns and pushes a held object,
 RB and LB rise and fall, LT thrusts. The whole table, with the keyboard,
 is in forge-editing.md, "Controls".
 
-Forge is a mode of the custom game lobby, picked on the lobby's strip
-of tabs ([party-lobby.md](party-lobby.md);
+Forge is a mode of the custom game lobby, picked in the lobby's GAME
+MODE picker ([party-lobby.md](party-lobby.md);
 [forge-firefight-ui.md](forge-firefight-ui.md), "The lobbies").
 The screens are the game's (`forge_screens`, slice U4). Until slices U3
 and U7 land, the HUD strip is painted by the play window's compositor
@@ -741,10 +741,10 @@ The owner's choices, which the sections above follow.
    features of Halo Infinite's that fit Halo 2's engine
    ([forge-editing.md](forge-editing.md), "What it takes after"). The
    look stays Halo 2's.
-8. **Forge is a lobby mode**, not a main menu row. It is a tab of the
-   party lobby's strip in Split Screen, System Link and Xbox Live
-   custom games ([party-lobby.md](party-lobby.md)); Theater is the main
-   menu's sixth row.
+8. **Forge is a lobby mode**, not a main menu row. It is a mode of the
+   party lobby in Split Screen, System Link and Xbox Live custom games
+   ([party-lobby.md](party-lobby.md)); Theater is the main menu's sixth
+   row.
 9. **Halo 3's buttons**, the axis gizmo and the motion tracker in the
    monitor ([forge-firefight-ui.md](forge-firefight-ui.md),
    "Decisions").

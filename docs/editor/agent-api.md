@@ -98,7 +98,7 @@ What goes through actions, from both sides:
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress`, `UiBrowse` | the UI Screens tool | `ui.pick`, `ui.press`, `ui.select_folder` |
-| UI screen edits | `UiEdit(EditAction)`, `UndoIn(UiScreens)`, `RedoIn(UiScreens)` | the UI Screens tool's canvas drags, handles, nudges, inline text, Selected section and Save | `ui.select`, `ui.move`, `ui.set_rect`, `ui.set_text`, `ui.revert`, `ui.undo`, `ui.redo`, `ui.save` |
+| UI screen edits | `UiEdit(EditAction)`, `UndoIn(UiScreens)`, `RedoIn(UiScreens)` | the UI Screens tool's canvas drags, handles, nudges, inline text, Selected section and Save | `ui.select`, `ui.move`, `ui.set_rect`, `ui.set_text`, `ui.hide`, `ui.duplicate`, `ui.set_string`, `ui.revert`, `ui.undo`, `ui.redo`, `ui.save` |
 | Playtest | `play::playtest::decide` | F5, Play button, Game menu and confirmation dialog | `pair.playtest {confirm?, prompt?}` |
 | Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
 | Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
@@ -183,7 +183,11 @@ docs/game/ui-builder.md "Consistency") and returns
 `consistency::ALLOWED` doesn't excuse, and how many screen states were
 checked. A screen not in `NAMES` is `INVALID_PARAMS`. Both read the kit
 alone: no disc and no window state. The rules include the pattern rules
-(`button`, `handled`, `arrows`).
+(`button`, `handled`, `arrows`) and the settings dialog's (`settings`,
+drawn at every focus, and `help`; docs/game/ui-builder.md "The settings
+dialog"). The `settings` component in `components` is the shared
+settings dialog, its parts `settings.name`, `settings.about` and
+`settings.help`.
 
 `ui.widgets` answers `{widgets, findings: [{text, ids}], from_disc}` for
 the picked screen in its state. The findings are
@@ -210,6 +214,16 @@ does, so `view.snapshot` of the window shows it. `folder` is the text form,
 or an id under `root` when both are given. It answers `{browse, tiles,
 states}`; an unknown folder is `INVALID_PARAMS`, retail without a disc
 `FAILED`. `ui.pick` shows the picture again.
+
+`ui.pick {screen, state?}` shows one of our screens in a state (default
+its first); `ui.pick {retail, sample?}` shows a retail screen by tag
+name, in its plain sample state or the sample variant `sample` names
+(`variant:` in `assets/ui/retail-samples/`, docs/game/ui-builder.md
+"Retail screens in a believable state"). It answers `{pick, summary}`;
+`pick` is `{screen, state}` or `{retail}`, with `sample` when one is
+named. An unknown screen or state, a `sample` the screen has no variant
+of (the message lists the ones it has), or a `sample` with `screen` is
+`INVALID_PARAMS`.
 
 `ui.sheet {folder?, root?, states?, columns?, out?}` writes that grid to
 one labelled contact-sheet PNG (default: the grid shown; `states` draws
@@ -892,6 +906,24 @@ the window and the API stay one path.
   `doc.save`. Each edit answers with the widget and the checks' findings
   on the edited view; `ui.animate` writes a transition's filmstrip PNG
   (docs/game/ui-builder.md "Editing in the editor").
+- **Retail tag edits.** `api/ui_retail.rs` registers `UiRetail` for
+  `ui.hide {id}`, `ui.duplicate {id, rect?, grow?}` and `ui.set_string
+  {id, string, shows?}`, over the same `Action::UiEdit`
+  (`app/ui_screens/edit/retail_tag.rs`). They edit the retail screen
+  `ui.pick {retail}` shows, in the open `mainmenu` map's tag document:
+  `ui.hide` parks a text or bitmap block off screen, `ui.duplicate`
+  appends a copy of a text, button or bitmap block to the end of its
+  block and answers its id as `copy`, and `ui.set_string` sets the
+  string ID of the title, a text or a button to a string by name, added
+  to the map when it has none. `shows` is the stand-in text the picture
+  draws for a string the game's code answers at run time; it is the
+  tool's and is not saved. `grow: true` turns on Edit > Allow growing
+  full blocks first, which a copy into a full block needs. A screen of
+  ours, a button to hide, and a widget with no string ID answer
+  `REFUSED` with the owner. `ui.edits` lists the blocks added and edited
+  (`retail_blocks`) and the stand-ins (`stand_ins`); `ui.revert` puts a
+  block back as the loaded map has it and removes a copy
+  (docs/game/ui-builder.md "Retail tag edits").
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets

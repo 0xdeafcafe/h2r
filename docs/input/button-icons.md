@@ -104,16 +104,6 @@ Style rules, taken from the retail glyphs:
   pixels wide and carries LB/RB or L1/R1 labels; PlayStation triggers carry
   L2/R2. The inactive side stays faint. Labels keep their orientation when
   the active side changes.
-- **One bumper alone** (`font::icons::strip_bumper`): the pregame lobby's
-  mode control has the two bumpers at its two ends, each naming a
-  direction, where two pairs read as the same two boxes
-  ([party-lobby.md](../game/party-lobby.md)). For that control only, each
-  bumper has a picture of its own, 21 pixels wide
-  (`font::icons::BUMPER_WIDTH`): a solid white bar whose outer shoulder is
-  rounder than its other corners, with its name (LB, RB, L1, R1) cut out
-  of it, so it takes the text colour and reads at any colour. No code
-  point carries it and no font is patched with it: every prompt, the
-  lobby's included, draws the pair.
 - **Keys**: a light cap shaded like the retail White button, with a dark rim,
   a lip along the bottom and the key's name in a 5 x 7 letter set drawn for
   this project. **Mouse buttons**: a mouse from above in the same shading with
@@ -292,8 +282,7 @@ All use synthetic fonts and in-memory files.
   width, blending, pixel conversion); the label set covers every key name
   `crates/platform/input` accepts; every icon at heights 9 to 24 fits the glyph limits
   and survives the compressor; the bumper pair is white at run levels with the
-  right side lit, and the lobby's one bumper alone is one bar with its name
-  cut out; face balls have the right colours; key caps are light with
+  right side lit; face balls have the right colours; key caps are light with
   dark letters and follow the labels; each set's code points are distinct; a
   patched font validates and still draws the retail glyphs.
 - `vfs::rewrite`: rewritten size in `stat` and listings, reads at and past the

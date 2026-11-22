@@ -483,12 +483,18 @@ fn an_empty_library_still_opens_the_map_picker_on_all() {
         crate::ui_kit::preview::render_view_where(screen, source.source(), &|_| widgets, false)
     };
     let library = draw(parent, true);
+    // Under a dialog the game draws its backdrop (the overlay fill, then
+    // the blur) over what it opened on: the library is drawn, dimmed,
+    // behind the modal.
+    let mut behind = draw(parent, true);
+    crate::ui_kit::preview::Source::backdrop(source.source(), &mut behind);
+    assert!(behind.rgba != library.rgba, "the backdrop dims the library");
     assert!(
-        draw(&open, false).rgba == library.rgba,
-        "the library remains behind the modal"
+        draw(&open, false).rgba == behind.rgba,
+        "the library is drawn, dimmed, behind the modal"
     );
     assert!(
-        draw(&open, true).rgba != library.rgba,
+        draw(&open, true).rgba != behind.rgba,
         "the picker is visible on top"
     );
     view.press(Input::A);
