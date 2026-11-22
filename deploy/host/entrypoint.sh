@@ -1,8 +1,10 @@
 #!/bin/sh
 set -eu
 
-export H2_IMAGE="${H2_IMAGE:-/opt/h2/image}"
 export H2_HOST_CACHE="${H2_HOST_CACHE:-/var/cache/h2}"
+# The game module comes with the verified host-data bundle: h2 host run
+# runs <H2_HOST_CACHE>/<bundle sha>/image unless H2_IMAGE names another
+# directory (docs/live/dedicated-host.md#game-data-bundle).
 
 # The bookworm image uses glibc. Bound its per-process arenas and return
 # free space at the end of the heap after the level-load allocations.

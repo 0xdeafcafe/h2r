@@ -67,6 +67,7 @@ impl Game {
         live: &Live<'_>,
         lease: &HostLease,
         disc: &Path,
+        image: &Path,
         address: SocketAddrV4,
     ) -> Result<Self> {
         Self::spawn_with(opts, live, lease, disc, |cmd, data, socket| {
@@ -79,7 +80,7 @@ impl Game {
                     "--no-mappack",
                 ])
                 .arg("--out")
-                .arg(&opts.out)
+                .arg(image)
                 .arg("--data")
                 .arg(data)
                 .arg("--socket")
@@ -107,12 +108,13 @@ impl Game {
         live: &Live<'_>,
         lease: &HostLease,
         disc: &Path,
+        image: &Path,
     ) -> Result<Self> {
         // A sim child builds no nav meshes (docs/runtime/sim.md): without
         // the bundle's, its phantoms would stand still all match.
         sim_run::require_nav(&host_data::bundled_bot_files(disc)?, &lease.map)?;
         Self::spawn_with(opts, live, lease, disc, |cmd, data, socket| {
-            sim_run::configure(cmd, lease, disc, &opts.out, data, socket)?;
+            sim_run::configure(cmd, lease, disc, image, data, socket)?;
             cmd.env("H2_FILM_OUT", film_path(opts.film.as_deref(), socket))
                 .env("H2_FILM_GAME_ID", &lease.assignment_id);
             Ok(())
