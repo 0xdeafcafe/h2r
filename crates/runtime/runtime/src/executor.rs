@@ -7,7 +7,9 @@
 //! ([`Guest::cow_refresh`]). Its dispatch tables are copied once from the
 //! main runtime: generated handlers and resumes as they are; every HLE
 //! override the caller does not allow, and every kernel import, refused.
-//! No kernel scheduler runs it: no slices, no interrupts, no waits.
+//! No kernel scheduler runs it: no slices, no interrupts, no waits. The
+//! main runtime's guest coverage, when it has one, is shared: entries the
+//! executor runs are recorded with the main runtime's.
 
 use crate::dispatch::Handler;
 use crate::guest::{FrozenRam, HandBack, PAGE_SIZE, RAM_SIZE, WrittenPage};
@@ -187,6 +189,11 @@ impl SecondExecutor {
             .watch_writes(watch, CONTIGUOUS_BASE, RAM_SIZE as u32)
             .expect("all of RAM is a valid watch range");
         let runtime = Runtime::new(guest, dispatch);
+        // A host audit counts what the executor runs as the main runtime's
+        // (docs/runtime/sim.md, "Host audit corpus"): it runs the same generated
+        // handlers. Shared before the context is built, so the context
+        // routes direct calls through the runner as an audited one does.
+        runtime.share_coverage(main);
         let mut ctx = ExecCtx::new(runtime.clone(), EXECUTOR_THREAD_ID);
         // Count accesses and take host requests (cancel); never expire.
         ctx.arm_preemption(0);
@@ -805,5 +812,65 @@ mod tests {
             exec.call(&mut cpu, HOOK, &[]),
             Err(ExecutorError::Cancelled)
         ));
+    }
+
+    /// Generated code that returns to its caller, as a native fixture.
+    unsafe extern "C" fn native_return(
+        cpu: *mut CpuAbi,
+        exec: *mut crate::ExecCtxOpaque,
+        _: u32,
+    ) -> TransferAbi {
+        // SAFETY: the runner's exclusive pair, for this call only.
+        unsafe {
+            crate::ffi::with_context(cpu, exec, |cpu, ctx| {
+                ctx.memory().ret(cpu, 0).expect("the return address is on the stack")
+            })
+        }
+    }
+
+    /// A host audit's coverage lives on the main runtime; a generated entry
+    /// that only the executor runs (the phantom bots' input builder) is
+    /// counted there too, or a slim host built from the audit leaves it to
+    /// the interpreter.
+    #[test]
+    fn a_host_audit_counts_generated_entries_the_executor_runs() {
+        const NATIVE: u32 = CODE + 0x100;
+        let mut g = Guest::new();
+        g.map_zeroed(CODE, 0x2000, Permissions::RX).unwrap();
+        g.map_zeroed(STACK - 0x1000, 0x1000, Permissions::RW)
+            .unwrap();
+        let mut d = Dispatch::default();
+        // SAFETY: the fixture keeps the handler ABI and touches only the
+        // pair it is given.
+        unsafe {
+            d.register_generated(NATIVE, crate::cpu::ABI_VERSION, native_return)
+                .unwrap()
+        };
+        let main = Runtime::new(g, d);
+        main.enable_guest_coverage(
+            &[crate::H2GenEntry {
+                addr: NATIVE,
+                kind: 0,
+                handler: Some(native_return as crate::GuestFn),
+                abi_version: None,
+            }],
+            &[],
+        );
+        let mut exec = SecondExecutor::new(&main, |_, _| false);
+        exec.snapshot(&main);
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ..CpuAbi::default()
+        };
+        exec.call(&mut cpu, NATIVE, &[]).unwrap();
+        assert_eq!(cpu.esp, STACK);
+        let coverage = main.guest_coverage().unwrap();
+        assert_eq!(coverage.functions, std::collections::BTreeSet::from([NATIVE]));
+        assert_eq!(
+            coverage.selectors,
+            std::collections::BTreeSet::from([(NATIVE, NATIVE)])
+        );
+        assert_eq!(coverage.unmapped, 0);
+        assert_eq!(exec.runtime().guest_coverage(), Some(coverage));
     }
 }

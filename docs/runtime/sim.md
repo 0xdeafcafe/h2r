@@ -1072,8 +1072,12 @@ points. The telemetry worker has a separate bucket for consumed samples.
 Divide each total by report ticks for an inclusive per-tick
 attribution. Nested buckets overlap, and totals include lobby and load
 work where the hook runs. Auditing bypasses generated native direct
-calls to count visible entries. Inlined blocks with no selector cannot
-be counted separately. Use an unaudited batch for throughput.
+calls to count visible entries. Second executors forked from the main
+runtime (`runtime::executor`), such as the phantom bots' retail input
+builder, share its coverage and bypass direct calls the same way, so
+the guest code they run is counted with the main runtime's. Inlined
+blocks with no selector cannot be counted separately. Use an unaudited
+batch for throughput.
 
 For a deployable module, export the owner/selector pairs with
 `h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]` and use
