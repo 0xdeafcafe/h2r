@@ -2603,7 +2603,7 @@ fn an_exact_pose_sets_the_eye_basis_roll_and_clip_planes() {
 }
 
 #[test]
-fn a_geometry_raw_append_saves_before_the_index_and_changes_the_geometry_hash() {
+fn a_geometry_raw_append_saves_before_the_index_and_repoints_the_cluster() {
     use crate::package::geometry_hash;
     use crate::scenario::{GeometryChanges, RawAppend};
     let src = fixture_with_textured_bsp_last();
@@ -2638,9 +2638,13 @@ fn a_geometry_raw_append_saves_before_the_index_and_changes_the_geometry_hash() 
     let render = tags::structure::StructureRender::read(&mut m, id(4)).unwrap();
     let p = render.clusters[0].geometry.block.block.unwrap();
     assert_eq!(p.offset as usize, index);
-    // The geometry hash follows the new block, so a package says so.
+    // The geometry hash (docs/game/maps.md §1) covers a BSP's cluster
+    // blocks only through a scenario entry with a file offset; this
+    // fixture's BSP is ordinary metadata (offset 0), so its hash is the
+    // same before and after. Retail BSPs have regions, and there the new
+    // block's bytes are hashed.
     let before = geometry_hash(&mut open(src.clone())).unwrap();
-    assert_ne!(geometry_hash(&mut m).unwrap(), before);
+    assert_eq!(geometry_hash(&mut m).unwrap(), before);
     // A refusal still stops the save; the map that cannot take raw data
     // refuses the append by name.
     let mut t = read(fixture_with_textured_bsp());
