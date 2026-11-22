@@ -641,14 +641,20 @@ params = "tuning/aggressive.toml"
   `<map>[-<gametype>][-<skill>]-s<seed>`, with the game type and skill
   segments included when those axes are set. Separate mode appends the
   arm name. In either swap mode the second leg appends `-swapped`.
-- **Z:'s map cache.** A run's data directory starts with Z:'s cache slots
-  (`shared`, `single_player_shared`) cloned from the image's template in
-  `<image out>/sim-cache/utility/`, so its boot skips their copy. The
-  first run of a batch with no template makes it while the other workers
-  wait. N:'s slots (the main menu and the match's map) are copied on
-  every run, since every boot formats N:. Each run's status line says
-  `warm Z:` or `cold Z:`; `H2_SIM_CACHE_TEMPLATE=0` turns the template
-  off ([cache-slots.md](cache-slots.md#sim-batches-a-warm-z)).
+- **The map cache.** A run's data directory starts with Z:'s cache slots
+  (`shared`, `single_player_shared`) and the title's `preferences.dat`
+  cloned from the image's template in `<image out>/sim-cache/utility/`.
+  N:'s slots (the main menu and the match's map) come from the same
+  template: every boot formats N:, and the run's VFS clones them in
+  straight after the format (`H2_SIM_CACHE_SEED`, set by the batch). A
+  boot that finds them skips their copy, and the System Link lobby does
+  not wait for slot 3. The first run of each map that misses a part of the
+  template makes it while the batch's other runs of that map wait. Each
+  run's status line says `warm Z:` or `cold Z:` and how many N: slots
+  were seeded; `H2_SIM_CACHE_TEMPLATE=0` turns the whole template off
+  ([cache-slots.md](cache-slots.md#sim-batches-a-warm-n)). On a light
+  host the lobby's own background copy also runs several steps a frame
+  (`map-copy.lobby`), which is what a cold run waits on.
 - **Arms.** By default each run plays config A against config B in the
   same match: half the bots A, half B (2 v 2 with teams A and B in a team
   game; in free-for-all, alternating). That is the fairest comparison: the

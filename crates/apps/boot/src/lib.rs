@@ -436,6 +436,15 @@ fn run_configured(
         cfg.sim_store = std::env::var_os(vfs::sim_store::STORE_ENV)
             .filter(|path| !path.is_empty())
             .map(PathBuf::from);
+        // A sim batch's warm N:: the template's slots, cloned in after the
+        // boot formats N: (docs/runtime/cache-slots.md, "Sim batches: a warm N:").
+        cfg.cache_seed = std::env::var_os(vfs::CACHE_SEED_ENV)
+            .map(|paths| {
+                std::env::split_paths(&paths)
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
     }
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();

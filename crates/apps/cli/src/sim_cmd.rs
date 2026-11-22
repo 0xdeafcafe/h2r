@@ -622,6 +622,7 @@ fn spawn(
     run: &RunDir,
     batch: Option<(&str, &Path)>,
     audit: bool,
+    cache_seed: &[PathBuf],
 ) -> Result<Child> {
     let log = std::fs::File::create(run.log())?;
     let err = log.try_clone()?;
@@ -632,6 +633,12 @@ fn spawn(
         .env_remove(BATCH_LOCKS_ENV)
         .env(BATCH_CHILD_ENV, "1");
     child.env_remove(boot::host_audit::ENV);
+    // N:'s slots from the template, cloned in after the child's boot formats
+    // N: (docs/runtime/cache-slots.md, "Sim batches: a warm N:").
+    child.env_remove(vfs::CACHE_SEED_ENV);
+    if !cache_seed.is_empty() {
+        child.env(vfs::CACHE_SEED_ENV, std::env::join_paths(cache_seed)?);
+    }
     if audit {
         child.env(boot::host_audit::ENV, run.audit());
     }
@@ -803,8 +810,9 @@ fn batch(args: Vec<String>) -> Result<()> {
     }
     let batch = batch_id.as_deref().map(|id| (id, locks.as_path()));
     prepare_output(&b, &file, &arms, batch_id.as_deref())?;
-    // Z:'s map cache from the image's template (docs/runtime/cache-slots.md,
-    // "Sim batches: a warm Z:").
+    // Z:'s and N:'s map cache from the image's template
+    // (docs/runtime/cache-slots.md, "Sim batches: a warm Z:" and "Sim
+    // batches: a warm N:").
     let template = cache_template::Template::for_batch(&common.out(), &plan.dylib, &disc);
     let gate = cache_template::Gate::default();
     common.disc = Some(disc);
@@ -823,14 +831,14 @@ fn batch(args: Vec<String>) -> Result<()> {
                     let result = make_data(&rd, &shared)
                         .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
                         .and_then(|()| {
-                            let start = cache_template::start(template.as_ref(), &gate, &rd.data());
+                            let start =
+                                cache_template::start(template.as_ref(), &gate, &rd.data(), &r.map);
                             cache = start.label();
-                            let status = spawn(&common, &rd, batch, audit)?.wait()?;
-                            if let (cache_template::Start::Producer(_), Some(t)) =
-                                (&start, &template)
+                            let status = spawn(&common, &rd, batch, audit, start.seed())?.wait()?;
+                            if let (Some(parts), Some(t)) = (start.saves(), &template)
                                 && status.success()
                             {
-                                save_template(t, &rd.data());
+                                save_template(t, &rd.data(), parts);
                             }
                             // Dropping the start lets runs waiting for the
                             // template go.
@@ -896,20 +904,23 @@ fn batch(args: Vec<String>) -> Result<()> {
     finish_batch(&b, failed.load(Ordering::Relaxed), t)
 }
 
-/// Saves a finished cold run's Z: slots as the batch's template.
-fn save_template(t: &cache_template::Template, data: &Path) {
+/// Saves the parts of the template a finished producer run made.
+fn save_template(t: &cache_template::Template, data: &Path, parts: &[cache_template::Part]) {
     use cache_template::Saved;
-    match t.save(data) {
-        Ok(Saved::Saved { slots, cloned }) => println!(
-            "map cache: saved {slots} Z: slots as template {} ({})",
-            t.key(),
-            if cloned { "cloned" } else { "copied, no clone" }
-        ),
-        Ok(Saved::Exists) => {}
-        Ok(Saved::NoSlots) => {
-            println!("map cache: the run left no finished Z: slot; every run copies Z:'s maps")
+    for part in parts {
+        let what = part.label();
+        match t.save(data, part) {
+            Ok(Saved::Saved { files, cloned }) => println!(
+                "map cache: saved {what} ({files} files) in template {} ({})",
+                t.key(),
+                if cloned { "cloned" } else { "copied, no clone" }
+            ),
+            Ok(Saved::Exists) => {}
+            Ok(Saved::Nothing) => {
+                println!("map cache: the run left no whole {what}; runs copy it from the disc")
+            }
+            Err(e) => println!("map cache: {what} not saved in template {}: {e}", t.key()),
         }
-        Err(e) => println!("map cache: template {} not saved: {e}", t.key()),
     }
 }
 
