@@ -779,5 +779,6 @@ fn settling_that_does_not_move_the_body_jumps_before_a_primed_body_would_sleep()
     let at = [s.stand[0], s.stand[1] - 0.3, s.stand[2]];
     let jump = (0..200).find(|&t| run.step(at, t).jump).expect("a jump");
     assert!(jump <= SETTLE_STILL_TICKS + STILL_TICKS + 1, "jumped at {jump}");
-    assert!(jump < 38 && jump < SETTLE_TICKS);
+    // 38 is well inside SETTLE_TICKS (90).
+    assert!(jump < 38);
 }

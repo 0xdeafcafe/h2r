@@ -94,7 +94,7 @@ impl Exe {
         let mut strings = STRINGS;
         let mut string = |b: &mut Vec<u8>, s: &str| {
             let at = strings;
-            assert!(at + s.len() as u32 < END, "invented strings overflow");
+            assert!((at + s.len() as u32) < END, "invented strings overflow");
             b[off(at)..off(at) + s.len()].copy_from_slice(s.as_bytes());
             strings += s.len() as u32 + 1;
             at

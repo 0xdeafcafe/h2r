@@ -294,7 +294,8 @@ pub fn gather(scene: &FrameScene, view: u32, height: u32, models: &dyn CasterMod
                 .towards_light(scene)
                 .ok_or(CasterRefusal::NoDirection)?;
             let weight = shadow.weight().ok_or(CasterRefusal::NoWeight)?;
-            if !(weight > DRAW_THRESHOLD) {
+            // Anything not above the threshold is refused, a NaN weight too.
+            if weight.partial_cmp(&DRAW_THRESHOLD) != Some(std::cmp::Ordering::Greater) {
                 return Err(CasterRefusal::Faint);
             }
             let mesh = skin(loaded, nodes);

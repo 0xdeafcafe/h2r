@@ -1489,6 +1489,8 @@ impl ProgramSet {
     /// channels stored biased there.
     fn image_textures(&self, bitmap: map::TagId, image: u32) -> Vec<(wgpu::Texture, usize, [bool; 4])> {
         let want = Stage::Bitmap { bitmap, image };
+        // `wgpu::Texture` hashes and compares by its id, not its interior state.
+        #[allow(clippy::mutable_key_type)]
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         let mut materials: Vec<_> = self.materials.iter().collect();
