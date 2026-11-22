@@ -271,14 +271,22 @@ fn reloading_a_play_copy_uses_the_layout_at_save_time() {
             FieldValue::Vec3([3., 4., 5.]),
         ))
         .unwrap();
-    // Not `until`: a timeout here says whether the batch never went out or a
-    // Pending row stayed, and which.
+    // The invented game streams no weapon objects, so the moved weapon has
+    // no live object to follow: its one Pending row says the change applies
+    // at its next creation. Not `until`: a timeout here says whether the
+    // batch never went out or another row stayed, and which.
+    let only_creation_row = |pending: &[Value]| {
+        matches!(pending, [row] if row["doc"] == "object"
+            && row["path"] == "weapons[0]"
+            && tag_sync::Effect::is_reload(row)
+            && row["why"].as_str().is_some_and(|why| why.contains("no live object")))
+    };
     let end = Instant::now() + Duration::from_secs(25);
     loop {
         play.update(&mut app);
         if !game.calls("edit.batch").is_empty()
             && play.edits.sent.is_none()
-            && app.pairing.pending.is_empty()
+            && only_creation_row(app.pairing.pending.as_slice())
         {
             break;
         }
