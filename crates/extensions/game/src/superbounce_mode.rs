@@ -1125,6 +1125,7 @@ mod gpu {
         host.add_world_line_source(Arc::new(Lines));
         host.add_world_line_source(Arc::new(crate::superbounce_view::Source));
         host.add_world_line_source(Arc::new(crate::superbounce_reticle::Source));
+        host.add_world_line_source(Arc::new(crate::superbounce_steps::Source));
         crate::superbounce_ghost::register(host);
     }
 

@@ -806,6 +806,37 @@ game's own takes the box while it shows. Closing the last step sets the
 the next time the game starts, and `H2_SUPERBOUNCE_TUTORIAL=1`
 ([switches](../runtime/switches.md)) shows them whatever it says.
 
+**The step chain.** A row of small panels low in the middle of the HUD,
+one a step of a bounce, for the first local player
+(`crates/extensions/game/src/superbounce_steps.rs`; tests in
+`superbounce_steps_tests.rs` beside it). The step to do is at full
+strength; a done one is ticked and dimmed; a failed one is red with a
+cross. A block that comes slides in from the left over 0.25 s beside the
+one before it, with a chevron between them.
+
+| Block | Shows when | Says |
+|---|---|---|
+| Prime | always | not primed, `Prime` over the recipe's step (`Crouch under a lip`, `Hold crouch, walk under`, `Let go of crouch`, `Walk out to stand up`, `Charge lost. Crouch again`) with the charge's fill along its foot; primed, a ticked `Primed` (`Primed: keep moving` from 19 still ticks) |
+| Speed | primed, with a strip to go to | `Speed 6.1`: the player's speed downward now, in metres a second (0 on the ground or rising). Under it what the strip needs: on the ground `Fall 3 m for 13.0` (the strip's `fall` and the touchdown speed it needs) or `A jump is enough`; in the air `Need 13.0 m/s`. Along its foot, the touchdown speed the fall gives over the speed needed. Ticked, `Fast enough`, once that speed is reached: in a fall toward a strip the speed counted is the one at the strip (`landing.speed`), so it ticks as soon as the drop is enough |
+| Land | primed and falling toward a strip, and for 2.5 s after a landing by a strip | falling: a ticked `On the strip` when the coasting landing is in the slot, else `Steer 1.2 m` (how far outside it) over `Onto the strip` or `Too far to reach`. After the landing: a ticked `Bounce!`, or in red `Missed the strip`, `Too slow`, `No bounce`, `Not primed`. The next fall toward a strip takes the block back |
+
+The speed needed is the predicted landing's strip's `need`, else the
+navpoint's strip's worked from its `fall` (`superbounce_steps::need`).
+The blocks are one row centred under the reticle, its top 46 HUD pixels
+below the view's centre, over the arming bar (`place`); the speed block
+keeps one width as its digits change.
+
+Each block is drawn in the shape of the game's training box: a dark
+panel of the user's HUD colour with cut corners, a border, a light line
+along its top and a dark one along its foot, text in the disc's HUD
+font. They are host marks (`gfx::world_lines::HudMark`), as the
+[bounce view](#the-bounce-view)'s are: the game has one training box,
+the tutorial's, so the HUD kit cannot place a row of them. The chain is
+worked out from the mode's state at each 30 Hz tick; the slide and the
+2.5 s run on the wall clock (`superbounce_steps::Track`), evaluated at
+each present. The `superbounce-steps` feature
+([switches](../runtime/switches.md)) turns it off.
+
 **The lines.** The spots are small marks on the map, drawn by the
 window's world-line pass with no depth test (the styles are described in
 [the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)),

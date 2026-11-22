@@ -228,6 +228,7 @@ pub mod superbounce_ghost;
 pub mod superbounce_hud;
 pub mod superbounce_prompts;
 pub mod superbounce_reticle;
+pub mod superbounce_steps;
 pub mod superbounce_world;
 pub mod superbounce_mode;
 pub mod superbounce_verify;
