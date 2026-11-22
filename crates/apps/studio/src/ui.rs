@@ -633,7 +633,10 @@ impl Studio {
             .build(|| variants::settings(ui, app, st, fonts, actions));
         ui.window(&keys.inspector)
             .build(|| variants::inspector(ui, app, st, fonts, self.dialogs, actions));
+        // Docked beside the settings, but never takes the tab from them
+        // when it first appears; it is opened by picking its tab.
         ui.window(&self.keys.rules)
+            .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
             .build(|| game_script::window(ui, app, fonts, self.dialogs));
     }
 

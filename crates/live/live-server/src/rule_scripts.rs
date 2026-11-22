@@ -404,7 +404,10 @@ impl From<&Input> for WireEvent {
             Input::Pickup(player, object) => WireEvent::Pickup { player, object },
             Input::Drop(player, object) => WireEvent::Drop { player, object },
             Input::Press(player, object) => WireEvent::Press { player, object },
-            Input::Bounce(player, object) => WireEvent::Bounce { player, object },
+            Input::Bounce { player, spot, chain, monster } => {
+                WireEvent::Bounce { player, object: spot, chain, monster }
+            }
+            Input::Bounced(player) => WireEvent::Bounced { player },
             Input::Edit(player, object) => WireEvent::Edit { player, object },
             Input::Enter { zone, object } => WireEvent::Enter { zone, object },
             Input::Leave { zone, object } => WireEvent::Leave { zone, object },
@@ -677,7 +680,7 @@ fn eight() -> u8 {
     8
 }
 
-fn one() -> u64 {
+fn one_seed() -> u64 {
     1
 }
 
@@ -695,7 +698,7 @@ struct SimBody {
     /// 0 or 1 is free for all.
     #[serde(default)]
     teams: u8,
-    #[serde(default = "one")]
+    #[serde(default = "one_seed")]
     seed: u64,
     /// Matches to play and sum up, seeds `seed` upwards; the answer's
     /// `match` is `seed`'s.

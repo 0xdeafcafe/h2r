@@ -702,7 +702,17 @@ impl Director {
             && let Some(i) = self.any(&living)
         {
             let spot = SPOT_BASE + self.below(6) as u32;
-            out.push(Input::Bounce(self.bots[i].slot, spot));
+            // Most bounces stand alone; a few chain, and a long chain is
+            // now and then a Monster Bounce.
+            let chain = 1 + self.below(4) as u32;
+            let monster = chain >= 3 && self.below(4) == 0;
+            out.push(Input::Bounce { player: self.bots[i].slot, spot, chain, monster });
+        }
+        if self.wants.on(Event::Bounced)
+            && self.below(40 * u64::from(TPS)) < n
+            && let Some(i) = self.any(&living)
+        {
+            out.push(Input::Bounced(self.bots[i].slot));
         }
         if self.wants.on(Event::Edit)
             && self.below(15 * u64::from(TPS)) < n
@@ -1151,7 +1161,10 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
             Input::RoundEnd => file::ScenarioEvent::RoundEnd,
             // Tick 0 of a file reports these by itself.
             Input::Init | Input::RoundStart => continue,
-            Input::Bounce(player, object) => file::ScenarioEvent::Bounce { player, object },
+            Input::Bounce { player, spot, chain, monster } => {
+                file::ScenarioEvent::Bounce { player, object: spot, chain, monster }
+            }
+            Input::Bounced(player) => file::ScenarioEvent::Bounced(player),
             Input::Edit(player, object) => file::ScenarioEvent::Edit { player, object },
             Input::ActorKill { killer, class } => file::ScenarioEvent::ActorKill { killer, class },
             Input::ActorAssist {

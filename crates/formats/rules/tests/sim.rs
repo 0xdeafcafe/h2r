@@ -112,7 +112,7 @@ fn a_match_holds_only_events_the_script_can_notice() {
     assert!(!events(builtin::SLAYER).contains(&Event::Bounce));
 
     let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 1)).unwrap();
-    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Bounce(..))));
+    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Bounce { .. })));
     let m = sim::simulate(builtin::SIEGE, &setup(8, 0, 1)).unwrap();
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Death(_))));
 }
