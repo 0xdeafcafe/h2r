@@ -6,7 +6,7 @@ use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use firefight::scoring::kill_points;
 use firefight::{
     Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
-    Round, Scoring, Skull, SquadSpec, Wave,
+    Round, Scoring, ScriptDirector, Skull, SquadSpec, Wave,
 };
 
 fn round(skulls_on: Vec<Skull>) -> Round {

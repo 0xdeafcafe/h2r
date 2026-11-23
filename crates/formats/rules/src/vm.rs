@@ -1551,18 +1551,18 @@ mod tests {
     #[test]
     fn host_writes_change_only_the_named_slots() {
         let src = "rules \"Write\" 1\ncarrier slayer\n\
-                   global var pool: int = 7\nplayer var lives: int = 3\n";
+                   global var pool: int = 7\nplayer var stock: int = 3\n";
         let (ir, _) = crate::build(src).unwrap();
         let mut vm = Vm::new(ir, 0, 0).unwrap();
         assert!(vm.set_global("pool", 4));
         assert_eq!(vm.global("pool"), Some(4));
         assert!(!vm.set_global("none_such", 1), "an unknown global");
 
-        assert!(vm.set_player_var(2, "lives", 0));
-        assert_eq!(vm.player_var(2, "lives"), Some(0));
-        assert_eq!(vm.player_var(1, "lives"), Some(3), "another player's row");
+        assert!(vm.set_player_var(2, "stock", 0));
+        assert_eq!(vm.player_var(2, "stock"), Some(0));
+        assert_eq!(vm.player_var(1, "stock"), Some(3), "another player's row");
         assert!(!vm.set_player_var(2, "none_such", 1), "an unknown variable");
-        assert!(!vm.set_player_var(16, "lives", 1), "outside the roster");
+        assert!(!vm.set_player_var(16, "stock", 1), "outside the roster");
     }
 
     fn ext() -> RulesExt {
