@@ -1014,7 +1014,7 @@ to the guest's draws (**Code**):
     Before a scene view's layer draw (`layer_site` is `Site::Scene`),
     before the first person's layers 1, 7, 8 and 20 (`Site::FirstPerson`;
     its layer 3 is `native_first_person`'s), and before the sorted
-    transparent list's camouflage layers 18 and 19 (`sorted_site`,
+    transparent list's camouflage layers 18 and 19 and hologram layer 21 (`sorted_site`,
     [native-water-fog.md](native-water-fog.md)), the bridge extracts the
     layer's pass from guest memory and the host plans it
     (`render_bridge::native_layers::caller`). A structure item (the

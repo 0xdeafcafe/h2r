@@ -65,11 +65,17 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
 /// Each layer goes through the layer begin `0x00044370`, the draw
 /// `0x00044550` and the end `0x000445d0` with no wrapper of its own; the
 /// begin binds the layer's target before the draw (the descriptor at
-/// `0x0043fa1c`: 18 the bound target, 19 render target 3).
+/// `0x0043fa1c`: 18 and 21 the bound target, 19 render target 3). The
+/// producer `0x00042760` adds class-3 entries whose handler is
+/// `0x000423c0` for the records whose `+0x1c` is 3: it adds their items
+/// through `0x00044c90` over every layer, replays layers 1, 3, 8, 7, 2,
+/// 16 and 15, then draws 21.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortedHandler {
     /// `0x00041cc0`: active camouflage.
     Camouflage,
+    /// `0x000423c0`: the hologram.
+    Hologram,
 }
 
 /// The sorted handler whose call of `layer` returns to `return_address`,
@@ -81,6 +87,9 @@ pub fn sorted_site(layer: u32, return_address: u32) -> Option<SortedHandler> {
         // `call 0x00044550` at `0x0004205a`, after the begin at
         // `0x00042051` returned true.
         (19, 0x0004_205f) => Some(SortedHandler::Camouflage),
+        // `call 0x00044550` at `0x0004271c`, after the begin at
+        // `0x00042713` returned true.
+        (21, 0x0004_2721) => Some(SortedHandler::Hologram),
         _ => None,
     }
 }
@@ -267,6 +276,8 @@ mod tests {
         assert_eq!(sorted_site(18, 0x0004_2015), Some(SortedHandler::Camouflage));
         assert_eq!(sorted_site(19, 0x0004_205f), Some(SortedHandler::Camouflage), "the modulate layer");
         assert_eq!(sorted_site(19, 0x0004_2015), None, "18's return names only 18");
+        assert_eq!(sorted_site(21, 0x0004_2721), Some(SortedHandler::Hologram));
+        assert_eq!(sorted_site(15, 0x0004_2709), None, "the hologram's replays are not taken");
         assert_eq!(sorted_site(18, 0x0002_c0e9), None, "another caller's");
         assert_eq!(sorted_site(16, 0x0004_1ffd), None, "the handler's replay of layer 16 is not taken");
         assert_eq!(layer_site(18, 0x0004_2015), Site::Other, "no scene site");

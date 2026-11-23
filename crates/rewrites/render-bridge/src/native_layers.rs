@@ -1,8 +1,8 @@
 //! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20, the
 //! first person's layers 1, 7, 8 and 20, and the sorted transparent list's
-//! camouflage layers 18 and 19, drawn from the scene's plan instead of the guest's
+//! camouflage layers 18 and 19 and hologram layer 21, drawn from the scene's plan instead of the guest's
 //! draws under the layer call (docs/graphics/framescene.md, slice 4;
-//! docs/graphics/native-water-fog.md for 18 and 19). On with the native renderer;
+//! docs/graphics/native-water-fog.md for 18, 19 and 21). On with the native renderer;
 //! `frame-scene.layers=off` leaves every layer to the D3D path.
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), as
@@ -50,10 +50,11 @@ pub const FIRST_PERSON_LAYERS: [u32; 4] = [1, 7, 8, 20];
 
 /// The sorted transparent list's handlers' layers taken: the
 /// camouflage handler `0x00041cc0`'s 18 and 19 (19 drawn into render
-/// target 3, which the begin binds before the layer draw). Their items are object render
+/// target 3, which the begin binds before the layer draw) and the
+/// hologram handler `0x000423c0`'s 21. Their items are object render
 /// records only; the handlers' replays of the scene's layers stay on the
 /// D3D path.
-pub const SORTED_LAYERS: [u32; 2] = [18, 19];
+pub const SORTED_LAYERS: [u32; 3] = [18, 19, 21];
 
 /// Which caller's layer draw is about to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +63,8 @@ pub enum LayerCaller {
     Scene,
     /// The first person's (`0x0003fdf0`): its arms' and weapon's items.
     FirstPerson,
-    /// A sorted transparent entry's handler (`0x00041cc0`): the scene's
-    /// object items it adds for its records.
+    /// A sorted transparent entry's handler (`0x00041cc0`, `0x000423c0`):
+    /// the scene's object items it adds for its records.
     Sorted(SortedHandler),
 }
 
@@ -260,7 +261,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20, the first person's 1, 7, 8 and 20 and the camouflage handler's 18 and 19 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20, the first person's 1, 7, 8 and 20 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -326,11 +327,13 @@ mod tests {
     }
 
     #[test]
-    fn the_stage_takes_the_camouflage_handlers_layers_18_and_19() {
+    fn the_stage_takes_the_sorted_handlers_layers_18_19_and_21() {
         assert_eq!(caller(18, 0x0004_2015), Some(LayerCaller::Sorted(SortedHandler::Camouflage)));
         assert_eq!(caller(16, 0x0004_1ffd), None, "the handler's replay of the scene's layers stays on D3D");
         assert_eq!(caller(18, 0x0002_c0e9), None);
         assert_eq!(caller(19, 0x0004_205f), Some(LayerCaller::Sorted(SortedHandler::Camouflage)), "the modulate layer");
+        assert_eq!(caller(21, 0x0004_2721), Some(LayerCaller::Sorted(SortedHandler::Hologram)));
+        assert_eq!(caller(21, 0x0004_205f), None, "another layer's return");
         count_for(LayerCaller::Sorted(SortedHandler::Camouflage), 18, "taken", 4);
         let c: BTreeMap<String, u64> = counters().into_iter().collect();
         assert!(c["layer_plan_sorted18_taken"] >= 4, "a sorted handler's apart");
