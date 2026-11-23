@@ -4887,6 +4887,8 @@ fn collision_boxes_chain_save_and_clear_as_modeling_actions() {
     saved.validate_checksum().unwrap();
     let back = geometry_edit::level_collision::read(&mut saved, tag).unwrap();
     assert_eq!(back.level, edit.added.level);
+}
+
 /// An outside editor's save: `text`, with a modification time `secs`
 /// ahead, so Studio's watch sees a new one.
 fn save_as_editor(path: &Path, text: &str, secs: u64) {

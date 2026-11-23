@@ -173,13 +173,6 @@ impl App {
             .as_deref()
             .filter(|m| self.opened_package.is_none() && self.is_mappack_map(m))
     }
-    /// The data root the studio reads and writes.
-    pub fn data_root(&self) -> PathBuf {
-        self.data_root
-            .clone()
-            .unwrap_or_else(content::store::default_data_root)
-    }
-
     /// Re-read the installed Map Pack and rebuild the group: the open map
     /// pack disc's maps when there is one (each named from its installed
     /// record when that is there, else by its file name, after the named

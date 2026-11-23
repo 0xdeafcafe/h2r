@@ -4,7 +4,8 @@
 //! PCM, `art/announcer/README.md`). Pure: the meter is `sound.measure`'s.
 
 use super::{Pcm, VoiceError};
-use crate::api::sound_measure::meter::{self, Levels, SILENCE_DB};
+use crate::api::sound_measure::meter::{self, Levels};
+use audio::meter::SILENCE_DB;
 
 /// The rate lines are asked for and saved at.
 pub const RATE: u32 = 44_100;
