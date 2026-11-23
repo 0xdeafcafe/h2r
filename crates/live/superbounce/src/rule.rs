@@ -28,9 +28,17 @@
 //! The game's HUD reads the verdict once airborne, the bots accept or
 //! reject a takeoff with it, and the bounce search scores it.
 
-use crate::flight::{AIR_ACCEL, GRAVITY, MAX_TICKS, TICK};
 use crate::geom::{cross, dot, segment_xy, sub};
 use crate::{Poly, RADIUS, Vec3};
+
+/// A game tick (seconds).
+pub const TICK: f32 = 1.0 / 30.0;
+/// Gravity (units/s²), fitted to the control drops: 0.13904 units/s a tick.
+pub const GRAVITY: f32 = 4.171;
+/// How fast the air stick changes horizontal velocity (units/s²).
+pub const AIR_ACCEL: f32 = 1.05;
+/// The longest fall the predictor steps: eight seconds.
+pub const MAX_TICKS: u32 = 240;
 
 /// The speed (units/s) over which the biped's collision agent sweeps the
 /// capsule along the tick's motion: the wrapper shape's `+0x24` on
@@ -359,8 +367,8 @@ fn toward(v: [f32; 2], want: [f32; 2], step: f32) -> [f32; 2] {
 
 /// What a body at origin `start` moving `velocity` comes to on `polys`
 /// (any polygons; the floors among them are used), with `drift` the
-/// sideways velocity the air stick holds ([`flight::AIR_ACCEL`] a second
-/// toward it; zero for no stick, which brakes).
+/// sideways velocity the air stick holds ([`AIR_ACCEL`] a second toward
+/// it; zero for no stick, which brakes).
 ///
 /// Each tick, as the engine steps it: the fall speed gains a tick of
 /// gravity and the sideways velocity steps toward `drift`. Moving down:
@@ -373,12 +381,9 @@ fn toward(v: [f32; 2], want: [f32; 2], step: f32) -> [f32; 2] {
 ///   touches it: stopped when more than [`CONTACT`] inside, else a
 ///   landing.
 ///
-/// Then the body moves a tick. [`Outcome::NoFloor`] after
-/// [`flight::MAX_TICKS`], or for a number that is not one. The pair word
-/// is not an input: the verdict is what a primed body does.
-///
-/// [`flight::AIR_ACCEL`]: crate::flight::AIR_ACCEL
-/// [`flight::MAX_TICKS`]: crate::flight::MAX_TICKS
+/// Then the body moves a tick. [`Outcome::NoFloor`] after [`MAX_TICKS`],
+/// or for a number that is not one. The pair word is not an input: the
+/// verdict is what a primed body does.
 pub fn predict(start: Vec3, velocity: Vec3, drift: [f32; 2], polys: &[Poly]) -> Verdict {
     if !start
         .iter()

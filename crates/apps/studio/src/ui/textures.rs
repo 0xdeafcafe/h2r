@@ -16,7 +16,9 @@ use bitmap_edit::{Adjust, BitmapOp, LayerId, Rect};
 use dear_imgui_rs::{Key, MouseButton, TextureId, TreeNodeFlags, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 use map::TagId;
+use tags::PixelFormat;
 
+use crate::app::image_gen::ImageAction;
 use crate::app::textures::{BitmapAction, PaintTool};
 use crate::app::{Action, App};
 use crate::theme::{self, Fonts, icon};
@@ -46,6 +48,8 @@ pub struct TexturesUi {
     marquee: Option<Marquee>,
     levels: [f32; 3],
     hsv: [f32; 3],
+    /// The Resize fields and the image they were filled from.
+    resize: Option<((TagId, usize), [i32; 2], PixelFormat)>,
 }
 
 impl Default for TexturesUi {
@@ -57,9 +61,26 @@ impl Default for TexturesUi {
             marquee: None,
             levels: [0.0, 1.0, 1.0],
             hsv: [0.0, 1.0, 1.0],
+            resize: None,
         }
     }
 }
+
+/// The formats Resize offers: those a save writes.
+const FORMATS: [PixelFormat; 12] = [
+    PixelFormat::A8,
+    PixelFormat::Y8,
+    PixelFormat::Ay8,
+    PixelFormat::A8Y8,
+    PixelFormat::Rgb565,
+    PixelFormat::Argb1555,
+    PixelFormat::Argb4444,
+    PixelFormat::Xrgb8888,
+    PixelFormat::Argb8888,
+    PixelFormat::Dxt1,
+    PixelFormat::Dxt3,
+    PixelFormat::Dxt5,
+];
 
 fn heading(ui: &Ui, fonts: &Fonts, t: &str) {
     let f = ui.push_font(fonts.bold);
@@ -104,7 +125,7 @@ pub fn list(ui: &Ui, app: &mut App, _st: &mut TexturesUi, actions: &mut Vec<Acti
             .textures
             .open
             .get(id)
-            .is_some_and(|o| o.bitmap.is_edited());
+            .is_some_and(|o| app.textures.edited(o));
         let mark = if edited { "* " } else { "" };
         let label = format!("{mark}{}##tex-{}", short(name), id.0);
         if ui
@@ -565,10 +586,20 @@ pub fn inspector(
                 "{} by {}, depth {}, {} {}",
                 info.width, info.height, info.depth, info.kind, info.format
             ));
-            ui.text(format!("{} mips stored; pixels in the {} file", info.mips, info.pixels));
+            match &info.added {
+                Some(a) => ui.text(format!(
+                    "Added, from image {}: the save writes it whole",
+                    a.from
+                )),
+                None => ui.text(format!(
+                    "{} mips stored; pixels in the {} file",
+                    info.mips, info.pixels
+                )),
+            }
         }
+        image_shape(ui, app, st, tag, layer.image as usize, actions);
         ui.text_wrapped(
-            "Edits stay in the editor: writing them to the map is not built yet. Export a PNG to keep them.",
+            "Edits stay in the editor until the map is saved. An added image or sequence moves the whole bitmap tag to the end of the map's metadata when it is saved.",
         );
     }
     if ui.collapsing_header("PNG##tex-png", TreeNodeFlags::DEFAULT_OPEN) {
@@ -583,6 +614,15 @@ pub fn inspector(
                 path,
             }));
         }
+        ui.same_line();
+        if ui.button(format!("{} Generate...##tex-generate", icon::ZAP)) {
+            let name = app.textures.open.get(&tag).map(|o| o.name.clone()).unwrap_or_default();
+            actions.push(Action::Image(ImageAction::Open {
+                bitmap: name,
+                image: layer.image as usize,
+            }));
+        }
+        ui.set_item_tooltip("Make a new picture for this image from a prompt and references you pick");
         d.end();
         ui.same_line();
         if ui.button(format!("{} Export...##tex-export", icon::SAVE)) {
@@ -618,6 +658,146 @@ pub fn inspector(
     if ui.button("Revert this bitmap##tex-revert") {
         actions.push(Action::Bitmap(BitmapAction::Revert(tag)));
     }
+}
+
+/// Resize, Add image and the sequences of the bitmap on the canvas.
+fn image_shape(
+    ui: &Ui,
+    app: &mut App,
+    st: &mut TexturesUi,
+    tag: TagId,
+    image: usize,
+    actions: &mut Vec<Action>,
+) {
+    let Some(open) = app.textures.open.get(&tag) else {
+        return;
+    };
+    let Some(info) = open.images.get(image) else {
+        return;
+    };
+    let writable = info.locked.is_none() && info.error.is_none();
+    let asked = app.textures.reshape.get(&(tag, image)).copied();
+    let stored = info.source.as_ref().map(|s| {
+        (
+            [i32::from(s.dimensions[0]), i32::from(s.dimensions[1])],
+            s.format,
+        )
+    });
+    let Some((stored_size, stored_format)) = stored else {
+        return;
+    };
+    let now = asked.map_or((stored_size, stored_format), |r| {
+        ([r.width as i32, r.height as i32], r.format)
+    });
+    if st.resize.as_ref().is_none_or(|(k, ..)| *k != (tag, image)) {
+        st.resize = Some(((tag, image), now.0, now.1));
+    }
+    let movable = open.parts.as_ref().err().cloned();
+    let sequences = open.sequences();
+    let images = open.images.len();
+    let name = open.name.clone();
+
+    ui.separator();
+    let d = ui.begin_disabled_with_cond(!writable);
+    let (_, size, format) = st.resize.as_mut().expect("just set");
+    ui.set_next_item_width(90.0);
+    ui.input_int("W##tex-resize-w", &mut size[0]);
+    ui.same_line();
+    ui.set_next_item_width(90.0);
+    ui.input_int("H##tex-resize-h", &mut size[1]);
+    ui.set_next_item_width(140.0);
+    let preview = format!("{format:?}");
+    if let Some(_c) = ui.begin_combo("Format##tex-resize-format", &preview) {
+        for f in FORMATS {
+            let label = format!("{f:?}");
+            if ui.selectable_config(&label).selected(f == *format).build() {
+                *format = f;
+            }
+        }
+    }
+    ui.same_line();
+    if ui.button("Resize##tex-resize") {
+        let (w, h) = (size[0].clamp(1, 4096) as u32, size[1].clamp(1, 4096) as u32);
+        actions.push(Action::Bitmap(BitmapAction::Reshape {
+            tag,
+            image,
+            width: Some(w),
+            height: Some(h),
+            format: Some(*format),
+        }));
+    }
+    ui.set_item_tooltip(
+        "Save this image at a new size or format: every layer resampled, every mip written again. One undo step.",
+    );
+    if let Some(r) = asked {
+        ui.text_disabled(format!(
+            "Saves as {} by {} {:?} (stored {} by {} {stored_format:?})",
+            r.width, r.height, r.format, stored_size[0], stored_size[1]
+        ));
+    }
+    d.end();
+    let d = ui.begin_disabled_with_cond(movable.is_some() || info_kind_is_not_2d(app, tag, image));
+    if ui.button(format!("{} Add image##tex-add-image", icon::PLUS)) {
+        actions.push(Action::Bitmap(BitmapAction::AddImage {
+            tag,
+            from: Some(image),
+            width: None,
+            height: None,
+            format: None,
+        }));
+    }
+    ui.set_item_tooltip(
+        "Add an image after the last, the size and format of this one, transparent until you paint, import or generate into it",
+    );
+    ui.same_line();
+    if ui.button(format!("{} New image, generated...##tex-add-generate", icon::ZAP)) {
+        actions.push(Action::Image(ImageAction::NewSlot {
+            bitmap: name.clone(),
+            like: image,
+        }));
+    }
+    d.end();
+    if let Some(why) = &movable {
+        ui.text_disabled(format!("No image can be added: {why}"));
+    }
+    if let Some(_node) = ui
+        .tree_node_config("##tex-sequences")
+        .label(format!("Sequences ({})", sequences.len()))
+        .push()
+    {
+        if sequences.is_empty() {
+            ui.text_disabled("None: the bitmap's images are picked by index.");
+        }
+        for s in &sequences {
+            let label = if s.label.is_empty() { "(no label)" } else { &s.label };
+            let last = i32::from(s.first) + i32::from(s.count) - 1;
+            ui.text(format!(
+                "{}  {label}: images {} to {last}{}{}",
+                s.index,
+                s.first,
+                if s.sprites > 0 { format!(", {} sprites", s.sprites) } else { String::new() },
+                if s.added { " (added)" } else { "" },
+            ));
+        }
+        let d = ui.begin_disabled_with_cond(movable.is_some() || image >= images);
+        if ui.button(format!("{} Add a sequence for image {image}##tex-add-seq", icon::PLUS)) {
+            actions.push(Action::Bitmap(BitmapAction::AddSequence {
+                tag,
+                first: image,
+                count: 1,
+                label: String::new(),
+            }));
+        }
+        d.end();
+    }
+}
+
+fn info_kind_is_not_2d(app: &App, tag: TagId, image: usize) -> bool {
+    app.textures
+        .open
+        .get(&tag)
+        .and_then(|o| o.images.get(image))
+        .is_none_or(|i| i.kind != "D2")
 }
 
 /// A PNG to import.

@@ -1,0 +1,29 @@
+{
+  "teams": [
+    0,
+    1
+  ],
+  "variant": {
+    "team_play": 1,
+    "score_limit": 7
+  },
+  "players": [
+    {
+      "slot": 0,
+      "team": 0
+    },
+    {
+      "slot": 1,
+      "team": 0
+    },
+    {
+      "slot": 2,
+      "team": 1
+    },
+    {
+      "slot": 3,
+      "team": 1
+    }
+  ],
+  "ticks": [{"events":[{"spawn":0},{"spawn":1},{"spawn":2},{"spawn":3}]},{"events":[{"kill":{"victim":3,"killer":0}}]},{"events":[{"spawn":3}]},{"events":[{"kill":{"victim":2,"killer":1}}]},{"events":[{"kill":{"victim":3,"killer":0}}]},{}]
+}

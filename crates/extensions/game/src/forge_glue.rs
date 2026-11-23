@@ -4,6 +4,7 @@
 mod editing;
 pub mod gizmo;
 pub mod marker;
+pub mod net;
 
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -83,7 +84,7 @@ pub fn click(_row: usize) -> bool {
 }
 
 fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {
-    GENERATION.load(Ordering::Acquire) == generation && forge_map::admitted(m)
+    GENERATION.load(Ordering::Acquire) == generation && forge_map::admitted_session(m)
 }
 
 struct Driver {
@@ -140,7 +141,7 @@ impl Driver {
             self.reset();
         }
         if self.loaded.is_none() {
-            if !forge_map::admitted(m) {
+            if !forge_map::admitted_session(m) {
                 return;
             }
             // The monitor is a Forge lobby's (or the level boot's) only
@@ -192,6 +193,19 @@ impl Driver {
                         .unwrap_or_default();
                     if let Some(notice) = self.looks.open(self.store.as_deref(), &who_of(Some(m))) {
                         editor.say(notice, tick);
+                    }
+                    // A synchronous network game's session is shared over
+                    // the Forge lanes its link offered.
+                    if forge_map::admitted_shared(m) {
+                        let Some(offer) = net::take() else {
+                            self.reason = "The co-op link has no Forge channel.".into();
+                            return;
+                        };
+                        let name = who_of(Some(m)).profile;
+                        if let Err(e) = editor.open_shared(offer, tick, &name) {
+                            self.reason = e;
+                            return;
+                        }
                     }
                     self.editor = Some(editor);
                 }
@@ -270,6 +284,7 @@ impl Feature for Hooks {
                 .is_some_and(|v| v != 0)
             {
                 driver.lock().unwrap_or_else(|e| e.into_inner()).reset();
+                net::clear();
             }
         });
         let driver = self.0.clone();
@@ -409,14 +424,16 @@ impl LocalApi for Backend {
     }
 
     fn log(&self, since: u32) -> Result<Vec<Entry>, String> {
-        self.read(|e| {
-            e.session
-                .log()
-                .iter()
-                .filter(|entry| entry.seq > since)
-                .cloned()
-                .collect()
-        })
+        self.read(|e| e.log_since(since))
+    }
+
+    fn wait_ticks(&self) -> u64 {
+        let driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if driver.editor.as_ref().is_some_and(Editor::is_shared) {
+            agent::forge::net::WAIT_TICKS
+        } else {
+            30
+        }
     }
 
     fn input(&self, m: &dyn engine::GuestMemory, input: forge::tool::Input) -> Result<(), String> {

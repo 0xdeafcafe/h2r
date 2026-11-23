@@ -3,8 +3,8 @@
 // point for each second on the hill, and contesting.
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
-// Entries a host cannot make yet (`verify::unhostable`):
-//   inside           not built (zone tests on the corners' polygon)
+// Entries a host cannot make yet (`verify::unhostable`): none. `inside`
+// tests the polygon of the hill's corners (`game::rules::world::zones`).
 // Not reproduced: the KotH globals (`[0x51ecc8]`: the hill in play
 // `+0x1a4`, the occupants mask `+0x1a8`, player `+0x1b8`) are not written;
 // the next hill is the next number in order, as 0x2bd0b0's choice is not

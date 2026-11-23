@@ -1,0 +1,39 @@
+{
+  "teams": [
+    0,
+    1
+  ],
+  "players": [
+    {
+      "slot": 0,
+      "team": 0,
+      "unit": 100
+    },
+    {
+      "slot": 1,
+      "team": 1,
+      "unit": 101
+    }
+  ],
+  "map": [
+    {
+      "label": "hill_corner",
+      "object": 31,
+      "number": 1,
+      "class": "flag"
+    },
+    {
+      "label": "hill_corner",
+      "object": 33,
+      "number": 3,
+      "class": "flag"
+    },
+    {
+      "label": "hill_corner",
+      "object": 35,
+      "number": 5,
+      "class": "flag"
+    }
+  ],
+  "ticks": [{"events":[{"spawn":0},{"spawn":1}]},{"events":[{"enter":{"zone":33,"object":100}}]},{"events":[{"leave":{"zone":33,"object":100}},{"enter":{"zone":31,"object":101}}]},{"events":[{"enter":{"zone":31,"object":100}},{"leave":{"zone":31,"object":101}}]},{"events":[{"leave":{"zone":31,"object":100}},{"enter":{"zone":35,"object":101}}]},{"events":[{"enter":{"zone":33,"object":100}},{"leave":{"zone":35,"object":101}}]},{"events":[{"leave":{"zone":33,"object":100}},{"enter":{"zone":31,"object":101}}]},{"events":[{"enter":{"zone":35,"object":100}},{"leave":{"zone":31,"object":101}}]},{"events":[{"leave":{"zone":35,"object":100}}]},{"events":[{"enter":{"zone":31,"object":100}}]},{"events":[{"leave":{"zone":31,"object":100}}]},{"events":[{"enter":{"zone":33,"object":100}}]},{"events":[{"leave":{"zone":33,"object":100}}]},{"events":[{"enter":{"zone":35,"object":100}}]},{"events":[{"leave":{"zone":35,"object":100}}]},{"events":[{"enter":{"zone":31,"object":100}}]},{"events":[{"leave":{"zone":31,"object":100}}]},{"events":[{"enter":{"zone":33,"object":100}}]},{"events":[{"leave":{"zone":33,"object":100}}]},{"events":[{"enter":{"zone":35,"object":100}}]},{"events":[{"leave":{"zone":35,"object":100}}]},{"events":[{"enter":{"zone":31,"object":100}}]},{"events":[{"leave":{"zone":31,"object":100}}]},{}]
+}

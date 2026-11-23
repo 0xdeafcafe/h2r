@@ -114,6 +114,13 @@ crate::layout! {
     }
 }
 
+/// [`Biped::FLAGS`] bit 5: the biped's facing was set by something other
+/// than its control, such as a melee lunge (the facing update `0x000e01d0`
+/// sets it at `0x000e0c47`). The local action builder's control update
+/// reseeds the control yaw and pitch from the unit's aim while it is set,
+/// then clears it (`0x00186f8b..0x0018700b`).
+pub const FACING_SET: u8 = 0x20;
+
 /// The byte of [`Biped::FLAGS`]'s high half: bit 4 ([`SUPPORT_COPIED`]) is
 /// set when the physics update copied a support contact (`0x000ddeda`).
 pub const SUPPORT_FLAGS: u32 = 0x349;

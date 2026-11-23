@@ -737,8 +737,14 @@ that does not need the settings layer.
 
 - `wire`: the one datagram. It carries the sender's acknowledgements and
   repeats every pad frame and tick hash the other side has not
-  acknowledged (up to 32 of each, 859 bytes at most), so delivery is in
+  acknowledged (up to 32 of each), so delivery is in
   order whatever the link drops, and nothing is retransmitted on a timer.
+  The datagram (version 3, 1159 bytes at most, under the relay's cap) also
+  carries the Forge lane: up to 200 bytes of an ordered, acknowledged byte
+  stream that a shared Forge session sends its messages on, and the beat,
+  the 48 bytes of log head and stream position a machine reports in every
+  datagram as the session's keep-alive
+  ([forge-design.md](../game/forge-design.md), "F5 in detail").
   A datagram of another session, another version or another shape is
   counted and dropped.
 - `link`: `Link` is an unreliable datagram path. `UdpLink` is the direct
@@ -758,7 +764,9 @@ that does not need the settings layer.
 - `peer`: one machine's end. `begin_frame` starts a frame only when both
   ports' pads are in hand (`Hold::Waiting` otherwise); `report_hash` takes
   a tick's hash, and the first tick whose hashes differ latches
-  `Hold::Desync` on both machines.
+  `Hold::Desync` on both machines. `forge_send`, `forge_recv` and
+  `forge_set_beat` are the Forge lane's ends; a queue of 24 MiB
+  unacknowledged refuses more bytes.
 - `tap`: `ScheduleTap`, an `xapi::tap::InputTap`. It overwrites the live
   packet for ports 0 and 1, answers "not connected" for anything else,
   and counts a read that came with no frame started.

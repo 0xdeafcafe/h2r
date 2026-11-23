@@ -32,6 +32,7 @@ mod docs;
 mod game_script;
 mod geometry;
 mod hud;
+mod image_gen;
 mod mirror;
 mod models;
 mod nav;
@@ -46,7 +47,7 @@ mod scripts;
 pub mod seams;
 pub mod server;
 mod sound;
-mod sound_measure;
+pub(crate) mod sound_measure;
 mod tag_fields;
 mod tag_io;
 mod tags;
@@ -59,6 +60,8 @@ mod ui_retail;
 mod ui_screens;
 mod variants;
 mod view;
+mod voice;
+mod voice_clone;
 
 #[cfg(test)]
 mod tests;
@@ -865,6 +868,8 @@ impl Api {
         }
         play.update(app);
         app.poll_bot_nav();
+        // Outside editors' saves, as the window polls them each frame.
+        app.poll_external(std::time::Instant::now());
         true
     }
 

@@ -31,6 +31,10 @@
 //! - **Textures** (the open map's bitmaps): `bitmap.list`, `read`,
 //!   `export`, `import`, `paint`, `fill`, `adjust`, `pixels` through
 //!   `Action::Bitmap` ([`super::bitmaps`]).
+//! - **Image generation**: `image.generate`, `image.result`,
+//!   `image.apply`, `image.accept` and `image.discard` over the app's jobs
+//!   (`crate::imagegen`), written through `Action::Bitmap`'s commands
+//!   ([`super::image_gen`]).
 //! - **Scripts** (the open map's scripts, read): `script.list`,
 //!   `script.source`, `script.follow`, `script.uses`, `script.builtins` and
 //!   `script.doc` through `Action::Script` ([`super::scripts`]).
@@ -45,6 +49,11 @@
 //!   when asked ([`super::models`]); read-only, so no actions.
 //!   `model.colors`, `model.emblem` and `custom.*` are planned
 //!   (docs/editor/agent-api.md).
+//! - **the Announcer** and **Voices**: `voice.say`, `voice.list`,
+//!   `voice.commit`, `voice.characters`, `voice.dataset.build`,
+//!   `voice.dataset.status`, `voice.clone.train` and `voice.clone.say`
+//!   ([`super::voice`], [`super::voice_clone`]) over `app::announcer`
+//!   and `app::voices`.
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::perform`]: crate::App::perform
@@ -84,6 +93,9 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::geometry::Geometry));
     // The Textures tool: the open map's bitmaps, paint, import and export.
     api.register(Box::new(super::bitmaps::Bitmaps));
+    // Image generation: a picture made for a bitmap slot, applied,
+    // accepted or discarded through the Textures tool (app::image_gen).
+    api.register(Box::new(super::image_gen::ImageGenApi));
     // The Scripts tool: the open map's scripts read, links and builtins.
     api.register(Box::new(super::scripts::Scripts));
     // pair.*: the window's pairing with a running game (play::pair).
@@ -112,4 +124,10 @@ pub fn register(api: &mut Api) {
     // model.*: objects' models read, rendered (ground, third and first
     // person) and checked as content, Pogo kit maps included.
     api.register(Box::new(super::models::Models::default()));
+    // The Announcer: a line said by a voice, made a clip and kept
+    // (app::announcer).
+    api.register(Box::new(super::voice::Voice));
+    // Voices: game characters cloned from the disc: datasets, the local
+    // model's jobs and lines (app::voices).
+    api.register(Box::new(super::voice_clone::VoiceClone));
 }

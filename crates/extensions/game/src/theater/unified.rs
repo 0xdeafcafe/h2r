@@ -45,6 +45,18 @@ impl Capture {
         self.count_drops(source, 1);
     }
 
+    /// A default recording's next game, after its last game's film was cut
+    /// or the player left it: stats, medals and drop counts start again.
+    /// The presentation stream belongs to the tape and carries on.
+    pub(super) fn next_game(&mut self) {
+        self.stats = Default::default();
+        self.drops.clear();
+        self.clock = None;
+        self.final_clock = None;
+        self.ended = false;
+        self.live_session = false;
+    }
+
     fn count_drops(&mut self, source: &'static str, n: u64) {
         if n == 0 {
             return;
@@ -138,6 +150,12 @@ impl Capture {
             self.count_drops("frame", u64::from(dropped));
             out.push(RecordData::pose(checkpoint));
         }
+        // The shared Forge session's welcome and the items it applied.
+        out.extend(
+            crate::forge_glue::net::take_film()
+                .into_iter()
+                .map(RecordData::forge_payload),
+        );
         let mut pending = std::mem::take(&mut self.pending);
         for item in pending.drain(..) {
             let (source, result) = match item {

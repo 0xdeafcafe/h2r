@@ -71,9 +71,23 @@ world is resident and no refresh is running, and a worker applies it
   as at load (`GpuWorld::rewrite_image`, `ProgramSet::rewrite_image`,
   `gpu::rewrite_texture`). Another size, level count or format is refused
   with a log line and the texture keeps its pixels until the map reloads.
+- **A shader, template, pass or vertex shader** (`Edit::Shader`). Each
+  native material built from it is compiled again from the overlaid map
+  as the load compiles it (`native_world_glue::refresh_shaders`) and put
+  in place (`GpuWorld::refresh_programs`, `ProgramSet::refresh`): a
+  constants-only change rewrites its uniform buffers, any other change
+  rebuilds its programs, stage textures and batch groups. When the fog,
+  water, layers, lights, decorators or opaque pass draw the shader, or
+  the material would draw other parts, the world reloads instead.
 
-The refresh covers the layer-3 world. The fog, water, layers, lights and
-decorators keep the textures they loaded, E3's sun receivers
+The same image refresh reaches the lightmap pages (`GpuWorld::rewrite_page`:
+the page decoded again through each palette the load held, written into
+every texture that holds it), the fog, water and layer stage images
+(`GpuWorld::held`) and the lights' gels (`GpuWorld::rewrite_gel`). The
+lights' pass textures and the decorators' are rewritten by their own glue,
+and a decorator's geometry is prepared again after a model or section
+edit ([realtime-edits.md](../editor/realtime-edits.md), "The native
+refresh"). E3's sun receivers
 (`native_render::sun_casters::SunWorld`) keep the geometry they loaded
 until the world reloads, and the editor's preview
 (`GpuWorld::set_section_vertices`) moves vertices without recomputing

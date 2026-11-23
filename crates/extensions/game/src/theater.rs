@@ -140,6 +140,8 @@ struct Recording {
     unified: unified::Capture,
     disk: Arc<Mutex<film::manifest::DiskTracker>>,
     upload: Option<UploadTarget>,
+    /// Wall time of the current game's first tick: a cut film's start.
+    game_started_ms: Option<u64>,
 }
 
 struct UploadTarget {
@@ -333,6 +335,7 @@ impl Session {
                 live_service,
                 features: switches.with(admission, true).spec(),
                 player_features: player_features && !host_recording,
+                tape_id: None,
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
                     id: live_proto::sign::random_id(),
@@ -381,6 +384,7 @@ impl Session {
                     unified: Default::default(),
                     disk: Arc::new(Mutex::new(disk)),
                     upload,
+                    game_started_ms: None,
                 }),
                 header,
                 1.,
@@ -546,6 +550,7 @@ impl Session {
                     return;
                 }
                 if rec.meta.descriptor().match_start_tick == Some(tick) {
+                    rec.game_started_ms = Some(autorecord::now_ms());
                     let _ = self.recording_account.set(self.film_sync.get().and_then(|account| account()));
                 }
             } else {
@@ -760,11 +765,16 @@ impl Session {
         if !teardown && (!rec.match_over || rec.frame.actions.is_some()) {
             return Ok(());
         }
-        // A default recording of a session that played no game (menus,
-        // Theater, settings) has nothing to watch.
-        if s.header.player_features && rec.meta.descriptor().match_start_tick.is_none() {
-            s.complete = true;
-            s.discard_auto();
+        // A default recording cuts each game into a film of its own and
+        // keeps recording. At the session's end it cuts the game in play,
+        // if any, and discards the tape (docs/game/film-format.md, "One
+        // film per game").
+        if s.header.player_features {
+            s.cut_game(slices);
+            if teardown {
+                s.complete = true;
+                s.discard_auto();
+            }
             return Ok(());
         }
         let matched = rec.match_over;
@@ -905,6 +915,40 @@ impl State {
         }
     }
 
+    /// Seal the game a default recording just played as a film of its own,
+    /// cut from the running tape, and describe the next game from its
+    /// start (docs/game/film-format.md, "One film per game"). A game that
+    /// never started (menus, Theater, settings) has no film. A cut that
+    /// cannot be written is logged; the tape keeps recording.
+    fn cut_game(&mut self, slices: u64) {
+        let (tick, calls) = (self.tick, self.calls);
+        let tape = self.header.clone();
+        let Mode::Record(rec) = &mut self.mode else { return };
+        rec.match_over = false;
+        if let Some(start) = rec.meta.descriptor().match_start_tick {
+            // The tape keeps the game's closing observations, as a film
+            // sealed at its game's end does, so every later cut has them.
+            let closed = (|| -> Result<()> {
+                rec.track.closing_events(std::mem::take(&mut rec.frame.events))?;
+                rec.track.append_to_last(rec.unified.take_records(false, false)?)?;
+                let out = rec.out.as_mut().context("film already closed")?;
+                rec.batch.flush(out)
+            })();
+            if let Err(error) = closed {
+                self.fail(format!("closing a game on the tape: {error:#}"));
+                return;
+            }
+            match autorecord::cut(rec, &tape, slices, tick, calls, start) {
+                Ok(path) => eprintln!("theater: this game's film is {}", path.display()),
+                Err(error) => eprintln!("theater: could not keep this game's film: {error:#}"),
+            }
+        }
+        rec.meta.next_game();
+        rec.unified.next_game();
+        rec.frame.next_game();
+        rec.game_started_ms = None;
+    }
+
     fn fail_at(&mut self, tick: u64, why: String) {
         // A failed warm load is already awaiting process replacement. No
         // later tap from this slice can supersede the original cold target.
@@ -1032,10 +1076,14 @@ impl agent::LobbyTape for Session {
     }
 }
 
+/// The [`Observer`]'s feature id. No other feature may take it: the
+/// in-game Theater's screens are `theater-films` and `theater-film-detail`.
+pub const OBSERVER_FEATURE: &str = "theater-film";
+
 pub struct Observer(pub Arc<Session>, pub Option<agent::Agent>);
 impl hooks::Feature for Observer {
     fn manifest(&self) -> hooks::Manifest {
-        hooks::Manifest::new("theater-film", "Exact host film").doc("docs/game/theater.md")
+        hooks::Manifest::new(OBSERVER_FEATURE, "Exact host film").doc("docs/game/theater.md")
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // Hook installation changes guest dispatch boundaries. A v1 tape

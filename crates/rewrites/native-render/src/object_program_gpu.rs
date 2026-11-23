@@ -799,6 +799,26 @@ impl LitObjects {
         })
     }
 
+    /// Each model's shader tag datums, over its layer-3 parts and its
+    /// other layers' parts, ascending and each once, by model: what a live
+    /// shader edit reloads (docs/editor/realtime-edits.md, "The native
+    /// refresh").
+    pub fn model_shaders(&self) -> Vec<(u32, Vec<u32>)> {
+        let mut out: Vec<(u32, Vec<u32>)> = self
+            .models
+            .iter()
+            .map(|(&index, m)| {
+                let mut shaders: Vec<u32> =
+                    m.parts.iter().map(|p| p.shader_tag).chain(m.layers.iter().map(|p| p.shader_tag)).collect();
+                shaders.sort_unstable();
+                shaders.dedup();
+                (index, shaders)
+            })
+            .collect();
+        out.sort_unstable_by_key(|(index, _)| *index);
+        out
+    }
+
     /// Drop model `index`: its parts keep their D3D draws. A live edit
     /// whose model no longer uploads takes it out rather than draw the
     /// old geometry (docs/editor/realtime-edits.md, "The native refresh").

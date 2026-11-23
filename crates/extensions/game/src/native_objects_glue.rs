@@ -255,10 +255,36 @@ fn edited_models_and_images(
                 }
             }
             Edit::Image { bitmap, image } => images.push((TagId(bitmap), image)),
-            Edit::Section { .. } => {}
+            // Sections are the world's. Another tag's field write changes
+            // nothing this copy reads from metadata live; a shader's is
+            // [`edited_shaders`].
+            Edit::Section { .. } | Edit::Tag { .. } | Edit::Shader { .. } => {}
         }
     }
     (modes, images)
+}
+
+/// The shader, template, pass and vertex shader tags one drain of live
+/// edits names (`Edit::Shader`).
+fn edited_shaders(edits: &[render_bridge::native_edits::Edit]) -> Vec<TagId> {
+    use render_bridge::native_edits::Edit;
+    edits
+        .iter()
+        .filter_map(|e| match *e {
+            Edit::Shader { tag } => Some(TagId(tag)),
+            Edit::Section { .. } | Edit::Model { .. } | Edit::Image { .. } | Edit::Tag { .. } => None,
+        })
+        .collect()
+}
+
+/// The resident models (of `model_shaders`, `LitObjects::model_shaders`)
+/// with a part whose shader `edited` says is built from an edited tag.
+fn shader_models(model_shaders: &[(u32, Vec<u32>)], edited: &mut dyn FnMut(TagId) -> bool) -> Vec<TagId> {
+    model_shaders
+        .iter()
+        .filter(|(_, shaders)| shaders.iter().any(|&s| edited(TagId(s))))
+        .map(|&(model, _)| TagId(model))
+        .collect()
 }
 
 /// Takes `mode` out of the draw set and the coverage: its parts keep
@@ -281,7 +307,9 @@ fn leave_native(models: &Models, mode: TagId) {
 /// that no longer loads natively leaves the native path, so its parts
 /// draw from guest memory rather than as they loaded; an image whose
 /// size, levels or format changed keeps its pixels until the map reloads.
-/// Both say so.
+/// Both say so. A model with a part whose shader is built from an edited
+/// shader, template, pass or vertex shader (`Edit::Shader`) is loaded
+/// again the same way: its programs are compiled from the edited tags.
 fn refresh_models(
     name: &str,
     generation: u64,
@@ -292,11 +320,12 @@ fn refresh_models(
     (device, queue): (wgpu::Device, wgpu::Queue),
 ) {
     let current = || native_map_work::generation() == generation;
-    let (modes, images) = {
+    let (mut modes, images) = {
         let coverage = models.coverage.read().unwrap_or_else(|e| e.into_inner());
         edited_models_and_images(edits, &|tag| coverage.keys().find(|k| k.0 & 0xffff == tag & 0xffff).copied())
     };
-    if modes.is_empty() && images.is_empty() {
+    let shaders = edited_shaders(edits);
+    if modes.is_empty() && images.is_empty() && shaders.is_empty() {
         return;
     }
     let mut opened = match open(name, palettes, formats) {
@@ -309,6 +338,23 @@ fn refresh_models(
             return;
         }
     };
+    if !shaders.is_empty() {
+        let model_shaders = models.lit.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(LitObjects::model_shaders);
+        match tags::material::ShaderLibrary::read(&mut opened.map) {
+            Ok(mut lib) => {
+                let mut known = HashMap::new();
+                let edited = shader_models(&model_shaders.unwrap_or_default(), &mut |s| {
+                    crate::native_world_glue::shader_edited(&mut lib, &mut known, &shaders, s)
+                });
+                for mode in edited {
+                    if !modes.contains(&mode) {
+                        modes.push(mode);
+                    }
+                }
+            }
+            Err(e) => eprintln!("native-objects: {name}: a shader edit's shader tags do not read ({e}); models keep their programs until the map reloads"),
+        }
+    }
     for mode in modes {
         if !current() {
             return;
@@ -1490,6 +1536,24 @@ mod tests {
         ], &resident);
         assert_eq!(modes, vec![TagId(0xe1c0_0042)]);
         assert_eq!(images, vec![(TagId(0xe000_0007), 2)]);
+    }
+
+    /// A shader edit reloads the models with a part built from it, and
+    /// only those.
+    #[test]
+    fn a_shader_edit_picks_the_models_whose_parts_use_it() {
+        use render_bridge::native_edits::Edit;
+        assert_eq!(
+            edited_shaders(&[Edit::Shader { tag: 0xe000_0300 }, Edit::Model { tag: 1 }]),
+            vec![TagId(0xe000_0300)]
+        );
+        let model_shaders = [
+            (0xe1c0_0040, vec![0xe000_0010, 0xe000_0011]),
+            (0xe1c0_0041, vec![0xe000_0012]),
+            (0xe1c0_0042, vec![0xe000_0011]),
+        ];
+        let picked = shader_models(&model_shaders, &mut |s| s == TagId(0xe000_0011));
+        assert_eq!(picked, vec![TagId(0xe1c0_0040), TagId(0xe1c0_0042)]);
     }
 
     /// The lit parts are W-buffered programs as the world's: they clip w

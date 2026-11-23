@@ -660,6 +660,10 @@ pub enum Detail {
     /// No components; one digest row a game second and a rolling digest
     /// over every tick (`h2 sim diff` compares those).
     Training,
+    /// The training tally, and the spatial trace beside the report
+    /// ([`crate::spatial`]): where players were, spawned, fought, picked
+    /// up and got stuck.
+    Spatial,
 }
 
 impl Detail {
@@ -667,7 +671,10 @@ impl Detail {
         match s.trim().to_ascii_lowercase().as_str() {
             "full" => Ok(Detail::Full),
             "training" => Ok(Detail::Training),
-            other => Err(format!("detail = \"{other}\": \"full\" or \"training\"")),
+            "spatial" => Ok(Detail::Spatial),
+            other => Err(format!(
+                "detail = \"{other}\": \"full\", \"training\" or \"spatial\""
+            )),
         }
     }
 
@@ -675,7 +682,23 @@ impl Detail {
         match self {
             Detail::Full => "full",
             Detail::Training => "training",
+            Detail::Spatial => "spatial",
         }
+    }
+
+    /// What the tally records: a spatial run's tally is a training
+    /// run's, so the trace changes nothing in the report but its
+    /// `detail`.
+    pub fn tally(self) -> Detail {
+        match self {
+            Detail::Spatial => Detail::Training,
+            d => d,
+        }
+    }
+
+    /// The run writes the spatial trace ([`crate::spatial::trace_path`]).
+    pub fn traces(self) -> bool {
+        self == Detail::Spatial
     }
 }
 
@@ -755,8 +778,9 @@ pub struct MatchConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<bool>,
     /// How much of the state a report records: `"full"` (the default: the
-    /// per-tick digests and components) or `"training"` (no components;
-    /// sparse digests and a rolling digest over every tick).
+    /// per-tick digests and components), `"training"` (no components;
+    /// sparse digests and a rolling digest over every tick) or
+    /// `"spatial"` (the training report, and the spatial trace beside it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// Bot think workers for this process (`H2_BOT_THREADS`'s values): a
@@ -1053,7 +1077,7 @@ pub fn resolve(
     {
         problems.push(e);
     }
-    if config.detail() == Detail::Training && config.components == Some(true) {
+    if config.detail().tally() == Detail::Training && config.components == Some(true) {
         problems.push("components = true: a training report has no components".into());
     }
     if config.bots.is_empty() {
@@ -1301,8 +1325,8 @@ pub struct BatchConfig {
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// `detail` for every run (`"full"` or `"training"`); over the match
-    /// file's own.
+    /// `detail` for every run (`"full"`, `"training"` or `"spatial"`);
+    /// over the match file's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// Legacy batch option. Only false is accepted.

@@ -184,6 +184,27 @@ pub fn reference(
     exclude: Option<TagId>,
     limit: usize,
 ) -> Reference {
+    reference_where(app, class, exclude, limit, |_| true)
+}
+
+/// The shown map's retail announcer lines (`sound\dialog\multiplayer\flavor`,
+/// the multi-kill and spree lines), up to `limit` of them measured: what
+/// the Announcer brings a new line to (docs/editor/announcer.md).
+pub fn retail_announcer(app: &mut App, limit: usize) -> Reference {
+    reference_where(app, None, None, limit, |t| {
+        t.name
+            .to_ascii_lowercase()
+            .contains(r"dialog\multiplayer\flavor")
+    })
+}
+
+fn reference_where(
+    app: &mut App,
+    class: Option<u8>,
+    exclude: Option<TagId>,
+    limit: usize,
+    keep: impl Fn(&crate::app::audition::SoundTag) -> bool,
+) -> Reference {
     let mut r = Reference {
         class,
         ..Reference::default()
@@ -201,7 +222,7 @@ pub fn reference(
     };
     let pool: Vec<_> = all
         .into_iter()
-        .filter(|t| Some(t.id) != exclude && class.is_none_or(|c| t.class == c))
+        .filter(|t| Some(t.id) != exclude && class.is_none_or(|c| t.class == c) && keep(t))
         .collect();
     r.considered = pool.len();
     let n = pool.len();

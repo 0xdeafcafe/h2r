@@ -34,6 +34,7 @@ fn header(version: u32, length_ticks: u64) -> film::Header {
         live_service: false,
         features: String::new(),
         player_features: false,
+        tape_id: None,
     }
 }
 
@@ -64,6 +65,7 @@ fn sample_film() -> Vec<u8> {
                     events: vec![],
                     closing_events: vec![],
                     post_hash: None,
+                    forge: vec![],
                 },
                 vec![],
                 None,

@@ -651,6 +651,57 @@ impl Disc {
 
     /// The image `a` names.
     pub fn art(&self, a: &Art) -> Option<Image> {
+        let (r, image) = self.art_ref(a)?;
+        self.image(r, image)
+    }
+
+    /// The bitmap tag and image `a` draws: the tag's path in
+    /// `mainmenu.map` and the image's index. `None` for a solid colour
+    /// or art the disc does not have.
+    pub fn art_bitmap(&self, a: &Art) -> Option<(String, i16)> {
+        let (r, image) = self.art_ref(a)?;
+        let id = r.id?;
+        let map = self.map.borrow();
+        let name = map.tags().iter().find(|t| t.id == id)?.name.clone()?;
+        Some((name, image))
+    }
+
+    /// Draws `img` for image `index` of the bitmap at `path` (a tag path
+    /// of `mainmenu.map`, case blind) from now on: an edit made in
+    /// Studio and not yet saved. `None` reads the disc's pixels again.
+    /// False when the disc has no such bitmap.
+    pub fn set_image(&self, path: &str, index: i16, img: Option<Image>) -> bool {
+        let id = {
+            let map = self.map.borrow();
+            let Some(id) = map
+                .tags()
+                .iter()
+                .find(|t| {
+                    t.group == tui::BITMAP
+                        && t.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(path))
+                })
+                .map(|t| t.id)
+            else {
+                return false;
+            };
+            id
+        };
+        match img {
+            Some(img) => {
+                self.images.borrow_mut().insert((id, index), Some(img));
+            }
+            None => {
+                self.images.borrow_mut().remove(&(id, index));
+            }
+        }
+        // Openers are drawn once and kept: draw them again with the new
+        // picture.
+        self.openers.borrow_mut().clear();
+        true
+    }
+
+    /// The bitmap reference and image index `a` names.
+    fn art_ref(&self, a: &Art) -> Option<(tui::TagRef, i16)> {
         match *a {
             Art::Solid { .. } => None,
             Art::Level { ref stem } => {
@@ -674,21 +725,21 @@ impl Disc {
                         unknown_map,
                     )
                 });
-                self.image(
+                Some((
                     tui::TagRef {
                         group: tui::BITMAP,
                         id: Some(TagId(*pictures.get(stem)?)),
                     },
                     0,
-                )
+                ))
             }
             Art::Skin { skin, index, image } => {
                 let b = self.skins.get(&skin)?.bitmaps.get(usize::from(index))?;
-                self.image(b.bitmap, image)
+                Some((b.bitmap, image))
             }
             Art::Arrow { skin, image } => {
                 let bitmap = self.skins.get(&skin)?.bitmap;
-                self.image(bitmap, image)
+                Some((bitmap, image))
             }
             Art::Screen {
                 screen_id,
@@ -702,7 +753,7 @@ impl Disc {
                     .get(usize::from(pane))?
                     .bitmaps
                     .get(usize::from(index))?;
-                self.image(b.bitmap, image)
+                Some((b.bitmap, image))
             }
         }
     }

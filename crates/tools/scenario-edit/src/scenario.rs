@@ -195,6 +195,10 @@ pub struct Changes {
     /// with a solid added), each appended to the metadata with its pair,
     /// in the ordinary metadata or a BSP region, pointed at the copy.
     pub geometry_grown: Vec<GeometryGrown>,
+    /// Tags written whole to a new place (the Textures tool's bitmaps that
+    /// gained images or sequences), each with the raw blocks its words
+    /// point at.
+    pub tag_moves: Vec<TagMove>,
     /// Why the Modeling tool's edits cannot be saved, when they cannot: a
     /// save is then refused whole, before anything is written.
     pub geometry_refusal: Option<String>,
@@ -211,6 +215,7 @@ impl Changes {
             && self.raw_patches.is_empty()
             && self.raw_appends.is_empty()
             && self.geometry_grown.is_empty()
+            && self.tag_moves.is_empty()
             && self.geometry_refusal.is_none()
             && self.bitmap_refusal.is_none()
     }
@@ -241,6 +246,33 @@ pub struct RawAppend {
     pub pointer_address: u32,
 }
 
+/// A tag written whole to the end of the metadata, its index entry
+/// pointed at the copy (`map::MapEditor::move_tag`); the old bytes stay as
+/// dead data. A bitmap that gained images or sequences
+/// (`tags::bitmap_grow`, docs/editor/modeling.md, "Adding images").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagMove {
+    pub tag: map::TagId,
+    /// The payload laid out from offset 0.
+    pub bytes: Vec<u8>,
+    /// Offsets of the words in `bytes` that hold an offset from the start
+    /// (its block pointers): the copy's address is added to each.
+    pub rebase: Vec<u32>,
+    /// New raw blocks, each with the offset in `bytes` of the word that
+    /// takes its raw pointer (an image's LOD pointer).
+    pub raw: Vec<MovedRaw>,
+}
+
+/// A new raw block for a moved tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MovedRaw {
+    pub bytes: Vec<u8>,
+    /// Alignment in the file, a power of two up to 0x1000.
+    pub align: u32,
+    /// Offset in [`TagMove::bytes`] of the pointer word.
+    pub pointer: u32,
+}
+
 /// What the Modeling tool hands the save (docs/editor/modeling-targets.md,
 /// "The session and the save"): tag patches in the ordinary metadata and
 /// BSP regions, raw block patches, new raw blocks, or the reason it cannot
@@ -252,6 +284,9 @@ pub struct GeometryChanges {
     pub raw_patches: Vec<RawPatch>,
     pub raw_appends: Vec<RawAppend>,
     pub grown: Vec<GeometryGrown>,
+    /// Tags written whole to a new place (the Textures tool's grown
+    /// bitmaps).
+    pub moved: Vec<TagMove>,
     pub refusal: Option<String>,
 }
 
@@ -775,6 +810,9 @@ impl Scenario {
         out.patches.extend(self.bitmap.patches.iter().cloned());
         out.raw_patches.extend(self.bitmap.raw_patches.iter().cloned());
         out.raw_appends.extend(self.bitmap.raw_appends.iter().cloned());
+        out.geometry_grown.extend(self.bitmap.grown.iter().cloned());
+        out.tag_moves.extend(self.geometry.moved.iter().cloned());
+        out.tag_moves.extend(self.bitmap.moved.iter().cloned());
         out.bitmap_refusal = self.bitmap.refusal.clone();
         for b in &self.blocks {
             let root = self.address + b.def.offset;
@@ -909,6 +947,11 @@ impl Scenario {
             let (a, e) = (u64::from(*a), u64::from(*a) + b.len() as u64);
             a < hi && lo < e
         }) {
+            return Err(Error::Refused(
+                "the scenario tag's bytes belong to the Scenario tool",
+            ));
+        }
+        if changes.moved.iter().any(|m| m.tag == self.tag) {
             return Err(Error::Refused(
                 "the scenario tag's bytes belong to the Scenario tool",
             ));

@@ -57,7 +57,7 @@ use input::host::HostPadState;
 use super::feel::{Rng, reached};
 use super::order::Asked;
 use super::{Mind, RouteMotion, Vec3, angles, dist_xy};
-use crate::bounce_route::chain::{self, Engine, Leg};
+use crate::bounce_route::chain::{self, Ballistic, Leg};
 use crate::bounce_route::{
     Mode, Pairing, Step, TAKEOFF_EARLY, approach, flown, launch_floor, pair_site, path_length,
     prime_start,
@@ -148,15 +148,10 @@ pub const FUMBLE_EARLY: (f32, f32) = (0.15, 0.30);
 pub const FUMBLE_LATE: (f32, f32) = (0.10, 0.20);
 pub const FUMBLE_LETGO: (f32, f32) = (0.15, 0.30);
 /// Of the sites a chain's next link can be, it takes one of the this
-/// many easiest (the flight net's order), another site than the one it is
-/// off this share of the time.
+/// many easiest (least steering), another site than the one it is off
+/// this share of the time.
 pub const CHAIN_EASIEST: usize = 3;
 pub const CHAIN_ELSEWHERE: f32 = 0.75;
-/// With no proven site in reach, a chain goes on this share as often as
-/// with one: the bounce search finds most scanned seams fragile, bouncing
-/// on a few percent of its trials
-/// (docs/game/notes/2026-11-23-ascension-bounce-search.md).
-pub const CHAIN_LIKELY: f32 = 0.25;
 /// Sites a pick pairs with a crouch spot at most (each up to two walks a
 /// crouch spot, of [`crate::bounce_route::PAIR_CROUCHES`]); the rest wait for the
 /// next pick, [`PAIRING_PAUSE`] later.
@@ -415,9 +410,6 @@ pub struct Practice {
     /// The chain's links for the route about to be planned
     /// ([`Practice::take_chain`]).
     chain: Vec<Site>,
-    /// The flight net over the bot's sites ([`chain::Net`]), made once for
-    /// the sites in [`net_key`].
-    net: Option<(u64, chain::Net)>,
     /// Its last step aside (tick).
     aside_at: Option<u32>,
 }
@@ -526,22 +518,6 @@ fn stand_key(p: Vec3) -> [u32; 3] {
     p.map(f32::to_bits)
 }
 
-/// What a flight net was made for: every number of a site a leg reads
-/// (its place, target, launch, need, whether it plays and is proven).
-fn net_key(sites: &[Site]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    sites.len().hash(&mut h);
-    for s in sites {
-        stand_key(s.bounce.stand).hash(&mut h);
-        stand_key(s.target()).hash(&mut h);
-        s.launch.to_bits().hash(&mut h);
-        s.need.to_bits().hash(&mut h);
-        (s.plays(), s.proven(), s.arm.is_some()).hash(&mut h);
-    }
-    h.finish()
-}
-
 /// What a map's pairings were made for: the map and its spots.
 fn pairs_key(known: &Known, map: &MapData) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -602,7 +578,6 @@ impl Practice {
             retry: false,
             fumble: None,
             chain: Vec::new(),
-            net: None,
             aside_at: None,
         }
     }
@@ -1244,45 +1219,25 @@ fn aside_to(at: Vec3, dir: [f32; 2]) -> Vec3 {
 }
 
 /// Picks the next link of a chain off `from` from the sites its launch
-/// reaches (`near`, a flight net's row: proven first, then the easiest).
-/// Proven sites are the links it relies on: with any in reach it picks
-/// among them, with a chance of `go_on`; with none it goes on only
-/// [`CHAIN_LIKELY`] as often, onto a site no run has proved. Either way
-/// one of the [`CHAIN_EASIEST`] easiest of the pool, another site than
-/// `from` [`CHAIN_ELSEWHERE`] of the time when there is one. `None`: no
-/// link.
+/// reaches (`near`, the least steering first): with a chance of `go_on`,
+/// one of the [`CHAIN_EASIEST`] easiest, another site than `from`
+/// [`CHAIN_ELSEWHERE`] of the time when there is one. `None`: no link.
 pub fn chain_pick(
     from: &Site,
     near: &[(Site, Leg)],
     go_on: f32,
     draw: &mut dyn FnMut() -> f32,
 ) -> Option<usize> {
-    if near.is_empty() {
-        return None;
-    }
-    let sure: Vec<usize> = (0..near.len()).filter(|&i| near[i].1.sure).collect();
-    let (pool, chance) = if sure.is_empty() {
-        (
-            (0..near.len()).collect::<Vec<usize>>(),
-            go_on * CHAIN_LIKELY,
-        )
-    } else {
-        (sure, go_on)
-    };
-    if draw() >= chance {
+    if near.is_empty() || draw() >= go_on {
         return None;
     }
     let same = |s: &Site| dist_xy(s.bounce.stand, from.bounce.stand) < 0.05;
-    let elsewhere: Vec<usize> = pool
-        .iter()
-        .copied()
-        .filter(|&i| !same(&near[i].0))
-        .collect();
+    let elsewhere: Vec<usize> = (0..near.len()).filter(|&i| !same(&near[i].0)).collect();
     let pool: Vec<usize> =
-        if !elsewhere.is_empty() && (draw() < CHAIN_ELSEWHERE || elsewhere.len() == pool.len()) {
+        if !elsewhere.is_empty() && (draw() < CHAIN_ELSEWHERE || elsewhere.len() == near.len()) {
             elsewhere
         } else {
-            pool
+            (0..near.len()).collect()
         };
     let n = pool.len().min(CHAIN_EASIEST);
     let i = ((draw() * n as f32) as usize).min(n - 1);
@@ -2070,17 +2025,13 @@ impl Mind {
             (site, None)
         };
         self.practice.fumble = how;
-        let key = net_key(&self.known.sites);
-        if self.practice.net.as_ref().is_none_or(|(k, _)| *k != key) {
-            let net = chain::Net::build(&self.known.sites, &Engine::default());
-            self.practice.net = Some((key, net));
-        }
-        let net = &self.practice.net.as_ref().expect("built above").1;
+        let model = Ballistic::default();
         let go_on = style.chain;
         let rng = &mut self.practice.rng;
         let links = chain::plan(
             &site,
-            net,
+            &self.known.sites,
+            &model,
             chain::LINKS,
             &mut |from: &Site, near: &[(Site, Leg)]| {
                 chain_pick(from, near, go_on, &mut || rng.unit())

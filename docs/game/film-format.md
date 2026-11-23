@@ -32,7 +32,8 @@ The destination must be a new file. Put it in `<data>/films/` or the
 configured `H2_FILM_DIR` for library discovery. Recording starts at boot
 so that a player can reproduce the lobby, menus and the match's initial
 conditions. A multiplayer game-over seals the recording. An orderly exit
-also seals it.
+also seals it. A default recording instead cuts a film at each game's end
+and records on ([One film per game](#one-film-per-game)).
 
 ```sh
 h2 play --film match.h2film --level ascension
@@ -48,36 +49,47 @@ reference must be the version the recorder saw at boot.
 ## Recording every game
 
 `h2 play` records each session into the film library (`H2_FILM_DIR`, or
-`<data>/films`) when no `--film` or `H2_FILM_OUT` names a file. The
-decision and the library rules live in
-`crates/extensions/game/src/theater/autorecord.rs`. `H2_FEATURES=-film-autorecord`
-turns it off.
+`<data>/films`) when no `--film` or `H2_FILM_OUT` names a file. Each game
+the session plays becomes a film of its own in Theater's Recent tab
+([One film per game](#one-film-per-game)). The decision and the library
+rules live in `crates/extensions/game/src/theater/autorecord.rs`.
+`H2_FEATURES=-film-autorecord` turns it off.
 
-- **One film per session.** The film starts at boot, like every film, and
-  seals at the first multiplayer game's end. A campaign session seals when
-  the game exits. A session that plays no game (menus, Theater, settings)
-  leaves no film. Games after the first in the same session are not
-  recorded: a film replays from boot, and the recorder writes no machine
-  keyframe a later film could start from.
-- **Names.** `auto-YYYYMMDD-HHMMSS-mmm.h2film`, the session's UTC start.
-  Recent sorts by the header's start time, newest first.
-- **The library cap.** Before a session records, the library keeps the 24
-  newest unsaved default films, so the new one makes 25, the Recent tab's
-  length. A default film a stopped session left unsealed for an hour is
-  removed. Saved films, films named with `--film` and downloaded archives
-  are never removed. The keyframe cache keeps its own cap,
+- **One film per game.** The session records one tape from boot to exit.
+  Each multiplayer game's end cuts the tape so far into a film whose
+  header describes that game, and recording carries on. At the session's
+  end a game still in play (a campaign mission, a game left running) is
+  cut the same way, and the tape is deleted. A session that plays no game
+  (menus, Theater, settings) leaves no film.
+- **Names.** `auto-YYYYMMDD-HHMMSS-mmm.h2film`, the UTC time the film was
+  written; the running tape takes the session's start. Recent sorts by
+  the header's start time, which for a game's film is its game's start,
+  newest first.
+- **The library cap.** Before each game's film is written, and before a
+  session records, the library keeps the 24 newest unsaved default films,
+  so the new one makes 25, the Recent tab's length. A default film or tape
+  a stopped session left unsealed for an hour is removed. Saved films,
+  films named with `--film` and downloaded archives are never removed. The
+  keyframe cache keeps its own cap,
   [`theater.cache_cap_gib`](settings-menu.md#theater-keyframe-cache).
 - **Player features stay on.** A film named with `--film` turns off Live
-  session links, the Custom Game Browser advertisements, Firefight's
-  director, the rules start gate and editor map reloads while it records.
-  A default recording keeps them, and its header's `player_features` makes
-  the replay install the same features, so both run one plan. Firefight's
+  session links, the Custom Game Browser advertisements and its filters,
+  Firefight's director, the rules start gate, Forge and editor map reloads
+  while it records and when it plays back. A default recording keeps them,
+  and its header's `player_features` makes the replay install the same
+  features, so both run one plan (`registration::non_player` and
+  `registration::local_forge` in `crates/apps/boot/src/registration.rs`
+  read the header, not whether the boot records or replays). Firefight's
   director runs in that replay too. The start gate does not run in any
   replay.
-- **Outside changes discard the film.** A film cannot replay what reaches
+- **One film observer.** A recording session plans the film observer
+  (`theater-film`, `theater::OBSERVER_FEATURE`) beside the in-game
+  Theater's screens (`theater-films`, `theater-film-detail`). No other
+  feature takes its id; `registration/tests.rs` builds that plan.
+- **Outside changes discard the tape.** A film cannot replay what reaches
   the guest from outside its tape. A Live session link joined in the game
-  and the first authorized editor write stop the recording and delete its
-  file. A film sealed by its game's end stays.
+  and the first authorized editor write stop the recording and delete the
+  tape, with the game in play. Films of the games that already ended stay.
 - **Sessions that skip recording.** `h2 play --join URL` (the join comes
   from outside the game), an `h2 lab` job (its frame times stay comparable;
   `H2_FILM_OUT` records one on purpose) and a session with `H2_LOCKSTEP`,
@@ -90,8 +102,8 @@ What Theater's Recent tab shows:
 
 | The game | Recent |
 | --- | --- |
-| Offline, split screen or System Link | The session's default film. |
-| A Live game hosted by a player | The session's default film. Live lists only games with a host film, so this console's film is the only entry. |
+| Offline, split screen or System Link | The game's default film. |
+| A Live game hosted by a player | The game's default film. Live lists only games with a host film, so this console's film is the only entry. |
 | A Live game on a dedicated host | The host's film from the account's archive, when signed in, and this console's default film as a second entry. The default film replays what this console received. |
 
 Recording costs time on every tick. The film checkpoint observer hashes the
@@ -109,6 +121,51 @@ film records, so the recording's hook plan matches its replay: the
 window's loading picture on the return to the menu (`return_to_menu`) and
 the attract-movie guard, which leaves the retail idle timer
 ([Attract timer](../audio/bink-hle.md#attract-timer)).
+
+### One film per game
+
+A film replays from boot, so a film of a session's second game holds the
+first game too. The recorder therefore keeps one tape per session and
+cuts it at each game's end (`State::cut_game` in
+`crates/extensions/game/src/theater.rs`, `autorecord::cut`):
+
+1. The game's closing observations go on the tape's last tick, and the
+   pending HLE call batch is written, as when a film seals.
+2. The tape file is copied as it stands; it holds exactly the bytes
+   written so far, and on APFS the copy is a clone. `film::Writer::fork`
+   continues the copy with the tape's chunk index and time directory.
+3. A cloned track writer closes the copy: the cut's final `HEAD`, the
+   game's `DESC` and summary, `TIDX`, an end mark at this slice, then
+   `CIDX`, `INDX` and the footer. The tape's own writers are untouched and
+   record on.
+4. The tape's local keyframes from the last one before the game's start
+   onwards, with the RAM anchors they encode against, are copied into the
+   cut's keyframe cache (`SidecarWriter::fork`). Their capture marks sit at
+   the same offsets in the cut.
+5. The match description, stats, medals and drop counts start again for
+   the next game. The next game starts once the guest leaves the ended
+   one: a map unload, or a new game whose game-over latch is clear. A
+   multiplayer game left before its end is dropped from the description
+   when the guest leaves its map; its ticks stay on the tape and it never
+   becomes a film.
+
+A cut is an ordinary sealed v3 film whose final header has its own `id`,
+its game's start as `started_ms`, and `tape_id`, the tape's ID. Its boot
+`HEAD` is the tape's, with the tape's ID and start. The reader accepts
+that boot header only when the final header's `tape_id` names it and the
+image stamp and simulator ABI agree; without `tape_id` both headers must
+match the front, as in any film. The front carries the cut's ID, start
+and `match_start_tick`.
+
+Theater opens a cut at its game's start, `match_start_tick`
+(`autorecord::opening_tick`, used by `h2 theater play` when no seek or
+clip is asked for). It seeks there from the copied keyframes, or from
+boot when the cache has none. The timeline still covers the whole tape
+up to the game's end, including the games before it.
+
+A cut written at a game's end stalls the game thread for the copy, the
+seal and the keyframe copy. A cut that fails is logged with
+`theater: could not keep this game's film:` and the tape records on.
 
 ## Unified container, version 3
 
@@ -137,7 +194,9 @@ The front object contains `id`, `image_stamp`, `runtime_stamp`,
 `match_start_tick` and `ticks_per_second`, initial `roster` (seat, name, team and kind), and
 `summary` (level, game type, mode, variant name, duration and player
 results). `final_head` locates the private final machine header for the
-local selector. The menu reads the front, footer and local header
+local selector. A game cut from a session's tape keeps the tape's boot
+`HEAD`, and its final `HEAD` names the tape in `tape_id`
+([One film per game](#one-film-per-game)). The menu reads the front, footer and local header
 regardless of match length. Web reads just the used prefix and JSON.
 Zero padding reserves room for the final scoreboard and may be sparse
 on disk. The recorder writes the footer last. Truncation or an incomplete
@@ -265,6 +324,7 @@ sparse scene checkpoints in `CIDX`.
 | 4 | Hash | Eight little-endian bytes for the post-tick gameplay digest. The reader checks it after the matching tick completes. |
 | 5 | Marker | UTF-8 chapter name. The recording marks its start and the first active map. |
 | 6 | Clock | One ULEB for the current guest match tick, or empty while unavailable. The index mirrors clock discontinuities for clip lookup. |
+| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. The record is private: `film::privacy` never makes it public. |
 
 For tag 1, start each chunk with 16 empty seats. A state begins with a flags
 byte. Bit 0 selects the 18-byte Xbox gamepad, bit 1 the 92-byte retail

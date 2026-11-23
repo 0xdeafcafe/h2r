@@ -1,0 +1,105 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "HaloScript",
+  "scopeName": "source.haloscript",
+  "fileTypes": [
+    "hsc"
+  ],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#global-header" },
+    { "include": "#script-header-typed" },
+    { "include": "#script-header" },
+    { "include": "#script-keyword" },
+    { "include": "#call" },
+    { "include": "#constant" },
+    { "include": "#number" },
+    { "include": "#paren" }
+  ],
+  "repository": {
+    "comment": {
+      "patterns": [
+        {
+          "name": "comment.block.haloscript",
+          "begin": ";\\*",
+          "end": "\\*;",
+          "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.haloscript" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.comment.end.haloscript" } }
+        },
+        {
+          "name": "comment.line.semicolon.haloscript",
+          "match": ";.*$",
+          "captures": { "0": { "name": "punctuation.definition.comment.haloscript" } }
+        }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.haloscript",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.haloscript" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.haloscript" } },
+      "patterns": [
+        {
+          "name": "constant.character.escape.haloscript",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "global-header": {
+      "match": "(\\()\\s*(global)\\s+([^\\s()\";]+)\\s+([^\\s()\";]+)",
+      "captures": {
+        "1": { "name": "punctuation.section.parens.begin.haloscript" },
+        "2": { "name": "keyword.other.haloscript" },
+        "3": { "name": "storage.type.haloscript" },
+        "4": { "name": "variable.other.global.haloscript" }
+      }
+    },
+    "script-header-typed": {
+      "match": "(\\()\\s*(script)\\s+(static|stub)\\s+([^\\s()\";]+)\\s+([^\\s()\";]+)",
+      "captures": {
+        "1": { "name": "punctuation.section.parens.begin.haloscript" },
+        "2": { "name": "keyword.other.haloscript" },
+        "3": { "name": "keyword.other.script-kind.haloscript" },
+        "4": { "name": "storage.type.haloscript" },
+        "5": { "name": "entity.name.function.script.haloscript" }
+      }
+    },
+    "script-header": {
+      "match": "(\\()\\s*(script)\\s+(startup|dormant|continuous|command_script)\\s+([^\\s()\";]+)",
+      "captures": {
+        "1": { "name": "punctuation.section.parens.begin.haloscript" },
+        "2": { "name": "keyword.other.haloscript" },
+        "3": { "name": "keyword.other.script-kind.haloscript" },
+        "4": { "name": "entity.name.function.script.haloscript" }
+      }
+    },
+    "script-keyword": {
+      "match": "(\\()\\s*(global|script)(?![^\\s()\";])",
+      "captures": {
+        "1": { "name": "punctuation.section.parens.begin.haloscript" },
+        "2": { "name": "keyword.other.haloscript" }
+      }
+    },
+    "call": {
+      "match": "(\\()\\s*([^\\s()\";]+)",
+      "captures": {
+        "1": { "name": "punctuation.section.parens.begin.haloscript" },
+        "2": { "name": "entity.name.function.call.haloscript" }
+      }
+    },
+    "constant": {
+      "name": "constant.language.haloscript",
+      "match": "(?<![^\\s()\";])(?:true|false|none)(?![^\\s()\";])"
+    },
+    "number": {
+      "name": "constant.numeric.haloscript",
+      "match": "(?<![^\\s()\";])-?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?![^\\s()\";])"
+    },
+    "paren": {
+      "match": "[()]",
+      "name": "punctuation.section.parens.haloscript"
+    }
+  }
+}

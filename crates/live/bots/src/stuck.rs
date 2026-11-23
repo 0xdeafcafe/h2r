@@ -153,6 +153,13 @@ impl Stuck {
         self.blacklist.push((p, tick.wrapping_add(BLACKLIST_TICKS)));
     }
 
+    /// Where the bot is going in the end, as the last [`Stuck::step`] was
+    /// told; `None` with no goal (the sim's spatial trace,
+    /// docs/runtime/sim.md).
+    pub fn goal(&self) -> Option<Vec3> {
+        self.goal.map(|(g, _, _)| g)
+    }
+
     /// The points still blacklisted at `tick`.
     pub fn blacklisted(&self, tick: u32) -> impl Iterator<Item = Vec3> + '_ {
         self.blacklist

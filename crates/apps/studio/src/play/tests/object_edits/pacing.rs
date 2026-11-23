@@ -46,7 +46,7 @@ fn start_drag(play: &mut Play, app: &mut App, position: [f32; 3]) -> Instant {
     app.session.gesture_set(position, [0.; 3]).unwrap();
     // The first field batch is due on the next editor frame.
     let now = Instant::now();
-    play.next_push = now;
+    play.next_push = Some(now);
     fresh_capture(app, now);
     now
 }

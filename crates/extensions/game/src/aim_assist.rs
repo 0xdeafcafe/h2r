@@ -27,6 +27,11 @@
 //! retail back) and becomes the new retail value. So a reload, a revert or
 //! a change of level never compounds, and Default writes retail back.
 //!
+//! **Live edits.** A field the agent's `edit.*` sets is the value the
+//! user wants: the hot-edit glue's notice ([`tag_written`]) adopts it as
+//! retail, and activations leave it unscaled while it holds the edit's
+//! bits.
+//!
 //! **Multiplayer.** The tag values are shared by every player a machine
 //! simulates, so a multiplayer game (options mode 2) keeps the tags retail
 //! whatever the setting says. The touch player's stronger aim assist there
@@ -181,9 +186,11 @@ pub struct Applied {
     pub writes: u32,
 }
 
-/// The fields we hold changed, keyed by (tag datum, field address).
+/// The fields we hold changed, keyed by (tag datum, field address); and
+/// the fields a live edit set ([`Remembered::adopt`]), with the bits it
+/// left.
 #[derive(Debug, Default)]
-pub struct Remembered(HashMap<(u32, u32), Slot>);
+pub struct Remembered(HashMap<(u32, u32), Slot>, HashMap<(u32, u32), u32>);
 
 impl Remembered {
     /// How many fields are away from retail.
@@ -232,9 +239,11 @@ impl Remembered {
     pub fn apply<M: Gm>(&mut self, m: &mut M, level: Level) -> Applied {
         let f = level.factors();
         let mut next = HashMap::new();
+        let mut edited = HashMap::new();
         let mut out = Applied::default();
         let (Some(entries), Some(index)) = (m.u32(TAG_ENTRIES), m.u32(TAG_INDEX)) else {
             self.0.clear();
+            self.1.clear();
             return out;
         };
         let count = m
@@ -252,7 +261,7 @@ impl Remembered {
                 continue;
             }
             let mut field = |m: &mut M, at: u32, factor: f32, max: f32| {
-                self.settle(m, &mut next, (datum, at), |r| scale(r, factor, max))
+                self.settle(m, &mut next, &mut edited, (datum, at), |r| scale(r, factor, max))
             };
             if group == WEAP && size >= WEAP_MIN_SIZE {
                 out.weapons += 1;
@@ -282,22 +291,73 @@ impl Remembered {
             }
         }
         self.0 = next;
+        self.1 = edited;
         out
+    }
+
+    /// A live edit (the agent's `edit.*`, docs/editor/realtime-edits.md,
+    /// "Realtime coverage") wrote `[start, end)` of tag `datum` of `group`
+    /// at `address`: each aim-assist field there now holds the value in
+    /// force, taken as retail and kept unscaled by the next activations
+    /// while it holds those bits. A field that holds what we wrote (a
+    /// revert put our value back) is ours again. How many fields were
+    /// adopted.
+    pub fn adopt<M: Gm>(&mut self, m: &M, group: u32, datum: u32, address: u32, start: u32, end: u32) -> usize {
+        let mut fields = Vec::new();
+        if group == WEAP {
+            fields.extend([CONE_ANGLE, CONE_RANGE, PULL_ANGLE, PULL_RANGE].map(|o| address.wrapping_add(o)));
+        } else if group == MATG {
+            let pc = address.wrapping_add(MATG_PLAYER_CONTROL);
+            if let (Some(n), Some(at)) = (m.u32(pc), m.u32(pc.wrapping_add(4)))
+                && n <= MAX_PLAYER_CONTROLS
+                && at != 0
+            {
+                for k in 0..n {
+                    let el = at.wrapping_add(k * PLAYER_CONTROL_STRIDE);
+                    fields.extend([el.wrapping_add(SLOWDOWN), el.wrapping_add(FOLLOW)]);
+                }
+            }
+        }
+        let mut adopted = 0;
+        for at in fields {
+            if at < start || at.saturating_add(4) > end {
+                continue;
+            }
+            let Some(cur) = m.u32(at) else { continue };
+            let key = (datum, at);
+            if self.0.get(&key).is_some_and(|s| s.written == cur) {
+                self.1.remove(&key);
+            } else {
+                self.1.insert(key, cur);
+                adopted += 1;
+            }
+        }
+        adopted
     }
 
     /// One field: its retail value (remembered if it still holds what we
     /// wrote, else what it holds now), scaled, written if it differs.
-    /// Returns whether the bytes changed.
+    /// A field a live edit set and that still holds the edit's bits is
+    /// left as it is. Returns whether the bytes changed.
     fn settle<M: Gm>(
         &self,
         m: &mut M,
         next: &mut HashMap<(u32, u32), Slot>,
+        edited: &mut HashMap<(u32, u32), u32>,
         key: (u32, u32),
         scaled: impl Fn(f32) -> f32,
     ) -> bool {
         let Some(cur) = m.u32(key.1) else {
             return false;
         };
+        if self.1.get(&key) == Some(&cur) {
+            edited.insert(key, cur);
+            // Kept for a revert to tell our value from the edit's.
+            if let Some(s) = self.0.get(&key) {
+                next.insert(key, *s);
+            }
+            return false;
+        }
         let retail = match self.0.get(&key) {
             Some(s) if s.written == cur => s.retail,
             _ => cur,
@@ -338,6 +398,17 @@ pub fn snapshot_live(per_player: &player::PerPlayer) -> Option<String> {
         .then(|| "the touch player's aim assist window is open".into())
 }
 
+/// The running feature's memory, for [`tag_written`].
+static LIVE: Mutex<Option<Arc<Mutex<Remembered>>>> = Mutex::new(None);
+
+/// The hot-edit glue's notice of a `weap` or `matg` write: the edited
+/// aim-assist fields are adopted ([`Remembered::adopt`]). Nothing when the
+/// feature is not installed.
+pub fn tag_written<M: Gm>(m: &M, group: u32, datum: u32, address: u32, start: u32, end: u32) -> usize {
+    let live = LIVE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    live.map_or(0, |r| r.lock().unwrap_or_else(|e| e.into_inner()).adopt(m, group, datum, address, start, end))
+}
+
 /// The activation hook and what it remembers.
 pub struct AimAssist {
     setting: Setting<i64>,
@@ -364,6 +435,7 @@ impl hooks::Feature for AimAssist {
         use hooks::points::GAME_ACTIVATE;
         let setting = self.setting.clone();
         let remembered = Arc::clone(&self.remembered);
+        *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&remembered));
         b.raw()
             .before(&GAME_ACTIVATE, "weapon aim assist", move |c| {
                 let rt = Arc::clone(c.ctx.runtime());

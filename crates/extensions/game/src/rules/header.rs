@@ -101,8 +101,8 @@ mod tests {
     }
 
     /// The Superbounce and Bounce Practice scripts ask for the mode and
-    /// list under Research and Devolution; no port and no other example
-    /// does either.
+    /// list under Research and Devolution; Gun Game, Siege, Race and VIP
+    /// list under Party Games. No port and no other example does either.
     #[test]
     fn only_the_bounce_scripts_ask_for_the_mode_and_a_row() {
         let sb = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
@@ -110,15 +110,18 @@ mod tests {
         assert!(asks_superbounce(&sb));
         assert!(asks_superbounce(&practice));
         assert_eq!(list_row(&sb.header), Some(Row::Research));
+        assert_eq!(list_row(&practice.header), Some(Row::Research));
         for b in runtime::builtins().iter().chain(runtime::examples()) {
             let (ir, _) = ::rules::verify::load(&b.blob).unwrap();
             let asks = ir.id() == sb.id() || ir.id() == practice.id();
             assert_eq!(asks_superbounce(&ir), asks, "{}", ir.header.name);
-            let row = (ir.id() == sb.id()).then_some(Row::Research);
-            if ir.id() != practice.id() {
-                assert_eq!(list_row(&ir.header), row, "{}", ir.header.name);
-                assert_eq!(block_row(&rules_block(prefix(b))), row, "{}", ir.header.name);
-            }
+            let row = match ir.header.name.as_str() {
+                "Superbounce" | "Bounce Practice" => Some(Row::Research),
+                "Gun Game" | "Siege" | "Race" | "VIP" => Some(Row::PartyGames),
+                _ => None,
+            };
+            assert_eq!(list_row(&ir.header), row, "{}", ir.header.name);
+            assert_eq!(block_row(&rules_block(prefix(b))), row, "{}", ir.header.name);
         }
         assert!(runtime::examples().iter().any(|b| b.id == sb.id()));
         // A block with no script, and one naming a script not here.

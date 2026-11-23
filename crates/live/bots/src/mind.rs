@@ -10,7 +10,7 @@
 use input::host::{HostButton, HostPadState};
 
 use crate::arms::{self, Kit, Situation};
-use crate::brain::{Perception, Seen, Vec3};
+use crate::brain::{Me, Perception, Seen, Vec3};
 use crate::cache::MapData;
 use crate::decisions::{Decisions, Fight, Posture};
 use crate::incoming::{Evasion, Grenade};
@@ -171,10 +171,27 @@ pub const GRENADE_COOLDOWN: u32 = crate::grenades::COOLDOWN;
 pub const CROUCH: HostButton = HostButton::LeftStick;
 
 /// Shields under this: back off in a fight and do not chase
-/// (section 3.3)...
+/// (section 3.3, a fraction of the full shield, [`relative_shield`])...
 pub const LOW_SHIELD: f32 = 0.25;
 /// ...until they are back to this.
 pub const SHIELD_BACK: f32 = 0.9;
+/// A full shield under this is none: the variant gives no shields.
+pub const NO_SHIELD: f32 = 0.05;
+
+/// `me` with its shield as a fraction of its full shield
+/// ([`Me::shield_full`]), so the shield thresholds mean the same under a
+/// handicap or a variant with less shield. An overshield stays above 1.
+/// With no shields (full under [`NO_SHIELD`]) the body's vitality stands
+/// in, so the bot still backs off when hurt and comes back when healed
+/// (docs/game/bots.md §3.3, "Full shield").
+pub(crate) fn relative_shield(mut me: Me) -> Me {
+    me.shield = if me.shield_full < NO_SHIELD {
+        me.health
+    } else {
+        me.shield / me.shield_full.min(1.0)
+    };
+    me
+}
 /// No enemy in view for this long is calm: reloads, detours for
 /// ammunition.
 pub const CALM_TICKS: u32 = 45;
@@ -767,6 +784,9 @@ impl Mind {
             .vitality
             .is_some_and(|(shield, health)| me.shield < shield || me.health < health);
         self.vitality = Some((me.shield, me.health));
+        // Every shield threshold below reads a fraction of the full shield,
+        // which a handicap or the variant's shields can make less than 1.
+        let me = relative_shield(me);
         if took_damage {
             let quiet = self
                 .damage_tick

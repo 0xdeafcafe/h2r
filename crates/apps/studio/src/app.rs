@@ -7,11 +7,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub mod announcer;
 pub mod audition;
 pub mod bot_nav;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
+pub mod kinds;
+pub mod live;
+pub mod image_gen;
 mod editing;
 mod library;
 mod navigation;
@@ -19,6 +23,7 @@ pub mod map_cards;
 pub mod map_pack;
 pub mod modeling;
 pub mod playtest_static;
+pub mod external;
 pub mod rules_edit;
 pub mod scripts;
 pub mod shared_refs;
@@ -29,6 +34,7 @@ pub mod tag_doc;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
+pub mod voices;
 pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
@@ -265,6 +271,9 @@ pub enum Action {
     Model(modeling::ModelAction),
     /// A Textures command: select, paint, fill, import, export, undo.
     Bitmap(textures::BitmapAction),
+    /// Image generation: open the Generate window, generate, apply,
+    /// accept, discard (`app::image_gen`).
+    Image(image_gen::ImageAction),
     /// Show another tool.
     SetTool(ToolKind),
 
@@ -545,10 +554,17 @@ pub struct App {
     pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The fan-out of every write to the Preview, the own game and an
+    /// attached game (docs/editor/live-editors.md).
+    pub live: live::Fanout,
     /// The Modeling tool: the open map's geometry session.
     pub modeling: modeling::Modeling,
     /// The Textures tool: the open map's bitmaps and their edits.
     pub textures: textures::Textures,
+    /// Image generation's jobs and source (`crate::imagegen`).
+    pub imagegen: crate::imagegen::ImageGen,
+    /// The Generate window (`app::image_gen`).
+    pub image_panel: image_gen::Panel,
     /// How the field panel shows unnamed fields, saved with the layout
     /// (`fields::Settings`).
     pub tag_fields: crate::fields::Settings,
@@ -566,6 +582,10 @@ pub struct App {
     pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
     /// Sound audition: the decoded sound, the audio output and what plays.
     pub audition: audition::Audition,
+    /// The Announcer: its voice source and the last line made.
+    pub announcer: announcer::Announcer,
+    /// Voices: the clone's datasets, jobs and sidecar (`voices`).
+    pub voices: voices::Voices,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
 }
@@ -628,8 +648,11 @@ impl App {
             scripts: ScriptsTool::default(),
             pairing: Default::default(),
             tags: TagDoc::default(),
+            live: Default::default(),
             modeling: Default::default(),
             textures: Default::default(),
+            imagegen: Default::default(),
+            image_panel: Default::default(),
             tag_fields: Default::default(),
             tag_homes: Default::default(),
             tag_browse: None,
@@ -638,6 +661,8 @@ impl App {
             last_tag_export: None,
             last_tag_import: None,
             audition: Default::default(),
+            announcer: Default::default(),
+            voices: Default::default(),
             rules: Default::default(),
         }
     }
@@ -650,6 +675,13 @@ impl App {
         self.data_root = Some(root);
         self.variants_for = None;
         self.refresh_packages();
+    }
+
+    /// The runtime data root: `--data`, else the default one.
+    pub fn data_root(&self) -> PathBuf {
+        self.data_root
+            .clone()
+            .unwrap_or_else(content::store::default_data_root)
     }
 
     pub fn source(&self) -> Option<&MapSource> {
@@ -1150,6 +1182,7 @@ impl App {
             Action::SetAllowUnverifiedGeometry(allow) => self.set_allow_unverified_geometry(allow),
             Action::Model(a) => self.run_model(a),
             Action::Bitmap(a) => self.run_bitmap(a),
+            Action::Image(a) => self.run_image(a),
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {

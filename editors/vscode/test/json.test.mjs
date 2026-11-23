@@ -29,9 +29,25 @@ const LEGEND = [
   'capability',
 ];
 
+// crates/formats/hs/src/ide/mod.rs, LEGEND.
+const HS_LEGEND = [
+  'keyword',
+  'type',
+  'function',
+  'method',
+  'macro',
+  'variable',
+  'enumMember',
+  'string',
+  'number',
+  'comment',
+  'parameter',
+];
+
 const jsonFiles = [
   'package.json',
   'language-configuration.json',
+  'haloscript-language-configuration.json',
   'tsconfig.json',
   ...readdirSync(join(root, 'syntaxes'))
     .filter((f) => f.endsWith('.json'))
@@ -44,6 +60,8 @@ const jsonFiles = [
 test('every JSON file parses', () => {
   assert.ok(jsonFiles.includes('syntaxes/rules.tmLanguage.json'));
   assert.ok(jsonFiles.includes('snippets/rules.json'));
+  assert.ok(jsonFiles.includes('syntaxes/haloscript.tmLanguage.json'));
+  assert.ok(jsonFiles.includes('haloscript-language-configuration.json'));
   for (const f of jsonFiles) {
     assert.doesNotThrow(() => read(f), f);
   }
@@ -95,6 +113,35 @@ test('the language configuration behaves', () => {
   assert.ok(!start.test('// endregion'));
 });
 
+test('the HaloScript language configuration compiles and behaves', () => {
+  const conf = read('haloscript-language-configuration.json');
+  for (const p of [
+    conf.wordPattern,
+    conf.indentationRules.increaseIndentPattern,
+    conf.indentationRules.decreaseIndentPattern,
+  ]) {
+    assert.doesNotThrow(() => new RegExp(p), p);
+    assert.doesNotThrow(() => new RegExp(p, 'u'), p);
+  }
+  assert.equal(conf.comments.lineComment, ';');
+  assert.deepEqual(conf.comments.blockComment, [';*', '*;']);
+  assert.deepEqual(conf.brackets, [['(', ')']]);
+  const inc = new RegExp(conf.indentationRules.increaseIndentPattern);
+  const dec = new RegExp(conf.indentationRules.decreaseIndentPattern);
+  assert.ok(inc.test('(script startup main'));
+  assert.ok(inc.test('  (begin (invented_print "hi")'));
+  assert.ok(!inc.test('(global short count 3)'));
+  assert.ok(!inc.test('  (sleep 30))'));
+  assert.ok(!inc.test('; (a comment'));
+  assert.ok(dec.test('  )'));
+  assert.ok(!dec.test('  (x)'));
+  const word = new RegExp(`^(?:${conf.wordPattern})$`);
+  for (const w of ['door_open', 'ai_place', '-30', '1.5', 'a.b']) {
+    assert.ok(word.test(w), w);
+  }
+  assert.ok(!word.test('(x'));
+});
+
 test('semanticTokenScopes cover the server legend', () => {
   const pkg = read('package.json');
   const entry = pkg.contributes.semanticTokenScopes.find((s) => s.language === 'rules');
@@ -110,13 +157,27 @@ test('semanticTokenScopes cover the server legend', () => {
   assert.deepEqual(custom, ['api', 'capability', 'label']);
 });
 
+test('HaloScript semanticTokenScopes cover the server legend', () => {
+  const pkg = read('package.json');
+  const entry = pkg.contributes.semanticTokenScopes.find((s) => s.language === 'haloscript');
+  assert.ok(entry, 'a semanticTokenScopes entry for haloscript');
+  assert.deepEqual(Object.keys(entry.scopes).sort(), [...HS_LEGEND].sort());
+  for (const name of HS_LEGEND) {
+    const scopes = entry.scopes[name];
+    assert.ok(Array.isArray(scopes) && scopes.length > 0, `semantic token ${name} has scopes`);
+    for (const s of scopes) {
+      assert.ok(s.endsWith('.haloscript'), `${name}: ${s}`);
+    }
+  }
+});
+
 test('the manifest is consistent', () => {
   const pkg = read('package.json');
   assert.equal(pkg.name, 'h2-rules');
   assert.equal(pkg.publisher, 'h2recomp');
   assert.equal(pkg.license, 'WTFPL');
   assert.equal(pkg.main, './out/extension.js');
-  assert.deepEqual(pkg.activationEvents, ['onLanguage:rules']);
+  assert.deepEqual(pkg.activationEvents, ['onLanguage:rules', 'onLanguage:haloscript']);
   const lang = pkg.contributes.languages.find((l) => l.id === 'rules');
   assert.deepEqual(lang.extensions, ['.rules']);
   const grammar = pkg.contributes.grammars.find((g) => g.language === 'rules');
@@ -126,11 +187,33 @@ test('the manifest is consistent', () => {
   for (const s of pkg.contributes.snippets) {
     read(s.path.replace(/^\.\//, ''));
   }
+  const hsLang = pkg.contributes.languages.find((l) => l.id === 'haloscript');
+  assert.deepEqual(hsLang.extensions, ['.hsc']);
+  read(hsLang.configuration.replace(/^\.\//, ''));
+  const hsGrammar = pkg.contributes.grammars.find((g) => g.language === 'haloscript');
+  assert.equal(hsGrammar.scopeName, 'source.haloscript');
+  assert.equal(read(hsGrammar.path.replace(/^\.\//, '')).scopeName, 'source.haloscript');
   const commands = pkg.contributes.commands.map((c) => c.command).sort();
-  assert.deepEqual(commands, ['h2rules.restartServer', 'h2rules.showOutput']);
+  assert.deepEqual(commands, [
+    'h2hs.restartServer',
+    'h2hs.showInStudio',
+    'h2hs.showUses',
+    'h2rules.reloadInGame',
+    'h2rules.restartServer',
+    'h2rules.runScenario',
+    'h2rules.showOutput',
+  ]);
+  // Every menu entry names a command and is limited to one language.
+  for (const menu of ['editor/context', 'commandPalette']) {
+    for (const item of pkg.contributes.menus[menu]) {
+      assert.ok(commands.includes(item.command), item.command);
+      assert.match(item.when, /^editorLangId == (rules|haloscript)$/, item.command);
+    }
+  }
   const props = pkg.contributes.configuration.properties;
   assert.equal(props['h2rules.serverPath'].default, '');
   assert.deepEqual(props['h2rules.trace.server'].enum, ['off', 'messages', 'verbose']);
+  assert.deepEqual(props['h2hs.trace.server'].enum, ['off', 'messages', 'verbose']);
   // vsce refuses @types/vscode newer than engines.vscode.
   const engine = pkg.engines.vscode.replace(/^[\^~]/, '');
   const types = pkg.devDependencies['@types/vscode'].replace(/^[\^~]/, '');
@@ -158,6 +241,28 @@ test('every grammar regex is a string', () => {
         if (key in node) {
           for (const part of node[key].split(' ')) assert.ok(part.endsWith('.rules'), part);
         }
+      }
+      Object.values(node).forEach(walk);
+    }
+  };
+  walk(grammar.repository);
+  walk(grammar.patterns);
+});
+
+test('every HaloScript grammar regex is a string', () => {
+  const grammar = read('syntaxes/haloscript.tmLanguage.json');
+  const walk = (node) => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+    } else if (node && typeof node === 'object') {
+      for (const key of ['match', 'begin', 'end']) {
+        if (key in node) {
+          assert.equal(typeof node[key], 'string', key);
+          assert.doesNotThrow(() => new RegExp(node[key]), node[key]);
+        }
+      }
+      if (typeof node.name === 'string') {
+        for (const part of node.name.split(' ')) assert.ok(part.endsWith('.haloscript'), part);
       }
       Object.values(node).forEach(walk);
     }

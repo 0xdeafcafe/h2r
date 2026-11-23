@@ -213,7 +213,22 @@ fn errors_stop_at_fifty() {
 
 #[test]
 fn the_label_table_carries_the_declarations_in_order() {
-    let ir = compile(builtin::SIEGE).unwrap();
+    // Each kind of declaration once: numbered objects, numbered spawns in a
+    // range, a renamed numbered zone, a single object and a single zone
+    // (unused labels only warn).
+    let ir = compile(&script(
+        "",
+        "const last_phase = 2
+label barrier: objects numbered
+label attack: spawns numbered 0..last_phase
+label defend: spawns numbered 0..last_phase
+label capture: zones numbered 0..1 = \"zone\"
+label core: object
+label goal: zone
+on tick { }
+",
+    ))
+    .unwrap();
     let texts: Vec<&str> = ir.labels.iter().map(|l| l.text.as_str()).collect();
     assert_eq!(texts, ["barrier", "attack", "defend", "zone", "core", "goal"]);
     let barrier = &ir.labels[0];
@@ -631,7 +646,6 @@ on kill(victim, killer) {
 #[test]
 fn the_builtins_use_time_constants_and_match() {
     assert!(builtin::SIEGE.contains("option capture_time: time"));
-    assert!(builtin::SIEGE.contains("const last_phase"));
     assert!(builtin::ODDBALL.contains("player var held: time"));
     assert!(builtin::VIP.contains("match victim.role"));
     assert!(builtin::KING.contains("fn rival(a: player, b: player) -> bool ="));
@@ -639,7 +653,7 @@ fn the_builtins_use_time_constants_and_match() {
     // A time option's label carries its unit in the blob.
     let siege = compile(builtin::SIEGE).unwrap();
     let labels: Vec<&str> = siege.options.iter().map(|o| siege.strings[o.label as usize].as_str()).collect();
-    assert_eq!(labels, ["Phase time (seconds)", "Capture time (seconds)", "Respawn wave (seconds)"]);
+    assert_eq!(labels, ["Phase time (seconds)", "Capture time (seconds)", "Sites"]);
 }
 
 // ---- settings, quick marks and the scorer ----

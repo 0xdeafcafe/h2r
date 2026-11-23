@@ -27,7 +27,7 @@ struct Block {
     identity_sha256: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Directory {
     blocks: Vec<Block>,
     keyframes: Vec<Block>,
@@ -56,7 +56,9 @@ fn validate_summary(summary: &Summary) -> Result<()> {
     Ok(())
 }
 
-#[derive(Default)]
+/// Cloned when a running tape is cut into a game's film: the clone closes
+/// the cut and the original keeps recording.
+#[derive(Clone, Default)]
 pub struct TrackWriter {
     pending: Vec<Tick>,
     extra: Vec<unified::TickRecords>,

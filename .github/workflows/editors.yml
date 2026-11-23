@@ -1,8 +1,8 @@
 name: Editors
 
-# The rules language's editor support (docs/editor/rules-editors.md): the
-# tree-sitter grammar, the VS Code extension, the Zed extension and the
-# language server they start. A push to master also attaches the .vsix and
+# The rules language's and HaloScript's editor support
+# (docs/editor/rules-editors.md): the tree-sitter grammar, the VS Code
+# extension, the Zed extension and the language servers they start. A push to master also attaches the .vsix and
 # the Zed extension to the rolling `editors-latest` release, which
 # `h2 rules editors install` downloads when no local build exists
 # (crates/apps/h2-tools/src/rules_editors.rs, EDITORS_RELEASE).
@@ -14,6 +14,9 @@ on:
       - "editors/**"
       - "crates/formats/rules/src/ide/**"
       - "crates/apps/h2-tools/src/rules_lsp.rs"
+      - "crates/formats/hs/src/ide/**"
+      - "crates/apps/h2-tools/src/hs_lsp.rs"
+      - "crates/apps/h2-tools/src/studio_link.rs"
       - "crates/apps/h2-tools/src/rules_editors.rs"
       - ".github/workflows/editors.yml"
   pull_request:
@@ -21,6 +24,9 @@ on:
       - "editors/**"
       - "crates/formats/rules/src/ide/**"
       - "crates/apps/h2-tools/src/rules_lsp.rs"
+      - "crates/formats/hs/src/ide/**"
+      - "crates/apps/h2-tools/src/hs_lsp.rs"
+      - "crates/apps/h2-tools/src/studio_link.rs"
       - "crates/apps/h2-tools/src/rules_editors.rs"
       - ".github/workflows/editors.yml"
   workflow_dispatch:
@@ -139,8 +145,14 @@ jobs:
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - name: rules::ide
         run: cargo test --locked -p rules --lib ide
+      - name: hs::ide
+        run: cargo test --locked -p hs --lib ide
       - name: h2 rules lsp and h2 rules editors
         run: cargo test --locked -p h2-tools --bin h2-tools rules_
+      - name: h2 hs lsp and the Studio link
+        run: |
+          cargo test --locked -p h2-tools --bin h2-tools hs_lsp
+          cargo test --locked -p h2-tools --bin h2-tools studio_link
 
   # Master only: the rolling release `h2 rules editors install` downloads
   # from. The tag moves to this commit; the assets are replaced.

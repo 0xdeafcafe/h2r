@@ -1,0 +1,7 @@
+# The f5-mlx backend of Studio's voice sidecar (voice_clone.py): F5-TTS on
+# MLX, and the local Whisper. Apple Silicon only. docs/editor/voice-cloning.md.
+f5-tts-mlx
+mlx-whisper
+huggingface_hub
+numpy
+soundfile

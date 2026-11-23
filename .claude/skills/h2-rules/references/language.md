@@ -218,11 +218,11 @@ a host refuse the script) or `vm`.
 | `squad_alive(s)` | squad -> int | named |
 | `carrier_of(o)` | object -> player | named |
 | `zone_seen(o)`, `zone_distance(o)` | object -> bool, int | named (Firefight's `ff_drop` zones) |
-| `object_team(o)` | object -> team | traced |
-| `player_of(o)` | object -> player | traced |
-| `label_number(o)`, `zone_id(o)` | object -> int | not built |
-| `ticks_held(o, t)` | object, team -> time | vm, not built on a host (below) |
-| `inside(p, o)` | player, object -> bool | not built |
+| `object_team(o)` | object -> team | named |
+| `player_of(o)` | object -> player | named |
+| `label_number(o)`, `zone_id(o)` | object -> int | named |
+| `ticks_held(o, t)` | object, team -> time | vm (below) |
+| `inside(p, o)` | player, object -> bool | named (the host's zone test, below) |
 
 The field forms (`p.score`, `o.number`, `o.id`, `o.carrier`,
 `o.team`, `s.alive`) call these.
@@ -230,8 +230,11 @@ The field forms (`p.score`, `o.number`, `o.id`, `o.carrier`,
 `ticks_held(zone, team)` is counted by the VM: from the first tick the
 script names the zone, each tick the team holds it alone adds one. The
 counts clear at the round's end; at most 32 zones are counted. `none` or
-a team out of range reads 0. A host refuses a script that calls it until
-the host has a zone test; a scenario's fake game answers it.
+a team out of range reads 0. On a host the zone test is
+`game::rules::world::zones`: a labelled flag is an upright cylinder
+(radius 1.0, 0.5 under to 1.5 over), and three or more flags sharing a
+label and a number (a hill's corners) are one polygon. A scenario's fake
+game answers it from its `enter` and `leave` events.
 
 ## Entries: actions
 
@@ -247,7 +250,7 @@ the host has a zone test; a scenario's fake game answers it.
 | `role_traits` | player, bool | core | now | untraced |
 | `set_gravity` | fixed | `game.traits` | now | named |
 | `set_team` | player, team | `player.team` | now | untraced |
-| `set_loadout` | player, tag, tag | `player.weapons` | now | traced |
+| `set_loadout` | player, tag, tag | `player.weapons` | now | named (the multiplayer weapon list's tags only, `rules::weapons`) |
 | `give` | player, tag | `player.weapons` | now | untraced |
 | `take` | player, object | `player.weapons` | now | traced |
 | `create` | tag, object | `objects.create` | queued | traced |

@@ -424,7 +424,14 @@ pub fn install(
                 })
             },
         )
-        .first();
+        .first()
+        // Inside the agent's calls, the skulls', the map select's, the dedicated
+        // lobby's and the HUD kit's, which run the tick again.
+        .after_feature(agent::sim::calls::FEATURE)
+        .after_feature(crate::skulls_custom::FEATURE)
+        .after_feature(crate::map_select::FEATURE)
+        .after_feature("host-lobby")
+        .after_feature(crate::hud_kit::FEATURE);
     state
 }
 

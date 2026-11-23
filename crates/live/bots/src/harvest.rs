@@ -67,22 +67,15 @@ fn read_text(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
-/// A verified file's entries. One of an older version
-/// (`verified::older`) is none: not converted, and replaced when the
-/// shared file is written. Any other that does not read is an error.
 fn read_verified(path: &Path) -> Result<Vec<Entry>, String> {
     match read_text(path)? {
-        Some(t) if verified::older(&t).is_some() => Ok(Vec::new()),
         Some(t) => verified::parse(&t).map_err(|e| format!("{}: {e}", path.display())),
         None => Ok(Vec::new()),
     }
 }
 
-/// A ghosts file's runs, as [`read_verified`] reads a verified file: an
-/// older version's is none, and replaced when the shared file is written.
 fn read_ghosts(path: &Path) -> Result<Vec<Ghost>, String> {
     match read_text(path)? {
-        Some(t) if ghost::older(&t).is_some() => Ok(Vec::new()),
         Some(t) => ghost::parse(&t).map_err(|e| format!("{}: {e}", path.display())),
         None => Ok(Vec::new()),
     }
@@ -115,10 +108,8 @@ enum Owned {
 /// not beat (`ghost::offer`); for each `<map>.learned` in `end`, the lines
 /// it changed over `start`'s copy, each kept where it beats the shared
 /// line about its site (`learned::merge`). With `write` false nothing is
-/// written: what it would add. A verified or ghosts file of an older
-/// version reads as empty, so a shared one is replaced by what the run
-/// adds. A damaged file is an error naming it, and nothing of that file
-/// is written.
+/// written: what it would add. A damaged file is an error naming it, and
+/// nothing of that file is written.
 pub fn harvest_run(
     start: &Path,
     end: &Path,
@@ -285,38 +276,6 @@ mod tests {
         );
         // Again: nothing new.
         assert!(harvest_run(&start, &end, &into, false).unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A shared verified file of an older version (v1: positions read at
-    /// the bounding sphere's centre) is replaced by what a run adds; a
-    /// damaged shared file of this version stops the harvest of that file
-    /// and is not written over.
-    #[test]
-    fn an_older_shared_file_is_replaced_and_a_damaged_one_is_not() {
-        let root = dir("older");
-        let (start, end, into) = (root.join("start"), root.join("end"), root.join("bots"));
-        for d in [&start, &end, &into] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        let file = "zanzibar.verified";
-        let v1 = "# superbounce verified v1\nbounce proven 1.000 0.000 0.400 trials=3 ok=1\n";
-        // The run's start copy is the old file too: it reads as empty.
-        std::fs::write(start.join(file), v1).unwrap();
-        std::fs::write(into.join(file), v1).unwrap();
-        let mine = entry([5.0, 0.0, 0.0], Status::Proven);
-        std::fs::write(end.join(file), verified::to_text(&[mine])).unwrap();
-        let got = harvest_run(&start, &end, &into, true).unwrap();
-        assert_eq!((got.len(), got[0].verified), (1, 1));
-        let text = std::fs::read_to_string(into.join(file)).unwrap();
-        assert!(text.starts_with(verified::HEADER), "{text}");
-        assert_eq!(read_verified(&into.join(file)).unwrap(), vec![mine]);
-
-        let damaged = format!("{}\nbounce maybe 1 2 3\n", verified::HEADER);
-        std::fs::write(into.join(file), &damaged).unwrap();
-        let e = harvest_run(&start, &end, &into, true).unwrap_err();
-        assert!(e.contains("line 2"), "{e}");
-        assert_eq!(std::fs::read_to_string(into.join(file)).unwrap(), damaged);
         let _ = std::fs::remove_dir_all(&root);
     }
 

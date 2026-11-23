@@ -6,7 +6,7 @@ step. Design and status: [docs/live/live-coop.md](../../../docs/live/live-coop.m
 
 | module | what |
 |---|---|
-| `wire` | the one datagram: acknowledgements, plus every pad frame and tick hash not yet acknowledged |
+| `wire` | the one datagram: acknowledgements, plus every pad frame and tick hash not yet acknowledged, a run of the Forge lane's bytes and the Forge beat |
 | `link` | `Link` (an unreliable datagram path), `UdpLink` (direct, XNet base port + 4), `Fallback` (direct, with the relay while direct is silent), `sim_pair` (a simulated link on a fake clock) |
 | `relay` | `RelayLink`: the Live server's `GET /v1/sessions/{id}/relay` as a `Link` |
 | `schedule` | the two-port pad schedule with per-machine input delay |

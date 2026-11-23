@@ -3288,7 +3288,7 @@ are in `crates/extensions/agent/src/hot.rs`, the editor half in
 | `edit.batch` | act | adds `raw: [{owner, offset, bytes, was?}]` and `evict: [owner]`; `writes` may be left out when either is given | adds `raw: [{owner, offset, resident, refresh}]` and `evicted: [owner]` |
 | `edit.raw.append` | act | `{file?, bytes, align?, epoch?, confirm_peers?}` | `{id, pointer, len}` |
 | `edit.stage.put` | act | `{stage?, bytes}` | `{stage, len}` |
-| `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, files, owners}` |
+| `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, metadata, metadata_bytes, files, owners}`: raw runs, appended extents and metadata runs (copies of tag writes; docs/editor/realtime-edits.md, "The edit overlay") |
 
 `owner` is `{section: {tag, kind, index}}`, with `kind` one of `cluster`,
 `instance_def` and `mode`, or `{pixels: {tag, image, lod}}`, with `lod`
@@ -3751,6 +3751,14 @@ then says `bots: phantoms: the session's membership was rewritten on 30
 frames in a row (...)` once per run of such frames
 (`crates/live/bots/src/phantom.rs`, `churn_line`).
 
+`facing_releases` is counted on the action gather, not on render frames.
+It counts built actions after which the host cleared a phantom biped's
+facing-set flag, as retail's control update does for a local player
+([bots.md](../game/bots.md), "The facing release"). It rises by about
+one per melee lunge. A bot whose aim stops following its right stick
+while this stays flat points at a facing write the release does not
+cover.
+
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.
 The full vector contains `radar_use`, `noob_combo`, `dual_wield`,
@@ -3769,6 +3777,8 @@ difficulty’s reaction window.
 | `weapon_switches`, `grenades_used` | Observed exchanges of the two carried weapon definitions and decreases in grenade inventory within a life. |
 | `last_reaction_ticks`, `total_reaction_ticks`, `reactions` | Ticks from the selected target's first fight observation to the first attack decision on that target. The mean is the total divided by the sample count. |
 | `think_ms`, `total_think_ms`, `think_ticks` | Wall time for the latest brain decision and controller update, accumulated time and sample count. Guest reads, worker queueing and retail input processing fall outside this interval. |
+| `goal_decisions`, `standing_decisions` | Decisions per goal for the match, and those whose left stick (under 0.2) stood the bot still. `standing_decisions.recover / goal_decisions.recover` is the share of shield recovery spent standing. |
+| `look_asked`, `look_stalled` | Decisions after one whose right stick asked for a turn (over 0.3), and those whose observed aim had not moved since. A healthy bot stalls only for its input latency. A stall share near one means the look is not reaching the unit ([bots.md](../game/bots.md), "The facing release"). |
 
 `accuracy` groups the game's registered shots and credited enemy hits by
 weapon and decision range at fire time. Close is under 3 world units,
@@ -4477,6 +4487,35 @@ count and its type (7 or 8) before any guest write. A device link reaches
 the game only through a rebuild and counts in `pending_rebuild`. Deleting
 a linked machine ends its links in the same undo step.
 
+## Shared Forge session
+
+In a synchronous network game whose co-op link carries the Forge lanes,
+the local Forge methods answer for the shared session
+(`crates/extensions/agent/src/forge/net.rs`; the design is
+[forge-design.md](../game/forge-design.md), "F5 in detail").
+
+- `forge.status` has `session: "shared"`, the seat's `role`, and `net`:
+  `host`, `joined`, `seat`, `name`, `members` (`seat`, `name`, `role`),
+  `holds` (`seat`, `target`, `carried`), `head`, `n` (the last stream
+  item applied), `through` (the host's watermark), `in_flight`
+  (proposals and holds not yet settled) and `ended` (why the session
+  ended, else null).
+- `forge.propose` sends the op to the host and answers when the stream
+  carries the entry (the entry, as locally) or the host refuses it. It
+  waits up to 240 ticks, not 30. A refusal's message begins with its
+  name and a colon: `forge_not_joined`, `forge_role`, `forge_held`,
+  `forge_not_holding`, `forge_stale`, `forge_ahead`, `forge_lane`,
+  `forge_was`, `forge_print`, `forge_refused`, `forge_map` (the game's
+  palette, budget or bounds), `forge_seat`, `forge_name`,
+  `forge_head_differs` and `forge_clock`. A proposal waiting when the
+  session ends is refused `forge_not_joined`.
+- `forge.log`, `forge.doc` and `forge.things` read what this machine has
+  applied, so the same call on two machines at the same `through`
+  returns the same entries.
+
+A session that has ended keeps answering `forge.status` with `ended` set
+and refuses every proposal.
+
 ## Forge probes
 
 The running game's agent registers these methods through
@@ -5178,7 +5217,7 @@ or a host without the editor map mount returns `REFUSED` with `data.why`.
 A film named with `--film`, film playback and external Live sign-in also
 exclude file binding. A session's
 [default recording](../game/film-format.md#recording-every-game) allows
-it: the first authorized editor write discards that film. After a file binding succeeds, restart
+it: the first authorized editor write discards its tape and the game in play; films of games already ended stay. After a file binding succeeds, restart
 the game before signing in to external Live. Machine snapshots and
 snapshot-based rewind are unavailable while a play copy is bound.
 See [Map overrides](storage.md#map-overrides) and [Changed maps](cache-slots.md#changed-maps).

@@ -5,20 +5,28 @@ on a clean machine; see "Not verified".
 Code: `editors/vscode/` (the VS Code extension), `editors/zed/` (the Zed
 extension), `editors/tree-sitter-rules/` (the grammar Zed highlights with),
 `crates/apps/h2-tools/src/rules_lsp.rs` (`h2 rules lsp`),
+`crates/apps/h2-tools/src/hs_lsp.rs` (`h2 hs lsp`, over
+`crates/formats/hs/src/ide/`), `crates/apps/h2-tools/src/studio_link.rs`
+(the commands' calls to Studio),
 `crates/apps/h2-tools/src/rules_editors.rs` (`h2 rules editors`). Tests: each
 module's `tests`, `crates/formats/rules/src/ide/tests.rs`,
-`editors/vscode/test/`, `editors/tree-sitter-rules/test/corpus/`.
-Switch: none.
+`crates/formats/hs/src/ide/tests.rs`, `editors/vscode/test/`,
+`editors/tree-sitter-rules/test/corpus/`.
+Switch: `H2_STUDIO` (the Studio socket the commands call).
+
+The same extensions edit HaloScript, the scenario scripts Studio writes
+out as a working copy (see "HaloScript"), and their commands talk to a
+running Studio (see "Commands that talk to Studio").
 
 A game type script (a `.rules` file in the
 [rules language](../game/rules-engine.md#the-language)) is written in VS
 Code or Zed. Both start our language server, `h2 rules lsp`, which answers
 every request from `rules::ide`, the same module Studio's script window and
 Live's `POST /v1/rules/ide` use. Each extension also highlights on its own,
-so a file reads well before the server starts. Studio's **Open in editor**
-opens the script in whichever of the two has the extension, and each save
-there comes back into Studio and the paired game
-([editor-guide.md, "Game type scripts"](editor-guide.md#game-type-scripts)).
+so a file reads well before the server starts. Studio's **Open in VS
+Code** and **Open in Zed** open the script there, each save comes back
+into Studio and the paired game, and Studio's edits go to the file
+([editor-guide.md, "Scripts in VS Code and Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
 
 ## Install
 
@@ -40,9 +48,10 @@ there comes back into Studio and the paired game
 3. Run `h2 rules editors status`: whether VS Code has
    `h2recomp.h2-rules` (from `code --list-extensions --show-versions`),
    whether Zed has `h2-rules` (in `extensions/installed/` under Zed's data
-   directory), and whether `h2 rules lsp` answers `initialize` within ten
-   seconds.
-4. Open a `.rules` file.
+   directory), and whether `h2 rules lsp` and `h2 hs lsp` each answer
+   `initialize` within ten seconds.
+4. Open a `.rules` file, or a map's scripts from Studio's Scripts tab
+   (**Open in VS Code**).
 
 By hand: `code --install-extension h2-rules-0.1.0.vsix` for VS Code. For
 Zed, `editors/zed/extension.toml` names the grammar by repository and
@@ -122,11 +131,79 @@ A change to the language (a keyword, a token, a statement) changes
 `lex.rs` or `parse.rs`, and with them `grammar.js`, the TextMate grammar
 and the Zed queries.
 
+## HaloScript
+
+Studio's **Open in VS Code** and **Open in Zed** on the Scripts tab write
+the open map's globals and scripts to `<data>/scripts/<map>/<map>.hsc`,
+with a context file, `h2hs.json`, beside it
+([editor-guide.md, "Scripts in VS Code and Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
+Both extensions start `h2 hs lsp` for `*.hsc` files. It answers from
+`hs::ide`, which checks a file against the `h2hs.json` in its folder
+(`hs::ide::Context`):
+
+- the executable's value types and script kinds (with the kinds that
+  take a return type);
+- every builtin, with its name (or `#builtin:<index>`), return and
+  parameter types, usage text and documentation;
+- the game globals the scripts name;
+- the scenario's names by type (object names, trigger volumes, and the
+  other names the scripts spell).
+
+The context comes from the user's own map and executable and stays in
+the data root. A `.hsc` file with no context beside it is still parsed:
+its syntax, definitions and references work, and one information line
+says the builtins and names are unknown. The server reads the context
+again when it changes on disk (`workspace/didChangeWatchedFiles`, or a
+new modification time) and checks every open file again.
+
+| Feature | LSP method |
+|---|---|
+| Problems as you type: unbalanced parentheses and strings, a malformed or duplicate definition, an unknown type or script kind, an unknown builtin or script (with the nearest name), the wrong number of arguments, an object name or trigger volume the scenario does not have (a warning) | `publishDiagnostics` |
+| Completion of builtins, scripts, globals, types, script kinds and, in a parameter of a named type, the scenario's names of that type | `completion` (`(` and `#`) |
+| Hover: a builtin's call form, usage and documentation; a script's or global's header | `hover` |
+| The call's parameters | `signatureHelp` (`(` and a space) |
+| Go to definition and references of scripts and globals across the file; the uses under the cursor | `definition`, `references`, `documentHighlight` |
+| Outline, folding of each list and comment that spans lines | `documentSymbol`, `foldingRange` |
+| Rename a script or global, refused for a builtin or a name in use | `prepareRename`, `rename` |
+| Quick fixes (the nearest known name) and the Studio commands as source actions | `codeAction` |
+| Format: each line indented two spaces per open parenthesis, comments and line breaks kept | `formatting` |
+| Colour by meaning | `semanticTokens/full`, legend `hs::ide::LEGEND` |
+
+On their own, VS Code has the `haloscript` language for `*.hsc`: a
+TextMate grammar (`syntaxes/haloscript.tmLanguage.json`) for comments,
+strings, numbers, definitions and calls, and
+`haloscript-language-configuration.json` (`;` comments, brackets).
+**H2 HaloScript: Restart Language Server** restarts its server, and
+`h2hs.trace.server` logs the traffic. Zed has the `HaloScript` language
+(`languages/haloscript/config.toml`) with no tree-sitter grammar: its
+colour comes from the server's semantic tokens alone.
+
+## Commands that talk to Studio
+
+The extensions' commands go to the language server as
+`workspace/executeCommand`, and the server calls Studio's agent API on
+its socket (`studio_proto::default_socket`: `$H2_STUDIO`, else
+`studio.sock` in the cache folder; `studio_link.rs`). Studio has to be
+running; when it is not, the command says so.
+
+| Command (VS Code) | Server command | Studio method | What it does |
+|---|---|---|---|
+| **H2: Reload Script in Game** | `h2.studio.reload` | `rules.reload {path}`, then `rules.get` | Saves the `.rules` file; Studio reads it into its script window (opening it there if another script is open) and reloads it into the paired game. The message says how it went in: in place, restarted (with the reasons) or refused. |
+| **H2: Run Scenario Test...** | `h2.studio.runScenario` | `rules.run` | Runs the editor's text over a scenario file (picked once, then offered again) on the fake game, as `h2 rules run` does, and prints the result in the **H2 Rules** output channel. |
+| **H2: Show Uses in Map** | `h2.studio.uses` | `script.uses` | Lists the definitions that use the script, global, object name or trigger volume under the cursor, each going to its place in the working copy. |
+| **H2: Show in Studio** | `h2.studio.show` | `script.source` | Shows the definition under the cursor in Studio's Scripts tab. |
+
+VS Code puts the first two in a `.rules` file's right-click menu and the
+other two in a `.hsc` file's. Zed has no command palette entries for an
+extension: each is a code action (**Cmd+.**) of kind `source`. Run
+scenario is offered for each `<script name>*.json` beside the script.
+
 ## CI
 
 `.github/workflows/editors.yml` runs on pushes to master and on pull
 requests that touch `editors/**`, `crates/formats/rules/src/ide/**`,
-`rules_lsp.rs`, `rules_editors.rs` or the workflow:
+`crates/formats/hs/src/ide/**`, `rules_lsp.rs`, `hs_lsp.rs`,
+`studio_link.rs`, `rules_editors.rs` or the workflow:
 
 - **tree-sitter-rules**: installs the tree-sitter CLI, runs
   `tree-sitter generate`, fails if `src/` differs from what is
@@ -138,8 +215,9 @@ requests that touch `editors/**`, `crates/formats/rules/src/ide/**`,
   file as `h2-rules.vsix`.
 - **zed**: builds the extension for `wasm32-wasip2` and uploads the
   folder with `extension.wasm` as `h2-rules-zed.zip`.
-- **lsp**: `cargo test -p rules --lib ide` and the `rules_` tests of the
-  `h2` binary (`rules_lsp`, `rules_editors`, `rules_cmd`).
+- **lsp**: `cargo test -p rules --lib ide`, `cargo test -p hs --lib ide`,
+  and the `rules_`, `hs_lsp` and `studio_link` tests of the `h2-tools`
+  binary.
 - **release** (master only, after the four pass): moves the
   `editors-latest` tag to the commit, creating the prerelease the first
   time, and replaces its assets with the `.vsix` and the Zed zip.
@@ -175,6 +253,10 @@ requests that touch `editors/**`, `crates/formats/rules/src/ide/**`,
   credentials, which needs the repository to be public.
 - Whether Zed takes a project's own `.rules` file (its agent rules file)
   for a Rules script.
+- HaloScript in Zed: the language has no grammar, so its colour depends
+  on Zed painting the server's semantic tokens.
+- The Studio commands end to end in VS Code and Zed against a running
+  Studio; the tests drive the servers and Studio's API separately.
 
 ## Related
 
@@ -183,4 +265,8 @@ requests that touch `editors/**`, `crates/formats/rules/src/ide/**`,
 - [rules-language-types.md, "Diagnostics and the editor"](../game/rules-language-types.md#diagnostics-and-the-editor):
   the diagnostic codes and their fixes.
 - [editor-guide.md, "Game type scripts"](editor-guide.md#game-type-scripts):
-  Studio's script window and **Open in editor**.
+  Studio's script window.
+- [editor-guide.md, "Scripts in VS Code and Zed"](editor-guide.md#scripts-in-vs-code-and-zed):
+  **Open in VS Code**, the working copy and the sync both ways.
+- [haloscript.md](../formats/haloscript.md): the script tables the
+  working copy is decompiled from.

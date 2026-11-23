@@ -27,7 +27,7 @@ mod generation;
 mod overlay;
 
 pub use generation::MapGeneration;
-pub use overlay::{OverlaySummary, RawOverlay};
+pub use overlay::{OverlaidReader, OverlaySummary, RawOverlay};
 use std::{
     collections::HashMap,
     fs::File,

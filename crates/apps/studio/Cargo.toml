@@ -81,6 +81,8 @@ serde_json.workspace = true
 # Playtest's static checks (src/app/playtest_static.rs): the start gate's
 # census of the open scenario (docs/game/rules-start-gate.md).
 forge-doc.workspace = true
+# The announcer voice: Fish Audio's text to speech over HTTPS (src/voice/fish.rs).
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../../extensions/agent-proto" }

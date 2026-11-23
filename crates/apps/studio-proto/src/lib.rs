@@ -87,6 +87,7 @@ pub mod method {
     pub const TAG_READ: &str = "tag.read";
     pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
+    pub const TAG_KINDS: &str = "tag.kinds";
     pub const TAG_CHAIN: &str = "tag.chain";
     pub const TAG_FOLLOW: &str = "tag.follow";
     pub const TAG_SET: &str = "tag.set";
@@ -102,6 +103,17 @@ pub mod method {
     pub const SOUND_PLAY: &str = "sound.play";
     pub const SOUND_STOP: &str = "sound.stop";
     pub const SOUND_MEASURE: &str = "sound.measure";
+
+    // The Announcer: lines said by a voice (api/voice.rs).
+    pub const VOICE_SAY: &str = "voice.say";
+    pub const VOICE_LIST: &str = "voice.list";
+    pub const VOICE_COMMIT: &str = "voice.commit";
+    // Voices: game characters cloned from the user's disc (api/voice_clone.rs).
+    pub const VOICE_CHARACTERS: &str = "voice.characters";
+    pub const VOICE_DATASET_BUILD: &str = "voice.dataset.build";
+    pub const VOICE_DATASET_STATUS: &str = "voice.dataset.status";
+    pub const VOICE_CLONE_TRAIN: &str = "voice.clone.train";
+    pub const VOICE_CLONE_SAY: &str = "voice.clone.say";
 
     // Every content check in one list (api/checks.rs).
     pub const CHECK_RUN: &str = "check.run";
@@ -231,6 +243,16 @@ pub mod method {
     pub const BITMAP_PIXELS: &str = "bitmap.pixels";
     pub const BITMAP_RESHAPE: &str = "bitmap.reshape";
     pub const BITMAP_SPANS: &str = "bitmap.spans";
+    pub const BITMAP_IMAGE_ADD: &str = "bitmap.image.add";
+    pub const BITMAP_IMAGE_RESIZE: &str = "bitmap.image.resize";
+    pub const BITMAP_SEQUENCE_ADD: &str = "bitmap.sequence.add";
+
+    // Image generation (docs/editor/agent-api.md, "Generating images").
+    pub const IMAGE_GENERATE: &str = "image.generate";
+    pub const IMAGE_RESULT: &str = "image.result";
+    pub const IMAGE_APPLY: &str = "image.apply";
+    pub const IMAGE_ACCEPT: &str = "image.accept";
+    pub const IMAGE_DISCARD: &str = "image.discard";
 
     // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
     pub const SCRIPT_LIST: &str = "script.list";
@@ -239,6 +261,8 @@ pub mod method {
     pub const SCRIPT_USES: &str = "script.uses";
     pub const SCRIPT_BUILTINS: &str = "script.builtins";
     pub const SCRIPT_DOC: &str = "script.doc";
+    pub const SCRIPT_EXTERNAL: &str = "script.external";
+    pub const SCRIPT_WORKING: &str = "script.working";
 
     // The game type script editor (docs/editor/editor-guide.md, "Game
     // type scripts").
@@ -248,6 +272,8 @@ pub mod method {
     pub const RULES_SAVE: &str = "rules.save";
     pub const RULES_FORMAT: &str = "rules.format";
     pub const RULES_RELOAD: &str = "rules.reload";
+    pub const RULES_EXTERNAL: &str = "rules.external";
+    pub const RULES_RUN: &str = "rules.run";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

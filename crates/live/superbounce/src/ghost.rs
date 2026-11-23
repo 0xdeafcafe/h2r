@@ -11,7 +11,7 @@
 //! first line:
 //!
 //! ```text
-//! # superbounce ghosts v2
+//! # superbounce ghosts v1
 //! ghost -10.620 3.880 -3.190 source=bot launch=12.31 touchdown=212 frames=230
 //! f -10.910 0.720 -1.160 -121.0 c
 //! f -10.905 0.718 -1.160 -120.5 ca
@@ -26,17 +26,13 @@
 //! for none: `c` crouch held (the unit's crouch request), `j` the jump's
 //! take-off, `a` airborne, `p` primed (the level pair's word at -3).
 //! Blank lines and other `#` lines are comments; unknown keys are
-//! skipped. Every position, the spot's and each frame's, is the unit's
-//! origin (object `+0x64`). A file of another version is refused, not
-//! read; one of an older version ([`older`]) is not converted, and the
-//! next run kept replaces it.
+//! skipped. A file of another version is refused, not read.
 
 use crate::Vec3;
 use crate::verified::{MATCH, MATCH_Z};
 
-/// The file format's version; [`parse`] refuses any other. It rises when
-/// what a line means changes (v2: every position is the origin).
-pub const VERSION: u32 = 2;
+/// The file format's version; [`parse`] refuses any other.
+pub const VERSION: u32 = 1;
 /// The first line, before the version number.
 pub const HEADER_PREFIX: &str = "# superbounce ghosts v";
 /// Game ticks a second: the guest tick is 30 Hz at every display rate
@@ -321,15 +317,6 @@ fn number(t: &mut std::str::SplitWhitespace<'_>, what: &str) -> Result<f32, Stri
         .ok_or_else(|| format!("{what} {s:?} is not a number"))
 }
 
-/// The version of a ghosts file older than [`VERSION`], named by its
-/// header. Such a file is not read and not converted: the next run kept
-/// starts a fresh file in its place (`game::superbounce_ghost`,
-/// `bots::harvest`). `None` for a file of this version, a newer one, a
-/// damaged header or an empty file.
-pub fn older(text: &str) -> Option<u32> {
-    crate::verified::header_version(text, HEADER_PREFIX).filter(|&v| v < VERSION)
-}
-
 /// The runs of a ghosts file. The first line that is not blank must be
 /// [`header`]; a file of another version is an error that names it. An
 /// error names the line (from 1) and what is wrong with it.
@@ -503,7 +490,7 @@ mod tests {
             g
         }];
         let text = to_text(&ghosts);
-        assert!(text.starts_with("# superbounce ghosts v2\n"), "{text}");
+        assert!(text.starts_with("# superbounce ghosts v1\n"), "{text}");
         assert!(text.contains(
             "ghost -10.620 3.880 -3.190 source=bot launch=12.31 touchdown=10 frames=12\n"
         ));
@@ -533,30 +520,12 @@ mod tests {
 
     #[test]
     fn another_version_or_no_header_is_refused_by_name() {
-        let current = to_text(&[run(12, true, 12.0)]);
-        assert_eq!(older(&current), None);
-        // v1 runs were recorded at the bounding sphere's centre, about 0.4
-        // over the origin: refused by name, and older, so replaced.
-        let v1 = current.replace("ghosts v2", "ghosts v1");
-        let e = parse(&v1).unwrap_err();
+        let text = to_text(&[run(12, true, 12.0)]).replace("v1", "v2");
+        let e = parse(&text).unwrap_err();
         assert!(
-            e.contains("version 1") && e.contains("reads version 2"),
+            e.contains("version 2") && e.contains("reads version 1"),
             "{e}"
         );
-        assert_eq!(older(&v1), Some(1));
-        // A newer version is refused and is not older: not written over.
-        let v3 = current.replace("ghosts v2", "ghosts v3");
-        let e = parse(&v3).unwrap_err();
-        assert!(
-            e.contains("version 3") && e.contains("reads version 2"),
-            "{e}"
-        );
-        assert_eq!(older(&v3), None);
-        // A damaged file of this version is not older.
-        let damaged = format!("{}\nf 0 0 0 0 -\n", header());
-        assert!(parse(&damaged).is_err());
-        assert_eq!(older(&damaged), None);
-        assert_eq!(older(""), None);
         let e = parse("ghost 1 2 3 frames=0\n").unwrap_err();
         assert!(e.contains("not a ghosts file"), "{e}");
         assert!(

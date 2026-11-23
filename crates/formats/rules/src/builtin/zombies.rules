@@ -1,7 +1,7 @@
 // Zombies: humans on red with shotguns, zombies on green with swords. The
 // honour rules stay in `about`: the game does not switch a team for a
-// kill. `infection.rules` enforces them but waits on `set_team` (untraced)
-// and `set_loadout` (`verify::unhostable`).
+// kill. `infection.rules` enforces them but waits on `set_team` (untraced,
+// `verify::unhostable`).
 // docs/game/community-gametypes.md.
 rules "Zombies" 1
 carrier slayer

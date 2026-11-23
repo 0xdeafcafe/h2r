@@ -34,6 +34,7 @@ fn header(length_ticks: u64) -> Header {
         live_service: false,
         features: String::new(),
         player_features: false,
+        tape_id: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn sample(tick: u64) -> Tick {
         },
         closing_events: vec![],
         post_hash: Some(0xfe00 + tick),
+        forge: vec![],
     }
 }
 
@@ -788,4 +790,37 @@ fn private_join_and_migration_round_trip_across_a_keyframe() {
     assert_eq!(player.summary, scores());
     assert_eq!(player.seek(1).unwrap(), Some(key(1)));
     assert_eq!(player.step().unwrap(), Some(last));
+}
+
+#[test]
+fn forge_entry_records_round_trip_through_a_time_chunk_in_record_order() {
+    let mut ticks: Vec<Tick> = (1..=3).map(sample).collect();
+    ticks[1].forge = vec![
+        [&[stream::FORGE_WELCOME][..], b"welcome bytes"].concat(),
+        [&[stream::FORGE_ITEM][..], b"item bytes"].concat(),
+    ];
+    let extra = vec![unified::TickRecords::default(); 3];
+    let raw = unified::encode(&ticks, &extra).unwrap();
+    let back = unified::decode(&raw, 1, 3).unwrap();
+    assert_eq!(back.len(), 3);
+    assert_eq!(back[1].forge, ticks[1].forge);
+    assert!(back[0].forge.is_empty() && back[2].forge.is_empty());
+    // The rest of the tick is as it was.
+    assert_eq!(back[1].post_hash, ticks[1].post_hash);
+}
+
+#[test]
+fn a_forge_record_from_a_producer_is_written_and_read_back() {
+    let mut extra = vec![unified::TickRecords::default(); 2];
+    extra[0].during.push(RecordData::forge(stream::FORGE_ITEM, b"x"));
+    let raw = unified::encode(&[sample(1), sample(2)], &extra).unwrap();
+    let back = unified::decode(&raw, 1, 2).unwrap();
+    assert_eq!(back[0].forge, vec![vec![stream::FORGE_ITEM, b'x']]);
+}
+
+#[test]
+fn a_forge_record_of_an_unknown_subtype_is_refused() {
+    let mut chunk = stream::ChunkWriter::new(1, 1).unwrap();
+    chunk.record(1, stream::FORGE, &[9, 1]).unwrap();
+    assert!(unified::decode(&chunk.finish(), 1, 1).is_err());
 }

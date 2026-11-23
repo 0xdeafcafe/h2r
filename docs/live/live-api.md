@@ -1992,7 +1992,7 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   label's kind suggests when absent). Without a `map` the run is played
   on the script's minimal map; with one, the script's labels check it
   first, and a run it fails answers `{ok: false, errors: [], map:
-  ["the map has no zone labelled \"goal\"; Siege needs exactly 1", ...]}`
+  ["the map has no zone labelled \"territory\"; Siege needs at least 1", ...]}`
   and runs nothing. A `variant` field left out reads the stock record of the script's
   carrier. An event is `{type, ...}` with the handler's event name:
   `kill {victim, killer}`, `spawn`, `death`, `join`, `quit {player}`,

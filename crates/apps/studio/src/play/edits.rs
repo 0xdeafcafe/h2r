@@ -510,6 +510,7 @@ impl Play {
                 Effect::Reload,
                 "placement layout changed",
             );
+            tag_sync::set_class(&mut row, crate::app::live::Class::Shape);
             row["target"] = json!({"panel": "pending"});
             pending.push(row);
         }
@@ -682,7 +683,7 @@ impl Play {
             }
         }
         self.edits.last_diff = None;
-        self.next_push = Instant::now();
+        self.next_push = None;
         if std::mem::take(&mut self.edits.restore_after_batch)
             && let Err(why) = self.apply_edits(app, Apply::Restore)
         {
@@ -742,7 +743,7 @@ impl Play {
                 self.edits.refused = issues::Refusals::default();
                 self.edits.raw.reverted();
                 self.edits.last_diff = None;
-                self.next_push = Instant::now();
+                self.next_push = None;
                 app.pairing.journal.clear();
                 self.edits.journal_ready = false;
                 self.request_journal(epoch);
@@ -771,7 +772,7 @@ impl Play {
             }
             self.edits.confirmed = Some(scope.peers);
             self.objects.confirm_objects();
-            self.next_push = Instant::now();
+            self.next_push = None;
             return Ok(());
         }
         if action == Apply::Keep {
@@ -898,7 +899,7 @@ impl Play {
             Apply::Keep | Apply::Confirm(_) => unreachable!(),
         }
         self.edits.last_diff = None;
-        self.next_push = Instant::now();
+        self.next_push = None;
         Ok(())
     }
 
@@ -1067,7 +1068,7 @@ impl Play {
             self.accept_game_bytes(app, &field, true)?;
             self.edits.conflicts.remove(i);
             self.edits.last_diff = None;
-            self.next_push = Instant::now();
+            self.next_push = None;
             Ok(())
         })();
         if let Err(why) = outcome {

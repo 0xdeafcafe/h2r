@@ -113,8 +113,11 @@ fn a_match_holds_only_events_the_script_can_notice() {
 
     let m = sim::simulate(builtin::BOUNCE_HUNT, &setup(4, 0, 1)).unwrap();
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Bounce { .. })));
+    // Siege gives a loadout at each spawn and counts time in zones.
+    assert_eq!(events(builtin::SIEGE), [Event::Spawn, Event::Enter, Event::Leave]);
     let m = sim::simulate(builtin::SIEGE, &setup(8, 0, 1)).unwrap();
-    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Death(_))));
+    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Spawn(_))));
+    assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Enter { .. })));
 }
 
 #[test]
@@ -143,10 +146,11 @@ fn every_builtin_reaches_an_end() {
     let m = end(builtin::INFECTION, 8, 0);
     assert_eq!(m.end, End::Script);
     assert!(matches!(m.winner, Winner::Team(_)));
-    // Siege's attackers take the generated map's zones, and each one
-    // restarts the phase clock: a long round lets the last one run out.
+    // Siege ends itself within its two phase clocks: the attackers take
+    // the flag stand, or a clock runs out and the defenders win.
     let m = sim::simulate(builtin::SIEGE, &Setup { length: Some(1200), ..setup(8, 0, 1) }).unwrap();
-    assert_eq!((m.end, m.winner), (End::Script, Winner::Team(1)));
+    assert_eq!(m.end, End::Script);
+    assert!(matches!(m.winner, Winner::Team(_)), "{:?}", m.winner);
     // Somebody scores in the modes that score.
     for src in [builtin::ODDBALL, builtin::KING, builtin::TERRITORIES, builtin::CTF, builtin::RACE] {
         let ir = rules::compile(src).unwrap();

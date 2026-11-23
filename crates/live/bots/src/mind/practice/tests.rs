@@ -91,6 +91,7 @@ fn bot(shield: f32) -> Me {
         team: 0,
         shield,
         health: 1.0,
+        shield_full: 1.0,
         arms: Some(armed()),
     }
 }

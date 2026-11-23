@@ -301,8 +301,9 @@ there. **Watch** appears for playable films and host films awaiting their
 first download.
 
 Recent combines the local library and the signed-in Live account's
-archive. `h2 play` records each session into the local library, so a
-game played on this console appears there; the account's archive adds
+archive. `h2 play` records each session into the local library, one
+film per game, so each game played on this console appears there and
+opens at its own start; the account's archive adds
 games whose dedicated host recorded a film
 ([Recording every game](film-format.md#recording-every-game) lists what
 each kind of game shows). Saved includes local and account pins. Clips includes local

@@ -109,7 +109,7 @@ Map tool, or drop a disc image, `.map` file or folder onto the window.
 The window is made of panels that dock together:
 
 - **Tool bar** (under the menu): click **Map**, **Variants**,
-  **Playlists**, **UI** or **HUD** to switch workspaces. The middle names
+  **Playlists**, **UI**, **HUD** or **Textures** to switch workspaces. The middle names
   the open document. A `*` marks unsaved changes. The **game link** is at
   the right end in every tool: click the pill to pair, manage the link or
   choose a running game. Play, Stop, Pause, Step, Resume and the Edit
@@ -583,7 +583,8 @@ While the game runs, the editor stays paired with it:
   moment while it does. A Textures stroke shows mip 0 while you paint and
   the smaller mips when you let go. Undo sends the old geometry or pixels
   back. Each edit sits in the Pending tab until the game has it. A
-  bitmap you resize or reformat, and a geometry edit the save refuses,
+  bitmap you resize or reformat, an image or sequence you add to one,
+  and a geometry edit the save refuses,
   wait for **Play** again.
 
 A game you started yourself is found without any setup. `h2 play` opens
@@ -621,6 +622,38 @@ after the retry window ends.
 An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,
 `pair.disconnect`, `pair.auto`, `pair.playtest`, `pair.settings`, `pair.stop`, `pair.control`
 and `pair.edit` ([agent-api.md](agent-api.md)).
+
+### Edit a map's textures
+
+The **Textures** workspace paints a map's bitmaps and changes their
+shape. The outliner lists the map's bitmaps (an edited one marked `*`);
+click one and the centre is its canvas, the inspector the image's
+format and budget.
+
+- **Painting.** Brush, eraser, line, fill, eyedropper, clone, selection
+  and the colour adjustments paint at mip 0; every edit is one undo
+  step on the Textures document (Cmd+Z). With a game paired and **Edit**
+  on, a stroke shows in the game as you paint (above). **PNG** imports
+  a picture into the image and exports one; **Generate...** makes a
+  picture from a prompt ([Generating an image](#generating-an-image)).
+- **Resize.** Type a width, height and format and press **Resize**: the
+  image saves at that size and format, every layer resampled and every
+  mip written again. One undo step. The line under it says what the
+  image saves as against what is stored.
+- **Add image** appends an image after the bitmap's last, the size and
+  format of the one shown, transparent until you paint, import or
+  generate into it; **New image, generated...** does the same and opens
+  the Generate window on the new image. **Sequences** lists the
+  bitmap's sequences (which images each names, and its sprites) with
+  **Add a sequence** for the selected image. Adding is one undo step
+  each.
+- **Saving.** Edits stay in the editor until the map is saved (**File >
+  Save** or **Save as...**), which writes them into the map. A bitmap
+  that gained an image or a sequence no longer fits where it is stored,
+  so the save writes its whole tag again at the end of the map's
+  metadata: the other images keep their pixels and every other tag its
+  bytes. (modeling.md, "Texture editing"
+  ([modeling.md](modeling.md)).)
 
 ### Your packages in the Maps list
 
@@ -961,19 +994,23 @@ type script** window is a tab beside the variant's settings
   The hover wraps at about 60 characters, with code in a monospace
   font. Inside a call, the line under the text shows the call's
   parameters.
-- **Open in editor** saves the script and opens its file in another
-  editor. A script with no file goes to `scripts/<name>.rules` under
-  the data root, named after the script (`slayer.rules`; `slayer-2.rules`
-  when that name is in use). Studio tries, in order: VS Code (`code`)
-  or Zed (`zed`) when it has the rules extension, then `$VISUAL`,
-  `$EDITOR` (skipping a terminal editor such as `vim`, which has no
-  terminal to run in), VS Code, Zed, and on macOS `open -t`
-  (`editor_launches`, `extension_installed`). A command that fails
-  within three seconds hands over to the next. Studio then checks the
-  file once a second. Each save there comes into Studio's text, and into
-  the paired game while **Reload on save** is ticked; the status line
-  shows how the reload went. If Studio's text has unsaved changes too, a
-  row under the title asks: **Keep mine** or **Take the file's**
+- **Open in VS Code** and **Open in Zed** save the script and open its
+  file in that editor at the cursor's line; **Open in editor** opens it
+  in the first editor Studio finds. A script with no file goes to
+  `scripts/<name>.rules` under the data root, named after the script
+  (`slayer.rules`; `slayer-2.rules` when that name is in use). For
+  **Open in editor** Studio tries, in order: VS Code (`code`) or Zed
+  (`zed`) when it has the rules extension, then `$VISUAL`, `$EDITOR`
+  (skipping a terminal editor such as `vim`, which has no terminal to
+  run in), VS Code, Zed, and on macOS `open -t` (`editor_launches_at`,
+  `extension_installed`). A command that fails within three seconds
+  hands over to the next. Studio then checks the file once a second.
+  Each save there comes into Studio's text, and into the paired game
+  while **Reload on save** is ticked; the status line shows how the
+  reload went. Studio's own edits go to the file
+  ([Scripts in VS Code and Zed](#scripts-in-vs-code-and-zed)). If
+  Studio's text has unsaved changes too, a row under the title asks:
+  **Keep mine** or **Take the file's**
   (`crates/apps/studio/src/app/rules_edit.rs`, `prepare_external` and
   `poll_disk`).
 - **VS Code and Zed** edit scripts as well as this window does:
@@ -1027,6 +1064,88 @@ result shows at the bottom of the window and in the Game panel. The
 game refuses a reload in a Theater film, in a matchmade Live game, on a
 guest's machine, and outside a multiplayer game; a Live custom game
 reloads in place only.
+
+### Scripts in VS Code and Zed
+
+Both kinds of script Studio edits open in VS Code or Zed and stay in
+step with Studio while they are open. Studio checks their files once a
+frame, and between API calls when it runs without a window
+(`App::poll_external` in `crates/apps/studio/src/app/external.rs`).
+`h2 rules editors install` puts the extension, with both language
+servers, in VS Code and prints the steps for Zed
+([rules-editors.md](rules-editors.md)).
+
+Studio opens VS Code with `code -g <file>:<line>:<column>` and Zed with
+`zed <file>:<line>:<column>`. It finds each command on `PATH`, in
+Homebrew's `bin`, or inside the app in `/Applications` or
+`~/Applications` (`editor_launches_at`, `bundled_programs` in
+`crates/apps/studio/src/app/rules_edit.rs`).
+
+**Game type scripts** (the Game type script window):
+
+- **Open in VS Code** or **Open in Zed** opens the script's file at the
+  cursor's line. Each save there comes back into Studio, and into the
+  paired game while **Reload on save** is ticked.
+- Edits made in Studio go to the file once typing has paused for a
+  second, while **Write edits to the file** is ticked, as it is by
+  default (`RulesEditor::sync_out`). They are not reloaded into the game
+  until you save or press **Reload**. Nothing is written while the file
+  and Studio's text disagree; the **Keep mine** / **Take the file's** row
+  settles that first.
+- In VS Code, **H2: Reload Script in Game** (in the editor's right-click
+  menu and the command palette) saves the file and has Studio reload it
+  into the paired game, then shows how it went in.
+  **H2: Run Scenario Test...** runs the script over a scenario file on
+  the fake game, as `h2 rules run` does, and shows the printout. In Zed
+  both are code actions (**Cmd+.**). Both need Studio running
+  ([rules-editors.md, "Commands that talk to Studio"](rules-editors.md#commands-that-talk-to-studio)).
+
+**Scenario scripts** (the Scripts tab, see
+[rich-editors.md, "Scripts"](rich-editors.md#scripts)):
+
+- **Open in VS Code** or **Open in Zed** writes a working copy and opens
+  it at the definition shown. The working copy holds every global and
+  script of the open map, as the Scripts tab decompiles them, in
+  `scripts/<map>/<map>.hsc` under the data root.
+- Beside it, `h2hs.json` holds what `h2 hs lsp` checks the file against:
+  - the executable's types, script kinds and builtins, named as the
+    Scripts tab names them, with the documentation listing's text when
+    one is loaded;
+  - the game globals the scripts name;
+  - the scenario's object names, trigger volumes and the other names the
+    scripts spell.
+
+  Both files are made from your own map and executable and stay in the
+  data root.
+- With the extension, the file has problems as you type, such as:
+  - an unknown builtin, type or script kind;
+  - the wrong number of arguments;
+  - an object name or trigger volume the scenario does not have.
+
+  It also has completion of builtins and the scenario's names, hover
+  with each builtin's parameters and documentation, signature help, go
+  to definition and references, rename, the outline, folding and
+  formatting.
+- Each save comes back to the Scripts tab, which shows which definitions
+  differ from the map's (edited, added, removed) and how many errors the
+  file has.
+- The map itself is not changed: writing scripts into a map needs the
+  script compiler, which is not built yet
+  ([rich-editors.md, "Scripts"](rich-editors.md#scripts), slices H2 and
+  H3).
+- When the map's scripts or names change in Studio, the context is
+  written again, and so is the working copy while it holds no edits. A
+  working copy with edits is left as it is, and the Scripts tab says it
+  was made from an older map. Opening it again keeps your edits:
+  `.h2hs-base.hsc` beside it records what Studio last wrote.
+- In VS Code, **H2: Show Uses in Map** lists the definitions that use
+  the name under the cursor, each a link to its place in the file, and
+  **H2: Show in Studio** shows the definition in the Scripts tab. In Zed
+  both are code actions.
+
+Agents do the same through `rules.external`, `rules.run`,
+`rules.reload` with a `path`, `script.external` and `script.working`
+([agent-api.md](agent-api.md)).
 
 ## 6. Playlists (hoppers)
 
@@ -1231,7 +1350,9 @@ move, resize or retype its widgets.
     outside a checkout Save is refused. When a file changes on disk the
     screen reloads it, unless you have unsaved edits to it, in which
     case it says so. A retail screen's edits are changes to your
-    `mainmenu` map (open it first), saved with the map. Some widgets
+    `mainmenu` map (open it first), saved with the map. A picture has
+    **Generate image...** ([Generating an image](#generating-an-image)).
+    Some widgets
     can't be edited here and say why: a row's value comes from its
     setting, rows sit where the list puts them, and a retail screen's
     texts and title belong to the disc's string table and shared header.
@@ -1245,6 +1366,50 @@ move, resize or retype its widgets.
 
 To open the editor straight on a screen: `h2-editor --ui-screen
 signin-code/code-wrong --ui-press up,right`.
+
+### Generating an image
+
+**Generate image...** makes a new picture for an image of a bitmap: a
+menu icon, a screen's art, a HUD widget's picture or any texture. It is
+on a selected picture in **Selected** here, on a bitmap widget in the
+HUD tool, and as **Generate...** in the Textures tool's PNG panel. Each
+opens the **Generate image** window on that image of the map open in
+Studio (for a menu, open your `mainmenu` map first).
+
+1. **Image** is the image the picture goes into; the line under it gives
+   its size and format. The picture is made to fit both. **New image**
+   beside it (or **New image...** on a selected picture here, or **New
+   image, generated...** in the Textures tool) first adds an image to
+   the bitmap, the size and format of this one, and generates into
+   that: for a bitmap that has fewer images than you need, such as
+   `mainmenu`'s eleven game-type icons.
+2. Write the **Prompt**: what the picture shows ("a radar dish").
+3. Pick the **References**: the images whose style the new one should
+   match. For a menu icon, tick the other icons of the same bitmap; they
+   are listed as **Image N of this bitmap**. **Add PNG...** adds a file.
+   The references are your choice: they go to the generator as they are,
+   and the editor never picks any for you.
+4. **Alpha** is where transparency comes from. **Auto** keeps the
+   picture's own, except that a picture with no transparency going into
+   a mask-only image takes it from brightness.
+5. Press **Generate**. It takes a minute or more; the window counts the
+   seconds and the editor stays usable.
+6. **Apply (preview in place)** puts the picture into the image. The
+   Textures canvas, this tool's picture and a paired game show it where
+   it is used. Not right? **Discard** takes it out, or change the prompt
+   or the references and press **Regenerate**.
+7. **Accept** keeps it: it is an edit of the bitmap like any other and is
+   written when you save the map. **Accept and save art to...** also
+   copies the picture and a provenance file (the prompt, the
+   references and the generator) into a folder you pick, such as one in
+   the repository's `art/`.
+
+The generator is ChatGPT's image generation through the Codex CLI,
+signed in with your ChatGPT account. It needs `codex` installed and
+`codex login` done once. When it is missing, signed out or out of
+allowance the window says so in red, with what to do. Generated pictures
+are original AI-made art. The agent API's `image.*` methods do the same
+([agent-api.md](agent-api.md#generating-images)).
 
 ## 8. HUD
 
@@ -1462,6 +1627,48 @@ the map like any other edit. What to know:
 - Sounds only import into the map they came from.
 - If anything is refused, nothing changes.
 
+### Announcer lines
+
+**View > Voices** opens a window that makes announcer lines from text.
+Type the line, give a clip id (such as `superbounce`) if it is for one,
+and press **Say it**. The voice says it, Studio trims the silence, brings
+it to the loudness of the retail announcer lines of the open map and plays
+it. The window shows the level it reached, how far it is from the retail
+lines, and where the file is. The same text and voice give the earlier
+file back from the cache without asking the service again.
+
+The voice is Fish Audio's, and its key is in your Keychain. The first
+time, the window shows the command to add it:
+
+```
+security add-generic-password -s fish-audio -a "$USER" -w '<your-fish-audio-key>'
+```
+
+Lines are saved under `<data>/announcer/`, outside any checkout. **Copy
+into the checkout** (the same as `voice.commit` in the
+[agent API](agent-api.md)) puts a line with a clip id at
+`art/announcer/<clip>.wav` for you to `git add`; nothing else writes
+there. [announcer.md](announcer.md) has the rest.
+
+### Lines in a game character's voice
+
+In the same window, pick **Game character (local clone)** and a
+character. **Build dataset** reads that character's lines from your disc,
+cuts them into clean clips and pairs each with its subtitle; the lines
+with no subtitle are transcribed on your Mac. The first time, Studio also
+installs the voice model (a few GB, once); the window shows the progress.
+Then type a line and press **Say it**: the clone says it in the
+character's voice, copying the delivery of one of their own lines (name
+one under **Reference line**, or leave it to Studio), and brings it to the
+loudness of their lines on the disc. **Fine-tune** trains the clone on
+the whole dataset for a closer voice; it needs about ten minutes of their
+speech and takes a while.
+
+Everything stays on your Mac: the clips, the transcripts, the model and
+the lines are under `<data>/voices/` and Studio's caches, and nothing is
+uploaded. A line with a clip id can be copied into a checkout like an
+announcer line. [voice-cloning.md](voice-cloning.md) has the details.
+
 ## 10. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
@@ -1495,8 +1702,11 @@ uses, `~/Library/Application Support/h2recomp/data`.
 | The Map Pack (read only) | `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` | Installed by `h2 play` or `h2 import-mappack`. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
+| Scripts opened in VS Code or Zed | `<data>/scripts/<name>.rules` (a game type script with no file of its own); `<data>/scripts/<map>/<map>.hsc` and `h2hs.json` (a map's scripts) | Not directly: a game type script reloads into the paired game; a map's scripts are read back into the Scripts tab only. [Scripts in VS Code and Zed](#scripts-in-vs-code-and-zed) |
 | Exported tags (tag bundles) | Wherever you save the `.h2tag` (never inside a Git checkout); `<data>/tag-bundles/` when an agent gives no path | Not directly: import it in the Tags tool and save the map. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
+| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout with the Voices window or `voice.commit`, then build. |
+| Character voices | `<data>/voices/<character>/` (`dataset/`, `manifest.jsonl`, `model/`, `cache/`, `lines/`, `clips/`); the model's install in Studio's caches (`voice-clone/`) | Not directly: they are built from your disc and stay on your Mac. A line with a clip id copies into a checkout like an announcer line. |
 | The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |
 
 Your disc image is only ever read.

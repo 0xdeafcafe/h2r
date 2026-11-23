@@ -1143,7 +1143,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// The loaded map's screen effects: `None` until they load, the first
     /// call on a map starting their load ([`spawn_load`]).
     fn screen_effects(&self, mem: &dyn GuestMemory) -> Option<Arc<ScreenEffects>> {
-        map_effects(&self.effects, mem, &mut |name| spawn_load(name, Arc::clone(&self.effects)))
+        map_effects(&self.effects, mem, &mut |name, generation| spawn_load(name, generation, Arc::clone(&self.effects)))
     }
 
     fn arm(&self, mem: &mut dyn GuestMemory, swallow: d3d::Swallow) -> bool {
@@ -1157,30 +1157,33 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
 /// The screen effects of the map the game has loaded, which the post
 /// glue loads itself: the hook runs with the native post on, whether or
-/// not the native world (whose load used to carry them) is.
+/// not the native world (whose load used to carry them) is. The slot is
+/// keyed by the map's name and its load generation
+/// (`native_map_work::generation`), so a map opened again, as an edit
+/// that reloads it does, loads its effects again from the file.
 #[derive(Default)]
 pub struct EffectsSlot {
-    map: Option<String>,
+    map: Option<(String, u64)>,
     effects: Option<Arc<ScreenEffects>>,
 }
 
 impl EffectsSlot {
-    /// Map `name`'s effects once loaded, and whether a load of them must
-    /// start now: at the first ask on a map, which forgets the last
-    /// map's.
-    pub fn ask(&mut self, name: &str) -> (Option<Arc<ScreenEffects>>, bool) {
-        if self.map.as_deref() == Some(name) {
+    /// Map `name`'s effects at load `generation` once loaded, and whether
+    /// a load of them must start now: at the first ask on a map load,
+    /// which forgets the last one's.
+    pub fn ask(&mut self, name: &str, generation: u64) -> (Option<Arc<ScreenEffects>>, bool) {
+        if self.map.as_ref().is_some_and(|(n, g)| n == name && *g == generation) {
             return (self.effects.clone(), false);
         }
-        self.map = Some(name.to_string());
+        self.map = Some((name.to_string(), generation));
         self.effects = None;
         (None, true)
     }
 
-    /// The load of map `name` finished: kept while it is still the map;
-    /// whether it was.
-    pub fn loaded(&mut self, name: &str, effects: ScreenEffects) -> bool {
-        if self.map.as_deref() != Some(name) {
+    /// The load of map `name` at `generation` finished: kept while it is
+    /// still the map load; whether it was.
+    pub fn loaded(&mut self, name: &str, generation: u64, effects: ScreenEffects) -> bool {
+        if !self.map.as_ref().is_some_and(|(n, g)| n == name && *g == generation) {
             return false;
         }
         self.effects = Some(Arc::new(effects));
@@ -1194,22 +1197,23 @@ impl EffectsSlot {
 pub fn map_effects(
     slot: &Mutex<EffectsSlot>,
     mem: &dyn GuestMemory,
-    load: &mut dyn FnMut(String),
+    load: &mut dyn FnMut(String, u64),
 ) -> Option<Arc<ScreenEffects>> {
     let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty())?;
-    let (effects, start) = slot.lock().unwrap_or_else(|e| e.into_inner()).ask(&name);
+    let generation = render_bridge::native_map_work::generation();
+    let (effects, start) = slot.lock().unwrap_or_else(|e| e.into_inner()).ask(&name, generation);
     if start {
-        load(name);
+        load(name, generation);
     }
     effects
 }
 
 /// Loads map `name`'s screen effects on a thread of their own into
 /// `slot`; a map that does not load keeps every effect on D3D.
-fn spawn_load(name: String, slot: Arc<Mutex<EffectsSlot>>) {
+fn spawn_load(name: String, generation: u64, slot: Arc<Mutex<EffectsSlot>>) {
     let spawned = std::thread::Builder::new().name("native-post load".into()).spawn(move || match load_effects(&name) {
         Ok(e) => {
-            slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, e);
+            slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, generation, e);
         }
         Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); every screen effect keeps its D3D draws"),
     });
@@ -1671,19 +1675,37 @@ mod tests {
         let slot = Mutex::new(EffectsSlot::default());
         let mut started = Vec::new();
         let mainmenu = named("mainmenu");
-        assert!(map_effects(&slot, &mainmenu, &mut |n| started.push(n)).is_none(), "loading");
+        assert!(map_effects(&slot, &mainmenu, &mut |n, _| started.push(n)).is_none(), "loading");
         assert_eq!(started, vec!["mainmenu".to_string()], "started by the post itself");
-        assert!(map_effects(&slot, &mainmenu, &mut |n| started.push(n)).is_none());
+        assert!(map_effects(&slot, &mainmenu, &mut |n, _| started.push(n)).is_none());
         assert_eq!(started.len(), 1, "one load per map");
-        assert!(slot.lock().unwrap().loaded("mainmenu", ScreenEffects::default()));
-        assert!(map_effects(&slot, &mainmenu, &mut |n| started.push(n)).is_some(), "loaded");
+        assert!(slot.lock().unwrap().loaded("mainmenu", render_bridge::native_map_work::generation(), ScreenEffects::default()));
+        assert!(map_effects(&slot, &mainmenu, &mut |n, _| started.push(n)).is_some(), "loaded");
         let other = named("01a_tutorial");
-        assert!(map_effects(&slot, &other, &mut |n| started.push(n)).is_none());
+        assert!(map_effects(&slot, &other, &mut |n, _| started.push(n)).is_none());
         assert_eq!(started.last().map(String::as_str), Some("01a_tutorial"));
-        assert!(!slot.lock().unwrap().loaded("mainmenu", ScreenEffects::default()), "a late load of the last map is dropped");
-        assert!(map_effects(&slot, &other, &mut |n| started.push(n)).is_none());
-        assert!(map_effects(&slot, &named(""), &mut |n| started.push(n)).is_none(), "no map loaded");
+        assert!(!slot.lock().unwrap().loaded("mainmenu", render_bridge::native_map_work::generation(), ScreenEffects::default()), "a late load of the last map is dropped");
+        assert!(map_effects(&slot, &other, &mut |n, _| started.push(n)).is_none());
+        assert!(map_effects(&slot, &named(""), &mut |n, _| started.push(n)).is_none(), "no map loaded");
         assert_eq!(started.len(), 2);
+    }
+
+    /// A map opened again (its load generation moved, as the reload an
+    /// edit asks for does) loads its effects again; a load of the
+    /// earlier generation that finishes late is dropped.
+    #[test]
+    fn the_screen_effects_slot_is_keyed_by_map_generation() {
+        let mut slot = EffectsSlot::default();
+        let (effects, start) = slot.ask("mainmenu", 1);
+        assert!(effects.is_none() && start);
+        assert!(slot.loaded("mainmenu", 1, ScreenEffects::default()));
+        let (effects, start) = slot.ask("mainmenu", 1);
+        assert!(effects.is_some() && !start, "same map, same load");
+        let (effects, start) = slot.ask("mainmenu", 2);
+        assert!(effects.is_none() && start, "the same map opened again loads again");
+        assert!(!slot.loaded("mainmenu", 1, ScreenEffects::default()), "the earlier load finishes late");
+        assert!(slot.loaded("mainmenu", 2, ScreenEffects::default()));
+        assert!(slot.ask("mainmenu", 2).0.is_some());
     }
 
     #[test]

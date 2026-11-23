@@ -251,15 +251,17 @@ fn the_script_reads_the_labelled_things() {
 }
 
 #[test]
-fn label_reads_and_labelled_sets_are_hostable_and_zone_tests_are_not() {
-    for name in ["label_number", "label_of", "zone_id", "object_team"] {
+fn label_reads_labelled_sets_and_zone_tests_are_hostable() {
+    for name in ["label_number", "label_of", "zone_id", "object_team", "inside", "player_of"] {
         let e = caps::entry_named(name).unwrap();
         assert!(e.status.hostable(), "{name}");
         assert!(READS.contains(&e.id), "{name}");
     }
-    for name in ["inside", "ticks_held"] {
-        assert!(!caps::entry_named(name).unwrap().status.hostable(), "{name}");
-    }
+    // `ticks_held` is the VM's, over the host's zone test.
+    assert!(caps::entry_named("ticks_held").unwrap().status.hostable());
+    let loadout = caps::entry_named("set_loadout").unwrap();
+    assert!(loadout.status.hostable());
+    assert!(ACTIONS.contains(&loadout.id));
     // A script with labels is no longer refused for them.
     assert_eq!(host_refusal(&needing("goal")), None);
 }

@@ -659,3 +659,142 @@ fn a_script_is_found_by_its_hash_prefix() {
     let prefix: [u8; 8] = own.id().0[..8].try_into().unwrap();
     assert_eq!(find_script(prefix, &ed).unwrap().id(), own.id());
 }
+
+#[test]
+fn vs_code_and_zed_open_the_file_at_the_line() {
+    let file = Path::new("/s/x.rules");
+    let bin = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
+    let env = |k: &str| (k == "VISUAL").then(|| "subl -w".to_string());
+    let describe = |got: Vec<Launch>| -> Vec<String> { got.iter().map(Launch::describe).collect() };
+
+    // Any editor: VS Code (with the extension) and Zed open at the line;
+    // the others get the file alone.
+    let got = editor_launches_at(file, Some((12, 3)), None, env, bin, |e| e == "code", true);
+    assert_eq!(
+        describe(got),
+        [
+            "/bin/code -g /s/x.rules:12:3",
+            "subl -w /s/x.rules",
+            "/bin/zed /s/x.rules:12:3",
+            "open -t /s/x.rules",
+        ]
+    );
+
+    // One editor asked for: that one alone, or nothing when it is not
+    // found (and the reason names it).
+    let got = editor_launches_at(file, Some((1, 1)), Some("zed"), env, bin, |_| false, true);
+    assert_eq!(describe(got), ["/bin/zed /s/x.rules:1:1"]);
+    let got = editor_launches_at(file, None, Some("code"), env, |_| None, |_| true, true);
+    assert!(got.is_empty());
+    assert!(no_editor(Some("code")).contains("VS Code"));
+    assert!(no_editor(Some("zed")).contains("Zed"));
+    assert!(no_editor(None).contains("$VISUAL"));
+
+    assert_eq!(goto_args("code", "/f", None), ["/f"]);
+    assert_eq!(goto_args("vim", "/f", Some((2, 1))), ["/f"]);
+    assert_eq!(editor_param("vscode"), Ok(Some("code")));
+    assert_eq!(editor_param("zed"), Ok(Some("zed")));
+    assert_eq!(editor_param("auto"), Ok(None));
+    assert!(editor_param("emacs").is_err());
+
+    // The command inside the app, for an editor whose command is not on
+    // PATH: macOS only.
+    let home = Path::new("/home/me");
+    assert_eq!(
+        bundled_programs("zed", Some(home), true),
+        [
+            PathBuf::from("/Applications/Zed.app/Contents/MacOS/cli"),
+            PathBuf::from("/home/me/Applications/Zed.app/Contents/MacOS/cli"),
+        ]
+    );
+    assert_eq!(
+        bundled_programs("code", None, true),
+        [PathBuf::from("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code")]
+    );
+    assert!(bundled_programs("code", Some(home), false).is_empty());
+    assert!(bundled_programs("vim", Some(home), true).is_empty());
+}
+
+#[test]
+fn edits_here_reach_the_watched_file_once_typing_pauses() {
+    let root = std::env::temp_dir().join(format!("h2-editor-rules-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut ed = RulesEditor::default();
+    ed.open_starter("slayer").unwrap();
+    let path = ed.prepare_external(&root).unwrap();
+    let t0 = Instant::now();
+    assert!(!ed.sync_out(t0), "nothing unsaved");
+
+    let mine = rules::builtin::SLAYER.replace("Slayer", "Mine");
+    ed.set_text(mine.clone());
+    assert!(!ed.sync_out(t0), "the pause starts");
+    assert!(!ed.sync_out(t0 + SYNC_AFTER / 2));
+    assert!(ed.sync_out(t0 + SYNC_AFTER));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+    assert!(!ed.dirty());
+    assert_eq!(
+        ed.poll_disk(t0 + SYNC_AFTER * 5),
+        DiskPoll::Nothing,
+        "its own write is no outside change"
+    );
+
+    // Typing again starts the pause again.
+    let t1 = t0 + SYNC_AFTER * 10;
+    ed.set_text(mine.replace("Mine", "Again"));
+    assert!(!ed.sync_out(t1));
+    ed.set_text(mine.replace("Mine", "Third"));
+    assert!(!ed.sync_out(t1 + SYNC_AFTER), "the text changed since");
+
+    // Off, or while the file and the buffer disagree: nothing is written.
+    ed.sync_to_file = false;
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 3));
+    ed.sync_to_file = true;
+    ed.conflict = Some("theirs".into());
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 4));
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 6));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+    ed.keep_mine();
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 7));
+    assert!(ed.sync_out(t1 + SYNC_AFTER * 8));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), mine.replace("Mine", "Third"));
+
+    // A script with no watched file is not written behind the user's back.
+    ed.open_starter("slayer").unwrap();
+    ed.set_text(mine.clone());
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 9));
+    assert!(!ed.sync_out(t1 + SYNC_AFTER * 20));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn open_in_vs_code_opens_at_the_cursor_or_the_line_asked() {
+    let root = std::env::temp_dir().join(format!("h2-editor-rules-at-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut ed = RulesEditor::default();
+    ed.open_starter("slayer").unwrap();
+    // The cursor at the start of the third line.
+    let third = ed.text.match_indices('\n').nth(1).unwrap().0 + 1;
+    ed.cursor = third;
+    let (path, at, _) = ed.external_launches(&root, Some("code"), None).unwrap();
+    assert_eq!(at, (3, 1));
+    assert_eq!(ed.watch.as_ref().map(|w| w.path.clone()), Some(path.clone()));
+    let (_, at, _) = ed.external_launches(&root, Some("zed"), Some(0)).unwrap();
+    assert_eq!(at, (1, 1), "line 0 is the first");
+    let (_, at, _) = ed.external_launches(&root, None, Some(7)).unwrap();
+    assert_eq!(at, (7, 1));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_scenario_runs_the_script_on_the_fake_game() {
+    let r = run_scenario(rules::builtin::SLAYER, r#"{"ticks":[{},{}]}"#, false).unwrap();
+    assert!(r.ok, "{}", r.text);
+    assert_eq!(r.ticks, 2);
+    assert!(r.text.starts_with("tick 0: "), "{}", r.text);
+    assert_eq!(r.outcome, "the round was still running");
+
+    let err = run_scenario("rules", "{}", false).unwrap_err();
+    assert!(err.starts_with("the script does not build"), "{err}");
+    let err = run_scenario(rules::builtin::SLAYER, r#"{"nope":1}"#, false).unwrap_err();
+    assert!(err.starts_with("scenario:"), "{err}");
+}

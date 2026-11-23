@@ -2,12 +2,14 @@
 //! (docs/game/film-format.md, "Recording every game").
 //!
 //! `h2 play` records each session into the film library when no `--film`
-//! or `H2_FILM_OUT` names a destination. The recording keeps the session's
-//! player features on (Live session links, browser advertisements,
-//! Firefight's director, the rules start gate, editor reloads), and its
-//! header says so, so the replay installs the same plan. Anything that
-//! changes the guest from outside the tape (a session link joined, an
-//! editor write) stops and discards the recording instead.
+//! or `H2_FILM_OUT` names a destination. The session's tape runs from boot
+//! to exit and is never listed; each game it plays is cut from it into a
+//! film of its own ([`cut`], "One film per game"). The recording keeps the
+//! session's player features on (Live session links, browser
+//! advertisements, Firefight's director, the rules start gate, editor
+//! reloads, Forge), and its header says so, so the replay installs the same
+//! plan. Anything that changes the guest from outside the tape (a session
+//! link joined, an editor write) stops and discards the tape instead.
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -118,6 +120,108 @@ pub fn stopper(
 ) -> Option<Arc<dyn Fn() + Send + Sync>> {
     let film = film.filter(|f| !f.replaying && f.player_features())?.clone();
     Some(Arc::new(move || film.stop_auto(why)))
+}
+
+pub(super) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Seal the game that ended at `tick` as a film of its own, cut from the
+/// running tape `rec` (docs/game/film-format.md, "One film per game"). The
+/// cut is a copy of the tape so far, closed with its own `HEAD`, the game's
+/// description and scores, and an end mark here; it opens at the game's
+/// start, `start`. Before it is written the library keeps the `KEEP - 1`
+/// newest default films. The tape's keyframes from just before `start` on
+/// go into the cut's keyframe cache. Returns the cut's path.
+pub(super) fn cut(
+    rec: &mut super::Recording,
+    tape: &film::Header,
+    slices: u64,
+    tick: u64,
+    calls: u64,
+    start: u64,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    let mut summary = rec.meta.summary(tick);
+    rec.unified.summary_medals(&mut summary.players);
+    summary.dropped_samples = rec.unified.drop_counts();
+    let header = cut_header(tape, &summary, tick, rec.game_started_ms);
+    let dir = rec.file.parent().unwrap_or(Path::new(".")).to_owned();
+    let now = SystemTime::now();
+    if let Err(error) = prune(&dir, KEEP, now) {
+        eprintln!("theater: could not make room in the film library: {error:#}");
+    }
+    let path = destination(&dir, now);
+    let out = rec.out.as_mut().context("the tape is closed")?;
+    // A running tape's file holds exactly what it wrote so far; on APFS
+    // the copy is a clone.
+    fs::copy(&rec.file, &path).with_context(|| path.display().to_string())?;
+    let sealed = (|| -> anyhow::Result<()> {
+        let file = fs::File::options().write(true).open(&path)?;
+        let mut writer = out.fork(file, &header)?;
+        let mut track = rec.track.clone();
+        writer.chunk(film::HEAD, &header)?;
+        rec.meta.finish_map()?;
+        track.finish(&mut writer, rec.meta.descriptor(), &summary)?;
+        writer.chunk(film::MARK, &film::tape::Mark::End { slices, tick, calls })?;
+        writer.finish()?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = sealed {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    if let Some(keys) = &rec.sidecar
+        && let Err(error) = keys
+            .fork(&header.meta.id, start)
+            .and_then(|writer| writer.finish(&path))
+    {
+        eprintln!("theater: this game's film has no keyframe cache: {error:#}");
+    }
+    Ok(path)
+}
+
+/// The final header of a game cut from `tape`: an ID of its own, the
+/// tape's ID, the game's start, length and scoreboard.
+pub(super) fn cut_header(
+    tape: &film::Header,
+    summary: &film::blam::Summary,
+    tick: u64,
+    game_started_ms: Option<u64>,
+) -> film::Header {
+    let mut header = tape.clone();
+    header.meta.id = live_proto::sign::random_id();
+    header.tape_id = Some(tape.meta.id.clone());
+    header.meta.started_ms = game_started_ms.unwrap_or(tape.meta.started_ms);
+    header.meta.length_ticks = tick;
+    if !summary.level.is_empty() {
+        header.meta.map.clone_from(&summary.level);
+        header.meta.variant.clone_from(&summary.variant_name);
+        header.meta.players = summary
+            .players
+            .iter()
+            .map(|player| film::Player {
+                name: player.name.clone(),
+                team: player.team,
+                score: player.score,
+            })
+            .collect();
+    }
+    header
+}
+
+/// Where Theater opens a film with no seek or clip asked for: a game cut
+/// from a session's tape opens at its game's start, any other film at boot.
+pub fn opening_tick(header: &film::Header, front: Option<&film::range::Front>) -> u64 {
+    if header.tape_id.is_none() {
+        return 0;
+    }
+    front
+        .and_then(|f| f.match_start_tick)
+        .filter(|&tick| tick <= header.meta.length_ticks)
+        .unwrap_or(0)
 }
 
 pub fn is_auto(path: &Path) -> bool {

@@ -36,6 +36,8 @@ forge-doc.workspace = true
 forge-build.workspace = true
 # `h2 hud preview` and `h2 hud sheet` (docs/game/hud-kit.md).
 hud-kit = { path = "../../tools/hud-kit" }
+# `h2 tags build --project`: the content stage (docs/editor/content-stage.md).
+stage-kit = { path = "../../tools/stage-kit" }
 # `h2 superbounce scan` (docs/game/superbounce.md, "Spots in the geometry").
 superbounce = { path = "../../live/superbounce" }
 # `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
@@ -46,6 +48,10 @@ variants = { path = "../../formats/variants" }
 # `h2 rules lsp`: the stdio language server over `rules::ide`.
 lsp-server.workspace = true
 lsp-types.workspace = true
+# `h2 rules lsp` and `h2 hs lsp`: the commands that ask Studio over its
+# socket (studio_link.rs), a client only.
+agent-proto = { path = "../../extensions/agent-proto" }
+studio-proto = { path = "../studio-proto" }
 # `h2 rules editors install` downloads the extensions' release.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 

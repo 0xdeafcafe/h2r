@@ -19,7 +19,6 @@
 mod bounce;
 mod busy;
 mod crouch;
-pub mod flight;
 mod geom;
 pub mod ghost;
 pub mod learned;

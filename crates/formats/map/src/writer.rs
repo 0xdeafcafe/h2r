@@ -3,7 +3,9 @@
 //! change. Variable-length tag names are appended; opaque metadata/raw pointers
 //! keep their original addresses. New metadata bytes may be appended after the
 //! last tag (growing the ordinary metadata region in place, see
-//! [`MapEditor::append_metadata`]); nothing that exists moves. New raw data
+//! [`MapEditor::append_metadata`]); nothing that exists moves, except a
+//! tag whose index entry is pointed at a new whole copy of it there
+//! ([`MapEditor::move_tag`], a bitmap that gained images). New raw data
 //! may be inserted before the tag index ([`MapEditor::append_raw`]): the
 //! index and metadata move down the file, and nothing that a raw pointer, a
 //! BSP descriptor or a virtual address names moves. This is not a general
@@ -259,6 +261,13 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         {
             return Err(Error::Invalid("tag edit overlaps index or string table"));
         }
+        self.queue_unprotected(at, bytes)
+    }
+
+    /// [`Self::queue`] without the protected ranges: still no overlap with
+    /// another queued edit.
+    fn queue_unprotected(&mut self, at: u64, bytes: &[u8]) -> Result<()> {
+        let end = at + bytes.len() as u64;
         if let Some((&start, data)) = self.patches.range(..end).next_back()
             && start + data.len() as u64 > at
         {
@@ -323,6 +332,67 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         self.appended.extend_from_slice(bytes);
         Ok(address)
     }
+    /// The virtual address [`Self::append_metadata`] would give bytes
+    /// appended now with `align`: for a block whose own pointers must name
+    /// where it lands before it is appended (a moved tag,
+    /// [`Self::move_tag`]).
+    pub fn next_metadata_address(&self, align: u32) -> Result<u32> {
+        if !align.is_power_of_two() || align > METADATA_GROWTH_ALIGN {
+            return Err(Error::Invalid("append alignment"));
+        }
+        let space = self
+            .map
+            .metadata_space()
+            .ok_or(Error::Invalid("map has no metadata region"))?;
+        let pad = (align as usize - self.appended.len() % align as usize) % align as usize;
+        let start = u32::try_from(self.appended.len() + pad).map_err(|_| Error::Limit)?;
+        space
+            .virtual_base
+            .checked_add(space.size)
+            .and_then(|a| a.checked_add(start))
+            .ok_or(Error::Limit)
+    }
+
+    /// Point tag `id`'s index entry at `size` bytes at `address`, bytes
+    /// already queued with [`Self::append_metadata`]: the tag moves whole,
+    /// and its old bytes stay as dead data. Every reader that finds a tag
+    /// through the index (the engine, `Map::read_tag_bytes`) reads the new
+    /// copy; references to the tag are by datum and do not change. The
+    /// entry's group and datum are kept. Refused for the first slot, whose
+    /// address anchors the ordinary metadata region, for a tag with no
+    /// payload or a payload outside the ordinary metadata (a BSP), and for
+    /// a range that is not wholly in the appended bytes.
+    pub fn move_tag(&mut self, id: TagId, address: u32, size: u32) -> Result<()> {
+        let tag = self.map.tag(id)?;
+        let loc = tag.location.ok_or(Error::NoTagData)?;
+        if id.index() == 0 {
+            return Err(Error::Invalid(
+                "the first tag anchors the metadata region; it does not move",
+            ));
+        }
+        let space = self
+            .map
+            .metadata_space()
+            .ok_or(Error::Invalid("map has no metadata region"))?;
+        if loc.space != space {
+            return Err(Error::Invalid("only a tag in the ordinary metadata moves"));
+        }
+        let lo = u64::from(space.virtual_base) + u64::from(space.size);
+        let hi = lo + self.appended.len() as u64;
+        let (a, e) = (u64::from(address), u64::from(address) + u64::from(size));
+        if size == 0 || a < lo || e > hi {
+            return Err(Error::Invalid(
+                "a moved tag's new range is not in the appended metadata",
+            ));
+        }
+        let at = self.map.tag_entry_offset(id)? + 8;
+        let mut entry = address.to_le_bytes().to_vec();
+        entry.extend_from_slice(&size.to_le_bytes());
+        // The entry table is protected from ordinary patches; this is the
+        // one write it takes.
+        self.queue_unprotected(at, &entry)
+    }
+
     /// The bytes [`Self::append_metadata`] has queued, before padding.
     pub fn appended_len(&self) -> usize {
         self.appended.len()

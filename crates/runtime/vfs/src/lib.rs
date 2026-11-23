@@ -37,7 +37,7 @@ pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use journal::{FileReference, MAX_JOURNAL_BYTES};
 pub use map_override::{
-    MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, OverlaySummary,
+    MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, OverlaidReader, OverlaySummary,
     PreparedMapRebind, RawOverlay, ReservedMapRebind,
 };
 pub use packages::{PackageBackend, Scope as PackageScope};

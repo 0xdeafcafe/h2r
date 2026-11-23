@@ -153,7 +153,8 @@ The fixed list (`h2 rules caps`): `game.traits`, `player.traits`,
   the reason in `rules.state`. The VM refuses every granted proposal in a
   ranked game or in Theater. Declare the least a mode needs.
 - The host runtime refuses, today, any script that calls `grant`: grants
-  need the match edit path, which is not built. VIP is a test script.
+  need the match edit path, which is not built. The VIP with powers is a
+  test script (`tests/scripts.rs`); the listed VIP has none.
 
 ## The scenario
 
@@ -311,7 +312,11 @@ account publishes at most 200. Full reference:
 
 Studio's **Game type script** window (a tab beside the Variants tool's
 settings) edits one `.rules` file with colouring, problems, completion,
-hover and the check report. **Open in editor** saves it and opens the file
+hover and the check report. **Open in VS Code** and **Open in Zed** save it
+and open the file there at the cursor; Studio's own edits go to the file a
+second after typing stops. The extension's **H2: Reload Script in Game** and
+**H2: Run Scenario Test...** call Studio over its socket (`rules.reload
+{path}`, `rules.run`). **Open in editor** opens the file
 in VS Code or Zed when one has the rules extension (else `$VISUAL`,
 `$EDITOR`, `code`, `zed`, `open -t`); each save there comes back into
 Studio, and into the paired game while Reload on save is ticked. Agents drive the same state over the editor
@@ -323,6 +328,8 @@ h2 studio rules.set '{"source":"..."}'
 h2 studio rules.get                               # problems, check, reload state
 h2 studio rules.save '{"path":"/tmp/mine.rules"}' # reloads too while reload on save is on
 h2 studio rules.reload '{"mode":"auto"}'          # answers {queued}; rules.get's reload has the game's answer
+h2 studio rules.run '{"scenario":"case.json"}'    # the open script over a scenario, as h2 rules run prints it
+h2 studio rules.external '{"editor":"code","launch":false}'  # its file and the command that opens it
 ```
 
 Studio sends the verified blob to the paired game's `rules.reload`. A
@@ -382,23 +389,28 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   does not print the order; `crates/formats/rules/src/caps.rs` does.
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
   entry that is not `named` or VM-only: `set_team`, `give`,
-  `spawn_areas`, `reset_objective`, `role_traits`, `inside`, `ticks_held`,
-  `label_number`, `zone_id`, `set_loadout`, `take`, `create`,
-  `register_objective`, `spawn_objective`, `player_of`.
-  `check` lists these as unhostable. The host runtime also, today, delivers
-  only `init`, `kill`, `timer` and `tick`; reads only scores, kills,
-  deaths, `alive`, `team_of`, `lives`, `round_time_left` and
-  `is_objective`; makes only `score`, `end_round`, `set_lives`,
-  `respawn`, `role_traits`, `reset_objective` and the `bot_*` orders
+  `spawn_areas`, `take`, `create`, `register_objective`,
+  `spawn_objective`. `check` lists these as unhostable. The host runtime
+  also delivers only `init`, `round_start`, `kill`, `quit`, `timer`,
+  `tick`, `bounce`, `bounced`, `spawn`, `death`, `enter` and `leave`;
+  reads only scores, kills, deaths, `alive`, `team_of`, `lives`,
+  `round_time_left`, `is_objective`, `carrier_of`, the label reads,
+  `inside` and `player_of`; makes only `score`, `end_round`, `set_lives`,
+  `respawn`, `role_traits`, `reset_objective`, `set_loadout` (the
+  multiplayer weapon list's tags only) and the `bot_*` orders
   (a `bot_*` order to a seat no phantom holds is a refused call), and
   `message`, `message_team` and `message_all`, which it shows to the host's
   own players and sends to clients as a show cue
   (docs/game/rules-world-api.md, "The show channel"); reads only
   `variant.team_play`, `score_limit`, `time_limit`
-  and `lives`; and refuses Forge labels and any `grant`. Calls land at the
-  next tick boundary, and a mode 2 script on a lifted carrier does not
-  replace the carrier's own scoring. The one script playable today is
-  Slayer-shaped; everything else is proven by scenario. Name the entries
+  and `lives`; and refuses Forge labels and any `grant`. A zone is a
+  labelled netgame flag (`game::rules::world::zones`). Calls land at the
+  next tick boundary, so a score read back in the same handler is the
+  old one; a script that ends on a total counts it in a variable. While
+  a mode 2 script scores, the carrier's own scoring is answered in place
+  (docs/game/rules-engine.md, "One scorer"). The listed scripted modes
+  (Superbounce, Siege, Gun Game, Race, VIP) run on a host; the rest is
+  proven by scenario. Name the entries
   your script waits on in a comment at the top, as the built-ins do.
 - **`message(to, text)`.** `to` is a player, a team or `all`; `h2 rules
   caps` lists the three forms under the one name. The text may hold up

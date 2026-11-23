@@ -89,7 +89,7 @@ crates = [
     "editor-core", "firefight-kit", "forge-build", "geometry-edit", "h1-assets", "h1campaign",
     "h1convert", "h1map", "h1objects", "hopper-edit", "hud-edit", "hud-kit", "live-art", "mesh-edit",
     "perf",
-    "scenario-edit", "xtask",
+    "scenario-edit", "stage-kit", "xtask",
 ]
 live_owned = ["live-art"]
 
@@ -121,3 +121,8 @@ until = "simd's exact SSE lanes move to a guest-free crate sim-core may use"
 from = "game"
 to = "perf"
 until = "the sampler is a hook boot installs: sampling.rs reaches the profiler behind `perf`, and agent_glue answers profile.sample.* with it"
+
+[[exception]]
+from = "host-data"
+to = "firefight-kit"
+until = "a host bundle's Firefight kits are built by `h2 host bundle` in cli and handed to host-data as bytes: bundle/kits.rs calls firefight_kit::build_package behind the `firefight` feature"

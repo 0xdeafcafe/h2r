@@ -63,6 +63,15 @@ pub struct Loader {
 }
 
 impl Loader {
+    /// Forgets the loaded models: the next [`Loader::get`] loads them
+    /// again from the map file, which the raw overlay serves edited (a
+    /// live edit of a `mode`, docs/editor/realtime-edits.md). Until that
+    /// load is done the object entries keep their handlers.
+    pub fn invalidate(&self) {
+        let old = self.state.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(old);
+    }
+
     /// A view sees the same models for the whole frame. The worker sends
     /// only after uploading the section buffers for this device.
     pub fn get(

@@ -142,6 +142,57 @@ pub struct RigidProgram {
     pub words: Vec<u32>,
 }
 
+/// How a material's program compiled from an edited shader differs from
+/// the one drawing (docs/editor/realtime-edits.md, "The native refresh").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgramChange {
+    /// Nothing the GPU holds.
+    None,
+    /// Only uniform values: the vertex and pixel constants, and the rigid
+    /// program's vertex constants. The buffers are rewritten in place.
+    Constants,
+    /// The module, a stage's image or sampler, a texture's shape, the
+    /// inputs, the pass state or the rigid program: the material's
+    /// programs are built again.
+    Program,
+}
+
+impl MaterialProgram {
+    /// What drawing `edited` instead of `self` takes. The pixel shader
+    /// definition is not compared: its embedded constants reach the
+    /// program only through the pixel uniforms, and everything else of it
+    /// is in the module.
+    pub fn change_to(&self, edited: &MaterialProgram) -> ProgramChange {
+        let rigid_program = match (&self.rigid, &edited.rigid) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.wgsl == b.wgsl && a.inputs == b.inputs && a.words == b.words,
+            _ => false,
+        };
+        let program = self.wgsl == edited.wgsl
+            && self.stages == edited.stages
+            && self.samplers == edited.samplers
+            && self.dims == edited.dims
+            && self.signed == edited.signed
+            && self.inputs == edited.inputs
+            && self.pixel_options == edited.pixel_options
+            && self.state == edited.state
+            && self.inherits_cull == edited.inherits_cull
+            && rigid_program;
+        if !program {
+            return ProgramChange::Program;
+        }
+        let rigid_constants = match (&self.rigid, &edited.rigid) {
+            (Some(a), Some(b)) => a.vertex == b.vertex,
+            _ => true,
+        };
+        if self.vertex == edited.vertex && self.pixel == edited.pixel && rigid_constants {
+            ProgramChange::None
+        } else {
+            ProgramChange::Constants
+        }
+    }
+}
+
 /// Translates `look`'s pass with its vertex program `microcode` (the
 /// world-space classification, [`crate::look::world_program`]), or says
 /// why it stays on the D3D path.
@@ -1044,6 +1095,68 @@ pub struct ProgramSet {
     /// The cull the passes that inherit it draw with
     /// ([`ProgramSet::pipelines`]).
     cull: InheritedCull,
+    /// The lightmap pages uploaded for the batch groups, by key (`None`
+    /// for one that did not decode): what a rebuilt material's groups bind
+    /// ([`ProgramSet::refresh`]) and a live edit rewrites
+    /// ([`ProgramSet::page_textures`]).
+    pages: HashMap<LightmapKey, Option<wgpu::TextureView>>,
+}
+
+/// What [`ProgramSet::refresh`] did, by material, ascending.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Refreshed {
+    /// Uniform buffers rewritten in place.
+    pub constants: Vec<u16>,
+    /// Programs, textures and groups built again.
+    pub rebuilt: Vec<u16>,
+    /// The edited program draws as the old one did.
+    pub unchanged: Vec<u16>,
+}
+
+/// One material's refresh, checked and built before anything is swapped.
+enum Planned {
+    Constants(Box<MaterialProgram>),
+    Rebuild(Box<Gpu>, Option<Rigid>, Vec<(usize, Option<wgpu::BindGroup>)>),
+}
+
+/// Uploads `program`, each stage's image decoded once per signed variant
+/// through `images` (a layered image from `layered`, a two-dimensional
+/// one from `stage_image`); `None` when a stage's bitmap does not decode.
+fn material_gpu(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    program: MaterialProgram,
+    stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
+    layered: &HashMap<(map::TagId, u32), crate::light_gpu::LayeredImage>,
+    images: &mut HashMap<(map::TagId, u32, [bool; 4]), Option<wgpu::TextureView>>,
+) -> Option<Gpu> {
+    Gpu::with_images(device, program, &mut |stage, signed| {
+        let Stage::Bitmap { bitmap, image } = stage else { return None };
+        images.entry((bitmap, image, signed)).or_insert_with(|| {
+            if let Some(image) = layered.get(&(bitmap, image)) {
+                let biased;
+                let pixels = if signed.iter().any(|&s| s) {
+                    biased = {
+                        let mut pixels = image.clone();
+                        bias_levels(&mut pixels.rgba, &mut pixels.mips, signed);
+                        pixels
+                    };
+                    &biased
+                } else {
+                    image
+                };
+                return Some(crate::light_gpu::layered_texture(
+                    device,
+                    queue,
+                    pixels,
+                    "native world stage",
+                ));
+            }
+            let mut decoded = stage_image(stage)?;
+            bias_signed(&mut decoded, signed);
+            Some(texture(device, queue, &decoded, "native world stage"))
+        }).clone()
+    })
 }
 
 pub(crate) fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -1060,6 +1173,18 @@ pub(crate) fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgp
 }
 
 impl Gpu {
+    /// The textures this program's stages sample as `want`, with the stage
+    /// and its signed channels, appended to `out` unless `out` holds them.
+    pub(crate) fn held(&self, want: Stage, out: &mut Vec<crate::gpu::Held>) {
+        for (n, stage) in self.program.stages.iter().enumerate() {
+            let Some(view) = self.stage_views[n].as_ref().filter(|_| *stage == want) else { continue };
+            let t = view.texture().clone();
+            if !out.iter().any(|(o, ..)| *o == t) {
+                out.push((t, n, self.program.signed[n]));
+            }
+        }
+    }
+
     /// Uploads `program`; `None` when a stage's bitmap does not decode.
     pub(crate) fn new(
         device: &wgpu::Device,
@@ -1125,7 +1250,8 @@ impl Gpu {
             gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                // COPY_SRC: a live refresh's test reads the buffers back.
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             })
         };
         let vertex_buffer = buffer("native world program vertex", &program.vertex.to_bytes());
@@ -1389,6 +1515,21 @@ impl Rigid {
         let n = self.slots.binary_search_by_key(&instance, |s| s.0).ok()?;
         u32::try_from(n as u64 * self.stride).ok()
     }
+
+    /// Takes `program`'s constants (same module and inputs, a
+    /// [`ProgramChange::Constants`] edit): every slot written again as
+    /// [`Rigid::with_slots`] writes it.
+    pub(crate) fn rewrite(&mut self, queue: &wgpu::Queue, program: &RigidProgram) {
+        let stride = self.stride as usize;
+        let mut bytes = vec![0; stride * (self.slots.len().max(1) - 1) + VertexUniforms::SIZE];
+        for (i, (_, rows)) in self.slots.iter().enumerate() {
+            let mut v = program.vertex.clone();
+            v.constants[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(rows);
+            v.write_bytes(&mut bytes[i * stride..i * stride + VertexUniforms::SIZE]);
+        }
+        queue.write_buffer(&self.buffer, 0, &bytes);
+        self.program = program.clone();
+    }
 }
 
 impl ProgramSet {
@@ -1419,33 +1560,7 @@ impl ProgramSet {
         let mut rigid = HashMap::new();
         let mut images = HashMap::new();
         for (material, program) in programs {
-            let g = Gpu::with_images(device, program, &mut |stage, signed| {
-                let Stage::Bitmap { bitmap, image } = stage else { return None };
-                images.entry((bitmap, image, signed)).or_insert_with(|| {
-                    if let Some(image) = layered.get(&(bitmap, image)) {
-                        let biased;
-                        let pixels = if signed.iter().any(|&s| s) {
-                            biased = {
-                                let mut pixels = image.clone();
-                                bias_levels(&mut pixels.rgba, &mut pixels.mips, signed);
-                                pixels
-                            };
-                            &biased
-                        } else {
-                            image
-                        };
-                        return Some(crate::light_gpu::layered_texture(
-                            device,
-                            queue,
-                            pixels,
-                            "native world stage",
-                        ));
-                    }
-                    let mut decoded = stage_image(stage)?;
-                    bias_signed(&mut decoded, signed);
-                    Some(texture(device, queue, &decoded, "native world stage"))
-                }).clone()
-            });
+            let g = material_gpu(device, queue, program, stage_image, layered, &mut images);
             if let Some(g) = g {
                 if let Some(r) = Rigid::new(device, &g, world, material) {
                     rigid.insert(material, r);
@@ -1468,7 +1583,112 @@ impl ProgramSet {
                 }).clone()
             })
             .collect();
-        Self { materials, rigid, batch_groups, cull: InheritedCull::default() }
+        Self { materials, rigid, batch_groups, cull: InheritedCull::default(), pages }
+    }
+
+    /// The program material `material` draws with, if it has one.
+    pub fn program(&self, material: u16) -> Option<&MaterialProgram> {
+        self.materials.get(&material).map(|g| &g.program)
+    }
+
+    /// Whether material `material` draws with its own program.
+    pub fn has(&self, material: u16) -> bool {
+        self.materials.contains_key(&material)
+    }
+
+    /// Puts `edited` (by material, each compiled from the edited shader as
+    /// the load compiles it) in place of the materials' programs
+    /// (docs/editor/realtime-edits.md, "The native refresh"). A
+    /// constants-only change ([`ProgramChange::Constants`]) rewrites the
+    /// material's uniform buffers (and its rigid program's slots); any
+    /// other builds its program, stage textures, rigid program and batch
+    /// groups again, binding the lightmap pages the load uploaded. Every
+    /// material is checked and built before the first is swapped: a
+    /// material with no program here or a stage that does not decode
+    /// refuses them all and writes nothing.
+    pub fn refresh(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        world: &World,
+        edited: HashMap<u16, MaterialProgram>,
+        stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
+        layered: &HashMap<(map::TagId, u32), crate::light_gpu::LayeredImage>,
+    ) -> Result<Refreshed, String> {
+        let mut edited: Vec<(u16, MaterialProgram)> = edited.into_iter().collect();
+        edited.sort_by_key(|(m, _)| *m);
+        let mut done = Refreshed::default();
+        let mut plan = Vec::new();
+        let mut images = HashMap::new();
+        for (m, program) in edited {
+            let old = self.materials.get(&m).ok_or_else(|| format!("material {m} has no program to refresh"))?;
+            match old.program.change_to(&program) {
+                ProgramChange::None => done.unchanged.push(m),
+                ProgramChange::Constants => plan.push((m, Planned::Constants(Box::new(program)))),
+                ProgramChange::Program => {
+                    let g = material_gpu(device, queue, program, stage_image, layered, &mut images)
+                        .ok_or_else(|| format!("material {m}: a stage's bitmap does not decode or the program does not build"))?;
+                    // One group per page, as the load makes them; a page
+                    // that did not decode leaves its batches unbound, as
+                    // at the load.
+                    let mut by_page: HashMap<Option<LightmapKey>, Option<wgpu::BindGroup>> = HashMap::new();
+                    let mut groups = Vec::new();
+                    for (n, b) in world.batches.iter().enumerate().filter(|(_, b)| b.material == m) {
+                        let group = by_page.entry(b.lightmap).or_insert_with(|| {
+                            let page = b.lightmap.and_then(|k| self.pages.get(&k).cloned().flatten());
+                            g.textures(device, page.as_ref())
+                        });
+                        groups.push((n, group.clone()));
+                    }
+                    let rigid = Rigid::new(device, &g, world, m);
+                    plan.push((m, Planned::Rebuild(Box::new(g), rigid, groups)));
+                }
+            }
+        }
+        for (m, p) in plan {
+            match p {
+                Planned::Constants(program) => {
+                    let g = self.materials.get_mut(&m).expect("checked above");
+                    queue.write_buffer(&g.vertex_buffer, 0, &program.vertex.to_bytes());
+                    queue.write_buffer(&g.pixel_buffer, 0, &program.pixel.to_bytes());
+                    if let (Some(r), Some(edited)) = (self.rigid.get_mut(&m), program.rigid.as_ref()) {
+                        r.rewrite(queue, edited);
+                    }
+                    g.program = *program;
+                    done.constants.push(m);
+                }
+                Planned::Rebuild(g, rigid, groups) => {
+                    self.materials.insert(m, *g);
+                    match rigid {
+                        Some(r) => {
+                            self.rigid.insert(m, r);
+                        }
+                        None => {
+                            self.rigid.remove(&m);
+                        }
+                    }
+                    for (n, group) in groups {
+                        if let Some(slot) = self.batch_groups.get_mut(n) {
+                            *slot = group;
+                        }
+                    }
+                    done.rebuilt.push(m);
+                }
+            }
+        }
+        Ok(done)
+    }
+
+    /// The textures that hold lightmap page `key`, for
+    /// [`crate::gpu::rewrite_pages`].
+    pub fn page_textures(&self, key: LightmapKey) -> Vec<wgpu::Texture> {
+        self.pages.get(&key).and_then(|page| page.as_ref().map(|view| view.texture().clone())).into_iter().collect()
+    }
+
+    /// Every texture the materials' stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels, each texture once.
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        self.image_textures(bitmap, image)
     }
 
     /// The stages whose programs sample image `image` of `bitmap`,
@@ -1938,6 +2158,122 @@ mod tests {
         assert!(replacement.materials[&1].pipelines.pending.is_empty());
     }
 
+    /// `len` bytes of `buffer` from its start.
+    fn read_buffer(ctx: &gfx::GfxContext, buffer: &wgpu::Buffer, len: u64) -> Vec<u8> {
+        let out = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: len,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(buffer, 0, &out, 0, len);
+        ctx.queue.submit([enc.finish()]);
+        out.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        out.slice(..).get_mapped_range().unwrap().to_vec()
+    }
+
+    /// A program with a bitmap stage and a lightmap stage, as a world
+    /// material's.
+    fn staged_program() -> MaterialProgram {
+        let mut program = compile(&plain_look(), &plain_program()).unwrap();
+        program.dims[..2].fill(Some(TextureDim::D2));
+        program.stages[0] = Stage::Bitmap { bitmap: map::TagId(7), image: 1 };
+        program.stages[1] = Stage::Lightmap;
+        program
+    }
+
+    #[test]
+    fn a_constant_edit_changes_constants_and_anything_else_the_program() {
+        let base = staged_program();
+        assert_eq!(base.change_to(&base.clone()), ProgramChange::None);
+        let mut constant = base.clone();
+        constant.vertex.constants[20][0] += 1.0;
+        assert_eq!(base.change_to(&constant), ProgramChange::Constants);
+        let mut colour = base.clone();
+        colour.pixel = constant.pixel;
+        colour.def.constant0[0] ^= 1;
+        assert_eq!(base.change_to(&colour), ProgramChange::None, "the definition's constants reach the GPU through the uniforms");
+        let mut bitmap = base.clone();
+        bitmap.stages[0] = Stage::Bitmap { bitmap: map::TagId(8), image: 1 };
+        assert_eq!(base.change_to(&bitmap), ProgramChange::Program);
+        let mut module = base.clone();
+        module.wgsl.push_str("\n// edited");
+        assert_eq!(base.change_to(&module), ProgramChange::Program);
+    }
+
+    /// A constants-only refresh rewrites the buffers in place; the set
+    /// then holds what a set built from the edited program holds.
+    #[test]
+    fn a_refreshed_set_equals_one_built_from_the_edited_shader() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let page = LightmapKey { page: 0, palette: 0 };
+        let world = World {
+            batches: vec![crate::world::Batch { material: 0, lightmap: Some(page), first_draw: 0, draw_count: 0 }],
+            ..Default::default()
+        };
+        let build = |program: &MaterialProgram| {
+            ProgramSet::new(&ctx.device, &ctx.queue, &world, [(0, program.clone())].into(),
+                &mut |_| Some(Image::solid([7; 4])), &mut |_| Some(Image::solid([9; 4])))
+        };
+        let base = staged_program();
+        let mut edited = base.clone();
+        edited.vertex.constants[20] = [0.25, 0.5, 0.75, 1.0];
+        edited.pixel.c0[0] = [0.5; 4];
+        let mut set = build(&base);
+        let (vertex, pixel) = (set.materials[&0].vertex_buffer.clone(), set.materials[&0].pixel_buffer.clone());
+        let done = set
+            .refresh(&ctx.device, &ctx.queue, &world, [(0, edited.clone())].into(), &mut |_| panic!("no decode for constants"), &HashMap::new())
+            .unwrap();
+        assert_eq!(done, Refreshed { constants: vec![0], ..Default::default() });
+        assert_eq!(set.materials[&0].vertex_buffer, vertex, "in place");
+        let fresh = build(&edited);
+        assert_eq!(set.program(0).unwrap().vertex, fresh.program(0).unwrap().vertex);
+        assert_eq!(set.program(0).unwrap().pixel, fresh.program(0).unwrap().pixel);
+        let (vl, pl) = (VertexUniforms::SIZE as u64, set.materials[&0].program.pixel.to_bytes().len() as u64);
+        assert_eq!(read_buffer(&ctx, &vertex, vl), read_buffer(&ctx, &fresh.materials[&0].vertex_buffer, vl));
+        assert_eq!(read_buffer(&ctx, &pixel, pl), read_buffer(&ctx, &fresh.materials[&0].pixel_buffer, pl));
+    }
+
+    /// A change past the constants (a template's: another stage image)
+    /// builds only the edited material again, with the load's lightmap
+    /// page; the other material keeps every resource it had.
+    #[test]
+    fn a_program_change_rebuilds_only_the_materials_that_use_it() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let page = LightmapKey { page: 0, palette: 0 };
+        let batch = |material| crate::world::Batch { material, lightmap: Some(page), first_draw: 0, draw_count: 0 };
+        let world = World { batches: vec![batch(0), batch(1), batch(0)], ..Default::default() };
+        let base = staged_program();
+        let mut pages = 0;
+        let mut set = ProgramSet::new(&ctx.device, &ctx.queue, &world, [(0, base.clone()), (1, base.clone())].into(),
+            &mut |_| Some(Image::solid([7; 4])), &mut |_| { pages += 1; Some(Image::solid([9; 4])) });
+        assert_eq!(pages, 1);
+        let other = (set.materials[&1].vertex_buffer.clone(), set.batch_groups[1].clone());
+        let old = (set.materials[&0].vertex_buffer.clone(), set.batch_groups[0].clone());
+        let mut edited = base.clone();
+        edited.stages[0] = Stage::Bitmap { bitmap: map::TagId(8), image: 0 };
+        let mut decoded = Vec::new();
+        let done = set
+            .refresh(&ctx.device, &ctx.queue, &world, [(0, edited)].into(),
+                &mut |s| { decoded.push(s); Some(Image::solid([3; 4])) }, &HashMap::new())
+            .unwrap();
+        assert_eq!(done, Refreshed { rebuilt: vec![0], ..Default::default() });
+        assert_eq!(decoded, vec![Stage::Bitmap { bitmap: map::TagId(8), image: 0 }]);
+        assert_ne!(set.materials[&0].vertex_buffer, old.0);
+        assert_ne!(set.batch_groups[0], old.1);
+        assert_eq!(set.batch_groups[0], set.batch_groups[2], "one group per material and page");
+        assert_eq!((set.materials[&1].vertex_buffer.clone(), set.batch_groups[1].clone()), other);
+        let texture = set.materials[&0].stage_views[0].as_ref().unwrap().texture().clone();
+        assert_eq!(first_texel(&ctx, &texture), [3; 4]);
+        // A material with no program refuses the whole refresh.
+        let refused = set.refresh(&ctx.device, &ctx.queue, &world, [(0, base.clone()), (5, base)].into(),
+            &mut |_| None, &HashMap::new());
+        assert!(refused.is_err());
+        assert_eq!(set.program(0).unwrap().stages[0], Stage::Bitmap { bitmap: map::TagId(8), image: 0 }, "nothing swapped");
+    }
+
     /// The texel at the origin of `t`'s first level (an RGBA8 texture).
     fn first_texel(ctx: &gfx::GfxContext, t: &wgpu::Texture) -> [u8; 4] {
         let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1997,6 +2333,48 @@ mod tests {
         assert_eq!(first_texel(&ctx, &plain), [10, 20, 30, 40], "refused: nothing written");
         assert_eq!(set.rewrite_image(&ctx.queue, bitmap, 1, &HashMap::new()), Err(crate::gpu::ImageRefusal::NotDecoded));
         assert_eq!(set.rewrite_image(&ctx.queue, map::TagId(8), 1, &decoded), Ok(0), "no texture of another bitmap");
+    }
+
+    /// A lightmap page rewritten in place changes the texel the batch
+    /// group samples, and every holder of the page is one texture; a size
+    /// change is refused and writes nothing (docs/editor/realtime-edits.md,
+    /// "The native refresh").
+    #[test]
+    fn a_lightmap_page_rewrite_changes_the_sampled_texel() {
+        use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let page = LightmapKey { page: 3, palette: 1 };
+        let mut b = WorldBuilder::new();
+        b.add_section(
+            Owner::Cluster(0),
+            &SectionInput {
+                positions: vec![[10.0, 2.0, -2.0], [10.0, -2.0, -2.0], [10.0, 2.0, 2.0], [10.0, -2.0, 2.0]],
+                uvs: vec![[0.5; 2]; 4],
+                lightmap_uvs: vec![[0.5; 2]; 4],
+                normals: vec![[-1.0, 0.0, 0.0]; 4],
+                parts: vec![PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
+                ..Default::default()
+            },
+            &Placement::IDENTITY,
+            Some(page),
+        );
+        let world = b.finish();
+        let mut program = compile(&plain_look(), &plain_program()).unwrap();
+        program.dims[..2].fill(Some(TextureDim::D2));
+        program.stages[0] = Stage::Bitmap { bitmap: map::TagId(7), image: 1 };
+        program.stages[1] = Stage::Lightmap;
+        let set = ProgramSet::new(&ctx.device, &ctx.queue, &world, [(0, program)].into(),
+            &mut |_| Some(Image::solid([1, 2, 3, 4])), &mut |_| Some(Image::solid([7, 8, 9, 10])));
+        let held = set.page_textures(page);
+        assert_eq!(held.len(), 1, "one texture holds the page");
+        assert_eq!(first_texel(&ctx, &held[0]), [7, 8, 9, 10]);
+        assert!(set.page_textures(LightmapKey { page: 3, palette: 2 }).is_empty(), "another palette is another page");
+        assert_eq!(crate::gpu::rewrite_pages(&ctx.queue, &held, &Image::solid([70, 80, 90, 100])), Ok(1));
+        assert_eq!(first_texel(&ctx, &held[0]), [70, 80, 90, 100]);
+        let bigger = Image::level(2, 2, vec![99; 16]).unwrap();
+        assert_eq!(crate::gpu::rewrite_pages(&ctx.queue, &held, &bigger), Err(crate::gpu::ImageRefusal::Size));
+        assert_eq!(first_texel(&ctx, &held[0]), [70, 80, 90, 100], "refused: nothing written");
+        assert_eq!(set.held(map::TagId(7), 1).len(), 1, "the stage image is held beside the page");
     }
 
     /// The world's packets (`GpuWorld::selection_draws`) with their view

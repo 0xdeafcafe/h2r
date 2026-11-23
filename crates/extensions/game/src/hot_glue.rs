@@ -16,6 +16,14 @@
 //! Live collision commits (`edit.collision.*`) get the game's BSP
 //! activation ([`install_collision_activation`]) and make the bots'
 //! walls stale ([`install`]).
+//! Every applied tag write and revert sends a notice per changed tag
+//! (`hot_tags::TagWrite`) to the host copies of tag bytes ([`tag_written`]):
+//! the native renderer's queue (`native_edits::Edit::Tag`), the animation
+//! clip store, the HUD kit, aim assist and the bots' data. Before them,
+//! [`MetaGlue`] copies the written bytes into the raw overlay at their
+//! metadata's file offset, so a live open of the map
+//! (`native_map::open`) and the guest's own re-reads of the file read the
+//! edited tag.
 //!
 //! Grown tag blocks go to the edit arena (`hot_tags::arena`, in the HLE
 //! reservation, pages mapped through the runtime's memory as it grows).
@@ -89,6 +97,7 @@ fn install_edits(
     if let Some(locate) = maps.clone() {
         editor = editor.with_names(Box::new(move |g| names(g, &locate)));
     }
+    let vfs_for_meta = vfs.clone();
     editor = editor.with_raw(
         Box::new(RawGlue { vfs, overlay: vfs::RawOverlay::global().clone() }),
         Box::new(|r| render_bridge::native_edits::push(native_edit(r))),
@@ -101,6 +110,16 @@ fn install_edits(
             bots::autonav::collision_edited(Arc::clone(&c.bsp));
         }
     });
+    let mut meta = MetaGlue {
+        maps: maps.clone(),
+        vfs: vfs_for_meta,
+        overlay: vfs::RawOverlay::global().clone(),
+        spaces: None,
+    };
+    editor = editor.with_tag_writes(Box::new(move |g: &mut runtime::Guest, n: &hot_tags::TagWrite| {
+        meta.put(g, n);
+        tag_written(g, n);
+    }));
     let pages_rt = Arc::clone(rt);
     let rt = Arc::clone(rt);
     agent::hot::add_edit_methods(
@@ -155,6 +174,157 @@ fn names(g: &runtime::Guest, locate: &MapLocator) -> Option<hot_tags::Names> {
     let reader = std::fs::File::open(&file.path).ok()?;
     let map = map::Map::from_region(std::io::BufReader::new(reader), file.offset, file.len).ok()?;
     hot_tags::Names::from_map(&map)
+}
+
+/// Each tag's metadata region in a map's file, by tag index slot: the
+/// ordinary metadata, or a structure BSP's or lightmap's own region
+/// (docs/formats/map-format.md, "BSP and lightmap metadata").
+#[derive(Clone, Debug, Default)]
+pub struct Spaces {
+    slots: std::collections::HashMap<u32, map::AddressSpace>,
+}
+
+impl Spaces {
+    pub fn of<R: Read + Seek>(map: &map::Map<R>) -> Spaces {
+        Spaces {
+            slots: map
+                .tags()
+                .iter()
+                .filter_map(|t| Some((t.id.0 & 0xffff, t.location?.space)))
+                .collect(),
+        }
+    }
+
+    /// The file offset of `len` bytes at guest address `at` in tag `tag`
+    /// (matched by index, as `native_map::tag_of` does): `None` outside
+    /// the tag's region, as a block moved into the edit arena is.
+    pub fn offset(&self, tag: u32, at: u32, len: u32) -> Option<u64> {
+        self.slots.get(&(tag & 0xffff))?.translate(at, len).ok()
+    }
+}
+
+/// Puts each span of tag `tag` (its guest address and the bytes guest
+/// memory holds there now) into `overlay` at its file offset in `file`,
+/// as metadata. A span outside the tag's region is left out. How many
+/// went in.
+pub fn overlay_metadata(
+    overlay: &vfs::RawOverlay,
+    file: &str,
+    spaces: &Spaces,
+    tag: u32,
+    spans: &[(u32, Vec<u8>)],
+) -> usize {
+    let mut put = 0;
+    for (at, bytes) in spans {
+        let Ok(len) = u32::try_from(bytes.len()) else { continue };
+        if let Some(offset) = spaces.offset(tag, *at, len) {
+            overlay.put_metadata(file, offset, bytes);
+            put += 1;
+        }
+    }
+    put
+}
+
+/// The metadata overlay (docs/editor/realtime-edits.md, "The edit
+/// overlay"): every applied tag write and revert, as guest memory holds
+/// it after, at its file offset in the loaded map. The entries mirror
+/// guest bytes, so they never refuse a snapshot
+/// (`vfs::RawOverlay::holds_raw`); a new map clears them with the rest
+/// of the overlay.
+struct MetaGlue {
+    maps: Option<Arc<MapLocator>>,
+    vfs: Option<Arc<Mutex<vfs::Vfs>>>,
+    overlay: vfs::RawOverlay,
+    /// The loaded map's regions, keyed by its file and scenario.
+    spaces: Option<((std::path::PathBuf, u64, u64, u32), Spaces)>,
+}
+
+impl MetaGlue {
+    fn spaces(&mut self, g: &runtime::Guest) -> Result<&Spaces, String> {
+        let locate = self.maps.as_ref().ok_or("the loaded map's file is not known")?;
+        let file = locate(g).ok_or("the loaded map's file is not found")?;
+        let scenario = hot_tags::index::index(g)?.scenario;
+        let key = (file.path.clone(), file.offset, file.len, scenario);
+        if self.spaces.as_ref().is_none_or(|(k, _)| *k != key) {
+            let reader = std::fs::File::open(&file.path).map_err(|e| e.to_string())?;
+            let map = map::Map::from_region(std::io::BufReader::new(reader), file.offset, file.len)
+                .map_err(|e| e.to_string())?;
+            self.spaces = Some((key, Spaces::of(&map)));
+        }
+        Ok(&self.spaces.as_ref().expect("set above").1)
+    }
+
+    fn put(&mut self, g: &runtime::Guest, n: &hot_tags::TagWrite) {
+        if n.spans.is_empty() {
+            return;
+        }
+        let name = match loaded_name(g) {
+            Ok(name) => overlay_name(ResourceFile::Local, &name),
+            Err(_) => return,
+        };
+        // The guest re-reads a BSP's region from its slot at a switch:
+        // the slot serves the overlay as the map.
+        if let Some(vfs) = &self.vfs {
+            let vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(why) = alias_slots(g, &vfs, &self.overlay) {
+                eprintln!("hot edits: tag {:#010x}: the guest's slot does not read the metadata overlay ({why})", n.tag);
+            }
+        }
+        let spans: Vec<(u32, Vec<u8>)> = n
+            .spans
+            .iter()
+            .filter_map(|r| {
+                let mut b = vec![0; r.end.checked_sub(r.start)? as usize];
+                g.read_bytes(r.start, &mut b, 1).ok()?;
+                Some((r.start, b))
+            })
+            .collect();
+        let overlay = self.overlay.clone();
+        match self.spaces(g) {
+            Ok(spaces) => {
+                overlay_metadata(&overlay, &name, spaces, n.tag, &spans);
+            }
+            Err(why) => eprintln!(
+                "hot edits: tag {:#010x}: not in the metadata overlay ({why}); native copies read the file's bytes",
+                n.tag
+            ),
+        }
+    }
+}
+
+const SBSP: u32 = u32::from_be_bytes(*b"sbsp");
+const JMAD: u32 = u32::from_be_bytes(*b"jmad");
+const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
+
+/// The host subscribers of a tag-write notice
+/// (docs/editor/realtime-edits.md, "Realtime coverage", R8), called with
+/// the guest held right after the edit applied:
+///
+/// * every tag: `native_edits::Edit::Tag`, for the native copies (a
+///   `shad`, `stem`, `spas` or `vrtx` is queued as `Edit::Shader`, R10);
+/// * `jmad`: the clip store drops the clips keyed inside the tag;
+/// * `nhdt`: the HUD kit copies the edited widget records again;
+/// * `weap`, `matg`: aim assist adopts the edited fields as retail;
+/// * `sbsp`: the bots' data is marked stale.
+fn tag_written(g: &mut runtime::Guest, n: &hot_tags::TagWrite) {
+    let group = n.group.as_u32();
+    render_bridge::native_edits::push(render_bridge::native_edits::Edit::Tag { group, tag: n.tag });
+    let tag_end = n.address.saturating_add(n.size);
+    match group {
+        JMAD => {
+            engine::sim_anim::STORE.flush_range(n.address, tag_end);
+        }
+        NHDT => {
+            if let Err(e) = crate::hud_kit::tag_written(g, n.range.start, n.range.end) {
+                eprintln!("hud kit: an edited nhdt {:#010x} was not copied again ({e:?}); it shows at the next game", n.tag);
+            }
+        }
+        crate::aim_assist::WEAP | crate::aim_assist::MATG => {
+            crate::aim_assist::tag_written(&*g, group, n.tag, n.address, n.range.start, n.range.end);
+        }
+        SBSP => bots::cache::mark_stale(format!("a live edit wrote sbsp {:#010x}", n.tag)),
+        _ => {}
+    }
 }
 
 fn native_edit(r: hot_tags::Refresh) -> render_bridge::native_edits::Edit {
@@ -260,26 +430,33 @@ impl RawGlue {
     }
 }
 
+/// Aliases each cache slot file the guest reads to the map it holds, so
+/// the guest's reads serve `overlay` as the map. The loaded map's slot
+/// must resolve; a shared map's may not.
+fn alias_slots(g: &runtime::Guest, vfs: &vfs::Vfs, overlay: &vfs::RawOverlay) -> Result<(), String> {
+    let map = loaded_name(g)?;
+    for file in [
+        ResourceFile::Local,
+        ResourceFile::MainMenu,
+        ResourceFile::Shared,
+        ResourceFile::SinglePlayerShared,
+    ] {
+        let object = slot_of(g, file).and_then(|slot| slot_object(vfs, slot));
+        match object {
+            Ok(object) => overlay.alias(&object, &overlay_name(file, &map)),
+            // The guest pages the loaded map in from its slot; without
+            // it a live raw write would be lost at the next page-in.
+            Err(why) if file == ResourceFile::Local => return Err(why),
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
 impl hot_tags::RawFiles for RawGlue {
     fn ready(&mut self, g: &runtime::Guest) -> Result<(), String> {
-        let map = loaded_name(g)?;
         let vfs = self.vfs()?;
-        for file in [
-            ResourceFile::Local,
-            ResourceFile::MainMenu,
-            ResourceFile::Shared,
-            ResourceFile::SinglePlayerShared,
-        ] {
-            let object = slot_of(g, file).and_then(|slot| slot_object(&vfs, slot));
-            match object {
-                Ok(object) => self.overlay.alias(&object, &overlay_name(file, &map)),
-                // The guest pages the loaded map in from its slot; without
-                // it a live raw write would be lost at the next page-in.
-                Err(why) if file == ResourceFile::Local => return Err(why),
-                Err(_) => {}
-            }
-        }
-        Ok(())
+        alias_slots(g, &vfs, &self.overlay)
     }
 
     fn read(&mut self, g: &runtime::Guest, file: ResourceFile, offset: u64, len: usize) -> Result<Vec<u8>, String> {
@@ -333,6 +510,10 @@ impl hot_tags::RawFiles for RawGlue {
     fn summary(&self) -> serde_json::Value {
         let s = self.overlay.summary();
         serde_json::json!({"entries": s.entries, "bytes": s.bytes, "appended": s.appended,
-            "appended_bytes": s.appended_bytes, "files": s.files})
+            "appended_bytes": s.appended_bytes, "metadata": s.metadata,
+            "metadata_bytes": s.metadata_bytes, "files": s.files})
     }
 }
+
+#[cfg(test)]
+mod tests;

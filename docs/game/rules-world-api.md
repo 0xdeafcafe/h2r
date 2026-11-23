@@ -243,7 +243,12 @@ entries, signatures and fake of a group in
 `crates/formats/rules/src/world/<group>.rs`, and its guest half in
 `crates/extensions/game/src/rules/world/<group>.rs`, for `objects`,
 `vehicles`, `squads`, `bots`, `audio`, `hud`, `physics`, `data` and
-`show`. `rules::vm::Game` gains one sub-trait per group, so a fake or a
+`show`. The host's zone test (`world/zones.rs`, the labelled flags as
+cylinders and hill polygons, behind `inside`, `ticks_held`, `on enter`
+and `on leave`) and `set_loadout` (`world/loadout.rs`) are guest halves
+of the core entries, with no group of their own
+([rules-engine.md](rules-engine.md#the-host-runtime)).
+`rules::vm::Game` gains one sub-trait per group, so a fake or a
 host implements a group whole or not at all. The traits take typed
 handles (`ObjectRef`, `PlayerSlot`, `SquadSlot`, `VehicleRef`,
 `WidgetId`, `WaypointId`, `TagRef`, `Vec3Fixed`), never a `u32`; a

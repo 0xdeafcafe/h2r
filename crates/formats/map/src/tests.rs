@@ -667,6 +667,47 @@ fn appended_metadata_grows_the_region_and_moves_nothing() {
 }
 
 #[test]
+fn a_moved_tag_reads_from_its_new_copy_and_nothing_else_changes() {
+    let bytes = fixture_at_end();
+    let mut map = parse(bytes.clone()).unwrap();
+    let mut edit = map.edit();
+    // The bitmap (slot 4, 16 bytes at META + 0x500) grows to 0x30 bytes.
+    let copy: Vec<u8> = (0u8..0x30).collect();
+    let at = edit.next_metadata_address(16).unwrap();
+    assert_eq!(at, META + 0x600);
+    // Not appended yet: the range is refused.
+    assert!(edit.move_tag(id(4), at, 0x30).is_err());
+    assert_eq!(edit.append_metadata(&copy, 16).unwrap(), at);
+    // Past the appended bytes, the first slot and a BSP are refused.
+    assert!(edit.move_tag(id(4), at, 0x31).is_err());
+    assert!(edit.move_tag(id(0), at, 0x30).is_err());
+    assert!(edit.move_tag(id(2), at, 0x30).is_err());
+    edit.move_tag(id(4), at, 0x30).unwrap();
+    // The entry is patched once.
+    assert!(edit.move_tag(id(4), at, 0x30).is_err());
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    let result = out.into_inner();
+    let mut reread = parse(result.clone()).unwrap();
+    reread.validate_checksum().unwrap();
+    let t = reread.tag(id(4)).unwrap().clone();
+    assert_eq!((t.index_address, t.index_size), (META + 0x600, 0x30));
+    assert_eq!(reread.read_tag_bytes(id(4)).unwrap(), copy);
+    // Only the header sizes and the entry's address and size changed; the
+    // old copy stays as it was.
+    let entry = TAGS + 64 + 8;
+    let allowed = [8..12, 0x18..0x20, 0x2d0..0x2d4, entry..entry + 8];
+    for i in 0..bytes.len() {
+        if !allowed.iter().any(|r| r.contains(&i)) {
+            assert_eq!(result[i], bytes[i], "offset {i:#x}");
+        }
+    }
+    for (a, b) in reread.tags().iter().zip(map.tags()).filter(|(a, _)| a.id != id(4)) {
+        assert_eq!((a.index_address, a.index_size), (b.index_address, b.index_size));
+    }
+}
+
+#[test]
 fn appending_metadata_is_refused_outside_its_bounds() {
     // The metadata does not end the file.
     let mut map = parse(fixture()).unwrap();

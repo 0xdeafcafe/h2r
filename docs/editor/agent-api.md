@@ -252,7 +252,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop`, `measure {tag \| clip \| path, range?, permutation?, class?, limit?}` ([Content checks](#content-checks)) |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
@@ -270,6 +270,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
 | `check` | `run {what?, target?}`: every content check in one list ([Content checks](#content-checks)) |
+| `image` | `generate {prompt, references, bitmap?, image?, size?, alpha?, out?, from?}`, `result {id?}`, `apply {id}`, `accept {id, save?}`, `discard {id}`: a picture made for a bitmap image from a prompt and the references the user picks ([Generating images](#generating-images)) |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
 | `model` | `list {group?}`, `read {tag, variant?}`, `render {tag, view?, variant?, character?, biped?, hands?, size?, camera?, out?}`, `check {tag, variant?}`, each with `map?` and `pogo?` ([Models and customisation](#models-and-customisation)); `colors`, `emblem` (planned) |
 | `custom` (planned) | `list`, `set` |
@@ -294,7 +295,22 @@ Notes on some:
   call form. `script.doc {path}` names builtins from the user's script
   documentation listing, read from that path now and not stored
   (`null` drops it); its `doc` says how many entries read, agreed with
-  the map's names, disagreed and named.
+  the map's names, disagreed and named. `script.external` writes the
+  working copy VS Code and Zed edit (`<data>/scripts/<map>/<map>.hsc`,
+  with `h2hs.json`, the context `h2 hs lsp` reads, beside it; a copy
+  holding edits is kept) and opens it in `editor` (`code`, `zed`, or
+  `auto`, the default) at the definition `name` (default: the one
+  shown). Its answer has the `path`, the `context` file, the 1-based
+  `line`, the `commands` that open it (`{program, args, line}`) and
+  `working`. `launch: false` starts nothing; launching with no such
+  editor is `REFUSED`, and an unknown `name` is `INVALID_PARAMS`.
+  `script.working` reads the copy now and answers which definitions
+  differ from the map's (`changed`, `added`, `removed`), its `problems`
+  against the context (`line`, `col` from 1, `severity`, `message`,
+  `code`), and `stale` when the map's scripts changed while it held
+  edits; `{open: false}` when none is open. It needs no map. Nothing is
+  written into the map ([editor-guide.md, "Scripts in VS Code and
+  Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
 - **Variants of a script.** `doc.open {variant: {script: <starter>}}` (a
   `rules.get` starter's name, or `open` for the script in the script
   window) opens a new, unsaved variant of it: the record
@@ -328,6 +344,23 @@ Notes on some:
   in_place | restarted, hash, tick, reasons}` or `{state: refused, why}`
   (not paired, a game without `rules.reload`, or the game's refusal;
   [Rules scripts](../runtime/agent-api.md#rules-scripts)).
+  `rules.reload {path}` is an outside editor's save: when `path` is the
+  open script's file it is read first (`UNSAVED` when Studio has other
+  unsaved edits; the window then asks which to keep); another file is
+  opened and watched, `UNSAVED` over unsaved edits without `discard`.
+  `rules.external {editor?, line?, launch?}` saves the script to its
+  file (or a new one under `<data>/scripts/`), watches it both ways and
+  opens it in `editor` (`code`, `zed`, `auto`) at `line` (default: the
+  cursor's); it answers `path`, `line`, `col`, `editor`, `commands` and
+  `launched`, as `script.external` does. `rules.run {scenario, source?,
+  path?, label?, trace?}` runs a script over a
+  [scenario](../game/rules-engine.md#workbench) on the fake game, as `h2
+  rules run` does: `scenario` is a file's path or the scenario object,
+  and the script is `source`, else the file at `path`, else the open
+  one. It answers `ok` (no script error), `result` (how the run ended),
+  `text` (the printout), `ticks`, `calls` and `label`; a script that
+  does not build is `REFUSED`. The VS Code and Zed commands call these
+  ([rules-editors.md, "Commands that talk to Studio"](rules-editors.md#commands-that-talk-to-studio)).
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
   (`"scnr"`, `"matg"`).
@@ -453,6 +486,23 @@ Notes on some:
   scenario reference edits. `incomplete` marks a partial reachability
   walk and leaves `unreachable` empty. `truncated` indicates that an
   object chain hit its display walk budget.
+- **Kinds.** `tag.kinds {group?}` reads the kind registry
+  ([live-editors.md](live-editors.md), "The registry";
+  `app::kinds::KINDS`). It returns `{kinds, default, groups, target}`:
+  `kinds` has one row per kind with `label`, `groups`, `editor`
+  (`field_panel`, `scenario`, `modeling`, `textures`, `audition`,
+  `hud`, `ui_screens`, `scripts`), `preview` (`none`, `viewport`,
+  `model_render`, `thumbnails`, `waveform`, `tool`, `reports`),
+  `subject` (`none`, `level`, `placement`, `swatch`, `loop`, `play`),
+  `classes` (`field`, `raw`, `shape`, `host`) and `missing`; `default`
+  is the row a group without one gets (the field panel, no preview,
+  `field` and `shape`); `groups` lists every group the registry or the
+  open map has, each with `group`, `kind`, `default`, `editor`,
+  `preview`, `subject` and `classes`; `target` is where the game view's
+  changes go now (`off`, `own`, `attached`, `attached_edit`). With
+  `group` (up to four characters, as `tag.list` writes it) the reply is
+  that group's line alone; a group no row names gets the default. It
+  needs no open map.
 - **References.** `tag.refs {tag, limit?}` lists direct links in the
   open map, including in-memory tag edits and current scenario-owned
   reference fields. Each result has `to` (the target ID),
@@ -600,8 +650,13 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,path,effect,text,why` and an optional
-  `tag` and `label`: `effect` is when the change takes effect (`now`, `next_use`,
+  `mirror.pending` returns `pending` rows with `doc,path,class,effect,text,why` and an optional
+  `tag` and `label`: `class` is the change's fan-out class (`field`, `raw`, `shape` or
+  `host`, `app::live::Class`, [live-editors.md](live-editors.md)): `raw` for `geometry`,
+  `bitmaps` and `collision` rows, `shape` for a block layout or a new map string, `host`
+  for a `host` row (a Host change the game has no reload for, or one an attached game
+  in View waits to take, with `host` naming its source), else `field`;
+  `effect` is when the change takes effect (`now`, `next_use`,
   `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
@@ -987,6 +1042,152 @@ h2 studio pair.audio '{"seconds":3,"call":{"method":"pogo.test","params":{"trick
 h2 studio pair.result
 ```
 
+### Generating images
+
+`image.generate` makes a picture for an image of a bitmap from a prompt
+and reference pictures, and the `image.*` calls after it put the
+picture into the image through the Textures tool's own edits
+(`crates/apps/studio/src/api/image_gen.rs`, `src/app/image_gen.rs`,
+`src/imagegen.rs`). The window's Generate button does the same
+([editor-guide.md](editor-guide.md#generating-an-image)). A generation
+takes a minute or more, so it runs as a job: `image.generate` answers at
+once with `{id, state: "running", generator, slot}` (`slot` is
+`{bitmap, image}` or null) and `image.result {id?}`
+reads the job (the newest without `id`). One job runs at a time and the
+last sixteen are kept.
+
+`image.generate`'s params:
+
+- `prompt`: what the picture is.
+- `references`: a list, empty for none. Each is a PNG path, or
+  `{bitmap, image?}`, an image of the open map's bitmap, exported as a
+  PNG into the job's directory for the generator. The references are
+  the user's choice: an agent passes the ones the user named (for a menu
+  icon, the other icons of the same bitmap), and never picks disc images
+  of its own accord.
+- `bitmap` and `image` (default 0): the slot, named as `bitmap.*` names
+  a bitmap. The picture is fitted to the slot. `image: "new"` (which
+  needs `bitmap`) first adds an image to the bitmap (`bitmap.image.add`),
+  shaped like image `like` (default 0) or made at `size`, and makes it
+  the slot; the answer's `slot` names it. Without a slot, `size
+  [w, h]` fits it to that size as 32-bit RGBA; with neither, it is kept
+  as it came. A slot and a size together are `INVALID_PARAMS` (a `new`
+  slot is the one case that takes both).
+- `alpha`: `auto` (the default: the picture's own alpha, except that an
+  opaque picture going into an `A8` or `AY8` image takes its
+  brightness), `image`, `luma` or `opaque`.
+- `out`: a path to copy the fitted PNG to.
+- `from`: the job this one regenerates, with the same or a tweaked
+  prompt. The result and the provenance name it.
+
+The job gives the source the prompt with the slot's needs added
+(`imagegen::compose_prompt`): its size, a transparent background when the
+format keeps alpha, and how the references are meant (match their style,
+palette, line weight and framing, not their subject). It keeps the
+source's picture as `generated.png`, then fits it (`imagegen::fit`). The
+picture is resampled with the Textures tool's filter: stretched when the
+aspects are within a tenth, else centred on transparent pixels. Then
+each pixel is rounded to what the slot's format stores and its decoder
+gives back. The uncompressed formats round as `assets::encode` stores
+them and `gfx::convert` reads them. The DXT formats encode each 4 by 4
+block with `assets::encode::encode_block` and decode it with `gfx::dxt`.
+The fitted picture, `fitted.png`, is what the game shows. A slot of a
+format that is not a picture (`P8`, bump, float) is `REFUSED`, and so is
+a cube map or a volume. A slot with a `bitmap.reshape` asked for is
+fitted to the reshape's format.
+
+`image.result` gives `state` (`running`, `done` or `failed`),
+`generator`, `elapsed_ms`, `prompt`, `references` (each with its `path`
+and `origin`, `file` or `map` with its `bitmap` and `image`), `slot`,
+`size`, `dir` (the job's directory, in the cache's `studio/imagegen/`),
+`from`, and `applied`, `accepted` (the files written, or null) and
+`discarded`. A done job adds `raw {path, width, height}`, `fitted {path,
+width, height, format, alpha}`, `revised_prompt` and `out`. A failed one
+adds `why`, the source's message, and `error`:
+
+| `error` | Meaning |
+|---|---|
+| `missing` | the generator is not installed (`codex` not on `PATH`); `why` says how to install it and sign in |
+| `unauthenticated` | Codex is not signed in; `why` says to run `codex login` and sign in with ChatGPT |
+| `quota` | the ChatGPT account's allowance is used up; `why` has Codex's message, with when it renews |
+| `no_image` | the run finished without a picture |
+| `failed` | anything else, with the generator's message |
+
+Then:
+
+- `image.apply {id}` writes the fitted picture into its slot as one
+  `BitmapAction::Import`, one undo step, after keeping the slot's pixels
+  as `original.png` in the job's directory. The picture then shows
+  wherever the image is used: the Textures canvas, `bitmap.pixels`, the
+  UI Screens tool's pictures and `ui.render` (the disc's picture of the
+  bitmap, `UiScreens::show_image`), and a paired game through the
+  Textures tool's live sync ([realtime-edits.md](realtime-edits.md)).
+  `pair.preview {what: "ui"}` captures the menu with it. A job without a
+  slot, or one that failed, is `REFUSED`.
+- `image.accept {id, save?}` keeps it, applying it first if it is not in
+  its slot. The picture stays as the bitmap's edit and saves with the
+  map (`doc.save {doc: "bitmaps"}`), like any texture edit. It writes `provenance.json` in
+  the job's directory and logs a line naming the bitmap, the generator,
+  the references and the prompt. With `save` (a directory) it copies
+  `<bitmap>-<image>.png` (the generator's picture),
+  `<bitmap>-<image>.fitted.png` and `<bitmap>-<image>.provenance.json`
+  there. A job made to a `size` has no slot: accepting it keeps the art
+  and its provenance (`image-<id>.png`, `image-<id>.fitted.png`,
+  `image-<id>.provenance.json` under `save`) for an image made later,
+  and changes no bitmap.
+- `image.discard {id}` takes it out: the import's undo step while it is
+  still the newest step of that bitmap, else the original pixels
+  imported back.
+
+The provenance names the prompt, the prompt sent, the generator's
+rewrite of it, every reference with its origin, the generator (`codex-cli
+0.170.0 (ChatGPT image generation)`), the slot, the alpha, the job it
+regenerates, and whether it was accepted. Generated art is original
+AI-made art and may go in the repository with its provenance; every PNG
+there is stored in LFS.
+
+**The source.** `imagegen::ImageSource` makes the picture.
+`H2_IMAGEGEN` picks it: `codex` (the default) or `fake`. An OpenAI API key
+source, with the key in the Keychain under the service `openai`, is
+another implementation of the trait; it is not built.
+
+- **Codex** (`imagegen::codex::CodexCli`) uses ChatGPT's image generation
+  on the user's ChatGPT sign-in to the Codex CLI, with no API key. It
+  first runs `codex --version` and `codex login status`. Then it runs
+  `codex exec --image <ref>... --json --skip-git-repo-check --sandbox
+  workspace-write --cd <job dir> --output-last-message <job
+  dir>/codex-last-message.txt` once, with the prompt on stdin (`--image`
+  takes many values, so a prompt argument after it would be read as an
+  image). The prompt asks Codex to make one image with its image
+  generation tool and copy it to `out.png` in the job's directory. The
+  picture is `out.png`, else a `saved_path` in the run's events, else
+  the newest PNG in `$CODEX_HOME/generated_images/<thread id>/` (Codex
+  saves each picture there, the thread id from the `thread.started`
+  event), else a PNG path in the last message. The events are kept as
+  `codex-events.jsonl` in the job's directory. A run may take up to ten
+  minutes. Studio never reads Codex's credentials.
+- **The fake** (`imagegen::fake::FakeSource`) draws a disc on a
+  transparent ground, its colour from the prompt. The tests use it, and
+  `H2_IMAGEGEN=fake` tries the flow with no generator.
+
+Into an image the map has (here `mp_games2`'s last icon), then into no
+slot, at the icons' size, for an image made later, then into an image
+the bitmap did not have, added first:
+
+```sh
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0},{"bitmap":"mp_games2","image":3}],"bitmap":"mp_games2","image":10}'
+h2 studio image.result '{"id":1}'
+h2 studio image.apply '{"id":1}'
+h2 studio pair.preview '{"what":"ui"}'
+h2 studio image.accept '{"id":1,"save":"art/ui-icons"}'
+h2 studio doc.save '{"doc":"bitmaps"}'
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0}],"size":[40,40]}'
+h2 studio image.accept '{"id":2,"save":"art/ui-icons"}'
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0},{"bitmap":"mp_games2","image":3}],"bitmap":"mp_games2","image":"new"}'
+h2 studio image.apply '{"id":3}'
+h2 studio doc.save '{"doc":"bitmaps"}'
+```
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`
@@ -1100,6 +1301,105 @@ A check is a row of `CHECKS`: `ContentCheck { area, name, run }`,
 `run` being `fn(&mut App, Option<&str>) -> Result<Vec<Finding>,
 String>`.
 
+## Announcer
+
+`voice.say`, `voice.list` and `voice.commit` (`api/voice.rs`, over
+`app/announcer.rs`) make announcer lines from text with a Fish Audio voice.
+The design, the key and the steps are in [announcer.md](announcer.md).
+
+**`voice.say {text, voice?, model?, speed?, out?, clip?, play?,
+target_lufs?, fresh?}`** says `text` (at most 500 characters) in `voice`
+(a Fish Audio model id; default `86126c4c4dad4911979556b4569802cd`), trims
+the silence, measures the line against the open map's retail announcer
+lines and brings it to their median loudness (`target_lufs` instead), saves
+44.1 kHz mono 16-bit PCM under `<data root>/announcer`, and plays it
+(`play` defaults to true). The same text, voice, `model` and `speed` reuse
+the earlier file: `cached` is true and the service is not called, so no key
+is needed. `fresh` asks again. It answers `file`, `raw` (the voice's own
+file in the cache), `levels` and `raw_levels` (as `sound.measure`),
+`trimmed_ms`, `gain_db`, `limited` (the -1 dBFS peak ceiling held the gain
+back), `target` (`lufs`, `from`: `given`, `retail`, `our clips` or
+`fallback`, and `why` when not retail), `verdict` (as `sound.measure`),
+`playback`, and with `clip` a `ready` object: the checkout path
+`art/announcer/<clip>.wav`, the `CLIPS` entry to add, and whether the clip
+exists. With no key in the Keychain the error is `REFUSED`, its message
+says to add the key with the exact command, and its `data` is
+`{step: "add_key", service, command}`. A bad param is `INVALID_PARAMS`
+before the service is asked; the service's errors and a silent line are
+`FAILED`.
+
+**`voice.list`** answers the voice source, the default voice, the voices
+kept lines used, whether the key item exists (`key.state`: `present`,
+`missing` with the command, or `unreadable`; the key is not read), the
+cache's directory and size, and the lines most recently said. It asks
+nothing of the service.
+
+**`voice.commit {clip, from?, repo?, replace?}`** copies a saved line
+(`from`, else the last one made) to `art/announcer/<clip>.wav` of the
+checkout (`repo`, else the one above the editor's working directory). It is
+the only way a line reaches the checkout. It does not run `git` or edit
+`boot::medal_announcer::CLIPS`; `next` says what is left. An existing clip
+needs `replace`.
+
+## Voices
+
+`voice.characters`, `voice.dataset.build`, `voice.dataset.status`,
+`voice.clone.train` and `voice.clone.say` (`api/voice_clone.rs`, over
+`app/voices.rs` and `app/announcer.rs`) clone a game character's voice from
+the user's own disc and say new lines with it, all on this machine. The
+design, the dataset, the sidecar and the models are in
+[voice-cloning.md](voice-cloning.md).
+
+**`voice.characters {map?}`** lists the characters Studio knows: `id`,
+`name`, the tag-path `rules`, how many dialogue sounds of the source's maps
+(or `map`) they pick (`tags`), their `dataset` summary (or null) and
+whether they are `trained`. `speakers` lists the groups the maps' dialogue
+tags fall into (`kind: code` for the letters at the end of a tag name,
+`folder` for the first folders under `sound\dialog\`) with a count and a
+sample tag, to check the rules against. Nothing is decoded.
+
+**`voice.dataset.build {character, paths?, maps?, asr?, min_ms?, max_ms?,
+keep_radio?, limit?, max_permutations?}`** builds the character's dataset
+under `<data root>/voices/<character>`: 24 kHz mono clips and
+`manifest.jsonl`. `paths` (pieces of tag paths) replaces the character's
+rules and allows a new id. It answers `kept`, `tags`, `decoded`, `dropped`
+by reason (`too_short`, `too_long`, `silent`, `clipped`, `radio`,
+`decode`) with a few `dropped_examples`, `maps_read`, `maps_failed`, the
+`dataset` summary (`lines`, `usable`, `minutes`, `from_subtitle`,
+`from_asr`, `pending_asr`, `no_text`, `lufs`, `peak_dbfs`), and `asr_job`:
+the background transcription started for clips without a subtitle (`asr`
+defaults to true). An unknown character without `paths` is
+`INVALID_PARAMS`; no map read, or a job still running, is `REFUSED`.
+
+**`voice.dataset.status {character?, job?}`** answers the `sidecar`
+(`backend`, `state`: `installed`, `installing` or `missing`, `dir`,
+`trains`), the latest `job` (or `job`'s) and the last few `jobs` (`id`,
+`kind`: `install`, `transcribe` or `train`, `state`: `running`, `done` or
+`failed`, `stage`, `done`, `total`, `text`, `log`, `result` or `why`), and
+each built character's `dataset`, last `build` and `model` (`trained`,
+`checkpoint`).
+
+**`voice.clone.train {character, steps?, min_minutes?, backend?}`** starts
+the fine-tune on the character's lines with text as a background job
+(installing the model first when needed) and answers `{job, state:
+"running", lines, minutes}`. It is `REFUSED` under `min_minutes` of speech
+(default 10), without a dataset, or while a job runs, and
+`INVALID_PARAMS` for a backend that does not train.
+
+**`voice.clone.say {character, text, reference?, speed?, out?, clip?,
+play?, target_lufs?, fresh?, backend?}`** says `text` with the clone,
+copying the delivery of `reference` (a dataset clip id, or a source tag
+with an optional `#<permutation>`; default a subtitled line near 7 s), and
+answers as `voice.say` does plus `engine: "clone"`, `character`,
+`backend`, `model` (the backend, and the fine-tune's digest when there is
+one) and the `reference` used (null for a cached line). `target.from` is
+`character`: the median loudness of the character's own lines. Before the
+model is installed it starts the install and is `REFUSED` with
+`data.step: "install"`; without a dataset, or with no line that has text,
+`data.step` is `dataset`. A model failure is `FAILED` with the sidecar's
+message. To hear a committed clip in the game, `voice.commit` it and use
+`pair.audio` as for any announcer clip.
+
 ## Extension points
 
 `crates/apps/studio/src/api/seams.rs`. A tool implements `api::Provider`:
@@ -1128,7 +1428,8 @@ the window and the API stay one path.
   (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
-  `api/tags.rs` registers `TagGraph` for `tag.tree` and `tag.refs`.
+  `api/tags.rs` registers `TagGraph` for `tag.tree`, `tag.refs` and
+  `tag.kinds` (over `app/kinds.rs`).
   The tree and `tag.follow` share the reference reader with `tag.refs`.
 - **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
@@ -1214,7 +1515,10 @@ the window and the API stay one path.
   docs/editor/modeling.md, "Interfaces".
 - **Textures (studio-modeling slices 5 and 6).** `api/bitmaps.rs`:
   `bitmap.list {name?}` gives the map's bitmap tags and their images;
-  `bitmap.read` one bitmap's images (size, format, mips, write class);
+  `bitmap.read` one bitmap's images (size, format, mips, write class)
+  and its sequences (label, first image, count, sprites), with `grown`
+  saying a save writes the whole tag again and `movable` null or why the
+  bitmap cannot gain an image;
   `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
   65,536 pixels); `bitmap.paint`, `bitmap.fill` and `bitmap.adjust`
   (invert, levels, hsv) and `bitmap.import` (a PNG, resampled to the
@@ -1222,8 +1526,19 @@ the window and the API stay one path.
   {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
   checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
   unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
-  format?}` asks for a new size and/or format (`dxt1`, `argb8888`, ...)
-  for an image, refused at once when a save would refuse it;
+  format?}` and `bitmap.image.resize {bitmap, image?, size? | width?,
+  height?, format?}` ask for a new size and/or format (`dxt1`,
+  `argb8888`, ...) for an image, refused at once when a save would
+  refuse it;
+  `bitmap.image.add {bitmap, from?, size?, format?}` appends an image
+  after the bitmap's last, its record copied from image `from` (default
+  0; a 2D image) at `size` and `format` or the source's, its pixels
+  transparent black until painted, imported or generated into; it
+  answers the new index;
+  `bitmap.sequence.add {bitmap, first, count?, label?}` appends a
+  sequence entry over `count` images from `first`, labelled `label`,
+  shaped like the bitmap's first sequence;
+  each of these is one undo step;
   `bitmap.spans {bitmap, image?, face?, slice?, rect?}` gives the stored
   bytes the edits change (per LOD: offset, length, hex) without writing
   anything: the spans a save patches in place and a live push sends. Edits
@@ -1233,17 +1548,26 @@ the window and the API stay one path.
   by the write class `bitmap.read` names for the image: `in_place`
   (bytes patched in the map's own raw blocks), `appended` (a LOD in a
   shared cache is copied into the map as a new raw block, or the image has
-  a reshape), or `none` for P8, P8Bump, V8U8 and G8B8, which are read only.
+  a reshape), `new` (an added image: the whole tag is written again at
+  the end of the metadata and the tag's index entry pointed at the copy,
+  the other tags keeping their bytes), or `none` for P8, P8Bump, V8U8 and
+  G8B8, which are read only.
   A save the map cannot take (a new raw block where the metadata does not
   end the file) is `REFUSED` with the reason. `doc.diff` lists the edited
   layers by tile and the pending reshapes; `doc.list` says the doc is
   `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
-  that doc (a reshape is not an undo step; `doc.close` with `discard`
-  drops it). docs/editor/modeling.md, "Texture editing" and "Interfaces".
+  that doc (a reshape, an added image and an added sequence are one undo
+  step each). docs/editor/modeling.md, "Texture editing" and "Interfaces".
 - **Models.** `api/models.rs`: `model.list`, `model.read`,
   `model.render` and `model.check`, read-only over a map of their own
   (no actions, no undo); see "Models and customisation" below.
   `model.colors`, `model.emblem` and `custom.*` are planned there.
+- **Image generation.** `api/image_gen.rs` registers `ImageGenApi`:
+  `image.generate`, `image.result`, `image.apply`, `image.accept` and
+  `image.discard` over the jobs on the app (`App::imagegen`, shared with
+  the window's Generate window). Apply, accept and discard run the
+  commands `Action::Image` runs, which write through the Textures tool's
+  `BitmapAction`s ([Generating images](#generating-images)).
 
 ## Models and customisation
 
@@ -1422,6 +1746,12 @@ actions and the API's make identical profiles.
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
   `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`).
+  host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
+  `api/ui_check.rs` and `api/checks.rs`: the content checks. `api/voice.rs`
+  (with `app/announcer.rs` and `src/voice*`): the Announcer.
+  `api/voice_clone.rs` (with `app/voices.rs`, `voice/dataset.rs`,
+  `voice/clone.rs`, `voice/sidecar.rs` and `sidecar/voice_clone.py`):
+  Voices, tested in `api/voice_clone/tests.rs` with a fake sidecar.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

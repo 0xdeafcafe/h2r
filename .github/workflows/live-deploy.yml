@@ -1,8 +1,8 @@
 name: Live deploy
 
 # Deploys the Live Worker, the web and the dedicated host image to
-# production once CI has passed on a push to master (docs/live/live-worker.md,
-# "Deploy from CI"). It deploys the commit CI tested, not the branch tip.
+# production once the Linux workflow has passed on a push to master (docs/live/live-worker.md,
+# "Deploy from CI"). It deploys the commit that workflow tested, not the branch tip.
 # The host image holds public code only: this job builds the Linux h2
 # (deploy/host/build.sh --h2, glibc 2.36 through cargo-zigbuild) and
 # deploy.sh pushes the image by content tag. The game module compiled from
@@ -15,7 +15,7 @@ name: Live deploy
 
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Linux]
     types: [completed]
     branches: [master]
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         if: env.CLOUDFLARE_API_TOKEN != ''
         with:
-          # The commit CI tested; a manual run deploys the commit it was
+          # The commit the Linux workflow tested; a manual run deploys the commit it was
           # started on.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           lfs: true # web/public/art

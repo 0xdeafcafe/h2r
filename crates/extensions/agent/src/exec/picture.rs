@@ -174,13 +174,14 @@ mod tests {
         a.set_pictures(pictures.clone());
         let (tx, rx) = sync_channel(64);
         let conn = a.connect(tx);
-        ask(&a, conn, 1, wire::OPEN, json!({"width": 8, "fps": 30}));
+        ask(&a, conn, 1, wire::OPEN, json!({"width": 16, "fps": 30}));
         a.on_tick(&mut Menu);
         let reply: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert!(reply["error"].is_null(), "{reply}");
         let opened: Opened = serde_json::from_value(reply["result"].clone()).unwrap();
         assert_eq!(
             (opened.transport, opened.size, opened.fps),
-            (Transport::Ring, [8, 8], 30)
+            (Transport::Ring, [16, 16], 30)
         );
         let path = opened.path.clone().unwrap();
         assert!(path.exists());

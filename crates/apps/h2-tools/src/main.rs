@@ -12,6 +12,7 @@ mod effects;
 mod extract_shaders;
 mod firefight_cmd;
 mod forge_cmd;
+mod hs_lsp;
 mod hud_cmd;
 mod lights;
 mod map_testbuild;
@@ -23,6 +24,7 @@ mod rules_lsp;
 mod scripts;
 mod shader;
 mod strings;
+mod studio_link;
 mod superbounce_cmd;
 mod tag_repo_cmd;
 mod testmap_cmd;
@@ -75,6 +77,8 @@ sits beside h2 (docs/runtime/cli-tools.md).
                           every shad/stem/spas (options --disc <iso>)
   hs <map> [--script name] [--builtins] [--disc iso]
   hs --all [--disc iso]   verify all disc maps (codec symmetry and node counts)
+  hs lsp                  the language server for Studio's HaloScript working
+                          copies (.hsc; docs/editor/rules-editors.md)
   extract-shaders --out DIR [--disc iso] [--force]
                           write every distinct vertex program (*.xvu) and pixel shader
                           definition (*.psdef) from the disc's maps to DIR, the corpus

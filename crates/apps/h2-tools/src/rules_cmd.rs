@@ -742,64 +742,7 @@ pub fn run_text(
         scenario::RunError::Map(problems) => map_problems(label, &problems),
         scenario::RunError::Refused(r) => format!("{label}: refused: {r}\n"),
     })?;
-    let mut s = String::new();
-    for t in &result.ticks {
-        let _ = writeln!(s, "tick {}: {} calls", t.tick, t.calls.len());
-        if trace {
-            for (event, fired) in &t.fired {
-                let _ = writeln!(s, "  on {event}: {fired:?}");
-            }
-            for c in &t.calls {
-                let _ = writeln!(s, "  {}({})", c.entry, args_text(&c.args));
-            }
-        }
-    }
-    let _ = writeln!(s, "total: {} calls over {} ticks", result.total_calls(), result.ticks.len());
-    for (slot, p) in &result.game.players {
-        let _ = writeln!(
-            s,
-            "player {slot}: team {}, score {}, lives {}, {}",
-            p.team,
-            p.score,
-            p.lives,
-            if p.alive { "alive" } else { "dead" }
-        );
-    }
-    let mut teams = result.game.teams.clone();
-    teams.sort_unstable();
-    for t in teams {
-        let total: i32 = result
-            .game
-            .players
-            .values()
-            .filter(|p| p.team == t)
-            .map(|p| p.score)
-            .sum();
-        let _ = writeln!(s, "team {t}: score {total}");
-    }
-    match (result.script_error, result.ended_at) {
-        (Some(e), _) => {
-            let _ = writeln!(
-                s,
-                "result: script error {:?} at tick {}, handler {}, op {}",
-                e.kind, e.tick, e.handler, e.pc
-            );
-        }
-        (None, Some(t)) => {
-            let _ = writeln!(s, "result: the script ended the round at tick {t}");
-        }
-        (None, None) => {
-            let _ = writeln!(s, "result: the round was still running");
-        }
-    }
-    Ok((s, result.script_error.is_none()))
-}
-
-fn args_text(args: &[rules::vm::Arg]) -> String {
-    args.iter()
-        .map(|a| format!("{a:?}"))
-        .collect::<Vec<_>>()
-        .join(", ")
+    Ok((result.printout(trace), result.script_error.is_none()))
 }
 
 /// The capability list and the API entry table.

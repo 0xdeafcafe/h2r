@@ -174,7 +174,9 @@ scenario's `teams`). Per-team state is `team var`, read as `t.x`.
 
 ## A role with powers
 
-From `vip.rules`. A role is an enum in a player variable; a power is a
+From the VIP test script in `crates/formats/rules/tests/scripts.rs`
+(the listed `vip.rules` keeps the role and has no powers). A role is an
+enum in a player variable; a power is a
 grant made when the role changes. Needs the capabilities in `requires`, a
 palette of tag paths for what the player may place or touch, and a budget
 on each grant. Grants are not hostable by the host runtime today, so this

@@ -7,7 +7,9 @@
 //! `default.xbe` (`editor_core::MapSource::executable`,
 //! `hs::Catalog::from_xbe`), read when the map opens and never kept on
 //! disk. Builtins no scenario calls take names only from a script
-//! documentation listing the user points at (`hs::Naming`).
+//! documentation listing the user points at (`hs::Naming`). "Open in VS
+//! Code" and "Open in Zed" write the scripts as a working copy
+//! (`app::external`).
 
 use std::path::{Path, PathBuf};
 
@@ -114,6 +116,8 @@ pub struct ScriptsTool {
     pub selected: Option<Item>,
     /// The script documentation listing to name builtins from.
     pub doc_path: Option<PathBuf>,
+    /// The working copy an outside editor has (`app::external`).
+    pub external: Option<super::external::WorkingCopy>,
 }
 
 /// A Scripts tool command.
@@ -125,6 +129,9 @@ pub enum ScriptAction {
     Follow { item: Item, link: usize },
     /// Name builtins from this listing, or (`None`) from scenarios only.
     SetDoc(Option<PathBuf>),
+    /// Write the working copy and open it in `code`, `zed` or (`None`)
+    /// any editor, at the shown definition.
+    OpenInEditor(Option<&'static str>),
 }
 
 impl Loaded {
@@ -456,6 +463,11 @@ impl super::App {
                 match line {
                     Ok(m) => self.info(format!("script documentation: {m}")),
                     Err(e) => self.error(format!("script documentation: {e}")),
+                }
+            }
+            ScriptAction::OpenInEditor(only) => {
+                if let Err(why) = self.open_scripts_in_editor(None, only, true) {
+                    self.error(format!("Scripts not opened: {why}"));
                 }
             }
             ScriptAction::Select(item) => match self.scripts_loaded() {

@@ -27,6 +27,8 @@ pub struct Map<R = File> {
     index_space: AddressSpace,
     metadata_space: Option<AddressSpace>,
     metadata_size: u32,
+    /// File offset of the tag index's entry table (16 bytes a slot).
+    tag_table_offset: u64,
 }
 
 impl Header {
@@ -258,6 +260,7 @@ impl<R: Read + Seek> Map<R> {
             index_space,
             metadata_space,
             metadata_size,
+            tag_table_offset: tag_offset,
         };
         map.check_root(map.scenario, FourCC(*b"scnr"))?;
         map.check_root(map.globals, FourCC(*b"matg"))?;
@@ -295,6 +298,12 @@ impl<R: Read + Seek> Map<R> {
     /// declared more than it wrote (see `metadata_region_size`).
     pub fn metadata_size(&self) -> u32 {
         self.metadata_size
+    }
+    /// File offset of tag `id`'s 16-byte index entry: group, datum,
+    /// address (`+8`) and size (`+0xc`).
+    pub fn tag_entry_offset(&self, id: TagId) -> Result<u64> {
+        self.tag(id)?;
+        Ok(self.tag_table_offset + id.index() as u64 * 16)
     }
     /// Ordinary metadata translation (secondary magic); BSPs have their own
     /// [`TagLocation::space`]. An empty tag index has no metadata anchor.

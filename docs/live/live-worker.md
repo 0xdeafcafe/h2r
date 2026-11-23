@@ -643,7 +643,9 @@ passes this config to Wrangler and removes its temporary copy on exit.
 ### Deploy from CI
 
 `.github/workflows/live-deploy.yml` runs `deploy.sh production
---yes-production` on each push to master, and on demand. Before it, the
+--yes-production` on each push to master once the Linux workflow
+(`linux.yml`) passes for it, and on demand. The macOS and other platform
+workflows do not hold it back: the hosts run Linux. Before it, the
 job installs Rust from `rust-toolchain.toml`, Zig and cargo-zigbuild and
 runs `deploy/host/build.sh --h2`, so the deploy builds and pushes the
 host image for that commit's `h2` when the registry lacks its tag. The

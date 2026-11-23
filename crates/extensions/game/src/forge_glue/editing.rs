@@ -24,8 +24,12 @@ use crate::ui_kit::{
     spec::ScreenSpec,
 };
 
+mod net;
+
 enum After {
     Tool(Command),
+    /// Items of a shared session's stream.
+    Shared(Vec<forge::net::Stamped>),
     Load(String),
     Proposal(mpsc::Sender<Result<Entry, String>>),
 }
@@ -73,6 +77,8 @@ pub(super) struct Editor {
     ui_up: bool,
     /// The map's palette entries the Objects palette leaves out, with why.
     refused: Vec<String>,
+    /// Set in a shared session (docs/game/forge-design.md, F5).
+    net: Option<net::Net>,
 }
 
 impl Editor {
@@ -104,6 +110,7 @@ impl Editor {
             listed: false,
             ui_up: false,
             refused: opened.refused,
+            net: None,
         }
     }
 
@@ -141,6 +148,10 @@ impl Editor {
     }
 
     pub fn status(&self) -> Value {
+        self.shared_status(self.local_status())
+    }
+
+    fn local_status(&self) -> Value {
         let screen = screens::shown().map(|s| {
             json!({
                 "name":s.kind.screen(), "title":s.title, "focus":(!s.rows.is_empty()).then_some(s.focus),
@@ -365,6 +376,9 @@ impl Editor {
         op: Op,
         was: Option<Sha256>,
     ) -> Result<ProposalReply, String> {
+        if let Some(reply) = self.propose_shared(op.clone(), was) {
+            return reply;
+        }
         let (tx, rx) = mpsc::channel();
         self.stage(After::Proposal(tx), |s, w| {
             s.propose(w, tick, op, was).map(|_| ())
@@ -381,6 +395,7 @@ impl Editor {
             Ok((session, ())) => {
                 self.session = Arc::new(session);
                 match after {
+                    After::Shared(items) => self.shared_applied(&items),
                     After::Tool(command) => self.tool.applied(&command),
                     After::Load(name) => {
                         self.notice = Some((format!("Loaded {name}."), tick));
@@ -436,6 +451,7 @@ impl Editor {
         }
         self.poll_file(tick);
         self.poll(tick);
+        self.net_tick(tick);
         if !self.busy() {
             for choice in screens::take_choices() {
                 if let Err(error) = self.choose(tick, choice) {

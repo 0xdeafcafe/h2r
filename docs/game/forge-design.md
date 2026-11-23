@@ -374,11 +374,15 @@ retail's distributed protocol as any map package does.
   film's match ([film-format.md](film-format.md), "Determinism and
   verification").
 - A film of an editing session records each stream item as a tagged
-  record at its tick (a new tag, "Forge entry"), beside the inputs, and
+  record at its tick (the "Forge entry" tag, 7), beside the inputs, and
   the session's welcome at its start. The payload is the item's bytes
   (`net::Stamped::to_bytes`). Playback feeds them to a `net::Peer` and
   applies them as the session did. `simulation_hooks` covers Forge's
-  hooks, so a film records whether Forge was installed.
+  hooks, so a film records whether Forge was installed. The film's header
+  decides, on both sides: a session's default recording and its replay
+  install Forge, a film named with `--film` installs it on neither
+  (`registration::local_forge`,
+  [film-format.md](film-format.md#recording-every-game)).
 - `ForgeExt` is in the keyframes and the sim hash through `SimExt`
   (sim-rewrite.md section 7).
 - Theater never edits: writes are refused in playback, as for the
@@ -614,7 +618,7 @@ and the game. Sizes as under Features.
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
 | **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the compositor until U3 | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
-| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Protocol built** (below); the transport, the game's applier, the film tag and the `ForgeExt` hash are not |
+| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link's offer of the lanes and holding the tick are not wired and the game's run of it is unproven |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, except the generator half: `bots::autonav`'s teleporter reader is private, so the test checks the bytes it reads (below) |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
 | **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
@@ -777,13 +781,46 @@ joiner with items in flight, a changed welcome, a head that differs, the
 watermark, a late item, and a recorded stream replayed through a fresh
 peer to the same state. F3's measurements in
 [notes/forge-probes.md](notes/forge-probes.md) are still to be taken, so
-whether the synchronous protocol holds a multiplayer map is **S**. Not
-built: carrying `net::Up` and the stream on the session's reliable
-ordered channel and the beat in its keep-alive; the game's `Admit` and
-applier over `forge::Session` (a local session stamps its own entries and
-allocates IDs without lanes); the Forge entry film tag; the `ForgeExt`
-hash, which waits for F7; `forge.status`, `forge.propose` and `forge.log`
-over the network session.
+whether the synchronous protocol holds a multiplayer map is **S**.
+
+The session's reliable ordered channel is the co-op datagram's Forge
+lane (`coop::Peer::forge_send` and `forge_recv`): bytes in order, once,
+repeated until acknowledged, 200 bytes a datagram. Every datagram also
+carries the beat, the 48-byte log head and stream position
+(`forge::net::Beat`), as the keep-alive; `Host::check` ends the seat
+whose head differs. `forge::net::Node` runs a machine over a
+`forge::net::Lane`: the host and its `Host`, or a guest, with the
+messages `ToHost` and `Down` framed by `frame` and `Framer`. A node
+sends proposals, holds, carries and releases, settles each by nonce with
+the entry or the host's named refusal, and gives the game each tick's
+items. Its tests are in `crates/extensions/forge/src/net/node_tests.rs`,
+over a fake lane that reorders and chops what it carries and a fake
+world: edits made on every machine end at one document, a late joiner
+and a film replay equal the live state, a head that differs ends one
+seat, and a full lane is refused.
+
+A shared `forge::Session` (`Session::share`) queues each edit as a
+proposal (`Session::take_outgoing`) rather than applying it, stamps ids
+in its seat's lane (seat s uses s+1, s+17, and so on, as the host does),
+and applies the stream's items with `apply_item` after `sync_to` took
+the welcome's state. `Session::admit` gives the host the game's
+checks (palette, budget, bounds). In the game
+(`crates/extensions/game/src/forge_glue/editing/net.rs`) the editor
+sends what the session queued, runs the node, and stages the items the
+node releases through the same `ForgeWorld` path a local edit takes. A
+shared session proposes one op per edit: a command that makes several
+(a move that unlinks) is as many proposals, and another seat's edit may
+fall between them. `forge.status`, `forge.propose`, `forge.log`,
+`forge.doc` and `forge.things` answer from the node's state
+([agent-api.md](../runtime/agent-api.md), "Shared Forge session").
+
+The film's Forge entry record (tag 7) opens with the welcome and then
+carries each stream item the machine applied, at the tick it applied it
+(`forge::net::film`, [film-format.md](film-format.md)). Watermarks are
+not recorded; `film::Replay` makes each tick's own. The game records
+through `forge_glue::net::take_film`, which the theater drains into the
+tick's records. Playback's application of the records to a session is
+not wired.
 
 **F6 in detail.** `forge_doc::Forge` holds Forge-family edits: a
 `Link` and an `Unlink` naming the link op it ends. A teleporter link

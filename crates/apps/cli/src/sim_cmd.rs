@@ -16,6 +16,8 @@
 //!   match processes, then the ranked report (`bounces.json`,
 //!   `bounces.md`, `bounces.verified`).
 //! - `diff <a.json> <b.json>`: the first differing state of two reports.
+//! - `spatial <trace or dir>...`: the measures of spatial traces
+//!   (`sim_bench::spatial::measure`).
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -52,6 +54,7 @@ const USAGE: &str = "usage:
   h2 sim bounces <bounces.toml> [--parallel N] [--dry-run] [--merge] [--keep-data]
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
   h2 sim diff <report a.json> <report b.json>
+  h2 sim spatial <spatial.bin | run dir | results dir>...
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
   h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
 
@@ -122,6 +125,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             print!("{}", c.table());
             Ok(())
         }
+        Some("spatial") => spatial(it.collect()),
         Some("diff") => {
             let a = it.next().context(USAGE)?;
             let b = it.next().context(USAGE)?;
@@ -567,6 +571,49 @@ fn sim_options(disc: PathBuf, data_root: PathBuf) -> boot::RunOpts {
         xapi: true,
         movies: boot::movies_glue::Movies::Off,
     }
+}
+
+/// `h2 sim spatial`: the measures of the traces named, each a
+/// `spatial.bin`, a run's directory or a batch's results directory
+/// (every `runs/*/spatial.bin`), together (docs/runtime/sim.md, "The
+/// spatial trace").
+fn spatial(args: Vec<String>) -> Result<()> {
+    anyhow::ensure!(!args.is_empty() && !args.iter().any(|a| a.starts_with('-')), "{USAGE}");
+    let mut files = Vec::new();
+    for a in &args {
+        files.extend(spatial_files(Path::new(a))?);
+    }
+    anyhow::ensure!(!files.is_empty(), "no spatial trace under {}", args.join(", "));
+    let traces = files
+        .iter()
+        .map(|f| sim_bench::spatial::Trace::read(f).map_err(anyhow::Error::msg))
+        .collect::<Result<Vec<_>>>()?;
+    print!("{}", sim_bench::spatial::measure(&traces).render());
+    Ok(())
+}
+
+/// The trace files `path` names: itself, its `spatial.bin`, or its
+/// `runs/*/spatial.bin`.
+fn spatial_files(path: &Path) -> Result<Vec<PathBuf>> {
+    if !path.is_dir() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let own = path.join(sim_bench::spatial::FILE_NAME);
+    if own.is_file() {
+        return Ok(vec![own]);
+    }
+    let runs = path.join("runs");
+    let mut found = Vec::new();
+    if runs.is_dir() {
+        for entry in std::fs::read_dir(&runs).with_context(|| format!("reading {}", runs.display()))? {
+            let f = entry?.path().join(sim_bench::spatial::FILE_NAME);
+            if f.is_file() {
+                found.push(f);
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// `$TMPDIR/h2sim/<match stem>.report.json`.
@@ -2231,6 +2278,35 @@ mod tests {
         assert_eq!(c.arms, ["base", "aggr"]);
         assert_eq!(c.missing, ["lockout-s3"]);
         assert_eq!(c.diff["kills"].diff, 3.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spatial_finds_the_traces_of_a_results_directory() {
+        let dir = scratch("spatial");
+        let trace = sim_bench::spatial::Trace::default();
+        for id in ["lockout-s2", "lockout-s1"] {
+            let d = dir.join("runs").join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            trace.write(&d.join("spatial.bin")).unwrap();
+        }
+        // A run with no trace.
+        std::fs::create_dir_all(dir.join("runs/lockout-s3")).unwrap();
+        let found = spatial_files(&dir).unwrap();
+        assert_eq!(
+            found,
+            [
+                dir.join("runs/lockout-s1/spatial.bin"),
+                dir.join("runs/lockout-s2/spatial.bin")
+            ]
+        );
+        // A run's directory is its own trace; a file is itself.
+        let one = dir.join("runs/lockout-s1");
+        assert_eq!(spatial_files(&one).unwrap(), [one.join("spatial.bin")]);
+        assert_eq!(spatial_files(&found[0]).unwrap(), [found[0].clone()]);
+        assert!(spatial_files(&dir.join("runs/lockout-s3")).unwrap().is_empty());
+        spatial(vec![dir.display().to_string()]).unwrap();
+        assert!(spatial(vec![dir.join("runs/lockout-s3").display().to_string()]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
