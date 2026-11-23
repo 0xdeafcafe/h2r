@@ -176,13 +176,20 @@ fn a_moment_out_of_view_does_not_freeze_it_again() {
         for t in r + 6..r + 6 + gone {
             step(&mut m, bot(None), vec![], false, t);
         }
-        step(&mut m, bot(None), vec![enemy(1, at)], false, r + 6 + gone).right_stick
+        let back = r + 6 + gone;
+        let pad = step(&mut m, bot(None), vec![enemy(1, at)], false, back);
+        let (_, ready) = m.target.expect("in view");
+        (pad.right_stick, reached(back, ready))
     };
-    // Back after a moment: turns at once.
-    let soon = run(10);
+    // Back after a moment: turns at once, ready to fire.
+    let (soon, ready) = run(10);
     assert!(soon.0 < -0.1, "{soon:?}");
-    // Back after long: a fresh reaction, standing still.
-    assert_eq!(run(tactics::GRACE + 30), (0.0, 0.0));
+    assert!(ready);
+    // Back after long: a fresh reaction. The thumb starts to turn, but it
+    // may not fire yet.
+    let (late, ready) = run(tactics::GRACE + 30);
+    assert!(late.0 < 0.0, "{late:?}");
+    assert!(!ready);
 }
 
 #[test]
@@ -796,4 +803,49 @@ fn a_bot_shot_in_its_warm_up_fights_back_at_once() {
     }
     let first = first.expect("it fired before the warm-up would have ended");
     assert!(first >= 5 && first < warm, "{first}");
+}
+
+#[test]
+fn a_head_over_a_parapet_is_seen_and_shot() {
+    use crate::cache::MapData;
+    use crate::los::Walls;
+
+    // A parapet at X = 3 whose top is between the line to the chest (0.5
+    // high there) and the line to the head (0.6).
+    let parapet = |top: f32| MapData {
+        walls: Walls::from_polygons([&[
+            [3.0, -5.0, -1.0],
+            [3.0, 5.0, -1.0],
+            [3.0, 5.0, top],
+            [3.0, -5.0, top],
+        ][..]]),
+        ..Default::default()
+    };
+    let me = bot(Some(holding(Trigger::Automatic, rounds(36, 108))));
+    let run = |map: &MapData| {
+        let mut m = Mind::new(Skill::Legendary, 3);
+        let mut fired = false;
+        for tick in 0..40 {
+            let p = Perception {
+                me: Some(me),
+                others: vec![enemy(1, [6.0, 0.0, 0.0])],
+                tick,
+                ..Default::default()
+            };
+            fired |= m.step(&p, Some(map)).right_trigger > 0.0;
+        }
+        (m.doing, fired)
+    };
+    let low = parapet(0.55);
+    let p = Perception {
+        me: Some(me),
+        others: vec![enemy(1, [6.0, 0.0, 0.0])],
+        ..Default::default()
+    };
+    assert_eq!(Mind::visible(&p, Some(&low)).len(), 1, "the head shows");
+    assert_eq!(run(&low), (Doing::Fight(1), true));
+    // A parapet over the head hides it all.
+    let high = parapet(0.8);
+    assert!(Mind::visible(&p, Some(&high)).is_empty());
+    assert!(!run(&high).1);
 }

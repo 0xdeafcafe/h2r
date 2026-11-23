@@ -1284,6 +1284,11 @@ pub const LOOKAHEAD: f32 = 0.8;
 /// Frames without getting closer before the follower jumps, then gives up.
 pub const STUCK_FRAMES: u64 = 30;
 
+/// A route's pace on a straight walk, a little short of full stick. A
+/// named bot travelling with nothing in view lifts it back to full stick
+/// (`mind::stride`).
+pub(crate) const CRUISE_PACE: f32 = 0.94;
+
 pub(crate) fn approach_pace(distance: f32) -> f32 {
     0.44 + 0.50 * (distance / 1.25).min(1.0)
 }
@@ -1378,9 +1383,9 @@ impl Follower {
         } else if self.next + 1 == self.path.len() {
             approach_pace(d)
         } else if d < 1.2 && self.corner(at).is_some() {
-            0.70 + 0.24 * (d / 1.2)
+            0.70 + (CRUISE_PACE - 0.70) * (d / 1.2)
         } else {
-            0.94
+            CRUISE_PACE
         }
     }
 

@@ -444,13 +444,34 @@ fn the_hand_checks_the_opening_as_it_passes_a_doorway() {
     };
     let mut hand = Hand::new(1);
     assert_eq!(
-        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 0, Some(&map), None),
+        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 0, Some(&map), None, None),
         (0.45, 0.0)
     );
     assert_eq!(
-        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 10, None, None),
+        hand.travel([0.0, 0.0, 0.6], [1.0, 0.0], 10, None, None, None),
         (0.0, 0.0)
     );
+}
+
+#[test]
+fn on_a_ramp_the_look_pitches_toward_the_next_waypoint() {
+    let mut hand = Hand::new(1);
+    let eye = [0.0, 0.0, 0.6];
+    // Level ground: level eyes.
+    let (_, level) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([4.0, 0.0, 0.0]));
+    assert!(level.abs() < 1e-6, "{level}");
+    // Up a ramp: 1 up over 4 along, the slope's pitch.
+    let (yaw, up) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([4.0, 0.0, 1.0]));
+    assert!(yaw.abs() < 1e-6);
+    assert!((up - 0.25f32.atan()).abs() < 1e-3, "{up}");
+    // Down one, and a steep one capped.
+    let (_, down) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([4.0, 0.0, -1.0]));
+    assert!(down < -0.2, "{down}");
+    let (_, steep) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([1.0, 0.0, 5.0]));
+    assert_eq!(steep, SLOPE_PITCH);
+    // Standing on the waypoint gives no slope.
+    let (_, close) = hand.travel(eye, [1.0, 0.0], 0, None, None, Some([0.2, 0.0, 1.0]));
+    assert_eq!(close, 0.0);
 }
 
 #[test]
@@ -475,7 +496,8 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
             Some(&map),
             &[ShotSound {
                 at: [0.0, 9.0, 0.6],
-                tick: 100
+                tick: 100,
+                shooter: None,
             }]
         ),
         None
@@ -483,6 +505,7 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
     let shot = [ShotSound {
         at: [0.0, 4.0, 0.6],
         tick: 104,
+        shooter: None,
     }];
     assert_eq!(hand.sound(eye, 104, Some(&map), &shot), None);
     for tick in 105..109 {

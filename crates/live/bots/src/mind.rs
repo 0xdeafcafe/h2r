@@ -27,6 +27,8 @@ mod order;
 pub(crate) mod pad;
 mod practice;
 mod route;
+mod stride;
+mod tracker;
 pub mod warmup;
 #[cfg(test)]
 use look::turn_rate;
@@ -146,6 +148,9 @@ pub const TICKS: f32 = 30.0;
 /// The eye's and the target point's heights over a unit's origin.
 pub const EYE: f32 = 0.6;
 pub const CHEST: f32 = 0.4;
+/// The head, for sight (section 3.1): a player is seen by its chest or
+/// its head, so a head over a parapet is seen.
+pub const HEAD: f32 = EYE;
 /// Notices an enemy within this angle of its aim, or this close anywhere.
 pub const NOTICE_CONE: f32 = 65.0 * std::f32::consts::PI / 180.0;
 pub const NOTICE_NEAR: f32 = 3.0;
@@ -191,6 +196,17 @@ pub const CLUSTER: f32 = 2.5;
 pub const RECOVER_BACK_TICKS: u32 = 45;
 /// Lobs one where an enemy went out of view this recently.
 pub const COVER_GRENADE_TICKS: u32 = 60;
+/// Until its reaction passes, the hand turns toward a new target at this
+/// fraction of its gain; only the trigger, melee and grenade wait.
+pub const REACTION_GAIN: f32 = 0.5;
+/// Hit with nobody in view, it faces the newest shot it heard, a stand-in
+/// for the HUD's damage arrow, for at most this long...
+pub const HIT_LOOK_TICKS: u32 = 45;
+/// ...and the next sighting within this is an alert one.
+pub const ALERT_TICKS: u32 = 45;
+/// An enemy more than this over or under it is fought from the nav mesh:
+/// closing in walks the route up to it (`moves::HEIGHT_GAP`).
+pub const CLIMB_GAP: f32 = crate::moves::HEIGHT_GAP;
 /// An escort keeps this far from the carrier.
 pub const ESCORT_RANGE: f32 = 3.0;
 /// A ball carrier runs from enemies within this...
@@ -271,8 +287,21 @@ pub struct Mind {
     foot_plan: crate::work::PlanSchedule,
     foot_refresh: bool,
     last_seen: Option<(u32, Vec3, u32)>,
-    /// Last sampled motion tracker dot, held until the next glance.
+    /// The nearest dot the last glance at the tracker read, if the glance
+    /// was taken.
     radar: Option<Vec3>,
+    /// The dots remembered from glances at the tracker (`mind::tracker`).
+    tracker: tracker::Tracker,
+    /// The next sighting until this tick is an alert one: a dot near, or
+    /// a hit from out of view.
+    alert_until: Option<u32>,
+    /// Hit with nobody in view: where it faces (the newest shot's bearing,
+    /// at eye height), until when.
+    hit_from: Option<(Vec3, u32)>,
+    /// Last tick's walk, kept through a new target's reaction.
+    last_walk: Option<Walk>,
+    /// Stick push and hops on a run, from the name (`mind::stride`).
+    stride: stride::Stride,
     last_glance: Option<u32>,
     radar_rng: Rng,
     /// An uncertain search area from the tracker, hearing or the kill feed.
@@ -444,6 +473,11 @@ impl Mind {
             foot_refresh: false,
             last_seen: None,
             radar: None,
+            tracker: Default::default(),
+            alert_until: None,
+            hit_from: None,
+            last_walk: None,
+            stride: stride::Stride::new(seed),
             last_glance: None,
             radar_rng: Rng::new(seed ^ 0x0072_6164_6172),
             search: None,
@@ -490,7 +524,7 @@ impl Mind {
     }
 
     /// Who the bot can see this tick: enemies in its notice cone (or very
-    /// near) with nothing solid between its eye and their chest.
+    /// near) with nothing solid between its eye and their chest or head.
     pub fn visible(p: &Perception, map: Option<&MapData>) -> Vec<Seen> {
         let mut seen = Vec::new();
         Self::visible_into(p, map, None, &mut seen);
@@ -515,10 +549,12 @@ impl Mind {
             {
                 return false;
             }
-            let chest = up(o.position, CHEST);
-            let to = sub(chest, eye);
-            (len(to) < NOTICE_NEAR || angle_between(to, me.aim) < NOTICE_CONE)
-                && (observed.is_some() || map.is_none_or(|m| m.walls.clear(eye, chest)))
+            [CHEST, HEAD].into_iter().any(|h| {
+                let part = up(o.position, h);
+                let to = sub(part, eye);
+                (len(to) < NOTICE_NEAR || angle_between(to, me.aim) < NOTICE_CONE)
+                    && (observed.is_some() || map.is_none_or(|m| m.walls.clear(eye, part)))
+            })
         }));
     }
 
@@ -556,6 +592,11 @@ impl Mind {
         self.last_seen = None;
         self.last_threat = None;
         self.radar = None;
+        self.tracker.reset();
+        self.alert_until = None;
+        self.hit_from = None;
+        self.last_walk = None;
+        self.stride.reset();
         self.last_glance = None;
         self.search = None;
         self.decisions.died(tick);
@@ -573,17 +614,67 @@ impl Mind {
         self.tick = None;
     }
 
-    fn glance_at_tracker(&mut self, p: &Perception, interval: u32, chance: f32) {
+    /// A glance at the tracker when one is due, taken with `chance` (the
+    /// name's radar use): the dots it reads are remembered
+    /// (`mind::tracker`); a glance not taken forgets nothing. Whether one
+    /// was taken this tick.
+    fn glance_at_tracker(&mut self, p: &Perception, interval: u32, chance: f32) -> bool {
         let due = self.last_glance.map_or_else(
             || p.tick % interval == self.slot.unwrap_or(0) % interval,
             |last| p.tick.wrapping_sub(last) >= interval,
         );
-        if due {
-            self.last_glance = Some(p.tick);
-            self.radar = p.observations.radar.filter(|_| self.radar_rng.unit() < chance);
-            if let Some(at) = self.radar {
-                self.search = Some((at, p.tick));
-            }
+        if !due {
+            return false;
+        }
+        self.last_glance = Some(p.tick);
+        let dots = &p.observations.radar;
+        let taken = !dots.is_empty() && self.radar_rng.unit() < chance;
+        self.radar = dots.first().copied().filter(|_| taken);
+        if let Some(at) = self.radar {
+            self.search = Some((at, p.tick));
+            let (lo, hi) = tracker::GLANCE_TICKS;
+            let look = self.radar_rng.ticks(lo, hi);
+            self.tracker
+                .saw(dots, p.observations.radar_range, p.tick, look);
+        }
+        taken
+    }
+
+    /// The bearing of the newest shot heard that is not its own (`sounds`
+    /// are the last few ticks'): where a hit from out of view came from,
+    /// as far as a player can tell.
+    fn shot_bearing(&self, eye: Vec3, sounds: &[ShotSound]) -> Option<Vec3> {
+        let own = self.slot;
+        sounds
+            .iter()
+            .filter(|s| s.shooter.is_none_or(|slot| Some(slot) != own))
+            .filter(|s| dist_xy(s.at, eye) >= 1.0)
+            .max_by_key(|s| s.tick)
+            .map(|s| {
+                let to = [s.at[0] - eye[0], s.at[1] - eye[1]];
+                let l = to[0].hypot(to[1]);
+                [eye[0] + 6.0 * to[0] / l, eye[1] + 6.0 * to[1] / l, eye[2]]
+            })
+    }
+
+    /// Through a new target's reaction the feet keep on: the route under
+    /// way, else last tick's walk.
+    fn reaction_walk(
+        &mut self,
+        at: Vec3,
+        tick: u32,
+        map: Option<&MapData>,
+        pad: &mut HostPadState,
+        bodies: &[Vec3],
+    ) -> Option<Walk> {
+        match self
+            .follower
+            .as_ref()
+            .filter(|f| !f.done())
+            .and_then(Follower::goal)
+        {
+            Some(goal) => self.go(at, goal, tick, map, pad, bodies),
+            None => self.last_walk,
         }
     }
 
@@ -665,6 +756,21 @@ impl Mind {
             }
         }
         Self::visible_into(p, map, observed, seen);
+        // Hit with nobody in view: it faces the newest shot it heard (the
+        // HUD's damage arrow stands for no more), and is on its guard.
+        if took_damage && seen.is_empty() {
+            if let Some(at) = self.shot_bearing(up(me.position, EYE), sounds) {
+                self.hit_from = Some((at, p.tick.wrapping_add(HIT_LOOK_TICKS)));
+            }
+            self.alert_until = Some(p.tick.wrapping_add(ALERT_TICKS));
+        }
+        if !seen.is_empty()
+            || self
+                .hit_from
+                .is_some_and(|(_, until)| reached(p.tick, until))
+        {
+            self.hit_from = None;
+        }
         // Lead comes from consecutive sight samples only. Losing LOS
         // drops the velocity immediately, even within reaction grace.
         self.tracks.retain(|id, _| seen.iter().any(|o| o.id == *id));
@@ -724,18 +830,35 @@ impl Mind {
             _ => None,
         };
         self.experience.visit(me.position, checked);
-        // Glance at the tracker between engagements. A blip can move the
-        // search and the right stick, but cannot enter the sight/lead list.
+        // Glance at the tracker (mind::tracker): every reaction's worth of
+        // ticks between engagements, half as often in a fight. A dot can
+        // move the search and the right stick, but cannot enter the
+        // sight/lead list.
         let weights = self.profile_weights();
+        let chance = weights.map_or_else(
+            || 0.3 + 0.65 * crate::decisions::awareness(self.skill),
+            |w| w.radar_use,
+        );
         if seen.is_empty() {
-            let chance = weights.map_or_else(
-                || 0.3 + 0.65 * crate::decisions::awareness(self.skill),
-                |w| w.radar_use,
-            );
             self.glance_at_tracker(p, aim.reaction.max(1), chance);
-        } else {
-            self.radar = None;
+            // At a dot with nothing in view: another floor, or gone.
+            self.tracker.arrive(me.position, map, p.tick);
+        } else if self.glance_at_tracker(p, 2 * aim.reaction.max(1), chance) {
+            // A dot close behind in a fight is worth a turn to check.
+            let (lo, hi) = tracker::CHECK_TICKS;
+            let ticks = self.radar_rng.ticks(lo, hi);
+            self.tracker
+                .check_behind(me.position, me.aim, seen, p.tick, ticks);
         }
+        // A dot near puts it on its guard: no calm, and the next sighting
+        // is an alert one.
+        let on_guard = self.tracker.near(me.position, p.tick);
+        if on_guard {
+            self.alert_until = Some(p.tick.wrapping_add(ALERT_TICKS));
+        }
+        let alert = self
+            .alert_until
+            .is_some_and(|until| !reached(p.tick, until));
         let (goal, mut intent) = self.decide(p, me, seen, map);
         // The warm-up (mind::warmup): no target, so no shot, throw or
         // melee, until it is over or the bot is hurt.
@@ -759,7 +882,11 @@ impl Mind {
             .filter(|_| crate::tuning::current().is_none_or(|t| t.reaction.is_none()))
             .map(|w| w.reaction_jitter);
         let chosen = intent.chosen.map(|o| {
-            (o, self.fight.focus_with_jitter(o.id, p.tick, self.skill, reaction))
+            (
+                o,
+                self.fight
+                    .focus_alert(o.id, p.tick, self.skill, reaction, alert),
+            )
         });
         self.target = chosen.map(|(o, ready)| (o.id, ready));
         if let Some((o, _)) = chosen {
@@ -774,9 +901,10 @@ impl Mind {
         {
             self.last_seen = None;
         }
-        let calm = self
-            .last_threat
-            .is_none_or(|t| p.tick.wrapping_sub(t) > CALM_TICKS);
+        let calm = !on_guard
+            && self
+                .last_threat
+                .is_none_or(|t| p.tick.wrapping_sub(t) > CALM_TICKS);
 
         // Weapons (section 3.6): only with arms read.
         let enemy_dist = chosen.map(|(o, _)| len(sub(up(o.position, CHEST), eye)));
@@ -792,9 +920,10 @@ impl Mind {
                             tactics::draw_distance(me.position, o.position, velocity)
                         }),
                         calm,
-                        breather: self
-                            .last_threat
-                            .is_none_or(|t| p.tick.wrapping_sub(t) > BREATHER_TICKS),
+                        breather: !on_guard
+                            && self
+                                .last_threat
+                                .is_none_or(|t| p.tick.wrapping_sub(t) > BREATHER_TICKS),
                         by_range: style.by_range,
                         pickups: if goal.is_some()
                             && [a.held, a.other].into_iter().flatten().any(|g| g.ready())
@@ -953,7 +1082,7 @@ impl Mind {
                 let target = match locking {
                     Some((at, _)) => at,
                     None if clear(preferred) => preferred,
-                    None => up(o.position, CHEST),
+                    None => sight_point(map, eye, o.position),
                 };
                 let dist = len(sub(target, eye));
                 let vel = match locking {
@@ -1156,10 +1285,11 @@ impl Mind {
                     self.hand.wield(shot.role);
                     track = Some((o.id, sub(target, eye), sub(led, eye)));
                 }
-                // Until it reacts it stands, caught out. Then its footwork
-                // (crate::moves): strafing, keeping its range, reacting to
-                // hits, backing to cover; with no ammunition it runs straight
-                // in to melee.
+                // Until it reacts it walks on as it was and the hand starts
+                // to turn (REACTION_GAIN, below); nothing is fired. Then its
+                // footwork (crate::moves): strafing, keeping its range,
+                // reacting to hits, backing to cover; with no ammunition it
+                // runs straight in to melee.
                 if !reacted {
                     self.hand.lose_target();
                     self.fight.stop_trigger(p.tick);
@@ -1177,7 +1307,7 @@ impl Mind {
                         walk = self.go(me.position, at, p.tick, map, &mut pad, bodies);
                     }
                 } else if !reacted {
-                    self.follower = None;
+                    walk = self.reaction_walk(me.position, p.tick, map, &mut pad, bodies);
                 } else {
                     let to = sub(o.position, me.position);
                     let flat = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
@@ -1200,19 +1330,38 @@ impl Mind {
                         st.apply_weights(w);
                     }
                     let mv = self.moves.fight_with_style(&fight, map, bodies, st);
-                    if mv.jump {
-                        pad.buttons.set(JUMP, true);
+                    // Far over or under it and beyond the band: the route
+                    // up or down, not a walk under its ledge.
+                    let climb = map.is_some()
+                        && room.is_none()
+                        && !fight.retreat
+                        && (o.position[2] - me.position[2]).abs() > CLIMB_GAP
+                        && flat > fight.range.1;
+                    let route = if climb {
+                        self.go(me.position, o.position, p.tick, map, &mut pad, bodies)
+                    } else {
+                        None
+                    };
+                    if let Some(r) = route {
+                        walk = Some(Walk {
+                            walk: r.walk,
+                            face: [to[0] / flat, to[1] / flat],
+                        });
+                    } else {
+                        if mv.jump {
+                            pad.buttons.set(JUMP, true);
+                        }
+                        if mv.crouch {
+                            pad.buttons.set(CROUCH, true);
+                        }
+                        walk = Some(Walk {
+                            walk: room.map_or(mv.walk, |(at, radius)| {
+                                objective::within(mv.walk, me.position, at, radius)
+                            }),
+                            face: [to[0] / flat, to[1] / flat],
+                        });
+                        self.follower = None;
                     }
-                    if mv.crouch {
-                        pad.buttons.set(CROUCH, true);
-                    }
-                    walk = Some(Walk {
-                        walk: room.map_or(mv.walk, |(at, radius)| {
-                            objective::within(mv.walk, me.position, at, radius)
-                        }),
-                        face: [to[0] / flat, to[1] / flat],
-                    });
-                    self.follower = None;
                 }
             }
             Doing::Chase(at) => {
@@ -1421,20 +1570,39 @@ impl Mind {
             // In a vehicle `ride` made the pad.
             Doing::Drive(_) | Doing::Ride(_) | Doing::Idle => {}
         }
-        if let Some(at) = self.radar
-            && seen.is_empty() && look.is_none() && traversal.is_none()
+        // Hit from out of view: it faces the shot's bearing at once.
+        if seen.is_empty()
+            && let Some((at, _)) = self.hit_from
         {
-            let corner = self.follower.as_ref().filter(|f| {
-                f.goal().is_some_and(|goal| dist_xy(goal, at) < 1.5)
-            }).and_then(|f| f.corner(me.position));
-            look = Some(up(corner.unwrap_or(at), CHEST));
+            look = Some(at);
         }
-        // Pre-aim (tactics): chasing, it looks where the enemy went.
+        // The tracker (mind::tracker): the nearest remembered dot. On the
+        // way to it, into the route's turn toward it; standing, at it;
+        // travelling elsewhere, only a glance at a new dot.
+        if let Some(at) = self.tracker.nearest(me.position, p.tick)
+            && seen.is_empty()
+            && look.is_none()
+            && traversal.is_none()
+        {
+            let toward = self
+                .follower
+                .as_ref()
+                .filter(|f| f.goal().is_some_and(|goal| dist_xy(goal, at) < 1.5));
+            let travelling = walk.is_some_and(|w| w.walk[0].hypot(w.walk[1]) > 0.1);
+            if toward.is_some() || !travelling || self.tracker.glancing(p.tick) {
+                let corner = toward.and_then(|f| f.corner(me.position));
+                look = Some(up(corner.unwrap_or(at), CHEST));
+            }
+        }
+        // Pre-aim (tactics): chasing, it looks where the enemy went while
+        // that is in view of its eye and near the way it walks; otherwise
+        // the travel look takes the route's next turn (`Hand::travel`).
         if look.is_none()
             && style.pre_aim
             && let Doing::Chase(at) = self.doing
         {
-            look = tactics::pre_aim(me.position, at, walk.map(|w| w.walk));
+            look = tactics::pre_aim(me.position, at, walk.map(|w| w.walk))
+                .filter(|&point| map.is_none_or(|m| m.walls.clear(eye, point)));
         }
         if !self.navigated {
             self.foot_plan.idle();
@@ -1534,6 +1702,27 @@ impl Mind {
             (None, Some(at)) => look = Some(at),
             (None, None) => {}
         }
+        // A turn in a fight to check a dot close behind (mind::tracker):
+        // off the target, so no trigger, until it is over.
+        if matches!(self.doing, Doing::Fight(_))
+            && let Some(at) = self.tracker.checking(p.tick)
+        {
+            aim_error = Some(angle_error(facing, angles(sub(up(at, CHEST), eye))));
+            self.hand.lose_target();
+            self.fight.stop_trigger(p.tick);
+            pad.right_trigger = 0.0;
+        }
+        // Until its reaction passes (section 3.4) the hand already turns
+        // toward the new target, at REACTION_GAIN; the trigger, melee and
+        // grenade wait for it.
+        if aim_error.is_none()
+            && matches!(self.doing, Doing::Fight(_))
+            && let Some((o, ready)) = chosen
+            && !reached(p.tick, ready)
+        {
+            let to = angle_error(facing, angles(sub(sight_point(map, eye, o.position), eye)));
+            aim_error = Some([to[0] * REACTION_GAIN, to[1] * REACTION_GAIN]);
+        }
         if nade.throw {
             pad.left_trigger = 1.0;
         }
@@ -1617,12 +1806,10 @@ impl Mind {
                     })
                     .or_else(|| {
                         travel.map(|w| {
-                            let corner = if self.navigated {
-                                self.follower.as_ref().and_then(|f| f.corner(me.position))
-                            } else {
-                                None
-                            };
-                            self.hand.travel(eye, w.face, p.tick, map, corner)
+                            let route = self.follower.as_ref().filter(|_| self.navigated);
+                            let corner = route.and_then(|f| f.corner(me.position));
+                            let ahead = route.and_then(Follower::waypoint);
+                            self.hand.travel(eye, w.face, p.tick, map, corner, ahead)
                         })
                     })
             } else {
@@ -1637,6 +1824,41 @@ impl Mind {
             self.fidget.reset();
         }
 
+        // A hop on an open straight run, as the name likes.
+        let weights = self.profile_weights();
+        let fighting = matches!(self.doing, Doing::Fight(_)) && !seen.is_empty();
+        if let (Some(m), Some(w)) = (map, walk) {
+            let eye = up(me.position, EYE);
+            let open = seen.is_empty()
+                && matches!(
+                    self.doing,
+                    Doing::Roam
+                        | Doing::Chase(_)
+                        | Doing::Support(_)
+                        | Doing::Supply(_)
+                        | Doing::Vantage(_)
+                        | Doing::Rearm(_)
+                        | Doing::Play(_)
+                        | Doing::Carry(_)
+                )
+                && pad.buttons.bits() == 0
+                && dodge.is_none()
+                && self.stunt.is_none()
+                && self.stuck.level == crate::stuck::Level::Moving
+                && w.walk[0].hypot(w.walk[1]) > 0.9
+                && !objective_approach(self.doing, me.position)
+                && self.follower.as_ref().is_some_and(|f| {
+                    self.navigated
+                        && !f.committed()
+                        && !f.stepping_off()
+                        && f.corner(me.position).is_none()
+                })
+                && crate::moves::jumpable(m, me.position, w.walk)
+                && m.walls.clear(eye, up(eye, 0.7));
+            if self.stride.hop(weights, open, p.tick) {
+                pad.buttons.set(JUMP, true);
+            }
+        }
         let jumping = pad.buttons.contains(JUMP);
         let jump = self.buttons.jump(jumping, p.tick);
         pad.buttons.set(JUMP, jump);
@@ -1656,10 +1878,13 @@ impl Mind {
         } else {
             1.0
         };
+        self.last_walk = walk;
+        let stride = stride::push(weights, fighting, self.navigated);
         let walk = self.feet.step(
-            walk.map(|w| w.walk),
+            walk.map(|w| w.walk.map(|c| c * stride.lift)),
             dt,
             slow,
+            stride.push,
             jump || dodge.is_some(),
             |d| map.is_none_or(|m| crate::moves::bend_clear(m, me.position, d)),
         );
@@ -2049,6 +2274,17 @@ mod ride;
 /// never has one.
 pub(crate) fn glitch_doing(doing: Doing) -> bool {
     matches!(doing, Doing::Fight(_) | Doing::Roam)
+}
+
+/// The part of a player standing at `at` a shot or a look goes for: its
+/// chest when clear from `eye`, else its head when that is (a head over a
+/// parapet), else its chest.
+fn sight_point(map: Option<&MapData>, eye: Vec3, at: Vec3) -> Vec3 {
+    let (chest, head) = (up(at, CHEST), up(at, HEAD));
+    match map {
+        Some(m) if !m.walls.clear(eye, chest) && m.walls.clear(eye, head) => head,
+        _ => chest,
+    }
 }
 
 /// A carrier with no route home walks straight at it until it is there

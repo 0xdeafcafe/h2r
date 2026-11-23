@@ -240,6 +240,10 @@ pub struct AimTrace {
     pub error: [f32; 2],
 }
 
+/// Walking, the pitch follows the slope to the next waypoint up to this
+/// (radians).
+const SLOPE_PITCH: f32 = 0.35;
+
 /// How many of its own stick reports the hand remembers, for the turn the
 /// view does not show yet (under either aim model).
 const REMEMBERED: usize = 16;
@@ -673,6 +677,10 @@ impl Hand {
         self.glance.filter(|g| reached(tick, g.from)).map(|g| g.yaw)
     }
 
+    /// Where to look while walking `dir`: into the route's next turn
+    /// (`corner`) when it is in sight, else along the walk, glancing into
+    /// a doorway it passes. Off a turn the pitch follows the slope to the
+    /// next waypoint (`ahead`), so a ramp is not climbed staring level.
     pub(super) fn travel(
         &mut self,
         eye: Vec3,
@@ -680,8 +688,13 @@ impl Hand {
         tick: u32,
         map: Option<&MapData>,
         corner: Option<Vec3>,
+        ahead: Option<Vec3>,
     ) -> (f32, f32) {
         let forward = dir[1].atan2(dir[0]);
+        let slope = ahead
+            .map(|at| sub(super::up(at, super::EYE), eye))
+            .filter(|to| to[0].hypot(to[1]) > 0.5)
+            .map_or(0.0, |to| angles(to).1.clamp(-SLOPE_PITCH, SLOPE_PITCH));
         if let Some(map) = map {
             if let Some(at) = corner {
                 let at = super::up(at, super::EYE);
@@ -694,10 +707,10 @@ impl Hand {
                 }
             }
             if let Some(yaw) = self.doorway(eye, dir, tick, map) {
-                return (yaw, 0.0);
+                return (yaw, slope);
             }
         }
-        (forward, 0.0)
+        (forward, slope)
     }
 
     /// When approaching a doorway edge, check the side that opens up.

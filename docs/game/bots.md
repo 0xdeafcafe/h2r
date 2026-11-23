@@ -331,14 +331,19 @@ The brain reads game state the way telemetry already does
 - nearby grenade projectiles, identified by the loaded map's grenade
   definitions and checked against view and collision;
 - shots (the existing `0x104150` point) for a brief look toward the sound,
-  and kills (`0x15ce70`) for emote triggers (§3.5).
+  a turn toward the shooter when hit with nobody in view (the HUD's
+  damage arrow), and the shooter's tracker dot; and kills (`0x15ce70`)
+  for emote triggers (§3.5).
 
 **Line of sight** is a ray against the map's BSP collision, the same data
 the nav mesh comes from. A bot sees an enemy only when all three hold:
 
 - a ray reaches the enemy's head or chest;
-- the enemy is inside the bot's view cone;
+- that part is inside the bot's view cone;
 - a reaction delay has passed (§3.4).
+
+A head over a parapet is seen. The bot aims at the part it sees: the
+chest, or the head when only the head is clear (`mind::sight_point`).
 
 #### Visibility grid (`bots::vis`)
 
@@ -435,8 +440,7 @@ the nav mesh, and shared read-only by every bot in the process.
   fresh `.bots` that had none.
 
 The host gives each bot its own view, teammate HUD markers, audible shots,
-radio calls and public match information. Motion-tracker blips would be
-another legitimate input once a reader for the game's displayed blips exists.
+its motion tracker, radio calls and public match information.
 
 Each brain keeps a short, tick-stamped history of world samples, vehicle
 sight, nearby grenades, sound, deaths and teammate callouts. It thinks
@@ -444,6 +448,54 @@ from the newest sample at least `perception_ticks` old. A repeated poll
 in the same tick reuses the previous pad. If the host skips a sample, the
 brain can use an older observation. The first live sample after a respawn starts a
 fresh history.
+
+#### The motion tracker
+
+A phantom has no local-user HUD slot, so `bots::guest::radar` builds the
+dots its own tracker would show. It uses the active variant's motion
+sensor flag (setting 20, or setting 73 on the Juggernaut), the map's
+`hudg +0x290` horizontal range and the player speed threshold read by
+`0x1a1d55`. A hostile player shows when it moves faster than that
+threshold or fired in the last `sound::HEARD_TICKS` (6): the shot sound
+names the shooter's slot (`ShotSound::shooter`, from the players table's
+unit). A player who walks crouched and holds fire does not show, nor do
+allies. A mounted player's movement comes from its vehicle.
+
+The brain gets up to `radar::DOTS` (4) dots, nearest first, each a
+horizontal point rounded to half a world unit at the bot's own height.
+A dot has no identity and no height. It never picks a target or aims a
+shot: only sight does that.
+
+The bot reads the tracker at a glance. Between fights a glance is due
+every reaction time, in a fight every two. Each glance is taken with the
+Clanker's radar-use trait (without a profile, `0.3 + 0.65 ×` the skill's
+awareness). `mind::tracker` remembers each dot a taken glance showed for
+`KEEP_TICKS` (45) after the last glance that showed it, so a missed
+glance does not wipe them; a dot within `SAME` (1.5) of a remembered one
+is that dot, moved. What the dots do:
+
+- **On guard.** A remembered dot inside `NEAR` (half) of the disc makes
+  the next sighting an alert one (§3.4), and the bot is not calm: no
+  breather reload, no calm detours.
+- **Where to go.** Between fights, after helping a teammate and before
+  supplies, vantage points and roaming, the bot goes to the nearest
+  dot (`Doing::Support`).
+- **Where to look.** A new dot turns the head for `GLANCE_TICKS` (12 to
+  20) while travelling elsewhere. On a route toward it, it looks into the
+  coming corner or at the dot. Standing, it looks at the dot.
+- **Behind it in a fight.** A dot read within `BEHIND` (3) units, more
+  than a right angle off its aim, with no enemy in view near it, turns
+  the bot to check it for `CHECK_TICKS` (8 to 12), trigger released.
+- **Another floor.** At a dot with nothing in view, the player is above
+  or below: the dot moves to the nav mesh's nearest floor 1 to 8 units
+  over or under it, once, then it is dropped.
+
+Tests: `a_firing_stander_shows_and_a_crouch_walker_does_not`
+(`guest/tests.rs`), `a_shot_names_the_slot_whose_unit_fired_and_shows_it_as_firing`
+(`sound/tests.rs`), `mind/tracker/tests.rs`, and in `mind/tests.rs`
+`a_missed_glance_keeps_the_dot`, `a_dot_behind_stops_the_reload_and_turns_it`,
+`a_dot_makes_the_next_sighting_alert`, `nothing_at_the_dot_checks_the_floor_above`
+and `a_glance_at_the_tracker_ends`.
 
 ### 3.2 Navigation
 
@@ -643,25 +695,15 @@ biped's state in the synthetic object table before either brain runs.
 | Host input audited | Information the bot receives |
 |---|---|
 | Living unit table, aim and weapon slots | Enemies must pass view cone and BSP sight. Teammate positions act as HUD markers. Sight reveals aim, the held weapon and a broken shield. Partial shield strength and opponent ammunition stay private. Body avoidance, weapon seeking and group decisions use the filtered list. |
-| Motion tracker | An unzoomed player can investigate the nearest moving hostile blip inside the sensor disc. It gives an approximate horizontal position through walls. The bot needs sight to identify a player or fire. |
+| Motion tracker | An unzoomed player reads up to four hostile dots inside the sensor disc: players moving fast enough or firing. Each is an approximate horizontal position through walls, with no identity or height. The bot needs sight to identify a player or fire. |
 | Ground objects and placement records | Sight reveals loose grenade equipment and a weapon’s model. Its remaining ammo becomes known when held. Occupied power sites require sight. A successful scan establishes emptiness only at a known pad the bot can inspect. A failed scan supplies no observation. |
 | Vehicles and seats | A visible hull or the bot's own ride supplies the model, pose and seat layout. Identifying a rider on another vehicle also requires sight of that player. Remote vehicle health uses a neutral estimate. The bot can read its own ride's health. |
 | Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. Out of sight, a CTF or Assault bot plans from its own memory and from the public spawns (section 3.7, "Belief"). |
-| Shots, projectiles and death log | Audible shots give a direction for a look or search. A grenade dodge requires a close, visible projectile. The kill feed supplies identities. A fresh visible body or the bot's own death can supply a position. |
+| Shots, projectiles and death log | Audible shots give a direction for a look or search, and when hit with nobody in view, the shooter's bearing. A grenade dodge requires a close, visible projectile. The kill feed supplies identities. A fresh visible body or the bot's own death can supply a position. |
 | Scoreboard, radio and map tags | Scores and team membership are public. Radio distributes dated observations on completed ticks. Static placement periods and player starts describe the map. No variant countdown or actual enemy spawn selection feeds the planner. |
 
-A phantom has no local-user HUD slot. `bots::guest::radar` projects a
-movement contact for its own player using the active variant's motion
-sensor flag (setting 20, or setting 73 on the Juggernaut), the map's
-`hudg +0x290` horizontal range and the player speed threshold read by
-`0x1a1d55`. Slow movement, crouching and allies produce no hostile
-blip. A mounted player's movement comes from its vehicle. The brain gets
-a horizontal point rounded to half a world unit at its own height. A
-glance between fights sets a search direction and turns the head. On a
-route to the contact it looks into the upcoming turn. The glance interval
-uses the skill's reaction ticks. Each available dot gets one opportunity
-per glance, weighted by the Clanker's radar-use trait. This movement-only projection omits
-stationary firing blips.
+The tracker's dots and what the bot does with them are in "The motion
+tracker" (§3.1).
 
 A visible power item has probability 1 and a visibly empty pad has
 probability 0 for this tick. Away from the pad, an empty observation
@@ -706,7 +748,10 @@ recognizes, how far it will go, and how accurately it estimates arrival.
 A once-visible enemy can be chased at its last observed position. When an
 idle bot hears a gunshot, it can turn toward the coarse bearing after a
 5–8 tick reaction delay, then walk a short distance in that direction.
-The sound gives it neither a combat target nor a reason to fire. A kill
+The sound gives it neither a combat target nor a reason to fire. Hit
+with nobody in view, the bot faces the newest shot that is not its own at
+once, for `HIT_LOOK_TICKS` (45), as a player follows the HUD's damage
+arrow, and its next sighting in that time is an alert one (§3.4). A kill
 announcement retires the old sighting and may prompt a look toward a
 plausible out-of-view map start. Search confidence expires on the existing
 enemy-memory clock.
@@ -799,11 +844,20 @@ fight, apart from the aim:
 
 - A hit is a shield drop of more than 0.03 in a tick, with one
   footwork reaction at most every 20 ticks. A bot can also hop when it
-  starts a new strafe, according to its name profile's jump chance.
+  starts a new strafe, with `moves::FIGHT_HOP` (0.5) times its name
+  profile's jump weight, at most every 45 ticks.
 - **Range**: closes in beyond the far end of its range and backs off
   inside the near end. The range comes from `moves::preferred_range`,
   today 2.5 to 8 for every weapon: the seam for the weapons decision to
-  give a shotgun a short range and a sniper a long one.
+  give a shotgun a short range and a sniper a long one. The near end is
+  measured in three dimensions, and an enemy more above or below than
+  away is never backed from: stepping back under a ledge only hides it.
+- **Another level**: with the enemy more than `moves::HEIGHT_GAP` (1)
+  above or below, a strafe step that would lose sight of its head and
+  chest takes the other side if that keeps sight, else the bot stands.
+  An enemy that far above or below and beyond its range is reached by
+  the nav mesh route (`Mind::go`), up the ramp or lift, not by walking
+  under it.
 - **Shields down or reloading**: backs away, reloading at half the pace
   and never closing in. With cover allowed it looks (every 15 ticks) at
   16 spots 1.5 and 3 away, walkable in a straight line, for one where the
@@ -843,6 +897,28 @@ it can reach and has not been blacklisted wins.
   2 for one under 4 away;
 - plus a random wobble: 8 on Easy (it wanders nearly at random), 2 on
   Normal, 1 on Heroic, 0.4 on Legendary (it goes where the fight was).
+
+#### Pace and hops
+
+How hard a bot pushes the stick and when it hops on a run come from its
+name profile (`mind::stride`). A bot without a profile keeps its thumb's
+own pace (91 to 99.5% of the stick, seeded) times the route's cruise,
+`nav::CRUISE_PACE` (0.94), and never hops on a run.
+
+- **Travelling** with nothing in view, a named bot runs at full stick:
+  the thumb's shortfall is closed and a route's cruise is lifted to 1.
+  It still slows into a corner and onto its goal.
+- **In a fight** it aims with care: its strafe weight closes that much
+  of the thumb's shortfall, so a strafe-heavy name keeps the stick
+  pinned while it shoots.
+- **Hops on a run.** On an open straight stretch of a route (between
+  fights, no corner within reach, not crouched, footing for a running
+  hop and clear overhead), a roll every `HOP_EVERY` (30 to 90) ticks
+  hops with `HOP_CHANCE` (0.6) times the name's jump weight. Fight hops
+  are under "Moving in a fight" (§3.2).
+
+Tests: `a_named_bot_runs_at_full_stick_and_hops_as_its_name_likes`
+(`mind/tests.rs`) and the tests in `mind/stride.rs`.
 
 ### 3.3 Decision
 
@@ -1114,6 +1190,18 @@ its reaction jitter) runs from 0 to 1. Once down, a held trigger stays
 down while the aim is within 2.2 fire cones, and through 4 ticks outside
 that or with the shot blocked or out of range. A burst let go before its
 end is finished by the next press, without waiting out its gap.
+
+The reaction gates only the trigger, melee and grenades. Until it is
+over the bot keeps walking where it was going (its route, else last
+tick's walk) and the right thumb already turns toward the part of the
+enemy it sees, at `REACTION_GAIN` (half) of the angle. An alert bot
+reacts two ticks sooner (`Tactics::focus_alert`): one that saw the enemy
+within the grace period, has a tracker dot near (§3.1, "The motion
+tracker") or was just hit from out of view. Tests:
+`it_keeps_moving_and_starts_turning_before_it_may_fire`,
+`shot_from_behind_it_turns_to_the_shooter_within_ten_ticks` and
+`a_moment_out_of_view_does_not_freeze_it_again`.
+
 
 At the controller boundary, each stick stays within its unit circle and
 can travel at most 0.45 stick radii per tick. A full reversal takes at
@@ -5326,14 +5414,14 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      | automatic past its band | held | 24 on, 8 off | 16 on, 8 off | 12 on, 8 off |
      | grenades a minute | 0.5 | 1 | 2 | 3 |
 
-     Until its reaction time has passed the bot stands still and does not
-     turn. It fires within 25 units, melees (B) within 0.9, and throws a
+     Until its reaction time has passed the bot walks on and turns at
+     half gain, but does not fire (§3.4). It fires within 25 units, melees (B) within 0.9, and throws a
      grenade (left trigger) at a target 3 to 12 units away, at most once
      every 8 s. While fighting it strafes, kept on the nav mesh.
    - Tests (`cargo test -p bots`): the skills get better in order; a wall
-     hides an enemy, and so does the bot's back; the reaction time before
-     turning and firing; firing on target and not off it; the trigger held
-     inside the band and burst past it;
+     hides an enemy, and so does the bot's back; it turns and walks on
+     during its reaction and fires after it; firing on target and not off
+     it; the trigger held inside the band and burst past it;
      more lead at a higher skill, with a fixed seed; chasing the last
      known position, then forgetting it; roaming to a reachable polygon; a
      teammate never a target; a dead bot lets go of every input; grenades
@@ -5352,8 +5440,8 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
         map along floors and ramps, drops off ledges, and does not stay
         stuck on a wall for more than a second or two (it jumps, then picks
         a new path).
-     5. Step into its view: it pauses briefly (its reaction), then turns,
-        strafes and fires. Get close: it melees. At mid range it sometimes
+     5. Step into its view: it starts turning at once and fires after its
+        reaction, then strafes. Get close: it melees. At mid range it sometimes
         throws a grenade.
      6. Repeat with Difficulty set to Easy and Legendary:
         Easy is slow to react, sprays and misses a lot; Legendary
@@ -5779,8 +5867,8 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
    - **Grenades** (all difficulties): none at a target with a teammate
      within 3 of it.
    - **Pre-aim** (Normal and up): chasing, it looks where the enemy went
-     out of view (within 15, and not more than 100 degrees off the way it
-     walks), not where its feet go.
+     out of view (within 15, in clear sight, and not more than 45 degrees
+     off the way it walks), else into the coming corner.
    - **Signals for the movement** (`Mind::fight`): `fight.band`, the
      range to keep the target at (the held gun's band; arm's length with
      nothing to shoot), also `arms::preferred_range(&arms)`; and
@@ -5969,12 +6057,14 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      enemies alone supply live targets and shot lead.
    - The feet accelerate in world space, vary strafe deflection and
      ease off near a destination. Cameras look into clear turns and
-     doorways before the feet finish the turn. The navigation follower
+     doorways before the feet finish the turn, and on a ramp pitch toward
+     the next waypoint (`look::SLOPE_PITCH`). The navigation follower
      checks the corner cut for footing and keeps gap approaches at pace.
    - Bots crouch-walk on quiet objective approaches. Hits alone can
      change the strafe or start a crouch at range. Jumps are single
      short presses on planned routes, during stuck recovery, at the
-     start of a strafe, or while escaping a visible nearby grenade.
+     start of a strafe, on an open run as the name likes (§3.2, "Pace and
+     hops"), or while escaping a visible nearby grenade.
    - Weapon taps have a short intent delay, a hold and a release gap.
      Melee needs a sustained chance in front of the bot. Semi-auto
      pulls vary within the weapon's cadence and bursts start when the
