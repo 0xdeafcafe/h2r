@@ -4,6 +4,7 @@
 //! bytes the game is given.
 //!
 //! - [`model`]: a [`Hud`] of elements, a state as [`Values`];
+//! - [`flash`]: a `hudg` flash record's colour over time;
 //! - [`templates`]: what a compiled element takes from the loaded map,
 //!   the grenade row included, resolved through a [`MapView`];
 //! - [`map_file`]: a [`MapView`] over an open map file and its resources;
@@ -16,6 +17,7 @@
 //! Guest-free: no guest memory, no hook. The game extension reads and
 //! writes the guest; this crate only computes.
 
+pub mod flash;
 pub mod huds;
 pub mod map_file;
 pub mod model;

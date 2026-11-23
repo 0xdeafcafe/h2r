@@ -221,11 +221,14 @@ disc or the running game.
 | Flash records | `hudg +0xa4`..`+0xbc` (help), `+0xcc`..`+0xe4` (objective), `+0x318`, `+0x338` (timer): a rest colour, a peak colour, period, delay, count, flags, duration | Code `defs/hudg.txt`; E the help and objective reads above |
 | A team's colour | the loaded map's `matg +0x16c` is the datum of its `mulg`; the `mulg`'s first `universal` record (block at `+0`, element address at `+4`) has the team colour block at `+0x10`: one `real_rgb_color` of 12 bytes per team, 8 teams. `0x0007f720` is the game's lookup of it (`0x0007f790` gives it a player's slot 0 in a team game). `pad_lightbar::team_rgb` reads it; `Style::Team(n)` draws in it | E `0x0007f720` ([objects.md](../halo1/objects.md), "Change colours"); Code `crates/extensions/game/src/pad_lightbar.rs` (`team_palette`, synthetic-guest tests) |
 | Widget art | the widget's shader: a meter's fill and a panel's tint are shader colours | [health.md](../halo1/health.md) |
-| Text widget colour | not read: how `0x0022aa16` gets from the widget's shader to the colour it hands `0x0013edb0` | decoding needed (4) |
+| Text widget colour | the text draw hands `0x0013edb0` (`HUD_TEXT_SETUP`) the static colour `[0x004686d4]` points at, the one the message draw copies as its shadow, and the static `[0x004686cc]` as the shadow; `0x0013edb0` copies the colour to `0x004e73c4`..`0x004e73d0` and sets `0x004e73c0`. So the widget's own colour is not set at that call: the HUD material it binds (`0x00131bb0` on `0x004e6950`, `0x0022aabb`) gives it (S) | E `0x0022aa5b`..`0x0022aa6e`, `0x0013edcb`..`0x0013edf7`; decoding needed (4) |
 
-The flash curve of such a record is `strength` in
-`crates/extensions/game/src/h1_hud_text/flash.rs` (Halo 1's, which
-Halo 2's help text is drawn with on converted maps). That Halo 2's own
+A record's colour over its flash is `hud_kit_core::flash::colour`
+(`crates/rewrites/hud-kit-core/src/flash.rs`), its curve `strength`:
+Halo 1's, which Halo 2's help text is drawn with on converted maps
+(`h1_hud_text/flash.rs` calls it). Where each `Pulse`'s record starts
+comes from the `hudg` definition (`flash::record_at`), and a test reads
+the six fields after it at the offsets the curve reads. That Halo 2's own
 curve is the same is S: read the caller of `hudg +0xac`..`+0xb8`.
 
 ### Fonts
@@ -307,7 +310,12 @@ The kit names retail art by the widget that draws it, never by pixels.
 3. **The training box's pieces.** The ten quads of
    `0x001e9140`..`0x001e95c5`: each one's rectangle and which bitmap,
    for the preview. The game draws them without this.
-4. **A text widget's colour.** `0x0022aa16` to its `0x0013edb0` call.
+4. **A text widget's colour.** The colour `0x0022aa16` hands
+   `0x0013edb0` is a static one ("Colours"), so a colour written there
+   does not flash a kit text. Not read: how the HUD material bound at
+   `0x0022aabb` colours the text (the shader's colour, a material
+   input, or the static colour times either), and so where a kit text's
+   colour can be set per widget.
 5. **Widget effects.** The `0x68`-byte effect record and `0x0022bcaf`,
    for a retail widget's own flash and scale.
 6. **The notification list's order.** The insert is read (above). Not
@@ -1882,8 +1890,7 @@ Each slice is code and tests only; the coordinator compiles and runs.
    Pinned and Centered, fullscreen and split; the widget cap and the
    text shader's colour.
 2. **Styles and the pointer.** The colour hook (`HUD_TEXT_SETUP`,
-   `HUD_SHADER_QUAD`) and the flash (move `strength` into
-   `hud-kit-core` and have `h1_hud_text/flash.rs` call it), so `Dim`,
+   `HUD_SHADER_QUAD`) and the flash (`hud_kit_core::flash`), so `Dim`,
    `Inactive` and `Flash` draw; the corner turn. Before coding, decodings
    4 and 7. Tests: a `Dim` text's alpha; a flash at the record's phases;
    four corners turned by a quarter turn.
