@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub mod announcer;
 pub mod audition;
 pub mod bot_nav;
 pub mod commands;
@@ -571,6 +572,8 @@ pub struct App {
     pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
     /// Sound audition: the decoded sound, the audio output and what plays.
     pub audition: audition::Audition,
+    /// The Announcer: its voice source and the last line made.
+    pub announcer: announcer::Announcer,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
 }
@@ -644,6 +647,7 @@ impl App {
             last_tag_export: None,
             last_tag_import: None,
             audition: Default::default(),
+            announcer: Default::default(),
             rules: Default::default(),
         }
     }
@@ -656,6 +660,13 @@ impl App {
         self.data_root = Some(root);
         self.variants_for = None;
         self.refresh_packages();
+    }
+
+    /// The runtime data root: `--data`, else the default one.
+    pub fn data_root(&self) -> PathBuf {
+        self.data_root
+            .clone()
+            .unwrap_or_else(content::store::default_data_root)
     }
 
     pub fn source(&self) -> Option<&MapSource> {

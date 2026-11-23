@@ -104,6 +104,11 @@ pub mod method {
     pub const SOUND_STOP: &str = "sound.stop";
     pub const SOUND_MEASURE: &str = "sound.measure";
 
+    // The Announcer: lines said by a voice (api/voice.rs).
+    pub const VOICE_SAY: &str = "voice.say";
+    pub const VOICE_LIST: &str = "voice.list";
+    pub const VOICE_COMMIT: &str = "voice.commit";
+
     // Every content check in one list (api/checks.rs).
     pub const CHECK_RUN: &str = "check.run";
 

@@ -1122,6 +1122,46 @@ A check is a row of `CHECKS`: `ContentCheck { area, name, run }`,
 `run` being `fn(&mut App, Option<&str>) -> Result<Vec<Finding>,
 String>`.
 
+## Announcer
+
+`voice.say`, `voice.list` and `voice.commit` (`api/voice.rs`, over
+`app/announcer.rs`) make announcer lines from text with a Fish Audio voice.
+The design, the key and the steps are in [announcer.md](announcer.md).
+
+**`voice.say {text, voice?, model?, speed?, out?, clip?, play?,
+target_lufs?, fresh?}`** says `text` (at most 500 characters) in `voice`
+(a Fish Audio model id; default `86126c4c4dad4911979556b4569802cd`), trims
+the silence, measures the line against the open map's retail announcer
+lines and brings it to their median loudness (`target_lufs` instead), saves
+44.1 kHz mono 16-bit PCM under `<data root>/announcer`, and plays it
+(`play` defaults to true). The same text, voice, `model` and `speed` reuse
+the earlier file: `cached` is true and the service is not called, so no key
+is needed. `fresh` asks again. It answers `file`, `raw` (the voice's own
+file in the cache), `levels` and `raw_levels` (as `sound.measure`),
+`trimmed_ms`, `gain_db`, `limited` (the -1 dBFS peak ceiling held the gain
+back), `target` (`lufs`, `from`: `given`, `retail`, `our clips` or
+`fallback`, and `why` when not retail), `verdict` (as `sound.measure`),
+`playback`, and with `clip` a `ready` object: the checkout path
+`art/announcer/<clip>.wav`, the `CLIPS` entry to add, and whether the clip
+exists. With no key in the Keychain the error is `REFUSED`, its message
+says to add the key with the exact command, and its `data` is
+`{step: "add_key", service, command}`. A bad param is `INVALID_PARAMS`
+before the service is asked; the service's errors and a silent line are
+`FAILED`.
+
+**`voice.list`** answers the voice source, the default voice, the voices
+kept lines used, whether the key item exists (`key.state`: `present`,
+`missing` with the command, or `unreadable`; the key is not read), the
+cache's directory and size, and the lines most recently said. It asks
+nothing of the service.
+
+**`voice.commit {clip, from?, repo?, replace?}`** copies a saved line
+(`from`, else the last one made) to `art/announcer/<clip>.wav` of the
+checkout (`repo`, else the one above the editor's working directory). It is
+the only way a line reaches the checkout. It does not run `git` or edit
+`boot::medal_announcer::CLIPS`; `next` says what is left. An existing clip
+needs `replace`.
+
 ## Extension points
 
 `crates/apps/studio/src/api/seams.rs`. A tool implements `api::Provider`:
@@ -1445,6 +1485,9 @@ actions and the API's make identical profiles.
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
   `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`).
+  host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
+  `api/ui_check.rs` and `api/checks.rs`: the content checks. `api/voice.rs`
+  (with `app/announcer.rs` and `src/voice*`): the Announcer.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

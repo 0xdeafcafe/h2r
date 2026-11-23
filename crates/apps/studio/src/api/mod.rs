@@ -46,7 +46,7 @@ mod scripts;
 pub mod seams;
 pub mod server;
 mod sound;
-mod sound_measure;
+pub(crate) mod sound_measure;
 mod tag_fields;
 mod tag_io;
 mod tags;
@@ -59,6 +59,7 @@ mod ui_retail;
 mod ui_screens;
 mod variants;
 mod view;
+mod voice;
 
 #[cfg(test)]
 mod tests;

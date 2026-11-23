@@ -760,6 +760,24 @@ impl App {
         })
     }
 
+    /// Plays a clip that is not a tag of the map (the Announcer panel's
+    /// line) through the same output, replacing what plays.
+    pub fn sound_play_clip(&mut self, clip: &Clip) -> Result<Started, SoundError> {
+        let out = self.audition.output()?;
+        let rate = out.rate();
+        out.play(clip.stereo(rate).into(), 0);
+        let output = out.name();
+        self.audition.now = None;
+        Ok(Started {
+            frames: clip.frames(),
+            rate: clip.rate,
+            channels: clip.channels,
+            duration_ms: clip.duration_ms(),
+            from_ms: 0,
+            output,
+        })
+    }
+
     /// Every `snd!` of the shown map, in tag order, with its class: one
     /// pass over the map's headers (20 bytes each), nothing decoded. A
     /// header that does not read is left out.

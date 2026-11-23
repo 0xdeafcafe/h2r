@@ -45,6 +45,8 @@
 //!   when asked ([`super::models`]); read-only, so no actions.
 //!   `model.colors`, `model.emblem` and `custom.*` are planned
 //!   (docs/editor/agent-api.md).
+//! - **the Announcer**: `voice.say`, `voice.list` and `voice.commit`
+//!   ([`super::voice`]) over `app::announcer`.
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::perform`]: crate::App::perform
@@ -112,4 +114,7 @@ pub fn register(api: &mut Api) {
     // model.*: objects' models read, rendered (ground, third and first
     // person) and checked as content, Pogo kit maps included.
     api.register(Box::new(super::models::Models::default()));
+    // The Announcer: a line said by a voice, made a clip and kept
+    // (app::announcer).
+    api.register(Box::new(super::voice::Voice));
 }
