@@ -402,9 +402,8 @@ fn a_labels_hover_says_what_a_map_needs() {
     // An API entry's hover is its front-end signature.
     assert!(hover_text(LABELS, 8, 25).contains("inside(player, zone) -> bool"));
     // A set label lists what its members have.
-    let siege = crate::builtin::SIEGE;
-    let line = siege.lines().position(|l| l.starts_with("label capture:")).unwrap() as u32;
-    let h = hover_text(siege, line, 7);
+    let src = "rules \"T\" 1\ncarrier slayer\nlabel capture: zones numbered 0..1 = \"zone\"\non tick { for each capture c { } }\n";
+    let h = hover_text(src, 2, 7);
     assert!(h.contains("A set of zones. Members have"), "{h}");
     assert!(h.contains("numbered 0..1"), "{h}");
 }

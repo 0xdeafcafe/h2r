@@ -16,7 +16,6 @@
 // traits.
 //
 // Entries a host cannot make yet (`verify::unhostable`):
-//   inside           not built (the return point and plate volumes)
 //   spawn_objective  traced (the flag spawn 0x2422d0)
 //   reset_objective  made only on oddball (CTF's flag return, which calls
 //                    the shared objective return at 0x242b41, is not named)

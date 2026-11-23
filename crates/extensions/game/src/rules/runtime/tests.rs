@@ -17,6 +17,8 @@ use crate::rules::feature::Shared;
 mod hosted;
 /// The start gate and the label reads.
 mod gate;
+/// Zones, the roster's events and loadouts.
+mod world;
 
 const GAME_GLOBALS: u32 = 0x1000_0000;
 const GAME_TIME: u32 = 0x1000_2000;
@@ -394,8 +396,8 @@ fn a_script_the_host_cannot_run_is_refused_by_the_entry_or_event_it_names() {
             "the script calls set_team, whose engine entry is untraced",
         ),
         (
-            "rules \"Spawner\" 1\ncarrier slayer\n\non spawn(p) { score(p, 1) }\n",
-            "the script answers on spawn, which this host runtime does not deliver yet",
+            "rules \"Picker\" 1\ncarrier slayer\n\non pickup(p, o) { score(p, 1) }\n",
+            "the script answers on pickup, which this host runtime does not deliver yet",
         ),
     ] {
         let ir = ::rules::compile(src).unwrap();

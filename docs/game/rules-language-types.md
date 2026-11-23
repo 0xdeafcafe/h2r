@@ -724,8 +724,8 @@ on enter(goal, o) {
   `if let`.
 - `koth.rules` declares `label hill_corner: zones numbered` and reads
   `hill_corner[hill]`; `oddball.rules` `label oddball_spawn: objects`;
-  `race.rules` `label checkpoint: zones numbered` and
-  `label race_start: spawns`, with `on enter(checkpoint z, o)`.
+  `race.rules` `label checkpoint: zones numbered at least 3 at most 64
+  = "hill_corner"`, with `on enter(checkpoint z, o)`.
 - The six scripts with no label change only where a handle may be
   `none` (`juggernaut.rules`' `crown(p: player?)`) and where a count is
   `time`.

@@ -379,7 +379,11 @@ fn the_party_and_research_rows_hold_their_scripts() {
             "Hide and Seek",
             "Jousting",
             "Cops and Robbers",
-            "Bumper Cars"
+            "Bumper Cars",
+            "Siege",
+            "Gun Game",
+            "Race",
+            "VIP"
         ]
     );
     assert_eq!(

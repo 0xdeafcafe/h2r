@@ -1,0 +1,17 @@
+{
+  "teams": [
+    0,
+    1
+  ],
+  "players": [
+    {
+      "slot": 0,
+      "team": 0
+    },
+    {
+      "slot": 1,
+      "team": 1
+    }
+  ],
+  "ticks": [{"events":[{"spawn":0},{"spawn":1}]},{},{},{},{},{},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]},{},{},{},{},{"events":[{"kill":{"victim":1,"killer":0}}]},{},{},{},{},{"events":[{"spawn":1}]}]
+}

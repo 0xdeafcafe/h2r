@@ -75,7 +75,8 @@ ask it.
 `builtin::builtin(engine_index)` returns the built-in source for a
 retail engine index: Slayer, Oddball, King of the Hill, Juggernaut,
 Territories, and one `ctf.rules` body serving CTF and Assault, each under
-its own header. `builtin::examples()` lists the payoff modes (Infection,
+its own header. `builtin::LISTED` adds the scripted modes the Select Game
+menu lists, Siege among them. `builtin::examples()` lists the payoff modes (Infection,
 Gun Game, VIP, Siege, Race, Bounce Practice). Each script's header names
 the entries a host cannot make yet. `fake::FakeGame` is a table-backed
 `Game` that logs calls, for tests, `h2 rules run` and the workbench; it
