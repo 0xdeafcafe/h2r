@@ -15,6 +15,10 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+/// One batch of calls, as the recorder writes it.
+pub(super) fn tape_chunk<W: Write + Seek>(w: &mut Writer<W>, calls: &[Call]) {
+    w.chunk_bytes(tape::TAPE, &tape::encode_batch(calls).unwrap()).unwrap();
+}
 pub(super) fn header(id: u64) -> Header {
     Header {
         version: 1,
@@ -454,7 +458,7 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
         params: serde_json::Value::Null,
     };
     w.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    w.chunk(RAND, &vec![call(0)]).unwrap();
+    tape_chunk(&mut w, &[call(0)]);
     w.chunk(MARK, &lobby(9)).unwrap();
     w.chunk(
         HASH,
@@ -473,12 +477,12 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
         .unwrap();
     w.chunk(MARK, &lobby(10)).unwrap();
     w.chunk(MARK, &Mark::D3dBarrier { slices: 64, tick: 31, saved: true }).unwrap();
-    w.chunk(RAND, &vec![call(1)]).unwrap();
+    tape_chunk(&mut w, &[call(1)]);
     let size = Call {
         index: 2, op: tape::VIDEO_MENU_SIZE.into(), thread: 0, args: vec![],
         result: Ok((3440 << 16) | 1440), outputs: vec![],
     };
-    w.chunk(tape::VSIZ, &[&size]).unwrap();
+    tape_chunk(&mut w, &[size.clone()]);
     w.chunk(
         MARK,
         &Mark::End {
@@ -530,7 +534,7 @@ fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
     };
     let check = Check { tick: 30, calls: 2, sim: Some(7) };
     writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    writer.chunk(RAND, &[call(0), call(1)]).unwrap();
+    tape_chunk(&mut writer, &[call(0), call(1)]);
     writer.chunk(MARK, &Mark::D3dBarrier { slices: 40, tick: 22, saved: true }).unwrap();
     writer.chunk(MARK, &Mark::Lobby {
         boundary: 15, method: "host.lobby.state".into(), params: serde_json::Value::Null,
@@ -550,6 +554,56 @@ fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
         assert!(tape.exhausted());
         tape.resume_cursor(cursor).unwrap();
     }
+}
+
+#[test]
+fn streams_interleave_in_one_batch_and_a_json_batch_is_refused() {
+    let dir = Temp::new();
+    let call = |index: u64, op: &str| Call {
+        index,
+        op: op.into(),
+        thread: 1,
+        args: vec![index as u32 % 2],
+        result: Ok(0),
+        outputs: vec![vec![index as u8; 4]],
+    };
+    let ops = ["XInputGetState", "Recv", "XInputGetState", "Random", "XInputGetState"];
+    let make = |name: &str, json: bool| {
+        let path = dir.0.join(name);
+        let mut header = header(0);
+        header.version = 2;
+        let mut writer = Writer::new(File::create(&path).unwrap(), &header).unwrap();
+        writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
+        if json {
+            let calls: Vec<Call> = ops.iter().enumerate().map(|(i, op)| call(i as u64, op)).collect();
+            writer.chunk(tape::TAPE, &calls).unwrap();
+        } else {
+            let mut batch = tape::Batch::default();
+            for (i, op) in ops.iter().enumerate() {
+                batch.append(&mut writer, call(i as u64, op)).unwrap();
+            }
+            batch.flush(&mut writer).unwrap();
+        }
+        writer.chunk(HASH, &Check { tick: 30, calls: 5, sim: Some(1) }).unwrap();
+        writer.chunk(MARK, &Mark::End { slices: 10, tick: 30, calls: 5 }).unwrap();
+        writer.finish().unwrap();
+        path
+    };
+    let path = make("binary.h2film", false);
+    let reader = Reader::open(&path).unwrap();
+    // Pad reads, socket calls and entropy share one chunk: no stream
+    // change closes a batch.
+    assert_eq!(reader.entries.iter().filter(|e| e.tag == tape::TAPE).count(), 1);
+    let mut playback = Playback::load(reader).unwrap();
+    for (i, op) in ops.iter().enumerate() {
+        assert_eq!(playback.call(i as u64, op, &[i as u32 % 2], 1).unwrap(), call(i as u64, op));
+    }
+    assert!(playback.exhausted());
+
+    let path = make("json.h2film", true);
+    let mut playback = Playback::load(Reader::open(&path).unwrap()).unwrap();
+    let error = playback.call(0, ops[0], &[0], 1).unwrap_err().to_string();
+    assert!(error.contains("JSON encoding"), "{error}");
 }
 
 #[test]
@@ -701,22 +755,18 @@ fn dead_tape(path: &std::path::Path) -> Vec<Entry> {
         }
         if matches!(n, 50 | 200 | 280) {
             // The recorder flushes its call batch, then writes the mark.
-            tape.chunk(
-                NETR,
-                &vec![Call {
-                    index: match n {
-                        50 => 0,
-                        200 => 1,
-                        _ => 2,
-                    },
-                    op: "Recv".into(),
-                    thread: 7,
-                    args: vec![2],
-                    result: Ok(1),
-                    outputs: vec![],
-                }],
-            )
-            .unwrap();
+            tape_chunk(&mut tape, &[Call {
+                index: match n {
+                    50 => 0,
+                    200 => 1,
+                    _ => 2,
+                },
+                op: "Recv".into(),
+                thread: 7,
+                args: vec![2],
+                result: Ok(1),
+                outputs: vec![],
+            }]);
             tape.chunk(
                 MARK,
                 &Mark::D3dBarrier {

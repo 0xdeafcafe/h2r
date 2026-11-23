@@ -1,6 +1,6 @@
 # The input film
 
-Status: Design. The per-tick input capture, the HLE tape and the container that holds them are built; the film file, its encoding and the engine film are not.
+Status: Design. The per-tick input capture, the binary HLE tape and the container that holds them are built; the film file, its action-column encoding and the engine film are not.
 Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/tape.rs` (`Call`, `Batch`, `Playback`), `crates/live/film/src/blam` (the tick track). Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/blam/tests.rs`.
 Switch: none.
 
@@ -72,7 +72,7 @@ code:
 
 | Dependency | What is recorded | Where | Why | Machine film | Engine film |
 |---|---|---|---|---|---|
-| Pad reads (`PADR`) | every `XInputGetState` status and 22-byte packet, by call index | `FilmPads::read_with_memory` in `theater/local_pads.rs` | the only way input and menu presses reach the guest | needed; binary encoding (slice 14) | cut: the inputs replace it, menus are not replayed |
+| Pad reads (`PADR`) | every `XInputGetState` status and 22-byte packet, by call index | `FilmPads::read_with_memory` in `theater/local_pads.rs` | the only way input and menu presses reach the guest | needed; binary encoding | cut: the inputs replace it, menus are not replayed |
 | Controller ports (`PDEV`) | port topology at each input pump | `record_ports`, same file | the guest sees device changes without reading a pad; a controller arriving is how a split-screen seat joins | needed; sparse | cut: seat records |
 | Keyboard (`TEXT`) | virtual-keyboard edits | `crates/extensions/game/src/keyboard_glue.rs` | profile-name entry | needed; rare | cut |
 | Host randomness (`RAND`) | `XNetRandom`, `XNetCreateKey` and `Entropy.*` outputs | `Network::filmed`, `state_random` in `crates/live/live-hle/src/network/film.rs` | host entropy written into guest memory | needed; a few calls a session | cut: the game's own random state is guest memory, seeded from the descriptor |
@@ -94,17 +94,41 @@ the pad stream, port changes, keyboard edits and a few entropy and
 service calls. The network tape is the large stream and exists only for
 Live and system-link games.
 
-**The tape's cost.** Calls are JSON (`Writer::chunk` in
-`crates/live/film/src/lib.rs`): a `Call` with its operation name and each
-output byte as a decimal number. A batch is closed at 128 calls or 64 KiB,
-at every arena hash, and whenever the stream tag changes (`Batch::append`),
-so interleaved pad and socket calls make a zstd frame, an envelope and an
-`INDX` row each time they alternate. **Estimate**: a pad read is about
-165 bytes inflated, an empty socket poll about 100, a received datagram
-of N bytes about 90 + 3.6 N. One pad read a frame at 30 Hz is 297 KB a
-pad-minute inflated; stored size depends on the alternation and is not
-measured. [Theater seek measurements](notes/theater-seek.md) records
-calls and bytes per stream. Slice 14 replaces the encoding.
+**The tape.** The call tape is one binary stream in call order
+(`crates/live/film/src/tape/codec.rs`; the chunk tag is `TAPE`). A batch
+is one chunk: a table of the operation names it uses, then each call as
+a ULEB operation code, thread, call index (zigzag delta), result,
+arguments and outputs. An output is raw, a repeat of the last output of
+the same operation, first argument and slot, or the bytes that differ
+from it, so a pad read is the bytes that differ from its handle's last
+packet. State starts empty in each batch, which is what lets a seek read
+one chunk. Batches close at 128 calls, 64 KiB, a checkpoint or an arena
+hash, never on a change of stream, so pad reads and socket calls share
+one zstd frame and one `INDX` row. A decoder checks every count and
+length against the bytes left and refuses a batch that begins with `[`,
+which is the JSON encoding the tape no longer has (the simulation ABI
+is `h2-sim/2`).
+
+Calls that need no tape:
+
+- `Htonl`, `Htons` and `FdIsSet` are pure functions of their arguments
+  and guest memory; `Network::invoke` computes them in recording and in
+  playback, and they take no call index.
+- The null network. A game that has made no socket has none for an
+  operation on a socket (`Bind`, `Send`, `Recv`, `Close` and the like) to
+  name, so those operations are answered from the guest's own state in
+  both runs and are not taped. The first `Socket` call ends it
+  (`Network::dark`, `State::opened`, saved in the film state), and every
+  call after is taped. A dedicated host's tunnel answers before the
+  socket table and is never dark. `h2 film stat` lists the operations an
+  offline game makes; an operation it still makes that needs no socket
+  is a candidate for the same treatment.
+
+**Estimate**: a pad read that changes two packet bytes is about 15 bytes
+inflated; before, about 165. `h2 film stat FILE` prints each stream's
+bytes in both encodings from the same calls, and the tape's stored bytes.
+[Theater seek measurements](notes/theater-seek.md) records calls and
+bytes per stream.
 
 ### Joins and leaves
 

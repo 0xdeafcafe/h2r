@@ -602,7 +602,7 @@ mod compatibility_tests {
             let wire = json!({
                 "state": state,
                 "reasons": [],
-                "film": {"xbe": "synthetic", "contract": null, "hooks": null, "abi": "h2-sim/1"},
+                "film": {"xbe": "synthetic", "contract": null, "hooks": null, "abi": "h2-sim/2"},
                 "installed": [{"stamp": "synthetic build", "state": state}],
             });
             let result: Compatibility = serde_json::from_value(wire.clone()).unwrap();

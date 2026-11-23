@@ -10,7 +10,10 @@ use std::path::PathBuf;
 
 /// Bump for a backwards-incompatible change in scheduler, input or HLE
 /// semantics that is not already identified by the image or installed hooks.
-pub(super) const SIMULATION_ABI: &str = "h2-sim/1";
+/// `h2-sim/2`: the call tape is the binary stream, the pure network
+/// operations take no call index, and a game that has made no socket holds
+/// no socket call (docs/game/input-film.md, "What the replay depends on").
+pub(super) const SIMULATION_ABI: &str = "h2-sim/2";
 const BREAKING_CHANGE: &str = "Film predates a breaking simulation change.";
 
 /// Check an installed, current module against the recording. The launcher also

@@ -281,7 +281,7 @@ mod prepare_tests {
         fs::write(&sidecar, b"KEYF private local bytes").unwrap();
         let hash = "0".repeat(64);
         let seed = json!({"game_id":"test-game","map":"lockout","map_sha256":hash,
-            "seed":10,"compat":{"xbe":hash,"contract":hash,"hooks":hash,"abi":"h2-sim/1"},
+            "seed":10,"compat":{"xbe":hash,"contract":hash,"hooks":hash,"abi":"h2-sim/2"},
             "server":"synthetic.example","roster":[{"seat":0,"name":"Recorder","team":1,
             "xuid":"synthetic-account","address":"synthetic-machine"}]});
         let packed = zstd::bulk::compress(&serde_json::to_vec(&seed).unwrap(), 1).unwrap();

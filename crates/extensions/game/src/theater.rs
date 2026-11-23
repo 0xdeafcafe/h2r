@@ -1173,7 +1173,7 @@ impl Tap for Session {
             }
         }
     }
-    fn record(&self, tag: film::Tag, mut c: Call) {
+    fn record(&self, _tag: film::Tag, mut c: Call) {
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {
             return;
@@ -1183,7 +1183,7 @@ impl Tap for Session {
             return;
         };
         if let Some(out) = &mut rec.out {
-            match rec.batch.append(out, tag, c) {
+            match rec.batch.append(out, c) {
                 Ok(()) => s.calls += 1,
                 Err(e) => s.fail(e.to_string()),
             }

@@ -63,11 +63,7 @@ impl Session {
             && !Startup::tapes_video_menu(&mut playback.reader)?
         {
             ensure!(
-                !playback
-                    .reader
-                    .machine_section()
-                    .entries()
-                    .any(|e| e.tag == VSIZ),
+                !film::tape::holds_op(&mut playback.reader, VIDEO_MENU_SIZE)?,
                 "Video size tape without Video menu startup"
             );
             return Ok(native);
