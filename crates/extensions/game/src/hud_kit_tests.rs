@@ -836,7 +836,7 @@ fn a_world_mark_draws_shown_posed_and_in_its_mode() {
         ],
     };
     let mut values = Values::default();
-    values.set("w.box", Value::text("Go").styled(Style::Lock));
+    values.set("w.box", Value::text("Go").styled(Style::Go));
     values.set("w.hidden", Value::hidden());
     values.set("w.unposed", Value::shown());
     values.set("w.split", Value::shown().styled(Style::Dim));
@@ -856,7 +856,7 @@ fn a_world_mark_draws_shown_posed_and_in_its_mode() {
             id: "w.box",
             shape: Shape::Bracket,
             pose,
-            style: Style::Lock,
+            style: Style::Go,
             label: "Go".into(),
         }
     );
@@ -866,6 +866,6 @@ fn a_world_mark_draws_shown_posed_and_in_its_mode() {
         let split = world_marks_of(&hud, &values, &marks, mode);
         assert_eq!(split.iter().map(|m| m.id).collect::<Vec<_>>(), ["w.split"]);
     }
-    // The lock's red is not a style the widget hooks draw.
-    assert!(!draws(Style::Lock));
+    // The go green is not a style the widget hooks draw.
+    assert!(!draws(Style::Go));
 }

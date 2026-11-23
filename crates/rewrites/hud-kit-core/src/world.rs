@@ -29,11 +29,10 @@ pub const TICKS: usize = 3;
 /// The drawn part of each tick's slot of the run; the rest is the gap to
 /// the next.
 pub const TICK_DUTY: f32 = 0.55;
-/// The lock's red (docs/game/superbounce.md, "Lock-on"): the one colour a
-/// world mark has beside the user's HUD colour, as the game's reticle is
-/// red over a target in range. [`Style::Lock`](crate::model::Style::Lock)
-/// draws in it.
-pub const LOCK_RED: [f32; 3] = [1.0, 0.275, 0.196];
+/// The go green: the one colour a world mark has beside the user's HUD
+/// colour, for "this fall will bounce" (docs/game/superbounce.md, "The
+/// approach guide"). [`Style::Go`](crate::model::Style::Go) draws in it.
+pub const GO_GREEN: [f32; 3] = [0.35, 0.95, 0.45];
 
 /// What a world mark draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
