@@ -295,7 +295,10 @@ fn a_grown_edit_sends_append_writes_evict_in_order() {
     let batch = &raw.calls("edit.batch")[0];
     let word = sync::hex(&POINTER.to_le_bytes());
     assert!(
-        batch["writes"].as_array().unwrap().iter().any(|w| w["value"] == word.as_str()),
+        // The pointer goes whole, maybe in a run with the bytes after it.
+        batch["writes"].as_array().unwrap().iter().any(|w| {
+            w["value"].as_str().is_some_and(|v| v.starts_with(word.as_str()))
+        }),
         "the block info points at the appended block: {batch}"
     );
     assert_eq!(batch["evict"], json!([section_owner()]));
@@ -310,7 +313,9 @@ fn a_grown_edit_sends_append_writes_evict_in_order() {
     let undo = &raw.calls("edit.batch")[1];
     assert_eq!(undo["evict"], json!([section_owner()]));
     assert!(
-        undo["writes"].as_array().unwrap().iter().any(|w| w["was"] == word.as_str()),
+        undo["writes"].as_array().unwrap().iter().any(|w| {
+            w["was"].as_str().is_some_and(|v| v.starts_with(word.as_str()))
+        }),
         "the pointer word goes back from the appended block's: {undo}"
     );
 }

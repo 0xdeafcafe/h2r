@@ -914,11 +914,18 @@ impl Cx<'_, '_> {
     }
 
     /// A tag reference: its kind and name (the full path on hover), then
-    /// **Open** and **Change...** (the pick dialog).
+    /// **Open** and **Change...** (the pick dialog), on the next line when
+    /// the name leaves no room for them.
     fn reference(&mut self, r: &Row, groups: &[FourCC], id: u32) {
         let ui = self.ui;
         let doc = self.doc;
-        ui.text(r.summary.as_deref().unwrap_or_default());
+        let summary = r.summary.as_deref().unwrap_or_default();
+        let style = ui.clone_style();
+        let button = |label: &str| ui.calc_text_size(label)[0] + 2.0 * style.frame_padding()[0];
+        let gap = style.item_spacing()[0];
+        let buttons = button("Open") + button("Change...") + 2.0 * gap;
+        let fits = ui.calc_text_size(summary)[0] + buttons <= ui.content_region_avail()[0];
+        ui.text(summary);
         if ui.is_item_hovered() {
             let mut tip = doc.tag_label(id);
             if !groups.is_empty() {
@@ -927,7 +934,9 @@ impl Cx<'_, '_> {
             }
             ui.set_item_tooltip(tip);
         }
-        ui.same_line();
+        if fits {
+            ui.same_line();
+        }
         let target = doc.tag(TagId(id)).map(|t| t.id);
         {
             let _off = ui.begin_disabled_with_cond(target.is_none());

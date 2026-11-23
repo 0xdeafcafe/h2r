@@ -141,6 +141,10 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 struct Held {
     bytes: Arc<Vec<u8>>,
     pointer: Option<u32>,
+    /// The block info's pointer word and the file's word there: an undo
+    /// writes it back whole.
+    pointer_at: u32,
+    file_word: [u8; 4],
 }
 
 /// What the game holds beyond its loaded file: `(held, file)` per byte.
@@ -173,6 +177,8 @@ impl RawBaseline {
                 Held {
                     bytes: g.bytes,
                     pointer: None,
+                    pointer_at: g.pointer_at,
+                    file_word: g.file_word,
                 },
             );
         }
@@ -244,6 +250,9 @@ struct Want {
     raw: BTreeMap<(Owner, u32), (u8, u8)>,
     tags: BTreeMap<u32, (u8, u8)>,
     grown: BTreeMap<Owner, Grown>,
+    /// The first addresses of grown sections' pointer words: a changed
+    /// pointer is written whole, so the game never reads half of it.
+    words: BTreeSet<u32>,
     frozen: Frozen,
     /// Reload rows for what cannot go live.
     rows: Vec<Value>,
@@ -739,12 +748,21 @@ fn grown_plan(
             if held.is_some_and(|h| h.pointer.is_none()) {
                 copy_held.push(owner);
             } else {
+                if let Some(h) = held {
+                    // The word wants the file's value; the baseline keeps
+                    // only the bytes that differ from it.
+                    want.words.insert(h.pointer_at);
+                    for (i, f) in h.file_word.into_iter().enumerate() {
+                        want.tags.entry(h.pointer_at + i as u32).or_insert((f, f));
+                    }
+                }
                 plan.evict.push(owner);
                 plan.grown.push((owner, None));
             }
             continue;
         };
         let pointer = |p: u32, want: &mut Want| {
+            want.words.insert(g.pointer_at);
             for (i, (n, f)) in p.to_le_bytes().into_iter().zip(g.file_word).enumerate() {
                 want.tags.insert(g.pointer_at + i as u32, (n, f));
             }
@@ -765,6 +783,8 @@ fn grown_plan(
                         Some(Held {
                             bytes: g.bytes.clone(),
                             pointer: Some(p),
+                            pointer_at: g.pointer_at,
+                            file_word: g.file_word,
                         }),
                     ));
                 }
@@ -821,12 +841,24 @@ fn plan(
     plan.raw = runs(raw_diffs, |(o, at)| (o, at));
     if !frozen.geometry {
         let addresses: BTreeSet<u32> = want.tags.keys().chain(base.tags.keys()).copied().collect();
-        let tag_diffs = addresses.into_iter().filter_map(|at| {
+        let byte = |at: u32| {
             let held = base.tags.get(&at);
             let file = want.tags.get(&at).map(|w| w.1).or(held.map(|h| h.1))?;
             let now = want.tags.get(&at).map_or(file, |w| w.0);
             let was = held.map_or(file, |h| h.0);
-            (now != was).then_some((at, (now, was, file)))
+            Some((now, was, file))
+        };
+        let changed = |at: u32| byte(at).is_some_and(|(now, was, _)| now != was);
+        // A pointer word with any byte changed goes whole.
+        let whole: BTreeSet<u32> = want
+            .words
+            .iter()
+            .filter(|&&w| (w..w + 4).any(changed))
+            .flat_map(|&w| w..w + 4)
+            .collect();
+        let tag_diffs = addresses.into_iter().filter_map(|at| {
+            let b = byte(at)?;
+            (b.0 != b.1 || whole.contains(&at)).then_some((at, b))
         });
         plan.writes = runs(tag_diffs, |at| ((), at))
             .into_iter()

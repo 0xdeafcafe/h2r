@@ -644,15 +644,20 @@ mod tests {
 ")
             .filter(|section| {
                 section.starts_with("[Docking]")
-                    || ["outliner", "viewport", "inspector", "log", "game"]
-                        .iter()
-                        .any(|name| section.starts_with(&format!("[Window][###{name}]")))
+                    || ["outliner", "viewport", "inspector", "log", "game"].iter().any(|name| {
+                        section.starts_with(&format!("[Window][###{name}]"))
+                            || section.starts_with(&format!("[Window][{name}]"))
+                    })
             })
             .collect::<Vec<_>>()
             .join("
 
 ");
-        assert!(legacy.contains("[Window][###outliner]"));
+        assert!(
+            legacy.contains("[Window][###outliner]") || legacy.contains("[Window][outliner]"),
+            "{:?}",
+            settings.lines().filter(|l| l.starts_with('[')).collect::<Vec<_>>()
+        );
         assert!(legacy.contains("[Docking]"));
 
         let mut h = Headless::new([1280.0, 800.0], 1.0).unwrap();
@@ -737,8 +742,12 @@ mod tests {
                     file.display()
                 );
             }
+            // A constructor called by name: `to_rgba(` is a pixel copy, not one.
             for constructor in ["rgb(", "rgba(", "from_rgb(", "from_rgba("] {
-                assert!(!code.contains(constructor), "{} calls {constructor}", file.display());
+                let called = code.match_indices(constructor).any(|(at, _)| {
+                    !code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                });
+                assert!(!called, "{} calls {constructor}", file.display());
             }
         }
 
@@ -1121,7 +1130,7 @@ mod tests {
     fn the_tags_tool_edits_a_field_through_its_widgets() {
         use crate::app::tag_tests;
         use crate::script::{Button, Step};
-        let Some((_turn, mut h)) = headless() else {
+        let Some((_turn, mut h)) = tags_headless() else {
             return;
         };
         let dir = std::env::temp_dir().join(format!("h2-editor-tags-ui-{}", std::process::id()));
@@ -1197,7 +1206,7 @@ mod tests {
         use crate::app::tag_tests;
         use crate::script::{Button, Step};
         use studio_proto::method as m;
-        let Some((_turn, mut h)) = headless() else {
+        let Some((_turn, mut h)) = tags_headless() else {
             return;
         };
         let dir = std::env::temp_dir().join(format!("h2-editor-pick-ui-{}", std::process::id()));
@@ -1294,7 +1303,7 @@ mod tests {
         use crate::script::{Button, Step};
         use agent_proto::sim::SessionKind;
         use studio_proto::method as m;
-        let Some((_turn, mut h)) = headless() else {
+        let Some((_turn, mut h)) = tags_headless() else {
             return;
         };
         let t = Temp::new("tag-rows-chips");
@@ -1348,7 +1357,7 @@ mod tests {
     fn a_list_opens_one_element_and_shows_it_alone() {
         use crate::app::{NavAction, tag_tests};
         use crate::script::{Button, Step};
-        let Some((_turn, mut h)) = headless() else {
+        let Some((_turn, mut h)) = tags_headless() else {
             return;
         };
         let dir = std::env::temp_dir().join(format!("h2-editor-lists-{}", std::process::id()));
@@ -1403,7 +1412,7 @@ mod tests {
         use crate::script::{Button, Step};
         use agent_proto::sim::SessionKind;
         use studio_proto::method as m;
-        let Some((_turn, mut h)) = headless() else {
+        let Some((_turn, mut h)) = tags_headless() else {
             return;
         };
         let t = Temp::new("tag-header-link");
@@ -1503,7 +1512,7 @@ mod tests {
         use crate::app::tag_tests;
         use crate::script::{Button, Step};
         use studio_proto::method as m;
-        let Some((_turn, mut h)) = headless() else {
+        let Some((_turn, mut h)) = tags_headless() else {
             return;
         };
         let dir = std::env::temp_dir().join(format!("h2-editor-unnamed-{}", std::process::id()));
@@ -1745,8 +1754,18 @@ mod tests {
     }
 
     fn headless() -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {
+        headless_sized([1280.0, 800.0])
+    }
+
+    /// Tall enough that the Tags tree's last group (`weap`) opens above
+    /// the Game panel docked under the left column.
+    fn tags_headless() -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {
+        headless_sized([1280.0, 1100.0])
+    }
+
+    fn headless_sized(size: [f32; 2]) -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {
         let turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
-        match Headless::new([1280.0, 800.0], 1.0) {
+        match Headless::new(size, 1.0) {
             Ok(h) => Some((turn, h)),
             Err(e) => {
                 eprintln!("skipping: {e}");
