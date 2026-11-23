@@ -146,7 +146,7 @@ mod tests {
                 radius: 1.,
                 offset: [0.; 3],
             };
-            let axes = Axes::from_frame(frame, extent, &camera()).unwrap();
+            let axes = Axes::from_frame(frame, extent, &camera(), true).unwrap();
             let marker = Marker::from_frame(frame, &camera(), [1, 2, 3]).unwrap();
             assert_eq!(marker.centre, axes.origin());
             assert_eq!(marker.centre, [320, 240], "straight ahead is the middle");
@@ -159,7 +159,8 @@ mod tests {
                     radius: 1.,
                     offset: [0.; 3]
                 },
-                &camera()
+                &camera(),
+                true
             )
             .is_none()
         );

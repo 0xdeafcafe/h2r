@@ -88,7 +88,8 @@ pub fn gizmo() -> Option<gizmo::Axes> {
         let driver = current()?;
         let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
         let editor = driver.editor.as_ref()?;
-        (editor.ghost()?, editor.local_axes())
+        let (frame, extent) = editor.ghost()?;
+        (frame, extent, editor.local_axes())
     };
     gizmo::project(frame, extent, local)
 }
@@ -338,14 +339,12 @@ impl Feature for Hooks {
 /// forge-monitor-appearance.md, ML7): the local seat's look, what this
 /// machine can draw as its hello says, the host model list's catalogue
 /// and the palette's RGB.
-fn monitor_start(
-    m: &dyn engine::GuestMemory,
-    looks: &Looks,
-) -> editing::MonitorStart {
+fn monitor_start(m: &dyn engine::GuestMemory, looks: &Looks) -> editing::MonitorStart {
     let colour = crate::pad_lightbar::seat_colour(m, 0).unwrap_or(0);
-    let resolved = looks.session().cloned().unwrap_or_else(|| {
-        forge::look::MonitorLook::default_for(colour)
-    });
+    let resolved = looks
+        .session()
+        .cloned()
+        .unwrap_or_else(|| forge::look::MonitorLook::default_for(colour));
     let catalogue = looks.catalogue().to_vec();
     let base = catalogue
         .iter()
@@ -361,9 +360,7 @@ fn monitor_start(
         look: resolved,
         catalogue,
         palette: (0..forge::look::PALETTE)
-            .map(|index| {
-                crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3])
-            })
+            .map(|index| crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3]))
             .collect(),
     }
 }

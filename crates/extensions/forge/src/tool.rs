@@ -324,20 +324,20 @@ pub struct Tool {
     pub link_from: Option<Linkable>,
     /// Degrees between turn snaps.
     rotation_step: f32,
-    rotation: [f32; 3],
+    pub(crate) rotation: [f32; 3],
     /// Each palette item's bounding sphere, in palette order.
     extents: Arc<[Extent]>,
     /// Orientation on pickup. Snap the *delta* so picking up never changes orientation.
-    initial_rotation: [f32; 3],
+    pub(crate) initial_rotation: [f32; 3],
     /// Position on pickup, the origin of a Local movement snap.
-    initial_position: [f32; 3],
+    pub(crate) initial_position: [f32; 3],
     /// Offset from the aim point along the camera's forward, right and up,
     /// so a held object turns with the view and keeps its place in it.
-    offset: [f32; 3],
+    pub(crate) offset: [f32; 3],
     /// How far in front of the camera the object is carried: its
     /// [`Extent::hold`] for a new one, where it was taken for a picked-up
     /// one, then pushed and pulled.
-    distance: f32,
+    pub(crate) distance: f32,
 }
 
 impl Default for Tool {

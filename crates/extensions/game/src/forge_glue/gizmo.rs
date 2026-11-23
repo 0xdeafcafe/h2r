@@ -273,6 +273,7 @@ mod tests {
                 offset: [0.; 3],
             },
             &camera,
+            true,
         )
         .unwrap()
         .paint(&mut rgba, (640, 480));

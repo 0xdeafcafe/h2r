@@ -377,7 +377,7 @@ fn property_session() -> Session {
         BlockKind::StartingLocations,
         vec![
             vec3([0.0, 3.0, 0.0]),
-            float(0.0),
+            forge_doc::Value::Float(float(0.0)),
             forge_doc::Value::Int(0),
             forge_doc::Value::Int(-1),
         ],
@@ -386,7 +386,7 @@ fn property_session() -> Session {
         BlockKind::NetgameFlags,
         vec![
             vec3([1.0, 5.0, 0.0]),
-            float(0.0),
+            forge_doc::Value::Float(float(0.0)),
             forge_doc::Value::Int(0),
             forge_doc::Value::Int(0),
             forge_doc::Value::Int(0),

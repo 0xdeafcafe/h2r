@@ -596,7 +596,7 @@ impl Editor {
                 let (name, block, frame) = self.target().ok_or("Aim at a thing of the map.")?;
                 let thing = if self.tool.placing.is_some() {
                     Thing {
-                        id: Endpoint::Added(0),
+                        id: Endpoint::Added(OpId(0)),
                         block,
                         kind: ThingKind::Object,
                         own: false,
@@ -835,6 +835,12 @@ impl Editor {
                         value: forge_doc::Value::Int(i as i64),
                     },
                 );
+            }
+            Choice::Set(Prop::Coordinates, _) => {
+                return Err("Coordinates opens its own screen.".into());
+            }
+            Choice::Set(Prop::RespawnTime, _) => {
+                return Err("Respawn time is typed, not picked.".into());
             }
             Choice::Number(field, text) => match field {
                 sheet::NumberField::Coordinate(axis) => {

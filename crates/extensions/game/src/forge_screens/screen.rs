@@ -431,7 +431,10 @@ impl Rows for ForgeScreen {
             super::sheet::MOVE_STEPS[facts.movement_snap].max(0.01)
         };
         let value = current + if right { step } else { -step };
-        lock(&self.sheet).rows.get_mut(row)?.value = Some(super::sheet::number(value));
+        lock(&self.sheet)
+            .rows
+            .get_mut(usize::try_from(row).ok()?)?
+            .value = Some(super::sheet::number(value));
         super::send(Choice::Nudge(axis, right));
         Some(format!("{}: {value}", axis.label()))
     }
