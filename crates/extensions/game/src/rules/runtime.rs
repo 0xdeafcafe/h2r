@@ -14,9 +14,10 @@
 //!   blocks plays no rules at all: [`Status::Blocked`] keeps every problem,
 //!   no VM is made, and the first tick boundary ends the game
 //!   (docs/game/rules-start-gate.md, "What a blocked start shows"). A
-//!   `scoring carrier` script is loaded for its header only
-//!   ([`Status::Carrier`]): after the policy check, no gate, VM or record,
-//!   and none of the moments below does anything for it.
+//!   `scoring carrier` script, after the policy check, runs its carrier
+//!   engine's built-in script under the record ([`carrier_builtin`],
+//!   [`Carried`]): every step after that is the built-in's, and a
+//!   refusal names both.
 //! - [`Runtime::pre_tick`] before each game tick: the VM's tick begins and
 //!   its queued calls join the calls the handlers made since the last
 //!   boundary. The feature makes them, in order, in an async body
@@ -650,6 +651,9 @@ pub struct Running {
     /// against them again.
     census: ::rules::labels::Census,
     teams: Vec<u8>,
+    /// The `scoring carrier` script the record names, when `vm` runs its
+    /// carrier's built-in for it.
+    pub carried: Option<Carried>,
 }
 
 impl Running {
@@ -659,26 +663,51 @@ impl Running {
     }
 }
 
-/// A `scoring carrier` script's game (docs/game/rules-variants.md, "A
-/// script that keeps its carrier's rules"): the script is loaded for its
-/// header only. No VM runs, no `RULES` record is written and no call is
-/// made; the carrier's own scoring routines answer as retail
-/// ([`super::scoring::script_scores`] is false), and the header's
-/// `requires` still turn their modes on, since those are read from the
-/// record's script reference (`super::header`).
+/// The `scoring carrier` script a game's record names
+/// (docs/game/rules-variants.md, "A script that keeps its carrier's
+/// rules"): settings and a header, no handlers. The game runs its carrier
+/// engine's built-in script ([`carrier_builtin`]) under the record, and
+/// this keeps what the record named. The header's `requires` turn their
+/// modes on through the record's script reference (`super::header`).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Carried {
     pub hash: Sha256,
     pub source: Source,
     pub name: String,
-    pub version: u16,
-    pub carrier: u8,
+}
+
+/// The built-in script a `scoring carrier` script's game runs: its
+/// carrier engine's ([`builtins`]). A carrier with none is refused by
+/// name.
+pub fn carrier_builtin(ir: &Ir) -> Result<Ir, String> {
+    let carrier = ir.header.carrier;
+    let name = caps::carrier_name(carrier).map_or_else(|| format!("engine {carrier}"), str::to_string);
+    let Some(b) = builtins().iter().find(|b| b.engine == carrier) else {
+        return Err(format!(
+            "{} is scoring carrier, and its carrier {name} has no built-in script",
+            ir.header.name
+        ));
+    };
+    verify::load(&b.blob)
+        .map(|(ir, _)| ir)
+        .map_err(|e| format!("the built-in {name} script does not verify: {e}"))
+}
+
+/// A refusal of the script that runs, in words that name the `scoring
+/// carrier` script it runs for, if any.
+fn for_carried(carried: Option<&Carried>, running: &Ir, why: String) -> String {
+    match carried {
+        Some(c) => format!(
+            "{} is scoring carrier and plays the built-in {} script, which this host cannot run yet: {why}",
+            c.name, running.header.name
+        ),
+        None => why,
+    }
 }
 
 /// Whether a script runs in this game, and why not.
 pub enum Status {
     Idle(&'static str),
-    /// A `scoring carrier` script runs: the carrier engine scores.
-    Carrier(Carried),
     /// `hash`: the full hash, or the record's prefix when the blob was not
     /// found.
     Refused { hash: Option<String>, why: String },
@@ -883,8 +912,8 @@ impl Runtime {
     }
 
     /// The running blob's full hash, for the Live session's `rules` field.
-    /// A `scoring carrier` script has none: its guests need no script to
-    /// show, since the carrier engine scores and labels the game.
+    /// A `scoring carrier` script's game names its carrier's built-in,
+    /// which every build has.
     pub fn hash(&self) -> Option<String> {
         self.running().map(|r| r.hash.to_string())
     }
@@ -972,13 +1001,37 @@ impl Runtime {
         {
             return self.refuse(full, d.to_string());
         }
-        // `scoring carrier`: the header only. No gate (no handler reads a
-        // label), no VM and no record; the carrier engine scores.
-        if ir.header.scoring == Scoring::Carrier {
-            return self.carry(&ir, hash, source, engine);
-        }
+        // `scoring carrier`: the record's script is settings only, so the
+        // game runs the carrier engine's built-in script under the record
+        // (its settings, its score limit). From here on `ir` is the
+        // built-in's; every refusal names the carried script too.
+        let scoring = ir.header.scoring;
+        let (ir, hash, source, carried) = match scoring {
+            Scoring::Script => (ir, hash, source, None),
+            Scoring::Carrier => match carrier_builtin(&ir) {
+                Ok(builtin) => {
+                    let carried = Carried {
+                        hash,
+                        source,
+                        name: ir.header.name.clone(),
+                    };
+                    let id = builtin.id();
+                    (builtin, id, Source::Builtin, Some(carried))
+                }
+                Err(why) => return self.refuse(full, why),
+            },
+        };
         if let Some(why) = unhostable_refusal(&ir) {
-            return self.refuse(full, why);
+            return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
+        }
+        // A carried script's built-in is refused for what this host cannot
+        // run yet before the gate: the variant names no labels, so a map
+        // that lacks the built-in's must not end a game the host would
+        // refuse anyway.
+        if carried.is_some()
+            && let Some(why) = runtime_refusal(&ir)
+        {
+            return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
         }
         // The start gate: the final authority on the map's labels. Theater
         // skips it (`film`): the film's host passed it.
@@ -993,10 +1046,12 @@ impl Runtime {
             return self.block(hash, problems, table);
         }
         if let Some(why) = runtime_refusal(&ir) {
-            return self.refuse(full, why);
+            return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
         }
         let census = census::census(&things);
-        let options = if script.mode == Mode::Rules {
+        // The record's option bits are its script's; a carried script has
+        // no options, so the built-in plays its own defaults.
+        let options = if script.mode == Mode::Rules && carried.is_none() {
             script.options
         } else {
             ir.default_options()
@@ -1027,46 +1082,36 @@ impl Runtime {
             table,
             census,
             teams,
+            carried,
         };
         if let Err(why) = save(&mut running, &mut *self.store) {
             return self.refuse(full, why);
         }
+        let line = format!(
+            "rules: {name} ({}) from {} on engine {engine}, options {options:#010x}",
+            hash,
+            source.name()
+        );
+        let line = match &running.carried {
+            Some(c) => format!(
+                "{line}, for {} ({}) from {}, scoring carrier",
+                c.name,
+                c.hash,
+                c.source.name()
+            ),
+            None => line,
+        };
         self.status = Status::Running(Box::new(running));
         if let Some(e) = error {
             self.error(0, "init", describe(&e));
         }
-        format!(
-            "rules: {name} ({}) from {} on engine {engine}, options {options:#010x}",
-            hash,
-            source.name()
-        )
-    }
-
-    /// Plays a `scoring carrier` script ([`Carried`]): its header is kept
-    /// for `rules.state` and nothing else runs. The record stays removed.
-    fn carry(&mut self, ir: &Ir, hash: Sha256, source: Source, engine: i32) -> String {
-        let h = &ir.header;
-        let line = format!(
-            "rules: {} ({hash}) from {} on engine {engine}, scoring carrier: the carrier engine scores and no VM runs",
-            h.name,
-            source.name()
-        );
-        self.status = Status::Carrier(Carried {
-            hash,
-            source,
-            name: h.name.clone(),
-            version: h.version,
-            carrier: h.carrier,
-        });
         line
     }
 
-    /// The `scoring carrier` script this game plays, if any.
+    /// The `scoring carrier` script whose game runs its carrier's built-in
+    /// script here, if any.
     pub fn carried(&self) -> Option<&Carried> {
-        match &self.status {
-            Status::Carrier(c) => Some(c),
-            _ => None,
-        }
+        self.running().and_then(|r| r.carried.as_ref())
     }
 
     /// Stops the running script with `why`, removing its record.
@@ -1285,7 +1330,6 @@ impl Runtime {
     pub fn ended(&mut self) {
         let name = match &self.status {
             Status::Running(r) => r.vm.ir().header.name.clone(),
-            Status::Carrier(c) => c.name.clone(),
             _ => return,
         };
         eprintln!("rules: {name} ended with the game");
@@ -1300,16 +1344,14 @@ impl Runtime {
         let film = self.film;
         let r = match &mut self.status {
             Status::Running(r) => r,
-            Status::Carrier(_) => {
-                return Err("the game's script is scoring carrier: no VM runs to swap into".into());
-            }
             _ => return Err("no script runs in this game".into()),
         };
-        // The carrier would score nowhere: its routines stay answered in
-        // place while the new program has no handler to score.
+        // A program with no handlers would score nowhere: the carrier's
+        // routines stay answered in place. A carried script's game runs its
+        // carrier's built-in, which a restart picks.
         if ir.header.scoring == Scoring::Carrier {
             return Err(
-                "the new script is scoring carrier, which runs no VM; restart the game with it".into(),
+                "the new script is scoring carrier, which has no handlers to swap in; restart the game with it".into(),
             );
         }
         if let Err(why) = sync(r, &*self.store) {
@@ -1384,19 +1426,6 @@ impl Runtime {
                 errors,
                 blocked: problems.clone(),
                 labelled: table.view(),
-                ..Default::default()
-            },
-            // No VM: no options, authority, budget or calls to report.
-            Status::Carrier(c) => wire::State {
-                running: true,
-                refused: None,
-                script: Some(c.name.clone()),
-                version: Some(c.version),
-                hash: Some(c.hash.to_string()),
-                source: Some(c.source.name().into()),
-                carrier: Some(c.carrier),
-                scoring: Some(wire::Scoring::Carrier),
-                errors,
                 ..Default::default()
             },
             Status::Running(r) => {

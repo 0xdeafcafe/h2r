@@ -128,9 +128,10 @@ it.
 Thirteen of the fourteen community variants are settings and nothing else.
 Such a script says so in its header:
 
-- `scoring carrier`: the carrier engine scores the game. The script has
-  no handlers, no variables and no options (`scoring.handlers`). It may
-  have `requires`, `list`, `settings`, `quick` and `about`.
+- `scoring carrier`: the game plays its carrier's rules, which are the
+  carrier engine's built-in script. The script has no handlers, no
+  variables and no options (`scoring.handlers`). It may have `requires`,
+  `list`, `settings`, `quick` and `about`.
 - No `scoring` line: the script is the game's one scorer, as every
   script is today ([rules-engine.md](rules-engine.md#which-engine-index-a-script-rides)).
   A script with neither handlers nor `scoring carrier` is the error
@@ -140,13 +141,28 @@ Such a script says so in its header:
 The record still names the script (mode 2 and its prefix), so the
 variant keeps its row, its description and its quick marks wherever the
 record goes. On the host, the start observer loads a `scoring carrier`
-script for its header only: it answers none of the carrier's scoring
-routines and runs no VM, and `rules.state` reports `scoring: carrier`.
-The carrier then plays as a record with no mode does: its lifted engine,
-or its built-in script once the engine is in `runtime::PORTED`
-([rules-engine.md](rules-engine.md#the-host-runtime), "A record with no
-mode"). A host without the `rules` feature, and every guest, plays the
-same game, since the settings are ordinary record fields.
+script, checks its header (prefix, engine, policy) and then runs the
+carrier engine's built-in script in its place (`runtime::carrier_builtin`,
+`rules::builtin::builtin`) under the variant's own record: the VM reads
+the record's settings (team play, score limit, time limit), and the
+built-in plays its own default options, since the carried script has
+none. From there it is a running script like any other: the built-in is
+the one scorer, `rules.state` reports the built-in (`scoring: script`),
+and the Live session names the built-in's hash, which every build has
+([rules-engine.md](rules-engine.md#the-host-runtime), "A `scoring
+carrier` script").
+
+A built-in this host cannot run yet is refused by name, as any script
+is: "Sun King is scoring carrier and plays the built-in King of the Hill
+script, which this host cannot run yet: ...". Of the thirteen settings
+scripts, the nine on Slayer (Zombies, Jousting, SWAT, Duel, Tower of
+Power, Cops and Robbers, Bounce Practice, Glitch Hunt, Bumper Cars) run
+`slayer.rules`. The other four are refused: Clint Eastwood and Hide and
+Seek because `juggernaut.rules` answers on `round_start` and `quit`,
+Sun King because `koth.rules` answers on `round_start` and reads
+`variant.king_moving_hill`, and Wheeeeee! because `oddball.rules` calls
+`spawn_objective` and answers on `pickup` and `drop`, none of which the
+host does yet ([rules-engine.md](rules-engine.md#the-host-runtime)).
 
 ### Quick Options marks
 
@@ -457,7 +473,7 @@ change needs a line in another slice's doc puts the text in its report.
 | 3 | IDE and editor grammars | 1 | `crates/formats/rules/src/ide/*.rs`, `crates/formats/rules/src/workbench.rs`, `editors/**`, `web/src/stats/rulesMonaco.ts`, `web/src/lib/rulesIde.ts` | `ide::tests`: completion in the block offers only the carrier's settings, values after `=`, marks after `quick`; hover on a setting; rename of an option renames its mark; each fix; the formatter's round trip; the tree-sitter corpus cases |
 | 4 | The fourteen scripts | 1 | `crates/formats/rules/src/builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/scripts.rs` | `every_listed_script_compiles_and_verifies`; `listed_names_are_unique_and_fit_the_keyboard`; `each_listed_script_sets_what_the_table_set` (the old table's pairs, written into the test as the expected values, so the table can go) |
 | 5 | Built-in entries from scripts | 2, 4 | `crates/extensions/game/src/{community_variants,tweakers,string_ids,superbounce_mode}.rs`, `rules/header.rs`, `game_variants/port.rs`; `docs/game/community-gametypes.md` | on synthetic memory: `entries_are_built_from_the_listed_scripts` (name, type, pairs, description number); `every_listed_record_gets_its_block_at_load`; `a_copy_lists_under_its_scripts_row`; `a_script_the_disc_does_not_offer_is_left_out_by_name`; the existing merged-block and tweakers tests, moved off the table. Disc `#[ignore]`: `every_listed_script_is_offered_on_the_retail_disc` |
-| 6 | The host and `scoring carrier` | 1 | `crates/extensions/game/src/rules/{runtime,feature,scoring}.rs`, `rules/runtime/tests.rs`, `crates/extensions/agent-proto/src/rules.rs`, `crates/extensions/agent/src/rules.rs` | `a_carrier_scored_script_answers_no_scoring_routine`; `it_runs_no_vm_and_reports_scoring_carrier`; `its_requires_still_turn_the_mode_on` |
+| 6 | The host and `scoring carrier` | 1 | `crates/extensions/game/src/rules/{runtime,feature,scoring}.rs`, `rules/runtime/tests.rs`, `crates/extensions/agent-proto/src/rules.rs`, `crates/extensions/agent/src/rules.rs` | `a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record`; `a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name`; `every_listed_carrier_script_runs_its_builtin_or_is_refused_by_name`; `its_requires_still_turn_the_mode_on` |
 | 7 | Live and the web | 2 | `crates/live/live-server/src/game_variants.rs`, `crates/live/live-server/tests/{variants,rule_scripts}.rs`, `crates/live/live-worker/**`, `web/src/stats/{Rules,Variant}.tsx`, `web/src/lib/{rules,variants}.ts`; `docs/live/live-api.md` | `a_script_variant_has_the_scripts_settings`; `the_script_view_lists_settings_and_quick`; `stock_agrees_with_the_hopper_stock_record` (`GameVariant::stock` against `VariantRecord::stock`, all seven types); the parity suite's variant cases |
 | 8 | The panel | 5 | `crates/extensions/game/src/variant_quick.rs` (new), `lobby_options.rs`, `crates/extensions/agent/src/variants.rs` (new, the `variants.quick` read); `docs/game/ui-builder.md`, `docs/runtime/switches.md`, `docs/runtime/agent-api.md` | `rows_read_settings_and_options_from_the_record`; `marked_rows_replace_the_formatters_in_order`; `mode_and_option_lines_still_take_the_bottom`; `a_variant_with_no_script_keeps_retails_rows`; `a_script_with_no_marks_shows_none` |
 | 9 | The dialog | 8 | `crates/extensions/game/src/variant_quick/page.rs` (new), `assets/ui/screens/variant-quick.yaml` (new), `ui_kit/settings.rs`, `h1_options_row.rs`, `host_lobby/retail.rs`, `crates/hooking/guest-layout/src/points.rs`, and `variants.quick.set` in slice 8's agent file once 8 has landed | `ui_kit::settings::tests` for a bound row and an empty slot; `a_change_writes_one_setting_and_calls_the_setter` (runner test); `an_option_change_keeps_the_blocks_crc`; `a_refused_record_changes_nothing`; `quick_options_opens_ours_only_for_a_script_variant`; `quick_options_is_greyed_for_a_script_with_no_marks`; the page's offline render in every state |

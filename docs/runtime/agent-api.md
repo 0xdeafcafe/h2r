@@ -4285,11 +4285,11 @@ and `version` are its header's, `source` is `builtin` or `live`,
 `carrier` the engine index it rides, `scoring` who scores the game,
 `options` the record's option bits, and `authority` what
 `GAME_ENGINE_AUTHORITATIVE` answered at the first tick boundary (absent
-before it). `scoring` is `script` when the script's VM runs and
-`carrier` for a `scoring carrier` script
-([rules-variants.md](../game/rules-variants.md#a-script-that-keeps-its-carriers-rules)),
-which runs no VM: the carrier engine scores as retail, and `options`,
-`authority`, `stopped` and `budget` are absent. `stopped` names the script error that
+before it). `scoring` is `script`: the running script's VM scores. A
+`scoring carrier` script's game
+([rules-variants.md](../game/rules-variants.md#a-script-that-keeps-its-carriers-rules))
+runs its carrier's built-in script, so `script`, `hash`, `source` and
+`options` are the built-in's. `stopped` names the script error that
 stopped the VM. `budget` is the VM's tick (`tick`), the ops it has used
 (`ops`) against `limit` (20,000), and the verifier's `worst_tick`
 estimate. `pending` counts the calls waiting for the next tick boundary.

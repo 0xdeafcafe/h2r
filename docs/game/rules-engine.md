@@ -259,9 +259,9 @@ memory, `guest` the reads and engine calls behind the API entries (with
 `roles` and `objectives`), `scoring` the answers that keep the carrier's
 own scoring from running beside the script's, and `feature` the hooks. It follows Firefight's runtime
 (`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)).
-Boot registers the `rules` feature (`registration::register_core`), off
-unless `H2_FEATURES` names it, and its hooks are on game-thread points
-only.
+Boot installs the `rules` feature (`registration::register_core`), on
+by default (`H2_FEATURES=-rules` turns it off), and its hooks are on
+game-thread points only.
 
 **At the game's start**, an observer after a successful `GAME_ACTIVATE`
 (`0x18f000`) reads the active record's block (`G+0x13c+0x10c`) and engine
@@ -322,21 +322,31 @@ with its reason for `rules.state`, and the game plays as the record's
 own engine.** Nothing runs with a call stubbed out.
 
 **A `scoring carrier` script** ([rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules))
-is loaded for its header only. It passes the same prefix, engine and
-policy checks; then, before the start gate (it can declare no label), the
-runtime keeps its name, version, hash, source and carrier
-(`Status::Carrier`, `runtime::Carried`) and stops there: no VM, no `on
-init`, no `RULES` record, and no tick boundary asks for the authority or
-makes a call. `scoring::script_scores` is false for it, so none of the
-carrier's scoring or role-making routines is answered ("One scorer") and
-the carrier plays as a record with no mode does. Its `requires` still
-turn their modes on, since those are read from the record's script
-reference (`rules::header::script_asks_superbounce`), not from the
-runtime. `Runtime::hash` is none, so a Live host's session names no
-script; `rules.state` reports it running, with `scoring: carrier`; a
-`rules.reload` can only restart the game with the new blob. The log line
-is `rules: <name> (<hash>) from <source> on engine <n>, scoring carrier:
-the carrier engine scores and no VM runs`.
+runs its carrier engine's built-in script under the variant's own
+record. It passes the same prefix, engine and policy checks; then the
+runtime takes the carrier's built-in (`runtime::carrier_builtin`, the
+compiled-in `rules::builtin::builtin` of `header.carrier`) and every
+later step is the built-in's: the host checks, the start gate, the VM,
+`on init` and the `RULES` record. The VM reads the record's settings as
+any script does, and starts with the built-in's default options (the
+carried script has none, so the record's option bits are not read). The
+carried script's name, hash and source stay with the running game
+(`Running::carried`, `runtime::Carried`); everything else reports the
+built-in: `rules.state` (`scoring: script`), `Runtime::hash` (the Live
+session's script, which every build has built in) and the "One scorer"
+answers. Its `requires` still turn their modes on, since those are read
+from the record's script reference
+(`rules::header::script_asks_superbounce`). A built-in this host cannot
+run yet (`runtime::host_refusal`) is refused before the start gate, so a
+map without the built-in's labels does not end the game; the reason
+names both scripts ("Sun King is scoring carrier and plays the built-in
+King of the Hill script, which this host cannot run yet: ..."), and the
+game plays as a refused script's does. A carrier with no built-in is
+refused as "`<name>` is scoring carrier, and its carrier `<carrier>` has
+no built-in script". The log line is the built-in's with `, for <name>
+(<hash>) from <source>, scoring carrier` after it. Which community
+variants run and which are refused is in
+[rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules).
 
 **A blocked start.** `Status::Blocked` keeps the full hash and every
 problem's text, which `rules.state` lists as `blocked`. No VM is made and
@@ -713,8 +723,9 @@ Options and settings share one namespace: an option named like a setting
 is `option.setting`.
 
 **Who scores.** With no `scoring` line the script is the game's one
-scorer. `scoring carrier` says the carrier's engine scores the game and
-the script holds settings only: it may have `requires`, `list`,
+scorer. `scoring carrier` says the game plays its carrier's rules (the
+carrier engine's built-in script, run on the host under the variant's
+record; "The host runtime") and the script holds settings only: it may have `requires`, `list`,
 `settings`, `quick` and `about`, and any declaration or handler is the
 error `scoring.handlers`. A script with no handler and no `scoring
 carrier` scores nothing, the error `scoring.none` ("this script scores
