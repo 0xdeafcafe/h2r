@@ -859,6 +859,7 @@ struct Machine {
     deaf: bool,
     /// Where a teleport puts the origin over the point asked for: the
     /// game's placement, not the world's state, so no fork puts it back.
+    /// The game's own is [`PLACE_MISS`].
     lift: [f32; 3],
     /// What came of the last fork, for the next tick.
     done: Option<ForkDone>,
@@ -966,7 +967,7 @@ fn machine() -> Machine {
         saved: BTreeMap::new(),
         busy: 0,
         deaf: false,
-        lift: [0.0; 3],
+        lift: PLACE_MISS,
         done: None,
     }
 }
@@ -1085,16 +1086,48 @@ fn the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork() {
     assert_eq!(again.report(), run);
 }
 
-/// The game's placement puts the origin a little off the point asked for
-/// (`calls::Call::Teleport`, "a little above the point"). The base drops'
-/// lifts measure it, so every trial asks against it and lands on its
-/// start first time: no trial fails its setup or asks twice, and the
-/// replay check still pairs the first two waves.
+/// The game's placement puts the origin [`PLACE_LIFT`] over the point
+/// asked for (`calls::Call::Teleport`, "a little above the point"). Every
+/// site asks against it from its first teleport, and a run whose
+/// placement lifts by just that has no note of it: the note is for a
+/// miss the engine's constant does not explain.
+#[test]
+fn the_games_placement_lift_is_asked_against_from_the_first_teleport() {
+    let job = Job::new(&job_config(), "testmap", 3).unwrap();
+    for x in &job.sites {
+        assert_eq!(x.aim, [0.0, 0.0, -PLACE_LIFT], "{}", x.site.id);
+    }
+    let mut job = Job::new(&job_config(), "testmap", 3).unwrap();
+    let mut m = machine();
+    assert_eq!(m.lift, [0.0, 0.0, 0.0328]);
+    m.drive(&mut job);
+    assert_eq!(job.error(), None);
+    let run = job.report();
+    assert!(!run.trials.is_empty());
+    assert!(
+        run.trials
+            .iter()
+            .all(|t| t.outcome != Outcome::SetupFailed && !t.reaimed),
+        "{:?}",
+        run.trials.iter().find(|t| t.outcome == Outcome::SetupFailed || t.reaimed)
+    );
+    assert!(
+        !run.notes.iter().any(|n| n.starts_with("teleport: the placement")),
+        "{:?}",
+        run.notes
+    );
+}
+
+/// A placement off by more than the game's lift: the base drops' lifts
+/// measure it, so every trial asks against it and lands on its start
+/// first time: no trial fails its setup or asks twice, and the replay
+/// check still pairs the first two waves. The note names the miss and
+/// the part of it past the game's lift.
 #[test]
 fn a_placement_off_by_a_steady_amount_is_aimed_against() {
     let mut job = Job::new(&job_config(), "testmap", 3).unwrap();
     let mut m = machine();
-    m.lift = [0.002, -0.003, 0.03];
+    m.lift = [0.002, -0.003, PLACE_LIFT + 0.03];
     m.drive(&mut job);
     assert_eq!(job.error(), None);
     let run = job.report();
@@ -1108,9 +1141,9 @@ fn a_placement_off_by_a_steady_amount_is_aimed_against() {
     );
     assert_eq!((run.fork.replay_checks, run.fork.replay_mismatches), (2, 0));
     assert!(
-        run.notes
-            .iter()
-            .any(|n| n.starts_with("teleport: the placement put the origin 0.030 off (x +0.002 y -0.003 z +0.030)")),
+        run.notes.iter().any(|n| n
+            .starts_with("teleport: the placement put the origin 0.063 off (x +0.002 y -0.003 z +0.063)")
+            && n.contains("0.030 off (x +0.002 y -0.003 z +0.030) past the game's 0.0328 lift")),
         "{:?}",
         run.notes
     );
@@ -1121,7 +1154,7 @@ fn a_placement_off_by_a_steady_amount_is_aimed_against() {
     let mut job = Job::new(&job_config(), "testmap", 3).unwrap();
     let mut m = machine();
     assert!(!m.drive_until(&mut job, |j| j.at().0 == "wave"));
-    m.lift = [0.0, 0.0, 0.03];
+    m.lift = [0.0, 0.0, PLACE_LIFT + 0.03];
     m.drive(&mut job);
     assert_eq!(job.error(), None);
     let run = job.report();
@@ -1132,6 +1165,50 @@ fn a_placement_off_by_a_steady_amount_is_aimed_against() {
     // The corrected wave is no replay check's: the other variant's pair
     // still is.
     assert_eq!((run.fork.replay_checks, run.fork.replay_mismatches), (1, 0));
+}
+
+/// A held seat that stirs on the row it is let go (Ascension's
+/// `released at tick N+1..N+3, planned N`): a still body arms only after
+/// [`drops::SETTLE_STILL`] still rows, so its arm, and its release, came
+/// up to that many ticks after the plan and the variant lost its base on
+/// the site. A held drop arms on the row its hold is let go, the stir
+/// stopped, so the release is on the planned tick and the base is kept.
+#[test]
+fn a_seat_that_stirs_as_it_is_let_go_keeps_its_base() {
+    let mut job = Job::new(&job_config(), "testmap", 3).unwrap();
+    let mut m = machine();
+    // The tick the launch is planned on: every seat is held and still,
+    // and the batch's three sites fall alike, so every seat is let go on
+    // the next tick.
+    assert!(!m.drive_until(&mut job, |j| j.at().0 == "launch"));
+    // Seat 0's body stirs on that row (under the stop speed, so the
+    // settle writes no stop), and is still again after it.
+    m.world.bodies[0].vel = [0.3, 0.0, 0.0];
+    assert!(!m.drive_until(&mut job, |_| true));
+    m.world.bodies[0].vel = [0.0; 3];
+    m.drive(&mut job);
+    assert_eq!(job.error(), None);
+    let run = job.report();
+    assert!(
+        !run.notes.iter().any(|n| n.contains("out of step")),
+        "{:?}",
+        run.notes
+    );
+    assert!(
+        run.sites.iter().all(|x| x.bases.iter().all(|b| b.based)),
+        "{:?}",
+        run.sites[0].bases
+    );
+    assert_eq!(run.fork.captures, 4);
+    // Its trials ran from the base, and its anchor came out as its drop.
+    let anchors: Vec<&Trial> = run
+        .trials
+        .iter()
+        .filter(|t| t.site == 0 && t.variant == 0 && t.kind == Kind::Anchor)
+        .collect();
+    assert_eq!(anchors.len(), 2);
+    assert!(anchors.iter().all(|t| t.outcome == Outcome::NoBounce), "{anchors:?}");
+    assert!(run.trials.iter().any(|t| t.site == 0 && t.variant == 0 && t.kind == Kind::Sample));
 }
 
 #[test]
@@ -1432,8 +1509,8 @@ fn the_markdown_and_the_verified_file_have_their_formats() {
     assert_eq!(
         text,
         format!(
-            "# superbounce verified v1\nbounce proven 0.000 0.000 0.010 dx=0.000 dy=-0.030 height={height:.3} trials=42 ok=14 best=11.50\n"
+            "# superbounce verified v2\nbounce proven 0.000 0.000 0.010 dx=0.000 dy=-0.030 height={height:.3} trials=42 ok=14 best=11.50\n"
         )
     );
-    assert_eq!(verified_text(&[]), "# superbounce verified v1\n");
+    assert_eq!(verified_text(&[]), "# superbounce verified v2\n");
 }
