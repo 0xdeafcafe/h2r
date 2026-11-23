@@ -1,14 +1,15 @@
 //! `model.*` on the Pogo kit's invented map (`pogo_kit::fixture`, no game
-//! data): the kit's weapons listed and read, the missing first-person
-//! block found by `model.check` and refused by a first-person render (the
-//! check that catches a weapon whose first-person view goes black), and a
-//! weapon given a first-person entry checked and drawn. Renders skip
+//! data): the kit's weapons listed and read, a look with its first-person
+//! block taken out found by `model.check` and refused by a first-person
+//! render (the check that catches a weapon whose first-person view goes
+//! black), the view the kit copies from the fixture pistol checked, and a
+//! weapon held in its own model checked and drawn. Renders skip
 //! their pictures where there is no GPU; refusals answer on any machine.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use map::Map;
+use map::{Map, TagId};
 use map::build::{Block, TagPayload, TagSet};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -64,9 +65,9 @@ fn refusal(r: Reply) -> (i64, Value) {
     }
 }
 
-/// The kit's invented map with the UNSC look given a first-person entry:
-/// its own render model, no animations.
-fn with_first_person() -> Vec<u8> {
+/// The kit's invented map with the UNSC look's first-person block replaced
+/// by `elements` (the model of each, no animations); none leaves it empty.
+fn unsc_first_person(models: impl Fn(&pogo_kit::kit::Tags) -> Vec<TagId>) -> Vec<u8> {
     let mut map = Map::from_reader(Cursor::new(pogo_kit::fixture::fixture(0))).unwrap();
     let facts =
         pogo_kit::kit::Facts::read_with_class(&mut map, pogo_kit::fixture::fixture_class())
@@ -74,15 +75,42 @@ fn with_first_person() -> Vec<u8> {
     let mut set = TagSet::from_map(&mut map).unwrap();
     let looks = pogo_kit::kit::install_all(&mut set, &facts).unwrap();
     let unsc = looks[pogo_kit::Style::Unsc.index()];
+    let models = models(&unsc);
     let entry = set.tag_mut(unsc.weapon).expect("the weap");
     let TagPayload::Built(weap) = &mut entry.payload else {
         panic!("the kit builds its weap");
     };
     weap.fixups.retain(|f| f.offset != 0x2a8);
-    let mut element = Block::zeroed(0x10);
-    element.tag_ref(0, unsc.render);
-    weap.block(0x2a8, 1, element);
+    if !models.is_empty() {
+        let mut block = Block::zeroed(0x10 * models.len());
+        for (i, model) in models.iter().enumerate() {
+            block.tag_ref(0x10 * i as u32, *model);
+        }
+        weap.block(0x2a8, models.len() as u32, block);
+    }
     set.build().unwrap().0
+}
+
+/// The UNSC look held in its own render model: one that loads.
+fn with_first_person() -> Vec<u8> {
+    unsc_first_person(|unsc| vec![unsc.render])
+}
+
+/// The UNSC look with no first-person block: the black first-person
+/// screen. (The kit itself copies the fixture pistol's view onto the
+/// stick.)
+fn without_first_person() -> Vec<u8> {
+    unsc_first_person(|_| Vec::new())
+}
+
+/// The kit's weapons in a `model.list` reply.
+fn pogo_weapons(r: &Value) -> Vec<&Value> {
+    r["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["name"].as_str().is_some_and(|n| n.contains("pogo")))
+        .collect()
 }
 
 fn finding<'a>(r: &'a Value, code: &str) -> Option<&'a Value> {
@@ -98,14 +126,28 @@ fn list_names_the_kits_weapons_and_their_first_person_entries() {
     let (_d, mut app, mut api) = court("list", &pogo_kit::fixture::kitted().bytes);
     let r = call(&mut api, &mut app, m::MODEL_LIST, json!({"map": "court", "group": "weap"}));
     assert_eq!(r["map"], "court");
+    // The fixture's rifle and pistol, then the kit's three looks.
     let objects = r["objects"].as_array().unwrap();
-    assert_eq!(objects.len(), 3, "{r}");
+    assert_eq!(objects.len(), 2 + 3, "{r}");
     for o in objects {
         assert_eq!(o["group"], "weap");
-        assert_eq!(o["first_person"], 0, "the kit's weapons have no first-person model: {o}");
+        assert_eq!(o.get("error"), None, "every weapon resolves: {o}");
+    }
+    let held = pogo_kit::fixture::FIXTURE_FIRST_PERSON.len();
+    let kit = pogo_weapons(&r);
+    assert_eq!(kit.len(), 3, "{r}");
+    for o in kit {
+        assert_eq!(o["first_person"], held, "the stick takes the pistol's first-person view: {o}");
         assert!(o["model"].as_str().is_some_and(|n| n.contains("pogo_")), "{o}");
         assert!(o["render_model"].as_str().is_some(), "{o}");
     }
+    // The fixture's own weapons have a first-person view and no model.
+    let pistol = objects
+        .iter()
+        .find(|o| o["name"].as_str().is_some_and(|n| n.ends_with("pistol")))
+        .unwrap_or_else(|| panic!("{r}"));
+    assert_eq!(pistol["first_person"], held);
+    assert_eq!(pistol["model"], Value::Null);
     // The map came with the kit: its weapons are named, nothing was added.
     assert_eq!(r["pogo"]["weapons"].as_array().unwrap().len(), 3);
     assert_eq!(r["pogo"]["costs"], Value::Null);
@@ -118,7 +160,7 @@ fn list_names_the_kits_weapons_and_their_first_person_entries() {
 /// The check that would have caught the black first-person screen.
 #[test]
 fn check_finds_the_missing_first_person_block() {
-    let (_d, mut app, mut api) = court("check", &pogo_kit::fixture::kitted().bytes);
+    let (_d, mut app, mut api) = court("check", &without_first_person());
     let r = call(&mut api, &mut app, m::MODEL_CHECK, json!({"tag": "pogo_unsc", "map": "court"}));
     let f = finding(&r, "no_first_person").unwrap_or_else(|| panic!("{r}"));
     assert_eq!(f["severity"], "error");
@@ -137,7 +179,7 @@ fn check_finds_the_missing_first_person_block() {
 /// A view that cannot be drawn says why, before any GPU is asked for.
 #[test]
 fn a_first_person_render_without_a_first_person_block_is_refused_with_its_reason() {
-    let (d, mut app, mut api) = court("fp-refused", &pogo_kit::fixture::kitted().bytes);
+    let (d, mut app, mut api) = court("fp-refused", &without_first_person());
     let out = d.path("fp.png");
     let (c, data) = refusal(api.call(
         &mut app,
@@ -156,6 +198,28 @@ fn a_first_person_render_without_a_first_person_block_is_refused_with_its_reason
     ));
     assert_eq!(c, code::REFUSED);
     assert_eq!(data["reason"], "no_player_biped");
+}
+
+/// The kit holds the stick in the fixture pistol's first-person view; the
+/// fixture's invented first-person models do not load, and both the check
+/// and a first-person render say so at the element.
+#[test]
+fn the_kits_copied_first_person_view_is_checked_and_its_failure_named() {
+    let (d, mut app, mut api) = court("fp-copied", &pogo_kit::fixture::kitted().bytes);
+    let r = call(&mut api, &mut app, m::MODEL_CHECK, json!({"tag": "pogo_unsc", "map": "court"}));
+    assert!(finding(&r, "no_first_person").is_none(), "{r}");
+    let f = finding(&r, "first_person_model_fails").unwrap_or_else(|| panic!("{r}"));
+    assert_eq!(f["path"], "first_person[0].model");
+    assert!(finding(&r, "unresolved_link").is_none(), "{r}");
+    let out = d.path("fp.png");
+    let (c, data) = refusal(api.call(
+        &mut app,
+        m::MODEL_RENDER,
+        json!({"tag": "pogo_unsc", "view": "first_person", "out": out.display().to_string()}),
+    ));
+    assert_eq!(c, code::REFUSED);
+    assert_eq!(data["reason"], "first_person_model_fails");
+    assert!(!out.exists());
 }
 
 #[test]
@@ -202,9 +266,11 @@ fn a_weapon_with_a_first_person_model_passes_and_draws() {
     let f = finding(&r, "first_person_no_animations").expect("no animations named");
     assert_eq!(f["severity"], "warning");
     assert_eq!(f["path"], "first_person[0].animations");
-    // The other looks still have none.
+    // The other looks keep the view the kit copied from the fixture's
+    // pistol, whose invented models are not models.
     let other = call(&mut api, &mut app, m::MODEL_CHECK, json!({"tag": "pogo_covenant"}));
-    assert!(finding(&other, "no_first_person").is_some(), "{other}");
+    assert!(finding(&other, "no_first_person").is_none(), "{other}");
+    assert!(finding(&other, "first_person_model_fails").is_some(), "{other}");
 
     for view in ["ground", "first_person"] {
         let out = d.path(&format!("{view}.png"));
@@ -241,9 +307,16 @@ fn pogo_on_a_map_the_kit_cannot_go_into_is_refused_by_name() {
     ));
     assert_eq!(c, code::REFUSED);
     assert_eq!(data["reason"], "pogo_refused");
-    // Without the kit it reads the map as it is: no weapons, no kit.
+    // Without the kit it reads the map as it is: the fixture's rifle and
+    // pistol, each resolving (no model, null references), and no kit.
     let r = call(&mut api, &mut app, m::MODEL_LIST, json!({"map": "court", "pogo": false, "group": "weap"}));
-    assert_eq!(r["objects"], json!([]));
+    let objects = r["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 2, "{r}");
+    for o in objects {
+        assert_eq!(o.get("error"), None, "{o}");
+        assert_eq!(o["model"], Value::Null, "{o}");
+    }
+    assert!(pogo_weapons(&r).is_empty(), "{r}");
     assert_eq!(r["pogo"], Value::Null);
 }
 
@@ -252,7 +325,7 @@ fn an_unknown_tag_or_view_is_invalid() {
     let (_d, mut app, mut api) = court("bad", &pogo_kit::fixture::kitted().bytes);
     let (c, _) = refusal(api.call(&mut app, m::MODEL_READ, json!({"tag": "no_such_thing", "map": "court"})));
     assert_eq!(c, code::INVALID_PARAMS);
-    // Three weapons answer to their group: give one.
+    // Five weapons answer to their group: give one.
     let (c, _) = refusal(api.call(&mut app, m::MODEL_READ, json!({"tag": "weap"})));
     assert_eq!(c, code::INVALID_PARAMS);
     let (c, _) = refusal(api.call(&mut app, m::MODEL_RENDER, json!({"tag": "pogo_unsc", "view": "side"})));

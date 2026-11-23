@@ -1457,7 +1457,7 @@ mod checks {
         // A barrel's marker is where its shots leave from.
         for (i, b) in elements(ctx, data, WEAP_BARRELS, BARREL_SIZE).iter().enumerate() {
             if let Some(marker) = string_at(ctx, b, BARREL_MARKER).filter(|s| !s.is_empty())
-                && !markers.iter().any(|mk| *mk == marker)
+                && !markers.contains(&marker)
             {
                 out.push(
                     Finding::new(

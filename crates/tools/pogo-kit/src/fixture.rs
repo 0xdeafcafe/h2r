@@ -5,6 +5,7 @@
 use map::CacheType;
 use map::FourCC;
 use map::build::{Block, TagPayload, TagSet};
+use tags::defs::{self, Defs, Val};
 
 use crate::{kit, texture};
 
@@ -90,19 +91,35 @@ pub fn fixture(pad: usize) -> Vec<u8> {
             .unwrap();
         fp.push((i as u32, model, graph));
     }
+    // Built from the weap definition, as the kit builds its own, so every
+    // reference left unset is a null one (-1), as in a real map: a zeroed
+    // reference names class 0 and datum 0, which no field allows.
+    let weap = Defs::builtin()
+        .group(FourCC(*b"weap"))
+        .expect("a weap definition");
+    let element = weap.child("first_person").expect("weap first_person");
     for (path, class, elements) in [
         (r"invented\rifle", ("rifle", "ar"), &fp[..1]),
         (r"invented\pistol", ("pistol", "hp"), &fp[..]),
     ] {
-        let mut block = Block::zeroed(0x10 * elements.len());
-        for (k, (_, model, graph)) in elements.iter().enumerate() {
-            let at = 0x10 * k as u32;
-            block.tag_ref(at, *model).tag_ref(at + 8, *graph);
+        let mut r = defs::default_record(weap);
+        r.set(
+            "item.obje.object_type",
+            Val::Enum(h1objects::arsenal::WEAPON_TYPE),
+        )
+        .unwrap();
+        r.set("weapon_class", Val::text(class.0)).unwrap();
+        r.set("weapon_name", Val::text(class.1)).unwrap();
+        let mut list = Vec::new();
+        for (_, model, graph) in elements {
+            let mut x = defs::default_record(element);
+            x.set("model", Val::tag(FourCC(*b"mode"), *model)).unwrap();
+            x.set("animations", Val::tag(FourCC(*b"jmad"), *graph))
+                .unwrap();
+            list.push(x);
         }
-        let mut root = Block::zeroed(0x31c);
-        root.string_id(0x288, class.0)
-            .string_id(0x28c, class.1)
-            .block(0x2a8, elements.len() as u32, block);
+        r.set("first_person", Val::Block(list)).unwrap();
+        let root = defs::to_built(weap, &r, &mut |_| None).expect("the fixture weap");
         set.add_tag(FourCC(*b"weap"), path, TagPayload::Built(root))
             .unwrap();
     }

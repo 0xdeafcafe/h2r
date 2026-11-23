@@ -1356,9 +1356,11 @@ editor side is small once the profile document exists.
 
 `model.*` runs its examples in `every_method_in_methods_has_a_test` on
 the Pogo kit's invented map with the kit in it (`pogo_kit::fixture`, no
-game data). `api/models/tests.rs` checks the kit's weapons listed, the
-missing first-person block found by `model.check` and refused by a
-first-person render, a weapon given a first-person entry checked and
+game data). `api/models/tests.rs` checks the kit's weapons listed, a
+look with its first-person block taken out found by `model.check` and
+refused by a first-person render, the first-person view the kit copies
+from the fixture pistol checked (its invented models do not load:
+`first_person_model_fails`), a weapon held in its own model checked and
 drawn (the picture only where there is a GPU), a render refused in a
 Git checkout, and `pogo: true` refused by name on a map the kit cannot
 go into. The planned methods need: colour and emblem bounds refused;
