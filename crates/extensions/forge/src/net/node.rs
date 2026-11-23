@@ -575,7 +575,7 @@ impl<A: Admit, L: Lane> Node<A, L> {
                 }
             }
             for message in messages {
-                self.from_remote(seat, message)?;
+                self.on_remote(seat, message)?;
             }
         }
         let host = self.host.as_ref().expect("a host");
@@ -589,7 +589,7 @@ impl<A: Admit, L: Lane> Node<A, L> {
         Ok(())
     }
 
-    fn from_remote(&mut self, seat: Seat, message: ToHost) -> Result<(), NodeError> {
+    fn on_remote(&mut self, seat: Seat, message: ToHost) -> Result<(), NodeError> {
         let Some(remote) = self.remotes.get_mut(&seat) else {
             return Ok(());
         };
