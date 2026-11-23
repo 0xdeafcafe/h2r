@@ -157,8 +157,10 @@ machines"):
   held weapon's first magazine gaining loaded rounds while its reserve
   drops is `reload`; fewer grenades is `grenade`, more is `pickup`; the
   physics mode going from ground (1) to flying (2) with the velocity's z
-  above 0 is `jump`; entering the melee mode (6), or dealing melee damage,
-  is `melee`.
+  above 0 is `jump`; entering the melee mode (6) is `melee`. One swing is
+  one `melee`: its damage lands a few ticks into it, so dealing melee
+  damage marks the swing only when no frame saw the entry (a hit within
+  15 ticks of a marked entry is the same swing).
 - `grenade`: the selected grenade type (`+0x23c`).
 - `hits`: a hook on the damage report function `0x000d9640` (custom ABI,
   `EDI` = report, the victim datum on the stack; always runs the original)
