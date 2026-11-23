@@ -1,7 +1,7 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, rotation snap, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and Tool settings with Rotation snap exist. Movement snap, Axes, Coordinates, the spawn, goal and item properties, overlays, the browser, groups, prefabs and lights are design.
-Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs` and `forge_screens/tests.rs` in `crates/extensions/game/src`.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, and Tool settings with Movement snap, Rotation snap and Axes exist. Overlays, the browser, groups, prefabs and lights are design.
+Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player can do as a monitor in a Forge session, and which button
@@ -36,9 +36,9 @@ objects that are guest truth, tool state that is presentation
 | Feature | Verdict | Fit | Cost |
 |---|---|---|---|
 | Undo and redo | built | An undo is the author's inverse op in the log, so it works in a shared session, where Infinite's does not (**C**). `Session::undo`, `Session::redo` | none |
-| Movement and rotation snap | P1 | Tool state only: the frame is rounded before the op is made. Rotation snap is built (`Tool::set_rotation_step`) | S, with the rest of P1 |
-| World or local axes | P1 | Tool state: which basis the snap, the nudge and the gizmo use | in P1 |
-| Typed numbers, Coordinates | P1 | A frame is six `f32` values kept bit-exact in the document (`forge::Frame`), so a typed number is the number saved. Halo 3's variants quantise positions (**C**, [forge.md](forge.md) 1.1); ours do not | in P1 |
+| Movement and rotation snap | built | Tool state only: the frame is rounded before the op is made (`Tool::set_movement_step`, `Tool::set_rotation_step`) | none |
+| World or local axes | built | Tool state: which basis the snap, the nudge and the gizmo use (`Tool::set_axes`); Local is the pickup's basis | none |
+| Typed numbers, Coordinates | built | A frame is six `f32` values kept bit-exact in the document (`forge::Frame`), so a typed number is the number saved. Halo 3's variants quantise positions (**C**, [forge.md](forge.md) 1.1); ours do not. A typed or nudged value moves the held thing live, and closing writes one op (`Session::hold`, then `move_thing`) | none |
 | Duplicate | P1 | One `Placement::Add` with the source's fields, held at once | in P1 |
 | Placed-object browser | P4 | A list over `Session::objects`; choosing a row flies the monitor to it | S |
 | Limits by kind | P4 | `forge.capacity` already measures the object pool, each block's count and limit, and tag headroom | in P4 |
@@ -205,7 +205,7 @@ block's objects have a group (`Group::of_block`).
 
 X on the thing aimed at or held. One list page whose rows come from a
 table by kind (`forge_screens::sheet::PROPERTIES`, read through
-`properties(group)`), so a slice adds rows and no screen. A value row
+`properties(group, kind)`), so a slice adds rows and no screen. A value row
 opens a picker; an action row acts and closes.
 
 | Kind | Row | Writes | Class | Slice |
@@ -215,9 +215,9 @@ opens a picker; an action row acts and closes.
 | item entry | Respawn time | the entry's respawn time (`+0x0e`, **E**, [scenario-editor.md](../editor/scenario-editor.md) section 2) | Live, from the next spawn | P3 |
 | item entry | Game types | the entry's game-type bytes (**S**: not decoded) | Live, from the next spawn | P3, after the decode |
 | item entry | Place at start | the entry's respawn mode (**S**: its two values are not decoded) | Live, from the next round | P3, after the decode |
-| goal, spawn | Team | the flag's or location's team | Kit | P2 |
-| goal | Role | the netgame flag's type | Kit | P2 |
-| goal | Order | the flag's identifier, for hills and territories | Kit | P2 |
+| goal, spawn | Team | the flag's or location's team | built | P2 |
+| goal | Role | the netgame flag's type | built | P2 |
+| goal | Order | the flag's identifier, for hills and territories | built | P2 |
 | teleporter | Channel | the flag's identifier, through a link (`forge_doc::Forge::Link`) | Kit; built for the map's own flags | F6, P2 |
 | scenery, crate, machine | Physics: Normal, Fixed | **S**: no placement field that pins a physical object is known | | after a probe |
 | any object | Label | a label and number in the document ([rules-engine.md](rules-engine.md#forge-labels)) | none: scripts read it | P5 |
@@ -241,9 +241,11 @@ opens a picker; an action row acts and closes.
   that does not simulate (scenery, a machine) already stays where it is
   put and may intersect anything: Reach's Fixed and Phased at once
   (**C**). The row matters only for kinds that do simulate.
-- The built page has Heading, for any object. Heading is Coordinates'
-  Yaw; the rotation step is the Rotation snap setting, on Tool settings
-  (`sheet::SETTINGS`).
+- The built page has Coordinates... and Heading for any object, Team for
+  starting points and goals, Role and Order for goals, and Respawn time
+  for item spawners. Heading is Coordinates' Yaw; the rotation step is the
+  Rotation snap setting, on Tool settings (`sheet::SETTINGS`). Team, Role
+  and Order open pickers; Respawn time opens the game's keyboard.
 
 ## Selection, groups and prefabs
 
@@ -266,14 +268,14 @@ opens a picker; an action row acts and closes.
 
 ## Interfaces
 
-- **`forge::tool`**: `Tool`, `Action`, `Input`, `Command`. P1 adds the
-  settings to `Tool`, `thrust` and `fine` to `Input`, and the commands
-  `Duplicate`, `ResetOrientation`, `Coordinates`, `Tools` and
-  `Settings`.
-- **Agent API**: `forge.input` takes the new action names and a
-  `settings` object; `forge.status` reports the settings, the selection
-  and the tool ([agent-api.md](../runtime/agent-api.md), "Local Forge
-  session"). No new method: the two already carry input and state.
+- **`forge::tool`**: `Tool`, `Action`, `Input`, `Command`. The settings
+  are `movement_step`, `rotation_step` and `axes`; `HoldThing` carries a
+  frame without an op, `MoveThing` drops it, and `SetField` writes a
+  decoded property.
+- **Agent API**: `forge.status` adds `movement_snap`, `rotation_snap` and
+  `axes` beside `fine`, the selection and the tool
+  ([agent-api.md](../runtime/agent-api.md), "Local Forge session"). No new
+  method: input and state already carry them.
 - **Document**: groups, labels and prefabs come in one format step
   (P5), since `forge_doc::FORMAT` is one number and an older build
   refuses a newer document whole (`validate.rs`).
@@ -293,15 +295,17 @@ opens a picker; an action row acts and closes.
 
 ## Evidence
 
-- **Code** What is built: `tool.rs` (`Action`, `Tool`, the rotation
-  step, the pickup offset and the push), `session.rs` (place, move,
-  delete, link, undo, redo, save, load), `forge_controls.rs` (the gate
-  and `sample`), `forge_controls/bindings.rs` (the table).
-- **Test** `tool_tests.rs`, `link_tests.rs` and `tests.rs` in
-  `crates/extensions/forge/src`; `every_action_has_one_binding`,
-  `the_gate_follows_halo_3s_buttons` and
-  `the_controls_page_lists_the_bindings_table` in
-  `crates/extensions/game/src/forge_controls`.
+- **Code** What is built: `tool.rs` (`Action`, `Tool`, the movement and
+  rotation steps, world or local axes, the pickup offset and the push),
+  `session.rs` (place, move, hold, property sets, delete, link, undo,
+  redo, save, load), `forge_screens/sheet.rs` (Coordinates and the
+  property tables), `forge_controls.rs` (the gate and `sample`),
+  `forge_controls/bindings.rs` (the table).
+- **Test** `tool_tests.rs`, `link_tests.rs`, `props_tests.rs` and
+  `tests.rs` in `crates/extensions/forge/src`; `every_action_has_one_binding`,
+  `the_gate_follows_halo_3s_buttons`, `the_controls_page_lists_the_bindings_table`
+  and the Coordinates, nudge and property tests in
+  `crates/extensions/game/src/forge_screens` and `forge_glue/editing`.
 - **E** The netgame equipment entry and its spawner: [forge.md](forge.md)
   1.2 and [scenario-editor.md](../editor/scenario-editor.md) section 2.
 - **C** Every statement about Halo 3, Reach and Infinite:

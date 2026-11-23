@@ -378,12 +378,14 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 - **Properties.** The object's name is the header. A value row has its
   value in the skin's value column and A opens the picker; an action row
   (**Coordinates...**, **Reset orientation**, **Duplicate**) acts. No
-  row draws arrows. The rows are `properties(kind)`'s, so a later slice
-  adds rows to the table and no screen.
-- **Tool settings.** Rows Movement snap, Rotation snap, Axes, Fine
-  movement, each a picker. Until P1 it has the one row that is built,
-  Rotation snap (`Tool::set_rotation_step`, `sheet::SETTINGS`). Fine
-  movement is the stick click's toggle until then.
+  row draws arrows. Coordinates and Heading are present for every object,
+  Team for starting points and goals, Role and Order for goals, and
+  Respawn time for item spawners (`properties(group, kind)`), so a later
+  slice adds rows to the table and no screen.
+- **Tool settings.** Rows Movement snap, Rotation snap and Axes, each a
+  picker (`Tool::set_movement_step`, `Tool::set_rotation_step`,
+  `Tool::set_axes`, `sheet::SETTINGS`). Fine movement is the stick click's
+  toggle.
 - **Link.** The body lists the two ends and what the link writes, with
   rows **Remove link** and **Done**: retail's two-button question.
 - **Questions.** **Yes** and **No**; No has the focus.
