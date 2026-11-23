@@ -570,3 +570,24 @@ fn the_hooks_are_on_the_plan() {
         assert!(line.contains(label), "{line}");
     }
 }
+
+#[test]
+fn both_our_rows_are_added_to_a_full_retail_list() {
+    let mut g = FakeGuest::new();
+    g.map(SCREEN, 0x5000);
+    let list = HANDLER;
+    rows_with(&mut g, list, &GAME_TYPE_WORDS, 0x10);
+    let n = h1_options_row::insert_row_ordered(&mut g, list, with_row).unwrap();
+    assert_eq!(n, 9);
+    let words: Vec<i16> = (0..9).map(|i| word_at(&g, list, i).unwrap()).collect();
+    assert_eq!(words, with_row(&GAME_TYPE_WORDS));
+    // No room for more: the list is left as it was, not half-added.
+    assert!(h1_options_row::insert_row_ordered(&mut g, list, |w| {
+        let mut w = w.to_vec();
+        w.push(11);
+        w
+    })
+    .is_err());
+    assert_eq!(word_at(&g, list, 8), Some(PARTY_WORD));
+    assert_eq!(word_at(&g, list, 9), None);
+}

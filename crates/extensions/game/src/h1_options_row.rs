@@ -151,9 +151,10 @@ pub fn insert_row(m: &mut dyn GuestMemory, list: u32, action: i16) -> Result<usi
     insert_row_ordered(m, list, |actions| placed(actions, action))
 }
 
-/// Adds a row to the list at `list`: a new datum, then the actions
-/// `order` gives for the list's actions (one more than there were)
-/// written back in slot order. The new count.
+/// Adds rows to the list at `list`: the actions `order` gives for the
+/// list's actions (as many more as it adds), a new datum for each added
+/// one, then every action written back in slot order. The new count. A
+/// list without room for them all is left as it was.
 pub fn insert_row_ordered(
     m: &mut dyn GuestMemory,
     list: u32,
@@ -161,8 +162,21 @@ pub fn insert_row_ordered(
 ) -> Result<usize, String> {
     let e = |e: engine::memory::MemFault| format!("{e:?}");
     let actions = setup_actions(m, list).map_err(e)?;
+    let order = order(&actions);
+    let adds = order
+        .len()
+        .checked_sub(actions.len())
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("{} rows asked for {} there", order.len(), actions.len()))?;
     let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
-    array.new_datum(m).map_err(e)?.ok_or("the list is full")?;
+    let room = array.header_field(m, engine::datum::layout::MAXIMUM_COUNT).map_err(e)?
+        - array.header_field(m, engine::datum::layout::ACTIVE_COUNT).map_err(e)?;
+    if (room.max(0) as usize) < adds {
+        return Err(format!("the list has room for {room} rows, not {adds}"));
+    }
+    for _ in 0..adds {
+        array.new_datum(m).map_err(e)?.ok_or("the list is full")?;
+    }
     let hw = array
         .header_field(m, engine::datum::layout::HIGH_WATER)
         .map_err(e)?;
@@ -172,7 +186,6 @@ pub fn insert_row_ordered(
             elems.push(elem);
         }
     }
-    let order = order(&actions);
     if elems.len() != order.len() {
         return Err(format!(
             "{} rows after adding, not {}",
