@@ -19,6 +19,9 @@ impl Feature for H1SoundPromotion {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Each rule's credit and last time are in its tag, and the clock
+        // is the mixer's: all guest memory.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.raw()
             .before(
                 &points::SOUND_IMPULSE_ALLOCATE,

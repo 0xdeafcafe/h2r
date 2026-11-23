@@ -337,6 +337,12 @@ impl hooks::Feature for StartHook {
             // Halo 1's scope reset only clears its own vision states, so
             // either order is right; this one names it.
             .after_feature("h1-scope-zoom");
+        // The listing the guest's list entries name goes with the guest
+        // memory. The store is files on disk and the Live refresh adds to
+        // it; neither is the machine's, and a load does not rewind them.
+        b.snapshot(hooks::SnapshotPolicy::section(inject::save_listed, |bytes, _| {
+            inject::load_listed(bytes)
+        }));
         Ok(())
     }
 }

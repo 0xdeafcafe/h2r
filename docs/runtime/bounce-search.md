@@ -70,13 +70,25 @@ warm seek does (`BootMachine::save_ring_sections`,
 `crates/extensions/game/src/snapshot_glue.rs`). A ring entry is one Havok
 variant's base state; its key is the variant's index.
 
-The fork runs between two slices. The `sim: bounces` hook is a `before` on
-the game tick; when the job asks for a fork it ends the slice
+The fork runs between two slices, at the point `state.save` uses
+([snapshots.md, "The rule"](snapshots.md#the-rule)). The `sim: bounces`
+hook is a `before` on the game tick: it reads the seats, carries out
+their acts and keeps the job's ask. The tick observer `sim: bounces fork`
+(last) marks the ask due once the tick has returned
+(`sim_bounces::fork_due`) and ends the slice
 (`Runtime::request_preempt`), and the boot loop calls
 `sim_bounces::between_slices` with the machine at hand
 (`crates/apps/boot/src/lib.rs`, beside `Agent::run_snapshots`). So the
-saved state is a few transfers into a tick whose hooks have already run,
-and a restored machine carries on into that same tick.
+saved state is a few transfers after the tick that asked, with that
+tick's acts in it, and a restored machine carries on into the next tick.
+
+The slice can't end from the `before`. While the tick runs, the game
+thread is inside the tick chain's after-hooks continuation (the Rust
+closure that runs the chain's `after` hooks and observers when the
+original returns, `hooks::install::AFTER_HOOKS`), and the kernel refuses
+every save while one is live (`thread N: continuation feature: after
+hooks`). A slice that ends inside the tick for any other reason (its time
+ran out) leaves the ask waiting: `between_slices` takes only a due ask.
 
 Why this and not the others (**Design**):
 
@@ -280,6 +292,13 @@ The results directory holds:
   (`the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork`,
   `a_busy_capture_is_asked_again_and_then_given_up_by_name`,
   `a_host_with_no_fork_stops_the_run_by_name`).
+- **Test**: a slice a `before` on the tick ends stops inside the chain's
+  after-hooks continuation, and one a tick observer ends stops with
+  nothing live (`a_slice_asked_before_the_tick_ends_inside_its_after_hooks`,
+  `a_slice_asked_by_a_tick_observer_ends_with_nothing_live` in
+  `crates/hooking/hooks/tests/install.rs`); an ask is carried out only
+  after its tick returned (`a_fork_waits_for_its_tick_to_return` in
+  `sim_bounces.rs`).
 
 ### Cost
 
@@ -305,7 +324,11 @@ wrote and loads every section; its time is the open number.
 
 - That the machine is quiet enough to save at a tick boundary in a sim
   host: the kernel's and the features' blockers, with the keyframe scope.
-  A blocker is named in the base's `why`.
+  A blocker is named in the base's `why`, and the run's `fork.busy`
+  counts them. The features the first Ascension run named as not
+  audited have policies (snapshots.md, "Feature policies"); a test shows
+  a slice ended by a tick observer stops with no continuation live
+  (`crates/hooking/hooks/tests/install.rs`), but no sim has forked yet.
 - That skipping the part-less checks is safe for a signed-in Live HLE.
 - That a restored machine runs the same ticks as the captured one: the
   replay and RAM checks measure it on every first batch.

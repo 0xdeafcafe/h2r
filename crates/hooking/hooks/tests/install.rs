@@ -86,6 +86,82 @@ fn late_observers_preserve_the_boot_handler_and_reuse_its_shadow_page() {
     assert_eq!(*seen.lock().unwrap(), [("boot", 41), ("boot", 41), ("editor", 41)]);
 }
 
+/// Where a slice a tick hook ends (`Runtime::request_preempt`) stops: a
+/// `before` asks before the original runs, so the thread stops inside the
+/// chain's after-hooks continuation, which no snapshot can carry; a tick
+/// observer asks after it returned, so nothing is live. The bounce search
+/// asked its forks from a `before` and every one was refused
+/// ("continuation feature: after hooks"). Returns the live continuations'
+/// origins at each stop.
+fn stops_when_asked(from_before: bool) -> Vec<Vec<&'static str>> {
+    let rt = runtime();
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("asker", move |b| {
+        if from_before {
+            b.raw().before(&points::GAME_TICK, "ask before", |c| {
+                c.ctx.runtime().request_preempt(runtime::preempt::REQUEST);
+                Ok(Flow::Continue)
+            });
+        }
+        b.frame().on_tick("ask after", move |o| {
+            if !from_before {
+                o.runtime.request_preempt(runtime::preempt::REQUEST);
+            }
+        });
+        Ok(())
+    }))
+    .unwrap();
+    let plan = r.build(&at(&points::GAME_TICK)).unwrap();
+    plan.install(&rt).unwrap();
+    rt.memory().set_u32(STACK, HARNESS_EXIT).unwrap();
+    let mut cpu = CpuAbi {
+        esp: STACK,
+        ..Default::default()
+    };
+    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+    let mut stops = Vec::new();
+    let mut t = TransferAbi::jump(LEAF);
+    loop {
+        // Armed for host requests only, as the kernel arms a slice.
+        ctx.arm_preemption(0);
+        let end = Runner::default().run_from(&mut cpu, &mut ctx, t);
+        match ctx.take_preempted() {
+            Some(resume) => {
+                stops.push(
+                    ctx.live_continuations()
+                        .iter()
+                        .map(|c| c.origin)
+                        .collect(),
+                );
+                t = resume;
+            }
+            None => {
+                assert!(
+                    matches!(ctx.event(end.event_id), Some(Event::HarnessExit)),
+                    "{:?}",
+                    ctx.event(end.event_id)
+                );
+                break;
+            }
+        }
+        assert!(stops.len() < 8, "{stops:?}");
+    }
+    assert_eq!(cpu.eax, 41, "the original ran");
+    assert!(ctx.live_continuations().is_empty());
+    stops
+}
+
+#[test]
+fn a_slice_asked_before_the_tick_ends_inside_its_after_hooks() {
+    assert_eq!(stops_when_asked(true), vec![vec![hooks::install::AFTER_HOOKS]]);
+}
+
+#[test]
+fn a_slice_asked_by_a_tick_observer_ends_with_nothing_live() {
+    let stops = stops_when_asked(false);
+    assert!(stops.iter().all(Vec::is_empty), "{stops:?}");
+}
+
 /// The tick collision: lockstep's hash and Live telemetry's sample used to
 /// be two overrides on `game_tick`, and lockstep refused to install when
 /// telemetry was there. Both now run, once each per tick, after the

@@ -1943,8 +1943,9 @@ fn run_configured(
                 snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
             a.agent.run_snapshots(&mut machine);
         }
-        // The bounce search asked for a fork at this tick: save the
-        // machine, or put it back as a variant's capture left it.
+        // The bounce search asked for a fork at this tick and its tick
+        // observer ended the slice after the tick: save the machine, or
+        // put it back as a variant's capture left it.
         if let Some(shelf) = &shelf
             && sim_bounces::fork_pending()
         {

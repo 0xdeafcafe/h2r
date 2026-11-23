@@ -1742,9 +1742,8 @@ impl hooks::Feature for SimMetrics {
         }
         if self.sim.matched.config.bounces.is_some() {
             // The bounce search (docs/runtime/bounce-search.md): the
-            // drops' reads and acts, and a fork when the job asks: the
-            // slice ends here and the boot loop saves or restores the
-            // machine (`sim_bounces::between_slices`).
+            // drops' reads and acts before the tick, and a fork when the
+            // job asks, after it (below).
             let me = Arc::clone(&self.sim);
             b.raw()
                 .before(&points::GAME_TICK, "sim: bounces", move |c| {
@@ -1770,9 +1769,6 @@ impl hooks::Feature for SimMetrics {
                     let mut g = rt.memory();
                     let ticked = crate::sim_bounces::tick(&mut g, &seats);
                     drop(g);
-                    if ticked.fork {
-                        rt.request_preempt(runtime::preempt::REQUEST);
-                    }
                     if ticked.done {
                         let mut s = me.lock();
                         if let Some(e) = crate::sim_bounces::error() {
@@ -1785,6 +1781,18 @@ impl hooks::Feature for SimMetrics {
                         me.end(&mut s, End::Stopped);
                     }
                     Ok(Flow::Continue)
+                })
+                .last();
+            // The fork's slice ends after the tick returned, where
+            // `state.save` acts (docs/runtime/snapshots.md, "The rule"):
+            // inside the tick the game thread is in the tick chain's
+            // after-hooks continuation, which no save can carry, so a
+            // fork asked from the `before` above was refused every time.
+            b.frame()
+                .on_tick("sim: bounces fork", |o| {
+                    if crate::sim_bounces::fork_due() {
+                        o.runtime.request_preempt(runtime::preempt::REQUEST);
+                    }
                 })
                 .last();
         }

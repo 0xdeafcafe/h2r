@@ -77,6 +77,88 @@ fn listed() -> MutexGuard<'static, Vec<Listed>> {
     LISTED.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The listing as a machine snapshot keeps it (docs/runtime/snapshots.md,
+/// "Feature policies"): the guest's variant list holds our name ids and
+/// description numbers, and this listing is what they mean, so it goes
+/// with the guest memory that names them. [`set_sim_block`]'s block is
+/// the run's setting, as a switch is, and is not saved.
+pub fn save_listed() -> Vec<u8> {
+    encode_listed(&listed())
+}
+
+/// Puts [`save_listed`]'s bytes back. Nothing changes on an error.
+pub fn load_listed(bytes: &[u8]) -> Result<(), String> {
+    let l = decode_listed(bytes)?;
+    *listed() = l;
+    Ok(())
+}
+
+fn encode_listed(l: &[Listed]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(l.len() as u32).to_le_bytes());
+    for v in l {
+        for s in [&v.display, &v.description] {
+            out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+        out.extend_from_slice(&v.engine.to_le_bytes());
+        out.extend_from_slice(&v.name_field);
+        out.extend_from_slice(&v.block);
+    }
+    out
+}
+
+fn decode_listed(bytes: &[u8]) -> Result<Vec<Listed>, String> {
+    struct Cursor<'a>(&'a [u8]);
+    impl<'a> Cursor<'a> {
+        fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
+            if self.0.len() < n {
+                return Err("the game-variant listing is cut short".into());
+            }
+            let (head, rest) = self.0.split_at(n);
+            self.0 = rest;
+            Ok(head)
+        }
+        fn u32(&mut self) -> Result<u32, String> {
+            Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+        }
+        fn text(&mut self) -> Result<String, String> {
+            let n = self.u32()? as usize;
+            String::from_utf8(self.take(n)?.to_vec())
+                .map_err(|_| "a game-variant listing name is not UTF-8".to_string())
+        }
+    }
+    let mut c = Cursor(bytes);
+    let n = c.u32()? as usize;
+    if n > MAX_LISTED {
+        return Err(format!(
+            "the game-variant listing has {n} entries; the list takes {MAX_LISTED}"
+        ));
+    }
+    let mut l = Vec::with_capacity(n);
+    for _ in 0..n {
+        let display = c.text()?;
+        let description = c.text()?;
+        let engine = c.u32()? as i32;
+        let name_field: [u8; 0x40] = c.take(0x40)?.try_into().unwrap();
+        let block: [u8; variants::ext::LEN] = c.take(variants::ext::LEN)?.try_into().unwrap();
+        l.push(Listed {
+            display,
+            description,
+            engine,
+            name_field,
+            block,
+        });
+    }
+    if !c.0.is_empty() {
+        return Err(format!(
+            "the game-variant listing has {} bytes past its end",
+            c.0.len()
+        ));
+    }
+    Ok(l)
+}
+
 pub fn is_ours(id: u32) -> bool {
     id & 0xffff_ff00 == FAMILY.base
 }
@@ -313,4 +395,66 @@ pub fn retarget(name_field: &[u8], engine: i32, block: [u8; variants::ext::LEN])
         hit = true;
     }
     hit
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    fn sample() -> Vec<Listed> {
+        let mut block = [0u8; variants::ext::LEN];
+        block[0] = 0x68;
+        block[variants::ext::LEN - 1] = 0x78;
+        vec![
+            Listed {
+                display: format!("Bounce {ICON}"),
+                description: "Höhe".into(),
+                engine: 2,
+                name_field: name_field("Bounce"),
+                block,
+            },
+            Listed {
+                display: "Plain".into(),
+                description: String::new(),
+                engine: -1,
+                name_field: [0x41; 0x40],
+                block: [0; variants::ext::LEN],
+            },
+        ]
+    }
+
+    #[test]
+    fn the_listing_survives_a_snapshot() {
+        let l = sample();
+        assert_eq!(decode_listed(&encode_listed(&l)).unwrap(), l);
+        assert_eq!(decode_listed(&encode_listed(&[])).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn a_damaged_listing_is_refused_by_name() {
+        let bytes = encode_listed(&sample());
+        let err = decode_listed(&bytes[..bytes.len() - 1]).unwrap_err();
+        assert!(err.contains("cut short"), "{err}");
+        let mut long = bytes.clone();
+        long.push(0);
+        let err = decode_listed(&long).unwrap_err();
+        assert!(err.contains("1 bytes past its end"), "{err}");
+        let err = decode_listed(&(MAX_LISTED as u32 + 1).to_le_bytes()).unwrap_err();
+        assert!(err.contains("entries"), "{err}");
+    }
+
+    /// The start hook's feature keeps the listing as its section.
+    #[test]
+    fn the_start_hook_saves_a_section() {
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
+        assert!(r.add(&super::super::StartHook).unwrap());
+        let plan = r.build(&hooks::Base).unwrap();
+        let policies: Vec<_> = plan
+            .snapshot
+            .iter()
+            .map(|f| (f.id, f.policy.name()))
+            .collect();
+        assert_eq!(policies, vec![(super::super::FEATURE, "section")]);
+        assert!(plan.snapshot_blockers().is_empty());
+    }
 }
