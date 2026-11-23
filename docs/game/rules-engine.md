@@ -1086,14 +1086,17 @@ listed in Party Games) is the part of this a host runs. Its zones come
 from every Territories and CTF map's own flags, so it needs no kit: the
 attackers take `sites` of the map's territories (each held alone for
 the capture time in all, by `ticks_held`), then hold the defenders' CTF
-flag stand (`label base: zones per team = "ctf_flag_spawn"`,
+flag stand (`label base: zones = "ctf_flag_spawn"`,
 `base[team 1]`) for the capture time to win. Each phase has its own
 clock, and a clock that runs out wins it for the defenders. Each side
 spawns with its own loadout (`on spawn`, `set_loadout`), and the winners
-score a point each, so the post-game names them. The variant's
-`lives = 1` holds each death's respawn (the engine's own lives gate),
-and each side's dead come back together when its wave timer
-(`wave_time`) runs out (`respawn`). It opens no barriers
+score a point each, so the post-game names them. Neither label states a
+requirement, so every map starts: with no territory the assault goes
+straight to the flag stand, with no flag stand taking every site wins
+it, and with neither the round draws at its start with a message. The
+variant's `lives = 1` holds each death's respawn (the engine's own
+lives gate), and each side's dead come back together when its wave
+timer (`wave_time`) runs out (`respawn`). It opens no barriers
 and moves no spawn areas (`delete`, `create` and `spawn_areas` are not
 hostable, "The engine API"), and it has no core to carry.
 
