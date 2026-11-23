@@ -671,6 +671,21 @@ points! { ALL;
     TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// Juggernaut's per-tick slot `+0x48`.
     JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The game engine's round reset: clears the engine globals' round
+    /// block (`E+0x74`, 27 dwords), resets each player's round bytes
+    /// (`0x157a80`) and ends in a tail jump to the engine's slot `+0x0c`.
+    /// No engine, nothing. Called once from the game's start inside
+    /// `GAME_ACTIVATE` (`0x18f05e` → `0x158530` → `0x158556`) and from
+    /// the round state machine `0x15c550` as each later round begins
+    /// (`0x15c5de`); neither call runs in a distributed client.
+    ENGINE_ROUND_RESET @ 0x0015_7ae0: [fn() ret 0], Optional; "docs/engine/notes/2026-11-23-round-start-and-player-quit.md";
+    /// The game engine's player-left notice: ESI the salted player datum
+    /// of a player `0x152df0` has just taken out of the game (its unit
+    /// detached, player `+2` bit 1 set, bit 0 cleared). It calls the
+    /// engine's slot `+0x1c` with the player (Juggernaut's `0x1921f0`
+    /// clears the player's role bit) and posts an engine event
+    /// (`0x19eb30`). No engine, nothing.
+    ENGINE_PLAYER_LEFT @ 0x0015_7de0: [fn(player: esi) ret 0], Optional; "docs/engine/notes/2026-11-23-round-start-and-player-quit.md";
     /// The per-tick slot `+0x48` that CTF and Assault share (vtable
     /// `0x459d18`). Their capture scoring `0x242e00` runs from the
     /// per-player slot `+0x3c` and from `0x242741`, not from here.

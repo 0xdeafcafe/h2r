@@ -239,8 +239,10 @@ engine-globals entity's type (Slayer 0 to Juggernaut 5).
 
 **A record with no mode.** On a host with the `rules` feature on, a
 record whose block has mode 0 (all zero, or extras only), on an engine
-whose port has passed parity, runs that engine's built-in script, chosen
-by engine index from a table compiled in. Saved variants, hopper slots
+in `runtime::PORTED`, runs that engine's built-in script, chosen by
+engine index from a table compiled in. An engine is in `PORTED` when this
+host delivers every event its built-in answers and makes every entry it
+calls: Juggernaut (7). No port has had a parity run. Saved variants, hopper slots
 and copies an older build edited are script games with no byte changed.
 The host puts the built-in's hash in the session's `rules` field as for
 any script, and a film records which ran: its `simulation_hooks` SHA
@@ -270,7 +272,7 @@ index (`+0x44`):
 | Record | What runs |
 |---|---|
 | mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a compiled-in script (a port or an example of `rules::builtin`, compiled once at first use, `runtime::compiled_in`), else the game-variant store's (source `local`), else Live's by the full hash a store bundle names for the prefix (below); a System Link game takes a built-in or the store's, never Live's |
-| mode 0 | the built-in of the record's engine when the engine is in `runtime::PORTED`, which is empty: nothing runs, and Slayer stays lifted until its port passes parity |
+| mode 0 | the built-in of the record's engine when the engine is in `runtime::PORTED` (Juggernaut), with the script's default options; on any other engine nothing runs and the engine stays lifted |
 | mode 1 | nothing: Firefight's own feature runs it |
 | any other | refused: "script mode `n` is unknown to this build" |
 
@@ -305,8 +307,8 @@ gate checks the map's labels (`Runtime::gate`, `rules/census.rs`;
 a map that lacks or breaks a label or tag the script needs blocks the
 game (`Status::Blocked`, below), and no rules play, the carrier's
 included. Last, a script is refused when it needs what this runtime does
-not do yet (`runtime::host_refusal`): an event other than `init`, `kill`,
-`timer`, `tick`, `bounce` and `bounced`; a read other than the scores,
+not do yet (`runtime::host_refusal`): an event other than `init`,
+`round_start`, `kill`, `quit`, `timer`, `tick`, `bounce` and `bounced`; a read other than the scores,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 `is_objective`, `carrier_of` and the label reads (`label_number`,
 `label_of`, `zone_id`, `object_team`); an action other than `score`,
@@ -315,8 +317,10 @@ kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 variant field other than `team_play`, `score_limit`, `time_limit` and
 `lives`, whose record offsets are not traced; a `grant`.
 Then the VM starts with the record's option bits and seed 0 (as
-Firefight's, until the session carries one), `on init` runs, and its
-state becomes the `RULES` record. **A refused script is logged
+Firefight's, until the session carries one), `on init` runs, then the
+first round's `on round_start` (that round's reset ran inside
+`GAME_ACTIVATE`, before the start observer), and its state becomes the
+`RULES` record. **A refused script is logged
 ("refused, the game plays the carrier engine's own rules: ...") and kept
 with its reason for `rules.state`, and the game plays as the record's
 own engine.** Nothing runs with a call stubbed out.
@@ -389,9 +393,11 @@ Firefight sits inside.
 | Handlers | Run from | Their calls |
 |---|---|---|
 | `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
+| `on round_start`, each round after the first | an observer after `ENGINE_ROUND_RESET` (`0x157ae0`), the engine's round reset, which the round state machine `0x15c550` calls as a round begins | at the next tick boundary |
+| `on quit` | an observer before `ENGINE_PLAYER_LEFT` (`0x157de0`): the player's salted datum in ESI, the player already off the roster (player `+2` bit 1) | at the next tick boundary |
 | `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: each bounce and Bounced its medal chain files that tick (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
 | `on timer`, then `on tick` | an observer after `GAME_TICK` | at the next tick boundary |
-| `on init` | the start observer | at the first tick boundary |
+| `on init`, then the first `on round_start` | the start observer | at the first tick boundary |
 
 This differs from "Order" in one way, for every handler: a call is made
 at the next tick boundary, not inside the event. `PLAYER_KILLED` is
@@ -451,11 +457,15 @@ points:
 | `SCORE_ADD` `0x15b7c0`, returning to one of its ten call sites (`scoring::CARRIER_SCORE_SITES`) | AL 0, popping 4 bytes | Oddball's, King's, Territories' and CTF's points; their per-tick and per-player slots still run the ball, the hill, the territories and the flags |
 
 The script gives and moves the Juggernaut role with `role_traits` and
-scores with `score`, whose calls come from no carrier site. What the
-script API does not cover yet: the host delivers no `on quit` or `on
-round_start`, so a script takes the role from a player who leaves, or
-deals it at a round's start, only from `on tick`; the kill record and
-events `0x26` and `0x27` have no script call (the role setter posts its
+scores with `score`, whose calls come from no carrier site. It deals the
+role in `on round_start`; a player who leaves loses the role bit through
+the engine's own slot `+0x1c` (`0x1921f0`, from `ENGINE_PLAYER_LEFT`,
+which no feature answers), and the script names the next Juggernaut from
+`on quit` and `on tick`. A Juggernaut out of lives keeps the role: only
+the answered `JUGGERNAUT_TICK` took it. The evidence for both hooks is in
+[notes/2026-11-23-round-start-and-player-quit.md](../engine/notes/2026-11-23-round-start-and-player-quit.md). What the script API does not
+cover yet: the kill record and events `0x26` and `0x27` have no script
+call (the role setter posts its
 own new-Juggernaut event). `PLAYER_KILLED`'s kill feed, medals and
 statistics, the objective engines' kill callbacks (they post events
 only), and their objects and traits run as in a lifted game. Before the
@@ -499,7 +509,11 @@ never on a guest or for a refused script), `role_traits` making the
 role setter's call (none for a player already in that state, and a
 refusal by carrier on Slayer), `reset_objective` making Oddball's ball
 return with each refusal named, and the objective set and its carriers
-read from the registry; and the start gate (`runtime/tests/gate.rs`): a
+read from the registry; the built-in Juggernaut (`round_start_and_quit`)
+running for a record with no mode, dealing the role at the start and at
+each later round's reset, keeping it on another player's quit and
+passing it at the next tick after the Juggernaut's own; and the start
+gate (`runtime/tests/gate.rs`): a
 map that lacks a label blocks the game with every problem, no VM and one
 `end_round` at the first boundary, a map that has it starts, a film
 skips the check, a Forge session refuses without ending, a machine that
@@ -1813,16 +1827,18 @@ checks each engine's core rule over `fake::FakeGame` (Oddball: time held
 scores; Juggernaut: the killer takes the role; King: time on the hill
 scores, a contest stops it; CTF: a capture scores and the flag returns,
 by reset time and by touch; Assault: a bomb armed on the enemy plate
-scores; Territories: a territory held pays each interval). They run in
-tests only: no port has a parity run, and only Slayer's and
-Juggernaut's entries are all hostable on their carriers.
+scores; Territories: a territory held pays each interval). No port has
+a parity run. Only Slayer's and Juggernaut's entries are all hostable on
+their carriers, and Juggernaut's events are all delivered, so it runs
+for a no-mode Juggernaut record (`runtime::PORTED`); the others run in
+tests only.
 
 | Script | Waits on | Not reproduced |
 |---|---|---|
 | Slayer | nothing | |
 | Oddball | `spawn_objective`; `role_traits`, made only on Juggernaut | the Oddball globals; the reset delay is a script option |
 | King of the Hill | `label_number`, `inside` | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
-| Juggernaut | no entry; the host delivers neither `round_start` nor `quit` | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores |
+| Juggernaut | nothing | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores; the record's own Juggernaut settings (the script's options take their defaults); a Juggernaut out of lives keeps the role |
 | CTF and Assault | `object_team`, `inside`, `spawn_objective`; `reset_objective`, made only on Oddball; `role_traits`, made only on Juggernaut | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
 | Territories | `register_objective`, `inside` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
 
@@ -1842,8 +1858,8 @@ maps, with phantom seats filling the roster.
 
 **Variants.** The 39 retail built-ins and the 14 community variants
 differ: each retail record keeps its bytes, has no mode and runs its
-engine's built-in script once the port has passed parity ("A record with
-no mode"). The community variants (`rules::builtin::LISTED`) are built
+engine's built-in script once the engine is in `runtime::PORTED` ("A
+record with no mode"). The community variants (`rules::builtin::LISTED`) are built
 from their scripts by `variants::portable::record_for`, and each record
 names its script (mode 2, [rules-variants.md](rules-variants.md)). Rules
 that were honour rules ([community-gametypes.md](community-gametypes.md),
@@ -1866,8 +1882,8 @@ retail built-ins port from the disc (`--all-builtins`); the community
 variants are built by the game at boot (`community_variants.rs` is in
 the game crate) and are not ported by the tool.
 
-**Until a port passes.** A no-mode record on an engine whose port has
-not passed parity plays the lifted engine, on every kind of session.
+**Until a port passes.** A no-mode record on an engine not in
+`runtime::PORTED` plays the lifted engine, on every kind of session.
 
 **Old films do not replay.** A film replays only with the hook set and
 variant bytes it was recorded with (`simulation_hooks`, film-format.md).

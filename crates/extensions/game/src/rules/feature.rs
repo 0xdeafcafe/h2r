@@ -15,6 +15,11 @@
 //!   then lets pass).
 //! - `PLAYER_KILLED`, an observer before: `on kill` ([`Runtime::kill`]).
 //!   The point is opaque, so nothing can answer it.
+//! - `ENGINE_ROUND_RESET`, an observer after: `on round_start` for each
+//!   round after the first ([`Runtime::round_start`]); the first round's
+//!   reset runs inside `GAME_ACTIVATE`, and [`Runtime::start`] delivers it.
+//! - `ENGINE_PLAYER_LEFT`, an observer before: `on quit` with the player
+//!   in ESI, already off the roster ([`Runtime::quit`]).
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
@@ -294,6 +299,34 @@ impl hooks::Feature for Rules {
                 };
                 s.lock().kill(m, victim, slot_of(attacker));
             });
+        // A later round's start. The first round's reset runs inside
+        // `GAME_ACTIVATE`, before the start observer above: `Runtime::start`
+        // delivers that one. This observer runs before the script starts:
+        // the last game's runtime is idle from its end, or replaced by the
+        // start with whatever the handler queued.
+        let s = Arc::clone(&self.shared);
+        b.raw().observe_after(
+            &engine::points::ENGINE_ROUND_RESET,
+            "rules: on round_start",
+            move |o| {
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                s.lock().round_start(m);
+            },
+        );
+        let s = Arc::clone(&self.shared);
+        b.raw().observe_before(
+            &engine::points::ENGINE_PLAYER_LEFT,
+            "rules: on quit",
+            move |o| {
+                let Some(player) = slot_of(o.cpu.esi) else {
+                    return;
+                };
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                s.lock().quit(m, player);
+            },
+        );
         let s = Arc::clone(&self.shared);
         b.frame().on_tick("run the rules script's tick", move |o| {
             let mem = o.guest();

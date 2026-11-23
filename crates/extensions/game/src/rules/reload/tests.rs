@@ -125,7 +125,7 @@ fn a_restart_this_game_cannot_make_is_refused_with_both_reasons() {
 
 #[test]
 fn a_script_this_host_cannot_run_is_refused_before_anything() {
-    let src = format!("{}\non round_start {{\n}}\n", ::rules::builtin::SLAYER);
+    let src = format!("{}\non spawn(p) {{ score(p, 1) }}\n", ::rules::builtin::SLAYER);
     let ir = ::rules::compile(&src).unwrap();
     match decide(&host(Seat::Alone), Some(&slayer()), &ir, ReloadMode::Auto) {
         Decision::Refuse(why) => assert!(why.starts_with("this host cannot run the script"), "{why}"),

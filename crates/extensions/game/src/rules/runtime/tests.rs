@@ -126,9 +126,15 @@ fn drive(shared: &Arc<Shared>, m: FakeGuest, work: Work, authority: bool) -> Vec
 }
 
 #[test]
-fn every_builtin_compiles_and_nothing_is_ported_yet() {
+fn every_builtin_compiles_and_only_hostable_ports_are_ported() {
     assert_eq!(slayer().id, ::rules::compile(::rules::builtin::SLAYER).unwrap().id());
-    assert!(PORTED.is_empty(), "Slayer stays lifted until its port passes parity");
+    // A ported engine's built-in runs for a no-mode record: this host must
+    // deliver every event it answers and make every entry it calls.
+    for &e in PORTED {
+        let b = builtins().iter().find(|b| b.engine == e).expect("a built-in");
+        let (ir, _) = verify::load(&b.blob).unwrap();
+        assert_eq!(host_refusal(&ir), None, "engine {e}");
+    }
 }
 
 #[test]
@@ -966,4 +972,168 @@ fn its_requires_still_turn_the_mode_on() {
     // A carrier script without the capability asks for nothing.
     let plain = ::rules::compile(CARRIED).unwrap();
     assert!(!crate::rules::header::asks_superbounce(&plain));
+}
+
+/// Juggernaut's built-in on the host: the role is dealt as each round
+/// starts (`on round_start`: the first from the start, each later one from
+/// the engine's round reset) and passed on when its holder quits (`on
+/// quit`, then `on tick`), through the engine's role setter.
+mod round_start_and_quit {
+    use super::*;
+    use crate::rules::roles;
+
+    const JUGGERNAUT: u8 = 7;
+    const JUGGERNAUT_GLOBALS: u32 = 0x1005_0000;
+
+    fn juggernaut() -> &'static Builtin {
+        builtins()
+            .iter()
+            .find(|b| b.engine == JUGGERNAUT)
+            .expect("the built-in Juggernaut")
+    }
+
+    /// A Juggernaut game whose record carries `block`, no one holding the
+    /// role.
+    fn game(block: [u8; LEN]) -> (FakeGuest, [u32; 2]) {
+        let (mut m, datums) = guest(block, i32::from(JUGGERNAUT));
+        m.put_u32(points::JUGGERNAUT_GLOBALS.base, JUGGERNAUT_GLOBALS);
+        m.map(JUGGERNAUT_GLOBALS, 0x10);
+        m.put_u16(JUGGERNAUT_GLOBALS + roles::ROLE_MASK, 0);
+        (m, datums)
+    }
+
+    /// Takes player `slot` off the roster as the engine does before its
+    /// player-left notice (player `+2` bit 1).
+    fn leave(m: &mut FakeGuest, slot: u8) {
+        let players = engine::view::players::array(&*m).unwrap().unwrap();
+        let p = players.get_absolute(&*m, i32::from(slot)).unwrap().unwrap();
+        p.set_flags(m, 2).unwrap();
+    }
+
+    /// The script's Juggernaut, by its global (`ty::NONE` for none).
+    fn holder(s: &Arc<Shared>) -> i32 {
+        s.lock().running().unwrap().vm.global("juggernaut").unwrap()
+    }
+
+    fn pending(s: &Arc<Shared>) -> Vec<Call> {
+        s.lock().running().unwrap().pending().to_vec()
+    }
+
+    fn role(player: u8, on: bool) -> Call {
+        Call::RoleTraits { player, on }
+    }
+
+    /// Starts the script and makes its first boundary: the first round
+    /// deals the role, and the engine's role setter gives it. Returns the
+    /// slot it went to.
+    fn started(s: &Arc<Shared>, m: &FakeGuest, datums: [u32; 2]) -> u8 {
+        let line = s.lock().start(m, false);
+        assert!(s.lock().state().running, "{line}");
+        let j = holder(s);
+        assert!(j == 0 || j == 1, "the first round deals the role: {j}");
+        let j = j as u8;
+        assert_eq!(pending(s), [role(j, true)]);
+        let work = s.lock().pre_tick(m).unwrap();
+        let calls = drive(s, m.clone(), work, true);
+        assert_eq!(
+            calls,
+            [
+                GuestCall::new(points::GAME_ENGINE_AUTHORITATIVE.base),
+                GuestCall::new(points::JUGGERNAUT_ROLE_SET.base)
+                    .eax(datums[j as usize])
+                    .ecx(1),
+                GuestCall::new(points::GAME_TICK.base),
+            ]
+        );
+        assert!(s.lock().state().errors.is_empty());
+        j
+    }
+
+    #[test]
+    fn the_builtin_needs_nothing_this_host_lacks_and_runs_for_a_record_with_no_mode() {
+        let (ir, _) = verify::load(&juggernaut().blob).unwrap();
+        assert_eq!(host_refusal(&ir), None);
+        assert!(PORTED.contains(&JUGGERNAUT));
+        let store = Local::default();
+        let s = shared(&store, Box::new(no_fetch));
+        let (m, datums) = game([0; LEN]);
+        started(&s, &m, datums);
+        let state = s.lock().state();
+        assert_eq!(state.script.as_deref(), Some("Juggernaut"));
+        assert_eq!(state.source.as_deref(), Some("builtin"));
+        assert_eq!(state.hash, Some(juggernaut().id.to_string()));
+    }
+
+    #[test]
+    fn each_later_round_deals_the_role_again() {
+        let store = Local::default();
+        let s = shared(&store, Box::new(no_fetch));
+        let (m, datums) = game(block(prefix(&juggernaut().id), 0));
+        started(&s, &m, datums);
+        // A new Juggernaut takes the role from the last one; the same one
+        // is asked for the role it holds, which the host leaves alone.
+        for _ in 0..6 {
+            let before = holder(&s) as u8;
+            let n = pending(&s).len();
+            s.lock().round_start(&m);
+            let now = holder(&s);
+            assert!(now == 0 || now == 1, "{now}");
+            let now = now as u8;
+            let want = if now == before {
+                vec![role(now, true)]
+            } else {
+                vec![role(before, false), role(now, true)]
+            };
+            assert_eq!(pending(&s)[n..], want[..]);
+        }
+        assert!(s.lock().state().errors.is_empty());
+    }
+
+    #[test]
+    fn another_players_quit_leaves_the_juggernaut_alone() {
+        let store = Local::default();
+        let s = shared(&store, Box::new(no_fetch));
+        let (mut m, datums) = game(block(prefix(&juggernaut().id), 0));
+        let j = started(&s, &m, datums);
+        let other = 1 - j;
+        leave(&mut m, other);
+        s.lock().quit(&m, other);
+        s.lock().post_tick(&m);
+        assert_eq!(holder(&s), i32::from(j));
+        assert!(pending(&s).is_empty());
+    }
+
+    #[test]
+    fn the_juggernauts_quit_passes_the_role_at_the_next_tick() {
+        let store = Local::default();
+        let s = shared(&store, Box::new(no_fetch));
+        let (mut m, datums) = game(block(prefix(&juggernaut().id), 0));
+        let j = started(&s, &m, datums);
+        let heir = 1 - j;
+        // The engine took the leaver off the roster (its own slot `+0x1c`
+        // clears the leaver's role bit); the script lets the role go.
+        leave(&mut m, j);
+        s.lock().quit(&m, j);
+        assert_eq!(holder(&s), ::rules::ty::NONE);
+        assert!(pending(&s).is_empty(), "{:?}", pending(&s));
+        // `on tick` names one from those left.
+        s.lock().post_tick(&m);
+        assert_eq!(holder(&s), i32::from(heir));
+        assert_eq!(pending(&s), [role(heir, true)]);
+        // The next boundary gives it through the role setter.
+        m.put_u32(GAME_TIME + 8, TICK + 1);
+        let work = s.lock().pre_tick(&m).unwrap();
+        assert!(!work.ask_authority);
+        let calls = drive(&s, m, work, true);
+        assert_eq!(
+            calls,
+            [
+                GuestCall::new(points::JUGGERNAUT_ROLE_SET.base)
+                    .eax(datums[heir as usize])
+                    .ecx(1),
+                GuestCall::new(points::GAME_TICK.base),
+            ]
+        );
+        assert!(s.lock().state().errors.is_empty());
+    }
 }
