@@ -261,6 +261,9 @@ struct Shared {
     /// The BSP activation `edit.collision.commit` runs, when the game has
     /// one ([`Agent::set_collision_activation`]).
     collision_activation: crate::hot::collision::Activator,
+    /// Told of every structure collision commit
+    /// ([`Agent::on_structure_collision`]).
+    structure_listeners: crate::hot::collision::StructureListeners,
     editor_calls: OnceLock<crate::sim::calls::Shared>,
     state: Mutex<State>,
     wake: Condvar,
@@ -646,6 +649,22 @@ impl Agent {
             .collision_activation
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(activation);
+    }
+
+    /// Calls `f` after every `edit.collision.commit` that replaces a
+    /// structure's level collision (after its activation, when it asks for
+    /// one), from the commit's tick, with the guest held: `f` must not
+    /// wait on the game.
+    pub fn on_structure_collision(&self, f: impl Fn(&crate::hot::collision::StructureCommit) + Send + Sync + 'static) {
+        self.shared
+            .structure_listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Arc::new(f));
+    }
+
+    pub(crate) fn structure_listeners(&self) -> crate::hot::collision::StructureListeners {
+        self.shared.structure_listeners.clone()
     }
 
     pub(crate) fn set_debug_views(&self, views: crate::debug_views::Observer) {

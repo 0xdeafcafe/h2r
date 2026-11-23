@@ -26,9 +26,10 @@
 //! documents change or the user sends again. Sending again after a
 //! mismatch commits against the pairs the game said it holds.
 //!
-//! The Modeling tool makes no level collision edit yet
-//! (docs/editor/modeling.md): `App::set_level_collision` is the seam, and
-//! with `Modeling::level_collision` empty nothing is sent.
+//! The Modeling tool's collision box makes the edits
+//! (`ModelAction::AddCollisionBox`, `geometry.collision.add_box`;
+//! docs/editor/modeling.md) through `App::set_level_collision`; with
+//! `Modeling::level_collision` empty nothing is sent.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};

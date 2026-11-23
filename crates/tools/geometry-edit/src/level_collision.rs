@@ -21,6 +21,10 @@
 //!   to the new length and the rest of the old block zeroed; otherwise it
 //!   is grown too.
 //!
+//! [`LevelEdit::add_solid`] adds another solid to an edit's level, keeping
+//! its source, so an edit holds every solid added since the map was read.
+//! [`box_solid`] is the box the Modeling tool adds (`add_box`).
+//!
 //! The map's header checksum is repaired by the writer
 //! (`map::MapEditor::write_to`). The structure checksum (`sbsp+0x08`) is
 //! kept. [`LevelEdit::stage`] gives the same bytes for
@@ -243,7 +247,48 @@ pub fn read<R: Read + Seek>(map: &mut Map<R>, tag: TagId) -> Result<LevelSource,
     })
 }
 
+/// A closed box solid inside `[lo, hi]`, its six faces wound outward
+/// (counter-clockwise seen from outside), all of `material`: the solid
+/// the Modeling tool's "Add collision box" adds.
+pub fn box_solid(lo: [f32; 3], hi: [f32; 3], material: u16) -> Vec<Polygon> {
+    let c = |i: usize| -> [f32; 3] {
+        [
+            if i & 1 != 0 { hi[0] } else { lo[0] },
+            if i & 2 != 0 { hi[1] } else { lo[1] },
+            if i & 4 != 0 { hi[2] } else { lo[2] },
+        ]
+    };
+    let q = |is: [usize; 4]| Polygon::new(is.iter().map(|&i| c(i)).collect(), material);
+    vec![
+        q([0, 4, 6, 2]), // -x
+        q([1, 3, 7, 5]), // +x
+        q([0, 1, 5, 4]), // -y
+        q([2, 6, 7, 3]), // +y
+        q([0, 2, 3, 1]), // -z
+        q([4, 5, 7, 6]), // +z
+    ]
+}
+
+/// Why a box cannot be a solid: a corner not finite, or no volume.
+fn box_refusal(lo: [f32; 3], hi: [f32; 3]) -> Option<String> {
+    if lo.iter().chain(&hi).any(|v| !v.is_finite()) {
+        return Some("the box's corners must be finite".into());
+    }
+    if (0..3).any(|i| hi[i] <= lo[i]) {
+        return Some(format!("the box {lo:?} to {hi:?} has no volume: every hi must be above its lo"));
+    }
+    None
+}
+
 impl LevelSource {
+    /// [`Self::add_solid`] of [`box_solid`].
+    pub fn add_box(&self, lo: [f32; 3], hi: [f32; 3], material: u16) -> Result<LevelEdit, Error> {
+        if let Some(why) = box_refusal(lo, hi) {
+            return Err(refused(self.tag, why));
+        }
+        self.add_solid(&box_solid(lo, hi, material), &Options::default())
+    }
+
     /// Compiles `polygons` (materials indexing the structure's collision
     /// materials) and appends them to the level. Refused, naming the
     /// target, when `collision_build::level::Level::add_solid` refuses.
@@ -294,6 +339,29 @@ impl LevelWrites {
 }
 
 impl LevelEdit {
+    /// This edit with another solid added to its level: the same source,
+    /// so [`Self::writes`] and [`Self::stage`] give the file's blocks
+    /// with every solid added so far.
+    pub fn add_solid(&self, polygons: &[Polygon], opts: &Options) -> Result<LevelEdit, Error> {
+        let added = self
+            .added
+            .level
+            .add_solid(polygons, opts)
+            .map_err(|e| refused(self.source.tag, e.to_string()))?;
+        Ok(LevelEdit {
+            source: self.source.clone(),
+            added,
+        })
+    }
+
+    /// [`Self::add_solid`] of [`box_solid`].
+    pub fn add_box(&self, lo: [f32; 3], hi: [f32; 3], material: u16) -> Result<LevelEdit, Error> {
+        if let Some(why) = box_refusal(lo, hi) {
+            return Err(refused(self.source.tag, why));
+        }
+        self.add_solid(&box_solid(lo, hi, material), &Options::default())
+    }
+
     /// What a save writes: see the module docs.
     pub fn writes(&self) -> LevelWrites {
         let src = &self.source;

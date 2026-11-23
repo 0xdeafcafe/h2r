@@ -1,10 +1,11 @@
 //! The Modeling section of the map inspector (docs/editor/modeling.md):
 //! pick a cluster or instanced definition, open it in edit mode, select
-//! and move its vertices with undo. Every button is an `Action::Model`,
-//! the same command `geometry.*` and `mesh.*` run.
+//! and move its vertices with undo, and add a collision box to its
+//! structure's level collision. Every button is an `Action::Model`, the
+//! same command `geometry.*` and `mesh.*` run.
 
 use dear_imgui_rs::{TreeNodeFlags, Ui};
-use geometry_edit::TargetInfo;
+use geometry_edit::{TargetInfo, TargetKind};
 use geometry_edit::mesh_edit::{MeshOp, SelectMode};
 
 use crate::App;
@@ -20,6 +21,9 @@ pub struct ModelingPanel {
     targets: Option<(u64, Vec<TargetInfo>)>,
     picked: usize,
     delta: [f32; 3],
+    /// The collision box's corners, world units.
+    box_lo: [f32; 3],
+    box_hi: [f32; 3],
 }
 
 /// The section, under the inspector's fields.
@@ -62,14 +66,17 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
         }
     }
     let info = &targets[st.picked.min(targets.len() - 1)];
-    let t = info.target;
+    let (t, local) = (info.target, info.local);
+    if t.kind != TargetKind::ModeSection {
+        collision_box(ui, app, st, t.tag, actions);
+    }
     let g = &app.modeling.session;
     let editing = g.active == Some(t);
     if !editing {
         if ui.button("Edit mode##modeling-open") {
             actions.push(Action::Model(ModelAction::Open(t)));
         }
-        if !info.local {
+        if !local {
             ui.same_line();
             ui.text_disabled("In a shared cache: shown, not saved.");
         }
@@ -138,4 +145,46 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
     if let Some(why) = app.geometry_save_refusal() {
         ui.text_wrapped(format!("Save refused: {why}"));
     }
+}
+
+/// The structure's level collision: a box solid between two corners
+/// added to it (`ModelAction::AddCollisionBox`), and the edit cleared.
+/// A paired game gets each change live (docs/editor/realtime-edits.md,
+/// "Collision").
+fn collision_box(ui: &Ui, app: &App, st: &mut ModelingPanel, structure: map::TagId, actions: &mut Vec<Action>) {
+    ui.separator();
+    ui.text("Level collision");
+    for (name, corner) in [("From", &mut st.box_lo), ("To", &mut st.box_hi)] {
+        for (axis, a) in ["x", "y", "z"].iter().enumerate() {
+            let mut v = corner[axis];
+            if ui.input_float(format!("{name} {a}##modeling-box-{name}-{a}"), &mut v) && v.is_finite() {
+                corner[axis] = v;
+            }
+        }
+    }
+    let (lo, hi) = (st.box_lo, st.box_hi);
+    let solid = (0..3).all(|i| hi[i] > lo[i]);
+    if ui.button("Add collision box##modeling-box-add") && solid {
+        actions.push(Action::Model(ModelAction::AddCollisionBox {
+            structure,
+            lo,
+            hi,
+            material: 0,
+        }));
+    }
+    if !solid {
+        ui.same_line();
+        ui.text_disabled("Each To must be above its From.");
+    }
+    if let Some(edit) = app.modeling.level_collision.get(&structure) {
+        ui.text(format!(
+            "{} collision surfaces ({} in the file)",
+            edit.added.level.bsp.surfaces.len(),
+            edit.source.level.bsp.surfaces.len()
+        ));
+        if ui.button("Clear collision boxes##modeling-box-clear") {
+            actions.push(Action::Model(ModelAction::ClearCollision { structure }));
+        }
+    }
+    ui.separator();
 }

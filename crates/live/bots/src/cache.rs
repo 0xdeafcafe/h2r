@@ -156,6 +156,19 @@ fn build_geometry(
     Ok((pf, data))
 }
 
+/// The line-of-sight walls of `bsp` alone: every surface's ring fanned
+/// into triangles, and its breakable glass. What [`build`] makes for
+/// walls, without the nav mesh: a live collision edit's
+/// (`crate::autonav::collision_edited`).
+pub fn walls_of(bsp: &Bsp) -> Walls {
+    let mut tris = Vec::with_capacity(bsp.surfaces.len());
+    for s in 0..bsp.surfaces.len() {
+        let ring = bsp.surface_ring(s);
+        Walls::fan_polygon(ring.iter().filter_map(|&v| bsp.vertices.get(v).map(|v| v.point)), &mut tris);
+    }
+    Walls::new(tris).with_glass(crate::glass::panes(bsp))
+}
+
 impl MapData {
     /// The file: magic, version, `stamp`, the mesh, the walls, the glass
     /// (a count, then per pane its breakable index, its vertex count and
@@ -251,6 +264,39 @@ impl MapData {
 mod tests {
     use super::*;
     use crate::nav::{Kind, Poly};
+
+    /// One invented square surface at height `z`, its four edges round it
+    /// (left surface the square).
+    fn square(z: f32) -> Bsp {
+        use tags::collision::{Edge, Surface, Vertex};
+        let mut bsp = Bsp::default();
+        for (x, y) in [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)] {
+            bsp.vertices.push(Vertex { point: [x, y, z], edge: 0 });
+        }
+        for i in 0..4u16 {
+            bsp.edges.push(Edge {
+                start_vertex: i,
+                end_vertex: (i + 1) % 4,
+                forward_edge: (i + 1) % 4,
+                reverse_edge: u16::MAX,
+                left_surface: 0,
+                right_surface: u16::MAX,
+            });
+        }
+        bsp.surfaces.push(Surface { plane: 0, first_edge: 0, flags: 0, breakable_surface: u8::MAX, material: 0 });
+        bsp
+    }
+
+    #[test]
+    fn walls_of_a_bsp_fan_every_surface_ring() {
+        let walls = walls_of(&square(1.0));
+        // A square is two triangles.
+        assert_eq!(walls.tris.len(), 2);
+        assert!(walls.tris.iter().flatten().all(|v| v[2] == 1.0));
+        // The square blocks a segment through it and not one beside it.
+        assert!(!walls.clear([2.0, 2.0, 0.0], [2.0, 2.0, 2.0]));
+        assert!(walls.clear([6.0, 2.0, 0.0], [6.0, 2.0, 2.0]));
+    }
 
     #[test]
     fn the_file_round_trips_and_refuses_damage() {

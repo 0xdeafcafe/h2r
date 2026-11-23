@@ -78,6 +78,20 @@ const METHODS: &[MethodDef] = &[
         r#"{}"#,
     ),
     def(
+        m::GEOMETRY_COLLISION_ADD_BOX,
+        "Add a closed box solid inside [lo, hi] to a structure BSP's level collision (`structure`, its tag id), onto the boxes added before: one Modeling action. A paired game gets it live (edit.collision.stage then edit.collision.commit, append); a save writes it (grown blocks, with Allow unverified geometry writes on). `material` indexes the structure's collision materials (default 0)",
+        r#"{"structure":"string","lo":"[x,y,z]","hi":"[x,y,z]","material?":"integer"}"#,
+        r#"{"structure":"string","surfaces":"integer","planes":"integer","leaves":"integer","file_surfaces":"integer"}"#,
+        r#"{"structure":"e1000004","lo":[2,2,1],"hi":[3,3,2]}"#,
+    ),
+    def(
+        m::GEOMETRY_COLLISION_CLEAR,
+        "Drop every box added to a structure's level collision: the file's collision again, in the save and in a paired game (which stages the file's blocks again)",
+        r#"{"structure":"string"}"#,
+        r#"{"structure":"string","cleared":"boolean"}"#,
+        r#"{"structure":"e1000004"}"#,
+    ),
+    def(
         m::MESH_MODE,
         "Set the select mode of the target in edit mode (one undo step, as every mesh.* edit)",
         r#"{"mode":"vert|edge|face","target?":"string"}"#,
@@ -299,6 +313,45 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "save_refusal": save_refusal,
             }))
         }
+        m::GEOMETRY_COLLISION_ADD_BOX => {
+            let structure = parse_tag(p.str("structure")?)?;
+            let (Some(lo), Some(hi)) = (p.opt_vec3("lo")?, p.opt_vec3("hi")?) else {
+                return Err(err(code::INVALID_PARAMS, "lo and hi: the box's corners, [x,y,z] each"));
+            };
+            let material = match p.opt_u64("material")? {
+                None => 0,
+                Some(m) => u16::try_from(m)
+                    .map_err(|_| err(code::INVALID_PARAMS, format!("material: {m} is past a u16")))?,
+            };
+            run(
+                app,
+                ModelAction::AddCollisionBox {
+                    structure,
+                    lo,
+                    hi,
+                    material,
+                },
+            )?;
+            let edit = app
+                .modeling
+                .level_collision
+                .get(&structure)
+                .ok_or_else(|| err(code::FAILED, "the box was not added"))?;
+            let level = &edit.added.level;
+            Ok(json!({
+                "structure": format!("{:#010x}", structure.0),
+                "surfaces": level.bsp.surfaces.len(),
+                "planes": level.bsp.planes.len(),
+                "leaves": level.bsp.leaves.len(),
+                "file_surfaces": edit.source.level.bsp.surfaces.len(),
+            }))
+        }
+        m::GEOMETRY_COLLISION_CLEAR => {
+            let structure = parse_tag(p.str("structure")?)?;
+            let cleared = app.modeling.level_collision.contains_key(&structure);
+            run(app, ModelAction::ClearCollision { structure })?;
+            Ok(json!({ "structure": format!("{:#010x}", structure.0), "cleared": cleared }))
+        }
         m::MESH_MODE => {
             let t = open_target(app, p)?;
             let mode = match p.str("mode")? {
@@ -410,7 +463,7 @@ fn parse_tag(s: &str) -> Result<TagId, RpcError> {
         .map_err(|_| {
             err(
                 code::INVALID_PARAMS,
-                format!("model: {s:?} is not a tag id"),
+                format!("{s:?} is not a tag id"),
             )
         })
 }

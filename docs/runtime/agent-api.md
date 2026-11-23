@@ -3279,12 +3279,19 @@ it always activates, and is refused on a structure with pathfinding,
 which names surfaces by index.
 
 With `activate: true`, and always for `rebuild`, the commit asks the game
-for a BSP switch to the active BSP (`BSP_SWITCH`), which rebuilds Havok's
-structure shape over the new blocks, and answers after it has run, with
-`activated: true`. A game with no activation refuses these commits
-(`REFUSED`, nothing written); one whose switch does not start or fails
-puts the old pairs back, frees the stage, and answers `REFUSED` with the
-reason. The arena extents the old pairs named are freed after the next
+to activate the loaded structure BSP again and answers after it has run,
+with `activated: true`. The activation is the second half of a BSP
+switch, which `BSP_SWITCH` itself skips for the BSP already loaded and
+active: at the next tick, through the agent's guest calls
+(`Call::ReactivateStructure`, `crates/extensions/agent/src/sim/calls.rs`),
+`STRUCTURE_BSP_DEACTIVATE` (`0x137da0`) then `STRUCTURE_BSP_ACTIVATE`
+(`0x137d40`), so every game system rebuilds its per-BSP state (physics
+its Havok world over the structure, objects their locations) and the
+BSP's tag data, with the new pairs, is not loaded again. A game with no
+activation (no agent guest calls) refuses these commits (`REFUSED`,
+nothing written); one whose activation does not start or fails (no
+structure loaded and active) puts the old pairs back, frees the stage,
+and answers `REFUSED` with the reason. The arena extents the old pairs named are freed after the next
 activation, listed in `freed`; until then Havok's shape may still read
 them. A `coll` BSP's old extents are kept until the map changes, since a
 live body's shape points at them until the object is made again
@@ -3295,8 +3302,10 @@ and point location answer from the new blocks on the next tick, and
 `sim_collision`'s page watches over the pairs start a new generation. A
 structure commit hands the new BSP to `debug.view`'s `collision_geometry`
 and `invisible_barriers`, which are built from the map file and would
-otherwise show the old level. The bots' line-of-sight walls are not told.
-The journal does not hold a commit: `edit.revert` leaves it, and the
+otherwise show the old level. A commit on the active structure also
+rebuilds the bots' line-of-sight walls from the new BSP on a thread of
+their own (`bots::autonav::collision_edited`); their nav mesh keeps the
+old shape until the map loads again. The journal does not hold a commit: `edit.revert` leaves it, and the
 editor undoes it with the inverse stage and commit. Sessions are those
 of the other edit writes; with `confirm_peers` on a host the change stays
 local, as tag pokes do.

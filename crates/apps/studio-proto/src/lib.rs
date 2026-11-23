@@ -203,6 +203,8 @@ pub mod method {
     pub const GEOMETRY_CLOSE: &str = "geometry.close";
     pub const GEOMETRY_READ: &str = "geometry.read";
     pub const GEOMETRY_CHECK: &str = "geometry.check";
+    pub const GEOMETRY_COLLISION_ADD_BOX: &str = "geometry.collision.add_box";
+    pub const GEOMETRY_COLLISION_CLEAR: &str = "geometry.collision.clear";
     pub const MESH_MODE: &str = "mesh.mode";
     pub const MESH_SELECT: &str = "mesh.select";
     pub const MESH_TRANSFORM: &str = "mesh.transform";

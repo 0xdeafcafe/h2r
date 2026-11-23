@@ -982,7 +982,16 @@ the window and the API stay one path.
   edit mode, `doc.undo` and `doc.redo` with `"doc": "map"` are its undo.
   `geometry.check` gives each open target's write class and
   `save_refusal`, why a save would be refused (Allow unverified geometry
-  writes off, `allow_unverified`, or an edit that changes a count);
+  writes off, `allow_unverified`, or an edit that changes a count).
+  `geometry.collision.add_box {structure, lo, hi, material?}` adds a
+  closed box solid inside `[lo, hi]` to a structure's level collision
+  (`structure` its tag id), onto the boxes added before, as
+  `Action::Model(ModelAction::AddCollisionBox)`, and answers its counts
+  (`surfaces`, `planes`, `leaves`, `file_surfaces`); a box with no volume,
+  outside the level's open space or on a tag that is not a structure is
+  refused with the reason. `geometry.collision.clear {structure}` drops the
+  structure's boxes (`cleared` whether it had any). A paired game gets
+  both live as the `collision` row; the save writes the boxes;
   docs/editor/modeling.md, "Interfaces".
 - **Textures (studio-modeling slices 5 and 6).** `api/bitmaps.rs`:
   `bitmap.list {name?}` gives the map's bitmap tags and their images;

@@ -67,6 +67,18 @@
 //!   ([`SCRATCH_OPTIONS`]). The game loads the queued options at its next
 //!   transition, as it does the main menu's own start. `maps.test.load`
 //!   uses it (docs/game/test-maps.md).
+//! - **Reactivate the structure** is the second half of a BSP switch to
+//!   the BSP already loaded, which `BSP_SWITCH` (`0x11c1b0`) itself skips
+//!   (it returns at once when the asked BSP is both the loaded one,
+//!   `0x4686c4`, and the active one, game globals `+2`):
+//!   `STRUCTURE_BSP_DEACTIVATE` (`0x137da0`, every game system's
+//!   dispose-from-old-BSP callback) then `STRUCTURE_BSP_ACTIVATE`
+//!   (`0x137d40`, every initialize-for-new-BSP callback: physics' Havok
+//!   world over the structure, objects' locations), both `fn() ret 0`.
+//!   The BSP's tag data is not loaded again, so a live collision commit's
+//!   pairs stay. `edit.collision.commit` runs it
+//!   (`crate::hot::collision::QueuedActivation`;
+//!   docs/editor/realtime-edits.md, "Collision").
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,6 +112,12 @@ pub mod addr {
     /// Unit: desired facing, aiming and looking vectors, which the
     /// teleport writes (`0x2a01a2`, `0x2a01b8`, `0x2a01ce`).
     pub const UNIT_FACINGS: [u32; 3] = [0x150, 0x15c, 0x180];
+    /// The loaded structure BSP's index (`i16`, -1 for none), which
+    /// `BSP_SWITCH` sets and `STRUCTURE_BSP_ACTIVATE` copies into the game
+    /// globals.
+    pub const LOADED_STRUCTURE_BSP: u32 = engine::sim_collision::layout::BSP_INDEX;
+    /// The game globals' active structure BSP index (`i16`).
+    pub const GAME_GLOBALS_ACTIVE_BSP: u32 = 0x2;
     /// `unit_add_weapon` modes (module doc).
     pub const MODE_ADD: u32 = 1;
     pub const MODE_REPLACE: u32 = 2;
@@ -285,6 +303,10 @@ pub enum Call {
     /// Build game options with `steps` and queue them: a new game loads
     /// at the game's next transition.
     QueueGame { steps: Vec<GameStep> },
+    /// Deactivate and activate the loaded structure BSP again, so every
+    /// game system rebuilds its per-BSP state over the BSP's tag data as
+    /// it is now (module doc, "Reactivate the structure").
+    ReactivateStructure,
 }
 
 /// What came of a call: the answer's fields, or why not.
@@ -931,6 +953,50 @@ async fn object_delete(cx: &Cx, queue: &Shared, id: ObjectId) -> Result<Outcome,
     Ok(Ok(json!({ "deleted": id.to_string() })))
 }
 
+/// [`Call::ReactivateStructure`]: refused unless a structure is loaded
+/// and active, then the deactivate and activate pair, then the active
+/// index read back.
+async fn reactivate_structure(cx: &Cx) -> Result<Outcome, EntryError> {
+    let state = cx.read(|m| -> Result<(i16, i16), engine::MemFault> {
+        let loaded = m.u16(addr::LOADED_STRUCTURE_BSP)? as i16;
+        let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+        let active = m.u16(globals.wrapping_add(addr::GAME_GLOBALS_ACTIVE_BSP))? as i16;
+        Ok((loaded, active))
+    });
+    let (loaded, active) = match state {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(Err(unavailable(format!(
+                "cannot read the structure BSP state at {:#x}",
+                e.addr
+            ))));
+        }
+    };
+    if loaded < 0 || active != loaded {
+        return Ok(Err(refused(format!(
+            "no structure BSP is loaded and active (loaded {loaded}, active {active})"
+        ))));
+    }
+    cx.call(GuestCall::new(engine::points::STRUCTURE_BSP_DEACTIVATE.base))
+        .await?;
+    cx.call(GuestCall::new(engine::points::STRUCTURE_BSP_ACTIVATE.base))
+        .await?;
+    let after = cx.read(|m| -> Result<i16, engine::MemFault> {
+        let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+        Ok(m.u16(globals.wrapping_add(addr::GAME_GLOBALS_ACTIVE_BSP))? as i16)
+    });
+    match after {
+        Ok(bsp) if bsp == loaded => Ok(Ok(json!({ "bsp": bsp }))),
+        Ok(bsp) => Ok(Err(unavailable(format!(
+            "the structure BSP activation left BSP {bsp} active, not {loaded}"
+        )))),
+        Err(e) => Ok(Err(unavailable(format!(
+            "cannot read the active structure BSP at {:#x}",
+            e.addr
+        )))),
+    }
+}
+
 /// A stale Forge handle is a named refusal, so the session reports it and
 /// keeps its document. Memory faults stay as they are.
 fn forge_gone(e: RpcError, id: ObjectId) -> RpcError {
@@ -1401,6 +1467,7 @@ async fn run_call(
         }
         Call::PlacementEdit { ref plan } => placement::edit::run(cx, scratch, queue, plan).await,
         Call::Forge { guard, ref steps } => run_forge(cx, scratch, queue, guard, steps).await,
+        Call::ReactivateStructure => reactivate_structure(cx).await,
         Call::QueueGame { ref steps } => {
             let options = scratch + SCRATCH_OPTIONS;
             let mut out = serde_json::Map::new();

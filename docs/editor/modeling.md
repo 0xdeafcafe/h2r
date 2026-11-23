@@ -5,18 +5,21 @@ geometry path (slices 2 and 3, for clusters, instanced definitions and
 `mode` sections), grown raw writes (slice 7, with
 `MapEditor::append_raw` and **Use for lower LODs** in the session), the
 collision compiler with `coll` BSPs as meshes (slice 8, the crate only),
-adding solids to a structure's level collision (slice 11, the crates and
-the map's save only) and the Textures tool (slices 5 and 6: painting,
+adding solids to a structure's level collision (slice 11, with a box
+solid as the editor's one control) and the Textures tool (slices 5 and 6: painting,
 exporting, and writing the edited images with the map's save) are
 implemented; the Modeling window is a section of the map inspector with
 buttons, not yet the gizmo, overlays and keymap below, and has no control
 or API method for **Use for lower LODs** yet. A `coll` BSP and a
-structure's collision are not yet `geometry-edit` targets, so the window,
-`geometry.*` and the session do not reach them; no tool makes a
-`geometry_edit::level_collision` edit yet. `Modeling::level_collision`
-holds them (`App::set_level_collision`), and Play sends what it holds to
-a paired game (realtime-edits.md, "The editor"). Rebuilding a level's collision
-and markers are designs.
+structure's collision are not yet `geometry-edit` targets, so the mesh
+session does not reach them. The one level collision edit is a box:
+**Add collision box** in the section (two corners) and
+`geometry.collision.add_box` add a closed box solid to the picked
+target's structure (`ModelAction::AddCollisionBox`), onto the boxes added
+before; `geometry.collision.clear` drops them. `Modeling::level_collision`
+holds the edit (`App::set_level_collision`), the save writes it, and Play
+sends it to a paired game (realtime-edits.md, "The editor"). Rebuilding a
+level's collision and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/tools/collision-build/src/{merge,level}.rs`,
@@ -304,6 +307,11 @@ elements and the per-leaf block. The save takes grown blocks as
 `scenario_edit::GeometryChanges::grown` (`MapEditor::append_metadata`,
 then `patch_metadata` or `patch_bsp` for the pair), and the writer
 repairs the header checksum. `LevelEdit::stage` sends the same bytes.
+`LevelEdit::add_solid` adds another solid to an edit's level and keeps its
+source, so one edit holds every solid added since the map was read, and
+its writes and stage start from the file's blocks. `box_solid` is the
+closed box the editor adds (`LevelSource::add_box`, `LevelEdit::add_box`;
+a box with no volume or a corner not finite is refused by target).
 
 **From render** (`from_render.rs`): weld, drop degenerate and repeated
 triangles (one drawn both ways becomes two-sided), then join neighbours
@@ -482,9 +490,12 @@ pages open read-only.
 What is built (Code): every Modeling command is
 `Action::Model(ModelAction)` (`app/modeling.rs`): open, close, apply a
 list of `MeshOp`s as one undo step (or one merged step per `merge` key),
-seal, undo and redo. The provider `api/geometry.rs` answers
-`geometry.list {model?}`, `geometry.open`, `geometry.close`,
-`geometry.read`, `geometry.check`, `mesh.mode`, `mesh.select {ids, op |
+seal, undo and redo, and a collision box added to a structure's level
+collision or the structure's boxes cleared. The provider `api/geometry.rs`
+answers `geometry.list {model?}`, `geometry.open`, `geometry.close`,
+`geometry.read`, `geometry.check`, `geometry.collision.add_box
+{structure, lo, hi, material?}`, `geometry.collision.clear {structure}`,
+`mesh.mode`, `mesh.select {ids, op |
 all | none | invert}`, `mesh.transform {translate | matrix, pivot?,
 merge?}`, `mesh.ops` and `mesh.apply`, each with a target id
 `kind:tag:index` (`cluster:e1000004:0`) or the target in edit mode.
@@ -495,7 +506,9 @@ command the session's writes go to the save
 (`scenario_edit::GeometryChanges`): tag patches, raw patches and, for a
 grown section, a `RawAppend` (the new block, and the block info word that
 takes its raw pointer), which the save inserts with
-`MapEditor::append_raw`. With **Allow unverified geometry writes** off, or
+`MapEditor::append_raw`, and each level collision edit's patches and
+grown blocks (`LevelEdit::writes`). The collision boxes are not on the
+map's undo: clearing is their undo. With **Allow unverified geometry writes** off, or
 an edit the format cannot hold (a bucket-lit structure section or a sky
 model's strips grown, a part or material the section does not have, a map
 whose metadata does not end the file), the save is refused with the reason
