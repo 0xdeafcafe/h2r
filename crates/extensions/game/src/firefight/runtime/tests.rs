@@ -846,6 +846,59 @@ fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
     assert_eq!(with_team_play(0x10, true), Some(0x11));
 }
 
+/// Each multiplayer start publishes the match it plays for the session
+/// data (a Live host's `NewSession.firefight`): the set, its id, teams,
+/// difficulty and the kit version on a kit map with Firefight on, none
+/// otherwise, so a stale match does not linger. A film publishes nothing.
+#[test]
+fn each_multiplayer_start_names_its_match_for_the_session() {
+    type Sent = Arc<Mutex<Vec<Option<live_proto::session::Firefight>>>>;
+    let start = |options: Options, kit: bool, film: bool| {
+        let (it, _) = shared(false);
+        let sent: Sent = Arc::default();
+        let seen = Arc::clone(&sent);
+        it.lock().set_options(Box::new(move || Ok(options)));
+        it.lock()
+            .set_session(Box::new(move |f| seen.lock().unwrap().push(f)));
+        let (mut m, _) = guest(kit, 1);
+        options_block(&mut m, MODE_MULTIPLAYER, 1);
+        it.lock().activate(&mut m, OPTIONS, film);
+        let out = sent.lock().unwrap().clone();
+        out
+    };
+    let crossfire = Options {
+        wave_set: 3,
+        difficulty: ::firefight::Difficulty::Heroic,
+        ..Options::default()
+    };
+    let sent = start(crossfire, true, false);
+    let def = crossfire.definition().unwrap();
+    let expected = live_proto::session::Firefight {
+        set: "Crossfire".into(),
+        id: def.id().unwrap().to_string(),
+        teams: 2,
+        difficulty: 2,
+        kit: ::firefight::KIT_VERSION,
+    };
+    assert_eq!(sent, [Some(expected.clone())]);
+    assert_eq!(expected.validate(), Ok(()));
+    assert_eq!(session_firefight(&crossfire, true), Some(expected));
+    // Holdout: one team.
+    let one = start(Options::default(), true, false);
+    assert_eq!(
+        one[0].as_ref().map(|f| (f.set.as_str(), f.teams)),
+        Some(("Holdout", 1))
+    );
+    // No kit, or Firefight off: the session names no match.
+    assert_eq!(start(crossfire, false, false), [None]);
+    let off = Options {
+        enabled: false,
+        ..crossfire
+    };
+    assert_eq!(start(off, true, false), [None]);
+    assert!(start(crossfire, true, true).is_empty(), "a film");
+}
+
 /// The Clankers are told the match: the player teams, the actors' team,
 /// the bases, the drop zones, each team's pool and whether a wave is on.
 #[test]

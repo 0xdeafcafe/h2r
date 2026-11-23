@@ -22,7 +22,8 @@ mod nav;
 
 pub use bases::{Bases, Config, Source, Team};
 
-pub const KIT_VERSION: u32 = 2;
+/// The kit's version: the `firefight` crate's, which session data names.
+pub const KIT_VERSION: u32 = firefight::KIT_VERSION;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {

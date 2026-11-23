@@ -1211,7 +1211,12 @@ when none; docs/game/skulls.md "In multiplayer") and `variant_ext`
 game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
 host sends none; docs/game/game-options.md section 3) and `rules` (the
 SHA-256 of the rules IR blob the host's next game runs, 64 lowercase hex
-digits; omitted when none; docs/game/rules-engine.md "Carrying a script").
+digits; omitted when none; docs/game/rules-engine.md "Carrying a script")
+and `firefight` (`{set, id, teams, difficulty, kit}`: the Firefight match
+the host's next game plays, its wave set's name, the definition's SHA-256
+as 64 lowercase hex digits, 1 or 2 player teams, difficulty 0 to 3 and
+the kit version from 1; omitted when the next game is not Firefight;
+docs/game/firefight.md "Live").
 A session whose flags are `ranked` and whose `rules` is set names a saved
 or built-in script that the ranked policy takes
 (docs/game/rules-engine.md "Roles, powers and capabilities"): an unknown
@@ -1242,8 +1247,10 @@ fields.
 Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
-  visibility, `map_id`, `skulls`, `variant_ext` or `rules` (absent keeps
-  the current one). Use `clear_map_id: true` when a host returns to retail.
+  visibility, `map_id`, `skulls`, `variant_ext`, `rules` or `firefight`
+  (absent keeps the current one). Use `clear_map_id: true` when a host
+  returns to retail, and `clear_firefight: true` when its next game is not
+  Firefight (with `firefight` in the same update it is refused).
   `skulls: []` turns them all off. A `variant_ext` replaces the last.
   A server from before `skulls` refuses an update that has it, so the HLE
   sends it only when the host's set changed. The same applies to

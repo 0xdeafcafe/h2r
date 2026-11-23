@@ -38,6 +38,7 @@ fn lobby() -> NewSession {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     }
 }
@@ -215,10 +216,43 @@ async fn only_the_sessions_host_asks_and_counts_are_bounded() {
     );
 }
 
-/// Live names no team for a Clanker, in a team game or a Firefight session
-/// on a kit map: the host seats every bot, and its seat rule keeps them on
-/// the player teams (docs/game/firefight.md, "Live"). So no roster can put
-/// a Clanker on the AI's team. The Worker composes the same handler.
+/// `u` hosts a session advertising `ad`; its id.
+async fn host_ad(h: &Harness, u: &User, ad: &NewSession) -> String {
+    let r = h
+        .call(
+            Method::POST,
+            "/v1/sessions",
+            &[
+                h.bearer(u, lxm::SESSIONS_WRITE),
+                ("content-type", "application/json".into()),
+            ],
+            Body::from(serde_json::to_vec(ad).unwrap()),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    r.json()["session_id"].as_str().unwrap().to_string()
+}
+
+/// A Firefight lobby of `teams` player teams.
+fn firefight_lobby(teams: u8) -> NewSession {
+    NewSession {
+        firefight: Some(live_proto::session::Firefight {
+            set: if teams == 2 { "Crossfire" } else { "Holdout" }.into(),
+            id: "ab".repeat(32),
+            teams,
+            difficulty: 1,
+            kit: 2,
+        }),
+        ..lobby()
+    }
+}
+
+/// Live names no team for a Clanker outside Firefight: the host seats
+/// every bot. In a Firefight session (its advertisement names the match)
+/// each bot takes a player team, balanced across two teams with team 0 on
+/// a tie, all on team 0 with one, so no roster puts a Clanker on the AI's
+/// team (docs/game/firefight.md, "Live"). The Worker composes the same
+/// handler (`a_firefight_session_seats_balanced_clankers_on_the_worker`).
 #[tokio::test]
 async fn firefight_sessions_seat_clankers_on_player_teams_only() {
     let h = harness().await;
@@ -234,6 +268,24 @@ async fn firefight_sessions_seat_clankers_on_player_teams_only() {
         assert_eq!(r.bots.len(), 4);
         assert!(r.bots.iter().all(|b| b.team.is_none()), "teams {teams}");
     }
+    let teams_of = |r: &Roster| r.bots.iter().map(|b| b.team).collect::<Vec<_>>();
+    let one = host_ad(&h, &a, &firefight_lobby(1)).await;
+    let r = roster(&h, &a, json!({"session_id": one, "count": 3})).await;
+    assert_eq!(teams_of(&r), [Some(0); 3]);
+    let two = host_ad(&h, &a, &firefight_lobby(2)).await;
+    for (count, want) in [
+        (4, vec![0, 1, 0, 1]),
+        (5, vec![0, 1, 0, 1, 0]),
+        (1, vec![0]),
+    ] {
+        let r = roster(&h, &a, json!({"session_id": two, "count": count})).await;
+        let want: Vec<Option<u8>> = want.into_iter().map(Some).collect();
+        assert_eq!(teams_of(&r), want, "{count} bots");
+    }
+    // A full two-team roster: 15 bots beside the host, eight on team 0.
+    let r = roster(&h, &a, json!({"session_id": two, "count": 15})).await;
+    let on = |t| r.bots.iter().filter(|b| b.team == Some(t)).count();
+    assert_eq!((on(0), on(1), r.bots.len()), (8, 7, 15));
 }
 
 #[tokio::test]

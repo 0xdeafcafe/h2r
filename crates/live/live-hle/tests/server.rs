@@ -2647,6 +2647,100 @@ fn guests_read_the_rules_hash_their_host_advertises() {
         }
     );
 }
+/// A host's Firefight match (docs/game/firefight.md, "Live") reaches its
+/// open session at once and its guests read it back; leaving Firefight
+/// clears it on the server and for the guests.
+#[test]
+fn guests_read_the_firefight_match_their_host_advertises() {
+    use live_hle::HostFirefight;
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    guest.logon();
+    let wait = Duration::from_secs(5);
+    assert_eq!(guest.hle.host_firefight(wait), HostFirefight::NotJoined);
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert!(created.data["advertisement"].get("firefight").is_none());
+    let cap = guest.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (_, table, count) = match_search(&mut guest, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row = guest.u32(table);
+    assert_eq!(guest.call("XNetRegisterKey", &[row + 4, row + 0x30]), 0);
+    let session = live_proto::sign::hex(&host.hle.local_sessions()[0].id);
+    assert_eq!(
+        guest.hle.host_firefight(wait),
+        HostFirefight::Known {
+            session: session.clone(),
+            firefight: None,
+            refreshed: true
+        }
+    );
+    let crossfire = live_proto::session::Firefight {
+        set: "Crossfire".into(),
+        id: "5e".repeat(32),
+        teams: 2,
+        difficulty: 1,
+        kit: 2,
+    };
+    host.hle.set_session_firefight(Some(crossfire.clone()));
+    let advertised = || {
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items[0]
+            .advertisement
+            .firefight
+            .clone()
+    };
+    s.until(|| advertised().is_some());
+    assert_eq!(advertised(), Some(crossfire.clone()));
+    assert_eq!(
+        host.hle.local_sessions()[0].firefight,
+        Some(crossfire.clone())
+    );
+    assert_eq!(
+        guest.hle.host_firefight(wait),
+        HostFirefight::Known {
+            session: session.clone(),
+            firefight: Some(crossfire),
+            refreshed: true
+        }
+    );
+    // The host's next game is not Firefight: the session drops it.
+    host.hle.set_session_firefight(None);
+    s.until(|| advertised().is_none());
+    assert_eq!(host.hle.local_sessions()[0].firefight, None);
+    assert_eq!(
+        guest.hle.host_firefight(wait),
+        HostFirefight::Known {
+            session,
+            firefight: None,
+            refreshed: true
+        }
+    );
+}
 /// Every presence set carries the console's build and capabilities
 /// (docs/game/game-options.md section 3, "Older builds"), and a host names
 /// the players whose build lacks one: here a guest on an older build.

@@ -348,11 +348,19 @@ pub(crate) fn register_core_film(
             crate::firefight::runtime::Report::Ended(ended) => t.firefight_ended(ended),
         }
     }) as Box<crate::firefight::runtime::ReportSink>);
+    // A Live host names the match in its session data, so its guests and
+    // Live's Clanker roster know it (docs/game/firefight.md, "Live").
+    let firefight_session = i.live.clone().map(|hle| {
+        Box::new(move |f: Option<live_proto::session::Firefight>| {
+            hle.set_session_firefight(f)
+        }) as Box<crate::firefight::runtime::SessionSink>
+    });
     let firefight_on = crate::firefight::feature::install_with(
         features,
         film.is_some(),
         firefight_options,
         firefight_reports,
+        firefight_session,
     )
         .context("installing Firefight")?;
     if firefight_on && let Some(store) = i.settings.as_ref() {

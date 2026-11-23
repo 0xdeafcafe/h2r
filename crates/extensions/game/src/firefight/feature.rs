@@ -117,22 +117,31 @@ impl hooks::Feature for Firefight {
         // The two points of a line-of-sight test.
         let scratch = b.guest_alloc(0x20, ::runtime::guest::Permissions::RW)?;
         let s = Arc::clone(&self.0);
-        b.raw().before(
-            &hooks::points::GAME_ACTIVATE,
-            "Team Play on for two Firefight teams",
-            move |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let options = c.cpu.eax;
-                let line = {
-                    let mut mem = rt.memory();
-                    s.lock().activate(&mut *mem, options, s.film)
-                };
-                if let Some(line) = line {
-                    eprintln!("{line}");
-                }
-                Ok(Flow::Continue)
-            },
-        );
+        b.raw()
+            .before(
+                &hooks::points::GAME_ACTIVATE,
+                "Team Play on for two Firefight teams",
+                move |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let options = c.cpu.eax;
+                    let line = {
+                        let mut mem = rt.memory();
+                        s.lock().activate(&mut *mem, options, s.film)
+                    };
+                    if let Some(line) = line {
+                        eprintln!("{line}");
+                    }
+                    Ok(Flow::Continue)
+                },
+            )
+            // Inside the other start hooks of the default class: none of them
+            // reads or writes the variant's flags.
+            .after_feature(crate::variant_ext::FEATURE)
+            .after_feature(crate::aim_assist::FEATURE)
+            .after_feature(crate::precision::FEATURE)
+            .after_feature(crate::hud_swap::FEATURE)
+            .after_feature(crate::h1_hud_text::FEATURE)
+            .after_feature(crate::hud_kit::FEATURE);
         let s = Arc::clone(&self.0);
         b.game().on_start("start Firefight on a kit map", move |o| {
             let mut mem = o.guest();
@@ -190,19 +199,25 @@ impl hooks::Feature for Firefight {
 /// a film back. The match is the settings' defaults; [`install_with`] reads
 /// Game Setup's choices.
 pub fn install(registry: &mut hooks::Registry, film: bool) -> anyhow::Result<bool> {
-    install_with(registry, film, None, None)
+    install_with(registry, film, None, None, None)
 }
 
 /// [`install`] with the source of Game Setup's choices
-/// ([`super::options::source`]), read when each game starts, and where the
-/// host's scores and result go ([`runtime::Report`]).
+/// ([`super::options::source`]), read when each game starts, where the
+/// host's scores and result go ([`runtime::Report`]), and where the match
+/// each multiplayer game plays is published ([`runtime::SessionSink`]: a
+/// Live host's session).
 pub fn install_with(
     registry: &mut hooks::Registry,
     film: bool,
     options: Option<Box<super::options::Source>>,
     reports: Option<Box<runtime::ReportSink>>,
+    session: Option<Box<runtime::SessionSink>>,
 ) -> anyhow::Result<bool> {
     let shared = Arc::new(Shared::new(film, Box::new(write_skulls)));
+    if let Some(session) = session {
+        shared.lock().set_session(session);
+    }
     if let Some(options) = options {
         shared.lock().set_options(options);
     }

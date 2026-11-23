@@ -1,12 +1,13 @@
 //! What the hopper tool's variant picker offers, without any UI: the
 //! default lineup's matchmaking variants (the records of scripts), the
-//! disc's built-in variants (built the way the game builds them), the
-//! user's saved variants, and `.h2variant` files loaded this session. Each
-//! choice carries what the game's clean-up would say about it, and a
-//! hopper plays scripted variants only, so a choice that runs no rules
-//! script says so too; the picker only links choices with nothing to say
-//! ([`model::set_variant`] refuses the rest). The disc's built-ins run no
-//! script, so none is usable.
+//! built-in Firefight wave sets ([`firefight_record`]), the disc's
+//! built-in variants (built the way the game builds them), the user's
+//! saved variants, and `.h2variant` files loaded this session. Each choice
+//! carries what the game's clean-up would say about it, and a hopper plays
+//! scripted variants and built-in Firefight sets only, so a choice that
+//! runs neither says so too; the picker only links choices with nothing to
+//! say ([`model::set_variant`] refuses the rest). The disc's built-ins run
+//! no script, so none is usable.
 //!
 //! [`model::set_variant`]: super::model::set_variant
 
@@ -15,7 +16,7 @@ use std::path::{Path, PathBuf};
 use crate::model;
 use variants::record::{self, Problem};
 use variants::save::SaveStore;
-use variants::{GameVariant, Schema, portable};
+use variants::{GameType, GameVariant, Schema, SettingId, portable};
 
 /// Where a choice comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,9 @@ pub enum Origin {
     /// One of the default lineup's matchmaking variants
     /// (`live_proto::hopper::defaults::builtin_variants`), by key.
     Matchmaking(&'static str),
+    /// One of the built-in Firefight wave sets
+    /// (`firefight::builtin::definitions`), by name.
+    Firefight(String),
     /// One of the disc's built-in variants.
     Builtin,
     /// A saved variant (its save directory).
@@ -79,11 +83,51 @@ fn strip_icon(name: &str) -> String {
         .to_string()
 }
 
+/// The hopper record of a built-in Firefight wave set
+/// (docs/game/firefight.md, "Live"): Slayer's stock record named after the
+/// set, with the extension's script reference at mode 1 and the first 8
+/// bytes of the definition's SHA-256 (docs/game/rules-engine.md, "Carrying
+/// a script"). A two-team set (Crossfire) has team play on. The lives
+/// setting is 1, so the engine holds each respawn for the director, and
+/// neither a score nor a time limit ends the round before the director's
+/// `Finish` (firefight.md, "Lives, rounds and skulls").
+pub fn firefight_record(def: &firefight::Def) -> Result<GameVariant, String> {
+    let why = |e: &dyn std::fmt::Display| format!("Firefight set {:?}: {e}", def.name);
+    let id = def.id().map_err(|e| why(&e))?;
+    let stock = GameVariant::stock(GameType::Slayer).expect("Slayer has a stock record");
+    let mut bytes = stock.to_bytes();
+    let flags = record::FLAGS_AT;
+    bytes[flags] = (bytes[flags] & !1) | u8::from(def.teams == 2);
+    let mut v = GameVariant::from_bytes(&bytes).map_err(|e| why(&e))?;
+    v.set_name(&def.name).map_err(|e| why(&e))?;
+    for (setting, value) in [(SCORE_TO_WIN, 0), (TIME_LIMIT, 0), (LIVES, 1)] {
+        v.set(setting, value).map_err(|e| why(&e))?;
+    }
+    let mut e = v.ext();
+    e.script = variants::ext::Script {
+        mode: variants::ext::Mode::Firefight,
+        prefix: id.0[..8].try_into().expect("8 bytes"),
+        options: 0,
+    };
+    v.set_ext(&e).map_err(|e| why(&e))?;
+    Ok(v)
+}
+
+/// The record's settings [`firefight_record`] writes
+/// (`variants::record::field`): score to win (`+0x50`), the time limit
+/// (`+0x54`) and lives (`+0x7c`).
+const SCORE_TO_WIN: SettingId = SettingId(1);
+const TIME_LIMIT: SettingId = SettingId(10);
+const LIVES: SettingId = SettingId(16);
+
 /// Everything the picker offers.
 #[derive(Debug, Clone, Default)]
 pub struct Choices {
     /// The default lineup's matchmaking variants: scripted, so usable.
     pub matchmaking: Vec<Choice>,
+    /// The built-in Firefight wave sets, in menu order (Crossfire the
+    /// fourth): each a Firefight record, so usable.
+    pub firefight: Vec<Choice>,
     pub builtins: Vec<Choice>,
     pub saved: Vec<Choice>,
     pub files: Vec<Choice>,
@@ -102,6 +146,14 @@ impl Choices {
                 Err(e) => c
                     .notes
                     .push(format!("matchmaking variant {key} cannot be read: {e}")),
+            }
+        }
+        for def in firefight::builtin::definitions() {
+            match firefight_record(&def) {
+                Ok(v) => c
+                    .firefight
+                    .push(Choice::new(Origin::Firefight(def.name.clone()), v)),
+                Err(e) => c.notes.push(e),
             }
         }
         for b in &schema.builtins {
@@ -159,11 +211,12 @@ impl Choices {
         Ok(&self.files[at])
     }
 
-    /// Every choice: the matchmaking variants, the disc's built-ins, then
-    /// saves, then files.
+    /// Every choice: the matchmaking variants, the Firefight sets, the
+    /// disc's built-ins, then saves, then files.
     pub fn all(&self) -> impl Iterator<Item = &Choice> {
         self.matchmaking
             .iter()
+            .chain(&self.firefight)
             .chain(&self.builtins)
             .chain(&self.saved)
             .chain(&self.files)
@@ -206,6 +259,52 @@ mod tests {
         assert!(c.matchmaking.iter().all(Choice::usable), "{:?}", c.notes);
         assert_eq!(c.matchmaking[0].origin, Origin::Matchmaking("rumble_slayer"));
         assert!(c.saved.is_empty() && c.notes.is_empty());
+    }
+
+    #[test]
+    fn the_builtin_firefight_sets_are_offered_crossfire_with_teams() {
+        let c = Choices::new(&schema(), None);
+        let defs = firefight::builtin::definitions();
+        assert_eq!(c.firefight.len(), defs.len());
+        assert_eq!(c.firefight.len(), 4);
+        let names: Vec<&str> = c
+            .firefight
+            .iter()
+            .map(|ch| match &ch.origin {
+                Origin::Firefight(name) => name.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["Holdout", "Attrition", "Last Stand", "Crossfire"]);
+        for (ch, def) in c.firefight.iter().zip(&defs) {
+            assert!(ch.usable(), "{}: {:?}", def.name, ch.problems);
+            let v = &ch.variant;
+            assert_eq!(v.name(), def.name);
+            assert_eq!(v.game_type(), GameType::Slayer);
+            assert_eq!(v.team_play(), def.teams == 2, "{}", def.name);
+            let script = v.ext().script;
+            assert_eq!(script.mode, variants::ext::Mode::Firefight);
+            assert_eq!(script.prefix[..], def.id().unwrap().0[..8]);
+            assert_eq!(model::firefight_set(script.prefix).unwrap().name, def.name);
+            assert_eq!(v.get(LIVES), Some(1));
+            assert_eq!(v.get(SCORE_TO_WIN), Some(0));
+            assert_eq!(v.get(TIME_LIMIT), Some(0));
+        }
+        assert_eq!(c.firefight[3].label(), "Crossfire - Slayer - teams");
+        assert!(
+            c.all()
+                .any(|ch| ch.origin == Origin::Firefight("Crossfire".into()))
+        );
+        // A hopper entry takes one, and a file written with it reads back.
+        let f = crate::fixture::sample();
+        let mut m = model::load(&f);
+        model::set_variant(&mut m[0].records[0], &c.firefight[3].variant).unwrap();
+        let out = model::apply(&f, &m).unwrap();
+        let back = model::load(&out);
+        assert_eq!(
+            model::entry_variant(&out, &back[0].records[0]).unwrap(),
+            c.firefight[3].variant
+        );
     }
 
     #[test]

@@ -507,6 +507,7 @@ async fn host_session(h: &Harness, u: &User) -> String {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     };
     let r = h

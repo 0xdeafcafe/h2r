@@ -253,6 +253,36 @@ pub fn with_team_play(flags: u32, wanted: bool) -> Option<u32> {
     (wanted && flags & TEAM_PLAY == 0).then_some(flags | TEAM_PLAY)
 }
 
+/// The Firefight match a game about to start plays, as the session data
+/// names it (`NewSession.firefight`, docs/game/firefight.md, "Live"): the
+/// definition Game Setup's choices give, its id, teams and difficulty, and
+/// the kit version. None when Firefight is off, the map lacks the kit, or
+/// the choices give no definition.
+pub fn session_firefight(options: &Options, kit: bool) -> Option<live_proto::session::Firefight> {
+    if !kit || !options.enabled {
+        return None;
+    }
+    let def = options.definition().ok()?;
+    let id = def.id().ok()?;
+    use ::firefight::Difficulty as D;
+    Some(live_proto::session::Firefight {
+        set: def.name.clone(),
+        id: id.to_string(),
+        teams: def.teams,
+        difficulty: match options.difficulty {
+            D::Easy => 0,
+            D::Normal => 1,
+            D::Heroic => 2,
+            D::Legendary => 3,
+        },
+        kit: ::firefight::KIT_VERSION,
+    })
+}
+
+/// Where the match a game about to start plays goes: on a Live host, its
+/// session's advertisement (`live_hle::Hle::set_session_firefight`).
+pub type SessionSink = dyn Fn(Option<live_proto::session::Firefight>) + Send + Sync;
+
 /// The character palette row whose tag is `character`.
 fn palette_row(m: &dyn GuestMemory, character: u32) -> Option<u16> {
     let scnr = m.u32(points::SCENARIO.base).ok().filter(|&s| s != 0)?;
@@ -477,6 +507,8 @@ pub struct Runtime {
     options: Box<options::Source>,
     /// Where scores and the result go.
     reports: Box<ReportSink>,
+    /// Where the match a game about to start plays is published.
+    session: Box<SessionSink>,
 }
 
 /// The loaded map's name, from the cache header copy.
@@ -511,12 +543,19 @@ impl Runtime {
             // is the settings' defaults: Holdout, Normal, skulls on.
             options: Box::new(|| Ok(Options::default())),
             reports: Box::new(|_| {}),
+            session: Box::new(|_| {}),
         }
     }
 
     /// Where the host's scores and result go (`Report`).
     pub fn set_reports(&mut self, reports: Box<ReportSink>) {
         self.reports = reports;
+    }
+
+    /// Where the match a game about to start plays is published
+    /// ([`SessionSink`]).
+    pub fn set_session(&mut self, session: Box<SessionSink>) {
+        self.session = session;
     }
 
     /// Where the match's choices come from (`options::source`).
@@ -556,14 +595,19 @@ impl Runtime {
     /// game plays as teams and [`teams_refusal`] has nothing to refuse.
     /// Game Setup's Firefight choices decide, as they do the match. A
     /// film's playback, another mode, a map without the kit and one team
-    /// leave the options as they are. Returns the line to log when it
-    /// wrote.
+    /// leave the options as they are. It also publishes the match this
+    /// game plays ([`session_firefight`], none for any other game) to the
+    /// session sink. Returns the line to log when it wrote.
     pub fn activate(&self, m: &mut dyn GuestMemory, options: u32, film: bool) -> Option<String> {
         if film || m.u32(options).ok()? != MODE_MULTIPLAYER {
             return None;
         }
-        let chosen = (self.options)().ok()?;
+        let chosen = (self.options)().ok();
         let kit = guest::read_kit(&*m).ok().flatten().is_some();
+        // Every multiplayer start: a game that is not Firefight clears the
+        // last one's.
+        (self.session)(chosen.as_ref().and_then(|o| session_firefight(o, kit)));
+        let chosen = chosen?;
         let at = options.wrapping_add(OPTIONS_VARIANT_FLAGS);
         let flags = m.u32(at).ok()?;
         let on = with_team_play(flags, wants_team_play(&chosen, kit))?;

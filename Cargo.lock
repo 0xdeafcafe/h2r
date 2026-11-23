@@ -2113,6 +2113,7 @@ dependencies = [
  "anyhow",
  "bots",
  "content",
+ "firefight",
  "h1campaign",
  "h1convert",
  "hs",
@@ -3006,6 +3007,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "editor-core",
+ "firefight",
  "live-proto",
  "map",
  "thiserror 2.0.21",
@@ -3914,6 +3916,7 @@ dependencies = [
  "bytes",
  "content",
  "coop",
+ "firefight",
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
