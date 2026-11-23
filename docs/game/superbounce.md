@@ -1721,16 +1721,11 @@ run.
 ### The flight model
 
 Every landing the mode predicts is flown one game tick at a time on one
-model (`superbounce::flight`, `crates/live/superbounce/src/flight.rs`,
-which the game names `superbounce_flight`): the approach
+model (`crates/extensions/game/src/superbounce_flight.rs`): the approach
 guide's [impact](#the-approach-guide) and [takeoff](#the-takeoff), the
 [fall assist](#hold-x-the-fall-assist)'s gate and stick, the
 [landing](#landings) a fall is headed for and the
-[second bounce](#the-second-bounce)'s seams. The bots fly the same
-model: their routes' arcs, drop takeoffs and air steering, and the
-[flight net](bots.md#the-flight-net) their chains are planned over, so
-a bot and the HUD agree on where a jump comes down and which seams a
-flight reaches. Each tick:
+[second bounce](#the-second-bounce)'s seams. Each tick:
 
 1. the fall speed gains 4.171 / 30 units/s (`FALL_GRAVITY`, the sim's
    fall model, `sim_bench::drops`);
@@ -1741,7 +1736,7 @@ flight reaches. Each tick:
 3. the body moves its new velocity over 30.
 
 The air stick's numbers are the bots' drill runs'
-([notes/2026-11-21-bot-bounce-sim.md](notes/2026-11-21-bot-bounce-sim.md)):
+(`bots::bounce_route`, [notes/2026-11-21-bot-bounce-sim.md](notes/2026-11-21-bot-bounce-sim.md)):
 0.035 units/s a tick in every run, braking and pushing, and flights held
 at 0.9 to 1.3 under a full stick. So the air does not keep a run: a
 run-jump at 2.0 units/s and 3.08 up, which would coast 2.87 on in the 43
@@ -1749,9 +1744,7 @@ ticks back to its floor, brakes to 1.2 with the stick held on (2.01 on)
 and toward a stop with it let go (1.76), and a test holds those numbers.
 The flight
 ends on the last free row: the last tick whose next would be at or under
-the surface. A flight is flown for at most 240 ticks (8 s, `MAX_TICKS`):
-a 16 units/s Monster launch is back on its floor in under that, and the
-second bounce ranks no longer flight.
+the surface.
 
 - **Held** (`hold`): the stick the player holds, read from the unit's
   throttle each tick and turned into world axes by the aim's yaw
@@ -1792,12 +1785,7 @@ lift the mode reads to a row before it reads the depth.
 - **Other bounce spots.** Only this patch was traced. Whether every
   superbounce spot is a crease next to a seam is not checked. The
   [scan](#spots-in-the-geometry) finds candidates of that shape; none is
-  traced. The [bounce search](../runtime/bounce-search.md) drops onto
-  them in the sim: of Ascension's first 60, 4 bounce on every variant
-  inside a window (s007-slot and three seams of Vs), 53 bounce on some
-  trials only, 1 never and 2 had no base
-  ([notes/2026-11-23-ascension-bounce-search.md](notes/2026-11-23-ascension-bounce-search.md)).
-  Why the fragile ones bounce only sometimes is not known.
+  traced.
 
 ## Charge, crouch spots and landings
 
@@ -2237,19 +2225,6 @@ do not use snapshots, which `state.save` refuses in a game that is not
 quiescent. A teleport keeps the pair word and the velocity, so each
 trial clears the word after it lands and settles before it moves.
 
-**The frame.** Every position a batch reads, asks for or writes is the
-unit's origin (object `+0x64`, `superbounce_mode::OBJECT_POSITION`), the
-frame of the scan's `stand` (the floor plus 0.01), never the bounding
-sphere's centre (`+0x30`), which rides about 0.4 over it and moves with
-the pose. The game's placement puts the origin 0.0328 over the point a
-teleport asks for (`plan::PLACE_LIFT`: `PLAYER_PLACE_NEAR` adds the up
-vector times `[0x47f05c]`,
-[bounce-search.md](../runtime/bounce-search.md#one-trial)). That is the
-clearance the game keeps the feet out of the floor with, so a trial at
-rest asks for `stand`'s height itself and the settle drops it back, and
-a drop asks for its height less 0.0328, so the origin it falls from is
-`height` over `stand`.
-
 **Crouch trials** follow the recipe: crouch, walk in, let go, walk out.
 Each starts outside the lip on the approach side: `distance` out from
 `stand` against the way in, which is the way out (`out`) reversed and
@@ -2275,8 +2250,8 @@ A trial that did not prime fails as `not_under` (never within 0.2 of
 
 **Drop trials** fall onto a strip with the word set. Each is a point in
 the slot, `across` the spot's target line toward the drift (default
-−0.1 to 0.1 in 0.05 steps, centred on the seam) and `along` it (default 0), and a `height` of the
-origin over the strip's stand height (default 1.5, 2.5 and 3.5). The seat is teleported
+−0.1 to 0.1 in 0.05 steps, centred on the seam) and `along` it (default 0), and a `height` over the
+strip's stand height (default 1.5, 2.5 and 3.5). The seat is teleported
 onto the point, settles with the word written (`prime`: `set` −3, `none`
 0, `keep` left alone), is lifted straight up, and falls; the word is
 written again each tick there is a pair. Contact is the first tick the
@@ -2309,7 +2284,7 @@ cancelled) merges its proven and failed spots into
 `bots::spots::store_verified`):
 
 ```text
-# superbounce verified v2
+# superbounce verified v1
 crouch proven -10.910 0.720 -1.160 dx=0.060 dy=-0.030 yaw=-121.0 trials=9 ok=4
 bounce failed -10.620 3.880 -3.190 dx=0.000 dy=0.000 trials=15 ok=0 best=1.71
 ```
@@ -2317,7 +2292,7 @@ bounce failed -10.620 3.880 -3.190 dx=0.000 dy=0.000 trials=15 ok=0 best=1.71
 A line is the kind, the verdict and the spot's `stand` as the scan gave
 it, then `key=value` fields: `dx`, `dy` (a crouch's working start, a
 drop's landing point, from `stand`), `yaw` (the working way in, degrees),
-`height` (the working drop height, the origin's over `stand`), `trials`, `ok` and `best` (the
+`height` (the working drop height), `trials`, `ok` and `best` (the
 biggest launch seen). An entry is about the spot of its kind within 0.3
 of its point sideways and 0.5 up or down. The scan's readers apply it:
 the mode's spots (failed ones hidden, "The superbounce game type"),
@@ -2326,19 +2301,6 @@ first, never by failed ones, start a walking prime where the working
 trial started and along its way in, and aim a drop at the working
 landing point from the working height ([bots.md](bots.md)). A person can
 edit the file; a later batch replaces the entries it tried.
-
-Every position in the file is the origin (**The frame**, above).
-The first line names the version, and a file of any other is not read.
-One of an older version (`verified::older`) is not converted either: it
-is named in the log, reads as no entries, and the next write
-(`store_verified`, or `h2 sim harvest` and `--merge` into a shared bots
-directory, `bots::harvest`) replaces it. Its spots come back as they are
-tried again: by the bounce search (`h2 sim bounces ... --merge` writes the
-provable sites, [bounce-search.md](../runtime/bounce-search.md#the-command))
-and by `superbounce.verify` batches. A file of this version that does not
-read (a damaged line), or of a newer one, is named in the log and is not
-written over: `store_verified` says so, and keeps the entries for the
-session only.
 
 No game has run a batch yet: the defaults (the grid, the speeds, the
 tick counts) are first guesses to tune on the lab.
@@ -2358,9 +2320,8 @@ way. It is
 chain's awards to the recorder. It records the bots (phantoms; they
 practise bounces while the mode is on, [bots.md](bots.md#practising-bounces))
 and, while `superbounce.verify` runs, the local player's trials. Each
-such player has a track of its last minute of ticks: the origin (object
-`+0x64`, as the medal chain reads it, `superbounce_chain::read_players`;
-never the bounding sphere's centre), the aim's yaw, the vertical speed, the airborne bit, the level pair's word
+such player has a track of its last minute of ticks: the origin, the
+aim's yaw, the vertical speed, the airborne bit, the level pair's word
 and the crouch request (unit flags bit 23). A teleport (more than 3
 units in a tick), a new unit or a gap in the ticks starts it again.
 When the chain files a bounce ([Medals](#medals)), 3 ticks after its
@@ -2390,19 +2351,14 @@ files. A run that primed itself (a crouch before the touchdown) beats
 one whose word was set for it (a verifier's drop); then the shorter run
 wins; then the higher launch. A kept run also marks its spot proven in
 the verified file ([Verifying spots](#verifying-spots)), landing offset
-and launch with it, unless the spot is proven already. A ghosts file of
-an older version (`ghost::older`) is not read and not converted: it is
-named in the log, and the next run kept starts a fresh file in its place
-(`h2 sim harvest` replaces a shared one the same way). Its spots get runs
-again as bots practise them and `superbounce.verify` batches try them. A
-file that cannot be read otherwise (a damaged line, a newer version) is
-named in the log and is not written over.
+and launch with it, unless the spot is proven already. A ghosts file
+that cannot be read (another version, a damaged line) is named in the
+log and is not written over.
 
-The file is text, versioned by its first line; every position in it, the
-spot's and each frame's, is the origin:
+The file is text, versioned by its first line:
 
 ```text
-# superbounce ghosts v2
+# superbounce ghosts v1
 ghost -10.620 3.880 -3.190 source=bot launch=12.31 touchdown=212 frames=230
 f -10.910 0.720 -1.160 -121.0 c
 f -10.905 0.718 -1.160 -120.5 ca

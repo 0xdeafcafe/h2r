@@ -51,26 +51,14 @@ fn known(sites: Vec<Site>) -> Known {
     }
 }
 
-/// The route's flight is the flight model's (`superbounce::flight`), the
-/// one the HUD flies: the top and the time on its tick steps, and the
-/// reach the full air stick's from no sideways speed, toward 1.2 units/s
-/// at 1.05 units/s².
 #[test]
-fn the_flight_comes_from_the_launch_on_the_huds_flight_model() {
+fn the_flight_comes_from_the_launch_and_gravity() {
     let s = site(0.0, 0.0, 12.3);
     let f = flight(&s, 0.0).unwrap();
-    // Analytic v²/2g is 18.14 and 2v/g 5.90 s; the tick steps land just
-    // under both.
-    assert_eq!(f.apex, superbounce::flight::apex(0.0, 12.3));
-    assert!(f.apex > 17.8 && f.apex < 12.3 * 12.3 / (2.0 * FALL_GRAVITY), "{f:?}");
-    let down = superbounce::flight::fall(0.0, 12.3, 0.0).unwrap();
-    assert_eq!(f.time, down.time());
-    assert!((f.time - 2.0 * 12.3 / FALL_GRAVITY).abs() < 0.1, "{f:?}");
-    // The stick ramps to 1.2 in 1.14 s and holds it: 1.2 × (t − 0.57).
-    let ramp = AIR_TOP / AIR_ACCEL;
-    assert!((f.reach - AIR_TOP * (f.time - ramp / 2.0)).abs() < 0.05, "{f:?}");
-    // Not the old guess of 2.5 units/s the whole way.
-    assert!(f.reach < 0.5 * 2.5 * f.time);
+    assert!((f.apex - 12.3 * 12.3 / (2.0 * GRAVITY)).abs() < 1e-4);
+    // Up and back down to the start's height.
+    assert!((f.time - 2.0 * 12.3 / GRAVITY).abs() < 1e-3);
+    assert!((f.reach - AIR_SPEED * f.time).abs() < 1e-4);
     // Higher goal, less time.
     assert!(flight(&s, 6.0).unwrap().time < f.time);
     // Too high for the launch.
@@ -85,23 +73,21 @@ fn a_goal_up_a_ledge_walking_cannot_reach_is_bounced_to() {
         site(8.0, 0.0, 6.0),
         // Strong, but too far from the ledge's edge to reach it in the air.
         site(-30.0, 0.0, 12.3),
-        // Strong, but 6 short of the goal: the air stick carries about 5.7.
-        site(8.0, 2.0, 12.3),
         // The one.
         site(10.0, 0.0, 12.3),
     ]);
-    let p = plan(&ask([14.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
+    let p = plan(&ask([18.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
     assert_eq!(p.why, Why::Helps);
     assert_eq!(p.site.unwrap().bounce.stand, [10.0, 0.0, 0.0]);
-    assert!(matches!(p.steps.last(), Some(Step::Nav { to }) if *to == [14.0, 0.0, 6.0]));
+    assert!(matches!(p.steps.last(), Some(Step::Nav { to }) if *to == [18.0, 0.0, 6.0]));
 }
 
 #[test]
 fn the_cheaper_bounce_wins_when_several_help() {
-    let k = known(vec![site(11.0, 0.0, 12.3), site(13.0, 0.0, 12.3)]);
+    let k = known(vec![site(4.0, 0.0, 12.3), site(10.0, 0.0, 12.3)]);
     // Both reach it; the one nearer the crouch spot is less walking.
     let p = plan(&ask([14.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
-    assert_eq!(p.site.unwrap().bounce.stand[0], 11.0);
+    assert_eq!(p.site.unwrap().bounce.stand[0], 4.0);
 }
 
 #[test]
@@ -119,7 +105,7 @@ fn with_no_bounce_that_helps_it_is_the_plain_walk() {
     assert!(p.site.is_none());
     // No spots at all.
     let p = plan(
-        &ask([14.0, 0.0, 6.0], false, Mode::Help),
+        &ask([18.0, 0.0, 6.0], false, Mode::Help),
         &Known::default(),
         &ledge_walk,
     );
@@ -127,7 +113,7 @@ fn with_no_bounce_that_helps_it_is_the_plain_walk() {
     // A ledge the launch cannot clear.
     let weak = known(vec![site(10.0, 0.0, 6.0)]);
     let p = plan(
-        &ask([14.0, 0.0, 6.0], false, Mode::Help),
+        &ask([18.0, 0.0, 6.0], false, Mode::Help),
         &weak,
         &ledge_walk,
     );
@@ -140,10 +126,10 @@ fn without_a_crouch_spot_to_prime_at_there_is_no_bounce_route() {
         sites: vec![site(10.0, 0.0, 12.3)],
         crouches: Vec::new(),
     };
-    let p = plan(&ask([14.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
+    let p = plan(&ask([18.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
     assert_eq!(p.why, Why::Plain);
     // Already primed: no crouch spot needed.
-    let p = plan(&ask([14.0, 0.0, 6.0], true, Mode::Help), &k, &ledge_walk);
+    let p = plan(&ask([18.0, 0.0, 6.0], true, Mode::Help), &k, &ledge_walk);
     assert_eq!(p.why, Why::Helps);
     assert!(!p.steps.iter().any(|s| matches!(s, Step::Prime(_))));
 }
@@ -153,7 +139,7 @@ fn a_site_that_needs_a_drop_is_not_planned() {
     let mut s = site(10.0, 0.0, 12.3);
     s.fall = 3.0;
     let p = plan(
-        &ask([14.0, 0.0, 6.0], false, Mode::Help),
+        &ask([18.0, 0.0, 6.0], false, Mode::Help),
         &known(vec![s]),
         &ledge_walk,
     );
@@ -163,7 +149,7 @@ fn a_site_that_needs_a_drop_is_not_planned() {
 #[test]
 fn the_route_primes_first_and_never_crouches_between_the_prime_and_the_bounce() {
     let k = known(vec![site(10.0, 0.0, 12.3)]);
-    let p = plan(&ask([14.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
+    let p = plan(&ask([18.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
     let names: Vec<_> = p.steps.iter().map(Step::name).collect();
     assert_eq!(
         names,
@@ -204,7 +190,7 @@ fn the_route_primes_first_and_never_crouches_between_the_prime_and_the_bounce() 
 #[test]
 fn a_primed_bot_goes_straight_to_the_bounce() {
     let k = known(vec![site(10.0, 0.0, 12.3)]);
-    let p = plan(&ask([14.0, 0.0, 6.0], true, Mode::Help), &k, &ledge_walk);
+    let p = plan(&ask([18.0, 0.0, 6.0], true, Mode::Help), &k, &ledge_walk);
     let names: Vec<_> = p.steps.iter().map(Step::name).collect();
     assert_eq!(names, ["walk", "bounce", "fly", "nav"]);
 }
@@ -245,7 +231,7 @@ fn a_plan_makes_a_bounded_number_of_path_queries_however_many_spots_there_are() 
                 n.set(n.get() + 1);
                 ledge_walk(a, b)
             };
-            let p = plan(&ask([14.0, 0.0, 6.0], primed, mode), &k, &walk);
+            let p = plan(&ask([18.0, 0.0, 6.0], primed, mode), &k, &walk);
             assert!(
                 n.get() <= MAX_QUERIES,
                 "{mode:?} primed {primed}: {} queries",
@@ -472,7 +458,7 @@ fn a_site_that_needs_a_drop_is_planned_from_its_launch_floor() {
     let k = known(vec![s]);
     // No launch floor: not used.
     let p = plan_with(
-        &ask([14.0, 0.0, 6.0], false, Mode::Help),
+        &ask([18.0, 0.0, 6.0], false, Mode::Help),
         &k,
         &ledge_walk,
         &|_| None,
@@ -481,7 +467,7 @@ fn a_site_that_needs_a_drop_is_planned_from_its_launch_floor() {
     // A floor 2.4 up, a unit back.
     let floor = [9.0, 0.0, 2.4];
     let walk = |a: Vec3, b: Vec3| Some(dist3(a, b));
-    let p = plan_with(&ask([14.0, 0.0, 6.0], false, Mode::Fun), &k, &walk, &|_| {
+    let p = plan_with(&ask([18.0, 0.0, 6.0], false, Mode::Fun), &k, &walk, &|_| {
         Some(floor)
     });
     let names: Vec<_> = p.steps.iter().map(Step::name).collect();
@@ -529,7 +515,7 @@ fn with_the_way_out_known_the_prime_starts_out_along_it_and_walks_there_standing
         sites: vec![site(10.0, 0.0, 12.3)],
         crouches: vec![c],
     };
-    let p = plan(&ask([14.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
+    let p = plan(&ask([18.0, 0.0, 6.0], false, Mode::Help), &k, &ledge_walk);
     let start = prime_start(&c);
     assert!((start[1] - crate::glitches::prime::START_OUT).abs() < 1e-5 && start[0] == 3.0);
     assert_eq!(
@@ -672,24 +658,18 @@ fn ledge_map() -> MapData {
 /// from the edge, the slot 1.57 out, inside the 1.54 to 1.6 the air stick
 /// gives a 2.4 fall from 2 units/s; the site needs 4, which the run-off's
 /// 4.46 makes.
-/// At the ledge's edge: a run-off is in the air from where the flight
-/// model starts it.
-const RUN_OFF_FROM: Vec3 = [-0.01, 0.0, 2.4];
+const RUN_OFF_FROM: Vec3 = [-0.05, 0.0, 2.4];
 
-/// A slot a full-stick run-off from [`RUN_OFF_FROM`] lands on: its
-/// flight comes down 1.488 out with the air stick let go and 1.532 with it
-/// held on (`superbounce::flight`), and the slot is 1.51 out.
 fn run_off_site() -> Site {
     Site {
         need: 4.0,
-        ..drop_site(1.50, 12.3)
+        ..drop_site(1.52, 12.3)
     }
 }
 
 /// Where only a running jump lands on its slot: the site needs 4.5, over
-/// the 4.31 to 4.45 a run-off comes in at, and the slot is 2.3 out from
-/// 0.3 back from the edge, inside the 1.87 to 2.69 a full-stick jump's
-/// flight reaches.
+/// the run-off's 4.46, and the slot is 2.3 out from 0.3 back from the
+/// edge, inside the 1.9 to 2.76 a full-stick jump's flight reaches.
 const JUMP_FROM: Vec3 = [-0.3, 0.0, 2.4];
 
 fn jump_site() -> Site {
@@ -703,10 +683,8 @@ fn play_drop(bounces: bool) -> (Option<Result<(), &'static str>>, OrderRun) {
 }
 
 /// Plays a drop off the ledge from the launch point `from` onto `s`, with
-/// the motions it asked; the landing launches when its last free row (the
-/// origin the tick before it meets the floor, as the game judges a
-/// landing) is within 0.1 of the slot, it comes in faster than 4, and
-/// `bounces`. The body is the drill
+/// the motions it asked; the landing launches when it is within 0.1 of
+/// the slot, comes in faster than 4, and `bounces`. The body is the drill
 /// runs' (docs/game/notes/2026-11-21-bot-bounce-sim.md): on the ground it
 /// moves at [`ground_speed`] of the stick (a crawl at least, so a walk's
 /// slowing end arrives); a jump leaves at [`JUMP_VZ`] [`INPUT_LAG`] ticks
@@ -764,7 +742,6 @@ fn play_drop_from(
             side[0] += d[0] * step;
             side[1] += d[1] * step;
         }
-        let before = at;
         at[0] += side[0] / 30.0;
         at[1] += side[1] / 30.0;
         let floor = floor_at(at[0]);
@@ -783,7 +760,7 @@ fn play_drop_from(
             at[2] += vz / 30.0;
             if at[2] <= floor {
                 at[2] = floor;
-                let on_slot = dist_xy(before, slot) < 0.1;
+                let on_slot = dist_xy(at, slot) < 0.1;
                 vz = if bounces && on_slot && vz < -4.0 {
                     12.0
                 } else {
@@ -841,8 +818,8 @@ fn a_drop_that_does_not_launch_walks_back_up_for_another() {
 
 #[test]
 fn a_drop_a_run_off_lands_too_slow_for_runs_up_and_jumps_before_its_launch_point() {
-    // From 2.4 a run-off comes in at 4.31 to 4.45, under the 4.5 the site
-    // needs: the drop jumps, at full stick.
+    // From 2.4 a run-off lands at sqrt(2 g 2.4) = 4.46, under the 4.5 the
+    // site needs: the drop jumps, at full stick.
     let s = jump_site();
     let how = drop_takeoff(JUMP_FROM, &s, RUN_OFF_SPEED);
     assert!(how.jump && how.stick == 1.0 && how.reaches(), "{how:?}");
@@ -922,11 +899,7 @@ fn the_takeoff_is_a_run_off_where_one_gets_there_fast_enough_else_a_jump() {
     // A run off at full stick reaches the slot and lands fast enough.
     let how = drop_takeoff(from, &run_off_site(), RUN_OFF_SPEED);
     assert!(!how.jump && how.stick == 1.0 && how.reaches(), "{how:?}");
-    // The touchdown speed is the flight model's last free row's.
-    let fall = superbounce::flight::fall(2.4, 0.0, 0.0).unwrap();
-    assert_eq!(how.speed_in, fall.speed);
-    assert_eq!(how.time, fall.time());
-    assert!((how.speed_in - 4.31).abs() < 0.01, "{how:?}");
+    assert!((how.speed_in - (2.0 * FALL_GRAVITY * 2.4f32).sqrt()).abs() < 1e-3);
     // Nearer than a full-stick run-off can brake to: the slower run.
     let near = Site {
         need: 4.0,
@@ -974,35 +947,18 @@ fn the_air_stick_brakes_pushes_and_holds() {
     assert_eq!(speed, 1.0);
 }
 
-/// A takeoff's reach is the flight model's: let go, the air brakes the
-/// run to a stop; held on, it drives it toward the top. A full-stick run
-/// off a 2.4 ledge comes down 1.488 to 1.532 out, a running jump 1.872 to
-/// 2.692, and a walk off it 0.507 to 1.232.
 #[test]
-fn the_takeoff_reach_is_the_flight_models_braked_and_pushed() {
-    let at = |x: f32| Site {
-        need: 0.0,
-        ..drop_site(x, 12.3)
-    };
-    let from = [0.0, 0.0, 2.4];
-    let run = takeoff(from, &at(1.5), 1.0, false).unwrap();
-    assert!((run.near - 1.488).abs() < 2e-3 && (run.far - 1.532).abs() < 2e-3, "{run:?}");
-    assert!(run.reaches() && run.off() == 0.0);
-    let jump = takeoff(from, &at(2.3), 1.0, true).unwrap();
-    assert!((jump.near - 1.872).abs() < 2e-3 && (jump.far - 2.692).abs() < 2e-3, "{jump:?}");
-    assert!((jump.time - 2.0).abs() < 1e-4, "{jump:?}");
-    let walk = takeoff(from, &at(1.0), RUN_OFF_SPEED, false).unwrap();
-    assert!((walk.near - 0.507).abs() < 2e-3 && (walk.far - 1.232).abs() < 2e-3, "{walk:?}");
-    // Each end is a flight the model lands: the braked one with no
-    // stick, the pushed one with the full stick along the line.
-    let braked = superbounce::flight::hold(from, [2.0, 0.0, 0.0], [0.0; 2], |_| 0.0).unwrap();
-    assert_eq!(run.near, braked.row[0]);
-    // A slot past the flight's reach is off by the gap beyond it.
-    let far = takeoff(from, &at(3.0), 1.0, false).unwrap();
-    assert!(!far.reaches() && (far.off() - (3.0 - far.far)).abs() < 1e-5);
-    // Some phase of a touchdown comes in a tick's gravity faster.
-    assert!(!run.fast_enough(run.speed_in + 0.2));
-    assert!(run.fast_enough(run.speed_in + 0.1));
+fn the_air_reach_brakes_to_a_stop_and_pushes_toward_the_top() {
+    // Slow enough to stop in the time: u^2 / 2a.
+    let (near, far) = air_reach(1.0, 2.0);
+    assert!((near - 1.0 / (2.0 * AIR_ACCEL)).abs() < 1e-4);
+    // Pushed from 1 to the top, then held.
+    let t1 = (AIR_TOP - 1.0) / AIR_ACCEL;
+    let want = t1 + 0.5 * AIR_ACCEL * t1 * t1 + AIR_TOP * (2.0 - t1);
+    assert!((far - want).abs() < 1e-4, "{far} {want}");
+    // Faster than the top: even pushing it slows toward it.
+    let (near, far) = air_reach(2.0, 1.0);
+    assert!(far < 2.0 && near < far && near > 0.0, "{near} {far}");
 }
 
 #[test]
@@ -1015,15 +971,14 @@ fn the_measured_ascension_spot_is_a_full_stick_running_jump_from_its_takeoff() {
     let from = [-8.4, 2.5, -0.76];
     assert_eq!(launch_from(&site, &|_| None), Some(from));
     assert_eq!(approach(&site, &|_| None), Some(from));
-    // A run-off comes in at 4.31 to 4.45, under the 5.4 every traced
-    // bounce came in at; the jump at 5.26 on its last free row, 5.40 on
-    // the tick that meets the floor.
+    // A run-off lands at (2 g 2.43)^0.5 = 4.49, under the 5.4 every traced
+    // bounce came in at; the jump at (3.08^2 + 2 g 2.43)^0.5 = 5.44.
     let off = takeoff(from, &site, 1.0, false).unwrap();
     assert!(!off.fast_enough(site.need), "{off:?}");
     let how = drop_takeoff(from, &site, RUN_OFF_SPEED);
     assert!(how.jump && how.stick == 1.0 && how.reaches(), "{how:?}");
     assert!(
-        (how.speed_in - crate::spots::MEASURED_NEED).abs() < 0.2,
+        (how.speed_in - crate::spots::MEASURED_NEED).abs() < 0.1,
         "{how:?}"
     );
     // The drill's working tries: 2 units/s off the floor, braked in the
@@ -1065,11 +1020,9 @@ fn the_measured_ascension_spot_is_a_full_stick_running_jump_from_its_takeoff() {
 
 #[test]
 fn the_fall_time_follows_the_jump_and_the_ground_speed_the_measured_map() {
-    // A standing jump comes back to its floor in about 2 vz / g: its last
-    // free row is row 43 (docs/game/superbounce.md, "The flight model").
+    // A standing jump comes back to its floor in 2 vz / g.
     let t = fall_time(0.0, JUMP_VZ).unwrap();
-    assert!((t - 43.0 / 30.0).abs() < 1e-4, "{t}");
-    assert!((t - 2.0 * JUMP_VZ / FALL_GRAVITY).abs() < 0.05, "{t}");
+    assert!((t - 2.0 * JUMP_VZ / FALL_GRAVITY).abs() < 1e-4);
     assert!(fall_time(-10.0, 1.0).is_none());
     // The drill runs' points: nothing in the dead zone, a walk at 0.6 to
     // 0.85, a run at 1.

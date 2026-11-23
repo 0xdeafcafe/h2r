@@ -456,44 +456,6 @@ fn the_ghosts_file_sits_beside_the_verified_file() {
     assert!(no_params(&serde_json::json!({"x": 1})).is_err());
 }
 
-/// An older version's ghosts file (v1: runs read at the bounding sphere's
-/// centre) is not read, and the next run kept starts a fresh file in its
-/// place; a damaged file of this version is never written over.
-#[test]
-fn an_older_ghosts_file_is_replaced_and_a_damaged_one_is_not() {
-    let dir = std::env::temp_dir().join(format!("h2-ghosts-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (s, at) = practice(None, true);
-    let g = record(&s, at).unwrap();
-    let mut old = g.clone();
-    old.spot[2] += 0.4;
-    let v1 = file::to_text(&[old]).replace("ghosts v2", "ghosts v1");
-    assert!(v1.starts_with("# superbounce ghosts v1\n"), "{v1}");
-
-    let map = "ghost_old_map";
-    let path = dir.join(file_name(map));
-    std::fs::write(&path, &v1).unwrap();
-    let mut k = read(Some(&dir), map);
-    assert!(k.ghosts.is_empty() && k.error.is_none(), "{:?}", k.error);
-    assert!(offer_kept(&mut k, map, g.clone()));
-    let text = std::fs::read_to_string(&path).unwrap();
-    let back = file::parse(&text).expect("a fresh file of this version");
-    assert_eq!(back.len(), 1);
-    assert_eq!(back[0].spot, g.spot);
-
-    let map = "ghost_damaged_map";
-    let path = dir.join(file_name(map));
-    let damaged = format!("{}\nf 0 0 0 0 -\n", file::header());
-    std::fs::write(&path, &damaged).unwrap();
-    let mut k = read(Some(&dir), map);
-    assert!(k.error.is_some());
-    assert!(offer_kept(&mut k, map, g));
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), damaged);
-
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
 #[test]
 fn the_agent_lists_a_run_with_its_presses() {
     let (s, at) = practice(None, true);

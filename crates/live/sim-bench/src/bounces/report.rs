@@ -496,7 +496,7 @@ pub fn proven(r: &BouncesReport) -> Vec<Proven> {
 /// "Verifying spots"; `superbounce::verified`, whose `parse` a game test
 /// reads this with): the header, then a `bounce proven` line each.
 pub fn verified_text(proven: &[Proven]) -> String {
-    let mut o = String::from("# superbounce verified v2\n");
+    let mut o = String::from("# superbounce verified v1\n");
     for p in proven {
         let _ = write!(
             o,

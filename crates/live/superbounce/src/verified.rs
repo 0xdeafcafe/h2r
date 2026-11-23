@@ -7,7 +7,7 @@
 //! one spot a line, so a person can read and edit it:
 //!
 //! ```text
-//! # superbounce verified v2
+//! # superbounce verified v1
 //! crouch proven -10.910 0.720 -1.160 dx=0.060 dy=-0.030 yaw=-121.0 trials=9 ok=4
 //! bounce failed -10.620 3.880 -3.190 dx=0.000 dy=0.050 height=2.430 trials=15 ok=0 best=1.71
 //! ```
@@ -19,25 +19,13 @@
 //! working approach of a crouch trial), `height` (the working drop height
 //! over the strip), `trials` and `ok` (how many were tried and worked),
 //! `best` (the best launch seen, units/s). Unknown keys are kept out of the
-//! way: a reader ignores them. Blank lines and `#` lines after the first
-//! are comments.
-//!
-//! Every position is the unit's origin (object `+0x64`), the frame the
-//! scan's `stand` is in. The first line names the version; [`parse`]
-//! refuses a file of any other. A file of an older version ([`older`]) is
-//! not converted: its spots are tried again, and the next write replaces
-//! it.
+//! way: a reader ignores them. Blank lines and `#` lines are comments.
 
 use crate::geom::segment_xy;
 use crate::{CATCH, Kind, Spot, Status, Vec3};
 
-/// The file format's version; [`parse`] refuses any other. It rises when
-/// what a line means changes (v2: every position is the origin).
-pub const VERSION: u32 = 2;
-/// The first line, before the version number.
-pub const HEADER_PREFIX: &str = "# superbounce verified v";
-/// The first line [`to_text`] writes: [`HEADER_PREFIX`] and [`VERSION`].
-pub const HEADER: &str = "# superbounce verified v2";
+/// The first line [`to_text`] writes.
+pub const HEADER: &str = "# superbounce verified v1";
 
 /// A verified entry matches a spot of its kind whose `stand` is within this
 /// (world units, horizontally) and [`MATCH_Z`] vertically.
@@ -125,52 +113,16 @@ pub fn to_text(entries: &[Entry]) -> String {
     o
 }
 
-/// The version a file's first line that is not blank names, when it is a
-/// header of `prefix` with a number.
-pub(crate) fn header_version(text: &str, prefix: &str) -> Option<u32> {
-    let first = text.lines().map(str::trim).find(|l| !l.is_empty())?;
-    first.strip_prefix(prefix)?.trim().parse::<u32>().ok()
-}
-
-/// The version of a verified file older than [`VERSION`], named by its
-/// header. Such a file is not read and not converted: a writer replaces it
-/// (`bots::spots::store_verified`, `bots::harvest`). `None` for a file of
-/// this version, a newer one, a damaged header or an empty file.
-pub fn older(text: &str) -> Option<u32> {
-    header_version(text, HEADER_PREFIX).filter(|&v| v < VERSION)
-}
-
-/// The entries of a verified file. The first line that is not blank must
-/// be [`HEADER`]; a file of another version is an error that names it.
-/// An error names the line (from 1) and what is wrong with it. An empty
-/// file has no entries.
+/// The entries of a verified file. An error names the line (from 1) and
+/// what is wrong with it.
 pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
-    let mut lines = text
-        .lines()
-        .enumerate()
-        .map(|(i, l)| (i + 1, l.trim()))
-        .filter(|(_, l)| !l.is_empty());
-    let Some((n, first)) = lines.next() else {
-        return Ok(Vec::new());
-    };
-    let Some(v) = first.strip_prefix(HEADER_PREFIX) else {
-        return Err(format!("line {n}: not a verified file (want {HEADER:?})"));
-    };
-    match v.trim().parse::<u32>() {
-        Ok(VERSION) => {}
-        Ok(other) => {
-            return Err(format!(
-                "a verified file of version {other}; this build reads version {VERSION}"
-            ));
-        }
-        Err(_) => return Err(format!("line {n}: version {v:?} is not a number")),
-    }
     let mut out = Vec::new();
-    for (n, line) in lines {
-        if line.starts_with('#') {
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        out.push(parse_line(line).map_err(|e| format!("line {n}: {e}"))?);
+        out.push(parse_line(line).map_err(|e| format!("line {}: {e}", i + 1))?);
     }
     Ok(out)
 }
@@ -424,60 +376,26 @@ mod tests {
 
     #[test]
     fn a_reader_skips_comments_and_unknown_keys_and_names_a_bad_line() {
-        let h = HEADER;
-        let text = format!("{h}\n# hi\n\ncrouch proven 1 2 3 colour=blue trials=2 ok=1\n");
-        let e = parse(&text).unwrap();
+        let text = "# hi\n\ncrouch proven 1 2 3 colour=blue trials=2 ok=1\n";
+        let e = parse(text).unwrap();
         assert_eq!(
             (e.len(), e[0].trials, e[0].ok, e[0].offset),
             (1, 2, 1, [0.0, 0.0])
         );
-        let err = parse(&format!("{h}\nbounce maybe 1 2 3\n")).unwrap_err();
+        let err = parse("# x\nbounce maybe 1 2 3\n").unwrap_err();
         assert!(err.starts_with("line 2:"), "{err}");
-        let bad = |line: &str| parse(&format!("{h}\n{line}\n")).unwrap_err();
-        assert!(bad("crouch proven 1 2").contains("no z"));
-        assert!(bad("crouch proven 1 2 3 dx").contains("key=value"));
-        assert!(bad("crouch proven 1 2 3 ok=-1").contains("count"));
-        assert!(parse(&format!("{h}\ncrouch proven 1 2 nan\n")).is_err());
-        // An empty file, and the header alone, have no entries.
-        assert_eq!(parse("").unwrap(), Vec::new());
-        assert_eq!(parse(&to_text(&[])).unwrap(), Vec::new());
-    }
-
-    /// v1 files hold positions read at the bounding sphere's centre, about
-    /// 0.4 over the origin: refused by name, not read and not converted.
-    #[test]
-    fn an_older_version_is_refused_by_name_and_is_older() {
-        assert_eq!(HEADER, format!("{HEADER_PREFIX}{VERSION}"));
-        let v1 = "# superbounce verified v1\ncrouch proven -10.910 0.720 -0.760 trials=9 ok=4\n";
-        let e = parse(v1).unwrap_err();
+        assert!(parse("crouch proven 1 2\n").unwrap_err().contains("no z"));
         assert!(
-            e.contains("version 1") && e.contains("reads version 2"),
-            "{e}"
-        );
-        assert_eq!(older(v1), Some(1));
-        // This version, a newer one, a damaged header or none: not older.
-        assert_eq!(older(&to_text(&[crouch_entry()])), None);
-        assert_eq!(older("# superbounce verified v3\n"), None);
-        assert!(
-            parse("# superbounce verified v3\n")
+            parse("crouch proven 1 2 3 dx\n")
                 .unwrap_err()
-                .contains("version 3")
+                .contains("key=value")
         );
-        assert_eq!(older("# superbounce verified vx\n"), None);
         assert!(
-            parse("# superbounce verified vx\n")
+            parse("crouch proven 1 2 3 ok=-1\n")
                 .unwrap_err()
-                .contains("not a number")
+                .contains("count")
         );
-        assert_eq!(older("crouch proven 1 2 3\n"), None);
-        assert!(
-            parse("crouch proven 1 2 3\n")
-                .unwrap_err()
-                .contains("not a verified file")
-        );
-        assert_eq!(older(""), None);
-        // A damaged line under this version's header is not older either.
-        assert_eq!(older(&format!("{HEADER}\nbounce maybe 1 2 3\n")), None);
+        assert!(parse("crouch proven 1 2 nan\n").is_err());
     }
 
     #[test]
