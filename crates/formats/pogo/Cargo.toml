@@ -1,0 +1,9 @@
+[package]
+name = "pogo"
+description = "The Pogo Stick's looks, rig and placed weapon tags, shared by the kit and the game"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

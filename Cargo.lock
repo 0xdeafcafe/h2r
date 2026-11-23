@@ -2453,7 +2453,7 @@ dependencies = [
  "native-render",
  "perf",
  "png",
- "pogo-kit",
+ "pogo",
  "recomp",
  "render-bridge",
  "rules",
@@ -5333,6 +5333,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pogo"
+version = "0.1.0"
+
+[[package]]
 name = "pogo-kit"
 version = "0.1.0"
 dependencies = [
@@ -5344,6 +5348,7 @@ dependencies = [
  "h1objects",
  "map",
  "png",
+ "pogo",
  "serde",
  "serde_json",
  "serde_yaml_ng",

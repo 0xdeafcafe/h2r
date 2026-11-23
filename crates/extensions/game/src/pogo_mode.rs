@@ -3,7 +3,7 @@
 //! **When it is on.** The feature is on by default and `H2_FEATURES=-pogo`
 //! leaves it out. Installed, it acts only in a game whose rules script is
 //! Superbounce's with the `pogo` option on ([`crate::superbounce_options`]),
-//! on a map the kit's rewrite added the sticks to (`pogo_kit::placed`).
+//! on a map the kit's rewrite added the sticks to (`pogo::placed`).
 //!
 //! **What it holds.** The loadout ([`crate::pogo_loadout`]): the stick as
 //! the secondary weapon at every spawn. That hook changes the simulation,

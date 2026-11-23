@@ -28,7 +28,7 @@
 //! It is not in a snapshot: after a state load or a Theater seek a rider
 //! starts from the next tick, and a trick in flight is dropped.
 
-use pogo_kit::Style;
+use pogo::Style;
 
 use crate::superbounce_assist::GRAVITY;
 use crate::superbounce_chain::SLOTS;

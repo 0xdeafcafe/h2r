@@ -27,7 +27,7 @@ use engine::view::objects;
 use engine::{DatumHandle, points};
 use frame_scene::NodeMatrix;
 use hooks::Flow;
-use pogo_kit::RIG;
+use pogo::RIG;
 
 use crate::pogo_pose::{Keys, STICK_NODES, Skeleton, pose};
 use crate::pogo_ride::Ridden;
