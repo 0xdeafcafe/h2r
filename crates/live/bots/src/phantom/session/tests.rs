@@ -1052,11 +1052,9 @@ mod lobby {
 
         // The host turns its handicap off, then picks another: the
         // phantom's configuration never follows.
-        let mut frame = 2;
-        for h in [0, 2, 1] {
+        for (frame, h) in (2..).zip([0, 2, 1]) {
             set_handicap(&mut g, host, h);
             ph.tick(&mut g, frame).unwrap();
-            frame += 1;
             assert_eq!(both_configs(&g, a), seated, "host handicap {h}");
         }
         assert_eq!(ph.maintenance().handicap_writes, writes, "nothing of the bot's to repair");
