@@ -445,6 +445,9 @@ pub(crate) fn register_core_film(
     // (docs/game/superbounce.md): idle unless the game's script requires
     // `hud.superbounce`.
     crate::superbounce_mode::install(features, telemetry.clone()).context("installing the superbounce mode")?;
+    // Superbounce's Pogo Stick (docs/game/pogo-stick.md): the secondary
+    // weapon of a game whose script has `pogo` on, on a map with the kit.
+    crate::pogo_mode::install(features).context("installing the pogo stick")?;
     // Teabags in every game, for the incel medal (docs/game/teabag.md):
     // recorded to Live and the film on the console that records the game.
     crate::teabag::install(features, telemetry.clone()).context("installing the teabag watch")?;

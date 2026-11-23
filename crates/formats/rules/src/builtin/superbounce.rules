@@ -8,8 +8,8 @@
 // (Bouncetacular), and twice that for a Monster Bounce; a Bounced (a fall
 // out of the map during a bounce) costs a point, and so does a death by
 // the player's own hand. The medals, chains and the Monster test are the
-// host's, and so are the HUD's pieces, which the last seven options turn
-// off.
+// host's, and so are the HUD's pieces, which the eight options after the
+// scoring ones choose, and the Pogo Stick, which the last two do.
 // docs/game/superbounce.md, "The superbounce game type", and
 // docs/game/rules-engine.md, "Firefight, AI and bounces".
 //
@@ -52,6 +52,14 @@ option medals: bool = true "Medals" "Bounce medals in the list, and their announ
 option second_bounce: bool = true "Second bounce" "After a bounce, the seams the flight can reach, the best first, and which way to steer"
 option approach_guide: bool = true "Approach guide" "On the seam you are going for: where you will land, and whether the fall will bounce"
 option charge_segments: bool = true "Charge segments" "Round the motion tracker: how far you are through priming, and how long the charge has left"
+
+// The Pogo Stick: the host gives it as the secondary weapon and draws its
+// ride (`pogo_loadout`, `superbounce_options`); the script does not read
+// either option. docs/game/pogo-stick.md.
+enum PogoStyle { unsc, covenant, forerunner }
+
+option pogo: bool = true "Pogo Stick" "Everyone spawns with a pogo stick as the secondary weapon, and rides it through a bounce"
+option pogo_style: PogoStyle = PogoStyle.unsc "Pogo style" "Which stick the game hands out: the UNSC field spring, the Covenant grav hopper or the Forerunner strut"
 
 player var bounces: int = 0
 
