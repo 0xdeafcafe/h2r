@@ -482,7 +482,7 @@ impl Tool {
             .map(|v| snap(v, self.rotation_step.to_radians()));
         let rotation = match self.axes {
             Axes::World => std::array::from_fn(|i| self.initial_rotation[i] + turn[i]),
-            Axes::Local => to_euler(mat_mul(from_euler(self.initial_rotation), from_euler(turn))),
+            Axes::Local => to_euler(mat_mul(from_euler(turn), from_euler(self.initial_rotation))),
         };
         let position = match (self.axes, self.movement_step > 0.0) {
             (_, false) => raw,
@@ -806,15 +806,21 @@ fn from_euler([yaw, pitch, roll]: [f32; 3]) -> [[f32; 3]; 3] {
     let (sr, cr) = roll.sin_cos();
     [
         [cy * cp, sy * cp, sp],
-        [sy * cr + cy * sp * sr, cy * cr - sy * sp * sr, -cp * sr],
+        [-sy * cr - cy * sp * sr, cy * cr - sy * sp * sr, -cp * sr],
         [sy * sr - cy * sp * cr, -cy * sr - sy * sp * cr, cp * cr],
     ]
 }
 
 fn to_euler(m: [[f32; 3]; 3]) -> [f32; 3] {
+    let pitch = m[0][2].clamp(-1.0, 1.0).asin();
+    // With forward vertical, yaw is ambiguous: keep it zero and put the
+    // remaining turn in roll.
+    if pitch.abs() >= std::f32::consts::FRAC_PI_2 - 1e-6 {
+        return [0.0, pitch, (-pitch.signum() * m[1][0]).atan2(m[1][1])];
+    }
     [
-        m[1][0].atan2(m[0][0]).rem_euclid(std::f32::consts::TAU),
-        m[0][2].clamp(-1.0, 1.0).asin(),
+        m[0][1].atan2(m[0][0]).rem_euclid(std::f32::consts::TAU),
+        pitch,
         (-m[1][2]).atan2(m[2][2]),
     ]
 }

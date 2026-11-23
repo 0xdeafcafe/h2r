@@ -68,12 +68,12 @@ fn palette_to_properties_to_confirmed_engine_handle() {
         rotation: [0.; 3],
     };
     e.tool.ghost = Some(frame);
-    // X while placing: Properties, its Heading row first.
+    // X while placing: Properties, its Coordinates row first.
     e.command(4, Command::Properties).unwrap();
     assert_eq!(screens::take_request(), Some(Kind::Properties));
     let props = screens::screen(Kind::Properties).sheet();
     assert_eq!(props.title, "SHELF");
-    assert_eq!(props.rows[0].label, "Heading");
+    assert_eq!(props.rows[0].label, "Coordinates...");
     e.choose(7, Choice::Set(Prop::Heading, 1)).unwrap();
     let frame = e.tool.ghost.unwrap();
     assert_eq!(frame.rotation[0], 45f32.to_radians());
@@ -157,7 +157,10 @@ fn tools_and_settings_open_and_their_choices_set_the_tool() {
     assert_eq!(e.rotation_step, 3);
     e.choose(5, Choice::Set(Prop::MovementSnap, 2)).unwrap();
     assert_eq!(e.movement_step, 2);
-    assert_eq!(e.status()["movement_snap"], 0.1);
+    assert_eq!(
+        e.status()["movement_snap"].as_f64().unwrap() as f32,
+        0.1_f32
+    );
     e.choose(6, Choice::Set(Prop::Axes, 1)).unwrap();
     assert!(e.local_axes && e.local_axes());
     assert_eq!(e.status()["axes"], "local");
@@ -445,6 +448,7 @@ fn property_session() -> Session {
 #[test]
 fn coordinates_change_the_ghost_then_drop_once() {
     let mut e = editor();
+    calls::lock(&e.calls).arm();
     e.tool.monitor = true;
     e.tool.select(0);
     e.tool.ghost = Some(Frame {
@@ -515,6 +519,7 @@ fn spawn_goal_and_item_properties_write_their_fields() {
     e.tool.aimed_thing = Some(goal);
     e.choose(3, Choice::Set(Prop::Role, 4)).unwrap();
     finish(&mut e, 4);
+    e.tool.aimed_thing = Some(goal);
     e.choose(5, Choice::Set(Prop::Order, 7)).unwrap();
     finish(&mut e, 6);
     let goal_thing = e.session.thing(goal).unwrap();
