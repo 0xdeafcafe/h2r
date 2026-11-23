@@ -270,7 +270,9 @@ describe("the Firefight summary", () => {
   test("a server without Firefight stats reads as none", () => {
     for (const raw of [{}, { firefight: null }, { firefight: "x" }, null]) {
       expect(parseSummary(raw).firefight).toEqual({
-        games: 0, won: 0, rounds_cleared: 0, lives_used: 0, score: 0, sets: [], kills_by_class: [], players: [],
+        games: 0, won: 0, rounds_cleared: 0, lives_used: 0, score: 0, player_kills: 0,
+        versus: { games: 0, wins: [0, 0], draws: 0 },
+        sets: [], kills_by_class: [], players: [],
       });
     }
   });
@@ -280,5 +282,7 @@ describe("the Firefight summary", () => {
     expect([f.games, f.won]).toEqual([0, 0]);
     expect(f.sets).toEqual([{ set: "Holdout", games: 2, won: 0, rounds_cleared: 0 }]);
     expect(f.players).toEqual([]);
+    const v = parseSummary({ firefight: { versus: { games: 3, wins: [2, "x"], draws: -1 } } }).firefight.versus;
+    expect(v).toEqual({ games: 3, wins: [2, 0], draws: 0 });
   });
 });

@@ -32,6 +32,7 @@ fn round(skulls_on: Vec<Skull>) -> Round {
 fn scoring(skull_multipliers: BTreeMap<Skull, u16>) -> Scoring {
     Scoring {
         by_class: [("elite".into(), 100), ("grunt".into(), 7)].into(),
+        player_kill: 0,
         difficulty_multiplier: DifficultyMultipliers {
             easy: 1_000,
             normal: 1_000,
@@ -47,6 +48,7 @@ fn three_rounds() -> Def {
     Def {
         format: FORMAT,
         name: "Skulls".into(),
+        teams: 1,
         rounds: vec![
             round(vec![Skull::Famine]),
             round(vec![Skull::Mythic, Skull::Angry]),
@@ -113,13 +115,16 @@ fn play(def: Def, skulls: BTreeSet<Skull>) -> Vec<(u32, Command)> {
             players: vec![PlayerSeen {
                 slot: 0,
                 alive: true,
+                team: 0,
             }],
             actors_alive_by_squad: alive,
             zones: vec![ZoneSeen {
                 seen: false,
                 distance: 10,
+                team_distance: [10, 10],
             }],
             kills,
+            player_kills: Vec::new(),
         };
         let out = director.step(tick, &seen);
         all.extend(out.iter().cloned().map(|c| (tick, c)));

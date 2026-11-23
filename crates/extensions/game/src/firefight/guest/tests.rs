@@ -62,8 +62,10 @@ fn pair(m: &mut FakeGuest, at: u32, count: u32, address: u32) {
     m.put_u32(at, count).put_u32(at + 4, address);
 }
 
-/// A scenario with one base squad and two kit slots, one base zone and one
-/// kit zone of three firing positions, one palette row and two orders.
+/// A scenario with one base squad and two kit slots; a zone of the base
+/// map, one drop zone of three firing positions and the two base zones
+/// (base 1's first); one palette row; and an order of the base map before
+/// the two hunt orders (base 1's first).
 fn scenario() -> FakeGuest {
     let mut m = FakeGuest::new();
     m.map(SCNR, 0x300);
@@ -84,28 +86,39 @@ fn scenario() -> FakeGuest {
     m.map(STARTS, 2 * 0x64);
     m.put_u16(SQUADS + 2 * 0x74 + 0x24, 3);
 
-    pair(&mut m, SCNR + 0x168, 2, ZONES);
-    m.map(ZONES, 2 * 0x38);
+    pair(&mut m, SCNR + 0x168, 4, ZONES);
+    m.map(ZONES, 4 * 0x38);
     named(&mut m, ZONES, "base_zone");
     let zone = ZONES + 0x38;
     named(&mut m, zone, "ff_drop_00");
     pair(&mut m, zone + 0x28, 3, FIRING);
     pair(&mut m, zone + 0x30, 1, AREAS);
-    m.map(AREAS, 0x88);
+    m.map(AREAS, 3 * 0x88);
     for (k, v) in [1.0, 2.0, 3.0].into_iter().enumerate() {
         m.put_f32(AREAS + 0x24 + 4 * k as u32, v);
     }
-    m.map(FIRING, 3 * 0x20);
-    for i in 0..3u32 {
+    m.map(FIRING, 5 * 0x20);
+    for i in 0..5u32 {
         m.put_f32(FIRING + 0x20 * i, 10.0 * (i + 1) as f32)
             .put_u16(FIRING + 0x20 * i + 0x0c, 0xffff);
     }
+    // Zone 2 is base 1's, zone 3 the home base's: one area and one firing
+    // position each.
+    for (z, name, x) in [(2u32, "ff_base_01", 90.0), (3, "ff_base_00", -90.0)] {
+        let zone = ZONES + 0x38 * z;
+        let area = AREAS + 0x88 * (z - 1);
+        named(&mut m, zone, name);
+        pair(&mut m, zone + 0x28, 1, FIRING + 0x20 * (z + 1));
+        pair(&mut m, zone + 0x30, 1, area);
+        m.put_f32(area + 0x24, x);
+    }
 
     pair(&mut m, SCNR + 0x178, 1, 0x2_6000);
-    pair(&mut m, SCNR + 0x240, 2, ORDERS);
-    m.map(ORDERS, 2 * 0x7c);
+    pair(&mut m, SCNR + 0x240, 3, ORDERS);
+    m.map(ORDERS, 3 * 0x7c);
     named(&mut m, ORDERS, "ff_other");
-    named(&mut m, ORDERS + 0x7c, "ff_hunt");
+    named(&mut m, ORDERS + 0x7c, "ff_hunt_01");
+    named(&mut m, ORDERS + 2 * 0x7c, "ff_hunt_00");
     m
 }
 
@@ -173,15 +186,48 @@ fn the_kit_is_read_from_the_scenario_ai_blocks() {
             ],
         }]
     );
-    assert_eq!((kit.characters, kit.team, kit.hunt_order), (1, 3, Some(1)));
+    assert_eq!((kit.characters, kit.team), (1, 3));
     assert_eq!(
         kit.kit(),
         Kit {
             zones: vec![[1.0, 2.0, 3.0]],
+            bases: vec![[-90.0, 0.0, 0.0], [90.0, 0.0, 0.0]],
             classes: [("elite".to_string(), 0)].into(),
             team: 3,
         }
     );
+}
+
+#[test]
+fn read_kit_finds_the_bases_and_hunt_orders() {
+    let kit = layout();
+    assert_eq!(
+        kit.bases,
+        [
+            KitZone {
+                index: 3,
+                point: [-90.0, 0.0, 0.0],
+                starts: vec![([50.0, 0.0, 0.0], 0xffff)],
+            },
+            KitZone {
+                index: 2,
+                point: [90.0, 0.0, 0.0],
+                starts: vec![([40.0, 0.0, 0.0], 0xffff)],
+            },
+        ]
+    );
+    assert_eq!(kit.hunt_orders, [Some(2), Some(1)]);
+    assert_eq!(hunt_order_name(1), "ff_hunt_01");
+
+    // Only the run of base ordinals from 0 counts, and no hunt order is
+    // inferred from another name.
+    let mut m = scenario();
+    named(&mut m, ZONES + 0x38 * 3, "ff_base_02");
+    named(&mut m, ORDERS + 2 * 0x7c, "ff_hunt");
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert!(kit.bases.is_empty());
+    assert_eq!(kit.hunt_orders, [None, Some(1)]);
+    assert_eq!(kit.kit().bases, Vec::<[f32; 3]>::new());
 }
 
 #[test]
@@ -245,14 +291,15 @@ fn a_placement_the_kit_cannot_hold_writes_and_calls_nothing() {
 }
 
 #[test]
-fn hunt_gives_the_kit_order_and_erase_takes_the_squad() {
+fn hunt_gives_the_bases_order_and_erase_takes_the_squad() {
     let kit = layout();
     let (result, calls, _) = drive(
         scenario(),
         move |cx| {
             let kit = kit.clone();
             Box::pin(async move {
-                hunt(&cx, &kit, 1).await?;
+                hunt(&cx, &kit, 1, 0).await?;
+                hunt(&cx, &kit, 0, 1).await?;
                 erase_squad(&cx, &kit, 1).await
             })
         },
@@ -262,23 +309,30 @@ fn hunt_gives_the_kit_order_and_erase_takes_the_squad() {
     assert_eq!(
         calls,
         [
-            GuestCall::new(points::AI_SET_ORDERS.base).eax(2).ecx(1),
+            GuestCall::new(points::AI_SET_ORDERS.base).eax(2).ecx(2),
+            GuestCall::new(points::AI_SET_ORDERS.base).eax(1).ecx(1),
             GuestCall::new(points::AI_ERASE.base).args([2]),
         ]
     );
 
-    let mut kit = layout();
-    kit.hunt_order = None;
-    let (result, calls, _) = drive(
-        scenario(),
-        move |cx| {
-            let kit = kit.clone();
-            Box::pin(async move { hunt(&cx, &kit, 0).await })
-        },
-        returns(0),
-    );
-    assert!(result.is_err());
-    assert!(calls.is_empty());
+    // A base without its order: an error naming it, and no call.
+    for (base, missing) in [(1u8, true), (2, false)] {
+        let mut kit = layout();
+        if missing {
+            kit.hunt_orders[1] = None;
+        }
+        let (result, calls, _) = drive(
+            scenario(),
+            move |cx| {
+                let kit = kit.clone();
+                Box::pin(async move { hunt(&cx, &kit, 0, base).await })
+            },
+            returns(0),
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains(&format!("ff_hunt_{base:02}")), "{error}");
+        assert!(calls.is_empty());
+    }
 }
 
 fn players() -> FakeGuest {

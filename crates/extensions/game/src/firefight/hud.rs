@@ -3,7 +3,8 @@
 //!
 //! **The blob.** [`Mode`] is what the HUD needs of the director's state:
 //! the stage, the round and wave with their totals, whether the wave is a
-//! boss wave, the enemies left, and the lives. It encodes to at most
+//! boss wave, the enemies left, the lives, and with two teams each team's
+//! points and which roster slots are on the second. It encodes to at most
 //! [`MAX_BLOB`] bytes, the actor channel's mode state (`State` and `Key`
 //! records, docs/game/ai-networking.md), so a distributed client holding
 //! nothing but those bytes draws what the host draws. The host builds it
@@ -33,11 +34,11 @@
 
 use std::sync::Mutex;
 
-use ::firefight::Outcome;
 use ::firefight::director::{Director, Phase};
+use ::firefight::{MAX_TEAMS, Outcome};
 
 /// The blob's format.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 /// The actor channel's mode state holds this many bytes at most.
 pub const MAX_BLOB: usize = 63;
 /// Players whose own lives the blob carries when lives are not shared.
@@ -63,6 +64,12 @@ pub enum Stage {
     Lost = 6,
     /// The director is done and no outcome was logged.
     Over = 7,
+    /// Two teams: the first (red) team won.
+    Team0Won = 8,
+    /// Two teams: the second (blue) team won.
+    Team1Won = 9,
+    /// Two teams: level on score and lives.
+    Draw = 10,
 }
 
 impl Stage {
@@ -76,8 +83,25 @@ impl Stage {
             5 => Stage::Won,
             6 => Stage::Lost,
             7 => Stage::Over,
+            8 => Stage::Team0Won,
+            9 => Stage::Team1Won,
+            10 => Stage::Draw,
             _ => return None,
         })
+    }
+
+    /// The stage of a match `team` won.
+    pub fn team_won(team: u8) -> Stage {
+        if team == 0 {
+            Stage::Team0Won
+        } else {
+            Stage::Team1Won
+        }
+    }
+
+    /// A stage only two teams reach.
+    fn two_teams_only(self) -> bool {
+        matches!(self, Stage::Team0Won | Stage::Team1Won | Stage::Draw)
     }
 
     /// The wave is on: enemies are being placed, fought or hunted.
@@ -87,7 +111,10 @@ impl Stage {
 
     /// The match is over.
     pub fn over(self) -> bool {
-        matches!(self, Stage::Won | Stage::Lost | Stage::Over)
+        matches!(
+            self,
+            Stage::Won | Stage::Lost | Stage::Over | Stage::Team0Won | Stage::Team1Won | Stage::Draw
+        )
     }
 }
 
@@ -98,6 +125,25 @@ pub enum Lives {
     Shared(u16),
     /// Each player's own count, by roster slot, in slot order.
     Each(Vec<(u8, u16)>),
+    /// Each Firefight team's shared pool, with two teams.
+    Teams([u16; MAX_TEAMS]),
+}
+
+/// What the blob carries of two teams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Teams {
+    /// Each Firefight team's points.
+    pub scores: [u32; MAX_TEAMS],
+    /// The roster slots on the second team, one bit a slot; every other
+    /// slot is on the first.
+    pub second: u16,
+}
+
+impl Teams {
+    /// The Firefight team of the player at roster slot `slot`.
+    pub fn team_of(&self, slot: u8) -> usize {
+        usize::from(slot < 16 && self.second & (1 << slot) != 0)
+    }
 }
 
 /// What the HUD reads of the director: the mode blob.
@@ -114,6 +160,8 @@ pub struct Mode {
     /// Actors alive and still to be placed, while a wave is on; else 0.
     pub left: u16,
     pub lives: Lives,
+    /// Two teams' points and members; none with one team.
+    pub teams: Option<Teams>,
 }
 
 /// Why a blob could not be made or read.
@@ -122,6 +170,8 @@ pub enum Error {
     /// Lives are not shared and more players hold lives than the blob has
     /// room for.
     TooManyPlayers(usize),
+    /// A player's roster slot is past the 16 the team bits hold.
+    Slot(u8),
     /// The format byte is not [`VERSION`].
     Version(u8),
     /// The blob ends early, runs on, or is over [`MAX_BLOB`].
@@ -137,6 +187,10 @@ impl std::fmt::Display for Error {
                 f,
                 "{n} players hold their own lives; the mode blob carries {MAX_EACH}"
             ),
+            Error::Slot(slot) => write!(
+                f,
+                "roster slot {slot} is past the mode blob's 16 team bits"
+            ),
             Error::Version(v) => write!(f, "mode blob version {v}, this build reads {VERSION}"),
             Error::Length { len, want } => {
                 write!(f, "mode blob is {len} bytes, its fields need {want}")
@@ -148,12 +202,16 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Bytes before the lives: version, stage, round, rounds, wave, waves,
-/// flags, left (2), the lives kind.
+/// Bytes before the teams and lives: version, stage, round, rounds, wave,
+/// waves, flags, left (2), the team count.
 const HEAD: usize = 10;
+/// The two teams' part, when the team count is 2: each team's points (4
+/// each) and the second team's slot bits (2).
+const TEAMS: usize = 4 * MAX_TEAMS + 2;
 const FLAG_BOSS: u8 = 1;
 const LIVES_SHARED: u8 = 0;
 const LIVES_EACH: u8 = 1;
+const LIVES_TEAMS: u8 = 2;
 
 impl Mode {
     /// The blob for the director's state on the host. `players` is the
@@ -161,9 +219,12 @@ impl Mode {
     /// the last `Finish` in the host log, if any.
     pub fn of(director: &Director, players: u8, finished: Option<Outcome>) -> Result<Mode, Error> {
         let (state, def) = (director.state(), director.def());
+        let two = def.teams > 1;
         let stage = match (finished, state.phase) {
             (Some(Outcome::Won), _) => Stage::Won,
             (Some(Outcome::Lost), _) => Stage::Lost,
+            (Some(Outcome::TeamWon { team }), _) => Stage::team_won(team),
+            (Some(Outcome::Draw), _) => Stage::Draw,
             (None, Phase::Warmup { .. }) => Stage::Warmup,
             (None, Phase::Spawning) => Stage::Spawning,
             (None, Phase::Fighting) => Stage::Fighting,
@@ -172,13 +233,33 @@ impl Mode {
             (None, Phase::Done) => Stage::Over,
         };
         let round = def.rounds.get(usize::from(state.round));
-        let lives = if def.lives.shared {
-            Lives::Shared(state.pool)
+        let lives = if def.lives.shared && two {
+            Lives::Teams(state.pools)
+        } else if def.lives.shared {
+            Lives::Shared(state.pools[0])
         } else {
             if state.players.len() > MAX_EACH {
                 return Err(Error::TooManyPlayers(state.players.len()));
             }
             Lives::Each(state.players.iter().map(|(&s, p)| (s, p.lives)).collect())
+        };
+        let teams = if two {
+            let mut second = 0u16;
+            for (&slot, player) in &state.players {
+                if player.team == 0 {
+                    continue;
+                }
+                if slot >= 16 {
+                    return Err(Error::Slot(slot));
+                }
+                second |= 1 << slot;
+            }
+            Some(Teams {
+                scores: state.scores,
+                second,
+            })
+        } else {
+            None
         };
         Ok(Mode {
             stage,
@@ -197,6 +278,7 @@ impl Mode {
                 0
             },
             lives,
+            teams,
         })
     }
 
@@ -212,10 +294,26 @@ impl Mode {
             if self.boss { FLAG_BOSS } else { 0 },
         ];
         out.extend_from_slice(&self.left.to_le_bytes());
+        match &self.teams {
+            None => out.push(1),
+            Some(teams) => {
+                out.push(MAX_TEAMS as u8);
+                for score in teams.scores {
+                    out.extend_from_slice(&score.to_le_bytes());
+                }
+                out.extend_from_slice(&teams.second.to_le_bytes());
+            }
+        }
         match &self.lives {
             Lives::Shared(pool) => {
                 out.push(LIVES_SHARED);
                 out.extend_from_slice(&pool.to_le_bytes());
+            }
+            Lives::Teams(pools) => {
+                out.push(LIVES_TEAMS);
+                for pool in pools {
+                    out.extend_from_slice(&pool.to_le_bytes());
+                }
             }
             Lives::Each(each) => {
                 out.push(LIVES_EACH);
@@ -230,7 +328,8 @@ impl Mode {
     }
 
     /// Reads a blob, refusing one it does not understand: a wrong version,
-    /// a wrong length, a field out of range.
+    /// a wrong length, a field out of range, or a part of two teams' (their
+    /// stages, their pools) in a blob of one.
     pub fn decode(bytes: &[u8]) -> Result<Mode, Error> {
         if bytes.len() > MAX_BLOB {
             return Err(Error::Length {
@@ -260,26 +359,58 @@ impl Mode {
             return Err(Error::Field("flags"));
         }
         let left = u16::from_le_bytes([bytes[7], bytes[8]]);
-        let (lives, want) = match bytes[9] {
-            LIVES_SHARED => {
-                if bytes.len() < HEAD + 2 {
-                    return Err(short(HEAD + 2));
+        let (teams, at) = match bytes[9] {
+            1 => (None, HEAD),
+            2 => {
+                let end = HEAD + TEAMS;
+                if bytes.len() < end {
+                    return Err(short(end));
+                }
+                let part = &bytes[HEAD..end];
+                let score = |i: usize| {
+                    u32::from_le_bytes([part[4 * i], part[4 * i + 1], part[4 * i + 2], part[4 * i + 3]])
+                };
+                let teams = Teams {
+                    scores: std::array::from_fn(score),
+                    second: u16::from_le_bytes([part[TEAMS - 2], part[TEAMS - 1]]),
+                };
+                (Some(teams), end)
+            }
+            _ => return Err(Error::Field("teams")),
+        };
+        if teams.is_none() && stage.two_teams_only() {
+            return Err(Error::Field("stage"));
+        }
+        let kind = *bytes.get(at).ok_or_else(|| short(at + 1))?;
+        let at = at + 1;
+        let (lives, want) = match kind {
+            LIVES_SHARED if teams.is_none() => {
+                if bytes.len() < at + 2 {
+                    return Err(short(at + 2));
                 }
                 (
-                    Lives::Shared(u16::from_le_bytes([bytes[10], bytes[11]])),
-                    HEAD + 2,
+                    Lives::Shared(u16::from_le_bytes([bytes[at], bytes[at + 1]])),
+                    at + 2,
                 )
             }
-            LIVES_EACH => {
-                let n = usize::from(*bytes.get(HEAD).ok_or_else(|| short(HEAD + 1))?);
-                if n > MAX_EACH {
-                    return Err(Error::Field("lives"));
-                }
-                let want = HEAD + 1 + 3 * n;
+            LIVES_TEAMS if teams.is_some() => {
+                let want = at + 2 * MAX_TEAMS;
                 if bytes.len() < want {
                     return Err(short(want));
                 }
-                let each = bytes[HEAD + 1..want]
+                let pool = |i: usize| u16::from_le_bytes([bytes[at + 2 * i], bytes[at + 2 * i + 1]]);
+                (Lives::Teams(std::array::from_fn(pool)), want)
+            }
+            LIVES_EACH => {
+                let n = usize::from(*bytes.get(at).ok_or_else(|| short(at + 1))?);
+                if n > MAX_EACH {
+                    return Err(Error::Field("lives"));
+                }
+                let want = at + 1 + 3 * n;
+                if bytes.len() < want {
+                    return Err(short(want));
+                }
+                let each = bytes[at + 1..want]
                     .chunks_exact(3)
                     .map(|c| (c[0], u16::from_le_bytes([c[1], c[2]])))
                     .collect::<Vec<_>>();
@@ -302,6 +433,7 @@ impl Mode {
             boss: bytes[6] & FLAG_BOSS != 0,
             left,
             lives,
+            teams,
         })
     }
 }
@@ -389,10 +521,13 @@ pub const ROUND: &str = "round";
 pub const WAVE: &str = "wave";
 pub const ENEMIES: &str = "enemies";
 pub const LIVES: &str = "lives";
+/// Both teams' points, with two teams.
+pub const SCORE: &str = "score";
 
-/// The banner at the top centre; the round, wave, enemies and lives
-/// stacked at the top right, a line apart. Smaller screens show less.
-pub const LAYOUT: [Element; 5] = [
+/// The banner at the top centre; the round, wave, enemies, lives and (with
+/// two teams) both teams' points stacked at the top right, a line apart.
+/// Smaller screens show less.
+pub const LAYOUT: [Element; 6] = [
     Element {
         id: BANNER,
         font: Font::Hud,
@@ -448,6 +583,17 @@ pub const LAYOUT: [Element; 5] = [
         },
         longest: "LIVES 65535",
     },
+    Element {
+        id: SCORE,
+        font: Font::Hud,
+        at: Place {
+            anchor: Anchor::TopRight,
+            full: (-24, 88),
+            half: Some((-20, 72)),
+            quarter: Some((-16, 48)),
+        },
+        longest: "RED 4294967295 BLUE 4294967295",
+    },
 ];
 
 /// How a line is drawn.
@@ -488,14 +634,22 @@ fn banner_text(m: &Mode) -> Option<String> {
         Stage::Intermission => "WAVE COMPLETE".into(),
         Stage::Won => "VICTORY".into(),
         Stage::Lost | Stage::Over => "GAME OVER".into(),
+        Stage::Team0Won => "RED TEAM WINS".into(),
+        Stage::Team1Won => "BLUE TEAM WINS".into(),
+        Stage::Draw => "DRAW".into(),
     })
 }
 
-/// The lives the viewer at roster slot `local` sees, if any.
+/// The lives the viewer at roster slot `local` sees, if any: the pool, the
+/// viewer's own count, or the viewer's team's pool.
 fn lives_of(m: &Mode, local: u8) -> Option<u16> {
     match &m.lives {
         Lives::Shared(pool) => Some(*pool),
         Lives::Each(each) => each.iter().find(|(s, _)| *s == local).map(|&(_, n)| n),
+        Lives::Teams(pools) => {
+            let team = m.teams.map_or(0, |t| t.team_of(local));
+            pools.get(team).copied()
+        }
     }
 }
 
@@ -537,12 +691,22 @@ pub fn view(mode: &Mode, local: u8) -> Values {
         ),
         None => hidden(),
     };
+    // Shown through the end too: the result is read against the points.
+    let score = match mode.teams {
+        Some(t) => line(
+            true,
+            format!("RED {} BLUE {}", t.scores[0], t.scores[1]),
+            Style::Normal,
+        ),
+        None => hidden(),
+    };
     Values(vec![
         (BANNER, banner),
         (ROUND, round),
         (WAVE, wave),
         (ENEMIES, enemies),
         (LIVES, lives),
+        (SCORE, score),
     ])
 }
 
@@ -712,6 +876,11 @@ pub fn states() -> Vec<(String, Values)> {
         boss: false,
         left: 7,
         lives: Lives::Shared(12),
+        teams: None,
+    };
+    let teams = Teams {
+        scores: [1_250, 900],
+        second: 0b10,
     };
     let with = |f: &dyn Fn(&mut Mode)| {
         let mut m = base.clone();
@@ -783,6 +952,57 @@ pub fn states() -> Vec<(String, Values)> {
         (
             "no-own-lives",
             with(&|m| m.lives = Lives::Each(vec![(1, 3)])),
+        ),
+        (
+            "two-teams",
+            with(&|m| {
+                m.teams = Some(teams);
+                m.lives = Lives::Teams([8, 5]);
+            }),
+        ),
+        (
+            "two-teams-own-lives",
+            with(&|m| {
+                m.teams = Some(teams);
+                m.lives = Lives::Each(vec![(0, 2), (1, 4)]);
+            }),
+        ),
+        (
+            "two-teams-widest",
+            with(&|m| {
+                m.teams = Some(Teams {
+                    scores: [u32::MAX; MAX_TEAMS],
+                    second: u16::MAX,
+                });
+                m.lives = Lives::Teams([u16::MAX; MAX_TEAMS]);
+            }),
+        ),
+        (
+            "red-wins",
+            with(&|m| {
+                m.stage = Stage::Team0Won;
+                m.teams = Some(teams);
+                m.lives = Lives::Teams([3, 0]);
+            }),
+        ),
+        (
+            "blue-wins",
+            with(&|m| {
+                m.stage = Stage::Team1Won;
+                m.teams = Some(teams);
+                m.lives = Lives::Teams([0, 3]);
+            }),
+        ),
+        (
+            "draw",
+            with(&|m| {
+                m.stage = Stage::Draw;
+                m.teams = Some(Teams {
+                    scores: [900, 900],
+                    ..teams
+                });
+                m.lives = Lives::Teams([2, 2]);
+            }),
         ),
     ];
     modes

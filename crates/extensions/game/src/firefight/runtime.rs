@@ -13,7 +13,8 @@
 //!   calls, and the sight pass, in an async body ([`run_work`]) and then
 //!   runs the tick itself.
 //! - [`Runtime::post_tick`] after each game tick: [`Host::post_tick`] over
-//!   what the guest shows, the tick's actor kills and the last sight pass.
+//!   what the guest shows, the tick's actor and player kills and the last
+//!   sight pass.
 //!
 //! Ticks are numbered as the tick a boundary belongs to: before a tick it
 //! is the game time's tick count plus one, after it the count, so the
@@ -22,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ::firefight::director::SQUAD_SLOTS;
-use ::firefight::{Command, Outcome, Settings, Skull};
+use ::firefight::{Command, MAX_TEAMS, Outcome, PlayerKill, Settings, Skull};
 use agent_proto::firefight as wire;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::{GuestMemory, MemFault, points};
@@ -76,22 +77,39 @@ fn score_report(credit: super::host::Credit) -> live_proto::firefight::Firefight
         reason: match credit.reason {
             ::firefight::ScoreReason::Kill => "kill",
             ::firefight::ScoreReason::Assist => "assist",
+            ::firefight::ScoreReason::PlayerKill => "player_kill",
         }
         .into(),
         class: credit.class,
     }
 }
 
-/// A result as the wire names it. The set's name is cut to the wire's 32.
-fn ended_report(ended: super::host::Ended) -> live_proto::firefight::FirefightEnded {
+/// The wire's name for an outcome: `won`, `lost`, `team_won` (the team is
+/// the wire's `team`) or `draw`.
+pub fn outcome_name(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Won => "won",
+        Outcome::Lost => "lost",
+        Outcome::TeamWon { .. } => "team_won",
+        Outcome::Draw => "draw",
+    }
+}
+
+/// A result as the wire names it: the team count, the outcome with a
+/// winning team, and one score a team. The set's name is cut to the wire's
+/// 32.
+pub fn ended_report(ended: super::host::Ended) -> live_proto::firefight::FirefightEnded {
+    let teams = usize::from(ended.teams).clamp(1, MAX_TEAMS);
     live_proto::firefight::FirefightEnded {
         tick: u64::from(ended.tick),
         set: ended.set.chars().take(32).collect(),
-        outcome: match ended.outcome {
-            Outcome::Won => "won",
-            Outcome::Lost => "lost",
-        }
-        .into(),
+        teams: teams as u8,
+        outcome: outcome_name(ended.outcome).into(),
+        team: match ended.outcome {
+            Outcome::TeamWon { team } => Some(team),
+            _ => None,
+        },
+        scores: ended.scores[..teams].to_vec(),
         rounds_cleared: ended.rounds_cleared,
         lives_used: ended.lives_used,
     }
@@ -178,6 +196,44 @@ impl Assists {
     }
 }
 
+/// The tick's players killed (`SimEvent::Kill`, which the game credits
+/// only for players), each with its killer's and victim's roster slots as
+/// an actor kill's killer is resolved. A kill with no victim player is left
+/// out; one with no killer (a fall, the world) keeps none.
+pub fn player_kills(events: &[SimEvent]) -> Vec<PlayerKill> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SimEvent::Kill(k) => Some(PlayerKill {
+                killer: k.attacker.get().map(|a| (a & 0xffff) as u8),
+                victim: (k.victim.get()? & 0xffff) as u8,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the loaded multiplayer game's variant plays teams (its team play
+/// flag); none when the options cannot be read.
+pub fn team_play(m: &dyn GuestMemory) -> Option<bool> {
+    use bots::guest::{OPTIONS, VARIANT_FLAGS};
+    let globals = m.u32(points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
+    let flags = m.u32(globals + OPTIONS + VARIANT_FLAGS).ok()?;
+    Some(flags & live_proto::hopper::variant::flag::TEAM_PLAY != 0)
+}
+
+/// Why two player teams cannot play this game, if they cannot: the variant
+/// must be a team game, so the engine keeps each team's players together.
+pub fn teams_refusal(teams: u8, team_play: Option<bool>) -> Option<&'static str> {
+    match (teams > 1, team_play) {
+        (false, _) | (true, Some(true)) => None,
+        (true, Some(false)) => {
+            Some("two Firefight teams need a team game: turn Team Play on in the game variant")
+        }
+        (true, None) => Some("two Firefight teams need a team game, and the variant's team play could not be read"),
+    }
+}
+
 /// The character palette row whose tag is `character`.
 fn palette_row(m: &dyn GuestMemory, character: u32) -> Option<u16> {
     let scnr = m.u32(points::SCENARIO.base).ok().filter(|&s| s != 0)?;
@@ -247,6 +303,7 @@ pub struct GuestGame<'a> {
     /// The last sight pass, by kit zone.
     pub sight: &'a [bool],
     pub kills: Vec<KillSeen>,
+    pub player_kills: Vec<PlayerKill>,
     pub calls: Vec<(u32, Call)>,
     entry: u32,
     pub skulls: &'a mut BTreeSet<Skull>,
@@ -266,6 +323,7 @@ impl<'a> GuestGame<'a> {
             kit,
             sight,
             kills: Vec::new(),
+            player_kills: Vec::new(),
             calls: Vec::new(),
             entry: 0,
             skulls,
@@ -319,12 +377,19 @@ impl Game for GuestGame<'_> {
     fn kills(&self) -> Vec<KillSeen> {
         self.kills.clone()
     }
+    fn player_kills(&self) -> Vec<PlayerKill> {
+        self.player_kills.clone()
+    }
     fn credit_score(&mut self, player: u8, points: u32) -> anyhow::Result<()> {
         self.defer(Call::Score { player, points })
     }
     /// The pool is the director's: the HUD reads it from the mode blob, and
     /// the engine holds a respawn by the variant's lives setting.
     fn set_lives(&mut self, _player: Option<u8>, _pool: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// As [`Game::set_lives`]: the team's pool is in the mode blob only.
+    fn set_team_lives(&mut self, _team: u8, _pool: u16) -> anyhow::Result<()> {
         Ok(())
     }
     fn respawn(&mut self, player: u8) -> anyhow::Result<()> {
@@ -362,6 +427,9 @@ pub struct Match {
     assists: Assists,
     /// The HUD's mode blob could not be made, and the runtime said so.
     hud_failed: bool,
+    /// What the Clankers were last told of the match
+    /// (`bots::firefight::set_context`), to tell them only of a change.
+    bots: Option<bots::firefight::Context>,
 }
 
 impl Match {
@@ -464,6 +532,8 @@ impl Runtime {
     pub fn start(&mut self, m: &mut dyn GuestMemory, film: bool) -> String {
         self.errors.clear();
         hud::slot().set(None);
+        // No match for the Clankers until one runs.
+        bots::firefight::set_context(None);
         if bots::guest::game_mode(&*m) != Some(MODE_MULTIPLAYER) {
             self.status = Status::Idle("not a multiplayer game");
             return "firefight: idle: not a multiplayer game".into();
@@ -482,6 +552,14 @@ impl Runtime {
         if !options.enabled {
             self.status = Status::Idle("Firefight is off in Game Setup");
             return "firefight: idle: Firefight is off in Game Setup".into();
+        }
+        if let Some(why) = teams_refusal(definition.teams, team_play(&*m)) {
+            let line = format!("firefight: off on {map}: {why}");
+            self.status = Status::Refused {
+                map,
+                why: why.into(),
+            };
+            return line;
         }
         let kit = match guest::read_kit(&*m) {
             Ok(kit) => kit,
@@ -514,6 +592,8 @@ impl Runtime {
                     kit.zones.len(),
                     host.team()
                 );
+                let context = bot_context(&host);
+                bots::firefight::set_context(context.clone());
                 self.status = Status::Running(Box::new(Match {
                     map,
                     sight: vec![false; kit.zones.len()],
@@ -526,6 +606,7 @@ impl Runtime {
                     skulls,
                     assists: Assists::default(),
                     hud_failed: false,
+                    bots: context,
                 }));
                 line
             }
@@ -612,6 +693,7 @@ impl Runtime {
             return;
         }
         game.post = Some(tick);
+        let player_kills = player_kills(events);
         let kills: Vec<KillSeen> = game
             .assists
             .take(tick, events)
@@ -635,6 +717,7 @@ impl Runtime {
         let result = {
             let mut g = GuestGame::new(m, Some(&*kit), sight, skulls, &*self.sink);
             g.kills = kills;
+            g.player_kills = player_kills;
             *players = g.players().len().min(usize::from(u8::MAX)) as u8;
             host.post_tick(tick, &g)
         };
@@ -643,6 +726,12 @@ impl Runtime {
         }
         if let Some(ended) = host.take_ended() {
             (self.reports)(Report::Ended(ended_report(ended)));
+        }
+        // The Clankers' view of the match, when it changed.
+        let context = bot_context(&game.host);
+        if context != game.bots {
+            bots::firefight::set_context(context.clone());
+            game.bots = context;
         }
         // The HUD's mode blob, for the actor channel and the local draw.
         let mut announce = None;
@@ -722,17 +811,33 @@ impl Runtime {
             }
         }
         let op = p.command.map(command).transpose()?;
-        if let Some(Command::PlaceSquad { class, zone, .. }) = &op {
-            let kit = game.host.kit();
-            if !kit.classes.contains_key(class) {
-                return Err(Refused::Invalid(format!("the kit has no class {class}")));
+        let kit = game.host.kit();
+        match &op {
+            Some(Command::PlaceSquad { class, zone, .. }) => {
+                if !kit.classes.contains_key(class) {
+                    return Err(Refused::Invalid(format!("the kit has no class {class}")));
+                }
+                if usize::from(*zone) >= kit.zones.len() {
+                    return Err(Refused::Invalid(format!(
+                        "the kit has no zone {zone} (it has {})",
+                        kit.zones.len()
+                    )));
+                }
             }
-            if usize::from(*zone) >= kit.zones.len() {
+            Some(Command::Target { team, .. })
+                if usize::from(*team) >= kit.bases.len().min(MAX_TEAMS) =>
+            {
                 return Err(Refused::Invalid(format!(
-                    "the kit has no zone {zone} (it has {})",
-                    kit.zones.len()
+                    "the kit has no base for team {team} (it has {})",
+                    kit.bases.len()
                 )));
             }
+            Some(Command::TeamLives { team, .. }) if usize::from(*team) >= MAX_TEAMS => {
+                return Err(Refused::Invalid(format!(
+                    "there is no player team {team} (a match has at most {MAX_TEAMS})"
+                )));
+            }
+            _ => {}
         }
         if let Some(run) = p.director {
             game.host
@@ -759,6 +864,46 @@ impl Runtime {
             log: log(&game.host),
         })
     }
+}
+
+/// What the Clankers' brain is told of the match (`bots::firefight`,
+/// docs/game/bots.md): the player teams' engine teams (Firefight team 0's
+/// is game team 0, team 1's game team 1, the team the lobby seats a second
+/// team's Clankers on), the actors' team, each team's base and the drop
+/// zones, and on the host each team's pool (none when lives are not
+/// shared: each player's own count is not a team's) and whether a wave is
+/// on. A replica or client has no director: its lives are unknown and its
+/// phase is `Fighting`. None once the director has finished the match.
+pub fn bot_context(host: &Host) -> Option<bots::firefight::Context> {
+    use ::firefight::director::Phase;
+    use bots::firefight::{Context, Phase as BotPhase};
+    let teams = usize::from(host.teams()).clamp(1, MAX_TEAMS);
+    let (lives, phase) = match host.director() {
+        Some(d) => {
+            let s = d.state();
+            let phase = match s.phase {
+                Phase::Done => return None,
+                Phase::Warmup { .. } | Phase::Intermission { .. } => BotPhase::Between,
+                Phase::Spawning | Phase::Fighting | Phase::Cleanup { .. } => BotPhase::Fighting,
+            };
+            let shared = d.def().lives.shared;
+            let lives = s.pools[..teams]
+                .iter()
+                .map(|&pool| shared.then_some(pool))
+                .collect();
+            (lives, phase)
+        }
+        None => (vec![None; teams], BotPhase::Fighting),
+    };
+    let kit = host.kit();
+    Some(Context {
+        player_teams: (0..teams as i16).collect(),
+        ai_team: i16::from(host.team()),
+        bases: kit.bases.clone(),
+        lives,
+        phase,
+        drop_zones: kit.zones.clone(),
+    })
 }
 
 /// The HUD's mode blob for the director on this machine (`hud`); none where
@@ -791,8 +936,9 @@ pub fn kit_reply(m: &dyn GuestMemory) -> Result<wire::Kit, MemFault> {
             })
             .collect(),
         classes: kit.kit().classes,
+        bases: kit.kit().bases,
         characters: kit.characters,
-        hunt_order: kit.hunt_order,
+        hunt_orders: kit.hunt_orders.clone(),
     })
 }
 
@@ -832,13 +978,16 @@ fn director(d: &::firefight::Director, game: &Match) -> wire::Director {
         Phase::Intermission { until } => ("intermission", Some(until)),
         Phase::Done => ("done", None),
     };
+    let teams = usize::from(d.def().teams).clamp(1, MAX_TEAMS);
     wire::Director {
         phase: phase.into(),
         phase_tick,
         round: s.round,
         wave: s.wave,
         reserve: d.reserve(game.players),
-        pool: s.pool,
+        teams: teams as u8,
+        pools: s.pools[..teams].to_vec(),
+        scores: s.scores[..teams].to_vec(),
         live_actors: d.live_actors(),
         cap: d.cap(game.players),
         players: game.players,
@@ -867,7 +1016,9 @@ pub async fn make_calls(
     for (seq, call) in &work.calls {
         let result = match *call {
             Call::Squad(SquadOp::Place(p)) => guest::place_squad(cx, &work.kit, p).await,
-            Call::Squad(SquadOp::Hunt { slot }) => guest::hunt(cx, &work.kit, slot).await,
+            Call::Squad(SquadOp::Hunt { slot, base }) => {
+                guest::hunt(cx, &work.kit, slot, base).await
+            }
             Call::Squad(SquadOp::Erase { slot }) => guest::erase_squad(cx, &work.kit, slot).await,
             Call::Score { player, points } => guest::credit_score(cx, player, points).await,
             Call::Respawn(player) => guest::respawn(cx, player).await,

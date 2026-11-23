@@ -9,15 +9,19 @@ fn golden_hash_for_the_builtin_defs() {
     let expected = [
         (
             "Holdout",
-            "f5f343c25a973698a88bc7d862870afd0eb1aa1b87dfd2a4f4a6ffda02ffaca7",
+            "dedccaa6ea2b95d1249a781ebaf9ebc5c98dfdc1e2c4f10027fac038855a0480",
         ),
         (
             "Attrition",
-            "80ce34231906cb5b988fe8ad1e68d2d0826e18b5d32d027206b7ded0485eb2a7",
+            "e230b005449fed422f3a76d5ac1743675853010d2926dc0d3440528a0ba1b967",
         ),
         (
             "Last Stand",
-            "807b010dc2121ee96c814d1ac3cac84b47fe8f5192c68e26e771a510878798ca",
+            "45b0a26cea858ce5ff8edf67d97971530060cf7bb2602cf707fea882cf620237",
+        ),
+        (
+            "Crossfire",
+            "106899ec8fed2d189a3425766796fba3cf6a3457c8eed8341f399fa5dc47a4cf",
         ),
     ];
     let limits = elite_kit();
@@ -32,7 +36,7 @@ fn golden_hash_for_the_builtin_defs() {
 
 #[test]
 fn a_wave_over_the_cap_is_refused() {
-    let [mut def, _, _] = builtin::definitions();
+    let [mut def, ..] = builtin::definitions();
     def.rounds.truncate(1);
     def.caps.live_actors_by_players = vec![(4, 12), (8, 9), (16, 16)];
     def.rounds[0].waves[0].squads[0].count = Count {
@@ -75,7 +79,7 @@ fn a_wave_over_the_cap_is_refused() {
 
 #[test]
 fn an_unknown_class_is_refused() {
-    let [mut def, _, _] = builtin::definitions();
+    let [mut def, ..] = builtin::definitions();
     def.rounds[0].waves[0].squads[0].class = "fixture".into();
     def.scoring.by_class.insert("fixture".into(), 500);
     let canonical = def.canonical_json().unwrap();
@@ -92,7 +96,7 @@ fn an_unknown_class_is_refused() {
 
 #[test]
 fn canonical_form_is_stable_under_key_order() {
-    let [mut def, _, _] = builtin::definitions();
+    let [mut def, ..] = builtin::definitions();
     let canonical = def.canonical_json().unwrap();
     let reordered = serde_json::to_string_pretty(&def).unwrap();
     assert!(canonical.starts_with(r#"{"caps":"#));
@@ -140,7 +144,7 @@ fn count_scaling_uses_both_bounds() {
 
 #[test]
 fn cap_tiers_are_inclusive_and_may_cover_a_smaller_lobby() {
-    let [mut def, _, _] = builtin::definitions();
+    let [mut def, ..] = builtin::definitions();
     def.caps.live_actors_by_players.pop();
     assert_eq!(def.caps.for_players(0), None);
     assert_eq!(def.caps.for_players(1), Some(12));
@@ -160,7 +164,7 @@ fn refuse(doc: &Def, field: &str) {
 
 #[test]
 fn invalid_headers_and_schedule_are_refused() {
-    let [mut doc, _, _] = builtin::definitions();
+    let [mut doc, ..] = builtin::definitions();
     doc.format = FORMAT + 1;
     assert_eq!(
         validate(&doc, &elite_kit()),
@@ -192,7 +196,7 @@ fn invalid_headers_and_schedule_are_refused() {
         (|d| d.lives.per_round_bonus = 1_001, "lives"),
     ];
     for (change, field) in cases {
-        let [mut doc, _, _] = builtin::definitions();
+        let [mut doc, ..] = builtin::definitions();
         change(&mut doc);
         refuse(&doc, field);
     }
@@ -213,7 +217,7 @@ fn cap_tiers_cannot_bypass_the_host_budget() {
         vec![(16, 17)],
         vec![(1, 1); 17],
     ] {
-        let [mut doc, _, _] = builtin::definitions();
+        let [mut doc, ..] = builtin::definitions();
         doc.caps.live_actors_by_players = tiers;
         refuse(&doc, "actor cap tiers");
     }
@@ -234,12 +238,12 @@ fn malformed_waves_are_refused() {
         (|s| s[0].weapon_tier = 4, "weapon_tier"),
     ];
     for (change, field) in cases {
-        let [mut doc, _, _] = builtin::definitions();
+        let [mut doc, ..] = builtin::definitions();
         change(&mut doc.rounds[0].waves[0].squads);
         refuse(&doc, field);
     }
 
-    let [mut doc, _, _] = builtin::definitions();
+    let [mut doc, ..] = builtin::definitions();
     doc.rounds[0].waves[0].gap_ticks = 9_001;
     refuse(&doc, "gap_ticks");
 }
@@ -278,12 +282,12 @@ fn scoring_bounds_are_enforced() {
         (|d| d.scoring.assist = 1_001, "assist"),
     ];
     for (change, field) in cases {
-        let [mut doc, _, _] = builtin::definitions();
+        let [mut doc, ..] = builtin::definitions();
         change(&mut doc);
         refuse(&doc, field);
     }
 
-    let [mut doc, _, _] = builtin::definitions();
+    let [mut doc, ..] = builtin::definitions();
     for i in 0..32 {
         doc.scoring.by_class.insert(format!("fixture_{i}"), 1);
     }
@@ -295,4 +299,57 @@ fn scoring_bounds_are_enforced() {
         validate(&doc, &elite_kit()),
         Err(Refusal::UnknownClass("fixture_0".into()))
     );
+}
+
+#[test]
+fn team_counts_and_player_kill_points_are_refused_out_of_range() {
+    let cases: [(fn(&mut Def), &str); 5] = [
+        (|d| d.teams = 0, "teams"),
+        (|d| d.teams = 3, "teams"),
+        (|d| d.scoring.player_kill = 10, "player_kill"),
+        (
+            |d| {
+                d.teams = 2;
+                d.scoring.player_kill = 1_001;
+            },
+            "player_kill",
+        ),
+        (
+            |d| {
+                d.teams = 2;
+                d.caps.live_actors_by_players = vec![(1, 12)];
+            },
+            "teams",
+        ),
+    ];
+    for (change, field) in cases {
+        let [mut doc, ..] = builtin::definitions();
+        change(&mut doc);
+        refuse(&doc, field);
+    }
+
+    // Two teams admit player kills from nothing to the bound.
+    let [.., mut doc] = builtin::definitions();
+    assert_eq!((doc.name.as_str(), doc.teams), ("Crossfire", 2));
+    for points in [0, 50, 1_000] {
+        doc.scoring.player_kill = points;
+        validate(&doc, &elite_kit()).unwrap();
+    }
+}
+
+#[test]
+fn with_teams_sets_the_team_count_and_player_kill_points() {
+    let [holdout, .., crossfire] = builtin::definitions();
+    let two = builtin::with_teams(holdout.clone(), 2);
+    assert_eq!(
+        (two.teams, two.scoring.player_kill),
+        (2, builtin::PLAYER_KILL_POINTS)
+    );
+    validate(&two, &elite_kit()).unwrap();
+    let one = builtin::with_teams(crossfire.clone(), 1);
+    assert_eq!((one.teams, one.scoring.player_kill), (1, 0));
+    validate(&one, &elite_kit()).unwrap();
+    assert_eq!(builtin::with_teams(crossfire.clone(), 2), crossfire);
+    assert_eq!(builtin::with_teams(holdout.clone(), 9).teams, 2);
+    assert_eq!(builtin::with_teams(holdout, 0).teams, 1);
 }

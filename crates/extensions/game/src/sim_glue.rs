@@ -598,7 +598,8 @@ impl Sim {
         &self.0.matched
     }
 
-    /// Resolve the match's multiplayer map for the System Link lobby.
+    /// Resolve the match's multiplayer map for the System Link lobby: a
+    /// disc map, else an installed Firefight kit package ([`kit_request`]).
     pub fn select_map(&self, disc: &Path, data_root: &Path) -> Result<()> {
         let m = &self.0.matched;
         let req = level_boot::resolve_in(
@@ -607,6 +608,7 @@ impl Sim {
             &m.config.map,
             level_boot::Difficulty::Normal,
         )
+        .or_else(|e| kit_request(&m.config.map).ok_or(e))
         .with_context(|| format!("sim: map {:?}", m.config.map))?;
         if req.kind != level_boot::Kind::Multiplayer {
             bail!(
@@ -629,6 +631,20 @@ impl Sim {
     /// host console runs the game playerless.
     pub fn add_bots(&self) -> Result<()> {
         bots::phantom::global().set_playerless_host(true);
+        if let Some(f) = &self.0.matched.firefight {
+            // Firefight (docs/runtime/sim.md, "Firefight"): the runtime
+            // reads the match file's choices as it reads Game Setup's page,
+            // from a store of their own; the bots sit on the player teams
+            // the match file resolved.
+            let shared = crate::firefight::feature::AgentSource::installed()
+                .0
+                .context("sim: a Firefight match needs the firefight feature, which is off")?;
+            let store = Arc::new(firefight_store(f)?);
+            shared
+                .lock()
+                .set_options(crate::firefight::options::source(&store));
+            *lock_ended() = None;
+        }
         if self.0.matched.superbounce {
             // Bounce practice (docs/runtime/sim.md, "Bounce practice"): the
             // game plays the Superbounce script, which turns the mode on;
@@ -776,7 +792,7 @@ impl Sim {
             self.0.path.display(),
             self.0.matched.config.map,
             self.0.matched.bots.len(),
-            self.0.matched.game_type.name(),
+            self.0.matched.game_type_name(),
             self.0.matched.pace.label()
         );
         Ok(())
@@ -1006,7 +1022,7 @@ impl Sim {
         json!({
             "match": inner.path.display().to_string(),
             "map": inner.matched.config.map,
-            "game_type": inner.matched.game_type.name(),
+            "game_type": inner.matched.game_type_name(),
             "bots": inner.matched.bots.len(),
             "phase": s.phase.name(),
             "lobby": lobby,
@@ -1148,7 +1164,92 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     let mut lean = s.lean.clone();
     lean.setup = Some(s.setup.phases(s.first_tick.unwrap_or_else(Instant::now)));
     report.set_lean(lean);
+    if let Some(f) = &inner.matched.firefight {
+        use sim_bench::firefight::FirefightReport;
+        report.firefight = Some(match lock_ended().as_ref() {
+            Some(ended) => FirefightReport::ended(ended),
+            None => FirefightReport::unfinished(f, &report.result.teams),
+        });
+    }
     report
+}
+
+// ---- Firefight (docs/runtime/sim.md, "Firefight") ----
+
+/// The result the Firefight runtime reported this run ([`note_firefight`]).
+static FIREFIGHT_ENDED: Mutex<Option<live_proto::firefight::FirefightEnded>> = Mutex::new(None);
+
+fn lock_ended() -> MutexGuard<'static, Option<live_proto::firefight::FirefightEnded>> {
+    FIREFIGHT_ENDED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Keeps the Firefight runtime's result for a sim report's `firefight`
+/// section. Boot's report sink passes every report here as well as to Live
+/// telemetry; only the result is kept, the last one.
+pub fn note_firefight(report: &crate::firefight::runtime::Report) {
+    if let crate::firefight::runtime::Report::Ended(ended) = report {
+        *lock_ended() = Some(ended.clone());
+    }
+}
+
+/// The Firefight page's choices for a match file's `[firefight]`, in a
+/// store of their own over the page's settings
+/// (`crate::firefight::options::DEFS`).
+fn firefight_store(f: &sim_bench::firefight::Firefight) -> Result<settings::Store> {
+    use sim_bench::firefight::Choice;
+    let store = settings::Store::defaults(&crate::firefight::options::DEFS[..]);
+    for (key, choice) in f.settings() {
+        if store.def(key).is_none() {
+            // The set's own teams needs no setting.
+            if key == "firefight.teams" && choice == Choice::Int(0) {
+                continue;
+            }
+            bail!("sim: this build has no {key} setting for the match's [firefight] table");
+        }
+        let value = match choice {
+            Choice::Bool(b) => settings::Value::Bool(b),
+            Choice::Int(i) => settings::Value::Int(i),
+        };
+        store
+            .set(key, value)
+            .map_err(|e| anyhow::anyhow!("sim: [firefight] as {key}: {e:?}"))?;
+    }
+    Ok(store)
+}
+
+/// The installed Firefight kit package a match file names, as the lobby's
+/// map select lists it: by its package directory (`firefight-<map>`, as
+/// `h2 firefight kit` installs it) or its list name (`Firefight – <map>`).
+/// The request is its map list slot.
+fn kit_request(name: &str) -> Option<level_boot::Request> {
+    let catalogue = crate::map_select::current()?;
+    let map = kit_map_named(catalogue.all(), name)?;
+    Some(level_boot::Request {
+        name: map.short_name(),
+        // The game options' scenario path for a package is its slot path.
+        scenario: map.path.clone(),
+        campaign: u32::MAX,
+        map: map.id,
+        difficulty: level_boot::Difficulty::Normal,
+        kind: level_boot::Kind::Multiplayer,
+    })
+}
+
+/// The kit map among `maps` that `name` names ([`kit_request`]).
+fn kit_map_named<'a>(
+    mut maps: impl Iterator<Item = &'a crate::map_select::Map>,
+    name: &str,
+) -> Option<&'a crate::map_select::Map> {
+    let name = name.trim().trim_end_matches(".map");
+    let lower = name.to_ascii_lowercase();
+    let listed = lower
+        .strip_prefix("firefight-")
+        .map(|base| format!("{}{base}", crate::lobby_start::KIT_NAME_PREFIX));
+    maps.find(|m| {
+        crate::lobby_start::is_kit_map(m)
+            && (m.name.eq_ignore_ascii_case(name)
+                || listed.as_deref().is_some_and(|l| m.name.eq_ignore_ascii_case(l)))
+    })
 }
 
 /// The process's running cost totals, for the report's costs.
@@ -2304,6 +2405,63 @@ mod tests {
         assert_eq!(seed32(7), 7);
         assert_eq!(seed32(1 << 32), 1);
         assert_ne!(seed32(1), seed32(2));
+    }
+
+    /// A match file names a kit package by its directory or its list name;
+    /// the disc map it is built on and the probe are not it.
+    #[test]
+    fn a_firefight_match_finds_its_kit_package() {
+        use crate::map_select::Map;
+        let map = |id, name: &str| Map {
+            id,
+            name: name.into(),
+            sort: 0,
+            path: format!("t:\\$C\\0000000{id}\\m-{id:08x}"),
+        };
+        let maps = [
+            map(1, "Beaver Creek"),
+            map(2, "Firefight Probe \u{2013} beavercreek"),
+            map(3, "Firefight \u{2013} beavercreek"),
+            map(4, "Firefight \u{2013} lockout"),
+        ];
+        for name in [
+            "firefight-beavercreek",
+            "Firefight-BeaverCreek.map",
+            "Firefight \u{2013} beavercreek",
+        ] {
+            assert_eq!(kit_map_named(maps.iter(), name).map(|m| m.id), Some(3), "{name}");
+        }
+        assert!(kit_map_named(maps.iter(), "beavercreek").is_none());
+        assert!(kit_map_named(maps.iter(), "firefight-midship").is_none());
+    }
+
+    /// The `[firefight]` table becomes the page's choices, which the
+    /// runtime reads as it reads Game Setup's.
+    #[test]
+    fn a_firefight_table_becomes_the_pages_choices() {
+        let sim = sim_with(
+            "map = 'firefight-beavercreek'\ngame_type = 'firefight'\n\
+             [firefight]\nset = 'attrition'\ndifficulty = 'heroic'\nlives = 8\nskulls = false\n\
+             [[bot]]\n[[bot]]\n",
+        );
+        let store = firefight_store(sim.matched().firefight.as_ref().unwrap()).unwrap();
+        let o = crate::firefight::options::Options::read(&store).unwrap();
+        assert!(o.enabled);
+        assert_eq!(o.wave_set, 1);
+        assert_eq!(o.difficulty, ::firefight::Difficulty::Heroic);
+        assert_eq!((o.lives, o.skulls, o.teams), (Some(8), false, None));
+        // Crossfire, and Holdout played by two teams.
+        for (table, wave_set) in [("set = 'crossfire'", 3), ("teams = 2", 0)] {
+            let sim = sim_with(&format!(
+                "map = 'firefight-beavercreek'\ngame_type = 'firefight'\n[firefight]\n{table}\n\
+                 [[bot]]\n[[bot]]\n"
+            ));
+            let store = firefight_store(sim.matched().firefight.as_ref().unwrap()).unwrap();
+            let o = crate::firefight::options::Options::read(&store).unwrap();
+            assert_eq!(o.wave_set, wave_set, "{table}");
+            let teams = if wave_set == 3 { None } else { Some(2) };
+            assert_eq!(o.teams, teams, "{table}");
+        }
     }
 
     fn sim_with(text: &str) -> Sim {

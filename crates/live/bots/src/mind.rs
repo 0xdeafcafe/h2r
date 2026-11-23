@@ -339,6 +339,8 @@ pub struct Mind {
     /// Practising bounces while the superbounce mode is on
     /// (`mind::practice`): no fight at all.
     practice: practice::Practice,
+    /// Firefight's match and the bot's way home (`crate::firefight`).
+    pub(crate) firefight: crate::firefight::State,
     /// The start-of-match warm-up (`mind::warmup`).
     pub warmup: warmup::Warmup,
     /// The seed it was made with: the warm-up's length without a name.
@@ -477,6 +479,7 @@ impl Mind {
             show_off: crate::glitches::ShowOff::new(seed ^ 0x5b0_0ce),
             stunt: None,
             practice: practice::Practice::new(seed),
+            firefight: Default::default(),
             warmup: warmup::Warmup::Over,
             seed,
         }
@@ -499,12 +502,18 @@ impl Mind {
         let Some(me) = p.me else { return };
         let eye = up(me.position, EYE);
         seen.extend(p.others.iter().copied().filter(|o| {
+            // An actor (Firefight) is always an enemy, and the sight
+            // filter has already kept only the actors in view.
+            let actor = crate::firefight::is_actor(o.id);
             let enemy = p
                 .objective
                 .as_ref()
                 .and_then(|g| g.juggernaut_opponent(o.id))
-                .unwrap_or(!p.teams || o.team != me.team);
-            if !enemy || observed.is_some_and(|mask| mask & crate::perceive::player_bit(o.id) == 0)
+                .unwrap_or_else(|| crate::firefight::hostile(p, me.team, o));
+            if !enemy
+                || observed.is_some_and(|mask| {
+                    !actor && mask & crate::perceive::player_bit(o.id) == 0
+                })
             {
                 return false;
             }
@@ -563,7 +572,14 @@ impl Mind {
         self.stunt = None;
         self.cancel_order("died");
         self.vehicles.reset();
+        self.firefight.release();
         self.tick = None;
+    }
+
+    /// Plays in the Firefight match `ctx` (`crate::firefight`), or outside
+    /// Firefight with `None`.
+    pub fn set_firefight(&mut self, ctx: Option<std::sync::Arc<crate::firefight::Context>>) {
+        self.firefight.set(ctx);
     }
 
     fn glance_at_tracker(&mut self, p: &Perception, interval: u32, chance: f32) {
@@ -774,6 +790,7 @@ impl Mind {
         self.kit = match me.arms {
             Some(a) => {
                 let (st, errands, tick) = (&self.stuck, &self.errands, p.tick);
+                let ff = &self.firefight;
                 arms::plan_with_personality(
                     &Situation {
                         arms: &a,
@@ -798,6 +815,7 @@ impl Mind {
                     |pk| {
                         st.blocked(pk.position, tick)
                             || errands.refused(pk.id, tick)
+                            || ff.blocks(pk.position, p, &me, weights)
                             || p.objective
                                 .as_ref()
                                 .and_then(|o| o.hill.as_ref())

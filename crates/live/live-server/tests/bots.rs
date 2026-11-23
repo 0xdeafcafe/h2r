@@ -215,6 +215,27 @@ async fn only_the_sessions_host_asks_and_counts_are_bounded() {
     );
 }
 
+/// Live names no team for a Clanker, in a team game or a Firefight session
+/// on a kit map: the host seats every bot, and its seat rule keeps them on
+/// the player teams (docs/game/firefight.md, "Live"). So no roster can put
+/// a Clanker on the AI's team. The Worker composes the same handler.
+#[tokio::test]
+async fn firefight_sessions_seat_clankers_on_player_teams_only() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let session = host(&h, &a).await;
+    for teams in [false, true] {
+        let r = roster(
+            &h,
+            &a,
+            json!({"session_id": session, "count": 4, "teams": teams}),
+        )
+        .await;
+        assert_eq!(r.bots.len(), 4);
+        assert!(r.bots.iter().all(|b| b.team.is_none()), "teams {teams}");
+    }
+}
+
 #[tokio::test]
 async fn nobody_else_writes_bot_streams() {
     let h = harness().await;

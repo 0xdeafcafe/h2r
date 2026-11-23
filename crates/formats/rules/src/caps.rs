@@ -291,6 +291,11 @@ pub mod id {
     pub const BOT_FOLLOW: u16 = 67;
     pub const BOT_ATTACK: u16 = 68;
     pub const BOT_FREE: u16 = 69;
+    pub const ZONE_TEAM_DISTANCE: u16 = 70;
+    pub const FF_TARGET: u16 = 71;
+    pub const FF_TEAM_LIVES: u16 = 72;
+    pub const FF_PLAYER_SCORE: u16 = 73;
+    pub const FF_TEAM_FINISH: u16 = 74;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -434,6 +439,17 @@ pub const ENTRIES: &[Entry] = &[
     act(id::BOT_FOLLOW, "bot_follow", &[Player, Player], Some("bots.orders"), Queued, Named),
     act(id::BOT_ATTACK, "bot_attack", &[Player, Player], Some("bots.orders"), Queued, Named),
     act(id::BOT_FREE, "bot_free", &[Player], Some("bots.orders"), Queued, Named),
+    // Firefight with two player teams (docs/game/firefight.md, "Two
+    // teams"): a drop zone's distance from one team's players
+    // (`ZoneSeen::team_distance`), the team a placed squad is sent at
+    // (`Command::Target`), a team's pool (`Command::TeamLives`), a player
+    // kill across the teams (`ScoreReason::PlayerKill`), and the end with a
+    // winning team, `none` for a draw (`Outcome::TeamWon`, `Outcome::Draw`).
+    read(id::ZONE_TEAM_DISTANCE, "zone_team_distance", &[Object, Team], Int, Named),
+    act(id::FF_TARGET, "ff_target", &[Squad, Team], Some("firefight.director"), Queued, Named),
+    act(id::FF_TEAM_LIVES, "ff_team_lives", &[Team, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_PLAYER_SCORE, "ff_player_score", &[Player, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_TEAM_FINISH, "ff_team_finish", &[Team], Some("firefight.director"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

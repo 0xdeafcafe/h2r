@@ -4,10 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Limits, Refusal, Result, Sha256, validate, wire};
 
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 pub const MAX_DOC_BYTES: usize = 64 * 1024;
 pub const MAX_PLAYERS: u8 = 16;
 pub const MULTIPLIER_SCALE: u16 = 1_000;
+/// Player teams a definition may have: one co-operative team, or two that
+/// also fight each other.
+pub const MAX_TEAMS: usize = 2;
 
 pub(crate) const MAX_ROUNDS: usize = 12;
 pub(crate) const WAVES_PER_ROUND: usize = 5;
@@ -21,6 +24,9 @@ const MAX_CAPS: usize = MAX_PLAYERS as usize;
 pub struct Def {
     pub format: u32,
     pub name: String,
+    /// Player teams: 1 (everyone against the AI) or 2 (two teams, each
+    /// against the AI and the other team).
+    pub teams: u8,
     #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_ROUNDS>")]
     pub rounds: Vec<Round>,
     pub lives: Lives,
@@ -113,6 +119,7 @@ pub enum Drop {
 pub struct Lives {
     pub pool_start: u16,
     pub per_round_bonus: u16,
+    /// One pool per team; otherwise each player has their own count.
     pub shared: bool,
 }
 
@@ -187,6 +194,9 @@ pub enum Skull {
 pub struct Scoring {
     #[serde(deserialize_with = "wire::bounded_map::<_, _, _, MAX_CLASSES>")]
     pub by_class: BTreeMap<String, u16>,
+    /// Points for killing a player of the other team, with two teams. Not
+    /// scaled by difficulty or skulls. Zero with one team.
+    pub player_kill: u16,
     /// Fixed-point multipliers, in thousandths.
     pub difficulty_multiplier: DifficultyMultipliers,
     /// Fixed-point multipliers, in thousandths. Omitted skulls use 1,000.

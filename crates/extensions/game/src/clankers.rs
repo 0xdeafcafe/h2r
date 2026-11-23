@@ -1500,6 +1500,26 @@ fn mixed_slot(number: u32) -> u8 {
 /// The driver [`install`] started, for [`frame`] and telemetry.
 static DRIVER: Mutex<Option<std::sync::Weak<Driver>>> = Mutex::new(None);
 
+/// The settings store [`frame`] reads the Firefight options from, for
+/// [`firefight_seat_teams`] (set with [`DRIVER`]).
+static STORE: Mutex<Option<std::sync::Weak<Store>>> = Mutex::new(None);
+
+/// The player teams new Clankers are seated on in a lobby in `mode`
+/// ([`bots::firefight::set_seat_teams`]): Firefight's
+/// ([`crate::firefight::options::Options::player_teams`], one when the
+/// options cannot be read), none in any other mode. The phantom session
+/// then puts each new Clanker on a player team, the one with fewer
+/// players with two ([`bots::firefight::seat_team`]), never the AI's
+/// team, which the Firefight host keeps clear of the player teams
+/// (docs/game/firefight.md).
+pub fn firefight_seat_teams(
+    mode: crate::lobby_start::Mode,
+    options: impl FnOnce() -> Result<crate::firefight::options::Options, String>,
+) -> Option<u8> {
+    (mode == crate::lobby_start::Mode::Firefight)
+        .then(|| options().map_or(1, |o| o.player_teams()))
+}
+
 /// Once a frame, from the bots' frame hook: every second or so, asks
 /// for a roster again if the hosted Live session changed
 /// ([`Driver::refresh`]). Never waits on the server. `host_team` reads
@@ -1530,6 +1550,18 @@ pub fn frame(
         .as_ref()
         .and_then(|w| w.upgrade());
     let Some(d) = d else { return };
+    let store = STORE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|w| w.upgrade());
+    bots::firefight::set_seat_teams(firefight_seat_teams(
+        crate::lobby_start::state().mode,
+        || match &store {
+            Some(store) => crate::firefight::options::Options::read(store),
+            None => Err("no settings store".into()),
+        },
+    ));
     d.set_host_team(host_team());
     d.set_party(party());
     d.set_hosts_game(hosts_game());
@@ -1810,6 +1842,7 @@ pub fn install(
     }
     let d = drive(store, driver);
     *DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(&d));
+    *STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(store));
     // Every bot goes out as a bot; a game with server bots names their
     // roster's session, and its phantoms carry their rostered xuids.
     if let Some(t) = telemetry {

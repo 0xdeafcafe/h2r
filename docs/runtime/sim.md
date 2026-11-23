@@ -323,7 +323,72 @@ Superbounce rules script, which turns the superbounce mode on: the bots practise
 `superbounce = true`, and no `[drill]`) makes the run one shard of a
 bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)). A
 `[drops]` table (without `superbounce`) drops every seat onto candidate
-seams ([Seam drops](#seam-drops)).
+seams ([Seam drops](#seam-drops)). `game_type = "firefight"` with a
+`[firefight]` table plays Firefight ([Firefight](#firefight)).
+
+### Firefight
+
+`game_type = "firefight"` plays a Firefight match
+([firefight.md](../game/firefight.md)) on a map that carries the kit:
+a Slayer game with team play on and, unless the file sets one, no time
+limit. The bots are the players.
+
+```toml
+map = "firefight-beavercreek"   # the kit package `h2 firefight kit beavercreek` installs
+game_type = "firefight"
+
+[firefight]                     # every key optional
+set = "holdout"                 # holdout (default), attrition, last_stand, crossfire
+difficulty = "normal"           # easy, normal (default), heroic, legendary
+teams = 1                       # 1 or 2; unset: the set's own (Crossfire 2, the rest 1)
+lives = 5                       # 1, 3, 5, 8, 12, 20 or 30; unset: the set's own
+skulls = true                   # each round switches on its skull; unset: on
+
+[[bot]]
+team = 0
+```
+
+- **The map.** A disc map name resolves as for any match. Otherwise the
+  name is an installed kit package, as the lobby's map select lists it:
+  its package directory (`firefight-<map>`) or its list name
+  (`Firefight – <map>`), and the lobby is opened on its map list slot
+  (`sim_glue::kit_request`).
+- **The seat rule.** Bots sit on the player teams only: team 0 with one
+  team, 0 or 1 with two. The AI's team is never a seat, so any other
+  `team` is refused by name (`bot 3: team 2: Firefight seats are on the
+  player teams 0..1`). A bot with no `team` takes the player team with
+  the fewest bots so far, the lower on a tie, after the named ones
+  (`sim_bench::firefight::Firefight::balance`). Every bot on one team is
+  no problem here.
+- **The choices.** At the sim's start the table becomes the Firefight
+  page's settings (`firefight.enabled`, `firefight.waveset`,
+  `firefight.difficulty`, `firefight.lives`, `firefight.skulls`,
+  `firefight.teams`; 0 for lives and teams is the set's own) in a
+  settings store of the run's own, and the runtime reads them when the
+  game starts, as it reads Game Setup's (`sim_glue::firefight_store`).
+- **Refused with it:** `team_play = false`, `superbounce`, `[drill]`,
+  `[train]`, `[drops]` and `[bounces]`; a `[firefight]` table without
+  `game_type = "firefight"`.
+- **The report** gains a `firefight` section
+  (`sim_bench::firefight::FirefightReport`): the set, the teams, whether
+  the director ended the match and with what `outcome` (`won`, `lost`,
+  `team_won` with its `team`, or `draw`), `rounds_cleared`, each player
+  team's `scores` and `lives_used`, from the runtime's result
+  (`sim_glue::note_firefight`). A match a limit stopped first has
+  `ended: false`, no outcome, and the player teams' scores as the game
+  last showed them.
+
+[sim-examples/firefight-beavercreek.toml](sim-examples/firefight-beavercreek.toml)
+is Holdout with two Clankers on team 0;
+[sim-examples/firefight-beavercreek-crossfire.toml](sim-examples/firefight-beavercreek-crossfire.toml)
+is Crossfire with two Clankers on each team:
+
+```
+h2 firefight kit beavercreek
+h2 bots nav beavercreek
+h2 sim run docs/runtime/sim-examples/firefight-beavercreek.toml
+h2 sim run docs/runtime/sim-examples/firefight-beavercreek-crossfire.toml
+```
 
 ### Bot parameters from a file
 
@@ -1747,11 +1812,20 @@ headers and blocks while those dependencies are being traced.
 - The `guest_census` reads and the `wall.phantom_*` timers in a run: the
   array pointers and names come from the retail XBE, and the reads are
   tested over a fake guest only.
+- A Firefight match end to end: that the game options' scenario path for
+  a kit package is its map list slot path (what the sim waits for), that
+  the bots load the base map's nav mesh on the kit map, and that the
+  phantoms' teams hold in a team game the runtime places actors in.
 
 ## Tests
 
 `cargo test -p sim-bench` (config, metrics, compare, clock, the examples
-here), `cargo test -p bots tuning` and `cargo test -p bots
+here, and Firefight: `a_firefight_match_toml_parses`,
+`firefight_bots_are_on_player_teams_only`,
+`two_team_firefight_balances_omitted_teams`,
+`the_report_has_rounds_and_score`), `cargo test -p game sim_glue`
+(`a_firefight_match_finds_its_kit_package`,
+`a_firefight_table_becomes_the_pages_choices`), `cargo test -p bots tuning` and `cargo test -p bots
 a_tuned_brain` (the overrides), `cargo test -p sim-bridge sim_frame` (the skip's decision
 and stubs over a fake guest), `cargo test -p game sim_glue` (snapshots to
 samples, limits and phantom tuning), `cargo test -p game sim_census` (the

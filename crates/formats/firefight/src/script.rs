@@ -29,7 +29,7 @@ use crate::director::{
     SLOT_TIMEOUT_TICKS, SQUAD_SLOTS, Settings, Slot, State,
 };
 use crate::scoring::ScoreReason;
-use crate::{Def, Difficulty, Drop, MULTIPLIER_SCALE, Refusal, Skull, WAVES_PER_ROUND};
+use crate::{Def, Difficulty, Drop, MAX_TEAMS, MULTIPLIER_SCALE, Refusal, Skull, WAVES_PER_ROUND};
 
 /// The Forge label of the kit's drop zones. The host reports zone `n` as
 /// the labelled object with placement id `n`, so the VM visits zones in
@@ -80,12 +80,15 @@ const CLEANUP: i32 = 3;
 const INTERMISSION: i32 = 4;
 const DONE: i32 = 5;
 
-// A squad slot's mode, the low two bits of `slot_NN_info`; the rest is the
-// placed count times four.
+// A squad slot's mode, the low two bits of `slot_NN_info`; then the placed
+// count times four (at most 32, so below 256), and the squad's target team
+// times 256.
 const FREE: i32 = 0;
 const PLACED: i32 = 1;
 const SEEN: i32 = 2;
 const DRAINING: i32 = 3;
+/// `slot_NN_info`'s unit of the target team.
+const TARGET_UNIT: i32 = 256;
 
 // Tables and their columns.
 const T_SQUADS: u8 = 0;
@@ -159,7 +162,19 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
     let wave = global(&mut st, "wave", Ty::Int, 0);
     let next = global(&mut st, "next_squad", Ty::Int, 0);
     let wave_actors = global(&mut st, "wave_actors", Ty::Int, 0);
-    let pool = global(&mut st, "pool", Ty::Int, pool_start);
+    let pool = [
+        global(&mut st, "pool_0", Ty::Int, pool_start),
+        global(
+            &mut st,
+            "pool_1",
+            Ty::Int,
+            if def.teams > 1 { pool_start } else { 0 },
+        ),
+    ];
+    let score = [
+        global(&mut st, "score_0", Ty::Int, 0),
+        global(&mut st, "score_1", Ty::Int, 0),
+    ];
     let skulls = global(&mut st, "skulls", Ty::Int, 0);
     let started = global(&mut st, "started", Ty::Bool, 0);
     let mut info = [0u16; SQUAD_SLOTS];
@@ -173,6 +188,8 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
     let registered = slot(&mut slots, &mut st, "registered", Scope::Player, Ty::Bool, 0);
     let lives = slot(&mut slots, &mut st, "lives", Scope::Player, Ty::Int, pool_start);
     let respawning = slot(&mut slots, &mut st, "respawning", Scope::Player, Ty::Bool, 0);
+    // The player's Firefight team, 0 or 1, fixed by `on join`.
+    let team = slot(&mut slots, &mut st, "team", Scope::Player, Ty::Int, 0);
 
     // Options: the difficulty, then one switch per skull on from the start.
     let mut options = vec![OptionDef {
@@ -315,6 +332,7 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
             next,
             wave_actors,
             pool,
+            score,
             skulls,
             started,
             info,
@@ -323,7 +341,10 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
             registered,
             lives,
             respawning,
+            team,
         },
+        two_teams: def.teams > 1,
+        player_kill: i32::from(def.scoring.player_kill),
         shared: def.lives.shared,
         pool_start,
         bonus: i32::from(def.lives.per_round_bonus),
@@ -338,13 +359,16 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
         caps_rows: def.caps.live_actors_by_players.len(),
         skull_cols: skull_cols as u8,
     };
-    let handlers = vec![
+    let mut handlers = vec![
         on_init(&g)?,
         on_join(&g)?,
         on_actor_kill(&g)?,
         on_actor_assist(&g)?,
-        on_tick(&g)?,
     ];
+    if g.two_teams && g.player_kill > 0 {
+        handlers.push(on_kill(&g)?);
+    }
+    handlers.push(on_tick(&g)?);
 
     let ir = Ir {
         header: Header {
@@ -352,9 +376,10 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
             api_version: ::rules::caps::API_VERSION,
             name: def.name.clone(),
             version: 1,
-            // Slayer, the engine Firefight's one-team match rides.
+            // Slayer, the engine Firefight's match rides, on one or two
+            // player teams; the actors' team is the host's.
             carrier: 2,
-            teams: 1,
+            teams: def.teams,
             list: ::rules::ir::List::GameType,
             scoring: ::rules::ir::Scoring::Script,
             about: String::new(),
@@ -410,6 +435,7 @@ pub fn match_seed(def: &Def, ir: &Ir, seed: u64) -> Result<u64, ScriptRefusal> {
 /// The Firefight director run as a rules script on the VM.
 pub struct ScriptDirector {
     vm: Vm,
+    teams: u8,
 }
 
 impl ScriptDirector {
@@ -420,6 +446,7 @@ impl ScriptDirector {
         let bits = options(&ir, &settings);
         Ok(Self {
             vm: Vm::new(ir, bits, seed)?,
+            teams: def.teams,
         })
     }
 
@@ -429,6 +456,7 @@ impl ScriptDirector {
         let bits = options(&ir, settings);
         Ok(Self {
             vm: Vm::resume(ir, bits, ext)?,
+            teams: def.teams,
         })
     }
 
@@ -449,12 +477,14 @@ impl ScriptDirector {
     /// Advance one tick, as [`crate::Director::step`] does. The host fires
     /// `on init` once, `on join` for each player present for the first
     /// time (in slot order), `on actor_kill` and `on actor_assist` for each
-    /// kill in event order, then the per-tick group; every command is a
-    /// queued call, made in program order at the end.
+    /// kill in event order, `on kill` for each player killed by a player,
+    /// then the per-tick group; every command is a queued call, made in
+    /// program order at the end.
     pub fn step(&mut self, tick: u32, seen: &Observed) -> Vec<Command> {
         let mut host = Host {
             seen,
             present: present(seen),
+            teams: self.teams,
             out: Vec::new(),
         };
         self.vm.begin_tick(tick);
@@ -489,6 +519,15 @@ impl ScriptDirector {
                 );
             }
         }
+        for kill in &seen.player_kills {
+            self.vm.fire(
+                &mut host,
+                Input::Kill {
+                    victim: kill.victim,
+                    killer: kill.killer,
+                },
+            );
+        }
         self.vm.update(&mut host);
         self.vm.flush_queue(&mut host);
         host.out
@@ -511,10 +550,11 @@ impl ScriptDirector {
             let since = g(&tick_name(s)) as u32;
             match info % 4 {
                 PLACED | SEEN => Slot::Placed {
-                    count: (info / 4) as u16,
+                    count: (info % TARGET_UNIT / 4) as u16,
                     alive: g(&alive_name(s)) as u16,
                     seen: info % 4 == SEEN,
                     placed_at: since,
+                    target: (info / TARGET_UNIT) as u8,
                 },
                 DRAINING => Slot::Draining { since },
                 _ => Slot::Free,
@@ -528,6 +568,7 @@ impl ScriptDirector {
                     PlayerState {
                         lives: self.vm.player_var(slot, "lives").unwrap_or(0) as u16,
                         respawning: self.vm.player_var(slot, "respawning") == Some(1),
+                        team: self.vm.player_var(slot, "team").unwrap_or(0) as u8,
                     },
                 );
             }
@@ -546,7 +587,8 @@ impl ScriptDirector {
             next_squad: g("next_squad") as u8,
             wave_actors: g("wave_actors") as u16,
             slots,
-            pool: g("pool") as u16,
+            pools: [g("pool_0") as u16, g("pool_1") as u16],
+            scores: [g("score_0") as u32, g("score_1") as u32],
             players,
             skulls,
             rng: self.vm.ext().rng,
@@ -555,12 +597,25 @@ impl ScriptDirector {
     }
 }
 
+/// A present player: alive, and the game team of its first entry.
+#[derive(Clone, Copy)]
+struct Seen {
+    alive: bool,
+    team: u8,
+}
+
 /// Present players by slot; a slot listed twice counts as alive if either
-/// entry is.
-fn present(seen: &Observed) -> BTreeMap<u8, bool> {
+/// entry is, and keeps its first entry's team.
+fn present(seen: &Observed) -> BTreeMap<u8, Seen> {
     let mut players = BTreeMap::new();
     for player in &seen.players {
-        *players.entry(player.slot).or_insert(false) |= player.alive;
+        players
+            .entry(player.slot)
+            .or_insert(Seen {
+                alive: false,
+                team: player.team,
+            })
+            .alive |= player.alive;
     }
     players
 }
@@ -569,7 +624,8 @@ fn present(seen: &Observed) -> BTreeMap<u8, bool> {
 /// call the script makes becomes a [`Command`].
 struct Host<'a> {
     seen: &'a Observed,
-    present: BTreeMap<u8, bool>,
+    present: BTreeMap<u8, Seen>,
+    teams: u8,
     out: Vec<Command>,
 }
 
@@ -579,7 +635,7 @@ impl Game for Host<'_> {
     }
 
     fn teams(&self) -> Vec<u8> {
-        vec![0]
+        (0..self.teams).collect()
     }
 
     fn labelled(&self, label: &str) -> Vec<Placed> {
@@ -602,8 +658,13 @@ impl Game for Host<'_> {
         let zone = |z: &u32| self.seen.zones.get(*z as usize);
         match (call.entry.id, call.args.as_slice()) {
             (id::ALIVE, [Arg::Player(Some(p))]) => {
-                i32::from(self.present.get(p).copied().unwrap_or(false))
+                i32::from(self.present.get(p).is_some_and(|seen| seen.alive))
             }
+            // A game team is 0 to 7; a present player's, else none.
+            (id::TEAM_OF, [Arg::Player(Some(p))]) => self
+                .present
+                .get(p)
+                .map_or(-1, |seen| i32::from(seen.team.min(7))),
             (id::SQUAD_ALIVE, [Arg::Squad(s)]) => self
                 .seen
                 .actors_alive_by_squad
@@ -613,6 +674,9 @@ impl Game for Host<'_> {
             (id::ZONE_DISTANCE, [Arg::Object(Some(z))]) => {
                 zone(z).map_or(0, |z| i32::try_from(z.distance).unwrap_or(i32::MAX))
             }
+            (id::ZONE_TEAM_DISTANCE, [Arg::Object(Some(z)), Arg::Team(Some(t))]) => zone(z)
+                .and_then(|z| z.team_distance.get(usize::from(*t)))
+                .map_or(0, |&d| i32::try_from(d).unwrap_or(i32::MAX)),
             _ => 0,
         }
     }
@@ -678,6 +742,25 @@ fn command(call: &Call) -> Option<Command> {
         (id::FF_FINISH, [Arg::Bool(won)]) => Command::Finish {
             outcome: if *won { Outcome::Won } else { Outcome::Lost },
         },
+        (id::FF_TARGET, [Arg::Squad(slot), Arg::Team(Some(team))]) => Command::Target {
+            slot: *slot,
+            team: *team,
+        },
+        (id::FF_TEAM_LIVES, [Arg::Team(Some(team)), Arg::Int(pool)]) => Command::TeamLives {
+            team: *team,
+            pool: narrow_u16(*pool)?,
+        },
+        (id::FF_PLAYER_SCORE, [Arg::Player(Some(player)), Arg::Int(points)]) => Command::Score {
+            player: *player,
+            points: u32::try_from(*points).ok()?,
+            reason: ScoreReason::PlayerKill,
+        },
+        (id::FF_TEAM_FINISH, [Arg::Team(team)]) => Command::Finish {
+            outcome: match *team {
+                Some(team) => Outcome::TeamWon { team },
+                None => Outcome::Draw,
+            },
+        },
         _ => return None,
     })
 }
@@ -742,7 +825,10 @@ struct Vars {
     wave: u16,
     next: u16,
     wave_actors: u16,
-    pool: u16,
+    /// Each team's shared pool.
+    pool: [u16; MAX_TEAMS],
+    /// Each team's points.
+    score: [u16; MAX_TEAMS],
     /// Skulls on, one bit per [`SKULLS`] entry.
     skulls: u16,
     started: u16,
@@ -754,12 +840,15 @@ struct Vars {
     registered: u16,
     lives: u16,
     respawning: u16,
+    team: u16,
 }
 
 /// What every handler generator reads.
 struct Gen {
     tys: Vec<Ty>,
     v: Vars,
+    two_teams: bool,
+    player_kill: i32,
     shared: bool,
     pool_start: i32,
     bonus: i32,
@@ -1161,9 +1250,19 @@ fn on_init(g: &Gen) -> Result<Handler, ScriptRefusal> {
     c.store_k(g.v.phase, WARMUP);
     c.store(g.v.phase_tick, until);
     if g.shared {
-        let none = c.kt(Ty::Player, -1);
-        let pool = c.load(g.v.pool);
-        c.act(id::FF_LIVES, vec![none, pool]);
+        if g.two_teams {
+            for t in 0..MAX_TEAMS {
+                let mark = c.mark();
+                let team = team_k(&mut c, t);
+                let pool = c.load(g.v.pool[t]);
+                c.act(id::FF_TEAM_LIVES, vec![team, pool]);
+                c.release(mark);
+            }
+        } else {
+            let none = c.kt(Ty::Player, -1);
+            let pool = c.load(g.v.pool[0]);
+            c.act(id::FF_LIVES, vec![none, pool]);
+        }
     }
     let mask = c.k(0);
     for k in 0..SKULLS.len() {
@@ -1187,6 +1286,15 @@ fn on_join(g: &Gen) -> Result<Handler, ScriptRefusal> {
     c.exit_if(known);
     let yes = c.kt(Ty::Bool, 1);
     c.store_of(g.v.registered, p, yes);
+    // The Firefight team, fixed here: game team 0 is the first, every
+    // other the second.
+    if g.two_teams {
+        let game_team = c.call(id::TEAM_OF, vec![p], Ty::Team);
+        let first = c.cmp_k(CmpOp::Eq, game_team, 0);
+        let side = c.k(1);
+        c.when(first, |c| c.set(side, 0));
+        c.store_of(g.v.team, p, side);
+    }
     if !g.shared {
         let lives = c.k(g.pool_start);
         c.store_of(g.v.lives, p, lives);
@@ -1207,6 +1315,8 @@ fn on_actor_kill(g: &Gen) -> Result<Handler, ScriptRefusal> {
     let points = kill_points(&mut c, g, row);
     let kill = c.kt(Ty::Bool, 0);
     c.act(id::FF_SCORE, vec![killer, points, kill]);
+    let team = c.load_of(g.v.team, killer);
+    credit_team(&mut c, g, team, points);
     c.finish(Event::ActorKill)
 }
 
@@ -1232,8 +1342,54 @@ fn on_actor_assist(g: &Gen) -> Result<Handler, ScriptRefusal> {
     c.when(some, |c| {
         let yes = c.kt(Ty::Bool, 1);
         c.act(id::FF_SCORE, vec![assist, credit, yes]);
+        let team = c.load_of(g.v.team, assist);
+        credit_team(c, g, team, credit);
     });
     c.finish(Event::ActorAssist)
+}
+
+/// `Director::score_players`: with two teams, a kill of a player on the
+/// other team scores the fixed `player_kill`.
+fn on_kill(g: &Gen) -> Result<Handler, ScriptRefusal> {
+    let mut c = Code::new(g, Event::Kill.args());
+    let (victim, killer): (Reg, Reg) = (0, 1);
+    exit_if_done(&mut c, g);
+    let nobody = c.cmp_k(CmpOp::Eq, killer, -1);
+    c.exit_if(nobody);
+    let suicide = c.cmp(CmpOp::Eq, killer, victim);
+    c.exit_if(suicide);
+    let ours = c.load_of(g.v.team, killer);
+    let theirs = c.load_of(g.v.team, victim);
+    let team_kill = c.cmp(CmpOp::Eq, ours, theirs);
+    c.exit_if(team_kill);
+    let points = c.k(g.player_kill);
+    c.act(id::FF_PLAYER_SCORE, vec![killer, points]);
+    credit_team(&mut c, g, ours, points);
+    c.finish(Event::Kill)
+}
+
+/// A `team` register holding Firefight team `t`.
+fn team_k(c: &mut Code, t: usize) -> Reg {
+    c.kt(Ty::Team, t as i32)
+}
+
+/// Adds `value` to the global at `slot`.
+fn add_to(c: &mut Code, slot: u16, value: Reg) {
+    let mark = c.mark();
+    let x = c.load(slot);
+    c.arith_to(x, ArithOp::Add, x, value);
+    c.store(slot, x);
+    c.release(mark);
+}
+
+/// Adds `points` to the score of the Firefight team in `team` (0 or 1).
+fn credit_team(c: &mut Code, g: &Gen, team: Reg, points: Reg) {
+    let first = c.cmp_k(CmpOp::Eq, team, 0);
+    c.when_else(
+        first,
+        |c| add_to(c, g.v.score[0], points),
+        |c| add_to(c, g.v.score[1], points),
+    );
 }
 
 /// `scoring::kill_points` for the points-table row: class points times the
@@ -1306,24 +1462,7 @@ fn on_tick(g: &Gen) -> Result<Handler, ScriptRefusal> {
 
     observe_slots(&mut c, g, tick);
     respawn(&mut c, g);
-
-    // Everyone dead with no respawn coming: lost.
-    let up = c.kt(Ty::Bool, 0);
-    c.each(SetBase::Players, |c, p| {
-        let alive = c.call(id::ALIVE, vec![p], Ty::Bool);
-        let respawning = c.load_of(v.respawning, p);
-        let either = c.or(alive, respawning);
-        c.when(either, |c| c.set(up, 1));
-    });
-    let some = c.cmp_k(CmpOp::Gt, present, 0);
-    let down = c.not(up);
-    let lost = c.and(some, down);
-    c.when(lost, |c| {
-        let no = c.kt(Ty::Bool, 0);
-        c.act(id::FF_FINISH, vec![no]);
-        c.store_k(v.phase, DONE);
-        c.exit();
-    });
+    out_of_lives(&mut c, g, present);
 
     // Cleanup: at the deadline, erase what is left; then the wave ends.
     let ending = c.kt(Ty::Bool, 0);
@@ -1410,6 +1549,144 @@ fn on_tick(g: &Gen) -> Result<Handler, ScriptRefusal> {
     c.finish(Event::Tick)
 }
 
+/// Which Firefight teams have a player present (`here`), and which have
+/// one alive or with a respawn coming (`up`), by the players' fixed teams.
+fn team_presence(c: &mut Code, g: &Gen) -> ([Reg; MAX_TEAMS], [Reg; MAX_TEAMS]) {
+    let v = &g.v;
+    let here = [c.kt(Ty::Bool, 0), c.kt(Ty::Bool, 0)];
+    let up = [c.kt(Ty::Bool, 0), c.kt(Ty::Bool, 0)];
+    c.each(SetBase::Players, |c, p| {
+        let team = c.load_of(v.team, p);
+        let alive = c.call(id::ALIVE, vec![p], Ty::Bool);
+        let respawning = c.load_of(v.respawning, p);
+        let either = c.or(alive, respawning);
+        let first = c.cmp_k(CmpOp::Eq, team, 0);
+        c.when_else(
+            first,
+            |c| {
+                c.set(here[0], 1);
+                c.when(either, |c| c.set(up[0], 1));
+            },
+            |c| {
+                c.set(here[1], 1);
+                c.when(either, |c| c.set(up[1], 1));
+            },
+        );
+    });
+    (here, up)
+}
+
+/// `Director::out_of_lives`: a team present with nobody alive and no
+/// respawn coming is out. One team (or one of two present) out: lost. Both
+/// present: the other team wins, and both out at once is decided.
+fn out_of_lives(c: &mut Code, g: &Gen, present: Reg) {
+    let v = &g.v;
+    if !g.two_teams {
+        let up = c.kt(Ty::Bool, 0);
+        c.each(SetBase::Players, |c, p| {
+            let alive = c.call(id::ALIVE, vec![p], Ty::Bool);
+            let respawning = c.load_of(v.respawning, p);
+            let either = c.or(alive, respawning);
+            c.when(either, |c| c.set(up, 1));
+        });
+        let some = c.cmp_k(CmpOp::Gt, present, 0);
+        let down = c.not(up);
+        let lost = c.and(some, down);
+        c.when(lost, |c| {
+            let no = c.kt(Ty::Bool, 0);
+            c.act(id::FF_FINISH, vec![no]);
+            c.store_k(v.phase, DONE);
+            c.exit();
+        });
+        return;
+    }
+    let (here, up) = team_presence(c, g);
+    let out: [Reg; MAX_TEAMS] = std::array::from_fn(|t| {
+        let down = c.not(up[t]);
+        c.and(here[t], down)
+    });
+    let any = c.or(out[0], out[1]);
+    let both_here = c.and(here[0], here[1]);
+    c.when(any, |c| {
+        c.when_else(
+            both_here,
+            |c| {
+                let both_out = c.and(out[0], out[1]);
+                let winner = c.kt(Ty::Team, 1);
+                c.when_else(
+                    both_out,
+                    |c| {
+                        let decided = decide(c, g);
+                        c.mov(winner, decided);
+                    },
+                    |c| c.when(out[1], |c| c.set(winner, 0)),
+                );
+                c.act(id::FF_TEAM_FINISH, vec![winner]);
+            },
+            |c| {
+                let no = c.kt(Ty::Bool, 0);
+                c.act(id::FF_FINISH, vec![no]);
+            },
+        );
+        c.store_k(v.phase, DONE);
+        c.exit();
+    });
+}
+
+/// `Director::decide`: the winning team by score, then lives left; `none`
+/// for a draw.
+fn decide(c: &mut Code, g: &Gen) -> Reg {
+    let winner = c.kt(Ty::Team, -1);
+    let mark = c.mark();
+    let scores = [c.load(g.v.score[0]), c.load(g.v.score[1])];
+    let lives = [lives_left(c, g, 0), lives_left(c, g, 1)];
+    let ahead = c.cmp(CmpOp::Gt, scores[0], scores[1]);
+    let behind = c.cmp(CmpOp::Lt, scores[0], scores[1]);
+    let more = c.cmp(CmpOp::Gt, lives[0], lives[1]);
+    let fewer = c.cmp(CmpOp::Lt, lives[0], lives[1]);
+    c.when_else(
+        ahead,
+        |c| c.set(winner, 0),
+        |c| {
+            c.when_else(
+                behind,
+                |c| c.set(winner, 1),
+                |c| {
+                    c.when(more, |c| c.set(winner, 0));
+                    c.when(fewer, |c| c.set(winner, 1));
+                },
+            );
+        },
+    );
+    c.release(mark);
+    winner
+}
+
+/// `Director::lives_left`: team `t`'s pool, or its registered players'
+/// own counts.
+fn lives_left(c: &mut Code, g: &Gen, t: usize) -> Reg {
+    let v = &g.v;
+    if g.shared {
+        return c.load(v.pool[t]);
+    }
+    let sum = c.k(0);
+    for slot in 0..16 {
+        let mark = c.mark();
+        let p = c.kt(Ty::Player, slot);
+        let known = c.load_of(v.registered, p);
+        c.when(known, |c| {
+            let team = c.load_of(v.team, p);
+            let ours = c.cmp_k(CmpOp::Eq, team, t as i32);
+            c.when(ours, |c| {
+                let lives = c.load_of(v.lives, p);
+                c.arith_to(sum, ArithOp::Add, sum, lives);
+            });
+        });
+        c.release(mark);
+    }
+    sum
+}
+
 /// `Director::observe_slots`, unrolled over the 16 slots.
 fn observe_slots(c: &mut Code, g: &Gen, tick: Reg) {
     let v = &g.v;
@@ -1420,6 +1697,7 @@ fn observe_slots(c: &mut Code, g: &Gen, tick: Reg) {
         let info = c.load(v.info[s]);
         let four = c.k(4);
         let mode = c.arith(ArithOp::Rem, info, four);
+        // The placed count and the target, kept as they are.
         let count4 = c.arith(ArithOp::Sub, info, mode);
         let unseen = c.cmp_k(CmpOp::Eq, mode, PLACED);
         let was_seen = c.cmp_k(CmpOp::Eq, mode, SEEN);
@@ -1478,56 +1756,82 @@ fn observe_slots(c: &mut Code, g: &Gen, tick: Reg) {
     }
 }
 
-/// `Director::respawn`: a life for each dead player not yet respawning;
-/// with none left, a free respawn only between waves.
+/// `Director::respawn`: a life for each dead player not yet respawning,
+/// from the team's pool or the player's own count; with none left, a free
+/// respawn only between waves.
 fn respawn(c: &mut Code, g: &Gen) {
     let v = &g.v;
     let warmup = phase_is(c, g, WARMUP);
     let intermission = phase_is(c, g, INTERMISSION);
     let between = c.or(warmup, intermission);
-    let shared = g.shared;
     c.each(SetBase::Players, |c, p| {
         let alive = c.call(id::ALIVE, vec![p], Ty::Bool);
         let respawning = c.load_of(v.respawning, p);
         let up = c.or(alive, respawning);
         let down = c.not(up);
         c.when(down, |c| {
-            let lives = if shared {
-                c.load(v.pool)
+            if !g.shared {
+                spend(c, g, p, between, None);
+            } else if g.two_teams {
+                let team = c.load_of(v.team, p);
+                let first = c.cmp_k(CmpOp::Eq, team, 0);
+                c.when_else(
+                    first,
+                    |c| spend(c, g, p, between, Some(0)),
+                    |c| spend(c, g, p, between, Some(1)),
+                );
             } else {
-                c.load_of(v.lives, p)
-            };
-            let left = c.cmp_k(CmpOp::Gt, lives, 0);
-            c.when_else(
-                left,
-                |c| {
-                    let one = c.k(1);
-                    c.arith_to(lives, ArithOp::Sub, lives, one);
-                    if shared {
-                        c.store(v.pool, lives);
-                    } else {
-                        c.store_of(v.lives, p, lives);
-                    }
-                    let yes = c.kt(Ty::Bool, 1);
-                    c.store_of(v.respawning, p, yes);
-                    c.act(id::FF_RESPAWN, vec![p]);
-                    let who = if shared { c.kt(Ty::Player, -1) } else { p };
-                    c.act(id::FF_LIVES, vec![who, lives]);
-                },
-                |c| {
-                    c.when(between, |c| {
-                        let yes = c.kt(Ty::Bool, 1);
-                        c.store_of(v.respawning, p, yes);
-                        c.act(id::FF_RESPAWN, vec![p]);
-                    });
-                },
-            );
+                spend(c, g, p, between, Some(0));
+            }
         });
     });
 }
 
+/// One dead player's respawn: from team `pool`'s shared pool, or (none)
+/// the player's own lives.
+fn spend(c: &mut Code, g: &Gen, p: Reg, between: Reg, pool: Option<usize>) {
+    let v = &g.v;
+    let lives = match pool {
+        Some(t) => c.load(v.pool[t]),
+        None => c.load_of(v.lives, p),
+    };
+    let left = c.cmp_k(CmpOp::Gt, lives, 0);
+    c.when_else(
+        left,
+        |c| {
+            let one = c.k(1);
+            c.arith_to(lives, ArithOp::Sub, lives, one);
+            match pool {
+                Some(t) => c.store(v.pool[t], lives),
+                None => c.store_of(v.lives, p, lives),
+            }
+            let yes = c.kt(Ty::Bool, 1);
+            c.store_of(v.respawning, p, yes);
+            c.act(id::FF_RESPAWN, vec![p]);
+            match pool {
+                Some(t) if g.two_teams => {
+                    let team = team_k(c, t);
+                    c.act(id::FF_TEAM_LIVES, vec![team, lives]);
+                }
+                Some(_) => {
+                    let none = c.kt(Ty::Player, -1);
+                    c.act(id::FF_LIVES, vec![none, lives]);
+                }
+                None => c.act(id::FF_LIVES, vec![p, lives]),
+            }
+        },
+        |c| {
+            c.when(between, |c| {
+                let yes = c.kt(Ty::Bool, 1);
+                c.store_of(v.respawning, p, yes);
+                c.act(id::FF_RESPAWN, vec![p]);
+            });
+        },
+    );
+}
+
 /// `Director::end_wave`: respawn the dead, then the next wave, the next
-/// round with its lives bonus, or the win.
+/// round with its lives bonus, or the end.
 fn end_wave(c: &mut Code, g: &Gen, tick: Reg) {
     let v = &g.v;
     c.each(SetBase::Players, |c, p| {
@@ -1558,12 +1862,22 @@ fn end_wave(c: &mut Code, g: &Gen, tick: Reg) {
                     c.store(v.round, next_round);
                     c.store_k(v.wave, 0);
                     if g.shared {
-                        let pool = c.load(v.pool);
-                        let bonus = c.k(g.bonus);
-                        c.arith_to(pool, ArithOp::Add, pool, bonus);
-                        c.store(v.pool, pool);
-                        let none = c.kt(Ty::Player, -1);
-                        c.act(id::FF_LIVES, vec![none, pool]);
+                        let teams = if g.two_teams { MAX_TEAMS } else { 1 };
+                        for t in 0..teams {
+                            let mark = c.mark();
+                            let pool = c.load(v.pool[t]);
+                            let bonus = c.k(g.bonus);
+                            c.arith_to(pool, ArithOp::Add, pool, bonus);
+                            c.store(v.pool[t], pool);
+                            if g.two_teams {
+                                let team = team_k(c, t);
+                                c.act(id::FF_TEAM_LIVES, vec![team, pool]);
+                            } else {
+                                let none = c.kt(Ty::Player, -1);
+                                c.act(id::FF_LIVES, vec![none, pool]);
+                            }
+                            c.release(mark);
+                        }
                     } else {
                         for slot in 0..16 {
                             let mark = c.mark();
@@ -1581,8 +1895,13 @@ fn end_wave(c: &mut Code, g: &Gen, tick: Reg) {
                     }
                 },
                 |c| {
-                    let yes = c.kt(Ty::Bool, 1);
-                    c.act(id::FF_FINISH, vec![yes]);
+                    if g.two_teams {
+                        let winner = last_round_winner(c, g);
+                        c.act(id::FF_TEAM_FINISH, vec![winner]);
+                    } else {
+                        let yes = c.kt(Ty::Bool, 1);
+                        c.act(id::FF_FINISH, vec![yes]);
+                    }
                     c.store_k(v.phase, DONE);
                     c.jump(won);
                 },
@@ -1595,6 +1914,30 @@ fn end_wave(c: &mut Code, g: &Gen, tick: Reg) {
     c.store_k(v.phase, INTERMISSION);
     c.store(v.phase_tick, until);
     c.bind(won);
+}
+
+/// `Director::last_round_outcome` with two teams: the only team present,
+/// else decided by score and lives (`none` for a draw).
+fn last_round_winner(c: &mut Code, g: &Gen) -> Reg {
+    let (here, _) = team_presence(c, g);
+    let winner = c.kt(Ty::Team, -1);
+    let away = [c.not(here[0]), c.not(here[1])];
+    let only = [c.and(here[0], away[1]), c.and(away[0], here[1])];
+    c.when_else(
+        only[0],
+        |c| c.set(winner, 0),
+        |c| {
+            c.when_else(
+                only[1],
+                |c| c.set(winner, 1),
+                |c| {
+                    let decided = decide(c, g);
+                    c.mov(winner, decided);
+                },
+            );
+        },
+    );
+    winner
 }
 
 /// `Director::start_wave`: a round's first wave announces the round and
@@ -1634,6 +1977,62 @@ fn start_wave(c: &mut Code, g: &Gen) {
     c.store_k(v.phase, SPAWNING);
 }
 
+/// `Director::choose_target`: the only team present, else the one fewer
+/// live actors are sent at, else even squads at team 0. An int, 0 or 1.
+fn choose_target(c: &mut Code, g: &Gen, here: &[Reg; MAX_TEAMS], next: Reg) -> Reg {
+    let v = &g.v;
+    let target = c.k(0);
+    let away = [c.not(here[0]), c.not(here[1])];
+    let only = [c.and(here[0], away[1]), c.and(away[0], here[1])];
+    c.when_else(
+        only[0],
+        |c| c.set(target, 0),
+        |c| {
+            c.when_else(
+                only[1],
+                |c| c.set(target, 1),
+                |c| {
+                    let load = [c.k(0), c.k(0)];
+                    for s in 0..SQUAD_SLOTS {
+                        let mark = c.mark();
+                        let held = placed(c, g, s);
+                        c.when(held, |c| {
+                            let info = c.load(v.info[s]);
+                            let unit = c.k(TARGET_UNIT);
+                            let at = c.arith(ArithOp::Div, info, unit);
+                            let alive = c.load(v.alive[s]);
+                            let first = c.cmp_k(CmpOp::Eq, at, 0);
+                            c.when_else(
+                                first,
+                                |c| c.arith_to(load[0], ArithOp::Add, load[0], alive),
+                                |c| c.arith_to(load[1], ArithOp::Add, load[1], alive),
+                            );
+                        });
+                        c.release(mark);
+                    }
+                    let less = c.cmp(CmpOp::Lt, load[0], load[1]);
+                    let more = c.cmp(CmpOp::Gt, load[0], load[1]);
+                    c.when_else(
+                        less,
+                        |c| c.set(target, 0),
+                        |c| {
+                            c.when_else(
+                                more,
+                                |c| c.set(target, 1),
+                                |c| {
+                                    let two = c.k(2);
+                                    c.arith_to(target, ArithOp::Rem, next, two);
+                                },
+                            );
+                        },
+                    );
+                },
+            );
+        },
+    );
+    target
+}
+
 /// `Director::place`: up to two squads from the reserve, in definition
 /// order, while the next fits under the cap and a slot and a zone are free.
 fn place(c: &mut Code, g: &Gen, tick: Reg, present: Reg) {
@@ -1650,6 +2049,7 @@ fn place(c: &mut Code, g: &Gen, tick: Reg, present: Reg) {
         c.when(within, |c| c.cell_to(cap, T_CAPS, row, 1));
         c.release(mark);
     }
+    let here = g.two_teams.then(|| team_presence(c, g).0);
     let live = live_sum(c, g);
     let wave = wave_row(c, g);
     let first = c.cell(T_WAVES, wave, W_FIRST, Ty::Int);
@@ -1683,18 +2083,24 @@ fn place(c: &mut Code, g: &Gen, tick: Reg, present: Reg) {
         let full = c.cmp_k(CmpOp::Eq, free, -1);
         c.jump_if(full, stop);
 
+        let target = here.map(|here| choose_target(c, g, &here, next));
         let prefer = c.cell(T_SQUADS, row, Q_PREFER, Ty::Int);
-        let zone = choose_zone(c, prefer);
+        let zone = choose_zone(c, prefer, target);
         let nowhere = c.cmp_k(CmpOp::Eq, zone, -1);
         c.jump_if(nowhere, stop);
 
         let four = c.k(4);
         let count4 = c.arith(ArithOp::Mul, count, four);
         let info = c.add_k(count4, PLACED);
+        if let Some(target) = target {
+            let unit = c.k(TARGET_UNIT);
+            let at = c.arith(ArithOp::Mul, target, unit);
+            c.arith_to(info, ArithOp::Add, info, at);
+        }
         for s in 0..SQUAD_SLOTS {
             let inner = c.mark();
-            let here = c.cmp_k(CmpOp::Eq, free, s as i32);
-            c.when(here, |c| {
+            let chosen = c.cmp_k(CmpOp::Eq, free, s as i32);
+            c.when(chosen, |c| {
                 c.store(v.info[s], info);
                 c.store(v.alive[s], count);
                 c.store(v.tick[s], tick);
@@ -1705,6 +2111,10 @@ fn place(c: &mut Code, g: &Gen, tick: Reg, present: Reg) {
         let class = c.cell(T_SQUADS, row, Q_CLASS, Ty::Class);
         let tier = c.cell(T_SQUADS, row, Q_TIER, Ty::Int);
         c.act(id::PLACE_SQUAD_AT, vec![squad, class, count, zone, tier]);
+        if let Some(target) = target {
+            let team = team_of_int(c, target);
+            c.act(id::FF_TARGET, vec![squad, team]);
+        }
         let after = c.add_k(next, 1);
         c.store(v.next, after);
         let placed = c.load(v.wave_actors);
@@ -1716,10 +2126,22 @@ fn place(c: &mut Code, g: &Gen, tick: Reg, present: Reg) {
     c.bind(stop);
 }
 
+/// A `team` register for the Firefight team in the int register `t` (0
+/// or 1).
+fn team_of_int(c: &mut Code, t: Reg) -> Reg {
+    let team = c.kt(Ty::Team, 0);
+    let second = c.cmp_k(CmpOp::Eq, t, 1);
+    c.when(second, |c| c.set(team, 1));
+    team
+}
+
 /// `director::choose_zone` over the labelled drop zones, in kit order: an
 /// unseen preferred zone, else a seeded pick among the farther half of the
-/// unseen zones (of all zones when every one is in sight). -1 for none.
-fn choose_zone(c: &mut Code, prefer: Reg) -> Reg {
+/// unseen zones (of all zones when every one is in sight). With a target
+/// team (an int register, 0 or 1), the candidates narrow to the zones at
+/// least as near that team as the other, when any is, and rank by the
+/// target team's distance. -1 for none.
+fn choose_zone(c: &mut Code, prefer: Reg, target: Option<Reg>) -> Reg {
     let zones = SetBase::Labelled(ZONES);
     let zone = c.k(-1);
     let done = c.label();
@@ -1744,6 +2166,30 @@ fn choose_zone(c: &mut Code, prefer: Reg) -> Reg {
     let n = c.tmp(Ty::Int);
     c.mov(n, unseen);
     c.when(use_all, |c| c.mov(n, all));
+
+    // With a target: the target team's side, and whether to keep to it.
+    let side = target.map(|t| {
+        let ours = team_of_int(c, t);
+        let other = c.k(1);
+        c.arith_to(other, ArithOp::Sub, other, t);
+        let theirs = team_of_int(c, other);
+        let near = c.k(0);
+        c.each(zones, |c, z| {
+            let seen = c.call(id::ZONE_SEEN, vec![z], Ty::Bool);
+            let hidden = c.not(seen);
+            let candidate = c.or(use_all, hidden);
+            c.when(candidate, |c| {
+                let mine = c.call(id::ZONE_TEAM_DISTANCE, vec![z, ours], Ty::Int);
+                let yours = c.call(id::ZONE_TEAM_DISTANCE, vec![z, theirs], Ty::Int);
+                let nearer = c.cmp(CmpOp::Le, mine, yours);
+                c.when(nearer, |c| c.inc(near));
+            });
+        });
+        let use_near = c.cmp_k(CmpOp::Gt, near, 0);
+        c.when(use_near, |c| c.mov(n, near));
+        (ours, theirs, use_near)
+    });
+
     let empty = c.cmp_k(CmpOp::Eq, n, 0);
     c.jump_if(empty, done);
     let n1 = c.add_k(n, 1);
@@ -1752,21 +2198,41 @@ fn choose_zone(c: &mut Code, prefer: Reg) -> Reg {
     let pick = c.k(0);
     let draw = c.cmp_k(CmpOp::Gt, farther, 1);
     c.when(draw, |c| c.call_to(pick, id::RANDOM, vec![farther]));
-    let i = c.k(0);
-    c.each(zones, |c, z| {
+
+    // Whether a zone is a candidate, and its rank key.
+    let candidate_of = |c: &mut Code, z: Reg| -> Reg {
         let seen = c.call(id::ZONE_SEEN, vec![z], Ty::Bool);
         let hidden = c.not(seen);
         let candidate = c.or(use_all, hidden);
+        match side {
+            None => candidate,
+            Some((ours, theirs, use_near)) => {
+                let mine = c.call(id::ZONE_TEAM_DISTANCE, vec![z, ours], Ty::Int);
+                let yours = c.call(id::ZONE_TEAM_DISTANCE, vec![z, theirs], Ty::Int);
+                let nearer = c.cmp(CmpOp::Le, mine, yours);
+                let anywhere = c.not(use_near);
+                let allowed = c.or(anywhere, nearer);
+                c.and(candidate, allowed)
+            }
+        }
+    };
+    let distance_of = |c: &mut Code, z: Reg| -> Reg {
+        match side {
+            None => c.call(id::ZONE_DISTANCE, vec![z], Ty::Int),
+            Some((ours, _, _)) => c.call(id::ZONE_TEAM_DISTANCE, vec![z, ours], Ty::Int),
+        }
+    };
+    let i = c.k(0);
+    c.each(zones, |c, z| {
+        let candidate = candidate_of(c, z);
         c.when(candidate, |c| {
-            let dz = c.call(id::ZONE_DISTANCE, vec![z], Ty::Int);
+            let dz = distance_of(c, z);
             let rank = c.k(0);
             let j = c.k(0);
             c.each(zones, |c, w| {
-                let seen = c.call(id::ZONE_SEEN, vec![w], Ty::Bool);
-                let hidden = c.not(seen);
-                let other = c.or(use_all, hidden);
+                let other = candidate_of(c, w);
                 c.when(other, |c| {
-                    let dw = c.call(id::ZONE_DISTANCE, vec![w], Ty::Int);
+                    let dw = distance_of(c, w);
                     let farther = c.cmp(CmpOp::Gt, dw, dz);
                     c.when_else(
                         farther,

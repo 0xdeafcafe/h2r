@@ -1,0 +1,8 @@
+[
+  {"kind": "FirefightScore", "data": {"tick": 30, "player": 0, "points": 100, "reason": "kill", "class": "elite"}},
+  {"kind": "FirefightScore", "data": {"tick": 45, "player": 2, "points": 100, "reason": "kill", "class": "elite"}},
+  {"kind": "FirefightScore", "data": {"tick": 60, "player": 0, "points": 50, "reason": "player_kill"}},
+  {"kind": "FirefightScore", "data": {"tick": 75, "player": 3, "points": 50, "reason": "player_kill"}},
+  {"kind": "FirefightScore", "data": {"tick": 90, "player": 1, "points": 25, "reason": "assist"}},
+  {"kind": "FirefightEnded", "data": {"tick": 800, "set": "Crossfire", "teams": 2, "outcome": "team_won", "team": 0, "scores": [175, 150], "rounds_cleared": 2, "lives_used": 5}}
+]

@@ -4208,18 +4208,21 @@ registered; with the `firefight` feature off
 |---|---|---|
 | `firefight.state` (read) | `{}` or omitted | `{running, refused?, map?, role?, team?, director?, log?, errors}` |
 | `firefight.command` (act) | `{command?, director?: "hold" \| "run"}`, at least one | `{appended?: {seq, tick}, held, log}` |
-| `firefight.kit` (read) | `{}` or omitted | `{kit, slots, team?, zones: [{index, point, starts}], classes, characters, hunt_order?}` |
+| `firefight.kit` (read) | `{}` or omitted | `{kit, slots, team?, zones: [{index, point, starts}], classes, bases, characters, hunt_orders}` |
 
 **State.** `running` is false outside a multiplayer game, on a map
 without the kit, and with the feature off; `refused` names which (a map
 without the kit: "the map does not carry the Firefight kit"). `role` is
 `host` (the distributed server, a synchronous host, or a game with no
 session), `replica` (a synchronous peer, or a film's playback) or
-`client` (a distributed client). `team` is the actors' team. `director`,
-on the host only: `phase` (`warmup`, `spawning`, `fighting`, `cleanup`,
+`client` (a distributed client). `team` is the actors' team, never a
+player team (with two player teams it is a third). `director`, on the
+host only: `phase` (`warmup`, `spawning`, `fighting`, `cleanup`,
 `intermission`, `done`) with `phase_tick` for the timed ones, `round`
 and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
-`pool`, `live_actors` against `cap`, `players`, `skulls` and `held`.
+`teams` (the player teams, 1 or 2), `pools` and `scores` (each team's
+shared lives and points, one entry per team), `live_actors` against
+`cap`, `players`, `skulls` and `held`.
 `log` is the head (`seq`, `tick`, `hash` in hex) and `applied`, the last
 entry applied here. `errors` holds the latest 16 entries the engine
 refused, each with its `seq` (none for the AI switch), `tick` and
@@ -4227,24 +4230,32 @@ refused, each with its `seq` (none for the AI switch), `tick` and
 
 **Command.** `command` is one director command in the host log's shape
 (externally tagged, snake_case): `place_squad {slot, class, count, zone,
-weapon_tier}`, `hunt {slot}`, `erase_squad {slot}`, `round {index}`,
-`wave {index}`, `skull {id, on}`, `lives {player?, pool}`, `score
-{player, points, reason: kill | assist}`, `respawn {player}` and `finish
-{outcome: won | lost}`. It is appended at the tick after the last one
+weapon_tier}`, `target {slot, team}`, `hunt {slot}`, `erase_squad
+{slot}`, `round {index}`, `wave {index}`, `skull {id, on}`, `lives
+{player?, pool}`, `team_lives {team, pool}`, `score {player, points,
+reason: kill | assist | player_kill}`, `respawn {player}` and `finish
+{outcome: won | lost | {team_won: {team}} | draw}`. `target` picks the
+player team a slot's squad goes for, and its next `hunt` heads for that
+team's base (team 0's until one is set); `team_lives` sets one team's
+shared pool. It is appended at the tick after the last one
 the runtime stepped, with the author `agent`, and applied before that
 tick like the director's own. `director: "hold"` stops the director
 stepping, so only appended commands reach the game; `"run"` starts it
 again. A director change applies before the command. Refusals:
 `UNAVAILABLE` when the mode does not run, `REFUSED` (11) on a client or
 a replica (only the host writes the log), `INVALID_PARAMS` for a command
-of another shape, a class or zone the kit lacks, and params with neither
-field. An engine refusal comes later, in `firefight.state`'s `errors`.
+of another shape, a class or zone the kit lacks, a `target` team the
+kit has no base for, a `team_lives` team above 1, and params with
+neither field. An engine refusal comes later, in `firefight.state`'s `errors`.
 
 **Kit.** Read from the loaded scenario on any machine: `slots` gives
 each of the sixteen slots' scenario squad index (`null` where the kit
 reserves none), `zones` each drop zone's scenario index, point and
 firing position count, `classes` each kit class's character palette row,
-`characters` the palette's rows, and `hunt_order` the `ff_hunt` order.
+`characters` the palette's rows, `bases` each player team's base point
+(base 0 the home base, from the `ff_base_NN` zones) and `hunt_orders`
+the scenario order for each base's hunt (`ff_hunt_00`, `ff_hunt_01`;
+`null` where the kit has none).
 A map without the kit answers `{"kit": false, ...}` with empty lists.
 The kit's version string is not read: the game has no reader for the
 loaded map's string IDs.

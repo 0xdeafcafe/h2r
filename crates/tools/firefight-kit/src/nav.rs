@@ -1,4 +1,5 @@
-//! Generate the engine sectors and choose drop zones on the same polygons.
+//! Generate the engine sectors and choose drop zones and base zones on the
+//! same polygons.
 use std::io::{Read, Seek};
 
 use anyhow::{Context, Result, ensure};
@@ -19,30 +20,69 @@ use tags::{
     structure::InstancedGeometryInstance,
 };
 
+use crate::bases::{self, Bases, Config};
+
 pub(crate) struct Navigation {
     /// Elements for the pathfinding block of each structure BSP, in scenario order.
     pub bsps: Vec<(TagId, Block)>,
+    /// The drop zones, `ff_drop_NN`.
     pub zones: Vec<Zone>,
+    /// One zone per base, `ff_base_NN`, in base order.
+    pub base_zones: Vec<Zone>,
+    pub bases: Bases,
+    /// The starting location rows, each team designator rewritten to the
+    /// index of its nearest base.
+    pub starts: Vec<Vec<u8>>,
 }
 
 const MIN_ZONES: usize = 6;
 const MAX_ZONES: usize = 12;
+/// A firing position keeps this far from every player start.
 const SPAWN_CLEARANCE: f32 = 2.0;
+/// A drop's polygon centre keeps this far from every player start.
+const DROP_START_CLEARANCE: f32 = 4.0;
+/// A drop's polygon centre keeps a quarter of the bases' separation from
+/// each base, within these bounds.
+const BASE_CLEARANCE: (f32, f32) = (2.0, 8.0);
 const BODY_SPACING: f32 = 0.8;
+/// A drop zone samples its polygon and its neighbours within this radius.
+const DROP_RADIUS: f32 = 4.0;
+const DROP_POSITIONS: usize = 4;
+/// A base zone samples polygons up to two links out within this radius.
+const BASE_RADIUS: f32 = 8.0;
+const BASE_POSITIONS: usize = 8;
 
-pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>) -> Result<Navigation> {
+pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Result<Navigation> {
     let scenario = map.scenario().context("map has no scenario")?;
     let scnr = map.read_tag_bytes(scenario.id)?;
-    let starts = metadata_block(map, &scnr, STARTING_LOCATIONS as usize, STARTING_LOCATION)?
-        .into_iter()
-        .map(|row| {
-            std::array::from_fn(|k| f32::from_le_bytes(row[k * 4..k * 4 + 4].try_into().unwrap()))
-        })
-        .collect::<Vec<V3>>();
+    let start_rows = metadata_block(map, &scnr, STARTING_LOCATIONS as usize, STARTING_LOCATION)?;
+    let rows: Vec<bases::StartRow> = start_rows.iter().map(|r| bases::start_row(r)).collect();
+    let starts: Vec<V3> = rows.iter().map(|r| r.position).collect();
     ensure!(
         starts.iter().flatten().all(|x| x.is_finite()),
         "non-finite multiplayer start"
     );
+    let flags: Vec<bases::FlagRow> = metadata_block(
+        map,
+        &scnr,
+        bases::NETGAME_FLAGS as usize,
+        bases::NETGAME_FLAG,
+    )?
+    .iter()
+    .map(|r| bases::flag_row(r))
+    .collect();
+    let found = bases::find(&rows, &flags, config.home).context(
+        "the map has no two bases: no CTF flag stand or starting location for each of teams 0 and 1, and no two distinct starting locations",
+    )?;
+    let teams = bases::start_teams(&found.points, &rows);
+    let rewritten = start_rows
+        .into_iter()
+        .zip(teams)
+        .map(|(mut row, team)| {
+            row[bases::START_TEAM..bases::START_TEAM + 2].copy_from_slice(&team.to_le_bytes());
+            row
+        })
+        .collect();
 
     let mut bsps = Vec::new();
     let mut best = None;
@@ -78,10 +118,16 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>) -> Result<Navigation> {
             let cluster = i16::from_le_bytes(row[..2].try_into().unwrap());
             (0..512).contains(&cluster).then_some(cluster)
         };
-        if let Some(arena) = choose_zones(&pf, &data, &starts, index.try_into()?, cluster)
-            && best
-                .as_ref()
-                .is_none_or(|b: &Arena| arena.rank() > b.rank())
+        if let Some(arena) = choose_zones(
+            &pf,
+            &data,
+            &starts,
+            &found.points,
+            index.try_into()?,
+            cluster,
+        ) && best
+            .as_ref()
+            .is_none_or(|b: &Arena| arena.rank() > b.rank())
         {
             best = Some(arena);
         }
@@ -89,10 +135,18 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>) -> Result<Navigation> {
         bsps.push((id, element));
     }
     ensure!(!bsps.is_empty(), "scenario has no structure BSP");
-    let arena = best.context("need six distinct drop zones off the player starts with a walkable path to a common middle")?;
+    let arena = best.with_context(|| {
+        format!(
+            "need six distinct drop zones off the player starts and both bases ({:?} and {:?}, from {:?}), with a walkable path to each base",
+            found.points[0], found.points[1], found.source
+        )
+    })?;
     Ok(Navigation {
         bsps,
         zones: arena.zones,
+        base_zones: arena.bases,
+        bases: found,
+        starts: rewritten,
     })
 }
 
@@ -105,6 +159,7 @@ struct Arena {
     starts: usize,
     sectors: usize,
     zones: Vec<Zone>,
+    bases: Vec<Zone>,
 }
 
 impl Arena {
@@ -140,10 +195,48 @@ fn walk_graph(pf: &PathfindingData, nav: &NavMesh) -> (Vec<Vec<usize>>, Vec<bool
     (graph, edge)
 }
 
+/// How far a drop keeps from each base: a quarter of the closest two
+/// bases' separation, within [`BASE_CLEARANCE`].
+fn base_clearance(bases: &[V3]) -> f32 {
+    let mut closest = f32::INFINITY;
+    for (i, &a) in bases.iter().enumerate() {
+        for &b in &bases[i + 1..] {
+            closest = closest.min(distance2(a, b).sqrt());
+        }
+    }
+    (closest * 0.25).clamp(BASE_CLEARANCE.0, BASE_CLEARANCE.1)
+}
+
+/// The point a zone at `p` takes cover from: the nearer base, or the
+/// arena's middle on a map without bases.
+fn facing(bases: &[V3], middle: V3, p: V3) -> V3 {
+    if bases.is_empty() {
+        middle
+    } else {
+        bases[bases::nearest(bases, p)]
+    }
+}
+
+/// The cover probe from a firing position at `p`: from half a unit up,
+/// up to two units level toward `toward`.
+fn cover_ray(p: V3, toward: V3) -> (V3, V3) {
+    let d = sub(toward, p);
+    let scale = 2.0 / libm::hypotf(d[0], d[1]).max(2.0);
+    let from = [p[0], p[1], p[2] + 0.5];
+    let to = [from[0] + d[0] * scale, from[1] + d[1] * scale, from[2]];
+    (from, to)
+}
+
+/// The drop zones and, when `bases` are given, one zone per base. A
+/// component qualifies only if it holds every base's polygon, so each drop
+/// has a walkable path to each base. Drops keep off the starts and off both
+/// bases, alternate between the bases' sides, and take cover facing the
+/// nearer base.
 fn choose_zones(
     pf: &PathfindingData,
     data: &MapData,
     starts: &[V3],
+    bases: &[V3],
     bsp: i16,
     cluster: impl Fn(V3) -> Option<i16>,
 ) -> Option<Arena> {
@@ -154,29 +247,41 @@ fn choose_zones(
             spawn_counts[k as usize] += 1;
         }
     }
-    let mut visited = vec![false; graph.len()];
+    let base_polys = bases
+        .iter()
+        .map(|&b| {
+            data.nav
+                .poly_near(b)
+                .map(|k| k as usize)
+                .filter(|&k| k < graph.len())
+        })
+        .collect::<Option<Vec<usize>>>()?;
+    let clearance = base_clearance(bases);
+    let mut owner = vec![usize::MAX; graph.len()];
     let mut best: Option<Arena> = None;
     for root in 0..graph.len() {
-        if visited[root] {
+        if owner[root] != usize::MAX {
             continue;
         }
-        visited[root] = true;
+        owner[root] = root;
         let mut stack = vec![root];
         let mut component = Vec::new();
         while let Some(k) = stack.pop() {
             component.push(k);
             for &next in &graph[k] {
-                if !visited[next] {
-                    visited[next] = true;
+                if owner[next] == usize::MAX {
+                    owner[next] = root;
                     stack.push(next);
                 }
             }
         }
         let players = component.iter().map(|&k| spawn_counts[k]).sum::<usize>();
         // Only player-accessible geometry may supply a drop, even if an
-        // isolated decorative island has more boundary polygons.
+        // isolated decorative island has more boundary polygons. Every base
+        // must be on it, so each drop has a walkable path to each base.
         if players == 0
             || component.len() < MIN_ZONES
+            || base_polys.iter().any(|&k| owner[k] != root)
             || best
                 .as_ref()
                 .is_some_and(|b| b.rank() >= (players, component.len()))
@@ -198,37 +303,61 @@ fn choose_zones(
             .iter()
             .map(|&k| center(k))
             .min_by(|a, b| distance2(*a, mid).total_cmp(&distance2(*b, mid)))?;
-        let mut candidates: Vec<_> = component
-            .iter()
-            .copied()
-            .filter(|&k| edge[k] && center(k) != middle)
-            .collect();
         let sample = ZoneSamples {
             data,
             starts,
             bsp,
-            middle,
             cluster: &cluster,
         };
+        let Some(base_zones) = base_polys
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| sample.base_zone(i, k, bases[i], &graph))
+            .collect::<Option<Vec<Zone>>>()
+        else {
+            continue;
+        };
+        let mut candidates: Vec<_> = component
+            .iter()
+            .copied()
+            .filter(|&k| {
+                let c = center(k);
+                edge[k]
+                    && c != middle
+                    && starts
+                        .iter()
+                        .all(|&s| distance2(c, s) >= DROP_START_CLEARANCE.powi(2))
+                    && bases.iter().all(|&b| distance2(c, b) >= clearance.powi(2))
+            })
+            .collect();
+        let side = |k: usize| bases::nearest(bases, center(k));
         let mut selected = vec![];
         let mut zones = vec![];
         while !candidates.is_empty() && zones.len() < MAX_ZONES {
-            // Spread the drops around the outside of the component. Equal
-            // scores use the lower on-disk sector index on every machine.
+            // Alternate between the bases' sides so each base gets drops,
+            // and spread the drops around the outside of the component.
+            // Equal scores use the lower on-disk sector index on every machine.
+            let wanted = zones.len() % bases.len().max(1);
+            let on_side = |k: usize| bases.is_empty() || side(k) == wanted;
             let score = |k| {
                 selected.iter().fold(distance2(center(k), middle), |d, &p| {
                     d.min(distance2(center(k), p))
                 })
             };
-            candidates
-                .sort_unstable_by(|a, b| score(*a).total_cmp(&score(*b)).then_with(|| b.cmp(a)));
+            candidates.sort_unstable_by(|a, b| {
+                on_side(*a)
+                    .cmp(&on_side(*b))
+                    .then_with(|| score(*a).total_cmp(&score(*b)))
+                    .then_with(|| b.cmp(a))
+            });
             // A rejected polygon cannot become eligible as more drops are
             // added. Discard it before ranking for the next drop.
             while let Some(k) = candidates.pop() {
                 if selected.iter().any(|&p| distance2(center(k), p) < 1.) {
                     continue;
                 }
-                if let Some(zone) = sample.make_zone(k, &graph[k], zones.len()) {
+                let toward = facing(bases, middle, center(k));
+                if let Some(zone) = sample.drop_zone(k, &graph[k], zones.len(), toward) {
                     selected.push(center(k));
                     zones.push(zone);
                     break;
@@ -240,6 +369,7 @@ fn choose_zones(
                 starts: players,
                 sectors: component.len(),
                 zones,
+                bases: base_zones,
             });
         }
     }
@@ -250,24 +380,89 @@ struct ZoneSamples<'a, C> {
     data: &'a MapData,
     starts: &'a [V3],
     bsp: i16,
-    middle: V3,
     cluster: &'a C,
 }
 
+/// How one zone is sampled.
+struct Spec {
+    name: String,
+    area: &'static str,
+    /// Where cover faces.
+    toward: V3,
+    radius: f32,
+    positions: usize,
+    /// A drop zone: its polygon's centre must be a firing position, and no
+    /// position is near a player start. A base zone's are around the starts.
+    drop: bool,
+}
+
 impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
-    fn make_zone(&self, sector: usize, neighbours: &[usize], ordinal: usize) -> Option<Zone> {
+    fn drop_zone(
+        &self,
+        sector: usize,
+        neighbours: &[usize],
+        ordinal: usize,
+        toward: V3,
+    ) -> Option<Zone> {
+        self.zone(
+            sector,
+            neighbours,
+            &Spec {
+                name: format!("ff_drop_{ordinal:02}"),
+                area: "drop",
+                toward,
+                radius: DROP_RADIUS,
+                positions: DROP_POSITIONS,
+                drop: true,
+            },
+        )
+    }
+
+    /// A zone around base `index` at `point`: its polygon and the polygons
+    /// up to two links out, cover facing the base point.
+    fn base_zone(
+        &self,
+        index: usize,
+        sector: usize,
+        point: V3,
+        graph: &[Vec<usize>],
+    ) -> Option<Zone> {
+        let mut near = vec![];
+        for &a in &graph[sector] {
+            for k in std::iter::once(a).chain(graph[a].iter().copied()) {
+                if k != sector && !near.contains(&k) {
+                    near.push(k);
+                }
+            }
+        }
+        self.zone(
+            sector,
+            &near,
+            &Spec {
+                name: format!("ff_base_{index:02}"),
+                area: "base",
+                toward: point,
+                radius: BASE_RADIUS,
+                positions: BASE_POSITIONS,
+                drop: false,
+            },
+        )
+    }
+
+    fn zone(&self, sector: usize, neighbours: &[usize], spec: &Spec) -> Option<Zone> {
         let data = self.data;
         let poly = &data.nav.polys[sector];
         let opts = Options::default();
         let mut positions: Vec<FiringPosition> = vec![];
-        // Sample the interior of the drop polygon and its immediately
-        // connected neighbours. Two separated points permit two actors to
-        // be placed together even when the sector has no neighbour nearby.
+        // Sample the interior of the polygon and its connected neighbours.
+        // Two separated points permit two actors to be placed together even
+        // when the sector has no neighbour nearby.
         let sample = |k: usize, p: V3| -> Option<FiringPosition> {
-            if self
-                .starts
-                .iter()
-                .any(|&s| distance2(p, s) < SPAWN_CLEARANCE.powi(2))
+            if (spec.drop
+                && self
+                    .starts
+                    .iter()
+                    .any(|&s| distance2(p, s) < SPAWN_CLEARANCE.powi(2)))
                 || !data
                     .walls
                     .clear([p[0], p[1], p[2] + 0.02], [p[0], p[1], p[2] + 0.9])
@@ -285,30 +480,29 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 normal: [libm::atan2f(n[1], n[0]), libm::asinf(n[2].clamp(-1., 1.))],
             })
         };
-        positions.push(sample(sector, poly.center)?);
-        let mut others = poly
-            .verts
-            .iter()
-            .map(|v| {
-                (
-                    sector,
-                    std::array::from_fn(|j| (v[j] + poly.center[j]) * 0.5),
-                )
-            })
-            .chain(neighbours.iter().map(|&k| (k, data.nav.polys[k].center)))
-            .filter(|(_, p)| distance2(*p, poly.center) <= 4.0f32.powi(2))
-            .filter_map(|(k, p)| sample(k, p))
-            .collect::<Vec<_>>();
-        // Prefer cover with a nearby wall on the side facing the middle.
+        let mut others = vec![];
+        let centre = sample(sector, poly.center);
+        if spec.drop {
+            positions.push(centre?);
+        } else {
+            others.extend(centre);
+        }
+        others.extend(
+            poly.verts
+                .iter()
+                .map(|v| {
+                    (
+                        sector,
+                        std::array::from_fn(|j| (v[j] + poly.center[j]) * 0.5),
+                    )
+                })
+                .chain(neighbours.iter().map(|&k| (k, data.nav.polys[k].center)))
+                .filter(|(_, p)| distance2(*p, poly.center) <= spec.radius.powi(2))
+                .filter_map(|(k, p)| sample(k, p)),
+        );
+        // Prefer cover: a nearby wall on the side facing `toward`.
         let cover = |p: V3| {
-            let toward = sub(self.middle, p);
-            let scale = 2.0 / libm::hypotf(toward[0], toward[1]).max(2.0);
-            let from = [p[0], p[1], p[2] + 0.5];
-            let to = [
-                from[0] + toward[0] * scale,
-                from[1] + toward[1] * scale,
-                from[2],
-            ];
+            let (from, to) = cover_ray(p, spec.toward);
             data.walls
                 .hit(from, to)
                 .is_some_and(|(_, n)| n[2].abs() < 0.7)
@@ -320,7 +514,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 .all(|q| distance2(q.position, p.position) >= BODY_SPACING.powi(2))
             {
                 positions.push(p);
-                if positions.len() == 4 {
+                if positions.len() == spec.positions {
                     break;
                 }
             }
@@ -343,7 +537,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
             clusters[c / 32] |= 1 << (c % 32);
         }
         let area = Area {
-            name: "drop".into(),
+            name: spec.area.into(),
             flags: 0,
             mean,
             reference_frame: -1,
@@ -354,7 +548,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
             manual_reference_frame: -1,
         };
         Some(Zone {
-            name: format!("ff_drop_{ordinal:02}"),
+            name: spec.name.clone(),
             flags: opts.zone_flags,
             manual_bsp: self.bsp,
             firing_positions: positions,

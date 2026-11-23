@@ -6,6 +6,20 @@ use map::build::{BspField, FixupKind};
 use std::fs;
 use tags::pathfinding::PathfindingData;
 
+/// Invented starts: one by each flag stand on its team, one untagged in the
+/// middle.
+const STARTS: [(f32, f32, i16); 3] = [(3., 13., 0), (25., 15., 1), (14., 14., 8)];
+
+fn start_teams(map: &mut Map<Cursor<&[u8]>>) -> Vec<i16> {
+    let id = map.scenario().unwrap().id;
+    let root = map.read_tag_bytes(id).unwrap();
+    scenario_edit::scene::metadata_block(map, &root, 0x100, 0x34)
+        .unwrap()
+        .iter()
+        .map(|row| i16::from_le_bytes([row[0x10], row[0x11]]))
+        .collect()
+}
+
 fn fixture() -> Vec<u8> {
     let mut set = TagSet::new(CacheType::Multiplayer, "court", r"invented\court");
     for group in [b"scnr", b"bipd", b"weap", b"sbsp"] {
@@ -49,9 +63,30 @@ fn fixture() -> Vec<u8> {
             .tag_id(d + 0x1c, TagId::NULL);
     }
     let mut root = Block::zeroed(0x3e0);
-    let mut start = Block::zeroed(0x34);
-    start.put_f32(0, 14.).put_f32(4, 14.);
-    root.block(0x100, 1, start).block(0x210, 2, descriptors);
+    let mut starts = Block::zeroed(3 * 0x34);
+    for (i, (x, y, team)) in STARTS.into_iter().enumerate() {
+        let at = i as u32 * 0x34;
+        starts
+            .put_f32(at, x)
+            .put_f32(at + 4, y)
+            .put_u16(at + 0x10, team as u16);
+    }
+    // A CTF flag stand at each end, and a flag of another type.
+    let mut flags = Block::zeroed(3 * 0x20);
+    for (i, (x, kind, team)) in [(2., 0u16, 0u16), (14., 1, 0), (26., 0, 1)]
+        .into_iter()
+        .enumerate()
+    {
+        let at = i as u32 * 0x20;
+        flags
+            .put_f32(at, x)
+            .put_f32(at + 4, 14.)
+            .put_u16(at + 0x10, kind)
+            .put_u16(at + 0x12, team);
+    }
+    root.block(0x100, 3, starts)
+        .block(0x118, 3, flags)
+        .block(0x210, 2, descriptors);
     set.tag_mut(scenario).unwrap().payload = TagPayload::Built(root);
     set.build().unwrap().0
 }
@@ -67,10 +102,14 @@ fn two_builds_of_one_map_are_byte_equal() {
             .unwrap()
             .as_nanos()
     ));
-    let first = build_package(&base, "court", Mode::Kit, &dir, "one", false).unwrap();
-    let second = build_package(&base, "court", Mode::Kit, &dir, "two", false).unwrap();
+    let config = Config::default();
+    let first = build_package(&base, "court", Mode::Kit, &config, &dir, "one", false).unwrap();
+    let second = build_package(&base, "court", Mode::Kit, &config, &dir, "two", false).unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(first.costs, second.costs);
+    assert_eq!(first.bases, second.bases);
+    assert_eq!(first.bases.source, Source::FlagStands);
+    assert_eq!(first.bases.points, [[2., 14., 0.], [26., 14., 0.]]);
     let lib = Library::open(&dir);
     assert_eq!(lib.packages().len(), 2);
     let manifest = &lib.packages()[0].manifest;
@@ -97,8 +136,19 @@ fn two_builds_of_one_map_are_byte_equal() {
     let ai = ScenarioAi::read_map(&mut map).unwrap();
     assert_eq!(ai.squads.len(), first.squads);
     assert_eq!(ai.squads.len(), 16);
-    assert_eq!(ai.zones.len(), first.zones);
+    // The drop zones, then one zone per base.
+    assert_eq!(ai.zones.len(), first.zones + 2);
     assert!((6..=12).contains(&first.zones));
+    for (i, zone) in ai.zones.iter().enumerate() {
+        let want = match i.checked_sub(first.zones) {
+            None => format!("ff_drop_{i:02}"),
+            Some(b) => format!("ff_base_{b:02}"),
+        };
+        assert_eq!(zone.name, want);
+    }
+    let orders: Vec<_> = ai.orders.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(orders, ["ff_hunt_00", "ff_hunt_01"]);
+    assert_eq!(start_teams(&mut map), [0, 1, 0]);
     assert!(
         ai.squads
             .iter()
@@ -113,7 +163,7 @@ fn two_builds_of_one_map_are_byte_equal() {
         assert!(!sectors.sectors.is_empty());
         assert!(sectors.validate(None).is_empty());
     }
-    let probe = build_package(&base, "court", Mode::Probe, &dir, "probe", false).unwrap();
+    let probe = build_package(&base, "court", Mode::Probe, &config, &dir, "probe", false).unwrap();
     assert_ne!(probe.id, first.id);
     let lib = Library::open(&dir);
     let p = lib.packages().iter().find(|p| p.id == probe.id).unwrap();
@@ -147,7 +197,7 @@ fn a_map_without_headroom_is_refused_with_the_cost() {
     pin.metadata_size += max - map.header().meta_size;
     let (full, layout) = set.build().unwrap();
     assert_eq!(layout.memory_size, max);
-    let error = build(&full, "court", Mode::Kit)
+    let error = build(&full, "court", Mode::Kit, &Config::default())
         .err()
         .expect("must refuse")
         .to_string();
@@ -172,9 +222,39 @@ fn a_base_without_its_own_elite_is_refused() {
     let id = map.tag(r"objects\characters\elite\elite_mp").unwrap().id;
     set.slots[id.index()].name = Some(r"invented\other_unit".into());
     let base = set.build().unwrap().0;
-    let error = build(&base, "court", Mode::Probe)
+    let error = build(&base, "court", Mode::Probe, &Config::default())
         .err()
         .unwrap()
         .to_string();
     assert!(error.contains("required Elite biped"), "{error}");
+}
+
+#[test]
+fn the_kit_writes_each_start_its_base_team() {
+    let base = fixture();
+    let mut map = Map::from_reader(Cursor::new(&base[..])).unwrap();
+    assert_eq!(start_teams(&mut map), [0, 1, 8]);
+    for (home, teams) in [(Team::Red, [0, 1, 0]), (Team::Blue, [1, 0, 0])] {
+        let built = build(&base, "court", Mode::Kit, &Config { home }).unwrap();
+        let mut map = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
+        // The middle start is as near one base as the other: it takes
+        // the home base.
+        assert_eq!(start_teams(&mut map), teams, "{home:?}");
+        assert_eq!(built.bases.home, home);
+        // The other start fields are the base's.
+        let id = map.scenario().unwrap().id;
+        let root = map.read_tag_bytes(id).unwrap();
+        let rows = scenario_edit::scene::metadata_block(&mut map, &root, 0x100, 0x34).unwrap();
+        for (row, (x, y, _)) in rows.iter().zip(STARTS) {
+            assert_eq!(row[..4], x.to_le_bytes());
+            assert_eq!(row[4..8], y.to_le_bytes());
+        }
+    }
+    let red = build(&base, "court", Mode::Kit, &Config::default()).unwrap();
+    let blue = build(&base, "court", Mode::Kit, &Config { home: Team::Blue }).unwrap();
+    assert_eq!(
+        blue.bases.points,
+        [red.bases.points[1], red.bases.points[0]]
+    );
+    assert_ne!(red.bytes, blue.bytes);
 }

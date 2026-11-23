@@ -6,12 +6,12 @@
 //! other ([`DEFS`], in [`crate::setting_defs::ALL`]). [`Options::read`]
 //! reads them and the runtime starts the match from them
 //! ([`Options::definition`], [`Options::difficulty`]): on or off, which
-//! wave set, how hard, how many lives to start with, and whether each
-//! round switches on a skull.
+//! wave set, one player team or two, how hard, how many lives to start
+//! with, and whether each round switches on a skull.
 //!
 //! **The page** is the shared settings dialog ([`page`],
 //! `crate::ui_kit::settings`), declared by
-//! `assets/ui/screens/firefight.yaml`: five rows over [`DEFS`] on the
+//! `assets/ui/screens/firefight.yaml`: six rows over [`DEFS`] on the
 //! lobby's own settings dialog, Quick Options, as the Clankers page is
 //! (`crate::clankers`). A row opens the value picker on A, and left and
 //! right step through the choices as a shortcut. No row is a "< All >"
@@ -106,8 +106,23 @@ pub static WAVE_SET: Setting = setting(
         choice(0, "holdout", "Holdout"),
         choice(1, "attrition", "Attrition"),
         choice(2, "last_stand", "Last Stand"),
+        choice(3, "crossfire", "Crossfire"),
     ]),
     Value::Int(0),
+);
+/// [`TEAMS`]'s first choice: the wave set's own team count.
+pub const DEFAULT_TEAMS: i64 = 0;
+pub static TEAMS: Setting = setting(
+    "firefight.teams",
+    "Teams",
+    "How many player teams fight: one together against the waves, or two \
+     that also fight each other; Default is the wave set's own.",
+    Kind::Choice(&[
+        choice(DEFAULT_TEAMS, "default", "Default"),
+        choice(1, "one", "One team"),
+        choice(2, "two", "Two teams"),
+    ]),
+    Value::Int(DEFAULT_TEAMS),
 );
 pub static DIFFICULTY: Setting = setting(
     "firefight.difficulty",
@@ -126,7 +141,7 @@ pub const DEFAULT_LIVES: i64 = 0;
 pub static LIVES: Setting = setting(
     "firefight.lives",
     "Starting lives",
-    "How many lives the team starts with; Default is the wave set's own.",
+    "How many lives each team starts with; Default is the wave set's own.",
     Kind::Choice(&[
         choice(DEFAULT_LIVES, "default", "Default"),
         choice(1, "1", "1"),
@@ -148,11 +163,11 @@ pub static SKULLS: Setting = setting(
 );
 
 /// Every Firefight setting, in the page's order.
-pub static DEFS: [&Setting; 5] = [&ENABLED, &WAVE_SET, &DIFFICULTY, &LIVES, &SKULLS];
+pub static DEFS: [&Setting; 6] = [&ENABLED, &WAVE_SET, &TEAMS, &DIFFICULTY, &LIVES, &SKULLS];
 
 /// The Firefight page over `store`: the shared settings dialog
 /// (`crate::ui_kit::settings`) its doc declares,
-/// `assets/ui/screens/firefight.yaml`: its header, its five rows over
+/// `assets/ui/screens/firefight.yaml`: its header, its six rows over
 /// [`DEFS`], their help and picker copy, and the Game Setup row's text
 /// and help (`settings.caller`).
 pub fn page(store: Arc<Store>) -> KitScreen {
@@ -169,6 +184,8 @@ pub struct Options {
     pub enabled: bool,
     /// The position in [`builtin::definitions`].
     pub wave_set: usize,
+    /// The player teams, or the wave set's own.
+    pub teams: Option<u8>,
     pub difficulty: Difficulty,
     /// The starting pool, or the wave set's own.
     pub lives: Option<u16>,
@@ -177,11 +194,13 @@ pub struct Options {
 }
 
 impl Default for Options {
-    /// The settings' defaults: on, Holdout, Normal, its own lives, skulls.
+    /// The settings' defaults: on, Holdout, its own teams, Normal, its own
+    /// lives, skulls.
     fn default() -> Self {
         Options {
             enabled: true,
             wave_set: 0,
+            teams: None,
             difficulty: Difficulty::Normal,
             lives: None,
             skulls: true,
@@ -218,6 +237,11 @@ impl Options {
             3 => Difficulty::Legendary,
             v => return Err(format!("{} is {v}, not a difficulty", DIFFICULTY.key)),
         };
+        let teams = match int(&TEAMS)? {
+            DEFAULT_TEAMS => None,
+            n @ (1 | 2) => Some(n as u8),
+            n => return Err(format!("{} is {n}, not one team or two", TEAMS.key)),
+        };
         let lives = match int(&LIVES)? {
             DEFAULT_LIVES => None,
             n => Some(
@@ -228,19 +252,24 @@ impl Options {
         Ok(Options {
             enabled,
             wave_set,
+            teams,
             difficulty,
             lives,
             skulls,
         })
     }
 
-    /// The definition the match plays: the wave set, with the starting
-    /// pool the page chose and, with skulls off, no skull on any round.
+    /// The definition the match plays: the wave set, played by the teams
+    /// the page chose (`builtin::with_teams`), with the starting pool it
+    /// chose and, with skulls off, no skull on any round.
     pub fn definition(&self) -> Result<Def, String> {
         let mut def = builtin::definitions()
             .get(self.wave_set)
             .cloned()
             .ok_or_else(|| format!("no built-in wave set {}", self.wave_set))?;
+        if let Some(teams) = self.teams {
+            def = builtin::with_teams(def, teams);
+        }
         if let Some(n) = self.lives {
             def.lives.pool_start = n;
         }
@@ -250,6 +279,16 @@ impl Options {
             }
         }
         Ok(def)
+    }
+
+    /// The player teams the match has: the page's choice, else the wave
+    /// set's own (1 for a wave set the build does not have).
+    pub fn player_teams(&self) -> u8 {
+        self.teams.unwrap_or_else(|| {
+            builtin::definitions()
+                .get(self.wave_set)
+                .map_or(1, |def| def.teams)
+        })
     }
 }
 

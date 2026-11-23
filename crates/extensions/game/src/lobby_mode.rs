@@ -224,8 +224,9 @@ pub fn forge_map_pick(saved: Result<Vec<String>, String>, current: Option<&str>)
 // ---- the panel ----
 
 /// The variant panel's lines for the lobby's `mode`: the Forge map, or
-/// Firefight's wave set, difficulty and starting lives (`firefight`, the
-/// options page's choices, or why they cannot be read).
+/// Firefight's wave set with its player teams when there are two, the
+/// difficulty and the starting lives (`firefight`, the options page's
+/// choices, or why they cannot be read).
 pub fn panel_lines(
     mode: Mode,
     forge_map: Option<&str>,
@@ -242,17 +243,17 @@ pub fn panel_lines(
             Some(Err(why)) => vec![format!("Firefight options unread ({why})")],
             Some(Ok(o)) => {
                 let wave = choice_label(&ff::WAVE_SET, o.wave_set as i64);
+                let waves = match o.player_teams() {
+                    1 => format!("{wave} waves"),
+                    n => format!("{wave} waves, {n} teams"),
+                };
                 let difficulty = choice_label(&ff::DIFFICULTY, difficulty_value(o.difficulty));
                 let lives = match o.lives {
                     None => "The wave set's own lives".to_owned(),
                     Some(1) => "1 starting life".to_owned(),
                     Some(n) => format!("{n} starting lives"),
                 };
-                vec![
-                    format!("{wave} waves"),
-                    format!("{difficulty} difficulty"),
-                    lives,
-                ]
+                vec![waves, format!("{difficulty} difficulty"), lives]
             }
         },
     }

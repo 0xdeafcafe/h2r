@@ -8,8 +8,10 @@ states:
     focus: 0
   focus-2:
     focus: 2
-  focus-4:
-    focus: 4
+  focus-3:
+    focus: 3
+  focus-5:
+    focus: 5
 settings:
   host: menu
   icon: skull
@@ -33,20 +35,26 @@ rows:
     text: "Wave set"
     help: "Which set of waves you fight."
     setting: firefight.waveset
-    explain: "Holdout is steady, with lives to spare. Attrition sends more enemies and gives fewer lives. Last Stand sends the most and gives the fewest."
+    explain: "Holdout is steady. Attrition sends more for fewer lives. Last Stand is hardest. Crossfire pits two teams against the waves and each other."
   row.2:
+    kind: value
+    text: "Teams"
+    help: "One team, or two that also fight each other."
+    setting: firefight.teams
+    explain: "One team fights the waves together. Two teams each hold a base and fight the waves and each other. Default is the wave set's own."
+  row.3:
     kind: value
     text: "Difficulty"
     help: "How much a kill scores, by difficulty."
     setting: firefight.difficulty
     explain: "Harder difficulties score more for each kill: Easy 75%, Normal 100%, Heroic 125% and Legendary 150%."
-  row.3:
+  row.4:
     kind: value
     text: "Starting lives"
-    help: "How many lives the team starts with."
+    help: "How many lives each team starts with."
     setting: firefight.lives
-    explain: "The shared pool of lives. Each death takes one, and each round adds a few more. Default uses the wave set's own pool."
-  row.4:
+    explain: "Each team's pool of lives. Each death takes one, and each round adds a few more. Default uses the wave set's own pool."
+  row.5:
     kind: value
     text: "Skulls"
     help: "Whether each round switches on a skull."

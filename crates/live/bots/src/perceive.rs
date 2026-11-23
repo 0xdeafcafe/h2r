@@ -56,7 +56,7 @@ pub(crate) fn observe_for_brain(
     let seen = p
         .others
         .iter()
-        .filter(|o| visible(o.position, CHEST))
+        .filter(|o| !crate::firefight::is_actor(o.id) && visible(o.position, CHEST))
         .fold(0, |mask, o| mask | player_bit(o.id));
     let seen_player = |id| seen & player_bit(id) != 0;
     p.observations
@@ -76,8 +76,14 @@ pub(crate) fn observe_for_brain(
                     .any(|player| player.id == e.player && player.unit == e.unit))
     });
     p.observations.contacts.retain(|c| seen_player(c.id));
-    p.others
-        .retain(|o| (p.teams && p.me.is_some_and(|me| me.team == o.team)) || seen_player(o.id));
+    // Firefight's actors (crate::firefight) have no player bit: one is
+    // kept while in view, never as a teammate.
+    p.others.retain(|o| {
+        if crate::firefight::is_actor(o.id) {
+            return visible(o.position, CHEST);
+        }
+        (p.teams && p.me.is_some_and(|me| me.team == o.team)) || seen_player(o.id)
+    });
     p.observations.ground_grenades.retain(|(at, _)| visible(*at, 0.2));
     p.pickups.retain(|pk| visible(pk.position, 0.2));
     for pk in &mut p.pickups {

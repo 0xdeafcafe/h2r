@@ -272,8 +272,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
-  firefight kit MAP [--probe]  build a Firefight package from a disc map
-                          (docs/game/firefight.md)
+  firefight kit MAP [--home red|blue] [--probe]  build a Firefight package
+                          from a disc map (docs/game/firefight.md)
   map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
   testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
                           placements (docs/runtime/agent-api.md, phase 5)

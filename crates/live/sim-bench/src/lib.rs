@@ -4,7 +4,8 @@
 //! tally ([`bounce`]), the A/B comparison of a batch ([`compare`]) and
 //! the bounce tuning sweep ([`sweep`]), the bounce site training's
 //! plan and report ([`train`]), the seam drops ([`drops`]) and the forked
-//! bounce search ([`bounces`]; docs/runtime/bounce-search.md).
+//! bounce search ([`bounces`]; docs/runtime/bounce-search.md), and a
+//! Firefight match's table, seat rule and report section ([`firefight`]).
 //!
 //! Nothing here touches the game: the boot glue (`boot::sim_glue`) reads
 //! the game and feeds this crate plain values, and `h2 sim` (the CLI) runs
@@ -18,6 +19,7 @@ pub mod compare;
 pub mod config;
 pub mod diff;
 pub mod drops;
+pub mod firefight;
 pub mod metrics;
 pub mod sweep;
 pub mod train;

@@ -1,4 +1,5 @@
-//! Firefight definitions and admission rules for a one-team Slayer match.
+//! Firefight definitions and admission rules for a Slayer match of one
+//! player team, or two that also fight each other, against the AI.
 //!
 //! The definitions carry authored tuning and kit class names. The director
 //! turns a definition and what the host observes into host commands;
@@ -16,7 +17,7 @@ mod wire;
 
 pub use content::Sha256;
 pub use def::*;
-pub use director::{Command, Director, Observed, Outcome, Settings};
+pub use director::{Command, Director, Observed, Outcome, PlayerKill, Settings};
 pub use scoring::ScoreReason;
 pub use script::{ScriptDirector, ScriptRefusal};
 pub use validate::{HOST_ACTOR_CAPS, Limits, validate};

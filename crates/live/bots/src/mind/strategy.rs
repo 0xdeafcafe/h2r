@@ -13,8 +13,11 @@ impl Mind {
         map: Option<&MapData>,
     ) -> (Option<Goal>, Intent) {
         // An outside order (rules-world-api.md, "Bots") is the goal while
-        // it stands, in place of the objective's.
-        let ordered = self.decisions.ordered_goal(p);
+        // it stands, in place of Firefight's and the objective's.
+        // Firefight's (crate::firefight) holds the bot near its home base.
+        let weights = self.profile_weights();
+        let firefight = self.firefight.plan(p, &me, weights);
+        let ordered = self.decisions.ordered_goal(p).or(firefight);
         let goal = ordered.or_else(|| {
             let o = p.objective.as_ref()?;
             let others = juggernaut_quarry(o, seen, &p.others);

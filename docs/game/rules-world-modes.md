@@ -24,7 +24,7 @@ matchmade hopper denies.
 
 | Mode | Engine-specific code | Entries only it uses |
 |---|---|---|
-| Firefight | the director and scoring (`crates/formats/firefight/src/director.rs`, `scoring.rs`); the generator that builds its IR (`src/script.rs`); the host and its log (`crates/extensions/game/src/firefight/host.rs`); the mode blob and HUD view (`firefight/hud.rs`); the sight pass | `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`, `zone_seen`, `zone_distance`, `place_squad_at`; capability `firefight.director` |
+| Firefight | the director and scoring (`crates/formats/firefight/src/director.rs`, `scoring.rs`); the generator that builds its IR (`src/script.rs`); the host and its log (`crates/extensions/game/src/firefight/host.rs`); the mode blob and HUD view (`firefight/hud.rs`); the sight pass | `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`, `ff_target`, `ff_team_lives`, `ff_player_score`, `ff_team_finish`, `zone_seen`, `zone_distance`, `zone_team_distance`, `place_squad_at`; capability `firefight.director` |
 | Superbounce | the medal chain and its rule (`crates/extensions/game/src/superbounce_chain.rs`); the mode's HUD states and navpoint choice (`superbounce_mode.rs`, `superbounce_hud.rs`); the mode switch behind `hud.superbounce`, a capability that gates no entry | `on bounce`, `on bounced` |
 
 ## Firefight

@@ -1,12 +1,17 @@
 //! Authored wave sets for the Elite-only stage-one kit.
 
 use crate::{
-    Caps, Count, Def, DifficultyMultipliers, Drop, FORMAT, Lives, Round, Scoring, Skull, SquadSpec,
-    WAVES_PER_ROUND, Wave,
+    Caps, Count, Def, DifficultyMultipliers, Drop, FORMAT, Lives, MAX_TEAMS, Round, Scoring, Skull,
+    SquadSpec, WAVES_PER_ROUND, Wave,
 };
 
-/// The three built-in wave sets, in menu order.
-pub fn definitions() -> [Def; 3] {
+/// Points for killing a player of the other team in a built-in set played
+/// by two teams: half an Elite.
+pub const PLAYER_KILL_POINTS: u16 = 50;
+
+/// The built-in wave sets, in menu order: three for one team, then
+/// Crossfire for two.
+pub fn definitions() -> [Def; 4] {
     [
         Preset {
             name: "Holdout",
@@ -16,6 +21,7 @@ pub fn definitions() -> [Def; 3] {
             pool: 12,
             bonus: 4,
             skulls: [Skull::Blind, Skull::Famine, Skull::Thunderstorm],
+            teams: 1,
         },
         Preset {
             name: "Attrition",
@@ -25,6 +31,7 @@ pub fn definitions() -> [Def; 3] {
             pool: 8,
             bonus: 3,
             skulls: [Skull::Catch, Skull::Angry, Skull::Mythic],
+            teams: 1,
         },
         Preset {
             name: "Last Stand",
@@ -34,9 +41,33 @@ pub fn definitions() -> [Def; 3] {
             pool: 5,
             bonus: 2,
             skulls: [Skull::Ghost, Skull::Thunderstorm, Skull::Assassins],
+            teams: 1,
+        },
+        Preset {
+            name: "Crossfire",
+            actors: [24, 24, 16],
+            squad_max: 6,
+            gap_ticks: 450,
+            pool: 10,
+            bonus: 3,
+            skulls: [Skull::Famine, Skull::Catch, Skull::Angry],
+            teams: 2,
         },
     ]
     .map(Preset::definition)
+}
+
+/// `def` played by `teams` player teams (1 or 2, clamped): with two, a
+/// player kill scores the set's own points, or [`PLAYER_KILL_POINTS`]
+/// when it has none; with one, nothing.
+pub fn with_teams(mut def: Def, teams: u8) -> Def {
+    def.teams = teams.clamp(1, MAX_TEAMS as u8);
+    def.scoring.player_kill = match (def.teams, def.scoring.player_kill) {
+        (1, _) => 0,
+        (_, 0) => PLAYER_KILL_POINTS,
+        (_, points) => points,
+    };
+    def
 }
 
 struct Preset {
@@ -47,6 +78,7 @@ struct Preset {
     pool: u16,
     bonus: u16,
     skulls: [Skull; 3],
+    teams: u8,
 }
 
 impl Preset {
@@ -81,6 +113,7 @@ impl Preset {
         Def {
             format: FORMAT,
             name: self.name.into(),
+            teams: self.teams,
             rounds,
             lives: Lives {
                 pool_start: self.pool,
@@ -92,6 +125,11 @@ impl Preset {
             },
             scoring: Scoring {
                 by_class: [("elite".into(), 100)].into(),
+                player_kill: if self.teams > 1 {
+                    PLAYER_KILL_POINTS
+                } else {
+                    0
+                },
                 difficulty_multiplier: DifficultyMultipliers {
                     easy: 750,
                     normal: 1_000,

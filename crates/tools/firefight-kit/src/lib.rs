@@ -1,5 +1,7 @@
 //! Build a stage-one Firefight package from the owner's multiplayer cache.
-//! Only the authored character gets a new datum. Scenario and BSP roots keep
+//! The kit arms the map's two bases (`bases`): drop zones keep off them,
+//! one zone and one Hunt order per base, and each starting location takes
+//! its nearest base's team. Only the authored character gets a new datum. Scenario and BSP roots keep
 //! their addresses and point at new block trees in resident tag memory.
 use std::{fmt, io::Cursor, path::Path};
 
@@ -15,9 +17,12 @@ use serde::Serialize;
 use tags::pathfinding::SBSP_PATHFINDING_FIELD;
 
 mod ai;
+mod bases;
 mod nav;
 
-pub const KIT_VERSION: u32 = 1;
+pub use bases::{Bases, Config, Source, Team};
+
+pub const KIT_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -32,6 +37,9 @@ pub struct Costs {
     pub squads: usize,
     pub characters: usize,
     pub scripts: usize,
+    /// The starting locations, when their rewritten rows cannot stay in
+    /// place (0 when they do).
+    pub starts: usize,
     /// Actual increase in header +0x1c, including page rounding and any
     /// relocated tag index. File tables and patch compression do not count.
     pub tag_growth: u32,
@@ -42,12 +50,13 @@ impl fmt::Display for Costs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sectors {} B, zones {} B, squads {} B, characters and palettes {} B, scripts {} B; tag growth {} B, available {} B",
+            "sectors {} B, zones {} B, squads {} B, characters and palettes {} B, scripts {} B, starting locations {} B; tag growth {} B, available {} B",
             self.sectors,
             self.zones,
             self.squads,
             self.characters,
             self.scripts,
+            self.starts,
             self.tag_growth,
             self.available
         )
@@ -57,8 +66,11 @@ impl fmt::Display for Costs {
 pub struct Package {
     pub id: MapId,
     pub costs: Costs,
+    /// Drop zones.
     pub zones: usize,
     pub squads: usize,
+    /// The two bases the kit armed, base 0 the home base.
+    pub bases: Bases,
 }
 
 struct Built {
@@ -66,6 +78,7 @@ struct Built {
     costs: Costs,
     zones: usize,
     squads: usize,
+    bases: Bases,
 }
 
 struct Field {
@@ -112,7 +125,45 @@ fn set_pair(set: &mut TagSet, map: &Map<Cursor<&[u8]>>, field: &Field, address: 
     Ok(())
 }
 
-fn build(base: &[u8], base_name: &str, mode: Mode) -> Result<Built> {
+/// Give each starting location its rewritten team designator in place, when
+/// the rows lie in the scenario's own pinned bytes (where a cache keeps a
+/// tag's child blocks). False when they do not; the caller then writes the
+/// rows as a new block.
+fn starts_in_place(set: &mut TagSet, scenario: TagId, rows: &[Vec<u8>]) -> Result<bool> {
+    use h1campaign::scenario::{STARTING_LOCATION, STARTING_LOCATIONS};
+    let TagPayload::Pinned { address, bytes } = &mut set
+        .tag_mut(scenario)
+        .context("missing pinned scenario")?
+        .payload
+    else {
+        anyhow::bail!("expected a pinned scenario");
+    };
+    let field = STARTING_LOCATIONS as usize;
+    let pair = bytes
+        .get(field..field + 8)
+        .context("starting locations outside the scenario root")?;
+    ensure!(
+        u32::from_le_bytes(pair[..4].try_into()?) as usize == rows.len(),
+        "starting location count changed"
+    );
+    let at = u32::from_le_bytes(pair[4..].try_into()?);
+    let len = rows.len() * STARTING_LOCATION;
+    let Some(start) = at
+        .checked_sub(*address)
+        .map(|o| o as usize)
+        .filter(|&o| o + len <= bytes.len())
+    else {
+        return Ok(false);
+    };
+    let team = bases::START_TEAM..bases::START_TEAM + 2;
+    for (i, row) in rows.iter().enumerate() {
+        let o = start + i * STARTING_LOCATION;
+        bytes[o + team.start..o + team.end].copy_from_slice(&row[team.clone()]);
+    }
+    Ok(true)
+}
+
+fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Built> {
     let mut map = Map::from_reader(Cursor::new(base))?;
     ensure!(
         map.header().cache_type == CacheType::Multiplayer,
@@ -124,8 +175,9 @@ fn build(base: &[u8], base_name: &str, mode: Mode) -> Result<Built> {
     );
     let base_memory = map.header().meta_size;
     let scenario = map.scenario().context("missing scenario")?.id;
-    let nav = nav::prepare(&mut map)?;
+    let nav = nav::prepare(&mut map, config)?;
     let zones = nav.zones.len();
+    let bases = nav.bases;
     let mut set = TagSet::from_map(&mut map)?;
     ensure!(
         set.find(FourCC(*b"char"), ai::ELITE_PATH).is_none(),
@@ -136,8 +188,17 @@ fn build(base: &[u8], base_name: &str, mode: Mode) -> Result<Built> {
     // The version travels in the map, so it participates in the package id
     // even when two revisions happen to write identical AI tuning.
     set.intern(&format!("firefight_kit_v{KIT_VERSION}"))?;
-    let ai =
-        ai::prepare(&mut map, nav.zones, elite, mode == Mode::Probe).map_err(anyhow::Error::msg)?;
+    let ai = ai::prepare(
+        &mut map,
+        nav.zones,
+        nav.base_zones,
+        elite,
+        mode == Mode::Probe,
+    )
+    .map_err(anyhow::Error::msg)?;
+    // Each starting location takes its nearest base's team, so team 0
+    // spawns at the home base and team 1 at the other.
+    let starts_moved = !nav.starts.is_empty() && !starts_in_place(&mut set, scenario, &nav.starts)?;
     set.tag_mut(elite).expect("just added").payload = TagPayload::Built(ai.character);
 
     let mut fields = Vec::new();
@@ -157,6 +218,14 @@ fn build(base: &[u8], base_name: &str, mode: Mode) -> Result<Built> {
     for (offset, count, block) in ai.fields.fields {
         add(scenario, offset as usize, count, block)?;
     }
+    if starts_moved {
+        add(
+            scenario,
+            h1campaign::scenario::STARTING_LOCATIONS as usize,
+            nav.starts.len() as u32,
+            Block::new(nav.starts.concat()),
+        )?;
+    }
     let allocations = set.append_pinned_blocks(&blocks)?;
     let mut costs = Costs::default();
     let mut squads = 0;
@@ -171,6 +240,8 @@ fn build(base: &[u8], base_name: &str, mode: Mode) -> Result<Built> {
             if field.offset == layout::SQUADS.0 {
                 squads = field.count as usize;
             }
+        } else if field.offset == h1campaign::scenario::STARTING_LOCATIONS as usize {
+            costs.starts += bytes;
         } else if [layout::CHARACTER_PALETTE.0, 0x98].contains(&field.offset) {
             costs.characters += bytes;
         } else {
@@ -197,6 +268,7 @@ fn build(base: &[u8], base_name: &str, mode: Mode) -> Result<Built> {
         costs,
         zones,
         squads,
+        bases,
     })
 }
 
@@ -207,11 +279,12 @@ pub fn build_package(
     base: &[u8],
     base_name: &str,
     mode: Mode,
+    config: &Config,
     maps_dir: &Path,
     package_dir: &str,
     replace: bool,
 ) -> Result<Package> {
-    let built = build(base, base_name, mode)?;
+    let built = build(base, base_name, mode, config)?;
     let mut manifest = Manifest::retail(&base_name.to_ascii_lowercase(), Sha256::of(base));
     manifest.package.name = match mode {
         Mode::Kit => format!("Firefight – {base_name}"),
@@ -236,6 +309,7 @@ pub fn build_package(
         costs: built.costs,
         zones: built.zones,
         squads: built.squads,
+        bases: built.bases,
     })
 }
 

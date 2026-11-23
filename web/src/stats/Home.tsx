@@ -388,6 +388,10 @@ function Firefight(props: { sum: StatsSummary }) {
           <div><dt>Rounds Cleared</dt><dd>{num(f().rounds_cleared)}</dd></div>
           <div><dt>Lives Used</dt><dd>{num(f().lives_used)}</dd></div>
           <div><dt>Points Scored</dt><dd>{num(f().score)}</dd></div>
+          <Show when={f().versus.games > 0}>
+            <div><dt>Two-Team Matches</dt><dd>{num(f().versus.games)} ({num(f().versus.wins[0])} Red, {num(f().versus.wins[1])} Blue, {num(f().versus.draws)} drawn)</dd></div>
+            <div><dt>Players Killed</dt><dd>{num(f().player_kills)}</dd></div>
+          </Show>
         </dl>
         <div class="s-home-pair">
           <section class="s-sec">

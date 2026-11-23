@@ -463,7 +463,7 @@ fn run_one(args: Vec<String>) -> Result<()> {
         file.display(),
         m.config.map,
         m.bots.len(),
-        m.game_type.name(),
+        m.game_type_name(),
         report.display()
     );
     let matched = boot::sim_glue::Sim::new(file, m, Some(report.clone()));
@@ -502,7 +502,7 @@ fn sim_game(
         run_id,
         batch_id,
         seed: matched.config.seed.to_string(),
-        gametype: matched.game_type.name().into(),
+        gametype: matched.game_type_name().into(),
         pace: matched.pace.label(),
         bots: matched.resolved_json()["bot"]
             .as_array()
@@ -2173,6 +2173,7 @@ mod tests {
             bounce: None,
             drops: None,
             bounces: None,
+            firefight: None,
         }
     }
 
