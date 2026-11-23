@@ -4257,7 +4257,9 @@ reason: kill | assist | player_kill}`, `respawn {player}` and `finish
 {outcome: won | lost | {team_won: {team}} | draw}`. `target` picks the
 player team a slot's squad goes for, and its next `hunt` heads for that
 team's base (team 0's until one is set); `team_lives` sets one team's
-shared pool. It is appended at the tick after the last one
+shared pool and `lives` the one-team pool or a player's own lives, in
+the director, so its next respawns spend from the new count (a team at 0
+waits for the wave to end). It is appended at the tick after the last one
 the runtime stepped, with the author `agent`, and applied before that
 tick like the director's own. `director: "hold"` stops the director
 stepping, so only appended commands reach the game; `"run"` starts it
@@ -4266,7 +4268,10 @@ again. A director change applies before the command. Refusals:
 a replica (only the host writes the log), `INVALID_PARAMS` for a command
 of another shape, a class or zone the kit lacks, a `target` team the
 kit has no base for, a `team_lives` team above 1, and params with
-neither field. An engine refusal comes later, in `firefight.state`'s `errors`.
+neither field. An engine refusal comes later, in `firefight.state`'s `errors`,
+as does a `lives` or `team_lives` the match keeps no such count for (a
+player's own lives with shared lives, a shared pool with lives each
+player's own, a player the director has not seen).
 
 **Kit.** Read from the loaded scenario on any machine: `slots` gives
 each of the sixteen slots' scenario squad index (`null` where the kit

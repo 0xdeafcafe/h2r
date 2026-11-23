@@ -881,6 +881,50 @@ fn team_lives_and_team_won_reach_the_blob() {
     assert_eq!(view.get(hud::SCORE).unwrap().text, "RED 0 BLUE 0");
 }
 
+/// The engine keeps no team pool, so a `TeamLives` sets the director's:
+/// an operator's empties team 1's pool, which its respawns then spend from
+/// (the director holds them; firefight's `teams.rs` plays it), and the HUD
+/// shows it. A count the match does not keep is refused by entry.
+#[test]
+fn an_operator_team_pool_is_the_one_the_director_spends() {
+    use crate::firefight::hud;
+    let mut game = FakeGame::two_teams();
+    let mut host = Host::start(Role::Host, crossfire(), settings(), &game).unwrap();
+    run(&mut host, &mut game, 0);
+    run(&mut host, &mut game, 1);
+    assert_eq!(host.director().unwrap().state().pools, [10, 10]);
+    host.set_held(true).unwrap();
+    let empty = host.append(2, Command::TeamLives { team: 1, pool: 0 }).unwrap();
+    let own = host
+        .append(
+            2,
+            Command::Lives {
+                player: Some(0),
+                pool: 3,
+            },
+        )
+        .unwrap();
+    let errors = host.pre_tick(2, &mut game);
+    assert_eq!(
+        errors.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [Some(own.seq)],
+        "Crossfire's lives are each team's pool, not a player's own"
+    );
+    assert!(empty.seq < own.seq);
+    assert_eq!(host.director().unwrap().state().pools, [10, 0]);
+    assert_eq!(game.calls.last(), Some(&Call::TeamLives(1, 0)));
+    let mode = hud::Mode::of(host.director().unwrap(), 2, None).unwrap();
+    assert_eq!(mode.lives, hud::Lives::Teams([10, 0]));
+    // A replica keeps no director: the entry is the game's alone.
+    let mut replay = FakeGame::two_teams();
+    let mut replica = Host::start(Role::Replica, crossfire(), settings(), &replay).unwrap();
+    for entry in host.log().since(0) {
+        replica.receive(entry.clone()).unwrap();
+    }
+    assert!(replica.pre_tick(2, &mut replay).is_empty());
+    assert!(replay.calls.contains(&Call::TeamLives(1, 0)));
+}
+
 #[test]
 fn a_draw_ends_the_game() {
     let mut game = FakeGame::two_teams();

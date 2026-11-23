@@ -170,6 +170,22 @@ pub enum HostVariantExt {
     },
 }
 
+/// What a guest knows of its host's Firefight match ([`Hle::host_firefight`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostFirefight {
+    /// No session joined.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read.
+    Unknown { session: String },
+    /// Joined `session`, whose host advertised `firefight` (None: its next
+    /// game is not Firefight); `refreshed` when read just now.
+    Known {
+        session: String,
+        firefight: Option<live_proto::session::Firefight>,
+        refreshed: bool,
+    },
+}
+
 /// What a guest knows of its host's rules IR hash ([`Hle::host_rules`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRules {
@@ -812,6 +828,20 @@ impl Hle {
             },
         }
     }
+    /// What the host of the session this console joined advertised as the
+    /// Firefight match of its next game (docs/game/firefight.md, "Live"):
+    /// [`Hle::joined`]'s answer.
+    pub fn host_firefight(&self, wait: std::time::Duration) -> HostFirefight {
+        match self.joined(wait) {
+            Joined::NotJoined => HostFirefight::NotJoined,
+            Joined::Unknown { session } => HostFirefight::Unknown { session },
+            Joined::Known { session, refreshed } => HostFirefight::Known {
+                session: session.session_id.clone(),
+                firefight: session.advertisement.firefight.clone(),
+                refreshed,
+            },
+        }
+    }
     /// A rules IR blob by its full SHA-256 (64 lowercase hex digits), from
     /// `GET /v1/rules/{hash}/ir` as the first account signed in. Waits at
     /// most `wait` for the server; call with no guest memory held, it never
@@ -943,6 +973,16 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_session_variant_ext(ext)
+    }
+    /// The Firefight match of the game the host starts (docs/game/
+    /// firefight.md, "Live"), or None when it is not Firefight:
+    /// advertisements carry it from now, and open ones are updated at once
+    /// (cleared for None). No guest memory access.
+    pub fn set_session_firefight(&self, firefight: Option<live_proto::session::Firefight>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_firefight(firefight)
     }
     /// The host's rules IR hash (64 lowercase hex digits) for the game it
     /// starts: advertisements carry it from now, and open ones are updated

@@ -1154,6 +1154,22 @@ fn two_team_firefight_balances_omitted_teams() {
     assert_eq!(teams_of(&one), [Some(0), Some(0), Some(0)]);
 }
 
+/// The Firefight examples in docs/runtime/sim-examples stay valid: Holdout
+/// with two Clankers on team 0, and Crossfire with two on each team.
+#[test]
+fn the_firefight_examples_load() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let one = load_match(&dir.join("firefight-beavercreek.toml")).unwrap();
+    let f = one.firefight.unwrap();
+    assert_eq!((f.set, f.teams), (crate::firefight::Set::Holdout, 1));
+    assert_eq!(teams_of(&one), [Some(0), Some(0)]);
+    let two = load_match(&dir.join("firefight-beavercreek-crossfire.toml")).unwrap();
+    let f = two.firefight.unwrap();
+    assert_eq!((f.set, f.teams), (crate::firefight::Set::Crossfire, 2));
+    assert!(two.team_play);
+    assert_eq!(teams_of(&two), [Some(0), Some(1), Some(0), Some(1)]);
+}
+
 #[test]
 fn the_report_has_rounds_and_score() {
     use crate::firefight::FirefightReport;

@@ -9,6 +9,8 @@ license.workspace = true
 anyhow.workspace = true
 bots = { path = "../../live/bots" }
 content.workspace = true
+# The kit version the game and session data share.
+firefight = { path = "../../formats/firefight" }
 h1campaign = { path = "../h1campaign" }
 h1convert = { path = "../h1convert" }
 hs.workspace = true

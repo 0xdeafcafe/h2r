@@ -43,6 +43,7 @@ fn coop(visibility: session::Visibility) -> NewSession {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     }
 }

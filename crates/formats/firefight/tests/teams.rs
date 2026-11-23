@@ -54,6 +54,78 @@ fn two_teams_start_with_a_pool_each_and_spend_their_own() {
     );
 }
 
+/// The engine keeps no team pool: the director's is the pool, and a
+/// `TeamLives` from outside (the host applying an operator's) sets it. A
+/// team set to 0 gets no respawn in a wave; the other spends from the pool
+/// it was given.
+#[test]
+fn a_team_pool_set_from_outside_is_the_one_its_respawns_spend() {
+    let mut director = Director::new(pair_def(3, true), settings(1)).unwrap();
+    let mut world = World::new(2, two_zones());
+    let mut commands = Vec::new();
+    for tick in 0..8 {
+        world.apply(tick);
+        if world.finished.is_some() {
+            break;
+        }
+        if tick == 2 {
+            director.set_team_pool(1, 0).unwrap();
+            director.set_team_pool(0, 5).unwrap();
+            assert_eq!(director.state().pools, [5, 0]);
+        }
+        if tick == 4 {
+            world.players.insert(0, false);
+            world.players.insert(1, false);
+        }
+        let seen = world.observe();
+        let out = director.step(tick, &seen);
+        commands.extend(out.iter().cloned().map(|c| (tick, c)));
+        world.pending = out;
+    }
+    let at_four: Vec<&Command> = commands
+        .iter()
+        .filter(|(t, _)| *t == 4)
+        .map(|(_, c)| c)
+        .collect();
+    assert!(at_four.contains(&&Command::Respawn { player: 0 }));
+    assert!(at_four.contains(&&Command::TeamLives { team: 0, pool: 4 }));
+    assert!(
+        !at_four.contains(&&Command::Respawn { player: 1 }),
+        "team 1's pool is empty: {at_four:?}"
+    );
+    assert!(at_four.contains(&&Command::Finish {
+        outcome: Outcome::TeamWon { team: 0 }
+    }));
+}
+
+/// What a pool set from outside may name: a team the match has, with
+/// shared lives; a player's own lives only when lives are not shared, and
+/// only for a player the director has seen; the one shared pool only with
+/// one team.
+#[test]
+fn pools_set_from_outside_are_refused_where_the_match_keeps_none() {
+    let mut two = Director::new(pair_def(3, true), settings(1)).unwrap();
+    assert!(two.set_team_pool(2, 1).is_err(), "no third player team");
+    assert!(two.set_lives(None, 1).is_err(), "two teams: a team's pool");
+    assert!(two.set_lives(Some(0), 1).is_err(), "shared lives");
+    assert_eq!(two.state().pools, [3, 3]);
+
+    let mut one = Director::new(small_def(3, true), settings(1)).unwrap();
+    assert!(one.set_team_pool(1, 1).is_err(), "one team");
+    one.set_lives(None, 0).unwrap();
+    one.set_team_pool(0, 2).unwrap();
+    assert_eq!(one.state().pools[0], 2);
+
+    let mut own = Director::new(pair_def(3, false), settings(1)).unwrap();
+    assert!(own.set_team_pool(0, 1).is_err(), "each player's own lives");
+    assert!(own.set_lives(Some(0), 7).is_err(), "not seen yet");
+    let mut world = World::new(2, two_zones());
+    let seen = world.observe();
+    own.step(0, &seen);
+    own.set_lives(Some(0), 7).unwrap();
+    assert_eq!(own.state().players[&0].lives, 7);
+}
+
 #[test]
 fn a_team_out_of_lives_loses_to_the_other() {
     let (_, run) = play(pair_def(0, true), 2, 20, |tick, world| {

@@ -716,6 +716,7 @@ mod tests {
             ping_ms: None,
             variant_ext: None,
             rules: None,
+            firefight: None,
             browser: None,
         }
     }

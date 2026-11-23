@@ -186,6 +186,7 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     }
 }

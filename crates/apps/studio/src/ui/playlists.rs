@@ -505,12 +505,14 @@ fn variant_picker(ui: &Ui, view: &EditView<'_>, r: &EditRecord) -> Option<GameVa
         return None;
     };
     let mut picked = None;
-    // A hopper plays scripted variants only: the matchmaking lineup's, and
-    // the saved and loaded ones that run a rules script. The disc's
-    // built-ins run none, so they are not offered.
+    // A hopper plays scripted variants and built-in Firefight sets only:
+    // the matchmaking lineup's, the Firefight sets, and the saved and
+    // loaded ones that run a rules script or name a built-in set. The
+    // disc's built-ins run none, so they are not offered.
     let mut any = false;
     for (title, list) in [
         ("Matchmaking", &c.matchmaking),
+        ("Firefight", &c.firefight),
         ("Saved", &c.saved),
         ("Files", &c.files),
     ] {

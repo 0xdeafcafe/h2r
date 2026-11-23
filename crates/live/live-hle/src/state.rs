@@ -790,6 +790,11 @@ impl State {
         self.sessions
             .set_variant_ext(ext, self.service.as_ref(), session.as_ref());
     }
+    pub fn set_session_firefight(&mut self, firefight: Option<live_proto::session::Firefight>) {
+        let session = self.session();
+        self.sessions
+            .set_firefight(firefight, self.service.as_ref(), session.as_ref());
+    }
     pub fn set_session_rules(&mut self, rules: Option<String>) {
         let session = self.session();
         self.sessions

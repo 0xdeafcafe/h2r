@@ -34,6 +34,18 @@ fn golden_hash_for_the_builtin_defs() {
     }
 }
 
+/// A mode-1 variant names its set by the first eight bytes of its id:
+/// each built-in is found by its own, an unknown prefix by none.
+#[test]
+fn each_builtin_is_found_by_its_hash_prefix() {
+    for def in builtin::definitions() {
+        let id = def.id().unwrap();
+        let prefix: [u8; 8] = id.0[..8].try_into().unwrap();
+        assert_eq!(builtin::by_prefix(prefix).as_ref(), Some(&def), "{}", def.name);
+    }
+    assert_eq!(builtin::by_prefix([0x5a; 8]), None);
+}
+
 #[test]
 fn a_wave_over_the_cap_is_refused() {
     let [mut def, ..] = builtin::definitions();

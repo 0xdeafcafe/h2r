@@ -7,10 +7,11 @@ by `h2-editor`'s playlist tool (`crates/apps/studio`):
   Live server's rules) and writing back byte-exact.
 - `catalog`: the multiplayer maps a record can name, read from the user's
   disc.
-- `choices`: the variant picker's matchmaking variants, saves and
-  `.h2variant` files. A hopper plays scripted variants only
-  (`model::needs_script`), so the disc's built-ins are listed but never
-  usable.
+- `choices`: the variant picker's matchmaking variants, the built-in
+  Firefight wave sets (`choices::firefight_record`, Crossfire with team
+  play), saves and `.h2variant` files. A hopper plays scripted variants
+  and built-in Firefight sets only (`model::needs_script`), so the disc's
+  built-ins are listed but never usable.
 - `presets`: historical Xbox Live lineups, resolved against the disc.
 - `session`: `HopperSession`, the open file with undo, the map list and
   the picker's sources, reading and writing both forms of the file.

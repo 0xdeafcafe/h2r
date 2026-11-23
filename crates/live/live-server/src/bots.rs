@@ -330,7 +330,10 @@ impl Live {
     /// their own level and its skill (`rank::bot_skill`); any gap is filled
     /// with made-up bots at the mean level. Without one (a custom game),
     /// every bot is made up, at the request's skill (Normal when absent).
-    /// `team` is left to the host, which balances by skill.
+    /// `team` is left to the host, which balances by skill, except in a
+    /// Firefight session (its advertisement names a `firefight` match):
+    /// there every bot takes a player team by [`firefight_seats`], never
+    /// the AI's.
     pub async fn roster_bots(
         &self,
         bearer: Option<&str>,
@@ -352,7 +355,7 @@ impl Live {
         {
             return Err(invalid("playlist must be [A-Za-z0-9_-]{1,64}"));
         }
-        let (count, picked, mean, kept) = {
+        let (count, picked, mean, kept, firefight) = {
             let s = self.model.read();
             // A handoff: the earlier session's bots first, as they were.
             let kept: Vec<(Issued, u8, f32)> = match &req.carry_from {
@@ -371,6 +374,7 @@ impl Live {
                 .get(&req.session_id)
                 .filter(|v| v.host_xuid == host)
                 .ok_or_else(|| not_found("no session of yours by that id"))?;
+            let firefight = session.advertisement.firefight.as_ref().map(|f| f.teams);
             let humans: Vec<Xuid> = std::iter::once(host)
                 // The session's players include the bots the host
                 // reported (§9.5): they are not humans.
@@ -391,7 +395,7 @@ impl Live {
             }
             let kept: Vec<(Issued, u8, f32)> = kept.into_iter().take(count).collect();
             if kept.len() == count {
-                (count, Vec::new(), None, kept)
+                (count, Vec::new(), None, kept, firefight)
             } else {
                 let need = count - kept.len();
                 let (picked, mean) = match &req.playlist {
@@ -421,7 +425,7 @@ impl Live {
                     }
                     None => (Vec::new(), None),
                 };
-                (count, picked, mean, kept)
+                (count, picked, mean, kept, firefight)
             }
         };
         let made = self.issue(count - kept.len() - picked.len(), false).await?;
@@ -440,17 +444,21 @@ impl Live {
                     .map(|(b, level)| (b, level, skill_at(level))),
             )
             .collect();
+        // The session knows its humans, not their teams: the bots balance
+        // among themselves.
+        let seats = firefight.map(|teams| firefight_seats(teams, [0, 0], entries.len()));
         let rostered = Rostered {
             session_id: req.session_id.clone(),
             host,
             playlist: req.playlist.clone(),
             bots: entries
                 .iter()
-                .map(|(b, level, skill)| RosteredBot {
+                .enumerate()
+                .map(|(i, (b, level, skill))| RosteredBot {
                     xuid: b.xuid,
                     persistent: b.persistent,
                     level: *level,
-                    team: None,
+                    team: seats.as_ref().map(|s| s[i]),
                     skill: *skill,
                 })
                 .collect(),
@@ -500,6 +508,27 @@ impl Live {
         }
         self.issue(count as usize, true).await
     }
+}
+
+/// The player team each of `count` Clankers takes in a Firefight match of
+/// `teams` player teams (docs/game/firefight.md, "Live"), in roster order:
+/// each joins the team with fewer players, counting `players` already on
+/// teams 0 and 1 and the bots seated before it, team 0 on a tie. With one
+/// team (or any count but 2) every bot is on team 0. Never another team:
+/// the AI's team is never a seat. Both Live homes use it (the Worker
+/// composes this handler).
+pub fn firefight_seats(teams: u8, players: [usize; 2], count: usize) -> Vec<u8> {
+    if teams != 2 {
+        return vec![0; count];
+    }
+    let mut on = players;
+    (0..count)
+        .map(|_| {
+            let team = usize::from(on[1] < on[0]);
+            on[team] += 1;
+            team as u8
+        })
+        .collect()
 }
 
 // ---------- route handlers ----------
@@ -567,4 +596,23 @@ pub(crate) async fn post_admin_bots(
         StatusCode::CREATED,
         &json!({"bots": bots, "position": live.position()}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::firefight_seats;
+
+    #[test]
+    fn firefight_seats_balance_two_teams_and_fill_one() {
+        assert_eq!(firefight_seats(1, [0, 0], 4), [0, 0, 0, 0]);
+        assert_eq!(firefight_seats(2, [0, 0], 5), [0, 1, 0, 1, 0]);
+        // Players already seated count: the short team fills first.
+        assert_eq!(firefight_seats(2, [3, 1], 4), [1, 1, 0, 1]);
+        assert_eq!(firefight_seats(2, [0, 2], 3), [0, 0, 0]);
+        assert!(firefight_seats(2, [0, 0], 0).is_empty());
+        // Only the player teams, whatever the count.
+        for teams in 0..=4 {
+            assert!(firefight_seats(teams, [1, 0], 15).iter().all(|&t| t <= 1));
+        }
+    }
 }
