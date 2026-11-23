@@ -26,7 +26,10 @@ pub fn valid_id(id: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum AttributeValue {
-    Integer(u64),
+    /// Written as a JSON number up to 2^53 and as a decimal string above:
+    /// signed events go through canonical JSON (RFC 8785), whose numbers are
+    /// doubles, and Halo 2 sets several attributes to `u64::MAX`.
+    Integer(#[serde(with = "safe_u64")] u64),
     String(String),
     Blob(Vec<u8>),
     Null,
@@ -1356,5 +1359,61 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(s.advertisement.visibility, Visibility::Friends);
+    }
+}
+
+/// A u64 that survives canonical JSON ([`AttributeValue::Integer`]): a
+/// number while a double holds it exactly, a decimal string beyond. Reads
+/// a number, a string, or a double already rounded by an older writer
+/// (saturating, so `u64::MAX` written as `18446744073709552000` reads back).
+mod safe_u64 {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    const EXACT: u64 = 1 << 53;
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        if *v <= EXACT {
+            s.serialize_u64(*v)
+        } else {
+            s.serialize_str(&v.to_string())
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Int(u64),
+        Text(String),
+        Float(f64),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        match Wire::deserialize(d)? {
+            Wire::Int(v) => Ok(v),
+            Wire::Text(t) => t.parse().map_err(D::Error::custom),
+            Wire::Float(f) if f.is_finite() && f >= 0.0 && f.fract() == 0.0 => Ok(f as u64),
+            Wire::Float(f) => Err(D::Error::custom(format!("{f} is not a u64"))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod safe_u64_tests {
+    use super::AttributeValue;
+
+    #[test]
+    fn large_integers_survive_canonical_json() {
+        for v in [0, 1, 32767, (1 << 53) - 1, 1 << 53, (1 << 53) + 1, u64::MAX] {
+            let a = AttributeValue::Integer(v);
+            let text = crate::jcs::to_canonical(&a).unwrap();
+            let back: AttributeValue = serde_json::from_str(&text).unwrap();
+            assert_eq!(back, a, "{text}");
+        }
+        // A double an older writer rounded u64::MAX to still reads.
+        let old: AttributeValue =
+            serde_json::from_str(r#"{"type":"integer","value":18446744073709552000}"#).unwrap();
+        assert_eq!(old, AttributeValue::Integer(u64::MAX));
+        let small: AttributeValue = serde_json::from_str(r#"{"type":"integer","value":15}"#).unwrap();
+        assert_eq!(small, AttributeValue::Integer(15));
     }
 }

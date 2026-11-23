@@ -1200,7 +1200,9 @@ Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 `slots` (`public_filled`, `public_open`, `private_filled`, `private_open`),
 `attributes` (an object keyed by decimal attribute ID), `flags` (default
 `custom`, also `hopper`, `ranked` or `coop`), and optional `hopper_id`, `map`, `name`,
-`language`. Attribute values are `{type: "integer", value: <u64>}`,
+`language`. Attribute values are `{type: "integer", value: <u64>}` (a
+number up to 2^53 and a decimal string above it, since signed events use
+canonical JSON whose numbers are doubles; a reader takes either),
 `{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
 `{type: "null"}`, and optional `visibility` (`public`, the default and
 omitted on the wire; `friends`; `invite`) and `map_id` (64 hex digits,
