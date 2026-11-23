@@ -183,10 +183,15 @@ fn ticks(film: &Session, guest: &runtime::Guest, n: u64) {
 /// A game on the tape from tick `start` to now, ended: the next slice's
 /// check cuts it, as boot's slice loop does.
 fn end_game(film: &Session, start: u64, slices: u64) {
+    end_game_as(film, start, slices, film::blam::Mode::Custom, "zanzibar")
+}
+
+/// [`end_game`] with the game's mode and level, as the descriptor read them.
+fn end_game_as(film: &Session, start: u64, slices: u64, mode: film::blam::Mode, level: &str) {
     {
         let mut s = film.lock();
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
-        rec.meta.start_for_test(start, "zanzibar");
+        rec.meta.start_for_test(start, level, mode);
         rec.game_started_ms = Some(1_795_000_000_000 + start);
         rec.match_over = true;
     }
@@ -364,4 +369,103 @@ fn a_session_that_played_no_game_leaves_no_default_film() {
     let named_path = dir.0.join("named.h2film");
     local(&dir, &named_path, false).finish(5, true).unwrap();
     assert!(film::LibraryEntry::read(&named_path).is_ok(), "an explicit film still seals");
+}
+
+#[test]
+fn a_campaign_mission_ends_into_a_film_like_a_multiplayer_game() {
+    let dir = Temp::new("campaign");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    end_game_as(&auto, 10, 80, film::blam::Mode::Campaign, "deltahalo");
+    let films = cut_films(&dir.0);
+    assert_eq!(films.len(), 1, "the mission's film is cut at its end");
+    let entry = film::LibraryEntry::read(&films[0].0).unwrap();
+    assert_eq!(entry.meta.map, "deltahalo");
+    assert_eq!(films[0].1.front.as_ref().unwrap().match_start_tick, Some(10));
+    // Firefight is a variant of a game, not a mode of its own: the same cut.
+    ticks(&auto, &crate::theater::tests::arena(), 10);
+    end_game_as(&auto, 50, 100, film::blam::Mode::Custom, "guardhouse");
+    assert_eq!(cut_films(&dir.0).len(), 2);
+    auto.finish(110, true).unwrap();
+    assert!(!tape.exists());
+}
+
+#[test]
+fn a_session_that_goes_away_without_a_teardown_cuts_the_game_in_play() {
+    let dir = Temp::new("seal");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    // The boot loop holds one across its slice loop, so an error exit or a
+    // panic that skips the final finish still seals the session.
+    let seal = auto.seal_on_drop().expect("a default recording seals on drop");
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Campaign);
+    }
+    seal.advance(79);
+    drop(seal);
+    assert!(!tape.exists(), "the tape goes as a teardown would");
+    let films = cut_films(&dir.0);
+    assert_eq!(films.len(), 1);
+    assert_eq!(films[0].1.header.meta.length_ticks, 40);
+
+    // Only a default recording seals this way: an explicit film and a
+    // replay manage their own sealing.
+    assert!(
+        local(&dir, &dir.0.join("named.h2film"), false)
+            .seal_on_drop()
+            .is_none()
+    );
+    let replay = Session::open(
+        None,
+        Some(crate::theater::Replay {
+            verification: None,
+            path: films[0].0.clone(),
+            cache: None,
+            unpaced: false,
+            render_every: 0,
+            speed: 1.,
+            seek_tick: 0,
+            from_tick: None,
+            seek_source: None,
+            paused_at_target: false,
+            presentation: crate::theater::Presentation::default(),
+            restart: dir.0.join("restart"),
+            camera: Default::default(),
+            window_closed: None,
+        }),
+        Facts {
+            light: false,
+            ..host_facts()
+        },
+        b"xbe",
+        &options(&dir.data()),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(replay.seal_on_drop().is_none());
+}
+
+#[test]
+fn an_unsealed_tape_a_stopped_session_left_is_never_listed() {
+    let dir = Temp::new("unsealed");
+    let tape = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
+    // A session a hard kill caught mid-game: the tape holds ticks but was
+    // never sealed, cut or discarded.
+    fs::write(&tape, [0u8; 4096]).unwrap();
+    assert!(
+        film::LibraryEntry::read(&tape).is_err(),
+        "the unsealed tape is never listed"
+    );
+    let library = film::Library::open(&dir.0).unwrap();
+    assert!(library.list().unwrap().is_empty(), "Recent shows only sealed films");
+    // The prune is what removes it, after the abandoned interval.
+    assert!(
+        prune(&dir.0, KEEP, SystemTime::now() + ABANDONED_AFTER)
+            .unwrap()
+            .contains(&tape)
+    );
 }

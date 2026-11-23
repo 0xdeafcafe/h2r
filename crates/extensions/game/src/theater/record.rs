@@ -83,6 +83,11 @@ pub(super) struct CapturePoints {
     next_attempt: u64,
     ordinal: u64,
     last_reason: Option<String>,
+    /// The reason set of the last printed deferral line
+    /// ([`reason_set`]).
+    printed: Option<String>,
+    /// Deferred attempts since a capture last landed.
+    deferrals: u64,
     ram_anchor: Option<RamAnchor>,
 }
 
@@ -97,8 +102,13 @@ impl CapturePoints {
 
     /// Free the cut game's RAM anchor. The next game's first snapshot
     /// starts a new group; the capture ordinals carry on with the tape.
+    /// The next game's captures also start with a clean deferral slate:
+    /// the last game's line must not mute this one's.
     pub(super) fn release_anchor(&mut self) {
         self.ram_anchor = None;
+        self.printed = None;
+        self.deferrals = 0;
+        self.last_reason = None;
     }
 
     fn mark(&mut self, tick: u64) -> u64 {
@@ -107,11 +117,29 @@ impl CapturePoints {
         self.ordinal
     }
 
-    fn deferred(&mut self, tick: u64, why: String) {
-        if self.last_reason.as_deref() != Some(why.as_str()) {
-            eprintln!("theater: capture at tick {tick} deferred: {why}");
-            self.last_reason = Some(why);
-        }
+    /// Record a deferred attempt and return the line to print, if this
+    /// reason set has not printed since the last capture landed
+    /// ([`CapturePoints::captured`]). [`Session::try_capture_point`]
+    /// prints it.
+    fn deferred(&mut self, tick: u64, why: String) -> Option<String> {
+        self.deferrals += 1;
+        self.last_reason = Some(why.clone());
+        let set = reason_set(&why);
+        (self.printed.as_deref() != Some(set.as_str())).then(|| {
+            self.printed = Some(set);
+            format!("theater: capture at tick {tick} deferred: {why}")
+        })
+    }
+
+    /// A capture landed, a barrier with or without a keyframe: close the
+    /// deferral gap. Returns the line to print when one was open.
+    fn captured(&mut self) -> Option<String> {
+        let line = (self.deferrals != 0)
+            .then(|| format!("theater: captures resumed after {} deferrals", self.deferrals));
+        self.deferrals = 0;
+        self.printed = None;
+        self.last_reason = None;
+        line
     }
 
     pub(super) fn snapshot(
@@ -158,10 +186,21 @@ impl CapturePoints {
             Ok(())
         });
         match result {
-            Ok(()) => self.last_reason = None,
+            Ok(()) => self.captured(),
             Err(error) => self.deferred(tick, format!("{error:#}")),
         }
+        .map(|line| eprintln!("{line}"));
     }
+}
+
+/// The deferral line is keyed by the set of reasons, not their order: the
+/// kernel reports its blockers in whatever order its threads answer, so
+/// one deferral alternates strings tick to tick.
+fn reason_set(why: &str) -> String {
+    let mut reasons: Vec<&str> = why.split(", ").collect();
+    reasons.sort_unstable();
+    reasons.dedup();
+    reasons.join(", ")
 }
 
 pub(super) struct SnapshotCapture {
@@ -234,6 +273,16 @@ impl SnapshotCapture {
 }
 
 impl Recording {
+    /// Whether a game is on the tape: captures belong to games
+    /// (docs/game/film-format.md, "Recording every game"). Outside one
+    /// (main menu, lobby, pregame, Theater, settings) no keyframe or
+    /// snapshot is attempted, so the tape takes no capture material. The
+    /// descriptor's match start appears when a game starts and is cleared
+    /// when its film is cut or it is left ([`CapturePoints::release_anchor`]).
+    fn in_game(&self) -> bool {
+        self.meta.descriptor().match_start_tick.is_some()
+    }
+
     pub(super) fn post_tick(
         &mut self,
         guest: &runtime::Guest,
@@ -343,7 +392,7 @@ impl Session {
         let s = self.lock();
         !s.complete
             && s.failure.is_none()
-            && matches!(&s.mode, Mode::Record(r) if r.frame.actions.is_none()
+            && matches!(&s.mode, Mode::Record(r) if r.in_game() && r.frame.actions.is_none()
                 && r.frame.events.is_empty() && r.frame.points.due(s.tick) && !r.match_over)
     }
 
@@ -362,7 +411,8 @@ impl Session {
             let Mode::Record(rec) = &mut s.mode else {
                 return;
             };
-            if rec.match_over
+            if !rec.in_game()
+                || rec.match_over
                 || rec.frame.actions.is_some()
                 || !rec.frame.events.is_empty()
                 || !rec.frame.points.due(tick)
@@ -378,8 +428,10 @@ impl Session {
         let started = std::time::Instant::now();
         let result: Result<()> = self.with_keyframe(|| {
             if let Err(error) = self.capture_ready(machine) {
-                if let Mode::Record(rec) = &mut self.lock().mode {
-                    rec.frame.points.deferred(tick, error.to_string());
+                if let Mode::Record(rec) = &mut self.lock().mode
+                    && let Some(line) = rec.frame.points.deferred(tick, error.to_string())
+                {
+                    eprintln!("{line}");
                 }
                 return Err(error);
             }
@@ -420,7 +472,9 @@ impl Session {
                 let points = &mut rec.frame.points;
                 let ordinal = points.mark(tick);
                 if let Err(error) = device {
-                    points.deferred(tick, error.clone());
+                    if let Some(line) = points.deferred(tick, error.clone()) {
+                        eprintln!("{line}");
+                    }
                     anyhow::bail!("{error}");
                 }
                 let Some(capture) = points.snapshot(
@@ -430,6 +484,11 @@ impl Session {
                     rec.sidecar.as_ref(),
                     Some(&rec.disk),
                 ) else {
+                    // A barrier without a keyframe still closes a deferral
+                    // gap: the attempt landed.
+                    if let Some(line) = points.captured() {
+                        eprintln!("{line}");
+                    }
                     return Ok(());
                 };
                 (capture, mark_offset, calls)
@@ -463,5 +522,74 @@ impl Session {
         if let Some(run) = &mut self.lock().measurements {
             run.capture(tick, slices, started, result.err().map(|error| error.to_string()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The owner's repeating line: the kernel names its two continuations
+    /// in alternating order, so the joined blocker string changes every
+    /// tick while the deferral stays the same.
+    const CONTINUATIONS: [&str; 2] = [
+        "kernel: thread 2: continuation feature: after hooks -> 0xa0fa30bc",
+        "kernel: thread 2: continuation feature: after hooks -> 0xa0fc1000",
+    ];
+
+    #[test]
+    fn a_deferral_prints_once_per_reason_set_until_a_capture_lands() {
+        let mut points = CapturePoints::default();
+        let menus = |a: usize, b: usize| {
+            [
+                CONTINUATIONS[a],
+                CONTINUATIONS[b],
+                "features: pause-rows: not audited for snapshots",
+                "features: pause-mp-rows: not audited for snapshots",
+            ]
+            .join(", ")
+        };
+        let first = menus(0, 1);
+        assert_eq!(
+            points.deferred(3463, first.clone()),
+            Some(format!("theater: capture at tick 3463 deferred: {first}"))
+        );
+        // The same four reasons in the other order stay quiet.
+        for tick in [3464, 3465, 3466] {
+            assert!(points.deferred(tick, menus(1, 0)).is_none());
+        }
+        // A new reason joins the set: one line for it, then quiet again.
+        let grown = format!("{first}, d3d: push-buffer busy");
+        assert!(points
+            .deferred(3467, grown.clone())
+            .is_some_and(|l| l.ends_with("d3d: push-buffer busy")));
+        assert!(points.deferred(3468, grown).is_none());
+
+        // The capture lands: one resume line naming the gap, then nothing.
+        assert_eq!(
+            points.captured(),
+            Some("theater: captures resumed after 6 deferrals".to_string())
+        );
+        assert!(points.captured().is_none());
+        // The same deferral prints again after the resume.
+        assert!(points.deferred(4000, menus(0, 1)).is_some());
+    }
+
+    #[test]
+    fn a_new_game_starts_a_clean_deferral_slate() {
+        let mut points = CapturePoints::default();
+        let why = [CONTINUATIONS[0], "features: pause-rows: not audited for snapshots"].join(", ");
+        assert!(points.deferred(300, why.clone()).is_some());
+        points.release_anchor();
+        // The cut game's line does not mute the next game's.
+        assert_eq!(
+            points.deferred(5000, why.clone()),
+            Some(format!("theater: capture at tick 5000 deferred: {why}"))
+        );
+        assert_eq!(
+            points.captured(),
+            Some("theater: captures resumed after 1 deferrals".to_string())
+        );
+        assert!(points.last_reason.is_none());
     }
 }

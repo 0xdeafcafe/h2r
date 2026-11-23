@@ -232,6 +232,57 @@ fn a_save_writes_the_parts_in_order_and_a_load_puts_them_back_in_order() {
     assert!(!path.exists());
 }
 
+/// A feature whose after hooks give its chain a return shadow.
+struct Ticker;
+
+impl hooks::Feature for Ticker {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("ticker", "test")
+    }
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        b.frame().on_tick("count", |_| {});
+        Ok(())
+    }
+}
+
+#[test]
+fn a_deferred_after_hooks_continuation_names_its_point() {
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+    registry.add(&Ticker).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap();
+    let chain = plan.chains.values().next().unwrap();
+    let shadow = chain.shadow.expect("an after hook needs a shadow");
+    let blocker = kernel::quiesce::Blocker::Continuation {
+        thread: 2,
+        origin: hooks::install::AFTER_HOOKS,
+        target: shadow,
+    };
+    let text = kernel_blocker(&blocker, &plan);
+    assert!(
+        text.starts_with(&format!(
+            "thread 2: continuation feature: after hooks -> {shadow:#010x} (after hooks on "
+        )),
+        "{text}"
+    );
+    assert!(text.contains("ticker:count"), "{text}");
+    // Any other origin, and any other blocker, stays as the kernel wrote it.
+    assert_eq!(
+        kernel_blocker(
+            &kernel::quiesce::Blocker::Continuation {
+                thread: 2,
+                origin: "kernel: DPC return",
+                target: shadow,
+            },
+            &plan
+        ),
+        format!("thread 2: continuation kernel: DPC return -> {shadow:#010x}")
+    );
+    assert_eq!(
+        kernel_blocker(&kernel::quiesce::Blocker::Stopped, &plan),
+        "machine stopped"
+    );
+}
+
 #[test]
 fn a_v4_kernel_keyframe_is_refused_before_the_live_and_guest_parts_run() {
     const STACK: u32 = 0x10000;
@@ -248,12 +299,16 @@ fn a_v4_kernel_keyframe_is_refused_before_the_live_and_guest_parts_run() {
     };
     let mut machine = kernel::Machine::new(rt, kernel, cpu, STACK, STACK + SIZE).unwrap();
     let rebuilders = kernel::snapshot::Rebuilders::new();
+    let no_hooks = hooks::Registry::new(hooks::Switches::defaults())
+        .build(&hooks::Base)
+        .unwrap();
     let w = World::new("kcore-version");
     let mut parts = w.machine(0).parts;
     parts.retain(|part| matches!(part.name(), "guest" | "livefilm"));
     parts.push(Box::new(KernelPart {
         m: &mut machine,
         rebuilders: &rebuilders,
+        plan: &no_hooks,
         prepared: None,
     }));
     let mut out = SnapshotWriter::new(Header {

@@ -215,6 +215,14 @@ impl Feature for Settings {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Snapshots: nothing to save. The rows are drawn from guest memory
+        // on each call, and the feature holds no host state between calls;
+        // an answer still in flight is a kernel continuation, which blocks
+        // a snapshot on its own (kernel `quiesce.rs`), and a load restores
+        // the guest this reads. Without this the features forbid every
+        // keyframe for the whole session, in games too, not only while the
+        // pause menu is up.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         let mode = self.0;
         let text = match mode {
             Mode::Campaign => &points::PAUSE_ROW_TEXT,

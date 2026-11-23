@@ -58,7 +58,10 @@ use std::{
     collections::BTreeSet,
     fs::File,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -230,6 +233,30 @@ pub struct Session {
     require_upload: bool,
     recording_account: std::sync::OnceLock<Option<live_hle::films::sync::Sync>>,
     film_sync: std::sync::OnceLock<Box<dyn Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync>>,
+}
+
+/// Cuts the game in play and discards the tape when it drops
+/// ([`Session::seal_on_drop`]). It only locks the session, as every tap
+/// does.
+pub struct Seal {
+    session: Arc<Session>,
+    slices: AtomicU64,
+}
+
+impl Seal {
+    /// Name the last slice the owner finished, so a forced seal cuts
+    /// there. Cheap enough to call every slice.
+    pub fn advance(&self, slices: u64) {
+        self.slices.store(slices, Ordering::Relaxed);
+    }
+}
+
+impl Drop for Seal {
+    fn drop(&mut self) {
+        if let Err(error) = self.session.finish(self.slices.load(Ordering::Relaxed), true) {
+            eprintln!("theater: sealing the recording on exit: {error:#}");
+        }
+    }
 }
 impl Session {
     pub fn sync_library(&self, sync: impl Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync + 'static) {
@@ -515,6 +542,22 @@ impl Session {
         }
         s.fail(format!("{why}; this session's film is discarded"));
         s.discard_auto();
+    }
+
+    /// Cut and discard a default recording when its owner goes away without
+    /// a teardown (docs/game/film-format.md, "One film per game"). The boot
+    /// loop holds one across its whole slice loop: an error exit or a panic
+    /// that skips the final [`Session::finish`] still cuts the game in play
+    /// and deletes the tape, where an abandoned unsealed tape would keep
+    /// neither. [`Seal::advance`] names the last finished slice; the seal
+    /// does nothing once the recording completed or failed on its own.
+    /// `None` for anything but a default recording.
+    pub fn seal_on_drop(self: &Arc<Self>) -> Option<Seal> {
+        let s = self.lock();
+        (!self.replaying && s.header.player_features && !s.complete).then(|| Seal {
+            session: Arc::clone(self),
+            slices: AtomicU64::new(0),
+        })
     }
 
     pub fn render_hooks(&self) -> film::RenderHooks {
