@@ -25,7 +25,7 @@ pub use validate::{HOST_ACTOR_CAPS, Limits, validate};
 /// The Firefight map kit's version (`firefight_kit` writes it into the map
 /// it builds, so it is part of the package's id). Session data names it
 /// (`live_proto::session::Firefight::kit`) so every machine plays one kit.
-pub const KIT_VERSION: u32 = 2;
+pub const KIT_VERSION: u32 = 3;
 
 pub type Result<T> = std::result::Result<T, Refusal>;
 

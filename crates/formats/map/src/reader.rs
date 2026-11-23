@@ -124,13 +124,35 @@ impl<R: Read + Seek> Map<R> {
         if &ih[28..32] != b"sgat" {
             return Err(Error::Invalid("tag-index signature"));
         }
-        let index_base = word(&ih, 0)
+        // The table that follows the 32-byte header anchors the index: the
+        // groups, or the entries when the groups were moved to the end of
+        // the ordinary metadata to give them room (`TagSet::relocate_groups`).
+        let (groups_at, entries_at) = (word(&ih, 0), word(&ih, 8));
+        let anchor = if entries_at != 0 && entries_at < groups_at {
+            entries_at
+        } else {
+            groups_at
+        };
+        let index_base = anchor
             .checked_sub(32)
             .ok_or(Error::Invalid("group table address"))?;
         let index_space = address_space(index_base, index, header.index_size)?;
+        // A table outside the index region is in the ordinary metadata
+        // (base: index base + header `+0x1c` - `+0x18`).
+        let in_metadata = |address: u32, bytes: u32| -> Result<u64> {
+            let base = index_base
+                .checked_add(header.meta_size)
+                .and_then(|b| b.checked_sub(header.tag_data_size))
+                .ok_or(Error::Invalid("metadata base"))?;
+            address_space(base, meta_offset, metadata_size)?.translate(address, bytes)
+        };
         let group_count = word(&ih, 4);
         let group_bytes = table_size(group_count, 12)?;
-        let group_offset = index_space.translate(word(&ih, 0), group_bytes)?;
+        let group_offset = match index_space.translate(groups_at, group_bytes) {
+            Ok(o) => o,
+            Err(e) if anchor == entries_at => in_metadata(groups_at, group_bytes).map_err(|_| e)?,
+            Err(e) => return Err(e),
+        };
         let group_data = read_at(&mut reader, base, length, group_offset, group_bytes.into())?;
         let groups: Vec<_> = group_data
             .as_chunks::<12>()
@@ -150,18 +172,13 @@ impl<R: Read + Seek> Map<R> {
         // The entry table normally follows the groups; a map whose entries
         // outgrew its index region keeps them at the end of the ordinary
         // metadata (base: index base + header `+0x1c` - `+0x18`).
-        let tag_offset = match index_space.translate(word(&ih, 8), tag_bytes) {
+        let tag_offset = match index_space.translate(entries_at, tag_bytes) {
             Ok(o) => o,
-            Err(e) => {
-                let base = index_base
-                    .checked_add(header.meta_size)
-                    .and_then(|b| b.checked_sub(header.tag_data_size))
-                    .ok_or(e)?;
-                address_space(base, meta_offset, metadata_size)?
-                    .translate(word(&ih, 8), tag_bytes)?
-            }
+            Err(_) => in_metadata(entries_at, tag_bytes)?,
         };
-        if tag_offset < group_offset + u64::from(group_bytes) {
+        if tag_offset < group_offset + u64::from(group_bytes)
+            && group_offset < tag_offset + u64::from(tag_bytes)
+        {
             return Err(Error::Invalid("tag table overlaps groups"));
         }
         let tag_data = read_at(&mut reader, base, length, tag_offset, tag_bytes.into())?;

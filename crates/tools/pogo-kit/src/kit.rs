@@ -349,6 +349,7 @@ pub fn model(source: &Source, mesh: &Mesh) -> Result<src::Model> {
         shaders: vec![src::ShaderRef {
             group: h1map::Group::new(b"soso"),
             tag: h1map::TagId(0),
+            permutation: 0,
         }],
     })
 }

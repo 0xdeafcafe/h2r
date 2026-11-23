@@ -252,12 +252,33 @@ time (Design, **V** offline):
   untouched, and the old entries are zeroed. The reader follows the
   pointer into the metadata (base from header `+0x1c - +0x18`), and
   `from_map` of such a map works (the old table becomes unowned bytes).
-  Groups may grow only into the old entries' space.
+  Groups may grow only into the old entries' space;
+- with `TagSet::relocate_groups` (off by default), when the entries fit
+  from the index header's end to the old entries' end, the group table
+  moves to the end of the ordinary metadata instead (16-aligned, sorted,
+  the header's `+0` pointing there) and the entries start at
+  `0x80061020`. It costs 12 bytes a group (1.4 KB on a retail map) where
+  moving the entries costs 16 bytes a tag (about 80 KB on Zanzibar's
+  5023). Room for `12 × groups / 16` new tags (88 on a retail map); past
+  that, the entries move. The reader takes the index base from the entry
+  pointer when it is below the group pointer.
+  `BuildLayout::index_in_metadata` says how many index bytes went to the
+  metadata in either case. Tests:
+  `a_live_tail_can_move_the_groups_instead_of_the_entries`.
 
-Neither has been loaded by the game. Clearing the tail risks whatever the
-tail is for; moving the table risks an engine that expects the entries in
-the index region (the index header's explicit pointer suggests it reads
-them through the pointer). Retail proof, nothing written:
+The retail tail after the entries is not padding: on Zanzibar its
+`0x3f068` bytes are almost all nonzero and look like DXT-compressed
+texels (S). Clearing it risks whatever reads it; moving the entry table
+risks an engine that expects the entries in the index region (the index
+header's explicit pointer suggests it reads them through the pointer; the
+engine reads entries through `0x4e3b44`, which `cache_tags_load`
+publishes, docs/engine/tag_get_checked.md).
+Moving the groups risks a reader of the group table other than through
+the header's `+0` pointer, which `tag_group_find` (`0x122d00`, E) uses.
+Converted Halo 1 multiplayer maps move the entries
+([multiplayer.md](../halo1/multiplayer.md)); the Firefight kit moves the
+groups ([firefight.md](../game/firefight.md)). No game run has checked
+the groups move yet. Retail proof, nothing written:
 `H2_DISC=disc/halo2.iso cargo test --release -p tags --test map_build retail_maps_gain_tags -- --ignored --nocapture`
 adds 500 tags (a new group, string IDs) to lockout and 01a_tutorial, with
 the tail kept and cleared: every old tag reads back byte-identical at its

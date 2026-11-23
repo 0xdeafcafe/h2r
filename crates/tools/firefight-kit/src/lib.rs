@@ -33,7 +33,13 @@ pub enum Mode {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Costs {
+    /// The pathfinding of every structure BSP: sectors, links, vertices,
+    /// one ref per collision surface, the element.
     pub sectors: usize,
+    /// Sectors generated from the walkable collision surfaces, and of
+    /// them the ones kept: what the AI can use (`nav::usable_sectors`).
+    pub sectors_generated: usize,
+    pub sectors_kept: usize,
     pub zones: usize,
     pub squads: usize,
     pub characters: usize,
@@ -41,23 +47,53 @@ pub struct Costs {
     /// The starting locations, when their rewritten rows cannot stay in
     /// place (0 when they do).
     pub starts: usize,
-    /// Actual increase in header +0x1c, including page rounding and any
-    /// relocated tag index. File tables and patch compression do not count.
+    /// The part of the tag index the new character's entry pushes into
+    /// the ordinary metadata (`map::build::BuildLayout::index_in_metadata`):
+    /// the group table, or the whole entry table when the groups' room is
+    /// not enough.
+    pub index: usize,
+    /// Alignment between the parts and the rounding of the metadata to a
+    /// page: the rest of the growth.
+    pub padding: usize,
+    /// Actual increase in header +0x1c: every part above. File tables and
+    /// patch compression do not count.
     pub tag_growth: u32,
     pub available: u32,
+}
+
+impl Costs {
+    /// The parts, largest first.
+    fn parts(&self) -> [(&'static str, usize); 8] {
+        let mut parts = [
+            ("sectors", self.sectors),
+            ("zones", self.zones),
+            ("squads", self.squads),
+            ("characters and palettes", self.characters),
+            ("scripts", self.scripts),
+            ("starting locations", self.starts),
+            ("tag index", self.index),
+            ("padding", self.padding),
+        ];
+        parts.sort_by_key(|&(_, bytes)| std::cmp::Reverse(bytes));
+        parts
+    }
 }
 
 impl fmt::Display for Costs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sectors {} B, zones {} B, squads {} B, characters and palettes {} B, scripts {} B, starting locations {} B; tag growth {} B, available {} B",
+            "sectors {} B ({} of {} generated kept), zones {} B, squads {} B, characters and palettes {} B, scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
             self.sectors,
+            self.sectors_kept,
+            self.sectors_generated,
             self.zones,
             self.squads,
             self.characters,
             self.scripts,
             self.starts,
+            self.index,
+            self.padding,
             self.tag_growth,
             self.available
         )
@@ -185,6 +221,10 @@ fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Bu
         "base already carries a Firefight character"
     );
     set.add_group(FourCC(*b"char"), None, None);
+    // A retail index has no room for the new entry before its tail: move
+    // the group table (12 bytes a group) rather than the entry table (16
+    // bytes a tag, about 80 KB).
+    set.relocate_groups = true;
     let elite = set.add_tag(FourCC(*b"char"), ai::ELITE_PATH, TagPayload::Empty)?;
     // The version travels in the map, so it participates in the package id
     // even when two revisions happen to write identical AI tuning.
@@ -228,7 +268,11 @@ fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Bu
         )?;
     }
     let allocations = set.append_pinned_blocks(&blocks)?;
-    let mut costs = Costs::default();
+    let mut costs = Costs {
+        sectors_generated: nav.trim.generated,
+        sectors_kept: nav.trim.kept,
+        ..Costs::default()
+    };
     let mut squads = 0;
     for (field, (address, bytes)) in fields.iter().zip(allocations) {
         set_pair(&mut set, &map, field, address)?;
@@ -255,15 +299,23 @@ fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Bu
     set.check_tag_memory = false;
     let (bytes, layout) = set.build()?;
     costs.characters += layout.tags[elite.index()].1 as usize;
+    costs.index = layout.index_in_metadata as usize;
     costs.tag_growth = layout
         .memory_size
         .checked_sub(base_memory)
         .context("pinned map unexpectedly shrank")?;
+    costs.padding = (costs.tag_growth as usize)
+        .saturating_sub(costs.parts().iter().map(|&(_, bytes)| bytes).sum::<usize>());
     costs.available = max_metadata_size(CacheType::Multiplayer)?.saturating_sub(base_memory);
-    ensure!(
-        costs.tag_growth <= costs.available,
-        "Firefight kit exceeds tag headroom: {costs}"
-    );
+    if costs.tag_growth > costs.available {
+        let (biggest, bytes) = costs.parts()[0];
+        anyhow::bail!(
+            "Firefight kit exceeds tag headroom by {} B; the biggest part is {biggest} ({bytes} B), after trimming the sectors to the {} of {} generated the AI can use: {costs}",
+            costs.tag_growth - costs.available,
+            costs.sectors_kept,
+            costs.sectors_generated,
+        );
+    }
     Ok(Built {
         bytes,
         costs,

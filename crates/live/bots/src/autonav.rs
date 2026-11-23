@@ -303,15 +303,7 @@ fn build_map_with<R: Read + Seek>(
     }
     let placements = traversals::Placements::read(&view, map)?;
     let pads = pads::read(&view, map)?;
-    let starts: Vec<_> = view
-        .block(view.bytes(), 0x100, 0x34)
-        .map_err(|x| e(&x))?
-        .into_iter()
-        .map(|r| {
-            std::array::from_fn(|k| f32::from_le_bytes(r[k * 4..k * 4 + 4].try_into().unwrap()))
-        })
-        .filter(|p: &[f32; 3]| p.iter().all(|v| v.is_finite()))
-        .collect();
+    let starts = scenario_starts(&view)?;
     let mut out = Vec::with_capacity(bsps.len());
     for id in bsps {
         let tag = map.tag(id).map_err(|x| e(&x))?.clone();
@@ -325,11 +317,7 @@ fn build_map_with<R: Read + Seek>(
         let at = coll.first().ok_or("a BSP has no collision")?.as_ptr() as usize - b.as_ptr() as usize;
         let bsp = tags::collision::Bsp::decode_structure(&b, loc.address, at).map_err(|x| e(&x))?;
         let mut data = cache::build_with(&bsp, threads)?;
-        placements.add_links(&mut data);
-        // In the map: what the player starts and weapon pads reach without
-        // a glitch (nav::NavMesh::mark_out_of_map), after the rides.
-        let seeds: Vec<_> = starts.iter().copied().chain(pads.iter().map(|p| p.at)).collect();
-        data.nav.mark_out_of_map(&seeds);
+        link_and_mark(&mut data, &placements, &starts, &pads);
         data.places = crate::places::Places::build_with(&data.nav, &data.walls, &starts, threads);
         data.places.pads = pads
             .iter()
@@ -339,6 +327,59 @@ fn build_map_with<R: Read + Seek>(
         out.push(data);
     }
     Ok(out)
+}
+
+/// The scenario's player starts (`+0x100`, 0x34 each), the finite ones.
+fn scenario_starts(view: &tags::geometry::TagView<'_>) -> Result<Vec<[f32; 3]>, String> {
+    Ok(view
+        .block(view.bytes(), 0x100, 0x34)
+        .map_err(|x| x.to_string())?
+        .into_iter()
+        .map(|r| {
+            std::array::from_fn(|k| f32::from_le_bytes(r[k * 4..k * 4 + 4].try_into().unwrap()))
+        })
+        .filter(|p: &[f32; 3]| p.iter().all(|v| v.is_finite()))
+        .collect())
+}
+
+/// Link the scenario's rides into `data`'s mesh, then mark out of the map
+/// what the player starts and weapon pads do not reach without a glitch
+/// (`nav::NavMesh::mark_out_of_map`). Returns how many polygons are out.
+fn link_and_mark(
+    data: &mut MapData,
+    placements: &traversals::Placements,
+    starts: &[[f32; 3]],
+    pads: &[crate::places::PowerPad],
+) -> usize {
+    placements.add_links(data);
+    let seeds: Vec<_> = starts
+        .iter()
+        .copied()
+        .chain(pads.iter().map(|p| p.at))
+        .collect();
+    data.nav.mark_out_of_map(&seeds)
+}
+
+/// Mark which polygons of one structure BSP's mesh are in the map, as
+/// [`build_map`] does for the bots: the scenario's teleporters, lifts and
+/// elevators are linked in, and a polygon is in when a player start or a
+/// weapon pad reaches it without a glitch (docs/game/bots.md, "3.2
+/// Navigation"). `data` is a mesh from [`cache::build_with_pathfinding`] or
+/// [`cache::build`] for one of `map`'s BSPs. Returns how many polygons are
+/// out; with no start or pad on this BSP, none are.
+pub fn mark_in_map<R: Read + Seek>(
+    map: &mut map::Map<R>,
+    data: &mut MapData,
+) -> Result<usize, String> {
+    use tags::geometry::TagView;
+    let scenario = map.scenario().ok_or("no scenario")?.clone();
+    let location = scenario.location.ok_or("the scenario has no payload")?;
+    let bytes = map.read_tag_bytes(scenario.id).map_err(|x| x.to_string())?;
+    let view = TagView::new(&bytes, location.address);
+    let placements = traversals::Placements::read(&view, map)?;
+    let pads = pads::read(&view, map)?;
+    let starts = scenario_starts(&view)?;
+    Ok(link_and_mark(data, &placements, &starts, &pads))
 }
 
 /// One map the worker may build.

@@ -344,9 +344,10 @@ mod tests {
         let mut w = world(&sk);
         let before = bodies(&w.m);
         let mut kept = Vec::new();
+        let posed = rider(&w, 1.0);
         assert!(pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept
@@ -395,16 +396,18 @@ mod tests {
         let mut w = world(&sk);
         let before = bodies(&w.m);
         let mut kept = Vec::new();
+        let posed = rider(&w, 1.0);
         assert!(pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept
         ));
+        let posed = rider(&w, 0.5);
         assert!(pose_rider(
             &mut w.m,
-            &rider(&w, 0.5),
+            &posed,
             &sk,
             keys(),
             &mut kept
@@ -436,9 +439,10 @@ mod tests {
         put_rows(&mut w.m, STICK_BODY, &[stick[0], stick[1], stick[1]]);
         let before = bodies(&w.m);
         let mut kept = Vec::new();
+        let posed = rider(&w, 1.0);
         assert!(!pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept
@@ -446,9 +450,10 @@ mod tests {
         // And with one.
         put_rows(&mut w.m, STICK_BODY, &stick[..1]);
         let one = bodies(&w.m);
+        let posed = rider(&w, 1.0);
         assert!(!pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept
@@ -460,9 +465,10 @@ mod tests {
         let rows = standing(&sk, 1.0, AT);
         put_rows(&mut w.m, BIPED_BODY, &rows[..rows.len() - 1]);
         let before = bodies(&w.m);
+        let posed = rider(&w, 1.0);
         assert!(!pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept
@@ -471,9 +477,10 @@ mod tests {
         // A body with no rows, and a rider whose stick is its own body.
         w.m.put_u16(BIPED_BODY + Object::NODES_OFFSET.offset, 0);
         assert_eq!(node_rows(&w.m, w.biped), None);
+        let posed = rider(&w, 1.0);
         assert!(!pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept
@@ -491,9 +498,10 @@ mod tests {
         let mut w = world(&sk);
         let before = bodies(&w.m);
         let mut kept = Vec::new();
+        let posed = rider(&w, 1.0);
         assert!(pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept
@@ -509,9 +517,10 @@ mod tests {
 
         // The biped's rows are fewer than they were.
         let mut w = world(&sk);
+        let posed = rider(&w, 1.0);
         assert!(pose_rider(
             &mut w.m,
-            &rider(&w, 1.0),
+            &posed,
             &sk,
             keys(),
             &mut kept

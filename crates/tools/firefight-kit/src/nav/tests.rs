@@ -1,11 +1,25 @@
 use super::*;
 use std::collections::BTreeMap;
 use tags::collision::{Child, Edge, Leaf, Node3d, Plane, Surface, Vertex};
+use tags::pathfinding::Ref;
 
 /// A square arena with shared collision edges. A detached square to
 /// the east is close enough for a bot to cross the seam, but has no
 /// generated engine link into the arena.
 fn grid() -> Bsp {
+    floors(&[(9, 3)])
+}
+
+/// [`grid`] and a floor far off to the north-east that no start reaches,
+/// as a decorative island or a ledge past a map's boundary.
+fn grid_with_far_floor() -> Bsp {
+    floors(&[(9, 3), (40, 40)])
+}
+
+/// The 7x7 arena of 4-unit squares, then a square at each of `extra`'s
+/// cells (shifted 7.8 west from column 9 on, so the first lies 0.2 off
+/// the arena's east edge).
+fn floors(extra: &[(i32, i32)]) -> Bsp {
     let mut bsp = Bsp {
         planes: vec![Plane([0., 0., 1., 0.])],
         nodes: vec![Node3d {
@@ -24,7 +38,7 @@ fn grid() -> Bsp {
     let mut edges = BTreeMap::new();
     for (x, y) in (0..7)
         .flat_map(|y| (0..7).map(move |x| (x, y)))
-        .chain([(9, 3)])
+        .chain(extra.iter().copied())
     {
         let corners = [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)].map(|p| {
             *points.entry(p).or_insert_with(|| {
@@ -85,7 +99,7 @@ pub(crate) fn test_floor() -> Block {
     sbsp.block(
         SBSP_COLLISION_FIELD as u32,
         1,
-        h1convert::structure::collision_block(&grid()),
+        h1convert::structure::collision_block(&grid_with_far_floor()),
     );
     sbsp.block(0x2c, 1, Block::zeroed(8));
     sbsp
@@ -268,4 +282,53 @@ fn firing_positions_face_the_nearer_base() {
         cover_ray([25., 14., 0.], BASES[1]),
         ([25., 14., 0.5], [26., 14., 0.5])
     );
+}
+
+#[test]
+fn only_the_arenas_walkable_area_keeps_sectors() {
+    let (pf, mut data) = build_with_pathfinding(&grid_with_far_floor(), 0, 7).unwrap();
+    assert_eq!(pf.sectors.len(), 51);
+    let mut arena = choose_zones(
+        &pf,
+        &data,
+        &BASE_STARTS,
+        &BASES,
+        2,
+        |_| Some(3),
+        &mut |_| {},
+    )
+    .unwrap();
+    // No start reaches the far floor (sector 50): it is out of the map.
+    data.nav.mark_out_of_map(&BASE_STARTS);
+    assert!(!data.nav.in_map(50));
+    assert!((0..49).all(|k| data.nav.in_map(k)));
+    // The arena keeps its 49 sectors. The seam island (49) has no engine
+    // link in, so no AI path reaches it; the far floor is out of the map.
+    let keep = usable_sectors(&pf, &data.nav, &arena.sectors());
+    assert!(keep[..49].iter().all(|&k| k));
+    assert!(!keep[49] && !keep[50]);
+    // A BSP with no arena keeps what is in the map.
+    let in_map = usable_sectors(&pf, &data.nav, &[]);
+    assert!(!in_map[50]);
+    assert_eq!(in_map[49], data.nav.in_map(49));
+
+    let (kept, sector_of) = pathfind::trim::keep_sectors(&pf, &keep).unwrap();
+    assert!(kept.validate(Some(pf.refs.len())).is_empty());
+    assert_eq!(kept.sectors.len(), 49);
+    // One ref per collision surface still; the dropped floors' are none.
+    assert_eq!(kept.refs.len(), pf.refs.len());
+    assert_eq!(pf.refs[49], Ref::sector(49));
+    assert_eq!(pf.refs[50], Ref::sector(50));
+    assert_eq!((kept.refs[49], kept.refs[50]), (Ref::NONE, Ref::NONE));
+    // The two floors' four sides and four corners each go with them.
+    assert_eq!(kept.links.len(), pf.links.len() - 8);
+    assert_eq!(kept.vertices.len(), pf.vertices.len() - 8);
+    assert_eq!(&sector_of[49..], &[pathfind::trim::NONE; 2]);
+    // Every firing position keeps its polygon.
+    let before = (arena.zones.clone(), arena.bases.clone());
+    arena.renumber(&sector_of).unwrap();
+    assert_eq!((arena.zones, arena.bases), before);
+    // Encoded, the arena costs less than everything generated.
+    let size = |pf: &PathfindingData| pathfind::build::element(pf).unwrap().tree_len();
+    assert!(size(&kept) < size(&pf));
 }

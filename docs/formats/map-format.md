@@ -140,7 +140,11 @@ metadata_offset(p) = p - secondary_magic
 
 The first tag anchors ordinary metadata. All its addresses and payload ranges
 were checked against the header's declared metadata region. Index pointers
-are translated only within the index region. `AddressSpace` stores a virtual
+are translated within the index region, except in maps the builder grew
+([map-builder.md](map-builder.md), "Adding tags to a pinned map"): there
+the entry table or the group table can sit at the end of the ordinary
+metadata (base `index_virtual_base + +0x1c - +0x18`). When `T < G`, the
+group table is the moved one and `index_virtual_base = T - 0x20`. `AddressSpace` stores a virtual
 base, file start and size, avoiding accidental signed/wrapping subtraction.
 
 On retail maps the ordinary metadata ends the file exactly
