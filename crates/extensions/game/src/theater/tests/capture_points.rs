@@ -167,6 +167,17 @@ impl Fixture {
                 record.record(film::RAND, random(2));
             }
         }
+        // The fake game opened the capture gate; the sealed film must not
+        // describe it. The synthetic guest never presents an active match,
+        // so a DESC that claimed one would fail playback's verification of
+        // the recorded match start (`metadata::verify_start`).
+        {
+            let mut s = record.lock();
+            let Mode::Record(rec) = &mut s.mode else {
+                panic!("a recording")
+            };
+            rec.meta.next_game();
+        }
         record.finish(1803, true).unwrap();
         assert!(record.lock().complete);
         let state = record.lock();
