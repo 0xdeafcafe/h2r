@@ -1058,7 +1058,7 @@ impl Hle {
         };
         let answer = pending.wait(wait)?;
         Some(match answer {
-            Ok(client::Reply::CoopRelay(answer)) => Ok(answer),
+            Ok(client::Reply::CoopRelay(answer)) => answer,
             Ok(_) => Err(status::TASK_BUSY),
             Err(e) => Err(e),
         })

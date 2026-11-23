@@ -850,7 +850,7 @@ impl State {
     /// `sessions.relay` token, minted on the worker; nothing is sent to
     /// the server), unless one is asked for already.
     pub(crate) fn ask_relay(&mut self, session: &str) {
-        if self.relay_ask.is_some_and(|(asked, _)| asked == session) {
+        if self.relay_ask.as_ref().is_some_and(|(asked, _)| asked == session) {
             return;
         }
         let connection = self.session();

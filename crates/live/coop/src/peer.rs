@@ -314,7 +314,7 @@ impl<L: Link> Peer<L> {
             (first, frames, s.remote_end())
         };
         let first_tick = self.acked_tick.max(self.local.first);
-        let hashes = self
+        let hashes: Vec<u64> = self
             .local
             .values
             .iter()

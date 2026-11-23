@@ -50,7 +50,7 @@ pub trait Transport: Send + Sync {
     fn link(&self, remote: SocketAddrV4, host: bool) -> Option<Box<dyn coop::link::Link + Send>>;
     /// A shared Forge session began (or ended) on this machine: the
     /// advertisements that let the session's machines use the relay follow.
-    fn forge(&self, on: bool) {}
+    fn forge(&self, _on: bool) {}
 }
 
 /// How long a direct path stays quiet before the relay carries the
@@ -656,7 +656,7 @@ mod tests {
             self.0.link(remote, host)
         }
         fn forge(&self, on: bool) {
-            self.0.forge(on)
+            Transport::forge(&*self.0, on);
         }
     }
 
