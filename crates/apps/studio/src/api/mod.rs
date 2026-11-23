@@ -37,6 +37,7 @@ mod nav_mesh;
 mod pair;
 mod params;
 mod playlists;
+mod playtest;
 mod scenario;
 mod scripts;
 pub mod seams;

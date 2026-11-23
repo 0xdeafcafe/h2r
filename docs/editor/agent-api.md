@@ -258,6 +258,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
+| `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)) |
@@ -814,6 +815,30 @@ Notes on some:
   or `spot`, indices as the lists give them). The three layers
   (`pathfinding`, `bot_nav`, `bot_spots`) start hidden; the Navigation
   and Everything presets show them.
+- **Playtest's static checks.** (`studio::app::playtest_static`;
+  [playtest.md](playtest.md#static-checks).) `playtest.static` checks the
+  open map as edited, saved or not, with no match. It starts the bots'
+  mesh load as `nav.bots` does, and `wait` blocks until it is done; `nav`
+  is that load's state. `problems` lists each finding as `{kind, text,
+  target}`: `no_mesh` (no mesh to check against, and why), `off_mesh` (a
+  starting location, netgame item or netgame flag over no polygon, from
+  0.1 units under its floor to 1 over it), `unreachable` (a starting
+  location the mesh's links do not lead from to another), `island`
+  (polygons no starting location reaches, grouped by their links, 1
+  square unit or more), `one_way` (a link from the reached mesh into
+  polygons with no way back, one per trap) and `in_sight` (two starting
+  locations not of one team with a clear line between their eyes, 0.6
+  units up and at most 40 apart, through the level collision). A
+  `target` is `{block, index}` for `nav.go`, `{kind: "poly", index}` for
+  `nav.pick`, or `null`. `ok` is true when there is no problem. `ready`
+  has one row per built-in game type (`rules::builtin::ALL`): its
+  `game_type`, `engine` and `ok`, and `missing`: the start gate's
+  problems with the map's census for teams 0 and 1, two starting
+  locations on the mesh, and for Capture the Flag a `ctf_flag_spawn`
+  flag per team, for Assault an `assault_bomb_spawn` flag per team (or a
+  neutral one) and an `assault_bomb_return` flag per team, and for both a
+  starting location each team can use (its own or one with no team).
+  Without a map it is `NO_DOCUMENT`.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -1107,7 +1132,8 @@ identical profiles.
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs`, `api/sound.rs`, `api/hud.rs` and `api/scripts.rs` the Tags,
   sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's,
-  `api/ui_edit.rs` the UI Screens tool's edits.
+  `api/ui_edit.rs` the UI Screens tool's edits, `api/playtest.rs` the
+  playtest checks (`app/playtest_static.rs`).
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
@@ -1180,6 +1206,16 @@ system temp directory):
   (`api::tests::nav_bots_reads_an_invented_cache_and_its_spot_files`);
   with no cache it builds the mesh in memory and writes nothing
   (`api::tests::nav_bots_builds_the_mesh_when_there_is_no_cache`);
+- `playtest.static` over the invented map with sectors and an invented
+  bots' mesh finds an off-mesh starting location, item and flag, an
+  island, two opposing starting locations in sight and the missing
+  Capture the Flag flags; with both starts on the mesh Slayer is ready;
+  a start moved onto the island cannot reach the other and the room's
+  wall hides it
+  (`api::tests::playtest_tests::playtest_static_finds_each_problem_on_the_invented_map`);
+  the checks themselves on invented layouts: islands, slivers, one-way
+  drops, sight through a wall and by team, each game type's needs
+  (`app::playtest_static::tests`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

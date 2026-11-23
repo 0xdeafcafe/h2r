@@ -127,6 +127,7 @@ pub mod method {
     pub const NAV_PATHFINDING: &str = "nav.pathfinding";
     pub const NAV_BOTS: &str = "nav.bots";
     pub const NAV_PICK: &str = "nav.pick";
+    pub const PLAYTEST_STATIC: &str = "playtest.static";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";
