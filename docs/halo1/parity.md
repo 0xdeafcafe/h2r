@@ -1,18 +1,19 @@
 # Behaviour parity on converted maps
 
-**Built, awaiting integration runs.** `h2 parity` reads Halo 1's Xbox
+**Built.** The checks are not yet confirmed in an integration run.
+`h2 parity` reads Halo 1's Xbox
 executable and source cache from the owner's disc. It takes observations
 through the agent socket on a running Halo 2 serve. Each comparison prints a
 tab-separated check name, Halo 1 value, observed value and PASS or FAIL.
 Missing data, a refused give, an unresolved state, a missed target or a
 missing bot fails the case. The command returns non-zero on failure.
 
-## Coordinator run
+## The scripted run
 
-Use the integrated desktop `h2` on PATH, its matching prebuilt game image,
-and the data root containing the freshly imported campaign and both
-multiplayer variants. Run from the repository root. Replace the image and
-data paths with the integration build's directories.
+`scripts/h1-parity.sh` drives the integrated desktop `h2`, its matching
+prebuilt game image and a data root holding the imported campaign and
+both multiplayer variants. Run it from the repository root, with the
+image and data paths of the build under test.
 
 ```sh
 H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" \

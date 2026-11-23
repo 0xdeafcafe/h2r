@@ -1,16 +1,15 @@
 # Health: Halo 1's model on Halo 2's engine
 
-Status: the hooks and the switch are built and confirmed in the game by the
-owner (2026-11-17). Since 2026-11-18 the health meter is part of Halo 2's
-HUD (below, "The health meter in the HUD"); the window's overlay meter is
-gone. Its placement is not yet confirmed in a game run. Since 2026-11-17 the game start picks
-the model from the loaded map's name (`health::model_for_map`): converted
+Status: Built. The hooks and the switch are confirmed in the game; the
+meter's placement in the HUD is not. The health meter is part of Halo 2's
+HUD (below, "The health meter in the HUD"). At game start the model is
+picked from the loaded map's name (`health::model_for_map`): converted
 Halo 1 multiplayer maps (`h1_<map>`) in the Halo 1 sandbox and Halo 1's
-campaign levels get Halo 1's; the debug override `H2_HEALTH_MODEL` still
-beats it ([multiplayer.md](multiplayer.md), "Halo 1 sandbox").
-Started 2026-11-16. Since converter version 50 the converted player
-shows Halo 1's own HUD ([hud.md](hud.md)); the HUD with the health strip
-below is the Halo 2 alternative the HUD switch selects.
+campaign levels get Halo 1's; the debug override `H2_HEALTH_MODEL`
+beats it ([multiplayer.md](multiplayer.md), "Halo 1 sandbox"). The
+converted player shows Halo 1's own HUD ([hud.md](hud.md)); the HUD with
+the health strip below is the Halo 2 alternative the HUD switch
+selects.
 
 Halo 1 has a shield that recharges over a health bar that doesn't, and
 health packs that refill it. Halo 2 has a shield over hidden body health
@@ -21,7 +20,8 @@ decision 2). The engine still uses Halo 2's damage, shield and physics code.
 Labels: **confirmed** means read from the retail XBE's instructions with
 `h2 disasm` and asserted by `crates/apps/boot/tests/health_xbe.rs` (ignored;
 needs `H2_XBE`); **likely** means strong evidence but not every path read;
-**community** means public knowledge. Nothing here has been seen running.
+**community** means public knowledge. Nothing labelled in "What the game
+does" has been seen running; the hooks of "What we do" have been.
 
 ## What the game does
 
@@ -182,9 +182,6 @@ so it is data the game draws, not a host overlay:
   nothing of the shield meter, its emblem or the tracker; it is 9 pixels
   longer than the shield band, to the right.
 
-v33 drew a copy of the shield meter's own bitmap raised 10 pixels: a
-second shield bar over the first, hiding the emblem. Not kept.
-
 **Why it hides with the shield.** It is a widget of the same `nhdt` as
 the shield meter, so it is drawn by the same `0x13a532` pass, only after
 HUD_SHOWN said yes (Blind, the HUD-enabled byte, the per-user state), and
@@ -225,7 +222,7 @@ retail level (which has no health meter: its HUD is retail's).
 - each health pack: `health: health pack: object 0x..., a player's body at 0.300, restored to full (Halo 1 model)`
 - `H2_FEATURES` with `h1-health` off leaves Halo 2's model everywhere.
 
-## What the converter must write
+## What the converter writes
 
 For a Halo 1 health pack (Halo 1 `eqip` with a health powerup):
 

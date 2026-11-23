@@ -12,7 +12,7 @@ Halo 1 cache removes the repeated bytes and nothing else. What removes
 the second build is making the sandbox a **layer**: the Halo 1 sandbox is
 built once from the disc as loose tags, and added to any map as a small
 patch over the map's one build. The rule that must hold: a map's Halo 2
-view is the file it is today, byte for byte, and its Halo 1 view is that
+view is the file it is, byte for byte, and its Halo 1 view is that
 file plus the layer.
 
 ## How Halo 2's shared caches work
@@ -70,7 +70,7 @@ sandbox ([note](notes/shared-map.md)).
 | A | A fifth resource file with its own selector | raw | Not possible as data: two selector bits, four values used. Would need every raw reader in the engine hooked. |
 | B | **The shared cache's offset space, extended**: the VFS serves `shared.map` as the disc's bytes followed by a Halo 1 appendix, and Halo 1 raw pointers use the shared selector with offsets in the appendix | raw | Slot 0's capacity and the shared type's file limit grow (the campaign slots' precedent). One more thing every peer, host and tool must hold. The engine's own copy, checksum and paging run unchanged. |
 | C | Our own rebuilt `shared.map` on disk, Halo 1 assets added | raw | The same bytes as B, but it replaces a disc file: its hash, and the identity dependents check, are the disc's no longer. Adding tags to it gains nothing, since no level loads them. |
-| D | Per-map copies, as today | nothing | No engine work. 187 MiB of repeats over the 13 converted maps, growing by about 16 MiB for each further map. |
+| D | Per-map copies, one build per map | nothing | No engine work. 187 MiB of repeats over the 13 converted maps, growing by about 16 MiB for each further map. |
 | E | Tags loaded at run time from a second cache into tag memory | tags and raw | The loader has no such path. It needs datums, addresses and string ids relocated per map, the sound gestalt merged in guest memory, and the same result on every peer: `map::build` running inside the loader. |
 | F | One file holding both sandboxes, swapped by a hook at game start (as the HUD is, [hud.md](hud.md), "The switch: one map, both HUDs") | none | Both tag sets in tag memory always, on maps with no room (below). The retail file changes, so a retail map is retail no longer. The choice becomes hidden state that every peer must replicate. |
 | G | **The sandbox as a layer**: built once as loose tags, added to a map by a patch over its one build | tags are still copied into each Halo 1 view, by a patch, not a second conversion | The patch is made per map (about a second, no Halo 1 conversion in it). The Halo 2 view is untouched. The view is part of the map's identity, which Live already carries. |
@@ -91,7 +91,7 @@ What each concern says:
 - **Load time.** Slot 0 is copied once, when it is invalid, at about
   209 MiB in place of 175 (the base at 180 MiB, then an appendix near
   29 MiB for multiplayer). A
-  level load copies a smaller Halo 1 view than today's, since its raw
+  level load copies a smaller Halo 1 view than a per-map build's, since its raw
   is not in it.
 - **Peers.** Two players are on the same map when their `MapId`s match
   ([maps.md](../game/maps.md), "Identity: `MapId`"). A Halo 1 view's
@@ -151,17 +151,17 @@ nothing falls back quietly).
 pinned `map::build::TagSet` (`TagSet::from_map`, `TagSet::add_tag`): it
 adds the pack's tags after the map's own slots, merges their sounds
 into the map's gestalt (`h1_assets::sounds::merge_sound`), and makes the
-edits `convert::halo1` makes today: the player representation and arms
+edits `convert::halo1` makes on a converted map: the player representation and arms
 (`h1convert::globals`), the multiplayer globals' weapon list, one item
 or vehicle collection per spawn, the starting equipment. The difference
 between the map and the result is written as a file patch, and the
 package lists the Halo 1 view as the map plus that patch. A converted
 Halo 1 map's structure, sky, scenery and placements are converted once,
 into its Halo 2 view; its Halo 1 view takes its item plan from the
-Halo 1 scenario, as today. A retail Halo 2 map's Halo 1 view takes its
+Halo 1 scenario, as a converted map's does. A retail Halo 2 map's Halo 1 view takes its
 plan from the reverse sandbox table (below). The VFS serves the base or
 the base with its layer by the game's choice, as
-`vfs::ContentVariants` does for the two files today
+`vfs::ContentVariants` does for the two files of a converted map
 (`crates/runtime/vfs/src/variants.rs`).
 
 **The appendix.** The pack's raw is written once to
@@ -200,7 +200,7 @@ raised.
   with Halo 1's arms, so the Elite choice draws the cyborg.
 - **Health, precision and the HUD follow the sandbox, not the map
   name.** `health::model_for_map` and `hud::style_for_map` key on the
-  `h1_` prefix today (`crates/extensions/game/src/health.rs`,
+  `h1_` prefix (`crates/extensions/game/src/health.rs`,
   `crates/extensions/game/src/hud.rs`); they take the served view. The
   HUD pairs `hud_swap` reads come from the layer's manifest entry. The
   health model, Halo 2's physics and the health pack's powerup type are

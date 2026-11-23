@@ -1,11 +1,11 @@
 # More than one campaign in the menus
 
-**Built (2026-11-20).** With Halo: Combat Evolved installed, Campaign on
+**Built.** With Halo: Combat Evolved installed, Campaign on
 the main menu opens a game picker. Each game has its own Campaign Options,
 level list and Resume. With no installed Halo 1 mission, Campaign uses
 the retail path and no campaign hooks or artwork rewrite are installed.
-The owner confirmed the previous level picker on 2026-11-17. The new flow
-and checkpoint isolation await the coordinator's integration run.
+The picker flow and the per-game checkpoints are not yet confirmed in a
+game run.
 
 Labels: **E** read from the retail XBE with `h2 disasm` (a full linear
 disassembly of `.text`), **V** measured on the user's disc (the ignored
@@ -209,16 +209,12 @@ free slots, so they are not reused.
 - `campaigns::extend_with_cards` gives a level with a card that picture,
   ahead of its `picture` level's.
 
-**The frame is in the pixels (V, 2026-11-18).** Halo 2's level pictures
+**The frame is in the pixels (V).** Halo 2's level pictures
 show a pale border with the bottom-right corner cut off. The screen draws
-none of it: the level select's picture widget is one plain bitmap block
-(`[177 39 -30 259]`, `h2 ui mainmenu load_level`), and every used picture
-(`campaign0` to `campaign14`) carries the frame itself. All fifteen have
-the same alpha, pixel for pixel: 834 opaque border pixels (a one-pixel
-rim and the diagonal of the cut, `(154, 171, 189)`, `campaign14` a little
-lighter), 136 clear pixels past the cut, and the picture at alpha 191, so
-it is drawn a quarter see-through. The free slots' five are fully clear.
-So a card goes in the same frame: `campaign_cards::framed` takes
+none of it: the level select's picture widget is one plain bitmap block,
+and every used picture carries the frame itself, the same alpha in each
+pixel ([note](notes/campaign-picker.md)). So a card goes in the same
+frame: `campaign_cards::framed` takes
 `campaign0`'s own pixels from the disc's mainmenu at rewrite time
 (`Template::rgba`) and, pixel by pixel, keeps the template's where it is
 opaque (the border), clears where it is clear (the corner), and puts the
@@ -230,8 +226,8 @@ plain, and the log says so.
 **Descriptions.** Each Halo 1 level has a one-line description in
 `HALO1`, written for this project (not the game's text), which goes to
 the record's `+0x250` in all nine languages, where the level select reads
-Halo 2's own. An import made before they existed keeps its
-`campaign.toml` (the import never rewrites one it finds), so
+Halo 2's own. The import never rewrites a `campaign.toml` it finds, so a
+manifest from an older import can lack descriptions;
 `campaigns::installed` fills a manifest's missing descriptions from the
 built-in one (`CampaignManifest::fill_from`); a description the user
 wrote is kept.
@@ -243,10 +239,7 @@ progress it is given. For one of our campaigns `PROGRESS_MAX` answers our
 own progress (`progress.toml`), which counts a level only when it is
 **won** (`PROGRESS_RAISE`, from the game-won path). With nothing won it
 answers `-1`, and the list is the first level alone, as Halo 2's is on a
-new profile. On the user's machine (2026-11-18) `progress.toml` has
-`finished = [-1, -1, -1, -1]` and `last = 4097` for Halo 1: The Pillar of
-Autumn was started, not finished. Finishing it lists Halo next, and so
-on.
+new profile ([note](notes/campaign-picker.md)).
 - Retail tags keep their bytes and addresses. On the user's disc the map
   stays under the rewrite's 64 MiB limit (the boot disc test). If the
   rewrite fails, mainmenu is served as it is and levels keep the pictures
@@ -378,8 +371,8 @@ when restoring it. Older progress with only a numeric last level resumes
 the level on Normal. The UI resolves newer records by map basename, and
 omits Resume if that mission has been removed.
 
-A profile created before the split can have a converted mission in its
-retail checkpoint file. **Built:** on entering Campaign Options, resolve
+A retail profile's checkpoint file can hold a converted mission. On
+entering Campaign Options, resolve
 the signed-in profile's local U: directory using the same record as
 `0x216800`. Read the campaign, scenario and difficulty from the saved
 options at header +0x130 (`0x124520`, `0x2b17c3`). For a recognized
@@ -387,8 +380,8 @@ imported mission, preserve its signed bytes in the game's scoped file
 and recover its progress before offering Resume. The original stays in
 place, newer scoped saves take precedence, and Halo 2 omits the foreign
 checkpoint. At `0x2b178e` the native completion also rejects a foreign
-campaign header if it arrived through an unmigrated retail slot. Recovery
-of historical files covers the local hard disk. New checkpoints on other
+campaign header if it arrived through a retail slot that has not been
+migrated. Recovery covers the local hard disk. New checkpoints on other
 profile devices use the same per-game guest filename routing.
 
 ### The lookups by `(campaign, map)`
@@ -444,7 +437,8 @@ reads the multiplayer list, which campaign ids never reach.
   puts ten cards into the disc's mainmenu: every retail tag is unchanged,
   each card is a 220x207 `0x2d480`-byte LOD holding the scaled pixels,
   the checksum is good, tag memory grows by at most two pages (it grows
-  by one), and the map is under 64 MiB (61.6 MB). The rebuild takes 31 ms.
+  by one), and the map is under 64 MiB (61.6 MB, 31 ms for the rebuild:
+  [note](notes/campaign-picker.md)).
   `H2_DISC=disc/halo2.iso cargo test -p game --lib the_disc_s_mainmenu_takes_ten_cards --
   --ignored`.
 - `vfs` `rewrite::tests::a_chain_rewrites_what_either_wants_one_after_the_other`.
@@ -467,15 +461,15 @@ reads the multiplayer list, which campaign ids never reach.
   user's disc. `H2_DISC=disc/halo2.iso cargo test -p boot --lib
   campaigns::tests::real_disc -- --ignored --nocapture`
 
-## Coordinator verification
+## Verifying in a game run
 
 The synthetic tests cover picker navigation, native row allocation,
 separate game/profile saves, old progress, exact served descriptions,
 cover cropping, artwork selection and fallback, and agent menu state.
 The ignored disc test reads the owner's Halo 2 disc and checks the
-generated PNGs against the in-memory bitmaps. It also checks that Halo 2
-artwork loads with no Halo 1 picture. Supply an absolute disc path if
-the test checkout lacks a local disc directory.
+generated PNGs against the in-memory bitmaps, and that Halo 2 artwork
+loads with no Halo 1 picture; give it an absolute disc path when the
+checkout has no `disc/` directory.
 
 ```sh
 cargo xtask test -p game -p boot -p guest-layout -p agent-proto
@@ -483,11 +477,11 @@ cargo test -p agent-proto --lib sim::menu
 H2_DISC="$PWD/disc/halo2.iso" cargo test -p game --lib picker_tiles_match_the_pngs_and_halo2_works_without_halo1_art -- --ignored
 ```
 
-With both games installed, verify a fresh profile and one with an existing
+With both games installed, check a fresh profile and one with an existing
 Halo 2 checkpoint. Use `ui.campaign` to read `card.description` and
 `card.picture_datum` on each row. Use pad presses to choose each game,
 check its actions and missions, and back out. Start a Halo 1 mission,
-save a checkpoint, then reload and resume each game in turn. Verify the
+save a checkpoint, then reload and resume each game in turn. Check the
 restored position as well as the displayed mission. Repeat the main-menu
 press with only Halo 2 installed. The agent method and response fields are
 documented in [the agent API](../runtime/agent-api.md).
@@ -505,7 +499,7 @@ documented in [the agent API](../runtime/agent-api.md).
   credits through scripts; a campaign's last level (no next id) returns to
   the menu as `0x163610` returns 0. Unchecked in a run.
 - Whether the free slots' own pictures are blank placeholders or images.
-  Halo 1's levels no longer use them ("Pictures").
+  Halo 1's levels use their own pictures instead ("Pictures").
 - Whether the engine accepts mainmenu with its index tail cleared and one
   page more tag memory than retail's. The
   converted maps already do (sounds.md, "Open questions"). Only a run
