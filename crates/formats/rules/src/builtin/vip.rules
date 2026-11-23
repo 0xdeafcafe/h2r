@@ -36,9 +36,8 @@ global var over: bool = false
 
 fn crown(p: player) {
     p.role = Role.vip
-    let named = p
     let side = p.team
-    message(side, "{named} is your VIP")
+    message(side, "{p} is your VIP")
 }
 
 // Whether team t has a VIP.
