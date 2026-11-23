@@ -3,7 +3,8 @@
 //! A live open serves every selector through the raw overlay
 //! ([`vfs::RawOverlay::global`], docs/editor/realtime-edits.md, "The edit
 //! overlay"), so a world, model or image loaded after a live raw edit
-//! decodes the edited bytes.
+//! decodes the edited bytes; and reads the `Map` itself through it, so the
+//! tag metadata it decodes holds every live tag write too.
 
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
@@ -180,14 +181,22 @@ fn open_resolved(
         // stops drawing. Its native jobs may use only the activated source.
         return Err("the editor map is waiting for guest activation".into());
     }
+    // A live open's metadata is the file's with the live tag writes over it.
+    let served = |reader: Box<dyn MapReader>, base: u64| -> std::io::Result<Box<dyn MapReader>> {
+        if !live {
+            return Ok(reader);
+        }
+        let name = crate::hot_glue::overlay_name(ResourceFile::Local, name);
+        Ok(Box::new(vfs::OverlaidReader::new(reader, vfs::RawOverlay::global().clone(), &name, base)?))
+    };
     let map = match &local {
         FileSource::Host(file) => {
             let reader: Box<dyn MapReader> = Box::new(BufReader::new(File::open(&file.path)?));
-            Map::from_region(reader, file.offset, file.len)?
+            Map::from_region(served(reader, file.offset)?, file.offset, file.len)?
         }
         FileSource::Memory(bytes) => {
             let reader: Box<dyn MapReader> = Box::new(Cursor::new(Arc::clone(bytes)));
-            Map::from_reader(reader)?
+            Map::from_reader(served(reader, 0)?)?
         }
     };
     let mut files = ResourceFiles::new();

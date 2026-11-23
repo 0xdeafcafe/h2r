@@ -3106,7 +3106,7 @@ are in `crates/extensions/agent/src/hot.rs`, the editor half in
 | `edit.batch` | act | adds `raw: [{owner, offset, bytes, was?}]` and `evict: [owner]`; `writes` may be left out when either is given | adds `raw: [{owner, offset, resident, refresh}]` and `evicted: [owner]` |
 | `edit.raw.append` | act | `{file?, bytes, align?, epoch?, confirm_peers?}` | `{id, pointer, len}` |
 | `edit.stage.put` | act | `{stage?, bytes}` | `{stage, len}` |
-| `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, files, owners}` |
+| `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, metadata, metadata_bytes, files, owners}`: raw runs, appended extents and metadata runs (copies of tag writes; docs/editor/realtime-edits.md, "The edit overlay") |
 
 `owner` is `{section: {tag, kind, index}}`, with `kind` one of `cluster`,
 `instance_def` and `mode`, or `{pixels: {tag, image, lod}}`, with `lod`

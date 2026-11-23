@@ -16,40 +16,42 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-/// One file's replacements and appended extents.
+/// Non-overlapping, non-adjacent replacement runs by first offset.
 #[derive(Clone, Debug, Default)]
-struct FileOverlay {
-    /// Non-overlapping, non-adjacent runs by first offset.
-    runs: BTreeMap<u64, Vec<u8>>,
-    /// Extents reserved past the file's end, `(offset, len)`, in order.
-    appended: Vec<(u64, u64)>,
-}
+struct Runs(BTreeMap<u64, Vec<u8>>);
 
-impl FileOverlay {
-    /// The end of the last appended extent; 0 with none.
-    fn end(&self) -> u64 {
-        self.appended.iter().map(|(at, len)| at + len).max().unwrap_or(0)
+impl Runs {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn bytes(&self) -> u64 {
+        self.0.values().map(|r| r.len() as u64).sum()
     }
 
     /// Removes every byte in `[at, at + len)`, splitting runs at the edges.
     fn cut(&mut self, at: u64, len: u64) {
         let end = at + len;
         let first = self
-            .runs
+            .0
             .range(..at)
             .next_back()
             .filter(|(start, run)| **start + run.len() as u64 > at)
             .map(|(start, _)| *start)
             .unwrap_or(at);
-        let hit: Vec<u64> = self.runs.range(first..end).map(|(k, _)| *k).collect();
+        let hit: Vec<u64> = self.0.range(first..end).map(|(k, _)| *k).collect();
         for start in hit {
-            let run = self.runs.remove(&start).expect("listed");
+            let run = self.0.remove(&start).expect("listed");
             let run_end = start + run.len() as u64;
             if start < at {
-                self.runs.insert(start, run[..(at - start) as usize].to_vec());
+                self.0.insert(start, run[..(at - start) as usize].to_vec());
             }
             if run_end > end {
-                self.runs.insert(end, run[(end - start) as usize..].to_vec());
+                self.0.insert(end, run[(end - start) as usize..].to_vec());
             }
         }
     }
@@ -63,31 +65,31 @@ impl FileOverlay {
         // Join a run that ends at `at` and one that starts at the end.
         let mut start = at;
         let mut joined = bytes.to_vec();
-        if let Some((&prev, run)) = self.runs.range(..at).next_back()
+        if let Some((&prev, run)) = self.0.range(..at).next_back()
             && prev + run.len() as u64 == at
         {
-            let mut head = self.runs.remove(&prev).expect("found");
+            let mut head = self.0.remove(&prev).expect("found");
             head.extend_from_slice(&joined);
             joined = head;
             start = prev;
         }
-        if let Some(tail) = self.runs.remove(&(at + len)) {
+        if let Some(tail) = self.0.remove(&(at + len)) {
             joined.extend_from_slice(&tail);
         }
-        self.runs.insert(start, joined);
+        self.0.insert(start, joined);
     }
 
     /// The runs' bytes inside `[at, at + len)`, clipped, in order.
     fn held(&self, at: u64, len: u64) -> Vec<(u64, Vec<u8>)> {
         let end = at + len;
         let first = self
-            .runs
+            .0
             .range(..at)
             .next_back()
             .filter(|(start, run)| **start + run.len() as u64 > at)
             .map(|(start, _)| *start)
             .unwrap_or(at);
-        self.runs
+        self.0
             .range(first..end)
             .map(|(&start, run)| {
                 let from = at.max(start);
@@ -106,13 +108,52 @@ impl FileOverlay {
     }
 }
 
+/// One file's replacements and appended extents.
+#[derive(Clone, Debug, Default)]
+struct FileOverlay {
+    /// Raw replacements: bytes no guest memory holds.
+    runs: Runs,
+    /// Tag metadata replacements ([`RawOverlay::put_metadata`]): copies of
+    /// bytes guest memory holds too.
+    metadata: Runs,
+    /// Extents reserved past the file's end, `(offset, len)`, in order.
+    appended: Vec<(u64, u64)>,
+}
+
+impl FileOverlay {
+    /// The end of the last appended extent; 0 with none.
+    fn end(&self) -> u64 {
+        self.appended.iter().map(|(at, len)| at + len).max().unwrap_or(0)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.runs.is_empty() && self.metadata.is_empty() && self.appended.is_empty()
+    }
+
+    /// Whether it holds more than metadata copies.
+    fn holds_raw(&self) -> bool {
+        !self.runs.is_empty() || !self.appended.is_empty()
+    }
+
+    /// Writes both kinds of runs over `buf`, which holds the file's bytes
+    /// from `at`. They cover different ranges of a map (its metadata, its
+    /// raw blocks); where they meet, the raw run is written last.
+    fn apply(&self, at: u64, buf: &mut [u8]) {
+        self.metadata.apply(at, buf);
+        self.runs.apply(at, buf);
+    }
+}
+
 /// What the overlay holds, for `edit.overlay`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OverlaySummary {
-    /// Replacement runs, over every file.
+    /// Raw replacement runs, over every file.
     pub entries: usize,
     /// Bytes in those runs.
     pub bytes: u64,
+    /// Tag metadata runs ([`RawOverlay::put_metadata`]) and their bytes.
+    pub metadata: usize,
+    pub metadata_bytes: u64,
     /// Appended extents and their total length.
     pub appended: usize,
     pub appended_bytes: u64,
@@ -165,7 +206,7 @@ impl RawOverlay {
     fn write<T>(&self, f: impl FnOnce(&mut HashMap<String, FileOverlay>) -> T) -> T {
         let mut files = self.0.files.write().unwrap_or_else(|e| e.into_inner());
         let out = f(&mut files);
-        files.retain(|_, o| !o.runs.is_empty() || !o.appended.is_empty());
+        files.retain(|_, o| !o.is_empty());
         self.0.busy.store(!files.is_empty(), Ordering::Release);
         out
     }
@@ -177,16 +218,34 @@ impl RawOverlay {
 
     /// Replaces `bytes.len()` bytes of `file` at `at`.
     pub fn put(&self, file: &str, at: u64, bytes: &[u8]) {
-        self.write(|files| files.entry(file.to_ascii_lowercase()).or_default().put(at, bytes));
+        self.write(|files| files.entry(file.to_ascii_lowercase()).or_default().runs.put(at, bytes));
     }
 
-    /// The replacement bytes the overlay holds inside `[at, at + len)` of
-    /// `file`, as `(offset, bytes)` runs: what [`Self::restore`] puts back.
+    /// Replaces `bytes.len()` bytes of `file`'s tag metadata at `at`: a
+    /// copy of a live tag write (docs/editor/realtime-edits.md, "The
+    /// edit overlay"), so a reader of the file's metadata (the native
+    /// `Map`, a BSP switch) reads what guest memory holds. Served as
+    /// [`Self::put`]'s runs are; kept apart from them, since guest memory
+    /// holds the same bytes and a snapshot does not need them
+    /// ([`Self::holds_raw`]).
+    pub fn put_metadata(&self, file: &str, at: u64, bytes: &[u8]) {
+        self.write(|files| files.entry(file.to_ascii_lowercase()).or_default().metadata.put(at, bytes));
+    }
+
+    /// Whether the overlay holds anything guest memory does not: a raw
+    /// replacement or an appended extent. Metadata copies are not counted,
+    /// so they never refuse a snapshot.
+    pub fn holds_raw(&self) -> bool {
+        !self.is_empty() && self.read(|files| files.values().any(FileOverlay::holds_raw))
+    }
+
+    /// The raw replacement bytes the overlay holds inside `[at, at + len)`
+    /// of `file`, as `(offset, bytes)` runs: what [`Self::restore`] puts back.
     pub fn held(&self, file: &str, at: u64, len: u64) -> Vec<(u64, Vec<u8>)> {
         self.read(|files| {
             files
                 .get(&file.to_ascii_lowercase())
-                .map(|o| o.held(at, len))
+                .map(|o| o.runs.held(at, len))
                 .unwrap_or_default()
         })
     }
@@ -197,9 +256,9 @@ impl RawOverlay {
     pub fn restore(&self, file: &str, at: u64, len: u64, runs: &[(u64, Vec<u8>)]) {
         self.write(|files| {
             let o = files.entry(file.to_ascii_lowercase()).or_default();
-            o.cut(at, len);
+            o.runs.cut(at, len);
             for (from, bytes) in runs {
-                o.put(*from, bytes);
+                o.runs.put(*from, bytes);
             }
         });
     }
@@ -213,7 +272,7 @@ impl RawOverlay {
             let o = files.entry(file.to_ascii_lowercase()).or_default();
             let at = o.end().max(file_len).div_ceil(align) * align;
             o.appended.push((at, bytes.len() as u64));
-            o.put(at, bytes);
+            o.runs.put(at, bytes);
             at
         })
     }
@@ -228,7 +287,7 @@ impl RawOverlay {
                 return false;
             };
             let (at, len) = o.appended.remove(i);
-            o.cut(at, len);
+            o.runs.cut(at, len);
             true
         })
     }
@@ -303,7 +362,9 @@ impl RawOverlay {
             let mut s = OverlaySummary::default();
             for (name, o) in files {
                 s.entries += o.runs.len();
-                s.bytes += o.runs.values().map(|r| r.len() as u64).sum::<u64>();
+                s.bytes += o.runs.bytes();
+                s.metadata += o.metadata.len();
+                s.metadata_bytes += o.metadata.bytes();
                 s.appended += o.appended.len();
                 s.appended_bytes += o.appended.iter().map(|(_, l)| l).sum::<u64>();
                 s.files.push(name.clone());
@@ -311,6 +372,48 @@ impl RawOverlay {
             s.files.sort();
             s
         })
+    }
+}
+
+/// A reader of one map file served through an overlay: what it reads at
+/// a map offset is what [`RawOverlay::apply`] serves there. `base` is
+/// where the map starts in what `inner` reads (a map inside a larger
+/// image). Appended extents are not served: a reader of the file reads
+/// the file's own length.
+pub struct OverlaidReader<R> {
+    inner: R,
+    overlay: RawOverlay,
+    file: String,
+    base: u64,
+    /// `inner`'s position.
+    at: u64,
+}
+
+impl<R: std::io::Seek> OverlaidReader<R> {
+    pub fn new(mut inner: R, overlay: RawOverlay, file: &str, base: u64) -> std::io::Result<Self> {
+        let at = inner.stream_position()?;
+        Ok(OverlaidReader { inner, overlay, file: file.to_ascii_lowercase(), base, at })
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for OverlaidReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if let Some(offset) = self.at.checked_sub(self.base) {
+            self.overlay.apply(&self.file, offset, &mut buf[..n], n);
+        } else if self.at + n as u64 > self.base {
+            let skip = (self.base - self.at) as usize;
+            self.overlay.apply(&self.file, 0, &mut buf[skip..n], n - skip);
+        }
+        self.at += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for OverlaidReader<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.at = self.inner.seek(pos)?;
+        Ok(self.at)
     }
 }
 
@@ -390,6 +493,49 @@ mod tests {
         assert!(o.drop_appended("m", 35));
         assert!(o.is_empty());
         assert_eq!(read(&o, &base, 28, 8), [28, 29]);
+    }
+
+    #[test]
+    fn metadata_runs_are_served_and_kept_apart_from_raw_ones() {
+        let base = file(64);
+        let o = RawOverlay::new();
+        o.put_metadata("M", 8, &[0xc0, 0xc1]);
+        assert!(!o.is_empty());
+        assert!(!o.holds_raw(), "a metadata copy is not raw");
+        let mut want = base[6..12].to_vec();
+        want[2] = 0xc0;
+        want[3] = 0xc1;
+        assert_eq!(read(&o, &base, 6, 6), want);
+        // A raw restore over the same range leaves metadata alone.
+        o.restore("m", 0, 64, &[]);
+        assert_eq!(read(&o, &base, 8, 2), [0xc0, 0xc1]);
+        o.put("m", 40, &[1]);
+        assert!(o.holds_raw());
+        let s = o.summary();
+        assert_eq!((s.entries, s.bytes, s.metadata, s.metadata_bytes), (1, 1, 1, 2));
+        o.restore("m", 40, 1, &[]);
+        assert!(!o.holds_raw());
+        o.clear();
+        assert!(o.is_empty());
+    }
+
+    #[test]
+    fn an_overlaid_reader_serves_map_offsets_past_its_base() {
+        use std::io::{Read, Seek, SeekFrom};
+        let o = RawOverlay::new();
+        o.put_metadata("m", 2, &[0xaa]);
+        // The map starts 4 bytes into the image.
+        let image = file(16);
+        let mut r = OverlaidReader::new(std::io::Cursor::new(image.clone()), o.clone(), "M", 4).unwrap();
+        let mut all = Vec::new();
+        r.read_to_end(&mut all).unwrap();
+        let mut want = image.clone();
+        want[6] = 0xaa;
+        assert_eq!(all, want);
+        r.seek(SeekFrom::Start(5)).unwrap();
+        let mut two = [0u8; 2];
+        r.read_exact(&mut two).unwrap();
+        assert_eq!(two, [5, 0xaa]);
     }
 
     #[test]
