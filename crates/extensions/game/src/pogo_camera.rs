@@ -24,8 +24,18 @@
 //! The camera stands down for another host camera (Forge's monitor, a
 //! Theater camera, the agent's spawn view), which have made the view
 //! playerless before this hook runs, and for split screen.
+//!
+//! - **The eye when the view is not a camera.** When the game's view does
+//!   not read as a camera ([`retail_view`]: no finite position and aim,
+//!   or no lens), the chase camera is placed from the body's eye and aim
+//!   of the last tick instead ([`body_eye`]), and the frame is counted
+//!   (`pogo.state`'s `fallback_frames`), so a degenerate first-person
+//!   view never reaches the screen.
+//! - **No first-person draw.** While the chase camera draws, the
+//!   first-person arms and weapon (`points::FIRST_PERSON_RENDER`) are not
+//!   drawn over it, as the Blind skull leaves them out.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -164,6 +174,11 @@ static ROOM: AtomicU32 = AtomicU32::new(0x3f80_0000);
 static DRAWN: AtomicBool = AtomicBool::new(false);
 /// The eased boom and when it was last stepped.
 static BOOM_NOW: Mutex<(Boom, Option<Instant>)> = Mutex::new((Boom::new(), None));
+/// The body's eye and aim, as of the last tick: the camera's eye when the
+/// game's view does not read as one.
+static BODY: Mutex<Option<Pose>> = Mutex::new(None);
+/// Frames whose eye was the body's ([`BODY`]).
+static FALLBACK: AtomicU64 = AtomicU64::new(0);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -181,6 +196,9 @@ pub struct View {
     pub room: f32,
     /// The boom's share now, eased.
     pub share: f32,
+    /// Frames placed from the body's eye because the game's view did not
+    /// read as a camera.
+    pub fallback_frames: u64,
 }
 
 pub fn view() -> View {
@@ -189,6 +207,7 @@ pub fn view() -> View {
         drawn: DRAWN.load(Ordering::Relaxed),
         room: f32::from_bits(ROOM.load(Ordering::Relaxed)),
         share: lock(&BOOM_NOW).0.share(),
+        fallback_frames: FALLBACK.load(Ordering::Relaxed),
     }
 }
 
@@ -198,6 +217,14 @@ pub fn reset() {
     DRAWN.store(false, Ordering::Relaxed);
     ROOM.store(1.0f32.to_bits(), Ordering::Relaxed);
     *lock(&BOOM_NOW) = (Boom::new(), None);
+    *lock(&BODY) = None;
+    FALLBACK.store(0, Ordering::Relaxed);
+}
+
+/// The body's eye: `EYE` above its origin, looking along its aim. `None`
+/// for a body or aim that is not finite, or no aim at all.
+pub(crate) fn body_eye(position: Vec3, aim: Vec3) -> Option<Pose> {
+    Pose::looking([position[0], position[1], position[2] + EYE], aim)
 }
 
 /// One tick, from the superbounce mode: `held` is whether the first
@@ -213,24 +240,39 @@ pub(crate) fn on_tick(
         if ON.swap(false, Ordering::Relaxed) {
             DRAWN.store(false, Ordering::Relaxed);
             *lock(&BOOM_NOW) = (Boom::new(), None);
+            *lock(&BODY) = None;
         }
         return;
     }
-    let room = match (position, aim) {
-        (Some(p), Some(a)) => {
-            let pose = Pose::looking([p[0], p[1], p[2] + EYE], a);
-            pose.map_or(1.0, |e| pull_in(e.position, offset(e.yaw, e.pitch), clear))
-        }
-        _ => 1.0,
-    };
+    let body = position.zip(aim).and_then(|(p, a)| body_eye(p, a));
+    *lock(&BODY) = body;
+    let room = body.map_or(1.0, |e| pull_in(e.position, offset(e.yaw, e.pitch), clear));
     ROOM.store(room.to_bits(), Ordering::Relaxed);
     ON.store(true, Ordering::Relaxed);
 }
 
+/// Where the frame's eye came from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Eye {
+    /// The game's own first-person camera.
+    View(Pose),
+    /// The body's eye and aim: the game's view did not read as a camera.
+    Body(Pose),
+}
+
+impl Eye {
+    fn pose(self) -> Pose {
+        match self {
+            Eye::View(p) | Eye::Body(p) => p,
+        }
+    }
+}
+
 /// The player's own camera among the views the game built: `None` (the
 /// game's own view is drawn) unless there is exactly one view, and it is
-/// a player's.
-fn eye(guest: &dyn GuestMemory, views: &[u32]) -> Option<Pose> {
+/// a player's. A player's view that does not read as a camera gives
+/// `body`, the body's eye, instead.
+fn eye(guest: &dyn GuestMemory, views: &[u32], body: Option<Pose>) -> Option<Eye> {
     let [view] = views else {
         return None;
     };
@@ -238,13 +280,23 @@ fn eye(guest: &dyn GuestMemory, views: &[u32]) -> Option<Pose> {
     if guest.u32(view.checked_add(8)?).ok()? == u32::MAX {
         return None;
     }
-    retail_view(guest, *view).map(|(eye, _)| eye)
+    match retail_view(guest, *view) {
+        Some((eye, _)) => Some(Eye::View(eye)),
+        None => body.map(Eye::Body),
+    }
 }
 
 /// The frame's camera: the player's [`eye`] moved back by the boom,
 /// which this steps.
 fn resolve(guest: &dyn GuestMemory, views: &[u32]) -> Option<Pose> {
-    let eye = eye(guest, views)?;
+    let body = *lock(&BODY);
+    let eye = match eye(guest, views, body)? {
+        Eye::View(p) => p,
+        body @ Eye::Body(_) => {
+            FALLBACK.fetch_add(1, Ordering::Relaxed);
+            body.pose()
+        }
+    };
     let share = {
         let mut boom = lock(&BOOM_NOW);
         let now = Instant::now();
@@ -264,12 +316,11 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
             &points::RENDER_VIEWS,
             "pogo: the chase camera",
             move |call| {
-                if ON.load(Ordering::Relaxed) {
-                    let drawn = draw_world_view(call, scratch, |guest, views| {
+                let drawn = ON.load(Ordering::Relaxed)
+                    && draw_world_view(call, scratch, |guest, views| {
                         resolve(guest, views).map(|pose| (pose, None))
                     });
-                    DRAWN.store(drawn, Ordering::Relaxed);
-                }
+                DRAWN.store(drawn, Ordering::Relaxed);
                 Ok(Flow::Continue)
             },
         )
@@ -278,7 +329,30 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         .after_feature("theater-camera")
         .after_feature("agent-frames")
         .context_only();
+    // The frame drawn from the chase camera has no first-person arms and
+    // weapon over it: the call returns as the Blind skull's does.
+    b.raw()
+        .before(
+            &points::FIRST_PERSON_RENDER,
+            "pogo: no first person under the chase camera",
+            |call| {
+                if !hides_first_person() {
+                    return Ok(Flow::Continue);
+                }
+                call.cpu.eax = 0;
+                call.ret(16).map(Flow::Return)
+            },
+        )
+        // Blind's hook returns the same way; either leaves the draw out.
+        .after_feature(crate::skulls_mp::FEATURE)
+        .context_only();
     Ok(())
+}
+
+/// Whether the first-person draw is left out: the frame is drawn from the
+/// chase camera.
+fn hides_first_person() -> bool {
+    ON.load(Ordering::Relaxed) && DRAWN.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -411,22 +485,153 @@ mod tests {
         player_view(&mut guest, 0x2000, 0);
         player_view(&mut guest, 0x3000, 1);
         player_view(&mut guest, 0x4000, u32::MAX);
-        let e = eye(&guest, &[0x2000]).expect("one player's view");
+        let Some(Eye::View(e)) = eye(&guest, &[0x2000], None) else {
+            panic!("one player's view");
+        };
         assert_eq!(e.position, [1.0, 2.0, 3.0]);
         assert_eq!((e.yaw, e.pitch), (0.0, 0.0));
+        // The view wins over the body when it reads.
+        let body = body_eye([9.0, 9.0, 0.0], [0.0, 1.0, 0.0]);
+        assert!(matches!(eye(&guest, &[0x2000], body), Some(Eye::View(_))));
         // Split screen, and no view at all.
-        assert!(eye(&guest, &[0x2000, 0x3000]).is_none());
-        assert!(eye(&guest, &[]).is_none());
+        assert!(eye(&guest, &[0x2000, 0x3000], body).is_none());
+        assert!(eye(&guest, &[], body).is_none());
         // A view another host camera made playerless.
-        assert!(eye(&guest, &[0x4000]).is_none());
+        assert!(eye(&guest, &[0x4000], body).is_none());
         // Addresses the guest does not hold.
-        assert!(eye(&guest, &[0x9000]).is_none());
-        assert!(eye(&guest, &[u32::MAX - 4]).is_none());
+        assert!(eye(&guest, &[0x9000], None).is_none());
+        assert!(eye(&guest, &[u32::MAX - 4], None).is_none());
+    }
+
+    /// A player's view at `at` whose camera does not read: `forward` as
+    /// given, `fov` the vertical lens.
+    fn broken_view(guest: &mut FakeGuest, at: u32, forward: [f32; 3], fov: f32) {
+        let mut record = blank_view();
+        record[8..12].copy_from_slice(&0u32.to_le_bytes());
+        let camera = 0x0c;
+        for (i, v) in [1.0f32, 2.0, 3.0].into_iter().chain(forward).enumerate() {
+            record[camera + 4 * i..camera + 4 * i + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        record[camera + 0x28..camera + 0x2c].copy_from_slice(&fov.to_le_bytes());
+        guest.put(at, &record);
     }
 
     #[test]
+    fn a_view_that_is_not_a_camera_gives_the_bodys_eye() {
+        let body = body_eye([4.0, 5.0, 1.0], [0.0, 1.0, 0.0]).expect("a body");
+        assert_eq!(body.position, [4.0, 5.0, 1.0 + EYE]);
+        assert!((body.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        for (forward, fov) in [
+            // No aim, an aim not a number, no lens, a lens not a number.
+            ([0.0; 3], 1.0),
+            ([f32::NAN, 0.0, 0.0], 1.0),
+            ([1.0, 0.0, 0.0], 0.0),
+            ([1.0, 0.0, 0.0], f32::NAN),
+        ] {
+            let mut guest = FakeGuest::new();
+            broken_view(&mut guest, 0x2000, forward, fov);
+            assert_eq!(
+                eye(&guest, &[0x2000], Some(body)),
+                Some(Eye::Body(body)),
+                "{forward:?} {fov}"
+            );
+            // With no body either: the game's own view, as it is.
+            assert_eq!(eye(&guest, &[0x2000], None), None);
+        }
+        // A body with no aim, or not a number, gives none.
+        assert!(body_eye([0.0; 3], [0.0; 3]).is_none());
+        assert!(body_eye([f32::NAN, 0.0, 0.0], [1.0, 0.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn the_chase_record_is_the_host_cameras_record_for_its_pose() {
+        // The pogo hook and a host camera (Theater's, the agent's spawn
+        // view) hand the same pose to the one writer: the records match
+        // byte for byte, playerless, with the player's lens and viewport
+        // kept and the camera behind and above the eye.
+        const STACK: u32 = 0x1000;
+        const VIEW: u32 = 0x2000;
+        const POGO: u32 = 0x5000;
+        const HOST: u32 = 0x6000;
+        let mut guest = FakeGuest::new();
+        player_view(&mut guest, VIEW, 0);
+        guest.map(POGO, VIEW_STRIDE).map(HOST, VIEW_STRIDE);
+        let pose = chase(eye(&guest, &[VIEW], None).unwrap().pose(), 1.0);
+        let record = |guest: &mut FakeGuest, scratch: u32, give: Pose| {
+            guest
+                .put_u32(STACK, crate::spectator_view::WORLD_VIEW_RETURN)
+                .put_u32(STACK + 12, VIEW);
+            assert!(crate::spectator_view::replace_world_view(
+                guest,
+                STACK,
+                1,
+                scratch,
+                |_, _| Some((give, None)),
+            ));
+            let mut out = [0u8; VIEW_STRIDE as usize];
+            GuestMemory::read(&*guest, scratch, &mut out).unwrap();
+            out
+        };
+        let pogo = record(&mut guest, POGO, pose);
+        let host = record(&mut guest, HOST, pose);
+        assert_eq!(pogo, host);
+        let mut retail = [0u8; VIEW_STRIDE as usize];
+        GuestMemory::read(&guest, VIEW, &mut retail).unwrap();
+        let f = |r: &[u8], at: usize| f32::from_le_bytes(r[at..at + 4].try_into().unwrap());
+        assert_eq!(&pogo[8..12], &u32::MAX.to_le_bytes(), "playerless");
+        for camera in [0x0c, 0x80] {
+            // Behind (the eye looks along +X) and above.
+            assert!(f(&pogo, camera) < f(&retail, 0x0c), "behind");
+            assert!(f(&pogo, camera + 8) > f(&retail, 0x0c + 8), "above");
+            // The aim: forward +X, up +Z, both unit.
+            assert_eq!(
+                [f(&pogo, camera + 0x0c), f(&pogo, camera + 0x10), f(&pogo, camera + 0x14)],
+                [1.0, 0.0, 0.0]
+            );
+            assert_eq!(
+                [f(&pogo, camera + 0x18), f(&pogo, camera + 0x1c), f(&pogo, camera + 0x20)],
+                [0.0, 0.0, 1.0]
+            );
+            // The lens and the viewport are the player's.
+            assert_eq!(&pogo[camera + 0x28..camera + 0x40], &retail[camera + 0x28..camera + 0x40]);
+            // A clip range in front of the camera.
+            let (near, far) = (f(&pogo, camera + 0x40), f(&pogo, camera + 0x44));
+            assert!(near > 0.0 && far > near, "{near} {far}");
+        }
+        assert!(
+            (0..VIEW_STRIDE as usize / 4)
+                .filter(|i| !(3..3 + 0x74 / 4).contains(i) && !(0x80 / 4..0x80 / 4 + 0x74 / 4).contains(i))
+                .filter(|i| *i != 2)
+                .all(|i| pogo[4 * i..4 * i + 4] == retail[4 * i..4 * i + 4]),
+            "outside the cameras and the player word, the record is the player's"
+        );
+    }
+
+    #[test]
+    fn the_first_person_draw_is_left_out_only_under_the_chase_camera() {
+        // `hides_first_person` reads the statics the tick test drives;
+        // its truth table is checked here by setting them directly.
+        let _guard = STATICS.lock().unwrap_or_else(|e| e.into_inner());
+        for (on, drawn, hidden) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, true),
+        ] {
+            ON.store(on, Ordering::Relaxed);
+            DRAWN.store(drawn, Ordering::Relaxed);
+            assert_eq!(hides_first_person(), hidden, "on {on} drawn {drawn}");
+        }
+        reset();
+        assert!(!hides_first_person());
+    }
+
+    /// Held by every test of the statics, so none interleave.
+    static STATICS: Mutex<()> = Mutex::new(());
+
+    #[test]
     fn the_tick_turns_the_camera_on_and_the_frame_pulls_it_back() {
-        // The one test of the statics, so no other can interleave.
+        let _guard = STATICS.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         assert!(!view().on);
         on_tick(true, Some([0.0; 3]), Some([1.0, 0.0, 0.0]), &|_, to| {
@@ -451,8 +656,21 @@ mod tests {
         assert_eq!(next.position[1], 2.0);
         assert!(view().share > 0.0);
 
+        // A view that does not read: the body's eye of the last tick,
+        // counted.
+        on_tick(true, Some([10.0, 0.0, 0.0]), Some([1.0, 0.0, 0.0]), &|_, _| true);
+        broken_view(&mut guest, 0x3000, [0.0; 3], 1.0);
+        let fell_back = resolve(&guest, &[0x3000]).expect("the body's eye");
+        assert!(fell_back.position[0] < 10.0 && fell_back.position[2] > EYE);
+        assert_eq!(view().fallback_frames, 1);
+        // A view that reads is not counted.
+        resolve(&guest, &[0x2000]).unwrap();
+        assert_eq!(view().fallback_frames, 1);
+
         // The stick put away: back to the eye for the next time.
         on_tick(false, None, None, &|_, _| true);
+        // No body any more: a view that does not read is the game's.
+        assert!(resolve(&guest, &[0x3000]).is_none());
         assert!(!view().on);
         assert_eq!(view().share, 0.0);
         reset();
