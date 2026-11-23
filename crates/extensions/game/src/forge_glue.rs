@@ -88,7 +88,7 @@ pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
     let Some(driver) = current() else {
         return Vec::new();
     };
-    driver.lock().unwrap_or_else(|e| e.into_inner()).bodies
+    driver.lock().unwrap_or_else(|e| e.into_inner()).bodies.clone()
 }
 
 /// World-space axes and the held object's outline, projected through the

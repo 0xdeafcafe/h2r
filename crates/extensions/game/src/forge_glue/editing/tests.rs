@@ -489,7 +489,7 @@ fn spawn_goal_and_item_properties_write_their_fields() {
     let mut e = editor();
     e.session = Arc::new(property_session());
     calls::lock(&e.calls).arm();
-    let mut finish = |e: &mut Editor, tick| {
+    let finish = |e: &mut Editor, tick| {
         let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
         calls::lock(&e.calls).finish(ticket, Ok(json!({"handles": []})));
         e.poll(tick);
