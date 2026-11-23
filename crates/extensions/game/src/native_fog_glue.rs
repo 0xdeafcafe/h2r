@@ -8,7 +8,8 @@
 //!
 //! - **At load** ([`load`], on the world's worker, before the world's
 //!   draws are kept): each material's layer-16 passes
-//!   (`native_render::fog_gpu::layer_passes`) compiled with their own
+//!   (`native_render::fog_gpu::layer_passes_selected`, the planar gate's
+//!   implementation, [`LOADED_IMPLEMENTATION`]) compiled with their own
 //!   programs ([`FogProgram::compile`]), all or nothing, their stage
 //!   images decoded and their fog words kept; then the parts that can
 //!   draw: a material that compiled, with the rigid classification for
@@ -47,6 +48,13 @@ use frame_scene::{LateMaterial, LatePart};
 
 use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
+/// The implementation of its layer-16 passes the load compiles: the one
+/// layer 16's build binds for a record with the planar gate open
+/// (`native_render::fog::layer_implementation`: 2). A pass with a single
+/// implementation draws it for every item; an item whose record binds
+/// another stays on the D3D path ([`FogView::draws`]).
+pub const LOADED_IMPLEMENTATION: u8 = 2;
+
 /// The fog of one loaded world, kept for the whole load: what compiled
 /// with its fog words, and the parts the native pass draws.
 pub struct FogView {
@@ -61,13 +69,20 @@ pub struct FogView {
     /// The skip's table: each drawn part with its material's shader by
     /// tag index.
     pub part_set: HashMap<(Owner, u8), u16>,
+    /// Each drawn material's shader (tag index) that has a pass with more
+    /// than one implementation: the implementation compiled for it. A
+    /// material whose passes all have one is not here and draws for any
+    /// item's implementation.
+    pub chosen: HashMap<u16, u8>,
 }
 
 impl FogView {
     /// Whether the pass draws `part` of `owner` with `shader` (the item's
-    /// `+8` low word): the skip's acceptance.
-    pub fn draws(&self, owner: Owner, part: u8, shader: u16) -> bool {
+    /// `+8` low word) for an item whose record binds `implementation`
+    /// (`FogItem::implementation`): the skip's acceptance.
+    pub fn draws(&self, owner: Owner, part: u8, shader: u16, implementation: Option<u8>) -> bool {
         self.part_set.get(&(owner, part)) == Some(&shader)
+            && self.chosen.get(&shader).is_none_or(|&loaded| implementation == Some(loaded))
     }
 }
 
@@ -86,6 +101,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
 ) -> FogView {
     let mut programs: HashMap<u16, Vec<FogProgram>> = HashMap::new();
     let mut words: HashMap<u16, FogWords> = HashMap::new();
+    let mut chosen: HashMap<u16, u8> = HashMap::new();
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
     let materials: Vec<u16> = world.draws.iter().map(|d| d.material).collect::<BTreeSet<_>>().into_iter().collect();
     if !materials.is_empty() {
@@ -93,12 +109,32 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             Ok(mut lib) => {
                 let mut refused: HashMap<String, usize> = HashMap::new();
                 let mut rigid_refused: HashMap<String, usize> = HashMap::new();
-                for &m in &materials {
-                    let Some(&shader) = shaders.get(usize::from(m)) else { continue };
-                    let compiled = lib
-                        .material(shader, None)
-                        .map_err(|e| format!("material: {e}"))
-                        .and_then(|mat| fog_gpu::layer_passes(&mat, native_render::fog::FOG_LAYER).map_err(|r| r.describe()))
+                // Every material resolved first: whether any pass of the
+                // layer sets a cull other than the layer's start decides
+                // whether a pass that leaves it unset can be drawn
+                // (`fog_gpu::layer_sets_other_cull`).
+                let resolved: Vec<(u16, TagId, Result<tags::material::Material, String>)> = materials
+                    .iter()
+                    .filter_map(|&m| {
+                        let &shader = shaders.get(usize::from(m))?;
+                        Some((m, shader, lib.material(shader, None).map_err(|e| format!("material: {e}"))))
+                    })
+                    .collect();
+                let selection = fog_gpu::Selection {
+                    implementation: Some(usize::from(LOADED_IMPLEMENTATION)),
+                    layer_cull: !resolved
+                        .iter()
+                        .filter_map(|(_, _, mat)| mat.as_ref().ok())
+                        .any(|mat| fog_gpu::layer_sets_other_cull(mat, native_render::fog::FOG_LAYER)),
+                };
+                for (m, shader, mat) in resolved {
+                    if mat.as_ref().is_ok_and(|mat| fog_gpu::layer_has_choice(mat, native_render::fog::FOG_LAYER)) {
+                        chosen.insert(shader.0 as u16, LOADED_IMPLEMENTATION);
+                    }
+                    let compiled = mat
+                        .and_then(|mat| {
+                            fog_gpu::layer_passes_selected(&mat, native_render::fog::FOG_LAYER, selection).map_err(|r| r.describe())
+                        })
                         .and_then(|passes| {
                             passes
                                 .iter()
@@ -186,7 +222,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         .iter()
         .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0 as u16)))
         .collect();
-    FogView { programs, words, parts, part_set }
+    FogView { programs, words, parts, part_set, chosen }
 }
 
 /// Builds the fog resources on the BSP loader's device.
@@ -268,7 +304,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
         let (selected, cleared) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
-            let accepted = fog.draws(item.owner, item.part, item.shader);
+            let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
             if !accepted {
                 Stage::Fog.count(Metric::Examined, 1);
                 Stage::Fog.count(Metric::RefusedOwnership, 1);

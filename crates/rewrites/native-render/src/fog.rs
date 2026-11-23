@@ -43,6 +43,49 @@ pub const FOG_BYTES: u32 = 0x0048_5a74;
 /// current are not the scene's fog and stay on the D3D path.
 pub const SCENE_FOG_RETURN: u32 = 0x0002_c0e9;
 
+/// Layer 16's implementation chooser is the geometry build's own case
+/// (`0x0004cbf0`, the jump table entry `0x0004cdc8`; layers 3, 16, 18 and
+/// 19 have their own), not `0x00015d70`'s answer. Its inputs are the
+/// render record's flag word `+0` and one byte, `[0x004ba004]`, which
+/// with both fog bytes ([`FOG_BYTES`]) clear is the planar gate
+/// ([`planar_gate`]).
+pub const PLANAR_READY: u32 = 0x004b_a004;
+
+/// Bit 7 of the record's `+0`: the record has a layer-16 entry at all.
+pub const RECORD_FOG: u32 = 1 << 7;
+/// Bit 8 of the record's `+0`: the record's entry exists only without the
+/// planar gate (implementation 1); clear, it is implementation 2 with the
+/// gate and 0 without.
+pub const RECORD_FOG_UNGATED: u32 = 1 << 8;
+
+/// The implementation layer 16's build stores in the entry's byte `+4`
+/// for a record with flag word `record` (`0x0004cdc8`..`0x0004ce0c`), or
+/// `None` for no entry (the layer draws nothing of the item):
+///
+/// - bit 7 clear: no entry;
+/// - bit 8 clear: 2 with the planar gate, 0 without;
+/// - bit 8 set: 1 without the planar gate, no entry with it.
+pub fn layer_implementation(record: u32, planar: bool) -> Option<u8> {
+    if record & RECORD_FOG == 0 {
+        return None;
+    }
+    match (record & RECORD_FOG_UNGATED != 0, planar) {
+        (false, true) => Some(2),
+        (false, false) => Some(0),
+        (true, false) => Some(1),
+        (true, true) => None,
+    }
+}
+
+/// The planar gate the build tests (`0x0004cdc8`..`0x0004cde7`): the byte
+/// `[0x004ba004]` non-zero and both fog bytes clear. `None` when the words
+/// do not read.
+pub fn planar_gate<M: GuestRead + ?Sized>(mem: &M) -> Option<bool> {
+    let ready = mem.read_u32(PLANAR_READY)? & 0xff != 0;
+    let bytes = mem.read_u32(FOG_BYTES)? & 0x00ff_ff00 != 0;
+    Some(ready && !bytes)
+}
+
 /// One structure item of the fog layer: what it draws and its shader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FogItem {
@@ -50,6 +93,9 @@ pub struct FogItem {
     pub part: u8,
     /// The item's shader datum's low word, the tag index.
     pub shader: u16,
+    /// The implementation the layer's build binds ([`layer_implementation`]);
+    /// only layer 16's build is known here, so any other layer's is `None`.
+    pub implementation: Option<u8>,
 }
 
 /// Whether the layer draw would draw layer 16 at all: its own gate
@@ -62,7 +108,10 @@ pub fn layer_draws(mem: &dyn GuestRead) -> Option<bool> {
     Some(mem.read_u32(FOG_BYTES)? & 0x00ff_ff00 != 0)
 }
 
-/// Clears the layer bit on the structure items `native` accepts. Since
+/// Clears the layer bit on the structure items `native` accepts. In layer
+/// 16 an item whose record has no entry ([`layer_implementation`]) is
+/// neither: the guest draws nothing of it, so it is left alone and does
+/// not break the prefix. Since
 /// the native pass draws before the guest layer, the accepted items must
 /// form a prefix of the layer's items. Objects and other builds belong to
 /// the guest remainder. A gap in the prefix or an unreadable list refuses
@@ -88,6 +137,7 @@ pub fn clear_fog(
     }
     items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
     let bit = 1u32 << layer;
+    let planar = if layer == FOG_LAYER as u32 { Some(planar_gate(&*mem)?) } else { None };
     let mut prefix = Vec::new();
     let mut guest_remainder = false;
     for i in first..count {
@@ -117,8 +167,15 @@ pub fn clear_fog(
         } else {
             Owner::Instance((packed >> 18) & 0x7ff)
         };
+        let implementation = match planar {
+            Some(planar) => match layer_implementation(mem.read_u32(base)?, planar) {
+                Some(i) => Some(i),
+                None => continue,
+            },
+            None => None,
+        };
         let shader = mem.read_u32(item + 8)? as u16;
-        let fog_item = FogItem { owner, part: arg as u8, shader };
+        let fog_item = FogItem { owner, part: arg as u8, shader, implementation };
         if !native(fog_item) {
             guest_remainder = true;
             continue;
@@ -178,12 +235,15 @@ mod tests {
         item(&mut m, 2, GEOMETRY_BUILD, 7);
         item(&mut m, 3, 0x0005_0000, 2);
         m.w(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX);
-        m.w(RENDER_RECORDS + 0x20 * 2, 0);
+        m.w(RENDER_RECORDS + 0x20 * 2, RECORD_FOG);
         m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 37 << 9);
         m.w(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004);
         m.w(RENDER_RECORDS + 0x20 * 7 + 4, u32::MAX);
-        m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12);
+        m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12 | RECORD_FOG);
         m.w(RENDER_RECORDS + 0x20 * 7 + 0xc, 140 << 18);
+        // The planar gate: the ready byte set, both fog bytes clear.
+        m.w(PLANAR_READY, 1);
+        m.w(FOG_BYTES, 0);
         m
     }
 
@@ -215,8 +275,8 @@ mod tests {
         assert_eq!(
             drawn,
             vec![
-                FogItem { owner: Owner::Cluster(37), part: 1, shader: 0x0010 },
-                FogItem { owner: Owner::Instance(140), part: 3, shader: 0x0012 },
+                FogItem { owner: Owner::Cluster(37), part: 1, shader: 0x0010, implementation: Some(2) },
+                FogItem { owner: Owner::Instance(140), part: 3, shader: 0x0012, implementation: Some(2) },
             ],
             "the prefix includes both layer-16 structure items"
         );
@@ -244,7 +304,7 @@ mod tests {
                 }
                 m.w(ITEMS + ITEM_SIZE, build);
                 let record = RENDER_RECORDS + RENDER_RECORD_SIZE * 5;
-                m.w(record, 0);
+                m.w(record, RECORD_FOG);
                 m.w(record + 4, model);
                 m.w(record + 0xc, 19 << 9);
 
@@ -259,7 +319,7 @@ mod tests {
     #[test]
     fn the_walk_clears_only_what_the_host_accepts() {
         let mut m = scene();
-        let native = |i: FogItem| i == FogItem { owner: Owner::Cluster(37), part: 1, shader: 0x0010 };
+        let native = |i: FogItem| i == FogItem { owner: Owner::Cluster(37), part: 1, shader: 0x0010, implementation: Some(2) };
         let (drawn, cleared) = clear_fog(&mut m, 16, &native).unwrap();
         assert_eq!(drawn.len(), 1);
         assert_eq!(cleared.items, vec![ITEMS]);
@@ -268,6 +328,69 @@ mod tests {
         let other = |i: FogItem| i.shader == 0x0099;
         let mut m = scene();
         assert!(clear_fog(&mut m, 16, &other).unwrap().0.is_empty());
+    }
+
+    /// The chooser of `0x0004cdc8`, every row of its table.
+    #[test]
+    fn the_layer_16_build_picks_the_implementation_from_the_record_and_the_gate() {
+        assert_eq!(layer_implementation(0, true), None, "bit 7 clear: no entry");
+        assert_eq!(layer_implementation(RECORD_FOG_UNGATED, false), None, "bit 7 clear whatever bit 8 says");
+        assert_eq!(layer_implementation(RECORD_FOG, true), Some(2));
+        assert_eq!(layer_implementation(RECORD_FOG, false), Some(0));
+        assert_eq!(layer_implementation(RECORD_FOG | RECORD_FOG_UNGATED, false), Some(1));
+        assert_eq!(layer_implementation(RECORD_FOG | RECORD_FOG_UNGATED, true), None);
+    }
+
+    #[test]
+    fn the_planar_gate_wants_the_ready_byte_and_both_fog_bytes_clear() {
+        let mut m = scene();
+        assert_eq!(planar_gate(&m), Some(true));
+        m.w(PLANAR_READY, 0x100); // a byte above the one the build reads
+        assert_eq!(planar_gate(&m), Some(false));
+        m.w(PLANAR_READY, 1);
+        for word in [0x0000_0100, 0x0001_0000] {
+            m.w(FOG_BYTES, word);
+            assert_eq!(planar_gate(&m), Some(false), "a fog byte ({word:#x}) closes it");
+        }
+        m.w(FOG_BYTES, 0x0000_00ff); // the word's byte 0 is not one of the two
+        assert_eq!(planar_gate(&m), Some(true));
+        m.0.remove(&PLANAR_READY);
+        assert_eq!(planar_gate(&m), None, "an unreadable gate is not a closed one");
+    }
+
+    #[test]
+    fn the_walk_carries_each_items_implementation_and_skips_records_with_no_entry() {
+        // The gate shut: cluster record 2 (bit 8 clear) binds 0, the
+        // placement's (bit 8 set) binds 1.
+        let mut m = scene();
+        m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3); // the object is not in layer 16
+        m.w(FOG_BYTES, 0x0000_0100);
+        m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12 | RECORD_FOG | RECORD_FOG_UNGATED);
+        let (drawn, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        let got: Vec<_> = drawn.iter().map(|i| (i.owner, i.implementation)).collect();
+        assert_eq!(got, vec![(Owner::Cluster(37), Some(0)), (Owner::Instance(140), Some(1))]);
+        // The gate open: the placement has no entry, so the guest draws
+        // nothing of it: it is not drawn natively and does not stop the
+        // prefix, wherever it sits.
+        let mut m = scene();
+        m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3);
+        m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12 | RECORD_FOG | RECORD_FOG_UNGATED);
+        let (drawn, cleared) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].implementation, Some(2));
+        assert_eq!(cleared.items, vec![ITEMS]);
+        assert_eq!(mask(&m, 2), 1 << 16 | 1 << 3, "the entry-less item keeps its bit: nothing draws it");
+        // A record with bit 7 clear: no entry either.
+        let mut m = scene();
+        m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3);
+        m.w(RENDER_RECORDS + 0x20 * 2, 0);
+        let (drawn, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].owner, Owner::Instance(140));
+        // An unreadable gate refuses the walk.
+        let mut m = scene();
+        m.0.remove(&PLANAR_READY);
+        assert!(clear_fog(&mut m, 16, &|_| true).is_none());
     }
 
     #[test]
