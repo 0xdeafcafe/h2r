@@ -1,7 +1,7 @@
 # Playtest: headless matches on the map being edited
 
-Status: Design. `h2 sim`, its match and batch files, its reports and the bots are built ([sim.md](../runtime/sim.md), [bots.md](../game/bots.md)); the spatial trace, Studio's runner and the overlays are not.
-Code: `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner), `crates/apps/studio/src/api/playtest.rs`, `crates/apps/studio/src/viewport/playtest.rs` (the overlays). Tests: `sim::spatial::tests`, `app::playtest::tests`, `api::tests`.
+Status: Design. `h2 sim`, its match and batch files, its reports and the bots are built ([sim.md](../runtime/sim.md), [bots.md](../game/bots.md)), and so are the static checks and `playtest.static`; the spatial trace, Studio's runner and the overlays are not.
+Code: `crates/apps/studio/src/app/playtest_static.rs` (the static checks), `crates/apps/studio/src/api/playtest.rs`, `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner), `crates/apps/studio/src/viewport/playtest.rs` (the overlays). Tests: `app::playtest_static::tests`, `api::tests::playtest_tests`, `sim::spatial::tests`, `app::playtest::tests`.
 Switch: none.
 
 While a map is being made, Studio plays it: bot matches on the current
@@ -78,19 +78,39 @@ on invented traces:
 
 ### Static checks
 
-Some of this needs no match and runs on every edit, in Studio, in well
-under a second (`playtest.static`):
+**Code**, `app::playtest_static`. Some of this needs no match and runs
+on the open map as edited, saved or not (`playtest.static`;
+[agent-api.md](agent-api.md), "Playtest's static checks"). `check` is
+pure: it takes a `Layout` (the starting locations, netgame items and
+netgame flags with their teams, the bots' mesh, the level collision's
+triangles and the start gate's census) and gives each problem with its
+target, and each game type's readiness:
 
-- the nav mesh builds, and every starting location, item and objective
-  stands on it;
-- every starting location can reach every other, per team and across;
-- islands of the mesh nothing reaches; ledges with a drop one way and
-  no way back;
-- lines between starting locations of opposing teams (collision rays),
-  for spawns in sight of each other;
-- what each game type needs that the map lacks, by the start gate's
-  census ([rules-start-gate.md](../game/rules-start-gate.md)): spawns
-  per team, flags, hills, the labels a script declares.
+- the bots' mesh is there (`app::bot_nav`'s load, read or built in
+  memory), and every starting location, item and flag stands on it:
+  over a polygon, from 0.1 units under its floor to 1 over it
+  (`locate`);
+- every starting location reaches every other along the mesh's links,
+  per team and across;
+- islands of the mesh no starting location reaches, grouped by their
+  links (1 square unit or more); links from the reached mesh into
+  polygons with no way back, one per trap (a drop off a ledge into a
+  pit);
+- lines between the eyes (0.6 units up) of starting locations not of
+  one team, at most 40 units apart, through the level collision's
+  triangles, for spawns in sight of each other;
+- what each built-in game type needs that the map lacks: the start
+  gate's check on the census of the scenario's flags and starting
+  locations for teams 0 and 1 ([rules-start-gate.md](../game/rules-start-gate.md);
+  `Census::of_game` with no Forge document, so no tag paths), two
+  starting locations on the mesh, and for Capture the Flag and Assault
+  what `ctf.rules` declares with no least count since one script serves
+  both: a `ctf_flag_spawn` flag per team, an `assault_bomb_spawn` per
+  team (or a neutral one) and an `assault_bomb_return` per team, and a
+  starting location each team can use.
+
+The sight lines ignore the placed objects' collision. The thresholds
+are constants of `app::playtest_static`; none is measured yet.
 
 ### How an edit gets in
 
@@ -182,7 +202,7 @@ and the stuck-spot measure to be tested against.
 
 | Method | Access | Params | Result |
 |---|---|---|---|
-| `playtest.static` | read | `{project?}` | `{ok, problems: [{kind, text, target}], ready: [{game_type, ok, missing}]}`; a `target` goes to `nav.go` |
+| `playtest.static` (**Code**) | read | `{wait?}` | `{ok, nav, problems: [{kind, text, target}], ready: [{game_type, engine, ok, missing}]}`; a placement `target` goes to `nav.go`, a polygon's to `nav.pick`. It checks the open map; a project param comes with the workspace's projects |
 | `playtest.run` | act | `{preset?, game_types?, seeds?, minutes?, bots?, compare_to?}` | `{run, build, matches, parallel}` at once |
 | `playtest.status` | read | `{run?}` | `{state, done, total, speedup, stale, failed: [{seed, why}]}` |
 | `playtest.result` | read | `{run?, measure?}` | the measures, or one in full with its bins |

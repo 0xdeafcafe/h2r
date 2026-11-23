@@ -40,6 +40,7 @@ mod pair;
 mod params;
 mod preview;
 mod playlists;
+mod playtest;
 mod scenario;
 mod scripts;
 pub mod seams;

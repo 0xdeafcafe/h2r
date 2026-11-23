@@ -71,6 +71,8 @@ pub fn register(api: &mut Api) {
     // The Navigation layers' data: the game's pathfinding, the bots' mesh
     // and spots, and a pick.
     api.register(Box::new(super::nav_mesh::NavMesh));
+    // Playtest's static checks over the open map (app::playtest_static).
+    api.register(Box::new(super::playtest::Playtest));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
     api.register(Box::new(super::tag_io::TagIo));
     // Sound audition: decode, play and the waveform of a snd! tag.

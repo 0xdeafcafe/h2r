@@ -78,6 +78,9 @@ superbounce = { path = "../../live/superbounce" }
 # The Map Pack's content directory (`T:\$c`) on the host.
 vfs.workspace = true
 serde_json.workspace = true
+# Playtest's static checks (src/app/playtest_static.rs): the start gate's
+# census of the open scenario (docs/game/rules-start-gate.md).
+forge-doc.workspace = true
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../../extensions/agent-proto" }
