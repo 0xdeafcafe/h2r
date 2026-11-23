@@ -81,9 +81,12 @@ resolved draw packets after their recording has succeeded.
 - Record `+0x4` selects the geometry allocation. The byte offset is the
   allocation's `+8` value shifted left by `[[0x509448]+0x34]`; the guest
   vertex address is `([[0x509444]+0x4] | 0x80000000) + offset`, and the start
-  vertex is `offset >> 4`. The declaration at `0x0043f7b9` is 16 bytes per vertex:
-  float3 position at `+0`, packed D3DCOLOR at `+12` (vertex registers `v0`
-  and `v3`).
+  vertex is `offset >> 4`. The attribute list at `0x0043f7b9` binds 16 bytes
+  per vertex: float3 position at `+0` in `v0`, and a `NORMPACKED3` dword at
+  `+12` in `v3` — its format code 16 maps through the table at `0x0035790`
+  to `D3DVSDT 0x16`, an 11:11:10 signed normalised vector the NV2A fetches
+  with `w = 1` (the native pass decodes it to three floats, as
+  `gfx::repack` and the D3D translation do).
 - Record `+0x24` supplies vertex default `v10`; `v11` is zero. Any other
   unsupplied vertex input is a refusal.
 - The vertex program is engine slot 3 selected at `0x00043fe8`. The table at

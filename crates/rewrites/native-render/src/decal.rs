@@ -1,7 +1,8 @@
 //! Shared dynamic decal types. Admission and resources come from the ordered
 //! `d3d::DrawAdmission` snapshot; this module has no guest-memory decoder.
 
-/// Bytes in one decal vertex: float3 position and packed D3DCOLOR.
+/// Bytes in one guest decal vertex: float3 position and a packed 11:11:10
+/// signed normalised vector (`NORMPACKED3`, the declaration's v3).
 pub const VERTEX_SIZE: usize = 16;
 
 /// A dynamic decal pass mode. Modes 0..5 are W-buffered; mode 6 is not.
@@ -43,13 +44,31 @@ impl Mode {
     }
 }
 
-/// One vertex as the resolved declaration supplies it (`v0` and `v3`).
+/// One vertex as the native pass uploads it. The guest's v3 is
+/// `NORMPACKED3` ([`decode_packed`]); the wgpu attribute reads it as
+/// `Float32x3`, which supplies the fetch's fixed `w = 1` itself.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
-    /// Bytes in guest order (B, G, R, A for a D3DCOLOR).
-    pub color: [u8; 4],
+    /// v3 decoded to floats: 11:11:10 signed normalised `(x, y, z)`.
+    pub diffuse: [f32; 3],
+}
+
+/// v3 as the NV2A fetches a `NORMPACKED3` attribute: 11:11:10 signed
+/// normalised in one dword (`gfx::repack` and the D3D translation decode
+/// the same dword the same way).
+pub fn decode_packed(packed: [u8; 4]) -> [f32; 3] {
+    let w = u32::from_le_bytes(packed);
+    let signed = |v: u32, bits: u32| {
+        let shift = 32 - bits;
+        (((v << shift) as i32) >> shift) as f32 / ((1i32 << (bits - 1)) - 1) as f32
+    };
+    [
+        signed(w & 0x7ff, 11).max(-1.0),
+        signed((w >> 11) & 0x7ff, 11).max(-1.0),
+        signed(w >> 22, 10).max(-1.0),
+    ]
 }
 
 /// Triangle indices for a quad list, as the D3D path expands type 8.
@@ -84,5 +103,27 @@ mod tests {
             assert!(mode.w_buffered());
         }
         assert!(!Mode::Opaque.w_buffered());
+    }
+
+    #[test]
+    fn packed_decode_is_11_11_10_signed_normalised() {
+        assert_eq!(decode_packed(0u32.to_le_bytes()), [0.0, 0.0, 0.0]);
+        // The largest positive pattern of each field is exactly 1.
+        let max = 0x3ff | (0x3ff << 11) | (0x1ff << 22);
+        assert_eq!(decode_packed(max.to_le_bytes()), [1.0, 1.0, 1.0]);
+        // All bits set: each field's two's complement is -1 LSB.
+        let [x, y, z] = decode_packed(u32::MAX.to_le_bytes());
+        assert_eq!([x, y], [-1.0 / 1023.0; 2]);
+        assert_eq!(z, -1.0 / 511.0);
+        // The most negative pattern of each field clamps to -1.
+        let min = 0x400 | (0x400 << 11) | (0x200 << 22);
+        assert_eq!(decode_packed(min.to_le_bytes()), [-1.0, -1.0, -1.0]);
+        // Half in each field, and one field independent of the others.
+        let half = 0x200 | (0x200 << 11) | (0x100 << 22);
+        let [x, y, z] = decode_packed(half.to_le_bytes());
+        assert_eq!([x, y], [512.0 / 1023.0; 2]);
+        assert_eq!(z, 256.0 / 511.0);
+        let [x, y, z] = decode_packed(1u32.to_le_bytes());
+        assert_eq!([x, y, z], [1.0 / 1023.0, 0.0, 0.0]);
     }
 }

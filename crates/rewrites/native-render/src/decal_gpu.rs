@@ -17,7 +17,7 @@ use gfx::state::{
 use shaders::psh::{self, AlphaFunc, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 use shaders::vsh::{self, VertexOptions, VertexUniforms};
 
-use crate::decal::{Mode, VERTEX_SIZE, Vertex, quad_indices};
+use crate::decal::{Mode, Vertex, quad_indices};
 use crate::program;
 use crate::texture_groups::{Held, TextureGroups};
 
@@ -535,7 +535,7 @@ impl DecalGpu {
                     shader_location: 0,
                 },
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Unorm8x4Bgra,
+                    format: wgpu::VertexFormat::Float32x3,
                     offset: 12,
                     shader_location: 3,
                 },
@@ -550,7 +550,7 @@ impl DecalGpu {
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: VERTEX_SIZE as u64,
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attributes,
                     })],
@@ -1083,7 +1083,7 @@ fn decal_pipeline(
             shader_location: 0,
         },
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Unorm8x4Bgra,
+            format: wgpu::VertexFormat::Float32x3,
             offset: 12,
             shader_location: 3,
         },
@@ -1099,7 +1099,7 @@ fn decal_pipeline(
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: VERTEX_SIZE as u64,
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attributes,
                     })],
