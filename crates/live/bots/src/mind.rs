@@ -293,6 +293,9 @@ pub struct Mind {
     last_threat: Option<u32>,
     /// The pickup it is holding the action button on, and since when.
     take: Option<(u32, u32)>,
+    /// Flags and bombs out of view, and objective destinations given up
+    /// (section 3.7, `objective::belief`).
+    pub(crate) objective_belief: objective::Belief,
     /// Shields went under [`LOW_SHIELD`] and are not back.
     recovering: bool,
     /// [`Mind::go`] gave up on the goal this tick.
@@ -449,6 +452,7 @@ impl Mind {
             fight: Tactics::new(seed),
             last_threat: None,
             take: None,
+            objective_belief: Default::default(),
             recovering: false,
             gave_up: false,
             navigated: false,
@@ -1248,6 +1252,11 @@ impl Mind {
                 // Home along the nav mesh. It cannot shoot with the flag;
                 // whoever is in its way at arm's length gets the flag.
                 walk = self.go(me.position, home, p.tick, map, &mut pad, bodies);
+                // No route yet (waiting on a plan, or off the mesh): head
+                // straight for it rather than freeze with the flag.
+                if walk.is_none() {
+                    walk = carry_straight(me.position, home);
+                }
                 if let Some((o, ready)) = chosen
                     && len(sub(up(o.position, CHEST), eye)) < MELEE_RANGE * 1.3
                     && reached(p.tick, ready)
@@ -1279,7 +1288,12 @@ impl Mind {
                     Goal::Carry(at) => (at, 0.0),
                     Goal::Keep => (me.position, 0.0),
                 };
-                if len(sub(me.position, to)) > near_enough {
+                // There by XY, within a step's height: a flag's or bomb's
+                // origin is rarely at the unit's, and walking on at one
+                // never gets closer (the stuck machine's repath loop).
+                let there = dist_xy(me.position, to) <= near_enough.max(crate::nav::REACHED)
+                    && (me.position[2] - to[2]).abs() <= near_enough.max(objective::TAKE_HEIGHT);
+                if !there {
                     walk = self.go(me.position, to, p.tick, map, &mut pad, bodies);
                     if self.gave_up {
                         self.follower = None;
@@ -1928,6 +1942,14 @@ mod ride;
 /// never has one.
 pub(crate) fn glitch_doing(doing: Doing) -> bool {
     matches!(doing, Doing::Fight(_) | Doing::Roam)
+}
+
+/// A carrier with no route home walks straight at it until it is there
+/// (XY): `None` once there.
+fn carry_straight(at: Vec3, home: Vec3) -> Option<Walk> {
+    let d = [home[0] - at[0], home[1] - at[1]];
+    let l = d[0].hypot(d[1]);
+    (l > 1.0).then(|| Walk::straight([d[0] / l, d[1] / l]))
 }
 
 fn objective_approach(doing: Doing, at: Vec3) -> bool {

@@ -14,19 +14,29 @@ impl Mind {
     ) -> (Option<Goal>, Intent) {
         // An outside order (rules-world-api.md, "Bots") is the goal while
         // it stands, in place of the objective's.
-        let goal = self.decisions.ordered_goal(p).or_else(|| {
-            p.objective.as_ref().and_then(|o| {
-                objective::plan(
-                    o,
-                    &me,
-                    if o.game == objective::Game::Juggernaut {
-                        seen
-                    } else {
-                        &p.others
-                    },
-                    p.teams,
-                )
-            })
+        let ordered = self.decisions.ordered_goal(p);
+        let goal = ordered.or_else(|| {
+            let o = p.objective.as_ref()?;
+            let others: &[Seen] = if o.game == objective::Game::Juggernaut {
+                seen
+            } else {
+                &p.others
+            };
+            // Flags and bombs out of view are remembered or presumed at
+            // their spawn (objective::belief): the plan works from that.
+            let lean = objective::Lean::of(&self.decisions.personality);
+            let sees = |at: Vec3| crate::perceive::in_view(me, at, CHEST, map);
+            match self.objective_belief.know(o, &me, p.tick, lean, &sees) {
+                Some((known, outlook)) => {
+                    let goal = objective::plan_with(&known, &me, others, p.teams, &outlook);
+                    let take = matches!(goal, Some(Goal::Go(at))
+                        if known.items.iter().any(|i| i.carrier.is_none() && i.position == at));
+                    self.objective_belief
+                        .pursue(goal, take, me.position, self.stuck.repaths, p.tick);
+                    goal
+                }
+                None => objective::plan(o, &me, others, p.teams),
+            }
         });
         // Once a tick: a repeated frame returns the last pad before this.
         if let Some(map) = map {

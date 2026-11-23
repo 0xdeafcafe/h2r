@@ -646,7 +646,7 @@ biped's state in the synthetic object table before either brain runs.
 | Motion tracker | An unzoomed player can investigate the nearest moving hostile blip inside the sensor disc. It gives an approximate horizontal position through walls. The bot needs sight to identify a player or fire. |
 | Ground objects and placement records | Sight reveals loose grenade equipment and a weapon’s model. Its remaining ammo becomes known when held. Occupied power sites require sight. A successful scan establishes emptiness only at a known pad the bot can inspect. A failed scan supplies no observation. |
 | Vehicles and seats | A visible hull or the bot's own ride supplies the model, pose and seat layout. Identifying a rider on another vehicle also requires sight of that player. Remote vehicle health uses a neutral estimate. The bot can read its own ride's health. |
-| Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. |
+| Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. Out of sight, a CTF or Assault bot plans from its own memory and from the public spawns (section 3.7, "Belief"). |
 | Shots, projectiles and death log | Audible shots give a direction for a look or search. A grenade dodge requires a close, visible projectile. The kill feed supplies identities. A fresh visible body or the bot's own death can supply a position. |
 | Scoreboard, radio and map tags | Scores and team membership are public. Radio distributes dated observations on completed ticks. Static placement periods and player starts describe the map. No variant countdown or actual enemy spawn selection feeds the planner. |
 
@@ -1522,29 +1522,77 @@ it has found itself):
   approximation for loose pickups and observations without a scoring mask.
 
 A fault leaves `Perception::objective` `None`: the bot plays as in Slayer.
+Script games ride a retail engine index (rules-engine.md, "Which engine
+index a script rides") and keep its objective registry, so the same reads
+serve a `.rules` game on the CTF or Assault carrier.
 
-**Roles** (`objective::role_of`). Every bot sorts its living teammates
-and itself by player index; its rank and the team's size give its role,
-so all of a team's bots agree with nothing said between them. One alone
-attacks; of two, the higher index defends; from three, a third (rounded
-down) defend, the highest ranks. Humans count in the ranks: the bots do
-not know who is a bot.
+**Belief** (`objective::belief`, CTF and Assault). Perception keeps a
+loose flag or bomb, and an enemy carrying one, only while it is in view;
+the bases (the netgame flags) are public. The planner works from what the
+bot believes (`Belief::know`, `mind::strategy`):
 
-**The decision** (`objective::plan`, pure):
+- a flag or bomb in view is where it is; one seen loose is remembered
+  there for 45 s, and forgotten when the bot is within 15 world units with
+  the spot in view and it is not there;
+- an enemy carrying our flag is followed to where it was last seen for
+  4 s; then our flag is *missing*;
+- a flag or bomb never seen (or forgotten) is at its spawn (CTF types 0;
+  Assault type 2, a spawn with no team being the neutral bomb's). A spawn
+  in view within 15 with nothing on it makes that team's flag or bomb
+  missing;
+- a missing one stays missing until it is seen or 20 s pass (a return or a
+  capture puts it back at its spawn);
+- a destination the stuck machine repaths at 3 times (section 3.2), or a
+  loose item the bot stands on for 3 s without taking it, is given up for
+  15 s (`Belief::pursue`): the item drops out of the plan, and a return
+  point or plate drops out while another of its team remains.
+
+So from the spawn the attackers head for the enemy base whether or not
+the enemy flag is in view, and a bot looking at an empty spawn plays on
+rather than waiting.
+
+**Roles** (`objective::role_of`, `objective::Lean`). Every bot sorts its
+living teammates and itself by player index; its rank and the team's
+size give its slot, so all of a team's bots agree with nothing said
+between them. One alone attacks; of two, the higher index defends; from
+three, a third (rounded down) defend, the highest ranks. Humans count in
+the ranks: the bots do not know who is a bot.
+
+Within the slot the bot plays its name. `Lean::of` takes four of the
+name's personality draws (aggression, caution, teamwork, objective
+focus; section 3.3), each continuous within the difficulty's band:
+
+| Leaning | From | What it changes |
+|---|---|---|
+| escorts | teamwork over the mean of aggression and focus | an attacker with another attacker nearer the loose flag or bomb covers them (**escort**) instead of racing them; the nearest attacker always goes |
+| guard radius | 4 × (1 + aggression − caution), 3 to 8 | how far a defender strays from our flag or plate to fight |
+| return range | 25 × (0.5 + teamwork) | how far an attacker turns back to return our dropped flag |
+| carrier pull | 1.5 − focus | an attacker hunts our flag's carrier when it is nearer than this share of the way to its own target |
+
+A neutral leaning (all 0.5) gives the ranked plan unchanged. Of the eight
+round-1 names at Legendary, three escort and five grab.
+
+**The decision** (`objective::plan_with`, pure; `plan` with a neutral
+leaning and nothing missing):
 
 CTF uses this order.
 
 1. it carries the enemy flag: **carry** it to our return point, else our
-   flag's spawn, along the nav mesh;
+   flag's spawn, along the nav mesh (straight at it while no route is
+   ready);
 2. an enemy carries our flag: **hunt** the carrier (defenders always;
-   attackers when the carrier is nearer than the flag they are after);
+   attackers by the carrier pull);
 3. our flag lies more than 2 world units from its spawn: **go** and touch
-   it to return it (defenders always; attackers within 25);
-4. attackers: **go** for the enemy flag where it lies (at home or
-   dropped). With it taken by a teammate, the remaining players divide
-   escort and guard duties. A lone teammate escorts within 3 world units.
-5. defenders, and attackers with nothing to do: **hold** our flag's spawn,
-   within 4 world units, fighting from there.
+   it to return it (defenders always; attackers within the return range).
+   Our flag missing, a defender **goes** to the enemy return point (else
+   their spawn), where the carrier is heading;
+4. a teammate has the enemy flag: the remaining players divide escort and
+   guard duties. A lone teammate escorts within 3 world units;
+5. attackers: **go** for the enemy flag where it is believed to be (at its
+   spawn or dropped), or escort a nearer attacker by their leaning. With
+   the enemy flag missing they play as in Slayer until it turns up;
+6. defenders: **hold** our flag's spawn within the guard radius, fighting
+   from there.
 
 Oddball: carrying, **keep** it; a free ball, **go** for it; an enemy's,
 **hunt** them; a teammate's, **escort** them. Between balls, approach
@@ -1560,9 +1608,17 @@ bomb on foot inside the arming volume advances the counter toward
 `G+0x244` seconds times tick rate. Outside, it falls by three per tick
 to a floor of -1. Stay on the plate through arming; when armed, close to
 score. The engine releases the planted bomb, records the planter at
-`A+0x17c+4·bombTeam` and sets the planted bit. Escorts cover that bomb.
-Defenders guard the plate or intercept the enemy carrier. An ordinary
-dropped friendly bomb can be recovered by the nearest teammate.
+`A+0x17c+4·bombTeam` and sets the planted bit; the team's point comes when
+it goes off, about 3 s later, killing whoever stands near (round 1 on
+Midship: the planter and an escort 3 units away). Escorts cover the
+arming from the plate. A planted bomb is nobody's target: any goal whose
+point lies within `BLAST_CLEAR` (6 world units, XY) of it, or a bot with
+no goal standing there, becomes a **hold** within 1.5 of a spot 7.5 out
+along the line from the bomb to the bot (`objective::clear_of`).
+Defenders guard the plate within the guard radius or intercept the enemy
+carrier. An ordinary dropped friendly bomb can be recovered by the
+nearest teammate; a loose one elsewhere goes to the nearest attacker, the
+escorting names covering it.
 
 **Territories.** Relieve a friendly capture site occupied by an enemy,
 finish a capture already under way, then take an unowned or hostile site.
@@ -1575,7 +1631,11 @@ while firing, then melee up close. Movement bonuses come from the game
 variant. The role mask alone reveals no target position to the planner.
 
 **Picking up.** Approach the chosen item and hold X while it remains
-loose within pickup range. `0x1517ec..0x1518d6` gives a nonzero
+loose within pickup range: 0.5 world units in XY and 1 in height
+(`TAKE_HEIGHT`), as an item on a step or lip sits off the unit's origin.
+A goal counts as reached in XY within its radius (at least
+`nav::REACHED`) and in height within its radius (at least 1), so a bot
+does not walk on at an item it is standing on. `0x1517ec..0x1518d6` gives a nonzero
 multiplayer weapon type the contextual interaction kind 7. The held-X
 path accepts kinds 1 and 7 at `0x15195c` and requests primary pickup.
 There is also a proximity path (`0x15098f`) whose primary pickup is
@@ -5783,8 +5843,10 @@ and Clankers), Normal. Each line is a yes or no.
 
 CTF on Lockout or Beaver Creek:
 
-1. With both flags home, one bot per team runs for the enemy flag and
-   (with three or more on the team) one stays near its own flag.
+1. With both flags home and out of view, the attackers leave the spawn
+   for the enemy base; the nearest goes for the flag, escorting names
+   follow it, and (with three or more on the team) one stays near its
+   own flag. They fight whoever they meet on the way.
 2. A bot reaching the enemy flag takes it even with a full inventory.
    Check the X hold while the flag is loose and its release on pickup.
 3. A bot carrying the flag runs home along the floor, does not shoot,
@@ -5794,7 +5856,8 @@ CTF on Lockout or Beaver Creek:
 4. Reaching home with our flag there, it scores (the score goes up).
 5. Take a bot team's flag: its defender, and an attacker nearer to you,
    come after you; when you drop it, the nearest bot walks over it and it
-   goes home.
+   goes home. Break line of sight with it: the defender looks where you
+   were, then heads for your base.
 6. A bot whose teammate has the enemy flag runs near them.
 7. Spawns and returns are right on both maps: the bots' "home" is their
    own base, not the enemy's (the designator map, `E+8`/`E+0x10`).
@@ -5818,7 +5881,9 @@ King of the Hill (Midship or Lockout):
 Assault (if tried):
 
 14. Check which side picks up a team bomb and a neutral bomb, and whether
-    the carrier scores at the plate its escorts defend (§3.7).
+    the carrier scores at the plate its escorts defend (§3.7). After the
+    plant nobody, of either side, stays within about 6 world units of the
+    bomb when it goes off.
 
 All:
 

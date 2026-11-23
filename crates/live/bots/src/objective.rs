@@ -26,6 +26,12 @@ use engine::view::objects;
 
 use crate::brain::{Me, Seen, Vec3};
 
+pub mod belief;
+mod lean;
+
+pub use belief::{Belief, Outlook};
+pub use lean::Lean;
+
 type R<T> = Result<T, MemFault>;
 
 // ---- where it lives ----
@@ -195,7 +201,11 @@ impl Objective {
         let Some(Goal::Go(at)) = goal else {
             return false;
         };
-        dist(me.position,at) < crate::mind::TAKE_RANGE && self.items.iter().any(|i|{
+        // Across a step or a lip, the object sits higher or lower than
+        // the unit's origin: in reach by XY with a little height.
+        dist_xy(me.position, at) < crate::mind::TAKE_RANGE
+            && (me.position[2] - at[2]).abs() < TAKE_HEIGHT
+            && self.items.iter().any(|i|{
             i.position==at && i.carrier.is_none() && match self.game {
                 Game::Oddball => true,
                 Game::Ctf => i.team!=me.team,
@@ -222,6 +232,10 @@ impl Objective {
         }
     }
 }
+
+/// A loose flag, ball or bomb is in reach this far above or below the
+/// unit's origin.
+pub const TAKE_HEIGHT: f32 = 1.0;
 
 // ---- reading it ----
 
@@ -508,6 +522,18 @@ fn dist_xy(a: Vec3, b: Vec3) -> f32 {
 /// other living players and whether teams play. `None` when it asks
 /// nothing (no flag read, no hill): the bot plays as in Slayer.
 pub fn plan(o: &Objective, me: &Me, others: &[Seen], teams: bool) -> Option<Goal> {
+    plan_with(o, me, others, teams, &Outlook::default())
+}
+
+/// [`plan`] with what the bot believes besides what it sees: its name's
+/// leanings and the flags or bombs it knows are missing ([`Belief`]).
+pub fn plan_with(
+    o: &Objective,
+    me: &Me,
+    others: &[Seen],
+    teams: bool,
+    outlook: &Outlook,
+) -> Option<Goal> {
     let mates: Vec<u32> = others
         .iter()
         .filter(|s| teams && s.team == me.team)
@@ -515,8 +541,8 @@ pub fn plan(o: &Objective, me: &Me, others: &[Seen], teams: bool) -> Option<Goal
         .collect();
     let friend = |id: u32| id == o.me || mates.contains(&id);
     match o.game {
-        Game::Ctf => flag_plan(o, me, &mates, &friend),
-        Game::Assault => bomb_plan(o, me, others, &mates, &friend),
+        Game::Ctf => flag_plan(o, me, others, &mates, &friend, outlook),
+        Game::Assault => bomb_plan(o, me, others, &mates, &friend, outlook),
         Game::Oddball => ball_plan(o, me, &friend),
         Game::Koth => {
             let h = o.hill.as_ref()?;
@@ -583,7 +609,15 @@ fn nearest<'a, T: 'a>(at: Vec3, it: impl Iterator<Item = (&'a T, Vec3)>) -> Opti
         .map(|(t, _)| t)
 }
 
-fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool) -> Option<Goal> {
+fn flag_plan(
+    o: &Objective,
+    me: &Me,
+    others: &[Seen],
+    mates: &[u32],
+    friend: &dyn Fn(u32) -> bool,
+    outlook: &Outlook,
+) -> Option<Goal> {
+    let lean = outlook.lean;
     let mine = |s: &&Spot| s.team == Some(me.team);
     let at = me.position;
     let spot = |ty: u16, ours: bool| {
@@ -605,6 +639,7 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
     }
 
     let role = role_of(o.me, mates);
+    let guard = lean.guard_radius();
     let ours = |i: &&Item| i.team == me.team;
     let own = o.items.iter().find(ours);
     let theirs: Vec<&Item> = o.items.iter().filter(|i| !ours(i)).collect();
@@ -619,9 +654,12 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
     if let Some(f) = own {
         match f.carrier {
             // 2. An enemy has our flag: kill the carrier. Defenders always;
-            // attackers when the carrier is nearer than their target.
+            // attackers when the carrier is nearer than their target (a
+            // focused attacker keeps on for the flag longer).
             Some(c) if !friend(c) => {
-                let nearer = target.is_none_or(|t| dist(f.position, at) < dist(t.position, at));
+                let nearer = target.is_none_or(|t| {
+                    dist(f.position, at) < dist(t.position, at) * lean.carrier_pull()
+                });
                 if role == Role::Defend || nearer {
                     return Some(Goal::Hunt(c, f.position));
                 }
@@ -630,10 +668,16 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
             // 3. Our flag lies away from home: return it (touch it).
             None => {
                 let away = home.is_some_and(|h| dist(h, f.position) > HOME);
-                if away && (role == Role::Defend || dist(f.position, at) < RETURN_RANGE) {
+                if away && (role == Role::Defend || dist(f.position, at) < lean.return_range()) {
                     return Some(Goal::Go(f.position));
                 }
             }
+        }
+    } else if outlook.missing(me.team) && role == Role::Defend {
+        // Our flag is gone and its carrier out of sight: cut it off on
+        // its way to their base.
+        if let Some(p) = spot(kind::CTF_RETURN, false).or(spot(kind::CTF_SPAWN, false)) {
+            return Some(Goal::Go(p));
         }
     }
     // 4. A teammate has theirs: attackers escort, defenders guard.
@@ -649,7 +693,7 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
             .filter(|&id| Some(id) != e.carrier)
             .collect();
         return Some(match (role_of(o.me, &free), home) {
-            (Role::Defend, Some(base)) => Goal::Hold(base, DEFEND_RADIUS),
+            (Role::Defend, Some(base)) => Goal::Hold(base, guard),
             _ => Goal::Escort(e.position),
         });
     }
@@ -657,31 +701,135 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
         if let Some(t) = target {
             return Some(match t.carrier {
                 Some(c) => Goal::Hunt(c, t.position),
-                None => Goal::Go(t.position),
+                None => grab_or_escort(o, at, t.position, others, mates, lean),
             });
+        }
+        // Nothing known to take (their flag is missing): play as in
+        // Slayer until it turns up, rather than walking home to wait.
+        if home.is_some() {
+            return None;
         }
     }
     // 5. Guard our flag's spawn (or the flag itself).
-    let guard = home.or(own.filter(|f| f.carrier.is_none()).map(|f| f.position));
-    guard
-        .map(|g| Goal::Hold(g, DEFEND_RADIUS))
+    let base = home.or(own.filter(|f| f.carrier.is_none()).map(|f| f.position));
+    base.map(|g| Goal::Hold(g, guard))
         .or_else(|| target.map(|t| Goal::Go(t.position)))
 }
 
+/// An attacker takes the loose flag or bomb at `item`, unless it leans to
+/// escorting ([`Lean::escorts`]) and another attacker is nearer to it:
+/// then it covers them on the way. The nearest attacker always goes.
+fn grab_or_escort(
+    o: &Objective,
+    at: Vec3,
+    item: Vec3,
+    others: &[Seen],
+    mates: &[u32],
+    lean: Lean,
+) -> Goal {
+    if lean.escorts() {
+        let team: Vec<u32> = mates.iter().copied().chain([o.me]).collect();
+        let attacker = |id: u32| {
+            let rest: Vec<u32> = team.iter().copied().filter(|&m| m != id).collect();
+            role_of(id, &rest) == Role::Attack
+        };
+        let mine = (dist(at, item), o.me);
+        if let Some(m) = nearest(
+            item,
+            others
+                .iter()
+                .filter(|s| mates.contains(&s.id) && attacker(s.id))
+                .filter(|s| (dist(s.position, item), s.id) < mine)
+                .map(|s| (s, s.position)),
+        ) {
+            return Goal::Escort(m.position);
+        }
+    }
+    Goal::Go(item)
+}
+
+/// A planted bomb goes off where it lies: nobody stands within this of it
+/// (world units, XY).
+pub const BLAST_CLEAR: f32 = 6.0;
+/// Clear of the blast, a bot holds within this of its spot.
+pub const CLEAR_HOLD: f32 = 1.5;
+
+/// A spot clear of the blast of the bomb planted at `bomb`: out along the
+/// line from the bomb to the bot, or towards the nearest public spot
+/// outside the blast when the bot stands on the bomb.
+fn clear_of(bomb: Vec3, at: Vec3, spots: &[Spot]) -> Vec3 {
+    let unit = |p: Vec3| {
+        let d = [p[0] - bomb[0], p[1] - bomb[1]];
+        let l = d[0].hypot(d[1]);
+        (l >= 0.5).then(|| [d[0] / l, d[1] / l])
+    };
+    let away = nearest(
+        at,
+        spots
+            .iter()
+            .filter(|s| dist_xy(s.position, bomb) > BLAST_CLEAR)
+            .map(|s| (s, s.position)),
+    );
+    let dir = unit(at)
+        .or_else(|| away.and_then(|s| unit(s.position)))
+        .unwrap_or([-1.0, 0.0]);
+    let r = BLAST_CLEAR + CLEAR_HOLD;
+    [bomb[0] + dir[0] * r, bomb[1] + dir[1] * r, at[2]]
+}
+
 /// In Assault a team takes its own (or a neutral) bomb to the opposing
-/// plate. A dropped enemy bomb is not a flag we can touch to return.
+/// plate. A dropped enemy bomb is not a flag we can touch to return. A
+/// planted bomb is left alone and its blast kept clear of.
 fn bomb_plan(
     o: &Objective,
     me: &Me,
     others: &[Seen],
     mates: &[u32],
     friend: &dyn Fn(u32) -> bool,
+    outlook: &Outlook,
 ) -> Option<Goal> {
     let at = me.position;
+    let planted: Vec<Vec3> = match o.state {
+        State::Assault { planted, .. } => o
+            .items
+            .iter()
+            .filter(|i| i.carrier.is_none() && member(planted, i.team as u32))
+            .map(|i| i.position)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let goal = bomb_goal(o, me, others, mates, friend, outlook);
+    let Some(bomb) = nearest(at, planted.iter().map(|p| (p, *p))).copied() else {
+        return goal;
+    };
+    let inside = |p: Vec3| dist_xy(p, bomb) < BLAST_CLEAR;
+    let to = match goal {
+        Some(Goal::Carry(_) | Goal::Keep) => return goal,
+        Some(Goal::Go(p) | Goal::Hold(p, _) | Goal::Escort(p) | Goal::Hunt(_, p)) => Some(p),
+        None => None,
+    };
+    if to.map_or(inside(at), inside) {
+        return Some(Goal::Hold(clear_of(bomb, at, &o.spots), CLEAR_HOLD));
+    }
+    goal
+}
+
+fn bomb_goal(
+    o: &Objective,
+    me: &Me,
+    others: &[Seen],
+    mates: &[u32],
+    friend: &dyn Fn(u32) -> bool,
+    outlook: &Outlook,
+) -> Option<Goal> {
+    let at = me.position;
+    let lean = outlook.lean;
     let defending = match o.state {
         State::Assault { defending, .. } => defending,
         _ => None,
     };
+    let is_planted =
+        |i: &Item| matches!(o.state, State::Assault { planted, .. } if member(planted, i.team as u32));
     let plate = |ours| {
         nearest(
             at,
@@ -720,13 +868,16 @@ fn bomb_plan(
     };
     let incoming = closest(&|i| i.carrier.is_some_and(|id| !friend(id)));
     let escort = closest(&|i| i.carrier.is_some_and(friend));
-    let bomb = closest(&|i| i.carrier.is_none() && (i.team == me.team || i.team == 8));
+    let bomb = closest(&|i| {
+        i.carrier.is_none() && (i.team == me.team || i.team == 8) && !is_planted(i)
+    });
     let defender = role_of(o.me, mates) == Role::Defend;
     let home = plate(true);
+    let guard = lean.guard_radius();
     if defending == Some(me.team) {
         return incoming
             .and_then(|b| b.carrier.map(|id| Goal::Hunt(id, b.position)))
-            .or_else(|| home.map(|p| Goal::Hold(p, DEFEND_RADIUS)));
+            .or_else(|| home.map(|p| Goal::Hold(p, guard)));
     }
     if let Some(b) = incoming
         && (defender
@@ -745,9 +896,6 @@ fn bomb_plan(
         return Some(Goal::Escort(b.position));
     }
     if let Some(b) = bomb {
-        if matches!(o.state, State::Assault { planted, .. } if member(planted,b.team as u32)) {
-            return Some(Goal::Hold(b.position, DEFEND_RADIUS));
-        }
         if let Some(plate) = theirs
             && dist(plate, b.position) <= HOME
         {
@@ -765,10 +913,10 @@ fn bomb_plan(
             });
         }
         if !defender || home.is_none() || defending.is_some() {
-            return Some(Goal::Go(b.position));
+            return Some(grab_or_escort(o, at, b.position, others, mates, lean));
         }
     }
-    home.map(|p| Goal::Hold(p, DEFEND_RADIUS))
+    home.map(|p| Goal::Hold(p, guard))
         .or_else(|| bomb.map(|b| Goal::Go(b.position)))
 }
 
@@ -815,3 +963,5 @@ fn ball_plan(o: &Objective, me: &Me, friend: &dyn Fn(u32) -> bool) -> Option<Goa
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod team_tests;
