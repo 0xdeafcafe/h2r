@@ -256,6 +256,38 @@ fn a_verified_file_is_stored_merged_read_back_and_bumps_the_generation() {
     let st: Vec<_> = l.iter().map(|l| l.spot.status).collect();
     assert_eq!(st, vec![Status::Proven, Status::Failed]);
     assert!(Known::for_map(map).sites.is_empty());
+
+    // An older version's file (v1: positions read at the bounding
+    // sphere's centre) is not read and not converted; the next write
+    // replaces it with this version's.
+    let old_map = "verified_old_map";
+    let old_path = dir.join(verified_file_name(old_map));
+    std::fs::write(
+        &old_path,
+        "# superbounce verified v1\nbounce proven 4.000 5.000 6.400 trials=3 ok=1\n",
+    )
+    .unwrap();
+    assert!(read_verified(&dir, old_map).unwrap_err().contains("version 1"));
+    assert!(verified_for(old_map).is_empty());
+    let fresh = entry(Kind::Bounce, Status::Proven, [4.0, 5.0, 6.0]);
+    assert_eq!(store_verified(old_map, &[fresh]).unwrap(), Some(old_path.clone()));
+    let text = std::fs::read_to_string(&old_path).unwrap();
+    assert!(text.starts_with(verified::HEADER), "{text}");
+    let on_disk = read_verified(&dir, old_map).unwrap();
+    assert_eq!(on_disk.len(), 1);
+    assert_eq!(on_disk[0].at, fresh.at);
+
+    // A damaged file of this version is not written over: the store says
+    // so, and keeps the entry for the session.
+    let bad_map = "verified_damaged_map";
+    let bad_path = dir.join(verified_file_name(bad_map));
+    let damaged = format!("{}\nbounce maybe 1 2 3\n", verified::HEADER);
+    std::fs::write(&bad_path, &damaged).unwrap();
+    assert!(verified_for(bad_map).is_empty());
+    let e = store_verified(bad_map, &[fresh]).unwrap_err();
+    assert!(e.to_string().contains("not written over"), "{e}");
+    assert_eq!(std::fs::read_to_string(&bad_path).unwrap(), damaged);
+    assert_eq!(verified_for(bad_map).len(), 1);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

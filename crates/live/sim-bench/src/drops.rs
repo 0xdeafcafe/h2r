@@ -1511,6 +1511,9 @@ pub struct DropRun {
     /// Settled, it waits: the arm and the lift come when the hold is let
     /// go ([`DropRun::set_hold`]).
     hold: bool,
+    /// The hold was kept on a settled body: once it is let go, the arm is
+    /// that row's.
+    held: bool,
     phase: Phase,
     first_tick: Option<u64>,
     release: Option<u64>,
@@ -1551,6 +1554,7 @@ impl DropRun {
             drift_fixed: None,
             facing,
             hold: false,
+            held: false,
             phase: Phase::Place(false, 0),
             first_tick: None,
             release: None,
@@ -1579,8 +1583,12 @@ impl DropRun {
     /// Holds the drop on its rest point once it has settled (`true`), or
     /// lets it arm and lift on its next still row (`false`). A held drop
     /// keeps writing the word 0 and never runs out of settle rows while
-    /// it is still. The bounce search starts several seats' falls on
-    /// chosen ticks with it (`crate::bounces`).
+    /// it is still. A drop held once settled arms on the row its hold is
+    /// let go, still or not: a body that stirred after it settled is
+    /// stopped as it is lifted, so its lift starts from rest as a still
+    /// body's does. The bounce search starts several seats' falls on
+    /// chosen ticks with it (`crate::bounces`), and a stir on the arm's
+    /// row would make that tick late by up to [`SETTLE_STILL`] rows.
     pub fn set_hold(&mut self, hold: bool) {
         self.hold = hold;
     }
@@ -1710,12 +1718,15 @@ impl DropRun {
         };
         if still >= SETTLE_STILL && self.hold {
             // Settled and held: the rows count on, the arm waits.
+            self.held = true;
             self.phase = Phase::Settle(n.saturating_add(1), still);
-        } else if still >= SETTLE_STILL {
+        } else if still >= SETTLE_STILL || (self.held && !self.hold) {
             // Armed on the still body, then lifted straight up: the lift
-            // keeps the word and the (zero) velocity.
+            // keeps the word and the (zero) velocity. A held body let go
+            // is armed on this row even if it stirred since it settled,
+            // its velocity zeroed so it too is lifted from rest.
             act.word = Some(PRIMED);
-            act.stop = false;
+            act.stop = still < SETTLE_STILL;
             act.teleport = Some((self.drop.start, self.facing));
             self.rows.push(self.row(-1, "arm", sense, Some(PRIMED)));
             self.phase = Phase::Lift(0);

@@ -1,6 +1,6 @@
 # The forked bounce search
 
-Status: Partly built. The search, the fork and the command run on a real machine: a smoke run forked and restored with every RAM check equal. Costs and trial outcomes are not yet measured ([Not verified](#not-verified)).
+Status: Partly built. The search, the fork and the command run on a real machine: a 60-site Ascension run forked and restored with every replay and RAM check equal and ranked four sites provable ([2026-11-23-ascension-bounce-search.md](../game/notes/2026-11-23-ascension-bounce-search.md)). The ease numbers against a person are open ([Not verified](#not-verified)).
 Code: `crates/live/sim-bench/src/bounces.rs` (`Job`), `crates/extensions/game/src/sim_bounces.rs` (`tick`, `between_slices`), `crates/apps/cli/src/sim_cmd.rs` (`bounces`). Tests: `crates/live/sim-bench/src/bounces/tests.rs`.
 Switch: none.
 
@@ -68,12 +68,14 @@ with the pose and facing, so a start read from it never lands. The
 game's placement puts the origin above the point asked for:
 `PLAYER_PLACE_NEAR` hands `0x14e200` the point plus the up vector
 (`[0x4687b0]`, (0, 0, 1)) times `[0x47f05c]`, 0.0328 (**E**
-`0x14e9ae..0x14ea02`). Each base drop's lift, a teleport into the air as
-a trial's is, measures the miss, and the site's trials ask against it
-(`SiteJob::aim`), so their first teleport lands. A trial that had to ask again keeps the aim it landed
-with for the site's next trials, is marked `reaimed` in its record, and
-its wave is no replay check's. The run's notes name a measured miss over
-the tolerance.
+`0x14e9ae..0x14ea02`, `bounces::PLACE_LIFT`). A site's trials ask against
+that lift from the start (`SiteJob::aim`). Each base drop's lift, a
+teleport into the air as a trial's is, measures the miss, and the site's
+trials ask against the measured miss, so their first teleport lands. A
+trial that had to ask again keeps the aim it landed with for the site's
+next trials, is marked `reaimed` in its record, and its wave is no replay
+check's. The run's notes name a measured miss that differs from the
+game's lift by more than the tolerance, and that difference.
 
 ### The fork
 
@@ -163,7 +165,12 @@ variant:
    rows between its arm and its release, and its own last airborne row.
 2. **Settle and launch.** Each seat is placed and settled again and held.
    The seats are let go on their own ticks, so every body is `lead` rows
-   (default 4) before its touchdown on the same tick.
+   (default 4) before its touchdown on the same tick. A held drop arms on
+   the row its hold is let go (`DropRun::set_hold`): a body that stirred
+   after it settled is stopped and lifted from rest, as a still one is.
+   A seat whose release is not on its planned tick has no base on that
+   variant, by name: `base: out of step: released at tick R, planned W
+   (armed at tick A, planned P)`.
 3. **Capture.** The machine is saved on that tick, under the variant's key.
 4. **Waves.** A restore, then one trial a seat at once, each on its own
    site, then the next restore. A wave is seven ticks at the defaults.
@@ -314,6 +321,16 @@ The results directory holds:
 - **Run**: the last airborne row decides the bounce, and about half the
   tick phases bounce on the Ascension seam
   ([2026-11-22-seam-drop-depth.md](../game/notes/2026-11-22-seam-drop-depth.md)).
+- **Run**: Ascension's first 60 seams on three variants: 130,388 trials
+  from 24 captures and 20,215 restores, 12 of 12 replayed waves and 2,445
+  of 2,445 checked restores equal, four sites provable, and the harness's
+  notes (four bases out of step, the placement's lift)
+  ([2026-11-23-ascension-bounce-search.md](../game/notes/2026-11-23-ascension-bounce-search.md)).
+- **Test**: a seat that stirs on the row it is let go keeps its base
+  (`a_seat_that_stirs_as_it_is_let_go_keeps_its_base`); every site asks
+  against the game's lift from its first teleport, and a placement that
+  lifts by just that is no note
+  (`the_games_placement_lift_is_asked_against_from_the_first_teleport`).
 - **Code**: the Havok heap is outside the engine's checkpoint
   ([sim-rewrite-havok.md](../engine/sim-rewrite-havok.md)).
 - **Test**: the job over a made-up machine whose fork is a copy of its
@@ -332,7 +349,14 @@ The results directory holds:
 
 ### Cost
 
-Arithmetic over measured tick times, not a measurement of the search. A
+The Ascension run measured 0.35 to 0.49 s of a run's wall time a wave
+on the fast tier, setup and calibration included
+([2026-11-23-ascension-bounce-search.md](../game/notes/2026-11-23-ascension-bounce-search.md#time)):
+far over the arithmetic below. What a wave's time goes to (the restore,
+the ticks with the write watch on, other runs on the same machine) is
+not split out.
+
+The arithmetic over measured tick times, not a measurement of the search. A
 Lockout 2v2 sim tick on the clang tier at `H2_OPT=2` is 3.12 ms alone and
 5.09 ms with four processes
 ([notes/sim-10x.md](../perf/notes/sim-10x.md#2026-11-22-batch-throughput-at---parallel-1-4-and-8-on-the-quiet-laptop)).
@@ -352,23 +376,23 @@ wrote and loads every section; its time is the open number.
 
 ## Not verified
 
-- That the machine is quiet enough to save at a tick boundary in a sim
-  host: the kernel's and the features' blockers, with the keyframe scope.
-  A blocker is named in the base's `why`, and the run's `fork.busy`
-  counts them. The features the first Ascension run named as not
-  audited have policies (snapshots.md, "Feature policies"); a test shows
-  a slice ended by a tick observer stops with no continuation live
-  (`crates/hooking/hooks/tests/install.rs`), but no sim has forked yet.
 - That skipping the part-less checks is safe for a signed-in Live HLE.
-- That a restored machine runs the same ticks as the captured one: the
-  replay and RAM checks measure it on every first batch.
+  The Ascension run skipped them on every fork, and every replay and RAM
+  check was equal.
 - That a teleport and a velocity write two rows before the touchdown
   leave the pair and its word in place, and give the outcome a real fall
-  from that state gives: the anchor trial against its full drop.
-- That the seats' lift latency is steady enough for every body to be
-  `lead` rows from its touchdown on one tick.
-- The time of a restore, of a fast-tier tick with the write watch on all
-  of RAM, and so the trial rate.
+  from that state gives. The anchor trial checks it against its full
+  drop; on Ascension 129 of 169 variant bases agreed and 40 had no anchor
+  outcome, its teleport moved off its start
+  ([note](../game/notes/2026-11-23-ascension-bounce-search.md#trials-and-the-fork)).
+  Why the placement moves a start a real fall passed through is open.
+- That a late release is a stir on the arm row. The Ascension run lost
+  four bases to releases one to three ticks late, which is the range of
+  the 3 still rows a still body needs (`drops::SETTLE_STILL`); its
+  message did not name the arm tick. The arm on the hold's row is tested
+  on fakes, not yet seen in a run.
+- The time of a restore on its own, of a fast-tier tick with the write
+  watch on all of RAM, and so what a wave's time goes to.
 - That the ring's entries for eight variants fit in memory beside eight
   processes.
 - The ease numbers against a person: whether the human steps are the

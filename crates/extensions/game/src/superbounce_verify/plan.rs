@@ -40,9 +40,14 @@ pub const POINT_EDGE: f32 = 0.3;
 /// A route's default target: this far straight up from the strip's stand,
 /// so only a launch gets there.
 pub const ROUTE_RISE: f32 = 6.0;
-/// A teleport puts the origin this far over the planned point, so the feet
-/// do not start in the floor. A guess; the settle drops it back.
-pub const TELEPORT_LIFT: f32 = 0.05;
+/// How far over the point asked the game's placement puts the origin
+/// (object `+0x64`): `PLAYER_PLACE_NEAR` hands `0x14e200` the point plus
+/// the up vector times `[0x47f05c]`, 0.0328 (docs/runtime/bounce-search.md,
+/// "One trial"). That is the clearance the game keeps the feet out of the
+/// floor with, so a trial at rest asks for the strip's `stand` itself (the
+/// settle drops it back), and a drop asks for `height` less this, so the
+/// origin it falls from is `height` over `stand`.
+pub const PLACE_LIFT: f32 = 0.0328;
 /// Crouch: how far past `stand` (along the way in) the walk in aims, as
 /// the bots' walking prime does (`bots::glitches::prime::PUSH_IN`).
 pub const PUSH_IN: f32 = bots::glitches::prime::PUSH_IN;
@@ -160,11 +165,15 @@ impl Target {
 pub struct Trial {
     /// Index into the batch's targets.
     pub spot: usize,
-    /// Crouch: the start, outside the lip (teleported to). Drop: the drop
-    /// origin, `height` over `point`. Route: the route's target.
+    /// Every point is the unit's origin (object `+0x64`), as asked of the
+    /// game's placement, which puts the origin [`PLACE_LIFT`] over it.
+    /// Crouch: the start, outside the lip (teleported to), at `stand`'s
+    /// height. Drop: the point the drop is lifted to, [`PLACE_LIFT`] under
+    /// the origin `height` over `point`. Route: the route's target.
     pub start: Vec3,
     /// Crouch: where the walk in aims, just past `stand`. Drop: the rest
-    /// point on the strip a drop is lifted from. Route: the strip's stand.
+    /// point on the strip a drop is lifted from, at `stand`'s height.
+    /// Route: the strip's stand.
     pub point: Vec3,
     /// The facing, radians about +Z from +X: crouch, the way in; drop, the
     /// drift.
@@ -504,7 +513,7 @@ pub fn crouch_trial(spot: usize, s: &Spot, turn_by: f32, distance: f32, offset: 
     let start = [
         st[0] - way_in[0] * distance + offset[0],
         st[1] - way_in[1] * distance + offset[1],
-        st[2] + TELEPORT_LIFT,
+        st[2],
     ];
     let point = [
         st[0] + way_in[0] * PUSH_IN,
@@ -527,7 +536,8 @@ pub fn crouch_trial(spot: usize, s: &Spot, turn_by: f32, distance: f32, offset: 
 
 /// A drop trial: the point `across` the spot's target line toward the drift
 /// and `along` it from its middle, fallen onto from `height` over the
-/// strip's stand height.
+/// strip's stand height: the origin's height, so the start asked is
+/// [`PLACE_LIFT`] under it.
 pub fn drop_trial(spot: usize, s: &Spot, across: f32, along: f32, height: f32) -> Trial {
     let [a, b] = s.edge;
     let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
@@ -540,8 +550,8 @@ pub fn drop_trial(spot: usize, s: &Spot, across: f32, along: f32, height: f32) -
     let z = s.stand[2];
     Trial {
         spot,
-        start: [xy[0], xy[1], z + height],
-        point: [xy[0], xy[1], z + TELEPORT_LIFT],
+        start: [xy[0], xy[1], z + height - PLACE_LIFT],
+        point: [xy[0], xy[1], z],
         yaw: drift[1].atan2(drift[0]),
         way_in: [0.0; 2],
         way_out: [0.0; 2],

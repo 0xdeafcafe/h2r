@@ -119,6 +119,14 @@ pub const TELEPORT_WAIT: u32 = 4;
 /// further off is asked again once, aimed against the miss
 /// ([`TrialRun::aimed`]).
 pub const PLACE_TOLERANCE: f32 = 0.005;
+/// How far over the point asked the game's placement puts the origin
+/// (object `+0x64`): `PLAYER_PLACE_NEAR` (`0x14e970`) hands `0x14e200`
+/// the point plus the up vector (`[0x4687b0]`, (0, 0, 1)) times
+/// `[0x47f05c]`, 0.0328 (docs/runtime/bounce-search.md, "One trial").
+pub const PLACE_LIFT: f32 = 0.0328;
+/// The placement's own miss, [`PLACE_LIFT`] straight up: a site's trials
+/// ask against it until its base drops' lifts measure the miss.
+pub const PLACE_MISS: [f32; 3] = [0.0, 0.0, PLACE_LIFT];
 /// Rows past the planned last row a trial may still fall.
 pub const EXTRA_ROWS: u32 = 6;
 /// Hooks a fork is waited for before the run stops.
@@ -1264,8 +1272,10 @@ struct SiteJob {
     outcomes: Vec<Vec<Option<Outcome>>>,
     /// One queue a variant.
     queue: Vec<VecDeque<Task>>,
-    /// The aim the site's last trial landed its teleport with
-    /// ([`TrialResult::aim`]); its next trials ask with it.
+    /// The aim the site's next trial asks its teleport with: the game's
+    /// lift taken off ([`PLACE_MISS`]), then the miss its base drops'
+    /// lifts measured, then the aim its last trial landed with
+    /// ([`TrialResult::aim`]).
     aim: [f32; 3],
 }
 
@@ -1463,7 +1473,7 @@ impl Job {
                     points: Vec::new(),
                     outcomes: Vec::new(),
                     queue: vec![VecDeque::new(); variants],
-                    aim: [0.0; 3],
+                    aim: [-PLACE_MISS[0], -PLACE_MISS[1], -PLACE_MISS[2]],
                 })
                 .collect(),
             batches,
@@ -1607,14 +1617,22 @@ impl Job {
         let lead = self.s.lead;
         if let Some(miss) = b.lift_miss {
             // The trials' teleports ask against the placement's own
-            // offset, so the first lands on its start.
+            // offset as measured, so the first lands on its start. The
+            // game's lift is known ([`PLACE_MISS`]); only a miss past it
+            // is a note.
             self.sites[site].aim = [-miss[0], -miss[1], -miss[2]];
+            let past = [
+                miss[0] - PLACE_MISS[0],
+                miss[1] - PLACE_MISS[1],
+                miss[2] - PLACE_MISS[2],
+            ];
             const PLACED: &str = "teleport: the placement put the origin";
-            if len3(miss) > PLACE_TOLERANCE && !self.notes.iter().any(|n| n.starts_with(PLACED)) {
+            if len3(past) > PLACE_TOLERANCE && !self.notes.iter().any(|n| n.starts_with(PLACED)) {
                 self.note(format!(
-                    "{PLACED} {} from where it was asked (site {}); trials ask against it",
+                    "{PLACED} {} from where it was asked (site {}), {} past the game's {PLACE_LIFT} lift; trials ask against it",
                     miss_text(miss),
-                    self.sites[site].site.id
+                    self.sites[site].site.id,
+                    miss_text(past),
                 ));
             }
         }
@@ -2057,9 +2075,15 @@ impl Job {
             } else if tick >= fork_tick {
                 let want = arm_at[slot] + u64::from(c.latency);
                 let in_step = b.release == Some(want) && b.run.fall_row() == Some(c.row - lead + 1);
+                // The arm is named beside the release: a late arm and a
+                // lift that answered late are told apart.
+                let armed = match b.arm {
+                    Some(a) => format!("armed at tick {a}, planned {}", arm_at[slot]),
+                    None => "not armed".into(),
+                };
                 (!in_step).then(|| match b.release {
-                    Some(r) => format!("base: out of step: released at tick {r}, planned {want}"),
-                    None => "base: out of step: not released".into(),
+                    Some(r) => format!("base: out of step: released at tick {r}, planned {want} ({armed})"),
+                    None => format!("base: out of step: not released ({armed})"),
                 })
             } else {
                 None

@@ -49,7 +49,7 @@ pub const TICK: f32 = flight::TICK;
 pub const CLEARANCE: f32 = sim_bench::drops::FALL_CLEARANCE;
 /// A standing jump's launch (units/s up), as the bots' routes have it.
 pub const JUMP_VZ: f32 = bots::bounce_route::JUMP_VZ;
-/// The longest flight flown: five seconds.
+/// The longest flight flown (`superbounce_flight::MAX_TICKS`).
 pub const MAX_TICKS: u32 = flight::MAX_TICKS;
 /// A last free row this far under the surface at its own place is not a
 /// landing: the body never got over the seam's floor.
