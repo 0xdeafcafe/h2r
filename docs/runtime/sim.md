@@ -7,7 +7,7 @@ Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 [switches.md](switches.md).
 
 Code: `crates/live/sim-bench` (the match, batch and tuning files, pacing, the
-tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
+tally and report, the comparison, the spatial trace), `crates/live/bots/src/tuning.rs`,
 `crates/rewrites/sim-bridge/src/sim_frame.rs`, `crates/extensions/game/src/sim_glue.rs` and its
 System Link lobby, `crates/extensions/game/src/sim_census.rs`, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
@@ -294,6 +294,7 @@ render_every = 0
 pace = "unpaced"
 components = true           # false: no state_components_v1 in the report (timing arms)
 detail = "full"             # "training": no components; sparse digests and a rolling digest
+                            # "spatial": the training report and the spatial trace beside it
 bot_threads = 3             # bot think workers: a count, "auto" or "off"; unset: see below
 bot_pipeline = false        # true: thinks overlap the guest's tick (a different match)
 
@@ -626,6 +627,42 @@ The stage boundaries are the sim's own lobby observations
 only moves forward, charging the time since the last boundary to the stage
 it leaves.
 
+### The spatial trace
+
+`detail = "spatial"` in a match or batch file records where things
+happened, for Studio's playtest ([playtest.md](../editor/playtest.md)).
+The report is a training one (`Detail::tally`), and beside it
+(`sim_bench::spatial::trace_path`: `report.json` gives `spatial.bin`,
+`<name>.report.json` gives `<name>.spatial.bin`) the run writes the trace.
+The same observers that feed the tally feed a
+`sim_bench::spatial::Recorder` (`sim_glue::spatial`), on the game thread
+and read-only:
+
+| Event | When | What |
+|---|---|---|
+| `sample` | every 6th tick from the match's start (five a second), each living player | position, nav polygon, yaw and pitch of the aim |
+| `spawn` | a player's unit alive after a tick in which it was not | the place; the scenario starting location within 2 units; the nearest living enemy and its distance; how many living enemies have a clear line to it, eye to eye (the bots' walls; absent without them) |
+| `damage` | `DAMAGE_REPORT` against a player's unit | both players' places at the last tick and the weapons they held, the amount |
+| `kill` | `PLAYER_KILLED` | the same, classified as the tally classifies it |
+| `pickup` | a weapon datum new to a living player's slots, or more grenades | the place, the weapon (its definition when it is the one now held), the netgame equipment placement within 2.5 units |
+| `stuck` | a bot's stuck spell ending (the unstick escalation back at `Moving`, a death or the match's end) | where it began, its length in ticks, where the bot was going (`bots::stuck::Stuck::goal`) |
+| `repath` | a bot's repath count rising | the place and where it was going |
+
+A place is a position and the polygon of the bots' nav mesh under it
+(`NavMesh::poly_near`); without a loaded mesh it has no polygon. The
+header names the map, game type, seed and team play, the counted ticks,
+the scenario's player starting locations (position, team) and netgame
+equipment (position, respawn time), read from guest memory at the game's
+start (`sim_glue::spatial::places`), and the nav mesh's polygon centres
+and links. A tick jump restarts the trace as it restarts the tally.
+
+The file is `H2SP`, a format version (1), the header as JSON, the mesh,
+then the events, little-endian (`Trace::to_bytes`). At the end of the run
+the trace's kill log is checked against the report's
+(`Trace::agrees_with`) and the result is a note in the report and on
+stderr: `spatial trace <path> (N events; its K kills are the report's)`,
+or the first difference. A run with no report path writes no trace.
+
 ### 6.1 Sim stores: the map without the map
 
 The retail map is never streamed in a sim or light host that uses
@@ -798,9 +835,10 @@ params = "tuning/aggressive.toml"
   a run per skill and overrides each bot's skill. When the runs cover
   multiple skills, `compare.json` has `by_skill` and the table repeats
   per skill.
-- **Detail.** `detail = "training"` in the batch file sets every run's
-  `detail` (the match file's own is the default; see "Finding the first
-  differing state").
+- **Detail.** `detail = "training"` or `"spatial"` in the batch file
+  sets every run's `detail` (the match file's own is the default; see
+  "Finding the first differing state" and [The spatial trace](#the-spatial-trace)).
+  A spatial run writes `spatial.bin` beside its `report.json`.
 - `h2 sim batch --dry-run` prints the runs and stops.
 
 ### Arm swaps
@@ -1817,6 +1855,11 @@ headers and blocks while those dependencies are being traced.
 - The `guest_census` reads and the `wall.phantom_*` timers in a run: the
   array pointers and names come from the retail XBE, and the reads are
   tested over a fake guest only.
+- The spatial trace in a run: that the starting locations and equipment
+  read at the game's start are the map's (tested over a fake guest only),
+  that a pickup's placement by distance is the item's, and that a run's
+  trace agrees with its report's kills (the check runs at every traced
+  run's end).
 - A Firefight match end to end: that the game options' scenario path for
   a kit package is its map list slot path (what the sim waits for), that
   the bots load the base map's nav mesh on the kit map, and that the
@@ -1851,3 +1894,8 @@ table, the plan and shards, the queue, each outcome over a fake body
 including every `prime_lost` reason, the control gate, the fits and the
 verified lines), `cargo test -p live-telemetry havok_agents` (the level
 pairs) and `cargo test -p game sim_drops` (the constants it shares).
+The spatial trace: `cargo test -p sim-bench spatial` (the file's round
+trip and refusals, each event once with its places, the kills against the
+tally's) and `cargo test -p game sim_glue` (the scenario's places over a
+fake guest, `the_tally_is_unchanged_with_the_trace_on`,
+`a_spatial_match_writes_a_trace_whose_kills_are_the_reports`).
