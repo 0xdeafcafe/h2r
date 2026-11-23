@@ -701,9 +701,17 @@ and its pipeline completions have crossed a frame boundary.
   not resident starts lower (a smaller image, the same coordinates).
 
 Of 03a's scenario shaders with a layer 3, about a third sample the
-texaccum (engine texture 3, the `_combined` templates) and stay on the
-D3D path; most of the rest are `tex_bump` and its variants, one pass
-with the per-pixel lightmap implementation, and translate.
+texaccum (engine texture 3, the `_combined` templates). The program set
+here has no engine-texture stage, so `look::layer3_pass` refuses them
+(`layer 3: EngineTexture(3)` in the load line's rejections); the sorted
+opaque layers (below) take them, with the stage bound to target 1
+(`native_world_materials::Source::Texaccum`, for sources 2 and 3, and
+the accumulation targets of `prepare_opaque`). Most of the rest are
+`tex_bump` and its variants, one pass with the per-pixel lightmap
+implementation, and translate. Binding engine texture 3 in the program
+set itself would need its sampled level, texel-addressed coordinates and
+the size-reading engine vertex constants, as the objects' pass has
+(native-objects.md, "The texture accumulation target").
 
 ### Native opaque layers
 
