@@ -68,6 +68,8 @@ mod emit_output;
 mod extract_shaders;
 #[cfg(feature = "desktop")]
 mod firefight_cmd;
+#[cfg(feature = "desktop")]
+mod pogo_cmd;
 #[cfg(all(unix, feature = "desktop"))]
 mod follow;
 #[cfg(all(unix, feature = "desktop"))]
@@ -274,6 +276,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
   firefight kit MAP [--home red|blue] [--probe]  build a Firefight package
                           from a disc map (docs/game/firefight.md)
+  pogo kit MAP [--out FILE]  add the pogo stick to a disc multiplayer map and
+                          say what it took; pogo models [--out DIR] writes
+                          the three looks as OBJ files (art/pogo/README.md)
   map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
   testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
                           placements (docs/runtime/agent-api.md, phase 5)
@@ -477,6 +482,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "firefight" {
         return firefight_cmd::run(args.collect());
+    }
+    if cmd == "pogo" {
+        return pogo_cmd::run(args.collect());
     }
     if cmd == "map" {
         return map_testbuild::run(args.collect());

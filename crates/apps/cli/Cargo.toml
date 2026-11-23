@@ -31,6 +31,7 @@ h1convert = { path = "../../tools/h1convert", optional = true }
 gfx = { path = "../../platform/gfx", default-features = false, optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 firefight-kit = { path = "../../tools/firefight-kit", optional = true }
+pogo-kit = { path = "../../tools/pogo-kit", optional = true }
 forge = { workspace = true, optional = true }
 # `h2 live maps census`: the start gate's census of a map file.
 forge-doc = { workspace = true, optional = true }
@@ -171,6 +172,7 @@ desktop = [
     "dep:h1convert",
     "dep:scenario-edit",
     "dep:firefight-kit",
+    "dep:pogo-kit",
     "dep:forge",
     "dep:forge-doc",
     "dep:forge-build",

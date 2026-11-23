@@ -7,16 +7,22 @@
 //! - [`texture`]: an atlas as a `bitm`.
 //! - [`kit`]: one look as `bitm`, `shad`, `mode`, `hlmt` and `weap` in a
 //!   map's tag set.
+//! - [`inject`]: the kit added to a multiplayer map's bytes.
+//! - [`rewrite`]: every multiplayer map served with the kit, cached.
 //! - [`placed`]: which weapon tags the map being played holds.
 //!
 //! Every look shares one rig ([`RIG`]): the same grips, pegs, foot and
 //! piston travel, so the code that poses a rider reads no look.
 
+pub mod inject;
 pub mod kit;
 pub mod mesh;
+pub mod rewrite;
 pub mod source;
 pub mod texture;
 
+#[cfg(test)]
+mod inject_tests;
 #[cfg(test)]
 mod tests;
 
