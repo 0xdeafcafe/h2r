@@ -88,11 +88,11 @@ fn machine(c: &Case) -> (CpuAbi, Guest) {
     }
     w(&mut g, FRAME + ARG_B, c.b);
     w(&mut g, FRAME + ARG_A, c.a);
-    w(&mut g, FRAME - MODEL_ONE, MODEL_ONE);
-    w(&mut g, FRAME - MODEL_TWO, MODEL_TWO);
+    w(&mut g, FRAME - super::MODEL_ONE, MODEL_ONE);
+    w(&mut g, FRAME - super::MODEL_TWO, MODEL_TWO);
     w(&mut g, FRAME - SAVED_EDI, EDI_SAVE);
-    w(&mut g, FRAME - GRAPH, GRAPH);
-    for (i, (at, nodes_at)) in [(MODEL_ONE, NODES_ONE), (MODEL_TWO, NODES_TWO)] {
+    w(&mut g, FRAME - super::GRAPH, GRAPH);
+    for (i, (at, nodes_at)) in [(MODEL_ONE, NODES_ONE), (MODEL_TWO, NODES_TWO)].into_iter().enumerate() {
         w(&mut g, at + MODEL_COUNT, c.counts[i] as u32);
         w(&mut g, at + MODEL_NODES, nodes_at);
         for n in 0..c.counts[i].max(0) {

@@ -327,7 +327,7 @@ fn film_stat_fields_counts_changes_and_prices_each_predictor() {
         "{report}"
     );
     // Two films are one report.
-    let both = fields([films(), films()].concat()).unwrap();
+    let both = fields(films().into_iter().chain(films()).collect::<Vec<_>>()).unwrap();
     assert!(both.contains("films: 2\nticks: 80\n"), "{both}");
     assert!(both.contains("FIELD yaw words=1 seat_ticks=80 changed=80 "), "{both}");
 }
