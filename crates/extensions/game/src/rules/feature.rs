@@ -2,7 +2,8 @@
 //! runtime at the game's start, at each kill and tick boundary and at the
 //! game's end, and the agent API's view of it.
 //!
-//! Off unless `H2_FEATURES` names it. Its hooks, all on game-thread points:
+//! On by default; `H2_FEATURES=-rules` turns it off. Its hooks, all on
+//! game-thread points:
 //!
 //! - `GAME_ACTIVATE`, an observer after a successful start: start or refuse
 //!   the script ([`Runtime::start`]); a Live host then puts the running
@@ -24,12 +25,11 @@
 //!   ([`super::scoring`]).
 //!
 //! A `scoring carrier` script (docs/game/rules-variants.md, "A script that
-//! keeps its carrier's rules") is started for its header only
-//! ([`runtime::Status::Carrier`]): every hook above but the start and the
-//! end then lets the game run as retail, the Live session names no script
-//! (`Runtime::hash` is none), and `rules.state` reports it running with
-//! `scoring: carrier`. Its `requires` turn their modes on through the
-//! record's script reference (`super::header`), as for any script.
+//! keeps its carrier's rules") runs its carrier engine's built-in script
+//! under the record ([`runtime::carrier_builtin`]): every hook above treats
+//! it as that script, and the Live session names the built-in's hash. Its
+//! `requires` turn their modes on through the record's script reference
+//! (`super::header`), as for any script.
 //!
 //! The superbounce mode's tick observer feeds it each bounce its medal
 //! chain files ([`bounces`]).

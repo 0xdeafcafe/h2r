@@ -26,7 +26,8 @@
 //! medals and statistics, the objective engines' kill callbacks (they post
 //! events only), their objects and their traits. A refused or idle script,
 //! a guest and a film's replayed non-authority leave every routine to the
-//! engine, and so does a `scoring carrier` script, whose game runs no VM.
+//! engine. A `scoring carrier` script's game runs its carrier's built-in
+//! script, which is the one scorer as any script is.
 //! The evidence is in
 //! docs/engine/notes/2026-11-22-script-scoring-and-roles.md.
 
@@ -72,13 +73,12 @@ pub fn carrier_site(ret: u32) -> Option<&'static str> {
 /// Whether the script makes this game's rules here: its VM runs, and
 /// `GAME_ENGINE_AUTHORITATIVE` has answered true for this machine. Before
 /// the first tick boundary asks, the engine keeps its rules. A `scoring
-/// carrier` script never does: the carrier's routines answer as retail
-/// (docs/game/rules-variants.md, "A script that keeps its carrier's
-/// rules").
+/// carrier` script's game is a running one: its carrier's built-in
+/// scores (docs/game/rules-variants.md, "A script that keeps its
+/// carrier's rules").
 pub fn script_scores(rt: &Runtime) -> bool {
     match &rt.status {
         Status::Running(r) => r.authority == Some(true),
-        Status::Carrier(_) => false,
         Status::Idle(_) | Status::Refused { .. } | Status::Blocked { .. } => false,
     }
 }
