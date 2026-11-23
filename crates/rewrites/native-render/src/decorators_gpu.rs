@@ -165,6 +165,9 @@ pub struct MaterialGpu {
     program: DecoratorProgram,
     uniforms_layout: wgpu::BindGroupLayout,
     textures: wgpu::BindGroup,
+    /// The stage textures `textures` binds, by stage, for a live edit's
+    /// rewrite ([`MaterialGpu::held`]).
+    stage_textures: Vec<(usize, wgpu::Texture)>,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
@@ -245,6 +248,7 @@ impl MaterialGpu {
             group.push(wgpu::BindGroupEntry { binding: 2 * *n as u32, resource: wgpu::BindingResource::TextureView(view) });
             group.push(wgpu::BindGroupEntry { binding: 2 * *n as u32 + 1, resource: wgpu::BindingResource::Sampler(sampler) });
         }
+        let stage_textures: Vec<(usize, wgpu::Texture)> = views.iter().map(|(n, v)| (*n, v.texture().clone())).collect();
         let textures = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native decorator textures"),
             layout: &textures_layout,
@@ -268,12 +272,25 @@ impl MaterialGpu {
             program,
             uniforms_layout,
             textures,
+            stage_textures,
             vertices,
             indices,
             index_count,
             pipelines,
             formats: HashMap::new(),
         })
+    }
+
+    /// The textures this material's stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels: what a live edit
+    /// rewrites ([`crate::gpu::rewrite_held`]).
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        let want = Stage::Bitmap { bitmap, image };
+        self.stage_textures
+            .iter()
+            .filter(|(n, _)| self.program.stages[*n] == want)
+            .map(|(n, t)| (t.clone(), *n, self.program.signed[*n]))
+            .collect()
     }
 
     /// The pipeline for `color` and `depth` under `draw`, `None` when the

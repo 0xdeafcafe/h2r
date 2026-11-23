@@ -78,6 +78,9 @@ const SHAD: FourCC = FourCC(*b"shad");
 pub struct DecoratorLooks {
     looks: HashMap<(u16, u8, u8), Result<DecoratorLook, String>>,
     images: StageImages,
+    /// Images a live edit decoded again, by (bitmap, image): a material
+    /// made after the edit takes them over the load's `images`.
+    edited: Mutex<StageImages>,
     /// What a lightmap stage samples: the globals' rasterizer bitmap at
     /// `+0x64`, uniform (`native_objects_glue::engine_lightmap`), read
     /// when a pass samples it.
@@ -142,6 +145,7 @@ pub fn load<R: Read + Seek>(
             return Arc::new(DecoratorLooks {
                 looks,
                 images,
+                edited: Mutex::default(),
                 lightmap: None,
                 palettes: StagePalettes::default(),
                 prepared: Mutex::default(),
@@ -216,6 +220,7 @@ pub fn load<R: Read + Seek>(
     Arc::new(DecoratorLooks {
         looks,
         images,
+        edited: Mutex::default(),
         lightmap,
         palettes: decoder.used().clone(),
         prepared: Mutex::default(),
@@ -233,9 +238,28 @@ struct Prepared {
     /// None for a refused material, otherwise whether its pass writes depth.
     depth: HashMap<Material, Option<bool>>,
     frame: Option<u64>,
+    /// A live edit of a model or a section made the prepared materials'
+    /// geometry stale ([`Prepared::settle`]).
+    stale: bool,
 }
 
 impl Prepared {
+    /// Forgets every prepared material once a live edit has made their
+    /// geometry stale: the next view prepares each again from guest
+    /// memory, which the edit wrote, and until it is done the guest's own
+    /// draws stand. Waits (returns, with `stale` kept) while the previous
+    /// frame is still binding a batch.
+    fn settle(&mut self, materials: &Mutex<HashMap<Material, MaterialGpu>>) {
+        if !self.stale {
+            return;
+        }
+        let Ok(mut materials) = materials.try_lock() else { return };
+        materials.clear();
+        self.depth.clear();
+        self.pending = None;
+        self.stale = false;
+    }
+
     /// All views of a guest frame see the same set of uploaded materials.
     fn begin_frame(&mut self, frame: u64, materials: &Mutex<HashMap<Material, MaterialGpu>>) {
         if self.frame == Some(frame) {
@@ -289,7 +313,10 @@ impl MaterialJob {
         };
         let program = compile(look, &self.stream)?;
         let buffers = buffers(&program, &self.set)?;
-        let bitmap = |bitmap: TagId, image: u32| self.looks.images.get(&(bitmap, image)).cloned();
+        let edited = self.looks.edited.lock().unwrap_or_else(|e| e.into_inner());
+        let bitmap = |bitmap: TagId, image: u32| {
+            edited.get(&(bitmap, image)).or_else(|| self.looks.images.get(&(bitmap, image))).cloned()
+        };
         let images = stage_images(&program, &bitmap, self.looks.lightmap.as_ref())?;
         let gpu = MaterialGpu::new(&self.device, &self.queue, program, &buffers, &images).map_err(str::to_owned)?;
         self.queue.submit([]);
@@ -328,6 +355,9 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
     worker: OnceLock<Option<mpsc::SyncSender<MaterialJob>>>,
+    /// A live edit's image refresh is running ([`Glue::refresh_edits`]);
+    /// edits wait in the queue until it ends, so they apply in order.
+    refreshing: Arc<AtomicBool>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
@@ -335,6 +365,125 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         current_ready(&state, mem).cloned()
     }
+
+    /// Applies the queued live edits to the decorators
+    /// (docs/editor/realtime-edits.md, "The native refresh"): an edited
+    /// model or section makes every prepared material's geometry stale,
+    /// so each is prepared again from guest memory ([`Prepared::settle`]);
+    /// each edited image is decoded again at the stages the passes sample
+    /// it, on a worker, and the prepared materials' textures are rewritten
+    /// in place ([`refresh_images`]).
+    fn refresh_edits(&self, mem: &dyn GuestMemory, looks: &Arc<DecoratorLooks>, p: &mut Prepared) {
+        use render_bridge::native_edits::{self, Consumer, Edit};
+        p.settle(&looks.gpu);
+        if !native_edits::pending(Consumer::Decorators) || self.refreshing.load(Ordering::Acquire) {
+            return;
+        }
+        let current = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            crate::native_world_glue::current_ready_keyed(&state, mem)
+        };
+        let Some((ready, key)) = current else { return };
+        let Some((_, queue)) = ready.upload_device.clone() else { return };
+        let mut images = Vec::new();
+        for edit in native_edits::drain(Consumer::Decorators) {
+            match edit {
+                Edit::Model { .. } | Edit::Section { .. } => p.stale = true,
+                Edit::Image { bitmap, image } => images.push((TagId(bitmap), image)),
+                Edit::Tag { .. } | Edit::Shader { .. } => {}
+            }
+        }
+        p.settle(&looks.gpu);
+        if images.is_empty() {
+            return;
+        }
+        self.refreshing.store(true, Ordering::Release);
+        let refreshing = Arc::clone(&self.refreshing);
+        let looks = Arc::clone(looks);
+        let launched = background::spawn("native-decorators edits", move || {
+            refresh_images(&looks, &key, &queue, &images);
+            refreshing.store(false, Ordering::Release);
+        });
+        if let Err(e) = launched {
+            self.refreshing.store(false, Ordering::Release);
+            eprintln!("native-decorators: could not start the live edit refresh ({e}); the decorators keep their pixels until the map reloads");
+        }
+    }
+}
+
+/// The stages whose pass samples image `image` of `bitmap`, ascending, each
+/// once.
+fn stages_of(looks: &DecoratorLooks, bitmap: TagId, image: u32) -> Vec<usize> {
+    let want = Stage::Bitmap { bitmap, image };
+    let mut stages: Vec<usize> = looks
+        .looks
+        .values()
+        .filter_map(|look| look.as_ref().ok())
+        .flat_map(|look| look.look.textures.iter().enumerate().filter(|(_, s)| **s == want).map(|(n, _)| n))
+        .collect();
+    stages.sort_unstable();
+    stages.dedup();
+    stages
+}
+
+/// Decodes each of `images` (bitmap, image) again, from the map file the
+/// raw overlay serves edited, at the stages the decorator passes sample it
+/// (through the palettes the load expanded through), and rewrites the
+/// prepared materials' stage textures in place. Materials made later take
+/// the new pixels from `looks.edited`. A texture whose size, levels or
+/// format changed keeps its pixels until the map reloads, and says so.
+fn refresh_images(looks: &DecoratorLooks, key: &crate::native_world_glue::BspKey, queue: &wgpu::Queue, images: &[(TagId, u32)]) {
+    let wanted: Vec<_> = images
+        .iter()
+        .map(|&(bitmap, image)| ((bitmap, image), stages_of(looks, bitmap, image)))
+        .filter(|(_, stages)| !stages.is_empty())
+        .collect();
+    if wanted.is_empty() || !key.current() {
+        return;
+    }
+    let (mut map, mut files) = match crate::native_map::open(key.map()) {
+        Ok(opened) => opened,
+        Err(e) => {
+            eprintln!("native-decorators: a live edit's map does not open ({e}); the decorators keep their pixels");
+            return;
+        }
+    };
+    let decoded: Vec<_> = wanted
+        .into_iter()
+        .map(|((bitmap, image), stages)| {
+            let pixels = native_render::stage_images::decode_stages(&mut map, &mut files, &looks.palettes, bitmap, image, &stages);
+            ((bitmap, image), pixels)
+        })
+        .collect();
+    if !key.current() {
+        return;
+    }
+    {
+        let mut edited = looks.edited.lock().unwrap_or_else(|e| e.into_inner());
+        for ((bitmap, image), pixels) in &decoded {
+            // One image per (bitmap, image): the lowest stage's decode, as
+            // the load's.
+            if let Some(first) = pixels.keys().min().and_then(|n| pixels.get(n)) {
+                edited.insert((*bitmap, *image), first.clone());
+            }
+        }
+    }
+    {
+        let materials = looks.gpu.lock().unwrap_or_else(|e| e.into_inner());
+        for ((bitmap, image), pixels) in &decoded {
+            let held: Vec<_> = materials.values().flat_map(|m| m.held(*bitmap, *image)).collect();
+            if held.is_empty() {
+                continue;
+            }
+            if let Err(why) = native_render::gpu::rewrite_held(queue, &held, pixels) {
+                eprintln!(
+                    "native-decorators: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
+                    bitmap.0
+                );
+            }
+        }
+    }
+    queue.submit([]);
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -343,6 +492,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let Some(ready) = self.ready(mem) else { return out };
         let Some(looks) = ready.decorators.get() else { return out };
         let mut p = looks.prepared.lock().unwrap_or_else(|e| e.into_inner());
+        self.refresh_edits(mem, looks, &mut p);
         p.begin_frame(timeline::frames(), &looks.gpu);
         let read = ReadMemory(mem);
         let mut queue_full = false;
@@ -499,6 +649,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         state,
         worker: OnceLock::new(),
+        refreshing: Arc::default(),
     }));
 }
 

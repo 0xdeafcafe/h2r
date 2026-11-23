@@ -421,9 +421,32 @@ pub struct FogSet {
     materials: HashMap<u16, FogMaterial>,
     /// Index range, lightmap page and material for each eligible part.
     parts: HashMap<(Owner, u8), (u32, u32, Option<LightmapKey>, u16)>,
+    /// The lightmap page textures the groups bind, by page, for a live
+    /// edit's rewrite ([`FogSet::page_textures`]).
+    pages: HashMap<LightmapKey, wgpu::Texture>,
 }
 
 impl FogSet {
+    /// Every texture the passes' stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels, each once.
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        let want = Stage::Bitmap { bitmap, image };
+        let mut materials: Vec<_> = self.materials.iter().collect();
+        materials.sort_by_key(|(m, _)| **m);
+        let mut out = Vec::new();
+        for (_, m) in materials {
+            for (g, _, _) in &m.passes {
+                g.held(want, &mut out);
+            }
+        }
+        out
+    }
+
+    /// The textures that hold lightmap page `key`.
+    pub fn page_textures(&self, key: LightmapKey) -> Vec<wgpu::Texture> {
+        self.pages.get(&key).cloned().into_iter().collect()
+    }
+
     /// Uploads `programs` (each material's layer-16 passes in order) for
     /// `parts` (the load's parts list: owner and part, index range,
     /// lightmap page and material, in the world's draw order).
@@ -521,7 +544,8 @@ impl FogSet {
             materials.remove(&material);
         }
         out.retain(|(_, (_, _, _, mat))| materials.contains_key(mat));
-        Self { ready_formats: HashSet::new(), materials, parts: out.into_iter().collect() }
+        let pages = crate::gpu::page_textures_of(&pages);
+        Self { ready_formats: HashSet::new(), materials, parts: out.into_iter().collect(), pages }
     }
 
     /// How many materials draw natively.
