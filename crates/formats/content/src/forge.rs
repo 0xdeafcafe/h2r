@@ -8,9 +8,20 @@ use crate::{MapId, Sha256, canonicalize};
 
 /// The version of the Forge document that format 2 packages carry.
 pub const DOCUMENT_FORMAT: u32 = 1;
-/// The document version a document with Forge labels takes. A package may
-/// carry either version.
+/// The document version a document with Forge labels takes.
 pub const DOCUMENT_FORMAT_LABELS: u32 = 2;
+/// The document version a document with an entry edit or an entry print
+/// takes (docs/game/forge-map-variants.md, "The ops"). A package may carry
+/// any of the three versions.
+pub const DOCUMENT_FORMAT_ENTRIES: u32 = 3;
+
+/// Whether a package's resolver reads documents of this version.
+pub fn reads_document_format(format: u32) -> bool {
+    matches!(
+        format,
+        DOCUMENT_FORMAT | DOCUMENT_FORMAT_LABELS | DOCUMENT_FORMAT_ENTRIES
+    )
+}
 /// Largest canonical document accepted inside a package.
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -68,7 +79,7 @@ pub(crate) fn read_header(bytes: &[u8]) -> Result<Header, String> {
         base,
         expect,
     } = Wire::deserialize(&document).map_err(|e| e.to_string())?;
-    if format != DOCUMENT_FORMAT && format != DOCUMENT_FORMAT_LABELS {
+    if !reads_document_format(format) {
         return Err(format!("unsupported document format {format}"));
     }
     Ok(Header {
@@ -76,4 +87,38 @@ pub(crate) fn read_header(bytes: &[u8]) -> Result<Header, String> {
         base,
         expect,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// forge-doc's format 3 golden document (`src/tests/entry.rs` there):
+    /// a set, a reset and a removal of netgame flags by print.
+    const ENTRIES: &str = r#"{"author":"Editor","base":{"map":"fixture","sha256":"1111111111111111111111111111111111111111111111111111111111111111"},"builder":{"bots":3,"forge_build":1,"pathfind":2},"description":"row 1\nrow 2","format":3,"imports":[],"ops":[{"edit":{"entry":{"set":{"target":{"base":{"block":"netgame_flags","index":0,"print":"1373ae4eb8ca684d"}},"write":{"field":"team","value":{"int":1}}}}},"id":1},{"edit":{"entry":{"reset":{"target":{"base":{"block":"netgame_flags","index":0,"print":"1373ae4eb8ca684d"}}}}},"id":2},{"edit":{"entry":{"remove":{"target":{"base":{"block":"netgame_flags","index":1,"print":"0123456789abcdef"}}}}},"id":3}],"recipes":[],"sources":[],"title":"Forge \"é\""}"#;
+
+    #[test]
+    fn a_format_3_header_reads_with_its_identity() {
+        let header = read_header(ENTRIES.as_bytes()).unwrap();
+        assert_eq!(
+            header.id.to_string(),
+            "be1eea848c1c67bdab49fdb7bfdaeb3c0a0eb98f0db07d9b99daaa151181795a"
+        );
+        assert_eq!(header.base.map, "fixture");
+        assert!(header.expect.is_none());
+    }
+
+    #[test]
+    fn formats_past_3_are_refused() {
+        for format in [1, 2, 3] {
+            assert!(reads_document_format(format));
+        }
+        let four = ENTRIES.replace("\"format\":3", "\"format\":4");
+        assert_eq!(
+            read_header(four.as_bytes()).err(),
+            Some("unsupported document format 4".to_string())
+        );
+        let zero = ENTRIES.replace("\"format\":3", "\"format\":0");
+        assert!(read_header(zero.as_bytes()).is_err());
+    }
 }

@@ -6,13 +6,17 @@
 //! so the materialiser resolves every active link to final indices after
 //! the placement edits. An unlinked entry keeps the bytes it would have had
 //! without the link.
+//!
+//! Labels and entry ops (`crate::entry`) name entries the same way, and one
+//! pass over the ops checks all three: it follows each identity through the
+//! placement and entry edits, and holds each base entry to one print.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveLabel, BlockKind, Edit, ForgeDoc, Label, Labels, Op, OpId, Placement, Refusal, Result,
-    wire,
+    ActiveLabel, BlockKind, Edit, EntryOp, ForgeDoc, Label, Labels, Limits, Op, OpId, Placement,
+    Print, Refusal, Result, WorldBounds, entry, wire,
 };
 
 /// The largest channel a teleporter link writes. The netgame flag's
@@ -26,18 +30,51 @@ pub const TELEPORTER_RECEIVER: u16 = 8;
 
 const MAX_ENTRY_INDEX: u32 = i16::MAX as u32;
 
-/// One scenario entry a link names.
+/// One scenario entry a link, a label or an entry op names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Endpoint {
-    /// The base map's entry at `index`, wherever later edits move it.
+    /// The base map's entry at `index` in the base map's block, wherever
+    /// later edits move it. `print` is the entry's [`Print`]: an entry op
+    /// requires one; a link or a label may go without, which keeps its
+    /// spelling and identity.
     Base {
         #[serde(with = "wire::block")]
         block: BlockKind,
         index: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        print: Option<Print>,
     },
     /// The entry the document's `Placement::Add` op with this ID made.
     Added(OpId),
+}
+
+impl Endpoint {
+    /// The base map's entry at `index`, named without a print.
+    pub const fn base(block: BlockKind, index: u32) -> Self {
+        Self::Base {
+            block,
+            index,
+            print: None,
+        }
+    }
+
+    /// The entry this names, without its print. Two endpoints name one
+    /// entry when their identities are equal.
+    pub const fn identity(self) -> Self {
+        match self {
+            Self::Base { block, index, .. } => Self::base(block, index),
+            added => added,
+        }
+    }
+
+    /// The print a base endpoint carries.
+    pub const fn print(self) -> Option<Print> {
+        match self {
+            Self::Base { print, .. } => print,
+            Self::Added(_) => None,
+        }
+    }
 }
 
 /// Forge-family edits. Links are written as retail data, so they work in
@@ -135,14 +172,14 @@ impl ForgeDoc {
     /// Resolve the active links to final indices. The map's base count is
     /// needed for each block a link names.
     pub fn links(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Links> {
-        let pass = Pass::run(&self.ops, base_counts)?;
+        let pass = Pass::run(&self.ops, base_counts, None)?;
         pass.resolve()
     }
 
     /// Resolve the active labels to final indices. The map's base count is
     /// needed for each block a label names.
     pub fn labels(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Labels> {
-        Pass::run(&self.ops, base_counts)?.resolve_labels()
+        Pass::run(&self.ops, base_counts, None)?.resolve_labels()
     }
 }
 
@@ -184,7 +221,7 @@ pub(crate) fn op(edit: &Forge) -> Result<()> {
             receiver,
             channel,
         } => {
-            if sender == receiver {
+            if sender.identity() == receiver.identity() {
                 return Err(invalid(link.what(), "a flag cannot link to itself"));
             }
             if channel > MAX_CHANNEL {
@@ -192,7 +229,7 @@ pub(crate) fn op(edit: &Forge) -> Result<()> {
             }
         }
         Link::Device { from, to } => {
-            if from >= to {
+            if from.identity() >= to.identity() {
                 return Err(invalid(
                     link.what(),
                     "want two machines, the lower endpoint first",
@@ -204,9 +241,16 @@ pub(crate) fn op(edit: &Forge) -> Result<()> {
 }
 
 /// Checks over the active document: endpoints exist when the link is made,
-/// a linked entry is not removed, and each flag keeps one role and channel.
+/// a linked entry is not removed, each flag keeps one role and channel,
+/// each base entry has one print, and the entry ops' rules
+/// (`Pass::entry`).
 pub(crate) fn check(ops: &[Op], base_counts: &BTreeMap<BlockKind, u32>) -> Result<()> {
-    Pass::run(ops, base_counts).map(|_| ())
+    Pass::run(ops, base_counts, None).map(|_| ())
+}
+
+/// [`check`] with the limits' world bounds for an added entry's position.
+pub(crate) fn check_with(ops: &[Op], limits: &Limits) -> Result<()> {
+    Pass::run(ops, &limits.base_counts, limits.world).map(|_| ())
 }
 
 struct Role {
@@ -226,10 +270,21 @@ struct Pass<'a> {
     order: Vec<OpId>,
     roles: BTreeMap<Endpoint, Role>,
     labels: BTreeMap<Endpoint, (OpId, Label)>,
+    /// The print each base entry is named with, by identity.
+    prints: BTreeMap<Endpoint, Print>,
+    /// Base entries an entry op has changed since the last reset.
+    edited: BTreeSet<Endpoint>,
+    /// The ops a later reset covers (`entry::covered`).
+    covered: BTreeSet<OpId>,
+    world: Option<WorldBounds>,
 }
 
 impl<'a> Pass<'a> {
-    fn run(ops: &[Op], base: &'a BTreeMap<BlockKind, u32>) -> Result<Self> {
+    fn run(
+        ops: &[Op],
+        base: &'a BTreeMap<BlockKind, u32>,
+        world: Option<WorldBounds>,
+    ) -> Result<Self> {
         let mut pass = Self {
             base,
             rows: BTreeMap::new(),
@@ -239,15 +294,24 @@ impl<'a> Pass<'a> {
             order: Vec::new(),
             roles: BTreeMap::new(),
             labels: BTreeMap::new(),
+            prints: BTreeMap::new(),
+            edited: BTreeSet::new(),
+            covered: entry::covered(ops),
+            world,
         };
         for op in ops {
             match &op.edit {
                 Edit::Placement(placement) => pass.placement(op.id, placement)?,
-                Edit::Forge(Forge::Link(link)) => pass.link(op.id, link)?,
+                Edit::Forge(Forge::Link(link)) => {
+                    let link = pass.bare(link)?;
+                    pass.link(op.id, &link)?
+                }
                 Edit::Forge(Forge::Unlink { link }) => pass.unlink(*link)?,
                 Edit::Forge(Forge::Label { target, label }) => {
-                    pass.label(op.id, *target, label.as_ref())?
+                    let target = pass.name(*target)?;
+                    pass.label(op.id, target, label.as_ref())?
                 }
+                Edit::Entry(edit) => pass.entry(op.id, edit)?,
                 _ => {}
             }
         }
@@ -258,9 +322,98 @@ impl<'a> Pass<'a> {
         let count = *self.base.get(&block)?;
         Some(self.rows.entry(block).or_insert_with(|| {
             (0..count)
-                .map(|index| Endpoint::Base { block, index })
+                .map(|index| Endpoint::base(block, index))
                 .collect()
         }))
+    }
+
+    /// The identity `end` names, after recording its print. One base entry
+    /// has one print in a document.
+    fn name(&mut self, end: Endpoint) -> Result<Endpoint> {
+        let identity = end.identity();
+        if let Some(print) = end.print()
+            && *self.prints.entry(identity).or_insert(print) != print
+        {
+            return Err(invalid(
+                "print",
+                "the entry is named with two different prints",
+            ));
+        }
+        Ok(identity)
+    }
+
+    /// The link with its endpoints' identities.
+    fn bare(&mut self, link: &Link) -> Result<Link> {
+        Ok(match *link {
+            Link::Teleporter {
+                sender,
+                receiver,
+                channel,
+            } => Link::Teleporter {
+                sender: self.name(sender)?,
+                receiver: self.name(receiver)?,
+                channel,
+            },
+            Link::Device { from, to } => Link::Device {
+                from: self.name(from)?,
+                to: self.name(to)?,
+            },
+        })
+    }
+
+    /// An entry op: its target exists and is not removed, an added
+    /// target's write fits its block, a removal is of an unlinked and
+    /// unlabelled entry, and a reset follows an entry op on its entry.
+    fn entry(&mut self, id: OpId, edit: &EntryOp) -> Result<()> {
+        let what = edit.what();
+        let target = self.name(edit.target())?;
+        let block = match target {
+            Endpoint::Base { block, index, .. } => {
+                if self.base.get(&block).is_some_and(|&n| index >= n) {
+                    return Err(invalid(what, format!("names no {} entry", block.name())));
+                }
+                block
+            }
+            Endpoint::Added(add) => {
+                let block = *self
+                    .added
+                    .get(&add)
+                    .ok_or_else(|| invalid(what, "names no added entry"))?;
+                entry::check_added(edit, block, self.world)?;
+                block
+            }
+        };
+        if let EntryOp::Reset { .. } = edit {
+            if !self.edited.remove(&target) {
+                return Err(invalid(what, "the entry has no edit to reset"));
+            }
+            self.gone.remove(&target);
+            return Ok(());
+        }
+        if self.gone.contains(&target) {
+            return Err(invalid(what, "names a removed entry"));
+        }
+        if let Endpoint::Base { .. } = target {
+            self.edited.insert(target);
+        }
+        if let EntryOp::Remove { .. } = edit {
+            if self.linked(target) {
+                return Err(invalid(block.name(), "remove the entry's links first"));
+            }
+            if self.labels.contains_key(&target) {
+                return Err(invalid(block.name(), "clear the entry's label first"));
+            }
+            self.gone.insert(target);
+            // A removal a later reset covers is left out by the fold, so
+            // the entry keeps its row for the final indices.
+            if !self.covered.contains(&id)
+                && let Some(rows) = self.rows(block)
+                && let Some(i) = rows.iter().position(|e| *e == target)
+            {
+                rows.swap_remove(i);
+            }
+        }
+        Ok(())
     }
 
     fn placement(&mut self, id: OpId, placement: &Placement) -> Result<()> {
@@ -378,7 +531,7 @@ impl<'a> Pass<'a> {
 
     fn label(&mut self, id: OpId, target: Endpoint, label: Option<&Label>) -> Result<()> {
         let present = match target {
-            Endpoint::Base { block, index } => self.base.get(&block).is_none_or(|&n| index < n),
+            Endpoint::Base { block, index, .. } => self.base.get(&block).is_none_or(|&n| index < n),
             Endpoint::Added(add) => self.added.contains_key(&add),
         };
         if !present || self.gone.contains(&target) {

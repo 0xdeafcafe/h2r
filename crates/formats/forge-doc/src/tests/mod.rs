@@ -1,6 +1,7 @@
 use crate::*;
 
 mod bounds;
+mod entry;
 mod labels;
 mod links;
 mod log;

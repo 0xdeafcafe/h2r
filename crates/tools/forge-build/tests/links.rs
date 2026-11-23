@@ -177,10 +177,7 @@ fn unlink_restores_the_bytes() {
 fn a_link_from_a_flag_of_another_type_is_refused_by_name() {
     let source = source();
     // The fixture's own flag is not a teleporter.
-    let base = Endpoint::Base {
-        block: FLAGS,
-        index: 0,
-    };
+    let base = Endpoint::base(FLAGS, 0);
     let error = materialise(
         &source,
         vec![flag(1, 8, 2.0), teleporter(2, base, added(1), 5)],

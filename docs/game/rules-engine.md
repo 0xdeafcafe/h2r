@@ -2075,13 +2075,16 @@ The `RulesExt` table applies a placement's own label first and the
 built-in label of its flag type otherwise.
 
 A label is a change of the document format. The format is one number
-(`forge_doc::FORMAT`, 1; `FORMAT_LABELS`, 2). A document takes 2 when
-any op is a label op and 1 otherwise, and
-`crates/formats/forge-doc/src/validate.rs` refuses the other number, so
-a document has one spelling: every document without labels keeps its
-bytes and its identity, and a fold that retracts the last label
-returns to format 1. This build reads both; an older build refuses a
-labelled document whole.
+(`forge_doc::FORMAT`, 1; `FORMAT_LABELS`, 2; `FORMAT_ENTRIES`, 3 for
+the entry edits and prints of
+[forge-map-variants.md](forge-map-variants.md#the-ops)). A document
+takes the highest number its ops need: 2 when any op is a label op and
+no op needs 3, and 1 otherwise. `crates/formats/forge-doc/src/validate.rs`
+refuses any other number, so a document has one spelling: every
+document without labels keeps its bytes and its identity, and a fold
+that retracts the last label returns to format 1. This build reads all
+three; an older build refuses a newer document whole. A label's target
+may carry its entry's print, which makes the document format 3.
 
 ## Roadmap
 

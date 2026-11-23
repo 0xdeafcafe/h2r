@@ -51,7 +51,7 @@ fn label(target: Endpoint, text: &str, number: Option<i32>) -> Edit {
 }
 
 fn base(block: BlockKind, index: u32) -> Endpoint {
-    Endpoint::Base { block, index }
+    Endpoint::base(block, index)
 }
 
 /// The fixture's document: the first starting location is `"attack"` 0,

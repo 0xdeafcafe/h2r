@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod document;
+mod entry;
 mod labels;
 mod links;
 mod log;
@@ -14,6 +15,7 @@ mod wire;
 
 pub use content::{MapId, Sha256};
 pub use document::*;
+pub use entry::{EntryOp, Print, check_print, print};
 pub use labels::*;
 pub use links::*;
 pub use log::*;
@@ -28,8 +30,21 @@ pub type Result<T> = std::result::Result<T, Refusal>;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Refusal {
-    #[error("Forge format {0} is unsupported (this build reads 1, and 2 for documents with labels)")]
+    #[error(
+        "Forge format {0} is unsupported (this build reads 1, 2 for documents with labels and 3 for documents with entry edits or prints)"
+    )]
     Format(u32),
+    /// The base entry an edit names is not the one it was made on: its
+    /// typed fields give another print. Nothing is written.
+    #[error(
+        "the map's {} entry {index} is not the one this edit was made on",
+        .block.name()
+    )]
+    Print {
+        #[serde(with = "wire::block")]
+        block: BlockKind,
+        index: u32,
+    },
     #[error("invalid JSON: {0}")]
     Json(String),
     #[error("{what} exceeds its limit of {max}")]
