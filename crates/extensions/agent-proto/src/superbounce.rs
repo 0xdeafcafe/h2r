@@ -125,7 +125,7 @@ pub struct Guide {
     /// The seam's landing point: the box's centre.
     pub seam: [f64; 3],
     /// What the box says of the landing: `off_line`, `lined_up`,
-    /// `too_shallow` or `will_bounce`.
+    /// `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching` or `will_bounce`.
     pub call: String,
     /// The landing is a jump's from where the player stands, not a flight
     /// under way.

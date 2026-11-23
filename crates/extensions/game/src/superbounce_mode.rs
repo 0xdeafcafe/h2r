@@ -464,6 +464,10 @@ pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbou
             Call::OffLine => "off_line",
             Call::LinedUp => "lined_up",
             Call::TooShallow => "too_shallow",
+            Call::TooHigh => "too_high",
+            Call::OffEdge => "off_edge",
+            Call::NoDrift => "no_drift",
+            Call::Crouching => "crouching",
             Call::WillBounce => "will_bounce",
         }
         .into(),
