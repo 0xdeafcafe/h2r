@@ -270,7 +270,7 @@ entries; retail uses 0 to 38 and the store 94 to 100).
 | Jousting, Cops and Robbers | slayer | carrier | `party` | |
 | Bumper Cars | slayer | carrier | `party` | `starting_weapon = none` is one of our added choices; without `variant_options` the entry is left out, as today |
 | Glitch Hunt | slayer | carrier | `research` | |
-| Bounce Practice | slayer | carrier | `research` | see "Open decisions" on `bounce_practice.rules` |
+| Bounce Practice | slayer | carrier | `research` | `bounce_practice.rules`: settings only; the bounce-scoring script is `bounce_hunt.rules` |
 | Zombies | slayer | carrier | `party` | the honour rules stay in `about`. `infection.rules` enforces them but waits on `set_team` (untraced) and `set_loadout` (`verify::unhostable`) |
 | Sun King | king | carrier | none | |
 | Wheeeeee! | oddball | carrier | none | |
@@ -471,11 +471,11 @@ after 5; 9 after 8. Slice 1's `list.carrier` check accepts `slayer` and
 
 ## Open decisions
 
-1. **Bounce Practice.** Decided: the list's Bounce Practice stays the
+1. **Bounce Practice.** Done. The list's Bounce Practice is the
    community's settings-only variant (Slayer, no score), ported as
-   settings only in slice 4. `bounce_practice.rules`, a different game
-   (a point a bounce, three for a first find, a low-gravity option), is
-   renamed Bounce Hunt (`bounce_hunt.rules`) and stays an example; the
+   settings only (`bounce_practice.rules`). The script that scores
+   bounces (a point a bounce, three for a first find, a low-gravity
+   option) is Bounce Hunt (`bounce_hunt.rules`) and stays an example; the
    Superbounce game type is the list's bounce-scoring game.
 2. **Which settings each classic marks.** Slice 4 chooses, at most five
    each.
