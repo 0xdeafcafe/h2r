@@ -272,7 +272,10 @@ still read every other frame.
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
 metadata. On map activation telemetry asks boot for the active cache
-slot's file through the VFS. When the slot cannot identify an unbound
+slot's file through the VFS (`map_override::active_map_source`): its host
+region, or, for a map the VFS rewrites in memory (the pogo kit, the
+screens; such a map has no contiguous host file), those bytes
+(`MapFile::memory`). When the slot cannot identify an unbound
 map, the boot locator uses the cache name. Telemetry reads the tag names
 with `crates/formats/map` and keeps only `bipd` and `weap` rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the

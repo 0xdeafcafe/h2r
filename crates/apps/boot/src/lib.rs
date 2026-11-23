@@ -889,7 +889,7 @@ fn run_configured(
         let binding = map_rebind.clone();
         t.set_map_locator(Box::new(move |guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::active_map_file(&mut v, guest, binding.as_ref()).map(map_override::telemetry_file)
+            map_override::active_map_source(&mut v, guest, binding.as_ref())
         }));
     }
     // Sample the render thread too when profiling.
