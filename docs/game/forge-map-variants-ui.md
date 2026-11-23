@@ -204,10 +204,11 @@ set each tick (`Handle::world_mark`).
   marks are the nearest things with no body within 12 world units, by
   distance then identity, without the thing aimed at (`choose_near`).
   A held thing's `under` is on the ground its height below it, its
-  `from` where it was picked up. Not fed yet, so absent: a hold (the
-  ground's height needs a ray the tool does not keep), a ring (no kind's
-  radius is traced), the zone, a refusal's sentence and the budget by kind
-  (S6).
+  `from` where it was picked up. The zone is the aimed hill corner's hill: the goals of type 11 to 18
+  sharing its identifier, in corner order, closed (`zone_of`). Not fed
+  yet, so absent: a hold (the ground's height needs a ray the tool does
+  not keep), a ring (no kind's radius is traced), a refusal's sentence
+  and the budget by kind (S6).
 - **A pool, not a mark a thing.** One layout means a fixed set of
   elements: twelve near marks and eight zone lines. The runtime gives
   the nearest things the poses and leaves the rest without one; a

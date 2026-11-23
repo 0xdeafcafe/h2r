@@ -194,9 +194,17 @@ impl Editor {
                     game,
                 )
             });
+        let zone = self
+            .tool
+            .held_thing
+            .or(self.tool.aimed_thing)
+            .and_then(|id| self.session.thing(id))
+            .map(|goal| readout::zone_of(&goal, &things))
+            .unwrap_or_default();
         readout::Scene {
             monitor: true,
             eye: camera.position,
+            zone,
             target,
             things: things
                 .iter()

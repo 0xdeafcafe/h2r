@@ -269,3 +269,33 @@ fn aimed_things_say_their_kind_source_and_game_type() {
     let a = aimed(&flag, "Flag".into(), [0.0; 3], 0.0, 0.1, Some(2));
     assert_eq!(a.target.not_in.as_deref(), Some("this game type"));
 }
+
+#[test]
+fn a_hill_corners_outline_is_its_corners_in_order_and_closed() {
+    let corner = |index, ty, hill, at: [f32; 3]| {
+        entry(
+            BlockKind::NetgameFlags,
+            ThingKind::Goal,
+            index,
+            at,
+            &[("type", ty), ("identifier", hill)],
+        )
+    };
+    let all = [
+        corner(0, 13, 1, [4.0, 4.0, 0.0]),
+        corner(1, 11, 1, [0.0, 0.0, 0.0]),
+        corner(2, 12, 1, [4.0, 0.0, 0.0]),
+        // Another hill, a flag and a lone corner are not this outline.
+        corner(3, 11, 2, [9.0, 9.0, 0.0]),
+        corner(4, 0, 1, [7.0, 7.0, 0.0]),
+    ];
+    assert_eq!(
+        zone_of(&all[0], &all),
+        [[0.0; 3], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0; 3]]
+    );
+    assert!(
+        zone_of(&all[3], &all).is_empty(),
+        "one corner is no outline"
+    );
+    assert!(zone_of(&all[4], &all).is_empty(), "a flag is not a hill");
+}
