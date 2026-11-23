@@ -211,16 +211,20 @@ impl TagNames {
 
     pub fn load(file: &MapFile) -> Result<Self, String> {
         let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", file.path.display());
-        let mut map = match &file.bytes {
-            Some(bytes) => map::Map::from_region(std::io::Cursor::new(bytes.clone()), 0, file.len)
-                .map_err(|e| fail(&e))?,
+        let no_scenario = || format!("{}: no scenario tag", file.path.display());
+        match &file.bytes {
+            Some(bytes) => {
+                let mut map = map::Map::from_region(std::io::Cursor::new(bytes.clone()), 0, file.len)
+                    .map_err(|e| fail(&e))?;
+                Self::from_map(&mut map).ok_or_else(no_scenario)
+            }
             None => {
                 let reader = File::open(&file.path).map_err(|e| fail(&e))?;
-                map::Map::from_region(BufReader::new(reader), file.offset, file.len)
-                    .map_err(|e| fail(&e))?
+                let mut map = map::Map::from_region(BufReader::new(reader), file.offset, file.len)
+                    .map_err(|e| fail(&e))?;
+                Self::from_map(&mut map).ok_or_else(no_scenario)
             }
-        };
-        Self::from_map(&mut map).ok_or_else(|| format!("{}: no scenario tag", file.path.display()))
+        }
     }
 
     /// Whether this table is for the map whose scenario datum the guest's
