@@ -95,7 +95,7 @@ pub trait Tap: Send + Sync {
     /// v2 films tape the full guest-facing asynchronous service ABI.
     fn service_calls(&self) -> bool { false }
     fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call>;
-    fn record(&self, tag: Tag, call: Call);
+    fn record(&self, call: Call);
     fn fault(&self, reason: String);
 }
 

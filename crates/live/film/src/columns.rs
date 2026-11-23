@@ -61,7 +61,7 @@ const RAW_CAP: usize = 4
     + RECORD_LIMIT * 6
     + RECORD_BYTES
     + 8;
-const FRAME_CAP: usize = 192 << 10;
+pub const FRAME_CAP: usize = 192 << 10;
 /// The grids the encoder tries: the sizes of an 8-bit, 10-bit and 16-bit
 /// axis or pressure and the powers of two beside them.
 pub const GRIDS: [u32; 12] = [

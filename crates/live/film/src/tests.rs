@@ -19,7 +19,7 @@ impl Drop for Temp {
 pub(super) fn tape_chunk<W: Write + Seek>(w: &mut Writer<W>, calls: &[Call]) {
     w.chunk_bytes(tape::TAPE, &tape::encode_batch(calls).unwrap()).unwrap();
 }
-pub(super) fn header(id: u64) -> Header {
+pub(crate) fn header(id: u64) -> Header {
     Header {
         version: 1,
         meta: FilmMeta {

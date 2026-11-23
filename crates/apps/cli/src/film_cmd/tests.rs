@@ -331,3 +331,17 @@ fn film_stat_fields_counts_changes_and_prices_each_predictor() {
     assert!(both.contains("films: 2\nticks: 80\n"), "{both}");
     assert!(both.contains("FIELD yaw words=1 seat_ticks=80 changed=80 "), "{both}");
 }
+
+#[test]
+fn film_split_writes_a_film_file_that_decodes_to_the_same_actions() {
+    let dir = std::env::temp_dir().join(format!("film-split-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("match.h2film");
+    std::fs::write(&path, actions_film()).unwrap();
+    let out = dir.join("match.h2f");
+    let report = split(&path, &out).unwrap();
+    assert!(report.contains("ticks: 40 verified: 40\n"), "{report}");
+    assert!(report.contains("chunks: 1 machine_blocks: 0\n"), "{report}");
+    assert!(out.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}

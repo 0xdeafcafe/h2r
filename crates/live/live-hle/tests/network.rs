@@ -1206,7 +1206,7 @@ fn film_replays_network_random_and_qos_without_a_live_socket() {
             );
             Some(c)
         }
-        fn record(&self, _: film::Tag, c: Call) {
+        fn record(&self, c: Call) {
             self.calls.lock().unwrap().push_back(c)
         }
         fn fault(&self, why: String) {
@@ -1283,7 +1283,7 @@ fn film_holds_no_pure_call_and_no_call_on_a_network_nothing_opened() {
             );
             Some(c)
         }
-        fn record(&self, _: film::Tag, c: Call) {
+        fn record(&self, c: Call) {
             self.calls.lock().unwrap().push_back(c)
         }
         fn fault(&self, why: String) {
