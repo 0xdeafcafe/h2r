@@ -772,8 +772,16 @@ commits. The three parts are built.
     as a list (`object_program_gpu::lit_listed`, `LitPart::listed`: the
     whole triangles, as D3D draws `n / 3` of `n` list indices), and a
     strip part in the scene without the flag draws them
-    (`object_program_gpu::part_ranges`). Its chosen subparts would join
-    into one list, which is not built: that draw refuses at planning.
+    (`object_program_gpu::part_ranges`). Its chosen subparts draw as the
+    list loop `0x0004db68` joins them: each run of index-contiguous
+    chosen subparts (one starting one past the run's last index) is one
+    list of the section's indices, so a triangle can span two subparts
+    and a run's last `n % 3` indices draw nothing. The lit models keep,
+    after a strip part's subparts, the section's indices the subparts
+    span, verbatim, with each subpart's place in them
+    (`object_program_gpu::ListedSubparts`, `SubpartRanges::listed`), and
+    a planned draw issues each run's whole triangles
+    (`SubpartRanges::drawn_as_list`).
   - **Bit 6, conditional stream ranges** (`PartFlags::SUBPARTS`). With a
     visible-subpart mask (record `+0x14`, bit `s` of word `s >> 5` for
     the section's subpart `s`) and subparts in the section, the emitter
@@ -896,7 +904,9 @@ commits. The three parts are built.
   (`scene_extract::extract`),
   `a_marked_part_draws_in_mode_2_whatever_its_implementation_left`
   (`native_render::object_state`),
-  `chosen_subparts_draw_their_ranges_joined_where_adjacent` and
+  `chosen_subparts_draw_their_ranges_joined_where_adjacent`,
+  `a_strip_parts_chosen_subparts_draw_the_triangles_the_list_loop_draws`
+  (each choice against the list loop `0x0004db68` written out) and
   `an_auxiliary_depth_draw_takes_the_toggles_rows_and_clip_and_nothing_else`
   (`native_render::object_program_gpu`); for lights,
   `the_passes_order_is_10_11_14_12_13_and_each_flag_adds_its_layers`,
