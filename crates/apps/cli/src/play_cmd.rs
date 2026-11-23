@@ -366,6 +366,7 @@ fn hosted(
     }
     boot::Host {
         film_out: None,
+        film_auto: Default::default(),
         film_view: None,
         film_media: None,
         film_capture: None,
@@ -426,6 +427,21 @@ fn hosted(
         })),
         // `run` sets it when cloud saves are on.
         on_vfs: None,
+    }
+}
+
+/// A player session records into the film library unless it joins a
+/// session link at launch (the film cannot replay a join from outside the
+/// game) or runs as a lab job (its frame times stay comparable with
+/// earlier jobs; `H2_FILM_OUT` records one on purpose).
+fn film_auto_request(joins_at_launch: bool, lab_job: bool) -> boot::theater::autorecord::Request {
+    use boot::theater::autorecord::{JOIN_AT_LAUNCH, Request};
+    if joins_at_launch {
+        Request::Skip(JOIN_AT_LAUNCH)
+    } else if lab_job {
+        Request::Skip("a lab job records a film only with H2_FILM_OUT")
+    } else {
+        Request::On
     }
 }
 
@@ -674,6 +690,10 @@ pub(crate) fn run_with_theater(
         std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
     );
     live.check()?;
+    let film_auto = film_auto_request(
+        live.join.is_some(),
+        std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
+    );
     if live.join.is_some()
         && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
     {
@@ -869,6 +889,9 @@ pub(crate) fn run_with_theater(
             store,
             steam,
         );
+        // With no --film or H2_FILM_OUT, the session records into the film
+        // library (docs/game/film-format.md, "Recording every game").
+        host.film_auto = film_auto;
         host.film_out = film_out;
         host.level = level;
         host.on_vfs = on_vfs;
@@ -1392,6 +1415,16 @@ fn render_thread(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_play_session_records_by_default_but_not_a_launch_join_or_a_lab_job() {
+        use boot::theater::autorecord::{JOIN_AT_LAUNCH, Request};
+        assert_eq!(film_auto_request(false, false), Request::On);
+        assert_eq!(film_auto_request(true, false), Request::Skip(JOIN_AT_LAUNCH));
+        assert!(matches!(film_auto_request(false, true), Request::Skip(why) if why.contains("lab")));
+        // The launch join wins: it is the reason a player can act on.
+        assert_eq!(film_auto_request(true, true), Request::Skip(JOIN_AT_LAUNCH));
+    }
 
     #[test]
     fn editor_marks_reject_world_cameras_outside_the_guest_image() {

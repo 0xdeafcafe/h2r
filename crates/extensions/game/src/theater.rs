@@ -1,6 +1,7 @@
 //! Host film lifetime: boot facts before guest entry, observer-only checkpoints,
 //! then seal and optionally upload at the first slice after game over.
 mod actions;
+pub mod autorecord;
 mod camera;
 mod capture;
 mod media;
@@ -207,6 +208,9 @@ pub struct Facts {
     pub live_service: bool,
     pub telemetry_hooks: live_proto::film::TelemetryHooks,
     pub render_hooks: film::RenderHooks,
+    /// A player session's default recording keeps its player features on
+    /// ([`autorecord`]). Host and simulation recordings never do.
+    pub player_features: bool,
 }
 pub struct Session {
     version: u32,
@@ -247,6 +251,7 @@ impl Session {
             bots,
             address,
             live_service, telemetry_hooks, render_hooks,
+            player_features,
         } = facts;
         let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
         let admission = crate::replication_admission::FEATURE;
@@ -327,6 +332,7 @@ impl Session {
                 render_hooks: Some(render_hooks),
                 live_service,
                 features: switches.with(admission, true).spec(),
+                player_features: player_features && !host_recording,
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
                     id: live_proto::sign::random_id(),
@@ -477,6 +483,34 @@ impl Session {
 
     pub fn has_engine_track(&self) -> bool {
         self.version >= 2
+    }
+
+    /// A player session's default recording, or the replay of one: the
+    /// player features run as they did in the recorded session
+    /// ([`autorecord`]). Otherwise a film turns them off on both sides.
+    pub fn player_features(&self) -> bool {
+        self.lock().header.player_features
+    }
+
+    /// This boot plays a film back rather than recording one.
+    pub fn plays_back(&self) -> bool {
+        self.replaying
+    }
+
+    /// Stop and delete a default recording that something outside the tape
+    /// is about to change (a session link joined, an editor write). A sealed
+    /// film, an explicit recording and a replay are left alone.
+    pub fn stop_auto(&self, why: &str) {
+        let mut s = self.lock();
+        if !s.header.player_features
+            || s.complete
+            || s.failure.is_some()
+            || !matches!(s.mode, Mode::Record(_))
+        {
+            return;
+        }
+        s.fail(format!("{why}; this session's film is discarded"));
+        s.discard_auto();
     }
 
     pub fn render_hooks(&self) -> film::RenderHooks {
@@ -714,6 +748,10 @@ impl Session {
             return Ok(());
         }
         if s.complete || s.failure.is_some() {
+            // A default recording that failed is never listed half-written.
+            if teardown && s.failure.is_some() {
+                s.discard_auto();
+            }
             return Ok(());
         }
         let Mode::Record(rec) = &s.mode else {
@@ -722,8 +760,18 @@ impl Session {
         if !teardown && (!rec.match_over || rec.frame.actions.is_some()) {
             return Ok(());
         }
+        // A default recording of a session that played no game (menus,
+        // Theater, settings) has nothing to watch.
+        if s.header.player_features && rec.meta.descriptor().match_start_tick.is_none() {
+            s.complete = true;
+            s.discard_auto();
+            return Ok(());
+        }
         let matched = rec.match_over;
-        let account_upload = !rec.meta.archived_on_live
+        // Default recordings stay in the local library; only films the
+        // player asked for go to the account's archive.
+        let account_upload = !s.header.player_features
+            && !rec.meta.archived_on_live
             && !rec.unified.live_session
             && rec.meta.descriptor().mode != film::blam::Mode::Matchmaking
             && s.header.game_id.is_none();
@@ -836,6 +884,25 @@ impl State {
     }
     fn fail(&mut self, why: String) {
         self.fail_at(self.tick, why)
+    }
+
+    /// Close and delete a default recording's file and keyframe cache.
+    fn discard_auto(&mut self) {
+        if !self.header.player_features {
+            return;
+        }
+        let id = self.header.meta.id.clone();
+        let Mode::Record(rec) = &mut self.mode else { return };
+        if rec.out.is_none() && rec.sidecar.is_none() && !rec.file.exists() {
+            return;
+        }
+        drop(rec.out.take());
+        drop(rec.sidecar.take());
+        rec.frame = Default::default();
+        let dir = rec.file.parent().unwrap_or(std::path::Path::new(".")).to_owned();
+        if let Err(error) = autorecord::remove_as(&dir, &rec.file, Some(&id)) {
+            eprintln!("theater: could not delete {}: {error:#}", rec.file.display());
+        }
     }
 
     fn fail_at(&mut self, tick: u64, why: String) {

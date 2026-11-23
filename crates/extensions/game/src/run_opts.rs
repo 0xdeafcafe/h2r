@@ -49,6 +49,9 @@ pub struct RunReport {
 pub struct Host {
     /// Record this boot to a new film file. Falls back to H2_FILM_OUT.
     pub film_out: Option<PathBuf>,
+    /// A player session with no `film_out` records into the film library
+    /// (`theater::autorecord`). `h2 play` sets it; other hosts leave it off.
+    pub film_auto: crate::theater::autorecord::Request,
     /// Local media controls and the offline clip sink belong to separate players.
     pub film_media: Option<crate::theater::Media>,
     pub film_capture: Option<Arc<crate::theater::ClipCapture>>,

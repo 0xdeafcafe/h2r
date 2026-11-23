@@ -615,8 +615,10 @@ M10 each start by reading the retail code for the fields they add, into
 - A bound play copy or an unlinked placement preview prevents machine
   snapshots, snapshot rewind and film keyframes. A campaign checkpoint
   can restore a deleted preview, so its placement history lasts until
-  the scenario changes. Film recording and playback exclude object edits
-  and map reloads. After a file reload succeeds, restart the game before
+  the scenario changes. A film named with `--film` and film playback
+  exclude object edits and map reloads. The first edit in a session's
+  [default recording](../game/film-format.md#recording-every-game)
+  discards that film instead. After a file reload succeeds, restart the game before
   signing in to external Live.
 - Continuous writes require Edit. F5 in View can authorize a single
   playtest. `SessionKind::writes` gates host edits. An external Live game

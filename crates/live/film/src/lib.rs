@@ -123,6 +123,11 @@ pub struct Header {
     pub render_hooks: Option<RenderHooks>,
     pub live_service: bool,
     pub features: String,
+    /// A player session's default recording: the player features stayed
+    /// on, and the replay installs them the same way
+    /// (docs/game/film-format.md, "Recording every game").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub player_features: bool,
 }
 impl Header {
     pub fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {

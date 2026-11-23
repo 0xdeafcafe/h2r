@@ -113,8 +113,10 @@ admission again as the signed-in player and uses the accepted-invite path
 to enter the host's session. Friends-only sessions require a friendship
 with the host. An invite-only, full or closed session produces a failure
 reason. During play an unconfirmed failure goes to the log and agent status.
-Session links are available in Live player runs outside film recording and
-playback. The agent exposes the request and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
+Session links are available in Live player runs outside film playback and
+films named with `--film`. A link joined during a session's
+[default recording](../game/film-format.md#recording-every-game) discards
+that film. The agent exposes the request and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
 
 ## 1. How the System Link browser works
 

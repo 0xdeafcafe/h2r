@@ -33,6 +33,7 @@ fn header(version: u32, length_ticks: u64) -> film::Header {
         render_hooks: None,
         live_service: false,
         features: String::new(),
+        player_features: false,
     }
 }
 

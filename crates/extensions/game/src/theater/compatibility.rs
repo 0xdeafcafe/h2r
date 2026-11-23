@@ -526,6 +526,7 @@ mod tests {
             render_hooks: None,
             live_service: false,
             features: String::new(),
+            player_features: false,
         };
         header.meta.image_stamp = STAMP.into();
         for (id, abi) in [("old", "h2-sim/0"), ("current", SIMULATION_ABI)] {

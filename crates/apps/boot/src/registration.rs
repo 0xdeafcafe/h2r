@@ -126,6 +126,11 @@ pub(crate) fn register_core_film(
         Arc::new(crate::loaded_map::EditorSources::new(vfs, handle))
     });
     let rt: &Runtime = i.rt;
+    // A film turns the player features below off while it records and
+    // when it plays back, so both run the same plan. A player session's
+    // default recording, and its replay, keep them on
+    // (theater::autorecord, docs/game/film-format.md "Recording every game").
+    let features_off = film.as_ref().is_some_and(|f| !f.player_features());
     let creature_probe = features
         .add(&crate::actor_net::creature::CreatureProbe)
         .map_err(|e| anyhow::anyhow!("creature-probe: {e}"))?;
@@ -274,7 +279,9 @@ pub(crate) fn register_core_film(
     // screen opened from the logon's polling (docs/live/live.md, "In-game
     // sign-in").
     signin_screen::install(rt, features, i.live.as_ref()).context("installing the sign-in prompt")?;
-    crate::join_link::install(features, i.live.clone(), non_player || film.is_some())
+    let join_off = if film.is_some() { features_off } else { non_player };
+    let stop_film = crate::theater::autorecord::stopper(film.as_ref(), "a Live session link was joined");
+    crate::join_link::install(features, i.live.clone(), join_off, stop_film)
         .context("installing Live join links")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
@@ -331,7 +338,7 @@ pub(crate) fn register_core_film(
         .context("installing our skulls")?;
     // Firefight on a kit map (docs/game/firefight.md, "The host runtime"):
     // on by default, `-firefight` turns it off. A film replays the host's
-    // entries.
+    // entries; a default recording and its replay run the director.
     // Its Game Setup row and options page come with it, where there is a
     // settings store to keep the choices.
     let firefight_options = i.settings.as_ref().map(crate::firefight::options::source);
@@ -357,7 +364,7 @@ pub(crate) fn register_core_film(
     });
     let firefight_on = crate::firefight::feature::install_with(
         features,
-        film.is_some(),
+        features_off,
         firefight_options,
         firefight_reports,
         firefight_session,
@@ -398,10 +405,14 @@ pub(crate) fn register_core_film(
     // Rules scripts (docs/game/rules-engine.md, "The host runtime"): on
     // unless H2_FEATURES turns `rules` off. A Live host puts the script's hash
     // on its session. A film replays a game whose host passed the start
-    // gate, so the gate does not run in Theater.
+    // gate, so the gate does not run in Theater. A default recording runs it.
     #[cfg(feature = "rules")]
-    crate::rules::feature::install(features, i.live.clone(), film.is_some())
-        .context("installing rules scripts")?;
+    crate::rules::feature::install(
+        features,
+        i.live.clone(),
+        features_off || film.as_ref().is_some_and(|f| f.plays_back()),
+    )
+    .context("installing rules scripts")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
         &crate::h1_flag::H1Flag,
@@ -477,7 +488,6 @@ pub(crate) fn register_core_film(
         .context("installing the superbounce assist")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
-    let playing_film = film.is_some();
     let mut bots_on = false;
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
@@ -490,7 +500,7 @@ pub(crate) fn register_core_film(
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
         }
     }
-    if let Some(hle) = i.live.as_ref().filter(|_| !playing_film) {
+    if let Some(hle) = i.live.as_ref().filter(|_| !features_off) {
         crate::live_glue::install_browser_advertisement(
             features, hle, i.settings.as_ref(), bots_on,
         )
