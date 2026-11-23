@@ -381,6 +381,37 @@ is the phantom's pad, which every session kind already carries as a
 player's input. Seats are added in the lobby (bots.md section 7); a
 script adds and removes none.
 
+### Zones
+
+No capability: core entries with a host half but no group of their own
+(`world/zones.rs`). A zone is a labelled netgame flag — the host's census
+has no Forge document at a game's start, so no zone is a trigger volume.
+The flags that share a label and a number, three or more of them (a
+King of the Hill hill's corners), are one zone: the convex hull of their
+positions across the floor; every other flag is an upright cylinder
+around it. The sizes are ours ("Not verified"). A body is a living
+player's unit; the event order and the 64 zone events a tick are the
+host runtime's ([rules-engine.md](rules-engine.md#the-host-runtime)).
+
+| Script | Entry | Engine | Status | Synced by |
+|---|---|---|---|---|
+| `inside(p, zone)` | `inside`, a read | the zone test above, against the living player units' positions | named | a read on the machine that runs the VM |
+| `player_of(o)` | `player_of`, a read | the roster's units (the player datum's unit), so no unit field is read | named | a read |
+| `ticks_held(zone, team)` | `ticks_held`, a VM read | the VM's own counters over `Game::zone_holder`: the one team whose living players alone are inside, `none` when the zone is empty or contested | named | the state blob |
+| `on enter(zone, o)`, `on leave(zone, o)`; `on spawn(p)`, `on death(p)` | VM events | the roster's and the zones' changes since the last tick (`world::zones::events`), in the order the host runtime tells them | named | the state blob |
+
+### Loadouts
+
+Capability `player.weapons`, as `give` and `take`. A script names a
+weapon by its tag path, but the host gives only the multiplayer weapon
+list's (`rules::weapons`, the starting-weapon values the variant editor
+offers); a path off the list is refused by name, and nothing named gives
+nothing.
+
+| Script | Entry | Engine | Status | Synced by |
+|---|---|---|---|---|
+| `set_loadout(p, primary, secondary)` | `set_loadout` | `STARTING_WEAPON_PICK` (`0x19eda0`) answers the value's tag from the map's multiplayer globals, as the spawn's weapon pass asks it; the weapon is made and added as a starting profile does (`placement_data_new`, `object_new`, `unit_add_weapon`, and `object_delete` when the unit refuses it) — the primary in mode 2, which empties the unit's weapon slots first and readies it, the secondary in mode 1 beside it (mode 2 when there is no primary) | named | the unit's weapon entities |
+
 ### Audio
 
 Capability `audio.play` ("plays sounds, dialogue and music").

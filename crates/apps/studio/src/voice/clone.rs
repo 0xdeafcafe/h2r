@@ -3,7 +3,7 @@
 //! character's own lines as the reference (its delivery is what the clone
 //! copies), with the character's fine-tuned weights when
 //! `voice.clone.train` has made them. The request's `voice` is the
-//! character's id. docs/editor/voice-cloning.md, "Saying a line".
+//! character's id. docs/editor/voice-cloning.md, "How it works".
 //!
 //! The model answers at the dataset's 24 kHz; the line is brought to
 //! [`audio::RATE`] here, so the rest of the Announcer's pipeline (trim,
