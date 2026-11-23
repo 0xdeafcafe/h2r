@@ -868,7 +868,7 @@ fn expected() -> Vec<Expected> {
             (78, 4), (79, 4), (81, 6), (82, 6), (2, 25),
         ]),
         e("Superbounce", 2, Research, Script, BOUNCE_PAIRS),
-        e("Siege", 2, PartyGames, Script, &[(91, 1), (2, 0), (10, 0), (89, 1), (94, 1)]),
+        e("Siege", 2, PartyGames, Script, &[(91, 1), (2, 0), (10, 0), (16, 1), (89, 1), (94, 1)]),
         e("Gun Game", 2, PartyGames, Script, &[(89, 1), (94, 1), (83, 1), (2, 0)]),
         e("Race", 2, PartyGames, Script, &[(2, 0)]),
         e("VIP", 2, PartyGames, Script, &[(91, 1), (2, 25)]),

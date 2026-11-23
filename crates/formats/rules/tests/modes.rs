@@ -151,8 +151,8 @@ fn siege_holds_each_death_for_its_sides_wave() {
     assert_eq!(
         calls(&r, "respawn"),
         [
-            (300, &[Arg::Player(Some(2))][..]),
-            (300, &[Arg::Player(Some(0))]),
+            (300, &[Arg::Player(Some(0))][..]),
+            (300, &[Arg::Player(Some(2))]),
             (302, &[Arg::Player(Some(1))]),
         ]
     );
