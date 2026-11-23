@@ -30,13 +30,19 @@ const MAX_PLACED_LINES: usize = 4 * MAX_LINES;
 const INVISIBLE: u8 = 1 << 1; // docs/halo1/map-format.md, collision surface flags
 
 /// Static debug edges for one map's active BSP.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StaticViews {
     pub(super) geometry_edges: Vec<Edge>,
     pub(super) triggers: Vec<Edge>,
     pub(super) kill_volumes: Vec<Edge>,
     pub(super) barriers: Vec<Edge>,
     pub(super) collision: Vec<Edge>,
+    /// The structure BSP's datum, and how many of `collision` and
+    /// `barriers` (their first ones) are its level collision rather than
+    /// its instances': what a live collision commit replaces
+    /// ([`Self::replace_structure`]).
+    pub(super) structure: Option<u32>,
+    structure_lines: (usize, usize),
     errors: Vec<(View, String)>,
 }
 
@@ -126,6 +132,7 @@ impl StaticViews {
     }
 
     fn structure(&mut self, id: TagId, bytes: &[u8], base: u32, raw: &mut dyn RawSource) {
+        self.structure = Some(id.0);
         let view = TagView::new(bytes, base);
         if let Err(error) = self
             .structure_collision(&view)
@@ -158,9 +165,29 @@ impl StaticViews {
         let at = payload_offset(view, root.address)?;
         let mut bytes_left = MAX_DECODE_BYTES;
         let mesh = CollisionMesh::read(view, at, &mut bytes_left)?;
+        self.structure_lines = (mesh.all.len(), mesh.invisible.len());
         self.collision = mesh.all;
         self.barriers = mesh.invisible;
         Ok(())
+    }
+
+    /// The structure's level collision lines replaced by `bsp`'s, its
+    /// instances' kept: what the game reads after a live collision commit
+    /// (`edit.collision.commit`, docs/editor/realtime-edits.md,
+    /// "Collision"), which the map file these were built from does not
+    /// hold.
+    pub(super) fn replace_structure(&mut self, bsp: &Bsp) {
+        let mesh = CollisionMesh::of(bsp);
+        let (all, invisible) = self.structure_lines;
+        let keep_all = self.collision.split_off(all.min(self.collision.len()));
+        let keep_invisible = self.barriers.split_off(invisible.min(self.barriers.len()));
+        self.structure_lines = (mesh.all.len(), mesh.invisible.len());
+        self.collision = mesh.all;
+        self.collision.extend(keep_all);
+        self.collision.truncate(MAX_LINES);
+        self.barriers = mesh.invisible;
+        self.barriers.extend(keep_invisible);
+        self.barriers.truncate(MAX_LINES);
     }
 
     fn instance_collision(&mut self, view: &TagView<'_>) -> Result<()> {
@@ -343,6 +370,12 @@ impl CollisionMesh {
             )?;
         }
         let bsp = Bsp::decode_structure(view.bytes(), view.address(), at)?;
+        Ok(Self::of(&bsp))
+    }
+
+    /// Every edge of `bsp` that bounds a surface, and those of them on an
+    /// invisible surface.
+    fn of(bsp: &Bsp) -> Self {
         let mut all = Vec::new();
         let mut invisible = Vec::new();
         // Classify a shared definition once. When a destination cache is
@@ -378,7 +411,7 @@ impl CollisionMesh {
                 invisible.push(edge);
             }
         }
-        Ok(Self { all, invisible })
+        Self { all, invisible }
     }
 }
 

@@ -612,6 +612,13 @@ Notes on some:
   into agreement. An entry the game wrote without making its object is a
   `Reload` row of its own (`path` `block[index]`). Rows of this path carry
   `placement_edit: true`.
+  A structure's level collision edit is one row with `doc` `collision`,
+  `path` `structure_collision:<tag>:0` and `rebuild` (whether the commit
+  changes indices). In Edit it goes as `edit.collision.stage`, then
+  `edit.collision.commit` (realtime-edits.md, "The editor"); a refusal
+  makes it a `reload` row with the game's reason, and a `MISMATCH` marks
+  it `conflict` with `resolvable:false` until the documents change or
+  the user sends again.
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.

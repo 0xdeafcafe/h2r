@@ -20,6 +20,12 @@ pub struct Modeling {
     /// "Allow unverified geometry writes": off by default, and while off
     /// a save with geometry edits is refused.
     pub allow_unverified: bool,
+    /// Level collision edits by structure: the blocks a solid added to a
+    /// structure's collision makes (`geometry_edit::level_collision`).
+    /// Play sends them to a paired game (`play::collision_sync`).
+    pub level_collision: std::collections::BTreeMap<map::TagId, geometry_edit::level_collision::LevelEdit>,
+    /// Bumped on every change to [`Self::level_collision`].
+    pub level_collision_rev: u64,
     /// The map the session is over (`Session::world_rev`).
     for_rev: Option<u64>,
 }
@@ -50,8 +56,20 @@ impl App {
         let rev = Some(self.session.world_rev());
         if self.modeling.for_rev != rev {
             self.modeling.session.clear();
+            self.modeling.level_collision.clear();
+            self.modeling.level_collision_rev += 1;
             self.modeling.for_rev = rev;
         }
+    }
+
+    /// Set (or, with `None`, drop) structure `tag`'s level collision edit.
+    pub fn set_level_collision(&mut self, tag: map::TagId, edit: Option<geometry_edit::level_collision::LevelEdit>) {
+        self.sync_modeling();
+        match edit {
+            Some(e) => self.modeling.level_collision.insert(tag, e),
+            None => self.modeling.level_collision.remove(&tag),
+        };
+        self.modeling.level_collision_rev += 1;
     }
 
     /// The open map's structure targets, and a render model's sections

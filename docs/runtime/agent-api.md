@@ -73,6 +73,7 @@ connection to hold `session.claim`.
 | `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.set`, `edit.batch`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.arena` | read | [Block moves](#block-moves) |
+| `edit.collision.stage`, `edit.collision.commit` | act | [Collision edits](#collision-edits) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `game.menu` | act | [Returning to the main menu](#returning-to-the-main-menu) |
 | `game.load`, `game.levels` | act, read | [Loading a level](#loading-a-level) |
@@ -3224,6 +3225,85 @@ film keyframes are refused, as for an unlinked placement preview.
 ```sh
 h2 agent edit.arena
 h2 agent edit.batch '{"epoch":E,"moves":[{"root":{"tag":"<shad>","path":"postprocess[0].colors"},"stride":S,"count":3,"capacity":8,"bytes":"<base64>","was":{"count":2,"address":"0x..."}}]}'
+```
+
+### Collision edits
+
+The lifted game reads a collision BSP in place through its eight
+`(count, address)` pairs, so a live collision edit stages the new blocks
+in the edit arena and then repoints the pairs at one tick boundary. The
+design is [realtime-edits.md](../editor/realtime-edits.md), "Collision";
+the methods are `crates/extensions/agent/src/hot/collision.rs`.
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `edit.collision.stage` | act | `{target, blocks: {name: {count, bytes}}, leaves?: {count, bytes}, mopp?, epoch, confirm_peers?}` | `{stage, bytes, blocks: {name: {count, address}}, arena: {used, largest_free}, activation}` |
+| `edit.collision.commit` | act | `{stage, mode: "append" \| "rebuild", activate?, was: {name: {count, address}}, epoch, confirm_peers?}` | `{at, stage, mode, pairs: {name: {count, address}}, activated, freed: [address]}` |
+
+`target` is `{structure: tag}` (the structure's level collision,
+`sbsp+0x14`), `{instance_def: {tag, index}}` (an instanced geometry
+definition's BSP, at the definition's `+0x70`) or `{coll: {tag, region,
+permutation, bsp?}}` (`bsp` defaults to 0); `tag` is a datum or a name.
+`blocks` holds all eight blocks by the field names of
+`tags::collision::Bsp` (`nodes`, `planes`, `leaves`, `refs`, `nodes_2d`,
+`surfaces`, `edges`, `vertices`), each `count` elements laid out as
+`Bsp::encode_blocks` lays them (`collision_build::coll::stage_blocks`).
+For a structure, `leaves` is the per-leaf block (`sbsp+0x2c`, 8 bytes a
+leaf, one per BSP leaf) and `mopp` the bytes of the `sbsp+0x1e0` block;
+either left out keeps the structure's own, and a structure whose per-leaf
+block would no longer have one element per leaf is refused. Bytes are
+base64 or `{stage, at?, len?}` naming `edit.stage.put` bytes. A stage of
+`pathfinding` is refused: its blocks hold pointers the host would have to
+relocate.
+
+The stage decodes the blocks and runs `Bsp::validate` against the target's
+collision material count, then writes each nonempty block into its own
+arena extent. Nothing points at them, so the game reads nothing new. A
+full arena answers `REFUSED` (11) with `data.block`, `data.need` and
+`data.largest_free`, and holds nothing. A second stage of the same target
+before a commit replaces the first and frees its extents. `activation`
+says whether this game can run the BSP activation a commit asks for. A
+stage belongs to its connection and lives until a commit uses it or the
+map changes.
+
+The commit names in `was` every pair it repoints: the eight block names,
+`leaf_clusters` for the per-leaf block and `mopp`, each `{count,
+address}` before the commit (`address` a number or a `0x` string). A pair
+that holds another answers error 8 (`MISMATCH`) with `data.pairs: [{name,
+root, was, holds}]` and nothing is written. Every pair is checked before
+the first write, and all are written at the same boundary. `append` is
+the mode for added solids: every existing plane, leaf, surface, edge,
+vertex and per-leaf element keeps its index, so a block with fewer
+elements than the one it replaces is refused. `rebuild` changes indices:
+it always activates, and is refused on a structure with pathfinding,
+which names surfaces by index.
+
+With `activate: true`, and always for `rebuild`, the commit asks the game
+for a BSP switch to the active BSP (`BSP_SWITCH`), which rebuilds Havok's
+structure shape over the new blocks, and answers after it has run, with
+`activated: true`. A game with no activation refuses these commits
+(`REFUSED`, nothing written); one whose switch does not start or fails
+puts the old pairs back, frees the stage, and answers `REFUSED` with the
+reason. The arena extents the old pairs named are freed after the next
+activation, listed in `freed`; until then Havok's shape may still read
+them. A `coll` BSP's old extents are kept until the map changes, since a
+live body's shape points at them until the object is made again
+(`world.object.respawn`).
+
+The lifted BSP walks follow the pairs on every query, so rays, sweeps
+and point location answer from the new blocks on the next tick, and
+`sim_collision`'s page watches over the pairs start a new generation. A
+structure commit hands the new BSP to `debug.view`'s `collision_geometry`
+and `invisible_barriers`, which are built from the map file and would
+otherwise show the old level. The bots' line-of-sight walls are not told.
+The journal does not hold a commit: `edit.revert` leaves it, and the
+editor undoes it with the inverse stage and commit. Sessions are those
+of the other edit writes; with `confirm_peers` on a host the change stays
+local, as tag pokes do.
+
+```sh
+h2 agent edit.collision.stage '{"epoch":E,"target":{"structure":"<sbsp>"},"blocks":{"nodes":{"count":N,"bytes":"<base64>"},...},"leaves":{"count":L,"bytes":"<base64>"},"mopp":"<base64>"}'
+h2 agent edit.collision.commit '{"epoch":E,"stage":1,"mode":"append","activate":true,"was":{"nodes":{"count":N0,"address":"0x..."},...}}'
 ```
 
 ## Menu methods: settings, perf overlay, cheats

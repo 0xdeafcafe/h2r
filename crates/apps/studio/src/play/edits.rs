@@ -105,11 +105,17 @@ pub(super) struct Edits {
     refused: issues::Refusals,
     /// Geometry and pixels (`raw_sync`).
     pub(super) raw: raw_sync::RawSync,
+    /// Level collision (`collision_sync`).
+    pub(super) collision: collision_sync::CollisionSync,
 }
 
 impl Edits {
     pub(super) fn interrupted_write(&self) -> bool {
-        self.sent.is_some() || self.raw.busy() || self.reverting || self.restore_after_batch
+        self.sent.is_some()
+            || self.raw.busy()
+            || self.collision.busy()
+            || self.reverting
+            || self.restore_after_batch
     }
 
     pub(super) fn document_changed(&self, app: &App) -> bool {
@@ -134,6 +140,7 @@ impl Edits {
         self.taking = None;
         self.sent = None;
         self.raw.transport_lost();
+        self.collision.transport_lost();
         self.last_diff = None;
     }
 }
@@ -152,6 +159,7 @@ impl Play {
     pub(super) fn retry_refused_fields(&mut self) {
         self.edits.refused = issues::Refusals::default();
         self.edits.raw.retry();
+        self.edits.collision.retry();
         self.edits.last_diff = None;
     }
 
@@ -166,6 +174,7 @@ impl Play {
         let launch = self.launch_baseline.as_ref().filter(|_| copy);
         self.edits.tags = launch.map(|(_, tags, _)| tags.clone()).unwrap_or_default();
         self.edits.raw.reset(launch.map(|(_, _, raw)| raw.clone()).unwrap_or_default());
+        self.edits.collision.reset();
         self.baseline = app.loaded_map().zip(app.session.scenario()).map(|(m, s)| {
             (
                 m.into(),
@@ -550,9 +559,11 @@ impl Play {
             }
         }
         let raw = self.raw_pending(app, &mut pending);
+        let collision = self.collision_pending(app, &mut pending);
         self.objects.publish(&mut pending);
         *app.pairing.pending = pending;
         if !writable || self.edits.sent.is_some() || self.edits.raw.busy()
+            || self.edits.collision.busy()
             || self.edits.taking.is_some() || !self.edits.conflicts.is_empty()
         {
             return;
@@ -564,9 +575,15 @@ impl Play {
             ),
         );
         if writes.is_empty() {
-            // Geometry and pixels go when no field write is waiting.
-            if let Some(plan) = raw {
-                self.send_raw(plan);
+            // Geometry and pixels go when no field write is waiting, and
+            // level collision when neither is.
+            match raw {
+                Some(plan) if !plan.is_empty() => self.send_raw(plan),
+                _ => {
+                    if let Some(step) = collision {
+                        self.send_collision(step);
+                    }
+                }
             }
             return;
         }
@@ -767,7 +784,7 @@ impl Play {
         if action == Apply::Restore && self.is_paired() {
             self.request_leave(app);
             self.edits.taking = None;
-            if self.edits.sent.is_some() || self.edits.raw.busy() {
+            if self.edits.sent.is_some() || self.edits.raw.busy() || self.edits.collision.busy() {
                 self.edits.restore_after_batch = true;
                 return Ok(());
             }
@@ -777,6 +794,7 @@ impl Play {
         }
         if self.edits.sent.is_some()
             || self.edits.raw.busy()
+            || self.edits.collision.busy()
             || self.edits.reverting
             || self.edits.taking.is_some()
         {

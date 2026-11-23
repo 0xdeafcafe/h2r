@@ -256,6 +256,11 @@ pub struct Agent {
 #[derive(Default)]
 struct Shared {
     collision_traces: Arc<crate::CollisionTraces>,
+    /// Level collision live commits replaced, for the debug views.
+    collision_edits: Arc<crate::debug_views::CollisionEdits>,
+    /// The BSP activation `edit.collision.commit` runs, when the game has
+    /// one ([`Agent::set_collision_activation`]).
+    collision_activation: crate::hot::collision::Activator,
     editor_calls: OnceLock<crate::sim::calls::Shared>,
     state: Mutex<State>,
     wake: Condvar,
@@ -622,6 +627,25 @@ impl Agent {
 
     pub fn collision_traces(&self) -> Arc<crate::CollisionTraces> {
         self.shared.collision_traces.clone()
+    }
+
+    pub(crate) fn collision_edits(&self) -> Arc<crate::debug_views::CollisionEdits> {
+        self.shared.collision_edits.clone()
+    }
+
+    pub(crate) fn collision_activator(&self) -> crate::hot::collision::Activator {
+        self.shared.collision_activation.clone()
+    }
+
+    /// The BSP activation a collision commit with `activate` or `mode:
+    /// rebuild` runs (docs/editor/realtime-edits.md, "Collision"). Without
+    /// one those commits are refused.
+    pub fn set_collision_activation(&self, activation: Box<dyn crate::hot::collision::Activation>) {
+        *self
+            .shared
+            .collision_activation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(activation);
     }
 
     pub(crate) fn set_debug_views(&self, views: crate::debug_views::Observer) {

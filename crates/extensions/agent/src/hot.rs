@@ -16,6 +16,10 @@
 //! Block moves (`moves` in `edit.batch`, `edit.arena`) copy a grown tag
 //! block into the editor's `hot_tags::arena`, which the glue installs and
 //! `world.placement.edit` shares.
+//!
+//! Collision edits (`edit.collision.stage` and `.commit`, [`collision`])
+//! stage a collision BSP's new blocks in the same arena and repoint its
+//! pairs at one boundary.
 
 #[cfg(feature = "render-overrides")]
 use std::path::PathBuf;
@@ -385,6 +389,7 @@ pub fn add_edit_methods(
         })
     });
     let stages = Arc::new(Mutex::new(Stages::default()));
+    collision::add_methods(agent, &editor, &guest, &session, &stages);
     let (ed, g, probe, st) = (lock(&editor), guest.clone(), session.clone(), Arc::clone(&stages));
     agent.add_game_method(method::EDIT_BATCH, Access::Act, move |p, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
@@ -720,6 +725,8 @@ pub fn watch_overrides(hub: &'static Hub, dir: PathBuf) -> hot_render::ReloadRep
     }
     r
 }
+
+pub mod collision;
 
 #[cfg(test)]
 mod tests;

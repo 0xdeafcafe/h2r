@@ -289,7 +289,7 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.append.is_none()
             && self.writes.is_empty()
             && self.raw.is_empty()
@@ -393,8 +393,9 @@ impl RawSync {
     }
 }
 
-/// A revision of everything a raw want reads: the geometry session, the
-/// open bitmaps and whether a stroke is active.
+/// A revision of everything a raw or collision want reads: the geometry
+/// session, the open bitmaps, whether a stroke is active and the level
+/// collision edits.
 pub(crate) fn doc_rev(app: &App) -> u64 {
     let mut h = DefaultHasher::new();
     app.modeling.session.rev().hash(&mut h);
@@ -408,6 +409,7 @@ pub(crate) fn doc_rev(app: &App) -> u64 {
         .collect();
     revs.sort_unstable();
     revs.hash(&mut h);
+    super::collision_sync::doc_rev(app).hash(&mut h);
     h.finish()
 }
 
