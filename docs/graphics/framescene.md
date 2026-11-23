@@ -1175,6 +1175,7 @@ to the guest's draws (**Code**):
   would change a state, and a view the stage declines, stays the guest's
   ([native-decorators.md](native-decorators.md)). Tests:
   `a_skipped_placement_holds_only_when_what_its_draw_leaves_already_holds`
+  and `a_placement_whose_restore_list_writes_back_what_it_sets_holds`
   (`native_render::decorators_load`) and
   `a_draw_whose_skip_would_change_a_state_stays_the_guests_and_counts_apart`
   (`render_bridge::native_decorators`).
