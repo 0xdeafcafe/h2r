@@ -1103,7 +1103,15 @@ impl Mind {
                     self.hand.lose_target();
                     self.fight.stop_trigger(p.tick);
                 }
-                if let Some((at, radius)) = intent.anchor {
+                // Inside a held zone with room to move (the ball, the hill,
+                // a territory: objective::within), the footwork goes on and
+                // only its step out of the zone is taken away.
+                let room = intent.anchor.filter(|&(at, radius)| {
+                    radius >= objective::FOOTWORK_ROOM
+                        && len(sub(me.position, at)) <= radius
+                        && p.objective.as_ref().is_some_and(|o| o.zone_footwork())
+                });
+                if let Some((at, radius)) = intent.anchor.filter(|_| room.is_none()) {
                     if len(sub(me.position, at)) > radius {
                         walk = self.go(me.position, at, p.tick, map, &mut pad, bodies);
                     }
@@ -1138,7 +1146,9 @@ impl Mind {
                         pad.buttons.set(CROUCH, true);
                     }
                     walk = Some(Walk {
-                        walk: mv.walk,
+                        walk: room.map_or(mv.walk, |(at, radius)| {
+                            objective::within(mv.walk, me.position, at, radius)
+                        }),
                         face: [to[0] / flat, to[1] / flat],
                     });
                     self.follower = None;

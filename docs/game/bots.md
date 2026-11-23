@@ -869,7 +869,11 @@ detour to get a usable weapon. In King, it only collects guns inside the
 active hill.
 
 A bot can fire at a visible opponent while walking toward the hill,
-guarding its flag or escorting a carrier. Target choice combines the
+guarding its flag or escorting a carrier. Inside a held zone in Oddball,
+King of the Hill and Territories (one of at least `FOOTWORK_ROOM`, 1
+world unit) it keeps its fight footwork; past half the zone's radius the
+step loses the part that leads out (`objective::within`), so it strafes
+in the hill rather than standing still and never fights its way out. Target choice combines the
 existing range, turn and stickiness costs with the objective, teammates'
 calls, recent kills and visible openings. A bot that loses sight plays its
 objective first. In Slayer (`Mind::between_fights`,
@@ -969,11 +973,11 @@ difficulty and style.
 | Trait | What changes in play | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|---|
 | Aggression | Takes openings and closes distance | .05–.95 | .12–.92 | .24–.90 | .35–.88 |
-| Caution | Respects being outnumbered and routes around recent danger | .05–.90 | .16–.88 | .30–.84 | .46–.82 |
+| Caution | Respects being outnumbered, routes around recent danger and plays a hill's edge | .05–.90 | .16–.88 | .30–.84 | .46–.82 |
 | Teamwork | Responds to radio calls and helps teammates | .08–.85 | .18–.88 | .32–.88 | .46–.87 |
-| Objective focus | Stays closer to the assignment during a fight | .05–.90 | .18–.88 | .35–.90 | .48–.89 |
+| Objective focus | Stays closer to the assignment during a fight, and holds a hill, a territory or the ball carrier's fight one enemy longer | .05–.90 | .18–.88 | .35–.90 | .48–.89 |
 | Composure | Has smaller swings in mood and settles faster | .08–.50 | .28–.70 | .50–.86 | .73–.96 |
-| Patience | Holds a strafe or a corner longer before chasing | .05–.48 | .22–.72 | .42–.85 | .65–.91 |
+| Patience | Holds a strafe or a corner longer before chasing, and waits for teammates before pushing the ball carrier | .05–.48 | .22–.72 | .42–.85 | .65–.91 |
 | Showboating | Attempts riskier melee and sword lunges and taunts more often | .10–.95 | .10–.87 | .12–.75 | .15–.67 |
 | Weapon loyalty | Favors a weapon family and may take a short detour for it during a lull | .05–.95 | .13–.88 | .20–.80 | .28–.72 |
 | Chattiness | Refreshes radio sightings more often. New targets and urgent help go out immediately | .05–.95 | .12–.90 | .25–.83 | .36–.80 |
@@ -1572,6 +1576,29 @@ it has found itself):
 
 A fault leaves `Perception::objective` `None`: the bot plays as in Slayer.
 
+**Without the engine's globals.** A rules script that keeps no per-engine
+globals (docs/game/rules-engine.md, "Porting the seven engines") still
+leaves the bots an objective, read from the scenario's netgame flags
+(`objective/zones.rs`):
+
+- Oddball with `[0x51ecc4]` zero: the neutral type-4 spawns (designator
+  8, at most three). The balls themselves come from the objective
+  records, which a script's `spawn_objective` fills;
+- King of the Hill with `[0x51ecc8]` zero: the lowest-numbered hill's
+  corners (types 11 to 18). Who is in it is judged by the corners;
+- Territories with `[0x51eccc]` zero: `State::Markers`, for each
+  identifier 0 to 7 the first type-10 flag with it (`+0x14`), as
+  `0x2bf5b0` picks them. No owner is known; a player within
+  `TERRITORY_REACH` (3 units XY, 2 in height) of a marker stands in it.
+
+**What a bot knows of it.** Perception (`perceive::observe_for_brain`)
+keeps a flag or bomb only while the bot sees it, carries it, or a
+teammate carries it. The Oddball ball is kept wherever it is: its
+waypoint is on every Oddball HUD, so a hidden carrier's place is known,
+though the carrier as a player stays unseen (not traced; the HUD's ball
+waypoint is taken from play). Hill and territory occupancy is masked to
+the players the bot knows of.
+
 **Roles** (`objective::role_of`). Every bot sorts its living teammates
 and itself by player index; its rank and the team's size give its role,
 so all of a team's bots agree with nothing said between them. One alone
@@ -1595,13 +1622,44 @@ CTF uses this order.
 5. defenders, and attackers with nothing to do: **hold** our flag's spawn,
    within 4 world units, fighting from there.
 
-Oddball: carrying, **keep** it; a free ball, **go** for it; an enemy's,
-**hunt** them; a teammate's, **escort** them. Between balls, approach
-the closest neutral type-4 spawn selected by Oddball init.
+Every bot's goal also takes its name's temper (`objective::Temper`:
+patience and caution from the personality, `plan_with`).
 
-**King of the Hill.** Approach the current corners' centre, hold the spot
-where the engine counts the bot inside, and fight from there. Moving
-the hill rebuilds its corners. The bot follows the next scoring mask.
+**Oddball** (`zones::ball`):
+
+1. carrying, **keep** it: cover away from the threat, melee at arm's
+   length;
+2. a loose ball: the two of the team nearest it (`RUSHERS`) **go** for
+   it, the rest **hold** within `BALL_COVER` (6 units) of it. In a fight
+   the runners keep walking onto it, shooting on the way, and hold X on
+   it; in free-for-all everyone runs;
+3. an enemy has it: **hunt** the carrier as a group. A hunter between 6
+   and 18 units from it (`SHOWDOWN`, `STAGE`), with no teammate within 8
+   (`GROUP`) and one coming more than a lead behind it (6 to 20 units, the
+   patient the shorter), holds where it is (3 units) until they close
+   up; a teammate more than twice `STAGE` further off (respawning) is not
+   waited for. The carrier is the hunters' first target, and since it
+   cannot shoot it does not count as a gun when a hunter weighs whether
+   it is outnumbered;
+4. a teammate has it: **escort** as a screen, `SCREEN` (3.5 units) out
+   from the carrier towards the nearest enemy it knows within 25, the
+   escorts fanned out by index (0, ±0.6, ±1.2 rad) so each stands in its
+   own spot; with no threat, by the carrier. An escort's first target is
+   an enemy within 12 of the carrier;
+5. between balls, the closest neutral type-4 spawn.
+
+**King of the Hill** (`zones::hill`). Approach the current corners'
+centre. In the hill (the engine's mask, else the corners), **hold** the
+centre within a share of its radius, 0.4 to 0.65 by caution
+(`HILL_KEEP`, `HILL_KEEP_CAUTION`), so the cautious play its edge; where
+the mask counts the bot in but the corners do not, hold the spot. Out of
+it with two teammates already holding it and nobody contesting, a bot of
+caution 0.6 or more (`EDGE_CAUTION`) covers it from just outside, within
+`1 + caution` radii of the centre. Everyone else goes in, and an enemy in
+the hill sends the cautious in too, to clear it; an enemy standing in it
+is the preferred target. Holding the hill, a focused bot stays in a fight
+one enemy longer before backing off. Moving the hill rebuilds its
+corners and the bot follows the next scoring mask.
 
 **Assault.** Take a friendly or neutral bomb to an active enemy plate.
 In one-bomb, only the designated defender's plates score. Carrying the
@@ -1613,10 +1671,18 @@ score. The engine releases the planted bomb, records the planter at
 Defenders guard the plate or intercept the enemy carrier. An ordinary
 dropped friendly bomb can be recovered by the nearest teammate.
 
-**Territories.** Relieve a friendly capture site occupied by an enemy,
-finish a capture already under way, then take an unowned or hostile site.
-Break equal priorities by distance. The bot holds its position inside
-the chosen volume while fighting. FFA ownership follows the player slot.
+**Territories** (`zones::territory`). A team spreads over the sites.
+Every bot ranks each pair of teammate and site the same way: a friendly
+site with an enemy in it, or one the teammate stands in and is taking,
+first; then a site not ours; then ours; nearer first. Going down that
+list, each site takes one teammate, two where an enemy stands in it, so
+two relieve a site under pressure while the rest take the others; a bot
+the sites have no room for goes where it would alone. In its site it
+**holds** within `TERRITORY_KEEP` (1.5 units) of the marker, fighting from
+there; a site taken drops to the bottom of the list, so its taker moves
+on to the next unless nothing else is left. Holding a territory, a
+focused bot stays in a fight one enemy longer. FFA ownership follows the
+player slot and every bot plays alone.
 
 **Juggernaut.** Every other player sees the Juggernaut by its waypoint,
 so a hunter's goal is the Juggernaut wherever it is: it walks to it with
@@ -5868,16 +5934,20 @@ CTF on Lockout or Beaver Creek:
 
 Oddball (any small map):
 
-8. When the ball spawns, the bots run for it.
+8. When the ball spawns, the bots run for it; in teams two of a side run
+   and the others stay near it.
 9. A bot with the ball takes cover or moves away from an approaching enemy.
    It keeps its trigger up and melees a human who comes close.
-10. When a human has the ball, the bots come after them; in teams, a
-    bot's teammate with it is followed, not attacked.
+10. When a human has the ball, the bots come after them, together rather
+    than one at a time, even with the human out of sight; in teams, a
+    bot's teammate with it is screened, the escorts standing between it
+    and you.
 
 King of the Hill (Midship or Lockout):
 
-11. The bots go to the hill and stay in it, fighting from it, rather than
-    chasing out of it.
+11. The bots go to the hill and stay in it, fighting from it and strafing
+    inside it, rather than standing still or chasing out of it. With the
+    hill held, a cautious bot covers it from its edge.
 12. When the hill moves, they go to the new one within a few seconds.
 13. A bot in the hill counts as in it (the hill's colour and the score
     say so). Check the score on a different floor over the same XY and after a move.
@@ -5894,13 +5964,16 @@ All:
     stays until armed and plants on the active plate, and escorts cover
     a planted bomb while recovering a loose one.
 17. In team Territories, contest a friendly site while a neutral site
-    is closer. Watch the bot relieve it and hold through a capture. In
+    is closer. Watch two bots relieve it and hold through a capture. A
+    team's bots take different sites rather than stacking on one. In
     FFA, check that another player's territory counts as hostile.
 18. Kill the Juggernaut in front of two hunters. Check they switch to
     the new Juggernaut and leave one another alone. As Juggernaut the
     bot should close on a visible opponent and melee.
 19. In Oddball check the first spawn and a reset against a neutral type-4
     marker on the map.
+20. In Oddball, kill the bot carrier: the nearest bots of both teams run
+    onto the dropped ball and one picks it up.
 
 ### 11.3 Decisions boost in play (checklist)
 

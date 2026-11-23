@@ -475,7 +475,7 @@ fn territories_capture_hold_and_relieve_a_contested_teammate() {
             }],
             true
         ),
-        Some(Goal::Hold(bot.position, 0.0))
+        Some(Goal::Hold(RED_HOME, TERRITORY_KEEP))
     );
 }
 

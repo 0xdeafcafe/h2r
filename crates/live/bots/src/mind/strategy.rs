@@ -16,7 +16,13 @@ impl Mind {
         // it stands, in place of the objective's.
         let goal = self.decisions.ordered_goal(p).or_else(|| {
             p.objective.as_ref().and_then(|o| {
-                objective::plan(o, &me, juggernaut_quarry(o, seen, &p.others), p.teams)
+                objective::plan_with(
+                    o,
+                    &me,
+                    juggernaut_quarry(o, seen, &p.others),
+                    p.teams,
+                    objective::Temper::from(self.decisions.personality),
+                )
             })
         });
         // Once a tick: a repeated frame returns the last pad before this.
