@@ -940,19 +940,15 @@ Bounced is a death with no killer too, so while `suicide_costs` is on,
 point either way (supposed: that the game reports a fall out of the map as
 a death with no killer; a kill feed line on a lab run would show it).
 
-The mode is on when the variant's extension block names a rules script
-that requires `hud.superbounce` (`rules::header::script_asks_superbounce`,
-in `variant_ext::Decision::superbounce`, with or without the `rules`
-feature, on a guest that applies its host's block too), when the block
-has the superbounce flag (bit 2 of `+0x10f`,
-[game-options.md](game-options.md)), when the active variant's name is
-the built-in Superbounce's (a fallback for a game whose block did not
-arrive or is not applied, as in a System Link game, where no machine
-applies the block), or with
-`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). The built-in
-sets no flag; the flag stays a field of the block that a hand-made
-variant may set. An agent can force it on or off in any game with
-`superbounce.set`
+The mode is on only when the variant's extension block names a rules
+script that requires `hud.superbounce`
+(`rules::header::script_asks_superbounce`, in
+`variant_ext::Decision::superbounce`, with or without the `rules`
+feature, on a guest that applies its host's block too). The built-in
+Superbounce and Bounce Practice scripts do. The block's flag byte has no
+superbounce bit (bit 2 is reserved and reads as off), the variant's name
+turns nothing on, and no switch does. An agent can force the mode off in
+any game with `superbounce.set`; it cannot force it on
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
 
@@ -1499,9 +1495,7 @@ The host reads them by name where it decides the mode is on, at a game's
 start and every 30 ticks (`superbounce_options::read`): the active
 variant's extension block (`variant_ext::in_game`), its script
 reference, the script's IR (`rules::header::superbounce_options`,
-`Ir::option_value`). A game with the mode on and no script
-(`H2_SUPERBOUNCE=1`, `superbounce.set`, the name fallback), and a
-script that declares none of them, take the defaults.
+`Ir::option_value`). A script that declares none of them takes the defaults.
 `superbounce.state` returns them as `options`.
 
 ### Hold X: the fall assist
@@ -2021,8 +2015,9 @@ agent ticker then runs the trials one after another on one seat, a tick
 at a time, because a batch runs far longer than a deferred answer may
 wait. `superbounce.verify_status` reports progress and, at the end, a
 verdict and one line a spot; `superbounce.verify_cancel` stops it. A
-batch needs the mode on and its scan ready (`superbounce.set
-{"on":true}`, then `superbounce.state`'s `scan.status`), except over
+batch needs the mode on (a game whose script requires
+`hud.superbounce`) and its scan ready (`superbounce.state`'s
+`scan.status`), except over
 explicit points. A new map, or the game ending, fails a running batch.
 
 **The seat.** `player.0` (the default) is driven through the first
@@ -2489,8 +2484,8 @@ they are shown, as kill medals are worked out from kills.
   and listed in `PACK_MEDALS` (`web/src/lib/art.ts`).
 - **Theater.** A film played in the game runs the simulation again,
   and the mode with it when the film's variant turns it on, so the
-  lines show as they did (supposed: a mode forced on by
-  `H2_SUPERBOUNCE` or `superbounce.set` is not in the film). The film's
+  lines show as they did (supposed: a mode forced off by
+  `superbounce.set` is not in the film). The film's
   summary carries the counts to the film list and the post-game panels
   (`theater_ui::adapter`), and the web Theater reads the `Superbounce` and
   `Bounced` records as it reads the kills, and derives their medals.

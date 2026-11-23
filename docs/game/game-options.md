@@ -296,7 +296,7 @@ variant):
 |---|---|---|
 | `+0x10c` | 2 | magic `hx` |
 | `+0x10e` | 1 | version (1) |
-| `+0x10f` | 1 | flags: bit 0 reserved, bit 1 unlimited grenades, bit 2 superbounce (the HUD and spot lines, [superbounce.md](superbounce.md#the-superbounce-game-type)) |
+| `+0x10f` | 1 | flags: bit 0 reserved, bit 1 unlimited grenades, bit 2 reserved (reads as off; the superbounce mode comes from a rules script, [superbounce.md](superbounce.md#the-superbounce-game-type)) |
 | `+0x110` | 2 | gravity, percent (0 means 100; 10..400) |
 | `+0x112` | 2 | damage dealt, percent (0 means 100; 10..400, as the next three) |
 | `+0x114` | 2 | shield strength, percent |

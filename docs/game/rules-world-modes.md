@@ -1,7 +1,7 @@
 # Rules world API: Firefight and Superbounce as scripts
 
-Status: Design. Neither script exists; both wait on the slices of [rules-world-api.md](rules-world-api.md#implementation-plan).
-Code: none yet. The plan names `crates/formats/rules/src/builtin/firefight.rules` (new) and `crates/formats/rules/src/builtin/superbounce.rules`. Tests: `crates/formats/firefight/tests/script.rs` and `crates/extensions/game/src/superbounce_chain_tests.rs`, the oracles' own.
+Status: Design. `crates/formats/rules/src/builtin/superbounce.rules` exists (the mode's switch, its options and bounce scoring); `firefight.rules` does not, and the sketches below wait on the slices of [rules-world-api.md](rules-world-api.md#implementation-plan).
+Code: `superbounce.rules` only. The plan names `crates/formats/rules/src/builtin/firefight.rules` (new). Tests: `crates/formats/firefight/tests/script.rs` and `crates/extensions/game/src/superbounce_chain_tests.rs`, the oracles' own.
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 Firefight and Superbounce are engine code today: a director, a medal

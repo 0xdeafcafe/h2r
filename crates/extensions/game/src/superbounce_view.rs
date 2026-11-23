@@ -1377,7 +1377,7 @@ pub fn view_reply() -> agent_proto::superbounce_view::View {
 /// pulse. Refused while the mode is off.
 pub fn view_test(mode: &str) -> Result<agent_proto::superbounce_view::ViewTest, String> {
     if !crate::superbounce_mode::active() {
-        return Err("the superbounce mode is off (superbounce.set {\"on\":true})".into());
+        return Err("the superbounce mode is off (play a game whose script requires hud.superbounce)".into());
     }
     match mode {
         "pulse" => TEST_ASK.store(ASK_PULSE, Ordering::Relaxed),

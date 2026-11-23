@@ -8,9 +8,9 @@
 //! IR ([`crate::rules::header::superbounce_options`]).
 //!
 //! Every piece is on unless a variant turns it off. A game with the mode
-//! on and no script (the `H2_SUPERBOUNCE` switch, `superbounce.set`, the
-//! name fallback) takes [`Options::DEFAULT`]; so does a script that
-//! declares none of them, or only some.
+//! on takes [`Options::DEFAULT`] for each piece its script does not
+//! declare, so a script that declares none of them, or only some, shows
+//! the rest.
 
 use std::sync::atomic::{AtomicU16, Ordering};
 

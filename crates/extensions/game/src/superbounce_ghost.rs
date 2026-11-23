@@ -1180,7 +1180,7 @@ pub fn ghost_show(
 ) -> Result<agent_proto::superbounce::GhostShow, String> {
     use agent_proto::superbounce as wire;
     if !crate::superbounce_mode::active() {
-        return Err("the superbounce mode is off (superbounce.set {\"on\":true})".into());
+        return Err("the superbounce mode is off (play a game whose script requires hud.superbounce)".into());
     }
     if !enabled() && !p.stop {
         return Err(format!(

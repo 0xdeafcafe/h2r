@@ -3,12 +3,11 @@
 //! primed, lines over the map for the spots a primed landing launches
 //! from, and the `superbounce.state` agent method.
 //!
-//! **When it is on.** The active variant carries the extension block's
-//! superbounce flag ([`variants::ext::Ext::superbounce`], through
-//! [`crate::variant_ext::Decision::superbounce`]), or the rules script the
-//! block names requires `hud.superbounce` (through the same decision,
-//! [`crate::rules::header::script_asks_superbounce`]), or
-//! `H2_SUPERBOUNCE=1` forces it. The built-in "Superbounce" variant's
+//! **When it is on.** Only when the rules script the active variant's
+//! extension block names requires `hud.superbounce` (through
+//! [`crate::variant_ext::Decision::superbounce`] and
+//! [`crate::rules::header::script_asks_superbounce`]); nothing else turns
+//! it on, and `superbounce.set` can only force it off. The built-in "Superbounce" variant's
 //! record names the Superbounce script from the list's load
 //! (`crate::community_variants::write_blocks`), so a game on it, or on a
 //! copy of it, turns the mode on through the script.
@@ -60,8 +59,6 @@ use crate::superbounce_targets::Marks;
 
 /// The feature's name.
 pub const FEATURE: &str = "superbounce";
-/// `H2_SUPERBOUNCE=1` forces the mode on in any game.
-pub const ENV: &str = "H2_SUPERBOUNCE";
 /// The pair word of a primed player, as a signed number.
 pub const PRIMED_WORD: i32 = -3;
 /// Metres in a world unit (10 feet).
@@ -859,39 +856,38 @@ impl agent::StandingFits for StandingFitsNow {
 
 // ---- reading the game ----
 
-fn forced() -> bool {
-    static F: OnceLock<bool> = OnceLock::new();
-    *F.get_or_init(|| std::env::var(ENV).is_ok_and(|v| v == "1"))
-}
-
-/// The agent's override (`superbounce.set`): [`FOLLOW`], [`FORCE_ON`] or
-/// [`FORCE_OFF`].
+/// The agent's override (`superbounce.set`): [`FOLLOW`] or [`FORCE_OFF`].
+/// There is no force-on: only a script that requires `hud.superbounce`
+/// turns the mode on.
 static OVERRIDE: AtomicU8 = AtomicU8::new(FOLLOW);
 const FOLLOW: u8 = 0;
-const FORCE_ON: u8 = 1;
 const FORCE_OFF: u8 = 2;
 
-/// `superbounce.set`: `Some(true)` forces the mode on, `Some(false)` off,
-/// `None` follows the game again. Returns the override's name. The tick
-/// picks it up at its next check (within [`RECHECK`] ticks).
-pub fn set_override(on: Option<bool>) -> &'static str {
+/// `superbounce.set`: `Some(false)` forces the mode off, `None` follows
+/// the game again; `Some(true)` is refused. Returns the override's name.
+/// The tick picks it up at its next check (within [`RECHECK`] ticks).
+pub fn set_override(on: Option<bool>) -> Result<&'static str, &'static str> {
     let (v, name) = match on {
-        Some(true) => (FORCE_ON, "on"),
+        Some(true) => {
+            return Err(
+                "the mode turns on only from a game whose script requires hud.superbounce; \
+                 superbounce.set can only force it off",
+            );
+        }
         Some(false) => (FORCE_OFF, "off"),
         None => (FOLLOW, "game"),
     };
     OVERRIDE.store(v, Ordering::Relaxed);
-    name
+    Ok(name)
 }
 
 /// Whether the mode is on in the game running now.
 fn on_now(m: &dyn GuestMemory) -> bool {
     match OVERRIDE.load(Ordering::Relaxed) {
-        FORCE_ON => return true,
         FORCE_OFF => return false,
         _ => {}
     }
-    forced() || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
+    crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
 }
 
 /// The local player's word, position and motion.
@@ -1541,11 +1537,11 @@ mod tests {
 
     #[test]
     fn the_agent_override_names_itself_and_can_be_undone() {
-        assert_eq!(set_override(Some(true)), "on");
-        assert_eq!(OVERRIDE.load(Ordering::Relaxed), FORCE_ON);
-        assert_eq!(set_override(Some(false)), "off");
+        assert!(set_override(Some(true)).is_err(), "no force-on");
+        assert_eq!(OVERRIDE.load(Ordering::Relaxed), FOLLOW);
+        assert_eq!(set_override(Some(false)), Ok("off"));
         assert_eq!(OVERRIDE.load(Ordering::Relaxed), FORCE_OFF);
-        assert_eq!(set_override(None), "game");
+        assert_eq!(set_override(None), Ok("game"));
         assert_eq!(OVERRIDE.load(Ordering::Relaxed), FOLLOW);
     }
 

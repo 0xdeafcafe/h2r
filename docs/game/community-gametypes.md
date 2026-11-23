@@ -151,10 +151,10 @@ show through.
 | Tower of Power | Slayer | team play; no shields; 3 s respawn; no light vehicle; machine gun turret; shotgun, no secondary; shotguns on the map; no grenades; no pickups; 100 points |
 | Wheeeeee! | Oddball | team play; no shields; extra damage; fast and tough with the ball; rocket launcher; rockets on the map, respawning twice as often; 30 seconds |
 | Cops and Robbers | Slayer | team play; 3 lives; no shields; no pickups; shotgun and plasma pistol; nothing on the map |
-| Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
+| Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades; its script requires `hud.superbounce`, so the superbounce HUD, spot lines and practising bots are on ([superbounce.md](superbounce.md#the-superbounce-game-type)), and Slayer's scoring stays |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
-| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under Research and Devolution ([Tweakers](#tweakers)), not Slayer; its built-in record names the Superbounce rules script, whose header lists it there (`list research`) and turns the mode on |
+| Superbounce | Slayer | Bounce Practice's rules, scored by bounces, with the superbounce HUD's options ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under Research and Devolution ([Tweakers](#tweakers)), not Slayer; its built-in record names the Superbounce rules script, whose header lists it there (`list research`) and turns the mode on (as Bounce Practice's `requires hud.superbounce` does) |
 
 Why these, and the sources:
 
@@ -358,7 +358,7 @@ before its block is written. The script is found by the record's prefix
 among the scripts compiled into the game (the ports, the examples and
 the listed scripts) and in the game-variant store
 (`rules::header::block_row`); one this machine lacks lists under its
-carrier's game type. The superbounce flag files nothing. Our rows hold
+carrier's game type. Our rows hold
 Slayer and Juggernaut variants (`tweakers::record_row` checks the
 record's engine), so a row's list is Slayer's and Juggernaut's variant
 lists filtered: its defaults, copies and saves are Slayer's. Every

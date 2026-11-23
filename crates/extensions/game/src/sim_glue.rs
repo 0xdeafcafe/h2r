@@ -587,9 +587,12 @@ impl Sim {
         bots::phantom::global().set_playerless_host(true);
         if self.0.matched.superbounce {
             // Bounce practice (docs/runtime/sim.md, "Bounce practice"): the
-            // mode on in this game whatever the variant, the bots' route
-            // reads its pair word, and the tally counts the bounces.
-            crate::superbounce_mode::set_override(Some(true));
+            // game plays the Superbounce script, which turns the mode on;
+            // the bots' route reads its pair word, and the tally counts
+            // the bounces.
+            let sb = crate::community_variants::listed_named("Superbounce")
+                .context("sim: the built-in Superbounce script is not listed")?;
+            crate::game_variants::inject::set_sim_block(Some(sb.block()));
             crate::superbounce_mode::collect_awards(true);
             crate::sim_bots::install_pair_reader();
             self.0.lock().tally.track_bounces();

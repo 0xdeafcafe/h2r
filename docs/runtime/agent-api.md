@@ -837,7 +837,7 @@ with `INVALID_PARAMS`) answers from the state the
 
 | Field | Meaning |
 |---|---|
-| `active` | the mode is on: the variant's flag, the built-in Superbounce variant, `H2_SUPERBOUNCE=1`, or `superbounce.set`. Everything below is empty or `idle` while it is off |
+| `active` | the mode is on: the game's script requires `hud.superbounce` (Superbounce, Bounce Practice) and `superbounce.set` has not forced it off. Everything below is empty or `idle` while it is off |
 | `primed` | the local player's level pair word is -3 |
 | `word`, `word_signed` | the pair word as eight hex digits and as a signed number; absent without a level pair (between lives) |
 | `position` | the local player's position, world units |
@@ -865,16 +865,16 @@ with `INVALID_PARAMS`) answers from the state the
 printf '%s\n' 'superbounce.state' | h2 agent -
 ```
 
-`superbounce.set {"on": true|false|null}` (access: act) overrides whether
-the mode is on: `true` forces it on and `false` off in any game, and
-`null` or `{}` follows the game again (the variant, its flag and
-`H2_SUPERBOUNCE`). The answer is `{"mode": "on"|"off"|"game"}`. The
-tick's on/off check runs every 30 ticks, so `superbounce.state` shows the
-change within a second. It is how a lab run, whose environment can't
-carry `H2_SUPERBOUNCE`, turns the mode on.
+`superbounce.set {"on": false|null}` (access: act) forces the mode off in
+any game (`false`), or follows the game again (`null` or `{}`: its
+script). It cannot turn the mode on: `true` is refused with
+`invalid_params`, because only a game whose script requires
+`hud.superbounce` runs the mode. The answer is `{"mode": "off"|"game"}`.
+The tick's on/off check runs every 30 ticks, so `superbounce.state` shows
+the change within a second.
 
 ```sh
-h2 agent superbounce.set '{"on":true}'
+h2 agent superbounce.set '{"on":false}'
 ```
 
 `superbounce.medal_test {"chain": N}` or `{"bounced": true}` (access: act)
@@ -994,7 +994,6 @@ batch, lets go of the seat and answers with the report; a cancelled batch
 writes nothing.
 
 ```sh
-h2 agent superbounce.set '{"on":true}'
 h2 agent superbounce.verify '{"kind":"crouch","dry_run":true}'
 h2 agent superbounce.verify '{"kind":"crouch","spots":[0,1,2],"trace":0}'
 h2 agent superbounce.verify_status '{"wait_ticks":290,"brief":true}'

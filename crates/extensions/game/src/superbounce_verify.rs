@@ -613,7 +613,7 @@ fn verify(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
         let (map, spots) = crate::superbounce_mode::scanned_spots();
         if map.as_deref() != Some(loaded.as_str()) || spots.is_empty() {
             return Err(unavailable(
-                "no spot scan of this map: turn the mode on (superbounce.set {\"on\":true}) and \
+                "no spot scan of this map: turn the mode on (play a game whose script requires hud.superbounce) and \
                  wait for superbounce.state's scan.status to read ready",
             ));
         }

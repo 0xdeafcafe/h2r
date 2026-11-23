@@ -186,14 +186,14 @@ impl Decision {
     }
 
     /// Whether the variant's extension block asks for the superbounce game
-    /// type ([`crate::superbounce_mode`]): its flag, or the rules script it
-    /// names requires `hud.superbounce`
+    /// type ([`crate::superbounce_mode`]): the rules script it names
+    /// requires `hud.superbounce`
     /// ([`crate::rules::header::script_asks_superbounce`]). It only draws a
     /// plate and lines on this machine, so a guest with its host's block
     /// shows them too, whether or not this machine runs the script.
     pub fn superbounce(&self) -> bool {
         matches!(self, Decision::Apply { ext, .. }
-            if ext.superbounce || crate::rules::header::script_asks_superbounce(ext.script))
+            if crate::rules::header::script_asks_superbounce(ext.script))
     }
 
     /// The rules script reference of a block this machine applies: what a

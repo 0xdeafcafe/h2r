@@ -259,8 +259,8 @@ memory, `guest` the reads and engine calls behind the API entries (with
 `roles` and `objectives`), `scoring` the answers that keep the carrier's
 own scoring from running beside the script's, and `feature` the hooks. It follows Firefight's runtime
 (`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)).
-Boot registers the `rules` feature (`registration::register_core`), off
-unless `H2_FEATURES` names it, and its hooks are on game-thread points
+Boot registers the `rules` feature (`registration::register_core`), on
+by default (`-rules` turns it off), and its hooks are on game-thread points
 only.
 
 **At the game's start**, an observer after a successful `GAME_ACTIVATE`
@@ -1913,8 +1913,8 @@ players like any other to a script.
 an exact 30 Hz tick ([high-framerate.md](high-framerate.md)). A script
 hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, reads the scanner's spots as zones, scores
 and times them, and sets traits. That makes Bounce Practice and a trick
-or parkour mode real scripts, and the superbounce flag (bit 2 of the
-block's flags) a script's own choice. The detector's rule is a traced
+or parkour mode real scripts, and the superbounce mode a script's own
+choice (`requires hud.superbounce`). The detector's rule is a traced
 signature, not the launch rule (Open in superbounce.md), so it can miss
 or over-report until it is checked in play.
 
