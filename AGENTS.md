@@ -13,6 +13,13 @@ UI with synthetic input, or add one-off debug hooks.
 
 See the [agent API skill](.claude/skills/h2-agent-api/SKILL.md) for running-game checks and the [lab skill](.claude/skills/h2-lab/SKILL.md) for runs on another Mac.
 
+Content (models, weapons, objects, sounds, UI screens, HUD pieces) goes
+through Studio, the content workbench: open it there, render it
+(`model.render`, `ui.render`, `hud.render`), run `check.run`, and preview
+it on a running game with `pair.preview` and `pair.audio`. A content
+lane's report attaches the render paths, the check output and the
+preview results. See the [Studio content skill](.claude/skills/h2-studio-content/SKILL.md).
+
 See the [rules skill](.claude/skills/h2-rules/SKILL.md) to write, check, test and ship a game type script (`h2 rules`, `h2 variants port`); scenarios are its test, not the game.
 
 If the API can't do what you need, don't route around it. Decide whether

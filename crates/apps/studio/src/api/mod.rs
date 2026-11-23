@@ -36,6 +36,7 @@ mod nav;
 mod nav_mesh;
 mod pair;
 mod params;
+mod preview;
 mod playlists;
 mod scenario;
 mod scripts;

@@ -81,6 +81,9 @@ pub fn register(api: &mut Api) {
     // pair.*: the window's pairing with a running game (play::pair).
     api.register(Box::new(super::pair::Pair));
     api.register(Box::new(super::mirror::Mirror));
+    // pair.preview, pair.audio, pair.result: content shown in the paired
+    // game and read back (api::preview).
+    api.register(Box::new(super::preview::Preview::default()));
     // The game type script editor: open, check, save and reload a .rules
     // script (app::rules_edit).
     api.register(Box::new(super::game_script::GameScript));

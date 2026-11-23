@@ -182,6 +182,9 @@ pub mod method {
     pub const PAIR_STOP: &str = "pair.stop";
     pub const PAIR_EDIT: &str = "pair.edit";
     pub const PAIR_CONTROL: &str = "pair.control";
+    pub const PAIR_PREVIEW: &str = "pair.preview";
+    pub const PAIR_AUDIO: &str = "pair.audio";
+    pub const PAIR_RESULT: &str = "pair.result";
 
     pub const MIRROR_STATUS: &str = "mirror.status";
     pub const MIRROR_PENDING: &str = "mirror.pending";

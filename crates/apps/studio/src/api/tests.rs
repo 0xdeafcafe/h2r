@@ -820,6 +820,9 @@ fn every_method_in_methods_has_a_test() {
                         | m::MIRROR_APPLY
                         | m::MIRROR_PLAYER
                         | m::MIRROR_CONTROL
+                        | m::PAIR_PREVIEW
+                        | m::PAIR_AUDIO
+                        | m::PAIR_RESULT
                 ) && e.code == code::REFUSED => {}
             // Retail tag edits need the disc's screens: ours are refused.
             (None, Err(e))

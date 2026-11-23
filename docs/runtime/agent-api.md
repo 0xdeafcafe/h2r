@@ -3355,6 +3355,21 @@ The window still expires the plate and marks on wall time
 `crates/extensions/agent/src/exec/lobby_tape.rs`,
 `crates/extensions/agent/src/exec.rs`, `crates/apps/app/src/shell.rs`).
 
+### Content previews from the editor
+
+A paired editor's `pair.preview` and `pair.audio` are clients of this API
+on a second connection to the paired game's socket
+([editor agent API](../editor/agent-api.md#previewing-content-in-the-paired-game);
+`crates/apps/studio/src/api/preview/run.rs`). They add no game method. A
+preview calls `session.methods`, then `sim.give` or `sim.spawn` (or
+`cheat.set hide_hud`), `session.wait`, `world.object`, `world.query`,
+`pogo.state`, `render.scene`, `ui.audit`, `ui.stack`, `ui.screen`,
+`render.capture` or `host.screenshot`, and `audio.voices` and
+`audio.loops`, each where the game lists it. A game that leaves one of
+these out answers a preview without that read. The host writes keep their
+own rules: `sim.give` and `sim.spawn` are refused in a co-op session and
+on a multiplayer client.
+
 ### Drawing world-space lines over the frame
 
 A windowed host registers a `WorldLineSource` with
