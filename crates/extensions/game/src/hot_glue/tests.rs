@@ -38,7 +38,7 @@ fn tiny() -> Tiny {
     for (at, field) in [(0, BspField::FileOffset), (4, BspField::Size), (8, BspField::Address)] {
         descriptor.fixup(at, FixupKind::Bsp { section, field });
     }
-    descriptor.tag_id(0x14, bsp);
+    descriptor.tag_id(0x14, bsp).tag_id(0x1c, TagId::NULL);
     let mut scen = Block::zeroed(0x3e0);
     scen.block(0x210, 1, descriptor);
     set.tag_mut(scenario).unwrap().payload = TagPayload::Built(scen);

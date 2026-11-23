@@ -267,6 +267,8 @@ fn a_job_runs_then_is_done_with_its_pictures_and_provenance() {
     assert!(g.start(spec("  ", 0, None)).is_err());
     let next = g.start(spec("a moon", 0, None)).unwrap();
     assert_eq!(next, 2);
+    // The gate holds every generation, this one too.
+    go.send(()).unwrap();
     assert!(g.wait(next, Duration::from_secs(20)));
 }
 

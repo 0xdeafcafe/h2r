@@ -260,12 +260,13 @@ fn a_silent_line_is_an_error_and_a_relative_out_is_under_the_data_root() {
     let e = fails(api.call(&mut app, m::VOICE_SAY, json!({"text": "hi", "play": false})));
     assert_eq!(e.code, code::FAILED);
     assert!(e.message.contains("silent"));
+    // Another text: the silent line above is what the cache holds for "hi".
     app.announcer.source = Box::new(Fake::default());
     let r = call(
         &mut api,
         &mut app,
         m::VOICE_SAY,
-        json!({"text": "hi", "play": false, "out": "mine/hi.wav"}),
+        json!({"text": "hi again", "play": false, "out": "mine/hi.wav"}),
     );
     assert_eq!(
         PathBuf::from(r["file"].as_str().unwrap()),
