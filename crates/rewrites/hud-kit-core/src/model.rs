@@ -167,8 +167,8 @@ impl Element {
         }
     }
     /// A channel element: [`Kind::Message`], [`Kind::Prompt`],
-    /// [`Kind::Training`], [`Kind::Navpoint`] or [`Kind::WorldMark`],
-    /// fullscreen only ([`Place::GAME`]).
+    /// [`Kind::Training`], [`Kind::Banner`], [`Kind::Navpoint`] or
+    /// [`Kind::WorldMark`], fullscreen only ([`Place::GAME`]).
     pub fn channel(id: &'static str, kind: Kind) -> Self {
         debug_assert!(kind.is_channel());
         Element {
@@ -228,6 +228,13 @@ pub enum Kind {
     /// The framed box in the middle of the screen (the scripted training
     /// text).
     Training { longest: &'static str },
+    /// The timed centred line of the message routine, 40 pixels above the
+    /// frame's bottom (the user's timed text, `+0x454`, E `0x0024cc73`):
+    /// one line, shown for [`BANNER_TICKS`] from when its value's text
+    /// changes and fading as it goes. A state value, not an event: a new
+    /// shown text starts the line again, the same text keeps it, and
+    /// hiding the value lets it run out.
+    Banner { longest: &'static str },
     /// A navpoint over a point of the world: the `hudg` waypoint marker
     /// and arrow (E `0x0024e59f`), with the value's text, a whole number,
     /// under them in [`NAVPOINT_FONT`]. Its screen point is the runtime's
@@ -310,6 +317,27 @@ pub const NAVPOINT_FONT: Font = Font::Hud;
 /// `Handle::notify`.
 pub const MESSAGE_UNITS: usize = 63;
 
+/// The UTF-16 units of a banner the game keeps: its copy (E `0x0013fac0`,
+/// called with 63 by `0x0024cc73`) keeps one fewer than it is given and
+/// ends the text with a zero.
+pub const BANNER_UNITS: usize = 62;
+
+/// How long a banner shows, in game ticks: three seconds at 30 (Design).
+pub const BANNER_TICKS: u32 = 90;
+
+/// Why `text` cannot be a banner, if it cannot: more than
+/// [`BANNER_UNITS`] UTF-16 units, or a line break (the line is one).
+pub fn banner_fault(text: &str) -> Option<String> {
+    let units = text.encode_utf16().count();
+    if units > BANNER_UNITS {
+        Some(format!("{units} characters, over {BANNER_UNITS}"))
+    } else if text.contains(['\n', '\r']) {
+        Some("more than one line".into())
+    } else {
+        None
+    }
+}
+
 /// Why `text` cannot be a notification, if it cannot: more than
 /// [`MESSAGE_UNITS`] UTF-16 units, or a line break (a notification is one
 /// line).
@@ -336,6 +364,7 @@ impl Kind {
             Kind::Message { .. } => "message",
             Kind::Prompt { .. } => "prompt",
             Kind::Training { .. } => "training",
+            Kind::Banner { .. } => "banner",
             Kind::Navpoint { .. } => "navpoint",
             Kind::WorldMark { .. } => "world mark",
         }
@@ -347,6 +376,7 @@ impl Kind {
             Kind::Message { .. }
                 | Kind::Prompt { .. }
                 | Kind::Training { .. }
+                | Kind::Banner { .. }
                 | Kind::Navpoint { .. }
                 | Kind::WorldMark { .. }
         )
@@ -358,12 +388,15 @@ impl Kind {
             _ => None,
         }
     }
-    /// A channel into the game's text lines: a message, the prompt or the
-    /// training box (the prompt check's).
+    /// A channel into the game's text lines: a message, the prompt, the
+    /// training box or the banner (the prompt check's).
     pub fn is_lines(&self) -> bool {
         matches!(
             self,
-            Kind::Message { .. } | Kind::Prompt { .. } | Kind::Training { .. }
+            Kind::Message { .. }
+                | Kind::Prompt { .. }
+                | Kind::Training { .. }
+                | Kind::Banner { .. }
         )
     }
     pub fn art(&self) -> Option<Art> {
@@ -378,6 +411,7 @@ impl Kind {
             | Kind::Message { longest }
             | Kind::Prompt { longest }
             | Kind::Training { longest }
+            | Kind::Banner { longest }
             | Kind::Navpoint { longest }
             | Kind::WorldMark { longest, .. } => Some(longest),
             _ => None,

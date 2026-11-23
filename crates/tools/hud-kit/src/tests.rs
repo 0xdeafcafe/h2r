@@ -937,6 +937,22 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         ),
         Check::Prompt,
     );
+    // prompt: a banner over the game's 62 characters, and one of two
+    // lines.
+    fires(
+        case(
+            vec![Element::channel("b", Kind::Banner { longest: "A" })],
+            &[("b", Value::text("A".repeat(63)))],
+        ),
+        Check::Prompt,
+    );
+    fires(
+        case(
+            vec![Element::channel("b", Kind::Banner { longest: "A" })],
+            &[("b", Value::text("WAVE 3\nBOSS WAVE"))],
+        ),
+        Check::Prompt,
+    );
     // modes: one element with split-screen offsets, one without.
     fires(
         case(
@@ -1628,4 +1644,53 @@ fn the_preview_draws_a_line_in_a_team_colour() {
     let (red, blue) = (pixel(&shot(0)), pixel(&shot(1)));
     assert_eq!(red, preview::PREVIEW_TEAMS[0].to_vec());
     assert_eq!(blue, preview::PREVIEW_TEAMS[1].to_vec());
+}
+
+/// The banner is drawn where the message routine draws its timed line:
+/// one line centred across the frame, its top 40 pixels above the frame's
+/// bottom, in every screen mode its place has, in the notifications'
+/// colour; a short banner passes the prompt check.
+#[test]
+fn the_banner_is_drawn_centred_above_the_frames_bottom() {
+    let mut banner = Element::channel(
+        "b",
+        Kind::Banner {
+            longest: "ROUND COMPLETE",
+        },
+    );
+    banner.at = Place::GAME.split((0, 0), (0, 0));
+    let c = case(vec![banner], &[("b", Value::text("WAVE 3"))]);
+    let r = check::hud(&mut synthetic(), &c, &Mode::ALL).unwrap();
+    let prompt: Vec<_> = r.of(Check::Prompt).collect();
+    assert!(prompt.is_empty(), "{prompt:#?}");
+    for mode in Mode::ALL {
+        let s = r.shots.iter().find(|s| s.mode == mode).unwrap();
+        let d = s.element("b").unwrap();
+        assert!(d.channel && d.drawn, "{mode:?}");
+        assert_eq!(d.kind, "banner");
+        assert_eq!(d.text.as_deref(), Some("WAVE 3"));
+        let rect = d.rect.unwrap();
+        let f = &s.frame;
+        let centre = (f32::from(f.left) + f32::from(f.right)) / 2.0;
+        assert!(
+            ((rect.x0 + rect.x1) / 2.0 - centre).abs() <= 1.0,
+            "{mode:?}: {rect:?}"
+        );
+        assert_eq!(
+            rect.y0,
+            f32::from(f.bottom) - preview::BANNER_UP,
+            "{mode:?}"
+        );
+        // The longest is reserved wider than the text drawn.
+        let reserved = d.reserved.unwrap();
+        assert!(reserved.x1 - reserved.x0 >= rect.x1 - rect.x0, "{mode:?}");
+    }
+    // Fullscreen only unless its place says otherwise.
+    let full = case(
+        vec![Element::channel("b", Kind::Banner { longest: "WAVE 3" })],
+        &[("b", Value::text("WAVE 3"))],
+    );
+    let r = check::hud(&mut synthetic(), &full, &[Mode::Half]).unwrap();
+    let d = r.shots[0].element("b").unwrap();
+    assert!(!d.drawn && d.reserved.is_none());
 }

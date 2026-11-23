@@ -35,8 +35,9 @@ pub enum Check {
     OneLayout,
     /// Every `Art` and the text template resolve on the map.
     Templates,
-    /// A prompt, message or training text has at most two lines and fits
-    /// the frame's width less the box.
+    /// A prompt, message, training or banner text has at most two lines
+    /// (the prompt and the banner one) and fits the frame's width less the
+    /// box; a message or banner text is one the game keeps whole.
     Prompt,
     /// An element with no split-screen offset is hidden there, and the
     /// widgets of one HUD show in the same screen modes.
@@ -274,11 +275,15 @@ pub fn glyphs(r: &mut Report, hud: &Hud, states: &[(&'static str, Values)], has:
 
 /// The text a channel may take: two lines for a message or the training
 /// box, one for the prompt (the game's prompt line draws no line break, so
-/// a second line runs into the first), as wide as the frame less the box
-/// (the training box's margin; the prompt line runs from its start to the
-/// frame's right edge).
+/// a second line runs into the first) and the banner (one centred line), as
+/// wide as the frame less the box (the training box's margin; the prompt
+/// line runs from its start to the frame's right edge).
 fn prompt_fault(kind: &Kind, frame: &hud_edit::place::Frame, lines: &[[f32; 2]]) -> Option<String> {
-    let most = if matches!(kind, Kind::Prompt { .. }) { 1 } else { 2 };
+    let most = if matches!(kind, Kind::Prompt { .. } | Kind::Banner { .. }) {
+        1
+    } else {
+        2
+    };
     if lines.len() > most {
         return Some(format!("{} lines, at most {most}", lines.len()));
     }
@@ -624,10 +629,14 @@ fn per_shot(
                 texts.push(("its text".to_owned(), t.clone()));
             }
             for (what, t) in texts {
-                // A notification is one line the game copies 63 units of.
-                if matches!(e.kind, Kind::Message { .. })
-                    && let Some(why) = crate::model::message_fault(&t)
-                {
+                // A notification is one line the game copies 63 units of,
+                // a banner one of 62.
+                let units = match e.kind {
+                    Kind::Message { .. } => crate::model::message_fault(&t),
+                    Kind::Banner { .. } => crate::model::banner_fault(&t),
+                    _ => None,
+                };
+                if let Some(why) = units {
                     r.push(f(
                         Check::Prompt,
                         vec![d.id.into()],
