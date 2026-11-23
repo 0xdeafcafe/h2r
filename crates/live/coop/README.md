@@ -19,7 +19,8 @@ campaign path ([live-coop.md](../../../docs/live/live-coop.md) section 10),
 so no runner holds a game's frames on this crate; the game's Forge co-op
 link does run a `Peer` per other machine of a synchronous game for the
 Forge lane (`game/src/forge_glue/link.rs`, pumping it each tick), over a
-`UdpPort` at each machine's channel. `live-server` uses the wire for the
+`UdpPort` at each machine's channel with the Live relay beside it
+(`Fallback`) for two machines that cannot reach each other directly. `live-server` uses the wire for the
 relay's datagram limit and its tests.
 
 ```sh

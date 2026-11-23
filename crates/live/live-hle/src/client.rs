@@ -144,6 +144,10 @@ pub(crate) enum Reply {
         /// Tokens for the counted manifest GET (the download count).
         reader: Option<crate::maps::Reader>,
     },
+    /// A session's co-op relay URL (ws or wss) and the bearer token for
+    /// its upgrade ([`Work::CoopRelay`]); why not, when this console
+    /// cannot serve one.
+    CoopRelay(Result<(String, String), u32>),
 }
 #[derive(Default)]
 struct Completion {
@@ -337,6 +341,10 @@ enum Work {
     RulesIr(String),
     /// `GET /v1/variants?author=<xuid>`, the first signed-in account's.
     GameVariants,
+    /// The co-op relay of a session (docs/live/live-api.md, "Co-op relay"):
+    /// the WebSocket URL and a `sessions.relay` token for its upgrade,
+    /// both made locally; nothing is sent to the server.
+    CoopRelay(String),
     Wake,
 }
 /// Called on the worker with a command's result, once it has one.
@@ -627,6 +635,12 @@ impl Service {
         self.submit_then(s, Work::ContentApi, Some(then))
             .map(|_| ())
     }
+    /// The co-op relay of `session`: its WebSocket URL and a
+    /// `sessions.relay` token for its upgrade, both minted on the worker
+    /// (nothing is sent to the server); the reply carries them.
+    pub fn coop_relay(&self, s: &Session, session: String) -> Result<Pending, u32> {
+        self.submit(s, Work::CoopRelay(session))
+    }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
         let _ = self.submit(s, Work::Wake);
@@ -787,6 +801,18 @@ fn refused(result: u32) -> bool {
 }
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// The co-op relay's WebSocket URL of `session`: the API base with its
+/// scheme made a WebSocket one (`https` → `wss`, `http` → `ws`) and the
+/// relay path on it. None for an empty session or an API base that is
+/// neither scheme.
+fn relay_url(api: &str, session: &str) -> Option<String> {
+    let ws = api
+        .strip_prefix("https")
+        .map(|rest| format!("wss{rest}"))
+        .or_else(|| api.strip_prefix("http").map(|rest| format!("ws{rest}")))?;
+    (!session.is_empty()).then(|| format!("{ws}/sessions/{session}/relay"))
 }
 /// What the persistent connection task reports when a request made while
 /// signed in fails: a ban as the account-management result the game
@@ -2319,6 +2345,28 @@ impl Worker {
                     reader: self.reader(),
                 })
             }
+            Work::CoopRelay(session) => {
+                self.active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = self
+                    .active
+                    .as_ref()
+                    .and_then(|a| a.users.values().next())
+                    .ok_or(NO_USER)?;
+                let connection = self.connection.as_ref().ok_or(NO_SESSION)?;
+                let url = relay_url(&connection.api, &session)
+                    .ok_or(SERVICE_TEMPORARILY_UNAVAILABLE)?;
+                let token = issue_token(
+                    &user.key,
+                    &self.author(user),
+                    &connection.id,
+                    lxm::SESSIONS_RELAY,
+                    now(),
+                );
+                Ok(Reply::CoopRelay(Ok((url, token))))
+            }
             Work::Wake => Ok(Reply::Done),
         }
     }
@@ -2717,6 +2765,20 @@ mod tests {
         let query = json!({"hopper": 2, "party": 1, "has_map_pack": true});
         let retry = without_map_pack(&query).ok().unwrap();
         assert_eq!(serde_json::from_str::<serde_json::Value>(&retry).unwrap(), json!({"hopper": 2, "party": 1}));
+    }
+
+    #[test]
+    fn the_relay_url_makes_the_api_base_a_websocket_one() {
+        assert_eq!(
+            relay_url("https://live.example/v1", "0123456789abcdef").as_deref(),
+            Some("wss://live.example/v1/sessions/0123456789abcdef/relay")
+        );
+        assert_eq!(
+            relay_url("http://127.0.0.1:8074/v1", "0123456789abcdef").as_deref(),
+            Some("ws://127.0.0.1:8074/v1/sessions/0123456789abcdef/relay")
+        );
+        assert_eq!(relay_url("https://live.example/v1", ""), None);
+        assert_eq!(relay_url("ftp://live.example/v1", "0123456789abcdef"), None);
     }
 
     #[test]

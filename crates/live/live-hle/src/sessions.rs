@@ -192,6 +192,10 @@ pub(crate) struct Sessions {
     /// The co-op campaign the host set up on its co-op screen, for new and
     /// updated advertisements.
     coop: Option<live_proto::session::Campaign>,
+    /// The lobby is in Forge mode, for new and updated advertisements
+    /// ([`Sessions::set_forge`]); a co-op campaign armed with
+    /// [`Sessions::set_coop`] wins over it.
+    forge: bool,
     /// The host's campaign skulls for that campaign; they replace the
     /// multiplayer ones while a co-op campaign is armed.
     coop_skulls: Option<Vec<u8>>,
@@ -584,7 +588,13 @@ impl Sessions {
                 let request = MatchRequest::Update {
                     id: live_proto::sign::hex(id),
                     update: live_proto::session::Update {
-                        flags: coop.is_none().then(|| "custom".to_owned()),
+                        flags: coop.is_none().then(|| {
+                            if self.forge {
+                                live_proto::session::FORGE.to_owned()
+                            } else {
+                                "custom".to_owned()
+                            }
+                        }),
                         campaign: coop.clone(),
                         visibility: (record.session.visibility != want).then_some(want),
                         skulls: (record.session.skulls != skulls)
@@ -611,6 +621,41 @@ impl Sessions {
             }
             record.session.visibility = want;
             record.session.skulls = skulls.clone();
+        }
+    }
+    /// Mark (or unmark) this console's open advertisements as a Forge-mode
+    /// lobby's (`flags: "forge"`, docs/game/forge-design.md): a shared
+    /// Forge session's machines may use the co-op relay. A co-op campaign
+    /// armed with [`Sessions::set_coop`] keeps its own flag; a lobby
+    /// advertised while Forge is on is updated here, since the lobby itself
+    /// advertises as a custom game.
+    pub fn set_forge(&mut self, on: bool, service: Option<&Service>, connection: Option<&Session>) {
+        if self.forge == on {
+            return;
+        }
+        self.forge = on;
+        self.background.retain(|p| p.take().is_none());
+        if self.coop.is_some() {
+            return;
+        }
+        let flags = if on {
+            live_proto::session::FORGE
+        } else {
+            "custom"
+        };
+        for (id, _record) in &mut self.records {
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        flags: Some(flags.to_owned()),
+                        ..Default::default()
+                    },
+                };
+                if let Ok(pending) = service.match_request(connection, request) {
+                    self.background.push(pending);
+                }
+            }
         }
     }
     /// A co-op host's measured round trip to its guest (None: no guest or

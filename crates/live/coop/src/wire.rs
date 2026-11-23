@@ -29,16 +29,42 @@ pub const VERSION: u8 = 3;
 pub const MAX_FRAMES: usize = 32;
 /// Tick hashes repeated in one datagram.
 pub const MAX_HASHES: usize = 32;
-/// Forge stream bytes carried in one datagram.
-pub const MAX_FORGE: usize = 200;
+/// The most Forge stream bytes one datagram may carry. A peer carrying
+/// pads and hashes too fits fewer ([`forge_room`]); both machines of a
+/// session run one build, so the ceiling they accept is the same.
+pub const MAX_FORGE: usize = 1024;
+/// The largest datagram a sender puts on the wire: the relay's message
+/// cap and a UDP payload under the usual MTU both hold it. [`Peer::flush`]
+/// keeps within it by carrying less Forge ([`forge_room`]).
+pub const WIRE_CAP: usize = 1200;
 /// The Forge beat: log head sequence and tick (u32 each), its hash and the
 /// stream position (u64).
 pub const BEAT: usize = 4 + 4 + 32 + 8;
 const HEADER: usize = 4 + 1 + 4 + 4 + 4;
-/// The largest datagram [`Datagram::encode`] makes. The relay's size cap
-/// and a UDP payload under the usual MTU both hold it.
+/// The largest datagram [`Datagram::encode`] can make, every section
+/// full: the buffer bound, not what a sender sends (see [`WIRE_CAP`]).
 pub const MAX_DATAGRAM: usize =
     HEADER + 5 + MAX_FRAMES * PAD + 5 + MAX_HASHES * 8 + 4 + 4 + 2 + MAX_FORGE + 1 + BEAT + 9 + MAX_FRAMES;
+
+/// The Forge bytes one datagram carries beside the rest of it: the wire
+/// cap less the other sections as they encode. A datagram full of pads
+/// and hashes carries a short run; a Forge-only peer's, with none,
+/// carries nearly the whole cap.
+pub fn forge_room(frames: usize, hashes: usize, cinematic: usize, beat: bool) -> usize {
+    let rest = HEADER
+        + 5
+        + frames * PAD
+        + 5
+        + hashes * 8
+        + 4
+        + 4
+        + 2
+        + 1
+        + usize::from(beat) * BEAT
+        + 9
+        + cinematic;
+    WIRE_CAP.saturating_sub(rest).min(MAX_FORGE)
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Datagram {
@@ -247,7 +273,7 @@ mod tests {
             frames: vec![[9; PAD]; 100],
             hashes: vec![1; 100],
             cinematic: vec![CinematicTicks::default(); 100],
-            forge: vec![5; 1000],
+            forge: vec![5; 2000],
             ..sample()
         };
         let bytes = d.encode();
@@ -260,9 +286,36 @@ mod tests {
     }
 
     #[test]
-    fn fits_the_relays_cap() {
-        // The relay drops a message over 1200 bytes (docs/live/live-coop.md, "The coop crate").
-        assert!(MAX_DATAGRAM <= 1200, "{MAX_DATAGRAM}");
+    fn a_budgeted_datagram_fits_the_wire_cap() {
+        // The relay closes a socket over 1200 bytes (docs/live/live-coop.md,
+        // "The coop crate"), and a UDP payload wants the usual MTU.
+        for (frames, hashes, cinematic, beat) in [
+            (0, 0, 0, false),
+            (0, 0, 0, true),
+            (MAX_FRAMES, MAX_HASHES, MAX_FRAMES, true),
+            (7, 3, 2, true),
+        ] {
+            let forge = forge_room(frames, hashes, cinematic, beat);
+            let d = Datagram {
+                frames: vec![[0; PAD]; frames],
+                hashes: vec![0; hashes],
+                cinematic: vec![CinematicTicks::default(); cinematic],
+                forge: vec![0; forge],
+                beat: beat.then_some([0; BEAT]),
+                ..sample()
+            };
+            assert!(d.encode().len() <= WIRE_CAP, "{frames} {hashes} {cinematic}");
+            assert_eq!(
+                Datagram::decode(&d.encode()).unwrap().forge.len(),
+                forge,
+                "{frames} {hashes} {cinematic}"
+            );
+        }
+        // A datagram full of pads and hashes still carries a run the old
+        // per-datagram ceiling sized.
+        assert!(forge_room(MAX_FRAMES, MAX_HASHES, MAX_FRAMES, true) >= 200);
+        // A Forge-only peer's datagram carries nearly the whole cap.
+        assert!(forge_room(0, 0, 0, true) > 1000);
     }
 
     #[test]

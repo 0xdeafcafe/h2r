@@ -740,8 +740,11 @@ that does not need the settings layer.
   acknowledged (up to 32 of each), so delivery is in
   order whatever the link drops, and nothing is retransmitted on a timer.
   The datagram (version 3, 1159 bytes at most, under the relay's cap) also
-  carries the Forge lane: up to 200 bytes of an ordered, acknowledged byte
-  stream that a shared Forge session sends its messages on, and the beat,
+  carries the Forge lane: a run of an ordered, acknowledged byte
+  stream that a shared Forge session sends its messages on — as many
+  bytes as fit beside the datagram's pads and hashes (`forge_room`, at
+  most `MAX_FORGE`, never past the wire cap), with `FORGE_WINDOW` runs a
+  flush so a welcome crosses in a few round trips — and the beat,
   the 48 bytes of log head and stream position a machine reports in every
   datagram as the session's keep-alive
   ([forge-design.md](../game/forge-design.md), "F5 in detail").
@@ -759,7 +762,10 @@ that does not need the settings layer.
   been heard on direct for a timeout. `sim_pair` is a simulated link on a
   fake clock: latency, jitter, loss, reordering, a switch to take it down,
   repeatable by seed.
-- `relay`: `RelayLink`, the relay path as a `Link`, on a thread of its own.
+- `relay`: `RelayLink`, the relay path as a `Link`, on a thread of its
+  own. The game's Forge co-op link serves one lane through it beside the
+  direct channel (`coop::link::Fallback`), for two machines that cannot
+  reach each other directly.
 - `schedule`: the two-port pad schedule of 2.2. A machine's sample taken
   when it starts frame *f* is frame *f + delay* of its port; the first
   `delay` frames are neutral; the delay is per machine and can change
@@ -782,7 +788,8 @@ a running game) instead of all of RAM.
 
 **Live server**: `GET /v1/sessions/{id}/relay` ([live-api.md](live-api.md),
 "Co-op relay"): a WebSocket for the two members of an open session
-advertised with `flags: "coop"`. The upgrade uses a `sessions.relay`
+advertised with `flags: "coop"` or `flags: "forge"` (a shared Forge
+session's lobby). The upgrade uses a `sessions.relay`
 bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
 (`Policy::relay_rate`). It forwards bytes and never reads or stores them.
 
@@ -807,7 +814,8 @@ bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
   per other machine of a synchronous network game
   (`game/src/forge_glue/link.rs`, pumping it each tick and offering its
   Forge lane to a shared Forge session,
-  [forge-design.md](../game/forge-design.md) "F5 in detail"), but no
+  [forge-design.md](../game/forge-design.md) "F5 in detail"), over the
+  direct channel or the relay (`Fallback`), but no
   runner holds a game's frames on a `Peer` yet: the hold at the scheduler
   point after a present, the tap's handle-to-port map from `xapi` (the
   tap is given a handle only), and the tick observer feeding

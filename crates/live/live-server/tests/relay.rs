@@ -275,6 +275,24 @@ async fn only_the_two_members_of_an_open_coop_session_get_in() {
 }
 
 #[tokio::test]
+async fn a_forge_sessions_host_opens_a_relay() {
+    let (h, addr) = serve(Policy::default()).await;
+    let host = h.create("ForgeHost").await;
+    assert_eq!(h.sign_in(&host).await.status, StatusCode::CREATED);
+    let id = session(&h, &host, "forge").await;
+    let mut ws = open(&h, addr, &id, &host).await;
+    assert_eq!(h.live.relays().rooms(), 1);
+    ws.send(Message::Close(None)).await.unwrap();
+    for _ in 0..200 {
+        if h.live.relays().rooms() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.live.relays().rooms(), 0, "the room closed with the socket");
+}
+
+#[tokio::test]
 async fn an_oversized_message_closes_the_socket_and_is_not_relayed() {
     let (h, addr) = serve(Policy::default()).await;
     let (host, guest, id) = coop(&h).await;
