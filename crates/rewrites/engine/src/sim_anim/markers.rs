@@ -221,7 +221,7 @@ fn group_table(g: &impl Memory, tags: u32, handle: u32, name: u32) -> Step<Optio
         return Ok(None);
     }
     let array = read(g.u32(render.wrapping_add(GROUPS)))?;
-    Ok(Some((count, array)))
+    Ok(Some((count as u32, array)))
 }
 
 fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<TransferAbi, GuestFault> {

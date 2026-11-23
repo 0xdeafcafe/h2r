@@ -230,6 +230,10 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
 
 /// The records the kernel itself builds from the same world.
 fn reference(w: &World) -> Vec<Marker> {
+    // No group to scan, or no group answering the name: nothing selected.
+    if w.groups == 0 || w.found.is_none() {
+        return Vec::new();
+    }
     let mut window = [0u8; 256];
     for i in 0..8u8 {
         window[128 + i as usize] = 0x40 + i;
@@ -314,7 +318,7 @@ fn declines(w: &World, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     set_enabled(false);
     let (mut off_cpu, mut off) = machine(w);
     edit(&mut off_cpu, &mut off);
-    let off = crate::sim_native::marker::transforms(&mut off_cpu, &mut off).unwrap();
+    let off_result = crate::sim_native::marker::transforms(&mut off_cpu, &mut off).unwrap();
     set_enabled(true);
     let was = stats().declined[why as usize];
     let (mut cpu, mut g) = machine(w);
@@ -324,7 +328,7 @@ fn declines(w: &World, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     assert!(stats().declined[why as usize] > was, "{why:?}");
     assert_eq!(cpu, off_cpu, "{why:?}");
     assert_eq!(first_difference(ram(&off), ram(&g)), None, "{why:?}");
-    assert_eq!(on, off, "{why:?}");
+    assert_eq!(on, off_result, "{why:?}");
 }
 
 const MODEL_MARKERS: u32 = 0x001d_8f50;

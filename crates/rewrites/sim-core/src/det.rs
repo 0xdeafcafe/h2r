@@ -94,7 +94,7 @@ impl Fp {
     /// payload the host picks.
     #[inline]
     pub fn div(&mut self, a: u32, b: u32) -> u32 {
-        self.ok &= lanes::ordinary1(a) & lanes::ordinary1(b) & u32::from(b & 0x7fff_ffff != 0);
+        self.ok &= lanes::ordinary1(a) & lanes::ordinary1(b) & (b & 0x7fff_ffff != 0);
         (f32::from_bits(a) / f32::from_bits(b)).to_bits()
     }
 

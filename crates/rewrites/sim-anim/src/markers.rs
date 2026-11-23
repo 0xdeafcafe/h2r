@@ -57,10 +57,12 @@ pub fn basis(fp: &mut Fp, k: &Constants, q: &[u32; 4]) -> [u32; 9] {
     let [q0, q1, q2, q3] = *q;
     // The squared norm, one square and one add at a time, as the guest
     // accumulates it: ((q0² + q1²) + q2²) + q3².
-    let norm = fp.add(
-        fp.add(fp.add(fp.mul(q0, q0), fp.mul(q1, q1)), fp.mul(q2, q2)),
-        fp.mul(q3, q3),
-    );
+    let (a, b) = (fp.mul(q0, q0), fp.mul(q1, q1));
+    let ab = fp.add(a, b);
+    let c = fp.mul(q2, q2);
+    let abc = fp.add(ab, c);
+    let d = fp.mul(q3, q3);
+    let norm = fp.add(abc, d);
     // `comiss norm, cutoff`, then `jbe` to a zero factor.
     fp.check(norm);
     fp.check(k.small);
@@ -85,16 +87,19 @@ pub fn basis(fp: &mut Fp, k: &Constants, q: &[u32; 4]) -> [u32; 9] {
     let q1q3 = fp.mul(q1s, q3);
     let q2q2 = fp.mul(q2s, q2);
     let q2q3 = fp.mul(q2s, q3);
+    let d0 = fp.add(q2q2, q1q1);
+    let d1 = fp.add(q2q2, q0q0);
+    let d2 = fp.add(q1q1, q0q0);
     [
-        fp.sub(k.one, fp.add(q2q2, q1q1)),
+        fp.sub(k.one, d0),
         fp.add(q0q1, q2q3),
         fp.sub(q0q2, q1q3),
         fp.sub(q0q1, q2q3),
-        fp.sub(k.one, fp.add(q2q2, q0q0)),
+        fp.sub(k.one, d1),
         fp.add(q1q2, q0q3),
         fp.add(q0q2, q1q3),
         fp.sub(q1q2, q0q3),
-        fp.sub(k.one, fp.add(q1q1, q0q0)),
+        fp.sub(k.one, d2),
     ]
 }
 
