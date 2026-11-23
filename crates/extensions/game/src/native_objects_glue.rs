@@ -255,7 +255,9 @@ fn edited_models_and_images(
                 }
             }
             Edit::Image { bitmap, image } => images.push((TagId(bitmap), image)),
-            Edit::Section { .. } => {}
+            // Sections are the world's. A tag field write changes nothing
+            // this copy reads from metadata live.
+            Edit::Section { .. } | Edit::Tag { .. } => {}
         }
     }
     (modes, images)

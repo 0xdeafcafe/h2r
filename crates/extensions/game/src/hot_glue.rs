@@ -13,6 +13,11 @@
 //! it holds, and every applied raw act queues its native refresh on
 //! `render_bridge::native_edits`.
 //!
+//! Every applied tag write and revert sends a notice per changed tag
+//! (`hot_tags::TagWrite`) to the host copies of tag bytes ([`tag_written`]):
+//! the native renderer's queue (`native_edits::Edit::Tag`), the animation
+//! clip store, the HUD kit, aim assist and the bots' data.
+//!
 //! Grown tag blocks go to the edit arena (`hot_tags::arena`, in the HLE
 //! reservation, pages mapped through the runtime's memory as it grows).
 //! [`install`] hands back its [`hot_tags::arena::Link`] so the boot can
@@ -89,6 +94,7 @@ fn install_edits(
         Box::new(RawGlue { vfs, overlay: vfs::RawOverlay::global().clone() }),
         Box::new(|r| render_bridge::native_edits::push(native_edit(r))),
     );
+    editor = editor.with_tag_writes(Box::new(tag_written));
     let pages_rt = Arc::clone(rt);
     let rt = Arc::clone(rt);
     agent::hot::add_edit_methods(
@@ -134,6 +140,40 @@ fn names(g: &runtime::Guest, locate: &MapLocator) -> Option<hot_tags::Names> {
     let reader = std::fs::File::open(&file.path).ok()?;
     let map = map::Map::from_region(std::io::BufReader::new(reader), file.offset, file.len).ok()?;
     hot_tags::Names::from_map(&map)
+}
+
+const SBSP: u32 = u32::from_be_bytes(*b"sbsp");
+const JMAD: u32 = u32::from_be_bytes(*b"jmad");
+const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
+
+/// The host subscribers of a tag-write notice
+/// (docs/editor/realtime-edits.md, "Realtime coverage", R8), called with
+/// the guest held right after the edit applied:
+///
+/// * every tag: `native_edits::Edit::Tag`, for the native copies;
+/// * `jmad`: the clip store drops the clips keyed inside the tag;
+/// * `nhdt`: the HUD kit copies the edited widget records again;
+/// * `weap`, `matg`: aim assist adopts the edited fields as retail;
+/// * `sbsp`: the bots' data is marked stale.
+fn tag_written(g: &mut runtime::Guest, n: &hot_tags::TagWrite) {
+    let group = n.group.as_u32();
+    render_bridge::native_edits::push(render_bridge::native_edits::Edit::Tag { group, tag: n.tag });
+    let tag_end = n.address.saturating_add(n.size);
+    match group {
+        JMAD => {
+            engine::sim_anim::STORE.flush_range(n.address, tag_end);
+        }
+        NHDT => {
+            if let Err(e) = crate::hud_kit::tag_written(g, n.range.start, n.range.end) {
+                eprintln!("hud kit: an edited nhdt {:#010x} was not copied again ({e:?}); it shows at the next game", n.tag);
+            }
+        }
+        crate::aim_assist::WEAP | crate::aim_assist::MATG => {
+            crate::aim_assist::tag_written(&*g, group, n.tag, n.address, n.range.start, n.range.end);
+        }
+        SBSP => bots::cache::mark_stale(format!("a live edit wrote sbsp {:#010x}", n.tag)),
+        _ => {}
+    }
 }
 
 fn native_edit(r: hot_tags::Refresh) -> render_bridge::native_edits::Edit {

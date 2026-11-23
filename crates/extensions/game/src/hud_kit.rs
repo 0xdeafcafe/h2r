@@ -43,6 +43,10 @@
 //!    game's insert, a guest call at the top of the next tick
 //!    ([`NOTIFY`], [`stage_notes`]).
 //!
+//! 7. **Live edits**: an `nhdt` write from the agent's `edit.*`
+//!    ([`tag_written`]) copies the edited retail records into the copies
+//!    the root points at ([`recopy`]).
+//!
 //! The draw hooks are `context_only` and read one shared table, so they
 //! run on the render thread.
 
@@ -753,6 +757,46 @@ pub fn restore(mem: &mut dyn GuestMemory, region: (u32, u32)) -> Result<usize, M
     }
     mem.set_u32(start, 0)?;
     Ok(restored)
+}
+
+/// Copies the retail widget records again into the copies the root
+/// points at, for every installed root whose retail block overlaps
+/// `[start, end)`: a live edit wrote those records
+/// (docs/editor/realtime-edits.md, "Realtime coverage"), and the game
+/// draws the copy. A root that no longer points into `region` (a reloaded
+/// tag) draws its own block and is left alone. How many blocks were
+/// copied.
+pub fn recopy(mem: &mut dyn GuestMemory, region: (u32, u32), start: u32, end: u32) -> Result<usize, MemFault> {
+    let (first, len) = region;
+    let mut copied = 0;
+    for h in read_headers(&*mem, first)? {
+        for (k, kind) in [WidgetKind::Bitmap, WidgetKind::Text].into_iter().enumerate() {
+            let (count, from) = (h.retail[2 * k], h.retail[2 * k + 1]);
+            let bytes = count * kind.size() as u32;
+            if bytes == 0 || from >= end || start >= from.saturating_add(bytes) {
+                continue;
+            }
+            let copy = mem.u32(h.root + FIELDS[k] + 4)?;
+            if copy < first || copy >= first + len {
+                continue;
+            }
+            let mut b = vec![0; bytes as usize];
+            mem.read(from, &mut b)?;
+            mem.write(copy, &b)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+/// [`recopy`] over the installed region, for the hot-edit glue's notice
+/// of an `nhdt` write; nothing before the kit is installed.
+pub fn tag_written(mem: &mut dyn GuestMemory, start: u32, end: u32) -> Result<usize, MemFault> {
+    let first = REGION_START.load(Ordering::Relaxed);
+    if first == 0 {
+        return Ok(0);
+    }
+    recopy(mem, (first, REGION_END.load(Ordering::Relaxed) - first), start, end)
 }
 
 /// One player `nhdt`'s root and the HUDs that join it.

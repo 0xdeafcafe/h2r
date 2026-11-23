@@ -2,7 +2,9 @@
 //! (docs/editor/realtime-edits.md, "The native refresh").
 //!
 //! The hot-edit glue pushes one [`Edit`] per owner a batch changed, after
-//! the batch applies. The native world's glue and the native objects'
+//! the batch applies: a raw owner's ([`Edit::Section`], [`Edit::Model`],
+//! [`Edit::Image`]) and, from the tag-write notice, each tag whose
+//! metadata changed ([`Edit::Tag`]). The native world's glue and the native objects'
 //! glue each drain their own share ([`Consumer`]) at a frame boundary,
 //! once their map's copy is resident, and rebuild what the edit touched
 //! from the map file as the raw overlay serves it. Plain integers keep
@@ -36,6 +38,11 @@ pub enum Edit {
     Model { tag: u32 },
     /// Image `image` of bitmap tag `bitmap`, same size and format.
     Image { bitmap: u32, image: u32 },
+    /// Tag `tag`'s metadata, of group `group` (big-endian four-character
+    /// code, `u32::from_be_bytes(*b"shad")`), written by a field edit or
+    /// its revert. The lifted code and the D3D path read the field where
+    /// it lies; this tells the native copies.
+    Tag { group: u32, tag: u32 },
 }
 
 impl Edit {
@@ -52,7 +59,7 @@ impl Edit {
         match self.normalized() {
             Edit::Section { .. } => &[Consumer::World],
             Edit::Model { .. } => &[Consumer::Objects],
-            Edit::Image { .. } => &[Consumer::World, Consumer::Objects],
+            Edit::Image { .. } | Edit::Tag { .. } => &[Consumer::World, Consumer::Objects],
         }
     }
 
@@ -183,6 +190,17 @@ mod tests {
             "a mode section is its model's edit"
         );
         assert_eq!(q.mask(), 0);
+    }
+
+    #[test]
+    fn a_tag_write_goes_to_both_once() {
+        let mut q = Queue::new();
+        let shad = Edit::Tag { group: u32::from_be_bytes(*b"shad"), tag: 0xe111_0001 };
+        q.push(1, shad);
+        q.push(1, shad);
+        q.push(1, Edit::Tag { group: u32::from_be_bytes(*b"bitm"), tag: 0xe222_0002 });
+        assert_eq!(q.drain(1, Consumer::World).len(), 2);
+        assert_eq!(q.drain(1, Consumer::Objects)[0], shad);
     }
 
     #[test]

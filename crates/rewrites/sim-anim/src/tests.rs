@@ -536,6 +536,29 @@ fn store_builds_once_and_flushes_on_epoch() {
 }
 
 #[test]
+fn a_flushed_clip_is_rebuilt_from_the_edited_bytes() {
+    static EPOCH: Epoch = Epoch::new();
+    let store = ClipStore::new(&EPOCH);
+    let c = twelve();
+    let mut edited: Vec<u8> = c.bytes().to_vec();
+    // A keyframe value of the animated stream (track 0, frame 0, x).
+    edited[0x20..0x24].copy_from_slice(&99.0f32.to_le_bytes());
+    let blob = std::sync::Mutex::new(c.bytes().to_vec());
+    let get = |key| store.get(key, c.shape, |_| Some(blob.lock().unwrap().clone().into())).unwrap();
+    let first = get(0x1234);
+    let other = get(0x9000);
+    *blob.lock().unwrap() = edited.clone();
+    // Same shape, same key: the store keeps its copy until told.
+    assert!(std::sync::Arc::ptr_eq(&first, &get(0x1234)));
+    assert_eq!(store.flush_range(0x1000, 0x2000), 1, "only the edited tag's clip");
+    let rebuilt = get(0x1234);
+    assert_eq!(rebuilt.bytes(), &edited[..]);
+    assert_eq!(*rebuilt, Clip::decode(c.shape, edited.into()).unwrap());
+    assert!(std::sync::Arc::ptr_eq(&other, &get(0x9000)), "a clip outside the range stays");
+    assert_eq!(store.flush_range(0x5000, 0x6000), 0);
+}
+
+#[test]
 fn cold_and_warm_samples_agree_on_both_lane_paths() {
     let c = twelve();
     for simd in [false, true] {

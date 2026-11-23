@@ -269,16 +269,31 @@ impl Editor {
         // The extents before the first write: a full arena writes nothing.
         let extents = self.alloc_moves(g, &moves)?;
         self.next_id += 1;
+        let mut notices = notice::Notices::new(false);
         for c in &changes {
             g.write_bytes(c.addr, &c.new_bytes, 1).map_err(fault)?;
+            if c.old_bytes != c.new_bytes {
+                notices.field(c.tag, c.addr, c.new_bytes.len() as u32);
+            }
+        }
+        for p in &moves {
+            notices.root(p.tag, p.root);
         }
         let mut reply = json!({"id":self.next_id,"applied":changes.len(),"changes":changes});
         self.journal
             .extend(changes.into_iter().filter(|c| c.old_bytes != c.new_bytes));
         if !moves.is_empty() {
-            let moved = self.apply_moves(g, idx.scenario, self.next_id, moves, extents)?;
-            reply["moves"] = json!(moved);
+            match self.apply_moves(g, idx.scenario, self.next_id, moves, extents) {
+                Ok(moved) => reply["moves"] = json!(moved),
+                Err(e) => {
+                    self.send_notices(g, notices);
+                    return Err(e.into());
+                }
+            }
         }
+        // The tag bytes and roots are in place: their copies follow before
+        // the raw entries' refreshes are queued.
+        self.send_notices(g, notices);
         if !planned.is_empty() || !evict.is_empty() {
             let (raw, evicted) = self.apply_raw(g, idx.scenario, self.next_id, planned, evict)?;
             reply["raw"] = json!(raw);
@@ -454,7 +469,8 @@ impl Editor {
 
     /// Reverts the moves of `id` (all with `None`), newest first: a root
     /// that still points at its extent gets its old pair back and the
-    /// extent is freed; one pointed elsewhere since is left alone.
+    /// extent is freed; one pointed elsewhere since is left alone. The
+    /// `(tag, root)` of each pair put back.
     pub(crate) fn revert_moves(
         &mut self,
         g: &mut Guest,
@@ -462,7 +478,8 @@ impl Editor {
         scenario: Option<u32>,
         reverted: &mut Vec<Value>,
         dropped: &mut Vec<Value>,
-    ) -> Result<()> {
+    ) -> Result<Vec<(u32, u32)>> {
+        let mut back = Vec::new();
         let mut i = self.moves.len();
         while i > 0 {
             i -= 1;
@@ -485,12 +502,13 @@ impl Editor {
                 continue;
             }
             g.write_bytes(m.root, &pair(m.old.0, m.old.1), 1).map_err(fault)?;
+            back.push((m.tag, m.root));
             if let Some(a) = &self.arena {
                 arena::lock(a).free(m.extent);
             }
             reverted.push(json!({"id": m.id, "move": m.json()}));
         }
-        Ok(())
+        Ok(back)
     }
 }
 

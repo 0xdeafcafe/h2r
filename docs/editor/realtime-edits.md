@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, and the editor's send, `play/collision_sync.rs`; no BSP activation is installed and its live check has not run) are built; R8 to R17 ("Realtime coverage") are design, and what they build on is cited as **Code**.
-Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs`, `crates/apps/studio/src/play/objects/drive/placements.rs`, `crates/extensions/agent/src/hot/collision.rs`, `crates/extensions/agent/src/debug_views/debug_static.rs` and `crates/apps/studio/src/play/collision_sync.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, and the editor's send, `play/collision_sync.rs`; no BSP activation is installed and its live check has not run) and R8 (the tag-write notice and its subscribers; its live check has not run) are built; R9 to R17 ("Realtime coverage") are design, and what they build on is cited as **Code**.
+Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs`, `crates/apps/studio/src/play/objects/drive/placements.rs`, `crates/extensions/agent/src/hot/collision.rs`, `crates/extensions/agent/src/debug_views/debug_static.rs`, `crates/apps/studio/src/play/collision_sync.rs` and `crates/extensions/hot-tags/src/notice.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -443,15 +443,40 @@ other machines in the game.
 ### The native refresh
 
 `render_bridge::native_edits::push(Edit)`, with
-`Edit::{Section { bsp: u32, kind: u8, index: u32, grown: bool }, Model { tag: u32 }, Image { bitmap: u32, image: u32 }}`,
-called by the hot-edit glue after a batch applies. `bsp`, `tag` and
+`Edit::{Section { bsp: u32, kind: u8, index: u32, grown: bool }, Model { tag: u32 }, Image { bitmap: u32, image: u32 }, Tag { group: u32, tag: u32 }}`,
+called by the hot-edit glue after a batch applies. `Tag` comes from the
+tag-write notice ("Tag-write notices" below); `group` is the
+four-character code read big-endian. `bsp`, `tag` and
 `bitmap` are tag datums (matched by index). `kind` is `KIND_CLUSTER` (0),
 `KIND_INSTANCE_DEF` (1) or `KIND_MODE` (2, with `bsp` the render model's
 datum: queued as `Model`). Edits of one owner merge, a grown section
 staying grown. The glue for the world and for objects drains its share
 (`native_edits::drain(Consumer::World | Consumer::Objects)`;
 `native_world_glue`, `native_objects_glue`); an `Image` goes to both.
-Plain integers keep `render-bridge` free of the agent's types.
+Plain integers keep `render-bridge` free of the agent's types. The world
+and objects glue drain `Tag` and change nothing for it: no part of their
+copies follows a metadata field live.
+
+### Tag-write notices
+
+After an `edit.set`, an `edit.batch` or an `edit.revert` applies,
+`hot_tags::Editor` sends one `hot_tags::TagWrite` per tag whose bytes
+changed to the sink given by `Editor::with_tag_writes`
+(`crates/extensions/hot-tags/src/notice.rs`): the tag's group, datum and
+metadata allocation, the guest range from the first changed byte to past
+the last (a moved block's root pair included), each field write's span,
+and whether it was a revert. Unchanged bytes and refused batches send
+nothing. The notice is sent with the guest still held, so a subscriber
+reads the new bytes and writes its own copy at the same boundary.
+`hot_glue::tag_written` hands each notice to the host copies:
+
+| Group | Subscriber | What it does |
+|---|---|---|
+| every tag | `native_edits::push(Edit::Tag)` | queues the tag for the native copies |
+| `jmad` | `engine::sim_anim::STORE.flush_range` | drops the clips keyed inside the tag's allocation; the next lookup decodes them from the guest |
+| `nhdt` | `hud_kit::tag_written` | copies each retail widget block the range overlaps into the HUD kit's copy the root points at (`hud_kit::recopy`) |
+| `weap`, `matg` | `aim_assist::tag_written` | adopts each edited aim-assist field as retail; later activations leave it unscaled while it holds the edit's bits |
+| `sbsp` | `bots::cache::mark_stale` | marks the loaded bot data stale (`bots::cache::stale` says why) until the next map's data replaces it |
 
 ### The editor
 
@@ -554,10 +579,11 @@ What decides coverage beyond geometry, placements, collision and pixels
 - **Studio has no embedded game view.** Play launches the game as a
   child process and pairs with it over the agent socket, as with an
   attached game ([editor.md](editor.md), "Embedded play (not built)").
-- **Host copies outside the renderer** that miss hot edits: the animation
-  clip store (dropped only on an epoch move), the HUD kit's copy of the
-  `nhdt` widget blocks, aim assist's activation writes and the bots' map
-  data. The collision world follows writes by its page watches.
+- **Host copies outside the renderer** follow tag writes through the
+  tag-write notice ("Tag-write notices"): the animation clip store, the
+  HUD kit's copy of the `nhdt` widget blocks and aim assist. The bots'
+  map data is marked stale and not rebuilt. The collision world follows
+  writes by its page watches.
 
 Slices R8 to R17 close these, in the survey's order: shaders first, then
 completed textures and models, Studio's own view, object definitions,
@@ -568,7 +594,7 @@ string IDs touch every cache keyed by tag index (XL, not sliced).
 
 | Slice | Goal | Owns | Tests without the game | Live check | After |
 |---|---|---|---|---|---|
-| **R8** Tag-write notice (S) | after a batch or revert applies, one notice per changed tag (`group`, datum, range) to host subscribers; `native_edits` gains `Tag { group, tag }`; subscribers: the clip store flushes that tag's clips, the HUD kit re-copies edited widget blocks, aim assist adopts an edited field as retail, bot data is marked stale | `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/sim-anim/src/store.rs`, `crates/extensions/game/src/hud_kit.rs`, `crates/extensions/game/src/aim_assist.rs` | fake game: a field batch queues one notice per tag and a revert another; a flushed clip is rebuilt from the edited bytes; aim assist's next activation keeps an edited value | `edit.set` on an `nhdt` widget colour shows on the HUD within a frame | nothing |
+| **R8** Tag-write notice (S; built, live check not run) | after a batch or revert applies, one notice per changed tag (`group`, datum, range) to host subscribers; `native_edits` gains `Tag { group, tag }`; subscribers: the clip store flushes that tag's clips, the HUD kit re-copies edited widget blocks, aim assist adopts an edited field as retail, bot data is marked stale | `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/sim-anim/src/store.rs`, `crates/extensions/game/src/hud_kit.rs`, `crates/extensions/game/src/aim_assist.rs` | fake game: a field batch queues one notice per tag and a revert another; a flushed clip is rebuilt from the edited bytes; aim assist's next activation keeps an edited value | `edit.set` on an `nhdt` widget colour shows on the HUD within a frame | nothing |
 | **R9** Metadata overlay (M) | each applied tag write and revert also enters the raw overlay at the metadata's file offset (ordinary metadata, or the active BSP region's translation); live opens read the `Map` through the overlay; these entries do not refuse snapshots, since guest memory holds the same bytes | `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/game/src/hot_glue.rs` | a `Map` opened after a write reads the written bytes; a revert restores the file's; a BSP-region write lands at that region's offset | `edit.set` then a BSP switch: the native world's shader library holds the edited value | R8 |
 | **R10** Native shader refresh (L) | `native_edits::Edit::Shader { tag }`, queued by R8 for `shad`, `stem`, `spas`, `vrtx`; a constants-only change rewrites the material's uniform buffers; any other change rebuilds the programs of the parts that use it in the world, layers, fog, water, lights, decorators, objects and first person; a consumer that cannot rebuild asks for `reload_bsp` or a model reload | `crates/rewrites/native-render`, `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_world_materials.rs`, `crates/extensions/game/src/native_objects_glue.rs`, the fog, water, layers, lights, decorators and first-person glue | a refreshed `ProgramSet` equals one built from the edited shader; a template change rebuilds only the parts that use it | `edit.set` on `postprocess[0].colors[0].color` of a world shader: `render.frame` with `snap` shows the colour on the native path (`native_world_opaque_*` counters non-zero) | R9 |
 | **R11** Textures and models everywhere (M) | the `Image` refresh reaches lightmap pages, fog, water and layer stage images, decorator looks, the lights' textures and first person; first person and light models drain `Model`; decorators drain `Section` and `Model`; the screen-effects slot is keyed by map generation | `crates/rewrites/native-render/src/gpu.rs`, `crates/extensions/game/src/native_first_person_glue.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `crates/extensions/game/src/native_decorators_glue.rs`, `crates/extensions/game/src/native_post_glue.rs` | each holder's texture equals a decode of the edited image; a lightmap page rewrite changes the sampled texel | paint a lightmap page and a first-person weapon texture; both show natively | R2 |

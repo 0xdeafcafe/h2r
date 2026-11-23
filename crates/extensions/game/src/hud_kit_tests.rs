@@ -175,6 +175,28 @@ fn a_second_install_leaves_one_copy() {
     assert_eq!(restore(&mut m, REGION).unwrap(), 1, "only the texts' field");
 }
 
+/// A live edit of a retail record reaches the copy the game draws; an
+/// edit outside the retail blocks copies nothing.
+#[test]
+fn an_edited_retail_record_is_copied_again() {
+    let mut m = memory();
+    let (hud, c) = hud();
+    install(&mut m, &hud, &c);
+    let b = records::BITMAP_SIZE as u32;
+    let copy = m.u32(ROOT + records::ROOT_BITMAPS + 4).unwrap();
+    // The second retail bitmap widget's colour, say.
+    m.fill(RETAIL_BITMAPS + b + 4, 4, 0xee).unwrap();
+    assert_eq!(recopy(&mut m, REGION, RETAIL_BITMAPS + b + 4, RETAIL_BITMAPS + b + 8).unwrap(), 1);
+    let mut held = [0u8; 4];
+    m.read(copy + b + 4, &mut held).unwrap();
+    assert_eq!(held, [0xee; 4]);
+    // The kit's own records after the retail ones are untouched.
+    let mut kit = vec![0; b as usize];
+    m.read(copy + 2 * b, &mut kit).unwrap();
+    assert_eq!(kit, c.widgets[0].bytes);
+    assert_eq!(recopy(&mut m, REGION, ROOT + 0x400, ROOT + 0x404).unwrap(), 0);
+}
+
 #[test]
 fn a_region_too_small_is_refused_with_the_root_retail() {
     let mut m = memory();

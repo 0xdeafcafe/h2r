@@ -462,7 +462,9 @@ fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit])
                 plan.reload.get_or_insert(format!("section {kind}:{index} is of an unknown kind"));
             }
             Edit::Image { bitmap, image } => plan.images.push((TagId(bitmap), image)),
-            Edit::Model { .. } => {}
+            // Models are the objects' copy. A tag field write changes
+            // nothing this copy reads from metadata live.
+            Edit::Model { .. } | Edit::Tag { .. } => {}
         }
     }
     plan
