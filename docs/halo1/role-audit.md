@@ -101,7 +101,7 @@ integration run. There is no new pass count or play result yet.
 ## Models that used the marine head shader
 
 **Built.** A model with an H1 `soso` whose base, detail and reflection
-datums are null now gets its own H2 `shad`. On the owner's campaign
+datums are null gets its own H2 `shad`. On the owner's campaign
 discs, 15 of the 21 model records that referenced
 `objects\characters\marine\marine_female\shaders\head_female` on
 05a_deltaapproach meet this condition. Fourteen have all four bitmaps
@@ -149,7 +149,7 @@ require only the white lit surface.
 
 Each level in a row below contains a separate affected `mode` tag. Slots
 are zero-based. The inventory compares the material datums of all ten
-previously converted campaign maps against the shader references in
+converted campaign maps against the shader references in
 the matching H1 disc maps.
 
 | Levels | Render model tag | Slot | Source shader |
@@ -220,7 +220,7 @@ image zero. The null branch at `0x803c3` reads the rasterizer bitmap at
 `+0xac`, naming `rasterizer\default 2d`. Image zero is 4×4 opaque black.
 The new instance binds that converted H1 bitmap to H2's additive
 `one_add_illum` template. The stage adds zero RGB and leaves depth intact. The adjacent floor-symbol
-material in d20 has four source images. Its cutout bump now preserves the
+material in d20 has four source images. Its cutout bump preserves the
 alpha mask for every image and mip.
 
 **Built, Sentinel.** All four caches bind the same H1 bitmap to both noise
@@ -333,7 +333,7 @@ The accompanying TSV has 35,510 rows. Each gives the map, group, source path, pa
 | Script atoms and cinematic animation, `h1campaign::scenario` and `cutscenes` | 910 explicit map/reference pairs across eleven source groups, including sounds, loops, animation graphs, effects, damage, actor variants and five object groups. Formerly a path could resolve to a native namesake or disappear. | **Built.** The scenario resolves typed converted datums and explicit H2 asset aliases. Script-only effect, damage and object roots are rebuilt. First- and third-person animation sound events both resolve their authored sounds. |
 | Effects, projectiles and devices, `effect_uncached`, `arsenal::responses`, `device` | 10,102 effect-part rows, including 338 damage rows. 7,115 projectile material/effect rows and 137 device transitions, of which 127 are effects and ten are sounds. | **Built.** Every event keeps its original damage parts, except that a projectile's detonation effect hands its primary damage part to the projectile. H2 dispatches damage directly at `0x17a8a0`. Each material response resolves its normal, potential and detonation effects. Device transitions use the source reference's group. Cyclic dependencies resolve to the eventual converted datum. |
 | Source widgets, `Converter::native_widgets` and `object_attachments` | 27 retail paths in 262 owner/map rows, plus the a10 beam attachment. | **Built in code.** The converter binds antennas, light volumes, lightning, cloth and glow to their owners. The ignored disc test checks each binding through the public owner converter. Coordinator execution is pending. See [objects.md](objects.md#source-widgets) for native dispatch, physics and renderer evidence. |
-| Contrails, `Converter::contrail` | 265 map/contrail/physics rows formerly emitted a null `pphy`. Cold smoke, steam, vacuum and the Warthog antenna have corresponding point-physics records with differing coefficients on the two discs. | **Built.** The typed H2 definition receives source flags, mass, air/liquid buoyancy, density, drag, friction and restitution. Each contrail point names its own converted physics tag. |
+| Contrails, `Converter::contrail` | 265 map/contrail/physics rows emitted a null `pphy`. Cold smoke, steam, vacuum and the Warthog antenna have corresponding point-physics records with differing coefficients on the two discs. | **Built.** The typed H2 definition receives source flags, mass, air/liquid buoyancy, density, drag, friction and restitution. Each contrail point names its own converted physics tag. |
 | Multiplayer starting equipment, `halo1::plan_starting_equipment` | Both H2 bases used one `multiplayer\\single_weapons\\smg` collection. Blood Gulch's CTF row instead names the assault rifle and pistol. Wizard has three distinct game-type rows. | **Built.** The H1 sandbox rebuilds its source rows, selector words, collections, weapons and weights. A native variant selector with no H1 weapon or vehicle is left unassigned. |
 | Ordinary biped shields, `biped_rebuilt` | 55 biped/modifier rows name three `spla` tags. The H2 Chief uses `masterchief_plasma_shield_change_color_fp` and `masterchief_plasma_shield_change_color`; the Elite uses `elite_plasma_shield_fp` and `elite_plasma_shield`. | **Built.** Both ordinary shield views bind the source modifier through the model-material converter. All three source shaders use the Elite shield noise volume twice. The volume-plasma rebuild above draws them. |
 

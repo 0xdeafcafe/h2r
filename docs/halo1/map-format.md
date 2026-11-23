@@ -255,7 +255,7 @@ both maps every ring closes and every ring vertex lies within 1 cm of its
 surface's (flip-applied) plane. That one check confirms the plane, flip,
 surface, edge and vertex layouts together. `CollisionBsp::validate` runs it.
 
-**The converted collision answers as Halo 1's (V, converter version 54;
+**The converted collision answers as Halo 1's (V;
 `crates/tools/h1convert/tests/collision_engine.rs`).** All 81 collision BSPs of
 the nineteen multiplayer maps and ten campaign levels, converted
 (`h1convert::collision`), encoded as a structure BSP holds them and read

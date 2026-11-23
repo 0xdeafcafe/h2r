@@ -155,7 +155,7 @@ plan:
 
 ### The health meter in the HUD
 
-Built by the converter (`h1objects::health_hud`, converter version 37),
+Built by the converter (`h1objects::health_hud`),
 so it is data the game draws, not a host overlay:
 
 - The converted Halo 1 player biped (`is_player_biped`: the Halo 1 biped

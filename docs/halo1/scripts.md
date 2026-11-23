@@ -130,9 +130,9 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   `(sleep_until (= 0 (sound_impulse_time line)))` for one to finish.
   **E:** Halo 2's evaluator `0x002a9fe0` (builtin 602, `(sound) -> long`)
   finds the sound among the 16 script impulses (`0x0018a240`) and returns
-  its permutation's length less the time played, times 30. Stubbed (to
-  converter version 16) every such wait ended at once, so a level's
-  dialogue played over itself. `sound_impulse_time_waits_on_the_playing_sound`
+  its permutation's length less the time played, times 30. Stubbed, every
+  such wait ends at once and a level's dialogue plays over itself.
+  `sound_impulse_time_waits_on_the_playing_sound`
   checks the mapping on the discs.
   The [unit and object builtin notes](script-builtins.md) cover the other
   aliases, the equipment adapter and the converted-campaign hooks.
@@ -154,8 +154,8 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   of both, a threshold off the scale as `true` or `false`. Any other use
   is compiled as the full ladder, `(if (>= (ai_combat_status x)
   ai_combat_status_visible) 6 (if .. 5 .. 0))`, about 54 nodes a use
-  (as a ladder everywhere b40's scripts grew by 1,188 nodes and it no
-  longer fit its tag memory).
+  (as a ladder everywhere b40's scripts grow by 1,188 nodes and exceed
+  its tag memory).
 - **Adapter**: `Coerce` when the arity matches but types differ (argument
   nodes take Halo 2's parameter types and Halo 2's interpreter casts; a
   marker-name string becomes a `string_id` literal; a string the
@@ -233,9 +233,9 @@ Historical coverage, share of builtin calls (`translation_coverage`):
 | **all** | **33,737** | **82.0%** | **0.4%** | **6.1%** | **11.5%** | **139** |
 
 Missing builtins in the original translation census (top 40 of 139,
-3,882 calls). The census predates the conversation and command-list conversions below.
+3,882 calls). The census counts are from before the conversation and command-list conversions below.
 
-sound_impulse_time 493 (now renamed, above), ai_magically_see_players 180, ai_conversation 169,
+sound_impulse_time 493 (renamed, above), ai_magically_see_players 180, ai_conversation 169,
 ai_command_list 150, ai_go_to_vehicle 143, recording_play 141,
 ai_command_list_by_unit 136, show_hud_help_text 125, recording_time 96,
 object_beautify 93, ai_follow_target_players 93, ai_spawn_actor 82,
@@ -331,12 +331,11 @@ retail compiler writes them; literals keep their source type.
   which `flavor_intercom` wakes one at a time, and a50's, b40's and
   c10's `kill_all_continuous` is one `(sleep -1 <script>)` per
   continuous script). Halo 2's `sleep` takes a negative duration as no
-  sleep at all (E `0x002087e0`, [hs_vm.md](../engine/hs_vm.md)), so
-  until converter version 67 these calls did nothing: every continuous
-  script with one restarted each tick, and a10's captain started all
-  eight flavour lines thirty times a second from the level's first tick,
-  the "big whirring sound" over the opening cinematic. A negative
-  literal duration now compiles as Halo 2's `sleep_forever` (builtin 20,
+  sleep at all (E `0x002087e0`, [hs_vm.md](../engine/hs_vm.md)): compiled
+  that way every continuous script with one restarts each tick, and a10's
+  captain starts all eight flavour lines thirty times a second from the
+  level's first tick, the "big whirring sound" over the opening cinematic.
+  A negative literal duration compiles as Halo 2's `sleep_forever` (builtin 20,
   E `0x00208750`: wake -2 on this thread or on the script its optional
   argument names; `wake` resumes after it), the script argument kept
   (`Compiled::forever`). 312 calls on the ten levels (a10 35, a30 16,
@@ -363,9 +362,7 @@ retail compiler writes them; literals keep their source type.
   direct argument is an object name (`compile::OBJECT_NAME_TYPES`) that
   `resolves` says has no placement is stubbed and listed in
   `Compiled::unindexed`, like an indexed value. a10's `fast_setup` opens
-  and closes `cryotube_1`; while the cryotube had no template the name
-  pointed at no placement and the open faulted as the opening cinematic
-  ended. Since converter version 33 the cryotube is built from the `vehi`
+  and closes `cryotube_1`; the cryotube is built from the `vehi`
   definition and placed ([tag-definitions.md](../formats/tag-definitions.md),
   Vehicles with no template), so a10 stubs none of these; the stub stays
   as the safety net for any other unplaced name. Every other call is
@@ -378,10 +375,10 @@ retail compiler writes them; literals keep their source type.
   the retail short-to-boolean cast (`0x0020a020`) is `sete`, true for 0.
   Of the 79 builtins with a unit or vehicle parameter only these two reach
   an object with no `none` check (each evaluator and its first callees
-  read). With converter version 33 a10 still faulted there: the rebuilt
-  cryotube is placed but never created, because `vehicle_new`
-  (`0x000eeb80`) refuses a model with no physics model (campaign.md,
-  Units opened or closed; version 38 gives it a stand-in one).
+  read). The rebuilt cryotube is created by `vehicle_new`
+  (`0x000eeb80`), which refuses a model with no physics model; the
+  converter builds it a stand-in one (campaign.md,
+  Units opened or closed).
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes
@@ -418,9 +415,10 @@ fixed-signature call's arity and argument types equal Halo 2's descriptor) and
 
 Stubbed calls count outermost missing calls; a missing call's arguments go
 with it, which is why the Halo 2 node counts are lower than Halo 1's. The
-table predates the command lists, unit builtins and AI controls, which
-compile calls that were stubbed here and add generated scripts: a10 now
-needs more than retail's `0x9000` nodes (see Syntax storage below).
+table's counts are from before the command lists, unit builtins and AI
+controls, which compile calls it counts as stubbed and add generated
+scripts: a10 needs more than retail's `0x9000` nodes (see Syntax storage
+below).
 
 ## Step 4: hooks in a converted level
 
@@ -487,11 +485,11 @@ build. [Loop conversion and disc audit](sounds.md#campaign-loops-and-cache-slots
 
 **AI.** Most `ai` hooks left were squads `h1ai` dropped for having no
 starting locations. Retail Halo 2 keeps such squads (06b: 28 of 170;
-`h1campaign`'s `squad_flag_bits` survey), so `h1ai` now keeps them, with no
+`h1campaign`'s `squad_flag_bits` survey), so `h1ai` keeps them, with no
 locations, no actors and no order, and `h1campaign` keeps only those the
-scripts name. The historical b40 build reached `0xc23000` of `0xc24000`
-by dropping model textures. The current campaign retry ladder preserves
-model materials at every step (campaign.md).
+scripts name. A b40 build that drops model textures reaches `0xc23000`
+of `0xc24000`; the campaign retry ladder preserves
+model materials at every step instead (campaign.md).
 Each referenced platoon becomes a child squad group of its encounter.
 A placement or actor list receives the encoded group index. Migration
 into a platoon uses the compatible destination squads chosen by
@@ -567,7 +565,7 @@ each global keeps its own value cell.
 
 - The `unit_exit_vehicle` mode 1 default is not checked against Halo 2's
   evaluator (it is a hook, so the converter can change it). `ai_place`
-  no longer passes a count (above).
+  passes no count (above).
 - Halo 2's string literals are fixed up at load from `+0xc`; the compiled
   string atoms put the same offset in the data word. Untested in the engine.
 - Salts: `0x8000 | slot`. The engine rebuilds occupancy from salts at load;
