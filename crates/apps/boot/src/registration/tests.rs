@@ -300,7 +300,7 @@ fn registry_with_film(
             None,
             nowhere,
             None,
-            live.cloned(),
+            live.clone(),
         )
         .unwrap();
     }

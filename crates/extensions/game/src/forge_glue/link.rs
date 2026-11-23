@@ -101,7 +101,7 @@ impl Transport for HleTransport {
     fn link(&self, remote: SocketAddrV4) -> Option<Box<dyn coop::link::Link + Send>> {
         let local = self.local()?;
         let mut bound = self.port.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(bound, Bound::Untried) {
+        if matches!(*bound, Bound::Untried) {
             *bound = match coop::link::UdpPort::bind(std::net::SocketAddr::V4(local)) {
                 Ok(port) => Bound::Port(Arc::new(port)),
                 Err(e) => {
@@ -242,7 +242,9 @@ impl CoopLink {
         // tick, so a session that ended (a map change) finds lanes again.
         if coop.host && !self.remotes.is_empty() {
             net::offer_host(self.lanes());
-        } else if !coop.host && let Some(remote) = self.remotes.first() {
+        } else if !coop.host
+            && let Some(remote) = self.remotes.first()
+        {
             let lane: Box<dyn forge::net::Lane + Send> =
                 Box::new(CoopLane(Arc::clone(&remote.peer)));
             net::offer_guest(lane);
@@ -350,7 +352,13 @@ mod tests {
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(VecDeque::new())),
         );
-        (FakeLink { out: b, inn: a }, FakeLink { out: a, inn: b })
+        (
+            FakeLink {
+                out: Arc::clone(&b),
+                inn: Arc::clone(&a),
+            },
+            FakeLink { out: a, inn: b },
+        )
     }
 
     impl coop::link::Link for FakeLink {
@@ -652,7 +660,7 @@ mod tests {
         host.link.step(host.coop);
         let mut hosted = open_host();
         guest.link.step(guest.coop);
-        let mut joined = open_guest();
+        let mut joined = open_guest("guest");
         assert_eq!(
             host.link.peers(),
             vec![(addr(31014), Some(Seat(1)))],
@@ -673,10 +681,15 @@ mod tests {
         // A placement on the host reaches the guest.
         hosted
             .session
-            .place(&mut hosted.world, 200, 0, forge::Frame {
-                position: [1., 2., 3.],
-                rotation: [0.; 3],
-            })
+            .place(
+                &mut hosted.world,
+                200,
+                0,
+                forge::Frame {
+                    position: [1., 2., 3.],
+                    rotation: [0.; 3],
+                },
+            )
             .unwrap();
         for tick in 201..=400 {
             host.link.step(host.coop);
@@ -712,7 +725,7 @@ mod tests {
         host.link.step(host.coop);
         let mut hosted = open_host();
         first.link.step(first.coop);
-        let mut joined = open_guest();
+        let mut joined = open_guest("guest");
         for tick in 1..=200 {
             host.link.step(host.coop);
             first.link.step(first.coop);
@@ -735,7 +748,7 @@ mod tests {
         );
         // The second guest joins the running session over its lane.
         second.link.step(second.coop);
-        let mut late = open_guest();
+        let mut late = open_guest("late");
         for tick in 201..=400 {
             host.link.step(host.coop);
             first.link.step(first.coop);

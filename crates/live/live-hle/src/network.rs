@@ -322,7 +322,7 @@ impl Network {
                     *address.ip(),
                     address
                         .port()
-                        .checked_add(NetworkConfig::COOP_PORT_OFFSET)
+                        .checked_add(crate::network_config::COOP_PORT_OFFSET)
                         .unwrap_or(u16::MAX),
                 )
             })
