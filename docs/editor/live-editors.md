@@ -1,7 +1,7 @@
 # Every tag kind: an editor, a preview and three live views
 
-Status: Design. The editors named as built below are built; the kind registry, the fan-out to the game view and the missing editors are not.
-Code: `crates/apps/studio/src/fields/rich.rs` (the views' table), `crates/apps/studio/src/app/kinds.rs` (the registry), `crates/apps/studio/src/app/live.rs` (the fan-out), `crates/apps/studio/src/play/tag_sync.rs` (`Effect`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the write path). Tests: `app::kinds::tests`, `app::live::tests`, each editor's own.
+Status: In progress. LE1 (the kind registry, `tag.kinds`, the fan-out and `class` in Pending) is built, and so are the editors named as built below; the subject's follow-ups after a delivery (LE2), Host changes from the HUD, UI Screens and Rules tools, and the missing editors are design.
+Code: built in `crates/apps/studio/src/app/kinds.rs` (the registry), `crates/apps/studio/src/app/live.rs` (the fan-out), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the write path), `crates/apps/studio/src/play/tag_sync.rs` (`Effect`, `Play::fan_out`) and `crates/apps/studio/src/api/tags.rs` (`tag.kinds`); the views' table in `crates/apps/studio/src/fields/rich.rs` (planned). Tests: `app::kinds::tests`, `app::live::tests`, `play::tag_sync::fan_out_tests`, `api::tags::tests`, each editor's own.
 Switch: none.
 
 Studio is where any piece of content is picked and edited in place: a
@@ -37,9 +37,24 @@ their slices stay on those pages and are cited here by page and number.
 
 ### One write, three deliveries
 
-`TagDoc::write`, `block_op` and `resize_data`, and the scenario
-session's ops, each emit a `Change {tag, ranges, class}` to
-`app::live::Fanout`. The class decides the route:
+Every write path hands a `Change {tag, ranges, class}` to
+`app::live::Fanout` (`App::live`):
+
+- `TagDoc`'s `write`, `block_op`, `resize_data` and `set_string`, and
+  its `undo` and `redo`, each report one with the bytes written
+  (`TagDoc::take_changes`). A field set is Field; a block's count, a
+  data length or a new string is Shape. The frames of one drag are one
+  change.
+- The scenario session and the raw documents (the Modeling tool's
+  geometry, the Textures tool's pixels) are seen by their revisions
+  each frame (`play::tag_sync::see_documents`): a block's layout
+  revision is Shape, another scenario edit Field, a raw document's
+  revision Raw. Opening a document is not a write.
+- A host source hands in `Change::host(source, params)`.
+
+Once a frame `Play::fan_out` takes the changes, `app::live::route`
+gives each view its route, and the game side carries the deliveries
+out. The class decides the route:
 
 | Class | What changed | Preview | Game and attached |
 |---|---|---|---|
@@ -60,6 +75,29 @@ would otherwise keep showing the old thing, in the own game only:
 
 In an attached game none of these is done for the user: they are rows
 in Pending, as now.
+
+### Own and attached
+
+The own game is a game Studio started (`Play::own_game`: the paired
+endpoint is the child's). Every other paired game is attached. Each
+change makes one Preview re-read and, with a game paired, one game
+delivery or one Pending row:
+
+| Class | Own game | Attached, in Edit | Attached, in View |
+|---|---|---|---|
+| Field, Raw | one send of what the documents hold, with no click | the pairing's own push | a Pending row |
+| Shape | that send, then one play-copy reload (`map.reload`) when a row of class `shape` stays After reload | a Pending row | a Pending row |
+| Host | the source's reload method | the same | a Pending row, sent when Edit turns on |
+
+A Host source the game has no reload for (the UI, the HUD kit and host
+sounds have none in the game's agent API) is a Pending row in every
+game, saying so (`app::live::Host::NO_RELOAD`). No tool emits a Host
+change yet: the Rules tool keeps its own `rules.reload` button.
+
+Every Pending row carries its `class` beside its `effect`
+(`play::tag_sync::row`): `raw` for `geometry`, `bitmaps` and
+`collision` rows, `shape` for a block layout or a new map string,
+`host` for a held Host change, else `field`.
 
 ### The subject
 
@@ -114,14 +152,18 @@ preview is a query and not a guess.
 
 ## Interfaces
 
-- `tag.kinds {group?}` (read): the registry: editor, preview, subject rule and classes per group.
+- `tag.kinds {group?}` (read): the registry: its rows, the default,
+  and every group the registry or the open map has with its editor,
+  preview, subject rule and classes; `target` says where the game
+  view's changes go now ([agent-api.md](agent-api.md)).
 - `tag.open {tag}` (act): opens the tag in its editor and makes it the
   subject; the reply names the editor, the preview and the subject's
   place in the own game.
 - `tag.preview {tag, out, camera?}` (act): the Preview as a PNG, by
   the kind's provider; `NO_PREVIEW` with the reason for a kind that
   has only the game view.
-- `mirror.pending` rows gain `class` beside `effect`.
+- `mirror.pending` rows carry `class` (`field`, `raw`, `shape`,
+  `host`) beside `effect`.
 - Each editor's own namespace is on its page (`shader.*`, `function.*`,
   `sound.*`, `hud.*`, `mesh.*`, `model.*`).
 

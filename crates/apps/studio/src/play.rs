@@ -858,6 +858,8 @@ impl Play {
                 self.refresh_pending(app, false);
             }
         }
+        // Every write's deliveries (docs/editor/live-editors.md).
+        self.fan_out(app);
         let loaded = self.baseline.as_ref()
             .filter(|_| self.edits.world == Some(app.session.world_rev()))
             .map(|(_, base)| base);

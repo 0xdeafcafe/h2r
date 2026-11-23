@@ -33,11 +33,19 @@ const REFS: MethodDef = def(
     r#"{"tag":"scnr"}"#,
 );
 
+const KINDS: MethodDef = def(
+    m::TAG_KINDS,
+    "The kind registry: each tag group's editor, preview, subject and the classes its edits take",
+    r#"{"group?":"string (one group, as tag.list writes it)"}"#,
+    r#"{"kinds":"[{label,groups,editor,preview,subject,classes,missing}]","default":"{label,editor,preview,subject,classes,missing}","groups":"[{group,kind,default,editor,preview,subject,classes}]","target":"off|own|attached|attached_edit"}"#,
+    r#"{"group":"weap"}"#,
+);
+
 pub(super) struct TagGraph;
 
 impl Provider for TagGraph {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![TREE, REFS]
+        vec![TREE, REFS, KINDS]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -45,9 +53,50 @@ impl Provider for TagGraph {
         match method {
             m::TAG_TREE => Some(tree(app, &p)),
             m::TAG_REFS => Some(refs(app, &p)),
+            m::TAG_KINDS => Some(kinds_list(app, params)),
             _ => None,
         }
     }
+}
+
+/// `tag.kinds`: the rows, the default, and every group the registry or
+/// the open map has with the row it gets; with `group`, that group's line
+/// alone (an unknown group gets the default).
+fn kinds_list(app: &App, params: &Value) -> Reply {
+    use crate::app::kinds::{self, DEFAULT, KINDS};
+    use crate::app::live::Target;
+    if let Some(want) = params.get("group").filter(|v| !v.is_null()) {
+        let text = want
+            .as_str()
+            .filter(|t| !t.is_empty() && t.len() <= 4)
+            .ok_or_else(|| {
+                err(
+                    code::INVALID_PARAMS,
+                    "group: up to four characters, as tag.list writes them",
+                )
+            })?;
+        let mut bytes = *b"    ";
+        bytes[..text.len()].copy_from_slice(text.as_bytes());
+        return Ok(kinds::group_json(FourCC(bytes)));
+    }
+    let mut groups: std::collections::BTreeSet<[u8; 4]> =
+        app.tags.registry().groups.keys().map(|g| g.0).collect();
+    groups.extend(app.tags.tags().iter().map(|t| t.group.0));
+    let target = match app.live.target() {
+        Target::Off => "off",
+        Target::Own => "own",
+        Target::Attached { edit: false } => "attached",
+        Target::Attached { edit: true } => "attached_edit",
+    };
+    Ok(json!({
+        "kinds": KINDS.iter().map(|k| k.json()).collect::<Vec<_>>(),
+        "default": DEFAULT.json(),
+        "groups": groups
+            .into_iter()
+            .map(|g| kinds::group_json(FourCC(g)))
+            .collect::<Vec<_>>(),
+        "target": target,
+    }))
 }
 
 /// The map open in the scenario tool, read from its source (edits are not
@@ -940,5 +989,46 @@ mod tests {
         assert_eq!(entries[0]["placed"], 1);
         assert_eq!(entries[1]["placed"], 2);
         assert_eq!(updated["root"]["edited"], true);
+    }
+
+    /// `tag.kinds` lists every group the registry knows with its editor
+    /// and preview, the rows and the default, and one group's line.
+    #[test]
+    fn tag_kinds_lists_every_group_with_its_editor_and_preview() {
+        let mut app = App::new();
+        let mut api = Api::new();
+        let all = api.call(&mut app, m::TAG_KINDS, Value::Null).unwrap();
+        let groups = all["groups"].as_array().unwrap();
+        let registry = tags::registry::Registry::builtin();
+        assert_eq!(groups.len(), registry.groups.len());
+        for g in registry.groups.keys() {
+            let id = crate::app::kinds::group_id(*g);
+            let line = groups
+                .iter()
+                .find(|l| l["group"] == id)
+                .unwrap_or_else(|| panic!("{id} is listed"));
+            assert!(line["editor"].is_string() && line["preview"].is_string(), "{line}");
+            assert!(!line["classes"].as_array().unwrap().is_empty());
+        }
+        assert_eq!(all["kinds"].as_array().unwrap().len(), crate::app::kinds::KINDS.len());
+        assert_eq!(all["default"]["editor"], "field_panel");
+        assert_eq!(all["target"], "off");
+        let bitm = api
+            .call(&mut app, m::TAG_KINDS, json!({"group": "bitm"}))
+            .unwrap();
+        assert_eq!(
+            (bitm["editor"].clone(), bitm["preview"].clone()),
+            (json!("textures"), json!("thumbnails"))
+        );
+        assert_eq!(bitm["classes"], json!(["field", "raw", "shape"]));
+        let sky = api
+            .call(&mut app, m::TAG_KINDS, json!({"group": "sky"}))
+            .unwrap();
+        assert_eq!((sky["group"].clone(), sky["kind"].clone()), (json!("sky"), json!("Sky and fog")));
+        let unknown = api
+            .call(&mut app, m::TAG_KINDS, json!({"group": "zzzz"}))
+            .unwrap();
+        assert_eq!(unknown["default"], true);
+        assert!(api.call(&mut app, m::TAG_KINDS, json!({"group": 3})).is_err());
     }
 }
