@@ -1,6 +1,7 @@
 //! Each complete chunk stands alone. Offsets always refer to the four-byte tag.
 pub mod blam;
 pub mod columns;
+pub mod file;
 pub mod image;
 mod library;
 pub mod machine;

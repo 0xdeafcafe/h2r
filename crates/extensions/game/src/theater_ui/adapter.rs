@@ -667,6 +667,16 @@ pub(super) fn save_playback(recording: &Path, dir: &Path) -> anyhow::Result<()> 
             let _ = fs::remove_file(&target);
             return Err(error.into());
         }
+        // The film file travels with the film when there is one.
+        if let Err(error) = fs::hard_link(
+            film::file::beside(recording),
+            film::file::beside(&target),
+        ) && error.kind() != std::io::ErrorKind::NotFound
+        {
+            let _ = fs::remove_file(&target);
+            let _ = fs::remove_file(target.with_extension("h2stats"));
+            return Err(error.into());
+        }
     }
     library.save(&entry.meta.id)
 }

@@ -27,13 +27,7 @@ impl Network {
         let result = self.run(op, a, thread, rt);
         match capture(op, a, rt, result) {
             Ok(outputs) => {
-                let tag = if matches!(op, Op::Random | Op::CreateKey) {
-                    ::film::RAND
-                } else {
-                    ::film::NETR
-                };
                 tap.record(
-                    tag,
                     Call {
                         index: 0,
                         op: name,
@@ -255,7 +249,6 @@ pub(super) fn state_random(len: usize, draw: impl FnOnce() -> Result<Vec<u8>>) -
         }
         let bytes = draw();
         tap.record(
-            ::film::RAND,
             Call {
                 index: 0,
                 op,
@@ -314,7 +307,6 @@ pub(crate) fn service_qos(
     } else {
         match fields() {
             Ok(outputs) => tap.record(
-                ::film::NETR,
                 Call {
                     index: 0,
                     op: name.into(),

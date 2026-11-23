@@ -226,6 +226,10 @@ impl Library {
         let path = self.get(id)?.path;
         crate::sidecar::remove_film_with(&self.dir, id, || {
             remove_pin(&path)?;
+            match fs::remove_file(crate::file::beside(&path)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                r => r?,
+            }
             Ok(fs::remove_file(path)?)
         })
     }

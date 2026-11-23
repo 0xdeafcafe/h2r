@@ -346,7 +346,6 @@ pub(crate) fn invoke(
             outputs.push(item);
         }
         tap.record(
-            film::NETR,
             Call {
                 index: 0,
                 op: e.name.into(),
@@ -383,7 +382,7 @@ mod tests {
         fn service_calls(&self) -> bool {
             !self.legacy
         }
-        fn record(&self, _: film::Tag, call: Call) {
+        fn record(&self, call: Call) {
             self.calls.lock().unwrap().push_back(call)
         }
         fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {

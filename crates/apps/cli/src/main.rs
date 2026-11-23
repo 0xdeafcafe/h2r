@@ -188,6 +188,7 @@ const USAGE: &str = "usage: h2 <command>
   film stat FILE          report keyframes, capture points and tape usage
   film stat --fields FILE...
                           report each action field's change rate and stored bytes
+  film split FILE [OUT]   write the film file of a sealed film and check it
   theater prepare FILM    verify a film headlessly and build its seek cache
   mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   sim <run|batch|compare> run or compare bot matches

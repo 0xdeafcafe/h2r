@@ -1,7 +1,7 @@
 # The input film
 
-Status: Design. The per-tick input capture, the binary HLE tape, the container that holds them and the action-column codec are built; the film file that carries the columns and the engine film are not.
-Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/tape.rs` (`Call`, `Batch`, `Playback`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/blam` (the tick track). Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/blam/tests.rs`.
+Status: Design. The per-tick input capture, the binary HLE tape, the container that holds them, the action-column codec and the film file that carries the columns are built; a recorder that writes the film file as its only tick output, and the engine film, are not.
+Code: `crates/extensions/game/src/theater/actions.rs` (`capture`, `apply`), `crates/live/film/src/tape.rs` (`Call`, `Batch`, `Playback`), `crates/live/film/src/columns.rs` (`ChunkEncoder`, `ChunkDecoder`, `FieldStats`), `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`, `from_container`), `crates/live/film/src/blam` (the tick track). Tests: `crates/extensions/game/src/theater/actions.rs` (`gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows`), `crates/live/film/src/blam/tests.rs`.
 Switch: none.
 
 A film is how to make a game happen again: a seed, every seat's input on
@@ -247,6 +247,17 @@ blocks          each: u8 kind (0 tick chunk, 1 machine envelope,
                 u32 stored bytes, then one zstd frame
 trailer         u32 chunk count, then a u64 offset per tick chunk
 ```
+
+`film::file` writes and reads this layout. The seed is the container's
+header and match descriptor as JSON. A machine envelope block holds its
+four-byte tag and the zstd frame the container stored, so the machine part
+is copied without being inflated. A tick's digest in a chunk is the low 16
+bits of its gameplay digest and the chunk's closing hash is the last
+tick's whole digest. A seat that joins, leaves or quits is a seat record on
+its tick. The recorder writes the file beside each sealed game's container
+(`film::file::write_beside`, extension `.h2f`) and checks that every tick
+decodes to the container's actions and digests; `h2 film split FILE [OUT]`
+does the same for any sealed film and prints the two sizes.
 
 The length, the trailer offset and the sealed flag are zero while a film
 is being written or streamed; a reader of such a file walks the blocks.

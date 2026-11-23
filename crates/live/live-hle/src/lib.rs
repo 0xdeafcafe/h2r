@@ -686,7 +686,6 @@ impl Hle {
         } else {
             let id = self.lock().hosted_session();
             tap.record(
-                film::NETR,
                 film::tape::Call {
                     index: 0,
                     op: NAME.into(),
@@ -732,7 +731,6 @@ impl Hle {
         }
         let exists = present();
         tap.record(
-            film::NETR,
             film::tape::Call {
                 op: op.into(),
                 args: args.into(),
@@ -952,7 +950,6 @@ impl Hle {
         } else {
             let bytes = get();
             tap.record(
-                film::NETR,
                 film::tape::Call {
                     index: 0,
                     op: name.into(),

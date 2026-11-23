@@ -4,7 +4,7 @@ use super::{Mode, Session, Startup};
 use crate::run_opts::NativeSize;
 use crate::setting_defs::{GUEST_FRAME, RESOLUTION};
 use anyhow::{Result, ensure};
-use film::tape::{Call, Tap, VIDEO_MENU_SIZE, VSIZ};
+use film::tape::{Call, Tap, VIDEO_MENU_SIZE};
 use settings::{Resolution, Store};
 use std::sync::Arc;
 
@@ -33,7 +33,6 @@ fn observe(tap: &dyn Tap, native: &NativeSize) -> (u32, u32) {
     let size = native();
     if let Some(bits) = pack(size) {
         tap.record(
-            VSIZ,
             Call {
                 index: 0,
                 op: VIDEO_MENU_SIZE.into(),
@@ -167,8 +166,7 @@ mod tests {
             );
             Some(c)
         }
-        fn record(&self, tag: film::Tag, c: Call) {
-            assert_eq!(tag, VSIZ);
+        fn record(&self, c: Call) {
             self.calls.lock().unwrap().push_back(c)
         }
         fn fault(&self, reason: String) {

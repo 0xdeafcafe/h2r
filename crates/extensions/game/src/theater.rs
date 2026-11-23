@@ -948,6 +948,21 @@ impl Session {
         {
             eprintln!("theater: could not seal the sidecar: {error:#}");
         }
+        // The film file beside the container: the seats' actions as
+        // columns, the seed and the machine part (docs/game/input-film.md).
+        // It is checked against the container before it is kept.
+        if matched {
+            match film::file::write_beside(&path) {
+                Ok(done) => eprintln!(
+                    "theater: film file: {} ticks, {} bytes against {} in the container's tick blocks",
+                    done.ticks, done.film_bytes, done.container_tick_bytes
+                ),
+                Err(error) => {
+                    let _ = std::fs::remove_file(film::file::beside(&path));
+                    eprintln!("theater: could not write the film file: {error:#}");
+                }
+            }
+        }
         // Release the retained physical RAM anchor when a local game returns to the lobby.
         rec.frame = Default::default();
         s.complete = true;
@@ -1173,7 +1188,7 @@ impl Tap for Session {
             }
         }
     }
-    fn record(&self, _tag: film::Tag, mut c: Call) {
+    fn record(&self, mut c: Call) {
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {
             return;

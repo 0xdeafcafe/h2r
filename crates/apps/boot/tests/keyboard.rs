@@ -252,8 +252,7 @@ fn film_replays_guest_edits_and_ignores_live_typing() {
             assert_eq!(call.thread, thread);
             Some(call)
         }
-        fn record(&self, tag: film::Tag, call: Call) {
-            assert_eq!(tag, film::tape::TEXT);
+        fn record(&self, call: Call) {
             self.calls.lock().unwrap().push_back(call);
         }
         fn fault(&self, reason: String) {

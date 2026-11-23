@@ -11,11 +11,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const USAGE: &str = "usage: h2 film stat FILE | h2 film stat --fields FILE...";
+const USAGE: &str = "usage: h2 film stat FILE | h2 film stat --fields FILE... | h2 film split FILE [OUT]";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
-    ensure!(args.next().as_deref() == Some("stat"), "{USAGE}");
+    let verb = args.next();
+    if verb.as_deref() == Some("split") {
+        let path = PathBuf::from(args.next().context(USAGE)?);
+        let out = args.next().map(PathBuf::from).unwrap_or_else(|| film::file::beside(&path));
+        ensure!(args.next().is_none(), "{USAGE}");
+        print!("{}", split(&path, &out)?);
+        return Ok(());
+    }
+    ensure!(verb.as_deref() == Some("stat"), "{USAGE}");
     let first = args.next().context(USAGE)?;
     if first == "--fields" {
         let paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
@@ -33,6 +41,23 @@ pub fn run(args: Vec<String>) -> Result<()> {
     ensure!(args.next().is_none(), "{USAGE}");
     print!("{}", stat(&path)?);
     Ok(())
+}
+
+/// Write the film file of a sealed container and check that it decodes to
+/// the container's actions and digests on every tick.
+pub fn split(container: &Path, out: &Path) -> Result<String> {
+    let converted = film::file::from_container(container, out)?;
+    let verified = film::file::verify(container, out)?;
+    let mut report = String::new();
+    writeln!(report, "film file: {}", out.display())?;
+    writeln!(report, "ticks: {} verified: {verified}", converted.ticks)?;
+    writeln!(report, "chunks: {} machine_blocks: {}", converted.chunks, converted.machine_blocks)?;
+    writeln!(
+        report,
+        "container_tick_bytes: {} film_bytes: {}",
+        converted.container_tick_bytes, converted.film_bytes
+    )?;
+    Ok(report)
 }
 
 /// The field table over the tick tracks of `films`, one report for all of
