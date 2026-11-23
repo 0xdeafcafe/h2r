@@ -736,7 +736,7 @@ fn not_created(index: u16, why: impl Into<String>) -> PlacementCreated {
 
 /// One linked object for entry `index`, or the reason the engine path cannot
 /// make this record's object.
-async fn create(
+pub(in crate::sim::calls) async fn create(
     cx: &Cx,
     scratch: u32,
     queue: &Shared,

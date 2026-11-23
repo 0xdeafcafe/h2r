@@ -1624,3 +1624,5 @@ fn probe_animation_uses_the_units_graph_and_resolves_the_engine_selection() {
     assert_eq!(out["animation"], 77);
     assert_eq!(out["selected"], json!([1, 2, 3]));
 }
+
+mod base;

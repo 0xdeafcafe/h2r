@@ -191,6 +191,9 @@ pub enum ForgeStep {
     /// Set the identifier of the loaded scenario's netgame flag `flag`, a
     /// teleporter sender or receiver, to `channel`.
     Channel { flag: u32, channel: i16 },
+    /// An edit of one of the map's own scenario entries (`forge::base`),
+    /// after the other steps: checked with the batch, then done.
+    Base(crate::forge::base::BaseStep),
 }
 
 /// The guest address of the loaded scenario's netgame flag `flag`, checked
@@ -995,6 +998,13 @@ async fn run_forge(
                 }
                 (None, None)
             }
+            ForgeStep::Base(base_step) => {
+                if let Err(e) = cx.read(|m| crate::forge::base::plan(m, guard.scenario, base_step))
+                {
+                    return Ok(Err(e));
+                }
+                (None, None)
+            }
         };
         match target {
             Some(ForgeTarget::Live(id)) => {
@@ -1084,7 +1094,75 @@ async fn run_forge(
             cx.write(|m| m.write(at + teleporter_identifier(), &channel.to_le_bytes()))?;
         }
     }
+    for step in steps {
+        if let ForgeStep::Base(step) = step
+            && let Err(e) = run_base(cx, scratch, queue, guard.scenario, step).await?
+        {
+            unwind_made(cx, &made, &deleted).await?;
+            return Ok(Err(e));
+        }
+    }
     Ok(Ok(json!({ "handles": made })))
+}
+
+/// One edit of an own scenario entry (`forge::base`). The step is checked
+/// again here, so a change since the batch's checks is a refusal and the
+/// row stays as it was. An object block's live object is moved or deleted
+/// with the `world.object` bodies, and a restored row's object is made by
+/// `world.placement.edit`'s linked create.
+async fn run_base(
+    cx: &Cx,
+    scratch: u32,
+    queue: &Shared,
+    scenario: u32,
+    step: &crate::forge::base::BaseStep,
+) -> Result<Result<(), RpcError>, EntryError> {
+    use crate::forge::base::{BaseStep, object_kind, plan, write};
+    let planned = match cx.read(|m| plan(m, scenario, step)) {
+        Ok(planned) => planned,
+        Err(e) => return Ok(Err(e)),
+    };
+    if let BaseStep::Inert { .. } = step
+        && let Some(id) = planned.object
+        && let Err(e) = object_delete(cx, queue, id).await?
+    {
+        return Ok(Err(forge_gone(e, id)));
+    }
+    if let Err(e) = cx.write(|m| write(m, scenario, step, planned)) {
+        return Ok(Err(e));
+    }
+    match *step {
+        BaseStep::Move { frame, .. } => {
+            if let Some(id) = planned.object {
+                let (forward, up) = forge_axes(&frame);
+                let out =
+                    object_set(cx, scratch, id, Some(frame.position), Some(forward), Some(up))
+                        .await?;
+                if let Err(e) = out {
+                    return Ok(Err(forge_gone(e, id)));
+                }
+            }
+        }
+        BaseStep::Restore { block, index, .. } if object_kind(block).is_some() => {
+            let spec = placement::edit::BlockSpec::named(block.name());
+            let made = match (spec, u16::try_from(index)) {
+                (Some(spec), Ok(index)) => {
+                    placement::edit::create(cx, scratch, queue, &spec, index).await?
+                }
+                _ => return Ok(Err(super::invalid("the block cannot make its objects"))),
+            };
+            if !made.created {
+                // Leave the row as the map's removal had it.
+                let inert = BaseStep::Inert { block, index };
+                let _ = cx.write(|m| write(m, scenario, &inert, planned));
+                return Ok(Err(refused(made.why.unwrap_or_else(|| {
+                    "the restored entry's object was not made".into()
+                }))));
+            }
+        }
+        _ => {}
+    }
+    Ok(Ok(()))
 }
 
 /// Makes one call. A guest call that faults ends the tick's work
