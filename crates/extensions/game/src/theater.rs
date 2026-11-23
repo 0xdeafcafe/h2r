@@ -1032,10 +1032,14 @@ impl agent::LobbyTape for Session {
     }
 }
 
+/// The [`Observer`]'s feature id. No other feature may take it: the
+/// in-game Theater's screens are `theater-films` and `theater-film-detail`.
+pub const OBSERVER_FEATURE: &str = "theater-film";
+
 pub struct Observer(pub Arc<Session>, pub Option<agent::Agent>);
 impl hooks::Feature for Observer {
     fn manifest(&self) -> hooks::Manifest {
-        hooks::Manifest::new("theater-film", "Exact host film").doc("docs/game/theater.md")
+        hooks::Manifest::new(OBSERVER_FEATURE, "Exact host film").doc("docs/game/theater.md")
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // Hook installation changes guest dispatch boundaries. A v1 tape

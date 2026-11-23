@@ -74,6 +74,10 @@ turns it off.
   the replay install the same features, so both run one plan. Firefight's
   director runs in that replay too. The start gate does not run in any
   replay.
+- **One film observer.** A recording session plans the film observer
+  (`theater-film`, `theater::OBSERVER_FEATURE`) beside the in-game
+  Theater's screens (`theater-films`, `theater-film-detail`). No other
+  feature takes its id; `registration/tests.rs` builds that plan.
 - **Outside changes discard the film.** A film cannot replay what reaches
   the guest from outside its tape. A Live session link joined in the game
   and the first authorized editor write stop the recording and delete its

@@ -970,7 +970,10 @@ fn classes(theater: &Theater, texts: &Arc<GuestTexts>) -> [ListClass; 2] {
             .panel(library_panel())
             .sideways()
             .footer(TEXTS.id(FILMS_FOOTER)),
-        ListClass::with_rows("theater-film", DETAIL, detail)
+        // Not `theater-film`: that is the film observer's id
+        // (theater::OBSERVER_FEATURE), planned with these screens whenever
+        // a game records.
+        ListClass::with_rows("theater-film-detail", DETAIL, detail)
             .layout(FILM_LAYOUT)
             .description(FILM_STATUS)
             .picture(FILM_PICTURE)
@@ -1058,6 +1061,17 @@ pub(super) fn preview_page(theater: &Theater, list: bool) -> crate::ui_kit::page
 mod tests {
     use super::*;
     use crate::theater_ui::adapter::FilmMeta;
+
+    /// Every game records by default, so the film observer is planned with
+    /// these screens: a screen with its id fails the plan ("two features
+    /// have the id theater-film").
+    #[test]
+    fn no_screen_takes_the_film_observers_id() {
+        let theater = Theater::default();
+        for class in classes(&theater, &Arc::new(GuestTexts::default())) {
+            assert_ne!(class.id, crate::theater::OBSERVER_FEATURE);
+        }
+    }
 
     #[test]
     fn guest_rows_write_each_label_and_footer_to_its_own_slot() {
