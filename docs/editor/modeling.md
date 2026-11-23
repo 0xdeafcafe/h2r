@@ -363,6 +363,10 @@ pages open read-only.
   selection from a PNG, resampled (box down, bilinear up) when sizes
   differ; **Export** writes a PNG outside any Git checkout, as every
   render does ([agent-api.md](agent-api.md), "Documents").
+  **Generate...** makes a new picture for the image from a prompt and
+  references the user picks, fitted to its size and format, and
+  imports it as one undo step
+  ([editor-guide.md](editor-guide.md#generating-an-image)).
 - **Encode** (`assets::encode`). Texels invert `gfx::convert` for
   `A8`, `Y8`, `AY8`, `A8Y8`, `R5G6B5`, `A1R5G5B5`, `A4R4G4B4`,
   `X8R8G8B8` and `A8R8G8B8`, each channel quantised with rounding, so

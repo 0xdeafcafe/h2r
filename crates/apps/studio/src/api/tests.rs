@@ -13,6 +13,7 @@ use super::*;
 use crate::app::{Action, PlaylistEdit, Selection};
 
 mod bitmaps_tests;
+mod image_gen_tests;
 mod script_variants_tests;
 mod ui_export_tests;
 
@@ -242,6 +243,23 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 let png = bitmap_edit::encode_png(2, 2, &[10, 20, 30, 255].repeat(4)).unwrap();
                 std::fs::create_dir_all(t.path("out")).unwrap();
                 std::fs::write(t.path("out/in.png"), png).unwrap();
+            }
+        }
+        m::IMAGE_GENERATE | m::IMAGE_RESULT | m::IMAGE_APPLY | m::IMAGE_ACCEPT | m::IMAGE_DISCARD => {
+            // The invented textured map's floor is the slot; the fake
+            // source draws the picture (never the real generator).
+            let map = t.path("textured.map");
+            std::fs::write(&map, fixture::fixture_with_textured_bsp()).unwrap();
+            call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            image_gen_tests::fake(app, t);
+            if name != m::IMAGE_GENERATE {
+                call(
+                    api,
+                    app,
+                    m::IMAGE_GENERATE,
+                    json!({"prompt": "a round blue badge", "references": [], "bitmap": "floor"}),
+                );
+                assert!(app.imagegen.wait(1, std::time::Duration::from_secs(20)));
             }
         }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {

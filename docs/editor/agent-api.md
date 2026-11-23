@@ -269,6 +269,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
 | `check` | `run {what?, target?}`: every content check in one list ([Content checks](#content-checks)) |
+| `image` | `generate {prompt, references, bitmap?, image?, size?, alpha?, out?, from?}`, `result {id?}`, `apply {id}`, `accept {id, save?}`, `discard {id}`: a picture made for a bitmap image from a prompt and the references the user picks ([Generating images](#generating-images)) |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
@@ -962,6 +963,143 @@ h2 studio pair.audio '{"seconds":3,"call":{"method":"pogo.test","params":{"trick
 h2 studio pair.result
 ```
 
+### Generating images
+
+`image.generate` makes a picture for an image of a bitmap from a prompt
+and reference pictures, and the `image.*` calls after it put the
+picture into the image through the Textures tool's own edits
+(`crates/apps/studio/src/api/image_gen.rs`, `src/app/image_gen.rs`,
+`src/imagegen.rs`). The window's Generate button does the same
+([editor-guide.md](editor-guide.md#generating-an-image)). A generation
+takes a minute or more, so it runs as a job: `image.generate` answers at
+once with `{id, state: "running", generator}` and `image.result {id?}`
+reads the job (the newest without `id`). One job runs at a time and the
+last sixteen are kept.
+
+`image.generate`'s params:
+
+- `prompt`: what the picture is.
+- `references`: a list, empty for none. Each is a PNG path, or
+  `{bitmap, image?}`, an image of the open map's bitmap, exported as a
+  PNG into the job's directory for the generator. The references are
+  the user's choice: an agent passes the ones the user named (for a menu
+  icon, the other icons of the same bitmap), and never picks disc images
+  of its own accord.
+- `bitmap` and `image` (default 0): the slot, named as `bitmap.*` names
+  a bitmap. The picture is fitted to the slot. Without a slot, `size
+  [w, h]` fits it to that size as 32-bit RGBA; with neither, it is kept
+  as it came. A slot and a size together are `INVALID_PARAMS`.
+- `alpha`: `auto` (the default: the picture's own alpha, except that an
+  opaque picture going into an `A8` or `AY8` image takes its
+  brightness), `image`, `luma` or `opaque`.
+- `out`: a path to copy the fitted PNG to.
+- `from`: the job this one regenerates, with the same or a tweaked
+  prompt. The result and the provenance name it.
+
+The job gives the source the prompt with the slot's needs added
+(`imagegen::compose_prompt`): its size, a transparent background when the
+format keeps alpha, and how the references are meant (match their style,
+palette, line weight and framing, not their subject). It keeps the
+source's picture as `generated.png`, then fits it (`imagegen::fit`). The
+picture is resampled with the Textures tool's filter: stretched when the
+aspects are within a tenth, else centred on transparent pixels. Then
+each pixel is rounded to what the slot's format stores and its decoder
+gives back. The uncompressed formats round as `assets::encode` stores
+them and `gfx::convert` reads them. The DXT formats encode each 4 by 4
+block with `assets::encode::encode_block` and decode it with `gfx::dxt`.
+The fitted picture, `fitted.png`, is what the game shows. A slot of a
+format that is not a picture (`P8`, bump, float) is `REFUSED`, and so is
+a cube map or a volume. A slot with a `bitmap.reshape` asked for is
+fitted to the reshape's format.
+
+`image.result` gives `state` (`running`, `done` or `failed`),
+`generator`, `elapsed_ms`, `prompt`, `references` (each with its `path`
+and `origin`, `file` or `map` with its `bitmap` and `image`), `slot`,
+`size`, `dir` (the job's directory, in the cache's `studio/imagegen/`),
+`from`, and `applied`, `accepted` (the files written, or null) and
+`discarded`. A done job adds `raw {path, width, height}`, `fitted {path,
+width, height, format, alpha}`, `revised_prompt` and `out`. A failed one
+adds `why`, the source's message, and `error`:
+
+| `error` | Meaning |
+|---|---|
+| `missing` | the generator is not installed (`codex` not on `PATH`); `why` says how to install it and sign in |
+| `unauthenticated` | Codex is not signed in; `why` says to run `codex login` and sign in with ChatGPT |
+| `quota` | the ChatGPT account's allowance is used up; `why` has Codex's message, with when it renews |
+| `no_image` | the run finished without a picture |
+| `failed` | anything else, with the generator's message |
+
+Then:
+
+- `image.apply {id}` writes the fitted picture into its slot as one
+  `BitmapAction::Import`, one undo step, after keeping the slot's pixels
+  as `original.png` in the job's directory. The picture then shows
+  wherever the image is used: the Textures canvas, `bitmap.pixels`, the
+  UI Screens tool's pictures and `ui.render` (the disc's picture of the
+  bitmap, `UiScreens::show_image`), and a paired game through the
+  Textures tool's live sync ([realtime-edits.md](realtime-edits.md)).
+  `pair.preview {what: "ui"}` captures the menu with it. A job without a
+  slot, or one that failed, is `REFUSED`.
+- `image.accept {id, save?}` keeps it, applying it first if it is not in
+  its slot. The picture stays as the bitmap's edit and saves with the
+  map (`doc.save {doc: "bitmaps"}`), like any texture edit. It writes `provenance.json` in
+  the job's directory and logs a line naming the bitmap, the generator,
+  the references and the prompt. With `save` (a directory) it copies
+  `<bitmap>-<image>.png` (the generator's picture),
+  `<bitmap>-<image>.fitted.png` and `<bitmap>-<image>.provenance.json`
+  there. A job made to a `size` has no slot: accepting it keeps the art
+  and its provenance (`image-<id>.png`, `image-<id>.fitted.png`,
+  `image-<id>.provenance.json` under `save`) for an image made later,
+  and changes no bitmap.
+- `image.discard {id}` takes it out: the import's undo step while it is
+  still the newest step of that bitmap, else the original pixels
+  imported back.
+
+The provenance names the prompt, the prompt sent, the generator's
+rewrite of it, every reference with its origin, the generator (`codex-cli
+0.170.0 (ChatGPT image generation)`), the slot, the alpha, the job it
+regenerates, and whether it was accepted. Generated art is original
+AI-made art and may go in the repository with its provenance; every PNG
+there is stored in LFS.
+
+**The source.** `imagegen::ImageSource` makes the picture.
+`H2_IMAGEGEN` picks it: `codex` (the default) or `fake`. An OpenAI API key
+source, with the key in the Keychain under the service `openai`, is
+another implementation of the trait; it is not built.
+
+- **Codex** (`imagegen::codex::CodexCli`) uses ChatGPT's image generation
+  on the user's ChatGPT sign-in to the Codex CLI, with no API key. It
+  first runs `codex --version` and `codex login status`. Then it runs
+  `codex exec --image <ref>... --json --skip-git-repo-check --sandbox
+  workspace-write --cd <job dir> --output-last-message <job
+  dir>/codex-last-message.txt` once, with the prompt on stdin (`--image`
+  takes many values, so a prompt argument after it would be read as an
+  image). The prompt asks Codex to make one image with its image
+  generation tool and copy it to `out.png` in the job's directory. The
+  picture is `out.png`, else a `saved_path` in the run's events, else
+  the newest PNG in `$CODEX_HOME/generated_images/<thread id>/` (Codex
+  saves each picture there, the thread id from the `thread.started`
+  event), else a PNG path in the last message. The events are kept as
+  `codex-events.jsonl` in the job's directory. A run may take up to ten
+  minutes. Studio never reads Codex's credentials.
+- **The fake** (`imagegen::fake::FakeSource`) draws a disc on a
+  transparent ground, its colour from the prompt. The tests use it, and
+  `H2_IMAGEGEN=fake` tries the flow with no generator.
+
+Into an image the map has (here `mp_games2`'s last icon), then into no
+slot, at the icons' size, for an image made later:
+
+```sh
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0},{"bitmap":"mp_games2","image":3}],"bitmap":"mp_games2","image":10}'
+h2 studio image.result '{"id":1}'
+h2 studio image.apply '{"id":1}'
+h2 studio pair.preview '{"what":"ui"}'
+h2 studio image.accept '{"id":1,"save":"art/ui-icons"}'
+h2 studio doc.save '{"doc":"bitmaps"}'
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0}],"size":[40,40]}'
+h2 studio image.accept '{"id":2,"save":"art/ui-icons"}'
+```
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`
@@ -1205,6 +1343,12 @@ the window and the API stay one path.
   `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
   that doc (a reshape is not an undo step; `doc.close` with `discard`
   drops it). docs/editor/modeling.md, "Texture editing" and "Interfaces".
+- **Image generation.** `api/image_gen.rs` registers `ImageGenApi`:
+  `image.generate`, `image.result`, `image.apply`, `image.accept` and
+  `image.discard` over the jobs on the app (`App::imagegen`, shared with
+  the window's Generate window). Apply, accept and discard run the
+  commands `Action::Image` runs, which write through the Textures tool's
+  `BitmapAction`s ([Generating images](#generating-images)).
 - **Player models (planned, not started).** See "Planned: player
   models and customisation" below.
 - **Customisation (later).** Same section.

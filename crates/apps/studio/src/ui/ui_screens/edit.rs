@@ -9,6 +9,7 @@ use dear_imgui_rs::{Key, MouseButton, Ui};
 use boot::ui_kit::view::{Kind, View, Widget};
 
 use crate::app::ui_screens::edit::{EditAction, Sink};
+use crate::app::image_gen::ImageAction;
 use crate::app::{Action, App};
 use crate::theme::{self, Fonts, icon};
 
@@ -462,6 +463,17 @@ pub fn selected(
             ui.same_line();
             if ui.button(format!("{} Revert widget", icon::UNDO)) {
                 actions.push(Action::UiEdit(EditAction::Revert(Some(w.id.clone()))));
+            }
+            // A picture: the Generate window on the bitmap image it draws.
+            if matches!(w.kind, Kind::Art { .. })
+                && let Some((bitmap, image)) = app.ui_screens.widget_bitmap(&w.id)
+            {
+                if ui.button(format!("{} Generate image...##ui-sel-generate", icon::ZAP)) {
+                    actions.push(Action::Image(ImageAction::Open { bitmap: bitmap.clone(), image }));
+                }
+                ui.set_item_tooltip(format!(
+                    "{bitmap} image {image}: make a new picture for it (the bitmap opens from the map open in Studio)"
+                ));
             }
             if sink == Sink::Retail {
                 // Tag edits past a rect (app::ui_screens::edit::retail_tag);
