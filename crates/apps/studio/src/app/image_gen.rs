@@ -54,6 +54,9 @@ pub struct GenInput {
 pub enum ImageAction {
     /// Show the Generate window for an image of a bitmap.
     Open { bitmap: String, image: usize },
+    /// Add an image to the bitmap, shaped like image `like`, and make it
+    /// the window's slot.
+    NewSlot { bitmap: String, like: usize },
     /// Start a generation.
     Generate(Box<GenInput>),
     /// Write a finished picture into its slot.
@@ -130,6 +133,28 @@ impl App {
             height: info.height,
             format,
         })
+    }
+
+    /// A new slot for a picture: an image added to `bitmap` after its last
+    /// (`BitmapAction::AddImage`, one Textures undo step), shaped like
+    /// image `like` or at `size`. Its index; `image.generate` with
+    /// `image: "new"` makes one, then generates into it.
+    pub fn image_new_slot(
+        &mut self,
+        bitmap: &str,
+        like: usize,
+        size: Option<(u32, u32)>,
+    ) -> Result<usize, String> {
+        self.sync_textures();
+        let tag = self.resolve_bitmap(bitmap)?;
+        self.bitmap_action(BitmapAction::AddImage {
+            tag,
+            from: Some(like),
+            width: size.map(|s| s.0),
+            height: size.map(|s| s.1),
+            format: None,
+        })?;
+        Ok(self.textures.open[&tag].images.len() - 1)
     }
 
     /// Starts a generation: the slot read, map references exported into
@@ -421,6 +446,18 @@ impl App {
                     }
                     Err(e) => Err(e),
                 }
+            }
+            ImageAction::NewSlot { bitmap, like } => {
+                self.image_new_slot(&bitmap, like, None).and_then(|image| {
+                    let tag = self.resolve_bitmap(&bitmap)?;
+                    let name = self.textures.open[&tag].name.clone();
+                    let p = &mut self.image_panel;
+                    p.picked.retain(|i| *i != image);
+                    p.slot = Some((name, image));
+                    p.job = None;
+                    p.open = true;
+                    Ok(())
+                })
             }
             ImageAction::Generate(input) => self.image_generate(*input).map(|id| {
                 self.image_panel.job = Some(id);

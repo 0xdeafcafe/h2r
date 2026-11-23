@@ -617,7 +617,7 @@ reads the new bytes and writes its own copy at the same boundary.
 | `coll` BSP | stage, commit | bullets next tick, bodies on respawn | |
 | `phmo` primitive | `writes` | on respawn | |
 | Paint pixels, same size and format | `raw` | next frame | |
-| Resize or reformat a bitmap | none | | reload |
+| Resize or reformat a bitmap, add an image or a sequence to one | none | | reload |
 | Lightmap rebake | `raw` on the page, when the relighter exists | next frame | |
 
 ## Realtime coverage

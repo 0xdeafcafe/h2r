@@ -253,7 +253,10 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::BITMAP_ADJUST
         | m::BITMAP_PIXELS
         | m::BITMAP_RESHAPE
-        | m::BITMAP_SPANS => {
+        | m::BITMAP_SPANS
+        | m::BITMAP_IMAGE_ADD
+        | m::BITMAP_IMAGE_RESIZE
+        | m::BITMAP_SEQUENCE_ADD => {
             // The invented textured map: its floor bitmap is 4 by 4,
             // one `A8R8G8B8` colour.
             let map = t.path("textured.map");

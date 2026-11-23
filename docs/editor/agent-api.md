@@ -1051,7 +1051,8 @@ picture into the image through the Textures tool's own edits
 `src/imagegen.rs`). The window's Generate button does the same
 ([editor-guide.md](editor-guide.md#generating-an-image)). A generation
 takes a minute or more, so it runs as a job: `image.generate` answers at
-once with `{id, state: "running", generator}` and `image.result {id?}`
+once with `{id, state: "running", generator, slot}` (`slot` is
+`{bitmap, image}` or null) and `image.result {id?}`
 reads the job (the newest without `id`). One job runs at a time and the
 last sixteen are kept.
 
@@ -1065,9 +1066,13 @@ last sixteen are kept.
   icon, the other icons of the same bitmap), and never picks disc images
   of its own accord.
 - `bitmap` and `image` (default 0): the slot, named as `bitmap.*` names
-  a bitmap. The picture is fitted to the slot. Without a slot, `size
+  a bitmap. The picture is fitted to the slot. `image: "new"` (which
+  needs `bitmap`) first adds an image to the bitmap (`bitmap.image.add`),
+  shaped like image `like` (default 0) or made at `size`, and makes it
+  the slot; the answer's `slot` names it. Without a slot, `size
   [w, h]` fits it to that size as 32-bit RGBA; with neither, it is kept
-  as it came. A slot and a size together are `INVALID_PARAMS`.
+  as it came. A slot and a size together are `INVALID_PARAMS` (a `new`
+  slot is the one case that takes both).
 - `alpha`: `auto` (the default: the picture's own alpha, except that an
   opaque picture going into an `A8` or `AY8` image takes its
   brightness), `image`, `luma` or `opaque`.
@@ -1166,7 +1171,8 @@ another implementation of the trait; it is not built.
   `H2_IMAGEGEN=fake` tries the flow with no generator.
 
 Into an image the map has (here `mp_games2`'s last icon), then into no
-slot, at the icons' size, for an image made later:
+slot, at the icons' size, for an image made later, then into an image
+the bitmap did not have, added first:
 
 ```sh
 h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0},{"bitmap":"mp_games2","image":3}],"bitmap":"mp_games2","image":10}'
@@ -1177,6 +1183,9 @@ h2 studio image.accept '{"id":1,"save":"art/ui-icons"}'
 h2 studio doc.save '{"doc":"bitmaps"}'
 h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0}],"size":[40,40]}'
 h2 studio image.accept '{"id":2,"save":"art/ui-icons"}'
+h2 studio image.generate '{"prompt":"a radar dish","references":[{"bitmap":"mp_games2","image":0},{"bitmap":"mp_games2","image":3}],"bitmap":"mp_games2","image":"new"}'
+h2 studio image.apply '{"id":3}'
+h2 studio doc.save '{"doc":"bitmaps"}'
 ```
 
 ### Errors
@@ -1447,7 +1456,10 @@ the window and the API stay one path.
   docs/editor/modeling.md, "Interfaces".
 - **Textures (studio-modeling slices 5 and 6).** `api/bitmaps.rs`:
   `bitmap.list {name?}` gives the map's bitmap tags and their images;
-  `bitmap.read` one bitmap's images (size, format, mips, write class);
+  `bitmap.read` one bitmap's images (size, format, mips, write class)
+  and its sequences (label, first image, count, sprites), with `grown`
+  saying a save writes the whole tag again and `movable` null or why the
+  bitmap cannot gain an image;
   `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
   65,536 pixels); `bitmap.paint`, `bitmap.fill` and `bitmap.adjust`
   (invert, levels, hsv) and `bitmap.import` (a PNG, resampled to the
@@ -1455,8 +1467,19 @@ the window and the API stay one path.
   {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
   checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
   unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
-  format?}` asks for a new size and/or format (`dxt1`, `argb8888`, ...)
-  for an image, refused at once when a save would refuse it;
+  format?}` and `bitmap.image.resize {bitmap, image?, size? | width?,
+  height?, format?}` ask for a new size and/or format (`dxt1`,
+  `argb8888`, ...) for an image, refused at once when a save would
+  refuse it;
+  `bitmap.image.add {bitmap, from?, size?, format?}` appends an image
+  after the bitmap's last, its record copied from image `from` (default
+  0; a 2D image) at `size` and `format` or the source's, its pixels
+  transparent black until painted, imported or generated into; it
+  answers the new index;
+  `bitmap.sequence.add {bitmap, first, count?, label?}` appends a
+  sequence entry over `count` images from `first`, labelled `label`,
+  shaped like the bitmap's first sequence;
+  each of these is one undo step;
   `bitmap.spans {bitmap, image?, face?, slice?, rect?}` gives the stored
   bytes the edits change (per LOD: offset, length, hex) without writing
   anything: the spans a save patches in place and a live push sends. Edits
@@ -1466,13 +1489,16 @@ the window and the API stay one path.
   by the write class `bitmap.read` names for the image: `in_place`
   (bytes patched in the map's own raw blocks), `appended` (a LOD in a
   shared cache is copied into the map as a new raw block, or the image has
-  a reshape), or `none` for P8, P8Bump, V8U8 and G8B8, which are read only.
+  a reshape), `new` (an added image: the whole tag is written again at
+  the end of the metadata and the tag's index entry pointed at the copy,
+  the other tags keeping their bytes), or `none` for P8, P8Bump, V8U8 and
+  G8B8, which are read only.
   A save the map cannot take (a new raw block where the metadata does not
   end the file) is `REFUSED` with the reason. `doc.diff` lists the edited
   layers by tile and the pending reshapes; `doc.list` says the doc is
   `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
-  that doc (a reshape is not an undo step; `doc.close` with `discard`
-  drops it). docs/editor/modeling.md, "Texture editing" and "Interfaces".
+  that doc (a reshape, an added image and an added sequence are one undo
+  step each). docs/editor/modeling.md, "Texture editing" and "Interfaces".
 - **Models.** `api/models.rs`: `model.list`, `model.read`,
   `model.render` and `model.check`, read-only over a map of their own
   (no actions, no undo); see "Models and customisation" below.

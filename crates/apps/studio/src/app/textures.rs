@@ -16,7 +16,14 @@
 //! `StrokeTo` and `StrokeEnd`: many touched rectangles (each a dirty
 //! rectangle for the live preview and the later live push), one undo step.
 //! The undo stack is across bitmaps: `history` names which bitmap each step
-//! belongs to.
+//! belongs to, and whether it changed pixels or the bitmap's shape (an
+//! image added, an image resized, a sequence added).
+//!
+//! A bitmap that gained images or sequences no longer fits where it is
+//! stored: the save writes the whole tag again at the end of the metadata
+//! and points its index entry there (`tags::bitmap_grow`,
+//! `scenario_edit::TagMove`, docs/editor/modeling.md, "Adding images"),
+//! with every image record's writes made in the new copy.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,7 +35,8 @@ use bitmap_edit::{
     resample,
 };
 use map::TagId;
-use scenario_edit::{GeometryChanges, RawAppend, RawPatch};
+use scenario_edit::{GeometryChanges, MovedRaw, RawAppend, RawPatch, TagMove};
+use tags::bitmap_grow::{self, IMAGE_LEN, Parts, Sequence};
 use tags::{PixelFormat, TagData};
 
 use super::App;
@@ -88,16 +96,31 @@ pub struct ImageInfo {
     /// Why it could not be decoded, or `None`.
     pub error: Option<String>,
     /// The image record as the map has it: what its write is planned from.
+    /// For an added image, the record it starts as.
     pub source: Option<tags::Image>,
+    /// `Some` for an image added in Studio, not yet in the file.
+    pub added: Option<Added>,
+}
+
+/// An image added in Studio: the image it was made from and its record
+/// (`tags::bitmap_grow::added_image`, at the size and format asked).
+#[derive(Clone, Debug)]
+pub struct Added {
+    pub from: usize,
+    pub record: Vec<u8>,
 }
 
 impl ImageInfo {
     /// How saving the image would write: `none` (read only), `in_place`
-    /// (every stored LOD is in this map) or `appended` (a LOD in a shared
-    /// cache is copied into this map).
+    /// (every stored LOD is in this map), `appended` (a LOD in a shared
+    /// cache is copied into this map) or `new` (an added image: written
+    /// whole, its record in the moved tag).
     pub fn write_class(&self) -> &'static str {
         if self.locked.is_some() || self.error.is_some() {
             return "none";
+        }
+        if self.added.is_some() {
+            return "new";
         }
         let shared = self.source.as_ref().is_some_and(|i| {
             i.lods
@@ -122,6 +145,87 @@ pub struct OpenBitmap {
     pub bitmap: Bitmap,
     /// The virtual address of the tag's first `BitmapImage` record.
     pub images_at: u32,
+    /// The tag's records as stored, which a save that moves it lays out
+    /// again, or why it cannot move (`tags::bitmap_grow::Parts::split`).
+    pub parts: Result<Parts, String>,
+    /// Sequences added in Studio, after the tag's own.
+    pub new_sequences: Vec<Sequence>,
+}
+
+/// One sequence of a bitmap, as `bitmap.read` and the pickers show it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SequenceInfo {
+    pub index: usize,
+    pub label: String,
+    pub first: i16,
+    pub count: u16,
+    pub sprites: usize,
+    pub added: bool,
+}
+
+impl OpenBitmap {
+    /// Images the tag has in the file (the rest are added).
+    pub fn stored_images(&self) -> usize {
+        self.images.iter().filter(|i| i.added.is_none()).count()
+    }
+
+    /// The bitmap has images or sequences the file does not: a save moves
+    /// the tag.
+    pub fn grown(&self) -> bool {
+        self.images.iter().any(|i| i.added.is_some()) || !self.new_sequences.is_empty()
+    }
+
+    /// The tag's sequences, then the added ones.
+    pub fn sequences(&self) -> Vec<SequenceInfo> {
+        let stored = self.parts.as_ref().map_or(&[][..], |p| &p.sequences[..]);
+        stored
+            .iter()
+            .map(|s| (s, false))
+            .chain(self.new_sequences.iter().map(|s| (s, true)))
+            .enumerate()
+            .map(|(index, (s, added))| SequenceInfo {
+                index,
+                label: s.label(),
+                first: s.first_image(),
+                count: s.image_count(),
+                sprites: s.sprites.len(),
+                added,
+            })
+            .collect()
+    }
+}
+
+/// One undo step of the Textures tool.
+#[derive(Clone, Debug)]
+enum Step {
+    /// A pixel edit, in the bitmap's own history.
+    Pixels(TagId),
+    /// A change to the bitmap's shape.
+    Shape(TagId, Shape),
+}
+
+impl Step {
+    fn tag(&self) -> TagId {
+        match self {
+            Step::Pixels(t) | Step::Shape(t, _) => *t,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Shape {
+    /// The last image was added. `kept` holds it while it is undone.
+    AddImage {
+        kept: Option<Box<(ImageInfo, Vec<bitmap_edit::Layer>)>>,
+    },
+    /// An image's size or format asked for (`None`: as stored).
+    Reshape {
+        image: usize,
+        was: Option<Reshape>,
+        now: Option<Reshape>,
+    },
+    /// The last sequence was added. `kept` holds it while it is undone.
+    AddSequence { kept: Option<Sequence> },
 }
 
 /// The Textures tool's state.
@@ -153,18 +257,18 @@ pub struct Textures {
     pub filter: String,
     /// The bitmap a drag is painting into.
     pub stroke: Option<TagId>,
-    /// Which bitmap each undo step belongs to, oldest first, and the same
+    /// The undo steps, oldest first, each naming its bitmap, and the same
     /// for redo.
-    history: Vec<TagId>,
-    redo: Vec<TagId>,
+    history: Vec<Step>,
+    redo: Vec<Step>,
     /// The last edit's outcome, for the API.
     pub last: Option<(TagId, Applied)>,
     /// Where the last export went.
     pub last_export: Option<PathBuf>,
     for_rev: Option<u64>,
-    /// A new size or format asked for an image (`bitmap.reshape`), which
-    /// the save writes whole. Not an undo step: [`BitmapAction::Revert`]
-    /// drops it.
+    /// A new size or format asked for an image (`bitmap.reshape`,
+    /// `bitmap.image.resize`), which the save writes whole. An undo step;
+    /// [`BitmapAction::Revert`] drops it.
     pub reshape: HashMap<(TagId, usize), Reshape>,
     reshape_rev: u64,
     /// What each bitmap was when its changes were last handed to the save
@@ -213,10 +317,11 @@ impl Textures {
 
     /// Bitmap `o` differs from how it was read.
     pub fn edited(&self, o: &OpenBitmap) -> bool {
-        o.bitmap.is_edited() || self.reshape.keys().any(|(t, _)| *t == o.tag)
+        o.bitmap.is_edited() || o.grown() || self.reshape.keys().any(|(t, _)| *t == o.tag)
     }
 
-    /// An edit counter for a bitmap: its pixels' revision and the reshapes'.
+    /// An edit counter for a bitmap: its pixels' revision and the shape
+    /// changes' (reshapes, images and sequences added).
     fn stamp(&self, o: &OpenBitmap) -> (u64, u64) {
         (o.bitmap.rev(), self.reshape_rev)
     }
@@ -237,9 +342,13 @@ impl Textures {
         self.stroke.is_none() && !self.redo.is_empty()
     }
 
-    /// The bitmap the newest undo step belongs to.
+    /// The bitmap the newest undo step belongs to, when that step changed
+    /// pixels.
     pub fn last_step(&self) -> Option<TagId> {
-        self.history.last().copied()
+        match self.history.last()? {
+            Step::Pixels(t) => Some(*t),
+            Step::Shape(..) => None,
+        }
     }
 
     /// The brush a stroke paints with: the settings, the foreground colour
@@ -329,13 +438,34 @@ pub enum BitmapAction {
     /// Drop a bitmap's edits (it is decoded again when next needed).
     Revert(TagId),
     /// Ask for a new size and/or format for an image; the save writes it
-    /// whole. `None` keeps that one.
+    /// whole. `None` keeps that one. One undo step.
     Reshape {
         tag: TagId,
         image: usize,
         width: Option<u32>,
         height: Option<u32>,
         format: Option<PixelFormat>,
+    },
+    /// Add an image after the bitmap's last, its record made from image
+    /// `from` (default 0) at `width`, `height` and `format` (default
+    /// `from`'s), its pixels transparent black. It is selected. One undo
+    /// step; the save moves the tag.
+    AddImage {
+        tag: TagId,
+        from: Option<usize>,
+        width: Option<u32>,
+        height: Option<u32>,
+        format: Option<PixelFormat>,
+    },
+    /// Add a sequence of `count` images from `first`, labelled `label`,
+    /// after the bitmap's last (shaped like its first sequence, with a
+    /// sprite per image when that one has sprites). One undo step; the
+    /// save moves the tag.
+    AddSequence {
+        tag: TagId,
+        first: usize,
+        count: u16,
+        label: String,
     },
 }
 
@@ -429,6 +559,17 @@ impl App {
         let TagData::Bitmap(b) = decoded.data else {
             return Err(format!("{name} is not a bitmap"));
         };
+        let parts = (|| {
+            let address = map
+                .tag(tag)
+                .ok()
+                .and_then(|t| t.location)
+                .map(|l| l.address)
+                .ok_or_else(|| "it has no payload".to_owned())?;
+            let bytes = map.read_tag_bytes(tag).map_err(|e| e.to_string())?;
+            Parts::split(&bytes, address)
+        })()
+        .map_err(|why| format!("{name} cannot be laid out again: {why}"));
         let mut bitmap = Bitmap::new();
         let mut images = Vec::new();
         for (i, img) in b.images.iter().enumerate() {
@@ -448,6 +589,7 @@ impl App {
                 locked: locked_reason(img.format),
                 error: None,
                 source: Some(img.clone()),
+                added: None,
             };
             match assets::decode_image(img, &mut files) {
                 Err(e) => info.error = Some(e.to_string()),
@@ -486,6 +628,8 @@ impl App {
             images,
             bitmap,
             images_at: b.header.images.address,
+            parts,
+            new_sequences: Vec::new(),
         })
     }
 
@@ -536,9 +680,23 @@ impl App {
         };
         for tag in tags {
             let open = &self.textures.open[&tag];
+            if open.grown() {
+                match self.moved_bitmap(open, &mut files) {
+                    Ok((moved, raw)) => {
+                        c.raw_patches.extend(raw);
+                        c.moved.push(moved);
+                    }
+                    Err(e) => {
+                        c.refusal = Some(format!("{}: {e}", open.name));
+                        return c;
+                    }
+                }
+                continue;
+            }
             for info in &open.images {
                 let reshape = self.textures.reshape.get(&(tag, info.index)).copied();
-                match plan_for(open, info, reshape, &mut files) {
+                let image_at = open.images_at + IMAGE_LEN as u32 * info.index as u32;
+                match plan_for(open, info, reshape, image_at, &mut files) {
                     Ok(None) => {}
                     Ok(Some(plan)) => {
                         c.raw_patches.extend(plan.raw.into_iter().map(|w| RawPatch {
@@ -566,6 +724,62 @@ impl App {
         c
     }
 
+    /// The write of a bitmap that gained images or sequences: the whole
+    /// tag laid out again (`tags::bitmap_grow`) with every image's record
+    /// writes made in the copy and its new pixel blocks pointed from it,
+    /// and the in-place pixel patches of its stored images.
+    fn moved_bitmap(
+        &self,
+        open: &OpenBitmap,
+        files: &mut assets::ResourceFiles,
+    ) -> Result<(TagMove, Vec<RawPatch>), String> {
+        let mut parts = open.parts.clone()?;
+        parts.images.extend(
+            open.images
+                .iter()
+                .filter_map(|i| i.added.as_ref().map(|a| a.record.clone())),
+        );
+        parts.sequences.extend(open.new_sequences.iter().cloned());
+        let layout = parts.layout();
+        let mut bytes = layout.bytes;
+        let mut raw = Vec::new();
+        let mut patches = Vec::new();
+        for info in &open.images {
+            let reshape = self.textures.reshape.get(&(open.tag, info.index)).copied();
+            let image_at = layout.images_at + IMAGE_LEN as u32 * info.index as u32;
+            let Some(plan) = plan_for(open, info, reshape, image_at, files)? else {
+                continue;
+            };
+            patches.extend(plan.raw.into_iter().map(|w| RawPatch {
+                block: w.block,
+                block_size: w.block_size,
+                offset: w.offset,
+                bytes: w.bytes,
+            }));
+            for (at, b) in plan.tag {
+                let at = at as usize;
+                bytes
+                    .get_mut(at..at + b.len())
+                    .ok_or_else(|| format!("image {}: a record write lies past the tag", info.index))?
+                    .copy_from_slice(&b);
+            }
+            raw.extend(plan.appended.into_iter().map(|a| MovedRaw {
+                bytes: a.bytes,
+                align: a.align,
+                pointer: a.pointer_address,
+            }));
+        }
+        Ok((
+            TagMove {
+                tag: open.tag,
+                bytes,
+                rebase: layout.rebase,
+                raw,
+            },
+            patches,
+        ))
+    }
+
     /// The stored bytes that changing `dirty` (rectangles of mip 0 pixels,
     /// by layer) of image `image` of bitmap `tag` changes, as the encoder
     /// writes them: byte spans per LOD, the same a save patches in place
@@ -585,6 +799,11 @@ impl App {
             .ok_or_else(|| format!("the bitmap has no image {image}"))?;
         if let Some(why) = info.locked.as_ref().or(info.error.as_ref()) {
             return Err(format!("image {image} is not written: {why}"));
+        }
+        if info.added.is_some() {
+            return Err(format!(
+                "image {image} is new: the save writes it whole, so it has no stored bytes to patch"
+            ));
         }
         let src = info.source.as_ref().ok_or("the image has no record")?;
         let (data, depth) = plane_data(open, info, None)?;
@@ -623,10 +842,212 @@ impl App {
 
     fn note_edit(&mut self, tag: TagId, applied: Applied) {
         if !applied.dirty.is_empty() {
-            self.textures.history.push(tag);
+            self.textures.history.push(Step::Pixels(tag));
             self.textures.redo.clear();
         }
         self.textures.last = Some((tag, applied));
+    }
+
+    /// Records a change to a bitmap's shape as an undo step. The redo
+    /// steps, the Textures tool's and the bitmap's own, are dropped.
+    fn note_shape(&mut self, tag: TagId, shape: Shape) {
+        self.textures.history.push(Step::Shape(tag, shape));
+        self.textures.redo.clear();
+        for o in self.textures.open.values_mut() {
+            o.bitmap.clear_redo();
+        }
+        self.textures.reshape_rev += 1;
+        self.textures.generation += 1;
+    }
+
+    /// Adds an image to bitmap `tag` (see [`BitmapAction::AddImage`]).
+    /// Its index.
+    fn add_image(
+        &mut self,
+        tag: TagId,
+        from: Option<usize>,
+        width: Option<u32>,
+        height: Option<u32>,
+        format: Option<PixelFormat>,
+    ) -> Result<usize, String> {
+        self.ensure_bitmap(tag)?;
+        let open = self.open_mut(tag)?;
+        let name = open.name.clone();
+        if let Err(why) = &open.parts {
+            return Err(format!("no image can be added: {why}"));
+        }
+        let from = from.unwrap_or(0);
+        let src_info = open.images.get(from).ok_or_else(|| {
+            format!(
+                "image {from}: {name} has {} images to copy a new one from",
+                open.images.len()
+            )
+        })?;
+        let src = src_info
+            .source
+            .clone()
+            .ok_or_else(|| format!("image {from} has no record"))?;
+        if src.kind != tags::TextureKind::D2 {
+            return Err(format!(
+                "image {from} is a {:?} image: a new image copies a 2D one",
+                src.kind
+            ));
+        }
+        if src.lods[0].is_none() {
+            return Err(format!(
+                "image {from} stores only a lower mip in this map: copy another image"
+            ));
+        }
+        let record = match &src_info.added {
+            Some(a) => a.record.clone(),
+            None => open
+                .parts
+                .as_ref()
+                .ok()
+                .and_then(|p| p.images.get(from))
+                .cloned()
+                .ok_or_else(|| format!("image {from} has no stored record"))?,
+        };
+        let want = Reshape {
+            width: width.unwrap_or(u32::from(src.dimensions[0])),
+            height: height.unwrap_or(u32::from(src.dimensions[1])),
+            format: format.unwrap_or(src.format),
+        };
+        bitmap_edit::check_size(want.width, want.height).map_err(|e| e.to_string())?;
+        let (mut record, img) = bitmap_grow::added_image(&record, &src)?;
+        let (img, fields) = assets::write::reshaped(&img, want).map_err(|e| e.to_string())?;
+        for (at, b) in fields {
+            let at = at as usize;
+            record[at..at + b.len()].copy_from_slice(&b);
+        }
+        let index = open.images.len();
+        let canvas = bitmap_edit::Canvas::new(want.width, want.height, [0, 0, 0, 0])
+            .map_err(|e| e.to_string())?;
+        let id = LayerId::new(index as u32, 0, 0);
+        open.bitmap.add_layer(id, canvas, None);
+        open.images.push(ImageInfo {
+            index,
+            width: want.width,
+            height: want.height,
+            depth: 1,
+            format: format!("{:?}", want.format),
+            kind: "D2".to_owned(),
+            mips: img.mip_count,
+            pixels: "new".to_owned(),
+            layers: vec![id],
+            locked: None,
+            error: None,
+            source: Some(img),
+            added: Some(Added { from, record }),
+        });
+        self.note_shape(tag, Shape::AddImage { kept: None });
+        self.textures.selected = Some(tag);
+        self.textures.image = index;
+        self.textures.face = 0;
+        self.textures.slice = 0;
+        self.textures.selection = None;
+        self.info(format!(
+            "{name}: image {index} added, {}x{} {:?} from image {from}; the save moves the tag",
+            want.width, want.height, want.format
+        ));
+        Ok(index)
+    }
+
+    /// Adds a sequence to bitmap `tag` (see [`BitmapAction::AddSequence`]).
+    fn add_sequence(
+        &mut self,
+        tag: TagId,
+        first: usize,
+        count: u16,
+        label: &str,
+    ) -> Result<usize, String> {
+        self.ensure_bitmap(tag)?;
+        let open = self.open_mut(tag)?;
+        let parts = open
+            .parts
+            .as_ref()
+            .map_err(|why| format!("no sequence can be added: {why}"))?;
+        let images = open.images.len();
+        if count == 0 || first + usize::from(count) > images {
+            return Err(format!(
+                "images {first} to {}: the bitmap has {images}",
+                (first + usize::from(count)).saturating_sub(1)
+            ));
+        }
+        if label.len() > 31 {
+            return Err(format!("label {label:?} is over 31 bytes"));
+        }
+        let first16 =
+            i16::try_from(first).map_err(|_| format!("image {first} is past a sequence's reach"))?;
+        let like = parts
+            .sequences
+            .first()
+            .or(open.new_sequences.first())
+            .cloned();
+        let s = bitmap_grow::sequence(like.as_ref(), label, first16, count);
+        let index = parts.sequences.len() + open.new_sequences.len();
+        open.new_sequences.push(s);
+        let name = open.name.clone();
+        self.note_shape(tag, Shape::AddSequence { kept: None });
+        self.info(format!(
+            "{name}: sequence {index} {label:?} added, images {first} to {}",
+            first + usize::from(count) - 1
+        ));
+        Ok(index)
+    }
+
+    /// Undoes (or redoes) a shape step of bitmap `tag`; the step to put
+    /// on the other stack.
+    fn swap_shape(&mut self, tag: TagId, shape: Shape, undo: bool) -> Option<Shape> {
+        let open = self.textures.open.get_mut(&tag)?;
+        let out = match shape {
+            Shape::AddImage { kept } => {
+                if undo {
+                    let info = open.images.pop()?;
+                    let layers = open.bitmap.remove_image(info.index as u32);
+                    self.textures.reshape.remove(&(tag, info.index));
+                    let (name, index) = (open.name.clone(), info.index);
+                    self.ui_screens.show_image(&name, index, None);
+                    Shape::AddImage {
+                        kept: Some(Box::new((info, layers))),
+                    }
+                } else {
+                    let (info, layers) = *kept?;
+                    open.bitmap.restore_layers(layers);
+                    open.images.push(info);
+                    Shape::AddImage { kept: None }
+                }
+            }
+            Shape::Reshape { image, was, now } => {
+                let set = if undo { was } else { now };
+                match set {
+                    Some(r) => self.textures.reshape.insert((tag, image), r),
+                    None => self.textures.reshape.remove(&(tag, image)),
+                };
+                Shape::Reshape { image, was, now }
+            }
+            Shape::AddSequence { kept } => {
+                if undo {
+                    Shape::AddSequence {
+                        kept: Some(open.new_sequences.pop()?),
+                    }
+                } else {
+                    open.new_sequences.push(kept?);
+                    Shape::AddSequence { kept: None }
+                }
+            }
+        };
+        if let Some(open) = self.textures.open.get(&tag)
+            && self.textures.image >= open.images.len()
+            && self.textures.selected == Some(tag)
+        {
+            self.textures.image = open.images.len().saturating_sub(1);
+            self.textures.face = 0;
+            self.textures.slice = 0;
+        }
+        self.textures.reshape_rev += 1;
+        self.textures.generation += 1;
+        Some(out)
     }
 
     pub(crate) fn bitmap_action(&mut self, action: BitmapAction) -> Result<(), String> {
@@ -753,16 +1174,37 @@ impl App {
                 let same = want.width == u32::from(src.dimensions[0])
                     && want.height == u32::from(src.dimensions[1])
                     && want.format == src.format;
-                if same {
-                    self.textures.reshape.remove(&(tag, image));
-                } else {
-                    self.textures.reshape.insert((tag, image), want);
+                let was = self.textures.reshape.get(&(tag, image)).copied();
+                let now = (!same).then_some(want);
+                if was == now {
+                    return Ok(());
                 }
-                self.textures.reshape_rev += 1;
+                match now {
+                    Some(r) => self.textures.reshape.insert((tag, image), r),
+                    None => self.textures.reshape.remove(&(tag, image)),
+                };
+                self.note_shape(tag, Shape::Reshape { image, was, now });
                 self.info(format!(
                     "image {image}: {w}x{h} {:?} when saved",
                     want.format
                 ));
+            }
+            BitmapAction::AddImage {
+                tag,
+                from,
+                width,
+                height,
+                format,
+            } => {
+                self.add_image(tag, from, width, height, format)?;
+            }
+            BitmapAction::AddSequence {
+                tag,
+                first,
+                count,
+                label,
+            } => {
+                self.add_sequence(tag, first, count, &label)?;
             }
             BitmapAction::Revert(tag) => {
                 if self.textures.stroke == Some(tag) {
@@ -772,8 +1214,9 @@ impl App {
                 self.textures.open.remove(&tag);
                 self.textures.reshape.retain(|(t, _), _| *t != tag);
                 self.textures.pushed.remove(&tag);
-                self.textures.history.retain(|t| *t != tag);
-                self.textures.redo.retain(|t| *t != tag);
+                self.textures.history.retain(|s| s.tag() != tag);
+                self.textures.redo.retain(|s| s.tag() != tag);
+                self.textures.reshape_rev += 1;
                 if self.textures.selected == Some(tag) {
                     self.textures.selected = None;
                 }
@@ -831,13 +1274,26 @@ impl App {
         if self.textures.stroke.is_some() {
             return false;
         }
-        let tag = if undo {
+        let step = if undo {
             self.textures.history.pop()
         } else {
             self.textures.redo.pop()
         };
-        let Some(tag) = tag else {
-            return false;
+        let tag = match step {
+            None => return false,
+            Some(Step::Pixels(tag)) => tag,
+            Some(Step::Shape(tag, shape)) => {
+                let Some(other) = self.swap_shape(tag, shape, undo) else {
+                    return false;
+                };
+                let step = Step::Shape(tag, other);
+                if undo {
+                    self.textures.redo.push(step);
+                } else {
+                    self.textures.history.push(step);
+                }
+                return true;
+            }
         };
         let applied = self.textures.open.get_mut(&tag).and_then(|o| {
             if undo {
@@ -850,9 +1306,9 @@ impl App {
             return false;
         };
         if undo {
-            self.textures.redo.push(tag);
+            self.textures.redo.push(Step::Pixels(tag));
         } else {
-            self.textures.history.push(tag);
+            self.textures.history.push(Step::Pixels(tag));
         }
         self.textures.last = Some((tag, applied));
         true
@@ -918,12 +1374,15 @@ fn plane_data(
     Ok((data, depth))
 }
 
-/// The write of one image of an open bitmap: `None` when nothing about it
-/// changed.
+/// The write of one image of an open bitmap, its record at `image_at` (a
+/// virtual address, or an offset into a moved tag's layout): `None` when
+/// nothing about it changed. An added image is always written whole, at
+/// the size and format asked.
 fn plan_for(
     open: &OpenBitmap,
     info: &ImageInfo,
     reshape: Option<Reshape>,
+    image_at: u32,
     files: &mut assets::ResourceFiles,
 ) -> Result<Option<assets::write::Plan>, String> {
     let layers: Vec<&bitmap_edit::Layer> = info
@@ -931,13 +1390,21 @@ fn plan_for(
         .iter()
         .filter_map(|id| open.bitmap.layer(*id))
         .collect();
+    let src = info.source.as_ref().ok_or("the image has no record")?;
+    let reshape = match (reshape, &info.added) {
+        (None, Some(_)) => Some(Reshape {
+            width: u32::from(src.dimensions[0]),
+            height: u32::from(src.dimensions[1]),
+            format: src.format,
+        }),
+        (r, _) => r,
+    };
     if reshape.is_none() && !layers.iter().any(|l| l.is_edited()) {
         return Ok(None);
     }
     if let Some(why) = info.locked.as_ref().or(info.error.as_ref()) {
         return Err(format!("image {}: not written: {why}", info.index));
     }
-    let src = info.source.as_ref().ok_or("the image has no record")?;
     let (data, depth) = plane_data(open, info, reshape)?;
     let refs: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
     let (width, height) = reshape.map_or(
@@ -956,7 +1423,7 @@ fn plan_for(
         .collect();
     let edit = Edit {
         image: src,
-        image_at: open.images_at + 0x74 * info.index as u32,
+        image_at,
         planes: Planes {
             width,
             height,

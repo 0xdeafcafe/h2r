@@ -66,6 +66,16 @@ fn body(ui: &Ui, app: &mut App, dialogs: bool, actions: &mut Vec<Action>) {
             app.image_panel.picked.retain(|i| *i != n);
         }
     }
+    ui.same_line();
+    if ui.button(format!("{} New image##gen-new-slot", icon::PLUS)) {
+        actions.push(Action::Image(ImageAction::NewSlot {
+            bitmap: bitmap.clone(),
+            like: image,
+        }));
+    }
+    ui.set_item_tooltip(
+        "Add an image to this bitmap, the size and format of this one, and generate into it",
+    );
     match &slot {
         Ok(s) => ui.text_disabled(format!(
             "{} by {}, {:?}: the picture is fitted to this",

@@ -474,6 +474,17 @@ pub fn selected(
                 ui.set_item_tooltip(format!(
                     "{bitmap} image {image}: make a new picture for it (the bitmap opens from the map open in Studio)"
                 ));
+                ui.same_line();
+                if ui.button(format!("{} New image...##ui-sel-new-image", icon::PLUS)) {
+                    actions.push(Action::Image(ImageAction::NewSlot {
+                        bitmap: bitmap.clone(),
+                        like: image,
+                    }));
+                }
+                ui.set_item_tooltip(format!(
+                    "Add an image to {bitmap}, the size and format of image {image}, and generate into it"
+                ));
+                bitmap_images(ui, app, &bitmap, image);
             }
             if sink == Sink::Retail {
                 // Tag edits past a rect (app::ui_screens::edit::retail_tag);
@@ -555,6 +566,43 @@ pub fn widget_list(ui: &Ui, app: &mut App, st: &mut EditUi, actions: &mut Vec<Ac
         if ui.is_item_hovered() {
             st.list_hot = Some(w.id.clone());
         }
+    }
+}
+
+/// The images and sequences of a picture's bitmap in the map open in
+/// Studio, added ones marked: what a widget or a doc's icon can show by
+/// index once the map is saved.
+fn bitmap_images(ui: &Ui, app: &mut App, bitmap: &str, shown: usize) {
+    let Ok(tag) = app.resolve_bitmap(bitmap) else {
+        return;
+    };
+    let Some(open) = app.textures.open.get(&tag) else {
+        return;
+    };
+    let added: Vec<usize> = open
+        .images
+        .iter()
+        .filter(|i| i.added.is_some())
+        .map(|i| i.index)
+        .collect();
+    ui.text_disabled(format!(
+        "Shows image {shown} of {}{}",
+        open.images.len(),
+        if added.is_empty() {
+            String::new()
+        } else {
+            format!("; added in Studio: {added:?}")
+        }
+    ));
+    for s in open.sequences() {
+        let label = if s.label.is_empty() { "(no label)" } else { s.label.as_str() };
+        ui.text_disabled(format!(
+            "Sequence {} {label}: images {} to {}{}",
+            s.index,
+            s.first,
+            i32::from(s.first) + i32::from(s.count) - 1,
+            if s.added { " (added)" } else { "" }
+        ));
     }
 }
 

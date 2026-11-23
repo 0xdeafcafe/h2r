@@ -183,6 +183,44 @@ impl Bitmap {
         });
     }
 
+    /// Takes every layer of image `image` out (an added image undone), in
+    /// order. Refused, with none taken, during a stroke.
+    pub fn remove_image(&mut self, image: u32) -> Vec<Layer> {
+        if self.active.is_some() {
+            return Vec::new();
+        }
+        let (out, keep): (Vec<Layer>, Vec<Layer>) = std::mem::take(&mut self.layers)
+            .into_iter()
+            .partition(|l| l.id.image == image);
+        self.layers = keep;
+        if !out.is_empty() {
+            self.rev += 1;
+        }
+        out
+    }
+
+    /// Puts layers taken by [`Bitmap::remove_image`] back as they were,
+    /// edits and all (an added image redone).
+    pub fn restore_layers(&mut self, layers: Vec<Layer>) {
+        if layers.is_empty() {
+            return;
+        }
+        self.rev += 1;
+        for l in layers {
+            self.view.push(Dirty {
+                layer: l.id,
+                rect: l.canvas.bounds(),
+            });
+            self.layers.push(l);
+        }
+    }
+
+    /// Forgets the redo steps: an edit outside the layers' pixels (an
+    /// image added) was made after them.
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
+    }
+
     pub fn layers(&self) -> &[Layer] {
         &self.layers
     }
