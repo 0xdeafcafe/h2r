@@ -230,6 +230,9 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
                 Ok(Flow::Continue)
             },
         )
+        // The rows are posed before any view of the frame is drawn,
+        // including the agent spawn view's.
+        .after_feature("agent-frames")
         .context_only();
     b.raw()
         .after(
