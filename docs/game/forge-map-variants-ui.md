@@ -183,12 +183,13 @@ set each tick (`Handle::world_mark`).
 | `fgr.near.1` to `fgr.near.12` | `Pipper` | the nearest things that have no body: starting points, goals, teleporters, spawners with nothing out; within 12 world units, nearest first | each in its team's colour (`Style::Team`), `Inactive` when not in the session's game type. Its label is short: `Spawn`, `Flag`, `Hill 2`, the item's name |
 | `fgr.zone.1` to `fgr.zone.8` | `Line` | between a hill's corners in order, or a territory's | the outline of the hill or territory the aimed goal belongs to |
 
-- **Team colour.** A mark is in the user's HUD colour today. K5 adds
-  `Style::Team(n)` for world marks: the colour the game itself gives
-  team `n`, read at run time from where the engine reads it (**S**:
-  the source is not traced; hud-kit.md, "Colours", takes its row).
-  Until then a mark's team is in its label. No colour is a constant of
-  ours.
+- **Team colour.** A mark is in the user's HUD colour unless it has
+  `Style::Team(n)` (K5): the colour the game itself gives team `n`,
+  read at run time from the loaded map's `mulg`
+  ([hud-kit.md](hud-kit.md), "Colours", "A team's colour"). Where the
+  map has none the mark is in the HUD colour, so a mark's team stays in
+  its label. No colour is a constant of ours but the preview's
+  stand-ins.
 - **A pool, not a mark a thing.** One layout means a fixed set of
   elements: twelve near marks and eight zone lines. The runtime gives
   the nearest things the poses and leaves the rest without one; a

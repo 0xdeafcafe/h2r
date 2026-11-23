@@ -234,14 +234,34 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
             let [r, g, b] = world::GO_GREEN.map(|v| (v * 255.0).round() as u8);
             [r, g, b, base[3]]
         }
+        // The preview has no map to read the team colours from: its own
+        // stand-ins (S, [`PREVIEW_TEAMS`]); the game reads the map's.
+        Style::Team(n) => {
+            let [r, g, b] = PREVIEW_TEAMS[usize::from(n) % PREVIEW_TEAMS.len()];
+            [r, g, b, base[3]]
+        }
     }
 }
+
+/// The colours the preview draws `Style::Team(n)` in: stand-ins of ours,
+/// one per team, apart enough to tell on the sheet. S: not the game's
+/// (docs/game/hud-kit.md, "Colours"; the runtime reads the map's own).
+pub const PREVIEW_TEAMS: [[u8; 3]; world::TEAMS as usize] = [
+    [220, 70, 60],
+    [70, 110, 230],
+    [230, 200, 60],
+    [70, 190, 90],
+    [235, 140, 50],
+    [160, 90, 210],
+    [230, 130, 170],
+    [160, 160, 160],
+];
 
 /// How a bitmap element's texels are drawn for its style: as they are
 /// (`Normal`, `Flash`), faded (`Dim`), greyed (`Inactive`).
 pub fn style_look(style: Style) -> Option<Look> {
     match style {
-        Style::Normal | Style::Flash(_) | Style::Go => None,
+        Style::Normal | Style::Flash(_) | Style::Go | Style::Team(_) => None,
         Style::Dim => Some(Look {
             alpha: DIM_ALPHA,
             grey: false,

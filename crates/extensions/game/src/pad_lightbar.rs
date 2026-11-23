@@ -130,6 +130,15 @@ pub fn seat_colour(m: &dyn GuestMemory, port: usize) -> Option<u8> {
         .filter(|i| *i < forge::look::PALETTE)
 }
 
+/// RGB of team `team`'s colour from the loaded map's multiplayer globals
+/// (`mulg`), the block the lightbar reads for a team match; `None` where
+/// the map has none or the team is outside it. The HUD kit's `Style::Team`
+/// draws in it (docs/game/hud-kit.md, "Colours").
+pub fn team_rgb(m: &dyn GuestMemory, team: u8) -> Option<[u8; 3]> {
+    let matg = pointer(m, points::GLOBALS_TAG.base)?;
+    team_palette(m, matg)?.rgb(m, u32::from(team))
+}
+
 /// RGB of palette colour `index` from the loaded map's player colours, or
 /// `None` where the map has none or the index is outside them.
 pub fn palette_rgb(m: &dyn GuestMemory, index: u8) -> Option<[u8; 3]> {

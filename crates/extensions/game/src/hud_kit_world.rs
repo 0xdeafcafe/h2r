@@ -44,10 +44,15 @@ pub struct MarkLines {
     pub style: LineStyle,
 }
 
+/// The game's colour of each team (`0..world::TEAMS`), `None` for a team
+/// it gives none (docs/game/hud-kit.md, "Colours").
+pub type Teams = [Option<[f32; 3]>; world::TEAMS as usize];
+
 /// A mark's colour and alpha for its style on the HUD colour `hud`:
 /// `Normal` and a flash as it is, `Dim` at [`DIM_ALPHA`], `Inactive` grey
-/// at [`INACTIVE_ALPHA`], `Go` the go green (`world::GO_GREEN`).
-pub fn colour(style: Style, hud: [f32; 3]) -> ([f32; 3], f32) {
+/// at [`INACTIVE_ALPHA`], `Go` the go green (`world::GO_GREEN`), `Team(n)`
+/// team `n`'s colour in `teams`, or the HUD colour where there is none.
+pub fn colour(style: Style, hud: [f32; 3], teams: &Teams) -> ([f32; 3], f32) {
     match style {
         Style::Normal | Style::Flash(_) => (hud, 1.0),
         Style::Dim => (hud, DIM_ALPHA),
@@ -56,13 +61,18 @@ pub fn colour(style: Style, hud: [f32; 3]) -> ([f32; 3], f32) {
             ([luma; 3], INACTIVE_ALPHA)
         }
         Style::Go => (world::GO_GREEN, 1.0),
+        Style::Team(n) => (
+            teams.get(usize::from(n)).copied().flatten().unwrap_or(hud),
+            1.0,
+        ),
     }
 }
 
-/// The lines of `marks` in the HUD colour `hud`, labels in `face`. A mark
+/// The lines of `marks` in the HUD colour `hud` and the team colours
+/// `teams`, labels in `face`. A mark
 /// whose shape gives no lines at its pose, or whose strength is 0, is
 /// left out.
-pub fn lines(marks: &[MarkNow], hud: [f32; 3], face: LabelFace) -> Vec<MarkLines> {
+pub fn lines(marks: &[MarkNow], hud: [f32; 3], teams: &Teams, face: LabelFace) -> Vec<MarkLines> {
     marks
         .iter()
         .filter_map(|m| {
@@ -71,7 +81,7 @@ pub fn lines(marks: &[MarkNow], hud: [f32; 3], face: LabelFace) -> Vec<MarkLines
             if edges.is_empty() || strength <= 0.0 {
                 return None;
             }
-            let (color, alpha) = colour(m.style, hud);
+            let (color, alpha) = colour(m.style, hud, teams);
             let at = m.pose.at;
             Some(MarkLines {
                 id: m.id,
@@ -127,7 +137,17 @@ mod gpu {
                 return None;
             }
             let look = crate::superbounce_font::look(guest);
-            let lines = lines(&marks, look.colour, look.face);
+            // The map's team colours are read only for a mark that has one.
+            let mut teams: Teams = [None; world::TEAMS as usize];
+            for m in &marks {
+                if let Style::Team(n) = m.style
+                    && let Some(slot) = teams.get_mut(usize::from(n))
+                {
+                    *slot = crate::pad_lightbar::team_rgb(guest, n)
+                        .map(|c| c.map(|v| f32::from(v) / 255.0));
+                }
+            }
+            let lines = lines(&marks, look.colour, &teams, look.face);
             (!lines.is_empty()).then(|| Arc::new(Sample(lines)) as Arc<dyn ImageMarks>)
         }
     }
@@ -157,6 +177,7 @@ mod tests {
     use hud_kit_core::world::{GO_GREEN, Pose, Shape};
 
     const HUD: [f32; 3] = [0.3, 0.6, 0.9];
+    const NO_TEAMS: Teams = [None; world::TEAMS as usize];
 
     fn mark(shape: Shape, style: Style, label: &str, pose: Pose) -> MarkNow {
         MarkNow {
@@ -181,6 +202,7 @@ mod tests {
                 mark(Shape::Arrow, Style::Dim, "", pose),
             ],
             HUD,
+            &NO_TEAMS,
             LabelFace::Hud,
         );
         assert_eq!(out.len(), 3);
@@ -206,10 +228,38 @@ mod tests {
                 mark(Shape::Bracket, Style::Normal, "", pose.strength(0.0)),
             ],
             HUD,
+            &NO_TEAMS,
             LabelFace::Hud,
         );
         assert!(none.is_empty());
-        let (grey, alpha) = colour(Style::Inactive, HUD);
+        let (grey, alpha) = colour(Style::Inactive, HUD, &NO_TEAMS);
         assert!(grey[0] == grey[1] && grey[1] == grey[2] && alpha == INACTIVE_ALPHA);
+    }
+
+    // ---- K5: team colours and lines ----
+
+    /// A `Team(n)` mark is in the game's colour of team `n`, in full
+    /// alpha; a team the game gives no colour is in the HUD colour, and a
+    /// team past the game's too. A line is one segment.
+    #[test]
+    fn a_team_mark_is_in_its_teams_colour() {
+        let pose = Pose::at([0.0; 3], [0.5, 0.0]);
+        let mut teams: Teams = [None; world::TEAMS as usize];
+        teams[1] = Some([0.9, 0.1, 0.2]);
+        let out = lines(
+            &[
+                mark(Shape::Line, Style::Team(1), "Spawn", pose),
+                mark(Shape::Line, Style::Team(2), "", pose),
+                mark(Shape::Line, Style::Team(200), "", pose),
+            ],
+            HUD,
+            &teams,
+            LabelFace::Hud,
+        );
+        assert_eq!(out.len(), 3);
+        assert_eq!((out[0].color, out[0].style.alpha), ([0.9, 0.1, 0.2], 1.0));
+        assert_eq!(out[0].edges.len(), 1);
+        assert_eq!(out[0].label.as_deref(), Some("Spawn"));
+        assert_eq!((out[1].color, out[2].color), (HUD, HUD));
     }
 }

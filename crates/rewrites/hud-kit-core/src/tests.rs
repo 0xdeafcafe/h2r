@@ -492,3 +492,16 @@ fn a_notification_is_one_line_of_at_most_63_units() {
     assert_eq!(message_fault(&medal), None);
     assert!(message_fault("two\nlines").is_some());
 }
+
+// ---- K5: team styles and the line shape ----
+
+/// A team style names itself; the line is a shape; the game has eight
+/// teams.
+#[test]
+fn a_team_style_names_its_team() {
+    assert_eq!(Style::Team(0).name(), "team 0");
+    assert_eq!(Style::Team(7).name(), "team 7");
+    assert_ne!(Style::Team(0), Style::Team(1));
+    assert!(crate::world::Shape::ALL.contains(&crate::world::Shape::Line));
+    assert_eq!(crate::world::TEAMS, 8);
+}

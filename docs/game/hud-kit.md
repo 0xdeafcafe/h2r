@@ -216,6 +216,7 @@ disc or the running game.
 | Text shadow | the four floats `[0x004686d4]` points at | E `0x0024d3ab` |
 | Prompt and help text | `hudg +0xa4`, packed ARGB | E `0x0024d0a6` |
 | Flash records | `hudg +0xa4`..`+0xbc` (help), `+0xcc`..`+0xe4` (objective), `+0x318`, `+0x338` (timer): a rest colour, a peak colour, period, delay, count, flags, duration | Code `defs/hudg.txt`; E the help and objective reads above |
+| A team's colour | the loaded map's `matg +0x16c` is the datum of its `mulg`; the `mulg`'s first `universal` record (block at `+0`, element address at `+4`) has the team colour block at `+0x10`: one `real_rgb_color` of 12 bytes per team, 8 teams. `0x0007f720` is the game's lookup of it (`0x0007f790` gives it a player's slot 0 in a team game). `pad_lightbar::team_rgb` reads it; `Style::Team(n)` draws in it | E `0x0007f720` ([objects.md](../halo1/objects.md), "Change colours"); Code `crates/extensions/game/src/pad_lightbar.rs` (`team_palette`, synthetic-guest tests) |
 | Widget art | the widget's shader: a meter's fill and a panel's tint are shader colours | [health.md](../halo1/health.md) |
 | Text widget colour | not read: how `0x0022aa16` gets from the widget's shader to the colour it hands `0x0013edb0` | decoding needed (4) |
 
@@ -416,7 +417,7 @@ pub enum Art {
 }
 pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
 pub enum PillPart { Body, End }       // the pill's first PILL_BODY (20) pixels, its last PILL_END (7)
-pub enum Style { Normal, Dim, Inactive, Flash(Pulse), Go } // Go: a world mark's green, alone
+pub enum Style { Normal, Dim, Inactive, Flash(Pulse), Go, Team(u8) } // Go, Team: a world mark's alone
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
 pub struct Value {
@@ -543,7 +544,7 @@ the checks and the preview cover it. `hud_kit_core::world` has its
 shapes and its pose:
 
 ```rust
-pub enum Shape { Pipper, Bracket, Arrow, Ticks }
+pub enum Shape { Pipper, Bracket, Arrow, Ticks, Line }
 
 pub struct Pose {
     pub at: Vec3,          // the point on the geometry
@@ -559,6 +560,7 @@ pub struct Pose {
 | `Bracket` | the four corner brackets of a box, each arm half the box's shorter half | along the heading, across it |
 | `Arrow` | a shaft and a head's two wings, pointing along the heading | half the length, the wings' reach |
 | `Ticks` | three dashes from the point along the heading | the run they take, unused |
+| `Line` | one segment through the point along the heading, an edge of an outline | half its length, unused |
 
 `world::edges(shape, &pose)` gives the line segments in world space,
 flat and 0.02 above the pose's point. The game and the preview draw the
@@ -570,7 +572,15 @@ preview and the checks").
 
 A mark is drawn in the user's HUD colour. `Dim` halves its alpha and
 `Inactive` greys it, as for a widget, and the pose's strength scales the
-alpha again. One more style is a world mark's alone: `Go`, a
+alpha again. `Team(n)` draws it in the colour the game gives team `n`
+("Colours", "A team's colour"): read from the loaded map's `mulg` each
+present, and only while a shown mark has the style
+(`hud_kit_world::colour`, `Teams`). Where the map has no colour for the
+team the mark is in the user's HUD colour. The preview has no map to read
+it from and draws the stand-ins `preview::PREVIEW_TEAMS` (**S**: not the
+game's, apart enough to tell on the sheet). The `world` check refuses
+`Team` on any other kind, and a team of `world::TEAMS` (8) or more. One
+more style is a world mark's alone: `Go`, a
 green (`world::GO_GREEN`, [0.35, 0.95, 0.45]) for a mark that says "this
 will work": the approach guide's "this fall will bounce"
 ([superbounce.md](superbounce.md#the-approach-guide)). The `world` check refuses `Go` on any other kind. The
@@ -837,13 +847,13 @@ the check, the elements and the state and mode:
 | glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5, a navpoint's number in font 6): not record 0, not the record U+FFFF reads, and no copy of either's bitmap (`font::Font::has_glyph`; MSLCD-14 maps `.`, `-` and `~` to a copy of its box) |
 | frame | every rectangle, reserved or drawn, is inside the HUD frame and the screen; an element may sit `FRAME_SLACK` (1) pixel outside the frame, as the tracker and the shield meter do (x 47, the frame's left 48), or its own `Element::outside` when that is more (the charge segments, left of and under the tracker) |
 | retail | no widget element's opaque pixels meet a retail widget's at any `HudState` of the sheet (plain, overshield, plasma grenades, zoomed), and no widget element's rectangle meets the reserved rectangles (`PROMPT_LINE`, `TRAINING_BOX`, `H1_HEALTH`, `RETICLE`); the channels are the game's own text and are not checked against them |
-| own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over` |
+| own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over`; two HUDs one of which names the other in `Describe::never_with` (a monitor's and a biped's, which are never shown together) are not compared with each other |
 | one layout | every state has a value for every element and for nothing else, and every element id is used once |
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
 | prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding |
-| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` is on world marks alone. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
+| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` and `Team` are on world marks alone, `Team` of a team the game has. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
 
 The synthetic source has no fonts, so it skips the glyph check and says
 so, and its retail check is against the flat boxes, not the disc's art.
@@ -1558,6 +1568,9 @@ seam's, which it is not in the flight after a bounce
   `Handle::navpoint_at(id, Option<point>)` for its navpoints, and
   `Handle::world_mark(id, Option<pose>)` for its world marks. A
   `Prompt` or `Training` element's shown text is the channel's text.
+- A feature whose HUD is never shown with another's names it in
+  `Describe::never_with`; the runtime hides the one whose user is not in
+  its mode.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
   `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,
   `HUD_INTERACTION_VISIBLE`,
@@ -1685,6 +1698,10 @@ particular:
   fades with the line, and where a fifth line in four slots goes
   (decoding 6). That the preview's text draw keeps a coloured glyph's
   colours.
+- Team colours: that `0x0007f720` is read as `pad_lightbar::team_rgb`
+  reads it on a retail map (the layout is the lightbar's, tested on a
+  synthetic guest), and that a world mark in a team's colour reads well
+  on the level.
 - World marks: that the world-line pass draws the kit's source beside
   the mode's own, the marks' width, glow and label size in a game, and
   how a mark reads on a slope or behind geometry (the pass has no depth

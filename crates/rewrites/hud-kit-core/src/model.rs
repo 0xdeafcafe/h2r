@@ -524,6 +524,12 @@ pub enum Style {
     /// widget or a text channel in it is a finding of the `world` check
     /// and is not drawn.
     Go,
+    /// Team `n`'s colour (`0..world::TEAMS`), as the game gives it
+    /// (docs/game/hud-kit.md, "Colours"), for a world mark alone: a
+    /// widget or a text channel in it, or a team outside the game's, is a
+    /// finding of the `world` check. Where the game has no colour for the
+    /// team the mark is in the user's HUD colour.
+    Team(u8),
 }
 
 impl Style {
@@ -534,6 +540,7 @@ impl Style {
             Style::Inactive => "inactive".into(),
             Style::Flash(p) => format!("flash {}", p.name()),
             Style::Go => "go".into(),
+            Style::Team(n) => format!("team {n}"),
         }
     }
 }
@@ -672,6 +679,14 @@ pub trait Describe {
     /// `00a_introduction`) is no failure of it.
     fn multiplayer_only(&self) -> Option<&'static str> {
         None
+    }
+    /// The HUDs, by `Hud::name`, that never show together with this one:
+    /// two that declare each other cannot meet on the screen (one is for
+    /// a monitor, the other for a biped), so the `own` check does not
+    /// compare them. The runtime hides the one whose user is not in its
+    /// mode.
+    fn never_with(&self) -> &'static [&'static str] {
+        &[]
     }
     /// The sample poses of the HUD's world marks in the state `state`,
     /// for the preview and the checks: world units in a scene of the
