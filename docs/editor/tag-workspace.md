@@ -15,7 +15,11 @@ knowledge of the formats grows. Maps are built from the tree. The rule
 that must hold: the tree is game data, lives under the data root, and
 nothing of it, its hashes or its lists is ever in Git.
 
-The [content stage](content-stage.md) is the first map built this way.
+The suite is four more pages on this one: the [content stage](content-stage.md),
+the first map built this way; [live editors](live-editors.md), an editor
+and a preview for every kind of tag; the [game view](game-view.md), the
+game's picture inside Studio; and [playtest](playtest.md), bot matches
+on the map being edited. "Build slices" orders the slices of all five.
 
 ## What exists
 
@@ -42,8 +46,10 @@ on every save, and Studio opening a project instead of a map.
 
 ### The tree and its versions
 
-The tree is `tags::repo`'s repository at `<data>/tags/`, in the layout
-[tag-repo.md](../formats/tag-repo.md) records. It is read-only to every
+The tree is `tags::repo`'s repository, in the layout
+[tag-repo.md](../formats/tag-repo.md) records. Its root is Studio's
+`tags_root` setting: `<data>/tags/` unless set, and on the owner's
+machine a folder on the builds volume. It is read-only to every
 tool but the extractor: a cache that the disc and the extractor
 reproduce. Beside it the extractor keeps `extract.toml`
 ([tag-repo.md](../formats/tag-repo.md), "Versions"):
@@ -69,11 +75,22 @@ from it are taken again.
 **First start.** With no tree, Studio's start page is one step: choose
 the disc (an image or an extracted folder; `H2_DISC` and
 `disc/halo2.iso` are offered), see the size and time
-([tag-repo.md](../formats/tag-repo.md), "The whole disc"), extract with a
-progress bar. On later starts Studio runs the plan and shows a bar in
+([tag-repo.md](../formats/tag-repo.md), "The whole disc"), and extract
+every map with a progress bar. On later starts Studio runs the plan and shows a bar in
 the status line while stale parts re-extract in the background; work
 continues on the tree as it is. Headless, `workspace.extract` does the
 same.
+
+**Size and cleanup.** The whole disc is about 2.7 GB of tag files and
+raw resources. The generated and imported layers, build caches and
+outputs add to it under `<data>/workspace/`. The builds volume has a
+quota, so the workspace accounts for itself: `workspace.status` gives
+the bytes of the tree, each layer, each project's cache and each
+output; `workspace.prune` removes raw resources no manifest names,
+generated layers whose fingerprint no project asks for, build caches
+unused for a week and outputs of deleted projects, and `cargo xtask
+prune` calls it. The tree itself is never pruned in part: it is
+deleted whole and extracted again.
 
 ### Layers
 
@@ -305,7 +322,8 @@ while it runs.
   metadata, and some retail maps have no room
   ([scenario-editor.md](scenario-editor.md), section 6).
 - **Disk and time.** The whole disc is about 2.7 GB and a minute and a
-  half to extract, more with raw written.
+  half to extract, more with raw written, on a volume with a quota
+  ("Size and cleanup").
 - **Pinned assumptions in kits.** A kit that finds its template by
   slot or address works on a pinned set and not on a fresh one; each
   migration checks both modes.
@@ -320,7 +338,7 @@ One lane each. A lane writes code and tests; the coordinator runs them.
 | W1 | Extraction versions: `extract.toml`, per-group layout hashes, the plan, resumable per map, `h2 tags extract --update` | `crates/formats/tags/src/repo/{store.rs, extract.rs}`, `crates/formats/tags/src/schema` (the hash), `tag_repo_cmd.rs`, [tag-repo.md](../formats/tag-repo.md) | on invented maps: a moved layout hash re-extracts that group only; an interrupted run redoes one map; unchanged input is a no-op | the disc test extracts, then `--update` does nothing |
 | S1, S2 | The stage's geometry and its map, built `fresh` from a `TagSource` | see the stage page | | the stage loads in the game |
 | W2 | `Layered` and projects: the crate, the project file, `fresh` and `onto` builds, the package output, `h2 tags build --project` | `crates/tools/workspace/{Cargo.toml, src/lib.rs, layer.rs, project.rs, build.rs, tests.rs}`, `h1convert/src/scratch.rs` (onto `Layered`) | invented tree and layers: first hit wins; a lossy tag refuses `fresh` by name; `onto` output differs from its base only in changed tags; the stage's project builds the bytes S2 built | `h2 tags build --project art/stage/project.toml` writes the stage package |
-| W3 | Studio's first start and `workspace.*`: the start page, the background plan, status, the game's `maps.load` rescan | `crates/apps/studio/src/{api/workspace.rs, ui/workspace.rs, app/workspace.rs}`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), [editor-guide.md](editor-guide.md) | headless: no tree shows the start page; `workspace.extract` on an invented disc; a Git checkout refused; every method's example | a fresh data root extracts from the disc in the window, with progress |
+| W3 | Studio's first start and `workspace.*`: the start page, the background plan, `tags_root`, status with sizes, `workspace.prune`, the game's `maps.load` rescan | `crates/apps/studio/src/{api/workspace.rs, ui/workspace.rs, app/workspace.rs}`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), [editor-guide.md](editor-guide.md) | headless: no tree shows the start page; `workspace.extract` on an invented disc; a Git checkout refused; every method's example | a fresh data root extracts from the disc in the window, with progress |
 | W4 | `ContentKit`, `KitRewrite`, the Pogo as the first kit, sources from a directory | `crates/formats/content/src/kit.rs`, `crates/tools/pogo-kit/src/{kit.rs, source.rs, rewrite.rs, inject.rs}`, `crates/apps/boot/src/lib.rs` (the chain), [pogo-stick.md](../game/pogo-stick.md) | baked and directory sources install the same tags; a map holding the kit is skipped; the rewrite's cache key is unchanged for unchanged input | the stage project with `kits = ["stage", "pogo"]` holds the Pogo |
 | S3 to S8 | The stage's flow: game methods, `stage.*`, checks | see the stage page | | `stage.run` gives a verdict on the Pogo |
 | W5 | Edit files and Studio's save: the format, `apply`, the journal to edit lines, `doc.open {project}`, `project.*` | `workspace/src/edits.rs`, `studio/src/{api/project.rs, app/project_doc.rs}`, [tag-editing.md](tag-editing.md), [scenario-editor.md](scenario-editor.md) | apply then diff gives the edit back; a stale `was` and a dead path stop with the line; the window's save and the API's write the same file; undo across a save | a field changed in the Tags tool is in the edit file, in the built map and in the paired game |
@@ -328,37 +346,45 @@ One lane each. A lane writes code and tests; the coordinator runs them.
 | W7 | Tags as text and the importers' one signature | `workspace/src/{author.rs, import.rs}`, `pogo-kit` (its weapon as YAML), `tag_repo_cmd.rs` (`h2 tags import`), `studio/src/api/import.rs` | a text tag equals the Rust-built one byte for byte; unknown fields refused with the nearest name; each importer on an invented source | the Pogo's `weap` comes from YAML with the same tags as before |
 | W8 | The other kits onto `ContentKit`, one lane per kit: Firefight, UI screens and retail edits, campaign cards, fonts and gear, Forge's build, test-map recipes | each kit's crate or module, `boot/src/lib.rs`, the kit's page | per kit: the map made through `KitRewrite` equals the one its own rewrite made | boot's chain is `KitRewrite` and the kits' own caches are gone |
 | W9 | Imports as layers: community maps and the map pack | `workspace/src/import_map.rs`, `tags::repo::extract` (map pack caches), `studio/src/api/workspace.rs` | an invented mod map stores only its differing tags; a project over it builds | a community map opens as a project |
-| W10 | Level tags without loss: `sbsp`, `ltmp` and `scnr` layouts from `tags::structure`, so retail levels build `fresh` | `crates/formats/tags/src/{schema, structure.rs, repo/extract.rs}`, [tag-repo.md](../formats/tag-repo.md) | the disc test reports no lossy level tag on its maps; the rebuilt regions compare byte for byte in content | a retail multiplayer map built `fresh` loads in the game |
+| W10 (later) | Level tags without loss: `sbsp`, `ltmp` and `scnr` layouts from `tags::structure`, so retail levels build `fresh` | `crates/formats/tags/src/{schema, structure.rs, repo/extract.rs}`, [tag-repo.md](../formats/tag-repo.md) | the disc test reports no lossy level tag on its maps; the rebuilt regions compare byte for byte in content | a retail multiplayer map built `fresh` loads in the game |
 
-W1, S1 and S2 start together. W2 follows S2 (it must reproduce S2's
-bytes). W3 and W4 follow W2. W5 to W9 are independent of each other
-after W4. W10 is independent of all but W1.
+### Order across the pages
+
+`S` is [content-stage.md](content-stage.md), `GV` [game-view.md](game-view.md),
+`LE` [live-editors.md](live-editors.md), `PT` [playtest.md](playtest.md).
+A wave's slices are independent of each other.
+
+| Wave | Slices | Waits for |
+|---|---|---|
+| 1 | W1, S1, then S2 | nothing |
+| 2 | GV1 (the picture), LE1 (registry and fan-out), PT1 (static checks), PT2 (spatial trace), PT3 (measures), S4 (`render.view`), S5 (`audio.meter`) | nothing; they start beside wave 1 |
+| 3 | W2 (layers and projects), S3 (lighting and sky), PT8 (fresh maps) | S2 |
+| 4 | W3 (first start), W4 (kits), GV2 (the panel, attached), GV3 (editor mode, the own game), PT4 (the runner), PT5 (overlays) | W2 for W3, W4 and PT4; GV1 for GV2 and GV3; PT3 for PT5 |
+| 5 | S6 (`stage.*`), GV4 (input), GV5 (cameras), LE2 (the subject), W5 (edit files), PT6 (compare), PT7 (the pool) | GV3 for S6, GV4, GV5 and LE2; W4 for W5; PT4 for PT6 and PT7 |
+| 6 | S7 (checks and `stage.run`), GV6 (edits with no Pending), W6 (incremental build), W7 (tags as text, importers), LE3 to LE8 (the editors) | S5, S6 and W4 for S7; W5 for GV6; LE1 and each editor's cited slice |
+| 7 | S8 (panel, skill, budgets), W8 (the other kits), W9 (imports) | S7; W4 |
+| Later | W10 (retail levels built fresh) | W1 |
+
+## Decisions
+
+- The suite covers the scenario editor, the tag editor, the asset
+  editors and viewers and the map builder, each tag kind with an
+  editor and a preview ([live-editors.md](live-editors.md)).
+- A player's game keeps the boot-time rewrite (`KitRewrite`) and needs
+  no tree and no Studio.
+- The first start extracts every map.
+- Edit files for retail tags are in Git, holding tag paths, field
+  names and our numbers.
+- Studio's save writes edit lines and builds. It writes no patch
+  packages and migrates none.
+- Retail levels stay `onto`. Building them `fresh` (W10) is a later
+  goal.
 
 ## Open questions
 
-1. **Which tools the suite must cover.** The scenario editor, the tag
-   editor and the map builder are named above. For the asset tools
-   beyond those (viewers, a bitmap tool, anything else meant by the
-   other two names), which behaviours are wanted first?
-2. **What the game does on a player's machine.** This design keeps the
-   boot-time rewrite (`KitRewrite`) so a player needs no tree and no
-   Studio. The other choice is that the game extracts and builds too,
-   or that our maps only ship as packages built here. Keep the rewrite?
-3. **Extract everything at first start** (about 2.7 GB), or the shared
-   caches and multiplayer maps first and each campaign map when first
-   opened?
-4. **Edits to retail tags in Git.** Edit files hold tag paths, field
-   names and our numbers. Is that within the public repository's rule,
-   as the retail screen edits are?
-5. **Our own tags in Git.** Sources only (YAML, art, kit code), with
+1. **Our own tags in Git.** Sources only (YAML, art, kit code), with
    the loose tags generated locally. Or commit the generated loose
    tags of ours as well, for review?
-6. **The end of patch packages.** Studio's save writes edit lines and
-   builds; saved patch packages are not migrated. Agreed?
-7. **Retail levels built fresh** (W10): a goal, or is `onto` enough
-   for retail levels for good?
-8. **The data root for the tree.** `<data>/tags/` by default. Should
-   it sit on the builds volume instead?
 
 ## Evidence
 
@@ -393,6 +419,7 @@ after W4. W10 is independent of all but W1.
 ## Related
 
 - [content-stage.md](content-stage.md): the first project, and how content is checked on it
+- [live-editors.md](live-editors.md), [game-view.md](game-view.md), [playtest.md](playtest.md): the rest of the suite
 - [tag-repo.md](../formats/tag-repo.md), [tag-schema.md](../formats/tag-schema.md), [map-builder.md](../formats/map-builder.md), [tag-definitions.md](../formats/tag-definitions.md): the tree, layouts, the builder, typed fields
 - [editor.md](editor.md), [tag-editing.md](tag-editing.md), [scenario-editor.md](scenario-editor.md), [rich-editors.md](rich-editors.md): Studio's tools
 - [maps.md](../game/maps.md): packages

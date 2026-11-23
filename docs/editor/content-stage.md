@@ -99,19 +99,18 @@ one, through `studio::play` ([editor.md](editor.md#play-and-pair)):
   reloaded; a guest crash would take Studio's unsaved documents with
   it, and `studio::play` already speaks to a separate game for every
   other tool.
-- **Which game.** `stage.open` uses the paired game (auto-pair's choice)
-  and claims it (`session.claim`). It refuses a game that is in a
-  networked session, as live edits do. It starts a game only with
-  `launch: true`, which the window's **Stage** button sends and an
-  agent's call does not: agents attach to the shared `h2 serve`.
-- **The launch.** `play::launch::Launch` gains a headless form: `h2
-  serve` with a GPU view backend for `h2-editor --serve`, `h2 play` for
-  the window. Both run the fast tier ([cranelift-tier.md](../lifter/cranelift-tier.md));
-  `launch` never builds an image.
+- **Which game.** Studio's own game in editor mode
+  ([game-view.md](game-view.md), "Own mode"), started by `stage.open`
+  when it is not running. The stage is never loaded into a game the
+  user started: an agent's `stage.run` on a headless Studio uses that
+  Studio's own game and leaves the shared `h2 serve` alone.
+- **The launch.** `h2 serve --editor` with a GPU view backend and no
+  window, on the fast tier ([cranelift-tier.md](../lifter/cranelift-tier.md)),
+  straight into the stage's package. Studio never builds an image.
 - **In Studio's window.** The viewport draws the stage document with
-  Studio's renderer and the live mirror's objects over it. The **Stage**
-  panel shows the game's own pixels: the last shot of each camera, and
-  the report. A live game picture in the panel is an open question.
+  Studio's renderer and the live mirror's objects over it. The Game
+  panel shows the own game live. The **Stage** panel shows the last
+  shot of each camera and the report.
 
 Time budgets, as targets until `notes/content-stage.md` (new) records
 them (**S**):
@@ -122,7 +121,7 @@ them (**S**):
 | Texture or vertex edit | raw edits | the next frame |
 | New or resized tags, a kit's sources changed | `project.build`, `maps.load` | 5 s |
 | Stage into a running game | `project.build` (cached), `maps.load` | 5 s |
-| Cold: no game running | launch on the fast tier, boot, load | 30 s to the first shot |
+| Cold: the own game not running | start it in editor mode on the stage | 30 s to the first shot |
 
 The stage is small (one BSP, few bitmaps), so a build is a small
 closure and a load reads little. A change to a kit's Rust code
@@ -136,7 +135,7 @@ tool's):
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `stage.status` | read | none | the package (`absent`, `building`, `ready`, its key and report), the game link, whether the stage is the loaded map, the last run |
-| `stage.open` | act | `{content?: [{kit, source?}], bay?, rules?, launch?}` | builds if the key changed, loads, waits for gameplay, places the player in `bay` (`flat` by default). `{map_id, activation, bay, placed: [{item, pad, tag, point}], costs, took_ms}` |
+| `stage.open` | act | `{content?: [{kit, source?}], bay?, rules?}` | builds if the key changed, starts the own game if needed, loads, waits for gameplay, places the player in `bay` (`flat` by default). `{map_id, activation, bay, placed: [{item, pad, tag, point}], costs, took_ms}` |
 | `stage.shoot` | act | `{shots?, bay?, out?}` | pauses at a fixed tick, takes each named shot. `{shots: [{name, path, size, tick, stats}]}`; PNGs under `<cache>/stage/runs/<run>/`, refused in a Git checkout |
 | `stage.listen` | act | `{cue \| tag, at?}` | plays a host cue or a sound tag at 1, 5 and 20 units from the listener and meters each. `{levels: [{at, peak_db, rms_db, lufs}], reference}` |
 | `stage.run` | act | `{content?, bays?, golden?}` | `open`, `shoot` in each bay, `listen` for each sound the content declares, the checks. `{ok, checks: [{name, ok, value, bar, shot?}], shots, levels, fits, skipped}` |
@@ -148,11 +147,14 @@ A lane's last step is one call:
 h2 studio stage.run '{"content":[{"kit":"pogo","source":"/abs/path/art/pogo"}]}'
 ```
 
-`stage.run` registers with `check.run` as the source `stage`. With no
-game to use it reports `skipped` with the reason, and `check.run` still
-gives the first layer's results.
+`stage.run` registers with `check.run` as the source `stage`. Where the
+own game cannot start (no disc, no current image, no GPU) it reports
+`skipped` with the reason, and `check.run` still gives the first
+layer's results.
 
-The shots, and how each is taken:
+The shots, and how each is taken. Every shot is taken twice from the
+same sealed scene, in `retail` and in `e3` lighting
+(`render.capture {lighting}`), and the checks run on both:
 
 - `ground`, `front`, `side`, `orbit-N`, `ruler`, `third`: a private
   world view at the layout's eye (`render.view {eye, yaw, pitch, fov}`,
@@ -165,7 +167,7 @@ The shots, and how each is taken:
 - `hud-full`, `hud-low`, `hud-empty`: `first` with the shield and ammo
   set by `sim.state.set`, for HUD kit elements and `nhdt` edits.
 - `screen`: an in-game screen of ours opened over the stage (needs a
-  game method that opens a screen by id; open question 5).
+  game method that opens a screen by id; the open question).
 
 The checks need no reference image:
 
@@ -193,14 +195,14 @@ repository.
 
 - The stage has no AI, no moving scenery and no weather. The lighting
   is baked. `stage.shoot` pauses the game at map tick 90 and captures
-  that tick's sealed scene (`render.capture {tick}`), so two runs draw
-  the same scene.
+  that tick's sealed scene (`render.capture {tick, lighting}`) once per
+  lighting, so two runs draw the same two pictures.
 - Cameras come from the layout, never from the player's aim. The field
   of view and the capture size (1280 by 720) are fixed.
 - References are local. `stage.golden {accept}` copies a run's shots to
-  `<data>/stage/goldens/<content>/<stage key>/<bay>-<shot>.png`. They
-  are valid for one stage key and one machine; a new key drops them from
-  comparison and says so. None goes in Git: the stage's own page may
+  `<data>/stage/goldens/<content>/<stage key>/<bay>-<shot>-<lighting>.png`. They
+  are valid for one stage key and one machine and are never copied
+  between machines; a new key drops them from comparison and says so. None goes in Git: the stage's own page may
   show one scripted shot under `docs/images/` in LFS, taken by the
   editor's scripted screenshot route, and nothing else.
 - `golden` is advisory by default (`stage.run {golden: "strict"}` makes
@@ -210,8 +212,7 @@ repository.
 ## Interfaces
 
 - **Studio builds** with `workspace::build` (`project.build`) and
-  **calls the game:** `session.claim`, `maps.load`, `session.wait`,
-  `session` pause
+  **calls its own game:** `maps.load`, `session.wait`, `session` pause
   and step, `render.view` (new), `render.spawn_view`, `render.capture`,
   `render.compare`, `sim.state.set`, the give call, `world` queries,
   `audio.meter` (new), `rules.reload`, `edit.*`.
@@ -250,8 +251,7 @@ repository.
   player and every shader template come from it. With no disc
   `stage.open` answers `UNAVAILABLE` and `check.run` reports the stage
   skipped.
-- The base is one disc multiplayer map (`lockout` in the project;
-  `base` moves it). A shader a kit writes needs its template in
+- The base is Lockout (`base` in the project). A shader a kit writes needs its template in
   the base or the shared map, as on any map.
 - The stage has far more free tag memory than a retail map
   (`map::writer::max_metadata_size` against a one-BSP map). `fits` is
@@ -262,6 +262,8 @@ repository.
   under Superbounce) names that script in its `ContentKit`.
 - One package, `stage`, rebuilt in place, so the stage takes one map
   slot whatever the content.
+- The stage runs on Studio's own game only
+  ([game-view.md](game-view.md), "Rules and limits").
 - Frame time on the stage is not a result. Perf numbers come from
   `h2 lab`.
 
@@ -309,41 +311,22 @@ Pogo as a `ContentKit`, sources from a directory) is its W4.
 | S3 | Lighting and sky: `stage_kit::light`, the three bays' lightmaps, the sky dome and its install | `stage-kit/src/{light.rs, sky.rs}` | the day bay's lightmap is brighter toward the sun's side of the references and the dark bay's is under its bar; the sky model converts and the scenario names it | the three bays' `ground` shots differ as designed in the game |
 | S4 | `render.view` | `crates/extensions/game/src/agent_spawn_view.rs`, `crates/extensions/agent-proto/src/render.rs`, [agent-api.md](../runtime/agent-api.md) | params checked; the pose reaches the private view; reset; interrupted by a map change | a capture from a given eye matches the pose |
 | S5 | `audio.meter` | the host mixer's tap in `crates/extensions/game` beside `medal_announcer`, `agent-proto`, the audio page, [agent-api.md](../runtime/agent-api.md) | a synthetic sine through the tap gives its peak, RMS and loudness; `play` starts a named cue; the null sink runs with no device | the Pogo's three cues meter on a headless game |
-| S6 | `stage.status`, `stage.open`, `stage.shoot`, the headless launch, `maps.load`'s rescan | `crates/apps/studio/src/api/stage.rs`, `studio/src/play/{launch.rs, stage.rs}`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), this page | over the fake game link in `play::testing`: the calls made in order, the claim, the refusals (no disc, a networked game, a Git checkout), every method's example; `maps.load` on an id published after start | one `stage.open` then `stage.shoot` on the shared serve gives the PNGs of a bay |
+| S6 | `stage.status`, `stage.open`, `stage.shoot` on the own game, `maps.load`'s rescan | `crates/apps/studio/src/api/stage.rs`, `studio/src/play/stage.rs`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), this page | over the fake game link in `play::testing`: the calls made in order, the own game started when absent, both lightings shot, the refusals (no disc, no image, a Git checkout), every method's example; `maps.load` on an id published after start | one `stage.open` then `stage.shoot` on a headless Studio gives the PNGs of a bay in both lightings |
 | S7 | The checks, `stage.listen`, `stage.run`, `stage.golden`, the `fits` table, the `check.run` source | `studio/src/api/stage_checks.rs`, `stage-kit/src/fits.rs`, `studio/src/api/stage.rs` | each check on invented images and levels, passing and failing; `fits` on invented costs and maps; the references keyed by stage key and tier; `check.run` reports the stage skipped with no game | `stage.run` on a Pogo with a blacked atlas fails `lit` and `first-person`, and on a clip raised 12 dB fails `loud` |
 | S8 | The Stage panel, the skill and the rule for lanes, the measured budgets | `studio/src/ui/stage.rs`, `.claude/skills/h2-agent-api/SKILL.md`, `AGENTS.md`, `docs/editor/notes/content-stage.md`, [editor-guide.md](editor-guide.md) | the panel's state from a canned report (a headless window test) | the budget table links to the note; a lane's report quotes a `stage.run` |
 
 S1 and S2 are in order and wait for nothing in the workspace: S2 builds
 on `tags::repo` as it is. S3, S4 and S5 are independent of each other
-once S2 lands. S6 needs S2, and takes S4 when it is there. S7 needs S5,
-S6 and W4.
+once S2 lands. S6 needs S2 and the game view's GV3 (the own game), and
+takes S4 when it is there. S7 needs S5, S6 and W4.
 
 ## Open questions
 
-1. **A live game picture inside Studio.** The design shows shots, not a
-   live view. A live panel means either a frame stream from the game
-   (the lab's, at a few frames a second) or the game's window as a child
-   of Studio's. Wanted, or are shots and the mirror enough?
-2. **May an agent's `stage.open` start a game** when none runs, or does
-   it always wait for the shared serve? The design says it does not
-   start one.
-3. **Taking over the shared serve.** `stage.open` changes its map for
-   every agent attached. The design claims the session and refuses
-   when another agent holds the claim. Is one stage game beside the
-   shared serve preferred?
-4. **References.** Local and advisory in this design. Should an accepted
-   set travel between the two Macs (through the lab), or stay per
-   machine?
-5. **Screens.** Our screens live in the main menu and shared maps
+1. **Screens.** Our screens live in the main menu and shared maps
    ([ui-in-maps.md](../game/ui-in-maps.md)), so the stage holds none.
    Is a game method that opens a screen by id over gameplay worth
    adding for the `screen` shot, or is `ui.check` with `pair.preview`
    at the menu enough?
-6. **The base map.** `lockout` by default. Any multiplayer map on the
-   disc works; a different default changes only the globals'
-   source.
-7. **Both lightings.** `render.capture` draws `retail` or `e3` lighting.
-   The design shoots `retail` only.
 
 ## Evidence
 
@@ -385,6 +368,9 @@ S6 and W4.
 ## Related
 
 - [tag-workspace.md](tag-workspace.md): the tree, projects, kits and the build the stage is made with
+- [game-view.md](game-view.md): Studio's own game, which the stage runs on
+- [live-editors.md](live-editors.md): the stage as where an edited tag stands
+- [playtest.md](playtest.md): bot matches, with the stage as the first fresh map
 - [agent-api.md](agent-api.md): Studio's methods, the first layer's among them
 - [editor.md](editor.md#play-and-pair): starting and pairing a game
 - [live-mirror.md](live-mirror.md), [realtime-edits.md](realtime-edits.md): edits to a running game
