@@ -448,3 +448,72 @@ fn a_hop_is_never_taken_where_its_landing_leaves_the_floor() {
     let turned = m.fight_with_style(&i, Some(&corridor), &bodies, eager);
     assert!(turned.walk[1] < -0.5 && !turned.jump, "{turned:?}");
 }
+
+#[test]
+fn an_enemy_overhead_is_not_backed_away_from() {
+    let map = open();
+    for skill in [Skill::Normal, Skill::Heroic, Skill::Legendary] {
+        let mut m = Moves::new(3);
+        for t in 0..60 {
+            // On a ledge 2.2 over, half a unit out: inside the near edge
+            // in 3D, but a step back only loses it.
+            let mv = m.fight(&input(skill, t, [0.0; 3], [0.5, 0.0, 2.2]), Some(&map), &[]);
+            assert!(toward(&mv) > -0.05, "{skill:?} tick {t}: {mv:?}");
+        }
+    }
+    // Level and as near, it backs off.
+    let mut m = Moves::new(3);
+    let mv = m.fight(
+        &input(Skill::Legendary, 0, [0.0; 3], [2.0, 0.0, 0.0]),
+        Some(&map),
+        &[],
+    );
+    assert!(toward(&mv) < -0.3, "{mv:?}");
+}
+
+#[test]
+fn the_near_edge_is_measured_in_three_dimensions() {
+    // 2 out and 2 under: 2.8 away, outside the near edge of 2.5.
+    let mut m = Moves::new(5);
+    let mv = m.fight(
+        &input(Skill::Legendary, 0, [0.0; 3], [2.0, 0.0, -2.0]),
+        Some(&open()),
+        &[],
+    );
+    assert!(toward(&mv).abs() < 1e-3, "{mv:?}");
+}
+
+#[test]
+fn on_another_level_a_strafe_that_loses_sight_is_not_taken() {
+    // A post at X = 2 north of the line: from half a unit north the line
+    // to the enemy on the ledge passes through it; from the south, clear.
+    let map = MapData {
+        walls: wall([2.0, 0.15], [2.0, 3.0]),
+        ..open()
+    };
+    for seed in 0..8 {
+        let mut m = Moves::new(seed);
+        for t in 0..90 {
+            let mv = m.fight(
+                &input(Skill::Legendary, t, [0.0; 3], [4.0, 0.0, 2.0]),
+                Some(&map),
+                &[],
+            );
+            assert!(mv.walk[1] < 0.05, "seed {seed} tick {t}: {mv:?}");
+        }
+    }
+    // Level with it, the same post does not hold the strafe back.
+    let north = (0..8u64).any(|seed| {
+        let mut m = Moves::new(seed);
+        (0..90).any(|t| {
+            m.fight(
+                &input(Skill::Legendary, t, [0.0; 3], [4.0, 0.0, 0.0]),
+                Some(&map),
+                &[],
+            )
+            .walk[1]
+                > 0.3
+        })
+    });
+    assert!(north);
+}

@@ -46,7 +46,7 @@ pub const FRIENDLY_SPLASH: f32 = 3.0;
 /// Pre-aims at where an enemy went out of view within this (world units)...
 pub const PRE_AIM_RANGE: f32 = 15.0;
 /// ...while walking no more than this far (radians) away from facing it.
-pub const PRE_AIM_CONE: f32 = 100.0 * std::f32::consts::PI / 180.0;
+pub const PRE_AIM_CONE: f32 = 45.0 * std::f32::consts::PI / 180.0;
 
 /// What skill changes in the fight, beyond the aim model.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -342,12 +342,29 @@ impl Tactics {
         self.focus_with_jitter(id, tick, skill, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn focus_with_jitter(
         &mut self,
         id: u32,
         tick: u32,
         skill: Skill,
         jitter: Option<f32>,
+    ) -> u32 {
+        self.focus_alert(id, tick, skill, jitter, false)
+    }
+
+    /// The tick the reaction to `id` ends, sampled once when the bot takes
+    /// notice, `jitter` the name's reaction trait. `alert` when the mind
+    /// has a reason to expect someone (a tracker dot near, a hit from out
+    /// of view): a fresh notice is then as quick as one in the middle of a
+    /// fight.
+    pub(crate) fn focus_alert(
+        &mut self,
+        id: u32,
+        tick: u32,
+        skill: Skill,
+        jitter: Option<f32>,
+        alert: bool,
     ) -> u32 {
         self.known.retain(|n| tick.wrapping_sub(n.last) <= FORGET);
         let prior = self.known.iter().position(|n| n.id == id);
@@ -357,10 +374,11 @@ impl Tactics {
             self.known[i].last = tick;
             return self.known[i].ready;
         }
-        let alert = self
-            .known
-            .iter()
-            .any(|n| tick.wrapping_sub(n.last) <= GRACE);
+        let alert = alert
+            || self
+                .known
+                .iter()
+                .any(|n| tick.wrapping_sub(n.last) <= GRACE);
         // Two uniform rolls put most reactions near the middle. Being
         // prepared shifts the distribution down without removing the floor.
         let nominal = skill.aim().reaction;
