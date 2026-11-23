@@ -549,10 +549,13 @@ fn the_modes_are_the_widgets_three() {
     assert_eq!(records::ROOT_TEXTS, 0x10);
 }
 
-/// A notification is one line of at most 63 UTF-16 units: the game's
-/// insert copies 63.
+/// A notification is one line of at most 62 UTF-16 units: the game's
+/// insert hands its copy 63, which keeps 62 and a zero.
 #[test]
-fn a_notification_is_one_line_of_at_most_63_units() {
+fn a_notification_is_one_line_of_at_most_62_units() {
+    assert_eq!(MESSAGE_UNITS, 62);
+    assert_eq!(MESSAGE_UNITS, BANNER_UNITS);
+    assert!(message_fault(&"a".repeat(63)).is_some());
     assert_eq!(message_fault(&"a".repeat(MESSAGE_UNITS)), None);
     assert!(message_fault(&"a".repeat(MESSAGE_UNITS + 1)).is_some());
     // A private-use glyph is one unit.

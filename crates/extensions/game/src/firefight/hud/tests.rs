@@ -118,6 +118,8 @@ struct Played {
     boss_spawn: bool,
     ticks: u32,
     finished: Option<Outcome>,
+    /// Every note the client's views sent, in order ([`Feed`]).
+    notes: Vec<String>,
 }
 
 /// Plays the director against a scripted game in which every placed squad
@@ -133,7 +135,9 @@ fn play(mut d: ScriptDirector, players: &[u8], local: u8) -> Played {
         boss_spawn: false,
         ticks: 0,
         finished: None,
+        notes: Vec::new(),
     };
+    let mut feed = Feed::default();
     for tick in 0..4_000u32 {
         let mut kills = Vec::new();
         for slot in 0..SQUAD_SLOTS {
@@ -165,6 +169,7 @@ fn play(mut d: ScriptDirector, players: &[u8], local: u8) -> Played {
         assert_eq!(client, host, "tick {tick}");
         let (host_view, client_view) = (view(&host, local), view(&client, local));
         assert_eq!(client_view, host_view, "tick {tick}");
+        out.notes.extend(feed.tick(Some(Ok(view_of(&client, local)))).1);
         out.stages.insert(host.stage as u8);
         out.boss_spawn |= host.stage == Stage::Spawning && host.boss;
         if let Some(b) = host_view.get(BANNER).filter(|b| b.shown) {
@@ -264,6 +269,7 @@ fn sample_mode() -> Mode {
         waves: 5,
         boss: false,
         left: 9,
+        skulls: 0,
         lives: Lives::Shared(4),
         teams: None,
     }
@@ -284,7 +290,7 @@ fn two_team_mode() -> Mode {
 #[test]
 fn mode_blobs_round_trip_within_the_channel_limit() {
     let shared = sample_mode();
-    assert_eq!(shared.encode().len(), 13);
+    assert_eq!(shared.encode().len(), 17);
     assert_eq!(Mode::decode(&shared.encode()), Ok(shared));
     let each = Mode {
         boss: true,
@@ -296,20 +302,20 @@ fn mode_blobs_round_trip_within_the_channel_limit() {
         ..sample_mode()
     };
     let bytes = each.encode();
-    assert_eq!(bytes.len(), 36);
+    assert_eq!(bytes.len(), 40);
     assert!(bytes.len() <= MAX_BLOB);
     assert_eq!(Mode::decode(&bytes), Ok(each.clone()));
     // Two teams: their points and members, then the team pools or each
     // player's own lives.
     let teams = two_team_mode();
-    assert_eq!(teams.encode().len(), 25);
+    assert_eq!(teams.encode().len(), 29);
     assert_eq!(Mode::decode(&teams.encode()), Ok(teams.clone()));
     let teams_each = Mode {
         lives: each.lives.clone(),
         ..teams
     };
     let bytes = teams_each.encode();
-    assert_eq!(bytes.len(), 46);
+    assert_eq!(bytes.len(), 50);
     assert!(bytes.len() <= MAX_BLOB);
     assert_eq!(Mode::decode(&bytes), Ok(teams_each));
     for stage in [Stage::Team0Won, Stage::Team1Won, Stage::Draw] {
@@ -354,10 +360,13 @@ fn a_blob_it_does_not_understand_is_refused() {
     assert_eq!(field(4, 5), Err(Error::Field("wave")));
     assert_eq!(field(5, 17), Err(Error::Field("wave")));
     assert_eq!(field(6, 2), Err(Error::Field("flags")));
-    assert_eq!(field(9, 0), Err(Error::Field("teams")));
-    assert_eq!(field(9, 3), Err(Error::Field("teams")));
+    assert_eq!(field(TEAM_COUNT, 0), Err(Error::Field("teams")));
+    assert_eq!(field(TEAM_COUNT, 3), Err(Error::Field("teams")));
+    // A skull Firefight never turns on (Envy, index 0; a bit past 16).
+    assert_eq!(field(9, 1), Err(Error::Field("skulls")));
+    assert_eq!(field(12, 0x80), Err(Error::Field("skulls")));
     // Two teams named with no room for their part.
-    assert!(matches!(field(9, 2), Err(Error::Length { .. })));
+    assert!(matches!(field(TEAM_COUNT, 2), Err(Error::Length { .. })));
     assert_eq!(field(HEAD, 3), Err(Error::Field("lives")));
     // Team pools in a blob of one team, and one pool in a blob of two.
     assert_eq!(field(HEAD, LIVES_TEAMS), Err(Error::Field("lives")));
@@ -559,4 +568,86 @@ fn the_published_blob_is_the_latest_or_none() {
     assert_eq!(Mode::decode(&held.get().unwrap()), Ok(sample_mode()));
     held.set(None);
     assert_eq!(held.get(), None);
+}
+
+/// The skulls on are in the blob, one bit a session skull index, and only
+/// Firefight's; every Firefight skull is in [`FIREFIGHT_SKULLS`].
+#[test]
+fn the_skulls_on_ride_in_the_blob() {
+    // Exhaustive: a new Firefight skull fails to compile here until it is
+    // listed.
+    let listed = |s: Skull| match s {
+        Skull::Assassins
+        | Skull::Thunderstorm
+        | Skull::Famine
+        | Skull::Blind
+        | Skull::Ghost
+        | Skull::Catch
+        | Skull::Mythic
+        | Skull::Angry
+        | Skull::LowGravity => FIREFIGHT_SKULLS.contains(&s),
+    };
+    assert!(FIREFIGHT_SKULLS.iter().all(|s| listed(*s)));
+    assert_eq!(SKULL_BITS.count_ones(), 9);
+    assert_eq!(skull_mask(&[Skull::Mythic, Skull::LowGravity]), 1 << 12 | 1 << 16);
+    let m = Mode {
+        skulls: skull_mask(&FIREFIGHT_SKULLS),
+        ..sample_mode()
+    };
+    assert_eq!(m.skulls, SKULL_BITS);
+    assert_eq!(Mode::decode(&m.encode()), Ok(m.clone()));
+    assert_eq!(view_of(&m, 0).skulls, SKULL_BITS);
+    // The director's set reaches the blob.
+    let mut d = director(small_def(true, 2));
+    d.step(0, &seen(&[0], [0; SQUAD_SLOTS], Vec::new()));
+    let mode = Mode::of(&d, 1, None).unwrap();
+    assert_eq!(mode.skulls, skull_mask(&d.state().skulls));
+    assert_eq!(skull_name(12), Some("Mythic"));
+    assert_eq!(skull_name(200), None);
+}
+
+/// A round's skull switched on is a note a client sends from the blob
+/// alone, with the round's: the second round of the test set turns Blind
+/// on.
+#[test]
+fn a_rounds_skull_is_a_note_from_the_blob() {
+    let played = play(director(small_def(true, 2)), &[0], 0);
+    assert_eq!(played.finished, Some(Outcome::Won));
+    let at = |t: &str| played.notes.iter().position(|n| n == t);
+    let (round, skull) = (at("Round 2 of 2"), at("Blind skull on"));
+    assert!(round.is_some() && skull.is_some(), "{:?}", played.notes);
+    assert!(round < skull, "{:?}", played.notes);
+}
+
+/// Split screen: each local user's feed views the blob at its own roster
+/// slot, so each sees its own lives and gets its own notes; a user with no
+/// player is hidden.
+#[test]
+fn each_local_user_sees_its_own_lives() {
+    let m = Mode {
+        lives: Lives::Each(vec![(0, 3), (2, 1)]),
+        ..sample_mode()
+    };
+    let blob = m.encode();
+    let current = |slot: u8| Some(Mode::decode(&blob).map(|m| view_of(&m, slot)));
+    let mut feeds: Feeds = Default::default();
+    let slots = [Some(0), Some(2), None, None];
+    let all = tick_all(&mut feeds, &slots, current);
+    let lives = |i: usize| {
+        let v = all[i].0.get(LIVES_COUNT).unwrap();
+        v.shown.then(|| v.text.clone())
+    };
+    assert_eq!(lives(0).as_deref(), Some("3"));
+    assert_eq!(lives(1).as_deref(), Some("1"));
+    assert_eq!(all[2].0, hud_kit_core::huds::firefight::hidden());
+    // User 1 loses its last life: the note is its alone.
+    let hit = Mode {
+        lives: Lives::Each(vec![(0, 3), (2, 0)]),
+        ..sample_mode()
+    }
+    .encode();
+    let current = |slot: u8| Some(Mode::decode(&hit).map(|m| view_of(&m, slot)));
+    let all = tick_all(&mut feeds, &slots, current);
+    assert!(all[0].1.is_empty());
+    assert_eq!(all[1].1, ["A life lost"]);
 }

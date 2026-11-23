@@ -87,6 +87,10 @@ pub(super) fn encode(ticks: &[Tick], extra: &[TickRecords]) -> Result<Vec<u8>> {
             out.record(tick.tick, stream::FORGE, payload)
                 .map_err(anyhow::Error::msg)?;
         }
+        for payload in &tick.firefight {
+            out.record(tick.tick, stream::FIREFIGHT, payload)
+                .map_err(anyhow::Error::msg)?;
+        }
         write_records(&mut out, tick.tick, &records.during)?;
         if let Some(hash) = tick.post_hash {
             out.record(tick.tick, stream::HASH, &hash.to_le_bytes())
@@ -110,8 +114,8 @@ fn write_records(
 ) -> Result<()> {
     for record in records {
         ensure!(
-            !matches!(record.tag, stream::INPUT | stream::HASH),
-            "duplicate source of engine inputs or hash"
+            !matches!(record.tag, stream::INPUT | stream::HASH | stream::FIREFIGHT),
+            "duplicate source of engine inputs, hash or Firefight entries"
         );
         writer
             .record(tick, record.tag, &record.payload)
@@ -199,6 +203,10 @@ pub(super) fn decode(raw: &[u8], first: u64, count: usize) -> Result<VecDeque<Ti
                         "invalid film Forge record"
                     );
                     frame.forge.push(record.payload.to_vec());
+                }
+                stream::FIREFIGHT => {
+                    ensure!(!record.payload.is_empty(), "empty film Firefight record");
+                    frame.firefight.push(record.payload.to_vec());
                 }
                 stream::HASH => {
                     ensure!(frame.post_hash.is_none(), "duplicate film hash");

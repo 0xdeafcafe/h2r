@@ -276,6 +276,11 @@ mod tests {
     }
 
     #[test]
+    fn a_firefight_entry_is_never_public() {
+        assert!(!is_public_tick(&block(&[b"{}"], stream::FIREFIGHT)));
+    }
+
+    #[test]
     fn a_forge_record_is_never_public() {
         // A Forge session's welcome holds the map's document and its members.
         for subtype in [stream::FORGE_WELCOME, stream::FORGE_ITEM] {

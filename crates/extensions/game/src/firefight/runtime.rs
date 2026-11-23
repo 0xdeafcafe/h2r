@@ -30,6 +30,7 @@ use engine::{GuestMemory, MemFault, points};
 use sim_state::SimEvent;
 
 use super::guest::{self, KitLayout};
+use super::film;
 use super::host::{AiGlobals, Game, Host, KillSeen, Kit, PlayerView, Role};
 use super::hud;
 use super::options::{self, Options};
@@ -624,6 +625,7 @@ impl Runtime {
     pub fn start(&mut self, m: &mut dyn GuestMemory, film: bool) -> String {
         self.errors.clear();
         hud::slot().set(None);
+        film::clear();
         crate::actor_net::publish_log_head(None);
         // No match for the Clankers until one runs.
         bots::firefight::set_context(None);
@@ -731,11 +733,35 @@ impl Runtime {
             skulls,
             ..
         } = &mut **game;
+        // A film's playback (or a peer) takes the entries handed over.
+        let mut film_errors = Vec::new();
+        if host.role() == Role::Replica {
+            for payload in film::take_played() {
+                if let Err(e) = film::parse(&payload)
+                    .and_then(|entry| host.receive(entry).map(drop).map_err(|e| e.to_string()))
+                {
+                    film_errors.push(e);
+                }
+            }
+        }
+        let before = host.applied();
         let (calls, errors) = {
             let mut g = GuestGame::new(m, Some(&*kit), sight, skulls, &*self.sink);
             let errors = host.pre_tick(tick, &mut g);
             (std::mem::take(&mut g.calls), errors)
         };
+        // The entries applied this tick, for the film being recorded.
+        let applied = host.applied();
+        film_errors.extend(film::record(
+            host.log()
+                .since(before)
+                .iter()
+                .take_while(|entry| entry.seq <= applied),
+        ));
+        // A replica draws the host's mode blob, from the log.
+        if host.role() == Role::Replica {
+            hud::slot().set(host.mode_state().map(<[u8]>::to_vec));
+        }
         let sight = (game.host.director().is_some() && !game.host.held() && tick >= game.sight_due)
             .then(|| {
                 game.sight_due = tick.saturating_add(SIGHT_EVERY);
@@ -752,6 +778,9 @@ impl Runtime {
         let kit = game.kit.clone();
         for e in errors {
             self.error(e.seq, e.tick, e.error);
+        }
+        for e in film_errors {
+            self.error(None, tick, e);
         }
         (!calls.is_empty() || sight.is_some()).then_some(Work {
             tick,
@@ -836,6 +865,10 @@ impl Runtime {
         match mode_blob(&game.host, game.players) {
             Some(Ok(blob)) => {
                 game.hud_failed = false;
+                // In the log too, for replicas and films.
+                if let Err(e) = game.host.note_mode(tick, &blob) {
+                    announce = Some(format!("the mode state's entry: {e}"));
+                }
                 hud::slot().set(Some(blob));
             }
             Some(Err(e)) => {

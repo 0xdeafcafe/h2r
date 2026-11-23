@@ -151,6 +151,13 @@ pub enum Command {
     Finish {
         outcome: Outcome,
     },
+    /// The HUD's mode blob after the host's step
+    /// (docs/game/firefight.md, "The HUD"), when it changed. The host's
+    /// runtime appends it, not the director (no script makes it), so a
+    /// replica and a film's playback draw the host's HUD from the log.
+    ModeState {
+        blob: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -311,11 +311,12 @@ pub const WORLD_FONT: Font = Font::Hud;
 /// engine font 6).
 pub const NAVPOINT_FONT: Font = Font::Hud;
 
-/// The UTF-16 units of a notification the game keeps: the insert copies 63
-/// (E `0x0024cbee`, `push 3Fh`). A [`Kind::Message`] text longer than
-/// this is refused by the prompt check and by the runtime's
+/// The UTF-16 units of a notification the game keeps: the insert copies
+/// through `0x0013fac0` with 63 (E `0x0024cc24`), which keeps one fewer and
+/// ends the text with a zero, as the banner's copy does ([`BANNER_UNITS`]).
+/// A [`Kind::Message`] text longer than this is refused by the prompt check and by the runtime's
 /// `Handle::notify`.
-pub const MESSAGE_UNITS: usize = 63;
+pub const MESSAGE_UNITS: usize = 62;
 
 /// The UTF-16 units of a banner the game keeps: its copy (E `0x0013fac0`,
 /// called with 63 by `0x0024cc73`) keeps one fewer than it is given and

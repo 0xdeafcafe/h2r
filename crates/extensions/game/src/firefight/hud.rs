@@ -23,13 +23,14 @@
 //! blob into the kit's `View` for one viewer, [`view`] into its `Values`.
 //! The kit's layout, its checks (`h2 hud preview firefight`) and its
 //! runtime (`crate::hud_kit`) are the kit's. [`install`] registers the HUD
-//! and adds its feed, which each tick publishes [`current`] for the first
-//! local player and sends the notes a change makes ([`Feed`]).
+//! and adds its feed, which each tick publishes [`current`] for each local
+//! player, its own values for each split-screen player, and sends each
+//! the notes a change makes ([`Feed`], [`tick_all`]).
 
 use std::sync::{Arc, Mutex};
 
 use ::firefight::director::Phase;
-use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector};
+use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector, Skull};
 use engine::memory::{GuestMemory, MemFault};
 use hud_kit_core::huds::firefight::{self as kit, Firefight};
 
@@ -39,7 +40,7 @@ pub use hud_kit_core::model::{Style, Value, Values};
 use crate::hud_kit::{self, Handle};
 
 /// The blob's format.
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 /// The actor channel's mode state holds this many bytes at most.
 pub const MAX_BLOB: usize = 63;
 /// Players whose own lives the blob carries when lives are not shared.
@@ -89,9 +90,40 @@ pub struct Mode {
     pub boss: bool,
     /// Actors alive and still to be placed, while a wave is on; else 0.
     pub left: u16,
+    /// The skulls on, one bit a session skull index ([`skull_mask`]).
+    pub skulls: u32,
     pub lives: Lives,
     /// Two teams' points and members; none with one team.
     pub teams: Option<Teams>,
+}
+
+/// Every skull Firefight turns on, by its session skull index.
+pub const FIREFIGHT_SKULLS: [Skull; 9] = [
+    Skull::Assassins,
+    Skull::Thunderstorm,
+    Skull::Famine,
+    Skull::Blind,
+    Skull::Ghost,
+    Skull::Catch,
+    Skull::Mythic,
+    Skull::Angry,
+    Skull::LowGravity,
+];
+
+/// The bits a blob's skulls may have: [`FIREFIGHT_SKULLS`]'.
+pub const SKULL_BITS: u32 = {
+    let mut m = 0;
+    let mut i = 0;
+    while i < FIREFIGHT_SKULLS.len() {
+        m |= 1 << FIREFIGHT_SKULLS[i] as u8;
+        i += 1;
+    }
+    m
+};
+
+/// The skulls in `on` as the blob's bits.
+pub fn skull_mask<'a>(on: impl IntoIterator<Item = &'a Skull>) -> u32 {
+    on.into_iter().fold(0, |m, s| m | 1 << *s as u8)
 }
 
 /// Why a blob could not be made or read.
@@ -133,8 +165,10 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes before the teams and lives: version, stage, round, rounds, wave,
-/// waves, flags, left (2), the team count.
-const HEAD: usize = 10;
+/// waves, flags, left (2), the skulls (4), the team count.
+const HEAD: usize = 14;
+/// Where the team count is.
+const TEAM_COUNT: usize = HEAD - 1;
 /// The two teams' part, when the team count is 2: each team's points (4
 /// each) and the second team's slot bits (2).
 const TEAMS: usize = 4 * MAX_TEAMS + 2;
@@ -211,6 +245,7 @@ impl Mode {
             } else {
                 0
             },
+            skulls: skull_mask(&state.skulls),
             lives,
             teams,
         })
@@ -228,6 +263,7 @@ impl Mode {
             if self.boss { FLAG_BOSS } else { 0 },
         ];
         out.extend_from_slice(&self.left.to_le_bytes());
+        out.extend_from_slice(&self.skulls.to_le_bytes());
         match &self.teams {
             None => out.push(1),
             Some(teams) => {
@@ -293,7 +329,11 @@ impl Mode {
             return Err(Error::Field("flags"));
         }
         let left = u16::from_le_bytes([bytes[7], bytes[8]]);
-        let (teams, at) = match bytes[9] {
+        let skulls = u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]);
+        if skulls & !SKULL_BITS != 0 {
+            return Err(Error::Field("skulls"));
+        }
+        let (teams, at) = match bytes[TEAM_COUNT] {
             1 => (None, HEAD),
             2 => {
                 let end = HEAD + TEAMS;
@@ -366,6 +406,7 @@ impl Mode {
             waves,
             boss: bytes[6] & FLAG_BOSS != 0,
             left,
+            skulls,
             lives,
             teams,
         })
@@ -440,6 +481,7 @@ pub fn view_of(mode: &Mode, local: u8) -> View {
         wave: mode.wave,
         boss: mode.boss,
         left: mode.left,
+        skulls: mode.skulls,
         lives: lives_of(mode, local),
     }
 }
@@ -486,7 +528,7 @@ impl Feed {
             None => None,
         };
         let notes = match &view {
-            Some(v) => kit::notes(self.last.as_ref(), v),
+            Some(v) => kit::notes(self.last.as_ref(), v, skull_name),
             None => Vec::new(),
         };
         let values = view.as_ref().map_or_else(kit::hidden, kit::values);
@@ -495,29 +537,57 @@ impl Feed {
     }
 }
 
-/// The roster slot of local user 0's player, if the game lists one.
-pub fn first_local_slot(m: &dyn GuestMemory) -> Result<Option<u8>, MemFault> {
-    use engine::view::players;
-    let Some(array) = players::array(m)? else {
-        return Ok(None);
-    };
-    if m.u32(array.array.addr.wrapping_add(engine::datum::layout::DATA))? == 0 {
-        return Ok(None);
-    }
-    for (handle, p) in array.live(m, 16)? {
-        if p.listed(m)? && p.local_user(m)? == 0 {
-            return Ok(Some(handle.index() as u8));
-        }
-    }
-    Ok(None)
+/// A skull's name by its session skull index, as the skull menu and the
+/// pickup message name it (`crate::skulls::SKULLS`).
+pub fn skull_name(index: u8) -> Option<&'static str> {
+    crate::skulls::SKULLS.get(usize::from(index)).map(|d| d.label)
 }
 
-/// The feed on the plan: each tick, [`current`] for the first local
-/// player's slot through [`Feed::tick`], published to the kit, each note
-/// sent to every local user.
+/// The roster slot of each local user's player the game lists, by local
+/// user (0 to 3).
+pub fn local_slots(m: &dyn GuestMemory) -> Result<[Option<u8>; USERS], MemFault> {
+    use engine::view::players;
+    let mut out = [None; USERS];
+    let Some(array) = players::array(m)? else {
+        return Ok(out);
+    };
+    if m.u32(array.array.addr.wrapping_add(engine::datum::layout::DATA))? == 0 {
+        return Ok(out);
+    }
+    for (handle, p) in array.live(m, 16)? {
+        let user = p.local_user(m)?;
+        if p.listed(m)? && (0..USERS as i16).contains(&user) {
+            out[user as usize] = Some(handle.index() as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// Local users the HUD kit draws for.
+const USERS: usize = hud_kit::USERS as usize;
+
+/// The feeds of the local users, one each.
+pub type Feeds = [Feed; USERS];
+
+/// One tick for every local user: user `u`'s view of the blob at its
+/// roster slot (`slots[u]`, through `current`), its values and its notes.
+/// A user with no slot is hidden and its feed forgets its last view.
+pub fn tick_all(
+    feeds: &mut Feeds,
+    slots: &[Option<u8>; USERS],
+    current: impl Fn(u8) -> Option<Result<View, Error>>,
+) -> [(Values, Vec<String>); USERS] {
+    std::array::from_fn(|u| feeds[u].tick(slots[u].and_then(&current)))
+}
+
+/// The feed on the plan: each tick, [`current`] for each local user's
+/// roster slot through its [`Feed`]: user 0's values are the HUD's shared
+/// ones (the banner, the channels), every other local user's its own
+/// (`Handle::publish_for`), so each split-screen player sees its own
+/// lives; each user's notes go to that user.
 struct FeedFeature {
     handle: Handle,
-    feed: Arc<Mutex<Feed>>,
+    feeds: Arc<Mutex<Feeds>>,
 }
 
 impl hooks::Feature for FeedFeature {
@@ -531,19 +601,22 @@ impl hooks::Feature for FeedFeature {
         // Rebuilt from the mode blob each tick; the last view only words
         // the next tick's notes.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
-        let (handle, feed) = (self.handle, Arc::clone(&self.feed));
+        let (handle, feeds) = (self.handle, Arc::clone(&self.feeds));
         b.frame().on_tick("firefight hud: values", move |o| {
-            let mem = o.guest();
-            let now = match first_local_slot(&*mem) {
-                Ok(Some(local)) => current(local),
-                _ => None,
-            };
-            let users = hud_kit::local_users(&*mem).unwrap_or(1);
-            drop(mem);
-            let (values, notes) = feed.lock().unwrap_or_else(|e| e.into_inner()).tick(now);
-            handle.publish(values);
-            for text in notes {
-                for user in 0..users {
+            let slots = local_slots(&*o.guest()).unwrap_or_default();
+            let all = tick_all(
+                &mut feeds.lock().unwrap_or_else(|e| e.into_inner()),
+                &slots,
+                current,
+            );
+            for (user, (values, notes)) in all.into_iter().enumerate() {
+                let user = user as u32;
+                if user == 0 {
+                    handle.publish(values);
+                } else {
+                    handle.publish_for(user, slots[user as usize].map(|_| values));
+                }
+                for text in notes {
                     handle.notify(user, &text);
                 }
             }
@@ -560,7 +633,7 @@ pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
     registry
         .add(&FeedFeature {
             handle,
-            feed: Arc::new(Mutex::new(Feed::default())),
+            feeds: Arc::new(Mutex::new(Default::default())),
         })
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("{FEED}: {e}"))

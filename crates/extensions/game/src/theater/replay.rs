@@ -117,6 +117,12 @@ impl EngineReplay {
         let checked_digest = frame.post_hash.is_some();
         self.pending = None;
         self.saw_actions = false;
+        // The next tick's Firefight entries, before its pre-tick applies
+        // them (`firefight::film`). Past the film's end there is none; a
+        // block that cannot be read fails at the next tick's own read.
+        if let Ok(next) = self.next_tick() {
+            crate::firefight::film::deliver(&next.firefight);
+        }
         Ok(checked_digest)
     }
 }

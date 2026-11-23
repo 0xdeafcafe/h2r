@@ -458,12 +458,19 @@ fn the_director_steps_after_the_tick_and_scores_a_kill_of_a_kit_class() {
     let (mut m, _) = guest(true, 1);
     shared.lock().start(&mut m, false);
     shared.lock().post_tick(&mut m, &[]);
-    // Holdout's shared pool is announced at the first step.
+    // Holdout's shared pool is announced at the first step, then the mode
+    // state the step leaves.
     let head = shared.lock().state().log.unwrap();
-    assert_eq!((head.seq, head.tick), (1, TICK + 1));
+    assert_eq!((head.seq, head.tick), (2, TICK + 1));
+    {
+        let rt = shared.lock();
+        let ops: Vec<_> = rt.running().unwrap().host.log().since(0).to_vec();
+        assert!(matches!(ops[0].op, Command::Lives { .. }), "{ops:?}");
+        assert!(matches!(ops[1].op, Command::ModeState { .. }), "{ops:?}");
+    }
     // The same tick again changes nothing.
     shared.lock().post_tick(&mut m, &[]);
-    assert_eq!(shared.lock().state().log.unwrap().seq, 1);
+    assert_eq!(shared.lock().state().log.unwrap().seq, 2);
     m.put_u32(GAME_TIME + 8, TICK + 1);
     shared
         .lock()
@@ -472,8 +479,10 @@ fn the_director_steps_after_the_tick_and_scores_a_kill_of_a_kit_class() {
     let host = &rt.running().unwrap().host;
     let last = host
         .log()
-        .since(1)
-        .last()
+        .since(2)
+        .iter()
+        .rev()
+        .find(|e| !matches!(e.op, Command::ModeState { .. }))
         .expect("a score entry")
         .op
         .clone();

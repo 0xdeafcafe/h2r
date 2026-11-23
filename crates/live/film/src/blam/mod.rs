@@ -112,6 +112,9 @@ pub struct Tick {
     /// The payloads of the tick's Forge entry records ([`stream::FORGE`]),
     /// in record order: the tag byte's subtype first, then the message.
     pub forge: Vec<Vec<u8>>,
+    /// The payloads of the tick's Firefight entry records
+    /// ([`stream::FIREFIGHT`]), in record order: each one host-log entry.
+    pub firefight: Vec<Vec<u8>>,
 }
 
 impl Tick {

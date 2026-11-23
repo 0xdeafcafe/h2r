@@ -850,12 +850,12 @@ fn a_notification_is_the_inserts_call_with_its_text() {
     assert!(NOTES_PER_TICK >= 16);
 }
 
-/// The insert copies 63 units: a longer text, a second line, an empty
+/// The insert keeps 62 units: a longer text, a second line, an empty
 /// text and a fifth user are refused, not cut.
 #[test]
 fn a_notification_the_game_cannot_keep_is_refused() {
-    assert_eq!(note_fits(0, &"a".repeat(63)), Ok(()));
-    assert!(note_fits(0, &"a".repeat(64)).is_err());
+    assert_eq!(note_fits(0, &"a".repeat(62)), Ok(()));
+    assert!(note_fits(0, &"a".repeat(63)).is_err());
     assert!(note_fits(0, "one\ntwo").is_err());
     assert!(note_fits(0, "").is_err());
     assert!(note_fits(USERS, "Primed").is_err());
@@ -1028,4 +1028,68 @@ fn the_local_users_are_the_views_one_to_four() {
     assert_eq!(local_users(&m).unwrap(), 1);
     m.set_u16(GLOBALS + 8, 9).unwrap();
     assert_eq!(local_users(&m).unwrap(), 4);
+}
+
+/// A HUD of one text, for the registry's tests.
+struct OneText(&'static str);
+
+impl Describe for OneText {
+    fn hud(&self) -> Hud {
+        Hud {
+            name: self.0,
+            elements: vec![Element::text(
+                "t",
+                Font::Lcd,
+                Justify::Centre,
+                "99",
+                Place::new(Anchor::TopLeft, (0, 0)),
+            )],
+        }
+    }
+    fn states(&self) -> Vec<(&'static str, Values)> {
+        Vec::new()
+    }
+}
+
+/// A local user's own values are drawn for that user's HUD, the shared
+/// ones for every other; taking them away draws the shared ones again.
+#[test]
+fn a_local_users_own_values_are_drawn_for_its_hud() {
+    let h = register(Arc::new(OneText("own-values-test")));
+    let text = |n: &str| {
+        let mut v = Values::default();
+        v.set("t", Value::text(n));
+        v
+    };
+    h.publish(text("4"));
+    h.publish_for(1, Some(text("2")));
+    h.publish_for(USERS, Some(text("9")));
+    let at = |user| value(h.0, user, "t").map(|v| v.text);
+    assert_eq!(at(0).as_deref(), Some("4"));
+    assert_eq!(at(1).as_deref(), Some("2"));
+    assert_eq!(at(3).as_deref(), Some("4"));
+    h.publish_for(1, Some(text("1")));
+    assert_eq!(at(1).as_deref(), Some("1"), "replaced, not added");
+    h.publish_for(1, None);
+    assert_eq!(at(1).as_deref(), Some("4"));
+    // The pure choice.
+    let (shared, stamps) = (text("4"), Stamps::new());
+    let own = [Own {
+        user: 2,
+        values: text("7"),
+        stamps: Stamps::new(),
+    }];
+    assert_eq!(values_for((&shared, &stamps), &own, 2).0, &text("7"));
+    assert_eq!(values_for((&shared, &stamps), &own, 0).0, &shared);
+}
+
+/// The drawing user is the HUD draw's global, 0 past the local users.
+#[test]
+fn the_drawing_user_is_the_hud_draws() {
+    let mut m = memory();
+    assert_eq!(draw_user(&m), 0);
+    m.set_u32(DRAW_USER, 2).unwrap();
+    assert_eq!(draw_user(&m), 2);
+    m.set_u32(DRAW_USER, u32::MAX).unwrap();
+    assert_eq!(draw_user(&m), 0);
 }

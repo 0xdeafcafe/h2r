@@ -12,7 +12,8 @@
 //! - `ff.enemies.pill`, `ff.enemies.end`, `ff.enemies.count`: the same,
 //!   the place after, while a wave is on: the enemies left.
 //! - `ff.note`: a notification ([`Kind::Message`]): the round that starts,
-//!   a life lost ([`notes`]). Sent once each, not published.
+//!   a skull switched on, a life lost ([`notes`]). Sent once each, not
+//!   published.
 //!
 //! The round and wave are not permanent lines: they are in the banner when
 //! they change and in the notification list. The score is the game's own
@@ -157,6 +158,8 @@ pub struct View {
     pub boss: bool,
     /// Actors alive and still to be placed, while a wave is on.
     pub left: u16,
+    /// The skulls on, one bit a session skull index.
+    pub skulls: u32,
     /// The lives the viewer has: the shared pool, its own, its team's;
     /// none when it has no count.
     pub lives: Option<u16>,
@@ -285,10 +288,16 @@ pub fn values(v: &View) -> Values {
 }
 
 /// The notifications the change from `before` to `now` sends: a round
-/// that starts ("Round 2 of 3"), and lives lost ("A life lost", "2 lives
-/// lost"). None from no view (the match's first), and none once it is
-/// over.
-pub fn notes(before: Option<&View>, now: &View) -> Vec<String> {
+/// that starts ("Round 2 of 3"), each skull switched on, lowest index
+/// first ("Mythic skull on", its name from `skull_name`; a skull with no
+/// name sends none), and lives lost ("A life lost", "2 lives lost"). None
+/// from no view (the match's first: the skulls on from the start are the
+/// lobby's), and none once it is over.
+pub fn notes(
+    before: Option<&View>,
+    now: &View,
+    skull_name: impl Fn(u8) -> Option<&'static str>,
+) -> Vec<String> {
     let Some(b) = before else {
         return Vec::new();
     };
@@ -302,6 +311,12 @@ pub fn notes(before: Option<&View>, now: &View) -> Vec<String> {
             u16::from(now.round) + 1,
             now.rounds
         ));
+    }
+    let on = now.skulls & !b.skulls;
+    for n in (0..32u8).filter(|n| on & (1 << n) != 0) {
+        if let Some(name) = skull_name(n) {
+            out.push(format!("{name} skull on"));
+        }
     }
     if let (Some(was), Some(is)) = (b.lives, now.lives)
         && is < was
@@ -324,6 +339,7 @@ pub fn views() -> Vec<(&'static str, View)> {
         wave: 1,
         boss: false,
         left: 7,
+        skulls: 0,
         lives: Some(12),
     };
     let with = |f: &dyn Fn(&mut View)| {
@@ -377,6 +393,7 @@ pub fn views() -> Vec<(&'static str, View)> {
         ("lost", with(&|v| v.stage = Stage::Lost)),
         ("over", with(&|v| v.stage = Stage::Over)),
         ("last-life", with(&|v| v.lives = Some(1))),
+        ("skull-on", with(&|v| v.skulls = 1 << 12)),
         ("no-lives", with(&|v| v.lives = Some(0))),
         ("no-own-lives", with(&|v| v.lives = None)),
         (
@@ -401,6 +418,7 @@ fn sample_note(state: &str) -> Option<&'static str> {
     match state {
         "round-complete" => Some("Round 2 of 3"),
         "last-life" => Some("A life lost"),
+        "skull-on" => Some("Mythic skull on"),
         "widest" => Some(NOTE_LONGEST),
         _ => None,
     }
@@ -455,7 +473,16 @@ mod tests {
             wave: 2,
             boss: false,
             left: 9,
+            skulls: 0,
             lives: Some(4),
+        }
+    }
+
+    fn name(n: u8) -> Option<&'static str> {
+        match n {
+            12 => Some("Mythic"),
+            16 => Some("Low Gravity"),
+            _ => None,
         }
     }
 
@@ -576,33 +603,59 @@ mod tests {
     #[test]
     fn a_new_round_and_a_lost_life_are_notes() {
         let a = view(Stage::Fighting);
-        assert!(notes(None, &a).is_empty());
-        assert!(notes(Some(&a), &a).is_empty());
+        assert!(notes(None, &a, name).is_empty());
+        assert!(notes(Some(&a), &a, name).is_empty());
         let next = View {
             round: 2,
             wave: 0,
             stage: Stage::Spawning,
             ..a.clone()
         };
-        assert_eq!(notes(Some(&a), &next), ["Round 3 of 3"]);
+        assert_eq!(notes(Some(&a), &next, name), ["Round 3 of 3"]);
         let hit = View {
             lives: Some(3),
             ..a.clone()
         };
-        assert_eq!(notes(Some(&a), &hit), ["A life lost"]);
+        assert_eq!(notes(Some(&a), &hit, name), ["A life lost"]);
         let two = View {
             lives: Some(2),
             ..a.clone()
         };
-        assert_eq!(notes(Some(&a), &two), ["2 lives lost"]);
+        assert_eq!(notes(Some(&a), &two, name), ["2 lives lost"]);
+        // Skulls switched on, lowest index first; one with no name and one
+        // switched off send none.
+        let skulls = View {
+            skulls: 1 << 16 | 1 << 12 | 1 << 3,
+            ..a.clone()
+        };
+        assert_eq!(
+            notes(Some(&a), &skulls, name),
+            ["Mythic skull on", "Low Gravity skull on"]
+        );
+        assert!(notes(Some(&skulls), &a, name).is_empty());
+        let both = View {
+            round: 2,
+            skulls: 1 << 12,
+            lives: Some(3),
+            ..a.clone()
+        };
+        assert_eq!(
+            notes(Some(&a), &both, name),
+            ["Round 3 of 3", "Mythic skull on", "A life lost"]
+        );
         // A life given back is no note.
-        assert!(notes(Some(&hit), &a).is_empty());
+        assert!(notes(Some(&hit), &a, name).is_empty());
         let end = View {
             lives: Some(0),
             ..view(Stage::Lost)
         };
-        assert!(notes(Some(&a), &end).is_empty());
-        for t in ["Round 12 of 12", "A life lost", "65535 lives lost"] {
+        assert!(notes(Some(&a), &end, name).is_empty());
+        for t in [
+            "Round 12 of 12",
+            "A life lost",
+            "65535 lives lost",
+            "Unlimited Grenades skull on",
+        ] {
             assert_eq!(message_fault(t), None, "{t}");
         }
     }

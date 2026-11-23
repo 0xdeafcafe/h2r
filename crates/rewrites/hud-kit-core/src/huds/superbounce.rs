@@ -911,7 +911,7 @@ mod tests {
     }
 
     /// The ghost prompts, either button, fit the prompt line's one line of
-    /// 63 units and differ only by the glyph.
+    /// 62 units and differ only by the glyph.
     #[test]
     fn the_ghost_prompts_fit_the_line_with_either_button() {
         for (x, b) in [
@@ -928,7 +928,7 @@ mod tests {
     }
 
     /// A medal is its glyph, a space and its words, each under the game's
-    /// 63 characters, in the states that show it and no other.
+    /// 62 characters, in the states that show it and no other.
     #[test]
     fn a_medal_line_is_its_glyph_and_its_words() {
         let medal = |s: &str| {

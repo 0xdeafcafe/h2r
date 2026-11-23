@@ -656,6 +656,7 @@ fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
         closing_events: vec![],
         post_hash: None,
         forge: vec![],
+        firefight: vec![],
     };
     let mut tape_header = header(7);
     tape_header.version = 3;
@@ -738,6 +739,7 @@ fn dead_tape(path: &std::path::Path) -> Vec<Entry> {
                     closing_events: vec![],
                     post_hash: None,
                     forge: vec![],
+                    firefight: vec![],
                 },
             )
             .unwrap();
@@ -890,6 +892,7 @@ fn a_tape_with_no_capture_to_end_at_is_not_a_film() {
                     closing_events: vec![],
                     post_hash: None,
                     forge: vec![],
+                    firefight: vec![],
                 },
             )
             .unwrap();
@@ -929,6 +932,7 @@ fn a_film_whose_boot_header_differs_without_naming_its_tape_is_refused() {
                 closing_events: vec![],
                 post_hash: None,
                 forge: vec![],
+                firefight: vec![],
             },
         )
         .unwrap();

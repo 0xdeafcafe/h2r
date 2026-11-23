@@ -921,7 +921,7 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         case(vec![Element::icon("i", nope, bl(10, -150))], &[]),
         Check::Templates,
     );
-    // prompt: a notification over the game's 63 characters.
+    // prompt: a notification over the game's 62 characters.
     fires(
         case(
             vec![Element::channel("m", Kind::Message { longest: "a" })],

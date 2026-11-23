@@ -66,6 +66,7 @@ fn sample_film() -> Vec<u8> {
                     closing_events: vec![],
                     post_hash: None,
                     forge: vec![],
+                    firefight: vec![],
                 },
                 vec![],
                 None,
