@@ -560,6 +560,7 @@ impl AgentGlue {
         skulls: Option<std::sync::Arc<crate::skulls::Tracker>>,
         sources: Option<std::sync::Arc<crate::loaded_map::EditorSources>>,
         rebind: agent::sim::MapRebind,
+        before_edit: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     ) {
         let Some(sim) = &self.sim else { return };
         let active = |feature: &str| plan.is_on(feature) && installed.off_reason(feature).is_none();
@@ -595,6 +596,10 @@ impl AgentGlue {
         }
         let runtime = std::sync::Arc::downgrade(rt);
         sim.on_first_edit(&self.agent, move |agent| {
+            // A default film recording cannot replay an outside write.
+            if let Some(before) = &before_edit {
+                before();
+            }
             let rt = runtime.upgrade().ok_or("the game has shut down")?;
             let mut registry = hooks::Registry::new(hooks::Switches::default());
             let sources = sources.clone().map(|sources| -> agent::EditorActivation {
@@ -1043,6 +1048,7 @@ mod tests {
         glue.install_editor_methods(
             &plan, &installed, &rt, off != Some(agent::EDIT_LIFECYCLE), blocked, None, None,
             Box::new(|_, _, _, _| panic!("a playback or uninstalled hook must not prepare a map")),
+            None,
         );
         assert!(!plan.is_on(agent::EDIT_LIFECYCLE));
         assert!(rt.read_dispatch(|d| d.override_name(hooks::points::GAME_ACTIVATE.base).is_none()));

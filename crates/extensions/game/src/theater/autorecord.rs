@@ -1,0 +1,205 @@
+//! Films of the games a player plays, recorded by default
+//! (docs/game/film-format.md, "Recording every game").
+//!
+//! `h2 play` records each session into the film library when no `--film`
+//! or `H2_FILM_OUT` names a destination. The recording keeps the session's
+//! player features on (Live session links, browser advertisements,
+//! Firefight's director, the rules start gate, editor reloads), and its
+//! header says so, so the replay installs the same plan. Anything that
+//! changes the guest from outside the tape (a session link joined, an
+//! editor write) stops and discards the recording instead.
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+/// `H2_FEATURES=-film-autorecord` records nothing unless asked.
+pub const FEATURE: &str = "film-autorecord";
+
+/// Automatic films kept in the library, newest first. The Recent tab
+/// shows 25 films, so older automatic films would never be seen.
+pub const KEEP: usize = 25;
+
+/// An unreadable automatic film untouched for this long belongs to a
+/// session that stopped without sealing it. A running recording writes
+/// a chunk every few seconds.
+pub const ABANDONED_AFTER: Duration = Duration::from_secs(60 * 60);
+
+const PREFIX: &str = "auto-";
+
+/// What the host asked for before boot (`Host::film_auto`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Request {
+    /// Not a player session (`h2 run`, `h2 serve`, hosts, sims, Theater).
+    #[default]
+    Off,
+    /// A player session with no explicit destination.
+    On,
+    /// A player session that must not record; the reason is logged once.
+    Skip(&'static str),
+}
+
+/// Why a player session goes unrecorded when it joins a link at launch.
+pub const JOIN_AT_LAUNCH: &str =
+    "a session link is joined at launch, and the film cannot replay a join from outside the game";
+
+/// The boot facts that decide whether this session records.
+#[derive(Clone, Copy, Debug)]
+pub struct Inputs {
+    pub request: Request,
+    /// `H2_FEATURES` keeps `film-autorecord` on.
+    pub feature_on: bool,
+    /// `--film` or `H2_FILM_OUT` named a destination.
+    pub explicit: bool,
+    pub replaying: bool,
+    pub host_light: bool,
+    pub sim: bool,
+    /// `H2_LOCKSTEP`, `H2_INPUT_RECORD` or `H2_INPUT_REPLAY` own the pad tap.
+    pub lockstep: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Record,
+    /// Nothing to say: not a player session, an explicit film, or the switch.
+    Quiet,
+    /// A player session that goes unrecorded, with the line to log.
+    Skip(&'static str),
+}
+
+pub fn decide(i: &Inputs) -> Decision {
+    if i.explicit || i.replaying || i.host_light || i.sim || !i.feature_on {
+        return Decision::Quiet;
+    }
+    match i.request {
+        Request::Off => Decision::Quiet,
+        Request::Skip(why) => Decision::Skip(why),
+        Request::On if i.lockstep => Decision::Skip(
+            "lockstep or input recording owns the controller tap (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY)",
+        ),
+        Request::On => Decision::Record,
+    }
+}
+
+/// `auto-YYYYMMDD-HHMMSS-mmm.h2film` in UTC: names sort oldest to newest,
+/// and the library sorts Recent by the header's start time.
+pub fn file_name(at: SystemTime) -> String {
+    let ms = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let ms = i64::try_from(ms).unwrap_or(i64::MAX);
+    let stamp = chrono::DateTime::from_timestamp_millis(ms)
+        .unwrap_or_default()
+        .format("%Y%m%d-%H%M%S-%3f");
+    format!("{PREFIX}{stamp}.h2film")
+}
+
+/// A new file in `dir` for a recording started at `at`. Two sessions
+/// started in the same millisecond take numbered names.
+pub fn destination(dir: &Path, at: SystemTime) -> PathBuf {
+    let name = file_name(at);
+    let first = dir.join(&name);
+    if !first.exists() {
+        return first;
+    }
+    let stem = name.trim_end_matches(".h2film");
+    (1u32..)
+        .map(|n| dir.join(format!("{stem}-{n}.h2film")))
+        .find(|p| !p.exists())
+        .expect("a free film name")
+}
+
+/// What a feature calls just before it changes the guest from outside the
+/// tape: stops and discards this session's default recording. `None` for
+/// any other film and for no film.
+pub fn stopper(
+    film: Option<&Arc<super::Session>>,
+    why: &'static str,
+) -> Option<Arc<dyn Fn() + Send + Sync>> {
+    let film = film.filter(|f| !f.replaying && f.player_features())?.clone();
+    Some(Arc::new(move || film.stop_auto(why)))
+}
+
+pub fn is_auto(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "h2film")
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(PREFIX))
+}
+
+fn saved(path: &Path) -> bool {
+    path.with_extension("h2film.saved").is_file()
+}
+
+/// Delete one automatic film with its stats, pin and keyframe cache.
+pub fn remove(dir: &Path, path: &Path) -> anyhow::Result<()> {
+    let id = film::LibraryEntry::read(path).ok().map(|e| e.meta.id);
+    remove_as(dir, path, id.as_deref())
+}
+
+/// [`remove`] for a film whose ID is known, sealed or not.
+pub fn remove_as(dir: &Path, path: &Path, id: Option<&str>) -> anyhow::Result<()> {
+    let delete = || -> anyhow::Result<()> {
+        for extra in ["h2stats", "h2film.saved"] {
+            match fs::remove_file(path.with_extension(extra)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                r => r?,
+            }
+        }
+        match fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            r => Ok(r?),
+        }
+    };
+    match id {
+        Some(id) => film::sidecar::remove_film_with(dir, id, delete),
+        None => delete(),
+    }
+}
+
+/// Make room for one more automatic film: keep the `keep - 1` newest
+/// unsaved automatic films and every saved one, and remove automatic films
+/// a stopped session left unsealed. Films named by `--film` and downloaded
+/// archives are never touched. Returns the removed paths.
+pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<PathBuf>> {
+    let mut sealed = Vec::new();
+    let mut removed = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() || !is_auto(&path) || saved(&path) {
+            continue;
+        }
+        if film::LibraryEntry::read(&path).is_ok() {
+            sealed.push(path);
+            continue;
+        }
+        let idle = entry
+            .metadata()?
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age >= ABANDONED_AFTER);
+        if idle {
+            remove(dir, &path)?;
+            removed.push(path);
+        }
+    }
+    // Names carry the start time, so the newest sort last.
+    sealed.sort();
+    let excess = sealed.len().saturating_sub(keep.saturating_sub(1));
+    for path in sealed.into_iter().take(excess) {
+        remove(dir, &path)?;
+        removed.push(path);
+    }
+    Ok(removed)
+}
+
+#[cfg(test)]
+mod tests;

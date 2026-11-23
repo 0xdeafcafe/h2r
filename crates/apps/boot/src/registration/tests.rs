@@ -149,6 +149,15 @@ impl crate::render_aspect::UiLayoutSink for NoDevice {
 }
 
 fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Registry {
+    registry_with_film(case, profile, None)
+}
+
+/// [`registry_for_profile`] for a boot that records `film`.
+fn registry_with_film(
+    case: &Case,
+    profile: film::RenderHooks,
+    film: Option<Arc<crate::theater::Session>>,
+) -> hooks::Registry {
     let rt = Arc::new(runtime::Runtime::new(
         runtime::Guest::new(),
         runtime::Dispatch::default(),
@@ -203,7 +212,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
             perf_level: case.level,
             bots: case.xapi,
         },
-        None,
+        film,
         case.light,
         None,
     )
@@ -891,4 +900,75 @@ fn viewer_skips_follow_the_light_profile_and_independent_switches() {
             "{light} {spec}"
         );
     }
+}
+
+/// A player session's film: recorded by default (`auto`) or with `--film`.
+fn recording(dir: &Path, name: &str, auto: bool) -> Arc<crate::theater::Session> {
+    let opts = crate::RunOpts {
+        disc: PathBuf::new(),
+        data_root: dir.to_owned(),
+        max_slices: 1,
+        xapi: true,
+        transfers_per_slice: 5000,
+        stopgaps: true,
+        trace: None,
+        d3d: true,
+        bink: true,
+        dsound: true,
+        movies: crate::movies_glue::Movies::Off,
+    };
+    let facts = crate::theater::Facts {
+        stamp: "fixture".into(),
+        title_id: 2,
+        epoch: 0,
+        light: false,
+        bots: false,
+        address: "127.0.0.1:3074".into(),
+        live_service: true,
+        telemetry_hooks: live_proto::film::TelemetryHooks::UNIFIED,
+        render_hooks: super::compiled_render_hooks(),
+        player_features: auto,
+    };
+    crate::theater::Session::open(Some(dir.join(name)), None, facts, b"xbe", &opts)
+        .unwrap()
+        .unwrap()
+}
+
+fn on_features(registry: hooks::Registry) -> std::collections::BTreeSet<&'static str> {
+    registry
+        .build(&hooks::Base)
+        .unwrap()
+        .features
+        .iter()
+        .filter(|f| f.off.is_none())
+        .map(|f| f.id)
+        .collect()
+}
+
+/// A default recording turns nothing off: Live session links, the Custom
+/// Game Browser advertisements, co-op over Live and the rest of a signed-in
+/// session's features are planned as with no film. A film the player asked
+/// for keeps its old rule and plans neither the links nor the
+/// advertisements, on recording and playback alike.
+#[test]
+fn a_default_recording_plans_every_feature_a_session_without_a_film_plans() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-film-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let case = Case { coop_live: true, ..Case::full("") };
+    let profile = super::compiled_render_hooks();
+    let without = on_features(registry_for_profile(&case, profile));
+    assert!(without.contains("live-join-link") && without.contains("live-browser-ads"));
+
+    let auto = recording(&dir, "auto.h2film", true);
+    assert!(auto.player_features());
+    let with_auto = on_features(registry_with_film(&case, profile, Some(auto)));
+    let missing: Vec<_> = without.difference(&with_auto).collect();
+    assert!(missing.is_empty(), "a default recording turned off {missing:?}");
+
+    let explicit = recording(&dir, "explicit.h2film", false);
+    assert!(!explicit.player_features());
+    let with_explicit = on_features(registry_with_film(&case, profile, Some(explicit)));
+    assert!(!with_explicit.contains("live-join-link"));
+    assert!(!with_explicit.contains("live-browser-ads"));
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -167,7 +167,9 @@ run the lobby check and the host check exactly as a Live host does.
 it on its host; the blob, the options and the seed are replay inputs.
 The `rules` feature is installed with `film`, as Firefight's is
 (`firefight::feature::install`), and `Runtime::start` skips the check
-when it is set.
+when it is set. It is set in every replay and while a film named with
+`--film` records. A session's
+[default recording](film-format.md#recording-every-game) runs the check.
 
 ## Rules and limits
 

@@ -538,8 +538,10 @@ Plain integers keep `render-bridge` free of the agent's types.
   commit drops and rebuilds the entry for the BSP or model it changed at
   the same tick boundary, so native and guest queries agree.
 - **Determinism.** Writes happen only before `game_tick`, never from the
-  stream, a render hook or a worker. Film recording and playback exclude
-  them, as they exclude object edits.
+  stream, a render hook or a worker. A film named with `--film` and film
+  playback exclude them, as they exclude object edits. The first write in
+  a session's [default recording](../game/film-format.md#recording-every-game)
+  discards that film.
 - **Snapshots.** A non-empty overlay or a used arena extent is host state
   a machine snapshot does not hold, so both prevent snapshots, rewind and
   film keyframes until the map changes, as a bound play copy does

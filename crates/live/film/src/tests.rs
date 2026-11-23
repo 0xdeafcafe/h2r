@@ -50,6 +50,7 @@ pub(super) fn header(id: u64) -> Header {
         render_hooks: None,
         live_service: false,
         features: String::new(),
+        player_features: false,
     }
 }
 #[test]

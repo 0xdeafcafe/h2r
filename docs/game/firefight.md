@@ -402,10 +402,12 @@ only:
 - an observer after `GAME_TICK` runs `Host::post_tick` over the guest,
   the tick's `SimEvent`s and the last sight pass.
 
-The machine's role is `Replica` in a film's playback, else by the
-simulation world's mode (docs/live/live-coop.md): `Replica` for a
-synchronous client (3), `Client` for a distributed client (5), and
-`Host` otherwise. No transport carries the host's entries to a replica
+The machine's role is `Replica` in a film's playback and while a film
+named with `--film` records. Otherwise the simulation world's mode
+decides (docs/live/live-coop.md): `Replica` for a synchronous client (3),
+`Client` for a distributed client (5), and `Host` otherwise. A session's
+[default recording](film-format.md#recording-every-game) and its replay
+take the role by the mode. No transport carries the host's entries to a replica
 yet, so a replica applies none. A tick boundary's number is the game
 time's tick count plus one before the tick and the count after it, so
 the director's entries for the next tick are due at the next boundary.

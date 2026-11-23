@@ -330,6 +330,7 @@ pub(super) fn host_facts() -> Facts {
         live_service: false,
         telemetry_hooks: live_proto::film::TelemetryHooks::UNIFIED,
         render_hooks: crate::run_plan::compiled_render_hooks(),
+        player_features: false,
     }
 }
 

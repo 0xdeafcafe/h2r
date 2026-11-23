@@ -33,6 +33,7 @@ fn header(length_ticks: u64) -> Header {
         render_hooks: None,
         live_service: false,
         features: String::new(),
+        player_features: false,
     }
 }
 

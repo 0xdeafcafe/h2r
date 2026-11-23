@@ -24,8 +24,10 @@ original command order also applies when watching another player.
 
 ## Making and opening a film
 
-A leased dedicated host records by default. For local play, pass
-`--film FILE` to `h2 play`, `h2 run` or `h2 serve`, or set `H2_FILM_OUT`.
+A leased dedicated host records by default. So does `h2 play`, into the
+film library ([Recording every game](#recording-every-game)). To choose
+the file, pass `--film FILE` to `h2 play`, `h2 run` or `h2 serve`, or set
+`H2_FILM_OUT`.
 The destination must be a new file. Put it in `<data>/films/` or the
 configured `H2_FILM_DIR` for library discovery. Recording starts at boot
 so that a player can reproduce the lobby, menus and the match's initial
@@ -42,6 +44,71 @@ command's disc, image and installed content match the recording.
 `--data` supplies initial files referenced by digest. Theater materialises a
 private guest disk for each play or seek. Any larger initial file kept by
 reference must be the version the recorder saw at boot.
+
+## Recording every game
+
+`h2 play` records each session into the film library (`H2_FILM_DIR`, or
+`<data>/films`) when no `--film` or `H2_FILM_OUT` names a file. The
+decision and the library rules live in
+`crates/extensions/game/src/theater/autorecord.rs`. `H2_FEATURES=-film-autorecord`
+turns it off.
+
+- **One film per session.** The film starts at boot, like every film, and
+  seals at the first multiplayer game's end. A campaign session seals when
+  the game exits. A session that plays no game (menus, Theater, settings)
+  leaves no film. Games after the first in the same session are not
+  recorded: a film replays from boot, and the recorder writes no machine
+  keyframe a later film could start from.
+- **Names.** `auto-YYYYMMDD-HHMMSS-mmm.h2film`, the session's UTC start.
+  Recent sorts by the header's start time, newest first.
+- **The library cap.** Before a session records, the library keeps the 24
+  newest unsaved default films, so the new one makes 25, the Recent tab's
+  length. A default film a stopped session left unsealed for an hour is
+  removed. Saved films, films named with `--film` and downloaded archives
+  are never removed. The keyframe cache keeps its own cap,
+  [`theater.cache_cap_gib`](settings-menu.md#theater-keyframe-cache).
+- **Player features stay on.** A film named with `--film` turns off Live
+  session links, the Custom Game Browser advertisements, Firefight's
+  director, the rules start gate and editor map reloads while it records.
+  A default recording keeps them, and its header's `player_features` makes
+  the replay install the same features, so both run one plan. Firefight's
+  director runs in that replay too. The start gate does not run in any
+  replay.
+- **Outside changes discard the film.** A film cannot replay what reaches
+  the guest from outside its tape. A Live session link joined in the game
+  and the first authorized editor write stop the recording and delete its
+  file. A film sealed by its game's end stays.
+- **Sessions that skip recording.** `h2 play --join URL` (the join comes
+  from outside the game), an `h2 lab` job (its frame times stay comparable;
+  `H2_FILM_OUT` records one on purpose) and a session with `H2_LOCKSTEP`,
+  `H2_INPUT_RECORD` or `H2_INPUT_REPLAY` print
+  `theater: not recording this session: <reason>` once at boot.
+- **Local only.** Default films stay in the local library. Only films the
+  player names are queued for the signed-in account's archive.
+
+What Theater's Recent tab shows:
+
+| The game | Recent |
+| --- | --- |
+| Offline, split screen or System Link | The session's default film. |
+| A Live game hosted by a player | The session's default film. Live lists only games with a host film, so this console's film is the only entry. |
+| A Live game on a dedicated host | The host's film from the account's archive, when signed in, and this console's default film as a second entry. The default film replays what this console received. |
+
+Recording costs time on every tick. The film checkpoint observer hashes the
+gameplay state and writes the tick's records each tick, and hashes the
+simulation arena every 30 ticks (`Session::checkpoint`, `checkpoint_interval`
+in `crates/extensions/game/src/theater.rs`; `Recording::post_tick` in
+`theater/record.rs`). Every taped HLE call, controller reads included, is
+appended to the tape (`Tap::record`). The recorder samples the pause latch
+between slices (`observe_pause`) and attempts a machine keyframe for the
+local cache every 150 ticks (`CAPTURE_TICKS`, `try_capture_point`). Boot
+hashes the data directory's start manifest once. An offline session also
+keeps retail pixels for readbacks (`d3d_glue::protected_readbacks`), which
+Live sessions already do. Two presentation features stay off while any
+film records, so the recording's hook plan matches its replay: the
+window's loading picture on the return to the menu (`return_to_menu`) and
+the attract-movie guard, which leaves the retail idle timer
+([Attract timer](../audio/bink-hle.md#attract-timer)).
 
 ## Unified container, version 3
 

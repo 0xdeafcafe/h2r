@@ -345,13 +345,52 @@ fn run_configured(
     } else {
         live_glue::install_configured(&loaded.runtime, &k, live, None, map_gate.clone(), publisher)?
     };
-    let film_path = host.film_out.take().or_else(|| {
+    let mut film_path = host.film_out.take().or_else(|| {
         std::env::var_os("H2_FILM_OUT").filter(|p| !p.is_empty()).map(PathBuf::from)
     });
     let film_dir = || {
         std::env::var_os("H2_FILM_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| opts.data_root.join("films"))
+    };
+    let lockstep_config = lockstep_glue::Config::from_env();
+    // A player session records into the film library by default
+    // (theater::autorecord, docs/game/film-format.md "Recording every game").
+    let autorecord = {
+        use theater::autorecord::{self, Decision};
+        let decision = autorecord::decide(&autorecord::Inputs {
+            request: host.film_auto,
+            feature_on: switches.feature(autorecord::FEATURE, true),
+            explicit: film_path.is_some(),
+            replaying,
+            host_light,
+            sim: sim_mode.is_some(),
+            lockstep: lockstep_config.enabled(),
+        });
+        match decision {
+            Decision::Record => {
+                let dir = film_dir();
+                let now = std::time::SystemTime::now();
+                let ready = std::fs::create_dir_all(&dir)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|()| autorecord::prune(&dir, autorecord::KEEP, now));
+                match ready {
+                    Ok(_) => {
+                        film_path = Some(autorecord::destination(&dir, now));
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("theater: not recording this session: the film library {}: {e:#}", dir.display());
+                        false
+                    }
+                }
+            }
+            Decision::Skip(why) => {
+                eprintln!("theater: not recording this session: {why}");
+                false
+            }
+            Decision::Quiet => false,
+        }
     };
     let viewer_cache = replay.as_ref().and_then(|r| r.cache.as_ref())
         .map(|c| (c.films_dir.clone(), c.cap_bytes));
@@ -373,6 +412,7 @@ fn run_configured(
                 address: _live
                     .as_ref()
                     .map_or_else(String::new, |h| h.film_address().to_string()),
+                player_features: autorecord,
             },
             xbe_bytes,
             opts,
@@ -406,7 +446,6 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
-    let lockstep_config = lockstep_glue::Config::from_env();
     let lockstep_on = lockstep_config.enabled();
     #[cfg(feature = "gpu")]
     let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
@@ -515,8 +554,13 @@ fn run_configured(
         host.discoverable_agent.then(agent_glue::discoverable_socket).flatten()
     });
     let editor_hooks_on = features.switches().feature(agent::EDIT_LIFECYCLE, true);
-    let recording_or_playback =
-        agent_glue::reload_recording_refusal(replaying, film.is_some(), &lockstep_config);
+    // A default recording lets the editor write; the first write discards
+    // the film (`stop_auto`, below) instead of being refused.
+    let recording_or_playback = agent_glue::reload_recording_refusal(
+        replaying,
+        film.as_ref().is_some_and(|f| !f.player_features()),
+        &lockstep_config,
+    );
     let reload_mount = if host_light {
         Err("the light host has no writable editor map mount")
     } else if let Some(reason) = recording_or_playback {
@@ -1610,6 +1654,7 @@ fn run_configured(
         a.install_editor_methods(
             &plan, &installed, &loaded.runtime, editor_hooks_on, recording_or_playback,
             skulls.clone(), core.editor_sources.clone(), rebind,
+            theater::autorecord::stopper(film.as_ref(), "an editor changed the game"),
         );
         if let Some(why) = installed.off_reason("agent") {
             a.agent.set_no_tick_hook();

@@ -301,7 +301,11 @@ there. **Watch** appears for playable films and host films awaiting their
 first download.
 
 Recent combines the local library and the signed-in Live account's
-archive. Saved includes local and account pins. Clips includes local
+archive. `h2 play` records each session into the local library, so a
+game played on this console appears there; the account's archive adds
+games whose dedicated host recorded a film
+([Recording every game](film-format.md#recording-every-game) lists what
+each kind of game shows). Saved includes local and account pins. Clips includes local
 in/out ranges and clips authored by the account. Use **Save** or **Unsave**
 to change a pin. Local films and authored clips offer **Delete** with a
 second press to confirm. The selector takes its data from the library
