@@ -92,7 +92,7 @@ async fn flow(timers: Timers) {
     assert_eq!(r.json()["id"], id);
 
     // An unlisted one, from a whole file.
-    let file = portable::port(&plain_king(), None, Some("No script"), PortScript::Keep).unwrap();
+    let file = portable::port(&plain_king(), None, Some("With script"), PortScript::Builtin).unwrap();
     let r = send(
         &h,
         Method::POST,
@@ -103,8 +103,21 @@ async fn flow(timers: Timers) {
     .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
     let unlisted = r.json()["id"].as_str().unwrap().to_string();
-    assert_eq!(r.json()["script_hash"], Value::Null);
+    assert_eq!(r.json()["script_name"], "King of the Hill");
     assert_eq!(r.json()["game_type"], "King of the Hill");
+
+    // A whole file with no script (mode 0) is refused, by name.
+    let bare = portable::export(&plain_king());
+    let r = send(
+        &h,
+        Method::POST,
+        "/v1/variants",
+        json!({"bundle": bare, "visibility": "public"}),
+        Some(&me),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert!(r.error().contains("no rules script"), "{}", r.error());
 
     // Nobody posts the event by hand.
     let forged = h.event(
@@ -234,10 +247,11 @@ async fn bad_variants_are_refused() {
     }))
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
-    // The fields way: a plain record publishes.
+    // The fields way: a plain record names no script, and is refused.
     let r = publish(&h, &me, json!({"name": "Hill", "description": "Up", "record_hex": hex, "visibility": "public"}))
         .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert!(r.error().contains("no rules script"), "{}", r.error());
 
     // A scripted record needs its script, and the script must be the one
     // the prefix names and ride the record's engine.

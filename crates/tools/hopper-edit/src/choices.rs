@@ -1,14 +1,18 @@
 //! What the hopper tool's variant picker offers, without any UI: the
+//! default lineup's matchmaking variants (the records of scripts), the
 //! disc's built-in variants (built the way the game builds them), the
 //! user's saved variants, and `.h2variant` files loaded this session. Each
-//! choice carries what the game's clean-up would say about it; the picker
-//! only links choices with nothing to say ([`model::set_variant`]
-//! refuses the rest).
+//! choice carries what the game's clean-up would say about it, and a
+//! hopper plays scripted variants only, so a choice that runs no rules
+//! script says so too; the picker only links choices with nothing to say
+//! ([`model::set_variant`] refuses the rest). The disc's built-ins run no
+//! script, so none is usable.
 //!
 //! [`model::set_variant`]: super::model::set_variant
 
 use std::path::{Path, PathBuf};
 
+use crate::model;
 use variants::record::{self, Problem};
 use variants::save::SaveStore;
 use variants::{GameVariant, Schema, portable};
@@ -16,6 +20,9 @@ use variants::{GameVariant, Schema, portable};
 /// Where a choice comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
+    /// One of the default lineup's matchmaking variants
+    /// (`live_proto::hopper::defaults::builtin_variants`), by key.
+    Matchmaking(&'static str),
     /// One of the disc's built-in variants.
     Builtin,
     /// A saved variant (its save directory).
@@ -29,13 +36,15 @@ pub enum Origin {
 pub struct Choice {
     pub origin: Origin,
     pub variant: GameVariant,
-    /// What the game's clean-up would reject (empty: usable).
+    /// What the game's clean-up would reject, and a missing rules script
+    /// ([`model::needs_script`]) (empty: usable).
     pub problems: Vec<Problem>,
 }
 
 impl Choice {
     pub fn new(origin: Origin, variant: GameVariant) -> Self {
-        let problems = record::refused(&variant);
+        let mut problems = record::refused(&variant);
+        problems.extend(model::needs_script(&variant));
         Choice {
             origin,
             variant,
@@ -73,6 +82,8 @@ fn strip_icon(name: &str) -> String {
 /// Everything the picker offers.
 #[derive(Debug, Clone, Default)]
 pub struct Choices {
+    /// The default lineup's matchmaking variants: scripted, so usable.
+    pub matchmaking: Vec<Choice>,
     pub builtins: Vec<Choice>,
     pub saved: Vec<Choice>,
     pub files: Vec<Choice>,
@@ -85,6 +96,14 @@ impl Choices {
     /// The built-ins of `schema` and the saves in `store`.
     pub fn new(schema: &Schema, store: Option<&SaveStore>) -> Self {
         let mut c = Choices::default();
+        for (key, record) in live_proto::hopper::defaults::builtin_variants() {
+            match GameVariant::from_bytes(record.bytes()) {
+                Ok(v) => c.matchmaking.push(Choice::new(Origin::Matchmaking(key), v)),
+                Err(e) => c
+                    .notes
+                    .push(format!("matchmaking variant {key} cannot be read: {e}")),
+            }
+        }
         for b in &schema.builtins {
             match schema.build(b) {
                 Ok(mut v) => {
@@ -140,9 +159,14 @@ impl Choices {
         Ok(&self.files[at])
     }
 
-    /// Every choice: built-ins, then saves, then files.
+    /// Every choice: the matchmaking variants, the disc's built-ins, then
+    /// saves, then files.
     pub fn all(&self) -> impl Iterator<Item = &Choice> {
-        self.builtins.iter().chain(&self.saved).chain(&self.files)
+        self.matchmaking
+            .iter()
+            .chain(&self.builtins)
+            .chain(&self.saved)
+            .chain(&self.files)
     }
 }
 
@@ -172,7 +196,15 @@ mod tests {
         assert_eq!(a.variant.description(), 3);
         assert_eq!(a.label(), "Alpha - Slayer");
         assert_eq!(c.builtins[1].variant.game_type(), GameType::King);
-        assert!(c.all().all(Choice::usable), "{:?}", c.notes);
+        // The disc's built-ins run no script, so a hopper cannot take them;
+        // the default lineup's matchmaking variants are what it offers.
+        for b in &c.builtins {
+            assert!(!b.usable());
+            assert!(b.problems.iter().any(|p| p.what.contains("mode 0")), "{:?}", b.problems);
+        }
+        assert_eq!(c.matchmaking.len(), 10);
+        assert!(c.matchmaking.iter().all(Choice::usable), "{:?}", c.notes);
+        assert_eq!(c.matchmaking[0].origin, Origin::Matchmaking("rumble_slayer"));
         assert!(c.saved.is_empty() && c.notes.is_empty());
     }
 
@@ -210,9 +242,21 @@ mod tests {
         let dir = scratch("files");
         let mut v = GameVariant::blank(GameType::King);
         v.set_name("Hill").unwrap();
+        // A file with no script is read, and is not usable.
+        let plain = dir.join("plain.h2variant");
+        std::fs::write(&plain, portable::export(&v)).unwrap();
+        let mut c = Choices::default();
+        assert!(!c.load_file(&plain).unwrap().usable());
+        c.files.clear();
+        let mut e = v.ext();
+        e.script = variants::ext::Script {
+            mode: variants::ext::Mode::Rules,
+            prefix: [7; 8],
+            options: 0,
+        };
+        v.set_ext(&e).unwrap();
         let good = dir.join("hill.h2variant");
         std::fs::write(&good, portable::export(&v)).unwrap();
-        let mut c = Choices::default();
         let got = c.load_file(&good).unwrap();
         assert_eq!(got.variant, v);
         assert!(got.usable());

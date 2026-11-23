@@ -90,10 +90,18 @@ pub fn put_variant(f: &mut HopperFile, i: usize, j: usize, name: &str, engine: u
 }
 
 /// A variant the clean-up accepts, with every byte it allows set to
-/// something recognisable.
+/// something recognisable. It names a rules script (mode 2, a made-up
+/// hash prefix), as a hopper entry's variant must.
 pub fn good_variant(name: &str) -> GameVariant {
     let mut v = GameVariant::blank(GameType::Slayer);
     v.set_name(name).unwrap();
+    let mut e = v.ext();
+    e.script = variants::ext::Script {
+        mode: variants::ext::Mode::Rules,
+        prefix: [0x5a; 8],
+        options: 0,
+    };
+    v.set_ext(&e).unwrap();
     v.set_builtin_flag(true);
     v.set_description(7);
     let mut b = v.to_bytes();

@@ -2119,7 +2119,9 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   keep the name rules (1 to 31 characters, at most 150 for a
   description), and a named script hashes to its hash, starts with the
   prefix, verifies, fits the tick budget and the IR cap (`rules::fits`)
-  and rides the record's engine. A refusal is 400 with the reason. The file's id is the SHA-256 of its canonical bytes, author
+  and rides the record's engine. A variant whose record runs no script
+  (mode 0, or Firefight's mode 1) is refused by name: Live lists scripted
+  variants only. A refusal is 400 with the reason. The file's id is the SHA-256 of its canonical bytes, author
   included, so the same file published again answers 200 with the same
   variant, and the file from `/bundle` (which has no author) gets another
   id once published.

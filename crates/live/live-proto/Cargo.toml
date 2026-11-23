@@ -15,6 +15,9 @@ content.workspace = true
 # The start gate's census (docs/game/rules-start-gate.md): a map's labelled
 # placements and tags, which `MapCensusSet` carries.
 rules.workspace = true
+# A built-in matchmaking variant is the record of its script
+# (`variants::portable::record_for`, hopper/defaults.rs).
+variants = { path = "../../formats/variants" }
 serde.workspace = true
 # Exact float parsing: the canonical-payload check re-serialises numbers.
 serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }

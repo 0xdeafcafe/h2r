@@ -1124,15 +1124,18 @@ entries with them.
 
 Click the entry's **Game variant**. The list has three groups:
 
-- **Built-in**: the game's built-in variants, from your disc.
-- **Saved**: the variants you saved in the Game variants tool. After
-  saving a new one, click **Refresh saved** to see it here.
-- **Files**: `.h2variant` files you loaded this session: type a path
-  under **Variants for the entries** and click **Load**, or click
-  **Browse...**.
+- **Matchmaking**: the variants of the default lineup, each the record of
+  a script.
+- **Saved**: the variants you saved in the Game variants tool that run a
+  script. After saving a new one, click **Refresh saved** to see it here.
+- **Files**: `.h2variant` files you loaded this session that run a script:
+  type a path under **Variants for the entries** and click **Load**, or
+  click **Browse...**.
 
-Pick one, and the entry shows it with `(picked)` after it. A variant the
-game would refuse is greyed out; hover over it to see why.
+A hopper plays only variants that run a rules script, so the game's
+built-in variants from your disc are not in the list. Pick one, and the
+entry shows it with `(picked)` after it. A variant the game would refuse
+is greyed out; hover over it to see why.
 
 ![The first entry's Game variant list open: under Built-in, Slayer - Slayer, Team Slayer - Slayer - teams, Rockets - Slayer, Swords - Slayer and more](../images/editor/hopper-variant-picker.png)
 
