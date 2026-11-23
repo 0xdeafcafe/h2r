@@ -76,6 +76,11 @@ pub struct HostLease {
     /// The mod package hash. Retail maps have none.
     pub map_id: Option<String>,
     pub variant: Option<String>,
+    /// The Firefight match the host plays (docs/game/firefight.md, "Live").
+    /// Its pack runs no other match ([`crate::host_pack::SlotClass::Whole`]),
+    /// and its game data must carry the map's kit at this kit version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<crate::session::Firefight>,
     pub hopper: Option<u32>,
     /// Total seats, from 1 to 16.
     pub max_players: u8,
@@ -310,6 +315,7 @@ mod tests {
             map: "lockout".into(),
             map_id: None,
             variant: Some("Slayer".into()),
+            firefight: None,
             hopper: None,
             max_players: 8,
             roster: vec![Xuid(0x0009_0000_0000_0001)],

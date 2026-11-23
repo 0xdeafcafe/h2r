@@ -37,6 +37,7 @@ fn lease() -> HostLease {
         map: "lockout".into(),
         map_id: None,
         variant: None,
+        firefight: None,
         hopper: Some(1),
         max_players: 4,
         roster: vec![Xuid(1), Xuid(2), Xuid(3)],

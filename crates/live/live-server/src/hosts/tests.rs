@@ -124,6 +124,7 @@ fn request(name: &str) -> HostLease {
         map: "lockout".into(),
         map_id: None,
         variant: None,
+        firefight: None,
         hopper: None,
         max_players: 4,
         roster: vec![],

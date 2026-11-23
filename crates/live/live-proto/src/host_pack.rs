@@ -8,7 +8,9 @@
 //! Three pure pieces live here so the Worker, native Live and the in-container
 //! supervisor agree on them:
 //!
-//! - [`admit`]: the supervisor's admission check from measured load.
+//! - [`admit`]: the supervisor's admission check from measured load, and
+//!   [`admit_class`] over it for matches that take a whole pack
+//!   ([`SlotClass`]).
 //! - [`Pool`]: which pack a new lease goes to, and which pack stops when its
 //!   last lease ends.
 //! - The supervisor's control wire ([`AddMatch`], [`Added`], [`PackStatus`])
@@ -140,6 +142,64 @@ pub enum Refusal {
     Memory { projected_mib: u64, budget_mib: u64 },
     #[error("the pack is shutting down")]
     Draining,
+    /// A Firefight match starts only in an empty pack.
+    #[error("a Firefight match takes a whole pack; this one runs {running} matches")]
+    WholeNeedsEmpty { running: usize },
+    /// The pack runs a Firefight match, which takes it whole.
+    #[error("the pack runs a Firefight match, which takes it whole")]
+    TakenWhole,
+}
+
+/// How much of a pack a match takes. Live and the supervisor read it from
+/// the lease ([`SlotClass::of`], [`SlotClass::of_lease_json`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotClass {
+    /// One slot beside the pack's other shared matches.
+    #[default]
+    Shared,
+    /// The whole pack: a Firefight match runs every actor's AI on the host
+    /// (docs/game/ai-networking.md, "CPU on the host"), so it starts only
+    /// in an empty pack and the pack admits nothing beside it. On a small
+    /// pack that is one whole vCPU.
+    Whole,
+}
+
+impl SlotClass {
+    /// A Firefight lease takes a whole pack; every other a shared slot.
+    pub fn of(lease: &crate::hosts::HostLease) -> Self {
+        if lease.firefight.is_some() { Self::Whole } else { Self::Shared }
+    }
+
+    /// [`Self::of`] over the lease JSON the supervisor receives
+    /// ([`AddMatch::lease_json`]): a non-null `firefight` takes the whole pack.
+    pub fn of_lease_json(lease: &serde_json::Value) -> Self {
+        if lease.get("firefight").is_some_and(|f| !f.is_null()) {
+            Self::Whole
+        } else {
+            Self::Shared
+        }
+    }
+}
+
+/// [`admit`] for a match of `class` beside `running`, each with its class.
+/// A pack running a [`SlotClass::Whole`] match admits nothing more, and a
+/// whole match needs an empty pack; otherwise the measured-load check
+/// decides.
+pub fn admit_class(
+    limits: &Limits,
+    running: &[(SlotClass, MatchLoad)],
+    class: SlotClass,
+    container_mib: Option<u64>,
+) -> Result<(), Refusal> {
+    if running.iter().any(|(c, _)| *c == SlotClass::Whole) {
+        return Err(Refusal::TakenWhole);
+    }
+    if class == SlotClass::Whole && !running.is_empty() {
+        return Err(Refusal::WholeNeedsEmpty { running: running.len() });
+    }
+    let loads: Vec<MatchLoad> = running.iter().map(|(_, load)| *load).collect();
+    admit(limits, &loads, container_mib)
 }
 
 /// Admit one more match next to `running`, or say why not.

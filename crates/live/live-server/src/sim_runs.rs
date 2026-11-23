@@ -595,6 +595,7 @@ impl HostMatch {
             map: m.map.to_ascii_lowercase(),
             map_id: None,
             variant: m.game_type,
+            firefight: None,
             hopper: None,
             max_players: bots.len() as u8,
             roster: vec![],

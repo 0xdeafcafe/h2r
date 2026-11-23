@@ -54,7 +54,9 @@ anyhow.workspace = true
 dhat = "0.3.3"
 sha2 = { workspace = true, optional = true }
 boot = { path = "../boot", default-features = false }
-host-data = { path = "../../live/host-data" }
+# The headless host only places bundled Firefight kits; the desktop build's
+# `h2 host bundle` builds them (`host-data/firefight`).
+host-data = { path = "../../live/host-data", default-features = false }
 # Bots for sim runs and `h2 bots nav` (docs/game/bots.md).
 bots = { path = "../../live/bots" }
 # h2 sim: match, batch and report files, the comparison (docs/runtime/sim.md).
@@ -116,6 +118,8 @@ time = "0.3"
 # decoding for the disc check's contact sheet.
 gltf = { version = "1", default-features = false, features = ["names"] }
 png = { workspace = true }
+# `strip_keeps_squads_and_sectors`: a kit map to strip.
+firefight-kit = { path = "../../tools/firefight-kit", features = ["testkit"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
@@ -160,6 +164,7 @@ desktop = [
     "dep:h1map",
     "dep:h1convert",
     "dep:scenario-edit",
+    "host-data/firefight",
     "dep:pogo-kit",
     "dep:forge",
     "dep:forge-doc",

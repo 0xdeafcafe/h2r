@@ -129,6 +129,7 @@ fn cloud_lease() -> live_proto::hosts::HostLease {
         map: "lockout".into(),
         map_id: None,
         variant: None,
+        firefight: None,
         hopper: None,
         max_players: 2,
         roster: vec![Xuid(42)],

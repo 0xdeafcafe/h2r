@@ -591,6 +591,7 @@ mod tests {
             map: "lockout".into(),
             map_id: None,
             variant: None,
+            firefight: None,
             hopper: None,
             max_players: 16,
             roster: vec![],

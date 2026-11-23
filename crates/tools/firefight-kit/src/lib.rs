@@ -19,6 +19,9 @@ use tags::pathfinding::SBSP_PATHFINDING_FIELD;
 mod ai;
 mod bases;
 mod nav;
+/// An invented map the kit builds on, for tests here and in other crates.
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 
 pub use bases::{Bases, Config, Source, Team};
 

@@ -120,6 +120,7 @@ mod tests {
             sim_stores: Some(stores),
             bots: None,
             image: None,
+            firefight: false,
             force: false,
             zstd_level: 1,
         }

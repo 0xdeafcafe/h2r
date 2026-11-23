@@ -219,6 +219,16 @@ Admission keeps 30% of each vCPU and 256 MiB of memory free. It accounts
 for boot reservations even before resident memory grows. A rolling
 30-second gameplay p99 over 36 ms also closes admission.
 
+A Firefight lease (`HostLease.firefight`) takes a whole pack: the host
+runs every actor's AI ([CPU on the host](../game/ai-networking.md#cpu-on-the-host)),
+so the supervisor starts it only in an empty pack and refuses every lease
+beside it until it ends (`SlotClass::Whole`, `admit_class`; refusals
+`whole_needs_empty` and `taken_whole`). On a small pack that is one whole
+vCPU. The pool routes it like any lease: a busy pack's refusal marks that
+pack full until one of its leases ends, and the lease lands in a new or
+empty pack.
+[Admission](../../crates/live/live-proto/src/host_pack.rs) · [Supervisor](../../crates/apps/cli/src/host_cmd/pack.rs)
+
 Small packs admit up to five slots on one vCPU within 1,536 MiB. Large
 packs admit up to ten slots on two vCPUs within 3,072 MiB. Cloudflare
 provisions and bills 3 and 6 GiB respectively under its capped scheduling
@@ -337,7 +347,9 @@ host uses the original. Keep matched files immutable while mounted.
 
 The stripper clears known local bitmap LOD and low-detail payloads and
 classifiable PCM and Xbox ADPCM sample spans. It keeps WMA, IMA, unknown
-or externally referenced ranges, and other raw resources. The guest can
+or externally referenced ranges, and other raw resources. Tag metadata,
+BSPs and the index stay whole, so a Firefight kit map keeps its squads,
+zones, orders, sectors and moved group table. The guest can
 read codec bytes before DirectSound sees a packet (WMA decoder
 `0x0038a0c5`–`0x0038a1cc`). Render also feeds the animation cache used
 from the tick. Keep the original cache alongside its verified override.
@@ -617,6 +629,7 @@ h2 host bundle --disc "$H2_DISC" --out "$bundle_dir"
 | Multiplayer `maps/*.map` | The host loads these maps for matches. The bundle selects them by their cache headers. |
 | `maps/fonts/` | The retail menu reads the font tables and packed glyphs from the DVD. |
 | `bots/<map>.<bsp>.bots`, `bots/<map>.<bsp>.vis` | Each multiplayer map's bot nav mesh and visibility grid, built from the disc. A sim child builds none, and a light host would otherwise build each map's when it is first played. |
+| `firefight/firefight-<map>/`, `firefight/kits.json` | Each multiplayer map's Firefight kit package (its `manifest.toml` and patch) and the index naming the kit version and each map's package ID. A Firefight match plays its map's kit. |
 
 The light host skips Bink movies. Campaign levels and dashboard media are
 outside the multiplayer boot path. See [boot](../../crates/apps/boot/src/lib.rs)
@@ -630,6 +643,21 @@ bundled map's header and refuses a map without a current mesh and grid.
 `--data DIR` names the data root (default: the one `h2 play` uses).
 `--no-bots` leaves the bot data out.
 [Bundle nav data](../../crates/live/host-data/src/bundle/nav.rs) · [Bot data files](../game/bots.md)
+
+The command builds every multiplayer map's Firefight kit from the disc
+with the builder `h2 firefight kit` uses, so the host's package ID is the
+one each player gets from their own disc
+([The kit](../game/firefight.md#the-kit)). A map the kit refuses, for
+lack of headroom or drops, is named and left without one. A kit's patch
+is bound to the disc map's hash, so a map with a kit comes from the disc
+even when `--stripped-maps` has a copy of it. `--no-firefight` leaves the
+kits out; the headless host's own build has no kit builder. When a lease
+names a Firefight match, the host places its map's package in the match's
+data root (`<data>/maps/firefight-<map>`) before the game starts. It
+refuses the lease when the bundle has no kit for the map, its kits are
+another version than the match's, or the lease's `map_id` names another
+package.
+[Bundle kits](../../crates/live/host-data/src/bundle/kits.rs) · [Placing a kit](../../crates/live/host-data/src/lib.rs)
 
 `--image DIR` adds `libh2game.so` and `libh2game.so.stamp` from `DIR`
 (`deploy/host/build.sh --module` stages them in `deploy/host/stage/image`).

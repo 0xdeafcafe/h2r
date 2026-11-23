@@ -255,6 +255,7 @@ pub(super) mod tests {
                 build: false,
             }),
             image: None,
+            firefight: false,
             force: true,
             zstd_level: 1,
         }

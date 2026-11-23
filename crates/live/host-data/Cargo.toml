@@ -23,6 +23,18 @@ vfs.workspace = true
 sha2 = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 zstd = "0.11"
+# `h2 host bundle` builds each multiplayer map's Firefight kit from the
+# disc (docs/live/dedicated-host.md, Game data bundle). The headless host
+# only places a bundled kit, so its build leaves the builder out.
+firefight-kit = { path = "../../tools/firefight-kit", optional = true }
+
+[features]
+default = ["firefight"]
+firefight = ["dep:firefight-kit"]
+
+[dev-dependencies]
+# An invented map the kit builds on.
+firefight-kit = { path = "../../tools/firefight-kit", features = ["testkit"] }
 
 [lints]
 workspace = true

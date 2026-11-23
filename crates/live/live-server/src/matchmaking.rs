@@ -642,6 +642,7 @@ fn host_request(
         map: playlist.map.clone(),
         map_id: None,
         variant: playlist.variant.clone(),
+        firefight: None,
         hopper: Some(assignment.hopper),
         max_players: assignment.members.len() as u8,
         roster: assignment.members.clone(),

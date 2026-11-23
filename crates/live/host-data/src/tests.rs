@@ -185,6 +185,7 @@ fn build_fixture_disc(out: &TempDir) -> (PathBuf, crate::BundleOut) {
         sim_stores: None,
         bots: None,
         image: None,
+        firefight: false,
         force: false,
         zstd_level: 3,
     })
@@ -352,6 +353,7 @@ fn the_cache_evicts_least_recently_used_entries() {
             sim_stores: None,
             bots: None,
             image: None,
+            firefight: false,
             force: false,
             zstd_level: 3,
         })
@@ -488,6 +490,7 @@ fn provisioning_places_the_bundles_bot_data_where_the_game_loads_it() {
         sim_stores: None,
         bots: Some(crate::BotData { dir: bots::cache::dir(&built_data), build: false }),
         image: None,
+        firefight: false,
         force: false,
         zstd_level: 3,
     })
@@ -560,4 +563,112 @@ fn only_flat_bot_data_files_are_bot_payload() {
     for bad in ["bots/lockout.spots", "bots/sub/lockout.0.bots", "bots/.lockout.0.bots", "bots/", "botsx/a.bots"] {
         assert!(validate_payload_path(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn only_kit_packages_and_their_index_are_firefight_payload() {
+    for ok in [
+        "firefight/kits.json",
+        "firefight/firefight-court/manifest.toml",
+        "firefight/firefight-court/kit-ab.bps",
+    ] {
+        assert!(validate_payload_path(ok).is_ok(), "{ok}");
+    }
+    for bad in [
+        "firefight/court/manifest.toml",
+        "firefight/firefight-court/sub/manifest.toml",
+        "firefight/firefight-court/.manifest.toml",
+        "firefight/firefight-court/",
+        "firefight/other.json",
+        "firefightx/kits.json",
+    ] {
+        assert!(validate_payload_path(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn the_bundle_carries_each_maps_firefight_kit_and_the_host_places_it() {
+    let tmp = TempDir::new("kits");
+    let disc = tmp.join("disc");
+    testkit::write_disc_dir(&disc);
+    let court = firefight_kit::testkit::court();
+    fs::write(disc.join("maps/court.map"), &court).unwrap();
+    // A stripped copy of court: same header and length, a blanked tail.
+    let stripped = tmp.join("stripped");
+    fs::create_dir_all(&stripped).unwrap();
+    let mut copy = court.clone();
+    let end = copy.len();
+    copy[end - 16..].fill(0);
+    fs::write(stripped.join("court.map"), &copy).unwrap();
+    let out = tmp.join("bundle");
+    let built = crate::build(&crate::BundleSpec {
+        disc: disc.clone(),
+        out: out.clone(),
+        stripped: Some(stripped),
+        sim_stores: None,
+        bots: None,
+        image: None,
+        firefight: true,
+        force: false,
+        zstd_level: 1,
+    })
+    .unwrap();
+    assert_eq!(built.kits, 1);
+    // The kit's patch is bound to the disc map, so court comes from the disc.
+    assert_eq!((built.kit_bases_unstripped, built.stripped_used), (1, 0));
+    // The synthetic maps are no caches the kit can read: named, left out.
+    let mut refused: Vec<_> = built.kits_refused.iter().map(|(map, _)| map.as_str()).collect();
+    refused.sort_unstable();
+    assert_eq!(refused, ["lockout", "zanzibar"]);
+
+    let dir = provision(
+        &testkit::file_url(&out.join(ARCHIVE_NAME)),
+        &built.manifest.sha256,
+        &tmp.join("cache"),
+    )
+    .unwrap();
+    assert_eq!(testkit::read_all(&dir.join("maps/court.map")), court);
+    let index = bundled_kits(&dir).unwrap().unwrap();
+    assert_eq!(index.kit, firefight_kit::KIT_VERSION);
+    assert_eq!(index.maps.keys().collect::<Vec<_>>(), ["court"]);
+    let id = index.maps["court"].clone();
+
+    // Another version, a map without a kit, another package: named
+    // refusals, and nothing placed.
+    let data = tmp.join("host-root");
+    let maps = content::store::maps_dir(&data);
+    for (map, kit, map_id) in [
+        ("court", index.kit + 1, None),
+        ("lockout", index.kit, None),
+        ("court", index.kit, Some("0".repeat(64))),
+    ] {
+        let placed = install_firefight_kit(&dir, &data, map, kit, map_id.as_deref());
+        assert!(matches!(placed, Err(Error::Kit(_))), "{map} v{kit}: {placed:?}");
+    }
+    assert!(!maps.join("firefight-court").exists());
+
+    // Placed where the game's library finds it, over an older copy.
+    fs::create_dir_all(maps.join("firefight-court")).unwrap();
+    fs::write(maps.join("firefight-court/stale"), b"old").unwrap();
+    assert_eq!(install_firefight_kit(&dir, &data, "Court", index.kit, Some(&id)).unwrap(), id);
+    assert!(!maps.join("firefight-court/stale").exists());
+    for entry in fs::read_dir(&maps).unwrap().flatten() {
+        let name = entry.file_name().into_string().unwrap();
+        assert!(!name.ends_with(".new") && !name.ends_with(".old"), "{name}");
+    }
+    let library = content::Library::open(&maps);
+    let package = library
+        .packages()
+        .iter()
+        .find(|p| p.id.to_string() == id)
+        .expect("the library loads the placed kit");
+    // It resolves over the bundled base into the kit map the players load.
+    let kit = library
+        .resolve_package(package, &mut &court[..])
+        .unwrap()
+        .read_all(&mut &court[..])
+        .unwrap();
+    let mut kit_map = map::Map::from_reader(std::io::Cursor::new(&kit[..])).unwrap();
+    kit_map.validate_checksum().unwrap();
+    assert!(kit_map.groups().iter().any(|g| g.class == map::FourCC(*b"char")));
 }

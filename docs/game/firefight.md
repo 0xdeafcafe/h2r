@@ -4,8 +4,9 @@ Status: Partly built. The definition format, validator, three built-in wave
 sets, director (FF2), stage-one offline kit, probe recipe, the host
 runtime (FF4) with its `Game` over the guest bodies of the engine
 entries and the `firefight` feature that runs it, the agent API
-(FF5), the Game Setup row and options page, and the HUD's mode blob and
-view (FF8, without the drawing) are implemented, tests only. "Guest boundary" lists the runs that
+(FF5), the Game Setup row and options page, the HUD's mode blob and
+view (FF8, without the drawing), and the dedicated host's whole-pack
+admission and bundled kits (FF10) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
 Code: `crates/formats/firefight` defines and validates wave sets and holds
 the director (`src/director.rs`) and kill scoring (`src/scoring.rs`).
@@ -35,7 +36,8 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 ## Decisions
 
 - **Kit map.** Every machine builds the kit map from its own disc using
-  the same offline builder, including dedicated hosts.
+  the same offline builder. A dedicated host's kits come in the owner's
+  game data bundle, which `h2 host bundle` builds from the owner's disc.
 - **Player count.** Firefight ships for 1 to 4 players. The 16-player
   playlist requires a passing CPU probe. [P5](ai-networking.md#probes)
 - **Home base.** The kit gives every map two bases, read from the map's
@@ -828,10 +830,19 @@ have no director and so no blob until the host log carries the mode state
   the census to check. FF9 ships the 1-to-4-player playlist. FF13 adds the
   16-player playlist once P5 meets the host target at the chosen actor
   cap.
-- **Dedicated host.** A Firefight match asks for a host of its own class
-  with a whole core (ai-networking.md, "CPU on the host"). The host
-  builds the kit map from its own disc. The server-map strip keeps the
-  AI blocks and sectors.
+- **Dedicated host.** A Firefight lease names its match
+  (`HostLease.firefight`) and takes a whole pack: the supervisor starts it
+  only in an empty pack and admits nothing beside it, so on a small pack
+  the match has a whole vCPU (ai-networking.md, "CPU on the host";
+  dedicated-host.md, "Packed hosts"). The owner's bundle carries every
+  multiplayer map's kit, built from their disc (`firefight/`), and the
+  host places the lease's map's package before the game starts, refusing
+  a map without a kit, another kit version or another package ID.
+  The server-map strip blanks only bitmap and sample payloads, so a
+  kit map keeps its AI blocks, sectors and moved group table
+  (dedicated-host.md, "Game data bundle" and "Server maps"). Nothing in
+  Live makes a Firefight lease yet: matchmaking's dedicated playlists and
+  custom hosts leave `firefight` empty.
 - **Join in progress** follows ai-networking.md: lobby only until probe
   P6 answers.
 
@@ -935,7 +946,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |
 | **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`); `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state (`every_state_passes_the_layout_checks`) | a client with only the mode blob draws the same HUD as the host |
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite; built: `firefight_match_round_trips_and_is_left_out_when_none`, `firefight_match_is_validated`, `sessions_carry_the_hosts_firefight_match`, `guests_read_the_firefight_match_their_host_advertises`, `each_multiplayer_start_names_its_match_for_the_session`, `each_builtin_is_found_by_its_hash_prefix`, `a_hopper_takes_the_builtin_firefight_sets`, `a_crossfire_variant_is_accepted_by_its_hash_prefix`, `the_builtin_firefight_sets_are_offered_crossfire_with_teams`, `firefight_seats_balance_two_teams_and_fill_one`, `firefight_sessions_seat_clankers_on_player_teams_only`, `a_firefight_session_seats_balanced_clankers_on_the_worker` | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
-| **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/apps/h2host/`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors` | admission tests; the coordinator's host run in notes |
+| **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/live/live-proto/src/{hosts,host_pack}.rs`, `crates/apps/cli/src/host_cmd/{pack,process}.rs`, `crates/apps/cli/src/server_map.rs`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors`; built: `a_whole_slot_class_needs_an_empty_pack_and_keeps_it`, `a_firefight_lease_takes_the_whole_slot_class`, `the_bundle_carries_each_maps_firefight_kit_and_the_host_places_it`, `only_kit_packages_and_their_index_are_firefight_payload` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `the_firefight_examples_load`, `rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
 | **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order | L | FF3, P2 | `crates/tools/firefight-kit/src/transplant.rs` (new) | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids` | on invented maps; the retail census goes in notes |
 | **FF13** | The 16-player playlist at the live-actor cap measured by the CPU probe | S | FF9, FF10, FF11, P5 passes at 16 seats | `crates/tools/hopper-edit/`, `crates/live/live-server/`, `crates/live/live-worker/` | `sixteen_player_playlist_requires_the_measured_host_class`, `sixteen_player_definition_honours_the_measured_actor_cap`, the parity suite | publish in both Live homes only with a P5 result at or below 28 ms p99 game-thread CPU at the chosen live-actor cap on the intended host class. Admission uses that class and cap |
