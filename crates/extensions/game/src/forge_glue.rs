@@ -171,7 +171,17 @@ impl Driver {
             };
             self.opening = None;
             match result {
-                Ok(opened) => {
+                Ok(mut opened) => {
+                    // The map's own entries, read once from the running
+                    // scenario before any edit (docs/game/forge-map-variants.md,
+                    // "Applying an edit in a session").
+                    let rows = forge_map::rows::read(m, loaded.scenario, &|datum: u32| {
+                        opened.names.get(&datum).cloned()
+                    });
+                    opened.session = opened.session.with_base(rows.into_base());
+                    for line in opened.session.left_out() {
+                        eprintln!("forge: the map's things leave out {line}");
+                    }
                     self.draft = take_draft().or_else(crate::lobby_start::forge_map);
                     let mut editor =
                         Editor::new(opened, &self.data, loaded.scenario, self.calls.clone());

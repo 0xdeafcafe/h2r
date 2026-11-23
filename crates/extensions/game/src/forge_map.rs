@@ -116,6 +116,9 @@ pub(crate) struct Opened {
     pub refused: Vec<String>,
     /// Structure collision indexed by the game's active BSP.
     pub walls: Vec<Walls>,
+    /// Every named tag of the map by its salted datum, which
+    /// [`rows::read`] resolves the loaded scenario's references through.
+    pub names: BTreeMap<u32, TagKey>,
 }
 
 /// Resolve the recorded source once, then release the foreground VFS before
@@ -247,6 +250,20 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
         extents.push(extent);
     }
     let teleporters = teleporters(&view, &root)?;
+    let names = map
+        .tags()
+        .iter()
+        .filter_map(|tag| {
+            let path = tag.name.clone().filter(|p| !p.is_empty())?;
+            Some((
+                tag.id.0,
+                TagKey {
+                    group: tag.group.to_string(),
+                    path,
+                },
+            ))
+        })
+        .collect();
     let (bounds, walls) = geometry(&mut map, &view)?;
     let doc = ForgeDoc {
         format: forge_doc::FORMAT,
@@ -278,6 +295,7 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
         extents,
         refused,
         walls,
+        names,
     })
 }
 

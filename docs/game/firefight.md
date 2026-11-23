@@ -514,7 +514,7 @@ as `starts`) when they are not in the scenario's own bytes.
 It chooses 6–12 boundary sectors on the walkable component that holds
 both bases, so every drop has a path to each base over shared sector
 edges with enough clearance for the bots' walk mesh. A drop's centre
-stays at least 4 units from every start and a quarter of the bases'
+stays at least 3 units from every start and a quarter of the bases'
 separation (2 to 8 units) from each base; picks alternate between the
 bases' sides, spread farthest first. Each zone has an area and separated
 firing positions, preferring cover that faces the nearer base. After the

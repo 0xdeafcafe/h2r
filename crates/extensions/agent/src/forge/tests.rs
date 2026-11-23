@@ -1,6 +1,9 @@
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Duration;
 
+// The base calls are the session's `World` calls.
+use ::forge::World as _;
+
 use agent_proto::{
     Object,
     sim::{SessionKind, SessionView},

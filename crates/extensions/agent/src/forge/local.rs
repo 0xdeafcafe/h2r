@@ -216,17 +216,14 @@ impl World for ForgeWorld {
         self.steps.push(Staged::Channel(flag, channel));
         Ok(())
     }
-}
 
-/// The base calls: an own entry is named by its block and the index the
-/// base map has it at, and each call stages one [`BaseStep`] (`base.rs`).
-/// They are inherent so far; the session's `World` takes them as its
-/// `base_move`, `base_field`, `base_inert` and `base_restore`.
-impl ForgeWorld {
+    // The base calls: an own entry is named by its block and the index the
+    // base map has it at, and each call stages one `BaseStep` (`base.rs`).
+
     /// Move and turn own entry `index` of `block`: its position and
     /// orientation in the loaded scenario, and its live object when the
     /// block makes objects.
-    pub fn base_move(&mut self, block: BlockKind, index: u32, frame: Frame) -> Result<(), String> {
+    fn base_move(&mut self, block: BlockKind, index: u32, frame: Frame) -> Result<(), String> {
         if layout::block(block).role(layout::Role::Position).is_none() {
             return Err(format!("{} rows have no position", block.name()));
         }
@@ -239,7 +236,7 @@ impl ForgeWorld {
     }
 
     /// Set one typed, editable field of the entry in the loaded scenario.
-    pub fn base_field(
+    fn base_field(
         &mut self,
         block: BlockKind,
         index: u32,
@@ -259,14 +256,14 @@ impl ForgeWorld {
     }
 
     /// Make the entry's row inert and delete its live object.
-    pub fn base_inert(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+    fn base_inert(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
         self.steps
             .push(Staged::Base(BaseStep::Inert { block, index }));
         Ok(())
     }
 
     /// Write the kept `row` back and make the entry's object again.
-    pub fn base_restore(&mut self, block: BlockKind, index: u32, row: &[u8]) -> Result<(), String> {
+    fn base_restore(&mut self, block: BlockKind, index: u32, row: &[u8]) -> Result<(), String> {
         let row = base::RowBytes::new(block, row)?;
         self.steps
             .push(Staged::Base(BaseStep::Restore { block, index, row }));

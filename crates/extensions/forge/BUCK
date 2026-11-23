@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/forge-doc:forge-doc",
+        "//crates/formats/map:map",
         "//crates/formats/settings:settings",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
@@ -60,6 +61,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/forge-doc:forge-doc",
+        "//crates/formats/map:map",
         "//crates/formats/settings:settings",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
