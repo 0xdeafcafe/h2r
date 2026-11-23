@@ -1,6 +1,6 @@
 # The forked bounce search
 
-Status: Partly built. The search, the fork and the command are written and tested over fakes; no run has forked a machine, so the costs and the fork's exactness are estimates ([Not verified](#not-verified)).
+Status: Partly built. The search, the fork and the command run on a real machine: a smoke run forked and restored with every RAM check equal. Costs and trial outcomes are not yet measured ([Not verified](#not-verified)).
 Code: `crates/live/sim-bench/src/bounces.rs` (`Job`), `crates/extensions/game/src/sim_bounces.rs` (`tick`, `between_slices`), `crates/apps/cli/src/sim_cmd.rs` (`bounces`). Tests: `crates/live/sim-bench/src/bounces/tests.rs`.
 Switch: none.
 
