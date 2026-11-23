@@ -1857,6 +1857,10 @@ fn run_configured(
         0
     };
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
+    // Cut the game in play and discard the tape even when the loop below
+    // exits by error or panic, skipping its teardown
+    // (`theater::Session::seal_on_drop`).
+    let film_seal = film.as_ref().and_then(|f| f.seal_on_drop());
     let first_slice = film_slices;
     let mut next_slice = film_slices;
     while next_slice < opts.max_slices {
@@ -1914,6 +1918,9 @@ fn run_configured(
                 }
             }
             film_slices = slice + 1;
+            if let Some(seal) = &film_seal {
+                seal.advance(film_slices);
+            }
         }
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
             break;

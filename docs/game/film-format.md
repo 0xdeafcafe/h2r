@@ -56,11 +56,11 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
 `H2_FEATURES=-film-autorecord` turns it off.
 
 - **One film per game.** The session records one tape from boot to exit.
-  Each multiplayer game's end cuts the tape so far into a film whose
-  header describes that game, and recording carries on. At the session's
-  end a game still in play (a campaign mission, a game left running) is
-  cut the same way, and the tape is deleted. A session that plays no game
-  (menus, Theater, settings) leaves no film.
+  Each game's end cuts the tape so far into a film whose header describes
+  that game, and recording carries on. At the session's end a game still
+  in play (a campaign mission, a game left running) is cut the same way,
+  and the tape is deleted. A session that plays no game (menus, Theater,
+  settings) leaves no film.
 - **Names.** `auto-YYYYMMDD-HHMMSS-mmm.h2film`, the UTC time the film was
   written; the running tape takes the session's start. Recent sorts by
   the header's start time, which for a game's film is its game's start,
@@ -97,6 +97,23 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   `theater: not recording this session: <reason>` once at boot.
 - **Local only.** Default films stay in the local library. Only films the
   player names are queued for the signed-in account's archive.
+- **The tape records games.** Machine keyframes, D3D barriers and the
+  local keyframe cache belong to games: outside one (main menu, lobby,
+  pregame, Theater, settings) no capture is attempted and no capture mark
+  is written. The first capture of a game lands within its first 30
+  ticks, then every 150. The tick and call stream does not stop: a film
+  replays from boot, so the tape keeps the menu ticks and calls that
+  carry a replay from boot to a game's start, and a cut's keyframes
+  resume at the game's first one. This is the menu state the tape keeps.
+- **An exit without a teardown still seals.** The boot loop holds a seal
+  (`theater::Session::seal_on_drop`) across its slice loop, so an error
+  exit or a panic that skips the final finish cuts the game in play and
+  deletes the tape as a clean exit does. A SIGTERM, a window close and
+  Cmd-Q all end the run through the loop's teardown. Only a hard kill
+  (SIGKILL, a power loss) leaves an unsealed tape; the library prune
+  removes it after an hour, and nothing recovers a film from it, because
+  the ranges directory and the per-game descriptors of an unsealed tape
+  live in the recorder's memory, not in the file.
 
 What Theater's Recent tab shows:
 
@@ -113,7 +130,13 @@ in `crates/extensions/game/src/theater.rs`; `Recording::post_tick` in
 `theater/record.rs`). Every taped HLE call, controller reads included, is
 appended to the tape (`Tap::record`). The recorder samples the pause latch
 between slices (`observe_pause`) and attempts a machine keyframe for the
-local cache every 150 ticks (`CAPTURE_TICKS`, `try_capture_point`). Boot
+local cache every 150 ticks in a game (`CAPTURE_TICKS`,
+`try_capture_point`, gated on the descriptor's match start). A deferred
+capture prints `theater: capture at tick N deferred:` once per set of
+reasons until one lands, then one `theater: captures resumed after N
+deferrals` line; the kernel reports its blockers in whatever order its
+threads answer, so the set, not the string, identifies the deferral, and
+an after-hooks continuation names its hooked point. Boot
 hashes the data directory's start manifest once. An offline session also
 keeps retail pixels for readbacks (`d3d_glue::protected_readbacks`), which
 Live sessions already do. Two presentation features stay off while any

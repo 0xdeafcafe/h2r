@@ -115,10 +115,10 @@ impl Capture {
     }
 
     #[cfg(test)]
-    pub(super) fn start_for_test(&mut self, tick: u64, level: &str) {
+    pub(super) fn start_for_test(&mut self, tick: u64, level: &str, mode: Mode) {
         self.descriptor.match_start_tick = Some(tick);
         self.descriptor.map.name = level.into();
-        self.descriptor.mode = Mode::Custom;
+        self.descriptor.mode = mode;
         self.variant_name = "Slayer".into();
     }
 
