@@ -65,7 +65,7 @@ connection to hold `session.claim`.
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
-| `render.spawn_view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.spawn_view`, `render.view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.residual` | read | [Residual D3D work](#renderresidual-residual-d3d-work) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -1581,6 +1581,9 @@ h2 agent frame compare off/frame-03000.png on/frame-03000.png --diff d.png  # no
 h2 agent render.spawn_view '{"index": 0}'
 h2 agent render.capture '{}'
 h2 agent render.spawn_view '{"reset": true}'
+h2 agent render.view '{"eye": [12.5, -3, 2.2], "yaw": 1.57, "pitch": -0.2, "fov": 70}'
+h2 agent render.capture '{}'
+h2 agent render.view '{"reset": true}'
 h2 agent render.capture '{"tick": 9000}'
 h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
 h2 agent render.capture '{"lighting":"retail"}' # latest sealed scene, private draw
@@ -1594,6 +1597,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
+| `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
@@ -1627,6 +1631,22 @@ h2 agent render.parity '{"arm": true}'
   gives `UNAVAILABLE`, and a session that draws no world frames times out.
   `crates/extensions/game/src/agent_spawn_view.rs` shares Theater's
   playerless world view in `spectator_view.rs`.
+- **`render.view`.** Places the same private camera at an explicit eye
+  in world units. `yaw` is the heading about +z in radians, from +x
+  towards +y; `pitch` is up from level, within ±1.55. `fov` is the
+  horizontal lens in degrees, 1 to 150; without it the view keeps the
+  drawn view's own lens and the reply gives `fov: null`. The reply
+  echoes the pose drawn, with `yaw` wrapped into 0 to 2π. It answers
+  when the world renderer accepts the view, and a following
+  `render.capture {}` takes the next tick's frame from that eye. The
+  camera is drawn only while the scenario it was placed in is loaded.
+  `render.view` and `render.spawn_view` select one camera: either
+  replaces the other, and a pending request answers `INTERRUPTED` when
+  it is replaced, reset (by either method) or released by the next game
+  activation. Missing, non-finite or out-of-range params, or `reset`
+  with a pose, give `INVALID_PARAMS`; no loaded scenario gives
+  `UNAVAILABLE`. Types: `ViewParams` and its `check` in
+  `crates/extensions/agent-proto/src/render.rs`.
 - **`render.capture`.** With `lighting: "retail" | "e3"`, the native
   renderer draws a sealed scene into a private target. The default is
   the latest sealed scene. An explicit `tick` selects that exact scene

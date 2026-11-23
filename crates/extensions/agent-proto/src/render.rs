@@ -15,6 +15,87 @@ pub struct SpawnViewParams {
     pub reset: bool,
 }
 
+/// `render.view`: place the private world camera at an explicit eye, or
+/// release it. Angles are radians; `fov` is the horizontal lens in degrees.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ViewParams {
+    pub eye: Option<[f32; 3]>,
+    /// Heading about +z, from +x towards +y.
+    pub yaw: Option<f32>,
+    /// Up is positive, within [`ViewParams::PITCH_LIMIT`].
+    pub pitch: Option<f32>,
+    /// Omit to keep the drawn view's own lens.
+    pub fov: Option<f32>,
+    pub reset: bool,
+}
+
+/// A checked [`ViewParams`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ViewRequest {
+    Reset,
+    /// `yaw` is wrapped into `0..TAU`.
+    Pose {
+        eye: [f32; 3],
+        yaw: f32,
+        pitch: f32,
+        fov: Option<f32>,
+    },
+}
+
+impl ViewParams {
+    /// The private camera's pitch limit (the spectator camera's).
+    pub const PITCH_LIMIT: f32 = 1.55;
+    /// The horizontal lens range, degrees.
+    pub const FOV_DEGREES: std::ops::RangeInclusive<f32> = 1.0..=150.0;
+
+    /// `{reset: true}` alone, or an eye, yaw and pitch with an optional
+    /// lens, all finite and in range.
+    pub fn check(&self) -> Result<ViewRequest, String> {
+        let posed =
+            self.eye.is_some() || self.yaw.is_some() || self.pitch.is_some() || self.fov.is_some();
+        if self.reset {
+            return if posed {
+                Err("reset takes no other params".into())
+            } else {
+                Ok(ViewRequest::Reset)
+            };
+        }
+        let (Some(eye), Some(yaw), Some(pitch)) = (self.eye, self.yaw, self.pitch) else {
+            return Err(
+                "supply eye: [x, y, z], yaw and pitch (fov optional), or reset: true".into(),
+            );
+        };
+        if !eye.iter().all(|v| v.is_finite()) {
+            return Err("eye must be three finite numbers".into());
+        }
+        if !yaw.is_finite() {
+            return Err("yaw must be finite".into());
+        }
+        if !pitch.is_finite() || pitch.abs() > Self::PITCH_LIMIT {
+            return Err(format!(
+                "pitch must be within -{0}..={0} radians",
+                Self::PITCH_LIMIT
+            ));
+        }
+        if let Some(fov) = self.fov
+            && !(fov.is_finite() && Self::FOV_DEGREES.contains(&fov))
+        {
+            return Err(format!(
+                "fov must be {}..={} horizontal degrees",
+                Self::FOV_DEGREES.start(),
+                Self::FOV_DEGREES.end()
+            ));
+        }
+        Ok(ViewRequest::Pose {
+            eye,
+            yaw: yaw.rem_euclid(std::f32::consts::TAU),
+            pitch,
+            fov: self.fov,
+        })
+    }
+}
+
 /// `render.frame` and `render.frame_layout`: record the next whole frame
 /// (`arm`), or read the last one recorded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1135,5 +1216,62 @@ mod tests {
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["producers"][0]["guest_ms"], Value::Null, "null, not missing");
         assert_eq!(serde_json::from_value::<ResidualReply>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn view_params_are_checked() {
+        let parse = |v: Value| serde_json::from_value::<ViewParams>(v).unwrap().check();
+        assert_eq!(
+            parse(serde_json::json!({"reset": true})),
+            Ok(ViewRequest::Reset)
+        );
+        assert_eq!(
+            parse(
+                serde_json::json!({"eye": [1.0, 2.0, 3.0], "yaw": -1.0, "pitch": 0.5, "fov": 70.0})
+            ),
+            Ok(ViewRequest::Pose {
+                eye: [1.0, 2.0, 3.0],
+                yaw: (-1.0f32).rem_euclid(std::f32::consts::TAU),
+                pitch: 0.5,
+                fov: Some(70.0),
+            })
+        );
+        assert!(matches!(
+            parse(serde_json::json!({"eye": [0, 0, 0], "yaw": 0, "pitch": 0})),
+            Ok(ViewRequest::Pose { fov: None, .. })
+        ));
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({"reset": true, "yaw": 0}),
+            serde_json::json!({"eye": [0, 0, 0], "yaw": 0}),
+            serde_json::json!({"eye": [0, 0, 0], "pitch": 0}),
+            serde_json::json!({"yaw": 0, "pitch": 0}),
+            serde_json::json!({"eye": [0, 0, 0], "yaw": 0, "pitch": 1.6}),
+            serde_json::json!({"eye": [0, 0, 0], "yaw": 0, "pitch": -1.6}),
+            serde_json::json!({"eye": [0, 0, 0], "yaw": 0, "pitch": 0, "fov": 0.5}),
+            serde_json::json!({"eye": [0, 0, 0], "yaw": 0, "pitch": 0, "fov": 151}),
+        ] {
+            assert!(parse(bad.clone()).is_err(), "{bad}");
+        }
+        let nan = ViewParams {
+            eye: Some([f32::NAN, 0.0, 0.0]),
+            yaw: Some(0.0),
+            pitch: Some(0.0),
+            ..Default::default()
+        };
+        assert!(nan.check().is_err());
+        let inf = ViewParams {
+            eye: Some([0.0; 3]),
+            yaw: Some(f32::INFINITY),
+            pitch: Some(0.0),
+            ..Default::default()
+        };
+        assert!(inf.check().is_err());
+        for unknown in [
+            serde_json::json!({"eye": [0, 0], "yaw": 0, "pitch": 0}),
+            serde_json::json!({"index": 0}),
+        ] {
+            assert!(serde_json::from_value::<ViewParams>(unknown).is_err());
+        }
     }
 }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const PITCH_LIMIT: f32 = 1.55;
 const RENDER_CAMERA_BYTES: usize = 0x74;
-const WORLD_VIEW_RETURN: u32 = 0x0022_3719;
+pub(crate) const WORLD_VIEW_RETURN: u32 = 0x0022_3719;
 const NEAR_CLIP: u32 = 0x0048_5ad4;
 const FAR_CLIP: u32 = 0x0048_5ad8;
 
@@ -127,7 +127,7 @@ pub(crate) fn draw_world_view(
     drawn
 }
 
-fn replace_world_view<M: GuestMemory>(
+pub(crate) fn replace_world_view<M: GuestMemory>(
     guest: &mut M,
     esp: u32,
     count: u32,

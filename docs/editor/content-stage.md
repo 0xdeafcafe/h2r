@@ -158,11 +158,9 @@ same sealed scene, in `retail` and in `e3` lighting
 
 - `ground`, `front`, `side`, `orbit-N`, `ruler`, `third`: a private
   world view at the layout's eye (`render.view {eye, yaw, pitch, fov}`,
-  a new game method on `spectator_view`, which `render.spawn_view`
-  already uses), then `render.capture`
+  on the same `spectator_view` camera as `render.spawn_view`), then
+  `render.capture`
   ([agent-api.md](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)).
-  Until `render.view` exists these use `render.spawn_view {index}` on
-  the cameras' starting locations.
 - `first`: the player's own view holding the item, with the HUD.
 - `hud-full`, `hud-low`, `hud-empty`: `first` with the shield and ammo
   set by `sim.state.set`, for HUD kit elements and `nhdt` edits.
@@ -213,7 +211,7 @@ repository.
 
 - **Studio builds** with `workspace::build` (`project.build`) and
   **calls its own game:** `maps.load`, `session.wait`, `session` pause
-  and step, `render.view` (new), `render.spawn_view`, `render.capture`,
+  and step, `render.view`, `render.spawn_view`, `render.capture`,
   `render.compare`, `sim.state.set`, the give call, `world` queries,
   `audio.meter` (new), `rules.reload`, `edit.*`.
 - **New game methods**, both wanted by later agents and tests, so the

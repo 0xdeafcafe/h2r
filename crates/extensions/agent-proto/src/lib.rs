@@ -66,6 +66,7 @@ pub use render::{
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
     SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
     SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,
+    ViewParams, ViewRequest,
 };
 
 use serde::{Deserialize, Serialize};
@@ -287,6 +288,9 @@ pub mod method {
     pub const RENDER_CAPTURE: &str = "render.capture";
     /// Position the world camera at a loaded player starting location.
     pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
+    /// Position the world camera at an explicit eye and heading, or release
+    /// it ([`crate::ViewParams`]).
+    pub const RENDER_VIEW: &str = "render.view";
     /// Arm a sequence of headless display presents, including in-between frames.
     pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
     /// Read the number of display frames written by a clip capture.
