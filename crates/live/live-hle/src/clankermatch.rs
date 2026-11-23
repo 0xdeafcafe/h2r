@@ -103,6 +103,7 @@ mod tests {
                 playlist_id: 9,
                 players: 8,
                 teams: 0,
+                ranked: true,
                 ranks_as: None,
             }],
         }

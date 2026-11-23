@@ -318,12 +318,16 @@ impl Live {
     /// The playlist a Clankermatch game in hopper `playlist` (a descriptor
     /// index) ranks in (docs/game/bots.md §8.2 item 1, §9.4 item 1): its
     /// own index, or with `ranks_as` the index of the ranked hopper with
-    /// that playlist id. `None` when the served file does not mark the
-    /// hopper as a clanker one (or `ranks_as` names no ranked hopper).
+    /// that playlist id. `None` for an unranked clanker playlist, when the
+    /// served file does not mark the hopper as a clanker one, or when
+    /// `ranks_as` names no ranked hopper.
     pub(crate) async fn clanker_rank_playlist(&self, playlist: &str) -> Option<String> {
         let index = playlist.parse::<u32>().ok()?;
         let file = self.hoppers().await?;
         let mark = *crate::admin::clanker_hoppers(Some(&file)).get(index)?;
+        if !mark.ranked {
+            return None;
+        }
         match mark.ranks_as {
             None => Some(playlist.to_string()),
             Some(id) => (0..HOPPERS)
@@ -378,6 +382,9 @@ impl Live {
             })
             .collect();
         for h in crate::admin::clanker_hoppers(Some(&f)).hoppers {
+            if !h.ranked {
+                continue;
+            }
             let playlist = match h.ranks_as {
                 None => Some(h.hopper_id.to_string()),
                 Some(id) => boards.get(&id).cloned(),

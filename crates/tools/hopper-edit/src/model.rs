@@ -1092,9 +1092,10 @@ mod tests {
     #[test]
     fn an_unused_slot_becomes_a_playlist_the_game_loads() {
         use live_proto::hopper::check_descriptor;
-        let f = HopperFile::default_set();
+        let mut f = HopperFile::default_set();
+        let i = live_proto::hopper::HOPPERS - 1;
+        f.clear_hopper(i).unwrap();
         let base = load(&f);
-        let i = defaults::playlists().len();
         assert!(is_unused(&base[i]));
         // Untouched unused slots never block a save; a title alone in one
         // says what to do.
@@ -1102,7 +1103,7 @@ mod tests {
         m[i].title = "Modtacular".into();
         let errs = errors(&base, &m);
         assert_eq!(errs.len(), 1, "{errs:?}");
-        assert!(errs[0].starts_with("Playlist 12: this slot is unused"));
+        assert!(errs[0].starts_with("Playlist 16: this slot is unused"));
         // From a template: one entry, the template's rules.
         let mut m = base.clone();
         assert!(!create_playlist(&mut m[i], 99));
@@ -1114,7 +1115,7 @@ mod tests {
         let out = apply(&f, &m).unwrap();
         let d = out.descriptor(i).unwrap();
         assert_eq!(check_descriptor(&d), vec![]);
-        assert_eq!(d.playlist_id, 12);
+        assert_eq!(d.playlist_id, 17);
         assert_eq!(out.text(i).unwrap().title, "Modtacular");
         assert_eq!(out.problems(&defaults::retail_map_ids()), vec![]);
         let e = out.entry(i, 0).unwrap();

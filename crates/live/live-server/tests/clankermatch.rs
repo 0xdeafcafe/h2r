@@ -138,19 +138,26 @@ async fn a_fresh_server_serves_the_default_clanker_hoppers() {
         String::from_utf8_lossy(&r.body)
     );
     let marks: ClankerHoppers = serde_json::from_slice(&r.body).unwrap();
-    let hopper = |hopper_id, playlist_id, players, teams| ClankerHopper {
+    let hopper = |hopper_id, playlist_id, players, teams, ranked| ClankerHopper {
         hopper_id,
         playlist_id,
         players,
         teams,
+        ranked,
         ranks_as: None,
     };
     assert_eq!(
         marks.hoppers,
         [
-            hopper(8, 9, 8, 0),
-            hopper(9, 10, 8, 2),
-            hopper(10, 11, 4, 2),
+            hopper(7, 8, 8, 0, true),
+            hopper(8, 9, 8, 2, true),
+            hopper(9, 10, 4, 2, true),
+            hopper(10, 11, 8, 2, true),
+            hopper(11, 12, 16, 2, true),
+            hopper(12, 13, 16, 2, true),
+            hopper(13, 14, 16, 2, true),
+            hopper(14, 15, 8, 0, false),
+            hopper(15, 16, 8, 2, false),
         ]
     );
 }
@@ -161,13 +168,13 @@ async fn a_clankermatch_game_reads_back_as_its_own_kind_and_ranks() {
     let host = h.create("Host").await;
     let s = host_session(&h, &host).await;
     let guest = h.create("Guest").await;
-    // Descriptor 8 is Clanker Slayer, an unranked free for all marked as
-    // a clanker hopper.
+    // Descriptor 7 is the clanker Rumble Pit: an unranked descriptor type,
+    // marked ranked in its clanker mark.
     let id = play(
         &h,
         &host,
         &guest,
-        duel(&s, &host, &guest, "8", "clankermatch"),
+        duel(&s, &host, &guest, "7", "clankermatch"),
     )
     .await;
 
@@ -182,8 +189,8 @@ async fn a_clankermatch_game_reads_back_as_its_own_kind_and_ranks() {
         .unwrap()
         .clone();
     assert_eq!(item["kind"], "clankermatch");
-    assert_eq!(item["playlist_id"], "8");
-    assert_eq!(item["playlist"], "Clanker Slayer");
+    assert_eq!(item["playlist_id"], "7");
+    assert_eq!(item["playlist"], "Rumble Pit");
     let page = h.get(&format!("/v1/games/{id}")).await;
     assert_eq!(page.status, StatusCode::OK);
     assert_eq!(page.json()["kind"], "clankermatch");
@@ -202,20 +209,20 @@ async fn a_clankermatch_game_reads_back_as_its_own_kind_and_ranks() {
         .collect();
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0]["data"]["game_id"], id.as_str());
-    assert_eq!(changed[0]["data"]["playlist"], "8");
+    assert_eq!(changed[0]["data"]["playlist"], "7");
     let after: Standing = serde_json::from_value(changed[0]["data"]["after"].clone()).unwrap();
     assert_eq!((after.level, after.wins), (2, 1));
 
-    // The game's stats read for its playlist id (9) answers that rank.
+    // The game's stats read for its playlist id (8) answers that rank.
     let r = h
         .get(&format!(
-            "/v1/rank-stats?leaderboards=9&xuids={}",
+            "/v1/rank-stats?leaderboards=8&xuids={}",
             host.xuid
         ))
         .await;
     assert_eq!(r.status, StatusCode::OK);
     let items = r.json()["items"].clone();
-    assert_eq!(items[0]["playlist"], "8");
+    assert_eq!(items[0]["playlist"], "7");
     assert_eq!(items[0]["standing"]["level"], 2);
 
     // A human hopper's game recorded as clankermatch ranks nobody.
@@ -226,17 +233,33 @@ async fn a_clankermatch_game_reads_back_as_its_own_kind_and_ranks() {
         duel(&s, &host, &guest, "6", "clankermatch"),
     )
     .await;
+    // Neither does an unranked clanker training game (Team Training).
+    play(
+        &h,
+        &host,
+        &guest,
+        duel(&s, &host, &guest, "15", "clankermatch"),
+    )
+    .await;
     let ranks = h.get("/v1/accounts/Host/ranks").await.json();
     assert_eq!(ranks["ranks"].as_object().unwrap().len(), 1);
+    let training = h
+        .get(&format!(
+            "/v1/rank-stats?leaderboards=16&xuids={}",
+            host.xuid
+        ))
+        .await;
+    assert_eq!(training.status, StatusCode::OK);
+    assert_eq!(training.json()["items"], json!([]));
 }
 
-/// The match lobby a Clanker Doubles search hosts (descriptor 10): a
+/// The match lobby a Team Skirmish search hosts (descriptor 9): a
 /// session with the hopper attribute, `filled` of four seats.
 async fn doubles_session(h: &Harness, u: &User, filled: u32) -> String {
     let mut attributes = std::collections::BTreeMap::new();
     attributes.insert(
         live_proto::optimatch::attr::HOPPER,
-        live_proto::session::AttributeValue::Integer(10),
+        live_proto::session::AttributeValue::Integer(9),
     );
     let lobby = live_proto::session::NewSession {
         addr: Some("192.168.2.4".parse().unwrap()),
@@ -253,7 +276,7 @@ async fn doubles_session(h: &Harness, u: &User, filled: u32) -> String {
         flags: "custom".into(),
         hopper_id: None,
         map: Some("lockout".into()),
-        name: Some("Clanker Doubles".into()),
+        name: Some("Team Skirmish".into()),
         language: None,
         visibility: Default::default(),
         map_id: None,
@@ -285,12 +308,12 @@ async fn doubles_session(h: &Harness, u: &User, filled: u32) -> String {
     r.json()["session_id"].as_str().unwrap().to_string()
 }
 
-/// Clanker Doubles from the lobby to a ranked game, for a party of one
+/// Team Skirmish from the lobby to a ranked game, for a party of one
 /// and of two (docs/game/bots.md §8.4): the host's match session, a roster
 /// of the seats the party leaves (three bots, or two) for the clanker
 /// playlist, every person's arbitration registration of the round the
 /// full lobby makes, and the host's game record with the party and the
-/// bots, which reads back as a Clankermatch in Clanker Doubles and ranks
+/// bots, which reads back as a Clankermatch in Team Skirmish and ranks
 /// the people there.
 #[tokio::test]
 async fn a_clanker_doubles_match_reaches_its_game_for_a_party_of_one_or_two() {
@@ -312,7 +335,7 @@ async fn a_clanker_doubles_match_reaches_its_game_for_a_party_of_one_or_two() {
                 axum::http::Method::POST,
                 "/v1/games/bots",
                 &[h.bearer(&host, live_proto::lxm::GAMES_WRITE)],
-                json!({"session_id": s, "playlist": "10", "count": bots, "teams": true})
+                json!({"session_id": s, "playlist": "9", "count": bots, "teams": true})
                     .to_string(),
             )
             .await;
@@ -360,7 +383,7 @@ async fn a_clanker_doubles_match_reaches_its_game_for_a_party_of_one_or_two() {
         let game = json!({
             "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Team Slayer",
             "team_play": true, "tick": 0, "kind": "clankermatch",
-            "playlist_id": "10", "session_id": s, "players": players
+            "playlist_id": "9", "session_id": s, "players": players
         });
         let id = h.start_game(&host, game).await;
         let scores: Vec<Value> = (0..4)
@@ -393,8 +416,8 @@ async fn a_clanker_doubles_match_reaches_its_game_for_a_party_of_one_or_two() {
         assert_eq!(page.status, StatusCode::OK);
         let page = page.json();
         assert_eq!(page["kind"], "clankermatch");
-        assert_eq!(page["playlist"], "Clanker Doubles");
-        // Each person ranks in Clanker Doubles.
+        assert_eq!(page["playlist"], "Team Skirmish");
+        // Each person ranks in Team Skirmish.
         for (name, u) in &people {
             let events = h
                 .get(&format!("/v1/events?stream=rank-{}", u.xuid))
@@ -407,7 +430,7 @@ async fn a_clanker_doubles_match_reaches_its_game_for_a_party_of_one_or_two() {
                 .filter(|e| e["type"] == rank::CHANGED)
                 .collect();
             assert_eq!(changed.len(), 1, "party {party}: {name}");
-            assert_eq!(changed[0]["data"]["playlist"], "10");
+            assert_eq!(changed[0]["data"]["playlist"], "9");
         }
     }
 }

@@ -21,10 +21,28 @@ pub const PATH: &str = "/hoppers/clankers";
 /// A playlist's clanker mark in the server's hopper source.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Clankers {
+    /// Whether finished games move this playlist's standing. The game's
+    /// descriptor stays an unranked type so one human and bots can fill it.
+    #[serde(default)]
+    pub ranked: bool,
     /// The playlist id (`+0x08`) of the human hopper whose standing this
     /// one shares; `None`: its own (§9.4 item 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ranks_as: Option<u32>,
+}
+
+impl Clankers {
+    /// A ranked Clanker playlist with a ladder of its own.
+    pub const RANKED: Self = Self {
+        ranked: true,
+        ranks_as: None,
+    };
+
+    /// An unranked Clanker playlist.
+    pub const UNRANKED: Self = Self {
+        ranked: false,
+        ranks_as: None,
+    };
 }
 
 /// One clanker hopper as served.
@@ -39,6 +57,9 @@ pub struct ClankerHopper {
     pub players: u32,
     /// The teams; 0 for free for all.
     pub teams: u32,
+    /// Whether finished games move this playlist's standing.
+    #[serde(default)]
+    pub ranked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ranks_as: Option<u32>,
 }
@@ -52,6 +73,7 @@ impl ClankerHopper {
             playlist_id,
             players,
             teams,
+            ranked: mark.ranked,
             ranks_as: mark.ranks_as,
         }
     }
@@ -166,13 +188,14 @@ mod tests {
                 playlist_id: 9,
                 players: 8,
                 teams: 0,
+                ranked: true,
                 ranks_as: None,
             }],
         };
         let json = serde_json::to_string(&set).unwrap();
         assert_eq!(
             json,
-            r#"{"hoppers":[{"hopper_id":8,"playlist_id":9,"players":8,"teams":0}]}"#
+            r#"{"hoppers":[{"hopper_id":8,"playlist_id":9,"players":8,"teams":0,"ranked":true}]}"#
         );
         let back: ClankerHoppers = serde_json::from_str(&json).unwrap();
         assert_eq!(back, set);
