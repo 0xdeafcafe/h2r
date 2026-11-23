@@ -19,8 +19,8 @@
 //!   the best first, each a rank, an arrow for where it is against the
 //!   aim and its distance ([`Next`]); else in a primed fall the drop from
 //!   the apex and the landing's distance to the nearest edge of its
-//!   floor, green in the window ([`Air`]); else why the last landing by
-//!   a seam did not bounce, for a few seconds ([`Miss`]).
+//!   floor ([`Air`]); else why the last landing by a seam did not
+//!   bounce, for a few seconds ([`Miss`]).
 //! - `sbr.kinds`, over the arming bar: the kinds of seam the targets are
 //!   on, how many the map has of them, and the flashlight's glyph twice,
 //!   the double tap that switches them ([`KindsRow`]); it flashes after a
@@ -196,8 +196,6 @@ pub fn window(drop: f32, [min, max]: [f32; 2]) -> f32 {
 pub struct Air {
     /// The drop from the apex to the floor under the landing.
     pub drop: f32,
-    /// The drop is inside the window: the line is lit green.
-    pub in_window: bool,
     /// The landing's distance to the nearest edge of its floor polygon.
     pub edge: Option<f32>,
 }
@@ -219,10 +217,10 @@ pub fn air_text(a: &Air) -> String {
     }
 }
 
-/// The air line's value: its text, green inside the window.
+/// The air line's value: its text. The go green is a world mark's alone;
+/// the drop being in the window is the fall bar's fill.
 pub fn air_value(a: &Air) -> Value {
-    let v = Value::text(air_text(a));
-    if a.in_window { v.styled(Style::Go) } else { v }
+    Value::text(air_text(a))
 }
 
 /// Why a landing by a seam did not bounce, with its numbers: the
@@ -722,7 +720,6 @@ pub fn views() -> Vec<(&'static str, View)> {
         "guide-too-high" => View {
             air: Some(Air {
                 drop: 12.6,
-                in_window: false,
                 edge: Some(0.15),
             }),
             ..fall(0.0, Steer::OnSeam)
@@ -730,7 +727,6 @@ pub fn views() -> Vec<(&'static str, View)> {
         _ => View {
             air: Some(Air {
                 drop: 10.5,
-                in_window: true,
                 edge: Some(0.06),
             }),
             ..fall(1.0, Steer::OnSeam)
@@ -922,8 +918,8 @@ mod tests {
     }
 
     /// The bar is full inside the drop window and empties a unit outside
-    /// it; the air line gives the drop and the edge, green in the window,
-    /// over a miss and under the ranked seams.
+    /// it; the air line gives the drop and the edge, over a miss and
+    /// under the ranked seams.
     #[test]
     fn the_drop_fills_the_bar_and_the_air_line_says_it() {
         let w = [3.35, 3.60];
@@ -939,14 +935,12 @@ mod tests {
         );
         let air = Air {
             drop: 10.52,
-            in_window: true,
             edge: Some(0.061),
         };
         assert_eq!(air_text(&air), "Drop 10.5 m  Edge 0.06 m");
         assert_eq!(air_text(&Air { edge: None, ..air }), "Drop 10.5 m");
         let widest = Air {
             drop: 88.8,
-            in_window: false,
             edge: Some(88.88),
         };
         assert!(air_text(&widest).chars().count() <= INFO_LONGEST.chars().count());
@@ -956,18 +950,11 @@ mod tests {
             ..View::default()
         });
         let info = v.get(INFO).unwrap();
+        // The go green is a world mark's alone; the line is always plain.
         assert_eq!(
             (info.text.as_str(), info.style),
-            ("Drop 10.5 m  Edge 0.06 m", Style::Go)
+            ("Drop 10.5 m  Edge 0.06 m", Style::Normal)
         );
-        let out = values(&View {
-            air: Some(Air {
-                in_window: false,
-                ..air
-            }),
-            ..View::default()
-        });
-        assert_eq!(out.get(INFO).unwrap().style, Style::Normal);
         let ranked = values(&View {
             air: Some(air),
             next: [
