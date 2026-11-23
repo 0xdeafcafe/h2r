@@ -105,7 +105,7 @@ impl VehiclePaths {
                 },
                 &mut self.edges,
             );
-            self.exhausted_from = (!found).then_some(start);
+            self.exhausted_from = self.search.exhausted_from();
             self.last = found.then_some((start, goal));
             if !found {
                 return false;
@@ -207,6 +207,24 @@ mod tests {
             );
             assert_eq!(paths.searches, searches);
         }
+    }
+
+    // A search refused before it starts (a goal out of the map) used to
+    // count as exhausted with no reachable set, so the next plan from the
+    // same polygon indexed an empty table and aborted the game.
+    #[test]
+    fn refused_search_is_not_an_exhausted_one() {
+        let mut fenced = map();
+        assert_eq!(fenced.nav.mark_out_of_map(&[START]), 1);
+        let map = Arc::new(fenced);
+        let mut paths = VehiclePaths::default();
+        paths.bind_map(&map);
+        assert_eq!(paths.vehicle_path(&map, 7, START, ISLAND, 0.5, 1.), None);
+        assert_eq!(
+            paths.vehicle_path(&map, 7, START, GOAL, 0.5, 1.),
+            uncached(&map, START, GOAL, 0.5, 1.)
+        );
+        assert!(paths.vehicle_path(&map, 7, START, GOAL, 0.5, 1.).is_some());
     }
 
     #[test]
