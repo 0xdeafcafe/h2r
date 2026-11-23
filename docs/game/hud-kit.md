@@ -1,6 +1,6 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
-Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training and navpoint channels, and the superbounce HUD on them with its medals ("The medals"). Not built: the colour hook and the flash, the pointer's turn, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
+Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training, banner and navpoint channels, the superbounce HUD on them with its medals ("The medals"), and the Firefight HUD ([firefight.md](firefight.md), "The HUD"). Not built: the colour hook and the flash, the pointer's turn, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
 Code: `crates/rewrites/hud-kit-core` (the model, the HUDs, the templates, the record compiler), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/h2-tools/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
@@ -97,8 +97,11 @@ to bottom from one starting point, then two centred lines:
    the drawn height times `hudg +0x80` lower
    (`0x0024d33a`..`0x0024d516`).
 5. **Two centred lines** 40 pixels above the frame's bottom, 18 apart:
-   a timed text at `+0x454` (start `+0x4d8`, duration `+0x4dc`) and the
-   text of `0x0015f120` (`0x0024d51f`..`0x0024d6bb`).
+   a timed text at `+0x454` (start `+0x4d8`, duration `+0x4dc`, both in
+   game ticks; drawn while the tick is from the start to the start plus
+   the duration, its alpha falling over it, `0x0024d58a`..`0x0024d5cf`)
+   and the text of `0x0015f120` (`0x0024d51f`..`0x0024d6bb`). Its colour
+   is the user's HUD text colour (`0x0013927e`, `0x0024d557`).
 
 Who writes the state (E):
 
@@ -111,7 +114,7 @@ Who writes the state (E):
 | `0x0024cbee` (EAX user, text) | queues a notification from UTF-16 text: takes a slot (`0x0024ccdb`), copies up to 63 characters to `+4`, sets the start tick, `+0x82`, clears `+0x84` and `+0x85`, gives `+0x83` the next value of the byte at `[0x005023f4] + 0x1385`, and clears the user's `+0x44e`. Ten callers; the game-event one is `0x0019e9c0` (below) |
 | `0x0024caac` (EAX user, singular, plural, count) | the same for a line that counts: adds the count to `+0x86`, sets `+0x84`, and shows the plural once the count is over 1 |
 | `0x0024ccdb` (state, singular, plural) | the slot: the first of the four that is not active; with both texts, an active counting entry already showing that text (the repeat); else the active entry with the oldest start tick, which it ends |
-| `0x0024cc73` (EAX user, ECX text, ticks) | sets the timed centred text at `+0x454` |
+| `0x0024cc73` (EAX user, ECX text, ticks) | sets the timed centred text: copies the text to `+0x454` through `0x0013fac0` with 63 (62 units and a zero), the game tick (`[0x00510c54] +8`) to `+0x450` and `+0x4d8`, 1 to `+0x4d2`, the next value of the byte at `[0x005023f4] + 0x1385` to `+0x4d3` (stepping it), and the ticks, its one stack argument, to `+0x4dc`; `ret 4` |
 
 Code that already uses them: `h1_hud_text/prompts.rs` (`show`) writes the
 prompt fields, and `skulls_custom.rs` queues "our text" through
@@ -513,8 +516,8 @@ of shown, fill or motion is stamped from the fill the old value was
 showing then (0 if it was not showing); the same value again keeps its
 stamp and its `from`. Text and style alone are no change.
 
-Five more elements are not widgets. Four are channels into the game's
-message, training and navpoint parts, one text each, and the fifth is a
+Six more elements are not widgets. Five are channels into the game's
+message, training and navpoint parts, one text each, and the sixth is a
 world mark, drawn by the window ("World marks"):
 
 | Element | What the player sees | Through |
@@ -522,6 +525,7 @@ world mark, drawn by the window ("World marks"):
 | `Message` | a notification in the pickup list, top left, that fades | the notification queue (`0x0024cbbf`) |
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
+| `Banner` | one line centred above the frame's bottom, for three seconds, fading | each local user's timed centred text (`+0x454`, `+0x4d8`, `+0x4dc`), when the text changes |
 | `Navpoint` | the game's arrow pointing down at a point of the world and its waypoint marker above | the navpoint list (`0x0024da7d`, below in "The navpoint") |
 | `WorldMark` | lines lying on the level's geometry, a label over them | the window's world-line pass (`hud_kit_world`, below in "World marks") |
 
@@ -540,6 +544,19 @@ one with a line break, is refused by the `prompt` check and by
 copies 63). A sender with no HUD of its own, such as a rules script's `message`
 ([rules-world-api.md](rules-world-api.md#the-show-channel)), queues the
 same line through `hud_kit::notify(user, text)`.
+
+A `Banner` is a state, unlike a notification: the HUD publishes its
+text while the line should show (a wave's number while the wave is
+being placed), and the runtime writes the line each time the shown text
+changes. The game draws it for `model::BANNER_TICKS` (90, three seconds;
+Design), fading, and then it is gone; the same text published again
+keeps the line it started, and a hidden value lets it run out. A text of
+at most 62 UTF-16 units (`model::BANNER_UNITS`: the game's copy keeps
+one fewer than the 63 it is given) and one line is written whole; a
+longer one, or a line break, is refused by the `prompt` check and not
+written (`model::banner_fault`). The preview draws it centred across the
+frame with its top 40 pixels above the frame's bottom
+(`preview::BANNER_UP`), in the notifications' colour.
 
 ### World marks
 
@@ -723,6 +740,13 @@ does the rest:
      skipped (kind 15): the draw does not check a kind-0 slot's index
      against the block's count. The game draws its own arrow and marker
      there; no number is drawn with it.
+   - `Banner`: the first shown banner of the registered HUDs whose place
+     has the screen mode (`hud_kit::banner_of`), compared with the last
+     tick's (`hud_kit::banner_due`): a new text is written into each
+     local user's timed line (users 0 to the local view count less one,
+     `hud_kit::local_users`) with the fields as `0x0024cc73` leaves them
+     and a duration of `BANNER_TICKS` (`hud_kit::write_banner`). With no
+     game time (`[0x00510c54]`) or no HUD state yet nothing is written.
    - `Message`: `Handle::notify(user, text)` queues the line (a user
      under 4, a text `message_fault` passes; else refused and logged).
      At the top of the next tick a before-hook on `GAME_TICK` writes
@@ -902,7 +926,7 @@ the check, the elements and the state and mode:
 | own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over`; two HUDs one of which names the other in `Describe::never_with` (a monitor's and a biped's, which are never shown together) are not compared with each other |
 | one layout | every state has a value for every element and for nothing else, and every element id is used once |
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
-| prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
+| prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` or `Banner` one (the game's prompt line draws no line break; the banner is one centred line), and fits the frame's width (less the training box's margin); a `Message` has at most 63 UTF-16 units and a `Banner` 62 |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding. A gauge shown puts pixels down: one whose picture no code of ours draws, or draws at another size, is a finding |
 | world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` and `Team` are on world marks alone, `Team` of a team the game has. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
@@ -1689,8 +1713,9 @@ chance field and shows no percentage beside the call.
   through `community_variants`' override.
 - Guest memory written: the two block fields of each player `nhdt` root,
   the scenario's point block field, the kit's two allocations, the first
-  local player's prompt fields and navpoint list, the training id and
-  show byte.
+  local player's prompt fields and navpoint list, each local user's timed
+  line and the order byte it shares with the notifications, the training
+  id and show byte.
 - Agent API: none yet (`hud.kit` is planned with slice 6's run checks).
 
 ## Rules and limits
@@ -1803,6 +1828,12 @@ particular:
   captured).
 - Where a notification is drawn against the first message line (the
   preview puts it below the line's five-line box).
+- The banner: that the timed line's top, not its baseline, is 40 pixels
+  above the frame's bottom (the preview's place), that it draws in a
+  multiplayer game with the HUD up, that writing the fields directly at
+  the tick's end draws as a call to `0x0024cc73` does, and that
+  `player_globals +8` counts the users whose state the line is read
+  from.
 - The notifications: that a guest call to `0x0024cbee` at the tick's top
   draws as the game-event caller's does, that running the tick again
   from the hook (as `skulls_custom` does) leaves the frame as it was,

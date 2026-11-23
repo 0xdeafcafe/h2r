@@ -37,7 +37,9 @@
 //! 6. **Channels**: the prompt through the user's prompt fields while the
 //!    game shows no prompt of its own ([`show_prompt`]); the training text
 //!    through the scripted training slot and the string lookup
-//!    ([`write_training`], [`text`]); the navpoint through the game's
+//!    ([`write_training`], [`text`]); the banner through each local user's
+//!    timed centred line when its text changes ([`banner_due`],
+//!    [`write_banner`]); the navpoint through the game's
 //!    navpoint list at a scenario point of ours ([`install_point`],
 //!    [`write_navpoint`]); a notification ([`Handle::notify`]) through the
 //!    game's insert, a guest call at the top of the next tick
@@ -62,7 +64,8 @@ use engine::tags::{GroupTag, tag_get_checked};
 use hooks::{BuildError, Builder, Flow};
 use hud_kit_core::Mode;
 use hud_kit_core::model::{
-    Describe, Hud, Kind, MESSAGE_UNITS, Style, Value, Values, message_fault,
+    BANNER_TICKS, BANNER_UNITS, Describe, Hud, Kind, MESSAGE_UNITS, Style, Value, Values,
+    banner_fault, message_fault,
 };
 use hud_kit_core::motion::{self, Motion};
 use hud_kit_core::records::{self, Compiled, WidgetKind};
@@ -110,6 +113,27 @@ pub const PROMPT_ID: u32 = 0x440;
 pub const PROMPT_SHOWN: u32 = 0x444;
 /// The UTF-16 units of the prompt's text, its zero included.
 pub const PROMPT_UNITS: usize = ((PROMPT_ID - PROMPT_TEXT) / 2) as usize;
+/// The user's timed centred line, as `0x0024cc73` (EAX the user, ECX the
+/// text, the ticks its one stack argument) leaves it: the text at
+/// `+0x454` (copied by `0x0013fac0` with 63, so 62 units and a zero), the
+/// tick at `+0x450` and `+0x4d8`, shown `+0x4d2`, the order byte `+0x4d3`
+/// (the next value of the byte at `[0x005023f4] + 0x1385`, which it steps)
+/// and the duration in ticks at `+0x4dc`. The draw shows it while the game
+/// tick is from the start to the start plus the duration, fading over it
+/// (E `0x0024d58a`..`0x0024d5cf`).
+pub const BANNER_TEXT: u32 = 0x454;
+pub const BANNER_STAMP: u32 = 0x450;
+pub const BANNER_SHOWN: u32 = 0x4d2;
+pub const BANNER_ORDER: u32 = 0x4d3;
+pub const BANNER_START: u32 = 0x4d8;
+pub const BANNER_DURATION: u32 = 0x4dc;
+/// The order byte the timed line and the notifications share, from the
+/// first user's state.
+pub const MESSAGE_ORDER: u32 = 0x1385;
+/// The game time (`[0x00510c54]`): the tick at `+8`, which the message
+/// routine reads (E `0x0024cc97`).
+pub const GAME_TIME: u32 = 0x0051_0c54;
+pub const GAME_TIME_TICK: u32 = 8;
 /// `HUD_INTERACTION_VISIBLE`'s caller, the interaction code (E
 /// `0x00191976`).
 pub const FROM_INTERACTION: u32 = 0x0019_197b;
@@ -278,6 +302,8 @@ pub struct Note {
     pub text: String,
 }
 static TRAINING_TEXT: Mutex<String> = Mutex::new(String::new());
+/// The banner the last tick showed ([`banner_due`]).
+static BANNER_LAST: Mutex<Option<String>> = Mutex::new(None);
 
 fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     l.read().unwrap_or_else(|e| e.into_inner())
@@ -564,6 +590,43 @@ fn channel(want: fn(&Kind) -> bool) -> Option<String> {
                     .map(|v| v.text.clone())
             })
     })
+}
+
+/// The first shown banner of `hud` at `values` in screen mode `mode`: a
+/// [`Kind::Banner`] element whose place has the mode and whose value is
+/// shown. A text [`banner_fault`] refuses is no banner (and is logged).
+pub fn banner_of(hud: &Hud, values: &Values, mode: Mode) -> Option<String> {
+    hud.elements
+        .iter()
+        .filter(|e| matches!(e.kind, Kind::Banner { .. }) && e.at.offset(mode).is_some())
+        .filter_map(|e| values.get(e.id).filter(|v| v.shown))
+        .find_map(|v| match banner_fault(&v.text) {
+            Some(why) => {
+                eprintln!("hud kit: banner {:?} not shown: {why}", v.text);
+                None
+            }
+            None => Some(v.text.clone()),
+        })
+}
+
+/// The banner over the registered HUDs in their order ([`banner_of`]).
+fn banner_now(mode: Mode) -> Option<String> {
+    let r = read(&REGISTRY);
+    r.iter().find_map(|x| banner_of(&x.hud, &x.values, mode))
+}
+
+/// Whether the banner `now` is to be written this tick, given the one the
+/// last tick showed (`last`, updated): a shown text that differs from the
+/// last tick's, or follows none. The same text again keeps the line the
+/// game is already showing; no banner lets it run out.
+pub fn banner_due(last: &mut Option<String>, now: Option<String>) -> Option<String> {
+    let due = match (&now, &*last) {
+        (Some(t), Some(l)) if t == l => None,
+        (Some(t), _) => Some(t.clone()),
+        (None, _) => None,
+    };
+    *last = now;
+    due
 }
 
 /// The point of each of the kit's navpoints now: the navpoint elements
@@ -1149,6 +1212,43 @@ pub fn show_prompt(mem: &mut dyn GuestMemory, user: u32, text: &str) -> Result<(
     mem.set_u8(hud + PROMPT_SHOWN, 1)
 }
 
+/// Writes `text` as user `user`'s timed centred line for `ticks` game
+/// ticks from now, as `0x0024cc73` leaves the fields ([`BANNER_TEXT`]).
+/// With no game time or no HUD state yet, nothing is written (false).
+pub fn write_banner(
+    mem: &mut dyn GuestMemory,
+    user: u32,
+    text: &str,
+    ticks: u32,
+) -> Result<bool, MemFault> {
+    let (time, base) = (mem.u32(GAME_TIME)?, mem.u32(USER_HUDS)?);
+    if time == 0 || base == 0 || user >= USERS {
+        return Ok(false);
+    }
+    let now = mem.u32(time + GAME_TIME_TICK)?;
+    let hud = base + USER_HUD_LEN * user;
+    mem.write(hud + BANNER_TEXT, &utf16(text, BANNER_UNITS + 1))?;
+    mem.set_u32(hud + BANNER_STAMP, now)?;
+    mem.set_u8(hud + BANNER_SHOWN, 1)?;
+    let order = mem.u8(base + MESSAGE_ORDER)?;
+    mem.set_u8(hud + BANNER_ORDER, order)?;
+    mem.set_u8(base + MESSAGE_ORDER, order.wrapping_add(1))?;
+    mem.set_u32(hud + BANNER_START, now)?;
+    mem.set_u32(hud + BANNER_DURATION, ticks)?;
+    Ok(true)
+}
+
+/// The local users the HUD draws for: the local views
+/// (`player_globals +8`, as [`mode`] reads it), at least one and at most
+/// [`USERS`].
+pub fn local_users(mem: &dyn GuestMemory) -> Result<u32, MemFault> {
+    let globals = mem.u32(points::PLAYER_GLOBALS.base)?;
+    if globals == 0 {
+        return Ok(1);
+    }
+    Ok(u32::from(mem.u16(globals + 8)?).clamp(1, USERS))
+}
+
 /// Shows the kit's training text while `show`, unless the game shows a
 /// scripted text of its own; hides it when `show` is off and it is ours.
 /// Returns whether ours is showing.
@@ -1448,6 +1548,13 @@ fn tick(mem: &mut dyn GuestMemory, points_region: (u32, u32)) -> Result<(), MemF
         *lock(&TRAINING_TEXT) = t.clone();
     }
     write_training(mem, training.is_some())?;
+    // The banner, to every local user, when its text changes.
+    let due = banner_due(&mut lock(&BANNER_LAST), banner_now(mode(&*mem)?));
+    if let Some(text) = due {
+        for user in 0..local_users(&*mem)? {
+            write_banner(mem, user, &text, BANNER_TICKS)?;
+        }
+    }
     // The superbounce target arrows clear the tracker and the readout.
     let on = crate::superbounce_mode::hud_state().is_some();
     crate::superbounce_readout::keep_waypoint_inset(mem, on);

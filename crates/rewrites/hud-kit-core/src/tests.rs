@@ -561,6 +561,26 @@ fn a_notification_is_one_line_of_at_most_63_units() {
     assert!(message_fault("two\nlines").is_some());
 }
 
+/// A banner is a text channel of one line of at most 62 UTF-16 units: the
+/// game's copy keeps one fewer than the 63 it is given, and a zero.
+#[test]
+fn a_banner_is_one_line_of_at_most_62_units() {
+    assert_eq!(banner_fault(&"A".repeat(BANNER_UNITS)), None);
+    assert!(banner_fault(&"A".repeat(BANNER_UNITS + 1)).is_some());
+    assert!(banner_fault("WAVE 3\nBOSS").is_some());
+    assert!(banner_fault("WAVE 3\r").is_some());
+    let k = Kind::Banner {
+        longest: "ROUND COMPLETE",
+    };
+    assert_eq!(k.name(), "banner");
+    assert!(k.is_channel() && k.is_lines());
+    assert_eq!(k.longest(), Some("ROUND COMPLETE"));
+    assert_eq!(k.art(), None);
+    let e = Element::channel("b", k);
+    assert_eq!(e.at, Place::GAME);
+    assert_eq!(BANNER_TICKS, 3 * 30);
+}
+
 // ---- K5: team styles and the line shape ----
 
 /// A team style names itself; the line is a shape; the game has eight

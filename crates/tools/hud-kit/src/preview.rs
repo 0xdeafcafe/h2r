@@ -97,6 +97,9 @@ pub const NAVPOINT_NUMBER_GAP: f32 = 2.0;
 /// The message and training font: font id 6 fullscreen, 5 in split
 /// screen (E `0x0024cfaf`..`0x0024cfc9`, `0x001e71d7`).
 pub const MESSAGE_FONT: [i16; 2] = [6, 5];
+/// The banner's top above the frame's bottom, in every screen mode (E
+/// `0x0024d554`: the frame's height less 40).
+pub const BANNER_UP: f32 = 40.0;
 /// The retail HUD's state words the sheet starts from: word A `0x1000`,
 /// the retail shield meter's show word. Each source adds the word the
 /// widget on the motion tracker's rectangle shows on
@@ -508,6 +511,13 @@ fn channel_rect(kind: &Kind, frame: &Frame, mode: Mode, size: [f32; 2]) -> Rect 
                 y1: y + size[1],
             }
         }
+        // Centred across the frame, its top BANNER_UP above the frame's
+        // bottom (E 0x0024d52a..0x0024d554; S: that the line's top, not
+        // its baseline, is there).
+        Kind::Banner { .. } => {
+            let cx = (f32::from(frame.left) + f32::from(frame.right)) / 2.0;
+            centred(cx, f32::from(frame.bottom) - BANNER_UP, size)
+        }
         // Centred on the frame's centre, half the text plus the margin
         // each way (E 0x001e72e9..0x001e7373).
         _ => {
@@ -590,7 +600,9 @@ fn channel(
     let rect = channel_rect(&e.kind, frame, mode, block_size(&lines));
     let base = match e.kind {
         Kind::Prompt { .. } => src.colours.prompt,
-        Kind::Message { .. } => src.colours.message,
+        // The banner is in the user's HUD text colour too (E `0x0024d557`
+        // calls `0x0013927e`, as the notifications do).
+        Kind::Message { .. } | Kind::Banner { .. } => src.colours.message,
         _ => src.colours.training,
     };
     let colour = style_colour(base, v.style, &src.colours);
@@ -619,7 +631,9 @@ fn channel(
     };
     for (line, size) in v.text.split('\n').zip(&lines) {
         let x = match e.kind {
-            Kind::Training { .. } => (rect.x0 + rect.x1) / 2.0 - (size[0] / 2.0).floor(),
+            Kind::Training { .. } | Kind::Banner { .. } => {
+                (rect.x0 + rect.x1) / 2.0 - (size[0] / 2.0).floor()
+            }
             _ => rect.x0,
         };
         blit(canvas, &mut cover, fonts, font, line, colour, [x, y]);
