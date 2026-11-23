@@ -2078,16 +2078,24 @@ rather than by engine: `infection.rules`, `gun_game.rules`,
 (`tests/engines.rs`), and each header names the entries a host cannot
 make yet. VIP, Bounce Hunt, Superbounce, Siege and Gun Game call none.
 VIP waits on the match edit log, and Bounce Practice on the host
-runtime's `round_start` and `set_gravity`. Superbounce, Siege and Gun
-Game run, and are listed (`builtin::LISTED`, [rules-variants.md](rules-variants.md#built-in-list-entries)).
+runtime's `round_start` and `set_gravity`. Superbounce, Siege, Gun Game
+and Race run, and are listed (`builtin::LISTED`, [rules-variants.md](rules-variants.md#built-in-list-entries)).
 The examples are compiled into the game, so a record names one by its
 hash prefix with no store or fetch; a record with no mode never runs
 one. `tests/modes.rs` plays the listed modes over scenarios on the fake
 game (the JSON files in `tests/scenarios/`). Prop Hunt has no script.
 
-- **Race.** Halo 1's race track points are dropped at conversion
-  ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and
-  a Race script give them a use. So do **Halo 1's per-spawn game
+- **Race** (listed in Party Games). The map's King of the Hill hills are
+  the checkpoints (`label checkpoint: zones numbered at least 3 at most
+  64 = "hill_corner"`), so every map with hills races with no kit: a
+  hill is the polygon of its corners, and `on enter` with `player_of`
+  follows each player round them in number order from the lowest, a lap
+  back at the lowest scoring a point, and `laps` of them winning. Each
+  corner's next hill is worked out at the round's start (an `object
+  var`), so an entry costs no loop. Halo 1's race
+  track points are dropped at conversion
+  ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints
+  would give them a use. So do **Halo 1's per-spawn game
   types**: starting locations carry labels and a script filters on them.
 - **Infection** with a real team switch, and other modes that were
   honour rules.

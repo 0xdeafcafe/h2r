@@ -238,3 +238,60 @@ fn gun_game_a_team_kill_climbs_nothing() {
     assert!(calls(&r, "set_loadout").iter().all(|(t, _)| *t == 0));
     assert_eq!(r.game.players[&0].score, 0);
 }
+
+// ---- Race ----
+
+const RACE_LAPS: &str = include_str!("scenarios/race_laps.json");
+
+/// Hills 1, 3 and 5: a lap is 1, 3, 5 and back to 1. Player 0 runs three
+/// and wins; player 1 skips hill 3 and never laps.
+#[test]
+fn race_laps_run_the_hills_in_number_order_from_the_lowest() {
+    let ir = rules::compile(builtin::RACE).unwrap();
+    let s: Scenario = serde_json::from_str(RACE_LAPS).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Race: 3 laps. Start at hill 1",
+            "Lap 1 of 3",
+            "Lap 2 of 3",
+            "player 0 won the race",
+        ]
+    );
+    // The third lap ends on hill 1 at tick 21.
+    assert_eq!(r.ended_at, Some(21));
+    assert_eq!(calls(&r, "end_round").len(), 1);
+    assert_eq!(r.game.players[&0].score, 3);
+    assert_eq!(r.game.players[&1].score, 0);
+}
+
+/// A map whose corners are all one hill has no track: nobody laps.
+#[test]
+fn race_needs_two_hills() {
+    let ir = rules::compile(builtin::RACE).unwrap();
+    let mut s: Scenario = serde_json::from_str(RACE_LAPS).unwrap();
+    for t in s.map.as_mut().unwrap() {
+        t.number = Some(1);
+    }
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(lines(&r), ["This map has one hill: Race needs two"]);
+    assert!(calls(&r, "score").is_empty());
+    assert_eq!(r.ended_at, None);
+}
+
+/// A map with fewer than three hill corners is no Race map.
+#[test]
+fn race_needs_a_hills_corners() {
+    let ir = rules::compile(builtin::RACE).unwrap();
+    let mut s: Scenario = serde_json::from_str(RACE_LAPS).unwrap();
+    s.map.as_mut().unwrap().truncate(2);
+    match scenario::run(ir, &s) {
+        Err(scenario::RunError::Map(problems)) => {
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].contains("hill_corner"), "{problems:?}");
+        }
+        other => panic!("{:?}", other.map(|r| r.ended_at)),
+    }
+}

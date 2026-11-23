@@ -870,12 +870,13 @@ fn expected() -> Vec<Expected> {
         e("Superbounce", 2, Research, Script, BOUNCE_PAIRS),
         e("Siege", 2, PartyGames, Script, &[(91, 1), (2, 0), (10, 0), (89, 1), (94, 1)]),
         e("Gun Game", 2, PartyGames, Script, &[(89, 1), (94, 1), (83, 1), (2, 0)]),
+        e("Race", 2, PartyGames, Script, &[(2, 0)]),
     ]
 }
 
 #[test]
 fn every_listed_script_compiles_and_verifies() {
-    assert_eq!(builtin::LISTED.len(), 16);
+    assert_eq!(builtin::LISTED.len(), 17);
     for b in builtin::LISTED {
         let ir = compile(b.source).unwrap_or_else(|e| panic!("{}: {e:?}", b.name));
         assert_eq!(ir.header.name, b.name);
