@@ -24,6 +24,8 @@ import struct
 import sys
 
 RATE = 44100
+# Each clip's peak, as a share of full scale. `pogo_sound::PEAK` holds the same
+# number, and the game plays each clip at `pogo_sound::level_mb` below it.
 PEAK = 0.7
 
 
