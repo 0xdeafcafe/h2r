@@ -99,6 +99,10 @@ pub struct BaseRows {
     pub left_out: Vec<String>,
 }
 
+/// The end of the refusal of an edit that names an entry of a block left
+/// out of the things: "The map's <block> entries " comes before it.
+pub const LEFT_OUT_SENTENCE: &str = "did not read, so Forge cannot edit them";
+
 /// The rows the session keeps, by block and base index. A block is kept
 /// whole or not at all.
 #[derive(Clone, Debug, Default)]
@@ -137,7 +141,7 @@ impl Kept {
     pub fn row(&self, block: BlockKind, index: u32) -> Result<&BaseRow, String> {
         let rows = self.rows.get(&block).ok_or_else(|| {
             format!(
-                "The map's {} entries did not read, so Forge cannot edit them.",
+                "The map's {} entries {LEFT_OUT_SENTENCE}.",
                 block.name().replace('_', " ")
             )
         })?;

@@ -767,6 +767,9 @@ fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
         fn status(&self) -> Result<Value, String> {
             Ok(json!({"session":"local"}))
         }
+        fn session(&self) -> Result<Arc<::forge::Session>, String> {
+            Err("Waiting for a local multiplayer map.".into())
+        }
         fn document(&self) -> Result<forge_doc::ForgeDoc, String> {
             Ok(draft())
         }
@@ -1134,6 +1137,357 @@ fn the_inert_row_is_the_kits_spare_form_for_every_block() {
                 if marked { 0xff } else { 0 },
                 "{block:?} byte {i:#x}"
             );
+        }
+    }
+}
+
+// ---- the map's things over the agent API (docs/game/forge-map-variants.md, slice M10) ----
+
+mod things {
+    use std::sync::{Arc, Mutex};
+
+    use ::forge::look::{Refusal, monitors::Who};
+    use ::forge::{BaseRow, BaseRows, BlockKind, Frame, PaletteItem, Session};
+    use agent_proto::forge::{THING_KINDS, refusal};
+    use forge_doc::{
+        Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, ForgeDoc, Op, OpId, Print, Sha256, TagKey,
+        Value,
+    };
+    use serde_json::{Value as Json, json};
+
+    use super::{Harness, draft, game};
+    use crate::forge::local::{self, LocalApi, ProposalReply};
+    use agent_proto::{code, forge::method};
+
+    /// A world that takes every call, as the game does at its next tick.
+    #[derive(Default)]
+    struct Takes {
+        next: u32,
+        base: Vec<(BlockKind, u32)>,
+    }
+
+    impl ::forge::World for Takes {
+        fn place(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
+            self.next += 1;
+            Ok(self.next)
+        }
+        fn move_object(&mut self, _: u32, _: Frame) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&mut self, _: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn respawn(&mut self, i: &PaletteItem, f: Frame) -> Result<u32, String> {
+            self.place(i, f)
+        }
+        fn base_move(&mut self, block: BlockKind, index: u32, _: Frame) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+        fn base_field(
+            &mut self,
+            block: BlockKind,
+            index: u32,
+            _: &str,
+            _: &Value,
+        ) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+        fn base_inert(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+        fn base_restore(&mut self, block: BlockKind, index: u32, _: &[u8]) -> Result<(), String> {
+            self.base.push((block, index));
+            Ok(())
+        }
+    }
+
+    /// The session's host: a session over two weapons of the map's own,
+    /// with the crates block left out, applying each proposal at once.
+    struct Host(Mutex<Arc<Session>>);
+
+    impl LocalApi for Host {
+        fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+            Who {
+                profile: "default".into(),
+                colour: 0,
+            }
+        }
+        fn look(&self, _: &Who, _: Option<u64>) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn look_set(&self, _: &Who, _: Json) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn monitors(&self, _: &Who) -> Json {
+            json!({"monitors": []})
+        }
+        fn status(&self) -> Result<Json, String> {
+            let s = self.0.lock().unwrap();
+            Ok(json!({
+                "session": "local",
+                "variant": local::variant_status(s.document(), Some("Arena"), !s.log().is_empty()),
+            }))
+        }
+        fn session(&self) -> Result<Arc<Session>, String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn document(&self) -> Result<ForgeDoc, String> {
+            Ok(self.0.lock().unwrap().document().clone())
+        }
+        fn log(&self, since: u32) -> Result<Vec<Entry>, String> {
+            let s = self.0.lock().unwrap();
+            Ok(s.log().iter().filter(|e| e.seq > since).cloned().collect())
+        }
+        fn input(
+            &self,
+            _: &dyn engine::GuestMemory,
+            _: ::forge::tool::Input,
+        ) -> Result<(), String> {
+            Err("Forge input requires the active local session.".into())
+        }
+        fn propose(&self, tick: u32, op: Op, was: Option<Sha256>) -> Result<ProposalReply, String> {
+            let mut held = self.0.lock().unwrap();
+            let mut session = Session::clone(&held);
+            let result = session.propose(&mut Takes::default(), tick, op, was);
+            if result.is_ok() {
+                *held = Arc::new(session);
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(result).unwrap();
+            Ok(rx)
+        }
+    }
+
+    fn vec3(v: [f32; 3]) -> Value {
+        Value::Vec3(v.map(|c| F32::new(c).unwrap()))
+    }
+
+    fn weapon_fields(x: f32) -> Vec<Value> {
+        vec![
+            Value::Tag(Some(TagKey {
+                group: "weap".into(),
+                path: r"fixture\rifle".into(),
+            })),
+            Value::Int(-1),
+            Value::Int(0),
+            vec3([x, 0., 0.]),
+            vec3([0., 0., 0.]),
+            Value::Float(F32::new(0.).unwrap()),
+        ]
+    }
+
+    fn weapon(index: u32, x: f32) -> BaseRow {
+        let fields = weapon_fields(x);
+        BaseRow {
+            block: BlockKind::Weapons,
+            index,
+            raw: vec![
+                index as u8 + 1;
+                map::scenario_layout::block(BlockKind::Weapons).stride as usize
+            ],
+            print: forge_doc::print(BlockKind::Weapons, &fields).unwrap(),
+            fields,
+        }
+    }
+
+    fn host() -> Host {
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(BlockKind::Weapons, 2), (BlockKind::Crates, 2)].into(),
+            ..Default::default()
+        };
+        let session = Session::new(draft(), limits, vec![], 3)
+            .unwrap()
+            .with_base(BaseRows {
+                rows: vec![weapon(0, -3.), weapon(1, 4.)],
+                left_out: vec!["crates: the loaded scenario has 1 rows, the map 2".into()],
+            });
+        Host(Mutex::new(Arc::new(session)))
+    }
+
+    fn set_position(id: u32, target: Endpoint, x: f32) -> Op {
+        Op {
+            id: OpId(id),
+            edit: Edit::Entry(EntryOp::Set {
+                target,
+                write: FieldWrite {
+                    field: "position".into(),
+                    value: vec3([x, 0., 0.]),
+                },
+            }),
+        }
+    }
+
+    /// Propose `params` and read the reply the tick after.
+    fn propose(h: &Harness, game: &mut super::Game, params: Json) -> Json {
+        h.send(method::PROPOSE, params);
+        h.agent.on_tick(game);
+        game.tick += 1;
+        h.agent.on_tick(game);
+        h.reply()
+    }
+
+    #[test]
+    fn things_entry_ops_and_the_variant_answer_and_a_refusal_carries_its_name() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host());
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        for name in [method::THINGS, method::STATUS] {
+            assert!(methods.as_array().unwrap().contains(&json!(name)), "{name}");
+        }
+
+        // forge.things: every own entry with its endpoint, print and fields,
+        // and the blocks left out.
+        let listed = h.ok(&mut game, method::THINGS, Json::Null);
+        let things = listed["things"].as_array().unwrap();
+        assert_eq!(things.len(), 2);
+        let print = forge_doc::print(BlockKind::Weapons, &weapon_fields(-3.)).unwrap();
+        let target = Endpoint::Base {
+            block: BlockKind::Weapons,
+            index: 0,
+            print: Some(print),
+        };
+        assert_eq!(things[0]["id"], json!(target));
+        assert_eq!(things[0]["kind"], THING_KINDS[0]);
+        assert_eq!(things[0]["block"], "weapons");
+        assert_eq!(things[0]["own"], true);
+        assert_eq!(things[0]["changed"], false);
+        assert_eq!(things[0]["position"], json!([-3., 0., 0.]));
+        assert_eq!(things[0]["fields"]["position"], json!(vec3([-3., 0., 0.])));
+        assert_eq!(
+            listed["left_out"][0],
+            "crates: the loaded scenario has 1 rows, the map 2"
+        );
+        assert_eq!(
+            h.ok(&mut game, method::THINGS, json!({"kind": "goal"}))["things"],
+            json!([])
+        );
+        for bad in [json!({"kind": "flag"}), json!({"block": "weapons"})] {
+            assert_eq!(
+                h.call(&mut game, method::THINGS, bad)["error"]["code"],
+                code::INVALID_PARAMS
+            );
+        }
+
+        // forge.status: the variant, unchanged.
+        let status = h.ok(&mut game, method::STATUS, Json::Null);
+        assert_eq!(status["variant"]["name"], "Arena");
+        assert_eq!(status["variant"]["tier"], "variant");
+        assert_eq!(status["variant"]["dirty"], false);
+        assert_eq!(
+            status["variant"]["id"],
+            json!(forge_doc::play_form(&draft()).id().unwrap())
+        );
+
+        // forge.propose takes an entry op naming the thing by its endpoint.
+        let moved = propose(&h, &mut game, json!({"op": set_position(1, target, -2.)}));
+        assert!(moved["error"].is_null(), "{moved}");
+        assert_eq!(moved["result"]["entry"]["seq"], 1);
+        let changed = h.ok(&mut game, method::THINGS, json!({"changed": true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["id"], json!(target));
+        assert_eq!(changed["things"][0]["position"], json!([-2., 0., 0.]));
+        let status = h.ok(&mut game, method::STATUS, Json::Null);
+        assert_eq!(status["variant"]["dirty"], true);
+        assert_eq!(
+            status["variant"]["tier"], "variant",
+            "entry ops keep it a variant"
+        );
+        assert!(status["variant"]["id"].is_string(), "{status}");
+
+        // A print that is not the entry's is refused by name, and the log
+        // stays where it was.
+        let stranger = Endpoint::Base {
+            block: BlockKind::Weapons,
+            index: 1,
+            print: Some(Print([0; 8])),
+        };
+        let refused = propose(&h, &mut game, json!({"op": set_position(2, stranger, 1.)}));
+        assert_eq!(refused["error"]["code"], code::INVALID_REQUEST);
+        assert_eq!(
+            refused["error"]["data"]["code"],
+            refusal::PRINT,
+            "{refused}"
+        );
+        // A `was` that is not the value's.
+        let refused = propose(
+            &h,
+            &mut game,
+            json!({"op": set_position(3, target, 0.), "was": Sha256::of(b"another value")}),
+        );
+        assert_eq!(refused["error"]["data"]["code"], refusal::WAS, "{refused}");
+        // An entry of the block left out.
+        let crate_entry = Endpoint::Base {
+            block: BlockKind::Crates,
+            index: 0,
+            print: Some(Print([1; 8])),
+        };
+        let refused = propose(
+            &h,
+            &mut game,
+            json!({"op": set_position(4, crate_entry, 0.)}),
+        );
+        assert_eq!(
+            refused["error"]["data"]["code"],
+            refusal::LEFT_OUT,
+            "{refused}"
+        );
+        assert_eq!(
+            h.ok(&mut game, method::LOG, Json::Null)["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn each_refusal_sentence_has_its_name() {
+        for (sentence, name) in [
+            (
+                format!(
+                    "{}: crate.0000001f is no longer in the world",
+                    local::OBJECT_GONE
+                ),
+                refusal::OBJECT_GONE,
+            ),
+            (
+                format!(
+                    "{}: live sound scenery objects cannot be moved",
+                    local::OBJECT_KIND
+                ),
+                refusal::OBJECT_KIND,
+            ),
+            (
+                format!(
+                    "{}: the weapons 2 object is held or attached",
+                    local::OBJECT_HELD
+                ),
+                refusal::OBJECT_HELD,
+            ),
+            (
+                forge_doc::Refusal::Print {
+                    block: BlockKind::NetgameFlags,
+                    index: 12,
+                }
+                .to_string(),
+                refusal::PRINT,
+            ),
+            (forge_doc::Refusal::Mismatch.to_string(), refusal::WAS),
+            (
+                format!("The map's crates entries {}.", ::forge::LEFT_OUT_SENTENCE),
+                refusal::LEFT_OUT,
+            ),
+            ("Forge edit log is full.".to_owned(), refusal::REFUSED),
+        ] {
+            assert_eq!(local::refusal_name(&sentence), name, "{sentence}");
         }
     }
 }

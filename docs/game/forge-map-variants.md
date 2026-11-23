@@ -1,7 +1,7 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M8 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), and `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8); everything else named here as new is not.
-Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld` and its base calls), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
+Status: Design, slices M1 to M10 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); everything else named here as new is not.
+Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 Forge edits every placement a multiplayer scenario has, not only the
@@ -54,6 +54,24 @@ A thing is an **own** entry (the base map has it) or an **added** one
 (a `Placement::Add` op of the document made it). Every tool treats the
 two alike. The only difference a player sees is **Restore original**,
 which an own entry has and an added one does not.
+
+**Aiming.** The Objects tool's reticle picks from every thing of
+`Session::things` (`crates/extensions/forge/src/tool.rs`): the nearest
+along the view, up to the wall the view meets, whose position the view
+passes within its **pick radius**. An object's pick radius is its
+palette item's bounding sphere (`Extent`, the default half unit for a
+tag the Objects palette lacks); a starting point, a goal, a teleporter
+and an item spawner are picked by their mark, `MARK_RADIUS` (0.5 world
+units). A spawner's object, when it has one out, lies on the mark, so
+the mark picks it too. Each radius widens by `RETICLE_SPREAD` (0.012) a
+unit of distance, so a far thing stays as wide as the reticle. A thing
+of another game type than the session's is passed over unless Show is
+All game types ("Game types"). What is aimed at is `Tool::aimed_thing`,
+an `Endpoint`; A picks it up, the drop is `Command::MoveThing` for an own
+entry (`Session::move_thing`) and `Command::Move` for an added one, and
+delete is `Command::Remove` (`Session::remove`) or `Command::Delete`.
+While held, an own entry stays where the document has it and the tool's
+ghost shows where it goes.
 
 ### Naming an entry
 
@@ -311,6 +329,18 @@ engines, or all of them.
   label, and can be aimed at and edited. Its field writes are Live in
   the loaded scenario like any other; nothing spawns from it until a
   game of its type.
+- **Which game type a thing is in**, for aiming (`forge::tool::in_game`,
+  given the variant record's engine index, `+0x44`, which the host reads
+  each tick): an item spawner when one of its slots matches the engine
+  by the engine's own matcher (`game_types::slot_matches`; King of the
+  Hill's index 4 is its code 0); a goal by its flag type, CTF's flag
+  spawn and return (0, 1), Assault's bomb spawn and return (2, 3),
+  Oddball's ball spawn (4), a territory (10) and a hill corner (11 to
+  18), as forge-doc's `builtin_label` traces them (**S**: which engines
+  read types 0 to 3 beyond their own); every other thing, and a flag of
+  an untraced type, in every game type. With no engine index read,
+  every thing is the session's. The Tool settings screen's Show row is
+  not built: the tool's `Show` is `This game type` until it is.
 - **A new thing's set.** A goal's is its role's. An item spawner or a
   starting point made in a session starts as all game types, as the
   map's own mostly are (**S**: the ignored test
@@ -504,19 +534,24 @@ Every machine builds the map from its own disc; no built byte travels
   changed}`, `ThingKind`, `BaseRows`,
   `Session::{with_base, left_out, things, thing, move_thing, hold,
   release, set_field, remove, reset}`, and on `World`: `base_move`,
-  `base_field`, `base_inert`, `base_restore`.
-  `forge::props` (new) is the table of properties by name: the kinds
+  `base_field`, `base_inert`, `base_restore`. The tool's
+  `Tool::{aimed_thing, held_thing, game, show}`, `Show`, `in_game`,
+  `MARK_RADIUS` and `Command::{MoveThing, Remove}`.
+  `forge::props` is the table of properties by name: the kinds
   each is on, how it reads a thing and the op it writes. `forge::files`
   is the variant store.
-- **Agent API** (game), in [agent-api.md](../runtime/agent-api.md)
-  when built. `forge.things {kind?, changed?}` (read, new) lists the
-  things with their endpoints, fields and prints: every test and lane
-  that edits the map's entries needs to name one, and `forge.status`
-  holds only the aimed and held one. `forge.propose` takes `EntryOp` ops.
-  `forge.variants {map?}` (read, new) and `forge.variant.pick {map_id?}`
-  (act, new) list the store and set the lobby's pick, for lobby and
-  start-gate checks. `forge.status` reports the variant's name, id and
-  whether it has unsaved edits.
+- **Agent API** (game), in [agent-api.md](../runtime/agent-api.md),
+  "Local Forge session". `forge.things {kind?, changed?}` (read) lists
+  the things with their endpoints, fields and prints: every test and
+  lane that edits the map's entries needs to name one, and
+  `forge.status` holds only the aimed and held one. `forge.propose`
+  takes `EntryOp` ops, and a refused edit carries its name
+  (`forge_print`, `forge_was`, `forge_left_out`, ...) in the error's
+  `data.code`. `forge.status` reports the variant's name, id, tier and
+  whether it has unsaved edits (`variant`). `forge.variants {map?}`
+  (read, new) and `forge.variant.pick {map_id?}` (act, new) list the
+  store and set the lobby's pick, for lobby and start-gate checks; they
+  are V1 and V2's.
 - **CLI**: `h2 forge check` and `build` read a `.h2mapvariant` as they
   read a `.h2forge`, and print each print they compared
   (`print <block> <index> <print>: matches`) and the tier

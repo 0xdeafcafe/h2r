@@ -182,11 +182,143 @@ fn the_status_names_what_the_palette_left_out_and_the_ghost_carries_its_size() {
         status["palette_refused"][0],
         r"test\hum: sound scenery has no body to place or see"
     );
+    // The map variant the session would save, and what the tool aims at.
+    assert_eq!(status["variant"]["name"], Value::Null);
+    assert_eq!(status["variant"]["title"], "Test room");
+    assert_eq!(status["variant"]["tier"], "variant");
+    assert_eq!(status["variant"]["dirty"], false);
+    assert_eq!(status["show"], "this_game_type");
+    assert_eq!(status["aimed_thing"], Value::Null);
     e.tool.monitor = true;
     e.tool.select(0);
     e.tool.ghost = Some(Frame::default());
     let (_, extent) = e.ghost().unwrap();
     assert_eq!(extent.radius, 1.);
+}
+
+/// An editor over a map with one weapon of its own, a rifle at (2, 0, 0),
+/// and its starting point 0 at (0, 3, 0).
+fn editor_with_own_things() -> Editor {
+    use forge::{BaseRow, BaseRows, Value};
+    let float = |v: f32| forge_doc::F32::new(v).unwrap();
+    let vec3 = |v: [f32; 3]| Value::Vec3(v.map(float));
+    let row = |block: BlockKind, fields: Vec<Value>| BaseRow {
+        block,
+        index: 0,
+        raw: vec![1; map::scenario_layout::block(block).stride as usize],
+        print: forge_doc::print(block, &fields).unwrap(),
+        fields,
+    };
+    let rifle = row(
+        BlockKind::Weapons,
+        vec![
+            Value::Tag(Some(TagKey {
+                group: "weap".into(),
+                path: r"test\battle_rifle".into(),
+            })),
+            Value::Int(-1),
+            Value::Int(0),
+            vec3([2., 0., 0.]),
+            vec3([0.; 3]),
+            Value::Float(float(0.)),
+        ],
+    );
+    let start = row(
+        BlockKind::StartingLocations,
+        vec![
+            vec3([0., 3., 0.]),
+            Value::Float(float(0.)),
+            Value::Int(0),
+            Value::Int(-1),
+        ],
+    );
+    let limits = Limits {
+        world: Some(WorldBounds {
+            min: [-10.; 3],
+            max: [10.; 3],
+        }),
+        base_counts: [(BlockKind::Weapons, 1), (BlockKind::StartingLocations, 1)]
+            .into_iter()
+            .collect(),
+        ..Limits::default()
+    };
+    let mut e = editor();
+    let base = e.session.document().clone();
+    e.session = Arc::new(
+        Session::new(base, limits, vec![], 8)
+            .unwrap()
+            .with_base(BaseRows {
+                rows: vec![rifle, start],
+                left_out: vec![],
+            }),
+    );
+    e
+}
+
+/// The map's own weapon and starting point are aimed at: the readout names
+/// them, X opens their Properties, and delete removes the map's entry.
+#[test]
+fn an_own_thing_aimed_at_is_named_opened_and_removed() {
+    let mut e = editor_with_own_things();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [-5., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    let update = |e: &mut Editor, action| {
+        let input = forge::tool::Input {
+            action,
+            ..Default::default()
+        };
+        e.tool.update(&e.session, 1, input).unwrap()
+    };
+    update(&mut e, None);
+    let rifle = Endpoint::base(BlockKind::Weapons, 0);
+    assert_eq!(e.tool.aimed_thing.map(Endpoint::identity), Some(rifle));
+    assert_eq!(e.hud().target, "battle rifle");
+    assert_eq!(e.status()["aimed"], Value::Null, "not an added object");
+    assert_eq!(e.status()["aimed_thing"]["base"]["block"], "weapons");
+    let cmd = update(&mut e, Some(forge::tool::Action::Properties)).unwrap();
+    e.command(2, cmd).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(
+        screens::screen(Kind::Properties).sheet().title,
+        "BATTLE RIFLE"
+    );
+    // A starting point is its kind by name.
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0., -5., 0.],
+        yaw: std::f32::consts::FRAC_PI_2,
+        pitch: 0.,
+    });
+    update(&mut e, None);
+    assert_eq!(e.hud().target, "Starting point");
+    // Delete on the rifle is its removal: one inert row at the next tick.
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [-5., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    let cmd = update(&mut e, Some(forge::tool::Action::Delete)).unwrap();
+    assert!(matches!(cmd, Command::Remove { id } if id.identity() == rifle));
+    e.command(3, cmd).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if matches!(
+            steps.as_slice(),
+            [calls::ForgeStep::Base(agent::forge::base::BaseStep::Inert {
+                block: BlockKind::Weapons,
+                index: 0,
+            })]
+        )),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(4);
+    assert!(e.session.thing(rifle).is_none(), "removed");
+    assert_eq!(e.status()["variant"]["dirty"], true);
 }
 
 #[test]

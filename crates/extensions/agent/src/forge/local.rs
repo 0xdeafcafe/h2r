@@ -5,7 +5,8 @@ use std::sync::{Arc, mpsc};
 
 use ::forge::look::{Refusal, monitors::Who};
 use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
-use agent_proto::{Boundary, Kind, ObjectId, RpcError, code, forge::method};
+use agent_proto::forge::{THING_KINDS, ThingsParams, method, refusal};
+use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
 use engine::GuestMemory;
 use forge_doc::{Entry, ForgeDoc, Op, Sha256, TagKey};
 use map::scenario_layout as layout;
@@ -44,15 +45,130 @@ impl Guard {
 /// Why a Forge edit's live object can no longer be edited: the session's
 /// handle no longer resolves with its kind and salt (`world.object.*`'s
 /// check). The edit leaves the document as it was.
-pub const OBJECT_GONE: &str = "forge_object_gone";
+pub const OBJECT_GONE: &str = refusal::OBJECT_GONE;
 
 /// A live object edit names a block whose objects `world.object.*` cannot
 /// resolve.
-pub const OBJECT_KIND: &str = "forge_object_kind";
+pub const OBJECT_KIND: &str = refusal::OBJECT_KIND;
 
 /// A base edit names an own entry whose live object is held or attached, so
 /// it is not the placement's to move.
-pub const OBJECT_HELD: &str = "forge_object_held";
+pub const OBJECT_HELD: &str = refusal::OBJECT_HELD;
+
+/// The name a refused edit's sentence carries (`agent_proto::forge::refusal`):
+/// a sentence that starts with a game call's name has it, a print or `was`
+/// check that failed has its own, and any other is
+/// [`refusal::REFUSED`]. The print and `was` sentences are forge-doc's own
+/// `Refusal`s, so they are matched against those.
+pub fn refusal_name(message: &str) -> &'static str {
+    if let Some(name) = [OBJECT_GONE, OBJECT_KIND, OBJECT_HELD]
+        .into_iter()
+        .find(|name| message.starts_with(name))
+    {
+        return name;
+    }
+    let print = forge_doc::Refusal::Print {
+        block: BlockKind::Weapons,
+        index: 0,
+    }
+    .to_string();
+    if let Some((head, tail)) = print.split_once(" weapons entry 0 ")
+        && message.starts_with(head)
+        && message.ends_with(tail)
+    {
+        return refusal::PRINT;
+    }
+    if message == forge_doc::Refusal::Mismatch.to_string() {
+        return refusal::WAS;
+    }
+    if message.contains(::forge::LEFT_OUT_SENTENCE) {
+        return refusal::LEFT_OUT;
+    }
+    refusal::REFUSED
+}
+
+/// `forge.status`'s `variant`: the session's document as a map variant
+/// would save it (docs/game/forge-map-variants.md, "The map variant
+/// file"). `name` is the file it was last saved or loaded as, `dirty` that
+/// it has edits since. `id` is the play form's identity and `tier` its
+/// tier; a document whose identity does not compute has `id` null and
+/// `id_refused` with the reason.
+pub fn variant_status(doc: &ForgeDoc, name: Option<&str>, dirty: bool) -> Value {
+    let play = forge_doc::play_form(doc);
+    let mut out = json!({
+        "name": name,
+        "title": play.title,
+        "tier": play.tier().name(),
+        "dirty": dirty,
+    });
+    match play.id() {
+        Ok(id) => out["id"] = json!(id),
+        Err(e) => {
+            out["id"] = Value::Null;
+            out["id_refused"] = json!(e.to_string());
+        }
+    }
+    out
+}
+
+/// One thing as `forge.things` lists it: its endpoint (the target an entry
+/// op names), block, kind, whether the base map has it and an entry op
+/// changes it, its frame, and its fields by layout name.
+pub fn thing_json(thing: &::forge::Thing) -> Value {
+    let fields: serde_json::Map<String, Value> = thing
+        .fields
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), json!(value)))
+        .collect();
+    json!({
+        "id": thing.id,
+        "block": thing.block.name(),
+        "kind": thing_kind(thing.kind),
+        "own": thing.own,
+        "changed": thing.changed,
+        "position": thing.frame.position,
+        "rotation": thing.frame.rotation,
+        "fields": fields,
+    })
+}
+
+/// A kind as `forge.things` spells it, one of `THING_KINDS`.
+fn thing_kind(kind: ::forge::ThingKind) -> &'static str {
+    use ::forge::ThingKind as K;
+    match kind {
+        K::Object => THING_KINDS[0],
+        K::ItemSpawner => THING_KINDS[1],
+        K::StartingPoint => THING_KINDS[2],
+        K::Goal => THING_KINDS[3],
+        K::Teleporter => THING_KINDS[4],
+    }
+}
+
+/// `forge.things`' reply for `session`: its things that pass the filters,
+/// and the blocks it left out, each as `block: reason`.
+pub fn things_reply(session: &Session, params: &ThingsParams) -> Result<Value, RpcError> {
+    if let Some(kind) = &params.kind
+        && !THING_KINDS.contains(&kind.as_str())
+    {
+        return Err(super::invalid(format!(
+            "kind: one of {}",
+            THING_KINDS.join(", ")
+        )));
+    }
+    let things: Vec<Value> = session
+        .things()
+        .iter()
+        .filter(|t| {
+            params
+                .kind
+                .as_deref()
+                .is_none_or(|k| thing_kind(t.kind) == k)
+        })
+        .filter(|t| params.changed.is_none_or(|c| t.changed == c))
+        .map(thing_json)
+        .collect();
+    Ok(json!({"things": things, "left_out": session.left_out()}))
+}
 
 /// The `world.object` kind of a block's live objects.
 fn live_kind(block: BlockKind) -> Option<Kind> {
@@ -341,6 +457,9 @@ pub trait LocalApi: Send + Sync + 'static {
     /// `forge.status.monitors`.
     fn monitors(&self, who: &Who) -> Value;
     fn status(&self) -> Result<Value, String>;
+    /// The session as it stands, for `forge.things`; the reason there is
+    /// none otherwise.
+    fn session(&self) -> Result<Arc<Session>, String>;
     fn document(&self) -> Result<ForgeDoc, String>;
     fn log(&self, since: u32) -> Result<Vec<Entry>, String>;
     fn input(&self, m: &dyn GuestMemory, input: ::forge::tool::Input) -> Result<(), String>;
@@ -459,6 +578,16 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         Ok(host.monitors(&who))
     });
     let host = backend.clone();
+    agent.add_game_method(method::THINGS, Access::Read, move |v, _| {
+        let p: ThingsParams = if v.is_null() {
+            ThingsParams::default()
+        } else {
+            serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
+        };
+        let session = host.session().map_err(super::unavailable)?;
+        things_reply(&session, &p)
+    });
+    let host = backend.clone();
     agent.add_game_method(method::DOC, Access::Read, move |v, _| {
         empty(v)?;
         host.document()
@@ -523,6 +652,11 @@ fn who_of(host: &impl LocalApi, ctx: &mut crate::GameCtx<'_>) -> Who {
         .unwrap_or_else(|_| host.who(None))
 }
 
+/// A refused input or edit: its sentence as the message, and
+/// `{code, message}` as the data, `code` its name ([`refusal_name`]).
 fn refused(message: String) -> RpcError {
-    RpcError::new(code::INVALID_REQUEST, message)
+    let name = refusal_name(&message);
+    let mut e = RpcError::new(code::INVALID_REQUEST, message.clone());
+    e.data = Some(json!({"code": name, "message": message}));
+    e
 }
