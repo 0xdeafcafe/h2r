@@ -298,11 +298,11 @@ entries; retail uses 0 to 38 and the store 94 to 100).
 | Superbounce | slayer | script | `research` | `superbounce.rules` gains its settings; the table's are deleted |
 | Gun Game | slayer | script | `party` | `gun_game.rules`: a kill gives the next rung's weapon at once (`set_loadout`); players spawn unarmed (`starting_weapon = none`) and the map has no weapons |
 | Race | slayer | script | `party` | `race.rules`: the map's hills are its checkpoints, run in number order, so every map with hills races |
+| VIP | slayer | script | `party` | `vip.rules`: a VIP per team, worth `vip_points` to kill, the role passing to a teammate; the script ends the round at the score limit |
 | Siege | slayer | script | `party` | `siege.rules`: the map's territory and CTF flags are its zones, so every Territories and CTF map plays it ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); players spawn unarmed (`starting_weapon = none`, our added choice) and `set_loadout` arms each side |
 
-Siege, Gun Game and Race, like Superbounce, are scripted modes after the
-settings scripts and are examples too (`builtin::examples`). VIP stays an
-example and is not listed.
+Siege, Gun Game, Race and VIP, like Superbounce, are scripted modes after
+the settings scripts and are examples too (`builtin::examples`).
 
 ### The default Live lineup
 

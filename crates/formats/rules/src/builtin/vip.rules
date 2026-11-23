@@ -1,77 +1,109 @@
-// VIP with powers: each team has a VIP who may place and move block-out
-// pieces during the match; the other players may delete vehicles. Killing
-// an enemy VIP scores more, and the role passes to a teammate.
-// docs/game/rules-engine.md, "Payoff" and "Roles, powers and capabilities".
+// VIP: each team has a VIP. A kill scores a point, a kill of an enemy VIP
+// scores `vip_points`, and the first team to the score limit wins. When a
+// VIP dies or quits the role passes to a teammate, living ones first; a
+// team left with no VIP crowns the next of its players to spawn.
+// docs/game/rules-engine.md, "Payoff".
 //
-// Entries a host cannot make yet (`verify::unhostable`): none. The grants
-// wait on the match edit log and the player's tool (roadmap phase 14).
+// Entries a host cannot make yet (`verify::unhostable`): none.
+// Not covered: the VIP has no mark over its head and no traits of its own
+// (`role_traits` is untraced); the powers of "Roles, powers and
+// capabilities" wait on the match edit log (roadmap phase 14), so their
+// grants live in the VIP test script of `tests/scripts.rs`.
 rules "VIP" 1
 carrier slayer
 teams 2
-requires forge.move, forge.delete, forge.place
+list party
+requires hud.message
+about "Each team has a VIP. Kill theirs for extra points and keep yours alive: when a VIP dies, a teammate takes the role."
+quick vip_points, score_limit, time_limit
 
-// The Forge kit's block-out pieces and the map's vehicles; tag paths are
-// checked against the map at load.
-palette "vip" = ["objects/forge/block_wall/block_wall", "objects/forge/block_ramp/block_ramp", "objects/forge/barrier/barrier"]
-palette "wrecker" = ["objects/vehicles/warthog/warthog", "objects/vehicles/ghost/ghost", "objects/vehicles/banshee/banshee"]
+// The script scores and ends the round, so the carrier's limit never
+// gets there first; `variant.score_limit` is the target.
+settings {
+    team_play = true
+    score_limit = 25
+}
 
 enum Role { none, vip }
 
 option vip_points: int 1..5 = 3 "VIP points" "Points for killing an enemy VIP"
 
 player var role: Role = Role.none
+// Each team's points as the script counts them: a score lands a tick
+// late on a host, so the limit is checked against this.
+team var points: int = 0
+global var over: bool = false
 
 fn crown(p: player) {
     p.role = Role.vip
-    grant(p, forge.place, budget 20, palette "vip")
-    grant(p, forge.move, budget 40, palette "vip")
-    revoke(p, forge.delete)
+    let named = p
+    let side = p.team
+    message(side, "{named} is your VIP")
 }
 
-fn uncrown(p: player) {
-    p.role = Role.none
-    revoke(p, forge.place)
-    revoke(p, forge.move)
-}
+// Whether team t has a VIP.
+fn has_vip(t: team) -> bool = count(players q where q.team == t and q.role == Role.vip) > 0
 
-// The first teammate of `p` other than `p` takes the role.
+// The role passes from `p` to a teammate, a living one if there is one.
 fn succeed(p: player) {
-    let heir = first(players q where q.team == p.team and q != p)
-    if heir != none { crown(heir) }
-}
-
-on round_start {
-    for each players p { uncrown(p) }
-    for each teams t {
-        let v = first(players p where p.team == t)
-        if v != none { crown(v) }
+    if let heir = first(players q where q.team == p.team and q != p and q.alive) {
+        crown(heir)
+    } else if let heir = first(players q where q.team == p.team and q != p) {
+        crown(heir)
     }
-}
-
-on spawn(p) {
-    if p.role != Role.vip { grant(p, forge.delete, budget 3, palette "wrecker") }
 }
 
 // A kill of someone on another team.
 fn enemy(killer: player, victim: player) -> bool = killer != victim and killer.team != victim.team
 
+fn award(k: player, n: int) {
+    let scorers = k.team
+    scorers.points = scorers.points + n
+    score(k, n)
+    if variant.score_limit > 0 and scorers.points >= variant.score_limit {
+        over = true
+        end_round(scorers)
+    }
+}
+
+on round_start {
+    over = false
+    for each players p { p.role = Role.none }
+    for each teams t {
+        t.points = 0
+        if let v = first(players p where p.team == t) { crown(v) }
+    }
+}
+
+// A team left with no VIP (its VIP quit alone, or it had no players at
+// the start) crowns the next of its players to spawn.
+on spawn(p) {
+    if not has_vip(p.team) { crown(p) }
+}
+
 on kill(victim, killer) {
-    match victim.role {
-        Role.vip {
-            uncrown(victim)
-            if let k = killer and enemy(k, victim) { score(k, vip_points) }
-            succeed(victim)
-            if count(players p where p.team == victim.team and p.role == Role.vip) == 0 { crown(victim) }
-        }
-        Role.none {
-            if let k = killer and enemy(k, victim) { score(k, 1) }
+    if not over {
+        match victim.role {
+            Role.vip {
+                victim.role = Role.none
+                if let k = killer and enemy(k, victim) {
+                    message(all, "{k} killed the VIP {victim}")
+                    award(k, vip_points)
+                }
+                succeed(victim)
+                // No teammate: the VIP keeps the role.
+                if not has_vip(victim.team) { victim.role = Role.vip }
+            }
+            Role.none {
+                if let k = killer and enemy(k, victim) { award(k, 1) }
+            }
         }
     }
 }
 
 on quit(p) {
     if p.role == Role.vip {
-        uncrown(p)
+        p.role = Role.none
         succeed(p)
     }
 }

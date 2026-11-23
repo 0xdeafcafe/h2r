@@ -2076,10 +2076,10 @@ rather than by engine: `infection.rules`, `gun_game.rules`,
 `vip.rules`, `siege.rules`, `race.rules`, `bounce_hunt.rules` and
 `superbounce.rules`. Each compiles, verifies and fits a tick
 (`tests/engines.rs`), and each header names the entries a host cannot
-make yet. VIP, Bounce Hunt, Superbounce, Siege and Gun Game call none.
-VIP waits on the match edit log, and Bounce Practice on the host
-runtime's `round_start` and `set_gravity`. Superbounce, Siege, Gun Game
-and Race run, and are listed (`builtin::LISTED`, [rules-variants.md](rules-variants.md#built-in-list-entries)).
+make yet. VIP, Bounce Hunt, Superbounce, Siege, Gun Game and Race call
+none. Bounce Practice waits on the host runtime's `round_start` and
+`set_gravity`. Superbounce, Siege, Gun Game, Race and VIP run, and are
+listed (`builtin::LISTED`, [rules-variants.md](rules-variants.md#built-in-list-entries)).
 The examples are compiled into the game, so a record names one by its
 hash prefix with no store or fetch; a record with no mode never runs
 one. `tests/modes.rs` plays the listed modes over scenarios on the fake
@@ -2107,8 +2107,15 @@ game (the JSON files in `tests/scenarios/`). Prop Hunt has no script.
   Players spawn unarmed and the map has no weapons; a weapon a dead
   player drops can still be picked up, so leaving it is an honour rule.
   Every rung is on the multiplayer weapon list (`rules::weapons`).
-- **VIP with powers.** The VIP holds a grant to place and move block-out
-  pieces; the hunters hold one to delete vehicles.
+- **VIP** (listed in Party Games). Each team has a VIP; a kill scores a
+  point and an enemy VIP's `vip_points`, and the role passes on a
+  VIP's death or quit to a teammate, living ones first, with a message
+  to the team. The script counts each team's points in a `team var`
+  and ends the round at `variant.score_limit`, since a score it makes
+  is read back a tick late. **With powers**, the VIP would hold a grant to
+  place and move block-out pieces and the hunters one to delete
+  vehicles; grants wait on the match edit log, so that version is the
+  VIP test script in `tests/scripts.rs`.
 - **Prop Hunt**, the hardest mode here. A hider's biped is hidden, a
   prop object is attached to the player, damage to the prop is forwarded
   to the player, and the camera is third person. `hide`, `attach`, the

@@ -382,7 +382,8 @@ fn the_party_and_research_rows_hold_their_scripts() {
             "Bumper Cars",
             "Siege",
             "Gun Game",
-            "Race"
+            "Race",
+            "VIP"
         ]
     );
     assert_eq!(

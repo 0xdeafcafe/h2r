@@ -285,7 +285,7 @@ fn every_listed_scripted_mode_is_hostable() {
         assert_eq!(host_refusal(&ir), None, "{}", b.name);
         scripted.push(b.name);
     }
-    for name in ["Siege", "Gun Game", "Race"] {
+    for name in ["Siege", "Gun Game", "Race", "VIP"] {
         assert!(scripted.contains(&name), "{name}: {scripted:?}");
     }
 }

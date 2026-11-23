@@ -49,7 +49,7 @@ pub fn sources_of(file_name: &str, text: &str) -> Vec<String> {
 pub const INFECTION: &str = include_str!("infection.rules");
 /// Gun Game: a weapon ladder, one rung a kill.
 pub const GUN_GAME: &str = include_str!("gun_game.rules");
-/// VIP, with Forge powers granted by role.
+/// VIP: a VIP per team, worth more to kill, the role passing on.
 pub const VIP: &str = include_str!("vip.rules");
 /// Siege: the phased attack-and-defend mode.
 pub const SIEGE: &str = include_str!("siege.rules");
@@ -141,7 +141,7 @@ pub const ALL: &[Builtin] = &[
 /// The scripts that are built-in variants, in list order: the entries the
 /// game's variant list gets at load (`docs/game/rules-variants.md`,
 /// "Built-in list entries"). `engine` is the carrier's engine index. The
-/// scripted modes after the settings scripts (Superbounce, Siege, Gun Game, Race) are
+/// scripted modes after the settings scripts (Superbounce, Siege, Gun Game, Race, VIP) are
 /// examples too, so `examples()` names them by key.
 pub const LISTED: &[Builtin] = &[
     Builtin { name: "Zombies", engine: 2, source: ZOMBIES },
@@ -161,6 +161,7 @@ pub const LISTED: &[Builtin] = &[
     Builtin { name: "Siege", engine: 2, source: SIEGE },
     Builtin { name: "Gun Game", engine: 2, source: GUN_GAME },
     Builtin { name: "Race", engine: 2, source: RACE },
+    Builtin { name: "VIP", engine: 2, source: VIP },
 ];
 
 /// The built-in script source for a retail engine index, for the engines

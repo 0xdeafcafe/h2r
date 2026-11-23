@@ -295,3 +295,64 @@ fn race_needs_a_hills_corners() {
         other => panic!("{:?}", other.map(|r| r.ended_at)),
     }
 }
+
+// ---- VIP ----
+
+const VIP_SUCCESSION: &str = include_str!("scenarios/vip_succession.json");
+
+/// Players 0 and 2 start as their teams' VIPs. An enemy VIP's kill is
+/// worth three, the role passes to a living teammate, then to a dead one
+/// when that is all the team has, and the team that reaches the score
+/// limit (7 here) wins.
+#[test]
+fn vip_the_role_passes_on_and_an_enemy_vip_scores_more() {
+    let ir = rules::compile(builtin::VIP).unwrap();
+    let s: Scenario = serde_json::from_str(VIP_SUCCESSION).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "player 0 is your VIP",
+            "player 2 is your VIP",
+            "player 1 killed the VIP player 2",
+            "player 3 is your VIP",
+            "player 0 killed the VIP player 3",
+            "player 2 is your VIP",
+        ]
+    );
+    assert_eq!(r.game.players[&0].score, 1 + 3);
+    assert_eq!(r.game.players[&1].score, 3);
+    assert_eq!(r.ended_at, Some(4));
+    assert_eq!(calls(&r, "end_round").len(), 1);
+}
+
+/// A VIP who quits hands the role on; a VIP with no teammate left keeps
+/// it, and is worth the VIP's points again.
+#[test]
+fn vip_a_quit_hands_the_role_on_and_a_lone_vip_keeps_it() {
+    let ir = rules::compile(builtin::VIP).unwrap();
+    let mut s: Scenario = serde_json::from_str(VIP_SUCCESSION).unwrap();
+    s.variant.insert("score_limit".into(), 0);
+    s.ticks = vec![ScenarioTick::default(); 6];
+    s.ticks[0].events = (0..4).map(ScenarioEvent::Spawn).collect();
+    s.ticks[1].events = vec![ScenarioEvent::Quit(2)];
+    s.ticks[2].events = vec![ScenarioEvent::Kill { victim: 3, killer: Some(0) }];
+    s.ticks[3].events = vec![ScenarioEvent::Spawn(3)];
+    s.ticks[4].events = vec![ScenarioEvent::Kill { victim: 3, killer: Some(0) }];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "player 0 is your VIP",
+            "player 2 is your VIP",
+            "player 3 is your VIP",
+            "player 0 killed the VIP player 3",
+            "player 0 killed the VIP player 3",
+        ]
+    );
+    assert_eq!(r.game.players[&0].score, 6);
+    // No score limit: the round runs on.
+    assert_eq!(r.ended_at, None);
+}

@@ -153,7 +153,8 @@ The fixed list (`h2 rules caps`): `game.traits`, `player.traits`,
   the reason in `rules.state`. The VM refuses every granted proposal in a
   ranked game or in Theater. Declare the least a mode needs.
 - The host runtime refuses, today, any script that calls `grant`: grants
-  need the match edit path, which is not built. VIP is a test script.
+  need the match edit path, which is not built. The VIP with powers is a
+  test script (`tests/scripts.rs`); the listed VIP has none.
 
 ## The scenario
 
@@ -398,9 +399,12 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   `variant.team_play`, `score_limit`, `time_limit`
   and `lives`; and refuses Forge labels and any `grant`. A zone is a
   labelled netgame flag (`game::rules::world::zones`). Calls land at the
-  next tick boundary, and a mode 2 script on a lifted carrier does not
-  replace the carrier's own scoring. Siege is the listed scripted mode
-  that uses zones and loadouts; the rest is proven by scenario. Name the entries
+  next tick boundary, so a score read back in the same handler is the
+  old one; a script that ends on a total counts it in a variable. While
+  a mode 2 script scores, the carrier's own scoring is answered in place
+  (docs/game/rules-engine.md, "One scorer"). The listed scripted modes
+  (Superbounce, Siege, Gun Game, Race, VIP) run on a host; the rest is
+  proven by scenario. Name the entries
   your script waits on in a comment at the top, as the built-ins do.
 - **`message(to, text)`.** `to` is a player, a team or `all`; `h2 rules
   caps` lists the three forms under the one name. The text may hold up

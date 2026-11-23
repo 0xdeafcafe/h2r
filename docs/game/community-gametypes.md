@@ -1,19 +1,19 @@
 # Community game variants
 
-Status: Built. 17 variants, each built from a script in `rules::builtin::LISTED`, are added after the retail built-ins; the unit tests prove the entries land in the `goof` block and their records get their scripts' blocks, and what the game then does with them is in "Not done and risks".
+Status: Built. 18 variants, each built from a script in `rules::builtin::LISTED`, are added after the retail built-ins; the unit tests prove the entries land in the `goof` block and their records get their scripts' blocks, and what the game then does with them is in "Not done and risks".
 Switch: none.
 
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
-hand in custom games, a practice mode (Superbounce) and three scripted
-modes (Siege, Gun Game and Race), as extra built-ins.
+hand in custom games, a practice mode (Superbounce) and four scripted
+modes (Siege, Gun Game, Race and VIP), as extra built-ins.
 Each is a script compiled into the game
 ([rules-variants.md](rules-variants.md#built-in-list-entries)): its list
 entry, its description and its row come from the script, and its record
 names the script. Two rows of ours at the bottom of the game type list
 ([Tweakers](#tweakers)) hold some of them: **Research and Devolution**
 has Bounce Practice, Glitch Hunt and Superbounce, and **Party Games** has
-Zombies, Jousting, Cops and Robbers, Bumper Cars, Siege, Gun Game and Race. The rest are listed
+Zombies, Jousting, Cops and Robbers, Bumper Cars, Siege, Gun Game, Race and VIP. The rest are listed
 under their game types. In the
 variant list they carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
@@ -159,6 +159,7 @@ show through.
 | Siege | Slayer | team play; no score or time limit; no starting weapon (our added choice) and no secondary, since its script gives each side a loadout at spawn; the attackers take the map's territories, then the defenders' CTF flag stand, each phase on its own clock ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); scored by its script and listed under Party Games (`list party`) |
 | Gun Game | Slayer | no starting weapon (our added choice) and no secondary; nothing on the map; no score limit; its script gives each player the weapon of their rung at spawn and the next rung's on each kill, from the SMG to the energy sword, and the kill past the sword wins; a suicide demotes a rung (an option); listed under Party Games |
 | Race | Slayer | no score limit; the map's King of the Hill hills are the checkpoints, run in number order from the lowest and back for a lap, and the first to finish the laps (3 by default) wins; listed under Party Games |
+| VIP | Slayer | team play; 25 points; each team has a VIP, a kill scores a point and an enemy VIP 3 (an option), and when a VIP dies or quits a teammate takes the role; the script ends the round at the score limit; listed under Party Games |
 
 Why these, and the sources:
 
@@ -346,7 +347,7 @@ Territories, in this order (`community_variants::Row`):
 | Row | Pane title | Description | Built-ins |
 |---|---|---|---|
 | Research and Devolution | RESEARCH AND DEVOLUTION | "Practice the tricks and find the glitches: superbounces, crouch jumps and the maps' secrets." | Bounce Practice, Glitch Hunt, Superbounce |
-| Party Games | PARTY GAMES | "Zombies, jousting, cops and robbers: the party games the community made up for custom games." | Zombies, Jousting, Cops and Robbers, Bumper Cars, Siege, Gun Game, Race, Hide and Seek |
+| Party Games | PARTY GAMES | "Zombies, jousting, cops and robbers: the party games the community made up for custom games." | Zombies, Jousting, Cops and Robbers, Bumper Cars, Siege, Gun Game, Race, VIP, Hide and Seek |
 
 Choosing a row opens a variant list of its variants, built-in and saved;
 Slayer's list no longer shows them. Each row is an ordinary list row,
