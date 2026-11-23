@@ -432,5 +432,13 @@ fn geometry<R: Read + Seek>(
     Ok((bounds, walls))
 }
 
+/// The loaded scenario's rows, typed fields and prints. The session reads
+/// them once when it opens (docs/game/forge-map-variants.md, "Applying an
+/// edit in a session"), and the Things list is built from them.
+#[allow(dead_code)]
+pub(crate) mod rows;
+
+#[cfg(test)]
+mod rows_tests;
 #[cfg(test)]
 mod tests;
