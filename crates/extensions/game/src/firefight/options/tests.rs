@@ -24,7 +24,7 @@ fn screen(kept: &Arc<Store>) -> Arc<KitScreen> {
 }
 
 fn list(s: &Arc<KitScreen>) -> ListPage {
-    ListPage::new(s.class(), described(s))
+    ListPage::new(s.class(), described(s)).with_states(&[0, 2, 3, 5])
 }
 
 fn stepped(line: &str) -> ListEffect {
@@ -314,8 +314,8 @@ fn the_teams_choice_reaches_the_definition() {
     kept.set(TEAMS.key, Value::Int(1)).unwrap();
     let d = read(&kept).definition().unwrap();
     assert_eq!((d.name.as_str(), d.teams, d.scoring.player_kill), ("Crossfire", 1, 0));
-    kept.set(TEAMS.key, Value::Int(3)).unwrap();
-    let e = Options::read(&kept).unwrap_err();
+    // The store refuses a count the setting does not offer.
+    let e = format!("{:?}", kept.set(TEAMS.key, Value::Int(3)).unwrap_err());
     assert!(e.contains("firefight.teams"), "{e}");
 }
 

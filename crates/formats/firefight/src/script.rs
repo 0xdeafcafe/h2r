@@ -2272,7 +2272,7 @@ mod tests {
             assert!(ir.encode().len() <= ::rules::ir::MAX_IR_BYTES);
             ids.insert(ir.id());
         }
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]

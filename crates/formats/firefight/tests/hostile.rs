@@ -48,8 +48,8 @@ fn the_byte_limit_applies_before_parsing_and_hashing() {
 fn malformed_documents_are_refused_at_the_wire_boundary() {
     let (base, limits) = fixture();
     let cases = [
-        base.replace("\"format\":1", "\"format\":1,\"format\":1"),
-        base.replace("\"format\":1", "\"format\":1,\"data\":[1,2,3]"),
+        base.replace("\"format\":2", "\"format\":2,\"format\":2"),
+        base.replace("\"format\":2", "\"format\":2,\"data\":[1,2,3]"),
         base.replace("\"max\":5", "\"max\":5,\"raw_count\":15"),
         base.replace("\"max\":5", "\"max\":-1"),
         base.replace("\"max\":5", "\"max\":5.0"),
@@ -87,7 +87,7 @@ fn malformed_documents_are_refused_at_the_wire_boundary() {
         );
     }
     let version = FORMAT + 1;
-    let bytes = base.replace("\"format\":1", &format!("\"format\":{version}"));
+    let bytes = base.replace("\"format\":2", &format!("\"format\":{version}"));
     assert_eq!(
         Def::from_bytes(bytes.as_bytes(), &limits),
         Err(Refusal::Format(version))

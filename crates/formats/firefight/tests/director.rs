@@ -123,7 +123,14 @@ fn live_actors_never_exceed_the_cap() {
             }
         }
     }
-    assert_eq!(outcomes.len(), 2, "both outcomes occur: {outcomes:?}");
+    // One team ends Won or Lost; two end with a team winning (or a draw).
+    for one in ["Won", "Lost"] {
+        assert!(outcomes.contains(one), "{one} occurs: {outcomes:?}");
+    }
+    assert!(
+        outcomes.iter().any(|o| o.starts_with("TeamWon")),
+        "a team wins: {outcomes:?}"
+    );
 }
 
 #[test]
