@@ -316,7 +316,7 @@ uses D3D for that call.
 | Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
 | Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
 | Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`). |
-| `0x0002df00`, `0x0002dd30` | D3D: they need the flares' visibility queries. The fade, UI and HUD are the native UI, above. |
+| `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts. The fade, UI and HUD are the native UI, above. |
 
 ### The post hooks
 
@@ -732,7 +732,7 @@ Its numbers are ported: `engine::colour_pass`
 
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
-- `0x0002df00` and `0x0002dd30`, the lens flares and their visibility tests, are not drawn natively: a native flare needs the visibility query's pixel count back in guest memory before `0x00020770` reads it. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
+- `0x0002df00` and `0x0002dd30`, the lens flares and their visibility tests, are not typed stages: their draws are carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
 
 ## Not verified
 
