@@ -11,7 +11,8 @@ Evidence labels, as in map-format.md:
 
 - **V — verified-on-disc:** checked by the `#[ignore]`d tests in
   `crates/tools/h1-assets/tests/sounds/real_disc.rs` on every map of the owner's Halo 1
-  disc (24 maps, 15,698 `snd!` tags) and every map of the Halo 2 disc (30).
+  disc and every map of the Halo 2 disc. The census counts are in
+  [notes/sounds.md](notes/sounds.md).
 - **S — unverified:** the reader relies on the name or meaning but the
   disc doesn't prove it.
 - **Design:** an implementation choice.
@@ -24,19 +25,18 @@ their sounds; the disc tests read `$H1_ISO` and `$H2_DISC` at run time.
 **V:** a permutation's samples data reference holds a **file offset in the
 decompressed map** (`+8`) and a size (`+0`), exactly as bitmap pixels do.
 Flags (`+4`) are zero. On every map the samples are one run after the
-bitmaps and before the tag data (beavercreek `0x16e7200..0x22ab698`, tag
-data from `0x22ab800`); no two spans overlap (sounds that share samples
+bitmaps and before the tag data; no two spans overlap (sounds that share samples
 share the span), and none reaches the tag data. Xbox Halo 1 has no
 `sounds.map`; every sample is in the map that plays it.
 
 The mouth data reference at permutation `+0x54` holds the byte count.
 Its virtual address at `+0x60` resolves in the Xbox tag data. The
-separate resource-file offset at `+0x5c` is unused on Xbox. Across the
-disc, 34,315 permutations have mouth data and none have subtitles.
+separate resource-file offset at `+0x5c` is unused on Xbox. Permutations on the
+disc have mouth data and none have subtitles.
 
 ### Dialogue mouth curves (Built)
 
-On a10, 1,038 sounds contain 4,659 authored mouth curves. Each byte
+On a10 the sounds contain authored mouth curves. Each byte
 gives the aperture for one 30 Hz tick. H1 clamps the tick to the curve,
 reads the byte through the permutation's tag-memory pointer and scales it
 by 1/255 (`0x2821f..0x2828d`). The unit updates its aperture at `+0x298`
@@ -53,7 +53,7 @@ length. The sampler clamps the tick, reads the aperture byte and scales
 by 1/255 (`0x218e50`). With no facial sequence, the unit looks up `talk`
 in the overlay block and mixes it at that aperture (`0x1cc150`,
 `0x112335..0x1123b5`). Retail 01b's marine has a one-frame talk overlay
-in both combat and patrol. Actor-bound H1 conversation lines already use
+in both combat and patrol. Actor-bound H1 conversation lines use
 the native biped sound callback.
 
 Conversion copies the H1 curve bytes into the H2 extra-info resource.
@@ -87,7 +87,7 @@ through the installed sound's pitch range and permutation.
 | `54`, `58`, `5c` | the same at scale 1 | S |
 | `6c` | `u16` encoding: 0 mono, 1 stereo | V |
 | `6e` | `u16` compression: 0 none, 1 Xbox ADPCM, 2 IMA ADPCM, 3 Ogg | V: only 1 on the disc |
-| `70` | `snd!` reference: promotion sound | V: 258 sounds set it |
+| `70` | `snd!` reference: promotion sound | V |
 | `80` | `i16` promotion count | E: `0x24eb5` and `0x24f11` |
 | `84` | milliseconds credited per request | E: `0x24ed7` and `0x24f01` |
 | `88`, `8c` | live promotion credit and last request time | E: `0x24ec3..0x24f3a` |
@@ -115,9 +115,7 @@ call in its looping playback path.
 The installer follows each promotion target to its source sound and assigns
 all datums before installing the target fixups. This handles the retail
 cycles in the small, medium and large rock impact sounds. Fresh map
-construction and gestalt compaction retain the fixups. A read-only census
-found 253 redirect rules and 77 rate limits across the 23 playable maps.
-The ignored `every_retail_halo1_promotion_round_trips` test rebuilds them
+construction and gestalt compaction retain the fixups. The ignored `every_retail_halo1_promotion_round_trips` test rebuilds them
 all and checks the target, count and duration. The campaign and multiplayer
 read-back audit checks rules on sounds reached by each converted map.
 The boot unit tests cover decay, threshold crossing and rate limiting.
@@ -149,7 +147,7 @@ The boot unit tests cover decay, threshold crossing and rate limiting.
 
 **Playable permutations (V):** the first *actual permutation count*
 permutations of a range start a sound; one whose `next` is set is continued
-by that permutation's samples, and so on (10,807 of 72,558 permutations
+by that permutation's samples, and so on (many permutations
 continue another). `Sound::chains` follows them and refuses chains that
 leave the range or loop. A playable permutation's samples are its chain's,
 concatenated; every chain is whole ADPCM blocks.
@@ -170,17 +168,11 @@ is the chain's first; the same scheme as `h2 sound`).
 
 ### Census (V, whole disc)
 
-`every_h1_sound_decodes`: 24 maps, 15,698 sounds, 72,558 permutations,
-61,751 playable, **23.0 hours**, every one decoded with no error.
-
-| Rate | Channels | Compression | Sounds | Hours |
-|---|---|---|---|---|
-| 22,050 | 1 | Xbox ADPCM | 14,567 | 18.40 |
-| 22,050 | 2 | Xbox ADPCM | 677 | 0.52 |
-| 44,100 | 2 | Xbox ADPCM | 454 | 4.14 |
-
-No uncompressed, IMA or Ogg sound is on the disc, and no 44,100 Hz mono
-sound. 53 sounds have more than one pitch range (engines); 258 promote.
+`every_h1_sound_decodes` decodes every sound of every map with no error.
+Every sound is Xbox ADPCM, mono or stereo at 22,050 or 44,100 Hz; no
+uncompressed, IMA or Ogg sound and no 44,100 Hz mono sound is on the disc.
+A few sounds have more than one pitch range (engines) and some promote.
+The counts and hours are in [notes/sounds.md](notes/sounds.md).
 
 ## The Halo 2 gestalt (`ugh!`)
 
@@ -223,16 +215,16 @@ What a converted sound adds (Design, checked by read-back):
   instead of playback `+0x00`, `0x800` the maximum (class `+0x1c`, playback
   `+0x04`) (**E:** `0x00124fc0`, `0x00125010`, `0x0012ac20`). `0x1000`
   skips the cone, so the source's facing is never looked up (**E:**
-  `0x0012adc2`). **V (all 30 maps, 65,309 sounds):** every sound whose
+  `0x0012adc2`). **V (every Halo 2 map):** every sound whose
   playback distances are 0 has `0x400` and `0x800`, no other has either,
   and every one has `0x1000` (all retail cones are the whole sphere). A
-  Halo 1 distance of 0 is the class default (13,149 of 15,698 Halo 1
-  sounds), so it gets the class bits; whole-sphere cones (every Halo 1
-  sound) get `0x1000`. Before converter version 47 the bits were left
-  clear, and the engine took the zeros as distances: the minimum is raised
-  to 0.001 and the gain is `min / distance` inside a fade that a maximum
-  of 0 leaves at 1 (**E:** `0x0012aff0`), so a positioned converted sound
-  was at -60 dB a world unit away (`distance_and_cone_flags_follow_the_retail_rule`,
+  Halo 1 distance of 0 is the class default (most Halo 1 sounds), so it
+  gets the class bits; whole-sphere cones (every Halo 1
+  sound) get `0x1000`. With the bits clear the engine takes the zeros as
+  distances: the minimum is raised to 0.001 and the gain is
+  `min / distance` inside a fade that a maximum of 0 leaves at 1
+  (**E:** `0x0012aff0`), so a positioned sound is at -60 dB a world unit
+  away (`distance_and_cone_flags_follow_the_retail_rule`,
   `tests/fields_disc.rs`).
 - One playback element and one scale element, shared with any identical
   existing element (scales are indexed by a byte).
@@ -240,10 +232,11 @@ What a converted sound adds (Design, checked by read-back):
 - Per range: a parameters element (zeros for single-range sounds, cents
   otherwise), and a pitch range `{name, parameters, +4, +6, first
   permutation, count}`. **V:** retail ranges use two forms for `+4/+6`. With
-  one permutation, `+4 = 0`, `+6 = ffff` (all but 598 of 16,942). With
+  one permutation, `+4 = 0`, `+6 = ffff` (nearly all). With
   several, either `+4 = ffff` and `+6` a bit offset into block 7, every run
-  inside the block and none overlapping another (all 19,183), or `+4 = 0`
-  and a `+6` that isn't such an offset (29,978; not interpreted). The
+  inside the block and none overlapping another, or `+4 = 0`
+  and a `+6` that isn't such an offset (not interpreted; counts in
+  [notes/sounds.md](notes/sounds.md)). The
   converter writes the first form: one fresh byte of block 7 per eight
   permutations.
 - Per playable Halo 1 permutation, one Halo 2 permutation: name, skip
@@ -262,9 +255,9 @@ What a converted sound adds (Design, checked by read-back):
 - Chunks: the samples as stored, cut every `0x7ff8` bytes (retail Halo 2's
   streaming chunk size, a whole number of mono and stereo blocks), each a
   raw resource of the map. Bit 31 of a chunk's size is never set. **V
-  (retail):** 6,904 of 310,088 retail chunks have it: 4,358 are a
-  permutation's only chunk, 2,487 its first or last, 59 in the middle, and
-  none is `0x7ff8` long. Its meaning is open.
+  (retail):** some retail chunks have it (a permutation's only, first,
+  last or, rarely, middle chunk), and none is `0x7ff8` long; counts in
+  [notes/sounds.md](notes/sounds.md). Its meaning is open.
 
 ### Field meanings used for playback and scale (S)
 
@@ -323,7 +316,7 @@ gains and 16-byte references at `+0x30` (start), `+0x40` (loop), `+0x50`
 bytes in both, with four intensities linear in Halo 1 and decibels in Halo
 2. `install_looping` installs every sound the looping sounds play in one
 gestalt pass, skipping paths the set already has, and reuses an `lsnd` of
-the same path. `tests/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
+the same path. `tests/looping_disc.rs`: every `lsnd` and `snde`
 on the Halo 1 disc converts, every named sound with it.
 
 ### Campaign loops and cache slots (**Built**)
@@ -334,9 +327,8 @@ detail sounds from the Halo 2 definition, converts each distinct referenced
 `ugh!`. It retains each loop as an explicit root when rebuilding or pruning
 the map. Scripts, objects and BSP palettes can all reference the same datum.
 
-**Disc evidence.** In campaign order from a10 to d40 the source levels contain
-50, 55, 47, 49, 62, 55, 35, 66, 51 and 78 loops. Their distinct sample spans
-range from 41.9 MiB on c20 to 104.2 MiB on d40. Every populated track or
+**Disc evidence.** The loop counts and sample spans of the ten source
+levels are in [notes/sounds.md](notes/sounds.md). Every populated track or
 detail reference resolves to a sound. All ten levels leave continuous damage
 empty. On a30, `vehicles\lifepod_entry\lifepod_entry` attaches
 `sound\sfx\vehicles\lifeboat` to the object origin with no scale function.
@@ -359,8 +351,8 @@ The synthetic test `two_unreferenced_loops_share_one_sample_and_keep_existing_da
 covers shared samples, stable references and a corrupted detail datum. The
 ignored campaign disc audit follows every source loop back through the built
 tracks and details, then compares each sound's permutation bytes. The cache
-table and header selection have separate synthetic and disc checks. The
-integration build and playback check are pending.
+table and header selection have separate synthetic and disc checks.
+Whether a built campaign level plays its loops in a game is not verified.
 
 ### Proof (V)
 
@@ -371,10 +363,8 @@ beavercreek map, builds it, and reads every converted sound back through
 sample for sample (ADPCM to ADPCM, nothing re-encoded); the max play time
 matches; the base's own sounds still resolve to the same chunks.
 
-| Source | Sounds | Permutations | Samples | Audio |
-|---|---|---|---|---|
-| beavercreek, every sound | 316 | 902 | 21,532,928 | 837.7 s |
-| a30 dialogue (classes 19, 44, 46, 47; every 4th) | 257 | 1,283 | 36,806,272 | 1,669.2 s |
+The runs cover every sound of beavercreek and a sample of a30's dialogue
+(classes 19, 44, 46 and 47); sizes are in [notes/sounds.md](notes/sounds.md).
 
 ### Every sound of a built map (`h1sounds::audit`)
 
@@ -391,26 +381,17 @@ pointing at the wrong or too few bytes plays as a short repeating buzz.
 `every_campaign_sound_plays_what_it_was_made_from` (h1campaign,
 `H1_LEVELS`, default all ten) and `every_multiplayer_sound_plays_what_it_was_made_from`
 (h1convert, `H1_MAPS`, default bloodgulch) run it on converted maps.
-**V (2026-11-17):** a10 on 05a_deltaapproach, 3,988 sounds: 175 from
-Halo 1 (602.4 s), 3,813 the base's and donors', 14,667 permutations, no
-problem. The bytes were never the fault behind a10's "repeated
-wurrrring" (`docs/halo1/campaign.md`, Sounds).
+**V:** a10 on 05a_deltaapproach, every sound is either one `convert_sound`
+makes or the base's or a donor's byte for byte, with no problem (figures in
+[notes/sounds.md](notes/sounds.md)). The bytes are not the cause of a
+repeated whirr in a10; that was a script ([scripts.md](scripts.md),
+"Sleeping forever").
 
-**What a10's opening cinematic plays** (`level_loops_and_their_character`
-in `tests/looping_disc.rs`, `$H1_LEVEL`, default a10; prints the length,
-RMS, zero crossings and the difference-to-RMS ratio `hf` of every
-permutation, near 0 for a low drone). The cinematic `x10` starts
-`sound\sinomatixx\x10_music01` (one stereo 44.1 kHz track, 114 s,
-flagged "not a loop"), then on the bridge and in the hangar
-`x10_foley1..3` and `x10_music02..04`, all "not a loop" with one track.
-The level's one background sound, `sound\sfx\ambience\a10\shipambience`
-(a `battleship` drone, `hf` 0.02, at -6 dB, and `shipcreaks` details),
-is named by every cluster of the ship's BSPs and the hangar's, none of
-the space BSP's (`a10_space`: one cluster, -1). No sound is a drone
-where Halo 1's is not. The whirr was a script: Halo 1's `(sleep -1)`
-did nothing in Halo 2 (scripts.md, Sleeping forever), so the
-continuous `dialog_flavor_captain` started eight captain lines every
-tick (converter version 67 fixes it).
+`level_loops_and_their_character` (`tests/looping_disc.rs`, `$H1_LEVEL`,
+default a10) prints the length, RMS, zero crossings and the
+difference-to-RMS ratio `hf` of every permutation of a level's loops, near
+0 for a low drone. a10's opening cinematic and background sound are in
+[notes/sounds.md](notes/sounds.md).
 
 ## Merging a moved sound (`h1sounds::merge_sound`)
 
@@ -440,15 +421,14 @@ pitch range in the gestalt. The merge rebuilds the pitch ranges and their
 permutations in source order, so the rule still selects the same samples.
 The destination gets a separate timer block for each copied sound. Invalid
 targets or timer blocks and promotion indices outside the signed-byte
-range produce errors. A read-only survey of 30 retail maps found 231
-promoted sounds among 65,309 sound headers. Every promotion had one
-owner, one timer per rule and sound-relative targets inside its owner.
+range produce errors. Every retail promotion has one owner, one timer per rule and
+sound-relative targets inside its owner (counts in
+[notes/sounds.md](notes/sounds.md)).
 
 `native_promotion_selects_the_same_samples_after_its_sound_moves`
 checks the selected chunk after both indices change.
 `every_retail_sound_merges` checks all retail rules and timers alongside
 the existing playback, range, permutation and chunk comparisons.
-Integration execution is pending.
 
 ```sh
 H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored every_retail_sound_merges --nocapture
@@ -484,8 +464,8 @@ included), so a set's gestalt can grow in more than one pass: donors
 first, then the converted script sounds (`h1campaign`).
 
 The ignored `a_transplanted_tree_takes_its_sounds` check transplants 04b's
-flood combat elite onto 05a and compares the 42 moved sounds after
-reopening the map, including the promotion previously cut. The synthetic
+flood combat elite onto 05a and compares the moved sounds after
+reopening the map, including the promotion. The synthetic
 `a_reused_donor_sound_must_keep_its_promotion` check covers a same-name
 sound whose destination lacks the rule.
 
@@ -500,18 +480,18 @@ their number (`class::to_h2`). **V:** each value's tag paths on both discs
 match the names below (dialogue under `sound\dialog`, weapons under
 `weapons`, and so on). Halo 1 classes Halo 2 lacks go to the nearest:
 
-| Halo 1 | Sounds | Halo 2 |
-|---|---|---|
-| 15 slow_particle_impacts | 63 | 14 particle_impacts |
-| 27 device_force_field | 10 | 28 device_machinery |
-| 29 device_nature | 0 | 29 device_stationary |
-| 30 device_computers | 31 | 28 device_machinery |
-| 35 ambient_computers | 0 | 34 ambient_machinery |
-| 39 first_person_damage (shield hit, charge, low) | 115 | 50 game_event |
-| 44 scripted_dialog_player | 913 | 47 mission_dialog |
-| 45 scripted_effect (includes the multiplayer announcer) | 468 | 49 scripted_cinematic_foley |
-| 46 scripted_dialog_other | 0 | 47 mission_dialog |
-| 47 scripted_dialog_force_unspatialized | 33 | 48 cinematic_dialog |
+| Halo 1 | Halo 2 |
+|---|---|
+| 15 slow_particle_impacts | 14 particle_impacts |
+| 27 device_force_field | 28 device_machinery |
+| 29 device_nature | 29 device_stationary |
+| 30 device_computers | 28 device_machinery |
+| 35 ambient_computers | 34 ambient_machinery |
+| 39 first_person_damage (shield hit, charge, low) | 50 game_event |
+| 44 scripted_dialog_player | 47 mission_dialog |
+| 45 scripted_effect (includes the multiplayer announcer) | 49 scripted_cinematic_foley |
+| 46 scripted_dialog_other | 47 mission_dialog |
+| 47 scripted_dialog_force_unspatialized | 48 cinematic_dialog |
 
 Same number and name: projectile impact and detonation, weapon fire,
 ready, reload, empty, charge, overheat and idle, object and particle
@@ -536,7 +516,7 @@ music, Cortana, UI.
   `decibels` writes 0 dB for it, not silence. Retail Halo 2 impacts use
   -64 dB there; which scale Halo 2 plays unscaled dialogue at is unchecked,
   so silence there could mute dialogue.
-- **Pitch range `+4 = 0` form** (29,978 retail multi-permutation ranges):
+- **Pitch range `+4 = 0` form** (many retail multi-permutation ranges):
   what `+6` holds there.
 - **Chunk size bit 31**: set on some retail chunks, never `0x7ff8` ones; meaning open.
 - **Playback, scale and pitch range parameter fields** are S; the
@@ -545,6 +525,7 @@ music, Cortana, UI.
   effects; whether Halo 2's mixer treats `scripted_cinematic_foley` well for
   announcer lines is unchecked.
 - **Gestalt limits:** pitch range, permutation and chunk indices are 16
-  bits. A campaign base already holds up to 19,963 chunks; a whole Halo 1
+  bits. A campaign base already holds many chunks (the largest count is in
+  [notes/sounds.md](notes/sounds.md)); a whole Halo 1
   campaign level's sounds on top may not fit (`install_sounds` fails cleanly
   if so).
