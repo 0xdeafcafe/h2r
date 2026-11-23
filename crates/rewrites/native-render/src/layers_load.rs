@@ -1,6 +1,6 @@
 //! The world layers' load (docs/graphics/framescene.md, slice 4): each
 //! world material's passes of layers 1, 5, 7, 8 and 20 compiled with their
-//! own programs (`fog_gpu::layer_passes` and `FogProgram`, the same
+//! own programs (`fog_gpu::layer_passes_selected` and `FogProgram`, the same
 //! translation the fog's layer 16 takes), all or nothing per material and
 //! layer, their stage images decoded; the parts that can draw them; and
 //! each material resolved once, with its instance's animated properties
@@ -190,6 +190,13 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
     for layer in layer_pass::LAYERS {
         let mut data = LayerData::default();
         let mut refused: BTreeMap<String, usize> = BTreeMap::new();
+        // A pass that leaves `CULLMODE` unset draws with the cull the layer
+        // starts with ([`fog_gpu::layer_cull`]) unless some pass of the
+        // layer sets another, which it may then follow.
+        let selection = fog_gpu::Selection {
+            implementation: None,
+            layer_cull: !resolved.values().any(|m| fog_gpu::layer_sets_other_cull(m, usize::from(layer))),
+        };
         for (&m, material) in &resolved {
             if !material
                 .layers
@@ -198,7 +205,7 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
             {
                 continue; // the layer draws nothing of it
             }
-            match compile(map, files, &lib, images, decoder, material, layer, given) {
+            match compile(map, files, &lib, images, decoder, material, layer, selection, given) {
                 Ok(p) => {
                     data.words
                         .insert(m, p.first().map(|p| p.words).unwrap_or_default());
@@ -266,9 +273,10 @@ fn compile<R: std::io::Read + std::io::Seek>(
     decoder: &mut StageDecoder,
     material: &Material,
     layer: u8,
+    selection: fog_gpu::Selection,
     given: Option<&[u8; program::VIEW_CONSTANTS]>,
 ) -> Result<Vec<FogProgram>, String> {
-    let passes = fog_gpu::layer_passes(material, usize::from(layer)).map_err(|r| r.describe())?;
+    let passes = fog_gpu::layer_passes_selected(material, usize::from(layer), selection).map_err(|r| r.describe())?;
     let mut out = Vec::with_capacity(passes.len());
     for p in &passes {
         let code = look::world_program(map, lib.metadata(), p.look.vertex_shader)

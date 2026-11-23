@@ -118,8 +118,9 @@ pub enum FogRefusal {
     /// Its template draws nothing in the layer at the first level of
     /// detail.
     NoPass { layer: usize },
-    /// Pass `pass` has more than one implementation (S: which one the
-    /// engine binds for a fog item is not traced).
+    /// Pass `pass` has `count` implementations and the caller did not
+    /// say which the draw binds, or named one it lacks
+    /// ([`Selection::implementation`]).
     Implementations { pass: usize, count: usize },
     /// Pass `pass`'s implementation does not fit ([`Refusal`]).
     Look { pass: usize, refusal: Refusal },
@@ -127,9 +128,10 @@ pub enum FogRefusal {
     /// `pass_state` decodes them but for its `Fog` refusal: the fog unit
     /// is resolved per view here, [`FogWords`], not a refusal).
     State { pass: usize, refusal: StateRefusal },
-    /// Pass `pass` does not set `CULLMODE`: layer 16 inherits whatever
-    /// the previous draw left (a later slice can take the device's cull
-    /// at the call, as the world's layer 3 does; first slice refused).
+    /// Pass `pass` does not set `CULLMODE`, and some pass of the layer
+    /// sets a cull other than the layer's start ([`layer_cull`]), so what
+    /// the pass draws with depends on the draw before it
+    /// ([`Selection::layer_cull`]).
     InheritsCull { pass: usize },
     /// Pass `pass`'s definition has no final combiner of its own: D3D
     /// builds one from the fog and specular states, which the native
@@ -170,15 +172,118 @@ impl FogRefusal {
     }
 }
 
+/// What the caller knows of the draw that the material alone does not
+/// say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Selection {
+    /// The implementation the engine binds for the item, which every pass
+    /// with more than one takes (a pass with one takes it, whatever this
+    /// says: the layer-draw rule `layer_pass::passes_of` applies). `None`:
+    /// a pass with more than one is refused.
+    pub implementation: Option<usize>,
+    /// Every pass of the layer sets the cull the layer starts with or
+    /// none ([`layer_sets_other_cull`] is false), so a pass that leaves
+    /// `CULLMODE` unset draws with [`layer_cull`]. `false`: such a pass
+    /// is refused ([`FogRefusal::InheritsCull`]).
+    pub layer_cull: bool,
+}
+
+/// The cull a layer's draws start with, and keep until a pass sets
+/// another: the shader draw begin `0x0001bbf0` runs the layer setup on the
+/// first draw after a layer draw (`[0x004670bc]`, set by the layer draw),
+/// which calls `0x003f53d0` with `0x900` (`SET_CULL_FACE_ENABLE`,
+/// `0x40308`: `CULLMODE` `CW`) and `0x003f5450` with `0x900`
+/// (`SET_FRONT_FACE`, `0x403a0`: `FRONTFACE` `CW`). Nothing restores the
+/// cull between the draws, so an unset pass takes the draw before's.
+pub fn layer_cull() -> (gfx::state::CullMode, gfx::state::FrontFace) {
+    (gfx::state::CullMode::Cw, gfx::state::FrontFace::Cw)
+}
+
+/// [`layer_cull`] as the primitive state's cull and winding.
+fn layer_cull_primitive() -> (Option<wgpu::Face>, wgpu::FrontFace) {
+    let (cull_mode, front_face) = layer_cull();
+    let rs = gfx::state::RenderState { cull_mode, front_face, ..Default::default() };
+    let p = gfx::translate::primitive_state(
+        &rs,
+        wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
+    );
+    (p.cull_mode, p.front_face)
+}
+
+/// Whether any implementation of any pass of `material`'s `layer` (first
+/// level of detail) sets `CULLMODE` or `FRONTFACE` to something other
+/// than [`layer_cull`]'s: then a pass that leaves them unset may draw
+/// after it and inherit it. Conservative: the implementations'
+/// `restore_states` are not credited with putting the cull back, and a
+/// value `gfx` does not decode counts. A host asks every material of the
+/// world it draws the layer for, and sets [`Selection::layer_cull`] when
+/// none does.
+pub fn layer_sets_other_cull(material: &Material, layer: usize) -> bool {
+    use gfx::state::{CullMode, FrontFace};
+    let table = RenderStateTable::for_build(HALO2_BUILD);
+    let start = layer_cull();
+    material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0 && l.layer == layer)
+        .flat_map(|l| &l.passes)
+        .flat_map(|p| &p.implementations)
+        .any(|imp| {
+            // The states the pass applies, its engine-driven ones over
+            // its own where they resolve.
+            let states = crate::engine_states::apply_static(imp, &material.inputs)
+                .map(|a| a.render_states)
+                .unwrap_or_else(|_| imp.render_states.clone());
+            let (mut cull, mut front) = start;
+            for s in &states {
+                match RenderStateType::from_guest_index(&table, u32::from(s.state)) {
+                    Some(RenderStateType::CullMode) => match CullMode::from_xbox(s.value) {
+                        Some(c) => cull = c,
+                        None => return true,
+                    },
+                    Some(RenderStateType::FrontFace) => match FrontFace::from_xbox(s.value) {
+                        Some(f) => front = f,
+                        None => return true,
+                    },
+                    _ => {}
+                }
+            }
+            (cull, front) != start
+        })
+}
+
+/// Whether any pass of `material`'s `layer` (first level of detail) has
+/// more than one implementation: then which draws depends on the item
+/// ([`Selection::implementation`]).
+pub fn layer_has_choice(material: &Material, layer: usize) -> bool {
+    material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0 && l.layer == layer)
+        .flat_map(|l| &l.passes)
+        .any(|p| p.implementations.len() > 1)
+}
+
 /// Every pass of `material`'s `layer` (first level of detail), with its
 /// look and state, in the order the layer draws them, or why not. All or
 /// nothing per material: an item is drawn natively only when every pass
 /// is. The compilation itself is the glue's (it owns the `vrtx` tag's
 /// microcode, [`compile_pass`]). The look refuses engine-texture stages
 /// ([`Refusal::EngineTexture`]); [`supplied_layer_passes`] is the same
-/// with the per-view supplied ones kept.
+/// with the per-view supplied ones kept. A pass with more than one
+/// implementation, or one that leaves `CULLMODE` to the draw before,
+/// refuses here; [`layer_passes_selected`] takes them where the caller
+/// knows which.
 pub fn layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, false)
+    passes_of(material, layer, false, Selection::default())
+}
+
+/// [`layer_passes`] for a draw that binds [`Selection::implementation`]
+/// and, with [`Selection::layer_cull`], takes the layer's start cull for a
+/// pass that leaves `CULLMODE` unset.
+pub fn layer_passes_selected(material: &Material, layer: usize, selection: Selection) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, false, selection)
 }
 
 /// [`layer_passes`] with the engine-texture stages a per-view supply
@@ -187,10 +292,10 @@ pub fn layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, F
 /// what the water edge blend binds. An id nothing supplies refuses the
 /// material ([`FogRefusal::Unsupplied`]).
 pub fn supplied_layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
-    passes_of(material, layer, true)
+    passes_of(material, layer, true, Selection::default())
 }
 
-fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<FogPass>, FogRefusal> {
+fn passes_of(material: &Material, layer: usize, supplied: bool, selection: Selection) -> Result<Vec<FogPass>, FogRefusal> {
     let layer = material
         .layers
         .iter()
@@ -199,8 +304,12 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         .ok_or(FogRefusal::NoPass { layer })?;
     let mut out = Vec::with_capacity(layer.passes.len());
     for (n, pass) in layer.passes.iter().enumerate() {
-        let [imp] = pass.implementations.as_slice() else {
-            return Err(FogRefusal::Implementations { pass: n, count: pass.implementations.len() });
+        let imp = match pass.implementations.as_slice() {
+            [imp] => imp,
+            all => selection
+                .implementation
+                .and_then(|i| all.get(i))
+                .ok_or(FogRefusal::Implementations { pass: n, count: all.len() })?,
         };
         let mut look = if supplied {
             // `implementation_look` with the engine stages kept when a
@@ -266,9 +375,14 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         // ([`FogWords`]). The rest of the pipeline state must be the
         // implementation's own (a pass that leaves blend or depth to the
         // previous draw stays on the D3D path, as the transparents').
-        let state = state_without_fog(&states).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
+        let mut state = state_without_fog(&states).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
         if !sets_cull(&states) {
-            return Err(FogRefusal::InheritsCull { pass: n });
+            if !selection.layer_cull {
+                return Err(FogRefusal::InheritsCull { pass: n });
+            }
+            // `pass_state` leaves an unset cull at `RenderState`'s default;
+            // the layer's draws start with [`layer_cull`].
+            (state.primitive.cull_mode, state.primitive.front_face) = layer_cull_primitive();
         }
         out.push(FogPass { look, state, fog: FogWords::from_states(&states) });
     }
@@ -1119,5 +1233,136 @@ pub(crate) mod tests {
         assert!(draws(&mut gpu, &[(Owner::Cluster(9), 0)], &fogs).is_err(), "a part the set does not hold");
         assert!(draws(&mut gpu, &[], &fogs).is_err(), "nothing to draw");
         assert!(draws(&mut gpu, &selected(), &HashMap::new()).is_err(), "a material with no resolved fog");
+    }
+}
+
+/// Which implementation a layer's pass draws and what cull a pass that
+/// leaves `CULLMODE` unset takes: synthetic materials, no game data.
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use crate::engine_states::tests::implementation;
+    use map::TagId;
+    use tags::material::{EngineInputs, ResolvedImplementation, ResolvedLayer, ResolvedPass};
+
+    const ALPHA_BLEND_ENABLE: u32 = 59;
+    const Z_WRITE_ENABLE: u32 = 64;
+    const FRONT_FACE: u32 = 146;
+    const CULL_MODE: u32 = 147;
+    const CW: u32 = 0x900;
+    const CCW: u32 = 0x901;
+
+    fn state(canonical: u32, value: u32) -> RenderStateValue {
+        let table = RenderStateTable::for_build(HALO2_BUILD);
+        RenderStateValue { state: table.canonical_to_guest(canonical).expect("a 5849 slot") as u8, value }
+    }
+
+    /// Implementation `index` with its own final combiner, blending and
+    /// depth write off, and `extra` states after them.
+    fn imp(index: usize, extra: &[RenderStateValue]) -> ResolvedImplementation {
+        let mut i = implementation(vec![state(ALPHA_BLEND_ENABLE, 0), state(Z_WRITE_ENABLE, 0)], 0);
+        i.index = index;
+        i.pixel_shader = PixelShaderDef::default().with_default_final_combiner(false, false).to_bytes();
+        i.render_states.extend_from_slice(extra);
+        i
+    }
+
+    /// A material whose `layer` has one pass per entry, each with the
+    /// implementations given.
+    fn material(layer: usize, passes: Vec<Vec<ResolvedImplementation>>) -> Material {
+        Material {
+            shader: TagId(0xe000_0001),
+            template: TagId(0xe000_0002),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer,
+                passes: passes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, implementations)| ResolvedPass { index, pass: TagId(0xe000_0200 + index as u32), implementations })
+                    .collect(),
+            }],
+        }
+    }
+
+    fn four(extra: &[RenderStateValue]) -> Vec<ResolvedImplementation> {
+        (0..4).map(|i| imp(i, extra)).collect()
+    }
+
+    const FRONT: Option<wgpu::Face> = Some(wgpu::Face::Front);
+
+    #[test]
+    fn a_pass_with_four_implementations_draws_the_one_selected() {
+        let m = material(16, vec![four(&[state(CULL_MODE, CW)])]);
+        assert_eq!(layer_passes(&m, 16).unwrap_err(), FogRefusal::Implementations { pass: 0, count: 4 });
+        for wanted in 0..4 {
+            let sel = Selection { implementation: Some(wanted), layer_cull: false };
+            let passes = layer_passes_selected(&m, 16, sel).expect("the selected implementation fits");
+            assert_eq!(passes.len(), 1);
+            assert_eq!(passes[0].look.implementation, wanted, "the look is the selected implementation's");
+        }
+        let past = Selection { implementation: Some(4), layer_cull: false };
+        assert_eq!(layer_passes_selected(&m, 16, past).unwrap_err(), FogRefusal::Implementations { pass: 0, count: 4 });
+        assert!(layer_has_choice(&m, 16));
+        assert!(!layer_has_choice(&m, 7), "another layer has no pass");
+    }
+
+    #[test]
+    fn a_pass_with_one_implementation_ignores_the_selection() {
+        let m = material(16, vec![vec![imp(0, &[state(CULL_MODE, CW)])], four(&[state(CULL_MODE, CW)])]);
+        let sel = Selection { implementation: Some(2), layer_cull: false };
+        let passes = layer_passes_selected(&m, 16, sel).unwrap();
+        let chosen: Vec<_> = passes.iter().map(|p| p.look.implementation).collect();
+        assert_eq!(chosen, vec![0, 2], "the single takes 0, the other the selection");
+        let only = material(16, vec![vec![imp(0, &[state(CULL_MODE, CW)])]]);
+        assert!(layer_passes(&only, 16).is_ok());
+        assert!(!layer_has_choice(&only, 16));
+    }
+
+    #[test]
+    fn an_unset_cull_takes_the_layers_start_only_when_the_layer_allows_it() {
+        let m = material(1, vec![vec![imp(0, &[])]]);
+        assert_eq!(layer_passes(&m, 1).unwrap_err(), FogRefusal::InheritsCull { pass: 0 });
+        let refused = Selection { implementation: None, layer_cull: false };
+        assert_eq!(layer_passes_selected(&m, 1, refused).unwrap_err(), FogRefusal::InheritsCull { pass: 0 });
+        let allowed = Selection { implementation: None, layer_cull: true };
+        let passes = layer_passes_selected(&m, 1, allowed).unwrap();
+        // `CULLMODE` CW with `FRONTFACE` CW culls the front face of the
+        // primitive state (`gfx::translate::primitive_state`), where
+        // `RenderState`'s own default (CCW) culls the back.
+        assert_eq!(passes[0].state.primitive.cull_mode, FRONT);
+        assert_eq!(passes[0].state.primitive.front_face, wgpu::FrontFace::Cw);
+        // A pass that sets its own keeps it.
+        let own = material(1, vec![vec![imp(0, &[state(CULL_MODE, 0)])]]);
+        let kept = layer_passes_selected(&own, 1, allowed).unwrap();
+        assert_eq!(kept[0].state.primitive.cull_mode, None);
+        assert!(layer_passes(&own, 1).is_ok(), "an explicit cull needs no layer rule");
+    }
+
+    #[test]
+    fn the_layers_start_is_the_layer_setups() {
+        assert_eq!(layer_cull(), (gfx::state::CullMode::Cw, gfx::state::FrontFace::Cw));
+        assert_eq!(layer_cull().0.xbox_value(), CW, "the `0x900` the setup passes both calls");
+        assert_eq!(layer_cull().1.xbox_value(), CW);
+        assert_eq!(layer_cull_primitive(), (FRONT, wgpu::FrontFace::Cw));
+    }
+
+    #[test]
+    fn a_layer_sets_another_cull_when_any_implementation_does() {
+        let sets = |extra: &[RenderStateValue]| layer_sets_other_cull(&material(16, vec![four(extra)]), 16);
+        assert!(!sets(&[]), "nothing set");
+        assert!(!sets(&[state(CULL_MODE, CW), state(FRONT_FACE, CW)]), "the start itself");
+        assert!(sets(&[state(CULL_MODE, CCW)]));
+        assert!(sets(&[state(CULL_MODE, 0)]), "no cull");
+        assert!(sets(&[state(FRONT_FACE, CCW)]));
+        assert!(sets(&[state(CULL_MODE, 5)]), "a value gfx does not decode counts");
+        // One implementation among the pass's is enough, and another
+        // layer's states do not count.
+        let mut passes = four(&[]);
+        passes[3] = imp(3, &[state(CULL_MODE, CCW)]);
+        let m = material(16, vec![passes]);
+        assert!(layer_sets_other_cull(&m, 16));
+        assert!(!layer_sets_other_cull(&m, 7));
     }
 }

@@ -65,7 +65,11 @@ fn scene() -> FlatMemory {
     item(&mut m, 1, GEOMETRY_BUILD, 5);
     item(&mut m, 2, 0x0005_0000, 2);
     m.set_u32(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX).unwrap();
-    m.set_u32(RENDER_RECORDS + 0x20 * 2, 0).unwrap();
+    // The record has a layer-16 entry; the planar gate (the ready byte
+    // set, both fog bytes clear) makes it implementation 2.
+    m.set_u32(RENDER_RECORDS + 0x20 * 2, fog::RECORD_FOG).unwrap();
+    m.set_u32(fog::PLANAR_READY, 1).unwrap();
+    m.set_u32(fog::FOG_BYTES, 0).unwrap();
     m.set_u32(RENDER_RECORDS + 0x20 * 2 + 0xc, 37 << 9).unwrap();
     m.set_u32(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004).unwrap();
     // The layer draw's gate on: the fog mode 3.

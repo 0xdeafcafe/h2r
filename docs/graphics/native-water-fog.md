@@ -67,8 +67,42 @@ the cached pipelines with their own uniforms and sampled textures.
   not the fog register: the pass supplies it. The pipeline state must
   be the implementation's own (`pass_state`'s rule but its `Fog`
   refusal, the fog words taken out of the decode): a pass that leaves
-  blend, depth or `CULLMODE` to the previous draw stays on the D3D path
-  (a pass inheriting the device's cull at the call, as layer 3 does, is not admitted).
+  blend or depth to the previous draw stays on the D3D path. `CULLMODE`
+  is the exception, below.
+- **The implementation** (`fog::layer_implementation`, Code `0x0004cbf0`).
+  Layer 16's passes carry four implementations. The geometry build has
+  its own case for layer 16 (jump table `0x0004d054`, byte table
+  `0x0004d068`, entry `0x0004cdc8`), not `0x00015d70`'s answer, and
+  stores its choice in the entry's byte `+4`: from the render record's
+  flag word `+0`, bit 7 clear gives no entry (the layer draws nothing of
+  the item); bit 7 set and bit 8 clear gives 2 with the planar gate and
+  0 without it; both set give 1 without the gate and no entry with it.
+  The gate (`fog::planar_gate`) is `[0x004ba004]` non-zero with both fog
+  bytes (`0x00485a75`, `0x00485a76`) clear. The skip (`fog::clear_fog`)
+  computes the same from the record and carries it on `FogItem`; a
+  record with no entry is left alone and does not break the prefix.
+  The load compiles implementation 2 (`native_fog_glue::LOADED_IMPLEMENTATION`,
+  the gate's) for every pass that has more than one
+  (`fog_gpu::layer_passes_selected`); a pass with one draws it whatever
+  the item binds. `FogView::draws` accepts an item of a material with a
+  choice only when its record binds 2, so a view with a fog byte set
+  (the gate shut: implementations 0 and 1) stays on D3D. Which bits of
+  the record `+0` mean what (7 and 8) is not traced beyond this use.
+- **The cull** (`fog_gpu::Selection::layer_cull`). A pass that leaves
+  `CULLMODE` unset draws with the cull the layer starts with: the shader
+  draw begin (`0x0001bbf0`) runs the layer setup on the first draw after
+  a layer draw (byte `0x004670bc`), which calls `0x003f53d0` and
+  `0x003f5450` with `0x900` (`SET_CULL_FACE_ENABLE` `0x40308`,
+  `SET_FRONT_FACE` `0x403a0`): `CULLMODE` and `FRONTFACE` both `CW`
+  (`fog_gpu::layer_cull`; `RenderState`'s own default is `CCW`). Nothing
+  restores the cull between draws, so a later unset pass inherits what an
+  earlier pass set. The load therefore admits an unset pass only when no
+  implementation of any pass of that layer, in any world material, sets
+  `CULLMODE` or `FRONTFACE` to something else
+  (`fog_gpu::layer_sets_other_cull`; `restore_states` are not credited
+  with putting it back). The native passes come first in the layer (the
+  skip's prefix rule), so each starts from the layer's setup. The world
+  layers (`layers_load`: 1, 5, 7, 8 and 20) apply the same rule.
 - **The fog state** (`fog_gpu::FogWords`): the effective fog unit of a
   draw is the implementation's own render states overlaid on the device's
   (`d3d::nv2a::d3d_fog` over `D3DRS_FOGENABLE`, `FOGCOLOR`,
@@ -178,6 +212,7 @@ the cached pipelines with their own uniforms and sampled textures.
 
 ## Not verified
 
+- The meaning of the render record's `+0` bits 7 and 8 and of `[0x004ba004]` (only their use in layer 16's build is read), the fog implementations 0 and 1 (views with a fog byte set stay on D3D), and that no draw between a layer's setup and the native passes changes the cull (read from the layer draw's order, not a captured trace).
 - Pixel parity of fog and the water edge blend against D3D, including the alpha channel the teardown clears.
 - The content of `0x00025d50` (what the fog render states and per-view constants it pushes).
 - The caller, wrapper and pass state of layers 18, 19 and 21.
