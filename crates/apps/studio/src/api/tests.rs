@@ -169,6 +169,14 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
             app.audition.headless = true;
         }
+        m::VOICE_CHARACTERS | m::VOICE_DATASET_BUILD | m::VOICE_DATASET_STATUS => {
+            // Invented maps and the fake sidecar (never Python).
+            super::voice_clone::test_setup(app, false, false);
+        }
+        m::VOICE_CLONE_TRAIN | m::VOICE_CLONE_SAY => {
+            // The fake sidecar installed and Cortana's dataset built.
+            super::voice_clone::test_setup(app, true, true);
+        }
         m::VOICE_SAY | m::VOICE_LIST => {
             // The fake voice (never the service), a headless output.
             app.audition.headless = true;

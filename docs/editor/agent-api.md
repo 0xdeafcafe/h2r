@@ -1114,6 +1114,65 @@ the only way a line reaches the checkout. It does not run `git` or edit
 `boot::medal_announcer::CLIPS`; `next` says what is left. An existing clip
 needs `replace`.
 
+## Voices
+
+`voice.characters`, `voice.dataset.build`, `voice.dataset.status`,
+`voice.clone.train` and `voice.clone.say` (`api/voice_clone.rs`, over
+`app/voices.rs` and `app/announcer.rs`) clone a game character's voice from
+the user's own disc and say new lines with it, all on this machine. The
+design, the dataset, the sidecar and the models are in
+[voice-cloning.md](voice-cloning.md).
+
+**`voice.characters {map?}`** lists the characters Studio knows: `id`,
+`name`, the tag-path `rules`, how many dialogue sounds of the source's maps
+(or `map`) they pick (`tags`), their `dataset` summary (or null) and
+whether they are `trained`. `speakers` lists the groups the maps' dialogue
+tags fall into (`kind: code` for the letters at the end of a tag name,
+`folder` for the first folders under `sound\dialog\`) with a count and a
+sample tag, to check the rules against. Nothing is decoded.
+
+**`voice.dataset.build {character, paths?, maps?, asr?, min_ms?, max_ms?,
+keep_radio?, limit?, max_permutations?}`** builds the character's dataset
+under `<data root>/voices/<character>`: 24 kHz mono clips and
+`manifest.jsonl`. `paths` (pieces of tag paths) replaces the character's
+rules and allows a new id. It answers `kept`, `tags`, `decoded`, `dropped`
+by reason (`too_short`, `too_long`, `silent`, `clipped`, `radio`,
+`decode`) with a few `dropped_examples`, `maps_read`, `maps_failed`, the
+`dataset` summary (`lines`, `usable`, `minutes`, `from_subtitle`,
+`from_asr`, `pending_asr`, `no_text`, `lufs`, `peak_dbfs`), and `asr_job`:
+the background transcription started for clips without a subtitle (`asr`
+defaults to true). An unknown character without `paths` is
+`INVALID_PARAMS`; no map read, or a job still running, is `REFUSED`.
+
+**`voice.dataset.status {character?, job?}`** answers the `sidecar`
+(`backend`, `state`: `installed`, `installing` or `missing`, `dir`,
+`trains`), the latest `job` (or `job`'s) and the last few `jobs` (`id`,
+`kind`: `install`, `transcribe` or `train`, `state`: `running`, `done` or
+`failed`, `stage`, `done`, `total`, `text`, `log`, `result` or `why`), and
+each built character's `dataset`, last `build` and `model` (`trained`,
+`checkpoint`).
+
+**`voice.clone.train {character, steps?, min_minutes?, backend?}`** starts
+the fine-tune on the character's lines with text as a background job
+(installing the model first when needed) and answers `{job, state:
+"running", lines, minutes}`. It is `REFUSED` under `min_minutes` of speech
+(default 10), without a dataset, or while a job runs, and
+`INVALID_PARAMS` for a backend that does not train.
+
+**`voice.clone.say {character, text, reference?, speed?, out?, clip?,
+play?, target_lufs?, fresh?, backend?}`** says `text` with the clone,
+copying the delivery of `reference` (a dataset clip id, or a source tag
+with an optional `#<permutation>`; default a subtitled line near 7 s), and
+answers as `voice.say` does plus `engine: "clone"`, `character`,
+`backend`, `model` (the backend, and the fine-tune's digest when there is
+one) and the `reference` used (null for a cached line). `target.from` is
+`character`: the median loudness of the character's own lines. Before the
+model is installed it starts the install and is `REFUSED` with
+`data.step: "install"`; without a dataset, or with no line that has text,
+`data.step` is `dataset`. A model failure is `FAILED` with the sidecar's
+message. To hear a committed clip in the game, `voice.commit` it and use
+`pair.audio` as for any announcer clip.
+
 ## Extension points
 
 `crates/apps/studio/src/api/seams.rs`. A tool implements `api::Provider`:
@@ -1353,6 +1412,9 @@ identical profiles.
   host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
   `api/ui_check.rs` and `api/checks.rs`: the content checks. `api/voice.rs`
   (with `app/announcer.rs` and `src/voice*`): the Announcer.
+  `api/voice_clone.rs` (with `app/voices.rs`, `voice/dataset.rs`,
+  `voice/clone.rs`, `voice/sidecar.rs` and `sidecar/voice_clone.py`):
+  Voices, tested in `api/voice_clone/tests.rs` with a fake sidecar.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

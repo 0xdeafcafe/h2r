@@ -107,6 +107,12 @@ pub mod method {
     pub const VOICE_SAY: &str = "voice.say";
     pub const VOICE_LIST: &str = "voice.list";
     pub const VOICE_COMMIT: &str = "voice.commit";
+    // Voices: game characters cloned from the user's disc (api/voice_clone.rs).
+    pub const VOICE_CHARACTERS: &str = "voice.characters";
+    pub const VOICE_DATASET_BUILD: &str = "voice.dataset.build";
+    pub const VOICE_DATASET_STATUS: &str = "voice.dataset.status";
+    pub const VOICE_CLONE_TRAIN: &str = "voice.clone.train";
+    pub const VOICE_CLONE_SAY: &str = "voice.clone.say";
 
     // Every content check in one list (api/checks.rs).
     pub const CHECK_RUN: &str = "check.run";

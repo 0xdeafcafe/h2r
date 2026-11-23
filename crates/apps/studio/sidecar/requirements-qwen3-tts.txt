@@ -1,0 +1,7 @@
+# The qwen3-tts backend of Studio's voice sidecar (voice_clone.py): Qwen3-TTS
+# on PyTorch (MPS), and the local Whisper. docs/editor/voice-cloning.md.
+qwen-tts
+torch
+mlx-whisper
+huggingface_hub
+numpy

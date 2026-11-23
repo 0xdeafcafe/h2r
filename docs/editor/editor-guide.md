@@ -1464,7 +1464,7 @@ the map like any other edit. What to know:
 
 ### Announcer lines
 
-**View > Announcer** opens a window that makes announcer lines from text.
+**View > Voices** opens a window that makes announcer lines from text.
 Type the line, give a clip id (such as `superbounce`) if it is for one,
 and press **Say it**. The voice says it, Studio trims the silence, brings
 it to the loudness of the retail announcer lines of the open map and plays
@@ -1484,6 +1484,25 @@ into the checkout** (the same as `voice.commit` in the
 [agent API](agent-api.md)) puts a line with a clip id at
 `art/announcer/<clip>.wav` for you to `git add`; nothing else writes
 there. [announcer.md](announcer.md) has the rest.
+
+### Lines in a game character's voice
+
+In the same window, pick **Game character (local clone)** and a
+character. **Build dataset** reads that character's lines from your disc,
+cuts them into clean clips and pairs each with its subtitle; the lines
+with no subtitle are transcribed on your Mac. The first time, Studio also
+installs the voice model (a few GB, once); the window shows the progress.
+Then type a line and press **Say it**: the clone says it in the
+character's voice, copying the delivery of one of their own lines (name
+one under **Reference line**, or leave it to Studio), and brings it to the
+loudness of their lines on the disc. **Fine-tune** trains the clone on
+the whole dataset for a closer voice; it needs about ten minutes of their
+speech and takes a while.
+
+Everything stays on your Mac: the clips, the transcripts, the model and
+the lines are under `<data>/voices/` and Studio's caches, and nothing is
+uploaded. A line with a clip id can be copied into a checkout like an
+announcer line. [voice-cloning.md](voice-cloning.md) has the details.
 
 ## 10. Undo and redo
 
@@ -1520,7 +1539,8 @@ uses, `~/Library/Application Support/h2recomp/data`.
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
 | Exported tags (tag bundles) | Wherever you save the `.h2tag` (never inside a Git checkout); `<data>/tag-bundles/` when an agent gives no path | Not directly: import it in the Tags tool and save the map. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
-| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout with the Announcer window or `voice.commit`, then build. |
+| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout with the Voices window or `voice.commit`, then build. |
+| Character voices | `<data>/voices/<character>/` (`dataset/`, `manifest.jsonl`, `model/`, `cache/`, `lines/`, `clips/`); the model's install in Studio's caches (`voice-clone/`) | Not directly: they are built from your disc and stay on your Mac. A line with a clip id copies into a checkout like an announcer line. |
 | The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |
 
 Your disc image is only ever read.

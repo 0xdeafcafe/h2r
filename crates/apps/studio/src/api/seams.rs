@@ -40,8 +40,11 @@
 //! - **content checks**: `sound.measure` ([`super::sound_measure`]),
 //!   `ui.check` ([`super::ui_check`]) and `check.run`, whose checks are
 //!   the rows of [`super::checks::CHECKS`].
-//! - **the Announcer**: `voice.say`, `voice.list` and `voice.commit`
-//!   ([`super::voice`]) over `app::announcer`.
+//! - **the Announcer** and **Voices**: `voice.say`, `voice.list`,
+//!   `voice.commit`, `voice.characters`, `voice.dataset.build`,
+//!   `voice.dataset.status`, `voice.clone.train` and `voice.clone.say`
+//!   ([`super::voice`], [`super::voice_clone`]) over `app::announcer`
+//!   and `app::voices`.
 //! - **player models** and **customisation**: `model.*` and `custom.*`
 //!   are planned the same way (docs/editor/agent-api.md).
 //!
@@ -109,4 +112,7 @@ pub fn register(api: &mut Api) {
     // The Announcer: a line said by a voice, made a clip and kept
     // (app::announcer).
     api.register(Box::new(super::voice::Voice));
+    // Voices: game characters cloned from the disc: datasets, the local
+    // model's jobs and lines (app::voices).
+    api.register(Box::new(super::voice_clone::VoiceClone));
 }

@@ -29,6 +29,7 @@ pub mod tag_doc;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
+pub mod voices;
 pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
@@ -568,6 +569,8 @@ pub struct App {
     pub audition: audition::Audition,
     /// The Announcer: its voice source and the last line made.
     pub announcer: announcer::Announcer,
+    /// Voices: the clone's datasets, jobs and sidecar (`voices`).
+    pub voices: voices::Voices,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
 }
@@ -641,6 +644,7 @@ impl App {
             last_tag_import: None,
             audition: Default::default(),
             announcer: Default::default(),
+            voices: Default::default(),
             rules: Default::default(),
         }
     }

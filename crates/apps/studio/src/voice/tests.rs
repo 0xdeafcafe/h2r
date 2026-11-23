@@ -203,3 +203,70 @@ fn a_missing_key_says_how_to_add_it_and_holds_no_secret() {
     assert_eq!(f.say(&req).unwrap_err(), VoiceError::Key("denied".into()));
     assert!(key::ADD_COMMAND.contains("<your-fish-audio-key>"));
 }
+
+#[test]
+fn a_reference_is_in_the_key_and_checked() {
+    let a = Request::new("Hold on.").unwrap();
+    let mut b = a.clone();
+    b.reference = Some(r"sound\dialog\x\l01_0010_cor".into());
+    assert_ne!(a.key(), b.key());
+    assert!(b.clone().checked().is_ok());
+    b.reference = Some("  ".into());
+    assert!(matches!(b.checked(), Err(VoiceError::Invalid(m)) if m.starts_with("reference")));
+}
+
+#[test]
+fn the_sidecar_protocol_reads_progress_and_the_answer() {
+    use super::sidecar::{Progress, read_answer};
+    let wire = concat!(
+        "some library printed this\n",
+        "{\"id\": 1, \"ok\": true, \"result\": {\"stale\": true}}\n",
+        "{\"id\": 2, \"progress\": {\"stage\": \"train\", \"done\": 1, \"total\": 4, \"text\": \"loss 0.5\"}}\n",
+        "{\"id\": 2, \"ok\": true, \"result\": {\"checkpoint\": \"/x\"}}\n",
+        "{\"id\": 3, \"ok\": false, \"error\": \"out of memory\"}\n",
+    );
+    let mut r = std::io::Cursor::new(wire.as_bytes());
+    let mut seen = Vec::new();
+    let v = read_answer(2, &mut r, &mut |p: &Progress| seen.push(p.clone())).unwrap();
+    assert_eq!(v.unwrap()["checkpoint"], "/x");
+    assert_eq!(seen.len(), 1);
+    assert_eq!((seen[0].stage.as_str(), seen[0].done, seen[0].total), ("train", 1, 4));
+    assert_eq!(seen[0].text.as_deref(), Some("loss 0.5"));
+    let e = read_answer(3, &mut r, &mut |_| {}).unwrap_err();
+    assert_eq!(e, VoiceError::Model("out of memory".into()));
+    // The process ended: no answer.
+    assert_eq!(read_answer(4, &mut r, &mut |_| {}).unwrap(), None);
+}
+
+#[test]
+fn the_sidecar_is_installed_only_by_a_matching_stamp() {
+    use super::sidecar::{Backend, Launcher, Managed, SCRIPT, stamp};
+    let t = Temp::new("sidecar");
+    let m = Managed::new(t.0.clone());
+    assert!(!m.installed(Backend::F5Mlx));
+    assert_eq!(m.dir(Backend::F5Mlx), t.0.join("f5-mlx"));
+    assert!(matches!(m.launch(Backend::F5Mlx), Err(VoiceError::Setup(_))));
+    // A venv and a stamp of another script are not an install.
+    let home = t.0.join("f5-mlx");
+    std::fs::create_dir_all(home.join("venv/bin")).unwrap();
+    std::fs::write(home.join("venv/bin/python"), b"").unwrap();
+    std::fs::write(home.join("installed.json"), r#"{"stamp": "old"}"#).unwrap();
+    assert!(!m.installed(Backend::F5Mlx));
+    let ok = serde_json::json!({"stamp": stamp(Backend::F5Mlx)});
+    std::fs::write(home.join("installed.json"), ok.to_string()).unwrap();
+    assert!(m.installed(Backend::F5Mlx));
+    assert!(!m.installed(Backend::Qwen3Tts));
+    assert_ne!(stamp(Backend::F5Mlx), stamp(Backend::Qwen3Tts));
+
+    // The script answers every op Studio sends, for both backends.
+    for op in ["\"hello\"", "\"prepare\"", "\"say\"", "\"transcribe\"", "\"train\""] {
+        assert!(SCRIPT.contains(op), "{op}");
+    }
+    for b in Backend::ALL {
+        assert!(SCRIPT.contains(&format!("\"{}\"", b.id())), "{}", b.id());
+        assert_eq!(Backend::parse(b.id()).unwrap(), b);
+        assert!(b.requirements().contains("mlx-whisper"));
+    }
+    assert!(Backend::parse("whisper").is_err());
+    assert!(SCRIPT.contains("HF_HUB_OFFLINE"));
+}

@@ -41,9 +41,11 @@ const COMMIT: MethodDef = def(
     r#"{"clip":"test-line","repo":"$OUT"}"#,
 );
 
-fn voice_error(e: VoiceError) -> RpcError {
+pub(super) fn voice_error(e: VoiceError) -> RpcError {
     let c = match &e {
-        VoiceError::NoKey | VoiceError::Key(_) => code::REFUSED,
+        VoiceError::NoKey | VoiceError::Key(_) | VoiceError::Setup(_) | VoiceError::Busy(_) => {
+            code::REFUSED
+        }
         VoiceError::Invalid(_) => code::INVALID_PARAMS,
         _ => code::FAILED,
     };
@@ -58,7 +60,7 @@ fn voice_error(e: VoiceError) -> RpcError {
     r
 }
 
-fn flag(p: &P, k: &str, default: bool) -> Result<bool, RpcError> {
+pub(super) fn flag(p: &P, k: &str, default: bool) -> Result<bool, RpcError> {
     match p.get(k) {
         None => Ok(default),
         Some(v) => v
@@ -154,6 +156,7 @@ fn say(app: &mut App, p: &P) -> Reply {
         play: flag(p, "play", true)?,
         target_lufs,
         fresh: flag(p, "fresh", false)?,
+        ..SayParams::default()
     };
     let said = app.voice_say(params).map_err(voice_error)?;
     Ok(said_json(&said))

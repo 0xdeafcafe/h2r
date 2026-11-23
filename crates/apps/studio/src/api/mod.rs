@@ -58,6 +58,7 @@ mod ui_screens;
 mod variants;
 mod view;
 mod voice;
+mod voice_clone;
 
 #[cfg(test)]
 mod tests;
