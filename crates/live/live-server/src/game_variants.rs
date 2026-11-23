@@ -367,13 +367,16 @@ fn refused(e: PortableError) -> ApiError {
     invalid(format!("the game variant: {e}"))
 }
 
-/// Every built-in and example script by IR hash, compiled once.
+/// Every built-in, example and default-lineup script by IR hash, compiled
+/// once. The default lineup's (`rules::builtin::MATCHMAKING`) are the
+/// scripts the built-in hopper entries name.
 fn builtins() -> &'static HashMap<String, &'static str> {
     static ALL: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
     ALL.get_or_init(|| {
         rules::builtin::ALL
             .iter()
             .map(|b| b.source)
+            .chain(rules::builtin::MATCHMAKING.iter().map(|m| m.source))
             .chain(rules::builtin::examples().iter().map(|(_, s)| *s))
             .filter_map(|src| Some((rules::compile(src).ok()?.id().to_string(), src)))
             .collect()
@@ -578,7 +581,17 @@ impl Live {
             xuid: xuid.to_string(),
             gamertag: self.who_is(xuid).gamertag,
         });
-        bundle.check().map_err(refused)?;
+        let checked = bundle.check().map_err(refused)?;
+        // Live lists scripted variants only: a record with no rules script
+        // (mode 0, or Firefight's mode 1) is refused by name.
+        if checked.script.is_none() {
+            return Err(invalid(format!(
+                "the game variant \"{}\" has no rules script (its record is mode 0 or 1); Live \
+                 publishes variants that run a script (mode 2), made by `h2 variants port` or \
+                 `/v1/variants/from-script`",
+                bundle.name
+            )));
+        }
         let text = bundle.canonical();
         if text.len() > MAX_BUNDLE {
             return Err(ApiError::new(

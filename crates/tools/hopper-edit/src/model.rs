@@ -111,15 +111,40 @@ fn describe(problems: &[Problem]) -> String {
         .join("; ")
 }
 
+/// What keeps a variant out of a hopper entry that the clean-up does not
+/// say: a hopper plays scripted variants only, so a record whose extension
+/// block does not name a rules script (mode 2) has no place. `None` for a
+/// scripted one.
+pub fn needs_script(v: &GameVariant) -> Option<Problem> {
+    use variants::ext::{AT, Block, Mode};
+    let mode = match v.ext_state() {
+        Block::Ext(e) => e.script.mode,
+        Block::None | Block::Ignored(_) => Mode::None,
+    };
+    let what = match mode {
+        Mode::Rules => return None,
+        Mode::None => "mode 0: the variant runs no rules script".to_string(),
+        Mode::Firefight => "mode 1 (Firefight): the variant runs no rules script".to_string(),
+        Mode::Unknown(n) => format!("mode {n}: a mode this build does not know"),
+    };
+    Some(Problem {
+        // The script reference's mode byte (`variants::ext`, +0x11f).
+        offset: AT + 0x13,
+        what: format!("a hopper plays scripted variants only, and this one is {what}"),
+    })
+}
+
 /// Links `v` to entry `r`: its record (`GameVariant::to_bytes`) becomes the
 /// slot's last 0x130 bytes. Refuses a record the game's clean-up would
-/// change, or one it keeps but cannot play (`variants::record::ours`).
+/// change, one it keeps but cannot play (`variants::record::ours`) and one
+/// with no rules script ([`needs_script`]).
 /// The editable fields that lie inside the variant (the raw string, flags
 /// and second dword) are re-read from the new bytes, so writing them back
 /// leaves the variant exactly as picked; the map id and
 /// weight stay.
 pub fn set_variant(r: &mut EditRecord, v: &GameVariant) -> Result<(), Rejected> {
-    let problems = vrecord::refused(v);
+    let mut problems = vrecord::refused(v);
+    problems.extend(needs_script(v));
     if !problems.is_empty() {
         return Err(Rejected(problems));
     }
@@ -820,6 +845,7 @@ mod tests {
         let e = variants::ext::Ext {
             gravity: 50,
             unlimited_grenades: true,
+            script: v.ext().script,
             ..Default::default()
         };
         v.set_ext(&e).unwrap();
@@ -845,6 +871,23 @@ mod tests {
         let v = good_variant("Swapped");
         set_variant(&mut m[0].records[1], &v).unwrap();
         assert_eq!(entry_variant(&f, &m[0].records[1]).unwrap(), v);
+    }
+
+    #[test]
+    fn a_variant_with_no_script_is_refused_by_its_mode() {
+        let f = sample();
+        let mut m = load(&f);
+        let was = m[0].records[0].clone();
+        let mut v = good_variant("Plain");
+        v.set_ext(&variants::ext::Ext::default()).unwrap();
+        let err = set_variant(&mut m[0].records[0], &v).unwrap_err();
+        assert!(err.to_string().contains("mode 0"), "{err}");
+        assert_eq!(m[0].records[0], was, "nothing changed");
+        assert!(needs_script(&good_variant("Scripted")).is_none());
+        let mut e = v.ext();
+        e.script.mode = variants::ext::Mode::Firefight;
+        v.set_ext(&e).unwrap();
+        assert!(needs_script(&v).unwrap().what.contains("mode 1"));
     }
 
     #[test]

@@ -228,6 +228,89 @@ fn the_named_rows_are_the_records_settings() {
     assert_eq!(stock.get(SettingId(94)), Some(0));
 }
 
+/// The record of a script of `carrier` whose settings block is `block`.
+fn record_of_block(carrier: &str, block: &str) -> GameVariant {
+    let src = format!("rules \"T\" 1\ncarrier {carrier}\nscoring carrier\n\nsettings {{\n{block}\n}}\n");
+    let ir = rules::compile(&src).unwrap_or_else(|e| panic!("{block}: {e}"));
+    variants::portable::record_for(&ir, &[]).unwrap_or_else(|e| panic!("{block}: {e}"))
+}
+
+/// The rows the default matchmaking variants need
+/// (docs/live/live-matchmaking.md, "6.8 The default set"): raw settings 12, 13, 14
+/// and 25 (the hopper defaults writer clears 12 to 14), the second heavy
+/// vehicle, and the CTF and Assault settings that sit in the type area:
+/// CTF's bits `0xc` (flag at home, touch return) and Assault's `+0x14`
+/// (the flag type). Each is written into the record's own bytes, reads
+/// back through the table, and writing it leaves the rest of the stock
+/// record as it was.
+#[test]
+fn the_matchmaking_rows_round_trip_through_a_script_record() {
+    let stock = |ty| GameVariant::stock(ty).unwrap();
+    // (row, carrier, script value, value read back, where it lands)
+    #[allow(clippy::type_complexity)]
+    let cases: [(&str, &str, &str, i32, Box<dyn Fn(&GameVariant) -> i64>); 7] = [
+        ("setting_twelve", "slayer", "false", 0, Box::new(|v| i64::from(v.bytes()[0x48] >> 4 & 1))),
+        ("setting_thirteen", "slayer", "true", 1, Box::new(|v| i64::from(v.bytes()[0x48] >> 5 & 1))),
+        ("join_in_progress", "slayer", "2", 2, Box::new(|v| i64::from(v.bytes()[0x58]))),
+        ("respawn_modifier", "oddball", "cycling", 1, Box::new(|v| i64::from(v.bytes()[0xa8]))),
+        ("second_heavy_vehicle", "slayer", "none", 4, Box::new(|v| i64::from(v.bytes()[0xd1]))),
+        ("ctf_flag_at_home", "ctf", "true", 1, Box::new(|v| i64::from(v.bytes()[0xf0] >> 2 & 1))),
+        ("ctf_flag_type", "assault", "1", 1, Box::new(|v| i64::from(v.bytes()[0x104]))),
+    ];
+    for (name, carrier, text, value, at) in cases {
+        let ty = ty_of(rules::caps::CARRIERS.iter().find(|c| c.0 == carrier).unwrap().1);
+        let v = record_of_block(carrier, &format!("    {name} = {text}"));
+        let row = rules::settings::named(name).unwrap().1;
+        let engine = rules::caps::CARRIERS.iter().find(|c| c.0 == carrier).unwrap().1;
+        assert_eq!(variants::portable::setting_value(&v, row, engine), Some(value), "{name}");
+        assert_eq!(at(&v), i64::from(value), "{name}: its own bytes");
+        // Nothing else changed but the name, the script reference and
+        // the one setting (setting 12 starts on in the stock record).
+        let mut was = stock(ty);
+        let id = SettingId(row.setting(engine).unwrap());
+        was.set(id, value).unwrap();
+        was.set_name("T").unwrap();
+        let mut now = v.clone();
+        let mut e = now.ext();
+        e.script = ext::Script::default();
+        now.set_ext(&e).unwrap();
+        assert_eq!(now.bytes()[..], was.bytes()[..], "{name}");
+    }
+    // CTF's two type-area bits, both at once: the stock 0x2 and 0xc.
+    let v = record_of_block("ctf", "    ctf_flag_at_home = true\n    ctf_touch_return = true");
+    assert_eq!(u32::from_le_bytes(v.bytes()[0xf0..0xf4].try_into().unwrap()), 0xe);
+    // The values are the clean-up's: past the range is refused by name.
+    for block in [
+        "join_in_progress = 3",
+        "respawn_modifier = 3",
+        "second_heavy_vehicle = 5",
+    ] {
+        let src = format!("rules \"T\" 1\ncarrier slayer\nscoring carrier\n\nsettings {{\n    {block}\n}}\n");
+        assert!(rules::compile(&src).is_err(), "{block}");
+    }
+}
+
+/// The names of the new rows are ours and unique, and each has a label.
+#[test]
+fn the_matchmaking_rows_have_names_and_record_labels() {
+    for (name, setting, label) in [
+        ("setting_twelve", 12, "Setting 12"),
+        ("setting_thirteen", 13, "Setting 13"),
+        ("join_in_progress", 14, "Join in progress"),
+        ("respawn_modifier", 25, "Respawn modifier"),
+        ("second_heavy_vehicle", 80, "Second heavy vehicle"),
+    ] {
+        let row = rules::settings::named(name).unwrap().1;
+        assert_eq!(row.setting(2), Some(setting), "{name}");
+        assert_eq!(record::symbolic_name(SettingId(setting)), Some(label), "{name}");
+    }
+    let r = rules::settings::named("respawn_modifier").unwrap().1;
+    assert_eq!(
+        [r.choice("inheritance"), r.choice("cycling"), r.choice("none")],
+        [Some(0), Some(1), Some(2)]
+    );
+}
+
 // ---- the disc ----
 
 fn iso() -> Option<std::path::PathBuf> {

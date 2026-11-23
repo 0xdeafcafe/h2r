@@ -9,7 +9,10 @@
 //! ([`super::layout::start_waits`]), the skill ceiling
 //! ([`super::layout::default_skill_ceiling`]), status 0, and entries whose
 //! variants are the stock record of a game type plus a few changes
-//! (`0x00212f40`), with settings 12..14 cleared (`0x00193010`). The
+//! (`0x00212f40`), with settings 12..14 cleared (`0x00193010`). Here each
+//! variant is the record of a script ([`variants`]): the same stock record
+//! and changes, written as the script's settings, so every default entry is
+//! mode 2 (docs/live/live-matchmaking.md, "6.8 The default set"). The
 //! timings here are the game's (30 s base wait and 150 s search timeout
 //! for small games, 45 s and 300 s for big team games); the playlists,
 //! their sizes, maps and weights are this project's choice.
@@ -27,7 +30,7 @@
 
 use super::clankers::Clankers;
 use super::layout::{Descriptor, Entry, PLAYLIST_IDS, Rules, default_skill_ceiling, start_waits};
-use super::variant::{self as v, GameType, VariantRecord};
+use super::variant::VariantRecord;
 use super::{
     BLOCK, BLOCKS_AT, DESCRIPTOR, HOPPERS, HopperError, HopperFile, MAX_DESCRIPTION, MAX_TITLE,
 };
@@ -75,117 +78,102 @@ const SMALL_TIMEOUT: u32 = 150_000;
 const BIG_WAIT: u32 = 45_000;
 const BIG_TIMEOUT: u32 = 300_000;
 
-/// The matchmaking variants the default playlists use: the stock record of
-/// the type, then each one's changes.
+/// The matchmaking variants the default playlists use. Each is the record of
+/// its engine's built-in script (`rules::builtin::MATCHMAKING`,
+/// `variants::portable::record_for`): the stock record of the type, the
+/// script's settings (the hopper defaults writer's, `0x00193010`, and the
+/// variant's own) and the script reference, so every one is mode 2 and a
+/// hopper plays scripted variants only. Built once.
 pub mod variants {
-    use super::*;
+    use std::sync::OnceLock;
 
-    fn mm(game: GameType, name: &str, team: bool) -> VariantRecord {
-        let mut r = VariantRecord::stock(game, name);
-        r.set_team(team);
-        r
+    use super::VariantRecord;
+
+    /// The built-in matchmaking scripts' records, in
+    /// `rules::builtin::MATCHMAKING` order, with their keys.
+    pub(super) fn all() -> &'static [(&'static str, VariantRecord)] {
+        static ALL: OnceLock<Vec<(&'static str, VariantRecord)>> = OnceLock::new();
+        ALL.get_or_init(|| {
+            ::rules::builtin::MATCHMAKING
+                .iter()
+                .map(|m| (m.key, of_script(m.key, m.source)))
+                .collect()
+        })
+    }
+
+    /// The record of a script's own variant (`record_for`). The built-in
+    /// scripts compile and make a record the game keeps (a test holds
+    /// them to it), so a failure here is a build with a broken script.
+    fn of_script(key: &str, source: &str) -> VariantRecord {
+        let ir = ::rules::compile(source)
+            .unwrap_or_else(|e| panic!("the built-in matchmaking script {key} does not compile: {e}"));
+        let record = ::variants::portable::record_for(&ir, &[])
+            .unwrap_or_else(|e| panic!("the built-in matchmaking script {key} makes no record: {e}"));
+        VariantRecord::from_bytes(&record.to_bytes()).expect("a record is 0x130 bytes")
+    }
+
+    fn by_key(key: &str) -> VariantRecord {
+        all()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("no built-in matchmaking variant {key}"))
     }
 
     /// Free for all Slayer, a six-minute limit.
     pub fn rumble_slayer() -> VariantRecord {
-        let mut r = mm(GameType::Slayer, "Rumble Slayer", false);
-        r.put_i32(v::TIME_LIMIT, 360);
-        r.for_matchmaking()
+        by_key("rumble_slayer")
     }
 
     pub fn team_slayer() -> VariantRecord {
-        mm(GameType::Slayer, "Team Slayer", true).for_matchmaking()
+        by_key("team_slayer")
     }
 
     /// Team Slayer with sniper rifles: no vehicles or turrets, no motion
     /// sensor, a sniper loadout (the item numbers the game's own Snipers
     /// variant uses).
     pub fn team_snipers() -> VariantRecord {
-        let mut r = mm(GameType::Slayer, "Team Snipers", true);
-        r.set_flag(v::flag::MOTION_SENSOR, false);
-        r.put_u8(v::WEAPONS_ON_MAP, 12);
-        r.put_u8(v::STARTING_WEAPON, 10);
-        r.put_u8(v::SECONDARY_WEAPON, 4);
-        for at in [v::LIGHT_VEHICLE, v::SECOND_LIGHT_VEHICLE] {
-            r.put_u8(at, 7);
-        }
-        for at in [v::HEAVY_VEHICLE, v::FLYING_VEHICLE, v::SECOND_HEAVY_VEHICLE] {
-            r.put_u8(at, 4);
-        }
-        for at in [v::PRIMARY_TURRET, v::SECONDARY_TURRET] {
-            r.put_u8(at, 6);
-        }
-        r.for_matchmaking()
+        by_key("team_snipers")
     }
 
     pub fn oddball() -> VariantRecord {
-        let mut r = mm(GameType::Oddball, "Oddball", false);
-        r.put_i32(v::TIME_LIMIT, 360);
-        r.for_matchmaking()
+        by_key("oddball")
     }
 
     pub fn king_of_the_hill() -> VariantRecord {
-        let mut r = mm(GameType::King, "King of the Hill", false);
-        r.put_i32(v::TIME_LIMIT, 360);
-        r.for_matchmaking()
+        by_key("king_of_the_hill")
     }
 
     /// CTF with the type's two extra flags on, as the game's Classic CTF.
     pub fn classic_ctf() -> VariantRecord {
-        let mut r = mm(GameType::Ctf, "Classic CTF", true);
-        let f = r.u32_at(v::TYPE_AREA);
-        r.put_u32(v::TYPE_AREA, f | 0xc);
-        r.for_matchmaking()
+        by_key("classic_ctf")
     }
 
     /// Two rounds, one score each, three minutes a round.
     pub fn assault() -> VariantRecord {
-        let mut r = mm(GameType::Assault, "Assault", true);
-        r.put_i32(v::ROUNDS, 2);
-        r.put_i32(v::SCORE_TO_WIN, 1);
-        r.put_i32(v::TIME_LIMIT, 180);
-        r.put_i32(v::TYPE_AREA + 0x14, 1);
-        r.for_matchmaking()
+        by_key("assault")
     }
 
     pub fn territories() -> VariantRecord {
-        mm(GameType::Territories, "Territories", true).for_matchmaking()
+        by_key("territories")
     }
 
     pub fn team_king() -> VariantRecord {
-        let mut r = mm(GameType::King, "Team King", true);
-        r.put_i32(v::SETTING_25, 0);
-        r.put_i32(v::RESPAWN_TIME, 10);
-        r.for_matchmaking()
+        by_key("team_king")
     }
 
     pub fn teamball() -> VariantRecord {
-        let mut r = mm(GameType::Oddball, "Teamball", true);
-        r.put_i32(v::SETTING_25, 0);
-        r.put_i32(v::RESPAWN_TIME, 10);
-        r.for_matchmaking()
+        by_key("teamball")
     }
 }
 
 /// The built-in matchmaking variants by key: what an entry can be given
 /// without copying another entry's 0x130 bytes (the playlist builders'
-/// variant picker, `variant` in the admin PUT body). Each is the stock
-/// record of its game type with this module's changes; none comes from a
-/// disc.
+/// variant picker, `variant` in the admin PUT body). Each is the record of
+/// a script in `rules::builtin::MATCHMAKING` ([`variants`]), so each is
+/// mode 2; none comes from a disc.
 pub fn builtin_variants() -> Vec<(&'static str, VariantRecord)> {
-    use variants::*;
-    vec![
-        ("rumble_slayer", rumble_slayer()),
-        ("team_slayer", team_slayer()),
-        ("team_snipers", team_snipers()),
-        ("oddball", oddball()),
-        ("teamball", teamball()),
-        ("king_of_the_hill", king_of_the_hill()),
-        ("team_king", team_king()),
-        ("classic_ctf", classic_ctf()),
-        ("assault", assault()),
-        ("territories", territories()),
-    ]
+    variants::all().to_vec()
 }
 
 /// The built-in variant named `key` ([`builtin_variants`]).
@@ -594,6 +582,7 @@ impl HopperFile {
 #[cfg(test)]
 mod tests {
     use super::super::layout::{HopperType, check_descriptor};
+    use super::super::variant as v;
     use super::super::{BLOCK, BLOCKS_AT, DESCRIPTOR, HOPPERS, MAX_FILE};
     use super::*;
 
@@ -723,6 +712,41 @@ mod tests {
             again.set_entries(i, &back.entries(i).unwrap()).unwrap();
         }
         assert!(again.image() == file.image());
+    }
+
+    /// The mode of a record's script reference (`+0x11f`, the first byte of
+    /// the `hx` block's reserved bytes: 0 none, 1 Firefight, 2 a rules
+    /// script) and its hash prefix.
+    fn script_of(r: &VariantRecord) -> (u8, [u8; 8]) {
+        let v = ::variants::record::GameVariant::from_bytes(r.bytes()).unwrap();
+        let s = v.ext().script;
+        (s.mode.to_u8(), s.prefix)
+    }
+
+    #[test]
+    fn the_default_lineup_is_all_mode_2_and_names_its_built_in_script() {
+        let mut named = Vec::new();
+        for p in playlists() {
+            assert!(!p.entries.is_empty(), "{}", p.title);
+            for e in p.entries() {
+                let (mode, prefix) = script_of(&e.variant);
+                assert_eq!(mode, 2, "{}: {}", p.title, e.variant.name());
+                named.push(prefix);
+            }
+        }
+        assert!(playlists().iter().any(|p| p.clankers.is_some()), "the clanker playlists are in");
+        // Each prefix is the hash of a script in `MATCHMAKING`.
+        let hashes: Vec<[u8; 8]> = ::rules::builtin::MATCHMAKING
+            .iter()
+            .map(|m| ::rules::compile(m.source).unwrap().id().0[..8].try_into().unwrap())
+            .collect();
+        for prefix in named {
+            assert!(hashes.contains(&prefix));
+        }
+        for (k, r) in builtin_variants() {
+            assert_eq!(script_of(&r).0, 2, "{k}");
+        }
+        assert_eq!(builtin_variants().len(), ::rules::builtin::MATCHMAKING.len());
     }
 
     #[test]

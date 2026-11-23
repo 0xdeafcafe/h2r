@@ -1096,13 +1096,14 @@ server's copy:
 
 **Game variants.** Each entry shows its game variant (name, game type,
 teams), decoded from the 0x130 bytes its slot will carry, with
-"(picked)" once changed. Its combo offers the disc's built-in variants
-(built the way the game builds them: the type's defaults, the name, the
-description number, the variant's own settings, and the built-in flag
-set, as the variant editor lists them), your saved variants (the
-runtime's save storage, re-read with **Refresh saved**) and
-`.h2variant` files loaded this session (typed path and **Load**, or
-**Browse...**). Picking one copies its `GameVariant::to_bytes()` over
+"(picked)" once changed. Its combo offers the default lineup's
+matchmaking variants (the records of scripts,
+`live_proto::hopper::defaults`), your saved variants (the runtime's save
+storage, re-read with **Refresh saved**) and `.h2variant` files loaded
+this session (typed path and **Load**, or **Browse...**), each only when
+it runs a rules script (mode 2): a hopper plays scripted variants only,
+so the disc's built-in variants are not offered and
+`model::set_variant` refuses a record with no script. Picking one copies its `GameVariant::to_bytes()` over
 the slot's `+0x24c..+0x37c`; the map id, weight and every byte before
 the variant stay as they were. A variant the game's clean-up would
 change (`variants::record::check`) is disabled with the reasons on hover,

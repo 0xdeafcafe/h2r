@@ -505,23 +505,32 @@ fn variant_picker(ui: &Ui, view: &EditView<'_>, r: &EditRecord) -> Option<GameVa
         return None;
     };
     let mut picked = None;
+    // A hopper plays scripted variants only: the matchmaking lineup's, and
+    // the saved and loaded ones that run a rules script. The disc's
+    // built-ins run none, so they are not offered.
+    let mut any = false;
     for (title, list) in [
-        ("Built-in", &c.builtins),
+        ("Matchmaking", &c.matchmaking),
         ("Saved", &c.saved),
         ("Files", &c.files),
     ] {
-        if list.is_empty() {
+        let scripted: Vec<&Choice> = list
+            .iter()
+            .filter(|ch| model::needs_script(&ch.variant).is_none())
+            .collect();
+        if scripted.is_empty() {
             continue;
         }
+        any = true;
         theme::section(ui, title);
-        for (k, ch) in list.iter().enumerate() {
+        for (k, ch) in scripted.into_iter().enumerate() {
             if let Some(v) = choice_row(ui, ch, current.as_ref(), title, k) {
                 picked = Some(v);
             }
         }
     }
-    if c.all().next().is_none() {
-        ui.text_disabled("No variants: open a disc, save some, or load a .h2variant file.");
+    if !any {
+        ui.text_disabled("No scripted variants: save one made from a script, or load a .h2variant file.");
     }
     picked
 }

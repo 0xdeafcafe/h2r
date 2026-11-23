@@ -297,6 +297,37 @@ entries; retail uses 0 to 38 and the store 94 to 100).
 Gun Game, VIP, Race and Siege stay examples (`builtin::examples`) and
 are not listed: each waits on entries no host makes yet.
 
+### The default Live lineup
+
+`rules::builtin::MATCHMAKING` lists ten `scoring carrier` scripts, one for
+each built-in matchmaking variant of Live's default playlists
+([live-matchmaking.md](../live/live-matchmaking.md), 6.8): Rumble Slayer,
+Team Slayer, Team Snipers, Oddball, Teamball, King of the Hill, Team King,
+Classic CTF, Assault and Territories. A script is its carrier's settings
+and nothing else, so the carrier's own rules score the game, as they do
+for a record with no mode. Each names the three settings the game's hopper
+defaults writer clears (`0x00193010`): `setting_twelve`,
+`setting_thirteen` and `join_in_progress`. `live_proto::hopper::defaults`
+makes every default variant with `record_for`, so each default entry is
+mode 2, and a hopper takes scripted variants only.
+
+The table has the rows these scripts need, appended after the others:
+
+| Row | Setting | Stored | Values |
+|---|---|---|---|
+| `setting_twelve` | 12 | flags bit 4 | on, off |
+| `setting_thirteen` | 13 | flags bit 5 | on, off |
+| `join_in_progress` | 14 | `+0x58` | 0 to 2 |
+| `respawn_modifier` | 25 | `+0xa8` | `inheritance` 0, `cycling` 1, `none` 2 |
+| `second_heavy_vehicle` | 80 | `+0xd1` | `none` 4, or 0 to 4 |
+
+Settings 12 and 13 have no label of the game's here, so the rows are
+named by number. Classic CTF's type-area bits `0xc` are the existing rows
+`ctf_flag_at_home` (setting 52, bit 2) and `ctf_touch_return` (setting 53,
+bit 3), and Assault's `+0x14` is `ctf_flag_type` (setting 59, `+0x104`).
+`crates/formats/variants/tests/settings_table.rs` writes each of these
+through `record_for` and reads it back.
+
 ### Copies, saves, files and Live
 
 - **A copy or a save** is the record. It has the settings as fields, the

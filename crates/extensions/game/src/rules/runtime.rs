@@ -259,14 +259,38 @@ pub fn listed() -> &'static [Builtin] {
     })
 }
 
+/// Every script of the default Live lineup
+/// (`rules::builtin::MATCHMAKING`), compiled once, each with its carrier as
+/// `engine`. A default hopper entry's record names one by its prefix
+/// (`live_proto::hopper::defaults`), so a match on it runs it, as the
+/// carrier's own rules (`scoring carrier`).
+pub fn matchmaking() -> &'static [Builtin] {
+    static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut out = Vec::new();
+        for m in ::rules::builtin::MATCHMAKING {
+            match ::rules::compile(m.source) {
+                Ok(ir) => out.push(Builtin {
+                    engine: ir.header.carrier,
+                    blob: ir.encode(),
+                    id: ir.id(),
+                }),
+                Err(e) => eprintln!("rules: the matchmaking {} script does not compile: {e}", m.key),
+            }
+        }
+        out
+    })
+}
+
 /// The compiled-in script whose hash starts with `prefix`: a port
-/// ([`builtins`]), an example ([`examples`]) or a listed script
-/// ([`listed`]).
+/// ([`builtins`]), an example ([`examples`]), a listed script
+/// ([`listed`]) or a default-lineup script ([`matchmaking`]).
 pub fn compiled_in(prefix: [u8; 8]) -> Option<&'static Builtin> {
     builtins()
         .iter()
         .chain(examples())
         .chain(listed())
+        .chain(matchmaking())
         .find(|b| b.id.0[..8] == prefix)
 }
 

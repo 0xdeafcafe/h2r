@@ -53,6 +53,10 @@ export interface RecordVariant {
    *  8 Territories, 9 Assault. */
   engine: number;
   team: boolean;
+  /** Whether the record runs a rules script (mode 2). A hopper plays
+   *  scripted variants only: the server refuses an edit or an import with an
+   *  entry that does not, by name, and the builder offers none. */
+  scripted?: boolean;
 }
 
 /** One entry of a hopper: a map (`id`, a multiplayer level id) with a game
@@ -70,13 +74,16 @@ export interface HopperRecord {
 }
 
 /** A game variant the server can write into an entry by key (`variant`
- *  in a PUT record): the stock record of a game type with the default
- *  lineup's changes. */
+ *  in a PUT record): the record of one of the default lineup's scripts
+ *  (the stock record of a game type, the script's settings and the
+ *  reference to it). */
 export interface BuiltinVariant {
   key: string;
   name: string;
   engine: number;
   team: boolean;
+  /** Always true from the server; `false` is never offered. */
+  scripted?: boolean;
 }
 
 /** A kind of playlist a new one is made from: the server's default
@@ -359,14 +366,16 @@ export function editErrors(original: EditHopper[], edited: EditHopper[], discMap
   return out;
 }
 
-/** An entry with a built-in variant on a map, weight 1. */
+/** An entry with a built-in variant on a map, weight 1. A variant that runs
+ *  no script is refused. */
 export function builtinEntry(mapId: number, v: BuiltinVariant, weight = 1): EditRecord {
+  if (v.scripted === false) throw new Error(`${v.name} runs no rules script; a hopper plays scripted variants only`);
   return {
     id: mapId,
     string: "",
     flags: 0,
     dwords: [weight, 0],
-    variant: { name: v.name, engine: v.engine, team: v.team },
+    variant: { name: v.name, engine: v.engine, team: v.team, scripted: true },
     builtin: v.key,
     pick: v.key,
     src: null,
@@ -428,21 +437,22 @@ export function variantLabel(v: RecordVariant | null | undefined, engines: Recor
 
 /** The variants an entry can take: the built-in ones, then each distinct
  *  variant (by name, game type and team play) in the file as published
- *  that is not exactly a built-in one. */
+ *  that is not exactly a built-in one. Only scripted variants are offered:
+ *  a published entry that runs no script (mode 0) is not a choice. */
 export function variantChoices(
   builtins: BuiltinVariant[],
   published: EditHopper[],
   engines: Record<number, { name: string }>,
 ): VariantChoice[] {
-  const out: VariantChoice[] = builtins.map((b) => {
-    const variant = { name: b.name, engine: b.engine, team: b.team };
+  const out: VariantChoice[] = builtins.filter((b) => b.scripted !== false).map((b) => {
+    const variant = { name: b.name, engine: b.engine, team: b.team, scripted: true };
     return { key: `b:${b.key}`, label: variantLabel(variant, engines), group: "built-in", variant, builtin: b.key };
   });
   const seen = new Set<string>();
   for (const h of published) {
     if (isUnused(h)) continue;
     h.records.forEach((r, slot) => {
-      if (!r.variant || r.builtin || r.src === null) return;
+      if (!r.variant?.scripted || r.builtin || r.src === null) return;
       const label = variantLabel(r.variant, engines);
       if (seen.has(label)) return;
       seen.add(label);

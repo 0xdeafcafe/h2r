@@ -9,6 +9,7 @@ import {
 } from "../src/admin/playlistDraft";
 import {
   buildPatch,
+  builtinEntry,
   choiceKey,
   clearPlaylist,
   createPlaylist,
@@ -56,8 +57,8 @@ function file(): HopperView[] {
     ranges: [2, 3, 4],
     dwords: Array(18).fill(1),
     records: [
-      { id: 50, string: "", flags: 1, dwords: [10, 0], variant: { name: "Team Slayer", engine: 2, team: true }, builtin: "team_slayer" },
-      { id: 20, string: "", flags: 3, dwords: [4, 9], variant: { name: "Team Hardcore", engine: 2, team: true } },
+      { id: 50, string: "", flags: 1, dwords: [10, 0], variant: { name: "Team Slayer", engine: 2, team: true, scripted: true }, builtin: "team_slayer" },
+      { id: 20, string: "", flags: 3, dwords: [4, 9], variant: { name: "Team Hardcore", engine: 2, team: true, scripted: true } },
     ],
   });
   const unused = (index: number): HopperView => ({
@@ -148,6 +149,19 @@ describe("removing a playlist", () => {
 });
 
 describe("an entry's game variant", () => {
+  test("only scripted variants are offered", () => {
+    const raw = file();
+    // A published entry with no script (mode 0) is not a choice.
+    raw[1]!.records[1] = { ...raw[1]!.records[1]!, variant: { name: "Plain", engine: 2, team: false, scripted: false } };
+    const c = variantChoices(
+      [...BUILTINS, { key: "plain", name: "Plain", engine: 2, team: false, scripted: false }],
+      toEditable(raw),
+      ENGINES,
+    );
+    expect(c.map((x) => x.key)).toEqual(["b:rumble_slayer", "b:team_slayer", "b:classic_ctf", "f:0:1"]);
+    expect(() => builtinEntry(10, { key: "plain", name: "Plain", engine: 2, team: false, scripted: false })).toThrow(/scripted/);
+  });
+
   test("choices: the built-ins, then each other variant in the file once", () => {
     const original = toEditable(file());
     const c = variantChoices(BUILTINS, original, ENGINES);
@@ -164,7 +178,7 @@ describe("an entry's game variant", () => {
     const c = variantChoices(BUILTINS, original, ENGINES);
     const r = withVariant(edited[0]!.records[1]!, c.find((x) => x.key === "b:classic_ctf")!, 0);
     expect(r).toMatchObject({ id: 20, dwords: [4, 9], pick: "classic_ctf", src: null });
-    expect(r.variant).toEqual({ name: "Classic CTF", engine: 1, team: true });
+    expect(r.variant).toEqual({ name: "Classic CTF", engine: 1, team: true, scripted: true });
     edited[0]!.records[1] = r;
     const p = buildPatch(original, edited).hoppers[0] as PatchHopper;
     expect(p.records[1]).toMatchObject({ id: 20, variant: "classic_ctf" });

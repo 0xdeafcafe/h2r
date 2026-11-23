@@ -140,10 +140,12 @@ within the hopper, the first `record_count` of them):
   always has 16 slots; the built-in lineup fills 11 and leaves 12..16
   unused. Its records are empty.
 - `variants`: the built-in game variants the server can write into an
-  entry by key (the stock record of a game type with the default lineup's
-  changes, built from numbers in `live_proto::hopper::defaults`, never a
-  disc). `builtin` on a record names the one its variant is byte for byte,
-  if any.
+  entry by key: the record of one of the default lineup's scripts
+  (`rules::builtin::MATCHMAKING`, built by `variants::portable::record_for`
+  in `live_proto::hopper::defaults`, never from a disc), so each is mode 2
+  and `scripted` is true. `builtin` on a record names the one its variant
+  is byte for byte, if any. A record's `variant.scripted` says whether its
+  variant runs a rules script; the builder offers scripted variants only.
 - `templates`: the default lineup's human playlists, each a kind of
   playlist a new one is made from: its type, sizes, waits and skill table
   (the descriptor the game's validator wants, which the JSON fields alone
@@ -254,8 +256,18 @@ New playlists, removals and built-in variants:
   fields is refused with the validator's reasons.
 - Only the hoppers named are checked: unused slots elsewhere never block a
   publish.
-- Each entry of a named playlist whose variant runs a rules script (mode
-  2) names, by its hash prefix, one saved or built-in script, and the
+- Every entry of a named playlist runs a rules script (mode 2): a hopper
+  plays scripted variants only, so an entry whose variant is mode 0 (its
+  own game type), mode 1 (Firefight) or a mode the server does not know is
+  refused by playlist, entry and variant name. The same check runs in the
+  map gate ([`blocked_pairs`] lists such an entry as blocked) and, for a
+  whole file, on `PUT /v1/titles/{title}/files/multiplayer_hopper.dat`
+  (`h2 live hopper import`): the entry checks of this list that concern
+  scripts apply, so a disc image of the game's own hoppers (every entry
+  mode 0) is not importable; the map pairs are not checked at import, as
+  a map's census may be set after the file.
+- Each entry names, by its hash prefix, one saved or built-in script (the
+  default lineup's scripts included), and the
   playlist's kind takes that script's capabilities (the script policy,
   [rules-engine.md, "Roles, powers and capabilities"](../game/rules-engine.md#roles-powers-and-capabilities)):
   ranked types (2, 4 and 5) refuse every `forge.*` capability, and the
@@ -263,7 +275,7 @@ New playlists, removals and built-in variants:
   the playlist, the entry and the capability; a prefix no script has is
   refused too.
 
-This is `apply_patch` and `check_scripts` in
+This is `apply_patch`, `check_scripts` and `check_file` in
 `crates/live/live-server/src/admin.rs`; the Worker serves the same
 router, so both homes check the same way.
 
@@ -339,10 +351,10 @@ at sign-in.
 
 The native editor's hopper tool (`h2-editor`, [editor.md](../editor/editor.md))
 opens and saves the raw image or download envelope with the same fields,
-validation and presets. In the web editor, pick from built-in variants or
-variants already in the published file. The native tool also accepts saved
-variants and `.h2variant` files. Publish an offline edit with
-`h2 live hopper import`.
+validation and presets. In the web editor, pick from the built-in variants or
+scripted variants already in the published file. The native tool also accepts
+saved variants and `.h2variant` files that run a rules script. Publish an
+offline edit with `h2 live hopper import`.
 
 Saves are the browser's first writes: each signs a self-issued 60-second
 token (`titles.write`) with the signed-in account's key, exactly as the CLI

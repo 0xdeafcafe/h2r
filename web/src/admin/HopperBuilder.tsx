@@ -210,8 +210,11 @@ export default function HopperBuilder() {
     if (!h || !canAddMap()) return;
     const source = h.records[groupSlot ?? h.records.length - 1];
     const defaultKey = h.type >= 3 ? "team_slayer" : "rumble_slayer";
-    const variant = builtins().find((b) => b.key === defaultKey) ?? builtins().find((b) => b.team === (h.type >= 3)) ?? builtins()[0];
-    const r = source ? { ...source, id } : variant ? builtinEntry(id, variant) : null;
+    const scripted = builtins().filter((b) => b.scripted !== false);
+    const variant = scripted.find((b) => b.key === defaultKey) ?? scripted.find((b) => b.team === (h.type >= 3)) ?? scripted[0];
+    // The last entry is copied only when it runs a script: a hopper plays
+    // scripted variants only.
+    const r = source?.variant?.scripted ? { ...source, id } : variant ? builtinEntry(id, variant) : null;
     if (!r) return;
     edit({ records: [...h.records, r] });
   }

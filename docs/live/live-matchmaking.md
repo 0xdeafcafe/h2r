@@ -593,6 +593,16 @@ variant (`0x00212f40`, 28 of them), then clear settings 12..14
 (`0x00193010`). `variant.rs` ports the stock record and the clean-up
 limits (`0x0019d650`) a variant is held to.
 
+Our default entries write the same records as scripts. Each of the ten
+built-in matchmaking variants is a `scoring carrier` script of its engine
+(`rules::builtin::MATCHMAKING`): the settings block holds the changes and
+the three settings the defaults writer clears (`setting_twelve`,
+`setting_thirteen`, `join_in_progress`). `defaults::variants` builds the
+record of each with `variants::portable::record_for`, so every default
+entry is mode 2 and names its script by hash. Live and the game both find
+the script by that prefix among their compiled-in scripts. A hopper takes
+scripted variants only ([live-admin.md](live-admin.md), "`PUT /v1/titles/{title}/hopper`").
+
 ### 6.6 The game's own defaults
 
 With no file, `0x001940d0` builds seven hoppers (`0x00193c70`): free for
@@ -622,7 +632,7 @@ is separate and goes to stats; an entry's "record id" is a map id. So
 playlists in hoppers 0..10, playlist ids 1..11 (eight human playlists, then
 three clanker ones), status 0, the game's skill
 ceiling and wait/timeout values, the game's start-wait table, maps from
-the Halo 2 disc, and variants from the stock records.
+the Halo 2 disc, and variants that are the records of scripts (6.5, 6.6).
 
 | # | Title | Type | Size | Entries |
 |---|---|---|---|---|
@@ -701,8 +711,8 @@ and the editor's playlist tool (`hopper_edit::model`) work the same way:
   shown at its playlist with a revert or discard action.
 - **An entry's game variant** is picked per entry: a built-in one
   (`defaults::builtin_variants`, keyed; the server writes its 0x130 bytes)
-  or one already in the file (its slot is copied with `from`/
-  `from_hopper`). The map is a Halo 2 disc map or a Multiplayer Map Pack
+  or one already in the file that runs a rules script (its slot is copied
+  with `from`/`from_hopper`). A variant with no script is not offered. The map is a Halo 2 disc map or a Multiplayer Map Pack
   map from the catalog. The builder labels Map Pack maps and requires at
   least one disc map in the rotation.
 - **Custom maps** are allowed per playlist by pins (`HopperPinsSet`,

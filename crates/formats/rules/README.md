@@ -88,6 +88,9 @@ carrier's stock record (`fake::stock_variant`), and a zone whose living
 occupants are all on one team is held by it. `scenario::step` runs one
 tick over it for both `scenario::run` and `workbench::run`.
 `builtin::ALL` lists each port with its name and engine index.
+`builtin::MATCHMAKING` lists the ten settings scripts of the default Live
+lineup (`scoring carrier`, one per built-in matchmaking variant), by the
+key Live's admin API names the variant.
 
 ## Workbench
 

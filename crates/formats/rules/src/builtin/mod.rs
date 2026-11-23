@@ -67,6 +67,34 @@ pub const GLITCH_HUNT: &str = include_str!("glitch_hunt.rules");
 /// Bumper Cars.
 pub const BUMPER_CARS: &str = include_str!("bumper_cars.rules");
 
+/// The built-in scripts of the default Live lineup, in lineup order: each a
+/// settings script (`scoring carrier`) of its engine, so the carrier's own
+/// rules score the game. A hopper entry's variant is the record of one
+/// (`variants::portable::record_for`), which is mode 2 and names the script
+/// by its hash. `key` is the name Live's admin API gives the variant
+/// (`live_proto::hopper::defaults::builtin_variants`).
+pub const MATCHMAKING: &[Matchmaking] = &[
+    Matchmaking { key: "rumble_slayer", engine: 2, source: include_str!("matchmaking/rumble_slayer.rules") },
+    Matchmaking { key: "team_slayer", engine: 2, source: include_str!("matchmaking/team_slayer.rules") },
+    Matchmaking { key: "team_snipers", engine: 2, source: include_str!("matchmaking/team_snipers.rules") },
+    Matchmaking { key: "oddball", engine: 3, source: include_str!("matchmaking/oddball.rules") },
+    Matchmaking { key: "teamball", engine: 3, source: include_str!("matchmaking/teamball.rules") },
+    Matchmaking { key: "king_of_the_hill", engine: 4, source: include_str!("matchmaking/king_of_the_hill.rules") },
+    Matchmaking { key: "team_king", engine: 4, source: include_str!("matchmaking/team_king.rules") },
+    Matchmaking { key: "classic_ctf", engine: 1, source: include_str!("matchmaking/classic_ctf.rules") },
+    Matchmaking { key: "assault", engine: 9, source: include_str!("matchmaking/assault.rules") },
+    Matchmaking { key: "territories", engine: 8, source: include_str!("matchmaking/territories.rules") },
+];
+
+/// One script of [`MATCHMAKING`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Matchmaking {
+    pub key: &'static str,
+    /// The carrier's engine index.
+    pub engine: u8,
+    pub source: &'static str,
+}
+
 /// A built-in script: its name, the retail engine index it rides and its
 /// source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +194,34 @@ mod tests {
             assert_eq!(builtin(b.engine), Some(b.source));
             assert_eq!(crate::lang::compile(b.source).unwrap().header.name, b.name);
         }
+    }
+
+    #[test]
+    fn every_matchmaking_script_is_a_settings_script_of_its_engine() {
+        for m in MATCHMAKING {
+            let ir = crate::lang::compile(m.source).unwrap_or_else(|e| panic!("{}: {e}", m.key));
+            assert_eq!(ir.header.carrier, m.engine, "{}", m.key);
+            assert_eq!(ir.header.scoring, crate::ir::Scoring::Carrier, "{}", m.key);
+            assert!(crate::verify::verify(&ir).unwrap().fits(), "{}", m.key);
+            // The key is the name's snake case.
+            assert_eq!(ir.header.name.to_lowercase().replace(' ', "_"), m.key);
+            // Every one clears the hopper defaults writer's three settings.
+            for name in ["setting_twelve", "setting_thirteen", "join_in_progress"] {
+                let (at, _) = crate::settings::named(name).unwrap();
+                assert!(
+                    ir.settings.iter().any(|s| s.index == at && s.value == 0),
+                    "{}: {name}",
+                    m.key
+                );
+            }
+        }
+        let mut hashes: Vec<_> = MATCHMAKING
+            .iter()
+            .map(|m| crate::lang::compile(m.source).unwrap().id().0)
+            .collect();
+        hashes.sort();
+        hashes.dedup();
+        assert_eq!(hashes.len(), MATCHMAKING.len(), "two scripts are one blob");
     }
 
     #[test]

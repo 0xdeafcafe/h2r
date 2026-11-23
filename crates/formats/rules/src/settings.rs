@@ -283,6 +283,13 @@ const TURRETS: &[Named] = &[
 /// Weapon respawn (setting 87).
 const WEAPON_RESPAWN: &[Named] = &[n("double_time", "Double Time", 3)];
 
+/// Respawn modifier (setting 25, `+0xa8`).
+const RESPAWN_MODIFIERS: &[Named] = &[
+    n("inheritance", "Inheritance", 0),
+    n("cycling", "Cycling", 1),
+    n("none", "None", 2),
+];
+
 /// Juggernaut movement and ball speed (settings 96 and 45).
 const SPEEDS: &[Named] = &[
     n("slow", "Slow", 0),
@@ -670,6 +677,34 @@ pub const TABLE: &[Row] = &[
         "Unlimited Grenades",
         Kind::Bool,
         Store::Ext(ExtField::UnlimitedGrenades),
+        ALL,
+    ),
+    // The settings the hopper defaults writer (`0x00193010`) clears and the
+    // built-in matchmaking variants change (docs/live/live-matchmaking.md,
+    // "6.8 The default set"): flag bits 4 and 5 (settings 12 and 13, no label of the
+    // game's), setting 14 (`+0x58`), the respawn modifier and the second
+    // heavy vehicle.
+    row("setting_twelve", "Setting 12", Kind::Bool, setting(12), ALL),
+    row("setting_thirteen", "Setting 13", Kind::Bool, setting(13), ALL),
+    row(
+        "join_in_progress",
+        "Join in Progress",
+        int(0, 2),
+        setting(14),
+        ALL,
+    ),
+    row(
+        "respawn_modifier",
+        "Respawn Modifier",
+        choice(2, RESPAWN_MODIFIERS),
+        setting(25),
+        ALL,
+    ),
+    row(
+        "second_heavy_vehicle",
+        "Second Heavy Vehicle",
+        choice(4, HEAVY_VEHICLES),
+        setting(80),
         ALL,
     ),
 ];
