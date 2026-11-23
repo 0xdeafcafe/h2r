@@ -507,8 +507,8 @@ fn the_approach_guide_is_the_states_with_its_option() {
     assert_eq!(view(&s, Options::DEFAULT, None).guide, None);
     assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(_, p)| p.is_none()));
     // Primed on the ground a unit before the seam: the box on its landing
-    // point, the pipper where a jump from here comes down, ticks between
-    // them, the arrow unlit.
+    // point, the arrow unlit; the floor underfoot is not the seam's, so
+    // no pipper and no ticks (`superbounce_guide::guide_from`).
     let body = Body {
         position: [9.0, 0.0, 2.03],
         velocity: [0.0; 3],
@@ -517,39 +517,38 @@ fn the_approach_guide_is_the_states_with_its_option() {
     };
     s.guide = guide(&body, &spot);
     let v = view(&s, Options::DEFAULT, None).guide.unwrap();
-    assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, true, true, Some(false)));
-    // From the seam's own floor no jump comes down fast enough: no
-    // percentage, no jump cue, no takeoff line.
+    assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, false, false, Some(false)));
     assert_eq!((v.chance, v.cue, v.takeoff), (None, None, false));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
-    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true, true, true, true, false]);
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true, false, false, true, false]);
+    assert!(!values.get(PIPPER).unwrap().shown && !values.get(TICKS).unwrap().shown);
     assert_eq!(values.get(BOX).unwrap().style, Style::Dim);
     assert_eq!(values.get(BOX).unwrap().text, "");
     let poses = guide_poses(&s, Options::DEFAULT);
     assert_eq!(poses.map(|(id, _)| id), MARKS);
-    assert!(poses.iter().all(|(id, p)| p.is_some() == (*id != TAKEOFF)));
+    assert!(poses.iter().all(|(id, p)| p.is_some() == (*id == BOX || *id == DRIFT)));
     let at = |id: &str| poses.iter().find(|(i, _)| *i == id).unwrap().1.unwrap().at;
     assert_eq!(at(BOX), [10.0, 0.0, 2.0]);
-    assert_eq!(at(PIPPER), [9.0, 0.0, 2.0]);
-    assert!(at(TICKS)[0] > 9.0 && at(TICKS)[0] < 10.0 && at(DRIFT)[0] > 10.0);
-    // Standing on a ledge 3.45 over the seam: the walk-up's takeoff line
-    // up the drift, short of the seam, across +X, and `Walk to line`.
+    assert!(at(DRIFT)[0] > 10.0);
+    // Standing on a ledge 3.45 over the seam with its takeoff: the box
+    // says `Walk to line`; the takeoff is the world's bar, not a mark.
     let ledge = Body {
         position: [7.0, 0.0, 5.45],
         ..body
     };
-    s.guide = guide(&ledge, &spot);
+    let takeoff = crate::superbounce_guide::Takeoff {
+        at: [8.0, 0.0, 5.45 - crate::superbounce_guide::CLEARANCE],
+        heading: [1.0, 0.0],
+        half: 0.03,
+        speed: 0.8,
+        leave: crate::superbounce_guide::Leave::Jump,
+        checked: true,
+    };
+    s.guide = crate::superbounce_guide::guide_from(&ledge, &spot, Some(takeoff));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
     assert_eq!(values.get(BOX).unwrap().text, "Walk to line");
-    let t = guide_poses(&s, Options::DEFAULT)
-        .into_iter()
-        .find(|(id, _)| *id == TAKEOFF)
-        .and_then(|(_, p)| p)
-        .unwrap();
-    assert_eq!(t.along, [1.0, 0.0]);
-    assert!(t.at[0] > 7.5 && t.at[0] < 9.5, "{:?}", t.at);
-    assert!((t.at[2] - (5.45 - crate::superbounce_guide::CLEARANCE)).abs() < 1e-5);
-    assert!(values.get(TAKEOFF).unwrap().shown);
+    assert!(!values.get(TAKEOFF).unwrap().shown);
+    assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(id, p)| *id != TAKEOFF || p.is_none()));
     // The variant's option takes all of it away.
     let off = Options {
         approach_guide: false,

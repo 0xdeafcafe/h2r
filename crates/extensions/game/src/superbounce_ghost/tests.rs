@@ -491,3 +491,36 @@ fn ghosts_are_off_by_default_and_only_the_chosen_strips_run_is_offered() {
     assert!(showable(&ghosts, None, true).is_empty());
     assert!(showable(&ghosts, Some([5.0, 0.0, 0.0]), true).is_empty());
 }
+
+/// A run's lip is where it left the floor for the flight that touched
+/// down: the last ground frame before it, the way and speed of its first
+/// tick in the air, and whether that tick was a jump's.
+#[test]
+fn a_runs_lip_is_where_it_left_the_floor() {
+    use crate::superbounce_guide::Leave;
+    let (s, at) = practice(None, true);
+    let g = record(&s, at).expect("a run");
+    let l = lip(&g).expect("a lip");
+    // The practice jumps at tick 100: tick 99 is its last on the floor.
+    assert_eq!(l.at, s[99].at);
+    assert_eq!(l.heading, [1.0, 0.0]);
+    assert!((l.speed.unwrap() - 0.05 * TICK_HZ).abs() < 1e-3);
+    assert_eq!(l.run, Some(Leave::Jump));
+    // A walk-off: the same run leaving the floor with no jump.
+    let mut off = g.clone();
+    for f in &mut off.frames {
+        f.flags &= !file::JUMP;
+    }
+    assert_eq!(lip(&off).unwrap().run, Some(Leave::Drop));
+    // With no ground frame before the touchdown there is no lip.
+    let mut late = g.clone();
+    for f in &mut late.frames[..=g.touchdown] {
+        f.flags |= file::AIRBORNE;
+    }
+    assert_eq!(lip(&late), None);
+    // Leaving the floor standing still has no heading.
+    let mut still = g.clone();
+    let k = 99 - 10;
+    still.frames[k + 1].at = still.frames[k].at;
+    assert_eq!(lip(&still), None);
+}

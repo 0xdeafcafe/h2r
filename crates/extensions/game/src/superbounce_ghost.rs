@@ -635,6 +635,39 @@ pub fn showable(ghosts: &[Ghost], chosen: Option<Vec3>, on: bool) -> Vec<usize> 
         .collect()
 }
 
+/// Where a run left the floor for its bounce: the approach guide's lip
+/// (`superbounce_guide::Lip`, docs/game/superbounce.md, "The takeoff").
+/// The last ground frame before the flight that touched down, the way
+/// and the ground speed of its first tick in the air, and whether that
+/// tick was a jump's (`file::JUMP`) or a walk-off's. `None` for a run
+/// with no ground frame before its touchdown, or one that left it
+/// standing still (no heading).
+pub fn lip(g: &Ghost) -> Option<crate::superbounce_guide::Lip> {
+    use crate::superbounce_guide::{Leave, Lip};
+    let end = g.touchdown.min(g.frames.len().checked_sub(1)?);
+    let k = (0..end)
+        .rev()
+        .find(|&k| !g.frames[k].airborne() && g.frames[k + 1].airborne())?;
+    let (on, off) = (g.frames[k], g.frames[k + 1]);
+    let d = [off.at[0] - on.at[0], off.at[1] - on.at[1]];
+    let step = d[0].hypot(d[1]);
+    (step > 1e-4 && step.is_finite()).then(|| Lip {
+        at: on.at,
+        heading: [d[0] / step, d[1] / step],
+        speed: Some(step * TICK_HZ),
+        run: Some(if off.jump() { Leave::Jump } else { Leave::Drop }),
+    })
+}
+
+/// The lip of the kept run of the strip at `stand` on `map` ([`lip`]):
+/// the first run within [`CHOSEN_NEAR`] of it that has one.
+pub fn lip_for(map: &str, stand: Vec3) -> Option<crate::superbounce_guide::Lip> {
+    ghosts_for(map)
+        .iter()
+        .filter(|g| distance(g.spot, stand) <= CHOSEN_NEAR)
+        .find_map(lip)
+}
+
 /// One playback as the window draws it: the run, when it started, where
 /// the viewer stood when the image was captured, and the HUD's look. Each
 /// present asks [`ImageMarks::visit`] with its own time, so an image shown
@@ -1180,7 +1213,10 @@ pub fn ghost_show(
 ) -> Result<agent_proto::superbounce::GhostShow, String> {
     use agent_proto::superbounce as wire;
     if !crate::superbounce_mode::active() {
-        return Err("the superbounce mode is off (play a game whose script requires hud.superbounce)".into());
+        return Err(
+            "the superbounce mode is off (play a game whose script requires hud.superbounce)"
+                .into(),
+        );
     }
     if !enabled() && !p.stop {
         return Err(format!(
