@@ -238,7 +238,7 @@ fn saved(path: &Path) -> bool {
     path.with_extension("h2film.saved").is_file()
 }
 
-/// Delete one automatic film with its stats, pin and keyframe cache.
+/// Delete one automatic film with its stats, film file, pin and keyframe cache.
 pub fn remove(dir: &Path, path: &Path) -> anyhow::Result<()> {
     let id = film::LibraryEntry::read(path).ok().map(|e| e.meta.id);
     remove_as(dir, path, id.as_deref())
@@ -247,7 +247,7 @@ pub fn remove(dir: &Path, path: &Path) -> anyhow::Result<()> {
 /// [`remove`] for a film whose ID is known, sealed or not.
 pub fn remove_as(dir: &Path, path: &Path, id: Option<&str>) -> anyhow::Result<()> {
     let delete = || -> anyhow::Result<()> {
-        for extra in ["h2stats", "h2film.saved"] {
+        for extra in ["h2stats", "h2f", "h2film.saved"] {
             match fs::remove_file(path.with_extension(extra)) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 r => r?,
