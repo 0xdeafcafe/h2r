@@ -96,15 +96,15 @@ impl Kind {
 
     pub const fn family(self) -> Family {
         match self {
-            Kind::Objects => ids::family("forge objects"),
-            Kind::Properties => ids::family("forge properties"),
-            Kind::Coordinates => ids::family("forge coordinates"),
-            Kind::Tools => ids::family("forge tools"),
-            Kind::Settings => ids::family("forge settings"),
-            Kind::Link => ids::family("forge link"),
-            Kind::Question => ids::family("forge question"),
-            Kind::Options => ids::family("forge options"),
-            Kind::Controls => ids::family("forge controls"),
+            Kind::Objects => const { ids::family("forge objects") },
+            Kind::Properties => const { ids::family("forge properties") },
+            Kind::Coordinates => const { ids::family("forge coordinates") },
+            Kind::Tools => const { ids::family("forge tools") },
+            Kind::Settings => const { ids::family("forge settings") },
+            Kind::Link => const { ids::family("forge link") },
+            Kind::Question => const { ids::family("forge question") },
+            Kind::Options => const { ids::family("forge options") },
+            Kind::Controls => const { ids::family("forge controls") },
         }
     }
 
