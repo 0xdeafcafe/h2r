@@ -243,6 +243,8 @@ pub struct LightGpu {
     /// By the gel target's view: both target copies' kept hot, a resized
     /// target evicting the oldest.
     gel_target_groups: Vec<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
+    /// By a frozen shadow-map view and static gel datum.
+    shadow_groups: Vec<((wgpu::TextureView, Option<u32>), Option<wgpu::BindGroup>)>,
     /// By target formats, cull and vertex layout (`None` the world's
     /// [`WorldVertex`], else a [`ModelLayout::id`]).
     pipelines: HashMap<PipelineFor, (Arc<PipelineKey>, Arc<PendingPipeline>)>,
@@ -396,17 +398,19 @@ impl LightGpu {
             stage_views,
             static_groups: HashMap::new(),
             gel_target_groups: Vec::new(),
+            shadow_groups: Vec::new(),
             pipelines: HashMap::new(),
         })
     }
 
-    /// The texture group: the pass's bitmaps, the engine's light textures
-    /// and the light's `gel`; `None` when a sampled stage has nothing.
+    /// The texture group: the pass's bitmaps, engine textures, gel and
+    /// frozen shadow map; `None` when a sampled stage has nothing suitable.
     pub fn textures(
         &self,
         device: &wgpu::Device,
         engine: &LightTextures,
         gel: Option<&wgpu::TextureView>,
+        shadow: Option<&crate::shadow_gpu::SampledMap>,
     ) -> Option<wgpu::BindGroup> {
         let mut views = Vec::new();
         for (n, d) in self.program.dims.iter().enumerate() {
@@ -419,6 +423,15 @@ impl LightGpu {
                 LightStage::Normalization => engine.normalization.clone()?,
                 LightStage::Attenuation => engine.attenuation.clone()?,
                 LightStage::Gel => gel?.clone(),
+                LightStage::DepthShadow => {
+                    let map = shadow.filter(|map| map.kind == crate::shadow_gpu::MapKind::Depth)?;
+                    map.view.clone()
+                }
+                LightStage::ColourMask => {
+                    let map =
+                        shadow.filter(|map| map.kind == crate::shadow_gpu::MapKind::ColourMask)?;
+                    map.view.clone()
+                }
             };
             views.push((n, view));
         }
@@ -586,6 +599,8 @@ pub struct LightDraw<'a> {
     /// Current target copy and guest-coordinate scale for engine texture 10.
     pub gel_view: Option<&'a wgpu::TextureView>,
     pub gel_scale: Option<[f32; 4]>,
+    /// The receiver's frozen depth or colour-mask map.
+    pub shadow_map: Option<&'a crate::shadow_gpu::SampledMap>,
     /// Ranges of the world's indices, or of `model`'s.
     pub ranges: &'a [std::ops::Range<u32>],
     /// A model part's buffers and rows; `None` the world's buffers.
@@ -739,7 +754,25 @@ impl LightSet {
                 .contains_key(&(color, depth, d.cull, model.map(|m| m.id)));
             let pipeline = pass.pipeline(device, color, depth, d.cull, model).clone();
             pipeline.1.previous_frame()?.as_ref()?;
-            let textures = if let Some(view) = d.gel_view.filter(|_| reads_gel) {
+            let textures = if let Some(map) = d.shadow_map {
+                let key = (map.view.clone(), static_gel);
+                if let Some((_, group)) = pass
+                    .shadow_groups
+                    .iter()
+                    .find(|(cached, _)| cached == &key)
+                {
+                    group.clone()?
+                } else {
+                    resident = false;
+                    let gel = static_gel.and_then(|gel| self.gels.get(&gel));
+                    let group = pass.textures(device, &self.textures, gel, Some(map));
+                    if pass.shadow_groups.len() == 2 {
+                        pass.shadow_groups.remove(0);
+                    }
+                    pass.shadow_groups.push((key, group.clone()));
+                    group?
+                }
+            } else if let Some(view) = d.gel_view.filter(|_| reads_gel) {
                 if let Some((_, group)) = pass
                     .gel_target_groups
                     .iter()
@@ -748,7 +781,7 @@ impl LightSet {
                     group.clone()?
                 } else {
                     resident = false;
-                    let group = pass.textures(device, &self.textures, Some(view));
+                    let group = pass.textures(device, &self.textures, Some(view), None);
                     if pass.gel_target_groups.len() == 2 {
                         pass.gel_target_groups.remove(0);
                     }
@@ -763,7 +796,7 @@ impl LightSet {
                     Some(g) => Some(self.gels.get(&g)?),
                     None => None,
                 };
-                let group = pass.textures(device, &self.textures, gel);
+                let group = pass.textures(device, &self.textures, gel, None);
                 pass.static_groups.insert(static_gel, group.clone());
                 group?
             };
@@ -814,6 +847,18 @@ impl LightSet {
             view.texture() == target.color.texture() || view.texture() == target.depth.texture()
         }) {
             return Err("light gel samples its own attachment");
+        }
+        if draws.iter().filter_map(|draw| draw.shadow_map).any(|map| {
+            map.view.texture() == target.color.texture()
+                || map.view.texture() == target.depth.texture()
+                || !gfx::program::filterable(map.view.texture().format(), target.device.features())
+                || !map
+                    .view
+                    .texture()
+                    .usage()
+                    .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+        }) {
+            return Err("shadow map samples its own attachment or is not sampleable");
         }
         if draws.iter().filter_map(|d| d.model.as_ref()).any(|m| {
             m.nodes.len() > 3 * MAX_PALETTE || m.vertices.size() == 0 || m.indices.size() == 0
@@ -1018,6 +1063,7 @@ mod tests {
             gel: None,
             gel_view: Some(&gel),
             gel_scale: None,
+            shadow_map: None,
             ranges: std::slice::from_ref(&range),
             model: None,
         };
@@ -1203,6 +1249,7 @@ mod tests {
                 gel: None,
                 gel_view: None,
                 gel_scale: None,
+                shadow_map: None,
                 ranges,
                 model: None,
             }
@@ -1441,6 +1488,7 @@ mod tests {
             gel: None,
             gel_view: None,
             gel_scale: None,
+            shadow_map: None,
             ranges: std::slice::from_ref(&range),
             model: None,
         };
@@ -1544,6 +1592,206 @@ mod tests {
         let texel = |x: u32, y: u32| &pixels[(4 * (y * SIZE + x)) as usize..][..4];
         assert_eq!(texel(0, 0), [0, 0, 0, 255], "outside the scissor");
         assert_eq!(texel(2, 2), [128, 0, 0, 255], "the caster triangle");
+    }
+
+    #[test]
+    fn receiver_packets_sample_the_frozen_map() {
+        use wgpu::{TextureFormat as F, TextureUsages as U};
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        let (device, queue) = (&ctx.device, &ctx.queue);
+        const SIZE: u32 = 4;
+        let mut set = LightSet::new(device, queue, None, None);
+        let program = LightProgram {
+            wgsl: "
+                @group(1) @binding(0) var map: texture_2d<f32>;
+                @group(1) @binding(1) var map_sampler: sampler;
+                @vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+                    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
+                    return vec4f(p, 0.5, 1.0);
+                }
+                @fragment fn fs_main() -> @location(0) vec4f {
+                    return textureSample(map, map_sampler, vec2f(0.5, 0.5));
+                }
+            "
+            .into(),
+            words: Vec::new(),
+            inputs: 0,
+            def: Default::default(),
+            pixel_options: Default::default(),
+            stages: [
+                LightStage::DepthShadow,
+                LightStage::Empty,
+                LightStage::Empty,
+                LightStage::Empty,
+            ],
+            samplers: [None; 4],
+            dims: [Some(TextureDim::D2), None, None, None],
+            signed: [[false; 4]; 4],
+            vertex: VertexUniforms::default(),
+            pixel: PixelUniforms::default(),
+            colours: Vec::new(),
+            state: crate::pass_state::PassState {
+                blend: None,
+                blend_constant: wgpu::Color::BLACK,
+                color_writes: wgpu::ColorWrites::ALL,
+                depth_write: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                primitive: wgpu::PrimitiveState::default(),
+                alpha_test: None,
+            },
+            inherits_cull: false,
+        };
+        let gpu = prepared_gpu(device, queue, &set, &program);
+        let view = ViewInputs {
+            constants: [[0.; 4]; d3d::VIEW_CONSTANTS],
+            guest_size: (SIZE, SIZE),
+            size: (SIZE, SIZE),
+            z_scale: 1.,
+            w_clip: None,
+        };
+        let map_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test receiver map"),
+            size: wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: F::Rgba8Unorm,
+            usage: U::TEXTURE_BINDING | U::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            map_texture.as_image_copy(),
+            &[64, 128, 192, 255].repeat((SIZE * SIZE) as usize),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * SIZE),
+                rows_per_image: Some(SIZE),
+            },
+            map_texture.size(),
+        );
+        let map = crate::shadow_gpu::SampledMap {
+            kind: crate::shadow_gpu::MapKind::Depth,
+            view: map_texture.create_view(&Default::default()),
+            size: (SIZE, SIZE),
+        };
+        let range = 0..3;
+        let draw = LightDraw {
+            program: &program,
+            gpu: &gpu,
+            cull: None,
+            colours: [[0.; 3]; 2],
+            frame: &[0; FRAME_DWORDS],
+            projection: None,
+            gel: None,
+            gel_view: None,
+            gel_scale: None,
+            shadow_map: Some(&map),
+            ranges: std::slice::from_ref(&range),
+            model: None,
+        };
+        let buffer = |usage, bytes: &[u8]| {
+            use wgpu::util::DeviceExt;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytes,
+                usage,
+            })
+        };
+        let vertices = buffer(
+            wgpu::BufferUsages::VERTEX,
+            &vec![0u8; 3 * std::mem::size_of::<WorldVertex>()],
+        );
+        let indices = buffer(
+            wgpu::BufferUsages::INDEX,
+            &[0u32, 1, 2]
+                .iter()
+                .flat_map(|i| i.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let texture = |format| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: U::RENDER_ATTACHMENT | U::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let (color, depth) = (texture(F::Rgba8Unorm), texture(F::Depth32Float));
+        let (cv, dv) = (
+            color.create_view(&Default::default()),
+            depth.create_view(&Default::default()),
+        );
+        let pool = gfx::ring::UploadPool::default();
+        let uploads = pool.begin();
+        let target = LightTarget {
+            device,
+            queue,
+            uploads: &uploads,
+            color: &cv,
+            color_format: F::Rgba8Unorm,
+            depth: &dv,
+            depth_format: F::Depth32Float,
+            size: (SIZE, SIZE),
+        };
+        let packets = set
+            .draws(
+                &target,
+                &vertices,
+                &indices,
+                &view,
+                [0, 0, SIZE, SIZE],
+                std::slice::from_ref(&draw),
+            )
+            .unwrap();
+        let rt = gfx::RenderTarget {
+            color: &cv,
+            color_format: F::Rgba8Unorm,
+            depth: Some(&dv),
+            depth_format: Some(F::Depth32Float),
+            size: (SIZE, SIZE),
+            samples: 1,
+        };
+        let mut enc = device.create_command_encoder(&Default::default());
+        gfx::Renderer::encode_pass(
+            &ctx,
+            &mut enc,
+            &rt,
+            gfx::Clear {
+                color: Some([0.0, 0.0, 0.0, 1.0]),
+                depth: Some(1.0),
+                stencil: None,
+            },
+            &packets.packets,
+            None,
+        )
+        .unwrap();
+        queue.submit(
+            uploads
+                .upload_commands(queue)
+                .into_iter()
+                .chain([enc.finish()]),
+        );
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let pixels =
+            gfx::readback::read_texture(&ctx, &color, wgpu::TextureAspect::All, 4, (SIZE, SIZE));
+        assert!(
+            pixels.chunks_exact(4).all(|p| p == [64, 128, 192, 255]),
+            "every pixel reads the frozen map"
+        );
     }
 
     #[test]

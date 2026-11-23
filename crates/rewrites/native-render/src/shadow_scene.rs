@@ -1,4 +1,4 @@
-//! A caster layer planned from its frame-scene group
+//! A shadow layer planned from its frame-scene group
 //! (docs/graphics/native-shadow-layers.md, "The plan and the state").
 //! Geometry planning is the light layers': sorted entries and duplicates
 //! stay in order, and adjacent ranges of one stream join. The shadow
@@ -9,11 +9,11 @@ use frame_scene::{FrameScene, LightEntry, LightGroup, Row};
 
 use crate::light_scene::{self, Draw, Resident};
 
-/// Why a caster group is not drawn from the scene.
+/// Why a shadow group is not drawn from the scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The target, projection or raster state did not read or does not
-    /// match layer 10's target choice.
+    /// match the layer's target choice.
     State,
     /// A geometry refusal of the shared light-group planner.
     Light(light_scene::Refusal),
@@ -36,15 +36,19 @@ impl From<light_scene::Refusal> for Refusal {
 
 fn validate(group: &LightGroup) -> Result<(), Refusal> {
     let pass = group.pass.ok_or(Refusal::State)?;
-    if group.layer != 10
-        || group.projection.is_none()
-        || pass.size.contains(&0)
-        || pass.target != if pass.colour_mask() { 10 } else { 9 }
-        || pass.stencil_mode != 0
-    {
+    if pass.size.contains(&0) || pass.stencil_mode != 0 {
         return Err(Refusal::State);
     }
-    Ok(())
+    match group.layer {
+        10 if group.projection.is_some()
+            && pass.target == if pass.colour_mask() { 10 } else { 9 } =>
+        {
+            Ok(())
+        }
+        11 if group.projection.is_some() => Ok(()),
+        14 if pass.target == 1 => Ok(()),
+        _ => Err(Refusal::State),
+    }
 }
 
 /// A whole caster group's draws from the scene alone.
@@ -110,7 +114,7 @@ mod tests {
         let valid = group();
         assert_eq!(plan(&scene, &valid, &Empty).unwrap().draws.len(), 0);
         let changes: [&dyn Fn(&mut LightGroup); 6] = [
-            &|g| g.layer = 11,
+            &|g| g.layer = 12,
             &|g| g.projection = None,
             &|g| g.pass.as_mut().unwrap().target = 10,
             &|g| g.pass.as_mut().unwrap().size[0] = 0,
@@ -126,5 +130,13 @@ mod tests {
         mask.pass.as_mut().unwrap().flags = 1 << 4;
         mask.pass.as_mut().unwrap().target = 10;
         assert_eq!(plan(&scene, &mask, &Empty).unwrap().draws.len(), 0);
+        let mut receiver = mask;
+        receiver.layer = 11;
+        assert_eq!(plan(&scene, &receiver, &Empty).unwrap().draws.len(), 0);
+        let mut opaque = receiver;
+        opaque.layer = 14;
+        opaque.projection = None;
+        opaque.pass.as_mut().unwrap().target = 1;
+        assert_eq!(plan(&scene, &opaque, &Empty).unwrap().draws.len(), 0);
     }
 }

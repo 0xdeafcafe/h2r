@@ -45,6 +45,19 @@ pub trait Host: Send + Sync {
     fn entry(&self, mem: &mut dyn GuestMemory, entry: Option<Entry>);
     fn begin(&self, mem: &mut dyn GuestMemory, layer: Layer);
     fn end(&self, mem: &mut dyn GuestMemory, site: Site, layer: u32);
+    /// Replace the object filter's guest quads at its return.
+    fn filter(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _esp: u32,
+        _filter: frame_scene::ShadowFilter,
+    ) -> Result<(), &'static str> {
+        Err("device")
+    }
+    /// Finish the filter's swallow at the call's return.
+    fn finish_filter(&self, _mem: &mut dyn GuestMemory, _esp: u32) -> Result<(), &'static str> {
+        Ok(())
+    }
     /// Draw a whole layer-10 group from the scene before its handlers.
     /// Refusal issues nothing and names the counter's category.
     fn draw_alone(
@@ -76,11 +89,21 @@ const REFUSALS: [&str; 8] = [
     "callback",
     "device",
 ];
-static ALONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ALONE: [std::sync::atomic::AtomicU64; 3] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 static REFUSED: [std::sync::atomic::AtomicU64; REFUSALS.len()] =
     [const { std::sync::atomic::AtomicU64::new(0) }; REFUSALS.len()];
 
-/// Draw a caster group from the scene and empty its guest entry loop on
+fn alone_index(layer: u32) -> Option<usize> {
+    match layer {
+        10 => Some(0),
+        11 => Some(1),
+        14 => Some(2),
+        _ => None,
+    }
+}
+
+/// Draw a shadow group from the scene and empty its guest entry loop on
 /// success. Every refusal leaves the gathered/resolved-draw path intact.
 pub fn draw_alone(
     mem: &mut dyn GuestMemory,
@@ -88,9 +111,9 @@ pub fn draw_alone(
     group: &crate::native_lights::SceneGroup,
 ) -> bool {
     use std::sync::atomic::Ordering;
-    if layer != 10 {
+    let Some(index) = alone_index(layer) else {
         return false;
-    }
+    };
     let view = mem
         .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
         .unwrap_or(u32::MAX);
@@ -102,7 +125,7 @@ pub fn draw_alone(
         .and_then(|host| host.draw_alone(mem, view, group));
     match result {
         Ok(()) => {
-            ALONE.fetch_add(1, Ordering::Relaxed);
+            ALONE[index].fetch_add(1, Ordering::Relaxed);
             true
         }
         Err(why) => {
@@ -116,29 +139,111 @@ pub fn draw_alone(
     }
 }
 
-/// Caster layers committed from the scene, no geometry handler run.
-pub fn drawn_alone() -> u64 {
-    ALONE.load(std::sync::atomic::Ordering::Relaxed)
+/// Shadow layers committed from the scene, no geometry handler run.
+pub fn drawn_alone(layer: u32) -> u64 {
+    alone_index(layer).map_or(0, |index| {
+        ALONE[index].load(std::sync::atomic::Ordering::Relaxed)
+    })
 }
 
-/// `render.scene` counters for scene-caster refusals by category.
+/// `render.scene` counters for scene-shadow refusals by category.
 pub fn alone_counters() -> Vec<(&'static str, u64)> {
-    std::iter::once(("scene_shadow_layers_alone_10", drawn_alone()))
-        .chain(REFUSALS.iter().zip(&REFUSED).map(|(name, count)| {
-            let name = match *name {
-                "remainder" => "scene_shadow_alone_refused_remainder",
-                "stream" => "scene_shadow_alone_refused_stream",
-                "pose" => "scene_shadow_alone_refused_pose",
-                "program" => "scene_shadow_alone_refused_program",
-                "state" => "scene_shadow_alone_refused_state",
-                "target" => "scene_shadow_alone_refused_target",
-                "callback" => "scene_shadow_alone_refused_callback",
-                _ => "scene_shadow_alone_refused_device",
-            };
-            (name, count.load(std::sync::atomic::Ordering::Relaxed))
-        }))
-        .chain(std::iter::once(("scene_dropped_shadow_layers", 0)))
-        .collect()
+    [
+        ("scene_shadow_layers_alone_10", drawn_alone(10)),
+        ("scene_shadow_layers_alone_11", drawn_alone(11)),
+        ("scene_shadow_layers_alone_14", drawn_alone(14)),
+    ]
+    .into_iter()
+    .chain(REFUSALS.iter().zip(&REFUSED).map(|(name, count)| {
+        let name = match *name {
+            "remainder" => "scene_shadow_alone_refused_remainder",
+            "stream" => "scene_shadow_alone_refused_stream",
+            "pose" => "scene_shadow_alone_refused_pose",
+            "program" => "scene_shadow_alone_refused_program",
+            "state" => "scene_shadow_alone_refused_state",
+            "target" => "scene_shadow_alone_refused_target",
+            "callback" => "scene_shadow_alone_refused_callback",
+            _ => "scene_shadow_alone_refused_device",
+        };
+        (name, count.load(std::sync::atomic::Ordering::Relaxed))
+    }))
+    .chain(std::iter::once(("scene_dropped_shadow_layers", 0)))
+    .collect()
+}
+
+const FILTER_REFUSALS: [&str; 5] = ["program", "state", "target", "callback", "device"];
+static FILTERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FILTER_REFUSED: [std::sync::atomic::AtomicU64; FILTER_REFUSALS.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; FILTER_REFUSALS.len()];
+
+fn filter_refused(why: &'static str) {
+    let n = FILTER_REFUSALS
+        .iter()
+        .position(|&name| name == why)
+        .unwrap_or(FILTER_REFUSALS.len() - 1);
+    FILTER_REFUSED[n].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Replace the current object shadow's filter with its scene's native
+/// quads. Refusal leaves every guest quad in place.
+pub fn filter(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16) -> bool {
+    let Some(filter) = crate::scene_step::shadow_filter(mem, esp, mxcsr, x87_control) else {
+        filter_refused("program");
+        return false;
+    };
+    let result = HOST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("device")
+        .and_then(|host| host.filter(mem, esp, filter));
+    match result {
+        Ok(()) => {
+            FILTERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            true
+        }
+        Err(why) => {
+            filter_refused(why);
+            false
+        }
+    }
+}
+
+/// Finish the filter's native swallow at the call's return.
+pub fn finish_filter(mem: &mut dyn GuestMemory, esp: u32) {
+    let result = HOST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("device")
+        .and_then(|host| host.finish_filter(mem, esp));
+    if let Err(why) = result {
+        filter_refused(why);
+    }
+}
+
+/// `render.scene` counters for native object filters and their refusals.
+pub fn filter_counters() -> Vec<(&'static str, u64)> {
+    std::iter::once((
+        "scene_shadow_filters_native",
+        FILTERS.load(std::sync::atomic::Ordering::Relaxed),
+    ))
+    .chain(
+        FILTER_REFUSALS
+            .iter()
+            .zip(&FILTER_REFUSED)
+            .map(|(name, count)| {
+                let name = match *name {
+                    "program" => "scene_shadow_filter_refused_program",
+                    "state" => "scene_shadow_filter_refused_state",
+                    "target" => "scene_shadow_filter_refused_target",
+                    "callback" => "scene_shadow_filter_refused_callback",
+                    _ => "scene_shadow_filter_refused_device",
+                };
+                (name, count.load(std::sync::atomic::Ordering::Relaxed))
+            }),
+    )
+    .collect()
 }
 
 fn capture(mem: &mut dyn GuestMemory, layer: u32, site: Site) -> Option<Layer> {
@@ -286,6 +391,23 @@ impl Feature for NativeShadows {
             })
             .context_only();
         b.raw()
+            .observe_before(&points::OBJECT_SHADOW_FILTER, "object shadow filter", |o| {
+                let esp = o.cpu.esp;
+                let mut mem = o.guest();
+                if o.cpu.eax == 10 && mem.u32(esp).ok() == Some(0x0003_29de) {
+                    filter(&mut *mem, esp, o.cpu.mxcsr, o.cpu.x87.control);
+                }
+            })
+            .context_only();
+        b.raw().observe_after(
+            &points::OBJECT_SHADOW_FILTER,
+            "object shadow filter end",
+            |o| {
+                let mut mem = o.guest();
+                finish_filter(&mut *mem, o.cpu.esp);
+            },
+        );
+        b.raw()
             .observe_before(
                 &points::LIGHT_GEOMETRY_DRAW,
                 "sorted shadow geometry",
@@ -403,14 +525,16 @@ mod tests {
         let mut mem = engine::FlatMemory::new(0, 0x1000);
         let group = group();
         set_host(Arc::new(Stub(Ok(()))));
-        let before = drawn_alone();
+        let before = drawn_alone(10);
         assert!(draw_alone(&mut mem, 10, &group));
-        assert_eq!(drawn_alone(), before + 1);
-        assert!(!draw_alone(&mut mem, 11, &group), "only caster layer 10");
-        assert_eq!(drawn_alone(), before + 1);
+        assert_eq!(drawn_alone(10), before + 1);
+        assert!(draw_alone(&mut mem, 11, &group), "a receiver group");
+        assert!(draw_alone(&mut mem, 14, &group), "an opacity group");
+        assert!(!draw_alone(&mut mem, 12, &group), "not a shadow layer");
+        assert_eq!(drawn_alone(10), before + 1);
         set_host(Arc::new(Stub(Err("stream"))));
         assert!(!draw_alone(&mut mem, 10, &group));
-        assert_eq!(drawn_alone(), before + 1);
+        assert_eq!(drawn_alone(10), before + 1);
         let counters = alone_counters();
         assert!(
             counters

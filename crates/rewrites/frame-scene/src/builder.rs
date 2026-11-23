@@ -14,7 +14,8 @@ use crate::light_group::{LightEntry, LightGroup, LightPose, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 use crate::scene::{
-    AuxDepth, Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp, Subparts, View, ViewKey, WorldState,
+    AuxDepth, Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp,
+    Subparts, View, ViewKey, WorldState,
 };
 
 /// Scenes whose readers are done, emptied, for the builder to fill again.
@@ -45,7 +46,11 @@ impl FreeList {
 
     /// An empty scene, recycled when one is free.
     pub fn take(&self) -> FrameScene {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_default()
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+            .unwrap_or_default()
     }
 
     /// Scenes waiting to be reused.
@@ -114,7 +119,10 @@ pub struct SceneBuilder {
 
 impl SceneBuilder {
     pub fn new(free: FreeList) -> Self {
-        Self { free, ..Default::default() }
+        Self {
+            free,
+            ..Default::default()
+        }
     }
 
     pub fn free_list(&self) -> &FreeList {
@@ -177,7 +185,11 @@ impl SceneBuilder {
         self.seal_view();
         let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
         let cut = !self.previous.views.contains(&key);
-        let (c, i, o) = (scene.clusters.len() as u32, scene.instances.len() as u32, scene.order.len() as u32);
+        let (c, i, o) = (
+            scene.clusters.len() as u32,
+            scene.instances.len() as u32,
+            scene.order.len() as u32,
+        );
         let l = scene.lights.len() as u32;
         let p = scene.layer_passes.len() as u32;
         let d = scene.decorators.len() as u32;
@@ -212,14 +224,24 @@ impl SceneBuilder {
     /// The scene and the index of its last view of `key`, open or sealed:
     /// a write that does not extend a view's ranges (the late passes,
     /// `crate::late`) may land in a view another has followed.
-    pub(crate) fn keyed_mut(&mut self, key: ViewKey) -> Result<(&mut FrameScene, usize), BuildError> {
+    pub(crate) fn keyed_mut(
+        &mut self,
+        key: ViewKey,
+    ) -> Result<(&mut FrameScene, usize), BuildError> {
         let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
-        let index = scene.views.iter().rposition(|v| v.key == key).ok_or(BuildError::NoView)?;
+        let index = scene
+            .views
+            .iter()
+            .rposition(|v| v.key == key)
+            .ok_or(BuildError::NoView)?;
         Ok((scene, index))
     }
 
     /// The open view's visible clusters, replacing any set before.
-    pub fn set_clusters(&mut self, clusters: impl IntoIterator<Item = u16>) -> Result<(), BuildError> {
+    pub fn set_clusters(
+        &mut self,
+        clusters: impl IntoIterator<Item = u16>,
+    ) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
         let start = scene.views[open].clusters.start;
         scene.clusters.truncate(start as usize);
@@ -272,14 +294,27 @@ impl SceneBuilder {
 
     /// Adds a part to `instance`, which must be the open view's last;
     /// parts of one instance in increasing `slot`.
-    pub fn push_part(&mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, rows: &[Row]) -> Result<u32, BuildError> {
+    pub fn push_part(
+        &mut self,
+        instance: u32,
+        slot: u32,
+        key: ItemKey,
+        layer: u8,
+        rows: &[Row],
+    ) -> Result<u32, BuildError> {
         self.push_part_flagged(instance, slot, key, layer, PartFlags::NONE, None, rows)
     }
 
     /// [`Self::push_part`] with how the part draws beyond its material:
     /// its flags and, with [`PartFlags::SUBPARTS`], the subparts it draws.
     pub fn push_part_flagged(
-        &mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, flags: PartFlags, subparts: Option<Subparts>,
+        &mut self,
+        instance: u32,
+        slot: u32,
+        key: ItemKey,
+        layer: u8,
+        flags: PartFlags,
+        subparts: Option<Subparts>,
         rows: &[Row],
     ) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
@@ -310,7 +345,11 @@ impl SceneBuilder {
     /// Adds a light to the open view, after its lights so far, with its
     /// passes' steps in order; its index in the scene. The builder sets
     /// `light.steps`.
-    pub fn push_light(&mut self, light: SceneLight, steps: &[LightStep]) -> Result<u32, BuildError> {
+    pub fn push_light(
+        &mut self,
+        light: SceneLight,
+        steps: &[LightStep],
+    ) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let s = scene.light_steps.len() as u32;
         scene.light_steps.extend_from_slice(steps);
@@ -326,7 +365,10 @@ impl SceneBuilder {
 
     /// Merges the visible candidates after the guest's last light pass.
     /// The guest's groups keep their indices and draw order.
-    pub fn add_light_candidates(&mut self, candidates: Vec<crate::Light>) -> Result<(), BuildError> {
+    pub fn add_light_candidates(
+        &mut self,
+        candidates: Vec<crate::Light>,
+    ) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
         let range = &mut scene.views[open].lights;
         let existing = range.start as usize..range.end as usize;
@@ -337,7 +379,10 @@ impl SceneBuilder {
                 scene.lights[i].candidate = candidate.candidate;
             } else {
                 let end = scene.light_steps.len() as u32;
-                scene.lights.push(crate::Light { steps: end..end, ..candidate });
+                scene.lights.push(crate::Light {
+                    steps: end..end,
+                    ..candidate
+                });
             }
         }
         range.end = scene.lights.len() as u32;
@@ -350,7 +395,10 @@ impl SceneBuilder {
         let (scene, open) = self.open_mut()?;
         let i = scene.layer_items.len() as u32;
         let index = scene.layer_passes.len() as u32;
-        scene.layer_passes.push(LayerPass { items: i..i, ..pass });
+        scene.layer_passes.push(LayerPass {
+            items: i..i,
+            ..pass
+        });
         scene.views[open].layers.end = index + 1;
         Ok(index)
     }
@@ -364,9 +412,17 @@ impl SceneBuilder {
         }
         let r = scene.rows.len() as u32;
         scene.rows.extend_from_slice(rows);
-        scene.layer_items.push(LayerItem { rows: r..scene.rows.len() as u32, ..item });
+        scene.layer_items.push(LayerItem {
+            rows: r..scene.rows.len() as u32,
+            ..item
+        });
         let end = scene.layer_items.len() as u32;
-        scene.layer_passes.last_mut().expect("the view's last pass").items.end = end;
+        scene
+            .layer_passes
+            .last_mut()
+            .expect("the view's last pass")
+            .items
+            .end = end;
         Ok(())
     }
 
@@ -377,7 +433,11 @@ impl SceneBuilder {
         if scene.views[open].layers.is_empty() {
             return Err(BuildError::NoLayer);
         }
-        scene.layer_passes.last_mut().expect("the view's last pass").remainder += items;
+        scene
+            .layer_passes
+            .last_mut()
+            .expect("the view's last pass")
+            .remainder += items;
         Ok(())
     }
 
@@ -386,7 +446,11 @@ impl SceneBuilder {
     /// the scene. Each entry comes with the node rows of a
     /// [`LightPose::Rows`] pose (the builder sets the range; other poses
     /// take none). The builder sets `group.light` and `group.entries`.
-    pub fn push_light_group(&mut self, group: LightGroup, entries: &[(LightEntry, Vec<Row>)]) -> Result<u32, BuildError> {
+    pub fn push_light_group(
+        &mut self,
+        group: LightGroup,
+        entries: &[(LightEntry, Vec<Row>)],
+    ) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let lights = &scene.views[open].lights;
         if lights.is_empty() || !scene.lights[lights.end as usize - 1].guest_selected {
@@ -395,17 +459,32 @@ impl SceneBuilder {
         let light = lights.end - 1;
         let entries = push_entries(scene, entries);
         let index = scene.light_groups.len() as u32;
-        scene.light_groups.push(LightGroup { light, entries, ..group });
+        scene.light_groups.push(LightGroup {
+            light,
+            entries,
+            ..group
+        });
         Ok(index)
     }
 
     /// Adds an object shadow to the open view, after its others; its
     /// index in the scene. Its groups follow ([`Self::push_shadow_group`]).
-    pub fn push_object_shadow(&mut self, identity: [u32; 2], creature: bool) -> Result<u32, BuildError> {
+    pub fn push_object_shadow(
+        &mut self,
+        identity: [u32; 2],
+        creature: bool,
+    ) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let g = scene.shadow_groups.len() as u32;
         let index = scene.object_shadows.len() as u32;
-        scene.object_shadows.push(ObjectShadow { view: open as u32, identity, groups: g..g, creature, weight_bits: None });
+        scene.object_shadows.push(ObjectShadow {
+            view: open as u32,
+            identity,
+            groups: g..g,
+            creature,
+            weight_bits: None,
+            filter: None,
+        });
         Ok(index)
     }
 
@@ -422,9 +501,25 @@ impl SceneBuilder {
         }
     }
 
+    /// Records the filter of the open view's last object shadow.
+    pub fn set_shadow_filter(&mut self, filter: crate::ShadowFilter) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        match scene.object_shadows.last_mut() {
+            Some(o) if o.view as usize == open => {
+                o.filter = Some(filter);
+                Ok(())
+            }
+            _ => Err(BuildError::NoShadow),
+        }
+    }
+
     /// Adds a gathered group to the open view's last object shadow, as
     /// [`Self::push_light_group`] to a light.
-    pub fn push_shadow_group(&mut self, group: LightGroup, entries: &[(LightEntry, Vec<Row>)]) -> Result<u32, BuildError> {
+    pub fn push_shadow_group(
+        &mut self,
+        group: LightGroup,
+        entries: &[(LightEntry, Vec<Row>)],
+    ) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let shadow = match scene.object_shadows.last() {
             Some(o) if o.view as usize == open => scene.object_shadows.len() as u32 - 1,
@@ -432,7 +527,11 @@ impl SceneBuilder {
         };
         let entries = push_entries(scene, entries);
         let index = scene.shadow_groups.len() as u32;
-        scene.shadow_groups.push(LightGroup { light: shadow, entries, ..group });
+        scene.shadow_groups.push(LightGroup {
+            light: shadow,
+            entries,
+            ..group
+        });
         scene.object_shadows[shadow as usize].groups.end = index + 1;
         Ok(index)
     }
@@ -460,7 +559,11 @@ impl SceneBuilder {
         self.seal_view();
         let mut scene = self.scene.take()?;
         let mut cut = std::mem::take(&mut self.pending_cut);
-        if self.previous.map_epoch.is_some_and(|e| e != scene.id.map_epoch) {
+        if self
+            .previous
+            .map_epoch
+            .is_some_and(|e| e != scene.id.map_epoch)
+        {
             cut |= Cut::MAP;
         }
         let mut keys: Vec<ViewKey> = scene.views.iter().map(|v| v.key).collect();
@@ -471,14 +574,20 @@ impl SceneBuilder {
         }
         scene.cut = cut;
         scene.stamp = stamp;
-        self.previous = Previous { map_epoch: Some(scene.id.map_epoch), views: keys };
+        self.previous = Previous {
+            map_epoch: Some(scene.id.map_epoch),
+            views: keys,
+        };
         Some(Arc::new(scene))
     }
 }
 
 /// A group's entries into the scene, each [`LightPose::Rows`] pose's rows
 /// with it; their range.
-fn push_entries(scene: &mut FrameScene, entries: &[(LightEntry, Vec<Row>)]) -> std::ops::Range<u32> {
+fn push_entries(
+    scene: &mut FrameScene,
+    entries: &[(LightEntry, Vec<Row>)],
+) -> std::ops::Range<u32> {
     let e = scene.light_entries.len() as u32;
     for (entry, rows) in entries {
         let pose = match entry.pose {
@@ -489,7 +598,10 @@ fn push_entries(scene: &mut FrameScene, entries: &[(LightEntry, Vec<Row>)]) -> s
             }
             ref other => other.clone(),
         };
-        scene.light_entries.push(LightEntry { pose, ..entry.clone() });
+        scene.light_entries.push(LightEntry {
+            pose,
+            ..entry.clone()
+        });
     }
     e..scene.light_entries.len() as u32
 }
@@ -497,15 +609,25 @@ fn push_entries(scene: &mut FrameScene, entries: &[(LightEntry, Vec<Row>)]) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_camera::camera;
     use crate::scene::ViewKind;
+    use crate::test_camera::camera;
 
     fn key(view: u8) -> ViewKey {
-        ViewKey { kind: ViewKind::Game, player: 0, view }
+        ViewKey {
+            kind: ViewKind::Game,
+            player: 0,
+            view,
+        }
     }
 
     fn item(record: u16) -> ItemKey {
-        ItemKey { record, shader: 0xe000_0010, section: 0, part: 0, implementation: 0 }
+        ItemKey {
+            record,
+            shader: 0xe000_0010,
+            section: 0,
+            part: 0,
+            implementation: 0,
+        }
     }
 
     fn object<'a>(handle: u32, nodes: &'a [NodeMatrix]) -> InstanceInput<'a> {
@@ -527,19 +649,31 @@ mod tests {
     /// Two views: the first with two objects (parts out of slot order
     /// across them), the second with one.
     fn two_views(b: &mut SceneBuilder) -> Arc<FrameScene> {
-        b.begin(SceneId { map_epoch: 1, frame: 10, tick: 20 });
+        b.begin(SceneId {
+            map_epoch: 1,
+            frame: 10,
+            tick: 20,
+        });
         b.open_view(key(0), camera()).unwrap();
         b.set_clusters([3, 1, 4]).unwrap();
-        let a = b.push_instance(object(1, &[NodeMatrix::IDENTITY; 2])).unwrap();
+        let a = b
+            .push_instance(object(1, &[NodeMatrix::IDENTITY; 2]))
+            .unwrap();
         b.push_part(a, 2, item(5), 3, &rows(3, 1.0)).unwrap();
         b.push_part(a, 7, item(6), 3, &rows(6, 2.0)).unwrap();
         let c = b.push_instance(object(2, &[NodeMatrix::IDENTITY])).unwrap();
         b.push_part(c, 4, item(8), 3, &rows(3, 3.0)).unwrap();
         b.add_remainder(2).unwrap();
         b.open_view(key(1), camera()).unwrap();
-        let d = b.push_instance(object(3, &[NodeMatrix::IDENTITY; 3])).unwrap();
+        let d = b
+            .push_instance(object(3, &[NodeMatrix::IDENTITY; 3]))
+            .unwrap();
         b.push_part(d, 0, item(9), 3, &rows(9, 4.0)).unwrap();
-        b.seal(Stamp { published: None, ticks_run: 1 }).unwrap()
+        b.seal(Stamp {
+            published: None,
+            ticks_run: 1,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -553,14 +687,20 @@ mod tests {
         assert_eq!(s.clusters_of(v), &[3, 1, 4]);
         assert_eq!(s.instances_of(v).len(), 2);
         assert_eq!(v.remainder, 2);
-        let slots: Vec<u32> = s.order[v.order.start as usize..v.order.end as usize].iter().map(|&p| s.parts[p as usize].slot).collect();
+        let slots: Vec<u32> = s.order[v.order.start as usize..v.order.end as usize]
+            .iter()
+            .map(|&p| s.parts[p as usize].slot)
+            .collect();
         assert_eq!(slots, [2, 4, 7]);
         let (instance, part) = s.part_at(v, 4).unwrap();
         assert_eq!(instance.key, InstanceKey(2));
         assert_eq!(s.rows_of(part), rows(3, 3.0).as_slice());
         assert!(s.part_at(v, 3).is_none());
         let counts = s.counts(v);
-        assert_eq!((counts.clusters, counts.instances, counts.parts, counts.rows), (3, 2, 3, 12));
+        assert_eq!(
+            (counts.clusters, counts.instances, counts.parts, counts.rows),
+            (3, 2, 3, 12)
+        );
         let w = &s.views[1];
         assert!(s.clusters_of(w).is_empty());
         assert_eq!(s.counts(w).rows, 9);
@@ -575,13 +715,38 @@ mod tests {
         b.open_view(key(0), camera()).unwrap();
         let a = b.push_instance(object(1, &[NodeMatrix::IDENTITY])).unwrap();
         b.push_part(a, 1, item(1), 3, &rows(3, 1.0)).unwrap();
-        b.push_part_flagged(a, 2, item(2), 3, PartFlags::STENCIL_MARK, None, &rows(3, 1.0)).unwrap();
-        b.push_part_flagged(a, 3, item(3), 3, PartFlags::STENCIL_MARK | PartFlags::STRIP, None, &rows(3, 1.0)).unwrap();
+        b.push_part_flagged(
+            a,
+            2,
+            item(2),
+            3,
+            PartFlags::STENCIL_MARK,
+            None,
+            &rows(3, 1.0),
+        )
+        .unwrap();
+        b.push_part_flagged(
+            a,
+            3,
+            item(3),
+            3,
+            PartFlags::STENCIL_MARK | PartFlags::STRIP,
+            None,
+            &rows(3, 1.0),
+        )
+        .unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         let v = &s.views[0];
-        let flags: Vec<PartFlags> = s.parts_of(&s.instances_of(v)[0]).iter().map(|p| p.flags).collect();
-        assert_eq!(flags, [PartFlags::NONE, PartFlags::STENCIL_MARK, PartFlags(3)]);
+        let flags: Vec<PartFlags> = s
+            .parts_of(&s.instances_of(v)[0])
+            .iter()
+            .map(|p| p.flags)
+            .collect();
+        assert_eq!(
+            flags,
+            [PartFlags::NONE, PartFlags::STENCIL_MARK, PartFlags(3)]
+        );
         assert_eq!(s.counts(v).flagged, [("stencil_mark", 2), ("strip", 1)]);
         assert_eq!(PartFlags(3).names(), ["stencil_mark", "strip"]);
         assert!(PartFlags::NONE.names().is_empty());
@@ -593,8 +758,21 @@ mod tests {
         b.begin(SceneId::default());
         b.open_view(key(0), camera()).unwrap();
         let a = b.push_instance(object(1, &[NodeMatrix::IDENTITY])).unwrap();
-        let visible = Subparts { first: 6, count: 5, visible: 0b1_0110 };
-        b.push_part_flagged(a, 1, item(1), 3, PartFlags::SUBPARTS, Some(visible), &rows(3, 1.0)).unwrap();
+        let visible = Subparts {
+            first: 6,
+            count: 5,
+            visible: 0b1_0110,
+        };
+        b.push_part_flagged(
+            a,
+            1,
+            item(1),
+            3,
+            PartFlags::SUBPARTS,
+            Some(visible),
+            &rows(3, 1.0),
+        )
+        .unwrap();
         b.push_part(a, 2, item(2), 3, &rows(3, 1.0)).unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
@@ -605,20 +783,52 @@ mod tests {
         assert_eq!(s.part_at(v, 2).unwrap().1.subparts, None, "the whole part");
         assert_eq!(s.counts(v).flagged, [("subparts", 1)]);
         // Bits past the part's own subparts draw nothing.
-        assert_eq!(Subparts { first: 0, count: 2, visible: u64::MAX }.drawn().count(), 2);
-        assert_eq!(Subparts { first: 0, count: 0, visible: u64::MAX }.drawn().count(), 0);
+        assert_eq!(
+            Subparts {
+                first: 0,
+                count: 2,
+                visible: u64::MAX
+            }
+            .drawn()
+            .count(),
+            2
+        );
+        assert_eq!(
+            Subparts {
+                first: 0,
+                count: 0,
+                visible: u64::MAX
+            }
+            .drawn()
+            .count(),
+            0
+        );
     }
 
     #[test]
     fn a_views_lights_keep_their_steps_in_order_and_count_their_shadows() {
         use crate::light::{LightStep, LightTarget, SceneLight};
-        let step = |layer, stencil, target| LightStep { layer, stencil, target, draws: true };
+        let step = |layer, stencil, target| LightStep {
+            layer,
+            stencil,
+            target,
+            draws: true,
+        };
         let light = |handle, flags| SceneLight {
-            handle, definition: 0xe300_0000, flags, definition_flags: 0, additional_casters: false, steps: 0..0, ..Default::default()
+            handle,
+            definition: 0xe300_0000,
+            flags,
+            definition_flags: 0,
+            additional_casters: false,
+            steps: 0..0,
+            ..Default::default()
         };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
-        assert_eq!(b.push_light(light(1, 0), &[]).unwrap_err(), BuildError::NoView);
+        assert_eq!(
+            b.push_light(light(1, 0), &[]).unwrap_err(),
+            BuildError::NoView
+        );
         b.open_view(key(0), camera()).unwrap();
         let shadowed = [
             step(10, None, LightTarget::ShadowMap),
@@ -627,16 +837,30 @@ mod tests {
             step(12, Some(0), LightTarget::View),
         ];
         b.push_light(light(7, 4), &shadowed).unwrap();
-        b.push_light(light(8, 3), &[step(14, Some(0), LightTarget::Target(1)), step(12, Some(0), LightTarget::View)]).unwrap();
+        b.push_light(
+            light(8, 3),
+            &[
+                step(14, Some(0), LightTarget::Target(1)),
+                step(12, Some(0), LightTarget::View),
+            ],
+        )
+        .unwrap();
         b.open_view(key(1), camera()).unwrap();
-        b.push_light(light(9, 0), &[step(12, Some(0), LightTarget::View)]).unwrap();
+        b.push_light(light(9, 0), &[step(12, Some(0), LightTarget::View)])
+            .unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         let v = &s.views[0];
         let lights = s.lights_of(v);
         assert_eq!(lights.iter().map(|l| l.handle).collect::<Vec<_>>(), [7, 8]);
         assert_eq!(s.steps_of(&lights[0]), &shadowed);
-        assert_eq!(s.steps_of(&lights[1]).iter().map(|s| s.layer).collect::<Vec<_>>(), [14, 12]);
+        assert_eq!(
+            s.steps_of(&lights[1])
+                .iter()
+                .map(|s| s.layer)
+                .collect::<Vec<_>>(),
+            [14, 12]
+        );
         assert_eq!((s.counts(v).lights, s.counts(v).shadows), (2, 1));
         let w = &s.views[1];
         assert_eq!((s.counts(w).lights, s.counts(w).shadows), (1, 0));
@@ -661,24 +885,47 @@ mod tests {
             inputs: Default::default(),
         };
         let entry = |slot, owner| LayerItem {
-            slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None,
-            flags: crate::PartFlags::NONE, subparts: None, refusal: None, prt: None,
+            slot,
+            key: item(1),
+            owner,
+            model: u32::MAX,
+            rows: 0..0,
+            lighting: None,
+            flags: crate::PartFlags::NONE,
+            subparts: None,
+            refusal: None,
+            prt: None,
         };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
         b.open_view(key(0), camera()).unwrap();
-        assert_eq!(b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[]).unwrap_err(), BuildError::NoLayer);
+        assert_eq!(
+            b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[])
+                .unwrap_err(),
+            BuildError::NoLayer
+        );
         assert_eq!(b.add_layer_remainder(1).unwrap_err(), BuildError::NoLayer);
         b.push_layer(pass(1)).unwrap();
-        b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[]).unwrap();
-        b.push_layer_item(entry(4, LayerOwner::Object(InstanceKey(7))), &rows(3, 5.0)).unwrap();
+        b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[])
+            .unwrap();
+        b.push_layer_item(entry(4, LayerOwner::Object(InstanceKey(7))), &rows(3, 5.0))
+            .unwrap();
         b.add_layer_remainder(2).unwrap();
         b.push_layer(pass(5)).unwrap();
-        let first_person = ViewKey { kind: ViewKind::FirstPerson, ..key(0) };
+        let first_person = ViewKey {
+            kind: ViewKind::FirstPerson,
+            ..key(0)
+        };
         b.open_view(first_person, camera()).unwrap();
-        assert_eq!(b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[]).unwrap_err(), BuildError::NoLayer, "a sealed view's");
+        assert_eq!(
+            b.push_layer_item(entry(0, LayerOwner::Cluster(1)), &[])
+                .unwrap_err(),
+            BuildError::NoLayer,
+            "a sealed view's"
+        );
         b.push_layer(pass(3)).unwrap();
-        b.push_layer_item(entry(2, LayerOwner::Object(InstanceKey(9))), &rows(6, 1.0)).unwrap();
+        b.push_layer_item(entry(2, LayerOwner::Object(InstanceKey(9))), &rows(6, 1.0))
+            .unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         let v = &s.views[0];
@@ -688,7 +935,10 @@ mod tests {
         let items = s.items_of(&passes[0]);
         assert_eq!(items.iter().map(|i| i.slot).collect::<Vec<_>>(), [0, 4]);
         assert!(items[0].rows.is_empty());
-        assert_eq!(&s.rows[items[1].rows.start as usize..items[1].rows.end as usize], rows(3, 5.0).as_slice());
+        assert_eq!(
+            &s.rows[items[1].rows.start as usize..items[1].rows.end as usize],
+            rows(3, 5.0).as_slice()
+        );
         assert!(s.items_of(&passes[1]).is_empty());
         assert_eq!(s.counts(v).layers, [(1, 2, 2), (5, 0, 0)]);
         let w = &s.views[1];
@@ -702,17 +952,33 @@ mod tests {
     #[test]
     fn writes_need_a_scene_and_a_view_and_parts_go_to_the_last_instance_in_slot_order() {
         let mut b = SceneBuilder::default();
-        assert_eq!(b.open_view(key(0), camera()).unwrap_err(), BuildError::NoScene);
+        assert_eq!(
+            b.open_view(key(0), camera()).unwrap_err(),
+            BuildError::NoScene
+        );
         b.begin(SceneId::default());
-        assert_eq!(b.push_instance(object(1, &[])).unwrap_err(), BuildError::NoView);
+        assert_eq!(
+            b.push_instance(object(1, &[])).unwrap_err(),
+            BuildError::NoView
+        );
         b.open_view(key(0), camera()).unwrap();
         let a = b.push_instance(object(1, &[])).unwrap();
         let c = b.push_instance(object(2, &[])).unwrap();
-        assert_eq!(b.push_part(a, 1, item(1), 3, &[]).unwrap_err(), BuildError::NotLastInstance);
+        assert_eq!(
+            b.push_part(a, 1, item(1), 3, &[]).unwrap_err(),
+            BuildError::NotLastInstance
+        );
         b.push_part(c, 5, item(1), 3, &[]).unwrap();
-        assert_eq!(b.push_part(c, 5, item(2), 3, &[]).unwrap_err(), BuildError::SlotOrder);
+        assert_eq!(
+            b.push_part(c, 5, item(2), 3, &[]).unwrap_err(),
+            BuildError::SlotOrder
+        );
         b.open_view(key(1), camera()).unwrap();
-        assert_eq!(b.push_part(c, 9, item(3), 3, &[]).unwrap_err(), BuildError::NotLastInstance, "a sealed view's");
+        assert_eq!(
+            b.push_part(c, 9, item(3), 3, &[]).unwrap_err(),
+            BuildError::NotLastInstance,
+            "a sealed view's"
+        );
         b.seal(Stamp::default()).unwrap().check().unwrap();
     }
 
@@ -735,13 +1001,20 @@ mod tests {
     fn cuts_follow_the_map_epoch_the_set_of_views_and_requests() {
         let mut b = SceneBuilder::default();
         let s = two_views(&mut b);
-        assert!(s.cut.is_empty(), "the first scene has nothing before it to differ from");
+        assert!(
+            s.cut.is_empty(),
+            "the first scene has nothing before it to differ from"
+        );
         assert!(s.views.iter().all(|v| v.cut), "no view before");
         let s = two_views(&mut b);
         assert!(s.cut.is_empty());
         assert!(s.views.iter().all(|v| !v.cut));
         b.cut(Cut::LOAD);
-        b.begin(SceneId { map_epoch: 2, frame: 11, tick: 21 });
+        b.begin(SceneId {
+            map_epoch: 2,
+            frame: 11,
+            tick: 21,
+        });
         b.open_view(key(0), camera()).unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         assert_eq!(s.cut.names(), ["map", "load", "views"]);
@@ -753,10 +1026,18 @@ mod tests {
     #[test]
     fn a_scene_never_sealed_is_dropped_at_the_next_begin() {
         let mut b = SceneBuilder::default();
-        b.begin(SceneId { map_epoch: 1, frame: 1, tick: 1 });
+        b.begin(SceneId {
+            map_epoch: 1,
+            frame: 1,
+            tick: 1,
+        });
         b.open_view(key(0), camera()).unwrap();
         b.push_instance(object(1, &[NodeMatrix::IDENTITY])).unwrap();
-        b.begin(SceneId { map_epoch: 1, frame: 2, tick: 2 });
+        b.begin(SceneId {
+            map_epoch: 1,
+            frame: 2,
+            tick: 2,
+        });
         let s = b.seal(Stamp::default()).unwrap();
         assert!(s.views.is_empty() && s.instances.is_empty() && s.nodes.is_empty());
         assert_eq!(s.id.frame, 2);

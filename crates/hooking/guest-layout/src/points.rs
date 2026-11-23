@@ -130,10 +130,16 @@ impl Point {
 
 /// Beginning and end of the index build within the sorted dispatcher.
 pub const TRANSPARENT_ORDER_BEGIN: Point = Point::new(
-    "TRANSPARENT_ORDER_BEGIN", 0x0001_e381, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_ORDER_BEGIN",
+    0x0001_e381,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 pub const TRANSPARENT_ORDER_READY: Point = Point::new(
-    "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_ORDER_READY",
+    0x0001_e3bc,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 
 /// Return sites on the retail depleting damage report's kill-credit path.
@@ -174,17 +180,26 @@ pub mod party_leave {
 
 /// The object section loop's call to the shared record writer.
 pub const OBJECT_RECORD_APPEND: Point = Point::new(
-    "OBJECT_RECORD_APPEND", 0x0013_41d0, Sig::Site, "docs/graphics/native-renderer.md",
+    "OBJECT_RECORD_APPEND",
+    0x0013_41d0,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 /// Return from that call, routed through the generated resume table.
 pub const OBJECT_RECORD_APPENDED: u32 = 0x0013_41d5;
 
 /// The geometry submitter's transparent-only append branch and epilogue.
 pub const TRANSPARENT_GEOMETRY_ENTRY: Point = Point::new(
-    "TRANSPARENT_GEOMETRY_ENTRY", 0x0004_1381, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_GEOMETRY_ENTRY",
+    0x0004_1381,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 pub const TRANSPARENT_GEOMETRY_QUEUED: Point = Point::new(
-    "TRANSPARENT_GEOMETRY_QUEUED", 0x0004_1477, Sig::Site, "docs/graphics/native-renderer.md",
+    "TRANSPARENT_GEOMETRY_QUEUED",
+    0x0004_1477,
+    Sig::Site,
+    "docs/graphics/native-renderer.md",
 );
 
 /// Entry points of the UI render walk. The feature asks image analysis
@@ -197,11 +212,9 @@ pub mod ui_render {
     };
 
     const DOC: &str = "docs/graphics/native-renderer.md";
-    pub const BACKDROP_WASH: Point =
-        Point::new("UI_BACKDROP_WASH", 0x0025_4b95, Sig::Site, DOC);
+    pub const BACKDROP_WASH: Point = Point::new("UI_BACKDROP_WASH", 0x0025_4b95, Sig::Site, DOC);
     pub const BACKDROP_WASH_TAIL: u32 = 0x0025_4dc0;
-    pub const BACKDROP_TINT: Point =
-        Point::new("UI_BACKDROP_TINT", 0x0025_4e28, Sig::Site, DOC);
+    pub const BACKDROP_TINT: Point = Point::new("UI_BACKDROP_TINT", 0x0025_4e28, Sig::Site, DOC);
     pub const BACKDROP_TINT_TAIL: u32 = 0x0025_4ee0;
     pub const BACKDROP_COMPOSITE: Point =
         Point::new("UI_BACKDROP_COMPOSITE", 0x0025_5083, Sig::Site, DOC);
@@ -843,6 +856,8 @@ points! { ALL;
     GATHER_OBJECT_SHADOWS @ 0x0003_3400: [opaque]; "docs/graphics/native-shadows.md";
     /// One object's shadow (caster and receiver layers).
     OBJECT_SHADOW @ 0x0003_2350: [opaque]; "docs/graphics/native-shadows.md";
+    /// The colour-mask filter between an object shadow's layers 10 and 11.
+    OBJECT_SHADOW_FILTER @ 0x0002_22a0: [opaque]; "docs/graphics/native-shadow-layers.md";
     /// One dynamic decal callback: `0x00163cd0` calls it in stored list order
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.
@@ -1801,21 +1816,63 @@ mod tests {
         assert_eq!(GAME_MEDAL.sig.arg("medal"), Some(Loc::Eax));
         assert_eq!(GAME_MEDAL.sig.arg("player"), Some(Loc::Ecx));
         assert_eq!(GAME_MEDAL.sig.arg("count"), Some(Loc::Ebx));
-        assert!(matches!(GAME_MEDAL.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert!(matches!(
+            GAME_MEDAL.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 0,
+                ..
+            }
+        ));
         assert_eq!(GAME_MEDAL.class, Class::Optional);
         // The engine vtable slots are thiscall: the engine object in ECX.
         assert_eq!(SLAYER_KILL.sig.arg("engine"), Some(Loc::Ecx));
         assert_eq!(SLAYER_KILL.sig.arg("victim"), Some(Loc::Stack(1)));
-        assert!(matches!(SLAYER_KILL.sig, Sig::Fn { ret: None, pop: 16, .. }));
-        assert!(matches!(ENGINE_TRAIT_QUERY.sig, Sig::Fn { ret: Some(Loc::Al), pop: 8, .. }));
+        assert!(matches!(
+            SLAYER_KILL.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 16,
+                ..
+            }
+        ));
+        assert!(matches!(
+            ENGINE_TRAIT_QUERY.sig,
+            Sig::Fn {
+                ret: Some(Loc::Al),
+                pop: 8,
+                ..
+            }
+        ));
         // The routines a script's calls reach: register arguments, no pop.
         assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("player"), Some(Loc::Eax));
         assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("on"), Some(Loc::Ecx));
-        assert!(matches!(JUGGERNAUT_ROLE_SET.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert!(matches!(
+            JUGGERNAUT_ROLE_SET.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 0,
+                ..
+            }
+        ));
         assert_eq!(ODDBALL_BALL_RETURN.sig.arg("ball"), Some(Loc::Eax));
-        assert!(matches!(ODDBALL_BALL_RETURN.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert!(matches!(
+            ODDBALL_BALL_RETURN.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 0,
+                ..
+            }
+        ));
         assert_eq!(OBJECTIVE_RETURN.sig.arg("object"), Some(Loc::Esi));
-        assert!(matches!(OBJECTIVE_RETURN.sig, Sig::Fn { ret: None, pop: 4, .. }));
+        assert!(matches!(
+            OBJECTIVE_RETURN.sig,
+            Sig::Fn {
+                ret: None,
+                pop: 4,
+                ..
+            }
+        ));
         assert_eq!(by_base(0x0013_7fe0).map(|p| p.name), Some("GAME_TICK"));
     }
 }

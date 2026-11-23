@@ -161,6 +161,34 @@ impl LightGroup {
     }
 }
 
+pub const SHADOW_COMBINER_WORDS: usize = 60;
+
+/// One quad of an object shadow's filter `0x000222a0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct ShadowFilterDraw {
+    pub source: u32,
+    pub dest: u32,
+    /// Spread in guest texels, as f32 bits.
+    pub spread: u32,
+}
+
+fn serialize_words<S: serde::Serializer>(words: &[u32], s: S) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(words, s)
+}
+
+/// The object filter's ping-pong quads and final copy, with the combiner
+/// and tap signs the native quad shader needs.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct ShadowFilter {
+    pub draws: Vec<ShadowFilterDraw>,
+    pub copy: Option<(u32, u32)>,
+    #[serde(serialize_with = "serialize_words")]
+    pub combiner: [u32; SHADOW_COMBINER_WORDS],
+    pub signs: [u32; 2],
+    /// The colour-mask target's guest size (targets 10 and 11).
+    pub size: [u32; 2],
+}
+
 /// One object shadow `0x00032350` of a view, in the guest's order: the
 /// caster gathered by `0x00033400`, its layers' groups after it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -181,6 +209,8 @@ pub struct ObjectShadow {
     /// fades, as f32 bits, read at its layer 11. `None` when that layer
     /// was not gathered or the word did not read.
     pub weight_bits: Option<u32>,
+    /// The filter `0x000222a0` between layers 10 and 11.
+    pub filter: Option<ShadowFilter>,
 }
 
 impl ObjectShadow {

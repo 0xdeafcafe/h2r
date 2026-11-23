@@ -9,8 +9,9 @@ Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
 census and the layer draws of the structure's static items and the
 objects' items (layers 1, 5, 7, 8 and 20, layer 5's with the model's
 PRT stream; the first person's 1, 7, 8 and 20) from the plan, on by
-default, and the caster groups of layer 10 drawn from the scene with no
-geometry handler, are built, and its
+default, the caster and receiver groups of layers 10, 11 and 14 drawn
+from the scene with no geometry handler, and the object filter's native
+quads, are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
@@ -1216,12 +1217,13 @@ to the guest's draws (**Code**):
   whole is drawn from the scene with no handler run, its object entries
   from model parts the light passes build per map with their node rows
   ([native-lights.md](native-lights.md), "Gathered groups in the
-  scene"). A whole caster group of layer 10 draws from the scene at all
-  three sites through `native_render::shadow_scene` and
+  scene"). Whole groups of layers 10, 11 and 14 draw from the scene at
+  all three sites through `native_render::shadow_scene` and
   `native_lights_glue::shadow_alone`; the guest's begin, clear and end
-  still run, and `ShadowPass` carries their target and raster words. Not
-  built: recorders for receiver layers 11 and 14 from the scene, so those
-  layers still run their handlers.
+  still run, and `ShadowPass` carries their target and raster words.
+  Receivers bind the boundary's frozen depth or colour-mask map. The
+  object shadow's `filter` carries its native quads and final copy into
+  `native_render::shadow_filter_gpu`, inside the guest call's swallow.
 
 The entry census (`render_bridge::entry_census`, built) measures both
 halves of 8.2's first two rules per entry, so the coordinator can tell

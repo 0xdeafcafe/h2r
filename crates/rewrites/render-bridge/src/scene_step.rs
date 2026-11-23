@@ -36,7 +36,7 @@ use scene_extract::extract;
 use scene_extract::light_groups::{self, Cause, Sorted};
 /// The shadow pass a light-group layer draws into, read from the guest
 /// (for the glue that checks a caster group before skipping its handlers).
-pub use scene_extract::light_groups::shadow_pass;
+pub use scene_extract::light_groups::{shadow_filter as extract_shadow_filter, shadow_pass};
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 
@@ -480,6 +480,25 @@ pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
     });
+}
+
+/// The current object shadow's filter, extracted and copied out of the
+/// scene for the native quad pass. `None` when its reads fail or no object
+/// shadow is open.
+pub fn shadow_filter(
+    mem: &dyn GuestMemory,
+    esp: u32,
+    mxcsr: u32,
+    x87_control: u16,
+) -> Option<frame_scene::ShadowFilter> {
+    let filter = extract_shadow_filter(mem, esp, mxcsr, x87_control)?;
+    with_step(|step| {
+        if !step.shadow_open {
+            return None;
+        }
+        step.builder.set_shadow_filter(filter.clone()).ok()?;
+        Some(filter)
+    })
 }
 
 /// A light layer's sorted entries (`sorted`, as the layer build leaves
@@ -954,6 +973,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .into_iter()
     .chain(crate::native_decorators::counters())
     .chain(crate::native_shadows::alone_counters())
+    .chain(crate::native_shadows::filter_counters())
     .chain(
         LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(
             LIGHT_ENTRY_REMAINDER
