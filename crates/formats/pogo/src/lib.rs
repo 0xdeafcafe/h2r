@@ -7,7 +7,7 @@ pub const FOLDER: &str = r"objects\weapons\multiplayer\pogo";
 
 /// The kit's version: part of every cache key, and of the string
 /// (`pogo_kit_v<n>`) a map carrying the kit interns.
-pub const KIT_VERSION: u32 = 1;
+pub const KIT_VERSION: u32 = 2;
 
 /// A look. The index is the script's `enum PogoStyle { unsc, covenant,
 /// forerunner }`.

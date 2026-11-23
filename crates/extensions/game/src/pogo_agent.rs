@@ -60,6 +60,7 @@ pub fn state_reply() -> wire::State {
             drawn: camera.drawn,
             room: f64::from(camera.room),
             share: f64::from(camera.share),
+            fallback_frames: camera.fallback_frames,
         },
         tricks: Trick::ALL.iter().map(|t| t.id().to_owned()).collect(),
     }

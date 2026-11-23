@@ -463,6 +463,13 @@ pub(crate) fn fixture_class() -> (String, String) {
     ("pistol".to_owned(), "hp".to_owned())
 }
 
+/// The fixture pistol's first-person models and graphs, one pair a
+/// player character.
+pub(crate) const FIXTURE_FIRST_PERSON: [(&str, &str); 2] = [
+    (r"invented\fp\pistol_chief", r"invented\fp\pistol_chief"),
+    (r"invented\fp\pistol_elite", r"invented\fp\pistol_elite"),
+];
+
 /// The group of the fixture's padding tag: one nothing reads.
 const PAD_GROUP: &[u8; 4] = b"bloc";
 
@@ -471,9 +478,10 @@ const PAD_GROUP: &[u8; 4] = b"bloc";
 /// materials. `pad` adds a tag of that many bytes.
 pub(crate) fn fixture(pad: usize) -> Vec<u8> {
     let mut set = TagSet::new(CacheType::Multiplayer, "court", r"invented\court");
-    for group in [b"scnr", b"matg", b"stem", b"bitm", PAD_GROUP] {
+    for group in [b"scnr", b"matg", b"stem", b"bitm", b"mode", b"jmad", PAD_GROUP] {
         set.add_group(FourCC(*group), None, None);
     }
+    set.add_group(FourCC(*b"weap"), Some(FourCC(*b"item")), Some(FourCC(*b"obje")));
     let globals = {
         let mut names = Block::zeroed(2 * 0xb4);
         names.string_id(0, "soft_organic_flesh");
@@ -517,6 +525,34 @@ pub(crate) fn fixture(pad: usize) -> Vec<u8> {
         texture::bitmap(&grey)
             .unwrap()
             .install(&mut set, path)
+            .unwrap();
+    }
+    // The map's own pistol, whose first-person view the stick takes: one
+    // element a player character. A rifle of another class before it.
+    let mut fp = Vec::new();
+    for (i, (model, graph)) in FIXTURE_FIRST_PERSON.iter().enumerate() {
+        let model = set
+            .add_tag(FourCC(*b"mode"), model, TagPayload::Built(Block::zeroed(0x10)))
+            .unwrap();
+        let graph = set
+            .add_tag(FourCC(*b"jmad"), graph, TagPayload::Built(Block::zeroed(0x10)))
+            .unwrap();
+        fp.push((i as u32, model, graph));
+    }
+    for (path, class, elements) in [
+        (r"invented\rifle", ("rifle", "ar"), &fp[..1]),
+        (r"invented\pistol", ("pistol", "hp"), &fp[..]),
+    ] {
+        let mut block = Block::zeroed(0x10 * elements.len());
+        for (k, (_, model, graph)) in elements.iter().enumerate() {
+            let at = 0x10 * k as u32;
+            block.tag_ref(at, *model).tag_ref(at + 8, *graph);
+        }
+        let mut root = Block::zeroed(0x31c);
+        root.string_id(0x288, class.0)
+            .string_id(0x28c, class.1)
+            .block(0x2a8, elements.len() as u32, block);
+        set.add_tag(FourCC(*b"weap"), path, TagPayload::Built(root))
             .unwrap();
     }
     if pad > 0 {
@@ -702,11 +738,56 @@ fn the_weapon_is_inert_and_held_as_the_class() {
         "no binocular zoom, nothing else"
     );
     assert_eq!(f32::from_bits(word(&weap, 4)), kit::BOUNDING_RADIUS);
+    // Held, it has the map's pistol's first-person view: both elements,
+    // each a model and a graph the map has.
+    let fp = kit::first_person_of(&mut map, weapons[0]).unwrap();
+    let named = |group: &[u8; 4], path: &str| {
+        map.tags()
+            .iter()
+            .find(|t| t.group == FourCC(*group) && t.name.as_deref() == Some(path))
+            .map(|t| t.id)
+            .unwrap()
+    };
+    let want: Vec<_> = FIXTURE_FIRST_PERSON
+        .iter()
+        .map(|(m, g)| kit::FirstPerson {
+            model: named(b"mode", m),
+            animations: named(b"jmad", g),
+        })
+        .collect();
+    assert_eq!(fp, want);
     // A second kit on the same map is refused by name.
     let facts = Facts::read_with_class(&mut map, fixture_class()).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
     let e = kit::install_all(&mut set, &facts).unwrap_err().to_string();
     assert!(e.contains("already has"), "{e}");
+}
+
+#[test]
+fn the_first_person_view_is_the_classs_weapons() {
+    let id = |n: u32| TagId(0xe000_0000 | n);
+    let weapons = vec![
+        ("rifle".to_owned(), "ar".to_owned(), id(1)),
+        ("pistol".to_owned(), "plasma".to_owned(), id(2)),
+        ("pistol".to_owned(), "hp".to_owned(), id(3)),
+    ];
+    let class = |c: &str, n: &str| (c.to_owned(), n.to_owned());
+    // The class and type exactly, wherever it is.
+    assert_eq!(kit::first_person_source(&weapons, &class("pistol", "hp")), Some(id(3)));
+    // Else the first of the class.
+    assert_eq!(kit::first_person_source(&weapons, &class("pistol", "smg")), Some(id(2)));
+    // None of the class: none.
+    assert_eq!(kit::first_person_source(&weapons, &class("sword", "any")), None);
+    assert_eq!(kit::first_person_source(&[], &class("pistol", "hp")), None);
+}
+
+#[test]
+fn a_map_without_a_weapon_of_the_class_is_refused_by_name() {
+    let mut map = Map::from_reader(Cursor::new(fixture(0))).unwrap();
+    let e = Facts::read_with_class(&mut map, ("sword".to_owned(), "any".to_owned()))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("first-person") && e.contains("sword"), "{e}");
 }
 
 #[test]
@@ -787,9 +868,18 @@ fn every_multiplayer_map_holds_the_class() {
             assert!(pairs.contains(&class), "{stem}: {biped} lacks {class:?}");
         }
         let facts = Facts::read(&mut map).unwrap_or_else(|e| panic!("{stem}: {e:#}"));
+        // The first-person view the stick is held in: one element a
+        // player character, each graph with an idle the stick's ready
+        // and hold play from.
+        assert_eq!(facts.first_person.len(), 2, "{stem}: {:?}", facts.first_person);
+        for fp in &facts.first_person {
+            let idle = kit::graph_has_idle(&mut map, fp.animations)
+                .unwrap_or_else(|e| panic!("{stem}: {e:#}"));
+            assert!(idle, "{stem}: the first-person graph {:?} has no idle", fp.animations);
+        }
         println!(
-            "{stem}: class {:?}, shader {}, material {:?}",
-            facts.class, facts.layout.stem, facts.material
+            "{stem}: class {:?}, shader {}, material {:?}, first person {:?}",
+            facts.class, facts.layout.stem, facts.material, facts.first_person
         );
     }
 }

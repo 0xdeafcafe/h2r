@@ -46,15 +46,23 @@ tags a map carries it as (`kit::install_from`):
 | `shad` | written from a shader template's definition the map has, with the atlas as its base map (`h1convert::shad::Library`, `kit::LAYOUTS`); no retail shader is copied |
 | `mode` | the mesh (`mesh.rs`) through `h1_assets::models::mode::convert_model`: two nodes, `frame` and `piston`, and the five markers |
 | `hlmt` | `h1objects::rebuild::model`, with one of the map's global materials |
-| `weap` | the definition's defaults with the model, an empty HUD and a weapon class (`kit::weapon`) |
+| `weap` | the definition's defaults with the model, an empty HUD, a weapon class and the first-person block of the map's own weapon of that class (`kit::weapon`) |
 
 The three looks share one physics model and one empty weapon HUD
 (`kit::install_shared`), so a map gains 17 tags. The weapon is inert: no
-triggers, barrels, magazines, melee damage, zoom or first-person model.
+triggers, barrels, magazines, melee damage or zoom.
 It is held as a weapon class both player animation graphs already have an
 `idle` for, read from the map when the kit is built (`kit::player_class`),
 because a unit refuses a weapon whose class its graph lacks
 ([objects.md](../halo1/objects.md)).
+
+Held, the game reads a weapon's first-person block (its arms and weapon
+model and their graph) by player character, for its first-person camera
+and draw. The stick's block is a copy of the map's own weapon of the same
+class (`kit::first_person`: the weapon of that class and type, else the
+first of the class), so the references are to tags the map already has
+and the stick is held in that weapon's first-person view. A map with no
+weapon of the class is refused by name, as one with no room is.
 
 ### The map rewrite
 
@@ -79,7 +87,8 @@ kit give the same bytes on every machine.
   header. A map served without the kit has none, and then nothing below
   happens on it.
 - **The kit's mark.** A rewritten map interns `pogo_kit_v<n>`, so the
-  kit's version changes the map's bytes.
+  kit's version changes the map's bytes. `KIT_VERSION` (in
+  `crates/formats/pogo`) is 2: the first with the first-person block.
 
 ### The loadout
 
@@ -157,6 +166,14 @@ private, playerless copy of the view, the director stays in first person,
 and the aim, the bots and the netcode read what they always do. Putting
 the stick away is first person again on the next frame.
 
+While the chase camera draws, the first-person arms and weapon are left
+out (a hook on `points::FIRST_PERSON_RENDER` returns as the Blind skull's
+does). When the game's view does not read as a camera (no finite
+position and aim, or no lens), the camera is placed from the body's eye
+and aim of the last tick instead (`pogo_camera::body_eye`) and the frame
+is counted in `pogo.state` (`camera.fallback_frames`), so a degenerate
+first-person view is never what is drawn.
+
 Each tick `pogo_camera::on_tick` finds how much of the boom the level
 leaves room for (`pull_in`: line-of-sight tests against the collision the
 superbounce scan read, a halving search when the full boom is blocked).
@@ -206,6 +223,14 @@ piston going in on a touchdown, springing out on a bounce, and easing out
 when no bounce comes. They play for the local players only, up to three
 at once.
 
+- **Level.** A host buffer is mixed at its own volume alone: none of the
+  sound class gain, mix-bin volumes and headroom the game's voices pass
+  through. The clips peak at `PEAK` (0.7 of full scale, the script's), so
+  each plays at `level_mb`: the spring -12 dB, the compress -14 dB and the
+  settle -20 dB, all under the game's weapons.
+- **Once.** A cue started less than `RETRIGGER_TICKS` (3) ago is dropped,
+  so two local players landing on one tick give one clank.
+
 ## Interfaces
 
 - **`h2 pogo kit MAP [--out FILE]`** builds one map's kit and prints the
@@ -218,7 +243,8 @@ at once.
 - **Guest boundary.** One hook changes the simulation:
   `points::STARTING_WEAPON_PICK` (the feature `pogo`). The feature
   `pogo-view` hooks `points::RENDER_VIEWS` twice (the camera's private
-  view; the rows written and put back) and is presentation only.
+  view; the rows written and put back) and `points::FIRST_PERSON_RENDER`
+  (left out under the chase camera), and is presentation only.
 - **From the superbounce mode.** `superbounce_mode::on_tick` calls
   `pogo_ride::on_tick`, `pogo_sound::play` and `pogo_camera::on_tick`;
   its resets call `pogo_ride::reset`. With the `superbounce` feature off
@@ -258,22 +284,35 @@ route and the row override, are in
   and returning to the mounted pose, the flips rigid).
 - **Test.** The rows put back byte for byte: the `tests` module of
   `pogo_pose_glue.rs`.
+- **Test.** The sounds: the `tests` module of `pogo_sound.rs` (each
+  clip's peak, the level each plays at, a cue sounding once in three
+  ticks, the oldest voice giving way).
 - **Test.** The kit and the rewrite: `pogo-kit`'s `tests.rs` (the rig's
-  markers, the triangle budget, outward normals, the tags read back) and
+  markers, the triangle budget, outward normals, the tags read back, the
+  first-person block copied from the class's weapon and the refusal
+  without one) and
   `inject_tests.rs` (the references resolve, the same bytes twice, the
   refusal, the cache).
 - **Test.** The loadout's decision: the `tests` module of
   `pogo_loadout.rs`; the script's options: `superbounce_scores_bounces_only_by_their_chain`
   in `crates/formats/rules/tests/engines.rs`.
-- **V**, not yet run: `every_multiplayer_map_holds_the_class` and
+- **Test.** The camera: the `tests` module of `pogo_camera.rs` (the
+  record matches a host camera's for the pose, the body's eye when the
+  view is not a camera, the first-person draw left out only under the
+  chase camera).
+- **V**, not yet run: `every_multiplayer_map_holds_the_class` (with the
+  first-person graphs' idle) and
   `every_multiplayer_map_has_the_room` in `pogo-kit` (`#[ignore]`, read
   `$H2_DISC`).
 
 ## Not verified
 
 - A rewritten multiplayer map loads, and peers accept each other's.
-- The unit accepts the stick at spawn, and Y swaps to and from it; a
-  weapon with no first-person model does not fault on ready or swap.
+- The unit accepts the stick at spawn, and Y swaps to and from it, with
+  the borrowed first-person block (the stick shows the class weapon's
+  arms in first person with `-pogo-view`).
+- The chase view is not black: `pogo.state`'s `camera.drawn` true and
+  `camera.fallback_frames` 0 while the stick is held.
 - The hook fires on both secondary calls in the recompiled image.
 - A guest and a film's playback make the same pick as the host.
 - The stick dropped on death, and picked up.
@@ -284,7 +323,7 @@ route and the row override, are in
 - The riding pose and each trick as they look; nothing has been seen.
 - The posed body is not culled by its bounding sphere, and nothing in
   render setup poses the body again after the hook.
-- The sounds' level against the game's mix.
+- The sounds' level against the game's weapons and footsteps, by ear.
 - Every multiplayer map has the tag memory and the shader template.
 
 ## Related

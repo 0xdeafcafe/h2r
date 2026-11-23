@@ -68,6 +68,10 @@ pub struct Camera {
     pub room: f64,
     /// The share of the boom now, eased.
     pub share: f64,
+    /// Frames drawn from the body's eye and aim because the game's own
+    /// view did not read as a camera, since the game started.
+    #[serde(default)]
+    pub fallback_frames: u64,
 }
 
 /// `pogo.state`'s result.

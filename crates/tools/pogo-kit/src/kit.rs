@@ -93,10 +93,158 @@ pub fn shared_path() -> String {
 pub struct Facts {
     /// The weapon class and type both player graphs hold.
     pub class: (String, String),
+    /// The first-person view the stick is held in: the map's own weapon
+    /// of that class's ([`first_person`]).
+    pub first_person: Vec<FirstPerson>,
     pub library: Library,
     pub layout: &'static Layout,
     /// The global material and its index in the globals.
     pub material: (String, i16),
+}
+
+/// One element of a weapon's first-person block: the arms and weapon
+/// model and the graph that animates them, for one player character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstPerson {
+    pub model: TagId,
+    pub animations: TagId,
+}
+
+/// A `weap`'s class and name (string IDs) and its first-person block
+/// (`crates/formats/tags/src/defs/item.txt`).
+const WEAPON_CLASS: usize = 0x288;
+const WEAPON_NAME: usize = 0x28c;
+const WEAPON_FIRST_PERSON: usize = 0x2a8;
+/// A first-person element: the model's tag reference, then the graph's.
+const FIRST_PERSON_SIZE: u32 = 0x10;
+/// The most first-person elements taken: retail has one a player
+/// character, two.
+pub const FIRST_PERSON_MAX: u32 = 4;
+
+/// The weapon whose first-person view the stick takes, of `weapons`
+/// (class, name, tag, in the map's order): the first held as `class`
+/// exactly, else the first of its class. A weapon with no first-person
+/// view is not offered.
+pub fn first_person_source(
+    weapons: &[(String, String, TagId)],
+    class: &(String, String),
+) -> Option<TagId> {
+    weapons
+        .iter()
+        .find(|(c, n, _)| *c == class.0 && *n == class.1)
+        .or_else(|| weapons.iter().find(|(c, ..)| *c == class.0))
+        .map(|(.., id)| *id)
+}
+
+/// The first-person block of the map's weapon of `class`
+/// ([`first_person_source`]), so that the stick, held, has the arms and
+/// view of a weapon the player graphs already animate. Retail reads the
+/// block by player character; a weapon with none leaves the first-person
+/// camera and draw with nothing to read.
+pub fn first_person<R: Read + Seek>(
+    map: &mut Map<R>,
+    meta: &tags::object::Metadata,
+    class: &(String, String),
+) -> Result<Vec<FirstPerson>> {
+    let strings = map.strings().to_vec();
+    let name = |w: u32| -> String {
+        strings
+            .get((w & 0xffff) as usize)
+            .cloned()
+            .flatten()
+            .unwrap_or_default()
+    };
+    // Every weapon with a first-person block, its class and name.
+    let mut weapons = Vec::new();
+    let mut blocks = HashMap::new();
+    for t in map.tags().iter().filter(|t| t.group == FourCC(*b"weap")) {
+        let Some(at) = t.location.map(|l| l.address) else {
+            continue;
+        };
+        let Ok(head) = meta.slice(at, (WEAPON_FIRST_PERSON + 8) as u64) else {
+            continue;
+        };
+        let (count, first) = (
+            word(head, WEAPON_FIRST_PERSON)?,
+            word(head, WEAPON_FIRST_PERSON + 4)?,
+        );
+        if count == 0 || count > FIRST_PERSON_MAX {
+            continue;
+        }
+        weapons.push((
+            name(word(head, WEAPON_CLASS)?),
+            name(word(head, WEAPON_NAME)?),
+            t.id,
+        ));
+        blocks.insert(t.id, (count, first));
+    }
+    let source = first_person_source(&weapons, class).with_context(|| {
+        format!(
+            "no weapon of class {:?} with a first-person view to hold the stick in ({} weapons have one)",
+            class.0,
+            weapons.len()
+        )
+    })?;
+    let (count, first) = blocks[&source];
+    elements(map, meta, source, count, first)
+}
+
+/// The `count` first-person elements at `first` of `weapon`, each a
+/// model and a graph the map has.
+fn elements<R: Read + Seek>(
+    map: &Map<R>,
+    meta: &tags::object::Metadata,
+    weapon: TagId,
+    count: u32,
+    first: u32,
+) -> Result<Vec<FirstPerson>> {
+    let group_of = |id: TagId| map.tags().iter().find(|t| t.id == id).map(|t| t.group);
+    let mut out = Vec::new();
+    for i in 0..count {
+        let el = meta
+            .slice(first + i * FIRST_PERSON_SIZE, u64::from(FIRST_PERSON_SIZE))
+            .map_err(|e| anyhow!("first-person element {i}: {e}"))?;
+        let fp = FirstPerson {
+            model: TagId(word(el, 4)?),
+            animations: TagId(word(el, 0xc)?),
+        };
+        ensure!(
+            group_of(fp.model) == Some(FourCC(*b"mode"))
+                && group_of(fp.animations) == Some(FourCC(*b"jmad")),
+            "the first-person element {i} of weapon {weapon:?} is not a model and a graph"
+        );
+        out.push(fp);
+    }
+    Ok(out)
+}
+
+/// The first-person block of the map's `weap` `weapon`, as the game
+/// reads it.
+pub fn first_person_of<R: Read + Seek>(map: &mut Map<R>, weapon: TagId) -> Result<Vec<FirstPerson>> {
+    let meta = tags::object::Metadata::read(map).map_err(|e| anyhow!("tag memory: {e}"))?;
+    let at = map
+        .tags()
+        .iter()
+        .find(|t| t.id == weapon && t.group == FourCC(*b"weap"))
+        .and_then(|t| t.location.map(|l| l.address))
+        .with_context(|| format!("no weapon {weapon:?}"))?;
+    let head = meta
+        .slice(at, (WEAPON_FIRST_PERSON + 8) as u64)
+        .map_err(|e| anyhow!("weapon {weapon:?}: {e}"))?;
+    let (count, first) = (
+        word(head, WEAPON_FIRST_PERSON)?,
+        word(head, WEAPON_FIRST_PERSON + 4)?,
+    );
+    ensure!(count <= FIRST_PERSON_MAX, "weapon {weapon:?}: {count} first-person elements");
+    elements(map, &meta, weapon, count, first)
+}
+
+/// Whether the graph `id`, its parent or a graph it inherits from has an
+/// `idle` in any class and type (in the combat mode where it has one).
+pub fn graph_has_idle<R: Read + Seek>(map: &mut Map<R>, id: TagId) -> Result<bool> {
+    let mut pairs = BTreeSet::new();
+    held(map, id, &mut BTreeSet::new(), &mut pairs)?;
+    Ok(!pairs.is_empty())
 }
 
 fn word(bytes: &[u8], at: usize) -> Result<u32> {
@@ -239,8 +387,10 @@ impl Facts {
             .position(|g| g == MATERIAL)
             .or(if globals.is_empty() { None } else { Some(0) })
             .context("the map's globals have no materials")?;
+        let first_person = first_person(map, &meta, &class)?;
         Ok(Facts {
             class,
+            first_person,
             library,
             layout,
             material: (globals[index].clone(), index as i16),
@@ -378,6 +528,21 @@ pub fn weapon(facts: &Facts, hlmt: TagId, hud: TagId) -> Result<Block> {
     set("weapon_flags", Val::Int(NO_BINOCULAR_ZOOM))?;
     set("magnification_levels", Val::Int(0))?;
     set("hud", Val::tag(FourCC(*b"nhdt"), hud))?;
+    // Held, the stick shows the first-person arms and weapon of the
+    // map's own weapon of its class; the chase camera hides them.
+    let element = d
+        .child("first_person")
+        .ok_or_else(|| anyhow!("weap: no first_person block"))?;
+    let mut list = Vec::new();
+    for fp in &facts.first_person {
+        let mut x = defs::default_record(element);
+        x.set("model", Val::tag(FourCC(*b"mode"), fp.model))
+            .map_err(|e| anyhow!("weap first_person.model: {e}"))?;
+        x.set("animations", Val::tag(FourCC(*b"jmad"), fp.animations))
+            .map_err(|e| anyhow!("weap first_person.animations: {e}"))?;
+        list.push(x);
+    }
+    set("first_person", Val::Block(list))?;
     defs::to_built(d, &r, &mut |_| None).map_err(|e| anyhow!("weap: {e}"))
 }
 
