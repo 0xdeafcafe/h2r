@@ -40,6 +40,12 @@
 //! row whose velocity is off the carry by more than [`CARRY_TOLERANCE`]
 //! (something hit it) or that is on the ground ends the writes for good:
 //! the record's `carry_cut`.
+//!
+//! **Carrying along.** `carry_along` is a list of speeds along each
+//! target's own drift direction ([`Target::drift`], a unit vector): a
+//! drop's carry is the speed times that unit vector, and the plan goes on
+//! as for `carry`. A target with no drift is skipped, and a note in the
+//! report counts them.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -217,8 +223,9 @@ pub struct DropsConfig {
     pub shard: u32,
     #[serde(default = "one")]
     pub shards: u32,
-    /// Origin heights over the target's floor (default [`HEIGHTS`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Origin heights over the target's floor (default [`HEIGHTS`]): a
+    /// list, or `{ from, to, step }` (read into the list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "heights_de")]
     pub heights: Vec<f32>,
     /// Offsets across the edge, toward its drift (default [`ACROSS`]): a
     /// list, or `{ from, to, step }`.
@@ -229,6 +236,12 @@ pub struct DropsConfig {
     /// with each (default `[[0, 0]]`, plumb). Not with an approach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carry: Option<Vec<[f32; 2]>>,
+    /// Speeds (units/s, each at most [`MAX_CARRY`] either way) along each
+    /// target's drift direction: each drop's carry is the speed times the
+    /// target's unit drift. Not with `carry` or an approach; a target with
+    /// no drift is skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry_along: Option<Vec<f32>>,
     /// A horizontal push through the fall, from either side of the edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approach: Option<Approach>,
@@ -261,6 +274,7 @@ impl Default for DropsConfig {
             heights: Vec::new(),
             across: None,
             carry: None,
+            carry_along: None,
             approach: None,
             control: None,
             targets: Targets::default(),
@@ -303,19 +317,7 @@ impl Across {
         let round = |v: f32| (v * 10_000.0).round() / 10_000.0;
         let v = match self {
             Across::List(v) => v.clone(),
-            &Across::Range { from, to, step } => {
-                if !(from.is_finite() && to.is_finite() && step.is_finite()) || step <= 0.0 {
-                    return Err("across: from, to and a step over 0".into());
-                }
-                if to < from {
-                    return Err("across: to is under from".into());
-                }
-                let n = ((to - from) / step + 1e-3).floor() as usize;
-                if n > 1000 {
-                    return Err("across: at most 1000 offsets".into());
-                }
-                (0..=n).map(|i| round(from + step * i as f32)).collect()
-            }
+            &Across::Range { from, to, step } => sweep("across", from, to, step)?,
         };
         if v.is_empty() {
             return Err("across: at least one offset".into());
@@ -324,6 +326,39 @@ impl Across {
             return Err(format!("across: {bad} is outside -1..1"));
         }
         Ok(v.into_iter().map(round).collect())
+    }
+}
+
+/// `from` to `to` in `step`s, each rounded to 0.1 mm; `name` is the key
+/// an error names.
+fn sweep(name: &str, from: f32, to: f32, step: f32) -> Result<Vec<f32>, String> {
+    let round = |v: f32| (v * 10_000.0).round() / 10_000.0;
+    if !(from.is_finite() && to.is_finite() && step.is_finite()) || step <= 0.0 {
+        return Err(format!("{name}: from, to and a step over 0"));
+    }
+    if to < from {
+        return Err(format!("{name}: to is under from"));
+    }
+    let n = ((to - from) / step + 1e-3).floor() as usize;
+    if n > 1000 {
+        return Err(format!("{name}: at most 1000 values"));
+    }
+    Ok((0..=n).map(|i| round(from + step * i as f32)).collect())
+}
+
+/// `heights` as a list or `{ from, to, step }`.
+fn heights_de<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<f32>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Heights {
+        List(Vec<f32>),
+        Range { from: f32, to: f32, step: f32 },
+    }
+    match Heights::deserialize(d)? {
+        Heights::List(v) => Ok(v),
+        Heights::Range { from, to, step } => {
+            sweep("heights", from, to, step).map_err(serde::de::Error::custom)
+        }
     }
 }
 
@@ -441,6 +476,9 @@ pub struct Settings {
     pub across: Vec<f32>,
     /// The carries, at least one (`[0, 0]` is plumb).
     pub carries: Vec<[f32; 2]>,
+    /// The speeds along each target's drift (`carry_along`); then
+    /// `carries` is the plumb one.
+    pub carry_along: Option<Vec<f32>>,
     pub along: u32,
     pub repeats: u32,
     pub sides: Vec<Side>,
@@ -522,6 +560,26 @@ impl DropsConfig {
                 };
                 from.dedup();
                 (from, a.stick, lead)
+            }
+        };
+        let carry_along = match &self.carry_along {
+            None => None,
+            Some(c) => {
+                if self.carry.is_some() {
+                    p.push("drops: carry_along and carry: one or the other".into());
+                }
+                if self.approach.is_some() {
+                    p.push("drops: carry_along and approach: one or the other".into());
+                }
+                if c.is_empty() {
+                    p.push("drops: carry_along: at least one speed".into());
+                }
+                if let Some(bad) = c.iter().find(|v| !(v.is_finite() && v.abs() <= MAX_CARRY)) {
+                    p.push(format!(
+                        "drops: carry_along: {bad} is not a speed of at most {MAX_CARRY} units/s"
+                    ));
+                }
+                Some(c.clone())
             }
         };
         let carries = match &self.carry {
@@ -620,6 +678,7 @@ impl DropsConfig {
             heights,
             across,
             carries,
+            carry_along,
             along,
             repeats,
             sides,
@@ -706,6 +765,10 @@ pub struct Target {
     pub shape: String,
     pub edge: [[f32; 3]; 2],
     pub normal: [f32; 2],
+    /// The drift's unit vector as the target gave it; `None` with none (a
+    /// scan spot with a zero drift). `carry_along` runs along it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift: Option<[f32; 2]>,
     pub stand: [f32; 3],
     #[serde(default, skip_serializing_if = "is_false")]
     pub control: bool,
@@ -775,6 +838,7 @@ impl Target {
             shape,
             edge,
             normal,
+            drift,
             stand: stand.unwrap_or(mid),
             control,
         }
@@ -861,6 +925,9 @@ pub struct Drop {
     /// falls plumb.
     #[serde(default)]
     pub carry: [f32; 2],
+    /// The speed along the target's drift that made `carry` (`carry_along`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry_along: Option<f32>,
     /// The point aimed at, on the floor (the edge's height).
     pub point: [f32; 3],
     /// Where the lift puts the origin: over the point (back by the lead
@@ -872,6 +939,19 @@ pub struct Drop {
     pub control: bool,
 }
 
+/// The carries a drop at `t` gets under `s`, each with the speed along
+/// the drift that made it: `carry_along`'s speeds times the target's unit
+/// drift (none for a target with no drift), or `carry`'s velocities.
+fn carries_of(s: &Settings, t: &Target) -> Vec<([f32; 2], Option<f32>)> {
+    match &s.carry_along {
+        Some(speeds) => match t.drift {
+            Some(d) => speeds.iter().map(|&v| ([d[0] * v, d[1] * v], Some(v))).collect(),
+            None => Vec::new(),
+        },
+        None => s.carries.iter().map(|&c| (c, None)).collect(),
+    }
+}
+
 /// How many drops `t` gets under `s`.
 pub fn drops_per_target(t: &Target, s: &Settings) -> usize {
     if t.control {
@@ -880,7 +960,7 @@ pub fn drops_per_target(t: &Target, s: &Settings) -> usize {
     t.alongs(s.along).len()
         * s.across.len()
         * s.heights.len()
-        * s.carries.len()
+        * carries_of(s, t).len()
         * s.sides.len()
         * s.repeats as usize
 }
@@ -931,6 +1011,7 @@ fn push_drop(
     across: f32,
     height: f32,
     carry: [f32; 2],
+    carry_along: Option<f32>,
     side: Side,
     repeat: u32,
 ) {
@@ -947,6 +1028,7 @@ fn push_drop(
         side,
         repeat,
         carry,
+        carry_along,
         point,
         start: [sx, sy, point[2] + height],
         rest: [
@@ -972,19 +1054,20 @@ pub fn plan(s: &Settings, targets: &[Target]) -> Vec<Drop> {
             let across = t.across_of(xy(c.point));
             let carry = c.carry.unwrap_or([0.0, 0.0]);
             for &h in &c.heights {
-                push_drop(&mut out, s, ti, t, point, along, across, h, carry, Side::None, 0);
+                push_drop(&mut out, s, ti, t, point, along, across, h, carry, None, Side::None, 0);
             }
             continue;
         }
+        let carries = carries_of(s, t);
         for a in t.alongs(s.along) {
             let on = t.at(a);
             for &h in &s.heights {
                 for &c in &s.across {
                     let point = [on[0] + t.normal[0] * c, on[1] + t.normal[1] * c, on[2]];
-                    for &carry in &s.carries {
+                    for &(carry, along_speed) in &carries {
                         for &side in &s.sides {
                             for r in 0..s.repeats {
-                                push_drop(&mut out, s, ti, t, point, a, c, h, carry, side, r);
+                                push_drop(&mut out, s, ti, t, point, a, c, h, carry, along_speed, side, r);
                             }
                         }
                     }
@@ -1262,6 +1345,10 @@ pub struct Record {
     /// The drop's carry ([`Drop::carry`]).
     #[serde(default, skip_serializing_if = "is_zero2")]
     pub carry: [f32; 2],
+    /// The speed along the target's drift the carry came from, if it was
+    /// a `carry_along` ([`Drop::carry_along`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry_along: Option<f32>,
     pub seat: u8,
     /// Tries (setup failures are tried again).
     pub attempts: u32,
@@ -1776,6 +1863,7 @@ impl DropRun {
             side: self.drop.side,
             repeat: self.drop.repeat,
             carry: self.drop.carry,
+            carry_along: self.drop.carry_along,
             seat: self.seat,
             attempts: 1,
             tick: self.release.or(self.first_tick).unwrap_or(0),
@@ -1942,6 +2030,21 @@ impl Job {
             targets.push(Target::from_spec(i, t)?);
         }
         let drops = plan(&s, &targets);
+        let mut notes = Vec::new();
+        if s.carry_along.is_some() {
+            let skipped: Vec<&str> = targets
+                .iter()
+                .filter(|t| !t.control && t.drift.is_none())
+                .map(|t| t.id.as_str())
+                .collect();
+            if !skipped.is_empty() {
+                notes.push(format!(
+                    "carry_along: {} target(s) with no drift skipped: {}",
+                    skipped.len(),
+                    skipped.join(", ")
+                ));
+            }
+        }
         if drops.len() > MAX_DROPS {
             return Err(format!(
                 "drops: {} drops in one run, at most {MAX_DROPS}; fewer targets, heights or offsets, or more runs",
@@ -1981,7 +2084,7 @@ impl Job {
             traced: Vec::new(),
             started: None,
             stalled: 0,
-            notes: Vec::new(),
+            notes,
             finished: false,
         })
     }
