@@ -10,6 +10,7 @@ use hud_kit_core::huds::superbounce_readout::{
 use superbounce::{Kind, Vec3};
 
 use super::*;
+use engine::GuestMemory as _;
 use crate::superbounce_mode::{Course, Predicted, ScanState};
 use crate::superbounce_options::TargetMode;
 use crate::superbounce_second::Ranked;
@@ -560,11 +561,12 @@ fn the_approach_guide_is_the_states_with_its_option() {
     assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [false; 5]);
 }
 
-/// In a primed fall the guide's percentage is on the box after its call
-/// and on the fall row after the steer line; a seam with no measured
-/// landing is capped at 60%; the variant's option takes it off both.
+/// In a primed fall the box shows the guide's call alone and the fall
+/// row the steer line alone: the chance is carried (a seam with no
+/// measured landing capped at 60%) but no label shows it; the variant's
+/// option hides the box.
 #[test]
-fn the_guides_percentage_is_on_the_box_and_the_fall_row() {
+fn the_guides_chance_is_carried_but_not_shown() {
     use crate::superbounce_guide::{Body, guide};
     use hud_kit_core::huds::superbounce_guide::{BOX, Call};
     let scan = Spot {
@@ -590,15 +592,17 @@ fn the_guides_percentage_is_on_the_box_and_the_fall_row() {
     assert_eq!(s.guide.unwrap().call, Call::WillBounce);
     assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(93));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce 93%", "On seam 93%"));
+    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce", rd::ON_SEAM));
     // The scan's seam: the cap.
     s.guide = guide(&body, &scan);
+    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(60));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce 60%", "On seam 60%"));
+    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce", rd::ON_SEAM));
     // Too shallow.
     s.guide = guide(&Body { position: [9.95, 0.0, 2.43], ..body }, &measured);
+    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(14));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Too shallow 14%", "On seam 14%"));
+    assert_eq!((on_box.as_str(), row.as_str()), ("Too shallow", rd::ON_SEAM));
     // With the guide off the row is as it was, and the box is hidden.
     let off = Options {
         approach_guide: false,

@@ -41,7 +41,7 @@ use superbounce::{Kind, Spot, Vec3};
 
 use crate::superbounce_charge::HIGH_SLACK;
 use crate::superbounce_font::{self as hud, Look};
-use crate::superbounce_guide::{Leave, Lip, Takeoff};
+use crate::superbounce_guide::{Lip, Takeoff};
 use crate::superbounce_mode::{DIM, FADE_FAR, FADE_NEAR, NavKind, State};
 use crate::superbounce_prompts::{Callout, FLAT_FALL, LABEL_RAISE, TAKEOFF_BACK, whole_metres};
 
@@ -930,6 +930,7 @@ pub fn lock_callouts(b: &LockBox, look: &Look) -> Vec<Callout> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::superbounce_guide::Leave;
     use gfx::world_lines::LabelFace;
     use std::time::Duration;
 
