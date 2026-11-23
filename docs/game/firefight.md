@@ -15,7 +15,9 @@ in `crates/apps/cli/src/firefight_cmd.rs`. The host runtime is
 `crates/extensions/game/src/actor_net/squads.rs`; the agent API's
 methods are `crates/extensions/agent/src/firefight.rs`. The HUD is
 `firefight/hud.rs`, the Game Setup row and options page `firefight/options.rs`.
-The slice table lists the planned Live code. Tests use invented data.
+Live carries the match in the session data, seats Clankers on player
+teams and takes the built-in sets in hoppers ("Live"); the slice table
+lists the rest of the planned Live code. Tests use invented data.
 Switch: the `firefight` feature of `H2_FEATURES`, on by default ([switches.md](../runtime/switches.md)).
 
 Firefight is a mode on multiplayer maps against waves of AI, with
@@ -570,28 +572,37 @@ limits").
   and the carnage report need nothing new.
 - In the stats stream: the host's `Host::post_tick` pairs each `Score`
   command with the class of the kill it was for (`Credit`) and, on
-  `Finish`, makes the result (`Ended`: the set's name, the outcome,
-  rounds cleared, respawns issued). The runtime reports each
-  ([`runtime::Report`]) to Live telemetry, which writes two public game
-  events the server takes only from the game's host
-  (`live_proto::firefight`): `FirefightScore` (`tick`, `player` slot,
-  `points`, `reason` `kill`, `assist` or `player_kill`, `class` on a
-  kill) and `FirefightEnded` (`tick`, `set`, `outcome` `won`, `lost`,
-  `team_won` or `draw`, `teams`, `team` on `team_won`, `scores` one per
-  team, `rounds_cleared`, `lives_used`). `won` needs one team,
-  `team_won` and `draw` two. In the film the tracker turns each `FirefightScore`
-  into a `live_proto::film::events::Event::FirefightScore` and the
-  player's running total into an `ObjectiveScore` with
-  `game_type: "firefight"`. `ActorKilled` stays its own event.
+  `Finish`, makes the result (`Ended`: the set's name, the outcome, the
+  team count, each team's score, rounds cleared, respawns issued). The
+  runtime reports each ([`runtime::Report`]) to Live telemetry, which
+  writes two public game events the server takes only from the game's
+  host (`live_proto::firefight`):
+  - `FirefightScore`: `tick`, `player` slot, `points`, and `reason`
+    `kill`, `assist` or `player_kill`. A `kill` carries the actor's
+    `class`; an assist and a player kill carry none, and a player kill's
+    points are the definition's `player_kill`.
+  - `FirefightEnded`: `tick`, `set`, `teams` (1 or 2), `outcome`, `team`,
+    `scores`, `rounds_cleared` and `lives_used`. `scores` has one entry
+    per team, team 0's first. `outcome` is `won` (one team only), `lost`
+    (one team out of lives, or the only team present of two),
+    `team_won` (two teams, with `team` 0 or 1) or `draw` (two teams);
+    only `team_won` names a `team`.
+
+  In the film the tracker turns each `FirefightScore` into a
+  `live_proto::film::events::Event::FirefightScore` and the player's
+  running total into an `ObjectiveScore` with `game_type: "firefight"`.
+  `ActorKilled` stays its own event.
 - The Live projection (`live-server`'s `stats`, which the Worker
   composes, so both homes give the same answer) folds them into the
-  summary's `firefight` section: finished matches and wins, rounds
-  cleared, lives used, points, matches by wave set, kills by class, and
-  a row per account (score, kills, assists, player kills, matches).
-  `won` counts one-team wins against the AI; two-team matches also
-  count in a `versus` row (games, wins by team, draws), where a two-team
-  `lost` counts in games only. A bot has no row; its points, kills and
-  player kills count in the totals and classes. A second
+  summary's `firefight` section (`live_proto::firefight::Summary`):
+  finished matches (`games`), one-team wins (`won`), rounds cleared,
+  lives used, points (`score`), player kills (`player_kills`, every
+  `player_kill` credit, bots' included), matches by wave set, kills by
+  class, and a row per account (score, kills, assists, player kills,
+  matches). Every finished match counts in `games`; a two-team match
+  counts again in `versus` (`games`, `wins` by team, `draws`), where a
+  two-team `lost` counts in `games` only. A bot has no row; its points,
+  kills and player kills count in the totals and classes. A second
   `FirefightEnded` for one game counts nothing. The stats home shows the
   section once a match has been played in the window.
 - Firefight scores do not enter ranks: a game that carries either event
@@ -752,17 +763,36 @@ have no director and so no blob until the host log carries the mode state
   extension's reserved bytes ([game-options.md](game-options.md), "The
   extension"), in the layout of
   [rules-engine.md](rules-engine.md#carrying-a-script): mode 1 and the
-  8-byte prefix of the definition's hash. The definition itself travels
-  in the session data beside the extension (`NewSession.firefight`), in
-  both homes.
-- **Clankers.** Live's roster names no team for a bot
-  (`live-server/src/bots.rs`, `roster_bots`); the host seats each one
-  on a player team by the Firefight seat rule, never on the AI's
-  (`firefight_sessions_seat_clankers_on_player_teams_only`).
-- **Hoppers.** A Firefight hopper entry identifies a kit map and the
-  Firefight variant. `hopper-edit` offers the built-in definitions. FF9
-  ships the 1-to-4-player playlist. FF13 adds the 16-player playlist
-  once P5 meets the host target at the chosen actor cap.
+  8-byte prefix of the definition's hash. `firefight::builtin::by_prefix`
+  finds the built-in set a prefix names.
+- **Session data.** At each multiplayer start the runtime names the match
+  the game plays (`runtime::session_firefight`: the set's name, the
+  definition's id, its teams, the difficulty and `firefight::KIT_VERSION`),
+  and boot hands it to a Live host's session
+  (`live_hle::Hle::set_session_firefight`) as `NewSession.firefight`; a
+  game that is not Firefight clears it (`clear_firefight`). Both homes
+  validate, keep and return it ([live-api.md](../live/live-api.md)). A
+  guest reads its host's with `Hle::host_firefight`; its runtime still
+  plays its own Game Setup choices.
+- **Clankers.** Live names a team only for a Clanker in a Firefight
+  session (one whose advertisement carries `firefight`), and only a player
+  team: `roster_bots` seats each bot by
+  `live_server::bots::firefight_seats`, every one on team 0 with one team, and with
+  two each on the team with fewer bots, team 0 on a tie. Any other session
+  names no team, and the host balances by skill. Both homes run the same
+  handler (`firefight_sessions_seat_clankers_on_player_teams_only`,
+  `a_firefight_session_seats_balanced_clankers_on_the_worker`).
+- **Hoppers.** A Firefight hopper entry identifies a kit map and a mode-1
+  variant naming a built-in set. `hopper-edit` offers the four built-in
+  sets (`choices::firefight_record`: Slayer with lives 1, no score or time
+  limit, Crossfire with team play), and both `hopper-edit`'s
+  `model::needs_script` and Live's hopper checks (`admin::unscripted`,
+  `check_scripts_of`, `blocked_pairs`) take a mode-1 entry whose prefix
+  names a built-in set, with team play for a two-team set; an unknown
+  prefix is refused, and a Firefight entry has no script for the policy or
+  the census to check. FF9 ships the 1-to-4-player playlist. FF13 adds the
+  16-player playlist once P5 meets the host target at the chosen actor
+  cap.
 - **Dedicated host.** A Firefight match asks for a host of its own class
   with a whole core (ai-networking.md, "CPU on the host"). The host
   builds the kit map from its own disc. The server-map strip keeps the
@@ -869,9 +899,9 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `the_firefight_summary_is_the_golden_one_and_players_cannot_write_it`, `the_firefight_summary_is_the_same_on_the_worker`, `firefight_scores_do_not_touch_ranks`, `a_two_team_match_projects_wins_by_team`, `credits_pair_each_kill_with_its_class_and_assist`, `a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film`, `firefight_scores_become_running_objective_scores`, `reads the server's golden summary as it is` (web) | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |
 | **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`); `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state (`every_state_passes_the_layout_checks`) | a client with only the mode blob draws the same HUD as the host |
-| **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
+| **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite; built: `firefight_match_round_trips_and_is_left_out_when_none`, `firefight_match_is_validated`, `sessions_carry_the_hosts_firefight_match`, `guests_read_the_firefight_match_their_host_advertises`, `each_multiplayer_start_names_its_match_for_the_session`, `each_builtin_is_found_by_its_hash_prefix`, `a_hopper_takes_the_builtin_firefight_sets`, `a_crossfire_variant_is_accepted_by_its_hash_prefix`, `the_builtin_firefight_sets_are_offered_crossfire_with_teams`, `firefight_seats_balance_two_teams_and_fill_one`, `firefight_sessions_seat_clankers_on_player_teams_only`, `a_firefight_session_seats_balanced_clankers_on_the_worker` | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/apps/h2host/`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors` | admission tests; the coordinator's host run in notes |
-| **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `game_cpu_p99_uses_individual_tick_deltas` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
+| **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `the_firefight_examples_load`, `rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
 | **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order | L | FF3, P2 | `crates/tools/firefight-kit/src/transplant.rs` (new) | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids` | on invented maps; the retail census goes in notes |
 | **FF13** | The 16-player playlist at the live-actor cap measured by the CPU probe | S | FF9, FF10, FF11, P5 passes at 16 seats | `crates/tools/hopper-edit/`, `crates/live/live-server/`, `crates/live/live-worker/` | `sixteen_player_playlist_requires_the_measured_host_class`, `sixteen_player_definition_honours_the_measured_actor_cap`, the parity suite | publish in both Live homes only with a P5 result at or below 28 ms p99 game-thread CPU at the chosen live-actor cap on the intended host class. Admission uses that class and cap |
 | **FF14** | Home bases in the kit: bases from flag stands, team starts or clusters; drops away from both with a path to each; firing positions facing the nearer base; `ff_base_NN` zones and `ff_hunt_NN` orders; starts rewritten to their base's team; `--home`; Beaver Creek's kit | M | FF3 | `crates/tools/firefight-kit/src/{bases,nav,ai,lib}.rs`, `crates/apps/cli/src/firefight_cmd.rs`, `crates/extensions/game/src/firefight/guest.rs` | `home_base_is_read_from_team_starting_points`, `home_base_prefers_the_ctf_flag_stand`, `the_home_option_swaps_the_bases`, `bases_split_untagged_starts_into_two_clusters`, `starting_locations_take_their_base_team`, `drops_are_chosen_away_from_the_home_base`, `every_drop_zone_has_a_path_to_each_base`, `firing_positions_face_the_nearer_base`, `each_base_has_a_hunt_order_over_its_area`, `the_kit_writes_each_start_its_base_team`, `read_kit_finds_the_bases_and_hunt_orders` | on invented maps the bases, drops and orders read back; the coordinator's Beaver Creek build goes in notes |
