@@ -375,14 +375,14 @@ pub fn shadow_filter(
     let combiner = glow::blur_combiner(mem, strength, 0, mxcsr, x87_control)
         .ok()?
         .0;
-    let size = |index| {
+    let target_size = |index: u32| {
         let at = engine::shadow_constants::global::TARGETS.checked_add(index.checked_mul(engine::shadow_constants::global::TARGET_STRIDE)?)?;
         let width = mem.u32(at.checked_add(0x80)?).ok()?;
         let height = mem.u32(at.checked_add(0x84)?).ok()?;
         (width != 0 && height != 0).then_some([width, height])
     };
-    let size = size(10)?;
-    if size(11)? != size {
+    let size = target_size(10)?;
+    if target_size(11)? != size {
         return None;
     }
     Some(ShadowFilter {

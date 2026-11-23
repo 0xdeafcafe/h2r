@@ -109,11 +109,11 @@ pub fn prepare(
             for command in &commands {
                 command.record(encoder);
             }
-            if let Some((source, dest, extent)) = copy {
+            if let Some((source, dest, extent)) = &copy {
                 encoder.copy_texture_to_texture(
-                    source.as_image_copy(),
-                    dest.as_image_copy(),
-                    extent,
+                    source.texture().as_image_copy(),
+                    dest.texture().as_image_copy(),
+                    *extent,
                 );
             }
         }),
@@ -190,7 +190,7 @@ mod tests {
             size: [size.0, size.1],
         };
         let views = [&mask, &other].map(|t| t.create_view(&Default::default()));
-        let slots = views.map(|view| PostSurface {
+        let slots = views.each_ref().map(|view| PostSurface {
             view,
             guest_size: size,
         });
