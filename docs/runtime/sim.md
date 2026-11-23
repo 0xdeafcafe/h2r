@@ -948,7 +948,12 @@ site (the stand point the try was at):
               "practice_bounces": 14, "bounced_tries": 12, "bounce_rate": 0.3,
               "chain_bounces": 17, "chains": { "1": 8, "2": 3 }, "best_chain": 3,
               "bounced_deaths": 1, "launch": { "n": 17, "best": 6.1, "mean": 4.2 },
-              "why": { "too_slow": 9, "prime_failed": 6, "missed": 5 } },
+              "why": { "too_slow": 9, "prime_failed": 6, "missed": 5 },
+              "habits": { "repeats": 2, "distinct_sites": 14, "fumbles": 3,
+                          "fumble_bounces": 0, "retries": 2, "monster_tries": 5,
+                          "monster_bounces": 0, "chain_links_planned": 9,
+                          "chain_links_tried": 4, "chain_links_made": 0, "yields": 1,
+                          "yields_given_up": 0, "yield_ticks": 64, "stepped_aside": 3 } },
   "players": [ { "index": 0, "seat": 0, "name": "Bouncer 1", "arm": "base",
                  "first_bounce_ticks": 812, "stats": { "...": "..." } } ],
   "sites": [ { "site": [12.1, -3.4, 2.0], "stats": { "...": "..." } } ]
@@ -976,6 +981,19 @@ crouch spot), so a site out of reach adds no try and no reason;
 `no_route` is a route that failed to plan from where the bot stood.
 `first_bounce_ticks` counts from the match's start to the bot's first
 chain bounce. The block is absent from a match without `superbounce`.
+
+`habits` is how the bots practised (`sim_bench::bounce::Habits`, from
+the practice's own events; [bots.md, "How each bot
+practises"](../game/bots.md#how-each-bot-practises)): `repeats`, tries
+at the same site as the bot's try before; `distinct_sites`, the sites a
+bot tried (in the totals, summed over the bots); `fumbles`, tries set
+up with a fumble, and `fumble_bounces`, those the chain still filed a
+bounce in; `retries`, tries going straight back to a site just missed;
+`monster_tries` at a Monster site and `monster_bounces` the chain filed
+as Monsters; `chain_links_planned`, `chain_links_tried` (in the air off
+a launch) and `chain_links_made` (launched again); `yields`, times a bot
+let a player go first, `yields_given_up` of them, and `yield_ticks`
+waited; `stepped_aside`, steps out of a player's way between tries.
 
 A batch's comparison carries them per arm (`compare.json`'s `bounce`:
 the runs, the totals and each map's, pooled over every bot) and the

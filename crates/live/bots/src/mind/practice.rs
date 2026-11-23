@@ -33,12 +33,23 @@
 //! ([`crate::spots::store_learned`]). Outside training the learned knobs
 //! ride on the sites ([`Site::knobs`]) and a `learned` site weighs more.
 //!
+//! How each bot practises is its own ([`style::Style`], from its name):
+//! its taste in sites, how much its recent tries weigh a site down, how
+//! often it fumbles a try (a believable error in the approach, never a
+//! scripted fall), how long it waits for a player, and how keen it is on
+//! chains ([`crate::bounce_route::chain`]) and Monster sites
+//! ([`Site::monster`]). A bot lets any player on its site, its crouch spot
+//! or their lines go first ([`yielding`]): it stops a few units back
+//! before the jump, never in the air, and picks elsewhere when the wait
+//! outlasts its patience; standing between tries, it steps off a moving
+//! player's course.
+//!
 //! The loop sits in front of everything else in [`Mind::step`]: no
 //! target is chosen, nothing is shot, thrown or meleed, and being shot
 //! changes nothing. A route an agent asks for (`bots.bounce_to`) runs as
 //! usual and is not tallied.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 
 use input::host::HostPadState;
@@ -46,8 +57,10 @@ use input::host::HostPadState;
 use super::feel::{Rng, reached};
 use super::order::Asked;
 use super::{Mind, RouteMotion, Vec3, angles, dist_xy};
+use crate::bounce_route::chain::{self, Ballistic, Leg};
 use crate::bounce_route::{
-    Mode, Pairing, approach, launch_floor, pair_site, path_length, prime_start,
+    Mode, Pairing, Step, TAKEOFF_EARLY, approach, flown, launch_floor, pair_site, path_length,
+    prime_start,
 };
 use crate::brain::{Me, Perception, Seen};
 use crate::cache::MapData;
@@ -55,6 +68,12 @@ use crate::glitches::prime::is_primed;
 use crate::learn::{self, SiteIn, Train, Try};
 use crate::spots::{Crouch, Known, Site};
 use superbounce::learned::{How, Knobs, State as LineState};
+
+pub mod style;
+pub mod yielding;
+
+use style::Style;
+use yielding::{Other, Zone, in_the_way, use_of};
 
 /// Sites this far away (XY) or nearer are practised at.
 pub const REACH: f32 = 120.0;
@@ -68,15 +87,71 @@ pub const NOTHING_PAUSE: u32 = 300;
 /// A bot's claim on its site lapses this many ticks after it was last
 /// renewed (a bot that left or stopped).
 pub const CLAIM_TICKS: u32 = 300;
-/// How a site is weighed: proven, another bot on it, the last one tried,
-/// a unit of distance, and the random part.
+/// How a site is weighed: proven, another bot on it (times its crowd,
+/// [`crowd`]), each recent try of it (times its recency, [`recency`], and
+/// the bot's novelty), a player using it (times their use,
+/// [`yielding::use_of`]), a unit of distance (times the bot's roam), and
+/// the random part.
 pub const W_PROVEN: f32 = 2.0;
 pub const W_CLAIMED: f32 = -3.0;
-pub const W_LAST: f32 = -1.5;
+pub const W_RECENT: f32 = -1.6;
+pub const W_IN_USE: f32 = -2.5;
 pub const W_DISTANCE: f32 = -1.0 / 60.0;
 pub const W_JITTER: f32 = 0.8;
 /// A site the map's learned file calls `learned` weighs this much more.
 pub const W_LEARNED: f32 = 1.0;
+/// The bot's taste for the site's shape ([`Style::taste`], -1 to 1)
+/// times this.
+pub const W_TASTE: f32 = 1.2;
+/// A Monster site ([`Site::monster`]) weighs this times the bot's pull
+/// to Monsters ([`Style::monster`]) more.
+pub const W_MONSTER: f32 = 3.0;
+/// A site whose landing the bot just missed and goes again at.
+pub const W_AGAIN: f32 = 8.0;
+/// A recent try counts `exp(-age / RECENT_TICKS)` toward a site's recency
+/// (90 s); the bot remembers its last [`RECENT_KEEP`] tries, sites and
+/// crouch spots each. A crouch spot's recency counts half toward the
+/// sites paired with it.
+pub const RECENT_TICKS: f32 = 2700.0;
+pub const RECENT_KEEP: usize = 16;
+pub const CROUCH_RECENT: f32 = 0.5;
+/// Another bot's claim this near (XY) a site crowds it, down to nothing
+/// at this distance, by at most [`CROWD_NEAR`] (its own site crowds by
+/// 1).
+pub const CROWD_RADIUS: f32 = 6.0;
+pub const CROWD_NEAR: f32 = 0.5;
+/// A landing that did not bounce: the pause after it (a look at the
+/// site), ticks.
+pub const SHRUG: (u32, u32) = (60, 120);
+/// Letting a player go first: the bot stops this far (XY) from the floor
+/// in use (past its reach); clear this many ticks in a row, it goes on;
+/// standing in the floor's reach, it steps back to this far past it.
+pub const YIELD_BACK: f32 = 3.0;
+pub const YIELD_CLEAR: u32 = 20;
+pub const YIELD_GAP: f32 = 2.0;
+/// Waiting, a nudge of the stick every this many ticks, for this many,
+/// at this stick, back and forth: a body still for 38 ticks sleeps and
+/// loses its level pair (the drill's numbers).
+pub const NUDGE_EVERY: u32 = 30;
+pub const NUDGE_TICKS: u32 = 3;
+pub const NUDGE_STICK: f32 = 0.3;
+/// Standing between tries in a moving player's way: it steps this far
+/// across their course, at most once in this many ticks.
+pub const STEP_ASIDE: f32 = 2.0;
+pub const ASIDE_EVERY: u32 = 30;
+/// A fumbled try's error (docs/game/bots.md, "Fumbles"): the aim off the
+/// seam line (world units; a landing more than 0.1 off it does not
+/// bounce), the takeoff early or late (world units of run), the air
+/// stick let go this near the target (world units).
+pub const FUMBLE_OFF: (f32, f32) = (0.12, 0.25);
+pub const FUMBLE_EARLY: (f32, f32) = (0.15, 0.30);
+pub const FUMBLE_LATE: (f32, f32) = (0.10, 0.20);
+pub const FUMBLE_LETGO: (f32, f32) = (0.15, 0.30);
+/// Of the sites a chain's next link can be, it takes one of the this
+/// many easiest (least steering), another site than the one it is off
+/// this share of the time.
+pub const CHAIN_EASIEST: usize = 3;
+pub const CHAIN_ELSEWHERE: f32 = 0.75;
 /// Sites a pick pairs with a crouch spot at most (each up to two walks a
 /// crouch spot, of [`crate::bounce_route::PAIR_CROUCHES`]); the rest wait for the
 /// next pick, [`PAIRING_PAUSE`] later.
@@ -131,9 +206,10 @@ pub struct SpotTally {
 /// What a bot's practice says, for the agent (`bots.bounce_status`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PracticeView {
-    /// `idle` (between tries), `route` (on one), `waiting` (no site).
+    /// `idle` (between tries), `route` (on one), `yielding` (letting a
+    /// player go first at its site), `waiting` (no site).
     pub state: &'static str,
-    /// The site being tried.
+    /// The site being tried (or waited for).
     pub site: Option<Vec3>,
     pub attempts: u32,
     pub bounces: u32,
@@ -202,6 +278,37 @@ pub enum PracticeEvent {
         bounced: bool,
         why: Option<&'static str>,
     },
+    /// What the try just started means to do (after its `Started`): a
+    /// Monster site, the chain's links planned after the first bounce, the
+    /// error it fumbles with (`off_line`, `early`, `late`, `lazy_air`),
+    /// and whether it goes again at a site it just missed.
+    Intent {
+        site: Vec3,
+        tick: u32,
+        monster: bool,
+        links: u32,
+        fumble: Option<&'static str>,
+        again: bool,
+    },
+    /// The try's chain after its first bounce (before its `Tried`): links
+    /// tried (in the air off a launch) and made (launched again).
+    Chained {
+        site: Vec3,
+        tick: u32,
+        tried: u32,
+        made: u32,
+    },
+    /// The bot let a player go first at the site and waited `waited`
+    /// ticks: then went on, or gave the site up (`gave_up`, its patience
+    /// out).
+    Yielded {
+        site: Vec3,
+        tick: u32,
+        waited: u32,
+        gave_up: bool,
+    },
+    /// Standing between tries, it stepped out of a player's way.
+    SteppedAside { tick: u32 },
 }
 
 /// Practice events kept for the host at most.
@@ -215,6 +322,21 @@ enum Phase {
     Route(Site),
     /// A drill's walk to its start.
     Walk,
+    /// Letting a player go first at this site (its crouch spot, primed
+    /// or not), from the tick: `zone` is the floor in use, `clear` the
+    /// ticks in a row nobody has been on it, `look` who it watches, and
+    /// `backed` whether it has stepped back out of the floor's reach.
+    Yield {
+        site: Site,
+        crouch: Option<Crouch>,
+        zone: Zone,
+        since: u32,
+        clear: u32,
+        look: Vec3,
+        backed: bool,
+    },
+    /// Stepping out of a player's way between tries.
+    Aside,
 }
 
 /// A bot's practice.
@@ -223,7 +345,6 @@ pub struct Practice {
     on: bool,
     owner: u64,
     phase: Option<Phase>,
-    last: Option<Vec3>,
     rng: Rng,
     tally: Vec<SpotTally>,
     waiting: bool,
@@ -272,6 +393,25 @@ pub struct Practice {
     training: Training,
     learn_board: &'static learn::Shared,
     learned_dir: Option<std::path::PathBuf>,
+    /// The bot's style, for the name seed and skill it was drawn for.
+    style: Option<((u64, crate::mind::Skill), Style)>,
+    /// The sites and crouch spots it tried last (by stand), with the tick:
+    /// at most [`RECENT_KEEP`] each.
+    recent: VecDeque<([u32; 3], u32)>,
+    recent_crouch: VecDeque<([u32; 3], u32)>,
+    /// The other players, tracked ([`yielding::Others`]).
+    others: yielding::Others,
+    /// A site it goes again at (its landing just missed), and whether the
+    /// route under way is that again.
+    again: Option<Site>,
+    retry: bool,
+    /// The route under way's fumble, if it fumbles.
+    fumble: Option<&'static str>,
+    /// The chain's links for the route about to be planned
+    /// ([`Practice::take_chain`]).
+    chain: Vec<Site>,
+    /// Its last step aside (tick).
+    aside_at: Option<u32>,
 }
 
 /// What a pick found.
@@ -399,7 +539,6 @@ impl Practice {
             on: false,
             owner: seed,
             phase: None,
-            last: None,
             rng: Rng::new(seed ^ 0x9a_c71c),
             tally: Vec::new(),
             waiting: false,
@@ -425,6 +564,29 @@ impl Practice {
             training: Training::default(),
             learn_board: learn::shared(),
             learned_dir: None,
+            style: None,
+            recent: VecDeque::new(),
+            recent_crouch: VecDeque::new(),
+            others: yielding::Others::default(),
+            again: None,
+            retry: false,
+            fumble: None,
+            chain: Vec::new(),
+            aside_at: None,
+        }
+    }
+
+    /// The chain's links for the route being planned (taken once:
+    /// `mind::order`'s plan of a practice site).
+    pub(super) fn take_chain(&mut self) -> Vec<Site> {
+        std::mem::take(&mut self.chain)
+    }
+
+    /// Remembers a try at the site `stand` (and its crouch spot) at `tick`.
+    fn remember(&mut self, stand: Vec3, crouch: Option<Crouch>, tick: u32) {
+        push_recent(&mut self.recent, stand_key(stand), tick);
+        if let Some(c) = crouch {
+            push_recent(&mut self.recent_crouch, stand_key(c.stand), tick);
         }
     }
 
@@ -505,11 +667,12 @@ impl Practice {
         PracticeView {
             state: match self.phase {
                 Some(Phase::Route(_)) => "route",
+                Some(Phase::Yield { .. }) => "yielding",
                 _ if self.waiting => "waiting",
                 _ => "idle",
             },
             site: match self.phase {
-                Some(Phase::Route(s)) => Some(s.bounce.stand),
+                Some(Phase::Route(s)) | Some(Phase::Yield { site: s, .. }) => Some(s.bounce.stand),
                 _ => None,
             },
             attempts: self.tally.iter().map(|t| t.attempts).sum(),
@@ -677,6 +840,12 @@ pub struct Claim {
     owner: u64,
     key: [i32; 3],
     tick: u32,
+    /// When the bot first claimed the site (kept while it renews it).
+    since: u32,
+    /// The bot's player slot, when known: who it is among the players.
+    slot: Option<u32>,
+    /// It is letting a player go first there.
+    waiting: bool,
 }
 
 /// The bots' claims on sites.
@@ -696,18 +865,121 @@ fn fresh(c: &Claim, tick: u32) -> bool {
 /// Claims `stand` for `owner` at `tick` (renewing it), dropping its other
 /// claims; `None` drops them all.
 pub fn claim(board: &Board, owner: u64, stand: Option<Vec3>, tick: u32) {
+    claim_as(board, owner, stand, tick, None, false);
+}
+
+/// [`claim`], saying which player the bot is (`slot`) and whether it is
+/// waiting for a player there.
+pub fn claim_as(
+    board: &Board,
+    owner: u64,
+    stand: Option<Vec3>,
+    tick: u32,
+    slot: Option<u32>,
+    waiting: bool,
+) {
     let mut v = board.lock().unwrap_or_else(|e| e.into_inner());
+    let k = stand.map(key);
+    let since = v
+        .iter()
+        .find(|c| c.owner == owner && Some(c.key) == k && fresh(c, tick))
+        .map_or(tick, |c| c.since);
     v.retain(|c| c.owner != owner && fresh(c, tick));
-    if let Some(s) = stand {
+    if let Some(k) = k {
         v.push(Claim {
             owner,
-            key: key(s),
+            key: k,
             tick,
+            since,
+            slot,
+            waiting,
         });
     }
 }
 
+/// The fresh claim of `owner`, if any.
+fn claim_of(board: &Board, owner: u64, tick: u32) -> Option<Claim> {
+    let v = board.lock().unwrap_or_else(|e| e.into_inner());
+    v.iter().find(|c| c.owner == owner && fresh(c, tick)).copied()
+}
+
+/// The fresh claim of the bot playing `slot`, if any.
+fn claim_by_slot(board: &Board, slot: u32, tick: u32) -> Option<Claim> {
+    let v = board.lock().unwrap_or_else(|e| e.into_inner());
+    v.iter()
+        .find(|c| c.slot == Some(slot) && fresh(c, tick))
+        .copied()
+}
+
+/// The other bots' fresh claims, by stand (the claim's key, to a quarter
+/// unit).
+fn others_claims(board: &Board, owner: u64, tick: u32) -> Vec<Vec3> {
+    let v = board.lock().unwrap_or_else(|e| e.into_inner());
+    v.iter()
+        .filter(|c| c.owner != owner && fresh(c, tick))
+        .map(|c| c.key.map(|k| k as f32 / 4.0))
+        .collect()
+}
+
+/// How crowded `stand` is by other bots' claims: 1 for each on it, up to
+/// [`CROWD_NEAR`] for each within [`CROWD_RADIUS`], less the farther.
+pub fn crowd(board: &Board, owner: u64, stand: Vec3, tick: u32) -> f32 {
+    let k = key(stand);
+    let v = board.lock().unwrap_or_else(|e| e.into_inner());
+    v.iter()
+        .filter(|c| c.owner != owner && fresh(c, tick))
+        .map(|c| {
+            if c.key == k {
+                1.0
+            } else {
+                let at = c.key.map(|k| k as f32 / 4.0);
+                CROWD_NEAR * (1.0 - dist_xy(at, stand) / CROWD_RADIUS).max(0.0)
+            }
+        })
+        .sum()
+}
+
+/// Whether a bot that claimed its site at `mine` (or not yet) lets the
+/// player `o` go first. A player no claim names (a person, or a bot not on
+/// a try) always; a bot on its own try always; a bot that is itself
+/// waiting only when it claimed first (the older claim goes first, the
+/// lower owner on a tie), so two waiting bots never wait for each other.
+fn defers(board: &Board, mine: Option<Claim>, o: &Other, tick: u32) -> bool {
+    let Some(theirs) = claim_by_slot(board, o.id, tick) else {
+        return true;
+    };
+    if !theirs.waiting {
+        return true;
+    }
+    match mine {
+        Some(m) if m.owner == theirs.owner => false,
+        Some(m) => {
+            let age = |c: &Claim| tick.wrapping_sub(c.since);
+            (age(&theirs), std::cmp::Reverse(theirs.owner)) > (age(&m), std::cmp::Reverse(m.owner))
+        }
+        None => true,
+    }
+}
+
+/// Adds a try at `k` to a recent list.
+fn push_recent(list: &mut VecDeque<([u32; 3], u32)>, k: [u32; 3], tick: u32) {
+    if list.len() >= RECENT_KEEP {
+        list.pop_front();
+    }
+    list.push_back((k, tick));
+}
+
+/// How recently and how often `k` was tried: each try `exp(-age /`
+/// [`RECENT_TICKS`]`)`, summed.
+pub fn recency(list: &VecDeque<([u32; 3], u32)>, k: [u32; 3], tick: u32) -> f32 {
+    list.iter()
+        .filter(|(r, _)| *r == k)
+        .map(|(_, t)| (-(tick.wrapping_sub(*t) as f32) / RECENT_TICKS).exp())
+        .sum()
+}
+
 /// Whether another bot practises at `stand` now.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn claimed_by_other(board: &Board, owner: u64, stand: Vec3, tick: u32) -> bool {
     let k = key(stand);
     let v = board.lock().unwrap_or_else(|e| e.into_inner());
@@ -796,23 +1068,167 @@ fn forgive_primes(board: &FailBoard, map: u64) {
     v.retain(|f| f.map != map);
 }
 
-/// The weight of practising at `s` from `at`: higher is better, before
-/// the random part.
-pub fn weight(s: &Site, at: Vec3, claimed: bool, last: Option<Vec3>) -> f32 {
-    let mut w = W_DISTANCE * dist_xy(s.bounce.stand, at);
+/// What weighs a site besides the site itself: other bots' claims on it
+/// and near it ([`crowd`]), the bot's recent tries of it and of its crouch
+/// spot ([`recency`]), players using it ([`yielding::use_of`], 0 to 1),
+/// and whether the bot goes again at it after a miss.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Weigh {
+    pub crowd: f32,
+    pub recent: f32,
+    pub in_use: f32,
+    pub again: bool,
+}
+
+/// The weight of practising at `s` from `at` for a bot of `style`: higher
+/// is better, before the random part.
+pub fn weight(s: &Site, at: Vec3, w: &Weigh, style: &Style) -> f32 {
+    let mut x = W_DISTANCE * style.roam * dist_xy(s.bounce.stand, at);
     if s.proven() {
-        w += W_PROVEN;
+        x += W_PROVEN;
     }
-    if claimed {
-        w += W_CLAIMED;
-    }
-    if last.is_some_and(|l| dist_xy(l, s.bounce.stand) < 0.05) {
-        w += W_LAST;
-    }
+    x += W_CLAIMED * w.crowd;
+    x += W_RECENT * style.novelty * w.recent;
+    x += W_IN_USE * w.in_use;
     if s.line == Some(LineState::Learned) {
-        w += W_LEARNED;
+        x += W_LEARNED;
     }
-    w
+    x += W_TASTE * style.taste(s.shape);
+    if s.monster() {
+        x += W_MONSTER * style.monster;
+    }
+    if w.again {
+        x += W_AGAIN;
+    }
+    x
+}
+
+/// A fumbled try (docs/game/bots.md, "Fumbles"): `site` with one of its
+/// knobs a little wrong, the way a person's try goes wrong, and the
+/// error's name. `draw` gives numbers in 0..1. The aim off the seam line
+/// (`off_line`, across it: along its drift, either way); for a running
+/// jump off a launch floor (`jump`), the takeoff early (`early`, comes
+/// down short) or late (`late`, long); for any drop, the air stick let go
+/// near the target (`lazy_air`). A standing jump can only be off the
+/// line.
+pub fn fumble(site: Site, drop: bool, jump: bool, draw: &mut dyn FnMut() -> f32) -> (Site, &'static str) {
+    let pick = draw();
+    let how = match (drop, jump) {
+        (false, _) => "off_line",
+        (true, true) if pick < 0.25 => "early",
+        (true, true) if pick < 0.5 => "late",
+        (true, _) if pick < 0.75 => "lazy_air",
+        _ => "off_line",
+    };
+    let within = |(a, b): (f32, f32), x: f32| a + (b - a) * x;
+    let mut k = site.knobs;
+    match how {
+        "early" => {
+            k.early = Some(k.early.unwrap_or(TAKEOFF_EARLY) + within(FUMBLE_EARLY, draw()));
+        }
+        "late" => {
+            k.early = Some(k.early.unwrap_or(TAKEOFF_EARLY) - within(FUMBLE_LATE, draw()));
+        }
+        "lazy_air" => k.letgo = Some(within(FUMBLE_LETGO, draw())),
+        _ => {
+            let d = site.bounce.drift;
+            let l = d[0].hypot(d[1]);
+            let across = if l > 1e-3 {
+                [d[0] / l, d[1] / l]
+            } else {
+                // No drift (a busy point's disc): any way off it.
+                let a = std::f32::consts::TAU * draw();
+                [a.cos(), a.sin()]
+            };
+            let side = if draw() < 0.5 { 1.0 } else { -1.0 };
+            let off = side * within(FUMBLE_OFF, draw());
+            let t = site.target();
+            k.aim = Some([t[0] + across[0] * off, t[1] + across[1] * off]);
+        }
+    }
+    (Site { knobs: k, ..site }, how)
+}
+
+/// Out of `z`'s reach from `at`, the way it came in: from the line's
+/// nearest point through `at` (back along the line from its start, when
+/// `at` is on it) to [`YIELD_GAP`] past the reach.
+fn back_out(z: &Zone, at: Vec3) -> Vec3 {
+    let d = [z.b[0] - z.a[0], z.b[1] - z.a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 > 1e-9 {
+        (((at[0] - z.a[0]) * d[0] + (at[1] - z.a[1]) * d[1]) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let q = [z.a[0] + d[0] * t, z.a[1] + d[1] * t];
+    let off = [at[0] - q[0], at[1] - q[1]];
+    let l = off[0].hypot(off[1]);
+    let dir = if l > 0.05 {
+        [off[0] / l, off[1] / l]
+    } else if l2 > 1e-9 {
+        let l = l2.sqrt();
+        [-d[0] / l, -d[1] / l]
+    } else {
+        [1.0, 0.0]
+    };
+    let r = z.r + YIELD_GAP;
+    [q[0] + dir[0] * r, q[1] + dir[1] * r, at[2]]
+}
+
+/// Across `z`'s line from `at`, to the side `at` is on.
+fn off_line(z: &Zone, at: Vec3) -> [f32; 2] {
+    let d = [z.b[0] - z.a[0], z.b[1] - z.a[1]];
+    let l = d[0].hypot(d[1]);
+    if l < 1e-3 {
+        let o = [at[0] - z.a[0], at[1] - z.a[1]];
+        let lo = o[0].hypot(o[1]);
+        return if lo > 1e-3 {
+            [o[0] / lo, o[1] / lo]
+        } else {
+            [1.0, 0.0]
+        };
+    }
+    let left = [-d[1] / l, d[0] / l];
+    let side = (at[0] - z.a[0]) * left[0] + (at[1] - z.a[1]) * left[1];
+    if side >= 0.0 {
+        left
+    } else {
+        [-left[0], -left[1]]
+    }
+}
+
+/// [`STEP_ASIDE`] from `at` the way `dir` says.
+fn aside_to(at: Vec3, dir: [f32; 2]) -> Vec3 {
+    [
+        at[0] + dir[0] * STEP_ASIDE,
+        at[1] + dir[1] * STEP_ASIDE,
+        at[2],
+    ]
+}
+
+/// Picks the next link of a chain off `from` from the sites its launch
+/// reaches (`near`, the least steering first): with a chance of `go_on`,
+/// one of the [`CHAIN_EASIEST`] easiest, another site than `from`
+/// [`CHAIN_ELSEWHERE`] of the time when there is one. `None`: no link.
+pub fn chain_pick(
+    from: &Site,
+    near: &[(Site, Leg)],
+    go_on: f32,
+    draw: &mut dyn FnMut() -> f32,
+) -> Option<usize> {
+    if near.is_empty() || draw() >= go_on {
+        return None;
+    }
+    let same = |s: &Site| dist_xy(s.bounce.stand, from.bounce.stand) < 0.05;
+    let elsewhere: Vec<usize> = (0..near.len()).filter(|&i| !same(&near[i].0)).collect();
+    let pool: Vec<usize> = if !elsewhere.is_empty() && (draw() < CHAIN_ELSEWHERE || elsewhere.len() == near.len()) {
+        elsewhere
+    } else {
+        (0..near.len()).collect()
+    };
+    let n = pool.len().min(CHAIN_EASIEST);
+    let i = ((draw() * n as f32) as usize).min(n - 1);
+    Some(pool[i])
 }
 
 impl Mind {
@@ -824,7 +1240,10 @@ impl Mind {
         }
         self.practice.on = on;
         if !on {
-            if matches!(self.practice.phase, Some(Phase::Route(_) | Phase::Walk)) {
+            if matches!(
+                self.practice.phase,
+                Some(Phase::Route(_) | Phase::Walk | Phase::Aside | Phase::Yield { .. })
+            ) {
                 self.cancel_order("practice_off");
             }
             self.train_let_go();
@@ -978,13 +1397,14 @@ impl Mind {
             ..NothingWhy::default()
         };
         let owner = self.practice.owner;
-        let last = self.practice.last;
+        let style = self.practice_style();
+        let again = self.practice.again.map(|a| stand_key(a.bounce.stand));
         let mut ranked: Vec<(f32, Site)> = Vec::new();
         for s in &self.known.sites {
             let k = stand_key(s.bounce.stand);
             let skip = if dist_xy(s.bounce.stand, at) > REACH {
                 Some(&mut why.far)
-            } else if self.stuck.blocked(s.bounce.stand, tick) {
+            } else if again != Some(k) && self.stuck.blocked(s.bounce.stand, tick) {
                 Some(&mut why.resting)
             } else if self.practice.out_of_reach.iter().any(|(o, _)| *o == k) {
                 Some(&mut why.no_walk)
@@ -1002,8 +1422,23 @@ impl Mind {
                 *n += 1;
                 continue;
             }
-            let claimed = claimed_by_other(self.practice.board, owner, s.bounce.stand, tick);
-            let w = weight(s, at, claimed, last) + W_JITTER * self.practice.rng.unit();
+            let paired = match self.practice.pairs.get(&k) {
+                Some(Ok(p)) => Some(*p),
+                _ => None,
+            };
+            let crouch = paired.and_then(|p| p.crouch);
+            let recent = recency(&self.practice.recent, k, tick)
+                + crouch.map_or(0.0, |c| {
+                    CROUCH_RECENT * recency(&self.practice.recent_crouch, stand_key(c.stand), tick)
+                });
+            let approach = paired.map_or_else(|| s.bounce.from(), |p| p.approach);
+            let w = Weigh {
+                crowd: crowd(self.practice.board, owner, s.bounce.stand, tick),
+                recent,
+                in_use: self.practice_in_use(s, approach, crouch, tick),
+                again: again == Some(k),
+            };
+            let w = weight(s, at, &w, &style) + W_JITTER * self.practice.rng.unit();
             ranked.push((w, *s));
         }
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -1184,12 +1619,17 @@ impl Mind {
         }
     }
 
-    /// The route asked for by the practice has ended: tally it.
-    fn practice_tally(&mut self, site: Site) {
+    /// The route asked for by the practice has ended: tally it. Whether
+    /// the bot shrugs it off (a landing that did not bounce: a look at the
+    /// site, and maybe once more at it).
+    fn practice_tally(&mut self, site: Site) -> bool {
         let view = self.order_view();
         // Ended by something that says nothing about the site.
-        if matches!(view.error, Some("died" | "map_changed" | "practice_off")) {
-            return;
+        if matches!(
+            view.error,
+            Some("died" | "map_changed" | "practice_off" | "yield")
+        ) {
+            return false;
         }
         let bounced = view.state == "done" && view.site.is_some();
         let why = if bounced {
@@ -1208,30 +1648,423 @@ impl Mind {
         if !bounced {
             self.practice_strike(site, &view.steps, view.step, why);
         }
-        eprintln!(
-            "{}",
-            try_line(
-                self.practice.drill.is_some(),
-                self.practice.owner,
-                site,
-                why,
-                &view
-            )
-        );
-        self.practice.record(site.bounce.stand, bounced, why);
         let tick = self.tick.unwrap_or(0);
+        let fumble = self.practice.fumble.take();
+        let retry = std::mem::take(&mut self.practice.retry);
+        let mut line = try_line(
+            self.practice.drill.is_some(),
+            self.practice.owner,
+            site,
+            why,
+            &view,
+        );
+        if let Some(how) = fumble {
+            line.push_str(&format!("; fumbled {how}"));
+        }
+        let (tried, made) = view.chain;
+        if tried > 0 {
+            line.push_str(&format!("; chain {made} of {tried}"));
+            self.practice.event(PracticeEvent::Chained {
+                site: site.bounce.stand,
+                tick,
+                tried,
+                made,
+            });
+        }
+        eprintln!("{line}");
+        self.practice.record(site.bounce.stand, bounced, why);
         self.practice.event(PracticeEvent::Tried {
             site: site.bounce.stand,
             tick,
             bounced,
             why,
         });
-        self.practice.last = Some(site.bounce.stand);
-        if !bounced {
-            // Something else next time; back to it after a while.
-            self.stuck
-                .blacklist(site.bounce.stand, self.tick.unwrap_or(0));
+        self.practice
+            .remember(site.bounce.stand, self.practice.route_crouch, tick);
+        if bounced {
+            return false;
         }
+        let landed = matches!(
+            why,
+            Some("missed" | "too_slow" | "no_bounce" | "not_primed")
+        );
+        if landed && !retry {
+            // Shrugged off: sometimes straight back to it, once.
+            let style = self.practice_style();
+            if self.practice.rng.unit() < style.retry {
+                self.practice.again = self
+                    .known
+                    .sites
+                    .iter()
+                    .find(|s| s.bounce.stand == site.bounce.stand)
+                    .copied();
+                if self.practice.again.is_some() {
+                    return true;
+                }
+            }
+        }
+        // Something else next time; back to it after a while.
+        self.stuck.blacklist(site.bounce.stand, tick);
+        landed
+    }
+
+    /// The bot's practice style ([`Style::for_name`]), drawn once for its
+    /// name (its seed without one) and skill.
+    fn practice_style(&mut self) -> Style {
+        let seed = self.name_profile.map_or(self.seed, |n| n.seed);
+        let k = (seed, self.skill);
+        match self.practice.style {
+            Some((had, s)) if had == k => s,
+            _ => {
+                let s = Style::for_name(seed, self.skill);
+                self.practice.style = Some((k, s));
+                s
+            }
+        }
+    }
+
+    /// How much players use `site` (taken from `approach`) or its crouch
+    /// spot: the most any one does ([`use_of`]), 0 to 1. A bot on a try of
+    /// its own is left out: its claim weighs the site already ([`crowd`]).
+    fn practice_in_use(
+        &self,
+        site: &Site,
+        approach: Vec3,
+        crouch: Option<Crouch>,
+        tick: u32,
+    ) -> f32 {
+        let zone = Zone::site(approach, site.target());
+        let cz = crouch.map(|c| Zone::crouch(prime_start(&c), c.stand));
+        self.practice
+            .others
+            .now
+            .iter()
+            .filter(|o| claim_by_slot(self.practice.board, o.id, tick).is_none())
+            .map(|o| {
+                let u = use_of(&zone, o);
+                cz.map_or(u, |z| u.max(use_of(&z, o)))
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// Whether the route under way stops to let a player go first: only
+    /// while it walks (never once the prime, the jump or the drop has
+    /// begun), when the floor the walk leads to (the crouch spot's, or
+    /// the bounce's from its approach) has a player on it or on the way
+    /// onto it whom the bot lets go first ([`defers`]), and the bot is
+    /// within [`YIELD_BACK`] of that floor's reach. The floor and the
+    /// player.
+    fn practice_should_yield(&self, me: Me, site: &Site, tick: u32) -> Option<(Zone, Other)> {
+        let (now, next) = self.route_leg()?;
+        let Step::Walk { to, .. } = now else {
+            return None;
+        };
+        let zone = match next? {
+            Step::Prime(c) => Zone::crouch(prime_start(&c), c.stand),
+            Step::Bounce(_) | Step::Drop { .. } => Zone::site(to, site.target()),
+            _ => return None,
+        };
+        if zone.dist(me.position) > zone.r + YIELD_BACK {
+            return None;
+        }
+        let board = self.practice.board;
+        let mine = claim_of(board, self.practice.owner, tick);
+        self.practice
+            .others
+            .now
+            .iter()
+            .filter(|o| use_of(&zone, o) > 0.0)
+            .find(|o| defers(board, mine, o, tick))
+            .map(|o| (zone, *o))
+    }
+
+    /// Stops the route to let `o` go first on `zone`: the route is dropped
+    /// (`yield`, neither a try nor a strike) and the bot waits
+    /// ([`Phase::Yield`]).
+    fn practice_yield(
+        &mut self,
+        me: Me,
+        site: Site,
+        zone: Zone,
+        o: Other,
+        tick: u32,
+    ) -> Option<HostPadState> {
+        let crouch = self.practice.route_crouch;
+        self.cancel_order("yield");
+        self.practice.chain.clear();
+        self.practice.fumble = None;
+        self.practice.retry = false;
+        self.practice.phase = Some(Phase::Yield {
+            site,
+            crouch,
+            zone,
+            since: tick,
+            clear: 0,
+            look: o.at,
+            backed: false,
+        });
+        claim_as(
+            self.practice.board,
+            self.practice.owner,
+            Some(site.bounce.stand),
+            tick,
+            self.slot,
+            true,
+        );
+        self.practice_watch(me, tick, o.at)
+    }
+
+    /// Waiting for a player to be done with a site's floor: watching them,
+    /// stepped back out of the floor's reach. Clear for [`YIELD_CLEAR`]
+    /// ticks, the try goes on (planned again from here); past the bot's
+    /// patience ([`Style::patience`]) it gives the site up for now (it
+    /// counts as tried, so the pick looks elsewhere).
+    fn practice_wait(
+        &mut self,
+        p: &Perception,
+        me: Me,
+        map: Option<&MapData>,
+        seen: &[Seen],
+    ) -> Option<HostPadState> {
+        let Some(Phase::Yield {
+            site,
+            crouch,
+            zone,
+            since,
+            clear,
+            look,
+            backed,
+        }) = self.practice.phase
+        else {
+            return None;
+        };
+        let tick = p.tick;
+        let (board, owner) = (self.practice.board, self.practice.owner);
+        claim_as(board, owner, Some(site.bounce.stand), tick, self.slot, true);
+        let mine = claim_of(board, owner, tick);
+        let user = self
+            .practice
+            .others
+            .now
+            .iter()
+            .filter(|o| use_of(&zone, o) > 0.0)
+            .find(|o| defers(board, mine, o, tick))
+            .copied();
+        let clear = if user.is_some() { 0 } else { clear + 1 };
+        let look = user.map_or(look, |o| o.at);
+        let waited = tick.wrapping_sub(since);
+        if clear >= YIELD_CLEAR {
+            self.practice.event(PracticeEvent::Yielded {
+                site: site.bounce.stand,
+                tick,
+                waited,
+                gave_up: false,
+            });
+            // The site as known, not the try's fumbled copy.
+            let own = self
+                .known
+                .sites
+                .iter()
+                .find(|s| s.bounce.stand == site.bounce.stand)
+                .copied()
+                .unwrap_or(site);
+            return self.practice_begin(p, me, map, seen, own, crouch);
+        }
+        if waited > self.practice_style().patience {
+            self.practice.event(PracticeEvent::Yielded {
+                site: site.bounce.stand,
+                tick,
+                waited,
+                gave_up: true,
+            });
+            claim(board, owner, None, tick);
+            self.practice.remember(site.bounce.stand, crouch, tick);
+            self.practice_idle(me, tick, PAUSE_MIN);
+            return self.practice_stand(me, tick);
+        }
+        let mut backed = backed;
+        let mut walk_to = None;
+        if !backed && zone.dist(me.position) < zone.r + 0.5 {
+            // In the floor's reach: back out of it, the way it came.
+            backed = true;
+            walk_to = Some(back_out(&zone, me.position));
+        } else if let Some(dir) = self.practice_aside(me.position, tick) {
+            walk_to = Some(aside_to(me.position, dir));
+        }
+        self.practice.phase = Some(Phase::Yield {
+            site,
+            crouch,
+            zone,
+            since,
+            clear,
+            look,
+            backed,
+        });
+        if let Some(to) = walk_to
+            && let Some(pad) = self.practice_walk(p, me, map, seen, to)
+        {
+            return Some(pad);
+        }
+        self.practice_watch(me, tick, look)
+    }
+
+    /// A plain walk to `to` for the practice's own moves (stepping back or
+    /// aside), the phase left as it is; `None` when there is no walk.
+    fn practice_walk(
+        &mut self,
+        p: &Perception,
+        me: Me,
+        map: Option<&MapData>,
+        seen: &[Seen],
+        to: Vec3,
+    ) -> Option<HostPadState> {
+        self.asked = Some(Asked {
+            to,
+            mode: Mode::Help,
+            show_off: false,
+            site: None,
+            crouch: None,
+            plain: true,
+        });
+        self.order_pad(p, me, map, seen)
+    }
+
+    /// Standing, the way to step out of a player's way, if it is in one:
+    /// a moving player's course ([`in_the_way`]), or the floor of a site
+    /// another bot is on a try at. At most once in [`ASIDE_EVERY`] ticks.
+    fn practice_aside(&mut self, at: Vec3, tick: u32) -> Option<[f32; 2]> {
+        if self
+            .practice
+            .aside_at
+            .is_some_and(|t| tick.wrapping_sub(t) < ASIDE_EVERY)
+        {
+            return None;
+        }
+        let dir = self
+            .practice
+            .others
+            .now
+            .iter()
+            .find_map(|o| in_the_way(at, o))
+            .or_else(|| self.in_claimed_floor(at, tick))?;
+        self.practice.aside_at = Some(tick);
+        self.practice.event(PracticeEvent::SteppedAside { tick });
+        Some(dir)
+    }
+
+    /// Standing on the floor of a site another bot has claimed: the way
+    /// off it, across its line to the side the bot is on.
+    fn in_claimed_floor(&self, at: Vec3, tick: u32) -> Option<[f32; 2]> {
+        others_claims(self.practice.board, self.practice.owner, tick)
+            .into_iter()
+            .find_map(|stand| {
+                let s = self
+                    .known
+                    .sites
+                    .iter()
+                    .find(|s| key(s.bounce.stand) == key(stand))?;
+                let approach = match self.practice.pairs.get(&stand_key(s.bounce.stand)) {
+                    Some(Ok(p)) => p.approach,
+                    _ => s.bounce.from(),
+                };
+                let z = Zone::site(approach, s.target());
+                z.holds(at, 0.0).then(|| off_line(&z, at))
+            })
+    }
+
+    /// Starts a practice try at `site` (priming at `crouch`, `None`:
+    /// primed): maybe fumbled ([`fumble`], the bot's miss rate), maybe
+    /// going on into a chain ([`chain::plan`], the bot's keenness), the
+    /// site claimed and the route asked for. The route's first pad, or
+    /// `None` when it has no route (tallied, and a pause).
+    fn practice_begin(
+        &mut self,
+        p: &Perception,
+        me: Me,
+        map: Option<&MapData>,
+        seen: &[Seen],
+        site: Site,
+        crouch: Option<Crouch>,
+    ) -> Option<HostPadState> {
+        let tick = p.tick;
+        let style = self.practice_style();
+        self.practice.waiting = false;
+        self.practice.route_crouch = crouch;
+        let again = self
+            .practice
+            .again
+            .take()
+            .is_some_and(|a| a.bounce.stand == site.bounce.stand);
+        self.practice.retry = again;
+        let (tried, how) = if self.practice.rng.unit() < style.miss {
+            let drop = !site.standing();
+            let jump = drop
+                && map.is_some_and(|m| {
+                    let ledge = |s: &Site| launch_floor(m, s);
+                    crate::bounce_route::launch_from(&site, &ledge).is_some_and(|from| {
+                        flown(&site, from, &crate::tuning::bounce().sane()).jump()
+                    })
+                });
+            let rng = &mut self.practice.rng;
+            let (s, how) = fumble(site, drop, jump, &mut || rng.unit());
+            (s, Some(how))
+        } else {
+            (site, None)
+        };
+        self.practice.fumble = how;
+        let model = Ballistic::default();
+        let go_on = style.chain;
+        let rng = &mut self.practice.rng;
+        let links = chain::plan(
+            &site,
+            &self.known.sites,
+            &model,
+            chain::LINKS,
+            &mut |from: &Site, near: &[(Site, Leg)]| {
+                chain_pick(from, near, go_on, &mut || rng.unit())
+            },
+        );
+        let n = links.len() as u32;
+        self.practice.chain = links;
+        claim_as(
+            self.practice.board,
+            self.practice.owner,
+            Some(site.bounce.stand),
+            tick,
+            self.slot,
+            false,
+        );
+        self.asked = Some(Asked {
+            to: site.bounce.stand,
+            mode: Mode::Fun,
+            show_off: false,
+            site: Some(tried),
+            crouch,
+            plain: false,
+        });
+        self.practice.phase = Some(Phase::Route(tried));
+        self.practice.primed_seen = false;
+        self.practice.event(PracticeEvent::Started {
+            site: site.bounce.stand,
+            tick,
+        });
+        self.practice.event(PracticeEvent::Intent {
+            site: site.bounce.stand,
+            tick,
+            monster: site.monster(),
+            links: n,
+            fumble: how,
+            again,
+        });
+        if let Some(pad) = self.order_pad(p, me, map, seen) {
+            self.practice_watch_prime(tried, tick);
+            return Some(pad);
+        }
+        // No route to it (or no map): tally and wait.
+        self.practice.chain.clear();
+        self.practice_tally(tried);
+        self.practice_idle(me, tick, PAUSE_MAX);
+        None
     }
 
     /// The practice's pad this tick while it is on; `None` while off.
@@ -1252,15 +2085,22 @@ impl Mind {
             return Some(self.drill_pad(p, me, map, seen, d));
         }
         let tick = p.tick;
-        // A route under way, the practice's or an agent's.
+        self.practice.others.see(&p.others, tick);
+        // A route under way, the practice's or an agent's (or the
+        // practice's own step back or aside).
         if self.asked.is_some() || self.order.is_some() {
             if let Some(Phase::Route(s)) = self.practice.phase {
-                claim(
+                claim_as(
                     self.practice.board,
                     self.practice.owner,
                     Some(s.bounce.stand),
                     tick,
+                    self.slot,
+                    false,
                 );
+                if let Some((zone, o)) = self.practice_should_yield(me, &s, tick) {
+                    return self.practice_yield(me, s, zone, o, tick);
+                }
             }
             if let Some(pad) = self.order_pad(p, me, map, seen) {
                 if let Some(Phase::Route(s)) = self.practice.phase {
@@ -1272,60 +2112,66 @@ impl Mind {
         match self.practice.phase {
             // The practice's route is over.
             Some(Phase::Route(site)) => {
-                self.practice_tally(site);
+                let shrug = self.practice_tally(site);
                 claim(self.practice.board, self.practice.owner, None, tick);
-                let pause = self.practice.rng.ticks(PAUSE_MIN, PAUSE_MAX);
-                self.practice_idle(me, tick, pause);
+                if shrug {
+                    // A look at where it went wrong.
+                    let pause = self.practice.rng.ticks(SHRUG.0, SHRUG.1);
+                    self.practice_idle(me, tick, pause);
+                    let t = site.target();
+                    let d = [t[0] - me.position[0], t[1] - me.position[1]];
+                    if d[0].hypot(d[1]) > 0.1
+                        && let Some(Phase::Idle { yaw, .. }) = &mut self.practice.phase
+                    {
+                        *yaw = d[1].atan2(d[0]);
+                    }
+                } else {
+                    let pause = self.practice.rng.ticks(PAUSE_MIN, PAUSE_MAX);
+                    self.practice_idle(me, tick, pause);
+                }
             }
             None => {
                 let pause = self.practice.rng.ticks(FIRST_PAUSE.0, FIRST_PAUSE.1);
                 self.practice_idle(me, tick, pause);
             }
-            Some(Phase::Idle { until, .. }) if reached(tick, until) => {
-                match self.pick_practice(me.position, tick, map) {
-                    Pick::Site(site, crouch) => {
-                        self.practice.waiting = false;
-                        self.practice.route_crouch = crouch;
-                        claim(
-                            self.practice.board,
-                            self.practice.owner,
-                            Some(site.bounce.stand),
-                            tick,
-                        );
-                        self.asked = Some(Asked {
-                            to: site.bounce.stand,
-                            mode: Mode::Fun,
-                            show_off: false,
-                            site: Some(site),
-                            crouch,
-                            plain: false,
-                        });
-                        self.practice.phase = Some(Phase::Route(site));
-                        self.practice.primed_seen = false;
-                        self.practice.event(PracticeEvent::Started {
-                            site: site.bounce.stand,
-                            tick,
-                        });
-                        if let Some(pad) = self.order_pad(p, me, map, seen) {
-                            self.practice_watch_prime(site, tick);
-                            return Some(pad);
+            Some(Phase::Yield { .. }) => {
+                if let Some(pad) = self.practice_wait(p, me, map, seen) {
+                    return Some(pad);
+                }
+            }
+            Some(Phase::Idle { until, .. }) => {
+                if let Some(dir) = self.practice_aside(me.position, tick) {
+                    self.practice.phase = Some(Phase::Aside);
+                    if let Some(pad) =
+                        self.practice_walk(p, me, map, seen, aside_to(me.position, dir))
+                    {
+                        return Some(pad);
+                    }
+                } else if reached(tick, until) {
+                    match self.pick_practice(me.position, tick, map) {
+                        Pick::Site(site, crouch) => {
+                            if let Some(pad) = self.practice_begin(p, me, map, seen, site, crouch)
+                            {
+                                return Some(pad);
+                            }
                         }
-                        // No route to it (or no map): tally and wait.
-                        self.practice_tally(site);
-                        self.practice_idle(me, tick, PAUSE_MAX);
-                    }
-                    Pick::Later => {
-                        self.practice_idle(me, tick, PAIRING_PAUSE);
-                    }
-                    Pick::Nothing => {
-                        self.practice.waiting = true;
-                        self.practice_idle(me, tick, NOTHING_PAUSE);
+                        Pick::Later => {
+                            self.practice_idle(me, tick, PAIRING_PAUSE);
+                        }
+                        Pick::Nothing => {
+                            self.practice.waiting = true;
+                            self.practice_idle(me, tick, NOTHING_PAUSE);
+                        }
                     }
                 }
             }
             // A drill's walk, the drill gone: pick as usual.
             Some(Phase::Walk) => self.practice_idle(me, tick, PAUSE_MIN),
-            Some(Phase::Idle { .. }) => {}
+            // Out of the way: a moment, then on.
+            Some(Phase::Aside) => {
+                let pause = self.practice.rng.ticks(FIRST_PAUSE.0, FIRST_PAUSE.1);
+                self.practice_idle(me, tick, pause);
+            }
         }
         self.practice_stand(me, tick)
     }
@@ -1342,6 +2188,41 @@ impl Mind {
             me.aim,
             tick,
             RouteMotion {
+                yaw: Some(yaw),
+                ..RouteMotion::default()
+            },
+        );
+        self.last_pad = pad;
+        Some(pad)
+    }
+
+    /// Waiting for a player: facing `look` with a glance about now and
+    /// then, and a nudge of the stick back and forth every
+    /// [`NUDGE_EVERY`] ticks so the body does not sleep.
+    fn practice_watch(&mut self, me: Me, tick: u32, look: Vec3) -> Option<HostPadState> {
+        let d = [look[0] - me.position[0], look[1] - me.position[1]];
+        let base = if d[0].hypot(d[1]) > 0.1 {
+            d[1].atan2(d[0])
+        } else {
+            angles(me.aim).0
+        };
+        let yaw = base + 0.35 * (tick as f32 / 37.0).sin();
+        let (dir, speed) = if tick % NUDGE_EVERY < NUDGE_TICKS {
+            let sign = if (tick / NUDGE_EVERY) % 2 == 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            ([base.cos() * sign, base.sin() * sign], NUDGE_STICK)
+        } else {
+            ([0.0; 2], 0.0)
+        };
+        let pad = self.route_pad.report(
+            me.aim,
+            tick,
+            RouteMotion {
+                dir,
+                speed,
                 yaw: Some(yaw),
                 ..RouteMotion::default()
             },
@@ -1396,7 +2277,7 @@ impl Mind {
                 self.practice_idle(me, tick, DRILL_PAUSE);
             }
             // At the start, or not: look at once.
-            Some(Phase::Walk) => self.practice_idle(me, tick, 1),
+            Some(Phase::Walk | Phase::Aside | Phase::Yield { .. }) => self.practice_idle(me, tick, 1),
             None => self.practice_idle(me, tick, DRILL_PAUSE),
             Some(Phase::Idle { until, .. }) if reached(tick, until) => {
                 if let Some(pad) = self.drill_next(p, me, map, seen, d) {
@@ -1575,7 +2456,7 @@ impl Mind {
                 self.train_tally(site);
                 self.practice_idle(me, tick, DRILL_PAUSE);
             }
-            Some(Phase::Walk) => self.practice_idle(me, tick, 1),
+            Some(Phase::Walk | Phase::Aside | Phase::Yield { .. }) => self.practice_idle(me, tick, 1),
             None => self.practice_idle(me, tick, DRILL_PAUSE),
             Some(Phase::Idle { until, .. }) if reached(tick, until) => {
                 if let Some(pad) = self.train_next(p, me, map, seen) {
@@ -1833,7 +2714,7 @@ impl Mind {
             bounced,
             why,
         });
-        self.practice.last = Some(site.bounce.stand);
+        self.practice.remember(site.bounce.stand, None, tick);
         self.train_try(t);
     }
 
@@ -1880,5 +2761,7 @@ impl Mind {
     }
 }
 
+#[cfg(test)]
+mod natural_tests;
 #[cfg(test)]
 mod tests;

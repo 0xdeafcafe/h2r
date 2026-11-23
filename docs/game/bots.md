@@ -2007,22 +2007,41 @@ is a practice loop (`mind::practice`, ahead of everything else in
 `Mind::step`):
 
 1. stand a moment, looking round (20 to 60 ticks at first, then 45 to
-   150 between tries, drawn each time);
-2. pick a site within 120 units that a route reaches: weighed by
-   distance (−1 a 60 units), a proven site +2, a site the learned file
-   calls `learned` +1, one another bot practises at −3, the one just
-   tried −1.5, plus a random 0 to 0.8, the best
-   weighed first. A failed try blacklists the site for a while
-   (`Stuck::blacklist`), so the next try is somewhere else, and counts
-   against what it failed at (below). With no
-   crouch spot to prime at (and the word not −3) or no site a route
-   reaches, it waits 300 ticks and looks again (`waiting`);
+   150 between tries, drawn each time), stepping out of any player's
+   way ([Letting players go first](#letting-players-go-first));
+2. pick a site within 120 units that a route reaches, the best weighed
+   first (`practice::weight`):
+
+   | What | Weight |
+   |---|---|
+   | distance | −1 a 60 units, times the bot's roam (0.4 to 1.6) |
+   | a proven site | +2 |
+   | a site the learned file calls `learned` | +1 |
+   | another bot's claim on it | −3 for each; a claim near it −1.5 next to it, down to 0 at 6 units (`practice::crowd`) |
+   | the bot's recent tries of it | −1.6 times the bot's novelty (0.6 to 1.4) for each, fading as `exp(−age / 2700 ticks)`, its paired crouch spot's tries counting half (`practice::recency`) |
+   | a player using it or its crouch spot | −2.5 on it, −2.0 on the way onto it |
+   | the bot's taste for its shape | −1.2 to +1.2: slots, or creases, Vs and busy points |
+   | a Monster site | +3 times the bot's pull to Monsters |
+   | the site it goes again at after a miss | +8 |
+   | the random part | 0 to 0.8 |
+
+   A try that failed on the way (a walk, a prime, no route) blacklists
+   the site for a while (`Stuck::blacklist`), so the next try is
+   somewhere else, and counts against what it failed at (below); a
+   landing that did not bounce is shrugged off ([Fumbles](#fumbles)).
+   With no crouch spot to prime at (and the word not −3) or no site a
+   route reaches, it waits 300 ticks and looks again (`waiting`);
 3. run the bounce route to the site (`bounce_route::plan_site`: that one
    site, priming at its paired crouch spot, then the jump or the drop,
-   the touchdown classified, over once down from the launch), and tally
+   the touchdown classified, over once down from the launch; going on
+   into a chain when it planned one, [Chains](#chains)), and tally
    it: a try, a bounce when the route ended done by the site, else why
    (the route's error, or the landing's result for one that landed
    without launching).
+
+The memory of recent tries is the bot's own (its last 16 sites and 16
+crouch spots), so a bot works round a map's sites rather than cycling
+the same few, and the claims spread the bots over it.
 
 **Which sites a route reaches.** The first time a pick looks at a site
 it pairs the site with a crouch spot (`bounce_route::pair_site`), and
@@ -2069,6 +2088,132 @@ neither. A pick that finds nothing says why once a map in the log
 spots known, how many crouch spots are set aside as out of reach, and
 how many sites had no crouch spot to prime at, no
 approach, no walk to them, were resting, given up or too far).
+
+##### How each bot practises
+
+Each bot practises its own way (`mind::practice::style::Style`): every
+trait a continuous draw from its name's hash (`NameProfile::seed`, the
+brain's seed without a name; lanes 40 to 48 of the profile's draws),
+placed inside its skill's band, so a name practises the same way every
+match and two names differently. The fumbles blend half the name's
+try-hard (the profile's own), so a keen name fumbles less, and the
+chains half too, so a keen name chains more. Match randomness picks the
+moments; the name sets how often.
+
+| Trait | What it changes | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|---|
+| Fumbles | share of tries set up a little wrong | .15–.30 | .10–.20 | .06–.14 | .03–.10 |
+| Chains | chance it goes for the next link when one is in reach | .15–.45 | .25–.60 | .40–.80 | .55–.95 |
+| Monster pull | times +3 on a Monster site | .10–.60 | .15–.75 | .20–.85 | .25–.95 |
+| Slot taste, crease taste | 0.5 neutral; times ±1.2 on a site of that shape | 0–1 | 0–1 | 0–1 | 0–1 |
+| Roam | the distance weight's factor: 1.6 stays near, 0.4 ranges far | 0.4–1.6 | 0.4–1.6 | 0.4–1.6 | 0.4–1.6 |
+| Novelty | how much its recent tries weigh a site down | 0.6–1.4 | 0.6–1.4 | 0.6–1.4 | 0.6–1.4 |
+| Retry | chance it goes straight back to a site it just missed | .20–.70 | .20–.70 | .20–.70 | .20–.70 |
+| Patience | how long it waits for a player before going elsewhere, ticks | 90–360 | 90–360 | 90–360 | 90–360 |
+
+##### Fumbles
+
+A person misses now and then, and a bot does too: at the start of a
+try, with its fumble rate's chance, the bot sets the try up a little
+wrong (`practice::fumble`), one of the site's knobs off, and then flies
+it as it is. Nothing scripts the fall; a fumbled try can still bounce.
+
+- `off_line`: the aim 0.12 to 0.25 units across the seam (along its
+  drift, either way; any way round a busy point, which has none). A
+  landing more than 0.1 off the seam line does not bounce (the
+  2026-11-23 sweep of 60 Ascension seams);
+- `early`, `late` (a running jump off a launch floor): the takeoff 0.15
+  to 0.30 units of run early, coming down short, or 0.10 to 0.20 late,
+  coming down long;
+- `lazy_air` (any drop): the air stick let go 0.15 to 0.30 units from
+  the target, so the landing drifts off.
+
+A standing jump can only be off the line. The drop's height is the
+launch floor's, so a fumble never picks a wrong height. After a landing
+that did not bounce (`missed`, `too_slow`, `no_bounce`, `not_primed`),
+fumbled or not, the bot shrugs: it stands 60 to 120 ticks facing the
+site and, with its retry chance, goes straight back to it once (weighed
++8, not blacklisted); otherwise the site rests (`Stuck::blacklist`) and
+the next try is elsewhere. The try's line ends `; fumbled <how>`.
+
+##### Letting players go first
+
+A practising bot never blocks a player, a person or another bot, and
+never treats one as an obstacle to flee or path round
+(`mind::practice::yielding`). It tracks every living player's position
+and speed tick to tick. A site's floor is the line from its approach
+over its target and 1 unit on (the landing), 1.5 units round it; a
+crouch spot's, the line from its prime's start to its stand, 1.2 units
+round. A player uses a floor while on its level within it (from 1.5
+under to 3 over, or in the air over it, a flight off it), or on the way
+onto it (moving faster than 0.8 units/s, their course enters it within
+1.5 s).
+
+- **Before the jump**: while the route walks to a crouch spot or to the
+  approach, and the bot is within 3 units of that floor's reach, a
+  player using the floor stops the route (`yield`: neither a try nor a
+  strike, and no rest for the site). The bot waits (`yielding` in
+  `bots.bounce_status`), facing the player with a glance about now and
+  then and a nudge of the stick every 30 ticks so the body does not
+  sleep; standing in the floor's reach, it first walks back out of it,
+  2 units past. Once the floor has been clear 20 ticks it plans the try
+  again from where it stands; past its patience it gives the site up
+  for now (counted as a recent try, so the pick looks elsewhere).
+  Nothing interrupts a prime, a jump, a drop or a flight.
+- **Between tries**: standing, it steps 2 units across the course of a
+  moving player whose course passes within 1 unit of it in the next
+  1.5 s (from within 8 units, ahead of them), and off the floor of a
+  site another bot is on a try at; at most once in 30 ticks, a plain
+  walk.
+- **Between bots**: a bot on its own try always goes first. Two bots
+  waiting for each other do not wait forever: the claims say who waits
+  (`practice::claim_as`: the bot's player slot, since when it claimed,
+  whether it waits), and the older claim goes first.
+
+A player on a site also weighs it down in the pick (above), so a bot
+usually picks another.
+
+##### Chains
+
+A chain is the 2nd to 6th bounce with no ground between
+([superbounce.md, "The rule"](superbounce.md#the-rule)). At the start
+of a try the bot may plan one (`bounce_route::chain`): from the site's
+launch, the sites a flight can come down on without touching the
+ground, the least steering first (the site itself among them, straight
+back down), and with its chain chance a link at a time, at most 3, one
+of the 3 easiest, another site than the one it is off 3 times in 4. The
+route goes on after the first bounce with a `chain` step for each link
+(`bounce_route::Step::Chain`, `chain_onto`): in the air off the last
+launch it steers the landing onto the link's target as a drop's air
+does, and the link is made when it is thrown up again. A link that comes
+down without launching ends the chain; the rest are passed over. The
+route's view counts the links tried and made (`chain`), and the try's
+line ends `; chain M of N`.
+
+The flight is a trait (`chain::Trajectory`). The one built in,
+`chain::Ballistic`, is conservative: the site's launch estimate
+straight up, the measured fall gravity (4.15), the measured air control
+(1.05 units/s² up to 1.2 units/s) with three quarters of that reach
+counted, a touchdown at or over the link's `need`, and a V's arm only
+from across its bisector. No flight after a bounce has been traced, and
+whether a seam bounces a landing at a chain's speed (8 to 13 units/s
+in, against the 5.3 the measured drops come in at) is open
+([superbounce.md, "What is known about a second bounce"](superbounce.md#what-is-known-about-a-second-bounce)):
+`Ballistic::max_speed_in` is where a measured window goes, and until
+then a bot tries chains the game may not file.
+
+##### Monsters
+
+A Monster Bounce launches over 16 units/s ([superbounce.md, "The
+rule"](superbounce.md#the-rule)); its shape is lines converging on the
+landing (superbounce.md, "Monster bounces", under [Single
+creases](superbounce.md#single-creases)). A site is a Monster site
+(`Site::monster`) when it is a V or a busy point, a slot or crease
+scoring 0.85 or more (two or more creases converging on its line,
+`spots::MONSTER_SCORE`), or its launch is over 16 (a verified best). A
+bot weighs one up by +3 times its Monster pull, so a keen name goes for
+them often and a cool one now and then. No approach of its own is
+documented: a Monster site is flown as any other of its shape.
 
 **The drill.** A sim match's `[drill]` ([sim.md, "The bounce
 drill"](../runtime/sim.md#the-bounce-drill)) makes the practice try one
@@ -2127,7 +2272,9 @@ vertical speed, the word then (`unread` when it could not be read), the
 air stick in world axes, the touchdown (origin the tick before, the
 miss, the speeds in and out) and its result; then the results of the
 flights before it. A try with no flight ends `no jump, ended at step N
-(name)`. (The numbers above show the shape, not a run.)
+(name)`. A fumbled try adds `; fumbled <how>` and a try that chained
+`; chain M of N` (links made of tried). (The numbers above show the
+shape, not a run.)
 
 **The drill's drop at Ascension.** What lands in the slot there is a
 running jump at full stick: off the upper level at about 2 units/s and
@@ -2148,7 +2295,8 @@ asks for (`bots.bounce_to`, `superbounce.verify`'s routes) runs as usual
 and is not tallied. Turning the mode off ends a practice route
 (`practice_off`). `bots.bounce_status` gives the tally while practising
 (`practice`: the state, the site, attempts, bounces, and by site the
-attempts, bounces and reasons), so a game of practising bots is a live
+attempts, bounces and reasons; the state is `idle`, `route`,
+`yielding` or `waiting`), so a game of practising bots is a live
 verifier too.
 
 Each bounce a practising bot makes is recorded by the game as a ghost
@@ -2159,9 +2307,13 @@ records it: the game reads the bots' units each tick.
 
 The practice also queues an event for each route it starts, the first
 time the route's word reads −3, and each try it tallies
-(`mind::PracticeEvent`: `Started`, `Primed` with `read` and `own`,
-`Tried` with `bounced` and why not; at most 64 between takes, the oldest
-dropped). `Mind::take_practice_events` drains them; sim mode counts them
+(`mind::PracticeEvent`: `Started`, then `Intent` with `monster`, the
+chain's `links` planned, its `fumble` and whether it goes `again`;
+`Primed` with `read` and `own`; `Chained` with the links `tried` and
+`made`; `Tried` with `bounced` and why not), each wait for a player
+(`Yielded` with the ticks `waited` and whether it `gave_up`) and each
+step out of a player's way (`SteppedAside`); at most 64 between takes,
+the oldest dropped. `Mind::take_practice_events` drains them; sim mode counts them
 into its report ([sim.md, "Bounce practice"](../runtime/sim.md#bounce-practice)).
 
 #### Tuning the bounce

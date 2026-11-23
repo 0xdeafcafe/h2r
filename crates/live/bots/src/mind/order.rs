@@ -58,6 +58,7 @@ pub(super) struct Ended {
     log: Vec<Logged>,
     site: Option<crate::spots::Site>,
     flights: Vec<Leap>,
+    chain: (u32, u32),
 }
 
 /// Where a bot's bounce route stands, for the agent.
@@ -93,6 +94,9 @@ pub struct OrderView {
     pub flights: Vec<Leap>,
     /// The bounce the plan uses.
     pub site: Option<crate::spots::Site>,
+    /// A chain's links after the first bounce: tried and made
+    /// ([`bounce_route::Step::Chain`]).
+    pub chain: (u32, u32),
     /// The practice loop's tally while the superbounce mode is on
     /// (`mind::practice`).
     pub practice: Option<super::PracticeView>,
@@ -153,6 +157,16 @@ impl Mind {
         })
     }
 
+    /// The route under way's step and the one after it: what the practice
+    /// reads to let a player go first (`mind::practice`, only ever before
+    /// the jump or the drop). `None` with no route under way.
+    pub(super) fn route_leg(&self) -> Option<(bounce_route::Step, Option<bounce_route::Step>)> {
+        let o = self.order.as_ref()?;
+        let i = o.run.status().step;
+        let steps = &o.run.plan.steps;
+        Some((*steps.get(i)?, steps.get(i + 1).copied()))
+    }
+
     /// The route, asked, under way or last over.
     pub fn order_view(&self) -> OrderView {
         let none = OrderView {
@@ -171,6 +185,7 @@ impl Mind {
             log: Vec::new(),
             flights: Vec::new(),
             site: None,
+            chain: (0, 0),
             practice: self.practice_view(),
         };
         if let Some(a) = self.asked {
@@ -198,6 +213,7 @@ impl Mind {
                 log: o.run.log().to_vec(),
                 flights: o.run.flights(),
                 site: o.run.plan.site,
+                chain: s.chain,
                 ..none
             };
         }
@@ -214,6 +230,7 @@ impl Mind {
                 log: e.log.clone(),
                 flights: e.flights.clone(),
                 site: e.site,
+                chain: e.chain,
                 ..none
             },
             None => none,
@@ -297,7 +314,12 @@ impl Mind {
                     crouches,
                 };
                 match bounce_route::plan_site(me.position, primed, site, &one, &walk, &ledge) {
-                    Some(plan) => plan,
+                    Some(mut plan) => {
+                        // A practice's chain on from the bounce
+                        // (`mind::practice`, docs/game/bots.md, "Chains").
+                        bounce_route::chain_onto(&mut plan, &self.practice.take_chain());
+                        plan
+                    }
                     None => {
                         self.stuck.blacklist(site.bounce.stand, p.tick);
                         self.ended = Some(Ended::empty(a.to, a.mode, Why::Asked, Err("no_route")));
@@ -338,7 +360,9 @@ impl Mind {
     }
 
     fn end_order(&mut self, o: Ordered, result: Result<(), &'static str>, tick: u32) {
+        // A practice that stopped to let a player go first comes back.
         if result.is_err()
+            && result != Err("yield")
             && let Some(stand) = o.site
         {
             self.stuck.blacklist(stand, tick);
@@ -359,6 +383,7 @@ impl Mind {
             log: o.run.log().to_vec(),
             site: o.run.plan.site,
             flights: o.run.flights(),
+            chain: status.chain,
         });
     }
 }
@@ -376,6 +401,7 @@ impl Ended {
             log: Vec::new(),
             site: None,
             flights: Vec::new(),
+            chain: (0, 0),
         }
     }
 }

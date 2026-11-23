@@ -348,6 +348,50 @@ pub fn practice_event(e: &bots::mind::PracticeEvent) -> (u32, sim_bench::bounce:
                 why: why.map(str::to_string),
             },
         ),
+        P::Intent {
+            site,
+            tick,
+            monster,
+            links,
+            fumble,
+            again,
+        } => (
+            *tick,
+            Event::Intent {
+                site: *site,
+                monster: *monster,
+                links: *links,
+                fumble: fumble.map(str::to_string),
+                again: *again,
+            },
+        ),
+        P::Chained {
+            site,
+            tick,
+            tried,
+            made,
+        } => (
+            *tick,
+            Event::Chained {
+                site: *site,
+                tried: *tried,
+                made: *made,
+            },
+        ),
+        P::Yielded {
+            site,
+            tick,
+            waited,
+            gave_up,
+        } => (
+            *tick,
+            Event::Yielded {
+                site: *site,
+                waited: *waited,
+                gave_up: *gave_up,
+            },
+        ),
+        P::SteppedAside { tick } => (*tick, Event::SteppedAside),
     }
 }
 
@@ -1429,6 +1473,13 @@ impl hooks::Feature for SimMetrics {
                         for a in crate::superbounce_mode::take_awards() {
                             let (player, at, e) = award_event(&a);
                             s.tally.bounce_event(player, at, e);
+                            if a.monster() {
+                                s.tally.bounce_event(
+                                    player,
+                                    at,
+                                    sim_bench::bounce::Event::Monster,
+                                );
+                            }
                         }
                     }
                 }
@@ -1894,6 +1945,62 @@ mod tests {
                     why: Some("too_slow".into())
                 }
             )
+        );
+        assert_eq!(
+            practice_event(&P::Intent {
+                site,
+                tick: 8,
+                monster: true,
+                links: 2,
+                fumble: Some("off_line"),
+                again: false
+            }),
+            (
+                8,
+                Event::Intent {
+                    site,
+                    monster: true,
+                    links: 2,
+                    fumble: Some("off_line".into()),
+                    again: false
+                }
+            )
+        );
+        assert_eq!(
+            practice_event(&P::Chained {
+                site,
+                tick: 9,
+                tried: 2,
+                made: 1
+            }),
+            (
+                9,
+                Event::Chained {
+                    site,
+                    tried: 2,
+                    made: 1
+                }
+            )
+        );
+        assert_eq!(
+            practice_event(&P::Yielded {
+                site,
+                tick: 10,
+                waited: 45,
+                gave_up: true
+            }),
+            (
+                10,
+                Event::Yielded {
+                    site,
+                    waited: 45,
+                    gave_up: true
+                }
+            )
+        );
+        assert_eq!(
+            practice_event(&P::SteppedAside { tick: 11 }),
+            (11, Event::SteppedAside)
         );
         let award = |chain, medals: Vec<Medal>| crate::superbounce_chain::Award {
             seq: 1,

@@ -317,3 +317,117 @@ fn the_match_report_carries_the_block_only_in_a_superbounce_match() {
     let back: crate::metrics::Report = serde_json::from_str(&text).unwrap();
     assert_eq!(back.bounce, Some(b));
 }
+
+#[test]
+fn habits_count_variety_fumbles_chains_monsters_and_yields() {
+    let mut t = BounceTally::new();
+    let mut tick = 100;
+    // Bot 1 at A: a fumbled try at a Monster site with two links planned,
+    // which the chain still filed a bounce in (a Monster), one link made.
+    t.event(1, tick, Event::Started { site: A });
+    t.event(
+        1,
+        tick,
+        Event::Intent {
+            site: A,
+            monster: true,
+            links: 2,
+            fumble: Some("off_line".into()),
+            again: false,
+        },
+    );
+    launch(&mut t, 1, &mut tick, -3.19, 4.0, 1);
+    t.event(1, tick, Event::Monster);
+    t.event(
+        1,
+        tick,
+        Event::Chained {
+            site: A,
+            tried: 2,
+            made: 1,
+        },
+    );
+    t.event(
+        1,
+        tick,
+        Event::Tried {
+            site: A,
+            bounced: true,
+            why: None,
+        },
+    );
+    // Again at A (a retry), missed; then it lets players go first at B
+    // twice (the second time it gives B up), steps aside, and tries B.
+    tick += 10;
+    t.event(1, tick, Event::Started { site: A });
+    t.event(
+        1,
+        tick,
+        Event::Intent {
+            site: A,
+            monster: true,
+            links: 0,
+            fumble: None,
+            again: true,
+        },
+    );
+    t.event(
+        1,
+        tick,
+        Event::Tried {
+            site: A,
+            bounced: false,
+            why: Some("missed".into()),
+        },
+    );
+    t.event(
+        1,
+        tick,
+        Event::Yielded {
+            site: B,
+            waited: 60,
+            gave_up: false,
+        },
+    );
+    t.event(
+        1,
+        tick,
+        Event::Yielded {
+            site: B,
+            waited: 300,
+            gave_up: true,
+        },
+    );
+    t.event(1, tick, Event::SteppedAside);
+    t.event(1, tick, Event::Started { site: B });
+    t.event(
+        1,
+        tick,
+        Event::Tried {
+            site: B,
+            bounced: false,
+            why: Some("too_slow".into()),
+        },
+    );
+    let r = t.report(Some(0), &who());
+    let h = &r.players[0].stats.habits;
+    assert_eq!((h.repeats, h.distinct_sites), (1, 2));
+    assert_eq!((h.fumbles, h.fumble_bounces, h.retries), (1, 1, 1));
+    assert_eq!((h.monster_tries, h.monster_bounces), (2, 1));
+    assert_eq!(
+        (h.chain_links_planned, h.chain_links_tried, h.chain_links_made),
+        (2, 2, 1)
+    );
+    assert_eq!(
+        (h.yields, h.yields_given_up, h.yield_ticks, h.stepped_aside),
+        (2, 1, 360, 1)
+    );
+    // The totals add the bots' habits.
+    assert_eq!(r.totals.habits, *h);
+    // By site: A had the fumble and the Monster, B the waits.
+    let at = |p: [f32; 3]| r.sites.iter().find(|s| s.site == p).unwrap().stats.habits.clone();
+    assert_eq!((at(A).fumbles, at(A).monster_bounces, at(A).yields), (1, 1, 0));
+    assert_eq!((at(B).yields, at(B).yields_given_up), (2, 1));
+    // A block from before the habits reads with none.
+    assert_eq!(Stats::default().habits, Habits::default());
+}

@@ -148,19 +148,31 @@ fn practice_off_drops_its_route_and_its_view() {
     assert!(mind.practice_view().is_none());
 }
 
+/// The weight with nothing else weighing it, for the plain style.
+fn plain(s: &Site, at: Vec3) -> f32 {
+    weight(s, at, &Weigh::default(), &Style::default())
+}
+
 #[test]
 fn proven_sites_weigh_more_and_a_claimed_or_just_tried_one_less() {
     let at = [0.0; 3];
+    let style = Style::default();
     let likely = site([10.0, 0.0, 0.0], Status::Likely);
     let proven = site([10.0, 5.0, 0.0], Status::Proven);
-    assert!(weight(&proven, at, false, None) > weight(&likely, at, false, None));
-    assert!(weight(&likely, at, true, None) < weight(&likely, at, false, None) - 2.0);
-    assert!(
-        weight(&likely, at, false, Some(likely.bounce.stand)) < weight(&likely, at, false, None)
-    );
+    assert!(plain(&proven, at) > plain(&likely, at));
+    let claimed = Weigh {
+        crowd: 1.0,
+        ..Weigh::default()
+    };
+    assert!(weight(&likely, at, &claimed, &style) < plain(&likely, at) - 2.0);
+    let tried = Weigh {
+        recent: 1.0,
+        ..Weigh::default()
+    };
+    assert!(weight(&likely, at, &tried, &style) < plain(&likely, at) - 1.0);
     // Further is a little worse.
     let far = site([70.0, 0.0, 0.0], Status::Likely);
-    assert!(weight(&far, at, false, None) < weight(&likely, at, false, None));
+    assert!(plain(&far, at) < plain(&likely, at));
 }
 
 #[test]
@@ -242,7 +254,11 @@ fn the_practice_reports_each_route_it_starts_and_how_each_try_ended() {
     }
     let started = mind.take_practice_events();
     assert!(
-        matches!(started.as_slice(), [PracticeEvent::Started { site, .. }] if *site == [10.0, 0.0, 0.0]),
+        matches!(
+            started.as_slice(),
+            [PracticeEvent::Started { site, .. }, PracticeEvent::Intent { site: also, .. }]
+                if *site == [10.0, 0.0, 0.0] && also == site
+        ),
         "{started:?}"
     );
     assert!(mind.take_practice_events().is_empty(), "taken once");
@@ -348,12 +364,19 @@ fn a_site_whose_approach_is_just_off_the_mesh_is_picked_and_routed() {
         |e: &[PracticeEvent]| e.iter().any(|e| matches!(e, PracticeEvent::Started { .. }));
     let events = practise(&mut mind, &m, 200, started);
     assert!(
-        matches!(events.as_slice(), [PracticeEvent::Started { site, .. }] if *site == s.bounce.stand),
+        matches!(
+            events.as_slice(),
+            [PracticeEvent::Started { site, .. }, PracticeEvent::Intent { .. }]
+                if *site == s.bounce.stand
+        ),
         "started, and not failed: {events:?}"
     );
     let v = mind.order_view();
     assert_eq!(v.state, "running");
-    assert_eq!(v.steps, ["walk_crouched", "prime", "walk", "bounce", "fly"]);
+    // Then the ride down, after any links of a chain.
+    assert_eq!(v.steps[..4], ["walk_crouched", "prime", "walk", "bounce"]);
+    assert!(v.steps[4..v.steps.len() - 1].iter().all(|s| *s == "chain"));
+    assert_eq!(v.steps.last(), Some(&"fly"));
 }
 
 #[test]
@@ -818,14 +841,8 @@ fn a_learned_site_weighs_more() {
         line: Some(superbounce::learned::State::Open),
         ..likely
     };
-    assert_eq!(
-        weight(&learned, at, false, None),
-        weight(&likely, at, false, None) + W_LEARNED
-    );
-    assert_eq!(
-        weight(&open, at, false, None),
-        weight(&likely, at, false, None)
-    );
+    assert_eq!(plain(&learned, at), plain(&likely, at) + W_LEARNED);
+    assert_eq!(plain(&open, at), plain(&likely, at));
 }
 
 #[test]

@@ -31,6 +31,8 @@ use crate::spots::{Crouch, Known, Site, dist_xy};
 use crate::tuning::BounceTuning;
 use superbounce::learned::{How, Knobs};
 
+pub mod chain;
+
 // ---- the map's walks and launch floors ----
 
 /// How far sideways (world units) a launch floor may be from the slot it
@@ -154,6 +156,11 @@ pub enum Step {
     /// [`drop_takeoff`]) and down onto the site, aiming at its target,
     /// until it launches.
     Drop { from: Vec3, site: Site },
+    /// The next bounce of a chain (docs/game/bots.md, "Chains"): in the
+    /// air off the last launch, steer the landing onto the site's target,
+    /// until it launches again or comes down without (the chain is over:
+    /// any further `Chain` step is passed over).
+    Chain(Site),
     /// Ride the launch, steering toward `to`, until down.
     Fly { to: Vec3 },
     /// Walk the rest, as a plain order.
@@ -168,6 +175,7 @@ impl Step {
             Step::Prime { .. } => "prime",
             Step::Bounce(_) => "bounce",
             Step::Drop { .. } => "drop",
+            Step::Chain(_) => "chain",
             Step::Fly { .. } => "fly",
             Step::Nav { .. } => "nav",
         }
@@ -614,6 +622,26 @@ pub fn plan_site(
     // Done once down: the asker is where it bounced.
     plan.steps.retain(|s| !matches!(s, Step::Nav { .. }));
     Some(plan)
+}
+
+/// `plan` (a route by one site, [`plan_site`]) going on into a chain
+/// over `links` ([`chain::plan`]): after the first bounce, a
+/// [`Step::Chain`] onto each link in turn, then the ride down off the
+/// last. A plan with no bounce, or no links, is left as it is.
+pub fn chain_onto(plan: &mut Plan, links: &[Site]) {
+    let Some(last) = links.last() else {
+        return;
+    };
+    let Some(i) = plan
+        .steps
+        .iter()
+        .position(|s| matches!(s, Step::Bounce(_) | Step::Drop { .. }))
+    else {
+        return;
+    };
+    plan.steps.truncate(i + 1);
+    plan.steps.extend(links.iter().map(|s| Step::Chain(*s)));
+    plan.steps.push(Step::Fly { to: last.target() });
 }
 
 // ---- a site paired with a crouch spot ----
@@ -1200,6 +1228,13 @@ enum State {
     Prime(PrimeRun),
     Bounce(BounceRun),
     Drop(Dropping),
+    /// In the air toward a chain's next site, from the tick; the highest
+    /// point, and the lowest once falling.
+    Chain {
+        since: u32,
+        top: f32,
+        low: Option<f32>,
+    },
     Fly {
         since: u32,
         peaked: bool,
@@ -1481,6 +1516,9 @@ pub struct OrderStatus {
     pub phase: &'static str,
     /// The step's try (from 1; 0 for a step that does not retry).
     pub tries: u32,
+    /// The chain's links tried (begun in the air off a launch) and made
+    /// (launched again) so far ([`Step::Chain`]).
+    pub chain: (u32, u32),
     /// The pair word is at -3 (read, or assumed after priming).
     pub primed: bool,
     /// Whether that was read from the game ([`OrderRun::step`]'s `pair`)
@@ -1540,6 +1578,10 @@ pub struct OrderRun {
     tune: crate::tuning::BounceTuning,
     /// The loaded BSP's breakable mask this tick ([`OrderRun::see_glass`]).
     glass: Option<crate::glass::Mask>,
+    /// A chain's links tried and made ([`Step::Chain`]), and whether one
+    /// came down without launching (the rest are passed over).
+    chain: (u32, u32),
+    chain_broken: bool,
 }
 
 fn norm(d: [f32; 2]) -> ([f32; 2], f32) {
@@ -1577,6 +1619,8 @@ impl OrderRun {
             goal: GOAL,
             tune: crate::tuning::bounce().sane(),
             glass: None,
+            chain: (0, 0),
+            chain_broken: false,
         }
     }
 
@@ -1634,7 +1678,7 @@ impl OrderRun {
         m: &RouteMotion,
     ) {
         let air = match &self.state {
-            State::Drop(Dropping::Jump(_) | Dropping::Air { .. }) => true,
+            State::Drop(Dropping::Jump(_) | Dropping::Air { .. }) | State::Chain { .. } => true,
             State::Bounce(b) => b.airborne(),
             _ => false,
         };
@@ -1713,7 +1757,7 @@ impl OrderRun {
                 },
                 self.drops + 1,
             ),
-            State::Fly { .. } => ("air", 0),
+            State::Chain { .. } | State::Fly { .. } => ("air", 0),
         };
         OrderStatus {
             step: self.at,
@@ -1721,6 +1765,7 @@ impl OrderRun {
             what: self.plan.steps.get(self.at).map_or("done", Step::name),
             phase,
             tries,
+            chain: self.chain,
             primed: self.primed,
             read: self.read,
             landing: self.landing,
@@ -1771,6 +1816,13 @@ impl OrderRun {
         // on before the speed out is read).
         match self.plan.steps.get(self.at) {
             Some(Step::Bounce(s)) | Some(Step::Drop { site: s, .. }) => self.watching = Some(*s),
+            // A chain's link: once the last touchdown's speed out is read,
+            // against the link's target.
+            Some(Step::Chain(s)) => {
+                if self.watch.open.is_none() {
+                    self.watching = Some(*s);
+                }
+            }
             _ if self.watch.open.is_none() => {
                 self.watching = None;
                 self.watch = Watch::default();
@@ -1841,6 +1893,7 @@ impl OrderRun {
                 Step::Prime(c) => self.prime(map, c, at, tick, pair),
                 Step::Bounce(site) => self.bounce(site, at, tick),
                 Step::Drop { from, site } => self.drop(from, site, at, tick, vel),
+                Step::Chain(site) => self.chain(site, at, tick, vel, pair),
                 Step::Fly { to } => self.fly(to, at, tick, vel),
             };
             match out {
@@ -2194,6 +2247,65 @@ impl OrderRun {
         }
     }
 
+    /// A chain's next bounce ([`Step::Chain`]): from the last launch, in
+    /// the air, steer the landing onto `site`'s target as a drop's air does
+    /// ([`OrderRun::drop_air`]), and see whether it launches again. Over
+    /// (the next step) either way: a link that comes down without
+    /// launching ends the chain, and the links after it are passed over.
+    fn chain(
+        &mut self,
+        site: Site,
+        at: Vec3,
+        tick: u32,
+        vel: Option<Vec3>,
+        pair: Option<u32>,
+    ) -> Result<Option<RouteMotion>, &'static str> {
+        let v = vel.unwrap_or([0.0; 3]);
+        let f = flown(&site, site.bounce.stand, &self.tune);
+        if matches!(self.state, State::Fresh) {
+            if self.chain_broken {
+                return Ok(None);
+            }
+            // The bounce before is still reading its speed out: steer, and
+            // begin the link once its touchdown is filed with its flight.
+            if self.watch.open.is_some() {
+                return Ok(Some(self.drop_air(&f, at, v)));
+            }
+            self.chain.0 += 1;
+            // The flight before ended in its bounce: this link's is a new
+            // one, in the air already.
+            self.end_flight("bounce");
+            self.flight = Some(Leap::new(tick, at, v, pair));
+            self.was_air = true;
+            self.state = State::Chain {
+                since: tick,
+                top: at[2],
+                low: None,
+            };
+        }
+        let State::Chain { since, top, low } = &mut self.state else {
+            return Err("state");
+        };
+        let since = *since;
+        *top = top.max(at[2]);
+        if at[2] < *top - DROP_FALLING {
+            *low = Some(low.map_or(at[2], |l: f32| l.min(at[2])));
+        }
+        if low.is_some_and(|l| at[2] > l + LAUNCH_RISE) {
+            // Down on the link and thrown up again.
+            self.chain.1 += 1;
+            return Ok(None);
+        }
+        let landed = self
+            .landing
+            .is_some_and(|t| t.tick > since && !t.bounced());
+        if landed || tick.wrapping_sub(since) > FLY_TICKS {
+            self.chain_broken = true;
+            return Ok(None);
+        }
+        Ok(Some(self.drop_air(&f, at, v)))
+    }
+
     fn fly(
         &mut self,
         to: Vec3,
@@ -2202,6 +2314,10 @@ impl OrderRun {
         vel: Option<Vec3>,
     ) -> Result<Option<RouteMotion>, &'static str> {
         if matches!(self.state, State::Fresh) {
+            // A chain that came down without launching is down already.
+            if self.chain_broken {
+                return Ok(None);
+            }
             self.state = State::Fly {
                 since: tick,
                 peaked: false,

@@ -96,7 +96,22 @@ pub struct Site {
     /// its own side as a control ([`Site::same_side`]). `None` for every
     /// other site.
     pub arm: Option<Arm>,
+    /// The floor's shape (`superbounce::Shape`): a slot, a single crease, a
+    /// V or a busy point. A measured site is a slot.
+    pub shape: Shape,
+    /// The scan's score (`superbounce::Spot::score`, 0 to 1); 0 for a
+    /// measured site, which no scan scored.
+    pub score: f32,
 }
+
+/// A seam scoring this or more has at least two creases converging on
+/// its line (docs/game/superbounce.md, "Monster bounces"): a Monster's
+/// shape.
+pub const MONSTER_SCORE: f32 = 0.85;
+/// A launch over this (world units a second) is a Monster Bounce
+/// (docs/game/superbounce.md, "The rule"; the game's
+/// `superbounce_chain::MONSTER_VZ`).
+pub const MONSTER_VZ: f32 = 16.0;
 
 impl Site {
     /// A scanned bounce spot as a site; `None` for a crouch spot.
@@ -125,6 +140,8 @@ impl Site {
             line: None,
             candidate: s.candidate(),
             arm: s.arm,
+            shape: s.shape,
+            score: s.score,
         })
     }
 
@@ -148,6 +165,8 @@ impl Site {
             line: None,
             candidate: false,
             arm: None,
+            shape: Shape::Slot,
+            score: 0.0,
         }
     }
 
@@ -260,6 +279,18 @@ impl Site {
 
     pub fn proven(&self) -> bool {
         self.status == Status::Proven
+    }
+
+    /// Whether it has a Monster's shape or launch (docs/game/superbounce.md,
+    /// "Monster bounces"): lines converging on it (a seam scoring
+    /// [`MONSTER_SCORE`] or more, a V, a busy point), or a launch over
+    /// [`MONSTER_VZ`] (a verified best, or the scan's estimate).
+    pub fn monster(&self) -> bool {
+        let shape = match self.shape {
+            Shape::Vee | Shape::Busy => true,
+            Shape::Slot | Shape::Crease => self.score >= MONSTER_SCORE,
+        };
+        shape || self.launch > MONSTER_VZ
     }
 }
 
