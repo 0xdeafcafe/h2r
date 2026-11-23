@@ -1,4 +1,5 @@
 use super::*;
+use crate::theater::Outcome;
 use crate::theater::tests::{host_facts, options};
 use crate::theater::{Facts, Mode, Session};
 
@@ -26,6 +27,8 @@ fn local(dir: &Temp, path: &Path, auto: bool) -> Arc<Session> {
         .unwrap()
         .unwrap()
 }
+
+const LAUNCH_SKIP: &str = "a lab job records a film only with H2_FILM_OUT";
 
 fn inputs(request: Request) -> Inputs {
     Inputs {
@@ -56,12 +59,12 @@ fn the_switch_turns_default_recording_off_without_a_line() {
     let off = Inputs { feature_on: false, ..inputs(Request::On) };
     assert_eq!(decide(&off), Decision::Quiet);
     // Even a session that would have said why stays quiet once it is off.
-    assert_eq!(decide(&Inputs { feature_on: false, ..inputs(Request::Skip(JOIN_AT_LAUNCH)) }), Decision::Quiet);
+    assert_eq!(decide(&Inputs { feature_on: false, ..inputs(Request::Skip(LAUNCH_SKIP)) }), Decision::Quiet);
 }
 
 #[test]
 fn a_launch_join_and_lockstep_skip_recording_and_say_why() {
-    assert_eq!(decide(&inputs(Request::Skip(JOIN_AT_LAUNCH))), Decision::Skip(JOIN_AT_LAUNCH));
+    assert_eq!(decide(&inputs(Request::Skip(LAUNCH_SKIP))), Decision::Skip(LAUNCH_SKIP));
     let lockstep = decide(&Inputs { lockstep: true, ..inputs(Request::On) });
     assert!(matches!(lockstep, Decision::Skip(why) if why.contains("H2_LOCKSTEP")), "{lockstep:?}");
 }
@@ -153,25 +156,24 @@ fn only_a_player_sessions_default_recording_keeps_its_player_features() {
 }
 
 #[test]
-fn a_join_or_an_editor_write_discards_only_a_default_recording() {
+fn a_join_or_an_editor_write_never_stops_a_default_recording_and_never_touches_another() {
     let dir = Temp::new("stop");
     let auto_path = dir.0.join("auto.h2film");
     let auto = local(&dir, &auto_path, true);
     assert!(auto_path.exists());
-    let stop = stopper(Some(&auto), "a Live session link was joined").expect("a default recording");
+    let stop = stopper(Some(&auto), "a Live session link was joined", false).expect("a default recording");
     stop();
-    assert!(!auto_path.exists(), "the default film is discarded");
-    // The session goes on: later taps and the teardown do nothing.
-    stop();
-    auto.finish(10, true).unwrap();
-    assert!(!auto_path.exists());
+    assert!(auto_path.exists(), "the tape keeps recording");
+    assert_eq!(auto.status().notes, ["a Live session link was joined"]);
+    assert!(auto.status().last_discard.is_none());
 
     let named_path = dir.0.join("named.h2film");
     let named = local(&dir, &named_path, false);
-    assert!(stopper(Some(&named), "a Live session link was joined").is_none());
-    named.stop_auto("an editor changed the game");
+    assert!(stopper(Some(&named), "a Live session link was joined", false).is_none());
+    named.outside_change("an editor changed the game", true);
     assert!(named_path.exists(), "an explicit film is never discarded");
-    assert!(stopper(None, "no film").is_none());
+    assert!(named.status().notes.is_empty());
+    assert!(stopper(None, "no film", false).is_none());
 }
 
 fn ticks(film: &Session, guest: &runtime::Guest, n: u64) {
@@ -288,16 +290,141 @@ fn a_cut_plays_back_with_the_recordings_player_features() {
 }
 
 #[test]
-fn a_join_after_a_game_discards_the_tape_and_keeps_the_games_film() {
+fn a_session_that_joins_a_link_still_leaves_a_film_of_each_game() {
     let dir = Temp::new("join");
     let tape = dir.0.join("auto-tape.h2film");
     let auto = local(&dir, &tape, true);
-    ticks(&auto, &crate::theater::tests::arena(), 40);
-    end_game(&auto, 10, 80);
-    auto.stop_auto("a Live session link was joined");
-    assert!(!tape.exists());
+    let guest = crate::theater::tests::arena();
+    // A link joined from the menu, before any game: the game that follows
+    // (a Live custom game or a matchmade one) is cut at its end.
+    ticks(&auto, &guest, 20);
+    auto.outside_change("a Live session link was joined", false);
+    assert!(tape.exists(), "the join does not delete the tape");
+    ticks(&auto, &guest, 20);
+    end_game_as(&auto, 25, 80, film::blam::Mode::Matchmaking, "lockout");
+    assert_eq!(cut_films(&dir.0).len(), 1);
+    // A second link joined with a game in play does not drop that game.
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(35, "zanzibar", film::blam::Mode::Custom);
+    }
+    auto.outside_change("a Live session link was joined", false);
     auto.finish(90, true).unwrap();
-    assert_eq!(cut_films(&dir.0).len(), 1, "the finished game's film stays");
+    assert!(!tape.exists());
+    assert_eq!(cut_films(&dir.0).len(), 2, "the game in play at the join and at exit is kept");
+    assert_eq!(auto.status().notes.len(), 2);
+}
+
+#[test]
+fn an_editor_write_drops_only_the_game_in_play() {
+    let dir = Temp::new("editor");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    let guest = crate::theater::tests::arena();
+    ticks(&auto, &guest, 30);
+    end_game(&auto, 5, 60);
+    assert_eq!(cut_films(&dir.0).len(), 1);
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(25, "zanzibar", film::blam::Mode::Custom);
+    }
+    auto.outside_change("an editor changed the game", true);
+    let status = auto.status();
+    assert!(!status.in_game);
+    assert!(status.last_discard.is_some_and(|why| why.contains("an editor changed the game")));
+    auto.finish(90, true).unwrap();
+    assert_eq!(cut_films(&dir.0).len(), 1, "the finished game's film stays; the dropped one is not cut");
+}
+
+#[test]
+fn a_multiplayer_game_left_before_its_end_is_a_film_of_what_was_played() {
+    let dir = Temp::new("left-multiplayer");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    let guest = crate::theater::tests::arena();
+    ticks(&auto, &guest, 40);
+    // A matchmade game starts at tick 10 and is left from the pause menu:
+    // the guest leaves its map with no game-over.
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(10, "lockout", film::blam::Mode::Matchmaking);
+        rec.meta.on_map_for_test();
+    }
+    ticks(&auto, &guest, 30);
+    auto.finish(120, false).unwrap();
+    let films = cut_films(&dir.0);
+    assert_eq!(films.len(), 1, "the left game keeps its film");
+    assert_eq!(films[0].1.front.as_ref().unwrap().match_start_tick, Some(10));
+    assert_eq!(film::LibraryEntry::read(&films[0].0).unwrap().meta.map, "lockout");
+    // Then the player quits the app: nothing more is cut and the session
+    // reports the film.
+    auto.finish(130, true).unwrap();
+    assert!(!tape.exists());
+    assert_eq!(cut_films(&dir.0).len(), 1);
+    assert_eq!(auto.status().games_cut.len(), 1);
+}
+
+#[test]
+fn quitting_in_a_multiplayer_game_cuts_it() {
+    let dir = Temp::new("quit-multiplayer");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    let seal = auto.seal_on_drop().expect("a default recording seals on drop");
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Custom);
+    }
+    seal.advance(79);
+    drop(seal);
+    assert!(!tape.exists());
+    assert_eq!(cut_films(&dir.0).len(), 1, "the game in play at quit is a film");
+}
+
+#[test]
+fn a_failed_recording_keeps_the_game_in_play() {
+    let dir = Temp::new("failed");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Custom);
+        s.fail("a synthetic failure".into());
+    }
+    auto.finish(80, true).unwrap();
+    assert_eq!(cut_films(&dir.0).len(), 1, "what was recorded is kept");
+    assert!(!tape.exists());
+}
+
+#[test]
+fn the_end_of_the_session_says_what_was_saved_or_why_nothing_was() {
+    let dir = Path::new("/films");
+    let mut outcome = Outcome::default();
+    assert_eq!(outcome.line(dir, None), "theater: no film: no game was played this session");
+    outcome.discard = Some("could not keep this game's film: disk full".into());
+    assert_eq!(
+        outcome.line(dir, None),
+        "theater: no film: could not keep this game's film: disk full"
+    );
+    outcome.discard = None;
+    assert!(outcome.line(dir, Some("recording stopped at tick 9: boom")).ends_with("boom"));
+    outcome.films.push("/films/a.h2film".into());
+    assert_eq!(outcome.line(dir, None), "theater: 1 film saved to /films");
+    outcome.films.push("/films/b.h2film".into());
+    assert_eq!(outcome.line(dir, None), "theater: 2 films saved to /films");
+
+    // A session reports once, and a session with no game reports no film.
+    let temp = Temp::new("line");
+    let auto = local(&temp, &temp.0.join("auto.h2film"), true);
+    auto.finish(5, true).unwrap();
+    assert!(auto.lock().outcome.reported);
+    assert!(auto.status().games_cut.is_empty());
 }
 
 #[test]

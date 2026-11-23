@@ -33,10 +33,11 @@ pub const KEYFRAMES: &str = "theater.keyframes";
 pub const MEASUREMENTS: &str = "theater.measurements";
 pub const STEP: &str = "theater.step";
 pub const VERIFY: &str = "theater.verify";
+pub const STATUS: &str = "theater.status";
 pub const TRANSPORT_METHODS: [&str; 9] = [
     PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, KEYFRAMES, STEP,
 ];
-pub const METHODS: [&str; 15] = [
+pub const METHODS: [&str; 16] = [
     PLAY,
     STATE,
     PAUSE,
@@ -52,7 +53,29 @@ pub const METHODS: [&str; 15] = [
     CLIP_MARK,
     CLIP_EXPORT,
     CLIP_STATUS,
+    STATUS,
 ];
+
+/// What this session's film recording is doing and has kept
+/// (`theater.status`). It answers on any session; a playback or an
+/// explicit `--film` recording reports `default_recording: false`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    /// The session records the games a player plays into the film library.
+    pub default_recording: bool,
+    /// The running tape's file while recording, as a path.
+    pub tape: Option<String>,
+    /// A game is on the tape now.
+    pub in_game: bool,
+    /// Films cut so far this session, oldest first, as paths.
+    pub games_cut: Vec<String>,
+    /// Why the last tape or game went without a film, if one did.
+    pub last_discard: Option<String>,
+    /// Changes from outside the tape the recording carried on through.
+    pub notes: Vec<String>,
+    /// The failure that stopped the recording, if one did.
+    pub failure: Option<String>,
+}
 
 /// Host wall-clock timings and write-watch counts for an instrumented run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

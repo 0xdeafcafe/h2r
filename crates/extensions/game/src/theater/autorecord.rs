@@ -10,8 +10,8 @@
 //! session's player features on (Live session links, browser
 //! advertisements, Firefight's director, the rules start gate, editor
 //! reloads, Forge), and its header says so, so the replay installs the same
-//! plan. Anything that changes the guest from outside the tape (a session
-//! link joined, an editor write) stops and discards the tape instead.
+//! plan. Something that changes the guest from outside the tape (a session
+//! link joined, an editor write) is noted and the recording carries on.
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -44,10 +44,6 @@ pub enum Request {
     /// A player session that must not record; the reason is logged once.
     Skip(&'static str),
 }
-
-/// Why a player session goes unrecorded when it joins a link at launch.
-pub const JOIN_AT_LAUNCH: &str =
-    "a session link is joined at launch, and the film cannot replay a join from outside the game";
 
 /// The boot facts that decide whether this session records.
 #[derive(Clone, Copy, Debug)]
@@ -114,14 +110,17 @@ pub fn destination(dir: &Path, at: SystemTime) -> PathBuf {
 }
 
 /// What a feature calls just before it changes the guest from outside the
-/// tape: stops and discards this session's default recording. `None` for
-/// any other film and for no film.
+/// tape. The session's default recording carries on and says so
+/// ([`super::Session::outside_change`]); `drops_game` also drops the game
+/// in play, which the tape can no longer replay. `None` for any other film
+/// and for no film.
 pub fn stopper(
     film: Option<&Arc<super::Session>>,
     why: &'static str,
+    drops_game: bool,
 ) -> Option<Arc<dyn Fn() + Send + Sync>> {
     let film = film.filter(|f| !f.replaying && f.player_features())?.clone();
-    Some(Arc::new(move || film.stop_auto(why)))
+    Some(Arc::new(move || film.outside_change(why, drops_game)))
 }
 
 pub(super) fn now_ms() -> u64 {

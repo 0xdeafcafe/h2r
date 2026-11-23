@@ -380,6 +380,7 @@ fn run_configured(
                 match ready {
                     Ok(_) => {
                         film_path = Some(autorecord::destination(&dir, now));
+                        eprintln!("theater: recording this session; each game's film goes to {}", dir.display());
                         true
                     }
                     Err(e) => {
@@ -557,8 +558,8 @@ fn run_configured(
         host.discoverable_agent.then(agent_glue::discoverable_socket).flatten()
     });
     let editor_hooks_on = features.switches().feature(agent::EDIT_LIFECYCLE, true);
-    // A default recording lets the editor write; the first write discards
-    // the film (`stop_auto`, below) instead of being refused.
+    // A default recording lets the editor write; the first write drops the
+    // game in play (`outside_change`, below) instead of being refused.
     let recording_or_playback = agent_glue::reload_recording_refusal(
         replaying,
         film.as_ref().is_some_and(|f| !f.player_features()),
@@ -1675,7 +1676,7 @@ fn run_configured(
         a.install_editor_methods(
             &plan, &installed, &loaded.runtime, editor_hooks_on, recording_or_playback,
             skulls.clone(), core.editor_sources.clone(), rebind,
-            theater::autorecord::stopper(film.as_ref(), "an editor changed the game"),
+            theater::autorecord::stopper(film.as_ref(), "an editor changed the game", true),
         );
         if let Some(why) = installed.off_reason("agent") {
             a.agent.set_no_tick_hook();
