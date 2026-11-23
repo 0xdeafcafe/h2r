@@ -110,6 +110,46 @@ pub struct Core {
     pub creature_probe: bool,
 }
 
+/// A boot without the player's own features (`register_core_film`'s
+/// `non_player`: the Custom Game Browser's filters, a link joined with no
+/// film): a light host, a sim, or a film that turns them off. With a film
+/// the header decides, never whether this boot records or replays it, so a
+/// recording and its replay plan the same hooks
+/// (docs/game/film-format.md, "Recording every game").
+pub(crate) fn non_player(
+    film: Option<&crate::theater::Session>,
+    replaying: bool,
+    host_light: bool,
+    sim: bool,
+) -> bool {
+    host_light
+        || sim
+        || match film {
+            Some(film) => !film.player_features(),
+            None => replaying,
+        }
+}
+
+/// Local Forge's hooks and controls (`forge_glue::install`): on unless
+/// `-forge`, a light host or lockstep. With a film the header decides as
+/// in [`non_player`]: a default recording and its replay both plan Forge,
+/// any other film neither.
+pub(crate) fn local_forge(
+    switches: &hooks::Switches,
+    film: Option<&crate::theater::Session>,
+    replaying: bool,
+    host_light: bool,
+    lockstep: bool,
+) -> bool {
+    switches.feature("forge", true)
+        && !host_light
+        && !lockstep
+        && match film {
+            Some(film) => film.player_features(),
+            None => !replaying,
+        }
+}
+
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
     register_core_film(features, i, None, false, None)

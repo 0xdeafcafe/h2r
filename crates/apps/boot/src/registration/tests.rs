@@ -71,6 +71,10 @@ pub(crate) struct Case {
     /// The dedicated lobby (`H2_HOST_LOBBY=1` on a light host with an
     /// agent), added as `host_lobby::install` does.
     pub host_lobby: bool,
+    /// Theater's playback child: boot's `replaying`, which decides the
+    /// non-player features and Forge with no film or a film's header
+    /// (`registration::non_player`, `registration::local_forge`).
+    pub replaying: bool,
 }
 
 impl Case {
@@ -93,6 +97,7 @@ impl Case {
             takeover: false,
             light: false,
             host_lobby: false,
+            replaying: false,
         }
     }
 
@@ -188,7 +193,18 @@ fn registry_with_film(
             .unwrap();
         theater
     });
-    let telemetry = if case.telemetry {
+    // Boot's film decisions, from the same functions (lib.rs).
+    let non_player = super::non_player(film.as_deref(), case.replaying, case.light, false);
+    let local_forge = super::local_forge(
+        features.switches(),
+        film.as_deref(),
+        case.replaying,
+        case.light,
+        case.lockstep,
+    );
+    let telemetry = if case.replaying {
+        Ok(crate::telemetry::TelemetryConfig::playback())
+    } else if case.telemetry {
         Ok(crate::telemetry::TelemetryConfig::file(
             std::env::temp_dir().join("h2-registration-test.telemetry"),
         ))
@@ -213,7 +229,7 @@ fn registry_with_film(
             bots: case.xapi,
         },
         film,
-        case.light,
+        non_player,
         None,
     )
     .unwrap();
@@ -277,7 +293,7 @@ fn registry_with_film(
         crate::coop_probe::install_live(&rt, &mut features, nowhere).unwrap();
     }
     // What `run_hosted_with_live` adds after `register_late`, in its order.
-    if features.switches().feature("forge", true) && !case.light && !lockstep_on {
+    if local_forge {
         crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere, None)
             .unwrap();
     }
@@ -970,5 +986,99 @@ fn a_default_recording_plans_every_feature_a_session_without_a_film_plans() {
     let with_explicit = on_features(registry_with_film(&case, profile, Some(explicit)));
     assert!(!with_explicit.contains("live-join-link"));
     assert!(!with_explicit.contains("live-browser-ads"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What a film's hook check compares (`theater::compatibility`'s hook
+/// digest), by name rather than placed address: the features on, their
+/// hooks by point and kind, their guest allocations and entries. Features
+/// that only draw are left out, as the check leaves them out.
+fn simulation_hooks(registry: hooks::Registry) -> std::collections::BTreeSet<String> {
+    let plan = registry.build(&hooks::Base).unwrap();
+    let counted = |id: &str| {
+        plan.features
+            .iter()
+            .any(|f| f.id == id && f.off.is_none() && !f.presentation_only)
+    };
+    let mut rows = std::collections::BTreeSet::new();
+    for feature in plan.features.iter().filter(|f| counted(f.id)) {
+        rows.insert(format!("feature {}", feature.id));
+    }
+    for chain in plan.chains.values() {
+        for hook in chain.hooks().filter(|h| counted(h.feature)) {
+            rows.insert(format!(
+                "hook {} {} {}",
+                chain.point.name,
+                hook.feature,
+                hook.kind().as_str()
+            ));
+        }
+    }
+    for alloc in plan.allocs.iter().filter(|a| !a.presentation_only && counted(a.feature)) {
+        rows.insert(format!("allocation {} {}", alloc.feature, alloc.len));
+    }
+    for entry in plan.entries.iter().filter(|e| counted(e.feature)) {
+        rows.insert(format!("entry {}", entry.feature));
+    }
+    rows
+}
+
+/// A default recording's replay installs the recording's hooks, so Theater
+/// can play it: boot's film decisions (`non_player` for the Custom Game
+/// Browser's filters, `local_forge` for Forge) follow the film's header,
+/// never whether this boot records or plays back. The replay side is
+/// Theater's playback child (`replaying`) holding a film whose header keeps
+/// the player features, as a default recording's replay does
+/// (`theater::autorecord`'s tests open one). A film the player named plans
+/// neither Forge nor the filters, on either side.
+#[test]
+fn a_default_recordings_replay_installs_the_recordings_hooks() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-replay-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let case = Case { coop_live: true, ..Case::full("") };
+    let replay = Case { replaying: true, ..case.clone() };
+    let profile = super::compiled_render_hooks();
+    for (name, auto) in [("auto.h2film", true), ("explicit.h2film", false)] {
+        let film = recording(&dir, name, auto);
+        assert_eq!(film.player_features(), auto);
+        let recorded = registry_with_film(&case, profile, Some(Arc::clone(&film)));
+        let forge = on_features(recorded).contains("forge");
+        assert_eq!(forge, auto, "{name}: Forge planned while recording");
+        let recorded = simulation_hooks(registry_with_film(&case, profile, Some(Arc::clone(&film))));
+        let replayed = simulation_hooks(registry_with_film(&replay, profile, Some(film)));
+        let only_recorded: Vec<_> = recorded.difference(&replayed).collect();
+        let only_replayed: Vec<_> = replayed.difference(&recorded).collect();
+        assert!(
+            only_recorded.is_empty() && only_replayed.is_empty(),
+            "{name}: recorded but not replayed {only_recorded:?}; replayed but not recorded {only_replayed:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_films_header_not_the_boot_decides_forge_and_the_non_player_features() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-decide-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let on = hooks::Switches::parse("").unwrap();
+    let auto = recording(&dir, "auto.h2film", true);
+    let named = recording(&dir, "named.h2film", false);
+    for replaying in [false, true] {
+        assert!(!super::non_player(Some(&*auto), replaying, false, false));
+        assert!(super::non_player(Some(&*named), replaying, false, false));
+        assert!(super::local_forge(&on, Some(&*auto), replaying, false, false));
+        assert!(!super::local_forge(&on, Some(&*named), replaying, false, false));
+    }
+    // With no film, Theater's child and hosts are the non-player boots.
+    assert!(!super::non_player(None, false, false, false));
+    assert!(super::non_player(None, true, false, false));
+    assert!(super::non_player(Some(&*auto), false, true, false));
+    assert!(super::non_player(Some(&*auto), false, false, true));
+    assert!(super::local_forge(&on, None, false, false, false));
+    assert!(!super::local_forge(&on, None, true, false, false));
+    assert!(!super::local_forge(&on, Some(&*auto), false, true, false));
+    assert!(!super::local_forge(&on, Some(&*auto), false, false, true));
+    let off = hooks::Switches::parse("-forge").unwrap();
+    assert!(!super::local_forge(&off, Some(&*auto), false, false, false));
     std::fs::remove_dir_all(&dir).unwrap();
 }

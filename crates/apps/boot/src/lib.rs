@@ -795,7 +795,7 @@ fn run_configured(
             bots,
         },
         film.clone(),
-        replaying || host_light || sim_mode.is_some(),
+        registration::non_player(film.as_deref(), replaying, host_light, sim_mode.is_some()),
         map_rebind.clone(),
     )?;
     let (skulls, skulls_mp_on, skulls_custom_on, health_on) = (
@@ -1094,8 +1094,14 @@ fn run_configured(
             game::pogo_sound::connect(audio.mixer());
         }
     }
-    let local_forge =
-        features.switches().feature("forge", true) && !host_light && !replaying && !lockstep_on;
+    // A default recording and its replay both plan Forge (registration::local_forge).
+    let local_forge = registration::local_forge(
+        features.switches(),
+        film.as_deref(),
+        replaying,
+        host_light,
+        lockstep_on,
+    );
     if local_forge
         && let Some(input) = &mut host.input
     {
