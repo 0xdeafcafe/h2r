@@ -1259,8 +1259,9 @@ fn it_draws_the_rifle_as_soon_as_an_smg_cannot_reach() {
     let mut primary = with(SMG, smg(), full());
     primary.profile.dual = Some(DualGun::Smg);
     let pair = arms(Some(primary), Some(with(BR, rifle(), full())));
-    assert_eq!(decide_by_range(&pair, Some(9.1), false, false, &[]), Kit::Switch);
-    assert_eq!(decide_by_range(&pair, Some(7.0), false, false, &[]), Kit::Fine);
+    // An SMG fires to 1.6 times its band (9 units), 14.4.
+    assert_eq!(decide_by_range(&pair, Some(14.5), false, false, &[]), Kit::Switch);
+    assert_eq!(decide_by_range(&pair, Some(9.1), false, false, &[]), Kit::Fine);
     let long = arms(Some(with(BR, rifle(), full())), Some(with(SNIPER, sniper(), full())));
     assert_eq!(decide_by_range(&long, Some(25.0), false, false, &[]), Kit::Switch);
 }

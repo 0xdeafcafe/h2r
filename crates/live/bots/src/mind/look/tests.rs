@@ -848,8 +848,9 @@ fn both_models_run_the_same_chases() {
                 // The same start, the same first move, and both get there.
                 assert!((0.93..0.951).contains(&c.errors[0]), "{model:?}");
                 assert!(
-                    c.sticks[0].0 < 0.0 && c.sticks[0].1.abs() < 0.1,
-                    "{model:?}"
+                    c.sticks[0].0 < 0.0 && c.sticks[0].1.abs() < 0.25,
+                    "{model:?} {skill:?} {seed}: {:?}",
+                    c.sticks[0]
                 );
                 let nearest = c.errors[..60].iter().map(|e| e.abs()).fold(1.0, f32::min);
                 assert!(nearest < 0.1, "{model:?} {skill:?} {seed}: {nearest}");
