@@ -38,6 +38,9 @@
 //! each tick for every listed player, bots included, published as
 //! [`State::medals`]. Each bounce they file goes to the running rules
 //! script as `on bounce` ([`crate::rules::feature::bounces`]).
+//!
+//! **The Pogo Stick's riders** (docs/game/pogo-stick.md) are stepped from
+//! here too, with the same players and awards ([`crate::pogo_ride`]).
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -1139,6 +1142,8 @@ fn reset() {
     *lock(&LOCAL) = None;
     crate::superbounce_assist::set_marked(None);
     crate::superbounce_view::reset();
+    crate::pogo_ride::reset();
+    crate::pogo_sound::reset();
     crate::superbounce_ghost::reset();
     crate::superbounce_targets::reset();
     crate::superbounce_options::set(crate::superbounce_options::Options::DEFAULT);
@@ -1201,6 +1206,7 @@ fn decide(o: &hooks::Obs) {
         *lock(&MEDALS) = Medals::empty();
         lock(&OFF_SPOT).clear();
         *lock(&LOCAL) = None;
+        crate::pogo_ride::reset();
         crate::superbounce_ghost::reset();
         crate::superbounce_targets::reset();
     }
@@ -1448,6 +1454,11 @@ fn on_tick(o: &hooks::Obs) {
         crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots, chosen);
         // A rules script hears each bounce on the tick it is filed.
         crate::rules::feature::bounces(m, &awards);
+        // The Pogo Stick's riders, on the chain's verdicts
+        // (docs/game/pogo-stick.md, "Phases and tricks").
+        // The local players' pistons are heard (pogo_sound.rs).
+        let cues = crate::pogo_ride::on_tick(m, map.as_deref(), &players, &awards);
+        crate::pogo_sound::play(&cues);
     }
     // The film and Live get each bounce and Bounced, as the kills.
     if !awards.is_empty()
@@ -1455,6 +1466,19 @@ fn on_tick(o: &hooks::Obs) {
     {
         let guest = o.guest();
         chain::record(&*t, &guest, &awards);
+    }
+    // The Pogo Stick's chase camera (docs/game/pogo-stick.md, "The
+    // camera"): on while the local player holds a stick, its boom as
+    // long as the level leaves room for.
+    {
+        use superbounce::view::LineOfSight;
+        let sight = room.view();
+        crate::pogo_camera::on_tick(
+            crate::pogo_ride::local().is_some(),
+            live.position,
+            live.aim,
+            &|from, to| sight.clear(from, to),
+        );
     }
     *lock(&STATE) = State {
         active: true,

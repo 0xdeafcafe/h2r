@@ -39,6 +39,7 @@ works, and its page says which part. **Design**: written up, not built.
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](game/skulls.md) |
 | | 14 community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](game/community-gametypes.md) |
 | | Aim assist strength setting | Built | [aim assist](game/aim-assist.md) |
+| | A Pogo Stick as Superbounce's secondary weapon, in three looks: ridden in the air with a trick for each bounce of a chain, behind a chase camera | Partly built | [pogo stick](game/pogo-stick.md) |
 | | Multiplayer bots (Clankers) join hosted matches as phantom peers, and controller ports stay for people; their nav meshes build in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](game/bots.md) |
 | | Multiplayer Map Pack installed from your own disc (`h2 import-mappack`, or `mappack.iso` beside the disc) | Partly built | [map pack](game/map-pack.md) |
 | | New, edited and patched maps as packages | Built | [maps](game/maps.md) |

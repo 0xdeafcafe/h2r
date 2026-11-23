@@ -1998,7 +1998,9 @@ Slayer's callbacks are answered in place.
 script declares the HUD's pieces: `targets` (an enum, `common`, `likely`
 or `all`; default `likely`) and the bools `velocity`, `alignment`,
 `miss_info`, `medals`, `second_bounce`, `approach_guide` and
-`charge_segments`, all on. The
+`charge_segments`, all on, then the Pogo Stick's `pogo` (a bool, on) and
+`pogo_style` (an enum, `unsc`, `covenant` or `forerunner`; default
+`unsc`; [pogo-stick.md](pogo-stick.md)). The
 script itself never reads them:
 they are in the record's option bits for the host, which looks each up
 by name (`Ir::option_value(bits, name)`, the value at the option's

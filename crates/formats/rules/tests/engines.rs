@@ -513,7 +513,9 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     // reads: the seam targets (bits 6 and 7, `likely` raw 1), velocity
     // (bit 8), the fall alignment (bit 9), the miss info (bit 10), the
     // medals (bit 11), the second bounce's targets (bit 12), the approach
-    // guide (bit 13) and the charge segments (bit 14), each on.
+    // guide (bit 13) and the charge segments (bit 14), each on; then the
+    // Pogo Stick's, the host's too: the stick (bit 15, on) and its style
+    // (bits 16 and 17, `unsc` raw 0).
     let names: Vec<&str> = (0..ir.options.len()).map(|i| ir.option_name(i)).collect();
     assert_eq!(
         names,
@@ -529,19 +531,34 @@ fn superbounce_scores_bounces_only_by_their_chain() {
             "medals",
             "second_bounce",
             "approach_guide",
-            "charge_segments"
+            "charge_segments",
+            "pogo",
+            "pogo_style"
         ]
     );
-    assert_eq!(ir.option_offsets(), [0, 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14]);
+    assert_eq!(ir.option_offsets(), [0, 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     let scoring = 1 | (1 << 1) | (1 << 4) | (1 << 5);
     let hud = (1 << 6) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 13) | (1 << 14);
-    assert_eq!(ir.default_options(), scoring | hud);
+    let pogo = 1 << 15;
+    assert_eq!(ir.default_options(), scoring | hud | pogo);
     assert_eq!(ir.option_values(4), ["common", "likely", "all"]);
     assert_eq!(ir.option_value(ir.default_options(), "targets"), Some(1));
     assert_eq!(ir.option_value(scoring, "targets"), Some(0));
     assert_eq!(ir.option_value(scoring | (2 << 6), "targets"), Some(2));
     assert_eq!(ir.option_value(ir.default_options(), "medals"), Some(1));
     assert_eq!(ir.option_value(scoring, "medals"), Some(0));
+    // The stick is on and UNSC by default; a variant turns it off, or
+    // picks a style by the enum's index.
+    assert_eq!(ir.option_values(13), ["unsc", "covenant", "forerunner"]);
+    assert_eq!(ir.option_value(ir.default_options(), "pogo"), Some(1));
+    assert_eq!(ir.option_value(ir.default_options(), "pogo_style"), Some(0));
+    assert_eq!(ir.option_value(scoring | hud, "pogo"), Some(0));
+    for style in 0..3u32 {
+        let bits = scoring | hud | pogo | (style << 16);
+        assert_eq!(ir.option_value(bits, "pogo_style"), Some(style as i32));
+        assert_eq!(ir.option_value(bits, "pogo"), Some(1));
+        assert_eq!(ir.option_value(bits, "targets"), Some(1));
+    }
 
     // The defaults: a kill scores nothing, a single scores 1, a double 2
     // (3 for the chain of two), and a death with no killer or by the

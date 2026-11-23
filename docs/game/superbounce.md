@@ -1535,13 +1535,17 @@ unless a variant turns it off:
 | `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
 | `approach_guide` | bool, on | no pipper, box, ticks or drift arrow, no jump cue, and no percentage on the box or the fall row ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
 | `charge_segments` | bool, on | no segments round the motion tracker ([hud-kit.md](hud-kit.md), "The charge segments"); priming is the arming bar, the prompt line and the notifications |
+| `pogo` | bool, on | no Pogo Stick: the secondary weapon is the variant's own ([pogo-stick.md](pogo-stick.md)) |
+| `pogo_style` | `unsc`, `covenant` or `forerunner`; `unsc` | picks the stick's look; it has no off |
 
 The host reads them by name where it decides the mode is on, at a game's
 start and every 30 ticks (`superbounce_options::read`): the active
 variant's extension block (`variant_ext::in_game`), its script
 reference, the script's IR (`rules::header::superbounce_options`,
 `Ir::option_value`). A script that declares none of them takes the defaults.
-`superbounce.state` returns them as `options`.
+`superbounce.state` returns the HUD's as `options`, and `pogo.state` the
+stick's two. The stick's are also read by the spawn's weapon pick, from
+guest memory alone ([pogo-stick.md](pogo-stick.md#the-loadout)).
 
 ### Hold X: the fall assist
 

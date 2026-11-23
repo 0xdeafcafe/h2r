@@ -391,6 +391,9 @@ impl AgentGlue {
         // The bounce view on the flashlight and the tracker
         // (superbounce_view.rs, docs/game/superbounce.md, "The bounce view").
         crate::superbounce_view::install(&agent);
+        // The Pogo Stick's riders, camera and trick test (pogo_agent.rs,
+        // docs/game/pogo-stick.md, "Interfaces").
+        crate::pogo_agent::install(&agent);
         // Ghost runs of the spots (superbounce_ghost.rs,
         // docs/game/superbounce.md, "Ghost runs").
         crate::superbounce_ghost::install(&agent);
