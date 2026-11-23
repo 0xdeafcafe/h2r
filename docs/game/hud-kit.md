@@ -1065,10 +1065,9 @@ its notification list:
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
 | `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
-| `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, until a crouch step begins; the reason is the loss's notification |
+| `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, from 60 ticks after it (the reason's notification shows first), until a crouch step begins |
 | `Prompt` | Press (X) to show ghost | with the `superbounce-ghost` feature on (off by default), looking at the chosen strip when it has a ghost run, and no recipe step is on the line (it replaces "Hold (crouch) and walk under"; [superbounce.md](superbounce.md#ghost-runs)); (B) on the Bumper Jumper layout |
 | `Prompt` | Press (X) to stop ghost | while a ghost run plays, as above; (B) on Bumper Jumper |
-| `Message` | Charging... | a recipe step begins (near, under or held, not primed) after none: the arming bar comes up |
 | `Message` | Primed! | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` (`sb.medal`) | a medal line (below, "The medals") | a bounce, or a Bounced |
@@ -1082,8 +1081,8 @@ game does, so the prompt reads "Let go of" and a pair of sticks. A
 prompt of the game's own wins the line.
 A landing has no notification: a bounce's line is its medal, and why
 another did not bounce is the readout's line
-("The superbounce readout"). "Charging..." and "Primed!" are the shape of
-Assault's pair, "Bomb is arming..." and "Bomb armed!" (V:
+("The superbounce readout"). A recipe step has no notification: the arming bar
+and the prompt say it. "Primed!" is the shape of Assault's "Bomb armed!" (V:
 `multiplayer\multiplayer_globals`), in the same list.
 
 ### The arming bar
@@ -1325,14 +1324,14 @@ feeds it each tick from `superbounce_mode`'s state through one adapter,
 | State (`superbounce_mode::State`) | View |
 |---|---|
 | `scan` | ready with spots, ready with none (`NoStrips`), failed, else scanning |
-| `charge` (phase, fill) | the charge, as it is; the arming bar from the phase tick to tick (`ArmTrack`: the run out when a step gives way to no charge); on a recipe step begun, one `Handle::notify` of "Charging..." |
-| `verb` | the prompt's verb (a crouch step, keep moving, charge again); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
+| `charge` (phase, fill) | the charge, as it is; the arming bar from the phase tick to tick (`ArmTrack`: the run out when a step gives way to no charge) (`ArmTrack`), and the primed ending once per priming: after its 18 ticks the bar is hidden until the charge is next primed, in the air or on the ground (`EndingOnce`) |
+| `verb` | the prompt's verb (a crouch step, keep moving, charge again, held back for 60 ticks after a loss so its reason shows first: `after_reason`); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
 | `word` | on its change to −3, one `Handle::notify` of "Primed!" |
 | the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick; the HUD keeps the last loss past the 150 ticks the state has it. One `Handle::notify` per loss, by its tick |
 | `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
 | `medals` (the awards newer than the last sent) | `sb.medal`: the last local award's highest medal at its tick; one `Handle::notify` per award of a local player, to its user: the line of its highest medal ([superbounce.md](superbounce.md#medals)). With the variant's `medals` option off no medal line is sent, and an award made then is not sent later |
 
-Charging, primed and the loss go to user 0, the first local player's,
+Primed and the loss go to user 0, the first local player's,
 whose state the mode tracks. The first state after the mode comes on is
 not news: what it already holds is not sent (`superbounce_hud::Sent`).
 
@@ -1343,7 +1342,7 @@ newer than the last it saw (`superbounce_hud::watch`).
 What shows in the game: the arming bar through the recipe, the prompt
 verbs, the navpoint (the game's arrow and marker, no number) and, when
 asked for, the tutorial's training text, and in the notification list
-"Charging...", "Primed!", a loss's reason and the medals. The charge
+"Primed!", a loss's reason and the medals. The charge
 itself is on the readout's segments.
 `superbounce.state` has a loss's reason as `lost_reason` and the medals
 as `medals`.
@@ -1477,8 +1476,8 @@ through `superbounce_readout::view`:
 |---|---|
 | `velocity`, `yaw`, `airborne` | the speed line (`speed`) |
 | `landing` (the assist's prediction), while airborne | the bar and the steer line (`fall`): `speed` over `need`; off the seam (`miss()` over 0) the way to `aim`, the seam's landing point; caught, the way to drift when `wants_drift()`, else on the seam |
-| `last_landing` (result, tick, origin) | the miss line (`miss`, `Info`): put up when a landing is filed, taken down after 120 ticks, by the next fall toward a seam, or by a bounce |
-| `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances |
+| `last_landing` (result, tick, origin) | the miss line (`miss`, `Info`): put up when a landing is filed, taken down after 120 ticks, by the next fall toward a seam, or by a bounce; a miss within 60 ticks of the line shown replaces it only with a higher speed in |
+| `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances; a target outside 40 degrees of the aim is cleared (`ahead`), and while the mode is on the `hudg`'s `waypoint_bottom_inset` (`+0xf0`) is raised to 80 so the one arrow the game clamps to the edge clears the tracker, the speed row and the score plate (`keep_waypoint_inset`, from the kit's tick) |
 | `switched` (`superbounce_targets::Switch`, for 60 ticks after a double tap of the flashlight) | the switch's line (`kinds`), over the ranked line and the miss line |
 | `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
 | `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`): on the ground its jump cue on the box; in a fall its chance as a whole percentage on the box and, on a fall toward its seam, after the steer line; and its marks' poses (`guide_poses`, `Handle::world_mark`) |
