@@ -3115,10 +3115,12 @@ mod tests {
         assert_eq!(built.input.programs[camo_program].pass.view, [false, true, false, false]);
         assert_eq!(built.input.programs[camo_program].images[1], None, "the copy is bound per encode");
         let (programs, buffers) = (model.input.programs.len(), model.input.buffers.len());
+        let own_parts = model.input.parts.len();
+        assert_eq!(own_parts, 2, "both parts draw the model's own layer 3");
         let theirs = built.input.layers[0].passes[0].implementations[0].unwrap();
         model.input.append(built.input);
         assert_eq!(model.input.layers.len(), 6);
-        assert_eq!(model.input.parts.len(), 1, "the model's layer-3 part alone");
+        assert_eq!(model.input.parts.len(), own_parts, "the model's layer-3 parts alone");
         assert_eq!(
             model.input.layers[0].passes[0].implementations[0],
             Some((theirs.0 + programs, theirs.1 + buffers)),
