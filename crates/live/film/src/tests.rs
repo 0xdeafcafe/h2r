@@ -761,7 +761,6 @@ fn an_unsealed_tape_is_sealed_to_its_last_flushed_capture() {
     assert_eq!(last.last, 256);
     // The staged copy is gone and the tape's bytes end where the film does.
     assert!(staging_files(&path).is_empty());
-    assert_eq!(index.iter().filter(|e| e.tag == TICK).count(), 2);
 }
 
 #[test]

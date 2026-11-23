@@ -96,7 +96,7 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     let flushed = spans.values().map(|(_, last)| *last).max().unwrap_or(0);
     let mut anchor = None;
     for entry in rest.iter().filter(|e| e.tag == MARK) {
-        if let Mark::D3dBarrier { slices, tick, .. } = crate::decode::<Mark>(&mut source, entry)?
+        if let Mark::D3dBarrier { slices, tick, .. } = crate::decode::<_, Mark>(&mut source, entry)?
             && tick <= flushed
         {
             anchor = Some((slices, tick, entry.offset));
@@ -121,20 +121,20 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
             PRIVATE => rest.get(i + 1).is_some_and(|next| {
                 next.tag == range::TICK && spans.get(&next.offset).is_some_and(|(f, _)| *f <= end_tick)
             }),
-            HASH => crate::decode::<Check>(&mut source, entry).is_ok_and(|c| c.tick <= end_tick),
-            MARK => match crate::decode::<Mark>(&mut source, entry) {
+            HASH => crate::decode::<_, Check>(&mut source, entry).is_ok_and(|c| c.tick <= end_tick),
+            MARK => match crate::decode::<_, Mark>(&mut source, entry) {
                 Ok(Mark::D3dBarrier { tick, .. }) => tick <= end_tick,
                 Ok(Mark::Lobby { .. }) => entry.offset < mark_offset,
                 _ => false,
             },
-            t if tape::CALL_STREAMS.contains(&t) => entry.offset < mark_offset,
+            t if crate::tape::CALL_STREAMS.contains(&t) => entry.offset < mark_offset,
             KEYF => crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)
                 .ok()
                 .and_then(|raw| range::key_tick(&raw).ok())
                 .is_some_and(|tick| tick <= end_tick),
             t if t == blam::DESC || t == blam::SUMM || t == blam::TIDX => false,
             t if t == *b"PSUM" || t == range::CIDX || t == crate::INDX => false,
-            HEAD | DATA => true,
+            crate::HEAD | crate::DATA => true,
             _ => true,
         };
         if keep {
@@ -146,15 +146,15 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     // first taped call after the mark names the call count at the end.
     let mut calls = 0;
     for entry in rest.iter().filter(|e| e.offset > mark_offset) {
-        if tape::CALL_STREAMS.contains(&entry.tag) {
+        if crate::tape::CALL_STREAMS.contains(&entry.tag) {
             let batch: Vec<Call> = crate::decode(&mut source, entry)?;
             calls = batch.first().context("an empty film call batch")?.index;
             break;
         }
     }
     if calls == 0 {
-        for entry in kept.iter().filter(|e| tape::CALL_STREAMS.contains(&e.tag)) {
-            if let Some(last) = crate::decode::<Vec<Call>>(&mut source, entry)?.last() {
+        for entry in kept.iter().filter(|e| crate::tape::CALL_STREAMS.contains(&e.tag)) {
+            if let Some(last) = crate::decode::<_, Vec<Call>>(&mut source, entry)?.last() {
                 calls = last.index + 1;
             }
         }
@@ -277,7 +277,7 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     drop(file);
 
     // Rename over the tape only once the result reads back whole.
-    let playback = match Reader::open(&staging).and_then(tape::Playback::load) {
+    let playback = match Reader::open(&staging).and_then(crate::tape::Playback::load) {
         Ok(playback) => playback,
         Err(error) => {
             let _ = fs::remove_file(&staging);
