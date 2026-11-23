@@ -21,5 +21,10 @@ scenario-edit = { path = "../scenario-edit", default-features = false }
 serde.workspace = true
 tags.workspace = true
 
+[features]
+# `testkit`: an invented map the kit builds on, for other crates' tests
+# (host data's kit bundle, the server-map strip).
+testkit = []
+
 [lints]
 workspace = true

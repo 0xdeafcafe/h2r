@@ -693,7 +693,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
     }
 }
 
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) mod fixture;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-pub(crate) use tests::test_floor;
