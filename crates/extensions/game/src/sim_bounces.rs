@@ -31,7 +31,7 @@ use sim_bench::bounces::{BouncesRun, ForkAsk, ForkDone, Job, MAX_VARIANTS};
 use sim_bench::drops::{PairSense, SeatSense, Sense};
 
 use crate::sim_drops::{Body, Seat, body, level, pad, stop};
-use crate::snapshot_glue::{BootMachine, Part, check_hash};
+use crate::snapshot_glue::{BootMachine, check_hash};
 use crate::theater::ring::Ring;
 
 /// The most the ring keeps: a whole RAM for every variant and one more

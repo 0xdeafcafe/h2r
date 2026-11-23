@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use super::region::{self, Class};
-use super::report::{self, Verdict};
+use super::report::Verdict;
 use super::sample::{self, Axis, Rng};
 use super::*;
 use crate::drops::{FALL_GRAVITY, Outcome, PRIMED, PairSense, SeatSense, Sense, Target, TargetSpec};
