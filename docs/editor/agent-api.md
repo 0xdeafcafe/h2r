@@ -261,7 +261,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)) |
-| `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
+| `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}`, `preview {what, target?, ...}`, `audio {seconds?, every_ms?, call?}`, `result {id?}` ([Previewing content in the paired game](#previewing-content-in-the-paired-game)) |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `script` | `list {filter?}`, `source {name?}`, `follow {name?, link}`, `uses {kind, name}`, `builtins {filter?, unnamed?}`, `doc {path}` ([rich-editors.md](rich-editors.md#scripts)) |
@@ -867,6 +867,100 @@ Notes on some:
   map: `h2 studio open mainmenu`, `h2 studio render-stats`, then
   `h2 studio snapshot` and look at the PNG.
 
+### Previewing content in the paired game
+
+`pair.preview` puts content into the paired game and reads it back, so a
+weapon, an object, a menu screen or the HUD is checked in the running game
+rather than found in play (`crates/apps/studio/src/api/preview.rs`). It
+answers at once with `{id, state}`. `pair.result {id?}` reads the job
+(the latest one without `id`). One job runs at a time and the last eight
+are kept.
+
+| `what` | `target` | The game calls, in order |
+|---|---|---|
+| `weapon` | a `weap` tag's name or datum (required) | `sim.give` to `player` (default 0; `keep: true` adds it as a spare), `session.wait`, `world.object` for the held weapon, `pogo.state`, `render.scene`, the capture |
+| `object` | an object tag's name or datum (required; `vehi:<name>` names the group) | `world.object` for the player, `sim.spawn` at `pos`, else `distance` (default 3) world units in front of the player and facing them, `session.wait`, `world.query` near it, `render.scene`, the capture |
+| `ui` | the screen expected (optional) | `ui.audit`, `ui.stack` and `ui.screen` where listed, the capture |
+| `hud` | a `<name>.state` method to read with it (optional: `superbounce`, `pogo`) | `cheat.list`, `cheat.set hide_hud false` when it was on, `session.wait`, the state, `render.scene`, the capture, then `hide_hud` back on |
+
+The other params are `ticks` to let run before the reads (0 to 600;
+default 30, and 0 for `ui`), `view` for the picture, `out` to copy the
+PNG to, and `edits` (`send`, the default, or `skip`). `view` is `render`
+(the default: `render.capture`, falling back to `host.screenshot`) or
+`screen` (`host.screenshot`, the window's frame as the player sees it).
+
+Pending edits reach the game first, through the pairing's own path. With
+edits waiting and the editor in View, the job queues `mirror.apply
+send`'s request. It is `sending` until the window has sent every waiting
+row (up to 15 s, else `failed`). A conflict, a refused write or an edit
+that needs a reload stays in Pending. The result lists those rows under
+`edits.left`, with a warning. A preview of a paused game is `REFUSED`,
+except for `ui`.
+
+The game calls run on a thread and a socket connection of their own, so
+the window keeps drawing. A method the game does not list is skipped.
+A missing method the preview needs (`sim.give`, `sim.spawn`, `ui.audit`
+or `ui.stack`) fails the job, and so does a game refusal, with the game's
+message in `why`.
+
+`pair.result` gives `state` (`sending`, `running`, `done`, `failed`),
+`why`, `elapsed_ms`, `steps` (the game calls made so far) and `edits
+{pending, sent, left}`. Once the job is done it also gives:
+
+- `applied`: the game's answer to `sim.give` or `sim.spawn`.
+- `reads.weapon`: `object`, `tag`, `name`, `held` (the player's held
+  weapon's tag is the given one after the wait) and `held_tag`.
+- `reads.pogo`, where `pogo.state` is listed: `stick` (the weapon is one
+  of the kit's three), `active`, the `rider` holding it and the chase
+  `camera` (`on`, `drawn`, `room`, `share`).
+- `reads.camera`, where `render.scene` is listed: the last sealed scene's
+  `views` (`key`, `instances`, `cut`) and `first_person {views, drawn}`.
+  `drawn` is true when a `first_person:` view drew an instance.
+- `reads.object`: the spawned object as `world.query` lists it, or null.
+- `reads.ui`: `shown` (the names and ids of `ui.audit`'s active surface
+  and menu, and `ui.screen`'s class and screen), `matches`, and the raw
+  `audit`, `stack` and `screen`.
+- `reads.hud {hidden_before, shown}` and `reads.state`.
+- `capture`: `path`, `method`, `tick`, `present`, `width`, `height`,
+  `mean_luma` (Rec. 709, 0 to 1), `dark_share` (pixels below 4% luma) and
+  `black` (a `dark_share` of 98% or more).
+- `warnings`: a black frame, a weapon not held, no first-person view
+  drawn (except while the Pogo chase camera draws), no rider for a Pogo
+  stick, a chase camera asked for and not drawn, a spawned object not
+  found, another screen shown, `ui.audit` issues, edits left in Pending.
+
+`pair.preview` does not open a menu screen. The game API has no call that
+opens a screen by name: the guest opens screens from its own UI code
+(`game::ui_kit::dialog_tag::open_over`), and a host call into it would
+need a guest call queue like `sim.give`'s. Drive the menu to the screen
+with the game's `ui.press`, then preview `ui`.
+
+`pair.audio {seconds?, every_ms?, call?}` makes `call` (`{method,
+params?}`, a game method that makes the sound, such as `pogo.test`),
+samples the game's `audio.voices` every `every_ms` (20 to 1000, default
+100) for `seconds` (0.1 to 30, default 3), then reads `audio.loops`.
+`pair.result` gives `audio`:
+
+- `samples`, `voices` (distinct voice ids) and `most_at_once`.
+- `peak_gain` and `peak_db`: the largest `applied_gain`, the level a
+  voice's direct path leaves the mixer with, before bin volumes and pan.
+- `loudest`: the eight loudest voices, with `id`, `kind`, `peak_gain`,
+  `peak_db`, `volume_mb`, `distance_units` and `samples`.
+- `loops`: the looping sounds playing, with `tag_name`, `tag_datum` and
+  `segment`.
+
+These are mixer gains, not the samples' own level. The game has no output
+meter (`H2_AUDIO_STATS` reports playout health, not level), so a sample
+that is too loud at full gain shows here only as a voice at 0 dB. A
+sound's own level is read in the editor from its tag.
+
+```sh
+h2 studio pair.preview '{"what":"weapon","target":"objects\\weapons\\multiplayer\\pogo\\unsc\\pogo_unsc","out":"/tmp/pogo.png"}'
+h2 studio pair.result '{"id":1}'
+h2 studio pair.audio '{"seconds":3,"call":{"method":"pogo.test","params":{"trick":"backflip"}}}'
+h2 studio pair.result
+```
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`
@@ -1114,7 +1208,10 @@ identical profiles.
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs`, `api/sound.rs`, `api/hud.rs` and `api/scripts.rs` the Tags,
   sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's,
-  `api/ui_edit.rs` the UI Screens tool's edits.
+  `api/ui_edit.rs` the UI Screens tool's edits, `api/preview.rs` and
+  `api/preview/run.rs` the previews in a paired game (tested in
+  `api/preview/tests.rs` against the agent's real server with invented
+  host methods).
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
