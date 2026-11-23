@@ -134,6 +134,11 @@ pub const MESSAGE_ORDER: u32 = 0x1385;
 /// routine reads (E `0x0024cc97`).
 pub const GAME_TIME: u32 = 0x0051_0c54;
 pub const GAME_TIME_TICK: u32 = 8;
+/// The local user whose HUD is being drawn: `UI_HUD_DRAW` reads it and
+/// hands it to its per-user draws (E `0x001917ed`, the navpoint draw's
+/// ECX at `0x0019186a`). S: that it holds the user through the widget
+/// loop.
+pub const DRAW_USER: u32 = 0x004b_9ed8;
 /// `HUD_INTERACTION_VISIBLE`'s caller, the interaction code (E
 /// `0x00191976`).
 pub const FROM_INTERACTION: u32 = 0x0019_197b;
@@ -209,6 +214,29 @@ struct Registered {
     navs: Vec<(&'static str, [f32; 3])>,
     /// The pose of each world mark element that has one, by its id.
     marks: Vec<(&'static str, Pose)>,
+    /// A local user's own values, drawn for that user's HUD in place of
+    /// [`Registered::values`] ([`Handle::publish_for`]).
+    own: Vec<Own>,
+}
+
+/// One local user's own values of a HUD, stamped as the shared ones are.
+#[derive(Clone, Debug)]
+pub struct Own {
+    pub user: u32,
+    pub values: Values,
+    pub stamps: Stamps,
+}
+
+/// The values the widget hooks draw for local user `user`: its own, else
+/// the shared ones.
+pub fn values_for<'a>(
+    shared: (&'a Values, &'a Stamps),
+    own: &'a [Own],
+    user: u32,
+) -> (&'a Values, &'a Stamps) {
+    own.iter()
+        .find(|o| o.user == user)
+        .map_or(shared, |o| (&o.values, &o.stamps))
 }
 
 /// How many world marks have a pose, over every registered HUD: what the
@@ -338,6 +366,7 @@ pub fn register(describe: Arc<dyn Describe + Send + Sync>) -> Handle {
         stamps: Stamps::new(),
         navs: Vec::new(),
         marks: Vec::new(),
+        own: Vec::new(),
     });
     Handle(r.len() - 1)
 }
@@ -352,6 +381,42 @@ impl Handle {
             let (values, stamps) = stamp_values(&x.values, &x.stamps, values, now, scaled());
             x.values = values;
             x.stamps = stamps;
+        }
+    }
+    /// Local user `user`'s own values, drawn by the widget hooks for that
+    /// user's HUD in place of the shared ones ([`Handle::publish`]); `None`
+    /// takes them away, so the user draws the shared values again. The
+    /// channels (prompt, training, banner, navpoints, world marks) read the
+    /// shared values alone. A user past [`USERS`] is ignored.
+    pub fn publish_for(&self, user: u32, values: Option<Values>) {
+        if user >= USERS {
+            return;
+        }
+        let now = Instant::now();
+        let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+        let Some(x) = r.get_mut(self.0) else {
+            return;
+        };
+        let at = x.own.iter().position(|o| o.user == user);
+        let Some(values) = values else {
+            if let Some(i) = at {
+                x.own.remove(i);
+            }
+            return;
+        };
+        let (old, stamps) = match at {
+            Some(i) => (&x.own[i].values, &x.own[i].stamps),
+            None => (&x.values, &x.stamps),
+        };
+        let (values, stamps) = stamp_values(old, stamps, values, now, scaled());
+        let own = Own {
+            user,
+            values,
+            stamps,
+        };
+        match at {
+            Some(i) => x.own[i] = own,
+            None => x.own.push(own),
         }
     }
     /// Queues `text` as a notification for local user `user`, one line of
@@ -551,25 +616,29 @@ async fn send_notes(
     Ok(Ret::new(0, 0))
 }
 
-/// HUD `hud`'s value for element `id`, as it draws now ([`animated`]).
-fn value(hud: usize, id: &str) -> Option<Value> {
+/// HUD `hud`'s value for element `id` in local user `user`'s HUD, as it
+/// draws now ([`animated`]).
+fn value(hud: usize, user: u32, id: &str) -> Option<Value> {
     let r = read(&REGISTRY);
     let x = r.get(hud)?;
-    let v = x.values.get(id).cloned()?;
-    let stamp = x.stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
+    let (values, stamps) = values_for((&x.values, &x.stamps), &x.own, user);
+    let v = values.get(id).cloned()?;
+    let stamp = stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
     Some(animated(v, stamp, Instant::now(), scaled()))
 }
 
-/// HUD `hud`'s element `id`'s scale now, wide and tall
+/// HUD `hud`'s element `id`'s scale now in local user `user`'s HUD, wide
+/// and tall
 /// (`motion::scale_at`).
-fn scale(hud: usize, id: &str) -> [f32; 2] {
+fn scale(hud: usize, user: u32, id: &str) -> [f32; 2] {
     let r = read(&REGISTRY);
     let Some(x) = r.get(hud) else {
         return [1.0, 1.0];
     };
+    let (values, stamps) = values_for((&x.values, &x.stamps), &x.own, user);
     let (Some(v), Some(stamp)) = (
-        x.values.get(id),
-        x.stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t),
+        values.get(id),
+        stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t),
     ) else {
         return [1.0, 1.0];
     };
@@ -721,6 +790,12 @@ fn in_region(address: u32) -> bool {
         REGION_END.load(Ordering::Relaxed),
     );
     s != 0 && address >= s && address < e
+}
+
+/// The local user whose HUD is being drawn ([`DRAW_USER`]); 0 when it
+/// cannot be read or is no local user.
+pub fn draw_user(mem: &dyn GuestMemory) -> u32 {
+    mem.u32(DRAW_USER).ok().filter(|u| *u < USERS).unwrap_or(0)
 }
 
 /// The screen mode the HUD draws in: one local view fullscreen, two half,
@@ -1643,15 +1718,17 @@ impl hooks::Feature for HudKit {
         // compiler leaves 0 (the state's pad byte) and which lives in the
         // converted nhdt's own blocks, not ours. Each passes the other's
         // widgets through, so the order between them only has to exist.
-        let values = |h: usize, id: &str| value(h, id);
         b.raw()
             .before(&points::HUD_WIDGET_GATE, "hud kit: gate", move |c| {
                 if !in_region(c.cpu.eax.wrapping_sub(8)) {
                     return Ok(Flow::Continue);
                 }
                 let table = read(&TABLE);
-                let answer =
-                    gate(&*c.ctx.memory(), c.cpu.esp, c.cpu.eax, &table, &values).map_err(fault)?;
+                let mem = c.ctx.memory();
+                let user = draw_user(&*mem);
+                let values = |h: usize, id: &str| value(h, user, id);
+                let answer = gate(&*mem, c.cpu.esp, c.cpu.eax, &table, &values).map_err(fault)?;
+                drop(mem);
                 match answer {
                     Some(show) => {
                         c.cpu.eax = u32::from(show);
@@ -1668,6 +1745,8 @@ impl hooks::Feature for HudKit {
                 if table.widgets.is_empty() {
                     return Ok(Flow::Continue);
                 }
+                let user = draw_user(&*c.ctx.memory());
+                let values = |h: usize, id: &str| value(h, user, id);
                 if inputs(&mut *c.ctx.memory(), c.cpu.esp, &table, &values).map_err(fault)? {
                     return c.ret(12).map(Flow::Return);
                 }
@@ -1681,6 +1760,8 @@ impl hooks::Feature for HudKit {
                     return Ok(Flow::Continue);
                 }
                 let table = read(&TABLE);
+                let user = draw_user(&*c.ctx.memory());
+                let values = |h: usize, id: &str| value(h, user, id);
                 if string(&mut *c.ctx.memory(), c.cpu.esp, c.cpu.ebx, &table, &values)
                     .map_err(fault)?
                 {
@@ -1715,21 +1796,22 @@ impl hooks::Feature for HudKit {
             .before(&points::HUD_WIDGET_EFFECTS, "hud kit: scale", move |c| {
                 // Only the bitmap draw's call, and only a widget in
                 // the kit's memory: two loads for a retail one.
-                {
+                let user = {
                     let mem = c.ctx.memory();
                     if mem.u32(c.cpu.esp)? != EFFECTS_RETURN
                         || !in_region(mem.u32(c.cpu.ebp.wrapping_add(FRAME_WIDGET))?)
                     {
                         return Ok(Flow::Continue);
                     }
-                }
+                    draw_user(&*mem)
+                };
                 let table = read(&TABLE);
                 let seen = scale_basis(
                     &mut *c.ctx.memory(),
                     c.cpu.esp,
                     c.cpu.ebp,
                     &table,
-                    &|h, id| scale(h, id),
+                    &|h, id| scale(h, user, id),
                 )
                 .map_err(fault)?;
                 if seen {

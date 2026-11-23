@@ -633,7 +633,9 @@ memory.
 
 A feature registers its `Describe` once (`hud_kit::register`, which
 returns a `Handle`), then publishes a `Values` whenever its state changes
-(`Handle::publish`), the world point of each of its navpoints
+(`Handle::publish`), and, for a split-screen player whose widgets differ,
+that local user's own (`Handle::publish_for(user, Some(values))`, `None`
+to draw the shared ones again), the world point of each of its navpoints
 (`Handle::navpoint` for its first, `Handle::navpoint_at(id, point)` for
 any) and the pose of each of its world marks
 (`Handle::world_mark(id, pose)`, "World marks"). The feature `hud-kit`
@@ -667,6 +669,12 @@ does the rest:
    none of its element's `hide_when_d` bits is set in the game's word D,
    the gate's third stack argument (`[esp+12]`, its low 16 bits). The
    retail gate is skipped for it; a retail widget costs two loads.
+   The gate, the inputs, the string and the scale read the values of
+   the local user whose HUD is being drawn: `[0x004b9ed8]`, which
+   `UI_HUD_DRAW` reads and hands to its per-user draws (E `0x001917ed`,
+   `0x0019186a`; `hud_kit::draw_user`): that user's own values if it has
+   them, else the shared ones (`hud_kit::values_for`). The channels read
+   the shared values alone.
 3. **Inputs** (`HUD_WIDGET_INPUTS`, before): `hud_input1` is
    `records::Widget::input(fill)`, the other three 0.
 
@@ -1699,7 +1707,8 @@ chance field and shows no percentage beside the call.
 ## Interfaces
 
 - A feature calls `hud_kit::register(describe) -> Handle`, then
-  `Handle::publish(values)`, `Handle::navpoint(Option<point>)` or
+  `Handle::publish(values)`, `Handle::publish_for(user, Option<values>)`
+  for a local user's own, `Handle::navpoint(Option<point>)` or
   `Handle::navpoint_at(id, Option<point>)` for its navpoints, and
   `Handle::world_mark(id, Option<pose>)` for its world marks. A
   `Prompt` or `Training` element's shown text is the channel's text.
@@ -1762,6 +1771,8 @@ particular:
   bounds times the image's size).
 - That `player_globals +8` is the count of local views the HUD's screen
   mode follows.
+- That `[0x004b9ed8]` is the user whose HUD the widget loop draws, for
+  every user's pass of a split frame.
 - That writing the prompt fields at `HUD_INTERACTION_VISIBLE`'s
   interaction call shows the verb and hides it again when the kit stops,
   and that U+E110 is redrawn as the bound crouch key.

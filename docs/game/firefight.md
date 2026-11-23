@@ -810,13 +810,15 @@ The HUD is the HUD kit's `firefight` HUD
 The kit's checks (`h2 hud preview firefight --state all --mode all`)
 hold it in every state and screen mode, and the kit's runtime draws it.
 The feed (`hud::install`, the feature `firefight-hud`, added with the
-`firefight` feature) registers it with the kit and, each tick, publishes
-`hud::current` for the roster slot of local user 0's player
-(`hud::first_local_slot`) and sends each note to every local user
-(`hud::Feed`). With no match, no local player or a blob it cannot read
-every element is hidden; the reason for an unreadable blob is logged
-once. The kit keeps one set of values per HUD, so a split-screen
-player's lives pill shows the first local player's count. Replicas and
+`firefight` feature) registers it with the kit and, each tick, views
+`hud::current` at the roster slot of each local user's player
+(`hud::local_slots`), one `hud::Feed` a user (`hud::tick_all`): local
+user 0's values are the HUD's shared ones, which the channels (the
+banner) read, and each other local user's are its own
+(`Handle::publish_for`), so each split-screen player's pill shows its
+own lives. Each user's notes go to that user. With no match, no player
+for the user or a blob it cannot read, that user's elements are hidden;
+the reason for an unreadable blob is logged once. Replicas and
 films have no director and so no blob until the host log carries the
 mode state (AN14). A distributed client gets the blob over the actor
 channel.

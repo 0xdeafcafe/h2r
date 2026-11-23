@@ -618,3 +618,36 @@ fn a_rounds_skull_is_a_note_from_the_blob() {
     assert!(round.is_some() && skull.is_some(), "{:?}", played.notes);
     assert!(round < skull, "{:?}", played.notes);
 }
+
+/// Split screen: each local user's feed views the blob at its own roster
+/// slot, so each sees its own lives and gets its own notes; a user with no
+/// player is hidden.
+#[test]
+fn each_local_user_sees_its_own_lives() {
+    let m = Mode {
+        lives: Lives::Each(vec![(0, 3), (2, 1)]),
+        ..sample_mode()
+    };
+    let blob = m.encode();
+    let current = |slot: u8| Some(Mode::decode(&blob).map(|m| view_of(&m, slot)));
+    let mut feeds: Feeds = Default::default();
+    let slots = [Some(0), Some(2), None, None];
+    let all = tick_all(&mut feeds, &slots, current);
+    let lives = |i: usize| {
+        let v = all[i].0.get(LIVES_COUNT).unwrap();
+        v.shown.then(|| v.text.clone())
+    };
+    assert_eq!(lives(0).as_deref(), Some("3"));
+    assert_eq!(lives(1).as_deref(), Some("1"));
+    assert_eq!(all[2].0, hud_kit_core::huds::firefight::hidden());
+    // User 1 loses its last life: the note is its alone.
+    let hit = Mode {
+        lives: Lives::Each(vec![(0, 3), (2, 0)]),
+        ..sample_mode()
+    }
+    .encode();
+    let current = |slot: u8| Some(Mode::decode(&hit).map(|m| view_of(&m, slot)));
+    let all = tick_all(&mut feeds, &slots, current);
+    assert!(all[0].1.is_empty());
+    assert_eq!(all[1].1, ["A life lost"]);
+}

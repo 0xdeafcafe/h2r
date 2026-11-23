@@ -23,8 +23,9 @@
 //! blob into the kit's `View` for one viewer, [`view`] into its `Values`.
 //! The kit's layout, its checks (`h2 hud preview firefight`) and its
 //! runtime (`crate::hud_kit`) are the kit's. [`install`] registers the HUD
-//! and adds its feed, which each tick publishes [`current`] for the first
-//! local player and sends the notes a change makes ([`Feed`]).
+//! and adds its feed, which each tick publishes [`current`] for each local
+//! player, its own values for each split-screen player, and sends each
+//! the notes a change makes ([`Feed`], [`tick_all`]).
 
 use std::sync::{Arc, Mutex};
 
@@ -542,29 +543,51 @@ pub fn skull_name(index: u8) -> Option<&'static str> {
     crate::skulls::SKULLS.get(usize::from(index)).map(|d| d.label)
 }
 
-/// The roster slot of local user 0's player, if the game lists one.
-pub fn first_local_slot(m: &dyn GuestMemory) -> Result<Option<u8>, MemFault> {
+/// The roster slot of each local user's player the game lists, by local
+/// user (0 to 3).
+pub fn local_slots(m: &dyn GuestMemory) -> Result<[Option<u8>; USERS], MemFault> {
     use engine::view::players;
+    let mut out = [None; USERS];
     let Some(array) = players::array(m)? else {
-        return Ok(None);
+        return Ok(out);
     };
     if m.u32(array.array.addr.wrapping_add(engine::datum::layout::DATA))? == 0 {
-        return Ok(None);
+        return Ok(out);
     }
     for (handle, p) in array.live(m, 16)? {
-        if p.listed(m)? && p.local_user(m)? == 0 {
-            return Ok(Some(handle.index() as u8));
+        let user = p.local_user(m)?;
+        if p.listed(m)? && (0..USERS as i16).contains(&user) {
+            out[user as usize] = Some(handle.index() as u8);
         }
     }
-    Ok(None)
+    Ok(out)
 }
 
-/// The feed on the plan: each tick, [`current`] for the first local
-/// player's slot through [`Feed::tick`], published to the kit, each note
-/// sent to every local user.
+/// Local users the HUD kit draws for.
+const USERS: usize = hud_kit::USERS as usize;
+
+/// The feeds of the local users, one each.
+pub type Feeds = [Feed; USERS];
+
+/// One tick for every local user: user `u`'s view of the blob at its
+/// roster slot (`slots[u]`, through `current`), its values and its notes.
+/// A user with no slot is hidden and its feed forgets its last view.
+pub fn tick_all(
+    feeds: &mut Feeds,
+    slots: &[Option<u8>; USERS],
+    current: impl Fn(u8) -> Option<Result<View, Error>>,
+) -> [(Values, Vec<String>); USERS] {
+    std::array::from_fn(|u| feeds[u].tick(slots[u].and_then(&current)))
+}
+
+/// The feed on the plan: each tick, [`current`] for each local user's
+/// roster slot through its [`Feed`]: user 0's values are the HUD's shared
+/// ones (the banner, the channels), every other local user's its own
+/// (`Handle::publish_for`), so each split-screen player sees its own
+/// lives; each user's notes go to that user.
 struct FeedFeature {
     handle: Handle,
-    feed: Arc<Mutex<Feed>>,
+    feeds: Arc<Mutex<Feeds>>,
 }
 
 impl hooks::Feature for FeedFeature {
@@ -578,19 +601,22 @@ impl hooks::Feature for FeedFeature {
         // Rebuilt from the mode blob each tick; the last view only words
         // the next tick's notes.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
-        let (handle, feed) = (self.handle, Arc::clone(&self.feed));
+        let (handle, feeds) = (self.handle, Arc::clone(&self.feeds));
         b.frame().on_tick("firefight hud: values", move |o| {
-            let mem = o.guest();
-            let now = match first_local_slot(&*mem) {
-                Ok(Some(local)) => current(local),
-                _ => None,
-            };
-            let users = hud_kit::local_users(&*mem).unwrap_or(1);
-            drop(mem);
-            let (values, notes) = feed.lock().unwrap_or_else(|e| e.into_inner()).tick(now);
-            handle.publish(values);
-            for text in notes {
-                for user in 0..users {
+            let slots = local_slots(&*o.guest()).unwrap_or_default();
+            let all = tick_all(
+                &mut feeds.lock().unwrap_or_else(|e| e.into_inner()),
+                &slots,
+                current,
+            );
+            for (user, (values, notes)) in all.into_iter().enumerate() {
+                let user = user as u32;
+                if user == 0 {
+                    handle.publish(values);
+                } else {
+                    handle.publish_for(user, slots[user as usize].map(|_| values));
+                }
+                for text in notes {
                     handle.notify(user, &text);
                 }
             }
@@ -607,7 +633,7 @@ pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
     registry
         .add(&FeedFeature {
             handle,
-            feed: Arc::new(Mutex::new(Feed::default())),
+            feeds: Arc::new(Mutex::new(Default::default())),
         })
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("{FEED}: {e}"))
