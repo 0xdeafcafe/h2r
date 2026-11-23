@@ -1,7 +1,7 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
-Status: Design, slices K5 and H1 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. Everything else named here as new is not built.
-Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, huds/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source). Tests: named per slice below.
+Status: Design, slices K5, H1 and H3 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring, hold, zone, refusal or budget feed yet (below). Everything else named here as new is not built.
+Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, huds/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 How a monitor sees and edits the things of
@@ -190,6 +190,18 @@ set each tick (`Handle::world_mark`).
   map has none the mark is in the HUD colour, so a mark's team stays in
   its label. No colour is a constant of ours but the preview's
   stand-ins.
+- **The runtime** (`forge_readout.rs`): `Editor::readout_scene` builds a
+  `Scene` each tick (`forge_glue/editing.rs`), the `forge` feature's tick
+  hook turns it into the view's values and the poses (`frame`), and
+  nothing is published again while neither changed. With the monitor
+  off every element is hidden and no mark has a pose. The twelve near
+  marks are the nearest things with no body within 12 world units, by
+  distance then identity, without the thing aimed at (`choose_near`).
+  A held thing's `under` is on the ground its height below it, its
+  `from` where it was picked up. Not fed yet, so absent: a hold (the
+  ground's height needs a ray the tool does not keep), a ring (no kind's
+  radius is traced), the zone, a refusal's sentence and the budget by kind
+  (S6).
 - **A pool, not a mark a thing.** One layout means a fixed set of
   elements: twelve near marks and eight zone lines. The runtime gives
   the nearest things the poses and leaves the rest without one; a

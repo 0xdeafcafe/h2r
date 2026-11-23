@@ -167,6 +167,45 @@ impl Editor {
         }
     }
 
+    /// What the Forge readout shows this tick (docs/game/
+    /// forge-map-variants-ui.md, "The readout"): the thing aimed at or held,
+    /// and the things with no body for the near marks. Nothing with the
+    /// monitor off.
+    pub fn readout_scene(&self, game: Option<i32>) -> crate::forge_readout::Scene {
+        use crate::forge_readout as readout;
+        let Some(camera) = self.tool.camera.as_ref().filter(|_| self.tool.monitor) else {
+            return readout::Scene::default();
+        };
+        let things = self.session.things();
+        let target = self
+            .tool
+            .held_thing
+            .or(self.tool.aimed_thing)
+            .and_then(|id| self.session.thing(id))
+            .map(|thing| {
+                let held = self.tool.held_thing.is_some();
+                let frame = self.tool.ghost.filter(|_| held).unwrap_or(thing.frame);
+                readout::aimed(
+                    &thing,
+                    thing_name(&thing),
+                    frame.position,
+                    frame.rotation[0].to_degrees(),
+                    self.tool.thing_extent(&self.session, &thing).radius,
+                    game,
+                )
+            });
+        readout::Scene {
+            monitor: true,
+            eye: camera.position,
+            target,
+            things: things
+                .iter()
+                .filter_map(|t| readout::placed(t, game))
+                .collect(),
+            ..readout::Scene::default()
+        }
+    }
+
     pub fn status(&self) -> Value {
         self.shared_status(self.local_status())
     }
