@@ -26,20 +26,27 @@
 //! site's edge (world units from its point), `depth` (the origin's height
 //! from the site's anchor height, which is where the first variant's own
 //! drop was on its last airborne row), `v_drift` and `v_side` (units/s
-//! along the site's drift and to its left), `vz` (units/s down) and `yaw`
-//! (degrees, the facing from the drift).
+//! along the site's drift and to its left), `drop` (world units from the
+//! apex to the site's floor, which with the depth sets the speed down: a
+//! real fall's, [`fall_speed`]) and `yaw` (degrees, the facing from the
+//! drift). The search holds the fall speed to what a drop gives: a free
+//! fall passes the sweep's band (docs/game/superbounce.md, "The bounce
+//! rule") once, and the drop is what says where. The windows are built
+//! on these asked coordinates.
 //!
 //! **A trial.** Row 0 asks the teleport to the start: the last row moved
 //! back `flight` rows along the fall ([`back`]). The teleport must put
 //! the origin within [`PLACE_TOLERANCE`] of the start; a landing further
 //! off is asked again once, aimed against the miss, and the aim that
-//! lands is the site's for its next trials. The row the teleport
-//! lands writes the start's velocity. Each row after writes the
-//! horizontal velocity again, and the row `flight` after the landing the
-//! whole planned velocity. The touchdown is the drops': the vertical
-//! speed back over [`crate::drops::LANDED_VZ`]; the prime is checked over
-//! the touchdown tick ([`crate::drops::prime_check`]); the launch is the
-//! best of the touchdown row and the [`crate::drops::LAUNCH_TICKS`] after.
+//! lands is the site's for its next trials. A landing 1.0 or 0.765 off is
+//! the placement's search for room, failed at once ([`PLACE_SEARCH`]).
+//! The row the teleport lands writes the start's velocity. Each row
+//! after writes the horizontal velocity again, and the row `flight`
+//! after the landing the whole planned velocity. The touchdown is the
+//! drops': the vertical speed back over [`crate::drops::LANDED_VZ`]; the
+//! prime is checked over the touchdown tick
+//! ([`crate::drops::prime_check`]); the launch is the best of the
+//! touchdown row and the [`crate::drops::LAUNCH_TICKS`] after.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -65,7 +72,9 @@ pub use sample::Axis;
 /// The run's report block's schema tag.
 pub const FORMAT: &str = "h2-sim-bounces/1";
 /// The axes of the input space, in a [`Vector`]'s order.
-pub const AXES: [&str; N] = ["across", "along", "depth", "v_drift", "v_side", "vz", "yaw"];
+pub const AXES: [&str; N] = [
+    "across", "along", "depth", "v_drift", "v_side", "drop", "yaw",
+];
 /// How many axes.
 pub const N: usize = 7;
 pub const ACROSS: usize = 0;
@@ -73,28 +82,31 @@ pub const ALONG: usize = 1;
 pub const DEPTH: usize = 2;
 pub const V_DRIFT: usize = 3;
 pub const V_SIDE: usize = 4;
-pub const VZ: usize = 5;
+pub const DROP: usize = 5;
 pub const YAW: usize = 6;
 /// One point of the input space.
 pub type Vector = [f32; N];
 
 /// The default ranges: `[low, high, step]`. Positions are on a 0.0005
 /// grid (1.5 mm; a world unit is 3.048 m). The depth covers a tick of
-/// fall at 5.4 units/s (0.18), so every tick phase is in it.
+/// fall at 5.4 units/s (0.18), so every tick phase is in it. The drop
+/// covers the bounce rule's window, 3.35 to 3.60, and a little either
+/// side.
 pub const DOMAIN: [[f32; 3]; N] = [
     [-0.10, 0.10, 0.0005],
     [-0.05, 0.05, 0.0005],
     [-0.09, 0.09, 0.0005],
     [0.0, 0.8, 0.0],
     [-0.1, 0.1, 0.0],
-    [5.0, 6.6, 0.0],
+    [3.2, 3.8, 0.0],
     [-45.0, 45.0, 0.0],
 ];
-/// The widest a range may be, either way from 0 (`vz`: 0.5 to this).
+/// The widest a range may be, either way from 0 (`drop`: 0.5 to this).
 pub const LIMITS: [f32; N] = [1.0, 1.0, 1.0, 3.0, 3.0, 20.0, 180.0];
 /// The human steps: what a player's error in each axis is counted in. A
-/// position is 0.01 units (3 cm), a speed 0.1 units/s, the facing 10°.
-pub const HUMAN: [f32; N] = [0.01, 0.01, 0.01, 0.1, 0.1, 0.1, 10.0];
+/// position is 0.01 units (3 cm), a speed 0.1 units/s, a drop 0.05 (the
+/// drop window is 0.25 wide), the facing 10°.
+pub const HUMAN: [f32; N] = [0.01, 0.01, 0.01, 0.1, 0.1, 0.05, 10.0];
 /// Defaults.
 pub const POINTS: u32 = 400;
 pub const ROUNDS: u32 = 3;
@@ -119,6 +131,16 @@ pub const TELEPORT_WAIT: u32 = 4;
 /// further off is asked again once, aimed against the miss
 /// ([`TrialRun::aimed`]).
 pub const PLACE_TOLERANCE: f32 = 0.005;
+/// How far the game's placement moves the unit when the standing
+/// capsule does not fit where it is asked (`PLAYER_PLACE_NEAR`'s search):
+/// 1.0 along an axis, 0.765 on a diagonal
+/// (docs/game/notes/2026-11-23-why-bounces-work.md, "The harness
+/// oddities"). A second teleport aimed against such a miss lands in the
+/// same search, so a trial whose teleport lands this far off fails at
+/// once ([`placement_searched`]).
+pub const PLACE_SEARCH: [f32; 2] = [1.0, 0.765];
+/// How near a miss is to a [`PLACE_SEARCH`] step to be one.
+pub const PLACE_SEARCH_NEAR: f32 = 0.02;
 /// Rows past the planned last row a trial may still fall.
 pub const EXTRA_ROWS: u32 = 6;
 /// Hooks a fork is waited for before the run stops.
@@ -426,7 +448,10 @@ impl BouncesConfig {
         }
         for (name, v) in &self.axes {
             let Some(a) = axis_index(name) else {
-                p.push(format!("bounces.axes: {name} is not an axis ({})", AXES.join(", ")));
+                p.push(format!(
+                    "bounces.axes: {name} is not an axis ({})",
+                    AXES.join(", ")
+                ));
                 continue;
             };
             let ok = (v.len() == 2 || v.len() == 3)
@@ -434,10 +459,12 @@ impl BouncesConfig {
                 && v[0] <= v[1]
                 && v.get(2).is_none_or(|s| *s >= 0.0);
             if !ok {
-                p.push(format!("bounces.axes: {name} is [low, high] or [low, high, step]"));
+                p.push(format!(
+                    "bounces.axes: {name} is [low, high] or [low, high, step]"
+                ));
                 continue;
             }
-            let floor = if a == VZ { 0.5 } else { -LIMITS[a] };
+            let floor = if a == DROP { 0.5 } else { -LIMITS[a] };
             if v[0] < floor || v[1] > LIMITS[a] {
                 p.push(format!(
                     "bounces.axes: {name} is inside {floor}..{}",
@@ -506,8 +533,7 @@ impl BouncesConfig {
             if !(v.height.is_finite() && (0.2..=20.0).contains(&v.height)) {
                 p.push(format!("bounces.variant {}: height is 0.2 to 20", v.name));
             }
-            if v
-                .carry_along
+            if v.carry_along
                 .is_some_and(|c| !(c.is_finite() && c.abs() <= drops::MAX_CARRY))
             {
                 p.push(format!(
@@ -517,7 +543,10 @@ impl BouncesConfig {
                 ));
             }
             if v.rest.is_some_and(|r| r > 600) {
-                p.push(format!("bounces.variant {}: rest is at most 600 rows", v.name));
+                p.push(format!(
+                    "bounces.variant {}: rest is at most 600 rows",
+                    v.name
+                ));
             }
         }
         if !p.is_empty() {
@@ -566,7 +595,9 @@ impl BouncesConfig {
             && !map.is_empty()
             && !m.eq_ignore_ascii_case(map)
         {
-            p.push(format!("bounces: map = \"{m}\" but the match's map is \"{map}\""));
+            p.push(format!(
+                "bounces: map = \"{m}\" but the match's map is \"{map}\""
+            ));
         }
         p
     }
@@ -680,7 +711,8 @@ impl Site {
     }
 
     /// The last airborne row `v` asks for, with the anchor height
-    /// `anchor` over the site's floor.
+    /// `anchor` over the site's floor. Its speed down is a real fall's:
+    /// [`fall_speed`] of the drop less the row's height over the floor.
     pub fn place(&self, anchor: f32, v: &Vector) -> Placed {
         let n = self.target.normal;
         let (e, d) = (self.edge, self.drift);
@@ -695,7 +727,7 @@ impl Site {
             vel: [
                 d[0] * v[V_DRIFT] + left[0] * v[V_SIDE],
                 d[1] * v[V_DRIFT] + left[1] * v[V_SIDE],
-                -v[VZ],
+                -fall_speed(v[DROP] - anchor - v[DEPTH]),
             ],
             facing: [yaw.cos(), yaw.sin()],
         }
@@ -712,6 +744,17 @@ impl Site {
             -vel[2],
         ]
     }
+}
+
+/// The speed down (units/s) on the row a fall from rest reaches after
+/// falling `fallen` world units, on the drops' tick steps: after `k` ticks
+/// the speed is `k g / 30` and the body has moved `g k (k + 1) / 1800`,
+/// so `v² + (g / 30) v = 2 g × fallen`. The phase the apex sits at is
+/// free, so `k` need not be whole. 0 for no fall.
+pub fn fall_speed(fallen: f32) -> f32 {
+    let (g, s) = (FALL_GRAVITY, fallen.max(0.0));
+    let b = g / 30.0;
+    (-b + (b * b + 8.0 * g * s).sqrt()) / 2.0
 }
 
 /// `last` moved back `rows` rows along a free fall: each row the speed
@@ -837,6 +880,15 @@ fn len3(v: [f32; 3]) -> f32 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
+/// Whether a teleport's miss is the placement's search for room: one of
+/// the [`PLACE_SEARCH`] steps, within [`PLACE_SEARCH_NEAR`].
+pub fn placement_searched(off: [f32; 3]) -> bool {
+    let d = len3(off);
+    PLACE_SEARCH
+        .iter()
+        .any(|s| (d - s).abs() <= PLACE_SEARCH_NEAR)
+}
+
 /// One trial, a row a tick: teleport, velocity, fall, touchdown, launch.
 #[derive(Clone, Debug)]
 pub struct TrialRun {
@@ -926,6 +978,15 @@ impl TrialRun {
                     };
                     let want = self.plan.start.pos;
                     let off = [pos[0] - want[0], pos[1] - want[1], pos[2] - want[2]];
+                    if placement_searched(off) {
+                        // The standing capsule did not fit at the start:
+                        // asked again, it would be moved the same way.
+                        self.fail(format!(
+                            "teleport: the placement moved the unit {}: no room to stand at the start",
+                            miss_text(off)
+                        ));
+                        return act;
+                    }
                     if len3(off) > PLACE_TOLERANCE {
                         if self.corrected {
                             self.fail(format!(
@@ -1057,7 +1118,9 @@ pub enum ForkAsk {
 /// What came of a [`ForkAsk`], handed to the next tick.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForkDone {
-    Captured { key: u64 },
+    Captured {
+        key: u64,
+    },
     Restored {
         key: u64,
         /// Guest RAM's hash before the restore (`check`).
@@ -1324,7 +1387,10 @@ enum Phase {
     /// Rows waited after the match's start.
     Start(u32),
     /// Each seat's full drop, to time its fall.
-    Calibrate { v: usize, runs: Vec<Option<BaseDrop>> },
+    Calibrate {
+        v: usize,
+        runs: Vec<Option<BaseDrop>>,
+    },
     /// Each seat placed and settled again, held; rows each has been
     /// ready.
     Settle {
@@ -2050,10 +2116,15 @@ impl Job {
             }
             let seat = self.seat(slot);
             acts.push(plain(seat, b.step(tick, &sense_of(senses, seat))));
-            let c = self.sites[site].calib[v].as_ref().expect("a base has its calibration");
+            let c = self.sites[site].calib[v]
+                .as_ref()
+                .expect("a base has its calibration");
             let why = if b.run.done() {
                 let (_, why) = b.run.outcome();
-                Some(format!("base: {}", why.unwrap_or_else(|| "ended early".into())))
+                Some(format!(
+                    "base: {}",
+                    why.unwrap_or_else(|| "ended early".into())
+                ))
             } else if tick >= fork_tick {
                 let want = arm_at[slot] + u64::from(c.latency);
                 let in_step = b.release == Some(want) && b.run.fall_row() == Some(c.row - lead + 1);
@@ -2224,7 +2295,9 @@ impl Job {
         };
         match fork {
             Some(ForkDone::Restored {
-                end_hash, ram_equal, ..
+                end_hash,
+                ram_equal,
+                ..
             }) => {
                 self.stats.restores += 1;
                 match (ended, end_hash) {
@@ -2266,10 +2339,8 @@ impl Job {
                         while let Some(task) = self.sites[site].queue[v].pop_front() {
                             if let Some(plan) = self.plan_of(site, v, task) {
                                 let aim = self.sites[site].aim;
-                                run = Some((
-                                    task,
-                                    TrialRun::new(plan, self.s.bounce_vz).aimed(aim),
-                                ));
+                                run =
+                                    Some((task, TrialRun::new(plan, self.s.bounce_vz).aimed(aim)));
                                 break;
                             }
                         }
@@ -2287,7 +2358,9 @@ impl Job {
                 self.stats.busy += 1;
                 self.stats.last_busy = Some(why.clone());
                 if tries + 1 >= RESTORE_TRIES {
-                    self.fatal(format!("fork: restore: busy for {RESTORE_TRIES} ticks: {why}"));
+                    self.fatal(format!(
+                        "fork: restore: busy for {RESTORE_TRIES} ticks: {why}"
+                    ));
                     return Some(Step::default());
                 }
                 self.phase = Phase::Restore {

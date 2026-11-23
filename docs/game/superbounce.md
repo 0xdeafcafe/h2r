@@ -99,6 +99,17 @@ a crease. The 57 Ascension sites of the search bounce alike. The rule,
 stepped over a site's polygons with no game, agrees with 98.9% of the
 search's 63,843 first-round trials.
 
+`superbounce::rule::predict` is that stepped rule in Rust. Starting at the
+body's origin and velocity, it adds gravity and the held air stick each
+tick, then classifies the deciding contact as `bounce`, `bounce_fast`,
+`caught`, `stopped`, `pop`, `level_pinch`, `landing` or `no_floor`. Its
+`Verdict` carries the tick, row, speed and, for a crossing, the polygon,
+edge distance, depth and speed across the edge. `rule::edge_under` finds
+the nearest edge of the floor under a point. A drift of 0.15 units/s is
+the full-launch minimum (`DRIFT_FULL`), and `DROP_MIN`, `DROP_BEST` and
+`DROP_MAX` are 3.35, 3.45 and 3.60. The HUD, the bots' takeoff gate and
+the search use these same constants and the same verdict.
+
 ## Forced crouch (Code)
 
 The crouch request is unit flags (`unit+0x134`) bit 23. The biped physics
@@ -818,10 +829,10 @@ along the drift than 0.3, still or against it, wants a push that way
 (`superbounce_assist::wants_drift`, `DRIFT_MIN`): the readout's steer
 line says `(arrow) Drift` in place of `On seam`. It is a hint, not a
 verdict: the lock and the landing's result do not read it. The
-[approach guide](#the-approach-guide)'s arrow is a looser hint still,
-lit by any speed along the drift: the seam drops with a carried
-velocity bounced from 0.1 units/s
-([notes/2026-11-22-seam-drop-depth.md](notes/2026-11-22-seam-drop-depth.md)).
+[approach guide](#the-approach-guide)'s arrow is lit at the full-launch
+minimum, 0.15 units/s along the drift (`rule::DRIFT_FULL`): 0.1 can
+bounce, 0.15 gives the full launch
+([notes/2026-11-23-why-bounces-work.md](notes/2026-11-23-why-bounces-work.md)).
 
 #### Covered seams
 
@@ -839,34 +850,34 @@ structure 3.00 over it`.
 
 #### Speed
 
-One threshold for every seam (`crates/live/superbounce/src/speed.rs`, the
-one place to tune it): a primed landing bounces when it touches down at
-5.4 units/s or faster (`BOUNCE_SPEED`), the slowest touchdown measured to
-bounce (the recipe's 2.43 drop, [the touchdown
-tick](#the-touchdown-tick-trace-stepped)); a standing jump lands at 3 and
-never did. The speed over the threshold sets how high the launch goes,
-not whether it bounces: `speed::launch` is the spot's `launch` plus 1 ×
-the excess (the gain is unmeasured). The drop that reaches the threshold
-from a standing jump is 2.43 (`speed::fall`, gravity 4.15). The sim's
-[seam drops](../runtime/sim.md#seam-drops) measure both (`drops.json`'s
-`bounce_speed` and `gain`).
+`crates/live/superbounce/src/speed.rs` keeps the older single-speed
+estimate for the assist, landing tracker and training scores: 5.4 units/s
+(`BOUNCE_SPEED`), the slowest touchdown measured to bounce in the first
+recipe, and a 2.43 drop to reach it (`speed::fall`, gravity 4.15). A
+standing jump lands at 3 and never bounced in that recipe. `speed::launch`
+adds 1 times the excess over 5.4 to the spot's launch (the gain is
+unmeasured). The sim's [seam drops](../runtime/sim.md#seam-drops) measure
+the speed and gain (`drops.json`'s `bounce_speed` and `gain`).
 
-The retail rule is not a floor on the speed. Near 5.4 it is a band one
-tick of gravity wide and a drop of 3.35 to 3.60, and faster falls bounce
-by another route ([the bounce rule](#the-bounce-rule-code-trace)).
-`speed.rs` does not model either.
+That estimate is not the retail rule. Near 5.4 the sweep is a band one
+tick of gravity wide and the useful apex-to-floor drop is 3.35 to 3.60;
+faster falls bounce by another route ([the bounce
+rule](#the-bounce-rule-code-trace)). The airborne HUD uses
+`rule::predict`, with no 5.4-or-faster check, and the bots' launch-floor
+search aims for a 3.45 drop. The navpoint, landing tracker, assist and
+training score still read the estimate. `speed.rs` does not model the
+threshold phase or the fast route.
 
-The community guides' landing posture fits this: "land vertically, no
-buttons", "release forward in mid-air", walk forward only with no
-strafing. They control the touchdown's vertical speed and keep the
-capsule on the line; none names a speed a spot needs.
+The community guides' landing posture fits the physical rule: "land
+vertically, no buttons", "release forward in mid-air", walk forward only
+with no strafing. They control the fall and keep the capsule on the line;
+none names a speed a spot needs.
 
 No spot carries a guessed `need` or `fall`: a spot has one only when a
-game run measured it. The game fills in the model where its spot list
+game run measured it. The game fills in the estimate where its spot list
 is built (`superbounce::speed::apply` in `superbounce_mode`): each strip
-needs 5.4 and a 2.43 drop, so the HUD's speed check, the navpoint's
-drop, the take-off search and the assist all read the one threshold. The
-bots' sites take it as their `need` (`Site::from_spot`).
+needs 5.4 and a 2.43 drop. The bots' sites take that estimate as their
+`need` (`Site::from_spot`), while their takeoff gate uses the bounce rule.
 
 ### Crouch
 
@@ -1371,16 +1382,18 @@ cue on the box that says what to do to get there. They are world marks
 of the readout HUD, built in the HUD kit
 ([hud-kit.md](hud-kit.md#the-approach-guide)); the rules are
 `crates/extensions/game/src/superbounce_guide.rs`, pure, run by the mode
-each tick (`superbounce_guide::guide_from`, into the state's `guide`).
+each tick (`superbounce_guide::guide_with_phase`, into the state's
+`guide`; the state's `phase` also feeds the readout when the guide is
+off).
 Where to leave from is a bar on the floor, the world's
 ([The takeoff](#the-takeoff)).
 
 | Mark | Where | Says |
 |---|---|---|
 | the pipper, a small ring with a cross | where the player's path touches down, on the seam's floor | in the air, the landing itself; on the ground, only while the cue counts to a jump's line, where that jump lands |
-| the box, four corner brackets | on the seam's collision edge, at the point of it beside the landing point ([The landing point](#the-landing-point)), turned along the edge, 0.6 long and as wide as the catch (0.2): the edge runs through its middle, under the [seam line](#seam-lines) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`) |
+| the box, four corner brackets | on the seam's collision edge, at the point of it beside the landing point ([The landing point](#the-landing-point)), turned along the edge, 0.6 long and as wide as the catch (0.2): the edge runs through its middle, under the [seam line](#seam-lines) | dim while the landing is off the seam, lit when it is lined up, and in a fall the phase verdict: green `Will bounce`, or `Too shallow`, `Too high`, `Off edge`, `No drift`, `Don't crouch`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`) |
 | the ticks, three dashes | from the pipper toward the box | how far off the landing is: they shorten as the two close and go when the landing is caught |
-| the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit while the player moves that way |
+| the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit at 0.15 units/s or more that way, the full-launch minimum |
 
 **Which seam** (`superbounce_guide::target`). The seam a fall is
 predicted onto (the state's `landing`); else, while primed, the chosen
@@ -1424,9 +1437,9 @@ not seen, which is why the pipper stays by the seam.
 the seam's catch of its edge (`superbounce::catch_miss`), either side:
 the pipper is inside the box.
 
-**Depth** (`superbounce_guide::depth`). A landing in the catch bounces
-or not by how low the last free row ends over the seam: low enough, and
-the next tick goes deep into it
+**Depth** (`superbounce_guide::depth`). The takeoff solver and the legacy
+chance estimate a landing in the catch by how low the last free row ends
+over the seam: low enough, and the next tick goes deep into it
 ([notes/2026-11-22-seam-drop-depth.md](notes/2026-11-22-seam-drop-depth.md)).
 The rule is in the seam's own frame, so it reads any seam with a drift:
 with `past` the row's place past the edge along the drift (negative
@@ -1450,23 +1463,31 @@ stops the body 0.135 under the cut (`DEPTH_BAND`), which is what makes a
 row the last free one by the edge; that number is inferred from the
 note's lowest and highest last free rows, not measured on its own.
 
-**The call** (`superbounce_guide::call`), what the box says:
+**The call** (`superbounce_guide::phase_call`), what the box says. Each
+airborne tick the mode reads the floor polygons within 4 units
+(`Room::floors_near`) and runs `rule::predict` from the body's origin and
+velocity with the held air stick. The `phase` keeps the verdict, the drop
+from the apex to the origin standing on the deciding floor, and that
+point's distance to the floor polygon's nearest edge.
 
-| Call | When | The box |
-|---|---|---|
-| off line | no landing by the seam, or one outside the catch | dim |
-| lined up | the landing is in the catch, and nothing below applies | lit |
-| too shallow | airborne, primed, touching down at 5.2 units/s or faster, in the catch, and not deep | lit, `Too shallow` |
-| will bounce | the same, deep, and in the landing window | green, `Will bounce`, the pipper green with it |
+| Predictor's outcome, or no landing by the seam | The box |
+|---|---|
+| outside the catch, or no landing | dim, off line |
+| `bounce` or `bounce_fast` | green, `Will bounce`, the pipper green with it |
+| `stopped` or `landing`: the sweep never came on before the floor | `Too shallow` |
+| `caught`: the sweep came on too high | `Too high` |
+| `pop`: through the floor away from an edge | `Off edge` |
+| `level_pinch`: on an edge with too little drift across it | `No drift` |
+| crouch held while primed and airborne | `Don't crouch` |
+| `no_floor`, no polygons, or on the ground | lined up, no label |
 
-On the ground the call stops at lined up: the landing is the jump's
-from the line at the player's own speed, and its phase moves with every
-step. Under 5.2 units/s
-(`DEPTH_SPEED`, just under the note's slowest drop) and on a seam with
-no drift there is no call either. A fall that is deep but outside the
-landing window is lined up, not promised. The drift is not in the call:
-the note's bounces came at drifts of 0.1 to 0.8 units/s, so the arrow is
-a hint, lit by any speed the drift's way (`drift_lit`).
+On the ground the call stops at lined up: the landing is the jump's from
+the line at the player's own speed, and its phase moves with every step.
+There is no touchdown-speed cutoff and no percentage. The readout's bar
+is full while the drop is in the 3.35 to 3.60 window and fades over the
+next unit outside it; its info row says `Drop 10.5 m  Edge 0.06 m`, green
+inside the window. **Depth**, above, remains the takeoff solver's
+heuristic and the agent API's legacy chance, not the airborne HUD call.
 
 Fullscreen, while the guide is on a seam the [lock-on](#lock-on)'s
 brackets are not drawn (`superbounce_world::lock_shown`): the guide's
@@ -1589,10 +1610,11 @@ now` show at once; `Jump now` never outlasts its band.
 
 #### The chance
 
-How sure the guide's call is in a fall while primed on a seam with a
-drift (`superbounce_guide::chance`). No label shows it: the box carries
-the verdict alone and the readout's fall row the steer text alone. The
-agent API reports it as a whole percentage.
+How sure the depth heuristic is in a fall while primed on a seam with a
+drift (`superbounce_guide::chance`). This is a legacy agent-API estimate,
+not the predictor's phase verdict. The HUD shows no percentage: the box
+carries the verdict alone and the readout's fall row the steer text
+alone. The agent API reports the chance from 0 to 1.
 
 **In the air** the fall is all but decided, so it is a confidence
 (`confidence`): how far the predicted last free row is from the two
@@ -1614,8 +1636,8 @@ confidence = 0.5 + 0.45 × tanh(min(margin, inside))
 | 0.05 over the cut, or 0.03 outside the window | 5 to 6% |
 | outside the catch | 5% |
 
-So `Will bounce` is 50% or over and `Too shallow` 50% or under. A fall
-slower than 5.2 units/s has no percentage, as it has no call.
+A fall slower than 5.2 units/s has no chance (`DEPTH_SPEED`). This cutoff
+belongs only to the legacy estimate; the airborne phase verdict has none.
 
 **Capped by evidence** (`cap`). On a seam with a measured landing
 (`Spot::landed`: a verified entry's or a learned line's, [The landing

@@ -2097,9 +2097,12 @@ restores the nav mesh (`autonav::Worker::keep_spots`) and saves the
 result beside it as `<map>.spots` (after the mesh is published and saved,
 and the scan is caught if it panics; a failed scan leaves an empty
 stamped file so it is not repeated every launch), stamped with the nav generator, the
-scan version (`spots::SCAN`) and the map's fingerprint. A scanned bounce
-spot becomes a `glitches::Bounce` (source `scan`, spread 0.03) with its
-launch speed (`spots::Site`); one at a measured spot's place is dropped.
+scan version (`spots::SCAN`) and the map's fingerprint. The worker also
+reads the map's floor polygons and publishes them in memory
+(`spots::read_floors`, `spots::publish_floors`) for the takeoff gate; they
+are not another cache file. A scanned bounce spot becomes a
+`glitches::Bounce` (source `scan`, spread 0.03) with its launch speed
+(`spots::Site`); one at a measured spot's place is dropped.
 A site with no fall (0.5 or less) and no takeoff is jumped onto in place;
 one that needs a fall is dropped onto from its takeoff or a ledge
 (below).
@@ -2164,9 +2167,12 @@ a walk-length function over the nav mesh:
    at 0 ([superbounce.md](superbounce.md), "Charge"). For a site that needs a fall, walk to its **launch
    point** (`bounce_route::launch_from`): its takeoff when it has one,
    else its **launch floor** (`bounce_route::launch_floor`: the nav
-   mesh's point nearest the site's aim sideways, within 3 units
-   **[guess]**, whose floor is the drop height over the strip, 0.2 under
-   to 2.5 over), then **drop**. How a drop leaves the floor comes from the flight model
+   mesh's point nearest the site's aim sideways, within 3 units, whose
+   takeoff gives a 3.45 apex-to-floor drop within the 3.35 to 3.60
+   window; a run-off from that height, else a running jump from a jump's
+   rise lower), then **drop**. An old measured fall height does not
+   choose the floor; an explicit measured or learned takeoff still wins.
+   How a drop leaves the floor comes from the flight model
    (`bounce_route::drop_takeoff`): gravity 4.15, a jump 3.08 up, the
    ground speed of the run's stick (`bounce_route::ground_speed`: the
    drill runs' map, nothing in the dead zone, about 1.05 units/s at 0.6
@@ -2181,8 +2187,15 @@ a walk-length function over the nav mesh:
    full stick, then at `run_off_speed`, that comes down fast enough and
    gets there; failing all, of those fast enough the one whose aim is
    least out of reach (a learned `how` picks the run-off or the jump, and
-   `run` the stick). Either way the drop lines up 0.6 behind the launch
-   point (a learned `back`; 45 ticks at most) and runs at the aim (turned
+   `run` the stick). Once lined up, before the run or jump,
+   `bounce_route::judge_takeoff` flies the takeoff and asks
+   `superbounce::rule::predict` for its outcome. The aim is at most 0.05
+   from the nearest floor-polygon edge (moved to 0.02 from it when
+   needed), with 0.3 units/s held across it; a takeoff the rule does not
+   call a bounce ends as `takeoff_rejected`. Training tries are not
+   gated, so they can measure the failures. Either way the drop lines up
+   0.6 behind the launch point (a learned `back`; 45 ticks at most) and
+   runs at the aim (turned
    by a learned `yaw`) at that stick, steered
    back onto the line through the launch point (60 ticks to leave the
    floor, else `no_drop`). A running jump presses A 0.05 short of the

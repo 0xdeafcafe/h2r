@@ -9,7 +9,9 @@ use super::region::{self, Class};
 use super::report::Verdict;
 use super::sample::{self, Axis, Rng};
 use super::*;
-use crate::drops::{FALL_GRAVITY, Outcome, PRIMED, PairSense, SeatSense, Sense, Target, TargetSpec};
+use crate::drops::{
+    FALL_GRAVITY, Outcome, PRIMED, PairSense, SeatSense, Sense, Target, TargetSpec,
+};
 
 fn axes() -> [Axis; N] {
     let mut out = [Axis::default(); N];
@@ -140,7 +142,7 @@ fn across(values: &[f32]) -> Vec<Vector> {
             let mut p = [0.0; N];
             p[ACROSS] = v;
             // Inside the default ranges, as every other axis's 0 is.
-            p[VZ] = 5.4;
+            p[DROP] = 3.45;
             p
         })
         .collect()
@@ -183,14 +185,25 @@ fn refinement_needs_both_outcomes_and_a_gap() {
     // All one outcome, or none known: nothing to refine.
     assert!(sample::refine(&points, &[Some(true); 3], &ax, &HUMAN, 10, MIN_GAP).is_empty());
     assert!(sample::refine(&points, &[Some(false); 3], &ax, &HUMAN, 10, MIN_GAP).is_empty());
-    assert!(sample::refine(&points, &[None, Some(true), None], &ax, &HUMAN, 10, MIN_GAP).is_empty());
+    assert!(
+        sample::refine(&points, &[None, Some(true), None], &ax, &HUMAN, 10, MIN_GAP).is_empty()
+    );
     // A pair already nearer than the gap is left alone: 0.0004 is 0.04
     // human steps.
     let close = across(&[0.0, 0.0004]);
-    assert!(sample::refine(&close, &[Some(true), Some(false)], &ax, &HUMAN, 10, MIN_GAP).is_empty());
+    assert!(
+        sample::refine(&close, &[Some(true), Some(false)], &ax, &HUMAN, 10, MIN_GAP).is_empty()
+    );
     // A point with no outcome takes no part.
     let points = across(&[-0.05, 0.0, 0.05]);
-    let new = sample::refine(&points, &[Some(true), None, Some(false)], &ax, &HUMAN, 10, MIN_GAP);
+    let new = sample::refine(
+        &points,
+        &[Some(true), None, Some(false)],
+        &ax,
+        &HUMAN,
+        10,
+        MIN_GAP,
+    );
     assert_eq!(new.len(), 0, "the midpoint 0.0 is already a point");
 }
 
@@ -204,8 +217,14 @@ fn a_points_class_is_over_every_variant() {
     // No outcome on a variant is not a proof.
     assert_eq!(region::class([Some(Bounced), None]), Class::Some);
     assert_eq!(region::class([Some(Bounced), Some(PrimeLost)]), Class::Some);
-    assert_eq!(region::class([Some(NoBounce), Some(PrimeLost)]), Class::None);
-    assert_eq!(region::class([Some(PrimeLost), Some(SetupFailed), None]), Class::Unknown);
+    assert_eq!(
+        region::class([Some(NoBounce), Some(PrimeLost)]),
+        Class::None
+    );
+    assert_eq!(
+        region::class([Some(PrimeLost), Some(SetupFailed), None]),
+        Class::Unknown
+    );
     assert_eq!(region::class([]), Class::Unknown);
 }
 
@@ -233,7 +252,10 @@ fn the_window_is_the_largest_failure_free_cube_in_human_steps() {
     // sampled floor (-0.05) to 0.01. The cube that fits is 3 steps of
     // 0.01 either way, centred across the box.
     assert!((w.radius - 3.0).abs() < 0.26, "{w:?}");
-    assert!(w.centre[ACROSS] > -0.045 && w.centre[ACROSS] < -0.025, "{w:?}");
+    assert!(
+        w.centre[ACROSS] > -0.045 && w.centre[ACROSS] < -0.025,
+        "{w:?}"
+    );
     assert!(w.support >= 8);
     // Each axis's own range reaches the first failure either way.
     assert!((w.bounds[ACROSS][0] - -0.065).abs() < 1e-4, "{w:?}");
@@ -323,7 +345,14 @@ rest = 50
 "#,
     );
     let s = t.settings().unwrap();
-    assert_eq!(s.axes[ACROSS], Axis { lo: -0.08, hi: 0.02, step: 0.001 });
+    assert_eq!(
+        s.axes[ACROSS],
+        Axis {
+            lo: -0.08,
+            hi: 0.02,
+            step: 0.001
+        }
+    );
     assert!(s.axes[YAW].fixed());
     assert_eq!(s.human[ACROSS], 0.005);
     assert_eq!(s.crouch, Crouch::Both);
@@ -338,7 +367,7 @@ sample = "random"
 [axes]
 sideways = [0.0, 1.0]
 across = [0.2, 0.1]
-vz = [0.0, 6.0]
+drop = [0.0, 6.0]
 [human]
 across = 0.0
 [[variant]]
@@ -356,7 +385,7 @@ height = 1.0
         "sample = \"random\"",
         "sideways is not an axis",
         "across is [low, high]",
-        "vz is inside 0.5..20",
+        "drop is inside 0.5..20",
         "bounces.human: across is over 0",
         "height is 0.2 to 20",
         "a name of its own",
@@ -364,7 +393,10 @@ height = 1.0
         assert!(p.contains(want), "{want}: {p}");
     }
     // A grid's counts need the grid sampler.
-    let p = table("[grid]\nacross = 3\n").settings().unwrap_err().join("\n");
+    let p = table("[grid]\nacross = 3\n")
+        .settings()
+        .unwrap_err()
+        .join("\n");
     assert!(p.contains("only with sample = \"grid\""), "{p}");
     // The other runs are refused beside it.
     let p = BouncesConfig::default().problems("ascension", true, false, false, true);
@@ -431,20 +463,23 @@ fn a_sites_frame_is_its_edge_and_its_drift() {
     v[DEPTH] = 0.01;
     v[V_DRIFT] = 0.4;
     v[V_SIDE] = 0.1;
-    v[VZ] = 5.3;
+    v[DROP] = 3.45;
     v[YAW] = 90.0;
     let at = s.place(0.4, &v);
     assert!((at.pos[0] - (-10.54 + 0.02)).abs() < 1e-4, "{at:?}");
     assert!((at.pos[1] - 3.97).abs() < 1e-4, "{at:?}");
     assert!((at.pos[2] - (-3.2 + 0.41)).abs() < 1e-4, "{at:?}");
-    // Along the drift (+Y) at 0.4, to its left (-X) at 0.1, down at 5.3.
+    // Along the drift (+Y) at 0.4, to its left (-X) at 0.1, down at what
+    // a fall from the apex 3.45 over the floor gives on a row 0.41 over it.
     assert!((at.vel[0] - -0.1).abs() < 1e-5 && (at.vel[1] - 0.4).abs() < 1e-5);
-    assert_eq!(at.vel[2], -5.3);
+    let down = fall_speed(3.45 - 0.41);
+    assert!((4.9..5.1).contains(&down), "{down}");
+    assert!((at.vel[2] - -down).abs() < 1e-4, "{at:?}");
     // Facing a quarter turn left of the drift: -X.
     assert!((at.facing[0] - -1.0).abs() < 1e-5 && at.facing[1].abs() < 1e-5);
     // What is measured back is what was asked.
     let m = s.measured(0.4, at.pos, at.vel);
-    for (got, want) in m.iter().zip([-0.03, 0.02, 0.01, 5.3]) {
+    for (got, want) in m.iter().zip([-0.03, 0.02, 0.01, down]) {
         assert!((got - want).abs() < 1e-4, "{m:?}");
     }
     // Several sites an edge are named by where they are.
@@ -480,11 +515,21 @@ fn a_start_is_the_last_row_moved_back_along_the_fall() {
 
 #[test]
 fn batches_keep_their_sites_clear_of_each_other() {
-    let points = [[0.0, 0.0], [0.5, 0.0], [2.0, 0.0], [2.2, 0.0], [4.0, 0.0], [6.0, 0.0]];
+    let points = [
+        [0.0, 0.0],
+        [0.5, 0.0],
+        [2.0, 0.0],
+        [2.2, 0.0],
+        [4.0, 0.0],
+        [6.0, 0.0],
+    ];
     let b = batches(&points, 3, 1.2);
     assert_eq!(b, vec![vec![0, 2, 4], vec![1, 3, 5]]);
     // Two sites nearer than the clearance never share a batch.
-    assert_eq!(batches(&[[0.0, 0.0], [0.5, 0.0], [0.9, 0.0]], 3, 1.2).len(), 3);
+    assert_eq!(
+        batches(&[[0.0, 0.0], [0.5, 0.0], [0.9, 0.0]], 3, 1.2).len(),
+        3
+    );
     // Every site is in one batch.
     let mut all: Vec<usize> = b.concat();
     all.sort_unstable();
@@ -557,7 +602,11 @@ fn a_trial_teleports_writes_its_velocity_flies_and_is_judged() {
     assert_eq!(acts[2].velocity, Some(p.last.vel));
     assert_eq!(acts[2].base.word, Some(PRIMED));
     // Nothing is written from the touchdown on.
-    assert!(acts[3..].iter().all(|a| a.velocity.is_none() && a.base.word.is_none()));
+    assert!(
+        acts[3..]
+            .iter()
+            .all(|a| a.velocity.is_none() && a.base.word.is_none())
+    );
     let r = run.result();
     assert_eq!(r.outcome, Outcome::Bounced);
     assert_eq!(r.launch, 12.3);
@@ -592,7 +641,10 @@ fn a_trial_tells_no_bounce_from_a_lost_prime() {
     assert_eq!(p.start, p.last);
     let (run, acts) = fly(p, [8.0, 8.0, 8.0, 8.0], PRIMED);
     assert_eq!(acts[1].velocity, Some(p.last.vel));
-    assert_eq!((run.result().outcome, run.result().rows), (Outcome::Bounced, 0));
+    assert_eq!(
+        (run.result().outcome, run.result().rows),
+        (Outcome::Bounced, 0)
+    );
     // Crouch is held on every row.
     let mut p = plan(1);
     p.crouch = true;
@@ -662,6 +714,57 @@ fn a_trial_names_its_setup_failures() {
     assert!(r.why.unwrap().starts_with("no touchdown"));
 }
 
+/// The placement's search for room moves the unit 1.0 along an axis or
+/// 0.765 on a diagonal. A second teleport against that miss lands in the
+/// same search, so the trial fails at once, by name, and asks no more.
+#[test]
+fn a_placement_moved_by_its_search_fails_at_once() {
+    let p = plan(1);
+    for off in [[1.0, 0.0, 0.0], [0.541, -0.541, 0.0]] {
+        let mut run = TrialRun::new(p, 3.5);
+        run.step(&sense([0.0; 3], -4.0, PRIMED));
+        let mut s = sense(
+            [
+                p.start.pos[0] + off[0],
+                p.start.pos[1] + off[1],
+                p.start.pos[2] + off[2],
+            ],
+            -4.0,
+            PRIMED,
+        );
+        s.teleported = Some(Ok(()));
+        let act = run.step(&s);
+        assert!(act.base.teleport.is_none(), "{off:?}");
+        assert!(run.done() && !run.corrected(), "{off:?}");
+        let r = run.result();
+        assert_eq!(r.outcome, Outcome::SetupFailed);
+        assert!(
+            r.why
+                .as_deref()
+                .unwrap()
+                .starts_with("teleport: the placement moved the unit"),
+            "{r:?}"
+        );
+    }
+    assert!(placement_searched([0.0, 1.0, 0.0]) && placement_searched([0.0, 0.0, 0.77]));
+    assert!(!placement_searched([0.0, 0.0, 0.4]) && !placement_searched([0.0, 0.0, 0.9]));
+}
+
+/// A fall from rest: the speed a drop gives on each row is the tick
+/// steps' own, and a drop of 3.43 is in the band the tick before the
+/// sweep comes on starts in (docs/game/superbounce.md, "The bounce rule").
+#[test]
+fn a_drops_speed_is_the_falls_on_its_rows() {
+    for k in [1u32, 10, 38] {
+        let v = FALL_GRAVITY / 30.0 * k as f32;
+        let fallen = FALL_GRAVITY * (k * (k + 1)) as f32 / 1800.0;
+        assert!((fall_speed(fallen) - v).abs() < 1e-3, "{k}");
+    }
+    let band = fall_speed(3.43);
+    assert!((5.168..5.3075).contains(&band), "{band}");
+    assert_eq!(fall_speed(-1.0), 0.0);
+}
+
 /// A placement off by a steady amount: the trial asks again against the
 /// miss, lands on its start and carries on; the aim it landed with puts
 /// the next trial's first teleport on the start.
@@ -688,7 +791,10 @@ fn a_steady_miss_is_asked_again_and_its_aim_kept() {
     assert_eq!(again.base.word, Some(PRIMED));
     let (asked, _) = again.base.teleport.expect("asked again");
     for a in 0..3 {
-        assert!((asked[a] - (p.start.pos[a] - lift[a])).abs() < 1e-5, "{asked:?}");
+        assert!(
+            (asked[a] - (p.start.pos[a] - lift[a])).abs() < 1e-5,
+            "{asked:?}"
+        );
     }
     // A row with no answer yet, then the landing on the start.
     let waiting = run.step(&sense([0.0; 3], -4.0, PRIMED));
@@ -701,7 +807,11 @@ fn a_steady_miss_is_asked_again_and_its_aim_kept() {
     }
     // The next trial asks with it and lands first time.
     let mut next = TrialRun::new(p, 3.5).aimed(aim);
-    let (asked, _) = next.step(&sense([0.0; 3], -4.0, PRIMED)).base.teleport.unwrap();
+    let (asked, _) = next
+        .step(&sense([0.0; 3], -4.0, PRIMED))
+        .base
+        .teleport
+        .unwrap();
     let landed = next.step(&land(asked));
     assert!(landed.base.teleport.is_none());
     assert_eq!(landed.velocity, Some(p.start.vel));
@@ -939,8 +1049,10 @@ min_support = 3
 along = [0.0, 0.0]
 v_drift = [0.3, 0.3]
 v_side = [0.0, 0.0]
-vz = [5.4, 5.4]
+drop = [3.6, 3.6]
 yaw = [0.0, 0.0]
+# The first variant's last airborne row, the anchor, is 0.12 over the
+# floor and the depth axis's phases stay over it.
 [[variant]]
 name = "low"
 height = 1.0
@@ -1003,7 +1115,11 @@ fn the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork() {
         assert!(x.bases.iter().all(|b| b.outcome == Some(Outcome::NoBounce)));
         assert!(x.points.len() >= 60, "{}", x.points.len());
         let mine: Vec<&Trial> = run.trials.iter().filter(|t| t.site as usize == i).collect();
-        let count = |k: Kind, v: u8| mine.iter().filter(|t| t.kind == k && t.variant == v).count();
+        let count = |k: Kind, v: u8| {
+            mine.iter()
+                .filter(|t| t.kind == k && t.variant == v)
+                .count()
+        };
         for v in 0..2 {
             // Every point once a variant, the replays, and the anchor
             // (twice in the batch that checks the fork).
@@ -1041,7 +1157,7 @@ fn the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork() {
         assert!(
             x.points
                 .iter()
-                .all(|p| p.x[ACROSS] >= -0.1 && p.x[ACROSS] <= 0.1 && p.x[VZ] == 5.4)
+                .all(|p| p.x[ACROSS] >= -0.1 && p.x[ACROSS] <= 0.1 && p.x[DROP] == 3.6)
         );
     }
     // The pooled report: every site has a window inside the band, on both
@@ -1064,7 +1180,10 @@ fn the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork() {
             continue;
         }
         let w = s.window.as_ref().unwrap();
-        assert!(w.centre[ACROSS] > BAND[0] && w.centre[ACROSS] < BAND[1], "{w:?}");
+        assert!(
+            w.centre[ACROSS] > BAND[0] && w.centre[ACROSS] < BAND[1],
+            "{w:?}"
+        );
         // The band is five steps wide; a sparse sample may miss its edge
         // by a step or two.
         assert!(s.ease > 0.0 && s.ease <= 4.5, "{}", s.ease);
@@ -1077,7 +1196,10 @@ fn the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork() {
         assert!(p.position <= 0.2 + 1e-4, "{p:?}");
         assert!((p.aim[1] - w.centre[ACROSS]).abs() < 1e-5);
     }
-    assert!(r.sites.iter().any(|s| s.verdict == Verdict::Provable), "{r:?}");
+    assert!(
+        r.sites.iter().any(|s| s.verdict == Verdict::Provable),
+        "{r:?}"
+    );
     assert!(r.sites.windows(2).all(|w| w[0].ease >= w[1].ease));
     // The same run again is the same block: the search is deterministic.
     let mut again = Job::new(&job_config(), "testmap", 3).unwrap();
@@ -1104,13 +1226,15 @@ fn a_placement_off_by_a_steady_amount_is_aimed_against() {
             .iter()
             .all(|t| t.outcome != Outcome::SetupFailed && !t.reaimed),
         "{:?}",
-        run.trials.iter().find(|t| t.outcome == Outcome::SetupFailed || t.reaimed)
+        run.trials
+            .iter()
+            .find(|t| t.outcome == Outcome::SetupFailed || t.reaimed)
     );
     assert_eq!((run.fork.replay_checks, run.fork.replay_mismatches), (2, 0));
     assert!(
-        run.notes
-            .iter()
-            .any(|n| n.starts_with("teleport: the placement put the origin 0.030 off (x +0.002 y -0.003 z +0.030)")),
+        run.notes.iter().any(|n| n.starts_with(
+            "teleport: the placement put the origin 0.030 off (x +0.002 y -0.003 z +0.030)"
+        )),
         "{:?}",
         run.notes
     );
@@ -1128,7 +1252,10 @@ fn a_placement_off_by_a_steady_amount_is_aimed_against() {
     assert!(run.trials.iter().all(|t| t.outcome != Outcome::SetupFailed));
     let reaimed: Vec<&Trial> = run.trials.iter().filter(|t| t.reaimed).collect();
     assert_eq!(reaimed.len(), 3, "{reaimed:?}");
-    assert!(reaimed.iter().all(|t| t.site < 3 && t.kind == Kind::Anchor), "{reaimed:?}");
+    assert!(
+        reaimed.iter().all(|t| t.site < 3 && t.kind == Kind::Anchor),
+        "{reaimed:?}"
+    );
     // The corrected wave is no replay check's: the other variant's pair
     // still is.
     assert_eq!((run.fork.replay_checks, run.fork.replay_mismatches), (1, 0));
@@ -1173,7 +1300,11 @@ fn a_busy_capture_is_asked_again_and_then_given_up_by_name() {
         assert!(x.bases[1].based);
     }
     assert!(run.sites[3].bases.iter().all(|b| b.based));
-    assert!(run.notes.iter().any(|n| n.contains("no base on low")), "{:?}", run.notes);
+    assert!(
+        run.notes.iter().any(|n| n.contains("no base on low")),
+        "{:?}",
+        run.notes
+    );
     assert!(run.trials.iter().all(|t| !(t.site < 3 && t.variant == 0)));
     // A site with one variant is still ranked, on that variant alone.
     let r = summarize(&[run]);
@@ -1183,7 +1314,10 @@ fn a_busy_capture_is_asked_again_and_then_given_up_by_name() {
             .all(|s| matches!(s.verdict, Verdict::Provable | Verdict::Fragile)),
         "{r:?}"
     );
-    assert!(r.sites.iter().any(|s| s.verdict == Verdict::Provable), "{r:?}");
+    assert!(
+        r.sites.iter().any(|s| s.verdict == Verdict::Provable),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -1202,7 +1336,9 @@ fn a_host_with_no_fork_stops_the_run_by_name() {
     assert_eq!(r.errors.len(), 1);
     assert!(r.sites.iter().all(|s| s.verdict == Verdict::Untested));
     // A scan is the batch's to resolve.
-    let e = Job::new(&BouncesConfig::default(), "ascension", 15).err().unwrap();
+    let e = Job::new(&BouncesConfig::default(), "ascension", 15)
+        .err()
+        .unwrap();
     assert!(e.contains("resolved by `h2 sim bounces`"), "{e}");
 }
 
@@ -1217,7 +1353,7 @@ fn block(id: &str, x: f32, trials: &[(f32, [Outcome; 2])]) -> BouncesRun {
         .map(|(a, _)| {
             let mut v = [0.0; N];
             v[ACROSS] = *a;
-            v[VZ] = 5.4;
+            v[DROP] = 3.45;
             v[V_DRIFT] = 0.3;
             Point {
                 x: v,
@@ -1281,7 +1417,13 @@ fn strip(from: f32, to: f32, some: f32) -> Vec<(f32, [Outcome; 2])> {
             let a = -0.10 + 0.01 * i as f32;
             let both = a > from - 0.001 && a < to + 0.001;
             let one = a > from - some - 0.001 && a < to + some + 0.001;
-            let o = |yes: bool| if yes { Outcome::Bounced } else { Outcome::NoBounce };
+            let o = |yes: bool| {
+                if yes {
+                    Outcome::Bounced
+                } else {
+                    Outcome::NoBounce
+                }
+            };
             (a, [o(one), o(both)])
         })
         .collect()
@@ -1294,7 +1436,16 @@ fn sites_are_ranked_by_verdict_then_ease() {
     let dead = block("dead", 4.0, &strip(1.0, 1.0, 0.0));
     let one: Vec<(f32, [Outcome; 2])> = strip(1.0, 1.0, 0.0)
         .into_iter()
-        .map(|(a, o)| (a, if a.abs() < 0.001 { [Outcome::Bounced; 2] } else { o }))
+        .map(|(a, o)| {
+            (
+                a,
+                if a.abs() < 0.001 {
+                    [Outcome::Bounced; 2]
+                } else {
+                    o
+                },
+            )
+        })
         .collect();
     let lone = block("lone", 6.0, &one);
     let mut untested = block("untested", 8.0, &[]);
@@ -1330,9 +1481,8 @@ fn sites_are_ranked_by_verdict_then_ease() {
     assert!((p.timing_ticks.unwrap() - 8.0).abs() < 0.05, "{p:?}");
     assert!((p.aim[1] - -0.03).abs() < 1e-4);
     assert_eq!(p.phase_share, Some(1.0));
-    // The height is the drop that touches down at the centre's 5.4.
-    assert!(drops::fall_model(p.height).1 >= 5.4);
-    assert!(drops::fall_model(p.height - 0.05).1 < 5.4);
+    // The height is the drop the window was asked at.
+    assert_eq!((p.height, p.drop), (3.45, [3.45, 3.45]));
     // Narrow: 3 points on both variants, 4 more on one only.
     let n = &r.sites[1];
     assert_eq!((n.all, n.some), (3, 4));
@@ -1344,6 +1494,41 @@ fn sites_are_ranked_by_verdict_then_ease() {
     // A lone bounce has no support: fragile, no window, ease 0.
     assert_eq!((r.sites[2].ease, r.sites[2].window.is_some()), (0.0, false));
     assert_eq!(r.sites[4].variants[0].why.as_deref(), Some("fork: busy: x"));
+}
+
+/// A site whose setups mostly failed is untested, by the reason most of
+/// them failed on, not `none`: what little ran says nothing of the rest.
+#[test]
+fn a_site_with_few_outcomes_is_untested_by_its_setups_reason() {
+    let mut b = block("cramped", 0.0, &strip(1.0, 1.0, 0.0));
+    let why = "teleport: the placement moved the unit 1.000 off (x +1.000 y +0.000 z +0.000): no room to stand at the start";
+    for t in b
+        .trials
+        .iter_mut()
+        .filter(|t| t.point.is_some_and(|p| p >= 2))
+    {
+        t.outcome = Outcome::SetupFailed;
+        t.why = Some(why.into());
+        t.last = None;
+    }
+    let r = summarize(&[b]);
+    let s = &r.sites[0];
+    assert_eq!(s.verdict, Verdict::Untested);
+    assert_eq!(
+        s.why.as_deref(),
+        Some(
+            "2 of 21 points have an outcome; 38 of 38 setups failed on teleport: the placement moved the unit"
+        )
+    );
+    let md = markdown(&r);
+    assert!(
+        md.contains("\nUntested:\n\n- cramped: 2 of 21 points"),
+        "{md}"
+    );
+    // A site with no base says so.
+    let mut none = block("nobase", 0.0, &[]);
+    none.sites[0].bases.iter_mut().for_each(|b| b.based = false);
+    assert_eq!(summarize(&[none]).sites[0].why.as_deref(), Some("no base"));
 }
 
 #[test]
@@ -1361,9 +1546,12 @@ fn the_report_counts_replays_anchors_and_the_forks_checks() {
         reaimed: false,
     };
     // Point 5 (-0.05) bounced; a replay that didn't is a mismatch.
-    b.trials.push(extra(Kind::Replay, Some(5), Outcome::Bounced));
-    b.trials.push(extra(Kind::Replay, Some(5), Outcome::NoBounce));
-    b.trials.push(extra(Kind::Unprimed, Some(5), Outcome::Bounced));
+    b.trials
+        .push(extra(Kind::Replay, Some(5), Outcome::Bounced));
+    b.trials
+        .push(extra(Kind::Replay, Some(5), Outcome::NoBounce));
+    b.trials
+        .push(extra(Kind::Unprimed, Some(5), Outcome::Bounced));
     b.trials.push(extra(Kind::Anchor, None, Outcome::NoBounce));
     b.fork = ForkStats {
         captures: 2,
@@ -1418,7 +1606,10 @@ fn the_markdown_and_the_verified_file_have_their_formats() {
         lines[head + 3],
         "| 2 | dead | none | 0.00 | - | - | - | - | 0% | - | 0/0 | 0.00 | 42 |"
     );
-    assert!(md.contains("2 sites, 84 trials of 200 planned in 2 runs"), "{md}");
+    assert!(
+        md.contains("2 sites, 84 trials of 200 planned in 2 runs"),
+        "{md}"
+    );
     // Only the provable site is a verified line, its landing point the
     // window's aim from the stand (a point target's stand is its point,
     // 0.01 up).

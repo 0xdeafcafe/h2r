@@ -228,12 +228,20 @@ fn the_readout_passes_beside_the_superbounce_hud() {
     // The charge segments' ring is drawn in every state but `idle`,
     // after the bar.
     let with_ring = |before: &[&'static str], after: &[&'static str]| -> Vec<&'static str> {
-        before.iter().chain(&segs::IDS).chain(after).copied().collect()
+        before
+            .iter()
+            .chain(&segs::IDS)
+            .chain(after)
+            .copied()
+            .collect()
     };
     // The targets row too, in every state but `idle`.
     assert_eq!(
         drawn("falling-off-seam", Mode::Full),
-        with_ring(&[readout::FALL], &[readout::SPEED, readout::STEER, readout::KINDS])
+        with_ring(
+            &[readout::FALL],
+            &[readout::SPEED, readout::STEER, readout::KINDS]
+        )
     );
     assert_eq!(
         drawn("miss-too-slow", Mode::Full),
@@ -249,7 +257,10 @@ fn the_readout_passes_beside_the_superbounce_hud() {
     for id in [readout::FALL, readout::SPEED, readout::STEER] {
         let d = shot("falling-off-seam", Mode::Full).element(id).unwrap();
         let rect = d.rect.unwrap();
-        assert!(rect.x0 >= 149.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
+        assert!(
+            rect.x0 >= 149.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0,
+            "{id}: {rect:?}"
+        );
     }
     // The targets row over the arming bar (y 355 to 368), clear of it,
     // and right of the Halo 1 health strip and the shield band.
@@ -355,18 +366,15 @@ fn the_synthetic_sheet_draws_and_passes() {
     // Not primed, nothing of this HUD but the navpoint: the charge is the
     // readout's segments'.
     assert_eq!(drawn, [superbounce::NAVPOINT]);
-    assert_eq!(
-        crate::rects::BOTTOM_LEFT[1],
-        36 + superbounce::FRAME_HEIGHT
-    );
+    assert_eq!(crate::rects::BOTTOM_LEFT[1], 36 + superbounce::FRAME_HEIGHT);
     // The navpoint at the sample point, right of and above the centre:
     // the arrow's tip on the point, everything else above it.
     let n = s.element(superbounce::NAVPOINT).unwrap();
     let nr = n.rect.unwrap();
     assert!(nr.x0 > 320.0 && nr.y1 < 240.0, "{nr:?}");
     let f = s.frame;
-    let sample_y = f.anchor_point(4).unwrap()[1]
-        + preview::NAVPOINT_SAMPLE[1] * f32::from(f.bottom - f.top);
+    let sample_y =
+        f.anchor_point(4).unwrap()[1] + preview::NAVPOINT_SAMPLE[1] * f32::from(f.bottom - f.top);
     assert_eq!(nr.y1, sample_y.round(), "{nr:?}");
     assert_eq!(n.text.as_deref(), Some("12"));
     // The retail tracker and frag pill are in the picture.
@@ -396,7 +404,12 @@ fn the_synthetic_sheet_draws_and_passes() {
             continue;
         };
         let nr = n.rect.unwrap();
-        assert!(nr.y0 >= f32::from(s.frame.top), "{} {:?}: {nr:?}", s.state, s.mode);
+        assert!(
+            nr.y0 >= f32::from(s.frame.top),
+            "{} {:?}: {nr:?}",
+            s.state,
+            s.mode
+        );
     }
     // No strips: nothing but the retail HUD.
     let none = r
@@ -505,10 +518,19 @@ fn the_pill_block_is_beside_the_tracker_and_in_the_grenade_row() {
             .unwrap()
     };
     let s = shot("not-primed", Mode::Full);
-    let drawn: Vec<_> = s.elements.iter().filter(|d| d.drawn).map(|d| d.id).collect();
+    let drawn: Vec<_> = s
+        .elements
+        .iter()
+        .filter(|d| d.drawn)
+        .map(|d| d.id)
+        .collect();
     assert_eq!(
         drawn,
-        [pill_block::PILL, pill_block::PILL_END, pill_block::PILL_ICON]
+        [
+            pill_block::PILL,
+            pill_block::PILL_END,
+            pill_block::PILL_ICON
+        ]
     );
     let at = |id| s.element(id).unwrap().rect.unwrap().pixels();
     let left = 48 + i32::from(pill_block::PILL_FULL.0);
@@ -536,10 +558,7 @@ fn the_pill_block_is_beside_the_tracker_and_in_the_grenade_row() {
         )
     );
     let size = render::text_size(None, Font::Hud.engine(), pill_block::ICON_TEXT);
-    assert_eq!(
-        icon,
-        place::text_rect(point, size, Justify::Centre as u16)
-    );
+    assert_eq!(icon, place::text_rect(point, size, Justify::Centre as u16));
     // In split screen the pill is the grenade row's next: one count step
     // past the frag pill, under the frame's top-left corner.
     let h = shot("primed-full", Mode::Half);
@@ -572,10 +591,7 @@ fn the_charge_segments_draw_round_the_tracker() {
         crate::rects::TRACKER.pixels(),
         "the rim the segments are placed round"
     );
-    assert_eq!(
-        [segs::CORNER.0, segs::CORNER.1],
-        crate::rects::BOTTOM_LEFT
-    );
+    assert_eq!([segs::CORNER.0, segs::CORNER.1], crate::rects::BOTTOM_LEFT);
     let mut src = synthetic();
     let r = check::hud(&mut src, &Readout, &[Mode::Full]).unwrap();
     let on_segments: Vec<_> = r
@@ -605,12 +621,12 @@ fn the_charge_segments_draw_round_the_tracker() {
         let d = shot("segments-primed").element(id).unwrap();
         let rect = d.rect.unwrap();
         assert!(d.drawn, "{id}");
-        assert_eq!((d.kind, d.font, d.text.as_deref()), ("gauge", Some(6), None), "{id}");
         assert_eq!(
-            rect.pixels(),
-            [x, y, x + w, y + h].map(i32::from),
+            (d.kind, d.font, d.text.as_deref()),
+            ("gauge", Some(6), None),
             "{id}"
         );
+        assert_eq!(rect.pixels(), [x, y, x + w, y + h].map(i32::from), "{id}");
         assert_eq!(d.reserved.unwrap().pixels(), rect.pixels(), "{id}");
         // The full picture's opaque pixels, none on the tracker or in the
         // gap round it, none of another arc's.
@@ -630,11 +646,23 @@ fn the_charge_segments_draw_round_the_tracker() {
         let track = empty.cover.as_ref().unwrap();
         assert!(empty.drawn && empty.fill == Some(0.0), "{id}");
         assert!(track.count() > 15 && track.count() <= cover.count(), "{id}");
-        assert_eq!(track.overlap(cover), track.count(), "{id}: the track is under the arc");
+        assert_eq!(
+            track.overlap(cover),
+            track.count(),
+            "{id}: the track is under the arc"
+        );
     }
     // The left side and the bottom are outside the frame.
-    let first = shot("segments-primed").element(segs::IDS[0]).unwrap().rect.unwrap();
-    let foot = shot("segments-primed").element(segs::IDS[4]).unwrap().rect.unwrap();
+    let first = shot("segments-primed")
+        .element(segs::IDS[0])
+        .unwrap()
+        .rect
+        .unwrap();
+    let foot = shot("segments-primed")
+        .element(segs::IDS[4])
+        .unwrap()
+        .rect
+        .unwrap();
     assert!(first.x0 < f32::from(frame.left) && foot.y1 > f32::from(frame.bottom));
     let fills = |state: &str| -> Vec<Option<f32>> {
         segs::IDS
@@ -642,11 +670,18 @@ fn the_charge_segments_draw_round_the_tracker() {
             .map(|id| shot(state).element(id).unwrap().fill)
             .collect()
     };
-    assert_eq!(fills("segments-under")[..4], [Some(1.0), Some(1.0), Some(1.0), Some(0.0)]);
+    assert_eq!(
+        fills("segments-under")[..4],
+        [Some(1.0), Some(1.0), Some(1.0), Some(0.0)]
+    );
     assert_eq!(fills("segments-held")[5..7], [Some(1.0), Some(0.0)]);
     assert_eq!(fills("segments-primed"), [Some(1.0); 9]);
     assert_eq!(fills("segments-lost"), [Some(0.0); 9]);
-    assert!(segs::IDS.iter().all(|id| !shot("idle").element(id).unwrap().drawn));
+    assert!(
+        segs::IDS
+            .iter()
+            .all(|id| !shot("idle").element(id).unwrap().drawn)
+    );
     // The wipe's edge: three quarters of the charge is 6.75 arcs, the
     // seventh part lit, more than the empty track and less than the arc.
     let count = |state: &str, i: usize| {
@@ -697,19 +732,26 @@ fn a_gauge_with_no_picture_is_a_finding() {
 /// further; one that is not let out may not sit outside at all.
 #[test]
 fn an_element_is_outside_the_frame_only_by_what_it_is_let() {
-    let strip = |id, x: i16, by: i16| {
-        Element::meter(id, Art::StripMeterEnd(9), bl(x, -100)).outside(by)
-    };
+    let strip =
+        |id, x: i16, by: i16| Element::meter(id, Art::StripMeterEnd(9), bl(x, -100)).outside(by);
     let frame = |elements| {
         let r = findings(&case(elements, &[]));
-        r.of(Check::Frame).map(|f| f.text.clone()).collect::<Vec<_>>()
+        r.of(Check::Frame)
+            .map(|f| f.text.clone())
+            .collect::<Vec<_>>()
     };
     assert_eq!(frame(vec![strip("a", -14, 14)]), Vec::<String>::new());
     assert_eq!(frame(vec![strip("a", 0, 0)]), Vec::<String>::new());
     let out = frame(vec![strip("a", -15, 14)]);
-    assert!(out.len() == 1 && out[0].contains("more than its 14 outside"), "{out:?}");
+    assert!(
+        out.len() == 1 && out[0].contains("more than its 14 outside"),
+        "{out:?}"
+    );
     let out = frame(vec![strip("a", -14, 0)]);
-    assert!(out.len() == 1 && out[0].contains("leaves the HUD frame"), "{out:?}");
+    assert!(
+        out.len() == 1 && out[0].contains("leaves the HUD frame"),
+        "{out:?}"
+    );
 }
 
 /// The pill block's pill is lit primed (its texels as they are, the icon
@@ -910,7 +952,12 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
     // prompt line's verbs use.
     let mut r = check::Report::default();
     let no_crouch = |_: i16, u: u16| Some(u != 0xe110);
-    check::glyphs(&mut r, &superbounce::hud(), &Superbounce.states(), &no_crouch);
+    check::glyphs(
+        &mut r,
+        &superbounce::hud(),
+        &Superbounce.states(),
+        &no_crouch,
+    );
     assert!(!r.findings.is_empty());
     assert!(r.findings.iter().all(|f| f.check == Check::Glyphs));
     let mut r = check::Report::default();
@@ -943,7 +990,10 @@ fn the_next_pill_is_cut_from_the_frag_pill() {
     let hud = pill_block::hud();
     let t = src.templates(&hud);
     let row = t.row.as_ref().unwrap();
-    let (w, sw) = (f32::from(synthetic::PANEL_SIZE.0), f32::from(synthetic::PILL_WIDTH));
+    let (w, sw) = (
+        f32::from(synthetic::PANEL_SIZE.0),
+        f32::from(synthetic::PILL_WIDTH),
+    );
     assert_eq!(row.panel, w);
     assert_eq!(row.frag, [w - sw, sw]);
     assert_eq!(row.pill, [(106, 0); 3]);
@@ -987,7 +1037,10 @@ fn a_crop_is_its_part_of_the_frag_pill() {
     assert_eq!(row.crop(PillPart::End), [96.0 / 103.0, 1.0, 0.0, 1.0]);
     row.frag = [0.0, 50.0];
     assert_eq!(row.crop(PillPart::Body), [0.0, 20.0 / 103.0, 0.0, 1.0]);
-    assert_eq!(row.crop(PillPart::End), [43.0 / 103.0, 50.0 / 103.0, 0.0, 1.0]);
+    assert_eq!(
+        row.crop(PillPart::End),
+        [43.0 / 103.0, 50.0 / 103.0, 0.0, 1.0]
+    );
 }
 
 /// The pill block's strip: the strip's last 27 columns, 2 pixels under the
@@ -1038,7 +1091,10 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
     assert!(!full("not-primed").drawn, "no charge building");
     assert!(full("primed-full").drawn);
     assert_eq!(full("primed-draining").fill, Some(0.25));
-    assert_eq!(full("primed-still-warning").fill, Some(superbounce::LOW_CHARGE));
+    assert_eq!(
+        full("primed-still-warning").fill,
+        Some(superbounce::LOW_CHARGE)
+    );
     // The recipe is the arming bar's: the strip shows primed and lost.
     assert!(!full("near").drawn && !full("held").drawn);
     assert!(full("lost").drawn);
@@ -1076,7 +1132,10 @@ fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
     assert_eq!(rect.x0 + rect.width() / 2.0, corner[0] + f32::from(x));
     assert_eq!(rect.y0 + rect.height() / 2.0, corner[1] + f32::from(y));
     assert_eq!(rect.x0, 138.0);
-    assert!(rect.y1 <= 376.0 && rect.y1 + 16.0 <= f32::from(segs::AT[8].1), "{rect:?}");
+    assert!(
+        rect.y1 <= 376.0 && rect.y1 + 16.0 <= f32::from(segs::AT[8].1),
+        "{rect:?}"
+    );
     assert!(arm("held").drawn && arm("near").drawn && arm("primed-ending").drawn);
     assert_eq!(arm("under").fill, Some(superbounce::FILL_UNDER));
     assert_eq!(arm("held").fill, Some(superbounce::FILL_HELD));
@@ -1099,12 +1158,27 @@ fn the_prompt_and_message_carry_the_steps_and_landings() {
             .cloned()
             .unwrap()
     };
-    assert_eq!(get("near", superbounce::PROMPT).text, superbounce::PROMPT_NEAR);
-    assert_eq!(get("under", superbounce::PROMPT).text, superbounce::PROMPT_UNDER);
-    assert_eq!(get("held", superbounce::PROMPT).text, superbounce::PROMPT_HELD);
+    assert_eq!(
+        get("near", superbounce::PROMPT).text,
+        superbounce::PROMPT_NEAR
+    );
+    assert_eq!(
+        get("under", superbounce::PROMPT).text,
+        superbounce::PROMPT_UNDER
+    );
+    assert_eq!(
+        get("held", superbounce::PROMPT).text,
+        superbounce::PROMPT_HELD
+    );
     assert!(!get("primed-full", superbounce::PROMPT).shown);
-    assert_eq!(get("primed-full", superbounce::MESSAGE).text, superbounce::MESSAGE_PRIMED);
-    assert_eq!(get("lost", superbounce::MESSAGE).text, superbounce::MESSAGE_LOST);
+    assert_eq!(
+        get("primed-full", superbounce::MESSAGE).text,
+        superbounce::MESSAGE_PRIMED
+    );
+    assert_eq!(
+        get("lost", superbounce::MESSAGE).text,
+        superbounce::MESSAGE_LOST
+    );
     assert_eq!(
         get("primed-still-warning", superbounce::PROMPT).text,
         superbounce::PROMPT_KEEP_MOVING
@@ -1188,13 +1262,23 @@ fn the_world_check_fires_on_marks_built_to_break_it() {
     let w = b.world.as_ref().unwrap();
     assert_eq!((w.shape, w.edges), (Shape::Bracket, 8));
     // No pose.
-    let c = case(vec![mark("b", Shape::Bracket)], vec![("b", Value::shown())], vec![]);
+    let c = case(
+        vec![mark("b", Shape::Bracket)],
+        vec![("b", Value::shown())],
+        vec![],
+    );
     assert_eq!(world(&c), ["b is shown with no sample pose"]);
     // A pose with a fault.
     let c = case(
         vec![mark("b", Shape::Bracket)],
         vec![("b", Value::hidden())],
-        vec![("b", Pose { strength: 2.0, ..pose })],
+        vec![(
+            "b",
+            Pose {
+                strength: 2.0,
+                ..pose
+            },
+        )],
     );
     assert_eq!(world(&c), ["b's pose has strength 2 outside 0 to 1"]);
     // A pose with no size draws nothing.
@@ -1210,7 +1294,11 @@ fn the_world_check_fires_on_marks_built_to_break_it() {
         vec![("b", Value::shown())],
         vec![("b", Pose::at([9.0, 0.0, 0.0], [0.3, 0.1]))],
     );
-    assert!(world(&c)[0].starts_with("b's sample leaves the HUD frame"), "{:?}", world(&c));
+    assert!(
+        world(&c)[0].starts_with("b's sample leaves the HUD frame"),
+        "{:?}",
+        world(&c)
+    );
     // A pose for a text, and for nothing.
     let c = case(
         vec![text("t")],
@@ -1219,7 +1307,10 @@ fn the_world_check_fires_on_marks_built_to_break_it() {
     );
     assert_eq!(
         world(&c),
-        ["a pose for t, which is a text", "a pose for nope, which is not an element"]
+        [
+            "a pose for t, which is a text",
+            "a pose for nope, which is not an element"
+        ]
     );
     // The go green on a text.
     let c = case(
@@ -1227,7 +1318,10 @@ fn the_world_check_fires_on_marks_built_to_break_it() {
         vec![("t", Value::text("AB").styled(Style::Go))],
         vec![],
     );
-    assert_eq!(world(&c), ["t is a text in the go green, a world mark's alone"]);
+    assert_eq!(
+        world(&c),
+        ["t is a text in the go green, a world mark's alone"]
+    );
 }
 
 /// The approach guide in the readout's preview: each moment draws the
@@ -1259,11 +1353,17 @@ fn the_approach_guide_draws_in_its_moments() {
     for (state, _, _) in guide::samples() {
         let b = bounds(state, guide::BOX);
         assert!(b.contains_point(origin), "{state}: {b:?} {origin:?}");
-        assert!(drawn(state, guide::PIPPER) && drawn(state, guide::DRIFT), "{state}");
+        assert!(
+            drawn(state, guide::PIPPER) && drawn(state, guide::DRIFT),
+            "{state}"
+        );
         // Fullscreen only, as the readout is.
         for mode in [Mode::Half, Mode::Quarter] {
             for id in guide::MARKS {
-                assert!(!shot(state, mode).element(id).unwrap().drawn, "{state} {id}");
+                assert!(
+                    !shot(state, mode).element(id).unwrap().drawn,
+                    "{state} {id}"
+                );
             }
         }
     }
@@ -1275,19 +1375,29 @@ fn the_approach_guide_draws_in_its_moments() {
         bounds("guide-approach", guide::TICKS),
     );
     assert!(p.y0 > b.y1, "{p:?} {b:?}");
-    assert!(t.y1 <= p.y1 && t.y0 >= b.y0, "{t:?} between {b:?} and {p:?}");
+    assert!(
+        t.y1 <= p.y1 && t.y0 >= b.y0,
+        "{t:?} between {b:?} and {p:?}"
+    );
     // Caught: no ticks, the pipper inside the box, the call above it.
     for (state, label, style) in [
         ("guide-falling-caught", "Will bounce", Style::Go),
         ("guide-too-shallow", "Too shallow", Style::Normal),
-        ("guide-on-the-cut", "Will bounce", Style::Go),
-        ("guide-scan-only", "Will bounce", Style::Go),
+        ("guide-too-high", "Too high", Style::Normal),
+        ("guide-no-drift", "No drift", Style::Normal),
     ] {
         assert!(!drawn(state, guide::TICKS), "{state}");
         let d = shot(state, Mode::Full).element(guide::BOX).unwrap();
-        assert_eq!((d.text.as_deref(), d.style), (Some(label), style), "{state}");
+        assert_eq!(
+            (d.text.as_deref(), d.style),
+            (Some(label), style),
+            "{state}"
+        );
         let (b, p) = (bounds(state, guide::BOX), bounds(state, guide::PIPPER));
-        assert!(b.x0 <= p.x0 && p.x1 <= b.x1 && p.y1 <= b.y1 + 1.0, "{state}: {p:?} in {b:?}");
+        assert!(
+            b.x0 <= p.x0 && p.x1 <= b.x1 && p.y1 <= b.y1 + 1.0,
+            "{state}: {p:?} in {b:?}"
+        );
     }
     // The arrow is past the box, up the screen: the drift is away.
     let (b, a) = (
@@ -1300,8 +1410,15 @@ fn the_approach_guide_draws_in_its_moments() {
         let d = shot(state, Mode::Full).element(guide::BOX).unwrap();
         let label = d.world.as_ref().unwrap().label.expect(state);
         let arrow = bounds(state, guide::DRIFT);
-        assert!(arrow.y1 <= label.y0, "{state}: arrow {arrow:?} label {label:?}");
-        assert_eq!(label.intersect(&arrow), None, "{state}: {label:?} over {arrow:?}");
+        assert!(
+            arrow.y1 <= label.y0,
+            "{state}: arrow {arrow:?} label {label:?}"
+        );
+        assert_eq!(
+            label.intersect(&arrow),
+            None,
+            "{state}: {label:?} over {arrow:?}"
+        );
     }
     // The go green is drawn green: the box's top-left corner pixel.
     let s = shot("guide-falling-caught", Mode::Full);
@@ -1311,12 +1428,19 @@ fn the_approach_guide_draws_in_its_moments() {
     assert!(px[1] > px[0] && px[1] > px[2], "{px:?}");
     // On the ground the takeoff line is drawn below the box on the
     // screen (nearer the viewer), green on it; a fall has none.
-    for state in ["guide-approach", "guide-lined-up", "guide-jump-now", "guide-walk-to-line"] {
+    for state in [
+        "guide-approach",
+        "guide-lined-up",
+        "guide-jump-now",
+        "guide-walk-to-line",
+    ] {
         assert!(drawn(state, guide::TAKEOFF), "{state}");
         let (b, t) = (bounds(state, guide::BOX), bounds(state, guide::TAKEOFF));
         assert!(t.y0 > b.y1, "{state}: {t:?} below {b:?}");
     }
-    let d = shot("guide-jump-now", Mode::Full).element(guide::TAKEOFF).unwrap();
+    let d = shot("guide-jump-now", Mode::Full)
+        .element(guide::TAKEOFF)
+        .unwrap();
     assert_eq!(d.style, Style::Go);
     assert!(!drawn("guide-falling-caught", guide::TAKEOFF));
     // The other states draw no mark.
@@ -1351,7 +1475,10 @@ fn the_world_sample_is_an_oblique_view() {
         bottom: 216,
         right: 592,
     };
-    let (ho, hx) = (preview::project(&half, [0.0; 3]), preview::project(&half, [1.0, 0.0, 0.0]));
+    let (ho, hx) = (
+        preview::project(&half, [0.0; 3]),
+        preview::project(&half, [1.0, 0.0, 0.0]),
+    );
     assert!((hx[0] - ho[0] - preview::WORLD_SCALE / 2.0).abs() < 1e-3);
 }
 
@@ -1368,7 +1495,13 @@ impl Describe for Apart {
     fn hud(&self) -> Hud {
         Hud {
             name: self.name,
-            elements: vec![Element::text("t", Font::Hud, Justify::Start, "AB", bl(10, -150))],
+            elements: vec![Element::text(
+                "t",
+                Font::Hud,
+                Justify::Start,
+                "AB",
+                bl(10, -150),
+            )],
         }
     }
     fn states(&self) -> Vec<(&'static str, Values)> {
@@ -1393,8 +1526,14 @@ fn huds_that_declare_each_other_are_not_compared_by_own() {
     };
     let plain = |name| Apart { name, never: &[] };
     assert_eq!(own(&[&plain("a"), &plain("b")]), 1);
-    let a = Apart { name: "a", never: &["b"] };
-    let b = Apart { name: "b", never: &["a"] };
+    let a = Apart {
+        name: "a",
+        never: &["b"],
+    };
+    let b = Apart {
+        name: "b",
+        never: &["a"],
+    };
     assert_eq!(own(&[&a, &b]), 0, "each declares the other");
     assert_eq!(own(&[&a, &plain("b")]), 0, "one declares the other");
     // Only the pair that declares is let off.
@@ -1407,12 +1546,23 @@ fn huds_that_declare_each_other_are_not_compared_by_own() {
 #[test]
 fn the_world_check_refuses_team_off_a_world_mark() {
     use hud_kit_core::world::{Pose, Shape, TEAMS};
-    let line = |id| Element::channel(id, Kind::WorldMark { shape: Shape::Line, longest: "" });
+    let line = |id| {
+        Element::channel(
+            id,
+            Kind::WorldMark {
+                shape: Shape::Line,
+                longest: "",
+            },
+        )
+    };
     let text = Element::text("t", Font::Hud, Justify::Start, "AB", bl(10, -150));
     let run = |value: Value, element: Element| {
         let id = element.id;
         let c = WorldCase {
-            hud: Hud { name: "world", elements: vec![element] },
+            hud: Hud {
+                name: "world",
+                elements: vec![element],
+            },
             states: vec![("s", Values(vec![(id, value)]))],
             poses: if id == "l" {
                 vec![("l", Pose::at([0.0; 3], [0.3, 0.0]))]
@@ -1433,7 +1583,9 @@ fn the_world_check_refuses_team_off_a_world_mark() {
     assert!(run(Value::shown().styled(Style::Team(TEAMS - 1)), line("l")).is_empty());
     assert_eq!(
         run(Value::shown().styled(Style::Team(TEAMS)), line("l")),
-        [format!("l is in team {TEAMS}'s colour; the game has {TEAMS} teams")]
+        [format!(
+            "l is in team {TEAMS}'s colour; the game has {TEAMS} teams"
+        )]
     );
     assert_eq!(Style::Team(3).name(), "team 3");
 }
@@ -1449,10 +1601,16 @@ fn the_preview_draws_a_line_in_a_team_colour() {
                 name: "world",
                 elements: vec![Element::channel(
                     "l",
-                    Kind::WorldMark { shape: Shape::Line, longest: "" },
+                    Kind::WorldMark {
+                        shape: Shape::Line,
+                        longest: "",
+                    },
                 )],
             },
-            states: vec![("s", Values(vec![("l", Value::shown().styled(Style::Team(team)))]))],
+            states: vec![(
+                "s",
+                Values(vec![("l", Value::shown().styled(Style::Team(team)))]),
+            )],
             poses: vec![("l", Pose::at([0.0; 3], [0.4, 0.0]))],
         };
         let r = check::hud(&mut synthetic(), &c, &[Mode::Full]).unwrap();

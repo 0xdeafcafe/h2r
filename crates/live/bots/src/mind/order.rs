@@ -351,6 +351,11 @@ impl Mind {
         // Primed here is the word read at -3 (a drill's, set by the host).
         let mut run = OrderRun::new(plan, primed && !a.plain, p.tick, seed).primed_read();
         run.show_off = a.show_off;
+        // A drop is judged on the map's floors before it is taken; a
+        // training run's search flies its tries unjudged.
+        if !self.practice.training() {
+            run.see_floors(std::sync::Arc::clone(&self.floors));
+        }
         self.order = Some(Ordered {
             run,
             to: a.to,

@@ -534,6 +534,12 @@ fn pairs_key(known: &Known, map: &MapData) -> u64 {
 }
 
 impl Practice {
+    /// A training run is under way (`crate::learn::current`): its search
+    /// flies its tries as asked, unjudged by the bounce rule.
+    pub(crate) fn training(&self) -> bool {
+        self.training.run.is_some()
+    }
+
     pub fn new(seed: u64) -> Practice {
         Practice {
             on: false,
@@ -769,37 +775,36 @@ pub fn site_in(
         ..*s
     };
     let unmeasured = own.standing() && !own.drop_known();
-    let (hows, base) = if unmeasured
-        && let Some(from) = crate::bounce_route::launch_from(&own, ledge)
-    {
-        // The drop's own knobs as the base; the stand's arm keeps only
-        // the knobs a stand uses (`Knobs::canonical`).
-        let drop = Site {
-            knobs: Knobs {
-                how: Some(How::Runoff),
-                ..Knobs::default()
-            },
-            ..own
-        };
-        let f = crate::bounce_route::flown(&drop, from, tune);
-        (
-            vec![How::Stand, How::Runoff, How::Jump],
-            f.knobs(Some(from)),
-        )
-    } else if own.standing() {
-        let f = crate::bounce_route::flown(&own, own.bounce.from(), tune);
-        (vec![How::Stand], f.knobs(None))
-    } else {
-        match crate::bounce_route::launch_from(&own, ledge) {
-            Some(from) => {
-                let f = crate::bounce_route::flown(&own, from, tune);
-                let other = if f.jump() { How::Runoff } else { How::Jump };
-                (vec![f.how, other], f.knobs(Some(from)))
+    let (hows, base) =
+        if unmeasured && let Some(from) = crate::bounce_route::launch_from(&own, ledge) {
+            // The drop's own knobs as the base; the stand's arm keeps only
+            // the knobs a stand uses (`Knobs::canonical`).
+            let drop = Site {
+                knobs: Knobs {
+                    how: Some(How::Runoff),
+                    ..Knobs::default()
+                },
+                ..own
+            };
+            let f = crate::bounce_route::flown(&drop, from, tune);
+            (
+                vec![How::Stand, How::Runoff, How::Jump],
+                f.knobs(Some(from)),
+            )
+        } else if own.standing() {
+            let f = crate::bounce_route::flown(&own, own.bounce.from(), tune);
+            (vec![How::Stand], f.knobs(None))
+        } else {
+            match crate::bounce_route::launch_from(&own, ledge) {
+                Some(from) => {
+                    let f = crate::bounce_route::flown(&own, from, tune);
+                    let other = if f.jump() { How::Runoff } else { How::Jump };
+                    (vec![f.how, other], f.knobs(Some(from)))
+                }
+                // No launch floor: its tries are void (`no_launch_floor`).
+                None => (vec![How::Runoff, How::Jump], Knobs::default()),
             }
-            // No launch floor: its tries are void (`no_launch_floor`).
-            None => (vec![How::Runoff, How::Jump], Knobs::default()),
-        }
-    };
+        };
     SiteIn {
         at: s.bounce.stand,
         hows,
@@ -900,7 +905,9 @@ pub fn claim_as(
 /// The fresh claim of `owner`, if any.
 fn claim_of(board: &Board, owner: u64, tick: u32) -> Option<Claim> {
     let v = board.lock().unwrap_or_else(|e| e.into_inner());
-    v.iter().find(|c| c.owner == owner && fresh(c, tick)).copied()
+    v.iter()
+        .find(|c| c.owner == owner && fresh(c, tick))
+        .copied()
 }
 
 /// The fresh claim of the bot playing `slot`, if any.
@@ -1111,7 +1118,12 @@ pub fn weight(s: &Site, at: Vec3, w: &Weigh, style: &Style) -> f32 {
 /// down short) or late (`late`, long); for any drop, the air stick let go
 /// near the target (`lazy_air`). A standing jump can only be off the
 /// line.
-pub fn fumble(site: Site, drop: bool, jump: bool, draw: &mut dyn FnMut() -> f32) -> (Site, &'static str) {
+pub fn fumble(
+    site: Site,
+    drop: bool,
+    jump: bool,
+    draw: &mut dyn FnMut() -> f32,
+) -> (Site, &'static str) {
     let pick = draw();
     let how = match (drop, jump) {
         (false, _) => "off_line",
@@ -1221,11 +1233,12 @@ pub fn chain_pick(
     }
     let same = |s: &Site| dist_xy(s.bounce.stand, from.bounce.stand) < 0.05;
     let elsewhere: Vec<usize> = (0..near.len()).filter(|&i| !same(&near[i].0)).collect();
-    let pool: Vec<usize> = if !elsewhere.is_empty() && (draw() < CHAIN_ELSEWHERE || elsewhere.len() == near.len()) {
-        elsewhere
-    } else {
-        (0..near.len()).collect()
-    };
+    let pool: Vec<usize> =
+        if !elsewhere.is_empty() && (draw() < CHAIN_ELSEWHERE || elsewhere.len() == near.len()) {
+            elsewhere
+        } else {
+            (0..near.len()).collect()
+        };
     let n = pool.len().min(CHAIN_EASIEST);
     let i = ((draw() * n as f32) as usize).min(n - 1);
     Some(pool[i])
@@ -2150,8 +2163,7 @@ impl Mind {
                 } else if reached(tick, until) {
                     match self.pick_practice(me.position, tick, map) {
                         Pick::Site(site, crouch) => {
-                            if let Some(pad) = self.practice_begin(p, me, map, seen, site, crouch)
-                            {
+                            if let Some(pad) = self.practice_begin(p, me, map, seen, site, crouch) {
                                 return Some(pad);
                             }
                         }
@@ -2277,7 +2289,9 @@ impl Mind {
                 self.practice_idle(me, tick, DRILL_PAUSE);
             }
             // At the start, or not: look at once.
-            Some(Phase::Walk | Phase::Aside | Phase::Yield { .. }) => self.practice_idle(me, tick, 1),
+            Some(Phase::Walk | Phase::Aside | Phase::Yield { .. }) => {
+                self.practice_idle(me, tick, 1)
+            }
             None => self.practice_idle(me, tick, DRILL_PAUSE),
             Some(Phase::Idle { until, .. }) if reached(tick, until) => {
                 if let Some(pad) = self.drill_next(p, me, map, seen, d) {
@@ -2456,7 +2470,9 @@ impl Mind {
                 self.train_tally(site);
                 self.practice_idle(me, tick, DRILL_PAUSE);
             }
-            Some(Phase::Walk | Phase::Aside | Phase::Yield { .. }) => self.practice_idle(me, tick, 1),
+            Some(Phase::Walk | Phase::Aside | Phase::Yield { .. }) => {
+                self.practice_idle(me, tick, 1)
+            }
             None => self.practice_idle(me, tick, DRILL_PAUSE),
             Some(Phase::Idle { until, .. }) if reached(tick, until) => {
                 if let Some(pad) = self.train_next(p, me, map, seen) {

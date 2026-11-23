@@ -7,9 +7,11 @@
 //! - `sbr.guide.box`: a bracket on the seam's edge by its landing point, turned along
 //!   the seam's edge: the catch across it, [`BOX_ALONG`] along it. Dim
 //!   while the predicted landing is off the seam, lit when it is lined
-//!   up, and during a fall `Too shallow` or, green, `Will bounce`
-//!   ([`Call`]). Its label is the one verdict, with no percentage: in a
-//!   fall the call; before the jump the jump cue ([`Cue`]): `Walk to
+//!   up, and during a fall the bounce rule's verdict (`superbounce::rule`):
+//!   green `Will bounce`, or why not: `Too shallow`, `Too high`, `Off
+//!   edge`, `No drift`, `Don't crouch` ([`Call`]). Its label is the one
+//!   verdict, with no percentage: in a fall the call; before the jump the
+//!   jump cue ([`Cue`]): `Walk to
 //!   line`, `Jump in 0.7 s` or, green, `Jump now` ([`box_text`]).
 //! - `sbr.guide.pipper`: where the player's path touches down: on the
 //!   ground where a jump now would land, in the air the landing itself.
@@ -41,10 +43,23 @@ pub const MARKS: [&str; 5] = [BOX, PIPPER, TICKS, DRIFT, TAKEOFF];
 /// The box's labels during a fall.
 pub const WILL_BOUNCE: &str = "Will bounce";
 pub const TOO_SHALLOW: &str = "Too shallow";
+pub const TOO_HIGH: &str = "Too high";
+pub const OFF_EDGE: &str = "Off edge";
+pub const NO_DRIFT: &str = "No drift";
+pub const DONT_CROUCH: &str = "Don't crouch";
+/// Every call's label, [`WILL_BOUNCE`] first.
+pub const CALLS: [&str; 6] = [
+    WILL_BOUNCE,
+    TOO_SHALLOW,
+    TOO_HIGH,
+    OFF_EDGE,
+    NO_DRIFT,
+    DONT_CROUCH,
+];
 /// The box's labels before the jump ([`Cue`]).
 pub const WALK_TO_LINE: &str = "Walk to line";
 pub const JUMP_NOW: &str = "Jump now";
-/// The widest label: the widest cue, `Jump in 9.9 s`, wider than either
+/// The widest label: the widest cue, `Jump in 9.9 s`, wider than any
 /// call.
 pub const BOX_LONGEST: &str = "Jump in 9.9 s";
 /// The most the count says, in tenths of a second: `Jump in 9.9 s`.
@@ -78,13 +93,25 @@ pub enum Call {
     /// Not within the seam's catch.
     OffLine,
     /// Within the catch, with no call on the bounce: on the ground, or
-    /// in a fall the depth rule has nothing to say about.
+    /// in a fall the bounce rule has no floor for.
     LinedUp,
-    /// In a fall: within the catch, and the last free tick ends too high
-    /// over the seam.
+    /// In a fall: the sweep does not come on before the floor (the bounce
+    /// rule's `stopped` or `landing`): the drop from the apex is too
+    /// short.
     TooShallow,
-    /// In a fall: primed, within the landing window, and the last free
-    /// tick ends deep enough.
+    /// In a fall: the sweep comes on too high and the capsule is caught
+    /// over the floor (the rule's `caught`): the drop is too long.
+    TooHigh,
+    /// In a fall: through a floor polygon too far from its edges (the
+    /// rule's `pop`).
+    OffEdge,
+    /// In a fall: on an edge with too little drift across it (the rule's
+    /// `level_pinch`).
+    NoDrift,
+    /// In a fall, primed, with crouch held: a crouch in the air ends the
+    /// prime.
+    Crouching,
+    /// In a fall: primed, and the bounce rule says it bounces.
     WillBounce,
 }
 
@@ -133,28 +160,14 @@ pub struct Guide {
     pub pipper: bool,
     /// The closure cues (the landing is known and not caught).
     pub ticks: bool,
-    /// The seam has a drift: `Some(true)` while the player moves its way.
+    /// The seam has a drift: `Some(true)` while the player moves its way
+    /// fast enough for a full launch (`superbounce::rule::DRIFT_FULL`).
     pub drift: Option<bool>,
-    /// The bounce's predicted chance in a fall, a whole percentage
-    /// ([`percent`]). Carried for the game's checks; no label shows it
-    /// (the call is the one verdict). `None` on the ground, and where
-    /// there is none to give (not primed, a seam with no drift).
-    pub chance: Option<u8>,
     /// Before the jump, when to press it; `None` in the air and where no
     /// takeoff bounces.
     pub cue: Option<Cue>,
     /// The takeoff line is drawn.
     pub takeoff: bool,
-}
-
-/// A chance of 0 to 1 as a whole percentage, 0 to 100; one that is not
-/// a number is 0.
-pub fn percent(chance: f32) -> u8 {
-    if chance.is_finite() {
-        (chance.clamp(0.0, 1.0) * 100.0).round() as u8
-    } else {
-        0
-    }
 }
 
 /// Where the guide lies.
@@ -200,7 +213,11 @@ pub fn ticks_run(distance: f32) -> Option<f32> {
 /// Each mark's pose for `l`; a mark with nothing to lie on (no landing,
 /// no drift) has none.
 pub fn poses(l: &Layout) -> Vec<(&'static str, Pose)> {
-    let strength = if l.strength.is_finite() { l.strength.clamp(0.0, 1.0) } else { 0.0 };
+    let strength = if l.strength.is_finite() {
+        l.strength.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let pose = |at: Vec3, along: [f32; 2], half: [f32; 2]| Pose {
         at,
         along,
@@ -221,11 +238,18 @@ pub fn poses(l: &Layout) -> Vec<(&'static str, Pose)> {
     if l.drift[0].hypot(l.drift[1]) > 1e-6 {
         let u = unit(l.drift);
         let out_by = BOX_ACROSS + ARROW_GAP + ARROW_HALF[0];
-        let at = [l.seam[0] + u[0] * out_by, l.seam[1] + u[1] * out_by, l.seam[2]];
+        let at = [
+            l.seam[0] + u[0] * out_by,
+            l.seam[1] + u[1] * out_by,
+            l.seam[2],
+        ];
         out.push((DRIFT, pose(at, l.drift, ARROW_HALF)));
     }
     if let Some(t) = l.takeoff {
-        out.push((TAKEOFF, pose(t.at, t.heading, [t.half.max(0.0), TAKEOFF_ACROSS])));
+        out.push((
+            TAKEOFF,
+            pose(t.at, t.heading, [t.half.max(0.0), TAKEOFF_ACROSS]),
+        ));
     }
     out
 }
@@ -244,17 +268,22 @@ pub fn elements() -> Vec<Element> {
 
 /// The box's label, the one verdict: before the jump the cue (`cue`,
 /// [`cue_text`]), `Jump in 0.7 s`; in a fall the call, `Will bounce` or
-/// `Too shallow`; with neither no label. No percentage: the call and the
-/// lock are not shown beside a second predictor.
+/// why not ([`CALLS`]); with neither no label. No percentage: the bounce
+/// rule's verdict is the one call.
 pub fn box_text(call: Call, cue: Option<Cue>) -> Option<String> {
     if let Some(c) = cue {
         return Some(cue_text(c));
     }
-    match call {
-        Call::TooShallow => Some(TOO_SHALLOW.to_owned()),
-        Call::WillBounce => Some(WILL_BOUNCE.to_owned()),
-        Call::OffLine | Call::LinedUp => None,
-    }
+    let label = match call {
+        Call::TooShallow => TOO_SHALLOW,
+        Call::TooHigh => TOO_HIGH,
+        Call::OffEdge => OFF_EDGE,
+        Call::NoDrift => NO_DRIFT,
+        Call::Crouching => DONT_CROUCH,
+        Call::WillBounce => WILL_BOUNCE,
+        Call::OffLine | Call::LinedUp => return None,
+    };
+    Some(label.to_owned())
 }
 
 /// The guide says go: the fall will bounce, or the cue is `Jump now`.
@@ -286,9 +315,17 @@ pub fn set_values(out: &mut Values, g: Option<&Guide>) {
         return;
     };
     let shown = |on: bool, style: Style| {
-        if on { Value::shown().styled(style) } else { Value::hidden() }
+        if on {
+            Value::shown().styled(style)
+        } else {
+            Value::hidden()
+        }
     };
-    let lit = if go(g.call, g.cue) { Style::Go } else { Style::Normal };
+    let lit = if go(g.call, g.cue) {
+        Style::Go
+    } else {
+        Style::Normal
+    };
     out.set(BOX, box_value(g.call, g.cue));
     out.set(PIPPER, shown(g.pipper, lit));
     out.set(TICKS, shown(g.ticks && g.pipper, Style::Normal));
@@ -320,12 +357,11 @@ pub fn samples() -> Vec<(&'static str, Guide, Layout)> {
         }),
         strength: 1.0,
     };
-    let fall = |call, ticks, drift, chance| Guide {
+    let fall = |call, ticks, drift| Guide {
         call,
         pipper: true,
         ticks,
         drift: Some(drift),
-        chance: Some(chance),
         cue: None,
         takeoff: false,
     };
@@ -334,7 +370,6 @@ pub fn samples() -> Vec<(&'static str, Guide, Layout)> {
         pipper: true,
         ticks,
         drift: Some(drift),
-        chance: None,
         cue: Some(cue),
         takeoff: true,
     };
@@ -353,17 +388,37 @@ pub fn samples() -> Vec<(&'static str, Guide, Layout)> {
             ground(Call::LinedUp, false, true, Cue::In(1)),
             scene([0.04, -0.03], Some([0.04, -1.1])),
         ),
-        // Falling, caught, the last free tick deep enough.
-        ("guide-falling-caught", fall(Call::WillBounce, false, true, 82), scene([-0.02, -0.02], None)),
-        // Falling, caught, the last free tick too high.
-        ("guide-too-shallow", fall(Call::TooShallow, false, true, 30), scene([0.02, -0.03], None)),
+        // Falling, caught, and the bounce rule says it bounces.
+        (
+            "guide-falling-caught",
+            fall(Call::WillBounce, false, true),
+            scene([-0.02, -0.02], None),
+        ),
+        // Falling, caught, and the sweep does not come on before the floor.
+        (
+            "guide-too-shallow",
+            fall(Call::TooShallow, false, true),
+            scene([0.02, -0.03], None),
+        ),
         // Falling wide of the seam, drifting the wrong way.
-        ("guide-off-line", fall(Call::OffLine, true, false, 5), scene([-0.35, -0.3], None)),
-        // Falling, caught, the last free tick just under the depth cut.
-        ("guide-on-the-cut", fall(Call::WillBounce, false, true, 52), scene([0.05, -0.02], None)),
-        // Falling deep and centred onto a seam no run has landed on: the
-        // scan-only cap.
-        ("guide-scan-only", fall(Call::WillBounce, false, true, 60), scene([-0.06, -0.03], None)),
+        (
+            "guide-off-line",
+            fall(Call::OffLine, true, false),
+            scene([-0.35, -0.3], None),
+        ),
+        // Falling, caught, and the sweep comes on a tick too high: caught
+        // over the floor.
+        (
+            "guide-too-high",
+            fall(Call::TooHigh, false, true),
+            scene([0.05, -0.02], None),
+        ),
+        // Falling onto the edge with too little drift across it.
+        (
+            "guide-no-drift",
+            fall(Call::NoDrift, false, false),
+            scene([-0.06, -0.03], None),
+        ),
         // On the takeoff line, walking the drift: press jump now; the
         // jump comes down in the box.
         (
@@ -414,15 +469,24 @@ mod tests {
             heading: [0.0, 1.0],
             half: 0.025,
         };
-        let l = Layout { takeoff: Some(line), ..layout(None) };
+        let l = Layout {
+            takeoff: Some(line),
+            ..layout(None)
+        };
         let t = pose(&l, TAKEOFF).unwrap();
-        assert_eq!((t.at, t.along, t.half), (line.at, [0.0, 1.0], [0.025, TAKEOFF_ACROSS]));
+        assert_eq!(
+            (t.at, t.along, t.half),
+            (line.at, [0.0, 1.0], [0.025, TAKEOFF_ACROSS])
+        );
         let e = edges(Shape::Bar, &t);
         // The line itself runs across the run (+Y), in X.
         assert!((e[0][0][1] - 2.9).abs() < 1e-5 && (e[0][1][1] - 2.9).abs() < 1e-5);
         assert!(((e[0][1][0] - e[0][0][0]).abs() - 2.0 * TAKEOFF_ACROSS).abs() < 1e-5);
         // A negative band is none.
-        let l = Layout { takeoff: Some(Line { half: -1.0, ..line }), ..layout(None) };
+        let l = Layout {
+            takeoff: Some(Line { half: -1.0, ..line }),
+            ..layout(None)
+        };
         assert_eq!(pose(&l, TAKEOFF).unwrap().half[0], 0.0);
     }
 
@@ -433,16 +497,31 @@ mod tests {
     fn the_box_is_on_the_seam_and_the_arrow_beside_it() {
         let l = layout(None);
         let b = pose(&l, BOX).unwrap();
-        assert_eq!((b.at, b.along, b.half), (l.seam, [1.0, 0.0], [BOX_ALONG, BOX_ACROSS]));
+        assert_eq!(
+            (b.at, b.along, b.half),
+            (l.seam, [1.0, 0.0], [BOX_ALONG, BOX_ACROSS])
+        );
         assert!(pose(&l, PIPPER).is_none() && pose(&l, TICKS).is_none());
         let a = pose(&l, DRIFT).unwrap();
         assert_eq!(a.along, [0.0, 1.0]);
         // Its tail is ARROW_GAP outside the box's far side.
         let tail = a.at[1] - ARROW_HALF[0];
         assert!((tail - (4.0 + BOX_ACROSS + ARROW_GAP)).abs() < 1e-5);
-        assert!(pose(&Layout { drift: [0.0; 2], ..l }, DRIFT).is_none());
+        assert!(
+            pose(
+                &Layout {
+                    drift: [0.0; 2],
+                    ..l
+                },
+                DRIFT
+            )
+            .is_none()
+        );
         // A seam along another heading turns the box with it.
-        let turned = Layout { along: [0.0, 1.0], ..l };
+        let turned = Layout {
+            along: [0.0, 1.0],
+            ..l
+        };
         assert_eq!(pose(&turned, BOX).unwrap().along, [0.0, 1.0]);
     }
 
@@ -463,7 +542,10 @@ mod tests {
         assert_eq!(run(4.0 - BOX_ACROSS), None);
         assert_eq!(ticks_run(f32::NAN), None);
         // Every tick ends before the box's centre.
-        for e in edges(Shape::Ticks, &pose(&layout(Some([10.0, 3.6])), TICKS).unwrap()) {
+        for e in edges(
+            Shape::Ticks,
+            &pose(&layout(Some([10.0, 3.6])), TICKS).unwrap(),
+        ) {
             assert!(e[1][1] < 4.0);
         }
         // The pipper is on the landing.
@@ -509,7 +591,6 @@ mod tests {
             pipper: true,
             ticks: true,
             drift: Some(false),
-            chance: None,
             cue: None,
             takeoff: false,
         };
@@ -530,11 +611,25 @@ mod tests {
         assert_eq!(will.get(BOX).unwrap().text, WILL_BOUNCE);
         assert_eq!(will.get(BOX).unwrap().style, Style::Go);
         assert_eq!(will.get(PIPPER).unwrap().style, Style::Go);
-        let no_pipper = values(Some(Guide { pipper: false, ..g(Call::OffLine) }));
+        let no_pipper = values(Some(Guide {
+            pipper: false,
+            ..g(Call::OffLine)
+        }));
         assert!(!no_pipper.get(PIPPER).unwrap().shown && !no_pipper.get(TICKS).unwrap().shown);
-        let lit = values(Some(Guide { drift: Some(true), ..g(Call::LinedUp) }));
+        let lit = values(Some(Guide {
+            drift: Some(true),
+            ..g(Call::LinedUp)
+        }));
         assert_eq!(lit.get(DRIFT).unwrap().style, Style::Normal);
-        assert!(!values(Some(Guide { drift: None, ..g(Call::LinedUp) })).get(DRIFT).unwrap().shown);
+        assert!(
+            !values(Some(Guide {
+                drift: None,
+                ..g(Call::LinedUp)
+            }))
+            .get(DRIFT)
+            .unwrap()
+            .shown
+        );
         // The takeoff line: lit while counting, green on it with the box
         // and the pipper.
         let counting = values(Some(Guide {
@@ -555,7 +650,7 @@ mod tests {
         }
         let none = values(None);
         assert!(MARKS.iter().all(|id| !none.get(id).unwrap().shown));
-        for l in [WILL_BOUNCE, TOO_SHALLOW, WALK_TO_LINE, JUMP_NOW] {
+        for l in CALLS.iter().chain(&[WALK_TO_LINE, JUMP_NOW]) {
             assert!(l.chars().count() <= BOX_LONGEST.chars().count());
         }
     }
@@ -568,10 +663,23 @@ mod tests {
         let text = |call| box_text(call, None);
         assert_eq!(text(Call::WillBounce).as_deref(), Some(WILL_BOUNCE));
         assert_eq!(text(Call::TooShallow).as_deref(), Some(TOO_SHALLOW));
+        assert_eq!(text(Call::TooHigh).as_deref(), Some(TOO_HIGH));
+        assert_eq!(text(Call::OffEdge).as_deref(), Some(OFF_EDGE));
+        assert_eq!(text(Call::NoDrift).as_deref(), Some(NO_DRIFT));
+        assert_eq!(text(Call::Crouching).as_deref(), Some(DONT_CROUCH));
         // Off the line in a fall: no label, not a bare percentage.
         assert_eq!(text(Call::OffLine), None);
         assert_eq!(text(Call::LinedUp), None);
-        for call in [Call::OffLine, Call::LinedUp, Call::TooShallow, Call::WillBounce] {
+        for call in [
+            Call::OffLine,
+            Call::LinedUp,
+            Call::TooShallow,
+            Call::TooHigh,
+            Call::OffEdge,
+            Call::NoDrift,
+            Call::Crouching,
+            Call::WillBounce,
+        ] {
             if let Some(t) = text(call) {
                 assert!(!t.contains('%'), "{t}");
                 assert!(t.chars().count() <= BOX_LONGEST.chars().count(), "{t}");
@@ -593,27 +701,32 @@ mod tests {
         assert_eq!(cue_text(Cue::In(200)), "Jump in 9.9 s");
         // The value: the label in the call's style, green for `Jump now`.
         let v = box_value(Call::WillBounce, None);
-        assert_eq!((v.text.as_str(), v.style, v.shown), ("Will bounce", Style::Go, true));
+        assert_eq!(
+            (v.text.as_str(), v.style, v.shown),
+            ("Will bounce", Style::Go, true)
+        );
         let v = box_value(Call::TooShallow, None);
         assert_eq!((v.text.as_str(), v.style), ("Too shallow", Style::Normal));
         let v = box_value(Call::LinedUp, Some(Cue::In(4)));
         assert_eq!((v.text.as_str(), v.style), ("Jump in 0.4 s", Style::Normal));
         let v = box_value(Call::OffLine, Some(Cue::Walk));
-        assert_eq!((v.text.as_str(), v.style, v.shown), ("Walk to line", Style::Dim, true));
+        assert_eq!(
+            (v.text.as_str(), v.style, v.shown),
+            ("Walk to line", Style::Dim, true)
+        );
         let v = box_value(Call::OffLine, Some(Cue::Now));
         assert_eq!((v.text.as_str(), v.style), ("Jump now", Style::Go));
         let v = box_value(Call::OffLine, Some(Cue::Label("Walk off")));
         assert_eq!((v.text.as_str(), v.style), ("Walk off", Style::Dim));
         let v = box_value(Call::OffLine, None);
         assert!(v.shown && v.text.is_empty() && v.style == Style::Dim);
-        // Through the values: the guide's chance is not on the label.
+        // Through the values: the call is the label.
         let mut out = Values::default();
         let g = Guide {
             call: Call::WillBounce,
             pipper: true,
             ticks: false,
             drift: Some(true),
-            chance: Some(60),
             cue: None,
             takeoff: false,
         };
@@ -626,38 +739,24 @@ mod tests {
     /// 0.1, 4 ticks 0.2, a second 1.0, and it stops at 9.9.
     #[test]
     fn the_count_is_tenths_rounded_up() {
-        for (ticks, want) in
-            [(0, 0), (1, 1), (3, 1), (4, 2), (21, 7), (30, 10), (90, 30), (5000, 99)]
-        {
-            assert_eq!(tenths(ticks), want, "{ticks}");
-        }
-    }
-
-    /// A chance is a whole percentage, rounded, kept inside 0 to 100.
-    #[test]
-    fn a_chance_is_a_whole_percentage() {
-        for (c, want) in [
-            (0.0, 0),
-            (0.004, 0),
-            (0.125, 13),
-            (0.375, 38),
-            (0.5, 50),
-            (0.6, 60),
-            (0.944, 94),
-            (1.0, 100),
-            (3.0, 100),
-            (-1.0, 0),
-            (f32::NAN, 0),
-            (f32::INFINITY, 0),
+        for (ticks, want) in [
+            (0, 0),
+            (1, 1),
+            (3, 1),
+            (4, 2),
+            (21, 7),
+            (30, 10),
+            (90, 30),
+            (5000, 99),
         ] {
-            assert_eq!(percent(c), want, "{c}");
+            assert_eq!(tenths(ticks), want, "{ticks}");
         }
     }
 
     /// Every sample gives each mark its values show a pose, and the
     /// calls of a caught landing have their pipper inside the box. A
-    /// fall has a percentage that agrees with its call; on the ground
-    /// the cue and the takeoff line are there instead.
+    /// fall has a call and no takeoff; on the ground the cue and the
+    /// takeoff line are there instead.
     #[test]
     fn every_sample_poses_what_it_shows() {
         let all = samples();
@@ -665,13 +764,10 @@ mod tests {
         for (name, g, l) in all {
             match g.cue {
                 None => {
-                    let c = g.chance.expect(name);
-                    assert!(g.call != Call::WillBounce || c >= 50, "{name}");
-                    assert!(g.call != Call::TooShallow || c <= 50, "{name}");
+                    assert!(g.call != Call::LinedUp, "{name}");
                     assert!(!g.takeoff, "{name}");
                 }
                 Some(_) => {
-                    assert_eq!(g.chance, None, "{name}");
                     assert!(g.takeoff, "{name}");
                     assert!(matches!(g.call, Call::OffLine | Call::LinedUp), "{name}");
                 }

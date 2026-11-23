@@ -10,11 +10,11 @@ use hud_kit_core::huds::superbounce_readout::{
 use superbounce::{Kind, Vec3};
 
 use super::*;
-use engine::GuestMemory as _;
 use crate::superbounce_mode::{Course, Predicted, ScanState};
 use crate::superbounce_options::TargetMode;
 use crate::superbounce_second::Ranked;
 use crate::superbounce_targets::{Mark, Marks};
+use engine::GuestMemory as _;
 
 const M: f32 = METRES_PER_UNIT;
 
@@ -59,6 +59,23 @@ fn predicted(at: Vec3, speed: f32) -> Predicted {
 
 fn landing(result: LandingResult, tick: u32, at: Vec3) -> Landing {
     Landing { result, tick, at }
+}
+
+fn phase(drop: f32) -> crate::superbounce_guide::Phase {
+    crate::superbounce_guide::Phase {
+        verdict: superbounce::rule::Verdict {
+            outcome: superbounce::rule::Outcome::Landing,
+            tick: 0,
+            row: [0.0; 3],
+            speed: 0.0,
+            gap: 0.0,
+            pierce: None,
+        },
+        drop: Some(drop),
+        edge: Some(0.02),
+        apex: drop,
+        crouching: false,
+    }
 }
 
 fn close(a: f32, b: f32) -> bool {
@@ -126,14 +143,15 @@ fn the_speed_line_is_the_bodys_motion_against_the_aim() {
 }
 
 #[test]
-fn the_fall_row_is_the_speed_over_the_need_and_the_way_to_the_seam() {
+fn the_fall_row_is_the_drop_window_and_the_way_to_the_seam() {
     let mut s = on();
     s.airborne = true;
-    // Coasting down 0.5 short of the seam (which is ahead along +X) at
-    // half the speed it needs.
+    // Coasting down 0.5 short of the seam (which is ahead along +X), with
+    // the apex-to-floor drop a quarter of the fade below the window.
+    s.phase = Some(phase(3.1));
     s.landing = Some(predicted([9.5, 0.0, 2.0], 2.7));
     let f = fall(&s).unwrap();
-    assert!(close(f.speed, 0.5));
+    assert!(close(f.window, 0.75));
     let Steer::Off { heading, metres } = f.steer else {
         panic!("{f:?}");
     };
@@ -148,11 +166,12 @@ fn the_fall_row_is_the_speed_over_the_need_and_the_way_to_the_seam() {
         panic!();
     };
     assert!(close(heading, FRAC_PI_2));
-    // Within the catch, fast enough: on the seam, the bar full.
+    // Within the catch and the drop window: on the seam, the bar full.
+    s.phase = Some(phase(3.45));
     s.landing = Some(predicted([10.02, 0.3, 2.0], 6.0));
     let f = fall(&s).unwrap();
     assert_eq!(f.steer, Steer::OnSeam);
-    assert!(f.speed > 1.0);
+    assert_eq!(f.window, 1.0);
     let values = rd::values(&view(&s, Options::DEFAULT, None));
     assert_eq!(values.get(FALL).unwrap().fill, 1.0);
     assert_eq!(values.get(STEER).unwrap().text, rd::ON_SEAM);
@@ -162,6 +181,43 @@ fn the_fall_row_is_the_speed_over_the_need_and_the_way_to_the_seam() {
     s.landing = None;
     s.airborne = true;
     assert_eq!(fall(&s), None);
+}
+
+#[test]
+fn a_primed_fall_shows_its_drop_and_nearest_edge() {
+    let mut s = on();
+    s.word = Some(0xffff_fffd);
+    s.airborne = true;
+    s.phase = Some(phase(3.45));
+    let a = air(&s).unwrap();
+    assert!(a.in_window);
+    assert!(close(a.drop, 3.45 * M) && close(a.edge.unwrap(), 0.02 * M));
+    let values = rd::values(&view(&s, Options::DEFAULT, Some(Miss::NotPrimed)));
+    assert_eq!(values.get(INFO).unwrap().text, "Drop 10.5 m  Edge 0.06 m");
+    // Outside the window the same numbers are not lit green.
+    s.phase = Some(phase(3.1));
+    let a = air(&s).unwrap();
+    assert!(
+        !a.in_window
+            && close(
+                fall(&State {
+                    landing: Some(predicted([9.5, 0.0, 2.0], 2.7)),
+                    ..s.clone()
+                })
+                .unwrap()
+                .window,
+                0.75
+            )
+    );
+    // On the ground, or with the alignment pieces off, there is no air row.
+    s.airborne = false;
+    assert_eq!(air(&s), None);
+    s.airborne = true;
+    let off = Options {
+        alignment: false,
+        ..Options::DEFAULT
+    };
+    assert_eq!(view(&s, off, None).air, None);
 }
 
 #[test]
@@ -288,8 +344,7 @@ fn a_miss_carries_the_numbers_of_its_first_failed_test() {
     };
     assert!(had > 6.0 * M);
     // A fall through: the speed in, as a no-bounce's.
-    let Some(Miss::Through { had }) = miss(&at(LandingResult::Through), &spots, Some(-6.0))
-    else {
+    let Some(Miss::Through { had }) = miss(&at(LandingResult::Through), &spots, Some(-6.0)) else {
         panic!();
     };
     assert!(had > 6.0 * M);
@@ -488,7 +543,10 @@ fn a_fall_through_outranks_and_replaces() {
     assert_eq!(info.step(&s, 3 + MISS_HOLD_TICKS + 2, line), None);
     // The rule itself.
     let through = Miss::Through { had: 1.0 };
-    let slow = Miss::TooSlow { had: 9.0, need: 16.5 };
+    let slow = Miss::TooSlow {
+        had: 9.0,
+        need: 16.5,
+    };
     assert!(replaces(&through, &slow, 0));
     assert!(!replaces(&slow, &through, 0));
     assert!(!replaces(&slow, &through, INFO_TICKS));
@@ -531,9 +589,10 @@ fn the_second_bounce_takes_the_fall_row_and_the_line() {
         Some(ranked([10.0, 0.0, 0.0], [0.0, -2.0], false)),
         Some(ranked([0.0, 20.0, 0.0], [0.0, 3.0], false)),
     ];
+    s.phase = Some(phase(3.45));
     let v = view(&s, Options::DEFAULT, Some(Miss::NotPrimed));
     let f = v.fall.unwrap();
-    assert!(close(f.speed, 8.1 / 5.4));
+    assert_eq!(f.window, 1.0);
     let Steer::Off { heading, metres } = f.steer else {
         panic!("{f:?}");
     };
@@ -552,7 +611,7 @@ fn the_second_bounce_takes_the_fall_row_and_the_line() {
     assert!(values.get(STEER).unwrap().text.ends_with("6.10 m"));
     // Caught coasting: on the seam.
     assert_eq!(
-        line_up(&ranked([10.0, 0.0, 0.0], [0.0, 0.0], true), 0.0).steer,
+        line_up(&ranked([10.0, 0.0, 0.0], [0.0, 0.0], true), 0.0, Some(3.45)).steer,
         Steer::OnSeam
     );
     // The best seam's row is over the assist's prediction.
@@ -586,10 +645,7 @@ fn the_second_bounce_takes_the_fall_row_and_the_line() {
 /// no longer takes the miss line.
 #[test]
 fn the_targets_row_shows_the_kinds_in_effect_and_their_count() {
-    let s = State {
-        bounce: 3,
-        ..on()
-    };
+    let s = State { bounce: 3, ..on() };
     let row = kinds_row(&s, TargetMode::Likely, 4, rd::FLASHLIGHT, None).unwrap();
     assert_eq!(
         row,
@@ -620,19 +676,35 @@ fn the_targets_row_shows_the_kinds_in_effect_and_their_count() {
     assert_eq!(rd::values(&v).get(INFO).unwrap().text, "Not primed");
     // Common on a map with none proven: the row says 0.
     let none = kinds_row(&s, TargetMode::Common, 0, rd::FLASHLIGHT, None).unwrap();
-    assert_eq!(rd::kinds_text(&none), "Targets: Common (0)  \u{e105}\u{e105}");
+    assert_eq!(
+        rd::kinds_text(&none),
+        "Targets: Common (0)  \u{e105}\u{e105}"
+    );
     // Before the scan is ready, and on a map with no spot, no row.
     let scanning = State {
         scan: ScanState::Scanning,
         ..s.clone()
     };
-    assert_eq!(kinds_row(&scanning, TargetMode::All, 4, rd::FLASHLIGHT, None), None);
-    let empty = State { bounce: 0, crouch: 0, ..s.clone() };
-    assert_eq!(kinds_row(&empty, TargetMode::All, 4, rd::FLASHLIGHT, None), None);
+    assert_eq!(
+        kinds_row(&scanning, TargetMode::All, 4, rd::FLASHLIGHT, None),
+        None
+    );
+    let empty = State {
+        bounce: 0,
+        crouch: 0,
+        ..s.clone()
+    };
+    assert_eq!(
+        kinds_row(&empty, TargetMode::All, 4, rd::FLASHLIGHT, None),
+        None
+    );
     // The flashlight is X on Bumper Jumper, White on every other layout.
     use crate::superbounce_ghost::{BUTTON, BUTTON_BUMPER_JUMPER};
     assert_eq!(flashlight_glyph(BUTTON), rd::FLASHLIGHT);
-    assert_eq!(flashlight_glyph(BUTTON_BUMPER_JUMPER), rd::FLASHLIGHT_BUMPER_JUMPER);
+    assert_eq!(
+        flashlight_glyph(BUTTON_BUMPER_JUMPER),
+        rd::FLASHLIGHT_BUMPER_JUMPER
+    );
     assert_eq!(
         [TargetMode::Common, TargetMode::Likely, TargetMode::All].map(kinds),
         rd::Kinds::EVERY
@@ -652,10 +724,7 @@ fn the_targets_row_flashes_from_the_switch() {
     assert_eq!(f.step(Some(TargetMode::Common), 50), Some(50));
     assert_eq!(f.step(None, 111), None);
     assert_eq!(f.step(Some(TargetMode::Common), 200), Some(200));
-    let s = State {
-        bounce: 3,
-        ..on()
-    };
+    let s = State { bounce: 3, ..on() };
     let row = kinds_row(&s, TargetMode::All, 23, rd::FLASHLIGHT, Some(11)).unwrap();
     let x = rd::kinds_value(&row);
     assert_eq!(x.text, "Targets: All (23)  \u{e105}\u{e105}");
@@ -669,14 +738,18 @@ fn the_targets_row_flashes_from_the_switch() {
 fn out_of_reach_shows_for_a_miss_and_not_for_a_fixable_landing() {
     let mut s = on();
     s.airborne = true;
+    s.phase = Some(phase(3.1));
     let mut p = predicted([9.5, 0.0, 2.0], 2.7);
     s.landing = Some(p);
-    assert!(matches!(fall(&s).unwrap().steer, Steer::Off { .. }), "fixable");
+    assert!(
+        matches!(fall(&s).unwrap().steer, Steer::Off { .. }),
+        "fixable"
+    );
     p.verdict = Course::Miss;
     s.landing = Some(p);
     let f = fall(&s).unwrap();
     assert_eq!(f.steer, Steer::OutOfReach);
-    assert!(close(f.speed, 0.5));
+    assert!(close(f.window, 0.75));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
     assert_eq!(values.get(STEER).unwrap().text, rd::OUT_OF_REACH);
     assert!(values.get(FALL).unwrap().shown);
@@ -725,16 +798,19 @@ fn the_line_up_is_to_the_landing_point_and_wants_the_seams_drift() {
     assert_eq!(fall(&s).unwrap().steer, Steer::OnSeam);
     // The second bounce's line-up reads the same.
     let mut r = ranked([10.0, 0.0, 0.0], [0.0; 2], true);
-    assert_eq!(line_up(&r, 0.0).steer, Steer::OnSeam);
+    assert_eq!(line_up(&r, 0.0, Some(3.45)).steer, Steer::OnSeam);
     r.drift = [0.0, 1.0];
-    let Steer::Drift { heading } = line_up(&r, 0.0).steer else {
+    let Steer::Drift { heading } = line_up(&r, 0.0, Some(3.45)).steer else {
         panic!("caught, no drift");
     };
     assert!(close(heading, -FRAC_PI_2));
     r.across = 0.8;
-    assert_eq!(line_up(&r, 0.0).steer, Steer::OnSeam);
+    assert_eq!(line_up(&r, 0.0, Some(3.45)).steer, Steer::OnSeam);
     r.caught = false;
-    assert!(matches!(line_up(&r, 0.0).steer, Steer::Off { .. }));
+    assert!(matches!(
+        line_up(&r, 0.0, Some(3.45)).steer,
+        Steer::Off { .. }
+    ));
 }
 
 /// The approach guide's marks are the state's guide, with the variant's
@@ -750,7 +826,11 @@ fn the_approach_guide_is_the_states_with_its_option() {
     };
     let mut s = on();
     assert_eq!(view(&s, Options::DEFAULT, None).guide, None);
-    assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(_, p)| p.is_none()));
+    assert!(
+        guide_poses(&s, Options::DEFAULT)
+            .iter()
+            .all(|(_, p)| p.is_none())
+    );
     // Primed on the ground a unit before the seam: the box on its landing
     // point, the arrow unlit; the floor underfoot is not the seam's, so
     // no pipper and no ticks (`superbounce_guide::guide_from`).
@@ -766,16 +846,26 @@ fn the_approach_guide_is_the_states_with_its_option() {
     };
     s.guide = guide(&body, &spot);
     let v = view(&s, Options::DEFAULT, None).guide.unwrap();
-    assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, false, false, Some(false)));
-    assert_eq!((v.chance, v.cue, v.takeoff), (None, None, false));
+    assert_eq!(
+        (v.call, v.pipper, v.ticks, v.drift),
+        (Call::OffLine, false, false, Some(false))
+    );
+    assert_eq!((v.cue, v.takeoff), (None, false));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
-    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true, false, false, true, false]);
+    assert_eq!(
+        MARKS.map(|id| values.get(id).unwrap().shown),
+        [true, false, false, true, false]
+    );
     assert!(!values.get(PIPPER).unwrap().shown && !values.get(TICKS).unwrap().shown);
     assert_eq!(values.get(BOX).unwrap().style, Style::Dim);
     assert_eq!(values.get(BOX).unwrap().text, "");
     let poses = guide_poses(&s, Options::DEFAULT);
     assert_eq!(poses.map(|(id, _)| id), MARKS);
-    assert!(poses.iter().all(|(id, p)| p.is_some() == (*id == BOX || *id == DRIFT)));
+    assert!(
+        poses
+            .iter()
+            .all(|(id, p)| p.is_some() == (*id == BOX || *id == DRIFT))
+    );
     let at = |id: &str| poses.iter().find(|(i, _)| *i == id).unwrap().1.unwrap().at;
     assert_eq!(at(BOX), [10.0, 0.0, 2.0]);
     assert!(at(DRIFT)[0] > 10.0);
@@ -797,7 +887,11 @@ fn the_approach_guide_is_the_states_with_its_option() {
     let values = rd::values(&view(&s, Options::DEFAULT, None));
     assert_eq!(values.get(BOX).unwrap().text, "Walk to line");
     assert!(!values.get(TAKEOFF).unwrap().shown);
-    assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(id, p)| *id != TAKEOFF || p.is_none()));
+    assert!(
+        guide_poses(&s, Options::DEFAULT)
+            .iter()
+            .all(|(id, p)| *id != TAKEOFF || p.is_none())
+    );
     // The variant's option takes all of it away.
     let off = Options {
         approach_guide: false,
@@ -810,18 +904,20 @@ fn the_approach_guide_is_the_states_with_its_option() {
 }
 
 /// In a primed fall the box shows the guide's call alone and the fall
-/// row the steer line alone: the chance is carried (a seam with no
-/// measured landing capped at 60%) but no label shows it; the variant's
-/// option hides the box.
+/// row the steer line alone, with no percentage; the variant's option
+/// hides the box.
 #[test]
-fn the_guides_chance_is_carried_but_not_shown() {
+fn the_guides_verdict_has_no_percentage() {
     use crate::superbounce_guide::{Body, guide};
     use hud_kit_core::huds::superbounce_guide::{BOX, Call};
     let scan = Spot {
         drift: [1.0, 0.0],
         ..seam()
     };
-    let measured = Spot { landed: true, ..scan };
+    let measured = Spot {
+        landed: true,
+        ..scan
+    };
     // One tick over the seam, 0.05 before its edge, 0.0375 under the cut.
     let body = Body {
         position: [9.95, 0.0, 2.37],
@@ -836,23 +932,39 @@ fn the_guides_chance_is_carried_but_not_shown() {
     s.landing = Some(predicted([9.95, 0.0, 2.0], 6.0));
     let texts = |s: &State, o: Options| {
         let values = rd::values(&view(s, o, None));
-        (values.get(BOX).unwrap().text.clone(), values.get(STEER).unwrap().text.clone())
+        (
+            values.get(BOX).unwrap().text.clone(),
+            values.get(STEER).unwrap().text.clone(),
+        )
     };
     s.guide = guide(&body, &measured);
     assert_eq!(s.guide.unwrap().call, Call::WillBounce);
-    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(93));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce", rd::ON_SEAM));
-    // The scan's seam: the cap.
+    assert_eq!(
+        (on_box.as_str(), row.as_str()),
+        ("Will bounce", rd::ON_SEAM)
+    );
+    assert!(!on_box.contains('%'));
+    // The scan's seam has the same label: no capped chance is shown.
     s.guide = guide(&body, &scan);
-    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(60));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce", rd::ON_SEAM));
+    assert_eq!(
+        (on_box.as_str(), row.as_str()),
+        ("Will bounce", rd::ON_SEAM)
+    );
     // Too shallow.
-    s.guide = guide(&Body { position: [9.95, 0.0, 2.43], ..body }, &measured);
-    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(14));
+    s.guide = guide(
+        &Body {
+            position: [9.95, 0.0, 2.43],
+            ..body
+        },
+        &measured,
+    );
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Too shallow", rd::ON_SEAM));
+    assert_eq!(
+        (on_box.as_str(), row.as_str()),
+        ("Too shallow", rd::ON_SEAM)
+    );
     // With the guide off the row is as it was, and the box is hidden.
     let off = Options {
         approach_guide: false,
@@ -868,11 +980,14 @@ fn the_guides_chance_is_carried_but_not_shown() {
 fn the_charge_segments_are_the_modes_charge() {
     use crate::superbounce_mode::{Charge, ChargePhase};
     use hud_kit_core::huds::superbounce_segments::{IDS, Stage};
-    let charge = |phase, fill| Some(Charge { phase, fill, lost: None });
-    let mut s = State {
-        bounce: 2,
-        ..on()
+    let charge = |phase, fill| {
+        Some(Charge {
+            phase,
+            fill,
+            lost: None,
+        })
     };
+    let mut s = State { bounce: 2, ..on() };
     // Not primed, by no crouch spot: the empty ring.
     let ring = segments(&s).unwrap();
     assert_eq!((ring.stage, ring.lit), (Stage::Idle, 0.0));
@@ -908,9 +1023,16 @@ fn the_charge_segments_are_the_modes_charge() {
     let values = rd::values(&view(&s, off, None));
     assert!(IDS.iter().all(|id| !values.get(id).unwrap().shown));
     // Before the scan is ready, and on a map with no spot, nothing.
-    let none = State { bounce: 0, crouch: 0, ..s.clone() };
+    let none = State {
+        bounce: 0,
+        crouch: 0,
+        ..s.clone()
+    };
     assert_eq!(segments(&none), None);
-    let scanning = State { scan: ScanState::Scanning, ..s };
+    let scanning = State {
+        scan: ScanState::Scanning,
+        ..s
+    };
     assert_eq!(segments(&scanning), None);
 }
 

@@ -486,6 +486,36 @@ fn a_site_that_needs_a_drop_is_planned_from_its_launch_floor() {
 }
 
 #[test]
+fn the_launch_floor_aims_for_the_drop_window_not_an_old_fall_height() {
+    // This site has an old measured 2.4 fall. Its launch floor is chosen
+    // for a 3.45 apex-to-floor drop instead.
+    let s = drop_site(1.5, 12.3);
+    assert_eq!(s.drop_height(), 2.4);
+    let quad = |z| {
+        Poly::new(vec![
+            [-2.0, -2.0, z],
+            [2.0, -2.0, z],
+            [2.0, 2.0, z],
+            [-2.0, 2.0, z],
+        ])
+    };
+    let map = MapData {
+        nav: NavMesh::new(vec![quad(2.4), quad(DROP_AIM)], vec![]),
+        ..MapData::default()
+    };
+    let at = launch_floor(&map, &s).unwrap();
+    assert!((at[2] - DROP_AIM).abs() < 1e-5, "{at:?}");
+    // With no run-off floor in the window, a running jump starts its
+    // own rise lower.
+    let map = MapData {
+        nav: NavMesh::new(vec![quad(DROP_AIM - jump_rise())], vec![]),
+        ..MapData::default()
+    };
+    let at = launch_floor(&map, &s).unwrap();
+    assert!((at[2] + jump_rise() - DROP_AIM).abs() < 1e-5, "{at:?}");
+}
+
+#[test]
 fn proven_sites_and_crouch_spots_come_first() {
     let mut proven = site(14.0, 0.0, 10.0);
     proven.status = superbounce::Status::Proven;
@@ -1045,15 +1075,9 @@ fn a_touchdown_is_named_by_its_first_failed_test() {
     };
     assert_eq!(t.result(4.0), "no_bounce");
     assert_eq!(Touchdown { vz_out: 12.0, ..t }.result(4.0), "bounce");
-    assert_eq!(
-        Touchdown { word: Some(0), ..t }.result(4.0),
-        "not_primed"
-    );
+    assert_eq!(Touchdown { word: Some(0), ..t }.result(4.0), "not_primed");
     assert_eq!(Touchdown { miss: 0.2, ..t }.result(4.0), "missed");
-    assert_eq!(
-        Touchdown { speed_in: 3.0, ..t }.result(4.0),
-        "too_slow"
-    );
+    assert_eq!(Touchdown { speed_in: 3.0, ..t }.result(4.0), "too_slow");
 }
 
 // ---- a named site ----
@@ -1653,11 +1677,13 @@ fn a_knob_moves_only_its_own_number() {
         }),
         ["still"]
     );
-    // The aim along the run's own line: the target moves, the heading and
-    // the takeoff do not.
+    // The aim along the run's own line, inside the full-stick run-off's
+    // reach (1.488 to 1.532 out from the launch point at -0.01): the
+    // target moves, the heading and the takeoff do not. An aim past the
+    // reach changes the takeoff too, as it should.
     assert_eq!(
         one(Knobs {
-            aim: Some([1.53, 0.0]),
+            aim: Some([1.51, 0.0]),
             ..k()
         }),
         ["target"]
@@ -2126,4 +2152,61 @@ fn glass_that_never_breaks_fails_the_route_as_glass_whole() {
         }
     }
     assert_eq!(done, Some(Err("glass_whole")));
+}
+
+// ---- the bounce rule on a takeoff ----
+
+/// A level floor at Z `z` cut along Y at `x`, as the map's collision
+/// gives it.
+fn floors_cut_at(x: f32, z: f32) -> Vec<superbounce::Poly> {
+    let quad = |x0: f32, x1: f32| superbounce::Poly {
+        verts: vec![[x0, -2.0, z], [x1, -2.0, z], [x1, 2.0, z], [x0, 2.0, z]],
+        normal: [0.0, 0.0, 1.0],
+    };
+    vec![quad(x - 3.0, x), quad(x, x + 3.0)]
+}
+
+#[test]
+fn the_aim_sits_by_an_edge_with_a_drift_across_it() {
+    // The target's floor (origin 0.01 over it) cut 0.3 off: the aim moves
+    // to 2 cm from the cut.
+    let floors = floors_cut_at(1.8, -0.01);
+    let (aim, across) = edge_aim([1.5, 0.0, 0.0], &floors);
+    assert!((aim[0] - 1.78).abs() < 1e-4 && aim[1] == 0.0, "{aim:?}");
+    assert!((across[0].abs() - 1.0).abs() < 1e-5, "{across:?}");
+    // Within EDGE_AIM already: left alone.
+    let (aim, _) = edge_aim([1.76, 0.0, 0.0], &floors);
+    assert_eq!(aim, [1.76, 0.0, 0.0]);
+    // No floor under it: as it is.
+    assert_eq!(
+        edge_aim([9.0, 0.0, 0.0], &floors),
+        ([9.0, 0.0, 0.0], [0.0; 2])
+    );
+    // The drift across: at least DRIFT_ACROSS the way it already goes,
+    // the along part kept.
+    let d = drift_across([-0.1, 0.5], [1.0, 0.0]);
+    assert!((d[0] - -DRIFT_ACROSS).abs() < 1e-6 && d[1] == 0.5, "{d:?}");
+    assert_eq!(drift_across([0.8, 0.0], [1.0, 0.0]), [0.8, 0.0]);
+    assert_eq!(drift_across([0.2, 0.1], [0.0; 2]), [0.2, 0.1]);
+}
+
+#[test]
+fn the_rule_takes_a_drop_from_the_window_and_not_a_short_one() {
+    // A run off at 0.6 of stick (1.05 units/s) onto a slot a unit out,
+    // 2 cm short of a cut in its floor: in reach from every height here.
+    let s = site(1.0, 0.0, 12.3);
+    let floors = floors_cut_at(1.02, -0.01);
+    let judge = |h: f32| {
+        let from = [0.0, 0.0, h];
+        let t = takeoff(from, &s, 0.6, false).unwrap();
+        judge_takeoff(from, &s, &t, &floors).unwrap()
+    };
+    // A 2.4 drop never turns the sweep on: no bounce.
+    assert!(!judge(2.4).outcome.bounces(), "{:?}", judge(2.4));
+    // Across the window, about a tick of fall from end to end, most
+    // phases bounce.
+    let bounced = (0..12)
+        .filter(|i| judge(rule::DROP_MIN + 0.02 * *i as f32).outcome.bounces())
+        .count();
+    assert!(bounced >= 3, "{bounced} of 12");
 }

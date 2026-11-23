@@ -9,15 +9,18 @@
 //!   aim and the horizontal speed, and in the air the fall speed after
 //!   it. Hidden standing still.
 //! - `sbr.fall` and `sbr.steer`, on a fall toward a seam: a bar that
-//!   fills with the touchdown speed over the speed the seam needs, and
-//!   beside it `On seam`, an arrow for the way to push and how far the
-//!   landing is off the seam, or `Out of reach` when no push brings it
-//!   in. No percentage follows it: the approach guide's box carries the
-//!   one verdict.
-//! - `sbr.info`: why the last landing by a seam did not bounce, for a few
-//!   seconds ([`Miss`]); in the flight after a bounce, the seams it can
-//!   reach, the best first, each a rank, an arrow for where it is against
-//!   the aim and its distance ([`Next`]).
+//!   is full while the drop from the apex is in the drop window (3.35
+//!   to 3.60 units, [`window`]) and empties outside it, and beside it
+//!   `On seam`, an arrow for the way to push and how far the landing is
+//!   off the seam, or `Out of reach` when no push brings it in. No
+//!   percentage follows it: the approach guide's box carries the one
+//!   verdict.
+//! - `sbr.info`: in the flight after a bounce, the seams it can reach,
+//!   the best first, each a rank, an arrow for where it is against the
+//!   aim and its distance ([`Next`]); else in a primed fall the drop from
+//!   the apex and the landing's distance to the nearest edge of its
+//!   floor, green in the window ([`Air`]); else why the last landing by
+//!   a seam did not bounce, for a few seconds ([`Miss`]).
 //! - `sbr.kinds`, over the arming bar: the kinds of seam the targets are
 //!   on, how many the map has of them, and the flashlight's glyph twice,
 //!   the double tap that switches them ([`KindsRow`]); it flashes after a
@@ -165,10 +168,61 @@ pub enum Steer {
 /// A fall toward a seam.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fall {
-    /// The touchdown speed the fall gives over the speed the seam needs:
-    /// 1 and over is fast enough.
-    pub speed: f32,
+    /// The drop from the apex against the drop window
+    /// (`superbounce::rule::DROP_MIN` to `DROP_MAX`, [`window`]): 1 inside
+    /// it, less the further outside. The bar fills with it.
+    pub window: f32,
     pub steer: Steer,
+}
+
+/// How far outside the drop window, in world units, empties the bar.
+pub const WINDOW_FADE: f32 = 1.0;
+
+/// The bar's fill for a drop of `drop` (world units) against the window
+/// `[min, max]`: 1 inside it, falling to 0 at [`WINDOW_FADE`] outside;
+/// 0 for a drop that is not a number.
+pub fn window(drop: f32, [min, max]: [f32; 2]) -> f32 {
+    if !drop.is_finite() {
+        return 0.0;
+    }
+    let out = (min - drop).max(drop - max).max(0.0);
+    (1.0 - out / WINDOW_FADE).max(0.0)
+}
+
+/// In a primed fall, the drop from the apex and how near the landing is
+/// to the nearest edge of its floor (docs/game/superbounce.md, "The
+/// bounce rule"). Metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Air {
+    /// The drop from the apex to the floor under the landing.
+    pub drop: f32,
+    /// The drop is inside the window: the line is lit green.
+    pub in_window: bool,
+    /// The landing's distance to the nearest edge of its floor polygon.
+    pub edge: Option<f32>,
+}
+
+/// The air line: `Drop 10.5 m  Edge 0.06 m`, the edge left off when it
+/// is not known.
+pub fn air_text(a: &Air) -> String {
+    let drop = one(a.drop, SPEED_MAX);
+    match a.edge {
+        Some(e) => {
+            let e = if e.is_finite() {
+                e.clamp(0.0, STEER_MAX)
+            } else {
+                0.0
+            };
+            format!("Drop {drop} m  Edge {e:.2} m")
+        }
+        None => format!("Drop {drop} m"),
+    }
+}
+
+/// The air line's value: its text, green inside the window.
+pub fn air_value(a: &Air) -> Value {
+    let v = Value::text(air_text(a));
+    if a.in_window { v.styled(Style::Go) } else { v }
 }
 
 /// Why a landing by a seam did not bounce, with its numbers: the
@@ -178,14 +232,23 @@ pub struct Fall {
 pub enum Miss {
     NotPrimed,
     /// The origin was `by` from the seam's edge.
-    Missed { by: f32 },
+    Missed {
+        by: f32,
+    },
     /// The speed in was `had`; the seam needs `need`.
-    TooSlow { had: f32, need: f32 },
+    TooSlow {
+        had: f32,
+        need: f32,
+    },
     /// Primed, on the seam, at `had`, and no launch.
-    NoBounce { had: f32 },
+    NoBounce {
+        had: f32,
+    },
     /// Primed, by the seam, in at `had`, and the body went through its
     /// floor: the worst of them.
-    Through { had: f32 },
+    Through {
+        had: f32,
+    },
 }
 
 /// A seam the flight after a bounce can reach.
@@ -247,7 +310,11 @@ pub struct KindsRow {
 /// The targets row's text: `Targets: Likely (4)  (flashlight)(flashlight)`.
 pub fn kinds_text(r: &KindsRow) -> String {
     let b = r.button;
-    format!("Targets: {} ({})  {b}{b}", r.kinds.name(), r.count.min(COUNT_MAX))
+    format!(
+        "Targets: {} ({})  {b}{b}",
+        r.kinds.name(),
+        r.count.min(COUNT_MAX)
+    )
 }
 
 /// The targets row's value: its text, after a switch flashing the help
@@ -281,6 +348,9 @@ pub struct View {
     pub speed: Option<Speed>,
     pub fall: Option<Fall>,
     pub info: Option<Miss>,
+    /// In a primed fall, the drop and the edge ([`air_text`]): the info
+    /// row's, over a miss.
+    pub air: Option<Air>,
     /// In the flight after a bounce, the seams it can reach, the best
     /// first. With any, the line is theirs and not the miss's, the fall
     /// row is the best one's, and the target navpoints are on them.
@@ -300,7 +370,11 @@ pub struct View {
 }
 
 fn one(v: f32, max: f32) -> String {
-    let v = if v.is_finite() { v.clamp(0.0, max) } else { 0.0 };
+    let v = if v.is_finite() {
+        v.clamp(0.0, max)
+    } else {
+        0.0
+    };
     format!("{v:.1}")
 }
 
@@ -328,7 +402,11 @@ pub fn steer_text(s: &Steer) -> String {
     match s {
         Steer::OnSeam => ON_SEAM.into(),
         Steer::Off { heading, metres } => {
-            let m = if metres.is_finite() { metres.clamp(0.0, STEER_MAX) } else { 0.0 };
+            let m = if metres.is_finite() {
+                metres.clamp(0.0, STEER_MAX)
+            } else {
+                0.0
+            };
             format!("{} {m:.2} m", arrow(*heading))
         }
         Steer::Drift { heading } => format!("{} {DRIFT}", arrow(*heading)),
@@ -341,11 +419,19 @@ pub fn miss_text(m: &Miss) -> String {
     match m {
         Miss::NotPrimed => "Not primed".into(),
         Miss::Missed { by } => {
-            let by = if by.is_finite() { by.clamp(0.0, STEER_MAX) } else { 0.0 };
+            let by = if by.is_finite() {
+                by.clamp(0.0, STEER_MAX)
+            } else {
+                0.0
+            };
             format!("Missed seam by {by:.2} m")
         }
         Miss::TooSlow { had, need } => {
-            format!("Too slow: {} of {} m/s", one(*had, SPEED_MAX), one(*need, SPEED_MAX))
+            format!(
+                "Too slow: {} of {} m/s",
+                one(*had, SPEED_MAX),
+                one(*need, SPEED_MAX)
+            )
         }
         Miss::NoBounce { had } => format!("No bounce: on seam at {} m/s", one(*had, SPEED_MAX)),
         Miss::Through { had } => format!("Fell through at {} m/s", one(*had, SPEED_MAX)),
@@ -360,7 +446,14 @@ pub fn next_text(next: &[Option<Next>; NEXT]) -> Option<String> {
         .iter()
         .flatten()
         .enumerate()
-        .map(|(i, n)| format!("{} {} {} m", i + 1, arrow(n.heading), distance_text(n.metres)))
+        .map(|(i, n)| {
+            format!(
+                "{} {} {} m",
+                i + 1,
+                arrow(n.heading),
+                distance_text(n.metres)
+            )
+        })
         .collect();
     (!parts.is_empty()).then(|| parts.join("  "))
 }
@@ -369,7 +462,14 @@ pub fn next_text(next: &[Option<Next>; NEXT]) -> Option<String> {
 /// texts, the navpoints, then the approach guide's world marks.
 pub fn hud() -> Hud {
     let row = |up: i16| Place::new(Anchor::BottomLeft, (LEFT, up));
-    let navpoint = |id| Element::channel(id, Kind::Navpoint { longest: DISTANCE_LONGEST });
+    let navpoint = |id| {
+        Element::channel(
+            id,
+            Kind::Navpoint {
+                longest: DISTANCE_LONGEST,
+            },
+        )
+    };
     let mut elements = vec![Element::meter(
         FALL,
         Art::StripMeterEnd(FALL_COLUMNS),
@@ -381,19 +481,31 @@ pub fn hud() -> Hud {
         elements,
     };
     hud.elements.extend([
-            Element::text(SPEED, Font::Hud, Justify::Start, SPEED_LONGEST, row(SPEED_UP)),
-            Element::text(
-                STEER,
-                Font::Hud,
-                Justify::Start,
-                STEER_LONGEST,
-                Place::new(Anchor::BottomLeft, (STEER_LEFT, FALL_UP)),
-            ),
-            Element::text(INFO, Font::Hud, Justify::Start, INFO_LONGEST, row(INFO_UP)),
-            Element::text(KINDS, Font::Hud, Justify::Start, KINDS_LONGEST, row(KINDS_UP)),
-            navpoint(TAG),
-            navpoint(TARGET_1),
-            navpoint(TARGET_2),
+        Element::text(
+            SPEED,
+            Font::Hud,
+            Justify::Start,
+            SPEED_LONGEST,
+            row(SPEED_UP),
+        ),
+        Element::text(
+            STEER,
+            Font::Hud,
+            Justify::Start,
+            STEER_LONGEST,
+            Place::new(Anchor::BottomLeft, (STEER_LEFT, FALL_UP)),
+        ),
+        Element::text(INFO, Font::Hud, Justify::Start, INFO_LONGEST, row(INFO_UP)),
+        Element::text(
+            KINDS,
+            Font::Hud,
+            Justify::Start,
+            KINDS_LONGEST,
+            row(KINDS_UP),
+        ),
+        navpoint(TAG),
+        navpoint(TARGET_1),
+        navpoint(TARGET_2),
     ]);
     hud.elements.extend(guide::elements());
     hud
@@ -407,18 +519,25 @@ pub fn values(v: &View) -> Values {
     out.set(
         FALL,
         match v.fall {
-            Some(f) if f.speed.is_finite() => Value::fill(f.speed.clamp(0.0, 1.0)),
+            Some(f) if f.window.is_finite() => Value::fill(f.window.clamp(0.0, 1.0)),
             Some(_) => Value::fill(0.0),
             None => Value::hidden(),
         },
     );
     out.set(SPEED, text(v.speed.as_ref().and_then(speed_text)));
     out.set(STEER, text(v.fall.map(|f| steer_text(&f.steer))));
+    // The ranked seams after a bounce, else the fall's drop and edge,
+    // else the last miss.
+    let info = match (next_text(&v.next), v.air) {
+        (Some(t), _) => Value::text(t),
+        (None, Some(a)) => air_value(&a),
+        (None, None) => text(v.info.as_ref().map(miss_text)),
+    };
+    out.set(INFO, info);
     out.set(
-        INFO,
-        text(next_text(&v.next).or_else(|| v.info.as_ref().map(miss_text))),
+        KINDS,
+        v.kinds.as_ref().map_or_else(Value::hidden, kinds_value),
     );
-    out.set(KINDS, v.kinds.as_ref().map_or_else(Value::hidden, kinds_value));
     out.set(TAG, nav(v.tag));
     out.set(TARGET_1, nav(v.targets[0]));
     out.set(TARGET_2, nav(v.targets[1]));
@@ -440,9 +559,9 @@ pub fn views() -> Vec<(&'static str, View)> {
         across: 2.1,
         down: Some(12.4),
     };
-    let fall = |speed, steer| View {
+    let fall = |window, steer| View {
         speed: Some(falling),
-        fall: Some(Fall { speed, steer }),
+        fall: Some(Fall { window, steer }),
         ..View::default()
     };
     let miss = |m| View {
@@ -481,7 +600,13 @@ pub fn views() -> Vec<(&'static str, View)> {
         ),
         ("miss-not-primed", miss(Miss::NotPrimed)),
         ("miss-missed", miss(Miss::Missed { by: 0.31 })),
-        ("miss-too-slow", miss(Miss::TooSlow { had: 12.4, need: 16.5 })),
+        (
+            "miss-too-slow",
+            miss(Miss::TooSlow {
+                had: 12.4,
+                need: 16.5,
+            }),
+        ),
         ("miss-no-bounce", miss(Miss::NoBounce { had: 17.2 })),
         ("miss-fell-through", miss(Miss::Through { had: 17.2 })),
         (
@@ -501,7 +626,7 @@ pub fn views() -> Vec<(&'static str, View)> {
                     down: None,
                 }),
                 fall: Some(Fall {
-                    speed: 1.0,
+                    window: 1.0,
                     steer: Steer::Off {
                         heading: -FRAC_PI_4,
                         metres: 1.2,
@@ -526,7 +651,7 @@ pub fn views() -> Vec<(&'static str, View)> {
             View {
                 speed: Some(falling),
                 fall: Some(Fall {
-                    speed: 1.0,
+                    window: 1.0,
                     steer: Steer::OnSeam,
                 }),
                 next: [
@@ -594,7 +719,22 @@ pub fn views() -> Vec<(&'static str, View)> {
                 metres: 1.4,
             },
         ),
-        _ => fall(0.97, Steer::OnSeam),
+        "guide-too-high" => View {
+            air: Some(Air {
+                drop: 12.6,
+                in_window: false,
+                edge: Some(0.15),
+            }),
+            ..fall(0.0, Steer::OnSeam)
+        },
+        _ => View {
+            air: Some(Air {
+                drop: 10.5,
+                in_window: true,
+                edge: Some(0.06),
+            }),
+            ..fall(1.0, Steer::OnSeam)
+        },
     };
     for (name, g, _) in guide::samples() {
         out.push((
@@ -664,7 +804,12 @@ mod tests {
     use std::f32::consts::{FRAC_PI_2, PI};
 
     fn state(name: &str) -> Values {
-        Readout.states().into_iter().find(|(n, _)| *n == name).unwrap().1
+        Readout
+            .states()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap()
+            .1
     }
 
     fn shown(s: &str, id: &str) -> Option<String> {
@@ -680,7 +825,11 @@ mod tests {
         let h = hud();
         assert!(h.problems().is_empty(), "{:?}", h.problems());
         for (name, v) in Readout.states() {
-            assert!(v.layout_problems(&h).is_empty(), "{name}: {:?}", v.layout_problems(&h));
+            assert!(
+                v.layout_problems(&h).is_empty(),
+                "{name}: {:?}",
+                v.layout_problems(&h)
+            );
         }
         assert!(Readout.multiplayer_only().is_some());
     }
@@ -699,11 +848,19 @@ mod tests {
                 continue;
             }
             let (x, y) = (48 + e.at.full.0, 444 + e.at.full.1);
-            assert!(x >= 149, "{}: right of the segments' right side, x 131 to 137", e.id);
+            assert!(
+                x >= 149,
+                "{}: right of the segments' right side, x 131 to 137",
+                e.id
+            );
             if e.id == KINDS {
                 continue;
             }
-            assert!((376..444).contains(&y), "{}: under the tracker's top, in the frame", e.id);
+            assert!(
+                (376..444).contains(&y),
+                "{}: under the tracker's top, in the frame",
+                e.id
+            );
             assert_eq!(e.outside, 0, "{}: inside the frame", e.id);
         }
         assert_eq!(48 + LEFT, 149);
@@ -754,11 +911,80 @@ mod tests {
             speed_text(&s(2.1, Some(12.44))).unwrap(),
             "\u{e2b2} 2.1  \u{e2b4} 12.4 m/s"
         );
-        assert_eq!(speed_text(&s(0.0, Some(12.4))).unwrap(), "\u{e2b4} 12.4 m/s");
+        assert_eq!(
+            speed_text(&s(0.0, Some(12.4))).unwrap(),
+            "\u{e2b4} 12.4 m/s"
+        );
         assert_eq!(speed_text(&s(500.0, None)).unwrap(), "\u{e2b2} 99.9 m/s");
         assert_eq!(speed_text(&s(f32::NAN, None)), None);
         assert_eq!(shown("idle", SPEED), None);
         assert_eq!(shown("moving", SPEED).unwrap(), "\u{e2b1} 7.2 m/s");
+    }
+
+    /// The bar is full inside the drop window and empties a unit outside
+    /// it; the air line gives the drop and the edge, green in the window,
+    /// over a miss and under the ranked seams.
+    #[test]
+    fn the_drop_fills_the_bar_and_the_air_line_says_it() {
+        let w = [3.35, 3.60];
+        assert_eq!(
+            (window(3.35, w), window(3.45, w), window(3.60, w)),
+            (1.0, 1.0, 1.0)
+        );
+        assert!((window(3.1, w) - 0.75).abs() < 1e-5);
+        assert!((window(4.1, w) - 0.5).abs() < 1e-5);
+        assert_eq!(
+            (window(2.0, w), window(5.0, w), window(f32::NAN, w)),
+            (0.0, 0.0, 0.0)
+        );
+        let air = Air {
+            drop: 10.52,
+            in_window: true,
+            edge: Some(0.061),
+        };
+        assert_eq!(air_text(&air), "Drop 10.5 m  Edge 0.06 m");
+        assert_eq!(air_text(&Air { edge: None, ..air }), "Drop 10.5 m");
+        let widest = Air {
+            drop: 88.8,
+            in_window: false,
+            edge: Some(88.88),
+        };
+        assert!(air_text(&widest).chars().count() <= INFO_LONGEST.chars().count());
+        let v = values(&View {
+            air: Some(air),
+            info: Some(Miss::NotPrimed),
+            ..View::default()
+        });
+        let info = v.get(INFO).unwrap();
+        assert_eq!(
+            (info.text.as_str(), info.style),
+            ("Drop 10.5 m  Edge 0.06 m", Style::Go)
+        );
+        let out = values(&View {
+            air: Some(Air {
+                in_window: false,
+                ..air
+            }),
+            ..View::default()
+        });
+        assert_eq!(out.get(INFO).unwrap().style, Style::Normal);
+        let ranked = values(&View {
+            air: Some(air),
+            next: [
+                Some(Next {
+                    heading: 0.0,
+                    metres: 4.0,
+                }),
+                None,
+            ],
+            ..View::default()
+        });
+        assert_eq!(ranked.get(INFO).unwrap().text, "1 \u{e2b0} 4 m");
+        assert_eq!(
+            shown("guide-falling-caught", INFO).unwrap(),
+            "Drop 10.5 m  Edge 0.06 m"
+        );
+        assert_eq!(state("guide-too-high").get(FALL).unwrap().fill, 0.0);
     }
 
     #[test]
@@ -770,10 +996,10 @@ mod tests {
         assert_eq!(shown("falling-off-seam", STEER).unwrap(), "\u{e2b6} 0.40 m");
         assert_eq!(state("falling-on-seam").get(FALL).unwrap().fill, 1.0);
         assert_eq!(shown("falling-on-seam", STEER).unwrap(), ON_SEAM);
-        // Faster than needed is a full bar, not past it.
+        // A fill over 1 is a full bar, not past it.
         let over = values(&View {
             fall: Some(Fall {
-                speed: 1.8,
+                window: 1.8,
                 steer: Steer::OnSeam,
             }),
             ..View::default()
@@ -787,7 +1013,10 @@ mod tests {
     fn a_miss_says_why_with_its_numbers() {
         assert_eq!(shown("miss-not-primed", INFO).unwrap(), "Not primed");
         assert_eq!(shown("miss-missed", INFO).unwrap(), "Missed seam by 0.31 m");
-        assert_eq!(shown("miss-too-slow", INFO).unwrap(), "Too slow: 12.4 of 16.5 m/s");
+        assert_eq!(
+            shown("miss-too-slow", INFO).unwrap(),
+            "Too slow: 12.4 of 16.5 m/s"
+        );
         assert_eq!(
             shown("miss-no-bounce", INFO).unwrap(),
             "No bounce: on seam at 17.2 m/s"
@@ -805,7 +1034,11 @@ mod tests {
     fn out_of_reach_has_no_arrow() {
         assert_eq!(steer_text(&Steer::OutOfReach), "Out of reach");
         assert_eq!(shown("falling-out-of-reach", STEER).unwrap(), OUT_OF_REACH);
-        assert!(!OUT_OF_REACH.chars().any(|c| ('\u{e2b0}'..='\u{e2b7}').contains(&c)));
+        assert!(
+            !OUT_OF_REACH
+                .chars()
+                .any(|c| ('\u{e2b0}'..='\u{e2b7}').contains(&c))
+        );
         let bar = state("falling-out-of-reach");
         let bar = bar.get(FALL).unwrap();
         assert!(bar.shown);
@@ -824,7 +1057,10 @@ mod tests {
         );
         assert_eq!(next_text(&[n(0.0, 4.0), None]).unwrap(), "1 \u{e2b0} 4 m");
         assert_eq!(
-            next_text(&[n(0.0, 1e9), n(0.0, f32::NAN)]).unwrap().chars().count(),
+            next_text(&[n(0.0, 1e9), n(0.0, f32::NAN)])
+                .unwrap()
+                .chars()
+                .count(),
             "1 \u{e2b0} 999 m  2 \u{e2b0} 0 m".chars().count()
         );
         assert!(NEXT_LONGEST.chars().count() <= INFO_LONGEST.chars().count());
@@ -885,7 +1121,10 @@ mod tests {
         };
         let out = values(&v);
         assert_eq!(out.get(INFO).unwrap().text, "Not primed");
-        assert_eq!(out.get(KINDS).unwrap().text, "Targets: Common (2)  \u{e105}\u{e105}");
+        assert_eq!(
+            out.get(KINDS).unwrap().text,
+            "Targets: Common (2)  \u{e105}\u{e105}"
+        );
         assert!(!values(&View::default()).get(KINDS).unwrap().shown);
         // In every preview state but `idle`, at the default kinds.
         for (name, v) in Readout.states() {
@@ -922,7 +1161,10 @@ mod tests {
             switched: None,
             ..switched
         });
-        assert_eq!((calm.style, calm.text.as_str()), (Style::Normal, v.text.as_str()));
+        assert_eq!(
+            (calm.style, calm.text.as_str()),
+            (Style::Normal, v.text.as_str())
+        );
         let s = state("targets-switched");
         let x = s.get(KINDS).unwrap();
         assert_eq!(x.style, Style::Flash(Pulse::Help));
@@ -947,12 +1189,19 @@ mod tests {
     fn the_guide_is_in_its_moments_alone() {
         let h = hud();
         let n = guide::MARKS.len();
-        let ids: Vec<_> = h.elements[h.elements.len() - n..].iter().map(|e| e.id).collect();
+        let ids: Vec<_> = h.elements[h.elements.len() - n..]
+            .iter()
+            .map(|e| e.id)
+            .collect();
         assert_eq!(ids, guide::MARKS);
         for id in guide::MARKS {
             let e = h.element(id).unwrap();
             assert!(e.kind.world().is_some() && e.kind.is_channel(), "{id}");
-            assert_eq!((e.at.half, e.at.quarter), (None, None), "{id}: fullscreen only");
+            assert_eq!(
+                (e.at.half, e.at.quarter),
+                (None, None),
+                "{id}: fullscreen only"
+            );
         }
         let mut moments = 0;
         for (name, v) in Readout.states() {
@@ -966,16 +1215,37 @@ mod tests {
             }
         }
         assert_eq!(moments, guide::samples().len());
-        assert_eq!(shown("guide-falling-caught", guide::BOX).unwrap(), "Will bounce");
-        assert_eq!(shown("guide-too-shallow", guide::BOX).unwrap(), "Too shallow");
-        assert_eq!(shown("guide-scan-only", guide::BOX).unwrap(), "Will bounce");
+        assert_eq!(
+            shown("guide-falling-caught", guide::BOX).unwrap(),
+            "Will bounce"
+        );
+        assert_eq!(
+            shown("guide-too-shallow", guide::BOX).unwrap(),
+            "Too shallow"
+        );
+        assert_eq!(shown("guide-too-high", guide::BOX).unwrap(), "Too high");
+        assert_eq!(shown("guide-no-drift", guide::BOX).unwrap(), "No drift");
         // Before the jump the box has the jump cue, and the takeoff line
         // shows.
-        assert_eq!(shown("guide-approach", guide::BOX).unwrap(), "Jump in 0.7 s");
-        assert_eq!(shown("guide-lined-up", guide::BOX).unwrap(), "Jump in 0.1 s");
+        assert_eq!(
+            shown("guide-approach", guide::BOX).unwrap(),
+            "Jump in 0.7 s"
+        );
+        assert_eq!(
+            shown("guide-lined-up", guide::BOX).unwrap(),
+            "Jump in 0.1 s"
+        );
         assert_eq!(shown("guide-jump-now", guide::BOX).unwrap(), "Jump now");
-        assert_eq!(shown("guide-walk-to-line", guide::BOX).unwrap(), "Walk to line");
-        for name in ["guide-approach", "guide-lined-up", "guide-jump-now", "guide-walk-to-line"] {
+        assert_eq!(
+            shown("guide-walk-to-line", guide::BOX).unwrap(),
+            "Walk to line"
+        );
+        for name in [
+            "guide-approach",
+            "guide-lined-up",
+            "guide-jump-now",
+            "guide-walk-to-line",
+        ] {
             assert!(shown(name, guide::TAKEOFF).is_some(), "{name}");
         }
         assert_eq!(shown("guide-falling-caught", guide::TAKEOFF), None);
@@ -988,7 +1258,7 @@ mod tests {
     fn the_fall_row_carries_no_percentage() {
         assert_eq!(shown("guide-falling-caught", STEER).unwrap(), ON_SEAM);
         assert_eq!(shown("guide-too-shallow", STEER).unwrap(), ON_SEAM);
-        assert_eq!(shown("guide-on-the-cut", STEER).unwrap(), ON_SEAM);
+        assert_eq!(shown("guide-too-high", STEER).unwrap(), ON_SEAM);
         assert_eq!(shown("guide-off-line", STEER).unwrap(), "\u{e2b3} 1.40 m");
         assert_eq!(shown("guide-lined-up", STEER), None);
         assert_eq!(shown("falling-on-seam", STEER).unwrap(), ON_SEAM);
@@ -1001,11 +1271,17 @@ mod tests {
             }
         }
         // The widest: `Out of reach`, over the furthest landing.
-        let off = Steer::Off { heading: 1.0, metres: 1e9 };
+        let off = Steer::Off {
+            heading: 1.0,
+            metres: 1e9,
+        };
         let h = hud();
         let longest = h.element(STEER).unwrap().kind.longest().unwrap();
         assert_eq!(longest, steer_text(&Steer::OutOfReach));
-        assert_eq!(steer_text(&off).chars().count(), STEER_OFF_LONGEST.chars().count());
+        assert_eq!(
+            steer_text(&off).chars().count(),
+            STEER_OFF_LONGEST.chars().count()
+        );
         assert!(STEER_OFF_LONGEST.chars().count() <= longest.chars().count());
     }
 
@@ -1015,7 +1291,10 @@ mod tests {
     #[test]
     fn the_segments_show_the_ring_in_every_state_but_idle() {
         let h = hud();
-        let ids: Vec<_> = h.elements[1..=segs::SEGMENTS].iter().map(|e| e.id).collect();
+        let ids: Vec<_> = h.elements[1..=segs::SEGMENTS]
+            .iter()
+            .map(|e| e.id)
+            .collect();
         assert_eq!(ids, segs::IDS);
         let fills = |name: &str| -> Vec<Option<f32>> {
             let v = state(name);
@@ -1036,11 +1315,18 @@ mod tests {
             [3, 6, 9]
         );
         // Three quarters of the charge: 6.75 segments.
-        assert_eq!(fills("segments-draining")[5..], [Some(1.0), Some(0.75), Some(0.0), Some(0.0)]);
+        assert_eq!(
+            fills("segments-draining")[5..],
+            [Some(1.0), Some(0.75), Some(0.0), Some(0.0)]
+        );
         assert_eq!(lit("segments-warning"), 4);
         assert_eq!(fills("segments-warning")[4], Some(0.5));
         assert_eq!(lit("segments-lost"), 0);
-        let n = Readout.states().iter().filter(|(n, _)| n.starts_with("segments-")).count();
+        let n = Readout
+            .states()
+            .iter()
+            .filter(|(n, _)| n.starts_with("segments-"))
+            .count();
         assert_eq!(n, segs::samples().len());
     }
 
@@ -1050,12 +1336,24 @@ mod tests {
     #[test]
     fn no_text_is_longer_than_its_longest() {
         let h = hud();
-        let longest = |id: &str| h.element(id).unwrap().kind.longest().unwrap().chars().count();
+        let longest = |id: &str| {
+            h.element(id)
+                .unwrap()
+                .kind
+                .longest()
+                .unwrap()
+                .chars()
+                .count()
+        };
         for (name, v) in Readout.states() {
             for e in &h.elements {
                 let x = v.get(e.id).unwrap();
                 if let (true, Some(l)) = (x.shown, e.kind.longest()) {
-                    assert!(x.text.chars().count() <= l.chars().count(), "{name} {}", e.id);
+                    assert!(
+                        x.text.chars().count() <= l.chars().count(),
+                        "{name} {}",
+                        e.id
+                    );
                 }
             }
         }
@@ -1070,7 +1368,10 @@ mod tests {
             metres: 1e9,
         };
         assert!(steer_text(&off).chars().count() <= longest(STEER));
-        assert_eq!(steer_text(&Steer::OutOfReach).chars().count(), longest(STEER));
+        assert_eq!(
+            steer_text(&Steer::OutOfReach).chars().count(),
+            longest(STEER)
+        );
         assert!(ON_SEAM.chars().count() <= longest(STEER));
         let drift = steer_text(&Steer::Drift { heading: FRAC_PI_2 });
         assert_eq!(drift, "\u{e2b2} Drift");
@@ -1079,13 +1380,19 @@ mod tests {
         for m in [
             Miss::NotPrimed,
             Miss::Missed { by: 1e9 },
-            Miss::TooSlow { had: 1e9, need: 1e9 },
+            Miss::TooSlow {
+                had: 1e9,
+                need: 1e9,
+            },
             Miss::NoBounce { had: 1e9 },
             Miss::Through { had: 1e9 },
         ] {
             assert!(miss_text(&m).chars().count() <= longest(INFO), "{m:?}");
         }
-        assert_eq!(miss_text(&Miss::NoBounce { had: 1e9 }).chars().count(), longest(INFO));
+        assert_eq!(
+            miss_text(&Miss::NoBounce { had: 1e9 }).chars().count(),
+            longest(INFO)
+        );
         // The targets row: the widest kind at the most digits, either
         // layout's glyph.
         for k in Kinds::EVERY {

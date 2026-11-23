@@ -155,7 +155,11 @@ fn the_seam_stops_the_body_on_its_floor_or_its_far_face() {
     // Past the edge's end the nearest point is the end.
     assert_eq!(s.edge_point([-20.0, 4.0]), [-11.10, 4.0, -3.2]);
     near(s.contact([-10.4, 3.0], 0.0), -3.2 + CLEARANCE, 1e-6);
-    near(s.contact([-10.4, 4.0], 0.0), -3.2 + DEPTH_CUT - DEPTH_BAND, 1e-5);
+    near(
+        s.contact([-10.4, 4.0], 0.0),
+        -3.2 + DEPTH_CUT - DEPTH_BAND,
+        1e-5,
+    );
     near(
         s.contact([-10.4, 3.96], 0.0),
         -3.2 + DEPTH_CUT - DEPTH_BAND - SEAM_SLOPE * 0.04,
@@ -176,7 +180,11 @@ fn the_seam_stops_the_body_on_its_floor_or_its_far_face() {
     near(s.contact([-10.4, 3.0], 0.4), -3.2 + CLEARANCE + 0.4, 1e-6);
     near(s.contact([-10.4, 4.5], 0.4), -3.2 + CLEARANCE + 0.4, 1e-6);
     for y in [3.92, 3.96, 4.0, 4.05] {
-        assert_eq!(s.contact([-10.4, y], 0.4), s.contact([-10.4, y], 0.0), "{y}");
+        assert_eq!(
+            s.contact([-10.4, y], 0.4),
+            s.contact([-10.4, y], 0.0),
+            "{y}"
+        );
     }
 }
 
@@ -264,7 +272,7 @@ fn the_depth_rule_is_the_notes_cut() {
 }
 
 /// Lined up is the catch, either side of the edge; the drift arrow is
-/// lit by any speed the drift's way.
+/// lit at the full-launch minimum, 0.15 units/s the drift's way.
 #[test]
 fn lined_up_is_the_catch_and_the_drift_a_hint() {
     let s = seam();
@@ -282,8 +290,8 @@ fn lined_up_is_the_catch_and_the_drift_a_hint() {
             ..row(3.976, -2.8)
         }
     ));
-    assert!(drift_lit(0.1) && drift_lit(0.8) && drift_lit(2.0));
-    assert!(!drift_lit(0.0) && !drift_lit(-0.3) && !drift_lit(f32::NAN));
+    assert!(drift_lit(0.15) && drift_lit(0.8) && drift_lit(2.0));
+    assert!(!drift_lit(0.1) && !drift_lit(0.0) && !drift_lit(-0.3) && !drift_lit(f32::NAN));
 }
 
 /// The box's call: off the line; lined up on the ground; in a primed
@@ -324,6 +332,97 @@ fn the_call_is_the_depths_in_a_primed_fall() {
         ..s
     };
     assert_eq!(call(&plain, Some(&deep), true, true), Call::LinedUp);
+}
+
+fn test_phase(outcome: Outcome, crouching: bool) -> Phase {
+    Phase {
+        verdict: Verdict {
+            outcome,
+            tick: 0,
+            row: [0.0; 3],
+            speed: 3.0,
+            gap: 0.0,
+            pierce: None,
+        },
+        drop: Some(3.45),
+        edge: Some(0.02),
+        apex: 3.46,
+        crouching,
+    }
+}
+
+/// The airborne call is the predictor's phase, with no 5.4-speed gate.
+#[test]
+fn the_air_call_is_the_phase_verdict() {
+    let body = Body {
+        position: [-10.457, 3.95, -2.83],
+        velocity: [0.0, 0.3, -3.0],
+        airborne: true,
+        primed: true,
+        lift: 0.0,
+        stick: keep2([0.0, 0.3, -3.0]),
+    };
+    let impact = row(3.95, -2.83);
+    for (outcome, want) in [
+        (Outcome::Bounce(rule::Route::Threshold), Call::WillBounce),
+        (Outcome::Stopped, Call::TooShallow),
+        (Outcome::Landing, Call::TooShallow),
+        (Outcome::Caught, Call::TooHigh),
+        (Outcome::Pop, Call::OffEdge),
+        (Outcome::LevelPinch, Call::NoDrift),
+        (Outcome::NoFloor, Call::LinedUp),
+    ] {
+        let p = test_phase(outcome, false);
+        assert_eq!(
+            phase_call(&seam(), Some(&impact), &body, Some(&p)),
+            want,
+            "{outcome:?}"
+        );
+    }
+    assert_eq!(
+        phase_call(&seam(), Some(&impact), &body, None),
+        Call::LinedUp
+    );
+    let crouched = test_phase(Outcome::Bounce(rule::Route::Threshold), true);
+    assert_eq!(
+        phase_call(&seam(), Some(&impact), &body, Some(&crouched)),
+        Call::Crouching
+    );
+}
+
+/// The phase carries the actual apex-to-floor drop and nearest edge.
+#[test]
+fn the_phase_reads_the_drop_and_edge_from_its_floors() {
+    let quad = |x0, x1| Poly {
+        verts: vec![
+            [x0, -2.0, 0.0],
+            [x1, -2.0, 0.0],
+            [x1, 2.0, 0.0],
+            [x0, 2.0, 0.0],
+        ],
+        normal: [0.0, 0.0, 1.0],
+    };
+    let polys = vec![quad(-2.0, 0.42), quad(0.42, 2.0)];
+    let body = Body {
+        position: [0.0, 0.0, 3.46],
+        velocity: [0.3, 0.0, -0.02],
+        airborne: true,
+        primed: true,
+        lift: 0.0,
+        stick: flight::keep([0.3, 0.0]),
+    };
+    let p = phase(
+        &body,
+        &Air {
+            floors: &polys,
+            apex: Some(3.46),
+            crouching: false,
+        },
+    )
+    .unwrap();
+    near(p.apex, 3.46, 1e-6);
+    near(p.drop.unwrap(), 3.45, 1e-3);
+    assert!(p.edge.unwrap() < 0.5, "{p:?}");
 }
 
 /// The guide is for a primed player alone: full strength primed, none
@@ -676,7 +775,9 @@ fn flight(s: &Seam, t: &Takeoff) -> Option<Impact> {
         t.at[1] + h[1] * from,
         t.at[2] + CLEARANCE,
     ];
-    coast(at, [h[0] * t.speed, h[1] * t.speed, vz], |xy| s.contact(xy, 0.0))
+    coast(at, [h[0] * t.speed, h[1] * t.speed, vz], |xy| {
+        s.contact(xy, 0.0)
+    })
 }
 
 /// A jump's takeoff on a ledge whose lip is at y 2.6: a walk-off from
@@ -746,7 +847,10 @@ fn a_lip_nothing_lands_from_is_still_where_to_go() {
     );
     // Inside the ledge, not at its edge: a jump, or the run's own way.
     let inside = lip_at(0.0);
-    assert_eq!(place(&s, NEED, &inside, 0.0, far).unwrap().leave, Leave::Jump);
+    assert_eq!(
+        place(&s, NEED, &inside, 0.0, far).unwrap().leave,
+        Leave::Jump
+    );
     let run = Lip {
         run: Some(Leave::Drop),
         ..inside
@@ -1036,7 +1140,7 @@ fn the_guide_carries_the_cue_on_the_ground() {
     assert!(v.pipper && !v.ticks);
     // The takeoff is the world's bar, not a guide mark.
     assert!(!v.takeoff && g.layout().takeoff.is_none());
-    assert_eq!((v.chance, v.cue), (None, g.cue.and_then(kit_cue)));
+    assert_eq!(v.cue, g.cue.and_then(kit_cue));
     let mut out = Values::default();
     marks::set_values(&mut out, Some(&v));
     assert!(out.get(marks::BOX).unwrap().text.starts_with("Jump in 0."));
@@ -1253,7 +1357,7 @@ fn a_scan_only_seam_is_capped() {
     near(mc.value, 0.929, 2e-3);
     assert!(!mc.capped);
     assert_eq!((sc.value, sc.capped), (SCAN_ONLY_CAP, true));
-    assert_eq!((m.view().chance, s.view().chance), (Some(93), Some(60)));
+    assert_eq!(m.view().call, Call::WillBounce);
     // Too shallow is under the cap on either: the same on both.
     let (m, s) = (
         guide(&body(-2.77), &ascension()).unwrap(),
@@ -1262,7 +1366,7 @@ fn a_scan_only_seam_is_capped() {
     assert_eq!(m.call, Call::TooShallow);
     near(m.chance.unwrap().value, 0.136, 2e-3);
     assert_eq!(m.chance, s.chance);
-    assert_eq!(m.view().chance, Some(14));
+    assert_eq!(m.view().call, Call::TooShallow);
     // A fall slower than the depth rule is measured at, and one not
     // primed, have no chance.
     let slow = Body {

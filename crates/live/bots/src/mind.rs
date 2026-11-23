@@ -36,8 +36,8 @@ use look::turn_rate;
 use feel::{Rng, reached};
 pub use look::AimTrace;
 use look::{Hand, angle_error};
-use pad::{Buttons, Feet, Fidget, Tap};
 pub use order::OrderView;
+use pad::{Buttons, Feet, Fidget, Tap};
 pub use practice::{EVENTS as PRACTICE_EVENTS, PracticeEvent, PracticeView, SpotTally};
 pub use route::{RouteMotion, RoutePad};
 
@@ -374,6 +374,11 @@ pub struct Mind {
     /// This map's measured and scanned spots (crate::spots): what bounce
     /// routes plan with.
     pub known: crate::spots::Known,
+    /// This map's floor polygons (crate::spots::floors): what a bounce
+    /// route's drop is judged on before it is taken
+    /// (`bounce_route::judge_takeoff`). Empty until the nav worker reads
+    /// them.
+    pub floors: std::sync::Arc<Vec<superbounce::Poly>>,
     /// The level pair word of the bot's player, when the host reads it
     /// ([`crate::set_pair_reader`]); `None` otherwise.
     pub pair_word: Option<u32>,
@@ -528,6 +533,7 @@ impl Mind {
             glitches: crate::glitches::Glitches::Off,
             bounces: Vec::new(),
             known: Default::default(),
+            floors: Default::default(),
             pair_word: None,
             glass_mask: None,
             asked: None,
@@ -569,9 +575,8 @@ impl Mind {
                 .and_then(|g| g.juggernaut_opponent(o.id))
                 .unwrap_or_else(|| crate::firefight::hostile(p, me.team, o));
             if !enemy
-                || observed.is_some_and(|mask| {
-                    !actor && mask & crate::perceive::player_bit(o.id) == 0
-                })
+                || observed
+                    .is_some_and(|mask| !actor && mask & crate::perceive::player_bit(o.id) == 0)
             {
                 return false;
             }
@@ -1206,14 +1211,16 @@ impl Mind {
                         && !carrying
                         && self.decisions.posture != Posture::Withdraw
                         && angle < 0.85
-                        && weights.is_some_and(|w| len(chest) < MELEE_RANGE * (1.0 + 0.25 * w.melee));
-                    let in_melee = opportunistic || tactics::melee_window(
-                        len(chest),
-                        angle,
-                        held,
-                        shield_down,
-                        melee || risky || juggernaut || finishing,
-                    );
+                        && weights
+                            .is_some_and(|w| len(chest) < MELEE_RANGE * (1.0 + 0.25 * w.melee));
+                    let in_melee = opportunistic
+                        || tactics::melee_window(
+                            len(chest),
+                            angle,
+                            held,
+                            shield_down,
+                            melee || risky || juggernaut || finishing,
+                        );
                     // Glitches (crate::glitches) only where the fight is not
                     // obviously lost: not low, not withdrawing, nobody else
                     // close; a sword fly never into a group.
@@ -1251,8 +1258,9 @@ impl Mind {
                         self.kit = Kit::Fine;
                     }
                     // A sword fly uses the blade's trigger to lunge.
-                    let sword_fly =
-                        blade && shot_clear && combo.trick == Some(crate::glitches::Trick::SwordFly);
+                    let sword_fly = blade
+                        && shot_clear
+                        && combo.trick == Some(crate::glitches::Trick::SwordFly);
                     if (can_fire || can_hold || sword_lunge || sword_fly)
                         && combo.trigger.unwrap_or(fired)
                     {
@@ -1457,9 +1465,8 @@ impl Mind {
                 let near = dist_xy(me.position, at) < TAKE_RANGE;
                 // A trip over its budget, or standing on one that does
                 // not come: given up for a while (mind::errand).
-                let on_trip = pk.is_none_or(|pk| {
-                    self.errands.step(pk.id, p.tick, dist_xy(me.position, at))
-                });
+                let on_trip =
+                    pk.is_none_or(|pk| self.errands.step(pk.id, p.tick, dist_xy(me.position, at)));
                 let other_kind =
                     pk.is_some_and(|pk| me.arms.is_some_and(|a| !a.carries(pk.gun.def)));
                 let dual = matches!(self.kit, Kit::Dual(_));
@@ -1719,9 +1726,12 @@ impl Mind {
             world,
             self.skill,
             dual.is_some(),
-            behavior.grenade_rate() * weights
-                .filter(|_| crate::tuning::current().is_none_or(|t| t.grenades_per_minute.is_none()))
-                .map_or(1.0, |w| 0.7 + 0.8 * w.grenades),
+            behavior.grenade_rate()
+                * weights
+                    .filter(|_| {
+                        crate::tuning::current().is_none_or(|t| t.grenades_per_minute.is_none())
+                    })
+                    .map_or(1.0, |w| 0.7 + 0.8 * w.grenades),
         );
         // Aiming a throw: the hand turns to the throw's line instead of the
         // target (tracked still, so the flick and lag are the same hand's).
@@ -2059,7 +2069,8 @@ impl Mind {
         if u.crouch {
             pad.buttons.set(CROUCH, true);
         }
-        let planned_step = map.is_some() && self.follower.as_ref().is_some_and(Follower::stepping_off);
+        let planned_step =
+            map.is_some() && self.follower.as_ref().is_some_and(Follower::stepping_off);
         // Try the other side if an unstick sidestep is blocked, then
         // fall back to the path direction. The path steers planned jumps
         // and drops directly toward their next waypoint.
@@ -2165,9 +2176,9 @@ impl Mind {
                         && !self.stuck.blocked(s.bounce.stand, tick)
                 })
                 .min_by(|a, b| {
-                    (!a.proven()).cmp(&!b.proven()).then(
-                        dist_xy(a.bounce.stand, at).total_cmp(&dist_xy(b.bounce.stand, at)),
-                    )
+                    (!a.proven())
+                        .cmp(&!b.proven())
+                        .then(dist_xy(a.bounce.stand, at).total_cmp(&dist_xy(b.bounce.stand, at)))
                 })
                 .copied();
             if let Some(site) = site {
@@ -2292,14 +2303,9 @@ impl Mind {
                         .is_some_and(|i| i == h || m.nav.corridor(h, i).is_some())
                 })
         };
-        let mut places = self.roam.candidates(
-            at,
-            tick,
-            &m.nav,
-            pickups,
-            &m.places.starts,
-            self.skill,
-        );
+        let mut places =
+            self.roam
+                .candidates(at, tick, &m.nav, pickups, &m.places.starts, self.skill);
         self.decisions.map.safe_first(&mut places, tick);
         places.into_iter().map(|(_, at)| at).find(|&at| ok(at))
     }

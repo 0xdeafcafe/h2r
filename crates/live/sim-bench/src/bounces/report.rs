@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use super::region::{self, Class, Window};
 use super::{
-    ACROSS, ALONG, AXES, BouncesRun, DEPTH, ForkStats, Kind, N, Site, SiteRun, Trial, V_DRIFT, VZ,
-    Vector,
+    ACROSS, ALONG, AXES, BouncesRun, DEPTH, DROP, ForkStats, Kind, N, Site, SiteRun, Trial,
+    V_DRIFT, Vector,
 };
-use crate::drops::{self, Outcome, Proven, dot2};
+use crate::drops::{Outcome, Proven, dot2};
 
 /// The report's schema tag.
 pub const REPORT_FORMAT: &str = "h2-sim-bounces-report/1";
@@ -22,13 +22,20 @@ pub const CM: f32 = 304.8;
 /// Under this speed along the drift (units/s) a window has no timing: the
 /// body is not running across it.
 pub const RUNNING: f32 = 0.05;
+/// A site with no window is `untested` when fewer than this share of its
+/// points have an outcome on a variant: its setups failed, most often
+/// on the placement's search for room (`teleport: the placement moved
+/// the unit 1.000 off`), and what ran says nothing of the rest.
+pub const KNOWN_SHARE: f32 = 0.25;
 
 fn is_false(b: &bool) -> bool {
     !*b
 }
 
 /// What the search made of a site.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     /// It has a window: a cube of inputs, with support, that bounced on
@@ -38,7 +45,8 @@ pub enum Verdict {
     Fragile,
     /// Nothing bounced.
     None,
-    /// No variant gave a base, so no trial ran.
+    /// No variant gave a base, so no trial ran, or too few points
+    /// have an outcome ([`KNOWN_SHARE`]) to say more.
     #[default]
     Untested,
 }
@@ -91,8 +99,8 @@ pub struct Press {
     pub sideways: f32,
     /// The speeds along the drift that bounce, `[low, high]` units/s.
     pub speed: [f32; 2],
-    /// The touchdown speeds down that bounce.
-    pub down: [f32; 2],
+    /// The drops from the apex that bounce, `[low, high]` world units.
+    pub drop: [f32; 2],
     /// `position` over the ground a tick covers at the centre's speed
     /// along the drift: how many ticks in a row a press can fall on.
     /// `None` under [`RUNNING`].
@@ -102,8 +110,8 @@ pub struct Press {
     /// phases, when the depth range is one tick of fall.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_share: Option<f32>,
-    /// The drop height whose touchdown speed is the centre's
-    /// ([`drops::fall_model`]).
+    /// The drop from the apex at the window's centre: the height a
+    /// verified line carries.
     pub height: f32,
 }
 
@@ -120,6 +128,10 @@ pub struct SiteSummary {
     pub point: [f32; 3],
     pub stand: [f32; 3],
     pub verdict: Verdict,
+    /// Why a site is `untested`: no base, or what most of its setups
+    /// failed on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// The window's radius in human steps; 0 with no window.
     pub ease: f32,
     /// Of the first round's points with an outcome, the share that
@@ -187,17 +199,15 @@ pub struct BouncesReport {
     pub errors: Vec<String>,
 }
 
-/// The drop height whose touchdown speed first reaches `speed`, on a 0.05
-/// grid from 0.2 to 20.
-pub fn height_for(speed: f32) -> f32 {
-    let mut h = 0.2f32;
-    while h < 20.0 {
-        if drops::fall_model(h).1 >= speed {
-            return h;
-        }
-        h += 0.05;
-    }
-    20.0
+/// A setup failure's reason without its numbers: `teleport: the
+/// placement moved the unit 1.000 off (...)` is `teleport: the placement
+/// moved the unit`.
+fn failure_head(why: Option<&str>) -> String {
+    let why = why.unwrap_or("no reason");
+    let cut = why.find(|c: char| c.is_ascii_digit()).unwrap_or(why.len());
+    why[..cut]
+        .trim_end_matches([' ', ':', '(', '+', '-'])
+        .to_string()
 }
 
 fn press(site: &Site, anchor: f32, w: &Window, phase: Option<f32>) -> Press {
@@ -227,10 +237,10 @@ fn press(site: &Site, anchor: f32, w: &Window, phase: Option<f32>) -> Press {
         position,
         sideways: room(left),
         speed: w.bounds[V_DRIFT],
-        down: w.bounds[VZ],
+        drop: w.bounds[DROP],
         timing_ticks: (v >= RUNNING).then(|| position / (v / 30.0)),
         phase_share: phase,
-        height: height_for(w.centre[VZ]),
+        height: w.centre[DROP],
     }
 }
 
@@ -248,9 +258,12 @@ fn summarize_site(
             .is_some_and(|p| p.crouch == crouch)
     };
     let based: Vec<usize> = (0..x.bases.len()).filter(|&v| x.bases[v].based).collect();
-    // Each point's outcome a variant, and its last row as it was.
+    // Each point's outcome a variant. The region is in the coordinates
+    // asked for: a trial the floor slowed has its last airborne row ticks
+    // later and a bounce's is inside the floor, so the rows as measured
+    // carry failures away from bounces (docs/runtime/bounce-search.md,
+    // "The region and the ease").
     let mut outcomes: Vec<Vec<Option<Outcome>>> = vec![vec![None; x.bases.len()]; x.points.len()];
-    let mut seen: Vec<Option<[f32; 4]>> = vec![None; x.points.len()];
     for t in run.trials.iter().filter(mine) {
         if t.kind != Kind::Sample {
             continue;
@@ -260,9 +273,6 @@ fn summarize_site(
         };
         if let Some(o) = outcomes[p].get_mut(t.variant as usize) {
             *o = Some(t.outcome);
-        }
-        if seen[p].is_none() {
-            seen[p] = t.last;
         }
     }
     let mut s = SiteSummary {
@@ -285,13 +295,7 @@ fn summarize_site(
             continue;
         }
         let class = region::class(based.iter().map(|&v| outcomes[p][v]));
-        let mut at = point.x;
-        if let Some(m) = seen[p] {
-            at[ACROSS] = m[0];
-            at[ALONG] = m[1];
-            at[DEPTH] = m[2];
-            at[VZ] = m[3];
-        }
+        let at = point.x;
         s.points += 1;
         match class {
             Class::All => s.all += 1,
@@ -313,6 +317,8 @@ fn summarize_site(
     if s.all + s.some > 0 {
         s.reproducibility = Some(s.all as f32 / (s.all + s.some) as f32);
     }
+    // Setup failures by reason, numbers left off.
+    let mut failed: BTreeMap<String, u32> = BTreeMap::new();
     let mut lines: Vec<VariantLine> = run
         .variants
         .iter()
@@ -353,6 +359,7 @@ fn summarize_site(
                     Outcome::SetupFailed => {
                         line.setup_failed += 1;
                         s.setup_failed += 1;
+                        *failed.entry(failure_head(t.why.as_deref())).or_default() += 1;
                     }
                 }
             }
@@ -376,13 +383,41 @@ fn summarize_site(
     s.variants = lines;
     let human: [f32; N] = std::array::from_fn(|a| run.human.get(a).copied().unwrap_or(0.0));
     s.extent = region::extent(&classed);
-    s.window = region::window(&classed, &human, run.min_support);
+    let known = s.points - s.unknown;
+    let enough = (known as f32) >= KNOWN_SHARE * s.points as f32;
+    if enough {
+        s.window = region::window(&classed, &human, run.min_support);
+    }
     if let (Some(w), Some(anchor)) = (&s.window, x.anchor) {
         let phase = region::share_along(&classed, w, &human, DEPTH).map(|(share, _)| share);
         s.ease = w.radius;
         s.press = Some(press(&x.site, anchor, w, phase));
     }
     s.verdict = if based.is_empty() || s.points == 0 {
+        s.why = Some(
+            if based.is_empty() {
+                "no base"
+            } else {
+                "no points"
+            }
+            .into(),
+        );
+        Verdict::Untested
+    } else if !enough {
+        // The most common reason; the first by name on a tie.
+        let most = failed
+            .iter()
+            .fold(None, |best: Option<(&String, &u32)>, (w, n)| match best {
+                Some((_, b)) if b >= n => best,
+                _ => Some((w, n)),
+            });
+        s.why = Some(match most {
+            Some((why, n)) => format!(
+                "{known} of {} points have an outcome; {n} of {} setups failed on {why}",
+                s.points, s.setup_failed
+            ),
+            None => format!("{known} of {} points have an outcome", s.points),
+        });
         Verdict::Untested
     } else if s.window.is_some() {
         Verdict::Provable
@@ -452,7 +487,11 @@ pub fn summarize(runs: &[BouncesRun]) -> BouncesReport {
     r.sites.sort_by(|a, b| {
         a.verdict
             .cmp(&b.verdict)
-            .then(b.ease.partial_cmp(&a.ease).unwrap_or(std::cmp::Ordering::Equal))
+            .then(
+                b.ease
+                    .partial_cmp(&a.ease)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
             .then(
                 b.share
                     .unwrap_or(0.0)
@@ -592,6 +631,17 @@ pub fn markdown(r: &BouncesReport) -> String {
             s.best_launch,
             s.trials
         );
+    }
+    let untested: Vec<&SiteSummary> = r
+        .sites
+        .iter()
+        .filter(|s| s.verdict == Verdict::Untested && s.why.is_some())
+        .collect();
+    if !untested.is_empty() {
+        let _ = writeln!(o, "\nUntested:\n");
+        for s in untested {
+            let _ = writeln!(o, "- {}: {}", s.id, s.why.as_deref().unwrap_or_default());
+        }
     }
     if !r.notes.is_empty() {
         let _ = writeln!(o, "\nNotes:\n");

@@ -30,13 +30,17 @@ A trial sets that row directly. Its inputs are a point on seven axes
 | `depth` | the origin's height against the anchor height | -0.09 to 0.09 | 0.0005 |
 | `v_drift` | speed along the site's drift | 0 to 0.8 | none |
 | `v_side` | speed to the drift's left | -0.1 to 0.1 | none |
-| `vz` | speed down | 5.0 to 6.6 | none |
+| `drop` | apex-to-floor drop, world units | 3.2 to 3.8 | none |
 | `yaw` | facing, degrees left of the drift | -45 to 45 | none |
 
 The anchor height is the origin's height over the site's floor on the last
 airborne row of the first variant's own drop. `depth` covers one tick of
 fall at 5.4 units/s (0.18), so it is the sub-tick phase: every phase a
-real fall can touch down in is in the range.
+real fall can touch down in is in the range. `drop` spans the bounce
+rule's 3.35 to 3.60 window and a little either side. The vertical speed
+is not sampled independently: `fall_speed(drop - anchor - depth)` gives
+the speed of a free fall from rest on that row, on the same tick steps as
+`back` (`v² + (g / 30) v = 2 g × fallen`).
 
 `TrialRun` steps a trial a row a tick:
 
@@ -47,9 +51,12 @@ real fall can touch down in is in the range.
    `PLACE_TOLERANCE` (0.005) of the start. A landing further off is asked
    again once, aimed against the miss (`TrialRun::aimed`); a second miss
    is `setup_failed` with the miss on each axis (`teleport: landed 0.012
-   off (x +0.000 y +0.000 z +0.012) with its aim corrected`). Then the
-   start's whole velocity is written (the object's and each Havok
-   motion's, `sim_bounces::velocity`).
+   off (x +0.000 y +0.000 z +0.012) with its aim corrected`). A miss of
+   1.0, or 0.765 on a diagonal (`PLACE_SEARCH`, within 0.02), is the
+   placement's own search for standing room: the trial fails at once as
+   `teleport: the placement moved the unit ...`, without re-aiming into
+   the same search. Then the start's whole velocity is written (the
+   object's and each Havok motion's, `sim_bounces::velocity`).
 3. `flight` rows of fall (default 1), the horizontal velocity held; the
    last one writes the whole planned velocity, so the tick that follows
    runs from exactly the asked state.
@@ -198,7 +205,10 @@ the prime was lost or the setup failed each time).
 
 The human steps (`bounces::HUMAN`, the table's `[bounces.human]`) say what
 a player's error is counted in: 0.01 units (3 cm) of position, 0.1 units/s
-of speed, 10 degrees of facing.
+of speed, 0.05 units of drop, 10 degrees of facing. Classes and windows
+are built on the coordinates asked for, not the last row as measured: a
+floor can slow a trial, and a bounce's measured row is already inside
+the floor, so measured coordinates carry failures away from bounces.
 
 - **The window** (`region::window`) is the largest cube, in human steps,
   centred on an `all` point, that holds no `some` or `none` point and does
@@ -216,14 +226,17 @@ of speed, 10 degrees of facing.
   the drift; `timing_ticks`, the position room over the distance a tick
   covers at the window's speed, so how many ticks early or late a walk-off
   may be; `phase_share`, the share of sub-tick phases that bounce at the
-  window's aim; and `height`, the drop whose touchdown speed is the
-  window centre's.
+  window's aim; `drop`, the apex-to-floor drops that bounce; and `height`,
+  the drop at the window's centre, which a verified line carries.
 - **`reproducibility`** is the `all` points over the points that bounced
   on any variant: 1.0 means the Havok state never changed an outcome.
 
 A site's verdict: `provable` (it has a window), `fragile` (points bounced
 on every variant but no window has the support, or only some variants
-bounced), `none`, or `untested` (no variant got a base).
+bounced), `none`, or `untested` (no variant got a base, or fewer than 25%
+of its points have an outcome, `KNOWN_SHARE`). An untested site's `why`
+says which applies; setup failures are grouped by reason, and the
+Markdown report lists them.
 
 ## Interfaces
 

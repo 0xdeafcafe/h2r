@@ -23,6 +23,7 @@ mod geom;
 pub mod ghost;
 pub mod learned;
 mod read;
+pub mod rule;
 mod scan;
 pub mod speed;
 pub mod tune;

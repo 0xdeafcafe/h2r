@@ -176,9 +176,12 @@ is). Its bots share one board, `learn::Board` (process-wide, as
 candidates (single creases, Vs and busy points, `Site::candidate`)
 too: the training is what proves them. A site with no measured drop
 (`mind::practice::site_in`) allows the stand first, then a run-off and a
-running jump from its launch floor: the nav floor nearest over the
-target at the speed model's 2.43 drop (`bounce_route::launch_floor`),
-when there is one.
+running jump from its launch floor: the nav floor whose takeoff gives a
+3.45 apex-to-floor drop (`bounce_route::DROP_AIM`), within the 3.35 to
+3.60 window. A floor at that height is a run-off; failing that, one a
+jump's rise lower is a running jump (`bounce_route::launch_floor`). An
+old measured fall height does not choose the floor; an explicit learned
+or measured takeoff still wins.
 
 - **Vs.** A V's arm (`Site::arm`, [superbounce.md,
   "Vs"](superbounce.md#single-creases)) is on the board twice
@@ -264,6 +267,15 @@ other.
   numbers; `air_stick` takes the let-go distance as an argument. The
   search's centre for a site with no line is `Flown` turned back into
   `Knobs`, so a search starts from what the route plays.
+- **The flight net.** The nav worker also publishes the map's floor
+  polygons (`spots::read_floors`, `spots::publish_floors`). Before a
+  real drop runs or jumps, `bounce_route::judge_takeoff` flies its
+  takeoff on the flight model, then hands the last part of the fall to
+  `superbounce::rule::predict`. The aim is at most 0.05 from the nearest
+  floor-polygon edge (moved to 0.02 from it when needed), with 0.3 units/s
+  held across that edge. A takeoff the rule does not call a bounce is
+  rejected as `takeoff_rejected` before the run. Training tries fly their
+  knobs unjudged, so the search can measure failed takeoffs too.
 - **Training.** A try's site is the known site with the board's knobs
   over its own (`Site::knobs`), so the route flies it as it flies a line.
   `mind::practice` has the training loop beside the drill's

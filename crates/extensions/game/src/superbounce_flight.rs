@@ -185,6 +185,24 @@ pub fn fall(z: f32, vz: f32, height: f32) -> Option<Landing> {
     hold([0.0, 0.0, z], [0.0, 0.0, vz], [0.0; 2], |_| height)
 }
 
+/// The highest a body at height `z` moving `vz` (up positive) gets, on
+/// the same tick steps as [`fly`]: `z` itself when it is not rising.
+pub fn apex(z: f32, vz: f32) -> f32 {
+    if !(z.is_finite() && vz.is_finite()) {
+        return z;
+    }
+    let (mut top, mut at, mut up) = (z, z, vz);
+    for _ in 0..=MAX_TICKS {
+        up -= GRAVITY * TICK;
+        if up <= 0.0 {
+            break;
+        }
+        at += up * TICK;
+        top = top.max(at);
+    }
+    top
+}
+
 /// What the stick can still do toward a point.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pursuit {
@@ -279,7 +297,10 @@ mod tests {
         // From rest a full stick pushes at the same rate, toward the top.
         near(air_step([0.0; 2], [0.0, -1.0])[1], -0.035, 1e-6);
         // A stick past the unit disc is the full stick that way.
-        assert_eq!(air_step([0.0; 2], [3.0, 0.0]), air_step([0.0; 2], [1.0, 0.0]));
+        assert_eq!(
+            air_step([0.0; 2], [3.0, 0.0]),
+            air_step([0.0; 2], [1.0, 0.0])
+        );
     }
 
     /// A stick inside the dead zone is none: the body brakes.
@@ -289,7 +310,10 @@ mod tests {
         assert_eq!(effective([0.0, 0.199]), [0.0, 0.0]);
         assert_eq!(effective([0.2, 0.0]), [0.2, 0.0]);
         assert_eq!(effective([f32::NAN, 0.0]), [0.0, 0.0]);
-        assert_eq!(air_step([0.5, 0.0], [0.1, 0.0]), air_step([0.5, 0.0], [0.0; 2]));
+        assert_eq!(
+            air_step([0.5, 0.0], [0.1, 0.0]),
+            air_step([0.5, 0.0], [0.0; 2])
+        );
         near(air_step([0.5, 0.0], [0.1, 0.0])[0], 0.465, 1e-6);
     }
 
@@ -376,7 +400,12 @@ mod tests {
         assert_eq!(hold([0.0; 3], up, [0.0; 2], flat(1.5)), None);
         assert_eq!(hold([0.0; 3], [0.0; 3], [0.0; 2], flat(1.0)), None);
         // Falling from rest onto the floor it stands a hair over.
-        assert_eq!(hold([0.0, 0.0, 0.001], [0.0; 3], [0.0; 2], flat(0.0)).unwrap().ticks, 0);
+        assert_eq!(
+            hold([0.0, 0.0, 0.001], [0.0; 3], [0.0; 2], flat(0.0))
+                .unwrap()
+                .ticks,
+            0
+        );
     }
 
     /// The pursuit gets to a point inside what the stick can do, and says
@@ -400,15 +429,32 @@ mod tests {
         let away = pursue([0.0, 0.0, 4.0], [-1.0, 0.0, 0.0], [0.9, 0.0], flat(0.0)).unwrap();
         assert!(away.miss > 0.5, "{away:?}");
         // Onto nothing, or toward no number: none.
-        assert_eq!(pursue([0.0, 0.0, -1.0], [0.0; 3], [0.5, 0.0], flat(0.0)), None);
-        assert_eq!(pursue([0.0, 0.0, 4.0], [0.0; 3], [f32::NAN, 0.0], flat(0.0)), None);
+        assert_eq!(
+            pursue([0.0, 0.0, -1.0], [0.0; 3], [0.5, 0.0], flat(0.0)),
+            None
+        );
+        assert_eq!(
+            pursue([0.0, 0.0, 4.0], [0.0; 3], [f32::NAN, 0.0], flat(0.0)),
+            None
+        );
     }
 
     /// A number that is not one has no landing.
     #[test]
     fn nan_in_is_no_landing() {
-        assert_eq!(hold([f32::NAN, 0.0, 2.0], [0.0; 3], [0.0; 2], flat(0.0)), None);
-        assert_eq!(hold([0.0, 0.0, 2.0], [0.0, f32::INFINITY, 0.0], [0.0; 2], flat(0.0)), None);
+        assert_eq!(
+            hold([f32::NAN, 0.0, 2.0], [0.0; 3], [0.0; 2], flat(0.0)),
+            None
+        );
+        assert_eq!(
+            hold(
+                [0.0, 0.0, 2.0],
+                [0.0, f32::INFINITY, 0.0],
+                [0.0; 2],
+                flat(0.0)
+            ),
+            None
+        );
         assert_eq!(fall(f32::NAN, 0.0, 0.0), None);
         // A NaN stick is no stick.
         let l = hold([0.0, 0.0, 2.0], [0.0; 3], [f32::NAN, 1.0], flat(0.0)).unwrap();

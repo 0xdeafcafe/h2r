@@ -24,9 +24,9 @@ pub mod goto;
 pub mod grenades;
 pub mod guest;
 pub mod harvest;
-pub mod learn;
 mod human_input;
 mod incoming;
+pub mod learn;
 pub mod lobby;
 pub mod los;
 pub mod mind;
@@ -39,8 +39,8 @@ mod perceive;
 pub mod phantom;
 pub mod places;
 pub mod roam;
-pub mod spots;
 mod sound;
+pub mod spots;
 pub mod stats;
 pub mod stuck;
 pub mod tactics;
@@ -431,7 +431,11 @@ impl Brain {
     /// The think (any thread): everything after the radio is heard, up to
     /// the pad. Touches this brain, the map data and thread-local scratch
     /// only; the calls it makes wait in the outbox.
-    fn decide(&mut self, mut observation: Observation, map: Option<&cache::MapData>) -> HostPadState {
+    fn decide(
+        &mut self,
+        mut observation: Observation,
+        map: Option<&cache::MapData>,
+    ) -> HostPadState {
         let p = &observation.perception;
         let tick = p.tick;
         let alive = p.me.is_some();
@@ -517,7 +521,8 @@ impl Brain {
             )
         });
         let throwing = pad.left_trigger > 0.5 && self.mind.grenade.pressing_trigger();
-        self.combat.decision(tick, p, self.mind.doing, pad, throwing);
+        self.combat
+            .decision(tick, p, self.mind.doing, pad, throwing);
         let reports = self.mind.decisions.supply_reports(p);
         self.outbox.tick = tick;
         self.outbox.report = self.mind.decisions.report.map(|mut call| {
@@ -727,6 +732,7 @@ impl Brain {
         if spots_gen != self.spots_gen {
             self.spots_gen = spots_gen;
             self.mind.known = spots::Known::for_map(&self.map);
+            self.mind.floors = spots::floors(&self.map);
         }
         // The superbounce mode's practice (mind::practice).
         self.mind.set_practice(practising());
@@ -876,7 +882,10 @@ mod tests {
         assert_eq!(a.name_profile(), initial.profile);
         assert_ne!(a.mind.profile_weights(), initial.weights);
         a.reset_mind();
-        assert_eq!(a.mind.profile_weights(), Some(a.name_profile().unwrap().weights(a.mind.skill)));
+        assert_eq!(
+            a.mind.profile_weights(),
+            Some(a.name_profile().unwrap().weights(a.mind.skill))
+        );
         a.set_skill(skill);
         assert_eq!(a.view(), initial);
         a.set_clanker_style(0.35, true);
@@ -888,7 +897,9 @@ mod tests {
         a.set_clanker_style(0.0, false);
         assert_eq!(a.view(), initial);
         let manual = a.with_tuning(tuning::Tuning {
-            aggression: Some(0.4), caution: Some(0.7), ..Default::default()
+            aggression: Some(0.4),
+            caution: Some(0.7),
+            ..Default::default()
         });
         let weights = manual.mind.profile_weights().unwrap();
         assert_eq!((weights.aggression, weights.retreat), (0.4, 0.7));
