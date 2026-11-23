@@ -624,6 +624,7 @@ impl Runtime {
     pub fn start(&mut self, m: &mut dyn GuestMemory, film: bool) -> String {
         self.errors.clear();
         hud::slot().set(None);
+        crate::actor_net::publish_log_head(None);
         // No match for the Clankers until one runs.
         bots::firefight::set_context(None);
         if bots::guest::game_mode(&*m) != Some(MODE_MULTIPLAYER) {
@@ -824,6 +825,11 @@ impl Runtime {
         if context != game.bots {
             bots::firefight::set_context(context.clone());
             game.bots = context;
+        }
+        // The host log's head, for the actor channel's digest: only the
+        // machine that writes the log publishes it.
+        if game.host.role() == Role::Host {
+            crate::actor_net::publish_log_head(Some(game.host.head().hash.0));
         }
         // The HUD's mode blob, for the actor channel and the local draw.
         let mut announce = None;

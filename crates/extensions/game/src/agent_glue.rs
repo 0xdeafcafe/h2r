@@ -221,6 +221,9 @@ impl AgentGlue {
             ),
             Err(e) => anyhow::bail!("agent-net: {e}"),
         }
+        // actors.net: the actor channel's report of the last tick
+        // (docs/game/ai-networking.md, "Interfaces").
+        agent::actors::install(&agent, crate::actor_net::report::get);
         agent::net::install(
             &agent,
             || {

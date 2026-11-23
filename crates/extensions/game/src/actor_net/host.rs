@@ -3,7 +3,8 @@
 
 use ::actor_net::wire::MAX_ACTORS;
 use ::actor_net::{
-    Actor, ActorChange, ActorSet, Budget, BudgetError, Control, Packet, Record, SetError,
+    Actor, ActorChange, ActorSet, Budget, BudgetError, Control, DIGEST_PERIOD_TICKS, Packet,
+    Record, SetError,
 };
 use engine::GuestMemory;
 use sim_state::ActorView;
@@ -20,6 +21,9 @@ pub struct Host {
     /// (`crate::rules::world::show::take_cues`).
     cues: Vec<Record>,
     controls: Vec<(u32, [f32; 3], Control)>,
+    /// The head of the host log the running mode writes, for the digest;
+    /// all zeros when no mode keeps one.
+    log_head: [u8; 32],
 }
 
 fn actor(view: &ActorView) -> Actor {
@@ -136,6 +140,19 @@ impl Host {
         self.cues = cues;
     }
 
+    /// The running mode's host log head for this tick's digest
+    /// ([`super::log_head`]); none when no mode keeps a log.
+    pub(super) fn set_log_head(&mut self, head: Option<[u8; 32]>) {
+        self.log_head = head.unwrap_or_default();
+    }
+
+    /// Whether a host tick carries a `Digest`: every
+    /// [`DIGEST_PERIOD_TICKS`] ticks of the host clock, so every peer
+    /// gets the same ones.
+    pub fn digest_due(tick: u32) -> bool {
+        tick % DIGEST_PERIOD_TICKS == 0
+    }
+
     /// Schedule once per connected client after capture, including quiet ticks
     /// (a line may still owe copies). The link holds a resync request until the
     /// returned packet actually contains the key.
@@ -156,6 +173,12 @@ impl Host {
         }
         offers.extend_from_slice(&self.lines);
         offers.extend_from_slice(&self.cues);
+        // The set after this tick's changes, which the client checks once
+        // the whole packet is applied (docs/game/ai-networking.md,
+        // "Determinism and digests").
+        if Self::digest_due(tick) {
+            offers.push(self.set.digest(self.log_head));
+        }
         if let Some(origin) = position.filter(|p| p.iter().all(|v| v.is_finite())) {
             let mut ranked: Vec<_> = self
                 .controls

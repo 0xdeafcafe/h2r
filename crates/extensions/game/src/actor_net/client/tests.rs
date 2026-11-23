@@ -486,3 +486,165 @@ fn the_mode_state_is_the_hosts_last_and_a_key_replaces_it() {
         .unwrap();
     assert_eq!(client.mode_state(), [7]);
 }
+
+fn digest_of(actors: &[Actor], state: &[u8]) -> Record {
+    let mut set = ::actor_net::ActorSet::default();
+    set.apply(&Record::Key {
+        actors: actors.to_vec(),
+        state: state.to_vec(),
+    })
+    .unwrap();
+    set.digest([3; 32])
+}
+
+#[test]
+fn an_agreeing_digest_asks_for_nothing_and_keeps_the_hosts_log_head() {
+    let mut client = Client::default();
+    let a = actor(ENTITY, 0x86);
+    assert!(client.receive(&packet(30, vec![key(vec![a]), digest_of(&[a], &[])]), 1));
+    assert!(!client.take_key_request());
+    let status = client.status();
+    assert_eq!(status.digest_misses, 0);
+    assert_eq!(status.host_log_head, Some([3; 32]));
+    assert!(!status.diverged);
+}
+
+#[test]
+fn a_wrong_digest_asks_for_a_key() {
+    let mut client = Client::default();
+    let (a, b) = (actor(ENTITY, 0x86), actor(OTHER_ENTITY, 0x86));
+    client.receive(&packet(1, vec![key(vec![a])]), 1);
+    // The upsert of `b` was lost: the host's digest counts two actors.
+    assert!(client.receive(&packet(30, vec![digest_of(&[a, b], &[])]), 2));
+    assert_eq!(client.status().digest_misses, 1);
+    assert!(client.take_key_request());
+    assert!(!client.take_key_request(), "one request per need");
+    // The key repairs the replica and the next digest agrees.
+    client.receive(&packet(31, vec![key(vec![a, b])]), 3);
+    assert!(client.receive(&packet(60, vec![digest_of(&[a, b], &[])]), 4));
+    assert_eq!(client.status().digest_misses, 0);
+    assert!(!client.take_key_request());
+}
+
+#[test]
+fn a_lost_mode_state_is_caught_by_the_digest() {
+    let mut client = Client::default();
+    client.receive(&packet(1, vec![Record::State(vec![1])]), 1);
+    assert!(client.receive(&packet(30, vec![digest_of(&[], &[2])]), 2));
+    assert!(client.take_key_request());
+    assert_eq!(client.mode_state(), [1], "the digest changes nothing");
+}
+
+#[test]
+fn a_packet_that_cannot_apply_asks_for_a_key() {
+    let mut client = Client::default();
+    let full: Vec<Actor> = (0..32).map(|i| actor(0x0100_0000 + i, 0x86)).collect();
+    client.receive(&packet(1, vec![key(full)]), 1);
+    // A creation into a full set follows a lost removal.
+    assert!(!client.receive(&packet(2, vec![upsert(actor(ENTITY, 0x86))]), 2));
+    assert!(client.take_key_request());
+}
+
+#[test]
+fn three_mismatches_end_the_session() {
+    let mut client = Client::default();
+    let a = actor(ENTITY, 0x86);
+    let host_key = || Record::Key {
+        actors: vec![a],
+        state: vec![9],
+    };
+    client.receive(&packet(1, vec![host_key()]), 1);
+    // A host whose digests never agree with its own keys.
+    let wrong = digest_of(&[a], &[8]);
+    for (n, host_tick) in [30u32, 60].into_iter().enumerate() {
+        assert!(client.receive(&packet(host_tick, vec![wrong.clone()]), 2 + n as u32));
+        assert!(client.take_key_request());
+        assert!(!client.status().diverged);
+        assert!(client.receive(&packet(host_tick + 1, vec![host_key()]), 2 + n as u32));
+    }
+    assert!(client.receive(&packet(90, vec![wrong]), 4));
+    let status = client.status();
+    assert!(status.diverged);
+    assert_eq!(status.digest_misses, ::actor_net::digest::DIVERGED_AFTER);
+    assert!(
+        !client.take_key_request(),
+        "a closed channel asks for nothing"
+    );
+    assert!(client.mode_state().is_empty(), "the HUD's blob is dropped");
+    // The rest of the match's packets are dropped.
+    assert!(!client.receive(&packet(91, vec![host_key()]), 5));
+    assert!(client.replica.set().actors().is_empty());
+    assert!(client.presentation.is_empty());
+}
+
+#[test]
+fn a_key_still_on_its_way_is_asked_for_again_without_ending_the_channel() {
+    let mut client = Client::default();
+    client.receive(&packet(1, vec![Record::State(vec![9])]), 1);
+    let wrong = digest_of(&[], &[8]);
+    for host_tick in [30, 60, 90, 120] {
+        assert!(client.receive(&packet(host_tick, vec![wrong.clone()]), 2));
+        assert!(client.take_key_request());
+    }
+    assert!(!client.status().diverged);
+    assert_eq!(client.status().digest_misses, 1);
+}
+
+#[test]
+fn a_new_match_reopens_a_closed_channel() {
+    let mut client = Client::default();
+    let host_key = || Record::Key {
+        actors: vec![],
+        state: vec![9],
+    };
+    let wrong = digest_of(&[], &[8]);
+    for host_tick in [30, 60, 90] {
+        client.receive(&packet(host_tick - 1, vec![host_key()]), 1);
+        client.receive(&packet(host_tick, vec![wrong.clone()]), 1);
+    }
+    assert!(client.status().diverged);
+    // `install` starts each match with a fresh client.
+    let mut client = Client::default();
+    assert!(client.receive(&packet(1, vec![Record::State(vec![8])]), 1));
+    assert!(client.receive(&packet(30, vec![wrong]), 2));
+    assert!(!client.status().diverged);
+    assert_eq!(client.status().digest_misses, 0);
+}
+
+#[test]
+fn the_report_lists_bound_puppets_and_what_waits_for_a_body() {
+    let (mut g, pool) = guest();
+    let mut client = Client::default();
+    let (a, b) = (actor(ENTITY, 0x86), actor(OTHER_ENTITY, 0x86));
+    let unit = bind(&mut g, &pool, ENTITY, BODY);
+    assert!(client.receive(
+        &packet(
+            30,
+            vec![
+                key(vec![a, b]),
+                Record::State(vec![1, 2, 3]),
+                digest_of(&[a, b], &[1, 2, 3]),
+            ]
+        ),
+        10
+    ));
+    let (client, _) = tick(client, g, 10);
+    let report = client.report();
+    assert_eq!(report.actors, 2);
+    assert_eq!(
+        report.puppets,
+        [agent::actors::Puppet {
+            entity: ENTITY,
+            character: 5,
+            squad: 7,
+            team: 9,
+            posture: 0x86,
+            unit: unit.raw(),
+        }]
+    );
+    assert_eq!(report.waiting, 1, "the second body has not arrived");
+    assert_eq!(report.mode_state_bytes, 3);
+    assert_eq!(report.digest_misses, 0);
+    assert!(!report.diverged);
+    assert_eq!(report.host_log_head, Some("03".repeat(32)));
+}

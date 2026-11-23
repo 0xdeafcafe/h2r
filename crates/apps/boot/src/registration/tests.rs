@@ -392,7 +392,7 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
 }
 
 #[test]
-fn actor_capture_is_on_unless_switched_off_and_observes_the_host_tick_and_dialogue() {
+fn actor_net_is_on_unless_switched_off_with_the_host_capture_and_the_client_puppets() {
     for (switches, enabled) in [("-actor-net", false), ("", true)] {
         let plan = plan(&Case::full(switches)).unwrap();
         let mut hooks: Vec<_> = plan
@@ -412,7 +412,12 @@ fn actor_capture_is_on_unless_switched_off_and_observes_the_host_tick_and_dialog
                 [
                     ("AI_DIALOGUE_ENQUEUE", "observe_after"),
                     ("AI_DIALOGUE_ENQUEUE", "observe_before"),
+                    // The host capture's and the client's new-match resets.
                     ("GAME_ACTIVATE", "observe_after"),
+                    ("GAME_ACTIVATE", "observe_after"),
+                    // The client applies presentation before the tick; the
+                    // host captures after it.
+                    ("GAME_TICK", "before"),
                     ("GAME_TICK", "observe_after"),
                 ]
             );

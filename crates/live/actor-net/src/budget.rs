@@ -82,6 +82,24 @@ struct Repeat {
     copies_left: usize,
 }
 
+/// What one budget has sent since its peer connected, for the agent
+/// API's `actors.net`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Packets returned by [`Budget::schedule`].
+    pub packets: u64,
+    /// Their bytes, headers included.
+    pub bytes: u64,
+    /// Keys among their records.
+    pub keys: u64,
+    /// Digests among their records.
+    pub digests: u64,
+    /// Records sent, repeated copies of lines and cues included.
+    pub records: u64,
+    /// Offered records that missed admission and were dropped.
+    pub dropped: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct Budget {
     last_tick: Option<u32>,
@@ -92,6 +110,7 @@ pub struct Budget {
     repeats: Vec<Repeat>,
     // At most CONTROL_PERIOD packets of control IDs, even under entity churn.
     controls: VecDeque<(u32, u32)>,
+    stats: Stats,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -125,6 +144,16 @@ fn repeats(record: &Record) -> bool {
 }
 
 impl Budget {
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
+
+    /// Bytes charged in the rolling window that ends at the last scheduled
+    /// tick: the peer's rate in bytes a second.
+    pub fn window_bytes(&self) -> usize {
+        self.sent.iter().map(|&(_, len)| len).sum()
+    }
+
     /// A new peer needs its first key. Each admitted key, including a resync,
     /// starts a fresh period. Call with the tick about to be scheduled.
     pub fn key_due(&self, tick: u32) -> bool {
@@ -229,6 +258,7 @@ impl Budget {
             reserved.add(repeat.len, repeat.copies_left);
         }
         let mut records = Vec::new();
+        let mut admitted = 0;
         let mut waiting_for_key = false;
         for rank in [
             Priority::Key,
@@ -295,14 +325,26 @@ impl Budget {
                 if let Record::Control { entity, .. } = record {
                     self.controls.push_back((tick, *entity));
                 }
+                admitted += 1;
                 records.push(record.clone());
             }
         }
 
+        self.stats.dropped += (offers.len() - admitted) as u64;
         if records.is_empty() {
             return Ok(None);
         }
         self.sent.push_back((tick, reserved.bytes[0]));
+        self.stats.packets += 1;
+        self.stats.bytes += reserved.bytes[0] as u64;
+        self.stats.records += records.len() as u64;
+        for record in &records {
+            match record {
+                Record::Key { .. } => self.stats.keys += 1,
+                Record::Digest { .. } => self.stats.digests += 1,
+                _ => {}
+            }
+        }
         Ok(Some(Packet { tick, records }))
     }
 }

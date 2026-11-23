@@ -30,6 +30,9 @@
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`firefight`] answers `firefight.*` over the game's Firefight
 //!   runtime, which the game registers as a [`firefight::Source`].
+//! * [`actors`] answers `actors.net`: the actor channel's per-peer budgets
+//!   on a distributed host and the puppets and digest check on a client,
+//!   from the report the game publishes each tick.
 //! * [`rules`] answers `rules.state` over the game's rules runtime, which
 //!   the game registers as a [`rules::Source`].
 //! * [`variants`] answers `variants.quick`: the lobby variant's Quick
@@ -55,6 +58,7 @@
 //! The observer adds dispatch transfers to every tick, as `lockstep`'s
 //! does: compare runs that all have the agent on, or all off.
 
+pub mod actors;
 pub mod ai;
 mod capture;
 pub mod collision;

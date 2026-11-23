@@ -1,7 +1,7 @@
 # AI over the network
 
-Status: Partly built. The probe methods (AN0), shared host log (AN1), actor channel (AN2), distributed host capture (AN3), client puppet adapter (AN4), Live tunnel transport (AN5) and actor kill events (AN6) are implemented. AN11 traces the creature slot. AN12 implements the creature probe and replication-version gate. P7 is pending.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/formats/host-log` (host log), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture), `crates/extensions/game/src/actor_net/client.rs` (client puppets), `crates/extensions/game/src/actor_net/link.rs` (per-peer scheduling) and `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` (transport), and `crates/rewrites/sim-objects/src/damage.rs` (actor kills), `crates/extensions/game/src/actor_net/creature.rs` (slot 17), `crates/extensions/game/src/replication_admission.rs` (guest admission) and `crates/live/live-hle/src/qos.rs` (Live QoS). Tests: each crate's own, on invented data.
+Status: Partly built. The probe methods (AN0), shared host log (AN1), actor channel (AN2), distributed host capture (AN3), client puppet adapter (AN4), Live tunnel transport (AN5), actor kill events (AN6) the client's receive path with digests and resync (AN7) and the `actors.net` readout (AN8) are implemented. AN11 traces the creature slot. AN12 implements the creature probe and replication-version gate. P7 is pending.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/actors.rs` and `crates/extensions/game/src/actor_net/report.rs` (`actors.net`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/formats/host-log` (host log), `crates/live/actor-net/src/wire.rs`, `set.rs`, `budget.rs` and `digest.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture), `crates/extensions/game/src/actor_net/client.rs` (client puppets), `crates/extensions/game/src/actor_net/link.rs` (per-peer scheduling) and `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` (transport), and `crates/rewrites/sim-objects/src/damage.rs` (actor kills), `crates/extensions/game/src/actor_net/creature.rs` (slot 17), `crates/extensions/game/src/replication_admission.rs` (guest admission) and `crates/live/live-hle/src/qos.rs` (Live QoS). Tests: each crate's own, on invented data.
 Switch: `agent-net`, `actor-net` and `creature-probe`, listed in [switches.md](../runtime/switches.md).
 
 AI actors in a network game: who runs them, what reaches the other
@@ -179,18 +179,25 @@ the connected peers’ budgets.
    negotiated tunnel peer. The link owns one budget per connection.
    A due or requested key contains the current actor set. Otherwise the
    budget receives the membership and posture deltas. Lines are offered
-   on either path. Controls, when requested, follow distance to the
+   on either path. On every host tick that is a multiple of 30, each
+   peer is offered a `Digest` of the set after the tick's changes, with
+   the head of the host log the running mode writes
+   (`actor_net::publish_log_head`, set by the Firefight host runtime after
+   each tick; all zeros when no mode keeps a log). The mode hash is 64-bit
+   FNV-1a over the mode bytes (`actor_net::digest::state_hash`). Controls, when requested, follow distance to the
    client's player with entity ID as the tie-breaker. The installed
    observer leaves controls off pending P3.
 
 ### On a client, each tick
 
 `crates/extensions/game/src/actor_net/client.rs` owns one `Client` per
-match. `client::install` takes a receive callback that drains accepted
-tunnel frames before `GAME_TICK`. The adapter resets puppet state on game
-activation. Its caller must reset it when the transport changes sessions
-or restores the guest. The adapter has an install entry point for wiring
-the Live inbox into the feature.
+match. `Capture::with_client` adds it to the `actor-net` feature through
+`client::install`, and boot (`registration::register_core_film`) passes a
+receive callback that drains the Live tunnel's actor inbox
+(`actor_net_link::pre_tick`) into `Client::receive` before `GAME_TICK` on
+a distributed client. The adapter resets puppet state on game activation
+and on a snapshot restore. A System Link session has no actor inbox, so
+its clients see layer 1 only.
 
 1. Apply packets in host-tick order. Resolve each named entity through the
    retail entity table, matching the full entity ID and the salted local
@@ -205,6 +212,18 @@ the Live inbox into the feature.
    its head marker and give a biped's sound instance to lip sync. The
    client remembers each original line tuple for the match, including
    across keys and repeats that arrive while the body is still missing.
+5. Check each `Digest` against the replica once its whole packet is
+   applied (`actor_net::digest::Check`). A digest that disagrees, or a
+   packet that cannot be applied, makes the receive callback ask the host
+   for a key (`actor_net_link::request_key`). A disagreement counts
+   towards closing the channel when it is the first of a run or a key was
+   applied since the previous one, so a key that is slow or lost is asked
+   for again. The third such disagreement in a row logs the named error
+   `actor_channel_diverged` and closes the channel for the match: the
+   client drops its puppets and mode state and ignores further packets
+   until the next game activation. The retail entity stream still
+   carries the bodies. The client keeps the log head of the last digest
+   (`Client::status`).
 
 The actor channel writes presentation fields. The entity stream carries
 the host's authoritative damage, position and death state.
@@ -372,8 +391,9 @@ the replicated bodies.
 | Synchronous | the whole arena, every tick | the sim hash, as co-op does (`lockstep::hash_sim`) |
 | Synchronous | the host log | each machine's log head in the keep-alive; a head that differs ends that machine's session |
 | Distributed, host | replay equals the recording | the film's `HASH` chunks; actors and squads are in the arena they hash |
-| Distributed, client | the host log head and the mode state | `Digest` every 30 ticks; a mismatch makes the client ask for a `Key`, and three in a row end its session with a named error |
-| Distributed, client | puppet set | `Digest`'s actor count against the client's puppet table; a mismatch asks for a `Key` |
+| Distributed, client | the mode state | `Digest` every 30 ticks, its mode hash against the received mode bytes; a mismatch makes the client ask for a `Key`, and three in a row with keys between them close the client's actor channel with the named error `actor_channel_diverged` |
+| Distributed, client | puppet set | `Digest`'s actor count against the client's replica; a mismatch asks for a `Key` and counts towards the same three |
+| Distributed, client | the host log head | carried in each `Digest` and kept by the client; a client holds no log to compare it with, so films and the agent API read it |
 
 Rules that keep the host replayable:
 
@@ -400,7 +420,7 @@ keeps mirrors, schedules and the capability mark.
 | Squad place and erase entry | `crates/extensions/game/src/actor_net/squads.rs` | the "squad place" sink (F11) | waves |
 | Actor channel | `crates/live/actor-net`, `actor_net/` | puppets in host-replicated sessions (F15) | the same |
 | Sectors on a multiplayer map | `pathfind::generate`, called by the kit builder | "sectors at materialise" (F11) | [firefight.md](firefight.md), "The kit" |
-| Probes | `net.replication`, `world.ai` | F3's replication and AI questions | probes P1 to P7 |
+| Probes | `net.replication`, `world.ai`, `actors.net` | F3's replication and AI questions | probes P1 to P8 |
 
 ## Interfaces
 
@@ -411,7 +431,7 @@ keeps mirrors, schedules and the capability mark.
 | `net.replication` | read | the simulation world's mode, objects by kind with and without an entity, cumulative events queued by type, cumulative datagram and byte counters ([agent-api.md](../runtime/agent-api.md#netreplication)) |
 | `net.replication` creature fields (AN12) | read | `creature_type`: registered slot or null. `creatures`: `{entity, type, object, updates}` per live creature entity. `object` is the local salted object handle and `updates` counts sent updates on the host and applied updates on the client for that entity's lifetime. |
 | `world.ai` | read | the actor snapshot; also the two AI globals bytes `ai_update` gates on |
-| `actors.net` (slice AN8) | read | per client: channel bytes a second, keys and deltas sent, records dropped by the budget; on a client: puppets, records waiting, digest mismatches |
+| `actors.net` | read | on the host, per peer: channel bytes a second, packets, keys, digests and records sent, records dropped by the budget; on a client: puppets, actors and lines waiting for a body, the digest check and the host's log head ([agent-api.md](../runtime/agent-api.md#actorsnet)) |
 
 ### Guest boundary
 
@@ -445,6 +465,7 @@ and `CLIENT` are the two agent sockets of a System Link pair
 | **P5** | What do actors cost in CPU? | The same four runs. On the intended Firefight host class, take `HOST: host.metrics` after 30 steady gameplay seconds at each count. Read `game_cpu_ms_per_tick_p99` (FF11). Repeat at the chosen cap if it differs from the sampled counts. Keep 16 seats occupied for the confirmation run. | game-thread CPU time by actor count sets the caps. FF13 requires p99 at or below 28 ms at the 16-seat cap |
 | **P6** | Can a machine join a distributed game in progress? | With `H2_FEATURES=+mp-jip-probe` (AN9) on the host: start, then join from the second instance. `HOST: net.replication`; `CLIENT: sim.session`, `sim.objects` | the client reaches `mp_client` and its object counts match the host's entity counts |
 | **P7** | Does the reserved creature slot carry a creation and a movement update while stock replication continues? | Run [the creature slot probe](#creature-slot-probe) on System Link | both peers observe the same new creature entity of the AN11 type, the client receives its motion, and player entities continue updating |
+| **P8** | Does a Live client get the actor channel, and do the digests agree? | A Live Firefight game on a dedicated host or a Live host with one client, with the kit map on both. After the first wave drops: `HOST: actors.net`, `CLIENT: actors.net`, `HOST: firefight.state`, `CLIENT: world.ai`; repeat after 900 map ticks | the host lists one peer with `keys` and `digests` rising and `bytes_per_second` at most 1000; the client's `actors` equals the host's live actor count, `puppets` grows as bodies arrive, `digest_misses` is 0, `diverged` is false, `mode_state_bytes` is above 0 and `host_log_head` equals the host's `log.hash` from the same 30 ticks; the client's `world.ai` lists no actors, since a client runs none |
 
 ### Creature slot probe
 
@@ -565,8 +586,9 @@ under a day, M one to three days, L a week.
 | **AN4** | Client puppets: the entity-to-object lookup (traced first), the puppet table, posture and control writes, the dialogue start | M | AN2; P3's answer for `Control` | `crates/extensions/game/src/actor_net/client.rs`, `points.rs` | `a_record_waits_for_its_entity_then_applies`, `an_unknown_entity_is_dropped_after_30_ticks`, `a_client_writes_no_damage_or_position`, `key_replaces_the_puppet_table` | over a fake guest, a `Key` and deltas produce the expected engine calls and no other write |
 | **AN5** | Transport: the tunnel frame kind, send on the host's post-tick, receive queue on clients, `Key` on join and on request | S | AN2 | `crates/live/live-hle/src/tunnel*.rs`, `crates/extensions/game/src/actor_net/link.rs` | `frames_of_another_kind_are_ignored`, `a_key_request_is_answered_once_a_second_at_most`, `no_tunnel_means_no_channel`, `lost_actor_frames_converge_on_the_next_key`, `reordered_actor_frames_cannot_rewind_a_newer_key`, `a_tunnel_down_retires_the_peer_and_rejoin_gets_a_key`, `a_client_without_the_channel_keeps_receiving_retail_datagrams` | two fake peers over the simulated link (`crates/live/coop`'s) converge under loss and reorder |
 | **AN6** | Actor events: `SimEvent::ActorKilled {unit, character, killer, weapon}`, the film `Event` variant, the telemetry row | S | nothing | `crates/rewrites/sim-objects/src/events.rs`, `crates/live/live-proto/src/film/events.rs`, `crates/live/live-telemetry/` | `a_fatal_damage_to_an_actor_unit_is_one_actor_killed`, `a_player_death_is_not_an_actor_kill`, `actor_killed_round_trips_in_a_film` | on a fake guest, one fatal damage report on a unit with an actor yields exactly one event with the killer's player |
-| **AN7** | Films and digests: the host-log record tag, recording and playback apply, `Digest` build and check, the client's resync | M | AN1, AN2, AN5 | `crates/live/live-proto/src/film/stream.rs`, `crates/live/film/`, `actor_net/digest.rs` | `a_film_replays_entries_at_their_ticks`, `playback_never_runs_a_producer`, `a_wrong_head_asks_for_a_key`, `three_mismatches_end_the_session` | a recorded fake session replays to the same log head and mode state hash |
-| **AN8** | `actors.net`, its doc section and `h2 agent` examples | S | AN3, AN4, AN5 | `crates/extensions/agent/src/actors.rs` (new), `agent-api.md` | `host_reports_per_client_rates`, `client_reports_puppets_and_waiting` | the method answers on a fake host and a fake client |
+| **AN7** | Digests and resync: the host's `Digest` every 30 ticks with the mode's log head, the client's check, its key requests, closing a diverged channel; the client half wired to the Live inbox | M | AN2, AN4, AN5 | `crates/live/actor-net/src/digest.rs`, `crates/extensions/game/src/actor_net/{mod,host,client}.rs`, `crates/extensions/game/src/firefight/runtime.rs`, `crates/apps/boot/src/registration.rs` | `the_state_hash_is_fnv_1a_64`, `a_wrong_state_or_count_asks_for_a_key`, `three_mismatches_in_a_row_with_keys_between_diverge`, `mismatches_while_the_key_is_on_its_way_ask_again_and_never_diverge`, `a_digest_rides_every_thirtieth_host_tick_with_the_log_head`, `a_lost_delta_is_found_by_the_next_digest_and_repaired_by_a_key`, `a_wrong_digest_asks_for_a_key`, `a_packet_that_cannot_apply_asks_for_a_key`, `three_mismatches_end_the_session`, `a_key_still_on_its_way_is_asked_for_again_without_ending_the_channel`, `actor_net_is_on_unless_switched_off_with_the_host_capture_and_the_client_puppets` | over a fake host and client, a lost delta is found by the next digest and repaired by one key; boot's plan installs the client half with the feature |
+| **AN14** | Films: the host-log record tag, recording and playback apply | M | AN1, AN7 | `crates/live/live-proto/src/film/stream.rs`, `crates/live/film/` | `a_film_replays_entries_at_their_ticks`, `playback_never_runs_a_producer` | a recorded fake session replays to the same log head and mode state hash |
+| **AN8** | `actors.net`, its doc section and `h2 agent` examples | S | AN3, AN4, AN5, AN7 | `crates/extensions/agent/src/actors.rs` (new), `crates/extensions/game/src/actor_net/report.rs` (new), `crates/live/actor-net/src/budget.rs` (`Stats`), `agent-api.md` | `host_reports_per_client_rates`, `client_reports_puppets_and_waiting`, `outside_a_distributed_game_the_role_is_off`, `stats_count_what_was_sent_and_dropped`, `host_peers_are_reported_in_peer_order_with_their_window_as_the_rate` | the method answers on a fake host and a fake client |
 | **AN9** | `mp-jip-probe`: lift the in-game join refusal on a distributed host behind a feature, log each stage | S | P1 | `crates/extensions/game/src/mp_jip_probe.rs` (new) | `the_refusal_is_lifted_only_for_a_distributed_session_with_the_feature_on` | P6 can be run |
 | **AN10** | Distributed join in progress, built from P6's answer | M | AN9, P6 | decided by P6 | decided by P6 | a third fake peer joining gets a `Key` and equal puppet tables |
 | **AN11** | Static read of creature registration, registry and scheduling bounds, serializers, unknown-type receive and session admission | M | nothing | [notes/creature-entity.md](notes/creature-entity.md) | `entity_table_bounds_trace`, `entity_type_codec_trace`, `unknown_type_receive_trace` (static checks) | slot 17 fits the existing codec. The host needs a creature scheduling record. A stock client rejects the batch on creation and refuses later motion for the missing identity |
@@ -574,7 +596,7 @@ under a day, M one to three days, L a week.
 | **AN13** | Creature entity: full creation, masked updates and removal, host authority, creature scheduling and bandwidth | L | AN12 admission tests and matched-pair P7 pass | planned `crates/extensions/game/src/actor_net/creature.rs` and `crates/extensions/game/src/actor_net/creature_wire.rs` (new); `crates/hooking/guest-layout/src/points.rs`; `crates/apps/boot/src/registration.rs` | `creature_create_update_delete_round_trip`, `a_creation_resolves_only_a_local_crea_tag`, `invalid_masks_and_truncated_packets_leave_state_unchanged`, `unknown_and_stale_entity_updates_are_rejected`, `retail_entities_keep_their_wire_encoding`, `only_the_host_advances_creature_behaviour`, `creature_updates_fit_the_sender_budget`, `the_full_definition_refuses_the_probe_version` | the full codec fits the baseline scratch and mask bounds, uses AN12's creature tuning, and covers lifecycle, loss and slot reuse with no stale writes. A 30-second synthetic stream at the design load fits 1 KB/s per peer with the stock entity budget preserved. Both transports use the same definition and version gate |
 
 AN0, AN1, AN2 and AN6 start at once and touch no existing behaviour.
-AN3, AN4 and AN5 follow AN2 in parallel. Probes P1 and P6 need only AN0
+AN3, AN4 and AN5 follow AN2 in parallel; AN7 joins them. Probes P1 and P6 need only AN0
 (and AN9); P2 to P5 wait for the probe map. AN12 uses the AN11 result.
 AN13 requires a passing P7.
 
@@ -603,8 +625,10 @@ AN13 requires a passing P7.
 
 ## Not verified
 
-- The runtime outcomes of P1 to P7, including scheduled creature motion
+- The runtime outcomes of P1 to P8, including scheduled creature motion
   alongside stock player replication and the measured traffic delta.
+- That a distributed client's own film replays: the puppets' posture and
+  control calls come from packets the film does not record (AN14).
 - That generated sectors are accepted by the engine and actors walk on
   them ([pathfinding.md](../formats/pathfinding.md)).
 - Who judges a client's shot at an actor, and with what lag.

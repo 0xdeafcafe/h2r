@@ -38,6 +38,7 @@ connection to hold `session.claim`.
 | `world.ai` | read | [`world.ai`](#worldai) |
 | `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
+| `actors.net` | read | [`actors.net`](#actorsnet) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
@@ -689,6 +690,42 @@ unchanged. The engine calls that entry only in a distributed game. On a
 host and a client of one game, `objects` answers whether an object the
 host made reached the client: the host's `with_entity` rises and so does
 the client's `objects` for that group.
+
+## `actors.net`
+
+`h2 agent actors.net` takes no parameters and returns the actor channel
+of [ai-networking.md](../game/ai-networking.md) as this machine ran it
+on the last tick (`crates/extensions/agent/src/actors.rs`). The game
+publishes the report once a tick (`game::actor_net::report`): a
+distributed host after it schedules its peers, a distributed client
+after it takes the tick's packets.
+
+| Field | Meaning |
+|---|---|
+| `role` | `host` on a distributed server, `client` on a distributed client, `off` elsewhere or with `-actor-net` |
+| `tick` | the simulation tick of the report; null when `role` is `off` |
+| `peers` | on the host, each Live tunnel peer with the channel, in id order: `{peer, bytes_per_second, packets, bytes, keys, digests, records, dropped}`. `bytes_per_second` is the bytes charged in the last 30 host ticks, headers included; the rest count since the peer connected. `records` includes repeated copies of lines and cues; `dropped` counts offered records the budget left out. Empty on a client and on a System Link host |
+| `client` | on a client, `{actors, puppets, waiting, lines_waiting, mode_state_bytes, digest_misses, key_requested, diverged, host_log_head}`; null elsewhere |
+
+On a client, `actors` counts the actors in the replica and `puppets`
+lists those whose body has arrived through retail replication as
+`{entity, character, squad, team, posture, unit}`, with `unit` the local
+salted handle. `waiting` is the actors whose body has not arrived and
+`lines_waiting` the dialogue lines waiting for their speaker.
+`digest_misses` is the current run of disagreeing digests,
+`key_requested` a key wanted and not yet asked for, and `diverged` the
+channel closed for the match (`actor_channel_diverged`).
+`host_log_head` is the last digest's host log head in 64 hex digits,
+null before the first digest.
+
+To check that both ends of a Live Firefight agree, read the host's
+`firefight.state` `log.hash` and the client's `client.host_log_head`
+within 30 ticks of each other:
+
+```sh
+h2 agent --socket "$HOST" actors.net
+h2 agent --socket "$CLIENT" actors.net
+```
 
 ## `world.raw`: an object's bytes, before and after
 

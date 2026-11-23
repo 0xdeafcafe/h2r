@@ -336,3 +336,78 @@ fn a_mode_state_over_the_blob_limit_is_refused_and_changes_nothing() {
     assert!(host.changes.is_empty());
     assert!(host.set.state().is_empty());
 }
+
+fn digests(packet: &Packet) -> Vec<&Record> {
+    packet
+        .records
+        .iter()
+        .filter(|r| matches!(r, Record::Digest { .. }))
+        .collect()
+}
+
+#[test]
+fn a_digest_rides_every_thirtieth_host_tick_with_the_log_head() {
+    let mut pool = Pool::new();
+    pool.add(0x0100_0001, 1.);
+    let mut host = Host::default();
+    let mut budget = Budget::default();
+    host.capture(&pool.mem, 29, false, &[]).unwrap();
+    assert!(digests(&packet(&host, &mut budget)).is_empty());
+    pool.add(0x0200_0002, 2.);
+    host.capture(&pool.mem, 30, false, &[]).unwrap();
+    host.set_mode(&[4, 2]).unwrap();
+    host.set_log_head(Some([5; 32]));
+    let sent = packet(&host, &mut budget);
+    assert_eq!(
+        digests(&sent),
+        [&Record::Digest {
+            log_head: [5; 32],
+            state_hash: ::actor_net::digest::state_hash(&[4, 2]),
+            actor_count: 2,
+        }]
+    );
+    // No mode keeps a log: the head is all zeros.
+    host.capture(&pool.mem, 60, false, &[]).unwrap();
+    host.set_log_head(None);
+    assert!(matches!(
+        digests(&packet(&host, &mut budget)).as_slice(),
+        [Record::Digest { log_head, .. }] if *log_head == [0; 32]
+    ));
+}
+
+#[test]
+fn a_lost_delta_is_found_by_the_next_digest_and_repaired_by_a_key() {
+    use crate::actor_net::client::Client;
+    let mut pool = Pool::new();
+    pool.add(0x0100_0001, 1.);
+    let mut host = Host::default();
+    let mut budget = Budget::default();
+    let mut client = Client::default();
+    host.capture(&pool.mem, 29, false, &[]).unwrap();
+    assert!(client.receive(&packet(&host, &mut budget), 1));
+
+    // The tick that creates the second actor is lost on the way.
+    pool.add(0x0200_0002, 2.);
+    host.capture(&pool.mem, 30, false, &[]).unwrap();
+    let lost = packet(&host, &mut budget);
+    assert_eq!(digests(&lost).len(), 1);
+
+    // The next digest disagrees with the client's one actor.
+    host.capture(&pool.mem, 60, false, &[]).unwrap();
+    let quiet = packet(&host, &mut budget);
+    assert!(matches!(quiet.records.as_slice(), [Record::Digest { .. }]));
+    assert!(client.receive(&quiet, 2));
+    assert!(client.take_key_request());
+
+    // The transport passes the request on; the key restores the set.
+    host.capture(&pool.mem, 61, false, &[]).unwrap();
+    let key = host.schedule(&mut budget, None, true).unwrap().unwrap();
+    let key = decode(&encode(&key).unwrap()).unwrap();
+    assert!(matches!(key.records.as_slice(), [Record::Key { actors, .. }] if actors.len() == 2));
+    assert!(client.receive(&key, 3));
+    host.capture(&pool.mem, 90, false, &[]).unwrap();
+    assert!(client.receive(&packet(&host, &mut budget), 4));
+    assert!(!client.take_key_request());
+    assert_eq!(client.status().digest_misses, 0);
+    assert!(!client.status().diverged);
+}

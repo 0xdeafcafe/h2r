@@ -408,7 +408,9 @@ decides (docs/live/live-coop.md): `Replica` for a synchronous client (3),
 `Client` for a distributed client (5), and `Host` otherwise. A session's
 [default recording](film-format.md#recording-every-game) and its replay
 take the role by the mode. No transport carries the host's entries to a replica
-yet, so a replica applies none. A tick boundary's number is the game
+yet, so a replica applies none. After each tick the host publishes its
+log head (`actor_net::publish_log_head`) for the actor channel's
+digest. A tick boundary's number is the game
 time's tick count plus one before the tick and the count after it, so
 the director's entries for the next tick are due at the next boundary.
 A snapshot is refused while a match runs.
@@ -417,7 +419,7 @@ A snapshot is refused while a match runs.
 |---|---|---|
 | `Host`: the distributed server, or the host of a synchronous session | yes | yes |
 | `Replica`: a synchronous peer, or a film's playback | no | the entries it receives |
-| `Client`: a distributed client | no | none; it keeps the log for the digest |
+| `Client`: a distributed client | no | none; the actor channel brings the mode blob, the host's log head and the actors' presentation ([ai-networking.md](ai-networking.md#on-a-client-each-tick)) |
 
 1. **At map load**, `Host::start` refuses the mode on a map without the
    kit, on a kit with no drop zones, and for a definition that names a
@@ -794,7 +796,7 @@ not built, so the view is published and checked but not drawn. When it is,
 `hud::LAYOUT` and `hud::view` register as the kit's `Hud` and `Values`,
 and the placements take the kit's retail rectangles. Replicas and films
 have no director and so no blob until the host log carries the mode state
-(AN7).
+(AN14). A distributed client gets the blob over the actor channel.
 
 ### Live
 

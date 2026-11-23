@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 use live_hle::{
     Hle,
-    actor_net::{Budget, Packet, WireError},
+    actor_net::{Budget, Packet, Stats, WireError},
 };
 
 #[derive(Default)]
@@ -34,6 +34,17 @@ impl HostLink {
             }
         }
         Ok(())
+    }
+
+    /// Each connected peer's budget counters and its bytes in the last
+    /// 30 ticks, for `actors.net`.
+    pub fn peers(&self) -> Vec<(u32, Stats, usize)> {
+        self.budgets
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(&peer, budget)| (peer, budget.stats(), budget.window_bytes()))
+            .collect()
     }
 
     pub fn reset(&self) {

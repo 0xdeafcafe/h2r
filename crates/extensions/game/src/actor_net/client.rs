@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use ::actor_net::{Actor, ActorChange, Control, Packet, Record, Replica, SetError};
+use ::actor_net::{Actor, ActorChange, Check, Control, Packet, Record, Replica, SetError, Verdict};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::{DatumHandle, points};
 use hooks::{Builder, Flow};
@@ -20,6 +20,10 @@ const WAIT_TICKS: u32 = 30;
 /// Cue ids `(tick, sequence)` kept so a cue's three copies show once: a
 /// copy comes in one of the next two packets.
 const SEEN_CUES: usize = 32;
+/// The named error a client reports when its digests keep disagreeing
+/// with the host's after keys (docs/game/ai-networking.md, "Determinism
+/// and digests").
+pub const DIVERGED: &str = "actor_channel_diverged";
 
 /// A show-channel cue received over the actor channel, before it is
 /// checked: the rules runtime decodes it against the running script's
@@ -64,6 +68,30 @@ pub struct Client {
     seen_cues: VecDeque<(u32, u8)>,
     /// Cues received and not yet presented at a tick boundary.
     pending_cues: Vec<ReceivedCue>,
+    /// The run of digests that disagreed with the replica.
+    digest: Check,
+    /// The replica needs a key: a digest disagreed or a packet could not
+    /// be applied. Taken by the transport ([`Client::take_key_request`]).
+    wants_key: bool,
+    /// The host log head of the last digest.
+    host_log_head: Option<[u8; 32]>,
+    /// The channel closed for this match after
+    /// [`::actor_net::digest::DIVERGED_AFTER`] disagreeing digests in a row
+    /// with keys between them.
+    diverged: bool,
+}
+
+/// The channel's state on a client, for the agent API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Status {
+    /// Disagreeing digests in the current run.
+    pub digest_misses: u8,
+    /// A key has been asked for and not yet sent.
+    pub key_requested: bool,
+    /// The host log head of the last digest.
+    pub host_log_head: Option<[u8; 32]>,
+    /// The channel closed for this match ([`DIVERGED`]).
+    pub diverged: bool,
 }
 
 fn waiting(received: u32, now: u32) -> bool {
@@ -71,6 +99,85 @@ fn waiting(received: u32, now: u32) -> bool {
 }
 
 impl Client {
+    /// Take one packet the transport drained. A packet that cannot be
+    /// applied asks for a key; once the channel has diverged, packets are
+    /// dropped for the rest of the match. Returns whether it was applied.
+    pub fn receive(&mut self, packet: &Packet, local_tick: u32) -> bool {
+        if self.diverged {
+            return false;
+        }
+        match self.apply(packet, local_tick) {
+            Ok(applied) => applied,
+            Err(error) => {
+                eprintln!(
+                    "actor-net: host tick {} not applied, asking for a key: {error}",
+                    packet.tick
+                );
+                self.wants_key = true;
+                false
+            }
+        }
+    }
+
+    /// Whether the transport should ask the host for a key now. Asks once
+    /// per need; a closed channel asks for none.
+    pub fn take_key_request(&mut self) -> bool {
+        std::mem::take(&mut self.wants_key) && !self.diverged
+    }
+
+    pub fn status(&self) -> Status {
+        Status {
+            digest_misses: self.digest.misses(),
+            key_requested: self.wants_key,
+            host_log_head: self.host_log_head,
+            diverged: self.diverged,
+        }
+    }
+
+    /// The client's side of `actors.net` (`agent::actors::Client`).
+    pub fn report(&self) -> agent::actors::Client {
+        let actors = self.replica.set().actors().len();
+        let puppets: Vec<_> = self
+            .puppets()
+            .map(|p| agent::actors::Puppet {
+                entity: p.actor.entity,
+                character: p.actor.character,
+                squad: p.actor.squad,
+                team: p.actor.team,
+                posture: p.actor.posture,
+                unit: p.unit.raw(),
+            })
+            .collect();
+        agent::actors::Client {
+            actors,
+            waiting: actors - puppets.len(),
+            puppets,
+            lines_waiting: self.pending_lines.len(),
+            mode_state_bytes: self.mode_state().len(),
+            digest_misses: self.digest.misses(),
+            key_requested: self.wants_key,
+            diverged: self.diverged,
+            host_log_head: self.host_log_head.as_ref().map(agent::actors::hex),
+        }
+    }
+
+    /// Close the channel for this match: forget the puppets, the mode
+    /// state and anything waiting. Retail replication still carries the
+    /// bodies.
+    fn diverge(&mut self) {
+        eprintln!(
+            "actor-net: {DIVERGED}: {} digests in a row disagree with the actor set, keys between them; the actor channel is closed for this match",
+            self.digest.misses()
+        );
+        let (digest, host_log_head) = (self.digest, self.host_log_head);
+        *self = Client {
+            digest,
+            host_log_head,
+            diverged: true,
+            ..Client::default()
+        };
+    }
+
     /// Resolve the host packet atomically before recording presentation work.
     /// `local_tick` is the local simulation tick at which transport drains it.
     pub fn apply(&mut self, packet: &Packet, local_tick: u32) -> Result<bool, SetError> {
@@ -80,6 +187,7 @@ impl Client {
         for record in &packet.records {
             match record {
                 Record::Key { actors, .. } => {
+                    self.digest.key_applied();
                     self.presentation
                         .retain(|entity, _| actors.iter().any(|actor| actor.entity == *entity));
                     self.pending_lines
@@ -126,7 +234,27 @@ impl Client {
                         self.pending_lines.push((line, local_tick));
                     }
                 }
-                Record::State(_) | Record::Digest { .. } => {}
+                Record::State(_) => {}
+                Record::Digest {
+                    log_head,
+                    state_hash,
+                    actor_count,
+                } => {
+                    // The replica holds the whole packet by now, so the
+                    // digest sees the tick's changes wherever it sits.
+                    self.host_log_head = Some(*log_head);
+                    match self
+                        .digest
+                        .observe(self.replica.set(), *state_hash, *actor_count)
+                    {
+                        Verdict::Agrees => {}
+                        Verdict::RequestKey => self.wants_key = true,
+                        Verdict::Diverged => {
+                            self.diverge();
+                            return Ok(true);
+                        }
+                    }
+                }
                 Record::Cue {
                     tick,
                     sequence,
@@ -265,9 +393,11 @@ pub fn install(
                     let Some(tick) = tick else {
                         *current = Client::default();
                         crate::firefight::hud::received().set(None);
+                        super::report::clear(agent::actors::Role::Client);
                         return Ok(Flow::Continue);
                     };
                     receive(&mut current, tick);
+                    super::report::publish_client(tick, &current);
                     // The HUD reads the mode state from here, not from the
                     // client, which is taken out of its lock while its
                     // presentation runs.
