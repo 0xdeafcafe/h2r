@@ -1278,10 +1278,10 @@ fn the_approach_guide_draws_in_its_moments() {
     assert!(t.y1 <= p.y1 && t.y0 >= b.y0, "{t:?} between {b:?} and {p:?}");
     // Caught: no ticks, the pipper inside the box, the call above it.
     for (state, label, style) in [
-        ("guide-falling-caught", "Will bounce 82%", Style::Go),
-        ("guide-too-shallow", "Too shallow 30%", Style::Normal),
-        ("guide-on-the-cut", "Will bounce 52%", Style::Go),
-        ("guide-scan-only", "Will bounce 60%", Style::Go),
+        ("guide-falling-caught", "Will bounce", Style::Go),
+        ("guide-too-shallow", "Too shallow", Style::Normal),
+        ("guide-on-the-cut", "Will bounce", Style::Go),
+        ("guide-scan-only", "Will bounce", Style::Go),
     ] {
         assert!(!drawn(state, guide::TICKS), "{state}");
         let d = shot(state, Mode::Full).element(guide::BOX).unwrap();

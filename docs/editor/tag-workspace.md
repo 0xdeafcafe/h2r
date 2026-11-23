@@ -272,7 +272,7 @@ while it runs.
 - Opening a loose `.map` (a community mod) still works; saving one
   offers "import as a layer".
 
-## Can the game run what is built
+## Running built maps in the game
 
 | Build | Evidence | Verdict |
 |---|---|---|
