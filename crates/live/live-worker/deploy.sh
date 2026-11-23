@@ -212,15 +212,15 @@ sys.exit(0 if any(i.get("name") == "h2-live-host" and tag in i.get("tags", []) f
         die "no staged Linux h2 (deploy/host/stage/h2): run deploy/host/build.sh --h2, or deploy with --no-hosts"
     host_tag=$(cd "$host_dir" && shasum -a 256 Dockerfile entrypoint.sh stage/h2 |
         shasum -a 256 | cut -c1-16)
-    step "host image: h2-live-host:$host_tag (content), h2-live-host:git-$git_sha (commit), from the staged h2"
+    step "host image: h2-live-host:$host_tag (content tag), from the staged h2 of commit $git_sha"
     if in_registry "$host_tag"; then
-        echo "in the registry; deploying it without a build (it was tagged git-<sha> when built)"
+        echo "in the registry; deploying it without a build"
     else
         docker info >/dev/null 2>&1 ||
             die "h2-live-host:$host_tag is not in the registry and Docker is not running: start it (colima start) and run again"
         echo "not in the registry: building and pushing it"
-        wrangler containers build --push --tag "h2-live-host:$host_tag" \
-            --tag "h2-live-host:git-$git_sha" "$host_dir"
+        # One tag: `wrangler containers build` takes a single --tag.
+        wrangler containers build --push --tag "h2-live-host:$host_tag" "$host_dir"
     fi
     image="registry.cloudflare.com/$account/h2-live-host:$host_tag"
     rm -f "$config"
