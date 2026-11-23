@@ -36,10 +36,9 @@ pub(super) struct Capture {
     /// The last game ended and its film is cut; the next game starts once
     /// the guest leaves it (a map unload, or a new game's globals).
     between_games: bool,
-    left: bool,
-    /// A campaign mission left in play: the recorder cuts its film at the
-    /// next slice's check, so the next mission describes itself instead of
-    /// inheriting this one's start and map.
+    /// A game left in play (a campaign mission, a multiplayer game): the
+    /// recorder cuts its film at the next slice's check, so the next game
+    /// describes itself instead of inheriting this one's start and map.
     cut_left: bool,
     /// The described game was read off a mounted map. Only a game the
     /// guest was seen in can be left.
@@ -78,7 +77,6 @@ impl Capture {
             sim_bots: vec![],
             games,
             between_games: false,
-            left: false,
             cut_left: false,
             on_map: false,
         }
@@ -109,26 +107,10 @@ impl Capture {
         self.between_games
     }
 
-    /// Whether the player left a game before its end since the last call:
-    /// its observations are dropped with it.
-    pub(super) fn take_left(&mut self) -> bool {
-        std::mem::take(&mut self.left)
-    }
-
-    /// Whether a campaign mission was left in play since the last call:
-    /// its film is cut, keeping the mission, where a left multiplayer game
-    /// is dropped.
+    /// Whether a game was left in play since the last call: its film is
+    /// cut as it stands, a campaign mission and a multiplayer game alike.
     pub(super) fn take_cut_left(&mut self) -> bool {
         std::mem::take(&mut self.cut_left)
-    }
-
-    /// A default recording's multiplayer game the player left before its
-    /// end: the guest is out of the game with no game-over. Its ticks stay
-    /// on the tape; it is never a film of its own.
-    fn left_unfinished(&self) -> bool {
-        self.games
-            && self.descriptor.match_start_tick.is_some()
-            && !matches!(self.descriptor.mode, Mode::Campaign | Mode::CoopCampaign)
     }
 
     #[cfg(test)]
@@ -181,19 +163,12 @@ impl Capture {
         let mut events = Vec::new();
         let Some(options) = active_options(g) else {
             self.between_games = false;
-            if self.left_unfinished() {
-                self.next_game();
-                self.between_games = false;
-                self.left = true;
-            } else if self.games
-                && self.on_map
-                && self.descriptor.match_start_tick.is_some()
-                && matches!(self.descriptor.mode, Mode::Campaign | Mode::CoopCampaign)
-            {
-                // A campaign mission left in play keeps its descriptor for
-                // the cut; a multiplayer game left before its end is
-                // dropped above instead. Only a game seen on a mounted map
-                // can be left, and only a default recording cuts one.
+            if self.games && self.on_map && self.descriptor.match_start_tick.is_some() {
+                // A game left in play (the guest is out of it with no
+                // game-over) keeps its descriptor for the cut: a left
+                // multiplayer game is a film of what was played, as a left
+                // mission is. Only a game seen on a mounted map can be
+                // left, and only a default recording cuts one.
                 self.cut_left = true;
             }
             return Ok(events);

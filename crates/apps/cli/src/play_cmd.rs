@@ -430,15 +430,13 @@ fn hosted(
     }
 }
 
-/// A player session records into the film library unless it joins a
-/// session link at launch (the film cannot replay a join from outside the
-/// game) or runs as a lab job (its frame times stay comparable with
-/// earlier jobs; `H2_FILM_OUT` records one on purpose).
-fn film_auto_request(joins_at_launch: bool, lab_job: bool) -> boot::theater::autorecord::Request {
-    use boot::theater::autorecord::{JOIN_AT_LAUNCH, Request};
-    if joins_at_launch {
-        Request::Skip(JOIN_AT_LAUNCH)
-    } else if lab_job {
+/// A player session records into the film library unless it runs as a lab
+/// job (its frame times stay comparable with earlier jobs; `H2_FILM_OUT`
+/// records one on purpose). A session link joined at launch or later is
+/// noted and the recording carries on (`Session::outside_change`).
+fn film_auto_request(lab_job: bool) -> boot::theater::autorecord::Request {
+    use boot::theater::autorecord::Request;
+    if lab_job {
         Request::Skip("a lab job records a film only with H2_FILM_OUT")
     } else {
         Request::On
@@ -691,7 +689,6 @@ pub(crate) fn run_with_theater(
     );
     live.check()?;
     let film_auto = film_auto_request(
-        live.join.is_some(),
         std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
     );
     if live.join.is_some()
@@ -1417,13 +1414,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_play_session_records_by_default_but_not_a_launch_join_or_a_lab_job() {
-        use boot::theater::autorecord::{JOIN_AT_LAUNCH, Request};
-        assert_eq!(film_auto_request(false, false), Request::On);
-        assert_eq!(film_auto_request(true, false), Request::Skip(JOIN_AT_LAUNCH));
-        assert!(matches!(film_auto_request(false, true), Request::Skip(why) if why.contains("lab")));
-        // The launch join wins: it is the reason a player can act on.
-        assert_eq!(film_auto_request(true, true), Request::Skip(JOIN_AT_LAUNCH));
+    fn a_play_session_records_by_default_launch_join_included_but_not_a_lab_job() {
+        use boot::theater::autorecord::Request;
+        assert_eq!(film_auto_request(false), Request::On);
+        assert!(matches!(film_auto_request(true), Request::Skip(why) if why.contains("lab")));
     }
 
     #[test]

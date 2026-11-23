@@ -202,6 +202,40 @@ struct State {
     warm_check: Option<(u64, bool)>,
     failure: Option<String>,
     complete: bool,
+    /// What a default recording kept and why it kept nothing.
+    outcome: Outcome,
+}
+
+/// A default recording's account of itself: the films it cut, the last
+/// reason a game or tape went without one, and the outside changes it
+/// carried on through (`theater.status`, and the line printed at the
+/// session's end).
+#[derive(Default)]
+struct Outcome {
+    films: Vec<PathBuf>,
+    discard: Option<String>,
+    notes: Vec<String>,
+    /// The session-end line has been printed.
+    reported: bool,
+}
+
+impl Outcome {
+    /// The one line a default recording ends with: the films written, or
+    /// why there are none.
+    fn line(&self, dir: &std::path::Path, failure: Option<&str>) -> String {
+        match self.films.len() {
+            0 => {
+                let why = self
+                    .discard
+                    .as_deref()
+                    .or(failure)
+                    .unwrap_or("no game was played this session");
+                format!("theater: no film: {why}")
+            }
+            1 => format!("theater: 1 film saved to {}", dir.display()),
+            n => format!("theater: {n} films saved to {}", dir.display()),
+        }
+    }
 }
 pub struct Facts {
     pub stamp: String,
@@ -490,6 +524,7 @@ impl Session {
                 warm_check: None,
                 failure: None,
                 complete: false,
+                outcome: Outcome::default(),
             }),
             upload: Mutex::default(),
         })))
@@ -528,10 +563,14 @@ impl Session {
         self.replaying
     }
 
-    /// Stop and delete a default recording that something outside the tape
-    /// is about to change (a session link joined, an editor write). A sealed
-    /// film, an explicit recording and a replay are left alone.
-    pub fn stop_auto(&self, why: &str) {
+    /// Something outside the tape (a session link joined, an editor write)
+    /// is about to change the guest. A default recording carries on: the
+    /// session's other games still become films, and a cut opens at its
+    /// game's start from the tape's keyframes, which hold the changed
+    /// guest. `drops_game` also drops the game in play, whose ticks the
+    /// tape can no longer replay; its film is never cut. A sealed film, an
+    /// explicit recording and a replay are left alone.
+    pub fn outside_change(&self, why: &str, drops_game: bool) {
         let mut s = self.lock();
         if !s.header.player_features
             || s.complete
@@ -540,8 +579,36 @@ impl Session {
         {
             return;
         }
-        s.fail(format!("{why}; this session's film is discarded"));
-        s.discard_auto();
+        let dropped = drops_game && s.drop_game(format!("{why}; the game in play is not kept"));
+        if !dropped {
+            s.outcome.notes.push(why.to_owned());
+        }
+        eprintln!(
+            "theater: {why}; recording carries on{}",
+            if dropped { ", without the game in play" } else { "" }
+        );
+    }
+
+    /// What this session's recording has kept and why it kept nothing
+    /// (`theater.status`).
+    pub fn status(&self) -> agent_proto::theater::Status {
+        let s = self.lock();
+        let (tape, in_game) = match &s.mode {
+            Mode::Record(rec) if s.header.player_features && rec.out.is_some() => {
+                (Some(rec.file.display().to_string()), rec.in_game())
+            }
+            Mode::Record(rec) => (None, rec.in_game()),
+            Mode::Replay(..) => (None, false),
+        };
+        agent_proto::theater::Status {
+            default_recording: s.header.player_features && !self.replaying,
+            tape,
+            in_game,
+            games_cut: s.outcome.films.iter().map(|p| p.display().to_string()).collect(),
+            last_discard: s.outcome.discard.clone(),
+            notes: s.outcome.notes.clone(),
+            failure: s.failure.clone(),
+        }
     }
 
     /// Cut and discard a default recording when its owner goes away without
@@ -798,6 +865,12 @@ impl Session {
         if s.complete || s.failure.is_some() {
             // A default recording that failed is never listed half-written.
             if teardown && s.failure.is_some() {
+                // Keep what was recorded: the game in play is cut up to the
+                // tick the failure stopped the tape at.
+                if s.header.player_features && matches!(&s.mode, Mode::Record(r) if r.out.is_some()) {
+                    s.cut_game(slices);
+                }
+                s.report_session_end();
                 s.discard_auto();
             }
             return Ok(());
@@ -816,6 +889,7 @@ impl Session {
             s.cut_game(slices);
             if teardown {
                 s.complete = true;
+                s.report_session_end();
                 s.discard_auto();
             }
             return Ok(());
@@ -962,7 +1036,8 @@ impl State {
     /// cut from the running tape, and describe the next game from its
     /// start (docs/game/film-format.md, "One film per game"). A game that
     /// never started (menus, Theater, settings) has no film. A cut that
-    /// cannot be written is logged; the tape keeps recording.
+    /// cannot be written is logged and kept as the last discard reason; the
+    /// tape keeps recording.
     fn cut_game(&mut self, slices: u64) {
         let (tick, calls) = (self.tick, self.calls);
         let tape = self.header.clone();
@@ -982,14 +1057,50 @@ impl State {
                 return;
             }
             match autorecord::cut(rec, &tape, slices, tick, calls, start) {
-                Ok(path) => eprintln!("theater: this game's film is {}", path.display()),
-                Err(error) => eprintln!("theater: could not keep this game's film: {error:#}"),
+                Ok(path) => {
+                    eprintln!("theater: this game's film is {}", path.display());
+                    self.outcome.films.push(path);
+                }
+                Err(error) => {
+                    eprintln!("theater: could not keep this game's film: {error:#}");
+                    self.outcome.discard = Some(format!("could not keep this game's film: {error:#}"));
+                }
             }
         }
+        let Mode::Record(rec) = &mut self.mode else { return };
         rec.meta.next_game();
         rec.unified.next_game();
         rec.frame.next_game();
         rec.game_started_ms = None;
+    }
+
+    /// Forget the game in play without cutting it; its ticks stay on the
+    /// tape. Returns whether a game was in play.
+    fn drop_game(&mut self, why: String) -> bool {
+        let Mode::Record(rec) = &mut self.mode else { return false };
+        if !rec.in_game() {
+            return false;
+        }
+        rec.match_over = false;
+        rec.meta.next_game();
+        rec.unified.next_game();
+        rec.frame.next_game();
+        rec.game_started_ms = None;
+        self.outcome.discard = Some(why);
+        true
+    }
+
+    /// Print the session's one closing line, once: the films written or why
+    /// there are none.
+    fn report_session_end(&mut self) {
+        if self.outcome.reported {
+            return;
+        }
+        self.outcome.reported = true;
+        let Mode::Record(rec) = &self.mode else { return };
+        let dir = rec.file.parent().unwrap_or(std::path::Path::new("."));
+        let line = self.outcome.line(dir, self.failure.as_deref());
+        eprintln!("{line}");
     }
 
     fn fail_at(&mut self, tick: u64, why: String) {

@@ -334,7 +334,7 @@ pub(crate) fn register_core_film(
     // sign-in").
     signin_screen::install(rt, features, i.live.as_ref()).context("installing the sign-in prompt")?;
     let join_off = if film.is_some() { features_off } else { non_player };
-    let stop_film = crate::theater::autorecord::stopper(film.as_ref(), "a Live session link was joined");
+    let stop_film = crate::theater::autorecord::stopper(film.as_ref(), "a Live session link was joined", false);
     crate::join_link::install(features, i.live.clone(), join_off, stop_film)
         .context("installing Live join links")?;
     // A campaign level in place of the main menu (`h2 play --level`,

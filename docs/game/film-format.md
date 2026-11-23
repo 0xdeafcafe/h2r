@@ -58,8 +58,9 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
 - **One film per game.** The session records one tape from boot to exit.
   Each game's end cuts the tape so far into a film whose header describes
   that game, and recording carries on. At the session's end a game still
-  in play (a campaign mission, a game left running) is cut the same way,
-  and the tape is deleted. A session that plays no game (menus, Theater,
+  in play (a campaign mission, a multiplayer game, a game left running)
+  is cut the same way, and the tape is deleted. A recording that failed
+  still cuts the game in play, up to the tick it stopped at. A session that plays no game (menus, Theater,
   settings) leaves no film.
 - **Names.** `auto-YYYYMMDD-HHMMSS-mmm.h2film`, the UTC time the film was
   written; the running tape takes the session's start. Recent sorts by
@@ -87,15 +88,28 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   (`theater-film`, `theater::OBSERVER_FEATURE`) beside the in-game
   Theater's screens (`theater-films`, `theater-film-detail`). No other
   feature takes its id; `registration/tests.rs` builds that plan.
-- **Outside changes discard the tape.** A film cannot replay what reaches
-  the guest from outside its tape. A Live session link joined in the game
-  and the first authorized editor write stop the recording and delete the
-  tape, with the game in play. Films of the games that already ended stay.
-- **Sessions that skip recording.** `h2 play --join URL` (the join comes
-  from outside the game), an `h2 lab` job (its frame times stay comparable;
-  `H2_FILM_OUT` records one on purpose) and a session with `H2_LOCKSTEP`,
-  `H2_INPUT_RECORD` or `H2_INPUT_REPLAY` print
-  `theater: not recording this session: <reason>` once at boot.
+- **Outside changes are noted, not fatal.** A Live session link joined
+  (at launch with `--join`, or in the game) and the first authorized
+  editor write reach the guest from outside the tape. The recording
+  carries on and prints the change; `theater.status` lists it in `notes`.
+  The link joins from a menu, so each game after it is cut as usual: its
+  film opens at the game's start from the tape's keyframes, which hold the
+  joined session, and the network traffic of a Live game is on the tape
+  (`NETR`). An editor write changes a running game's ticks, so the game in
+  play is dropped from the film list (`Session::outside_change`); the
+  other games stay.
+- **Sessions that skip recording.** An `h2 lab` job (its frame times stay
+  comparable; `H2_FILM_OUT` records one on purpose) and a session with
+  `H2_LOCKSTEP`, `H2_INPUT_RECORD` or `H2_INPUT_REPLAY` print
+  `theater: not recording this session: <reason>` once at boot. A recording
+  session prints `theater: recording this session; each game's film goes to
+  <dir>`.
+- **The session says what it kept.** At the session's end it prints one
+  line: `theater: N films saved to <dir>`, or `theater: no film: <reason>`
+  (no game was played, a game's cut failed, or the recording failed).
+  `theater.status` reports the same while it runs: the tape, whether a
+  game is on it, the films cut, the last discard reason, the notes and any
+  failure ([agent API](../runtime/agent-api.md#theater-transport)).
 - **Local only.** Default films stay in the local library. Only films the
   player names are queued for the signed-in account's archive.
 - **The tape records games.** Machine keyframes, D3D barriers and the
@@ -183,11 +197,11 @@ cuts it at each game's end (`State::cut_game` in
 5. The match description, stats, medals and drop counts start again for
    the next game. The next game starts once the guest leaves the ended
    one: a map unload, or a new game whose game-over latch is clear. A
-   multiplayer game left before its end is dropped from the description
-   when the guest leaves its map; its ticks stay on the tape and it never
-   becomes a film. A campaign mission left in play is cut when the guest
-   leaves its map, as a game's end is, so the next mission describes
-   itself instead of inheriting the left one's start and map.
+   game left in play, a multiplayer game (custom, system link or
+   matchmaking) or a campaign mission, is cut when the guest leaves its
+   map, as a game's end is: its film is what was played, and the next
+   game describes itself instead of inheriting the left one's start and
+   map.
 
 A cut is an ordinary sealed v3 film whose final header has its own `id`,
 its game's start as `started_ms`, and `tape_id`, the tape's ID. Its boot

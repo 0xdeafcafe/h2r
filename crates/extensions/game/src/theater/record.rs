@@ -279,7 +279,7 @@ impl Recording {
     /// snapshot is attempted, so the tape takes no capture material. The
     /// descriptor's match start appears when a game starts and is cleared
     /// when its film is cut or it is left ([`CapturePoints::release_anchor`]).
-    fn in_game(&self) -> bool {
+    pub(super) fn in_game(&self) -> bool {
         self.meta.descriptor().match_start_tick.is_some()
     }
 
@@ -294,11 +294,8 @@ impl Recording {
             self.meta
                 .observe(guest, tick, |source| self.unified.dropped(source))?,
         );
-        if self.meta.take_left() {
-            self.unified.next_game();
-        }
         if self.meta.take_cut_left() {
-            // The mission's film is cut at the next slice's check, as a
+            // The left game's film is cut at the next slice's check, as a
             // game's end is (docs/game/film-format.md, "One film per game").
             self.match_over = true;
         }

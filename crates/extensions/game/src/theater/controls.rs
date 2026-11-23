@@ -77,6 +77,11 @@ impl Session {
             })?;
             Ok(serde_json::json!(run.snapshot()))
         });
+        let session = self.clone();
+        a.add_method(api::STATUS, Access::Read, move |p| {
+            let _: Empty = params(p)?;
+            Ok(serde_json::json!(session.status()))
+        });
         if !self.replaying() {
             return;
         }
@@ -356,7 +361,7 @@ pub fn library_methods(
             other => unavailable(other.to_string()),
         })
     });
-    for name in api::METHODS.into_iter().filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY)) {
+    for name in api::METHODS.into_iter().filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY | api::STATUS)) {
         let player = player.clone();
         let launch = launch.clone();
         let jobs = jobs.clone();
