@@ -1,6 +1,6 @@
 # Playtest: headless matches on the map being edited
 
-Status: Design. `h2 sim`, its match and batch files, its reports, the spatial trace and the bots are built ([sim.md](../runtime/sim.md), "The spatial trace"; [bots.md](../game/bots.md)); the measures, Studio's runner and the overlays are not.
+Status: Design. `h2 sim`, its match and batch files, its reports, the spatial trace and its measures, and the bots are built ([sim.md](../runtime/sim.md), "The spatial trace"; [bots.md](../game/bots.md)); Studio's runner and the overlays are not.
 Code: `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner), `crates/apps/studio/src/api/playtest.rs`, `crates/apps/studio/src/viewport/playtest.rs` (the overlays). Tests: `sim::spatial::tests`, `app::playtest::tests`, `api::tests`.
 Switch: none.
 

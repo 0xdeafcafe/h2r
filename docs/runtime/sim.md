@@ -663,6 +663,24 @@ the trace's kill log is checked against the report's
 stderr: `spatial trace <path> (N events; its K kills are the report's)`,
 or the first difference. A run with no report path writes no trace.
 
+`h2 sim spatial <spatial.bin | run dir | results dir>...` prints the
+measures of the traces named, together (a results directory is every
+`runs/*/spatial.bin`): `sim_bench::spatial::measure`, each measure a pure
+function over the traces in `sim-bench/src/spatial/`. A place off the
+mesh is binned on a 2-unit XY grid.
+
+| Measure | From | Refused under |
+|---|---|---|
+| `heat` | kills (where killers stood) and deaths (where victims fell), per bin, by team and by the killer's weapon | 10 deaths |
+| `spawns` | per starting location: uses, mean life, deaths within 3 s, enemies in sight, nearest enemy, time to first engagement; the spawn kills' places; each team's seconds to its first engagement | 8 spawns |
+| `flow` | player-seconds per bin, crossings from bin to bin with direction, the mesh's polygons no sample was on | 300 samples |
+| `sight` | damage and kill segments: the ten longest, the ten bin pairs most fought across, the median, a histogram per weapon in 5-unit buckets | 10 segments |
+| `items` | per equipment placement: pickups, pickups a minute, time to first pickup, kills with a weapon taken from it, never picked | no placement, or 3 pickups |
+| `stuck` | stuck spells and repaths per bin, and the mesh's islands no starting location reaches along its links | 300 samples |
+
+A refused measure prints what it lacked, for example
+`heat: too few deaths (6, at least 10 needed)`.
+
 ### 6.1 Sim stores: the map without the map
 
 The retail map is never streamed in a sim or light host that uses
@@ -1855,6 +1873,8 @@ headers and blocks while those dependencies are being traced.
 - The `guest_census` reads and the `wall.phantom_*` timers in a run: the
   array pointers and names come from the retail XBE, and the reads are
   tested over a fake guest only.
+- How many seeds make each measure's numbers steady; the refusal
+  thresholds are guesses (**S**).
 - The spatial trace in a run: that the starting locations and equipment
   read at the game's start are the map's (tested over a fake guest only),
   that a pickup's placement by distance is the item's, and that a run's
@@ -1896,6 +1916,8 @@ verified lines), `cargo test -p live-telemetry havok_agents` (the level
 pairs) and `cargo test -p game sim_drops` (the constants it shares).
 The spatial trace: `cargo test -p sim-bench spatial` (the file's round
 trip and refusals, each event once with its places, the kills against the
-tally's) and `cargo test -p game sim_glue` (the scenario's places over a
+tally's, and each measure on invented traces with too few events
+refused) and `cargo test -p game sim_glue` (the scenario's places over a
 fake guest, `the_tally_is_unchanged_with_the_trace_on`,
-`a_spatial_match_writes_a_trace_whose_kills_are_the_reports`).
+`a_spatial_match_writes_a_trace_whose_kills_are_the_reports`), and `cargo
+test -p cli sim_cmd` (`spatial_finds_the_traces_of_a_results_directory`).

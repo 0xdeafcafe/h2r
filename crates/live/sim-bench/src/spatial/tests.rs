@@ -452,3 +452,56 @@ fn a_restart_drops_what_came_before() {
         1
     );
 }
+
+#[test]
+fn a_place_bins_on_its_polygon_or_the_grid() {
+    let on_mesh = Place {
+        pos: [3.0, -1.0, 0.0],
+        poly: Some(7),
+    };
+    assert_eq!(on_mesh.cell(), Cell::Poly(7));
+    let off = Place {
+        pos: [3.0, -1.0, 0.0],
+        poly: None,
+    };
+    assert_eq!(off.cell(), Cell::Grid(1, -1));
+    assert_eq!(off.cell().to_string(), "square (1, -1)");
+}
+
+#[test]
+fn the_measures_say_what_they_refused() {
+    let out = measure(&[Trace::default()]).render();
+    for line in [
+        "heat: too few deaths (0, at least 10 needed)",
+        "spawns: too few spawns (0, at least 8 needed)",
+        "flow: too few position samples (0, at least 300 needed)",
+        "sight: too few segments (0, at least 10 needed)",
+        "items: too few equipment placements (0, at least 1 needed)",
+        "stuck: too few position samples (0, at least 300 needed)",
+    ] {
+        assert!(out.contains(line), "{line} not in\n{out}");
+    }
+}
+
+#[test]
+fn the_measures_of_a_played_trace_render() {
+    use super::invent as i;
+    let mut events = Vec::new();
+    for n in 0..400u32 {
+        events.push(i::sample(n * 6, 0, i::on(n % 4, (n % 4) as f32)));
+    }
+    for n in 0..12u32 {
+        events.push(i::spawn(n * 100, 1, 1, Some(0), i::on(9, 9.0)));
+        events.push(i::kill(
+            n * 100 + 50,
+            i::party(0, 0, i::on(1, 1.0), Some(1)),
+            i::party(1, 1, i::on(9, 9.0), None),
+        ));
+    }
+    let out = measure(&[i::trace(2400, events)]).render();
+    assert!(out.starts_with("1 trace(s), 80 game seconds"), "{out}");
+    assert!(out.contains("heat: 12 deaths in 1 bins, 12 kills in 1"), "{out}");
+    assert!(out.contains("spawns: 12 spawns, 12 spawn kills"), "{out}");
+    assert!(out.contains("flow: 400 samples over 4 bins"), "{out}");
+    assert!(out.contains("sight: 12 segments, median 8.0 units"), "{out}");
+}

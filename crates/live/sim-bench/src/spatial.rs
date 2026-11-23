@@ -1093,5 +1093,398 @@ fn angles(f: V3) -> (f32, f32) {
     )
 }
 
+// ---- The measures (docs/editor/playtest.md, "What is measured") ----
+
+/// A bin of a layer: a nav polygon, or a [`GRID`]-unit XY square for a
+/// place off the mesh (or a trace without one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cell {
+    Poly(u32),
+    Grid(i32, i32),
+}
+
+/// The side of a [`Cell::Grid`] square, world units.
+pub const GRID: f32 = 2.0;
+
+impl Place {
+    pub fn cell(&self) -> Cell {
+        match self.poly {
+            Some(p) => Cell::Poly(p),
+            None => Cell::Grid(
+                (self.pos[0] / GRID).floor() as i32,
+                (self.pos[1] / GRID).floor() as i32,
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cell::Poly(p) => write!(f, "polygon {p}"),
+            Cell::Grid(x, y) => write!(f, "square ({x}, {y})"),
+        }
+    }
+}
+
+/// A measure refused for want of events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TooFew {
+    pub measure: &'static str,
+    /// What was counted (`kills`, `spawns`, ...).
+    pub what: &'static str,
+    pub have: usize,
+    pub need: usize,
+}
+
+impl std::fmt::Display for TooFew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: too few {} ({}, at least {} needed)",
+            self.measure, self.what, self.have, self.need
+        )
+    }
+}
+
+/// `Ok` when `have` reaches `need`, else the refusal.
+pub fn enough(
+    measure: &'static str,
+    what: &'static str,
+    have: usize,
+    need: usize,
+) -> Result<(), TooFew> {
+    if have >= need {
+        Ok(())
+    } else {
+        Err(TooFew {
+            measure,
+            what,
+            have,
+            need,
+        })
+    }
+}
+
+/// A running mean of positions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Mean {
+    sum: [f64; 3],
+    n: u64,
+}
+
+impl Mean {
+    pub fn add(&mut self, p: V3) {
+        for (s, c) in self.sum.iter_mut().zip(p) {
+            *s += f64::from(c);
+        }
+        self.n += 1;
+    }
+    pub fn get(&self) -> V3 {
+        let n = self.n.max(1) as f64;
+        [
+            (self.sum[0] / n) as f32,
+            (self.sum[1] / n) as f32,
+            (self.sum[2] / n) as f32,
+        ]
+    }
+}
+
+/// One bin of a counted layer.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Bin {
+    pub cell: Cell,
+    /// The mean of the places counted in it.
+    pub at: V3,
+    pub count: u32,
+}
+
+/// Places counted by [`Cell`].
+#[derive(Clone, Debug, Default)]
+pub struct Bins(BTreeMap<Cell, (Mean, u32)>);
+
+impl Bins {
+    pub fn add(&mut self, p: &Place) {
+        let e = self.0.entry(p.cell()).or_default();
+        e.0.add(p.pos);
+        e.1 += 1;
+    }
+    /// The bins, the most counted first.
+    pub fn into_vec(self) -> Vec<Bin> {
+        let mut v: Vec<Bin> = self
+            .0
+            .into_iter()
+            .map(|(cell, (m, count))| Bin {
+                cell,
+                at: m.get(),
+                count,
+            })
+            .collect();
+        v.sort_by(|a, b| b.count.cmp(&a.count).then(a.cell.cmp(&b.cell)));
+        v
+    }
+}
+
+/// Every measure over a set of traces (one map's, over seeds), each
+/// refused on its own when its events are too few.
+#[derive(Clone, Debug)]
+pub struct Measures {
+    pub traces: usize,
+    pub seconds: f32,
+    pub heat: Result<heat::Heat, TooFew>,
+    pub spawns: Result<spawns::Spawns, TooFew>,
+    pub flow: Result<flow::Flow, TooFew>,
+    pub sight: Result<sight::Sight, TooFew>,
+    pub items: Result<items::Items, TooFew>,
+    pub stuck: Result<stuck::Stuck, TooFew>,
+}
+
+pub fn measure(traces: &[Trace]) -> Measures {
+    Measures {
+        traces: traces.len(),
+        seconds: traces.iter().map(|t| t.header.seconds()).sum(),
+        heat: heat::heat(traces),
+        spawns: spawns::spawns(traces),
+        flow: flow::flow(traces),
+        sight: sight::sight(traces),
+        items: items::items(traces),
+        stuck: stuck::stuck(traces),
+    }
+}
+
+fn xyz(p: V3) -> String {
+    format!("({:.1}, {:.1}, {:.1})", p[0], p[1], p[2])
+}
+
+fn secs(s: Option<f32>) -> String {
+    s.map_or("-".into(), |s| format!("{s:.1} s"))
+}
+
+impl Measures {
+    /// The measures as `h2 sim spatial` prints them.
+    pub fn render(&self) -> String {
+        use std::fmt::Write;
+        let mut o = String::new();
+        let _ = writeln!(
+            o,
+            "{} trace(s), {:.0} game seconds",
+            self.traces, self.seconds
+        );
+        let refused = |o: &mut String, e: &TooFew| {
+            let _ = writeln!(o, "{e}");
+        };
+        match &self.heat {
+            Ok(h) => {
+                let _ = writeln!(
+                    o,
+                    "heat: {} deaths in {} bins, {} kills in {}",
+                    h.deaths.iter().map(|b| b.count).sum::<u32>(),
+                    h.deaths.len(),
+                    h.kills.iter().map(|b| b.count).sum::<u32>(),
+                    h.kills.len()
+                );
+                for b in h.deaths.iter().take(5) {
+                    let _ = writeln!(o, "  deaths {:>4}  {} at {}", b.count, b.cell, xyz(b.at));
+                }
+            }
+            Err(e) => refused(&mut o, e),
+        }
+        match &self.spawns {
+            Ok(s) => {
+                let _ = writeln!(o, "spawns: {} spawns, {} spawn kills", s.spawns, s.spawn_kills.len());
+                let _ = writeln!(
+                    o,
+                    "  start  uses  life     <3 s deaths  in sight  first fight"
+                );
+                for r in &s.starts {
+                    let _ = writeln!(
+                        o,
+                        "  {:>5}  {:>4}  {:>7}  {:>11}  {:>8}  {}",
+                        r.start.map_or("-".into(), |s| s.to_string()),
+                        r.uses,
+                        secs(r.mean_life_s),
+                        r.spawn_deaths,
+                        r.mean_in_sight.map_or("-".into(), |n| format!("{n:.2}")),
+                        secs(r.mean_first_engagement_s)
+                    );
+                }
+                for (team, s) in &s.opening {
+                    let _ = writeln!(o, "  team {team}'s first engagement: {s:.1} s");
+                }
+            }
+            Err(e) => refused(&mut o, e),
+        }
+        match &self.flow {
+            Ok(f) => {
+                let _ = writeln!(
+                    o,
+                    "flow: {} samples over {} bins, {} crossings{}",
+                    f.samples,
+                    f.cells.len(),
+                    f.crossings.iter().map(|c| c.count).sum::<u32>(),
+                    f.never
+                        .as_ref()
+                        .map_or(String::new(), |n| format!(", {} polygons never entered", n.len()))
+                );
+                for d in f.cells.iter().take(5) {
+                    let _ = writeln!(o, "  {:>7.1} s  {} at {}", d.seconds, d.cell, xyz(d.at));
+                }
+            }
+            Err(e) => refused(&mut o, e),
+        }
+        match &self.sight {
+            Ok(s) => {
+                let _ = writeln!(
+                    o,
+                    "sight: {} segments, median {:.1} units, longest {:.1}",
+                    s.segments,
+                    s.median,
+                    s.longest.first().map_or(0.0, |l| l.distance)
+                );
+                for (w, h) in &s.by_weapon {
+                    let name = if *w == sight::UNKNOWN_WEAPON {
+                        "unknown".to_string()
+                    } else {
+                        format!("{w:#010x}")
+                    };
+                    let _ = writeln!(o, "  {name}: {:?} (per {} units)", h, sight::BUCKET);
+                }
+            }
+            Err(e) => refused(&mut o, e),
+        }
+        match &self.items {
+            Ok(i) => {
+                let _ = writeln!(o, "items: {} pickups, {} loose", i.pickups, i.loose);
+                for p in &i.placements {
+                    let _ = writeln!(
+                        o,
+                        "  item {:>3}  {:>4} pickups  {:>5.2}/min  first {}  {} kills{}",
+                        p.item,
+                        p.pickups,
+                        p.per_minute,
+                        secs(p.first_pickup_s),
+                        p.kills,
+                        if p.never { "  never picked" } else { "" }
+                    );
+                }
+            }
+            Err(e) => refused(&mut o, e),
+        }
+        match &self.stuck {
+            Ok(s) => {
+                let _ = writeln!(
+                    o,
+                    "stuck: {} spots{}",
+                    s.spots.len(),
+                    s.islands
+                        .as_ref()
+                        .map_or(String::new(), |i| format!(", {} islands no start reaches", i.len()))
+                );
+                for p in s.spots.iter().take(5) {
+                    let _ = writeln!(
+                        o,
+                        "  {:>5} ticks  {} spells  {} repaths  {} at {}",
+                        p.ticks,
+                        p.spells,
+                        p.repaths,
+                        p.cell,
+                        xyz(p.at)
+                    );
+                }
+            }
+            Err(e) => refused(&mut o, e),
+        }
+        o
+    }
+}
+
+pub mod flow;
+pub mod heat;
+pub mod items;
+pub mod sight;
+pub mod spawns;
+pub mod stuck;
+
 #[cfg(test)]
 mod tests;
+
+/// Builders for the measures' invented traces.
+#[cfg(test)]
+pub(crate) mod invent {
+    use super::*;
+
+    /// A place on polygon `poly` at X = `x`.
+    pub fn on(poly: u32, x: f32) -> Place {
+        Place {
+            pos: [x, 0.0, 0.0],
+            poly: Some(poly),
+        }
+    }
+
+    pub fn party(player: u8, team: i8, at: Place, weapon: Option<u32>) -> Party {
+        Party {
+            player,
+            team: Some(team),
+            at: Some(at),
+            weapon: weapon.map(|d| Weapon {
+                datum: d,
+                definition: Some(0xd000 + d),
+            }),
+        }
+    }
+
+    pub fn kill(tick: u32, killer: Party, victim: Party) -> Event {
+        Event::Kill {
+            tick,
+            killer: Some(killer),
+            victim,
+            kind: KillKind::Kill,
+        }
+    }
+
+    pub fn damage(tick: u32, attacker: Party, victim: Party) -> Event {
+        Event::Damage {
+            tick,
+            attacker: Some(attacker),
+            victim,
+            amount: 0.5,
+        }
+    }
+
+    pub fn spawn(tick: u32, player: u8, team: i8, start: Option<u16>, at: Place) -> Event {
+        Event::Spawn {
+            tick,
+            player,
+            team: Some(team),
+            at,
+            start,
+            nearest: None,
+            in_sight: Some(0),
+        }
+    }
+
+    pub fn sample(tick: u32, player: u8, at: Place) -> Event {
+        Event::Sample {
+            tick,
+            player,
+            at,
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+
+    /// A trace of `ticks` ticks from 0 with `events`.
+    pub fn trace(ticks: u32, events: Vec<Event>) -> Trace {
+        Trace {
+            header: Header {
+                map: "invented".into(),
+                game_type: "slayer".into(),
+                team_play: true,
+                end_tick: ticks,
+                ..Default::default()
+            },
+            events,
+        }
+    }
+}
