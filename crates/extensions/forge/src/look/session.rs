@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(resets[0].seat, 1);
         let reset = &resets[0].look;
         assert!(reset.is_marker());
-        assert_eq!((reset.primary, reset.secondary), (5, 5));
+        assert_eq!((reset.primary, reset.secondary), (5, 3));
         assert_eq!(reset.tint, 0);
         assert_eq!(resets[0].notice, "Monitor look reset: Bravo does not have abc.");
         assert_eq!(table.look(1), Some(reset));
@@ -486,13 +486,16 @@ mod tests {
         assert_eq!(fade, 1., "fresh");
         // Held at the newest sample while none fresher has come.
         assert_eq!(seats.body(1, 1.5).unwrap().0.position[0], 10.);
-        // Stale by two seconds, faded over the second after.
-        let (_, fading) = seats.body(1, 2.5).unwrap();
+        // Stale by two seconds after the newest sample (at 1), faded
+        // over the second after that.
+        let (_, fresh) = seats.body(1, 2.5).unwrap();
+        assert_eq!(fresh, 1., "two seconds stale is still whole");
+        let (_, fading) = seats.body(1, 3.5).unwrap();
         assert!((fading - 0.5).abs() < 1e-6);
-        assert!(seats.body(1, 3.01).is_none(), "gone");
+        assert!(seats.body(1, 4.01).is_none(), "gone");
         // monitor: false hides the body at once.
-        seats.pose(1, 2.6, pose(0.), false);
-        assert!(seats.body(1, 2.6).is_none());
+        seats.pose(1, 4.5, pose(0.), false);
+        assert!(seats.body(1, 4.5).is_none());
         assert!(!seats.is_monitor(1));
     }
 
@@ -625,10 +628,19 @@ mod tests {
             match &message {
                 Monitor::Hello { seat, name, can } => {
                     table.joined(seat.0, name, can.clone()).unwrap();
+                    // The joiner learns the table, and a look it cannot
+                    // draw resets its seat with the notice.
+                    for (other, look) in table.looks().collect::<Vec<_>>() {
+                        host.send_look_to(*seat, other, look.clone());
+                    }
+                    for reset in table.join_reset(seat.0, name, can) {
+                        host.send_look(reset.seat, reset.look);
+                        host.send_notice(*seat, reset.notice);
+                    }
                 }
                 Monitor::Look { seat, look, base } => {
                     match table.propose(seat.0, look.clone(), base.as_deref()) {
-                        Ok(accepted) => host.send_look(accepted, None),
+                        Ok(accepted) => host.send_look(seat.0, accepted),
                         Err(refusal) => host.send_look_refused(*seat, refusal.clone()),
                     }
                 }

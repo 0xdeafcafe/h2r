@@ -58,12 +58,6 @@ pub(super) struct Net {
     /// The host model list and the palette, for the drawn bodies.
     bodies: Bodies,
     palette: Vec<[u8; 3]>,
-    /// The last game tick a pose was sampled at, for the 15 a second.
-    sampled: Option<u32>,
-    /// This machine's name on the channel.
-    name: String,
-    /// What this machine can draw.
-    can: CanDraw,
 }
 
 /// The monitor channel's state: the host's authority, when this machine
@@ -129,10 +123,14 @@ impl Editor {
             monitors,
             bodies: Bodies::new(&monitor.catalogue),
             palette: monitor.palette.clone(),
-            sampled: None,
-            name: name.into(),
-            can: monitor.can.clone(),
         });
+        // A guest tells the host the look it came with, naming the source
+        // map it read the model from: the host answers for everyone.
+        if !hosting {
+            let look = monitor.look.clone();
+            let base = monitor.base.clone();
+            self.propose_monitor_look(look, base);
+        }
         Ok(())
     }
 
@@ -289,7 +287,7 @@ impl Editor {
                 if let Ok(accepted) = table.propose(HOST_SEAT.0, look, base.as_deref()) {
                     let accepted = accepted.clone();
                     net.monitors.seats.look(HOST_SEAT.0, accepted.clone());
-                    net.node.send_look(accepted, None);
+                    net.node.send_look(HOST_SEAT.0, accepted);
                 }
             }
             None => net.node.send_look_up(look, base),
@@ -381,8 +379,8 @@ impl Editor {
                     match table.joined(seat.0, &name, can.clone()) {
                         Ok(()) => {
                             // The joiner learns the table as it stands...
-                            for (_, look) in table.looks().collect::<Vec<_>>() {
-                                net.node.send_look(look.clone(), Some(seat));
+                            for (other, look) in table.looks().collect::<Vec<_>>() {
+                                net.node.send_look_to(seat, other, look.clone());
                             }
                             // ...and a look it cannot draw resets its seat,
                             // told to the player it belongs to.
@@ -393,7 +391,7 @@ impl Editor {
                             } in table.join_reset(seat.0, &name, &can)
                             {
                                 net.monitors.seats.look(reset, look.clone());
-                                net.node.send_look(look, None);
+                                net.node.send_look(reset, look);
                                 net.node.send_notice(seat, notice);
                             }
                         }
@@ -409,7 +407,7 @@ impl Editor {
                     match table.propose(seat.0, look, base.as_deref()) {
                         Ok(accepted) => {
                             net.monitors.seats.look(seat.0, accepted.clone());
-                            net.node.send_look(accepted, None);
+                            net.node.send_look(seat.0, accepted);
                         }
                         Err(refusal) => net.node.send_look_refused(seat, refusal),
                     }

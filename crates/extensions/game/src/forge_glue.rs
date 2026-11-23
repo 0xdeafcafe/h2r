@@ -81,6 +81,16 @@ pub fn markers() -> Vec<marker::Marker> {
         .collect()
 }
 
+/// The other seats' drawn bodies, as the last tick left them: the
+/// presentation instances the native renderer's object pass draws. The
+/// local seat's own body is never drawn in its own view.
+pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
+    let Some(driver) = current() else {
+        return Vec::new();
+    };
+    driver.lock().unwrap_or_else(|e| e.into_inner()).bodies
+}
+
 /// World-space axes and the held object's outline, projected through the
 /// render frame's camera.
 pub fn gizmo() -> Option<gizmo::Axes> {
@@ -122,6 +132,9 @@ struct Driver {
     /// The other seats' markers as the last tick left them, for the play
     /// window's overlay ([`markers`]).
     markers: Vec<(forge::Frame, [u8; 3])>,
+    /// The other seats' drawn bodies as the last tick left them, for the
+    /// native renderer's object pass ([`monitor_bodies`]).
+    bodies: Vec<forge::look::body::Draw>,
     reason: String,
 }
 
@@ -134,6 +147,7 @@ impl Driver {
         self.opening = None;
         self.loaded = None;
         self.markers.clear();
+        self.bodies.clear();
         self.link.reset();
         self.reason = "Waiting for a local multiplayer map.".into();
         controls::publish(controls::State::default());
@@ -265,7 +279,9 @@ impl Driver {
                 .flatten()
                 .and_then(|g| g.options().variant().engine(m).ok());
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
-            self.markers = e.monitor_markers(tick as f32 / 30.);
+            let now = tick as f32 / 30.;
+            self.markers = e.monitor_markers(now);
+            self.bodies = e.monitor_draws(now, now);
         }
     }
 }
@@ -421,6 +437,7 @@ pub fn install(
         editor: None,
         draft: None,
         markers: Vec::new(),
+        bodies: Vec::new(),
         reason: "Waiting for a local multiplayer map.".into(),
     }));
     if registry

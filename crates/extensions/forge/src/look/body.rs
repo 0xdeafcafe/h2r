@@ -205,7 +205,8 @@ mod tests {
     }
 
     fn rgb(index: u8) -> [u8; 3] {
-        [index, 10 * index, 100 * index]
+        // Distinct channels that fit a palette index's u8.
+        [index, 5 * index, 15 * index]
     }
 
     #[test]
@@ -232,7 +233,7 @@ mod tests {
         assert_eq!(draw.sphere.0, [1., 2., 3.]);
         assert_eq!((draw.primary, draw.secondary), (3, 5));
         // The highlight mixes towards primary by the tint step's alpha.
-        assert_eq!(draw.highlight, [3, 30, 97, 128]);
+        assert_eq!(draw.highlight, [3, 15, 45, 128]);
         assert_eq!(
             draw.light,
             Some(Light {
