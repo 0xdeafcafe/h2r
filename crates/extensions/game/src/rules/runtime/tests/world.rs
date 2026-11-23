@@ -82,7 +82,7 @@ label site: zones at least 1 = "territory"
 global var entered: int = 0
 global var left: int = 0
 global var last: player? = none
-global var held: int = 0
+global var held: time = 0t
 global var inside_now: int = 0
 on enter(site z, o) {
     entered = entered + 1
@@ -90,7 +90,7 @@ on enter(site z, o) {
 }
 on leave(site z, o) { left = left + 1 }
 on tick {
-    held = 0
+    held = 0t
     for each site s { held = held + ticks_held(s, team 0) }
     inside_now = count(players p where count(site s where inside(p, s)) > 0)
 }

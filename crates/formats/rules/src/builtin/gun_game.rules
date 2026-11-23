@@ -66,15 +66,15 @@ on kill(victim, killer) {
         // The round is over: a kill after the last climbs nothing.
     } else if killer == none or killer == victim {
         if suicide_demotes and victim.level > 0 { victim.level = victim.level - 1 }
-    } else if let k = killer and not (variant.team_play and k.team == victim.team) {
-        k.level = k.level + 1
-        score(k, 1)
-        if k.level > top {
+    } else if not (variant.team_play and killer.team == victim.team) {
+        killer.level = killer.level + 1
+        score(killer, 1)
+        if killer.level > top {
             over = true
-            message(all, "{k} finished the ladder")
-            end_round(k.team)
-        } else if k.alive {
-            arm(k)
+            message(all, "{killer} finished the ladder")
+            end_round(killer.team)
+        } else if killer.alive {
+            arm(killer)
         }
     }
 }
