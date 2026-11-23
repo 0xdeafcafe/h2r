@@ -69,6 +69,27 @@ workspace_test(
 )
 
 workspace_test(
+    name = "entry",
+    crate = "entry",
+    crate_root = "crates/tools/forge-build/tests/entry.rs",
+    description = "Deterministic local Forge map materialisation over the user's Halo 2 maps",
+    features = [],
+    manifest = "crates/tools/forge-build",
+    package = "forge-build",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/forge-doc:forge-doc",
+        "//crates/formats/map:map",
+        "//crates/formats/tags:tags",
+        "//crates/tools/scenario-edit:scenario-edit",
+        "//third-party/rust:thiserror",
+        ":forge-build",
+    ],
+)
+
+workspace_test(
     name = "links",
     crate = "links",
     crate_root = "crates/tools/forge-build/tests/links.rs",

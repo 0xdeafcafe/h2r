@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 and M2 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), and `resolve`, which lowers entry ops for `replay` (M2); everything else named here as new is not.
+Status: Design, slices M1 to M3 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), and the materialiser's entry ops and print check (M3); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`), `crates/extensions/agent/src/forge/local.rs` (`ForgeWorld`), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -90,7 +90,9 @@ Endpoint::Added (OpId)
   the session opened. A print that differs is the refusal
   `Refusal::Print {block, index}`, "the map's entry is not the one this
   edit was made on", and nothing is written. `forge_doc::check_print`
-  is that check.
+  is that check. The materialiser reads the disc's row
+  (`forge_build::base_fields`) and stops the build as `variant_print`
+  (`forge_build::Error::Print`) with the block and index.
 - Links and labels written before a print existed carry none and keep
   their spelling and identity; one that carries a print makes the
   document format 3. Every op this page adds requires one.
@@ -481,8 +483,8 @@ Every machine builds the map from its own disc; no built byte travels
   start-gate checks. `forge.status` reports the variant's name, id and
   whether it has unsaved edits.
 - **CLI**: `h2 forge check` and `build` read a `.h2mapvariant` as they
-  read a `.h2forge`, and `check` prints the tier and each print it
-  compared.
+  read a `.h2forge`, and print each print they compared
+  (`print <block> <index> <print>: matches`).
 - **Live**: the two `map-variants` routes; `map_variant` on a hopper
   record; `HopperVariantsSet`; in [live-api.md](../live/live-api.md)
   when built. `NewSession` is unchanged.

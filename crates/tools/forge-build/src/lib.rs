@@ -1,9 +1,10 @@
-//! Materialise a Forge document's placement, tag-field and link edits into a
-//! local map package.
+//! Materialise a Forge document's placement, entry, tag-field and link
+//! edits into a local map package.
 //! The source maps are read-only. Scenario commands and tag patches go
 //! through scenario-edit's writer.
 #![forbid(unsafe_code)]
 
+mod entry;
 mod kit;
 mod links;
 mod placement;
@@ -21,10 +22,12 @@ use content::{
     manifest::{FORGE_FORMAT, ForgeLayer, MANIFEST_FILE, ResultInfo},
     store,
 };
-use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, Recipe};
+use forge_doc::{BlockKind, BuilderVersions, ForgeDoc, Limits, MapRef, Recipe, Refusal};
 use map::{CacheType, Map};
 use scenario_edit::{MapSource, Session, layout, package::geometry_hash, save};
 
+pub use entry::{base_fields, base_print, entry_fields, tag_key};
+pub use forge_doc::Printed;
 pub use kit::Reservation;
 
 /// Versions pinned by an F2 document. Geometry-changing generators have no
@@ -74,6 +77,14 @@ pub enum Error {
     Kit(&'static str),
     #[error("forge_links: {0}")]
     Links(&'static str),
+    /// The disc's entry is not the one an edit was made on: its typed
+    /// fields give another print (docs/game/forge-map-variants.md, "Rules
+    /// and limits"). Nothing is built.
+    #[error(
+        "variant_print: the map's {} entry {index} is not the one this edit was made on",
+        .block.name()
+    )]
+    Print { block: BlockKind, index: u32 },
 }
 
 /// Bytes and manifest produced by the document. Saving is a separate action
@@ -83,6 +94,9 @@ pub struct Built {
     document: String,
     map: Vec<u8>,
     pub reserves: Vec<Reservation>,
+    /// Every base entry the document names with a print, each compared
+    /// with the disc's row and found equal, by block then index.
+    pub prints: Vec<Printed>,
 }
 
 impl Built {
@@ -176,10 +190,14 @@ pub fn build(
     limits.world = placement::world_bounds(&mut map)?;
 
     let mut apply = placement::Materialiser::new(&mut session, &mut map);
-    forge_doc::replay(doc, &limits, &mut apply)?;
+    forge_doc::replay(doc, &limits, &mut apply).map_err(|refusal| match refusal {
+        Refusal::Print { block, index } => Error::Print { block, index },
+        refusal => Error::Document(refusal),
+    })?;
     let placement::Finished {
         strings: mut new_strings,
         device_groups,
+        prints,
     } = apply.finish()?;
     if !needs_kit {
         session.set_tag_strings(std::mem::take(&mut new_strings))?;
@@ -225,6 +243,7 @@ pub fn build(
         document: doc.canonical_json()?,
         map: output,
         reserves,
+        prints,
     })
 }
 
