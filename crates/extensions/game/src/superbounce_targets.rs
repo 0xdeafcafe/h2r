@@ -317,8 +317,7 @@ impl Tagger {
 /// Two taps of the flashlight let go within this many ticks of each
 /// other are a double tap: 12 ticks is 0.4 s.
 pub const DOUBLE_TICKS: u32 = 12;
-/// Ticks the readout's line says which kinds the player switched to: two
-/// seconds.
+/// Ticks the readout's targets row flashes after a switch: two seconds.
 pub const SWITCHED_TICKS: u32 = 60;
 
 /// The player's switch of the kinds of seam shown, and the flashlight's
@@ -373,7 +372,7 @@ impl Switch {
     }
 
     /// The mode the player switched to, for [`SWITCHED_TICKS`] after the
-    /// double tap: the readout's line.
+    /// double tap: the readout's targets row flashes while it is set.
     pub fn switched(&self) -> Option<TargetMode> {
         self.pick.filter(|_| self.shown > 0)
     }
@@ -809,7 +808,8 @@ mod tests {
 
     /// Two taps of the flashlight within [`DOUBLE_TICKS`] move the mode
     /// on from the variant's, round the cycle; one tap, two far apart and
-    /// a hold do not. The line is up [`SWITCHED_TICKS`].
+    /// a hold do not. The switch is set [`SWITCHED_TICKS`] (the targets
+    /// row's flash).
     #[test]
     fn a_double_tap_switches_the_kinds_shown() {
         let from = TargetMode::Likely;
@@ -832,7 +832,7 @@ mod tests {
         assert_eq!(tap(&mut s, 3), TargetMode::Common);
         assert_eq!(tap(&mut s, 20), TargetMode::Common);
         assert_eq!(tap(&mut s, 3), TargetMode::Likely);
-        // The pick stays whatever the variant says; the line goes.
+        // The pick stays whatever the variant says; the flash ends.
         assert_eq!(s.step(false, TargetMode::All), TargetMode::Likely);
         for _ in 0..SWITCHED_TICKS {
             s.step(false, from);

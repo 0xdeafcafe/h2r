@@ -4,7 +4,7 @@
 //! the player is going for, so the line-up is seen on the geometry and
 //! not guessed.
 //!
-//! - `sbr.guide.box`: a bracket on the seam's landing point, turned along
+//! - `sbr.guide.box`: a bracket on the seam's edge by its landing point, turned along
 //!   the seam's edge: the catch across it, [`BOX_ALONG`] along it. Dim
 //!   while the predicted landing is off the seam, lit when it is lined
 //!   up, and during a fall `Too shallow` or, green, `Will bounce`
@@ -160,7 +160,8 @@ pub fn percent(chance: f32) -> u8 {
 /// Where the guide lies.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    /// The seam's landing point: the box's centre.
+    /// The box's centre: the point of the seam's edge beside its landing
+    /// point.
     pub seam: Vec3,
     /// The seam's edge direction, flat.
     pub along: [f32; 2],

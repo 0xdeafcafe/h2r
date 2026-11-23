@@ -61,6 +61,16 @@ const _: () = assert!(BOUNCE_VZ > bots::bounce_route::JUMP_VZ);
 pub const TOUCHDOWN_VZ: f32 = -1.0;
 /// It has stopped falling when its vertical speed is over this.
 pub const LANDED_VZ: f32 = -0.5;
+/// An origin this far (world units) under a strip's edge has gone through
+/// its floor ([`through`]): deeper than any measured bounce's sink, 0.07
+/// to 0.23 under the floor (docs/game/superbounce.md, "Traces" and "The
+/// touchdown tick"), so a real bounce's dip is never a fall through.
+pub const SINK: f32 = 0.3;
+/// A fall through the floor counts within this horizontal distance (world
+/// units) of a strip's edge ([`through`]): the catch (0.1) and the
+/// capsule's radius (0.175), rounded. The Zanzibar fall-through came down
+/// 0.048 off its crease; the Ascension one over it.
+pub const THROUGH_RADIUS: f32 = 0.3;
 /// Gravity (units/s²), as the assist has it.
 pub const GRAVITY: f32 = crate::superbounce_assist::GRAVITY;
 
@@ -165,7 +175,7 @@ pub struct NavTarget {
 /// Whether a predicted landing is on the slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Course {
-    /// The coasting landing is inside the slot.
+    /// The landing, with the stick held as it is, is inside the slot.
     OnSlot,
     /// It is not, and the assist can still bring it in (its reach gate).
     Fixable,
@@ -177,14 +187,15 @@ pub enum Course {
 /// is falling toward.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Predicted {
-    /// Where the player lands coasting, at the strip's floor height.
+    /// Where the player lands with the stick held as it is
+    /// (`superbounce_flight::hold`), at the strip's floor height.
     pub at: Vec3,
     /// The point to come down on, X and Y: the strip's landing point
     /// nearest `at` (`superbounce_assist::aim_at`), what the line-up
     /// points at.
     pub aim: [f32; 2],
     /// The strip's drift, a unit vector (zero for none), and the speed
-    /// along it the coasting landing has (units/s).
+    /// along it the landing has (units/s).
     pub drift: [f32; 2],
     pub across: f32,
     pub verdict: Course,
@@ -198,6 +209,10 @@ pub struct Predicted {
     pub edge: [Vec3; 2],
     pub stand: Vec3,
     pub fall: f32,
+    /// The stick to hold now (world axes, 0 to 1) to bring the landing
+    /// onto `aim`, as the flight model's pursuit has it
+    /// (`superbounce_flight::pursue`); zero on the slot.
+    pub steer: [f32; 2],
 }
 
 impl Predicted {
@@ -244,17 +259,23 @@ pub enum LandingResult {
     TooSlow,
     /// Primed, in the slot, fast enough, and no bounce.
     NoBounce,
+    /// Went through the seam's floor: primed, by the edge, and no launch
+    /// ([`through`]). Filed on the tick the origin crossed, not at a
+    /// window's close.
+    Through,
 }
 
 /// A landing within [`LANDING_RADIUS`] of a strip, or a primed bounce
-/// anywhere, filed when its launch window closes ([`judge`]).
+/// anywhere, filed when its launch window closes ([`judge`]); a fall
+/// through a strip's floor ([`LandingResult::Through`]), filed at once.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Landing {
     pub result: LandingResult,
     /// The game tick of the touchdown (the tracker's own count where the
-    /// game's could not be read).
+    /// game's could not be read). For a [`LandingResult::Through`], the
+    /// touchdown's it followed, else the tick the origin crossed.
     pub tick: u32,
-    /// The origin on the tick before touchdown, world units.
+    /// The origin on the tick before `tick`, world units.
     pub at: Vec3,
 }
 
@@ -336,7 +357,18 @@ fn distance(a: Vec3, b: Vec3) -> f32 {
 
 /// The 3D distance from `p` to a spot's edge segment.
 fn edge_distance(spot: &Spot, p: Vec3) -> f32 {
-    let [a, b] = spot.edge;
+    segment_distance(spot.edge, p)
+}
+
+/// The height of `edge` at its point nearest `xy`, horizontally.
+fn segment_height_xy(edge: [Vec3; 2], xy: [f32; 2]) -> f32 {
+    let [a, b] = edge;
+    a[2] + segment_t_xy(edge, xy) * (b[2] - a[2])
+}
+
+/// The 3D distance from `p` to the segment `edge`.
+fn segment_distance(edge: [Vec3; 2], p: Vec3) -> f32 {
+    let [a, b] = edge;
     let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
     let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
@@ -571,6 +603,108 @@ pub fn judge(spots: &[Spot], p: &Pending) -> Option<Judged> {
     }
 }
 
+/// A fall through a strip's floor: a bounce attempt's result, as a
+/// landing is ([`through`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Through {
+    /// The index in `spots` of the strip.
+    pub spot: usize,
+    /// The strip's edge.
+    pub edge: [Vec3; 2],
+    /// The height the origin crossed: the edge's at its point nearest the
+    /// origin, less [`SINK`].
+    pub floor: f32,
+    /// The origin the fall came in at: the open touchdown's (`pending`),
+    /// else the tick before the crossing's.
+    pub at: Vec3,
+    /// The touchdown on the strip it follows, when one was open: the seam
+    /// hit, whose verdict the fall through replaces.
+    pub pending: Option<Pending>,
+    /// The vertical speed in (units/s, positive): the fall at `at` carried
+    /// down to the edge's height, as [`judge`] carries it.
+    pub speed_in: f32,
+}
+
+impl Through {
+    /// Whether `at` is still under the strip's floor, by its edge (within
+    /// [`LANDING_RADIUS`]): a touchdown there is the body coming to rest
+    /// in the fall through, not a landing of its own.
+    pub fn under(&self, at: Vec3) -> bool {
+        at[2] < self.floor && segment_distance(self.edge, at) <= LANDING_RADIUS
+    }
+}
+
+/// Whether the origin went through a strip's floor this tick, from
+/// `before` (the tick before's origin, vertical speed `vz_before` and word
+/// `word_before`) to `now`, with the touchdown `pending` open and the
+/// chain `live` (the tracker passes `false`; it has no chain). A Through
+/// is all of:
+///
+/// - the origin crosses from at or above the edge's height less [`SINK`]
+///   to below it, the height taken at the edge's point nearest `before`
+///   horizontally;
+/// - `before` is within [`THROUGH_RADIUS`] of that edge horizontally;
+/// - moving down: `vz_before` at most [`TOUCHDOWN_VZ`], or a touchdown
+///   by the strip (`pending` within [`LANDING_RADIUS`] of its edge) is
+///   open;
+/// - primed (the word -3 on the tick before, or on that touchdown's tick
+///   before), or the chain live.
+///
+/// The nearest such strip, or `None`.
+pub fn through(
+    spots: &[Spot],
+    before: Vec3,
+    vz_before: f32,
+    word_before: Option<u32>,
+    now: Vec3,
+    pending: Option<&Pending>,
+    live: bool,
+) -> Option<Through> {
+    let xy = [before[0], before[1]];
+    spots
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind == Kind::Bounce)
+        .filter_map(|(i, s)| {
+            let d = segment_distance_xy(s.edge, xy);
+            if d > THROUGH_RADIUS {
+                return None;
+            }
+            let edge_z = segment_height_xy(s.edge, xy);
+            let floor = edge_z - SINK;
+            let crossed = before[2] >= floor && now[2] < floor;
+            if !crossed {
+                return None;
+            }
+            let hit = pending
+                .filter(|p| segment_distance(s.edge, p.at) <= LANDING_RADIUS)
+                .copied();
+            let down = vz_before <= TOUCHDOWN_VZ || hit.is_some();
+            let primed_before = live
+                || word_before.is_some_and(primed)
+                || hit.is_some_and(|p| p.primed());
+            if !(down && primed_before) {
+                return None;
+            }
+            let (at, vz) = hit.map_or((before, vz_before), |p| (p.at, p.vz_before));
+            let height = (at[2] - edge_z).max(0.0);
+            let speed_in = (vz * vz + 2.0 * GRAVITY * height).sqrt();
+            Some((
+                d,
+                Through {
+                    spot: i,
+                    edge: s.edge,
+                    floor,
+                    at,
+                    pending: hit,
+                    speed_in,
+                },
+            ))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, t)| t)
+}
+
 // ---- the tracker ----
 
 /// What one tick reads of the local player.
@@ -632,6 +766,8 @@ pub struct Tracker {
     /// The touchdown whose launch is being read.
     pending: Option<Pending>,
     last_landing: Option<Landing>,
+    /// The last fall through a strip's floor ([`through`]).
+    last_through: Option<Through>,
 }
 
 impl Tracker {
@@ -645,7 +781,15 @@ impl Tracker {
             prev: None,
             pending: None,
             last_landing: None,
+            last_through: None,
         }
+    }
+
+    /// The last fall through a strip's floor, with its speed in
+    /// ([`Through::speed_in`]); its landing is the [`LandingResult::Through`]
+    /// filed on the tick it crossed.
+    pub fn last_through(&self) -> Option<Through> {
+        self.last_through
     }
 
     /// One tick: the charge, the verb, the navpoint and the last landing.
@@ -735,19 +879,49 @@ impl Tracker {
     /// launched, or on the ground) starts a [`Pending`], and the
     /// [`LAUNCH_TICKS`] after it are read for the launch before [`judge`]
     /// files it. A tick with no position or velocity closes the window on
-    /// what was seen. Returns an [`OffSpot`] bounce filed this tick.
+    /// what was seen. A fall through a strip's floor ([`through`], with no
+    /// chain) is filed at once as [`LandingResult::Through`], in place of
+    /// the touchdown it follows; a touchdown under that floor by its edge
+    /// after it ([`Through::under`]) is the same fall, not a landing.
+    /// Returns an [`OffSpot`] bounce filed this tick.
     fn landing(&mut self, t: &Tick, spots: &[Spot]) -> Option<OffSpot> {
         let now = match (t.position, t.velocity) {
             (Some(p), Some(v)) if v[2].is_finite() => Some((p, v[2])),
             _ => None,
         };
+        let went = match (self.prev, now) {
+            (Some(prev), Some((at, _))) => through(
+                spots,
+                prev.position,
+                prev.vz,
+                prev.word,
+                at,
+                self.pending.as_ref(),
+                false,
+            ),
+            _ => None,
+        };
         let mut off_spot = None;
-        if let Some(p) = self.pending.as_mut() {
+        if let (Some(th), Some(prev)) = (went, self.prev) {
+            // The seam hit's verdict is the fall through's.
+            self.pending = None;
+            let (tick, at) = match th.pending {
+                Some(p) => (p.tick, p.at),
+                None => (t.tick.unwrap_or(self.count), prev.position),
+            };
+            self.last_landing = Some(Landing {
+                result: LandingResult::Through,
+                tick,
+                at,
+            });
+            self.last_through = Some(th);
+        } else if let Some(p) = self.pending.as_mut() {
             if now.is_none_or(|(_, vz)| p.see(vz)) {
                 off_spot = self.settle(spots);
             }
         } else if let (Some(prev), Some((_, vz))) = (self.prev, now)
             && touchdown(prev.airborne, prev.vz, t.airborne, vz)
+            && self.last_through.is_none_or(|th| !th.under(prev.position))
         {
             self.pending = Some(Pending::new(
                 prev.word,
@@ -1151,6 +1325,7 @@ mod tests {
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
             fall: 1.0,
+            steer: [0.0; 2],
         }
     }
 
@@ -1412,6 +1587,122 @@ mod tests {
         t.step(&away(-5.4, true), &spots);
         for _ in 0..=LAUNCH_TICKS {
             assert_eq!(t.step(&away(0.0, false), &spots).last_landing, None);
+        }
+    }
+
+    /// A fall through a strip's floor: the origin crosses 0.3 under the
+    /// edge, by it, moving down and primed. A bounce's dip, a drop beside
+    /// the edge and an unprimed fall are not.
+    #[test]
+    fn a_crossing_under_the_floor_by_the_edge_is_a_through() {
+        let spots = spots();
+        let on = |z: f32| [10.0, 0.0, z];
+        let primed = Some(MINUS_3);
+        let th = through(&spots, on(-3.18), -4.3, primed, on(-3.4), None, false).unwrap();
+        assert_eq!(th.spot, 1);
+        assert!((th.floor + 3.3).abs() < 1e-6);
+        assert_eq!((th.at, th.pending), (on(-3.18), None));
+        assert!((th.speed_in - 4.3).abs() < 1e-5);
+        // A bounce's dip, 0.23 under the edge: short of SINK.
+        assert_eq!(
+            through(&spots, on(-2.9), -5.4, primed, on(-3.23), None, false),
+            None
+        );
+        // 0.6 beside the edge: a ledge, no; 0.25: within the radius.
+        let past = |x: f32| {
+            through(
+                &spots,
+                [x, 0.0, -3.18],
+                -4.3,
+                primed,
+                [x, 0.0, -3.4],
+                None,
+                false,
+            )
+        };
+        assert_eq!(past(10.6), None);
+        assert!(past(10.25).is_some());
+        // Unprimed: none, unless the chain is live.
+        assert_eq!(
+            through(&spots, on(-3.18), -4.3, Some(0), on(-3.4), None, false),
+            None
+        );
+        assert!(through(&spots, on(-3.18), -4.3, Some(0), on(-3.4), None, true).is_some());
+        // Not moving down: none, unless a touchdown by the strip is open;
+        // then the fall in is the touchdown's.
+        assert_eq!(
+            through(&spots, on(-3.05), 0.0, None, on(-3.4), None, false),
+            None
+        );
+        let hit = Pending::new(primed, on(-2.9), -4.3, 77, 0.0);
+        let th = through(&spots, on(-3.05), 0.0, None, on(-3.4), Some(&hit), false).unwrap();
+        assert_eq!((th.at, th.pending), (on(-2.9), Some(hit)));
+        let want = (4.3f32 * 4.3 + 2.0 * GRAVITY * 0.1).sqrt();
+        assert!((th.speed_in - want).abs() < 1e-4);
+        // Under its floor by its edge, and nowhere else.
+        assert!(th.under(on(-3.4)));
+        assert!(!th.under(on(-3.2)));
+        assert!(!th.under(on(-5.0)));
+    }
+
+    /// The tracker files a fall through at once, from the tick before the
+    /// crossing, or in place of the touchdown it follows; nothing under the
+    /// map after it is filed over it.
+    #[test]
+    fn a_fall_through_files_through_at_once() {
+        let spots = spots();
+        let on = |z: f32| [10.0, 0.0, z];
+        let primed = Some(MINUS_3);
+        let at = |p: Vec3, vz: f32, airborne: bool, word: Option<u32>, tick: u32| Tick {
+            tick: Some(tick),
+            word,
+            position: Some(p),
+            velocity: Some([0.0, 0.0, vz]),
+            airborne,
+            ..Tick::default()
+        };
+        let through_at = |tick: u32, from: Vec3| {
+            Some(Landing {
+                result: LandingResult::Through,
+                tick,
+                at: from,
+            })
+        };
+        // Straight through at -4.3, the video's: filed on the crossing.
+        let mut t = Tracker::new();
+        for (i, z) in [-2.76, -2.9, -3.04, -3.18].into_iter().enumerate() {
+            let s = t.step(&at(on(z), -4.3, true, primed, 100 + i as u32), &spots);
+            assert_eq!(s.last_landing, None);
+        }
+        let s = t.step(&at(on(-3.4), 0.0, false, None, 104), &spots);
+        assert_eq!(s.last_landing, through_at(104, on(-3.18)));
+        assert!((t.last_through().unwrap().speed_in - 4.3).abs() < 1e-5);
+        for i in 0..30u32 {
+            let p = [10.0 + 0.06 * i as f32, 0.0, -3.4];
+            let s = t.step(&at(p, 0.0, false, None, 105 + i), &spots);
+            assert_eq!(s.last_landing, through_at(104, on(-3.18)));
+        }
+        // The touchdown tick first, too slow for the strip, then through:
+        // `through`, not `too slow`, from the touchdown.
+        let mut t = Tracker::new();
+        t.step(&at(on(-2.76), -3.5, true, primed, 200), &spots);
+        t.step(&at(on(-2.9), -3.5, true, primed, 201), &spots);
+        let s = t.step(&at(on(-3.05), 0.0, false, primed, 202), &spots);
+        assert_eq!(s.last_landing, None);
+        let s = t.step(&at(on(-3.4), 0.0, false, None, 203), &spots);
+        assert_eq!(s.last_landing, through_at(202, on(-2.9)));
+        for i in 0..5 {
+            let s = t.step(&at(on(-3.4), 0.0, false, None, 204 + i), &spots);
+            assert_eq!(s.last_landing, through_at(202, on(-2.9)));
+        }
+        // Still falling as it crosses, then at rest under the strip: the
+        // same fall, not a landing of its own.
+        let mut t = Tracker::new();
+        t.step(&at(on(-3.18), -4.3, true, primed, 300), &spots);
+        t.step(&at(on(-3.4), -4.3, true, primed, 301), &spots);
+        for i in 0..6 {
+            let s = t.step(&at(on(-3.45), 0.0, false, primed, 302 + i), &spots);
+            assert_eq!(s.last_landing, through_at(301, on(-3.18)));
         }
     }
 }

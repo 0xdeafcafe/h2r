@@ -5,15 +5,16 @@
 //! ([`guide`]) and the readout HUD draws it as world marks
 //! (`hud_kit_core::huds::superbounce_guide`).
 //!
-//! - **The impact** ([`impact`]): the body's free flight stepped a game
-//!   tick at a time under the sim's fall model
-//!   (`sim_bench::drops::FALL_GRAVITY`: the fall speed gains 0.13904
-//!   units/s a tick and the body moves that speed over 30) until the next
-//!   tick would touch the seam's surface ([`Seam::contact`]). The tick
-//!   before is the **last free row**: its place is the landing the
-//!   pipper marks, and its height decides the bounce. On the ground the
-//!   flight is a jump pressed on the takeoff's line, shown only while
-//!   the cue counts to it ([`guide_from`]).
+//! - **The impact** ([`impact`]): the body's origin flown on the shared
+//!   flight model (`superbounce_flight::fly`: the sim's fall, and the air
+//!   stick driving the sideways velocity) until the next tick would touch
+//!   the seam's surface ([`Seam::contact`]). The surface is the bounding
+//!   sphere's centre's, as the depth rule was measured, so the origin
+//!   comes down onto it less the body's lift (the centre over the
+//!   origin). The tick before is the **last free row**: its place is the
+//!   landing the pipper marks, and its centre's height decides the
+//!   bounce. On the ground the flight is a jump pressed on the takeoff's
+//!   line, shown only while the cue counts to it ([`guide_from`]).
 //! - **Lined up** ([`caught`]): the landing is within the seam's catch
 //!   (`superbounce::catch_miss`).
 //! - **Depth** ([`depth`]): the one function that says whether the last
@@ -36,22 +37,28 @@ use hud_kit_core::huds::superbounce_guide::{self as marks, Call, Layout};
 use superbounce::{Kind, Spot, Vec3};
 
 use crate::superbounce_assist::{drift_unit, stand_near};
+use crate::superbounce_flight as flight;
 
-/// The fall model's gravity (units/s²) and tick, the sim's: the fall
-/// speed gains `GRAVITY × TICK` a tick, and the body moves the new speed
-/// times `TICK` (`sim_bench::drops::fall_model`).
-pub const GRAVITY: f32 = sim_bench::drops::FALL_GRAVITY;
-pub const TICK: f32 = 1.0 / 30.0;
-/// On a flat floor the body's position stops this far over the floor's
+/// The flight model's gravity (units/s²) and tick
+/// (`superbounce_flight`): the fall speed gains `GRAVITY × TICK` a tick,
+/// and the body moves the new speed times `TICK`.
+pub const GRAVITY: f32 = flight::GRAVITY;
+pub const TICK: f32 = flight::TICK;
+/// On a flat floor the body's origin stops this far over the floor's
 /// height at the touchdown (`sim_bench::drops::FALL_CLEARANCE`).
 pub const CLEARANCE: f32 = sim_bench::drops::FALL_CLEARANCE;
 /// A standing jump's launch (units/s up), as the bots' routes have it.
 pub const JUMP_VZ: f32 = bots::bounce_route::JUMP_VZ;
-/// The longest flight stepped: five seconds.
-pub const MAX_TICKS: u32 = 150;
+/// The longest flight flown: five seconds.
+pub const MAX_TICKS: u32 = flight::MAX_TICKS;
 /// A last free row this far under the surface at its own place is not a
 /// landing: the body never got over the seam's floor.
-pub const UNDER: f32 = 0.05;
+pub const UNDER: f32 = flight::UNDER;
+/// How far a biped's bounding-sphere centre (object `+0x30`) sits over
+/// its origin (`+0x64`) when it is not read: about 0.4 units, moving with
+/// the pose and the facing. The takeoff solver ([`place`] from the mode)
+/// flies with it, so a fixed takeoff does not move with the pose.
+pub const CENTRE_LIFT: f32 = 0.4;
 
 /// Not primed, the nearest target within this of the player is the seam
 /// [`target`] names.
@@ -108,9 +115,8 @@ pub const NOW_EARLY: u32 = 1;
 /// Under this ground speed (units/s) toward the line the body is not
 /// running at it, and the cue is `Walk to line`.
 pub const MOVING: f32 = 0.05;
-/// The run a takeoff is solved for when no run measured its own: the
-/// speed the fall assist crosses a strip at
-/// (`superbounce_assist::ARRIVE_SPEED`).
+/// The run a takeoff is solved for when no run measured its own: a
+/// walking approach (`superbounce_assist::ARRIVE_SPEED`).
 pub const WALK_UP: f32 = crate::superbounce_assist::ARRIVE_SPEED;
 /// Takeoffs are tried this far apart along the floor.
 pub const TAKEOFF_STEP: f32 = 0.005;
@@ -228,61 +234,73 @@ impl Seam {
         [past, p[2] - q[2]]
     }
 
-    /// The height the body's position is stopped at over `xy`: the
-    /// seam's floor ([`CLEARANCE`] over the edge's height), or where its
-    /// far face stops it first, [`DEPTH_CUT`] less [`DEPTH_BAND`] over
-    /// the edge and [`SEAM_SLOPE`] higher for each unit past it.
-    pub fn contact(&self, xy: [f32; 2]) -> f32 {
+    /// The height the body's bounding-sphere centre is stopped at over
+    /// `xy`, for a body whose centre is `lift` over its origin. Within the
+    /// catch of the edge (`superbounce::catch_miss`) it is the measured
+    /// rule: [`CLEARANCE`] over the edge's height, or where the far face
+    /// stops it first, [`DEPTH_CUT`] less [`DEPTH_BAND`] over the edge and
+    /// [`SEAM_SLOPE`] higher for each unit past it. Elsewhere it is the
+    /// floor in the centre's frame: the origin's [`CLEARANCE`] over the
+    /// edge's height, plus `lift`.
+    pub fn contact(&self, xy: [f32; 2], lift: f32) -> f32 {
         let q = self.edge_point(xy);
-        let floor = CLEARANCE;
+        if superbounce::catch_miss(self.edge, xy) > 0.0 {
+            return q[2] + CLEARANCE + lift;
+        }
         if !self.drifts() {
-            return q[2] + floor;
+            return q[2] + CLEARANCE;
         }
         let past = (xy[0] - q[0]) * self.drift[0] + (xy[1] - q[1]) * self.drift[1];
-        q[2] + floor.max(DEPTH_CUT - DEPTH_BAND + SEAM_SLOPE * past)
+        q[2] + CLEARANCE.max(DEPTH_CUT - DEPTH_BAND + SEAM_SLOPE * past)
     }
 }
 
 /// Where a free flight touches down.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Impact {
-    /// The last free row: the body's position on the tick before the
+    /// The last free row: the body's origin on the tick before the
     /// contact tick.
     pub row: Vec3,
     /// Game ticks from now to that row.
     pub ticks: u32,
     /// The fall speed on that row, units/s down: the touchdown speed.
     pub speed: f32,
+    /// The body's bounding-sphere centre over its origin, the frame the
+    /// depth rule is in ([`Impact::centre`]).
+    pub lift: f32,
 }
 
-/// The touchdown of a body at `position` moving `velocity`, in free
-/// flight onto the surface `contact` (the height the body is stopped at
-/// over a point, [`Seam::contact`]): each tick the fall speed gains
-/// [`GRAVITY`]`×`[`TICK`] and the body moves by its velocity times
-/// [`TICK`], and the last row whose next would be at or under the surface
-/// is the [`Impact`]. `None` when the flight does not come down onto the
-/// surface within [`MAX_TICKS`], or only reaches it from under
-/// ([`UNDER`]).
-pub fn impact(position: Vec3, velocity: Vec3, contact: impl Fn([f32; 2]) -> f32) -> Option<Impact> {
-    if !position.iter().chain(&velocity).all(|v| v.is_finite()) {
+impl Impact {
+    /// The last free row's bounding-sphere centre: the row `lift` up.
+    pub fn centre(&self) -> Vec3 {
+        [self.row[0], self.row[1], self.row[2] + self.lift]
+    }
+}
+
+/// The touchdown of a body whose origin is at `position`, moving
+/// `velocity` with `stick` (world axes) held, onto the surface `contact`
+/// (the height its centre is stopped at over a point, [`Seam::contact`]),
+/// its centre `lift` over its origin. The origin is flown on the shared
+/// flight model (`superbounce_flight::fly`) onto the surface less `lift`;
+/// the last row whose next would be at or under it is the [`Impact`].
+/// `None` when the flight does not come down onto the surface within
+/// [`MAX_TICKS`], or only reaches it from under ([`UNDER`]).
+pub fn impact(
+    position: Vec3,
+    velocity: Vec3,
+    stick: [f32; 2],
+    lift: f32,
+    contact: impl Fn([f32; 2]) -> f32,
+) -> Option<Impact> {
+    if !lift.is_finite() {
         return None;
     }
-    let step = [velocity[0] * TICK, velocity[1] * TICK];
-    let (mut p, mut down) = (position, -velocity[2]);
-    for ticks in 0..=MAX_TICKS {
-        let next_down = down + GRAVITY * TICK;
-        let next = [p[0] + step[0], p[1] + step[1], p[2] - next_down * TICK];
-        if next_down > 0.0 && next[2] <= contact([next[0], next[1]]) {
-            let over = p[2] - contact([p[0], p[1]]);
-            return (over >= -UNDER).then_some(Impact {
-                row: p,
-                ticks,
-                speed: down.max(0.0),
-            });
-        }
-        (p, down) = (next, next_down);
-    }
-    None
+    flight::hold(position, velocity, stick, |xy| contact(xy) - lift).map(|l| Impact {
+        row: l.row,
+        ticks: l.ticks,
+        speed: l.speed,
+        lift,
+    })
 }
 
 /// The velocity of a jump now by a body moving `velocity` on the ground:
@@ -318,8 +336,9 @@ impl Depth {
     }
 }
 
-/// The depth rule: for a landing on `seam` whose last free row is
-/// `impact.row`, how far under the cut the row ends, its height over the
+/// The depth rule: for a landing on `seam` whose last free row's
+/// bounding-sphere centre is `impact.centre()` (the frame the rule was
+/// measured in), how far under the cut the row ends, its height over the
 /// edge less [`SEAM_SLOPE`] times its place past it against
 /// [`DEPTH_CUT`]. The phase of the fall's ticks sets it, and that is
 /// fixed once the body is in the air, so it is known before touchdown.
@@ -331,7 +350,7 @@ pub fn depth(seam: &Seam, impact: &Impact) -> Option<Depth> {
     if !seam.drifts() {
         return None;
     }
-    let [past, over] = seam.frame(impact.row);
+    let [past, over] = seam.frame(impact.centre());
     Some(Depth {
         margin: DEPTH_CUT - (over - SEAM_SLOPE * past),
         past,
@@ -628,24 +647,35 @@ fn clear(seam: &Seam, landing: Option<&Impact>) -> Option<u8> {
     }
 }
 
+/// The flight of a takeoff with no real stick: a body leaving at
+/// `velocity` holds the stick that keeps it going
+/// (`superbounce_flight::keep`), so a run faster than the air stick's top
+/// slows to it.
+fn solve(position: Vec3, velocity: Vec3, seam: &Seam, lift: f32) -> Option<Impact> {
+    let stick = flight::keep([velocity[0], velocity[1]]);
+    impact(position, velocity, stick, lift, |xy| seam.contact(xy, lift))
+}
+
 /// The first band of takeoffs along the line from `origin` the unit
 /// `dir`, at distances `range`, whose flight at `velocity` onto `seam`
-/// is `good`: as distances along the line, each end widened by half a
-/// step ([`TAKEOFF_STEP`]). Every takeoff keeps `origin`'s height.
-/// `coarse` passes over stretches clear of the landing window
-/// ([`clear`]); for `good` landings inside the window the band is the
-/// same without it, which a test checks.
+/// ([`solve`], the centre `lift` over the origin) is `good`: as distances
+/// along the line, each end widened by half a step ([`TAKEOFF_STEP`]).
+/// Every takeoff keeps `origin`'s height. `coarse` passes over stretches
+/// clear of the landing window ([`clear`]); for `good` landings inside
+/// the window the band is the same without it, which a test checks.
+#[allow(clippy::too_many_arguments)]
 fn band_by(
     seam: &Seam,
     origin: Vec3,
     dir: [f32; 2],
     velocity: Vec3,
+    lift: f32,
     range: [f32; 2],
     coarse: bool,
     good: &dyn Fn(&Impact) -> bool,
 ) -> Option<[f32; 2]> {
     let at = |d: f32| [origin[0] + dir[0] * d, origin[1] + dir[1] * d, origin[2]];
-    let land = |d: f32| impact(at(d), velocity, |xy| seam.contact(xy));
+    let land = |d: f32| solve(at(d), velocity, seam, lift);
     let side = |d: f32| clear(seam, land(d).as_ref());
     let d_of = |i: u32| range[0] + i as f32 * TAKEOFF_STEP;
     let span = range[1] - range[0];
@@ -687,13 +717,17 @@ fn lands(seam: &Seam, need: f32, i: &Impact) -> bool {
 }
 
 /// The takeoff from `lip` for `seam`, whose landing needs `need` units/s
-/// down, with `floor(xy, top)` the height of the highest floor under
-/// `xy` at or below `top` (`superbounce_capsule::Room::floor_at`)
-/// (docs/game/superbounce.md, "The takeoff").
+/// down, for a body whose centre is `lift` over its origin (the mode
+/// passes [`CENTRE_LIFT`]), with `floor(xy, top)` the height of the
+/// highest floor under `xy` at or below `top`
+/// (`superbounce_capsule::Room::floor_at`) (docs/game/superbounce.md,
+/// "The takeoff").
 ///
 /// The lip is put on the real floor under it; `None` when there is none
-/// within [`SAME_FLOOR`]. Two flights are flown from it, both at the run's
-/// speed (the lip's own, else [`WALK_UP`]) along its heading:
+/// within [`SAME_FLOOR`]. Two flights are flown from it ([`solve`]: the
+/// shared flight model, holding the stick that keeps the run going), both
+/// leaving at the run's speed (the lip's own, else [`WALK_UP`]) along its
+/// heading:
 ///
 /// - **a walk-off** from the lip itself, when it is an edge (the floor
 ///   [`EDGE_PROBE`] past it is not its own);
@@ -711,6 +745,7 @@ pub fn place(
     seam: &Seam,
     need: f32,
     lip: &Lip,
+    lift: f32,
     floor: impl Fn([f32; 2], f32) -> Option<f32>,
 ) -> Option<Takeoff> {
     let h = lip.heading;
@@ -742,11 +777,7 @@ pub fn place(
     let body = [lip.at[0], lip.at[1], z + CLEARANCE];
     // The walk-off: off the lip at the run's speed, no jump.
     let drop = edge
-        .then(|| {
-            impact(body, [h[0] * speed, h[1] * speed, 0.0], |xy| {
-                seam.contact(xy)
-            })
-        })
+        .then(|| solve(body, [h[0] * speed, h[1] * speed, 0.0], seam, lift))
         .flatten();
     let dropped = line(0.0, DROP_HALF, Leave::Drop, true);
     // The jump: from each place back along the lip's floor.
@@ -761,7 +792,7 @@ pub fn place(
     let jumped =
         |[lo, hi]: [f32; 2]| line((lo + hi) / 2.0 + lead, (hi - lo) / 2.0, Leave::Jump, true);
     let band = |coarse: bool, good: &dyn Fn(&Impact) -> bool| {
-        band_by(seam, body, [-h[0], -h[1]], up, [0.0, reach], coarse, good)
+        band_by(seam, body, [-h[0], -h[1]], up, lift, [0.0, reach], coarse, good)
     };
     if drop.is_some_and(|i| bounces(seam, &i)) {
         return Some(dropped);
@@ -886,10 +917,17 @@ pub const SAME: f32 = 1e-3;
 /// The player, for the guide.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Body {
+    /// The origin (object `+0x64`), the frame every spot's heights are in.
     pub position: Vec3,
     pub velocity: Vec3,
     pub airborne: bool,
     pub primed: bool,
+    /// The bounding-sphere centre over the origin (units): the frame the
+    /// depth rule is in ([`CENTRE_LIFT`] when it is not read).
+    pub lift: f32,
+    /// The stick held (world axes, `superbounce_flight::held`); the
+    /// keeping stick (`superbounce_flight::keep`) when it is not read.
+    pub stick: [f32; 2],
 }
 
 /// The guide on one seam, as of a tick.
@@ -973,7 +1011,12 @@ impl Guide {
         let [a, b] = self.seam.edge;
         let half = (b[0] - a[0]).hypot(b[1] - a[1]) / 2.0;
         Layout {
-            seam: self.seam.point,
+            // The box is the catch, so it lies on the collision edge
+            // itself, at the point of it beside the landing point: the
+            // edge runs through its middle.
+            seam: self
+                .seam
+                .edge_point([self.seam.point[0], self.seam.point[1]]),
             along: self.seam.along(),
             // A busy point's edge has no length: the full box.
             half_along: if half > 1e-4 {
@@ -1003,7 +1046,8 @@ pub fn guide(body: &Body, spot: &Spot) -> Option<Guide> {
 /// In the air the impact is the fall's. On the ground it is the jump
 /// pressed on the takeoff's line, and only while the cue counts to it
 /// ([`Cue::counting`]): the floor under the body is not the seam's, so a
-/// jump from anywhere else says nothing.
+/// jump from anywhere else says nothing. Either is flown with the
+/// player's stick as it is held now.
 pub fn guide_from(body: &Body, spot: &Spot, takeoff: Option<Takeoff>) -> Option<Guide> {
     if spot.kind != Kind::Bounce || !body.primed {
         return None;
@@ -1025,7 +1069,9 @@ pub fn guide_from(body: &Body, spot: &Spot, takeoff: Option<Takeoff>) -> Option<
     // The surface is the edge's and the drift's, whatever the landing
     // point; the point then slides along the strip to the landing.
     let surface = Seam::of(spot, at);
-    let flight = from.and_then(|(p, v)| impact(p, v, |xy| surface.contact(xy)));
+    let lift = body.lift;
+    let flight =
+        from.and_then(|(p, v)| impact(p, v, body.stick, lift, |xy| surface.contact(xy, lift)));
     let seam = Seam::of(spot, flight.map_or(at, |i| [i.row[0], i.row[1]]));
     let impact = flight
         .filter(|i| (i.row[0] - seam.point[0]).hypot(i.row[1] - seam.point[1]) <= PIPPER_RANGE);
