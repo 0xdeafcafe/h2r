@@ -278,12 +278,20 @@ fn a_container_converts_to_a_film_file_that_decodes_to_the_same_actions() {
         .map(|r| (r.tick, r.seat, r.kind))
         .collect();
     assert_eq!(records, [(44, 3, RECORD_JOIN)]);
-    // A film that differs from its container is refused.
-    let mut damaged = fs::read(beside(&path)).unwrap();
-    let at = damaged.len() / 2;
-    damaged[at] ^= 0xff;
+    // A film that differs from its container is refused: here one action
+    // on tick 400 is another's, the rest as recorded.
     let other = dir.0.join("damaged.h2f");
-    fs::write(&other, damaged).unwrap();
+    let mut w = FilmWriter::new(File::create(&other).unwrap(), &seed(), 30).unwrap();
+    for tick in 1..=700u64 {
+        let mut row = seats(tick);
+        if tick == 400 {
+            row[0] = Some(action(tick, 9));
+        }
+        let digest = if tick % 30 == 0 { tick * 1_000_003 } else { 0 };
+        let flags = if tick % 30 == 0 { TICK_DIGEST } else { 0 };
+        w.push_tick(flags, digest, &row).unwrap();
+    }
+    w.finish().unwrap();
     assert!(verify(&path, &other).is_err());
 }
 

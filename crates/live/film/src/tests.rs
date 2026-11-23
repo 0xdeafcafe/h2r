@@ -104,20 +104,18 @@ fn render_hook_profiles_round_trip_and_require_the_recorders_groups() {
 fn encoded() -> Vec<u8> {
     let mut w = Writer::new(Cursor::new(Vec::new()), &header(1)).unwrap();
     w.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    for (i, (tag, op)) in [(NETR, "Recv"), (RAND, "Random")].into_iter().enumerate() {
-        w.chunk(
-            tag,
-            &vec![Call {
-                index: i as u64,
-                op: op.into(),
-                thread: 7,
-                args: vec![2],
-                result: Ok(1),
-                outputs: vec![vec![42]],
-            }],
-        )
-        .unwrap();
-    }
+    let calls: Vec<Call> = [(0, "Recv"), (1, "Random")]
+        .into_iter()
+        .map(|(index, op)| Call {
+            index,
+            op: op.into(),
+            thread: 7,
+            args: vec![2],
+            result: Ok(1),
+            outputs: vec![vec![42]],
+        })
+        .collect();
+    tape_chunk(&mut w, &calls);
     w.chunk(KEYF, &vec![1, 2, 3]).unwrap();
     w.chunk(
         HASH,
@@ -149,7 +147,7 @@ fn round_trip_all_chunks_index_and_wrong_stamp() {
     assert!(r.finalized);
     assert_eq!(
         r.entries.iter().map(|e| e.tag).collect::<Vec<_>>(),
-        vec![HEAD, DATA, NETR, RAND, KEYF, HASH, MARK]
+        vec![HEAD, DATA, tape::TAPE, KEYF, HASH, MARK]
     );
     for e in &r.entries {
         assert_eq!(b[e.offset as usize..][..4], e.tag);
@@ -598,7 +596,8 @@ fn streams_interleave_in_one_batch_and_a_json_batch_is_refused() {
     for (i, op) in ops.iter().enumerate() {
         assert_eq!(playback.call(i as u64, op, &[i as u32 % 2], 1).unwrap(), call(i as u64, op));
     }
-    assert!(playback.exhausted());
+    // The calls are used up; the hash check is a separate row.
+    assert!(playback.call(5, ops[0], &[1], 1).is_err());
 
     let path = make("json.h2film", true);
     let mut playback = Playback::load(Reader::open(&path).unwrap()).unwrap();
