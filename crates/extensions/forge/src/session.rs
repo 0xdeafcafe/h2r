@@ -12,6 +12,10 @@ use crate::{
     World, files, links, props, scene,
 };
 
+mod shared;
+
+pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
+
 #[derive(Clone, Debug)]
 pub struct Session {
     doc: ForgeDoc,
@@ -43,6 +47,9 @@ pub struct Session {
     // Only set if the engine refused both a load and its compensation.
     repair: Option<Vec<scene::Object>>,
     own_repair: Option<OwnMap>,
+    /// Set in a synchronous network game ([`Session::share`]): edits queue
+    /// for the host instead of applying here.
+    shared: Option<shared::Shared>,
 }
 
 impl Session {
@@ -86,6 +93,7 @@ impl Session {
             redo: vec![],
             repair: None,
             own_repair: None,
+            shared: None,
         })
     }
 
@@ -505,6 +513,9 @@ impl Session {
         op: Op,
         was: Option<Sha256>,
     ) -> Result<Entry, String> {
+        if self.shared.is_some() {
+            return Err(SHARED_PROPOSE.into());
+        }
         if op.edit == Edit::Undo {
             if self.doc.ops.last().map(|op| op.id) != Some(op.id) {
                 return Err("Undo must name the last active edit.".into());
@@ -530,6 +541,9 @@ impl Session {
     }
 
     pub fn undo(&mut self, world: &mut impl World, tick: u32) -> Result<(), String> {
+        if self.shared.is_some() {
+            return self.undo_shared();
+        }
         let count = self.undo.last().copied().unwrap_or(1);
         self.retract(world, tick, count)?;
         self.undo.pop();
@@ -555,6 +569,9 @@ impl Session {
     }
 
     pub fn redo(&mut self, world: &mut impl World, tick: u32) -> Result<(), String> {
+        if self.shared.is_some() {
+            return Err(SHARED_REDO.into());
+        }
         let ops = self.redo.last().ok_or("There is nothing to redo.")?.clone();
         self.apply(world, tick, &ops, None, true)?;
         self.undo.push(ops.len());
@@ -584,8 +601,10 @@ impl Session {
             .max()
             .unwrap_or(0)
             .max(self.last_id);
-        self.undo.push(ops.len());
-        self.redo.clear();
+        if self.shared.is_none() {
+            self.undo.push(ops.len());
+            self.redo.clear();
+        }
         Ok(())
     }
 
@@ -597,6 +616,9 @@ impl Session {
         was: Option<Sha256>,
         respawn: bool,
     ) -> Result<(), String> {
+        if self.shared.is_some() {
+            return self.queue(ops, was);
+        }
         let max_entries = self.limits.max_log_entries.min(forge_doc::MAX_LOG_ENTRIES);
         if self.log.len() + ops.len() > max_entries {
             return Err("Forge edit log is full.".into());
@@ -689,6 +711,9 @@ impl Session {
     }
 
     fn ops(&self, edits: Vec<Edit>) -> Result<Vec<Op>, String> {
+        if self.shared.is_some() {
+            return self.lane_ops(edits);
+        }
         edits
             .into_iter()
             .enumerate()

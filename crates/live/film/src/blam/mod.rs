@@ -106,6 +106,9 @@ pub struct Tick {
     /// Observed after the last completed tick, e.g. a quit on the scoreboard.
     pub closing_events: Vec<Event>,
     pub post_hash: Option<u64>,
+    /// The payloads of the tick's Forge entry records ([`stream::FORGE`]),
+    /// in record order: the tag byte's subtype first, then the message.
+    pub forge: Vec<Vec<u8>>,
 }
 
 impl Tick {

@@ -1492,4 +1492,380 @@ mod things {
             assert_eq!(local::refusal_name(&sentence), name, "{sentence}");
         }
     }
+
+    // ---- a shared session over the agent API (docs/game/forge-design.md, F5) ----
+
+    mod shared {
+        use std::sync::{Arc, Mutex};
+
+        use ::forge::SessionAdmit;
+        use ::forge::net::{
+            Admit, Beat, DocOnly, HOST_SEAT, Lane, NetRefusal, Node, Role, Seat, Step,
+        };
+
+        use super::*;
+        use crate::forge::net::{self as shared_net, Replies};
+
+        #[derive(Default)]
+        struct Pipe {
+            bytes: Vec<u8>,
+            beat: Option<Beat>,
+        }
+
+        /// One end of the session's reliable ordered channel.
+        #[derive(Clone)]
+        struct Wire {
+            out: Arc<Mutex<Pipe>>,
+            inn: Arc<Mutex<Pipe>>,
+        }
+
+        fn wires() -> (Wire, Wire) {
+            let (a, b) = (Arc::default(), Arc::default());
+            (
+                Wire {
+                    out: Arc::clone(&a),
+                    inn: Arc::clone(&b),
+                },
+                Wire { out: b, inn: a },
+            )
+        }
+
+        impl Lane for Wire {
+            fn send(&mut self, bytes: &[u8]) -> bool {
+                self.out.lock().unwrap().bytes.extend_from_slice(bytes);
+                true
+            }
+            fn recv(&mut self) -> Vec<u8> {
+                std::mem::take(&mut self.inn.lock().unwrap().bytes)
+            }
+            fn set_beat(&mut self, beat: Option<Beat>) {
+                self.out.lock().unwrap().beat = beat;
+            }
+            fn beat(&self) -> Option<Beat> {
+                self.inn.lock().unwrap().beat
+            }
+        }
+
+        struct Mach<A: Admit> {
+            node: Node<A, Wire>,
+            session: Session,
+            world: Takes,
+            name: &'static str,
+        }
+
+        impl<A: Admit> Mach<A> {
+            fn step(&mut self, tick: u32) -> Step {
+                let out = self.session.take_outgoing();
+                if !out.is_empty() {
+                    self.node.submit(out).unwrap();
+                }
+                let step = self.node.tick(tick).unwrap();
+                if let Some(state) = &step.joined {
+                    let seat = self.node.seat().unwrap();
+                    self.session = self.session.clone().share(seat, self.name);
+                    self.session.sync_to(&mut self.world, state).unwrap();
+                }
+                for item in &step.items {
+                    self.session.apply_item(&mut self.world, item).unwrap();
+                }
+                step
+            }
+        }
+
+        fn limits() -> forge_doc::Limits {
+            forge_doc::Limits {
+                world: Some(forge_doc::WorldBounds {
+                    min: [-8.0; 3],
+                    max: [8.0; 3],
+                }),
+                base_counts: [(BlockKind::Weapons, 2), (BlockKind::Crates, 2)].into(),
+                ..Default::default()
+            }
+        }
+
+        fn session() -> Session {
+            Arc::try_unwrap(host().0.into_inner().unwrap()).unwrap()
+        }
+
+        /// The host machine, one guest, and the proposals the guest has
+        /// sent to the agent API.
+        struct Machines {
+            host: Mach<SessionAdmit>,
+            guest: Mach<DocOnly>,
+            replies: Replies,
+            tick: u32,
+        }
+
+        impl Machines {
+            fn new() -> Self {
+                let host_session = session().share(HOST_SEAT, "Host");
+                let mut host = Mach {
+                    node: Node::host(
+                        host_session.document().clone(),
+                        limits(),
+                        host_session.admit(),
+                        "Host",
+                        0,
+                        ::forge::net::APPLY_DELAY,
+                    )
+                    .unwrap(),
+                    session: host_session,
+                    world: Takes::default(),
+                    name: "Host",
+                };
+                let (to_host, to_guest) = wires();
+                host.node.accept(Seat(1), to_guest, Role::Editor).unwrap();
+                let guest = Mach {
+                    node: Node::guest(limits(), "Guest", to_host).unwrap(),
+                    session: session(),
+                    world: Takes::default(),
+                    name: "Guest",
+                };
+                Self {
+                    host,
+                    guest,
+                    replies: Replies::default(),
+                    tick: 0,
+                }
+            }
+
+            fn step(&mut self) {
+                self.tick += 1;
+                self.host.step(self.tick);
+                self.guest.step(self.tick);
+                let settled = self.guest.node.take_settled();
+                self.replies.settle(settled);
+            }
+        }
+
+        /// The agent on the guest machine.
+        struct NetApi(Arc<Mutex<Machines>>);
+
+        impl LocalApi for NetApi {
+            fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+                Who {
+                    profile: "default".into(),
+                    colour: 0,
+                }
+            }
+            fn look(&self, _: &Who, _: Option<u64>) -> Result<Json, Refusal> {
+                unreachable!("the look is not this test's")
+            }
+            fn look_set(&self, _: &Who, _: Json) -> Result<Json, Refusal> {
+                unreachable!("the look is not this test's")
+            }
+            fn monitors(&self, _: &Who) -> Json {
+                json!({"monitors": []})
+            }
+            fn status(&self) -> Result<Json, String> {
+                let m = self.0.lock().unwrap();
+                Ok(shared_net::status(
+                    json!({"session": "local"}),
+                    &m.guest.node.report(),
+                ))
+            }
+            fn session(&self) -> Result<Arc<Session>, String> {
+                Ok(Arc::new(self.0.lock().unwrap().guest.session.clone()))
+            }
+            fn document(&self) -> Result<ForgeDoc, String> {
+                Ok(self.0.lock().unwrap().guest.session.document().clone())
+            }
+            fn log(&self, since: u32) -> Result<Vec<Entry>, String> {
+                Ok(self.0.lock().unwrap().guest.node.log_since(since))
+            }
+            fn input(
+                &self,
+                _: &dyn engine::GuestMemory,
+                _: ::forge::tool::Input,
+            ) -> Result<(), String> {
+                Err("Forge input requires the active local session.".into())
+            }
+            fn propose(&self, _: u32, op: Op, was: Option<Sha256>) -> Result<ProposalReply, String> {
+                let mut m = self.0.lock().unwrap();
+                let nonce = m.guest.node.propose(op, was).map_err(|e| e.named())?;
+                Ok(m.replies.wait_for(nonce))
+            }
+            fn wait_ticks(&self) -> u64 {
+                shared_net::WAIT_TICKS
+            }
+        }
+
+        /// Send `params` and step the machines and the game until the
+        /// agent answers.
+        fn ask(
+            h: &Harness,
+            game: &mut super::super::Game,
+            net: &Arc<Mutex<Machines>>,
+            name: &str,
+            params: Json,
+        ) -> Json {
+            h.send(name, params);
+            for _ in 0..400 {
+                net.lock().unwrap().step();
+                game.tick += 1;
+                h.agent.on_tick(game);
+                if let Ok(raw) = h.replies.try_recv() {
+                    return serde_json::from_str(&raw).unwrap();
+                }
+            }
+            panic!("{name} was not answered");
+        }
+
+        fn weapon_target() -> Endpoint {
+            Endpoint::Base {
+                block: BlockKind::Weapons,
+                index: 0,
+                print: Some(forge_doc::print(BlockKind::Weapons, &weapon_fields(-3.)).unwrap()),
+            }
+        }
+
+        #[test]
+        fn status_log_and_propose_work_over_a_network_session() {
+            let h = Harness::new();
+            let mut game = game(2);
+            let net = Arc::new(Mutex::new(Machines::new()));
+            local::install(&h.agent, NetApi(net.clone()));
+            for _ in 0..12 {
+                net.lock().unwrap().step();
+            }
+
+            // forge.status: the session is shared, and says whose seat this is.
+            let status = ask(&h, &mut game, &net, method::STATUS, Json::Null)["result"].clone();
+            assert_eq!(status["session"], "shared");
+            assert_eq!(status["role"], "editor");
+            let report = &status["net"];
+            assert_eq!(
+                (report["host"].clone(), report["seat"].clone(), report["name"].clone()),
+                (json!(false), json!(1), json!("Guest"))
+            );
+            assert_eq!(report["members"].as_array().unwrap().len(), 2);
+            assert_eq!(report["members"][0]["name"], "Host");
+            assert_eq!(report["head"]["seq"], 0);
+            assert!(report["ended"].is_null());
+
+            // forge.propose goes to the host and answers with the entry the
+            // stream carried, once this machine has applied it.
+            let target = weapon_target();
+            let moved = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(2, target, -2.)}),
+            );
+            assert!(moved["error"].is_null(), "{moved}");
+            assert_eq!(moved["result"]["entry"]["seq"], 1);
+            assert_eq!(moved["result"]["entry"]["author"], "Guest");
+
+            // Every machine has it, and forge.log and forge.things say so.
+            {
+                let m = net.lock().unwrap();
+                assert_eq!(m.host.session.document(), m.guest.session.document());
+                assert_eq!(m.host.session.head(), m.guest.session.head());
+            }
+            let log = ask(&h, &mut game, &net, method::LOG, json!({"since": 0}));
+            assert_eq!(log["result"]["entries"].as_array().unwrap().len(), 1);
+            assert_eq!(log["result"]["entries"][0]["author"], "Guest");
+            let log = ask(&h, &mut game, &net, method::LOG, json!({"since": 1}));
+            assert_eq!(log["result"]["entries"], json!([]));
+            let changed = ask(&h, &mut game, &net, method::THINGS, json!({"changed": true}));
+            assert_eq!(changed["result"]["things"][0]["position"], json!([-2., 0., 0.]));
+            let status = ask(&h, &mut game, &net, method::STATUS, Json::Null)["result"].clone();
+            assert_eq!(status["net"]["head"]["seq"], 1);
+            assert_eq!(status["net"]["in_flight"], 0);
+
+            // The host's refusals keep their names.
+            let refused = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(3, target, 1.)}),
+            );
+            assert_eq!(refused["error"]["code"], code::INVALID_REQUEST);
+            assert_eq!(refused["error"]["data"]["code"], refusal::LANE, "{refused}");
+            let refused = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(18, target, 0.), "was": Sha256::of(b"another value")}),
+            );
+            assert_eq!(refused["error"]["data"]["code"], refusal::WAS, "{refused}");
+            net.lock()
+                .unwrap()
+                .host
+                .node
+                .set_role(Seat(1), Role::Player)
+                .unwrap();
+            let refused = ask(
+                &h,
+                &mut game,
+                &net,
+                method::PROPOSE,
+                json!({"op": set_position(18, target, 0.)}),
+            );
+            assert_eq!(refused["error"]["data"]["code"], refusal::ROLE, "{refused}");
+            for _ in 0..8 {
+                net.lock().unwrap().step();
+            }
+            let status = ask(&h, &mut game, &net, method::STATUS, Json::Null)["result"].clone();
+            assert_eq!(status["role"], "player");
+
+            // Nothing was added to the log by any of them.
+            assert_eq!(net.lock().unwrap().host.node.state().unwrap().log().len(), 1);
+        }
+
+        #[test]
+        fn a_proposal_before_the_session_has_joined_is_refused_by_name() {
+            let h = Harness::new();
+            let mut game = game(2);
+            let net = Arc::new(Mutex::new(Machines::new()));
+            local::install(&h.agent, NetApi(net.clone()));
+            // No tick has run: the welcome has not come.
+            h.send(method::PROPOSE, json!({"op": set_position(2, weapon_target(), 1.)}));
+            h.agent.on_tick(&mut game);
+            let reply = h.reply();
+            assert_eq!(reply["error"]["data"]["code"], refusal::NOT_JOINED, "{reply}");
+        }
+
+        #[test]
+        fn every_net_refusal_keeps_its_name_through_the_api() {
+            for r in [
+                NetRefusal::NotJoined,
+                NetRefusal::Role { role: Role::Player },
+                NetRefusal::Held { by: "A".into() },
+                NetRefusal::NotHolding,
+                NetRefusal::Stale { proposed: 1, head: 2 },
+                NetRefusal::Ahead { proposed: 3, head: 2 },
+                NetRefusal::Lane { id: OpId(3) },
+                NetRefusal::Doc(forge_doc::Refusal::Mismatch),
+                NetRefusal::Doc(forge_doc::Refusal::DuplicateOp(OpId(1))),
+                NetRefusal::Map("Object budget exceeded (2 / 1).".into()),
+                NetRefusal::Seat,
+                NetRefusal::Name,
+                NetRefusal::HeadDiffers { seat: Seat(1), seq: 1 },
+                NetRefusal::Clock { now: 1, was: 2 },
+            ] {
+                assert!(refusal::SHARED.contains(&r.code()), "{r:?}");
+                assert_eq!(local::refusal_name(&r.named()), r.code(), "{r:?}");
+            }
+        }
+
+        #[test]
+        fn proposals_waiting_when_the_session_ends_are_refused() {
+            let mut replies = Replies::default();
+            let one = replies.wait_for(1);
+            let two = replies.wait_for(2);
+            replies.settle(vec![::forge::net::Settled {
+                nonce: 1,
+                result: Err("forge_held: A is holding that.".into()),
+            }]);
+            assert_eq!(one.try_recv().unwrap().unwrap_err(), "forge_held: A is holding that.");
+            assert_eq!(replies.len(), 1);
+            replies.end("The host left.");
+            assert!(two.try_recv().unwrap().unwrap_err().starts_with("forge_not_joined: "));
+            assert!(replies.is_empty());
+        }
+    }
 }

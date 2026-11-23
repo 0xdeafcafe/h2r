@@ -118,6 +118,18 @@ impl Peer {
         self.through
     }
 
+    /// The number of the next stream item this peer is missing.
+    pub fn next_n(&self) -> u64 {
+        self.received + 1
+    }
+
+    /// Say that nothing at or before `tick` is still to come, as the host's
+    /// watermark does. A film's replay knows it: the film holds every item
+    /// of the tick it has reached.
+    pub fn release_through(&mut self, tick: u32) {
+        self.through = self.through.max(tick);
+    }
+
     /// The keep-alive's position.
     pub fn beat(&self) -> Beat {
         Beat {

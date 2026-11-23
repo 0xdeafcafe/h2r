@@ -4487,6 +4487,35 @@ count and its type (7 or 8) before any guest write. A device link reaches
 the game only through a rebuild and counts in `pending_rebuild`. Deleting
 a linked machine ends its links in the same undo step.
 
+## Shared Forge session
+
+In a synchronous network game whose co-op link carries the Forge lanes,
+the local Forge methods answer for the shared session
+(`crates/extensions/agent/src/forge/net.rs`; the design is
+[forge-design.md](../game/forge-design.md), "F5 in detail").
+
+- `forge.status` has `session: "shared"`, the seat's `role`, and `net`:
+  `host`, `joined`, `seat`, `name`, `members` (`seat`, `name`, `role`),
+  `holds` (`seat`, `target`, `carried`), `head`, `n` (the last stream
+  item applied), `through` (the host's watermark), `in_flight`
+  (proposals and holds not yet settled) and `ended` (why the session
+  ended, else null).
+- `forge.propose` sends the op to the host and answers when the stream
+  carries the entry (the entry, as locally) or the host refuses it. It
+  waits up to 240 ticks, not 30. A refusal's message begins with its
+  name and a colon: `forge_not_joined`, `forge_role`, `forge_held`,
+  `forge_not_holding`, `forge_stale`, `forge_ahead`, `forge_lane`,
+  `forge_was`, `forge_print`, `forge_refused`, `forge_map` (the game's
+  palette, budget or bounds), `forge_seat`, `forge_name`,
+  `forge_head_differs` and `forge_clock`. A proposal waiting when the
+  session ends is refused `forge_not_joined`.
+- `forge.log`, `forge.doc` and `forge.things` read what this machine has
+  applied, so the same call on two machines at the same `through`
+  returns the same entries.
+
+A session that has ended keeps answering `forge.status` with `ended` set
+and refuses every proposal.
+
 ## Forge probes
 
 The running game's agent registers these methods through
