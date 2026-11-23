@@ -1,12 +1,15 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use forge_doc::{
-    ActiveLink, Before, BlockKind, Edit, Entry, F32, FieldWrite, Forge, ForgeDoc, Limits, Link,
-    Links, LogHead, Op, Placement, Proposal, Sha256, Value,
+    ActiveLink, Before, BlockKind, Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, Forge,
+    ForgeDoc, Limits, Link, Links, LogHead, Op, Placement, Proposal, Sha256, Value,
 };
 
+use crate::things::{self, Kept, Own, OwnMap};
 use crate::{
-    Frame, Linkable, OpId, PaletteItem, PlacedObject, Teleporter, World, files, links, scene,
+    BaseRows, Frame, Linkable, OpId, PaletteItem, PlacedObject, Teleporter, Thing, ThingKind,
+    World, files, links, scene,
 };
 
 #[derive(Clone, Debug)]
@@ -19,6 +22,17 @@ pub struct Session {
     objects: Vec<PlacedObject>,
     /// The loaded map's teleporter flags with their own channels.
     teleporters: Vec<Teleporter>,
+    /// The loaded map's rows as the session opened them. Shared by every
+    /// candidate clone; never in the document, the log or a save.
+    base: Arc<Kept>,
+    /// The own entries as the document leaves them.
+    own: OwnMap,
+    /// The own entries as the world holds them: the document's, but for a
+    /// held entry's frame.
+    own_live: OwnMap,
+    /// The entry held and the tick of its last move: a hold moves at most
+    /// once a tick.
+    held: Option<(Endpoint, u32)>,
     head: LogHead,
     log: Vec<Entry>,
     log_bytes: usize,
@@ -28,6 +42,7 @@ pub struct Session {
     redo: Vec<Vec<Op>>,
     // Only set if the engine refused both a load and its compensation.
     repair: Option<Vec<scene::Object>>,
+    own_repair: Option<OwnMap>,
 }
 
 impl Session {
@@ -59,6 +74,10 @@ impl Session {
             budget,
             objects: vec![],
             teleporters: vec![],
+            base: Arc::default(),
+            own: OwnMap::new(),
+            own_live: OwnMap::new(),
+            held: None,
             head,
             log: vec![],
             log_bytes: 0,
@@ -66,7 +85,52 @@ impl Session {
             undo: vec![],
             redo: vec![],
             repair: None,
+            own_repair: None,
         })
+    }
+
+    /// The loaded map's rows, read from the running scenario as the session
+    /// opens, before any edit. A block whose rows are not the map's (another
+    /// count, a missing row, a print that is not its fields') is left out
+    /// by name with the blocks that did not read; its entries are not
+    /// things and an edit naming one is refused.
+    pub fn with_base(mut self, base: BaseRows) -> Self {
+        self.base = Arc::new(Kept::new(base, &self.limits.base_counts));
+        self
+    }
+
+    /// The blocks of the loaded map left out of the things, each as
+    /// `block: reason`.
+    pub fn left_out(&self) -> &[String] {
+        &self.base.left_out
+    }
+
+    /// Every thing of the loaded map: the own entries as the document leaves
+    /// them, in the layout's block order and then index order, then the
+    /// added ones in scenario order. A removed entry is not listed.
+    pub fn things(&self) -> Vec<Thing> {
+        let mut out = things::own_things(&self.base, &self.own);
+        out.extend(self.added().iter().map(added_thing));
+        out
+    }
+
+    /// The added objects as the document leaves them.
+    fn added(&self) -> Vec<scene::Object> {
+        scene::project(&self.doc, &self.limits, &self.palette, self.budget)
+            .map(|scene| scene.objects)
+            .unwrap_or_default()
+    }
+
+    /// The thing `id` names, by identity: an own entry with or without its
+    /// print, or an added one.
+    pub fn thing(&self, id: Endpoint) -> Option<Thing> {
+        match id.identity() {
+            Endpoint::Added(op) => self.added().iter().find(|o| o.id == op).map(added_thing),
+            Endpoint::Base { block, index, .. } => {
+                let row = self.base.row(block, index).ok()?;
+                things::own_thing(row, self.own.get(&(block, index)))
+            }
+        }
     }
 
     /// The loaded map's teleporter flags, which the Links tool can join.
@@ -104,6 +168,7 @@ impl Session {
     }
 
     /// The map's teleporter flags with the channels the document gives them.
+    /// A flag the document removes is not listed.
     pub fn teleporters(&self) -> Vec<Teleporter> {
         let channels = self
             .resolved(&self.doc)
@@ -111,6 +176,7 @@ impl Session {
             .unwrap_or_default();
         self.teleporters
             .iter()
+            .filter(|t| !self.removed(BlockKind::NetgameFlags, t.index))
             .map(|t| Teleporter {
                 channel: channels.get(&t.index).copied().unwrap_or(t.channel),
                 ..*t
@@ -118,14 +184,23 @@ impl Session {
             .collect()
     }
 
+    fn removed(&self, block: BlockKind, index: u32) -> bool {
+        self.own.get(&(block, index)).is_some_and(|o| o.removed)
+    }
+
     /// The active links naming `thing`, oldest first.
     pub fn links_of(&self, thing: Linkable) -> Vec<ActiveLink> {
-        let end = thing.endpoint();
+        self.links_naming(thing.endpoint())
+    }
+
+    /// The active links naming the entry `end` names, by identity.
+    fn links_naming(&self, end: Endpoint) -> Vec<ActiveLink> {
+        let end = end.identity();
         self.resolved(&self.doc)
             .map(|l| l.active)
             .unwrap_or_default()
             .into_iter()
-            .filter(|a| a.link.endpoints().contains(&end))
+            .filter(|a| a.link.endpoints().iter().any(|e| e.identity() == end))
             .collect()
     }
 
@@ -248,6 +323,109 @@ impl Session {
         }));
         let ops = self.ops(edits)?;
         self.edit(world, tick, ops, None)
+    }
+
+    /// Move and turn a thing, own or added, to where a drop leaves it: one
+    /// `EntryOp::Set` for its position and one for its rotation or facing,
+    /// each only when it changes, in one undo step. An own entry is named by
+    /// its print, which the session checks against the row it kept.
+    pub fn move_thing(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        frame: Frame,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        let mut edits = vec![];
+        for write in things::frame_writes(thing.block, frame)? {
+            if field(&thing, &write.field) != Some(&write.value) {
+                edits.push(Edit::Entry(EntryOp::Set {
+                    target: thing.id,
+                    write,
+                }));
+            }
+        }
+        if edits.is_empty() {
+            // A drop where the hold left it: the world may still be there.
+            self.held = None;
+            return self.settle(world);
+        }
+        let ops = self.ops(edits)?;
+        self.edit(world, tick, ops, None)?;
+        self.held = None;
+        Ok(())
+    }
+
+    /// Carry a thing while it is held: the world moves it, and the document
+    /// and the log do not change until the drop ([`Self::move_thing`]). A
+    /// hold moves at most once a tick; a second move in the same tick is
+    /// dropped.
+    pub fn hold(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        frame: Frame,
+    ) -> Result<(), String> {
+        if self.held == Some((id.identity(), tick)) {
+            return Ok(());
+        }
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        match thing.id {
+            Endpoint::Added(op) => {
+                scene::in_bounds(&self.limits, frame)?;
+                things::frame_writes(thing.block, frame)?;
+                let object = self
+                    .objects
+                    .iter_mut()
+                    .find(|o| o.id == op)
+                    .ok_or(NO_THING)?;
+                if object.frame != frame {
+                    world.move_object(object.handle, frame)?;
+                    object.frame = frame;
+                }
+            }
+            Endpoint::Base { block, index, .. } => {
+                scene::in_bounds(&self.limits, frame)?;
+                let row = self.base.row(block, index)?;
+                let have = self.own_live.get(&(block, index)).cloned().unwrap_or(Own {
+                    fields: row.fields.clone(),
+                    removed: false,
+                });
+                let fields = things::with_frame(block, &have.fields, frame)?;
+                if fields != have.fields {
+                    world.base_move(block, index, frame)?;
+                    if fields == row.fields {
+                        self.own_live.remove(&(block, index));
+                    } else {
+                        self.own_live.insert(
+                            (block, index),
+                            Own {
+                                fields,
+                                removed: false,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        self.held = Some((thing.id.identity(), tick));
+        Ok(())
+    }
+
+    /// Put a held thing back where the document has it.
+    pub fn release(&mut self, world: &mut impl World) -> Result<(), String> {
+        self.held = None;
+        self.settle(world)
+    }
+
+    /// Bring the world back to the document.
+    fn settle(&mut self, world: &mut impl World) -> Result<(), String> {
+        let doc = self.doc.clone();
+        self.update_world(world, &doc, false)
     }
 
     /// One host-stamped portable op. Local input uses the same admission and
@@ -392,57 +570,53 @@ impl Session {
         Ok(())
     }
 
+    /// The digest of the value the target of a set holds now, for `was`.
     fn holds(&self, op: &Op) -> Result<Option<Sha256>, String> {
-        let Edit::Placement(Placement::Set {
-            block,
-            index,
-            write,
-        }) = &op.edit
-        else {
-            return Ok(None);
-        };
-        let Some(offset) = index.checked_sub(
-            *self
-                .limits
-                .base_counts
-                .get(block)
-                .ok_or("Unknown placement block.")?,
-        ) else {
-            return Ok(None);
-        };
-        let Some(object) = self
-            .objects
-            .iter()
-            .filter(|row| row.item.block == *block)
-            .nth(offset as usize)
-        else {
-            return Ok(None);
-        };
-        let value = match write.field.as_str() {
-            "position" => object.frame.position,
-            "rotation" => object.frame.rotation,
+        let value = match &op.edit {
+            Edit::Placement(Placement::Set {
+                block,
+                index,
+                write,
+            }) => {
+                let scene = scene::project(&self.doc, &self.limits, &self.palette, self.budget)?;
+                let Some(object) = scene
+                    .objects
+                    .iter()
+                    .find(|o| o.item.block == *block && scene.index.get(&o.id) == Some(index))
+                else {
+                    return Ok(None);
+                };
+                let Some((_, value)) = added_fields(object)
+                    .into_iter()
+                    .find(|(name, _)| *name == write.field)
+                else {
+                    return Ok(None);
+                };
+                value
+            }
+            Edit::Entry(EntryOp::Set { target, write }) => {
+                let Some(thing) = self.thing(*target) else {
+                    return Ok(None);
+                };
+                let Some(value) = field(&thing, &write.field) else {
+                    return Ok(None);
+                };
+                value.clone()
+            }
             _ => return Ok(None),
         };
-        vector(&write.field, value)?
-            .value
-            .digest()
-            .map(Some)
-            .map_err(reason)
+        value.digest().map(Some).map_err(reason)
     }
 
+    /// An added object and the index its block has it at.
     fn target(&self, id: OpId) -> Result<(&PlacedObject, u32), String> {
-        let offset = self
+        let object = self
             .objects
             .iter()
-            .position(|o| o.id == id)
+            .find(|o| o.id == id)
             .ok_or("Aim at a Forge object.")?;
-        let object = &self.objects[offset];
-        let block = object.item.block;
-        let index = self.limits.base_counts[&block]
-            + self.objects[..offset]
-                .iter()
-                .filter(|o| o.item.block == block)
-                .count() as u32;
+        let scene = scene::project(&self.doc, &self.limits, &self.palette, self.budget)?;
+        let index = *scene.index.get(&id).ok_or("Aim at a Forge object.")?;
         Ok((object, index))
     }
 
@@ -466,11 +640,24 @@ impl Session {
         doc: &ForgeDoc,
         respawn: bool,
     ) -> Result<(), String> {
-        let desired = scene::project(doc, &self.limits, &self.palette, self.budget)?;
-        let channels = self.channel_changes(doc)?;
+        let desired = scene::project(doc, &self.limits, &self.palette, self.budget)?.objects;
+        let own = things::desired(doc, &self.limits.base_counts, &self.base)?;
+        // A removed flag's row is inert: no channel is written to it.
+        let channels: Vec<_> = self
+            .channel_changes(doc)?
+            .into_iter()
+            .filter(|&(flag, ..)| {
+                !own.get(&(BlockKind::NetgameFlags, flag))
+                    .is_some_and(|o| o.removed)
+            })
+            .collect();
         self.restore(world)?;
         let before: Vec<_> = self.objects.iter().map(scene::Object::from).collect();
+        let own_before = self.own_live.clone();
         let mut result = scene::reconcile(world, &mut self.objects, &desired, respawn);
+        if result.is_ok() {
+            result = things::reconcile(world, &mut self.own_live, &own, &self.base);
+        }
         if result.is_ok() {
             for (i, &(flag, new, _)) in channels.iter().enumerate() {
                 if let Err(error) = world.channel(flag, new) {
@@ -484,14 +671,24 @@ impl Session {
             }
         }
         if let Err(error) = result {
-            if let Err(repair_error) = scene::reconcile(world, &mut self.objects, &before, true) {
-                self.repair = Some(before);
-                return Err(format!(
-                    "{error} Restoring the previous objects also failed: {repair_error}. Retry to restore them."
-                ));
+            let objects_repair = scene::reconcile(world, &mut self.objects, &before, true);
+            let own_repair = things::reconcile(world, &mut self.own_live, &own_before, &self.base);
+            if objects_repair.is_ok() && own_repair.is_ok() {
+                return Err(error);
             }
-            return Err(error);
+            let mut message = error;
+            if let Err(repair_error) = objects_repair {
+                self.repair = Some(before);
+                message += &format!(" Restoring the previous objects also failed: {repair_error}.");
+            }
+            if let Err(repair_error) = own_repair {
+                self.own_repair = Some(own_before);
+                message +=
+                    &format!(" Restoring the map's own entries also failed: {repair_error}.");
+            }
+            return Err(message + " Retry to restore them.");
         }
+        self.own = own;
         Ok(())
     }
 
@@ -516,6 +713,12 @@ impl Session {
             scene::reconcile(world, &mut self.objects, repair, true)
                 .map_err(|e| format!("Restoring objects after an interrupted load: {e}"))?;
             self.repair = None;
+        }
+        if let Some(repair) = &self.own_repair {
+            things::reconcile(world, &mut self.own_live, repair, &self.base).map_err(|e| {
+                format!("Restoring the map's own entries after an interrupted edit: {e}")
+            })?;
+            self.own_repair = None;
         }
         Ok(())
     }
@@ -558,6 +761,7 @@ impl Session {
             }
         }
         self.update_world(world, &doc, false)?;
+        self.held = None;
         self.last_id = doc.ops.iter().map(|op| op.id.0).max().unwrap_or(0);
         self.doc = doc;
         self.head = head;
@@ -567,6 +771,45 @@ impl Session {
         self.redo.clear();
         Ok(())
     }
+}
+
+const NO_THING: &str = "Aim at a thing of the map.";
+
+/// An added object as a thing: its palette entry, position and rotation.
+fn added_thing(object: &scene::Object) -> Thing {
+    let block = object.item.block;
+    Thing {
+        id: Endpoint::Added(object.id),
+        block,
+        kind: ThingKind::of(block, &[]).unwrap_or(ThingKind::Object),
+        own: false,
+        frame: object.frame,
+        fields: added_fields(object),
+        changed: true,
+    }
+}
+
+fn added_fields(object: &scene::Object) -> Vec<(&'static str, Value)> {
+    let mut out = vec![("palette index", Value::Tag(Some(object.item.tag.clone())))];
+    for (name, v) in [
+        ("position", object.frame.position),
+        ("rotation", object.frame.rotation),
+    ] {
+        // A document's frame is finite; the validator refuses any other.
+        if let Ok(write) = vector(name, v) {
+            out.push((name, write.value));
+        }
+    }
+    out
+}
+
+/// The value of a thing's field `name`.
+fn field<'a>(thing: &'a Thing, name: &str) -> Option<&'a Value> {
+    thing
+        .fields
+        .iter()
+        .find(|(field, _)| *field == name)
+        .map(|(_, value)| value)
 }
 
 fn vector(name: &str, v: [f32; 3]) -> Result<FieldWrite, String> {

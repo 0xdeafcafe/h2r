@@ -62,46 +62,9 @@ pub(crate) struct MapRows {
     pub left_out: Vec<String>,
 }
 
-/// What a thing is to a player (the table of docs/game/forge-map-variants.md,
-/// "Things").
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ThingKind {
-    Object,
-    ItemSpawner,
-    StartingPoint,
-    Goal,
-    Teleporter,
-}
-
-impl ThingKind {
-    /// The kind of an entry of `block` with these typed `fields`, or none
-    /// for a block that holds no things: sound scenery has no body and
-    /// starting equipment no decoded field worth a row. A netgame flag is a
-    /// teleporter when its type is 7 (sender) or 8 (receiver), else a goal.
-    pub(crate) fn of(block: BlockKind, fields: &[Value]) -> Option<Self> {
-        Some(match block {
-            BlockKind::Scenery
-            | BlockKind::Vehicles
-            | BlockKind::Equipment
-            | BlockKind::Weapons
-            | BlockKind::Machines
-            | BlockKind::Crates => Self::Object,
-            BlockKind::NetgameEquipment => Self::ItemSpawner,
-            BlockKind::StartingLocations => Self::StartingPoint,
-            BlockKind::NetgameFlags => {
-                let at = layout::block(block)
-                    .fields
-                    .iter()
-                    .position(|f| f.name == "type")?;
-                match fields.get(at) {
-                    Some(Value::Int(7 | 8)) => Self::Teleporter,
-                    _ => Self::Goal,
-                }
-            }
-            BlockKind::SoundScenery | BlockKind::StartingEquipment => return None,
-        })
-    }
-}
+/// What a thing is to a player: the session's own kinds
+/// (docs/game/forge-map-variants.md, "Things").
+pub(crate) use forge::ThingKind;
 
 /// One thing of the loaded map: an entry of a block, named by its index
 /// and its print, with the layout's fields by name.
@@ -147,6 +110,26 @@ impl MapRows {
     /// The row at `index` of `block`, when that block read.
     pub(crate) fn row(&self, block: BlockKind, index: u32) -> Option<&Row> {
         self.blocks.get(&block)?.rows.get(index as usize)
+    }
+
+    /// The rows as the session keeps them (`forge::Session::with_base`).
+    pub(crate) fn into_base(self) -> forge::BaseRows {
+        forge::BaseRows {
+            rows: self
+                .blocks
+                .into_iter()
+                .flat_map(|(block, rows)| {
+                    rows.rows.into_iter().map(move |row| forge::BaseRow {
+                        block,
+                        index: row.index,
+                        raw: row.raw,
+                        fields: row.fields,
+                        print: row.print,
+                    })
+                })
+                .collect(),
+            left_out: self.left_out,
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M4, M7 and M8 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario (M7), and `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8; the session's `World` trait takes them in M5); everything else named here as new is not.
-Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld` and its base calls), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
+Status: Design, slices M1 to M5, M7 and M8 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), and `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8); everything else named here as new is not.
+Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld` and its base calls), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 Forge edits every placement a multiplayer scenario has, not only the
@@ -194,9 +194,21 @@ allows at runtime".
   its own running indices.
 - **The session keeps the map's rows.** `forge_map` reads each block of
   the loaded scenario once, when the session opens, into the session's
-  own memory: the typed fields for the things list and the prints, and
-  the raw rows so an undo or a `Reset` can put one back exactly. None
+  own memory (`forge_map::rows::read`, handed to
+  `Session::with_base` as `forge::BaseRows`): the typed fields for the
+  things list and the prints, and the raw rows so an undo or a `Reset`
+  can put one back exactly. A block that does not read, or whose rows
+  are not the map's count, is left out by name (`Session::left_out`):
+  its entries are not things and an edit naming one is refused. None
   of it reaches the document, the log, a save or the network.
+- **The world follows the document.** After every fold the session
+  works out each own entry's state from the document's entry ops and
+  makes the base calls that take the world there, per entry: one
+  `base_inert` for a removal, one `base_restore` of the kept row for a
+  return, then one `base_move` for a changed position or turn and one
+  `base_field` for each other changed field
+  (`crates/extensions/forge/src/things.rs`, `reconcile`). A refused
+  call is compensated from where it stopped, as for placed objects.
 - **One path.** `Session::set_field`, `move_thing`, `remove` and
   `reset` make ops and pass them to `Session::edit`, which stamps,
   folds and reconciles as it does for a placed object. The pad, the
@@ -205,7 +217,10 @@ allows at runtime".
   as they were.
 - **Holding** an own entry is the same hold: moves are sent at most
   once a tick and the drop is one `EntryOp::Set` for position and one for
-  rotation, in one undo step.
+  rotation, in one undo step. `Session::hold` moves the thing in the
+  world only, `release` puts it back where the document has it, and
+  `move_thing` is the drop. An added entry's drop names it by its add
+  (`Endpoint::Added`), as an own entry's names it by index and print.
 
 ### Fields by kind
 
@@ -476,9 +491,11 @@ Every machine builds the map from its own disc; no built byte travels
   encode, decode}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
   `Refusal::Tier`, `play_form`, `session_form`, `KIT_RECIPE`,
   `variant_name`.
-- **`forge`**: `Thing {id: Endpoint, kind, own, frame, fields, changed}`,
-  `Session::{things, move_thing, set_field, remove, reset}`, and on
-  `World`: `base_move`, `base_field`, `base_inert`, `base_restore`.
+- **`forge`**: `Thing {id: Endpoint, block, kind, own, frame, fields,
+  changed}`, `ThingKind`, `BaseRows`,
+  `Session::{with_base, left_out, things, thing, move_thing, hold,
+  release, set_field, remove, reset}`, and on `World`: `base_move`,
+  `base_field`, `base_inert`, `base_restore`.
   `forge::props` (new) is the table of properties by name: the kinds
   each is on, how it reads a thing and the op it writes. `forge::files`
   is the variant store.

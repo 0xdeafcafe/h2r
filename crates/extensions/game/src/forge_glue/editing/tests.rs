@@ -44,6 +44,7 @@ fn editor() -> Editor {
         }],
         refused: vec![r"test\hum: sound scenery has no body to place or see".into()],
         walls: vec![],
+        names: Default::default(),
     };
     Editor::new(opened, Path::new("."), 1, calls::shared())
 }

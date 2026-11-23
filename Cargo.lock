@@ -2229,6 +2229,7 @@ version = "0.1.0"
 dependencies = [
  "content",
  "forge-doc",
+ "map",
  "serde",
  "serde_json",
  "settings",
