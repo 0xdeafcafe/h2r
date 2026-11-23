@@ -91,8 +91,8 @@ fn kit_map(probe: bool) -> Map<Cursor<Vec<u8>>> {
         .add_tag(FourCC(*b"scnr"), r"invented\arena", TagPayload::Built(root))
         .unwrap();
     set.scenario = scnr;
-    let base = set.build().unwrap().0;
-    let mut map = Map::from_reader(Cursor::new(base)).unwrap();
+    let bytes = set.build().unwrap().0;
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
     let elite = set
         .add_tag(FourCC(*b"char"), ELITE_PATH, TagPayload::Empty)
         .unwrap();

@@ -65,7 +65,7 @@ fn fixture() -> Vec<u8> {
     let mut root = Block::zeroed(0x3e0);
     let mut starts = Block::zeroed(3 * 0x34);
     for (i, (x, y, team)) in STARTS.into_iter().enumerate() {
-        let at = i as u32 * 0x34;
+        let at = i * 0x34;
         starts
             .put_f32(at, x)
             .put_f32(at + 4, y)
@@ -77,7 +77,7 @@ fn fixture() -> Vec<u8> {
         .into_iter()
         .enumerate()
     {
-        let at = i as u32 * 0x20;
+        let at = i * 0x20;
         flags
             .put_f32(at, x)
             .put_f32(at + 4, 14.)

@@ -725,6 +725,7 @@ dependencies = [
  "background",
  "content",
  "engine",
+ "guest-layout",
  "h1map",
  "host-dirs",
  "input",
