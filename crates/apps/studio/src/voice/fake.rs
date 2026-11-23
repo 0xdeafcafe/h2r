@@ -286,6 +286,7 @@ impl LineSource for FakeLines {
         Ok(m.sounds
             .iter()
             .enumerate()
+            .filter(|(_, (name, _))| super::dataset::is_dialogue(name))
             .map(|(i, (name, _))| DialogueSound {
                 id: i as u32,
                 name: name.clone(),

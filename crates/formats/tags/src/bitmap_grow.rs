@@ -155,8 +155,11 @@ impl Parts {
         let images = take(at::IMAGES, &header, IMAGE_LEN, "images")?;
         let entries = take(at::SEQUENCES, &header, SEQUENCE_LEN, "sequences")?;
         let mut sequences = Vec::with_capacity(entries.len());
-        for entry in entries {
+        for mut entry in entries {
             let sprites = take(at::SPRITES, &entry, SPRITE_LEN, "sprites")?;
+            // The sprite block's address is the layout's to write: a
+            // sequence is the same wherever the bitmap sits.
+            entry[at::SPRITES + 4..at::SPRITES + 8].fill(0);
             sequences.push(Sequence { entry, sprites });
         }
         let stray = owned
