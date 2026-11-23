@@ -374,8 +374,8 @@ impl CollisionSync {
                 (None, Some(h)) => (h.file.clone(), h.file.clone(), h.pairs.clone()),
                 (None, None) => continue,
             };
-            let hash = blocks.hash();
-            let holds = held.map_or_else(|| file.hash(), |h| h.hash);
+            let hash = Blocks::hash(&blocks);
+            let holds = held.map_or_else(|| Blocks::hash(&file), |h| h.hash);
             if hash == holds {
                 continue;
             }

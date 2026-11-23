@@ -219,8 +219,8 @@ fn tag_text(v: Option<&Value>, what: &str) -> Result<String, RpcError> {
 fn index_of(o: &Value, key: &str, default: Option<u32>) -> Result<u32, RpcError> {
     match (o.get(key), default) {
         (None | Some(Value::Null), Some(d)) => Ok(d),
-        (Some(v), _) => whole(v, &format!("target: {key}")),
         (None | Some(Value::Null), None) => Err(invalid(format!("target: {key} is required"))),
+        (Some(v), _) => whole(v, &format!("target: {key}")),
     }
 }
 
