@@ -783,3 +783,42 @@ fn a_phantom_cannot_sample_or_replay_an_action_while_the_round_is_closed() {
     g = gather(&ph, g, slot);
     assert_eq!(g.f32(OUT + 0x14).unwrap(), 0.0, "old round's shot was flushed");
 }
+
+/// Retail's control update clears a local biped's facing-set flag after it
+/// reseeds the look from the aim; the builder's copy of that write is
+/// discarded, so the action path makes it. Left set (as after a melee
+/// lunge), every build would reseed the look and drop the right stick.
+#[test]
+fn a_built_action_releases_the_bipeds_facing_flag() {
+    let (ph, mut g, slot) = game(|_| HostPadState {
+        right_stick: (1.0, 0.0),
+        ..Default::default()
+    });
+    let flags = BODY + 0x400 + guest::BIPED_FLAGS;
+    // Bit 0 (airborne) belongs to the biped update and stays.
+    g.put_u8(flags, guest::BIPED_FACING_SET | 1);
+    let mut g = gather(&ph, g, slot);
+    assert_eq!(g.u8(flags).unwrap(), 1, "facing flag released, others kept");
+    assert_eq!(ph.maintenance().facing_releases, 1);
+
+    // Already clear: nothing to release or count.
+    at_tick(&mut g, 101);
+    let mut g = gather(&ph, g, slot);
+    assert_eq!(ph.maintenance().facing_releases, 1);
+
+    // A missed build ran no control update, so the flag stays for the next.
+    g.put_u8(flags, guest::BIPED_FACING_SET);
+    at_tick(&mut g, 103);
+    let missed = call_with_builder(&ph, g, slot, |_| None, |_, _| panic!("no action to validate"));
+    assert_eq!(missed.result, Ok(Ret::new(0, 8)));
+    assert_eq!(missed.guest.u8(flags).unwrap(), guest::BIPED_FACING_SET);
+    assert_eq!(ph.maintenance().facing_releases, 1);
+
+    // A vehicle or other non-biped has no biped flags to touch.
+    let mut g = missed.guest;
+    g.put_u8(OBJECTS_DATA + 0xc + 3, 1);
+    at_tick(&mut g, 104);
+    let g = gather(&ph, g, slot);
+    assert_eq!(g.u8(flags).unwrap(), guest::BIPED_FACING_SET);
+    assert_eq!(ph.maintenance().facing_releases, 1);
+}

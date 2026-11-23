@@ -232,6 +232,11 @@ pub struct Maintenance {
     /// The 8-byte chunks of the `0xc8` peer properties that differed on any
     /// properties rewrite (bit `i`: bytes `8i..8i + 8`).
     pub props_diff_chunks: u32,
+    /// Built actions after which the action path cleared the phantom
+    /// biped's facing-set flag, as retail's control update does for a local
+    /// player ([`guest::BIPED_FACING_SET`]; counted on the action gather,
+    /// not the render frame).
+    pub facing_releases: u64,
 }
 
 /// Consecutive membership-writing frames after which the log says the game

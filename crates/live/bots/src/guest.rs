@@ -85,6 +85,11 @@ pub(crate) const GAME_TIME_RATE: u32 = 2;
 pub const GAME_TIME_TICK: u32 = 8;
 /// Unit `+0x168`: the aim, a world-space unit vector.
 pub const UNIT_AIM: u32 = 0x168;
+/// Biped flags (`+0x348`) and their facing-set bit, which the local action
+/// builder's control update clears after it reseeds the look from the aim
+/// (docs/game/bots.md §5.1, "The facing release").
+pub(crate) const BIPED_FLAGS: u32 = guest_layout::Biped::FLAGS.offset;
+pub(crate) const BIPED_FACING_SET: u8 = guest_layout::unit::FACING_SET;
 /// Crouch request bit on a biped (docs/live/live-gamestate.md).
 const BIPED_UNIT_FLAGS: u32 = 0x134;
 const BIPED_CROUCH_REQUEST: u32 = 1 << 23;

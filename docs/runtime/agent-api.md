@@ -3465,6 +3465,14 @@ then says `bots: phantoms: the session's membership was rewritten on 30
 frames in a row (...)` once per run of such frames
 (`crates/live/bots/src/phantom.rs`, `churn_line`).
 
+`facing_releases` is counted on the action gather, not on render frames.
+It counts built actions after which the host cleared a phantom biped's
+facing-set flag, as retail's control update does for a local player
+([bots.md](../game/bots.md), "The facing release"). It rises by about
+one per melee lunge. A bot whose aim stops following its right stick
+while this stays flat points at a facing write the release does not
+cover.
+
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.
 The full vector contains `radar_use`, `noob_combo`, `dual_wield`,
