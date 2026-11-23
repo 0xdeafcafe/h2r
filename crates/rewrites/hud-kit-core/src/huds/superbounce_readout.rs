@@ -1,7 +1,7 @@
 //! The superbounce readout (docs/game/hud-kit.md, "The superbounce
-//! readout"): three rows right of the motion tracker, the charge
-//! segments round it, and three navpoints, all drawn by Halo 2's own
-//! HUD.
+//! readout"): three rows right of the motion tracker and a fourth over
+//! the arming bar, the charge segments round the tracker, and three
+//! navpoints, all drawn by Halo 2's own HUD.
 //!
 //! - `sbr.seg.1` to `sbr.seg.9`: the charge segments round the motion
 //!   tracker, the priming indicator ([`super::superbounce_segments`]).
@@ -10,13 +10,18 @@
 //!   it. Hidden standing still.
 //! - `sbr.fall` and `sbr.steer`, on a fall toward a seam: a bar that
 //!   fills with the touchdown speed over the speed the seam needs, and
-//!   beside it `On seam`, or an arrow for the way to push and how far the
-//!   landing is off the seam. No percentage follows it: the approach
-//!   guide's box carries the one verdict.
+//!   beside it `On seam`, an arrow for the way to push and how far the
+//!   landing is off the seam, or `Out of reach` when no push brings it
+//!   in. No percentage follows it: the approach guide's box carries the
+//!   one verdict.
 //! - `sbr.info`: why the last landing by a seam did not bounce, for a few
 //!   seconds ([`Miss`]); in the flight after a bounce, the seams it can
 //!   reach, the best first, each a rank, an arrow for where it is against
 //!   the aim and its distance ([`Next`]).
+//! - `sbr.kinds`, over the arming bar: the kinds of seam the targets are
+//!   on, how many the map has of them, and the flashlight's glyph twice,
+//!   the double tap that switches them ([`KindsRow`]); it flashes after a
+//!   switch.
 //! - `sbr.tag`, `sbr.target.1` and `sbr.target.2`: the game's navpoint
 //!   over the tagged seam and over the two nearest seams the player can
 //!   reach.
@@ -26,7 +31,7 @@
 //!
 //! Nothing is in the middle of the screen: the rows are bottom left, and
 //! a navpoint or a world mark is where its seam is. The readout is fullscreen only. A
-//! half or quarter frame has no three rows free under the prompt line's
+//! half or quarter frame has no four rows free under the prompt line's
 //! box, so it is a HUD of its own beside the superbounce HUD
 //! ([`super::superbounce`]), whose widgets show in every screen mode.
 //!
@@ -34,7 +39,9 @@
 //! (`game::superbounce_readout`) fills it from `superbounce_mode`'s state
 //! each tick, with the pieces a variant turned off left out.
 
-use crate::model::{Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Value, Values};
+use crate::model::{
+    Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Pulse, Style, Value, Values,
+};
 
 use super::superbounce::{Charge, DISTANCE_LONGEST, Phase, distance_text};
 use super::superbounce_guide::{self as guide, Guide};
@@ -47,6 +54,7 @@ pub const SPEED: &str = "sbr.speed";
 pub const FALL: &str = "sbr.fall";
 pub const STEER: &str = "sbr.steer";
 pub const INFO: &str = "sbr.info";
+pub const KINDS: &str = "sbr.kinds";
 pub const TAG: &str = "sbr.tag";
 pub const TARGET_1: &str = "sbr.target.1";
 pub const TARGET_2: &str = "sbr.target.2";
@@ -85,6 +93,11 @@ pub const LEFT: i16 = segs::RIGHT_EDGE - segs::CORNER.0 + SEGMENTS_GAP;
 pub const SPEED_UP: i16 = -68;
 pub const FALL_UP: i16 = -47;
 pub const INFO_UP: i16 = -26;
+/// The targets row's top: y 326 fullscreen, a line of font 6 over the
+/// superbounce HUD's arming bar (y 355 to 368) and 8 above it, as the
+/// speed row is 8 under it. Under the bar the three rows fill the block
+/// to 5 above the frame's foot, so a fourth goes over the bar.
+pub const KINDS_UP: i16 = -118;
 /// The bar: the battery strip's last 64 columns, 8 high, 6 under its
 /// row's top so it sits on the text's middle.
 pub const FALL_COLUMNS: u8 = 64;
@@ -94,16 +107,26 @@ pub const STEER_LEFT: i16 = LEFT + FALL_COLUMNS as i16 + 6;
 
 /// The widest texts: the most characters, the widest digits.
 pub const SPEED_LONGEST: &str = "\u{e2b1} 88.8  \u{e2b4} 88.8 m/s";
-pub const STEER_LONGEST: &str = "\u{e2b0} 88.88 m";
+/// The steer line's widest: `Out of reach`, over the widest distance,
+/// `(arrow) 88.88 m` ([`STEER_OFF_LONGEST`]).
+pub const STEER_LONGEST: &str = OUT_OF_REACH;
+/// The widest distance the steer line gives.
+pub const STEER_OFF_LONGEST: &str = "\u{e2b0} 88.88 m";
 pub const INFO_LONGEST: &str = "No bounce: on seam at 88.8 m/s";
 /// The widest ranked line: [`NEXT`] seams, three digits each. Shorter
 /// than [`INFO_LONGEST`], whose row it shares.
 pub const NEXT_LONGEST: &str = "1 \u{e2b1} 888 m  2 \u{e2b1} 888 m";
+/// The widest targets row: the widest kind, three digits, two flashlight
+/// glyphs.
+pub const KINDS_LONGEST: &str = "Targets: Common (888)  \u{e105}\u{e105}";
 /// The steer line when the coasting landing is caught.
 pub const ON_SEAM: &str = "On seam";
 /// The steer line's word after the arrow when a caught landing wants its
 /// drift.
 pub const DRIFT: &str = "Drift";
+/// The steer line when the predicted landing is off the seam and the
+/// assist's reach cannot bring it in: no arrow to follow.
+pub const OUT_OF_REACH: &str = "Out of reach";
 
 /// The largest speed and distance shown.
 pub const SPEED_MAX: f32 = 99.9;
@@ -135,6 +158,8 @@ pub enum Steer {
     /// Within the catch, coming down still or against the way a bounce
     /// on it drifts: the way to drift, against the aim.
     Drift { heading: f32 },
+    /// Off it, and no push in the time left brings it in.
+    OutOfReach,
 }
 
 /// A fall toward a seam.
@@ -158,6 +183,9 @@ pub enum Miss {
     TooSlow { had: f32, need: f32 },
     /// Primed, on the seam, at `had`, and no launch.
     NoBounce { had: f32 },
+    /// Primed, by the seam, in at `had`, and the body went through its
+    /// floor: the worst of them.
+    Through { had: f32 },
 }
 
 /// A seam the flight after a bounce can reach.
@@ -182,16 +210,66 @@ pub enum Kinds {
 
 impl Kinds {
     pub const EVERY: [Kinds; 3] = [Kinds::Common, Kinds::Likely, Kinds::All];
-}
 
-/// The line that says which kinds the player has just switched to.
-pub fn kinds_text(k: Kinds) -> &'static str {
-    match k {
-        Kinds::Common => "Targets: common",
-        Kinds::Likely => "Targets: likely",
-        Kinds::All => "Targets: all",
+    /// Its name on the targets row.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kinds::Common => "Common",
+            Kinds::Likely => "Likely",
+            Kinds::All => "All",
+        }
     }
 }
+
+/// The flashlight's glyph on every layout but Bumper Jumper: White
+/// (U+E105, docs/input/button-icons.md), which the button swap redraws
+/// as the bound key's picture on the other input sets.
+pub const FLASHLIGHT: char = '\u{e105}';
+/// The flashlight's glyph on Bumper Jumper: X (U+E102).
+pub const FLASHLIGHT_BUMPER_JUMPER: char = '\u{e102}';
+/// The largest count the targets row shows.
+pub const COUNT_MAX: usize = 999;
+
+/// The targets row: which kinds of seam the target navpoints are on, how
+/// many seams of them the map has, and how to change them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KindsRow {
+    pub kinds: Kinds,
+    pub count: usize,
+    /// The flashlight's glyph for the layout in force ([`FLASHLIGHT`],
+    /// [`FLASHLIGHT_BUMPER_JUMPER`]): two taps of it switch the kinds.
+    pub button: char,
+    /// Set for a while after the player switched the kinds: the tick of
+    /// the switch, the flash's start.
+    pub switched: Option<u32>,
+}
+
+/// The targets row's text: `Targets: Likely (4)  (flashlight)(flashlight)`.
+pub fn kinds_text(r: &KindsRow) -> String {
+    let b = r.button;
+    format!("Targets: {} ({})  {b}{b}", r.kinds.name(), r.count.min(COUNT_MAX))
+}
+
+/// The targets row's value: its text, after a switch flashing the help
+/// record from the switch's tick.
+pub fn kinds_value(r: &KindsRow) -> Value {
+    let v = Value::text(kinds_text(r));
+    match r.switched {
+        Some(tick) => Value {
+            since_tick: tick,
+            ..v.styled(Style::Flash(Pulse::Help))
+        },
+        None => v,
+    }
+}
+
+/// The targets row of the preview's states: the variant's default kinds.
+pub const SAMPLE_KINDS: KindsRow = KindsRow {
+    kinds: Kinds::Likely,
+    count: 4,
+    button: FLASHLIGHT,
+    switched: None,
+};
 
 /// How many ranked seams the line lists: as many as the readout has
 /// target navpoints ([`TARGETS`]).
@@ -207,9 +285,8 @@ pub struct View {
     /// first. With any, the line is theirs and not the miss's, the fall
     /// row is the best one's, and the target navpoints are on them.
     pub next: [Option<Next>; NEXT],
-    /// The kinds of seam the player has just switched the targets to:
-    /// while set, the line says so ([`kinds_text`]) and nothing else.
-    pub kinds: Option<Kinds>,
+    /// The targets row ([`kinds_text`]); `None` hides it.
+    pub kinds: Option<KindsRow>,
     /// Metres to the tagged seam.
     pub tag: Option<f32>,
     /// Metres to each reachable seam marked, nearest first.
@@ -255,6 +332,7 @@ pub fn steer_text(s: &Steer) -> String {
             format!("{} {m:.2} m", arrow(*heading))
         }
         Steer::Drift { heading } => format!("{} {DRIFT}", arrow(*heading)),
+        Steer::OutOfReach => OUT_OF_REACH.into(),
     }
 }
 
@@ -270,6 +348,7 @@ pub fn miss_text(m: &Miss) -> String {
             format!("Too slow: {} of {} m/s", one(*had, SPEED_MAX), one(*need, SPEED_MAX))
         }
         Miss::NoBounce { had } => format!("No bounce: on seam at {} m/s", one(*had, SPEED_MAX)),
+        Miss::Through { had } => format!("Fell through at {} m/s", one(*had, SPEED_MAX)),
     }
 }
 
@@ -311,6 +390,7 @@ pub fn hud() -> Hud {
                 Place::new(Anchor::BottomLeft, (STEER_LEFT, FALL_UP)),
             ),
             Element::text(INFO, Font::Hud, Justify::Start, INFO_LONGEST, row(INFO_UP)),
+            Element::text(KINDS, Font::Hud, Justify::Start, KINDS_LONGEST, row(KINDS_UP)),
             navpoint(TAG),
             navpoint(TARGET_1),
             navpoint(TARGET_2),
@@ -336,13 +416,9 @@ pub fn values(v: &View) -> Values {
     out.set(STEER, text(v.fall.map(|f| steer_text(&f.steer))));
     out.set(
         INFO,
-        text(
-            v.kinds
-                .map(|k| kinds_text(k).to_owned())
-                .or_else(|| next_text(&v.next))
-                .or_else(|| v.info.as_ref().map(miss_text)),
-        ),
+        text(next_text(&v.next).or_else(|| v.info.as_ref().map(miss_text))),
     );
+    out.set(KINDS, v.kinds.as_ref().map_or_else(Value::hidden, kinds_value));
     out.set(TAG, nav(v.tag));
     out.set(TARGET_1, nav(v.targets[0]));
     out.set(TARGET_2, nav(v.targets[1]));
@@ -393,6 +469,7 @@ pub fn views() -> Vec<(&'static str, View)> {
             ),
         ),
         ("falling-on-seam", fall(1.0, Steer::OnSeam)),
+        ("falling-out-of-reach", fall(0.8, Steer::OutOfReach)),
         (
             "falling-wants-drift",
             fall(
@@ -406,6 +483,7 @@ pub fn views() -> Vec<(&'static str, View)> {
         ("miss-missed", miss(Miss::Missed { by: 0.31 })),
         ("miss-too-slow", miss(Miss::TooSlow { had: 12.4, need: 16.5 })),
         ("miss-no-bounce", miss(Miss::NoBounce { had: 17.2 })),
+        ("miss-fell-through", miss(Miss::Through { had: 17.2 })),
         (
             "targets",
             View {
@@ -466,8 +544,25 @@ pub fn views() -> Vec<(&'static str, View)> {
             "targets-switched",
             View {
                 speed: Some(running),
-                kinds: Some(Kinds::All),
+                kinds: Some(KindsRow {
+                    kinds: Kinds::All,
+                    count: 23,
+                    switched: Some(0),
+                    ..SAMPLE_KINDS
+                }),
                 targets: [Some(6.0), Some(9.0)],
+                ..View::default()
+            },
+        ),
+        (
+            "targets-common-none",
+            View {
+                speed: Some(running),
+                kinds: Some(KindsRow {
+                    kinds: Kinds::Common,
+                    count: 0,
+                    ..SAMPLE_KINDS
+                }),
                 ..View::default()
             },
         ),
@@ -526,10 +621,12 @@ pub fn views() -> Vec<(&'static str, View)> {
         ));
     }
     // In every other state but `idle` (a map with no strips: nothing of
-    // the readout shows) the ring is there, empty: not primed.
+    // the readout shows) the ring is there, empty: not primed; and the
+    // targets row, at the variant's default kinds.
     for (name, v) in &mut out {
         if *name != "idle" {
             v.segments.get_or_insert(segs::segments(None));
+            v.kinds.get_or_insert(SAMPLE_KINDS);
         }
     }
     out
@@ -590,7 +687,8 @@ mod tests {
 
     /// Fullscreen only, bottom left, right of the tracker and of the
     /// charge segments' right side, clear of the middle of the screen;
-    /// the rows a line apart.
+    /// the rows a line apart, and the targets row a line over the arming
+    /// bar, 8 clear of it.
     #[test]
     fn the_rows_are_bottom_left_and_fullscreen_only() {
         let h = hud();
@@ -602,12 +700,24 @@ mod tests {
             }
             let (x, y) = (48 + e.at.full.0, 444 + e.at.full.1);
             assert!(x >= 149, "{}: right of the segments' right side, x 131 to 137", e.id);
+            if e.id == KINDS {
+                continue;
+            }
             assert!((376..444).contains(&y), "{}: under the tracker's top, in the frame", e.id);
             assert_eq!(e.outside, 0, "{}: inside the frame", e.id);
         }
         assert_eq!(48 + LEFT, 149);
         let top = |id: &str| 444 + h.element(id).unwrap().at.full.1;
         assert_eq!((top(SPEED), top(STEER), top(INFO)), (376, 397, 418));
+        // The arming bar is 13 high about its centre, y 355 to 368
+        // (`superbounce::ARM_FULL` from the frame's top, 36); the targets
+        // row ends 8 over it, as the speed row starts 8 under it.
+        let bar_top = 36 + super::super::superbounce::ARM_FULL.1 - 6;
+        assert_eq!(bar_top, 355);
+        assert_eq!(top(KINDS), 326);
+        assert_eq!(top(KINDS) + 21 + 8, bar_top);
+        assert_eq!(top(SPEED), bar_top + 13 + 8);
+        assert_eq!(h.element(KINDS).unwrap().outside, 0);
         // The bar is in the steer row, left of its text.
         let bar = h.element(FALL).unwrap().at.full;
         assert_eq!((48 + bar.0, 444 + bar.1), (149, 403));
@@ -682,7 +792,24 @@ mod tests {
             shown("miss-no-bounce", INFO).unwrap(),
             "No bounce: on seam at 17.2 m/s"
         );
+        assert_eq!(
+            shown("miss-fell-through", INFO).unwrap(),
+            "Fell through at 17.2 m/s"
+        );
         assert_eq!(shown("moving", INFO), None);
+    }
+
+    /// A landing off the seam that no push can bring in says so, with no
+    /// arrow; the bar stays.
+    #[test]
+    fn out_of_reach_has_no_arrow() {
+        assert_eq!(steer_text(&Steer::OutOfReach), "Out of reach");
+        assert_eq!(shown("falling-out-of-reach", STEER).unwrap(), OUT_OF_REACH);
+        assert!(!OUT_OF_REACH.chars().any(|c| ('\u{e2b0}'..='\u{e2b7}').contains(&c)));
+        let bar = state("falling-out-of-reach");
+        let bar = bar.get(FALL).unwrap();
+        assert!(bar.shown);
+        assert_eq!(bar.fill, 0.8);
     }
 
     /// In the flight after a bounce the line is the ranked seams', over
@@ -718,28 +845,89 @@ mod tests {
         assert_eq!(shown("second-bounce-lined-up", TARGET_2), None);
     }
 
-    /// The switch's line names the kinds, takes the row from the ranked
-    /// line and the miss line while it is up, and is no longer than the
-    /// row's longest.
+    /// The targets row names the kinds in effect and how many seams of
+    /// them the map has, then the flashlight's glyph twice; it is a row
+    /// of its own, so the miss line and the ranked line keep theirs.
     #[test]
-    fn the_switch_line_names_the_kinds() {
+    fn the_targets_row_names_the_kinds_and_their_count() {
+        let row = |kinds, count, button| KindsRow {
+            kinds,
+            count,
+            button,
+            switched: None,
+        };
         assert_eq!(
-            Kinds::EVERY.map(kinds_text),
-            ["Targets: common", "Targets: likely", "Targets: all"]
+            Kinds::EVERY.map(|k| kinds_text(&row(k, 4, FLASHLIGHT))),
+            [
+                "Targets: Common (4)  \u{e105}\u{e105}",
+                "Targets: Likely (4)  \u{e105}\u{e105}",
+                "Targets: All (4)  \u{e105}\u{e105}",
+            ]
         );
-        for k in Kinds::EVERY {
-            assert!(kinds_text(k).chars().count() <= INFO_LONGEST.chars().count());
-        }
+        assert_eq!(
+            kinds_text(&row(Kinds::Common, 0, FLASHLIGHT)),
+            "Targets: Common (0)  \u{e105}\u{e105}"
+        );
+        assert_eq!(
+            kinds_text(&row(Kinds::All, 137, FLASHLIGHT_BUMPER_JUMPER)),
+            "Targets: All (137)  \u{e102}\u{e102}"
+        );
+        // A count over three digits is held at 999.
+        assert_eq!(
+            kinds_text(&row(Kinds::All, 12_345, FLASHLIGHT)),
+            "Targets: All (999)  \u{e105}\u{e105}"
+        );
+        // Its own row: the miss line and the ranked line are as they were.
         let v = View {
             info: Some(Miss::NotPrimed),
-            next: [Some(Next { heading: 0.0, metres: 4.0 }), None],
-            kinds: Some(Kinds::Common),
+            kinds: Some(row(Kinds::Common, 2, FLASHLIGHT)),
             ..View::default()
         };
-        assert_eq!(values(&v).get(INFO).unwrap().text, "Targets: common");
-        assert_eq!(shown("targets-switched", INFO).unwrap(), "Targets: all");
+        let out = values(&v);
+        assert_eq!(out.get(INFO).unwrap().text, "Not primed");
+        assert_eq!(out.get(KINDS).unwrap().text, "Targets: Common (2)  \u{e105}\u{e105}");
+        assert!(!values(&View::default()).get(KINDS).unwrap().shown);
+        // In every preview state but `idle`, at the default kinds.
+        for (name, v) in Readout.states() {
+            assert_eq!(v.get(KINDS).unwrap().shown, name != "idle", "{name}");
+        }
+        assert_eq!(
+            shown("moving", KINDS).unwrap(),
+            "Targets: Likely (4)  \u{e105}\u{e105}"
+        );
+        assert_eq!(
+            shown("targets-common-none", KINDS).unwrap(),
+            "Targets: Common (0)  \u{e105}\u{e105}"
+        );
+        assert_eq!(shown("targets-switched", INFO), None);
         assert_eq!(shown("targets-switched", TARGET_2).unwrap(), "9");
         assert_eq!(shown("targets", INFO), None);
+    }
+
+    /// After a switch the row names the new kinds at once and flashes the
+    /// help record from the switch's tick; otherwise it is plain.
+    #[test]
+    fn the_targets_row_flashes_on_a_switch() {
+        let switched = KindsRow {
+            kinds: Kinds::All,
+            count: 23,
+            button: FLASHLIGHT,
+            switched: Some(412),
+        };
+        let v = kinds_value(&switched);
+        assert!(v.shown);
+        assert_eq!(v.text, "Targets: All (23)  \u{e105}\u{e105}");
+        assert_eq!((v.style, v.since_tick), (Style::Flash(Pulse::Help), 412));
+        let calm = kinds_value(&KindsRow {
+            switched: None,
+            ..switched
+        });
+        assert_eq!((calm.style, calm.text.as_str()), (Style::Normal, v.text.as_str()));
+        let s = state("targets-switched");
+        let x = s.get(KINDS).unwrap();
+        assert_eq!(x.style, Style::Flash(Pulse::Help));
+        assert_eq!(x.text, "Targets: All (23)  \u{e105}\u{e105}");
+        assert_eq!(state("moving").get(KINDS).unwrap().style, Style::Normal);
     }
 
     #[test]
@@ -812,11 +1000,13 @@ mod tests {
                 assert!(!t.text.contains('%'), "{name}: {}", t.text);
             }
         }
-        // The widest: the furthest landing.
+        // The widest: `Out of reach`, over the furthest landing.
         let off = Steer::Off { heading: 1.0, metres: 1e9 };
         let h = hud();
-        let longest = h.element(STEER).unwrap().kind.longest().unwrap().chars().count();
-        assert_eq!(steer_text(&off).chars().count(), longest);
+        let longest = h.element(STEER).unwrap().kind.longest().unwrap();
+        assert_eq!(longest, steer_text(&Steer::OutOfReach));
+        assert_eq!(steer_text(&off).chars().count(), STEER_OFF_LONGEST.chars().count());
+        assert!(STEER_OFF_LONGEST.chars().count() <= longest.chars().count());
     }
 
     /// The charge segments are nine gauges after the bar: the empty ring
@@ -879,7 +1069,8 @@ mod tests {
             heading: 1.0,
             metres: 1e9,
         };
-        assert_eq!(steer_text(&off).chars().count(), longest(STEER));
+        assert!(steer_text(&off).chars().count() <= longest(STEER));
+        assert_eq!(steer_text(&Steer::OutOfReach).chars().count(), longest(STEER));
         assert!(ON_SEAM.chars().count() <= longest(STEER));
         let drift = steer_text(&Steer::Drift { heading: FRAC_PI_2 });
         assert_eq!(drift, "\u{e2b2} Drift");
@@ -890,9 +1081,30 @@ mod tests {
             Miss::Missed { by: 1e9 },
             Miss::TooSlow { had: 1e9, need: 1e9 },
             Miss::NoBounce { had: 1e9 },
+            Miss::Through { had: 1e9 },
         ] {
             assert!(miss_text(&m).chars().count() <= longest(INFO), "{m:?}");
         }
         assert_eq!(miss_text(&Miss::NoBounce { had: 1e9 }).chars().count(), longest(INFO));
+        // The targets row: the widest kind at the most digits, either
+        // layout's glyph.
+        for k in Kinds::EVERY {
+            for button in [FLASHLIGHT, FLASHLIGHT_BUMPER_JUMPER] {
+                let r = KindsRow {
+                    kinds: k,
+                    count: usize::MAX,
+                    button,
+                    switched: None,
+                };
+                assert!(kinds_text(&r).chars().count() <= longest(KINDS), "{k:?}");
+            }
+        }
+        let widest = KindsRow {
+            kinds: Kinds::Common,
+            count: 888,
+            button: FLASHLIGHT,
+            switched: None,
+        };
+        assert_eq!(kinds_text(&widest), KINDS_LONGEST);
     }
 }

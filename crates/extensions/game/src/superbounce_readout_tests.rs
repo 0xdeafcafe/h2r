@@ -53,6 +53,7 @@ fn predicted(at: Vec3, speed: f32) -> Predicted {
         edge: s.edge,
         stand: s.stand,
         fall: s.fall,
+        steer: [0.0; 2],
     }
 }
 
@@ -286,9 +287,20 @@ fn a_miss_carries_the_numbers_of_its_first_failed_test() {
         panic!();
     };
     assert!(had > 6.0 * M);
+    // A fall through: the speed in, as a no-bounce's.
+    let Some(Miss::Through { had }) = miss(&at(LandingResult::Through), &spots, Some(-6.0))
+    else {
+        panic!();
+    };
+    assert!(had > 6.0 * M);
+    assert_eq!(
+        rd::miss_text(&Miss::Through { had: 17.2 }),
+        "Fell through at 17.2 m/s"
+    );
     // Without the speed, or by no seam, there is no line to give.
     assert_eq!(miss(&at(LandingResult::TooSlow), &spots, None), None);
     assert_eq!(miss(&at(LandingResult::NoBounce), &spots, None), None);
+    assert_eq!(miss(&at(LandingResult::Through), &spots, None), None);
     assert_eq!(miss(&off, &[], None), None);
     assert_eq!(
         miss(&at(LandingResult::NotPrimed), &[], None),
@@ -296,43 +308,193 @@ fn a_miss_carries_the_numbers_of_its_first_failed_test() {
     );
 }
 
-#[test]
-fn the_miss_line_stays_four_seconds_or_until_the_next_fall() {
-    let line = |l: &Landing| match l.result {
+/// The mode's state with a body: the miss line's clock runs only while
+/// the player is alive.
+fn alive() -> State {
+    State {
+        position: Some([0.0; 3]),
+        ..on()
+    }
+}
+
+fn missed_line(l: &Landing) -> Option<Miss> {
+    match l.result {
         LandingResult::Bounce => None,
         _ => Some(Miss::Missed { by: 0.3 }),
-    };
-    let missed = Some(Miss::Missed { by: 0.3 });
-    let mut s = on();
+    }
+}
+
+const MISSED: Option<Miss> = Some(Miss::Missed { by: 0.3 });
+
+/// A state and an `Info` with the miss line up, at the readout's tick 2.
+fn with_line() -> (State, Info) {
+    let mut s = alive();
+    let mut info = Info::default();
+    assert_eq!(info.step(&s, 1, missed_line), None, "the first state");
+    s.last_landing = Some(landing(LandingResult::Missed, 100, [0.0; 3]));
+    assert_eq!(info.step(&s, 2, missed_line), MISSED);
+    (s, info)
+}
+
+#[test]
+fn the_miss_line_stays_five_seconds_at_most() {
+    let mut s = alive();
     s.last_landing = Some(landing(LandingResult::Missed, 50, [0.0; 3]));
     let mut info = Info::default();
     // The landing the first state held is not news.
-    assert_eq!(info.step(&s, 1, line), None);
-    assert_eq!(info.step(&s, 2, line), None);
-    // A new one puts its line up for four seconds.
+    assert_eq!(info.step(&s, 1, missed_line), None);
+    assert_eq!(info.step(&s, 2, missed_line), None);
+    // A new one puts its line up for five seconds.
     s.last_landing = Some(landing(LandingResult::Missed, 90, [0.0; 3]));
-    assert_eq!(info.step(&s, 3, line), missed);
-    assert_eq!(info.step(&s, 3 + INFO_TICKS - 1, line), missed);
-    assert_eq!(info.step(&s, 3 + INFO_TICKS, line), None);
-    // The next fall toward a seam takes it down early.
-    s.last_landing = Some(landing(LandingResult::Missed, 300, [0.0; 3]));
-    assert_eq!(info.step(&s, 400, line), missed);
+    assert_eq!(info.step(&s, 3, missed_line), MISSED);
+    assert_eq!(INFO_TICKS, 150);
+    assert_eq!(info.step(&s, 3 + INFO_TICKS - 1, missed_line), MISSED);
+    assert_eq!(info.step(&s, 3 + INFO_TICKS, missed_line), None);
+}
+
+/// The rebound hop after the failed landing, and a jump with a landing
+/// predicted while rising, are no new fall: the line holds through them,
+/// and after the hold it goes only on a real fall toward a seam.
+#[test]
+fn the_miss_line_survives_a_rebound_hop_and_a_rising_jump() {
+    let (mut s, mut info) = with_line();
+    // The rebound: up off the seam's foot, a landing predicted.
     s.airborne = true;
-    assert_eq!(
-        info.step(&s, 401, line),
-        missed,
-        "in the air, toward no seam"
-    );
     s.landing = Some(predicted([9.5, 0.0, 2.0], 2.7));
-    assert_eq!(info.step(&s, 402, line), None);
+    s.vz = Some(3.0);
+    assert_eq!(info.step(&s, 4, missed_line), MISSED);
+    // Coming down from it, inside the hold.
+    s.vz = Some(-4.0);
+    assert_eq!(info.step(&s, 20, missed_line), MISSED);
+    // Past the hold: a jump rising with a landing predicted is no fall.
+    s.vz = Some(5.0);
+    assert_eq!(info.step(&s, 2 + MISS_HOLD_TICKS + 5, missed_line), MISSED);
+    // Nor is drifting down slower than a touchdown.
+    s.vz = Some(-0.5);
+    assert_eq!(info.step(&s, 2 + MISS_HOLD_TICKS + 6, missed_line), MISSED);
+    // Nor a fall toward no seam.
+    s.vz = Some(-6.0);
+    s.landing = None;
+    assert_eq!(info.step(&s, 2 + MISS_HOLD_TICKS + 7, missed_line), MISSED);
+    // A real fall toward a seam takes it down.
+    s.landing = Some(predicted([9.5, 0.0, 2.0], 2.7));
+    s.vz = Some(TOUCHDOWN_VZ);
+    assert_eq!(info.step(&s, 2 + MISS_HOLD_TICKS + 8, missed_line), None);
+}
+
+/// A real fall inside the hold leaves the line; the tick the hold ends it
+/// goes.
+#[test]
+fn a_real_fall_takes_the_line_down_after_the_hold() {
+    let (mut s, mut info) = with_line();
+    s.airborne = true;
+    s.vz = Some(-6.0);
+    s.landing = Some(predicted([9.5, 0.0, 2.0], 2.7));
+    assert_eq!(info.step(&s, 2 + MISS_HOLD_TICKS - 1, missed_line), MISSED);
+    assert_eq!(info.step(&s, 2 + MISS_HOLD_TICKS, missed_line), None);
     // A fall on the tick a landing is filed does not hide that landing.
     s.last_landing = Some(landing(LandingResult::Missed, 410, [0.0; 3]));
-    assert_eq!(info.step(&s, 412, line), missed);
-    // A bounce takes the line down: its line is its medal.
-    s.airborne = false;
-    s.landing = None;
-    s.last_landing = Some(landing(LandingResult::Bounce, 500, [0.0; 3]));
-    assert_eq!(info.step(&s, 420, line), None);
+    assert_eq!(info.step(&s, 2 + MISS_HOLD_TICKS + 1, missed_line), MISSED);
+}
+
+/// A bounce takes the line down at once, inside the hold too: its line is
+/// its medal.
+#[test]
+fn a_bounce_takes_the_line_down_at_once() {
+    let (mut s, mut info) = with_line();
+    s.last_landing = Some(landing(LandingResult::Bounce, 130, [0.0; 3]));
+    assert_eq!(info.step(&s, 3, missed_line), None);
+}
+
+/// A landing the line cannot be worked out for (no seam by it, no fall
+/// speed in the history) leaves the line shown as it is.
+#[test]
+fn a_landing_with_no_line_leaves_the_line() {
+    let spots = [seam()];
+    let (mut s, mut info) = with_line();
+    // No speed history for a no-bounce by the seam.
+    s.last_landing = Some(landing(LandingResult::NoBounce, 130, [10.0, 0.0, 2.1]));
+    assert_eq!(info.step(&s, 10, |l| miss(l, &spots, None)), MISSED);
+    // A miss by no seam.
+    s.last_landing = Some(landing(LandingResult::Missed, 160, [50.0, 50.0, 0.0]));
+    assert_eq!(info.step(&s, 20, |l| miss(l, &spots, None)), MISSED);
+}
+
+/// Under a second with no state keeps the line; longer is the mode off.
+/// A new game (the state's landing gone) starts again, and the landing
+/// after it is news.
+#[test]
+fn the_miss_line_survives_a_short_gap_in_the_state() {
+    let (s, mut info) = with_line();
+    for _ in 0..20 {
+        assert!(!info.absent());
+    }
+    assert_eq!(info.step(&s, 23, missed_line), MISSED);
+    for _ in 0..GAP_TICKS {
+        assert!(!info.absent());
+    }
+    assert!(info.absent(), "over a second: the mode is off");
+    // The landing the next state holds is not news.
+    assert_eq!(info.step(&s, 100, missed_line), None);
+    // A new game: no landing, then one at the new game's ticks.
+    let mut fresh = alive();
+    assert_eq!(info.step(&fresh, 101, missed_line), None);
+    fresh.last_landing = Some(landing(LandingResult::Missed, 5, [0.0; 3]));
+    assert_eq!(info.step(&fresh, 102, missed_line), MISSED);
+}
+
+/// Between lives the line's clock stops: it stays through the respawn
+/// countdown, then has the rest of its time.
+#[test]
+fn the_miss_line_stays_through_a_death() {
+    let (mut s, mut info) = with_line();
+    s.position = None;
+    assert_eq!(info.step(&s, 502, missed_line), MISSED);
+    s.position = Some([0.0; 3]);
+    assert_eq!(info.step(&s, 502 + INFO_TICKS - 1, missed_line), MISSED);
+    assert_eq!(info.step(&s, 502 + INFO_TICKS, missed_line), None);
+}
+
+/// A fall through the seam's floor outranks every other line, replaces
+/// one inside the hold whatever its speed, and only a bounce replaces it.
+#[test]
+fn a_fall_through_outranks_and_replaces() {
+    let line = |l: &Landing| match l.result {
+        LandingResult::Bounce => None,
+        LandingResult::Through => Some(Miss::Through { had: l.at[2] }),
+        _ => Some(Miss::TooSlow {
+            had: l.at[2],
+            need: 16.5,
+        }),
+    };
+    let mut s = alive();
+    let mut info = Info::default();
+    assert_eq!(info.step(&s, 1, line), None);
+    s.last_landing = Some(landing(LandingResult::TooSlow, 100, [0.0, 0.0, 20.0]));
+    assert!(matches!(info.step(&s, 2, line), Some(Miss::TooSlow { .. })));
+    // Slower, and a fall through: it replaces the line.
+    s.last_landing = Some(landing(LandingResult::Through, 100, [0.0, 0.0, 5.0]));
+    assert_eq!(info.step(&s, 3, line), Some(Miss::Through { had: 5.0 }));
+    // A faster miss does not replace it, in the hold or after.
+    s.last_landing = Some(landing(LandingResult::TooSlow, 140, [0.0, 0.0, 30.0]));
+    assert_eq!(info.step(&s, 4, line), Some(Miss::Through { had: 5.0 }));
+    s.last_landing = Some(landing(LandingResult::TooSlow, 300, [0.0, 0.0, 30.0]));
+    assert_eq!(
+        info.step(&s, 3 + MISS_HOLD_TICKS + 1, line),
+        Some(Miss::Through { had: 5.0 })
+    );
+    // A bounce does.
+    s.last_landing = Some(landing(LandingResult::Bounce, 320, [0.0; 3]));
+    assert_eq!(info.step(&s, 3 + MISS_HOLD_TICKS + 2, line), None);
+    // The rule itself.
+    let through = Miss::Through { had: 1.0 };
+    let slow = Miss::TooSlow { had: 9.0, need: 16.5 };
+    assert!(replaces(&through, &slow, 0));
+    assert!(!replaces(&slow, &through, 0));
+    assert!(!replaces(&slow, &through, INFO_TICKS));
+    assert!(replaces(&Miss::Through { had: 2.0 }, &through, 0));
+    assert!(!replaces(&Miss::NotPrimed, &slow, 0));
+    assert!(replaces(&Miss::NotPrimed, &slow, MISS_HOLD_TICKS));
 }
 
 fn ranked(at: Vec3, steer: [f32; 2], caught: bool) -> Ranked {
@@ -418,29 +580,111 @@ fn the_second_bounce_takes_the_fall_row_and_the_line() {
     );
 }
 
-/// The kinds the player has just switched the targets to are the line's
-/// while the mode's state carries them, with every option off too: the
-/// line answers the player's own press.
+/// The targets row is the kinds in effect and their count, with the
+/// layout's flashlight glyph, whenever the map is scanned and has a spot;
+/// the view of the state alone leaves it to the runtime, and a switch
+/// no longer takes the miss line.
 #[test]
-fn the_switch_of_the_kinds_takes_the_line() {
-    let mut s = on();
-    assert_eq!(view(&s, Options::DEFAULT, None).kinds, None);
-    s.switched = Some(TargetMode::Common);
-    let off = Options {
-        miss_info: false,
-        velocity: false,
-        alignment: false,
-        ..Options::DEFAULT
+fn the_targets_row_shows_the_kinds_in_effect_and_their_count() {
+    let s = State {
+        bounce: 3,
+        ..on()
     };
-    for o in [Options::DEFAULT, off] {
-        let v = view(&s, o, Some(Miss::NotPrimed));
-        assert_eq!(v.kinds, Some(rd::Kinds::Common));
-        assert_eq!(rd::values(&v).get(INFO).unwrap().text, "Targets: common");
-    }
+    let row = kinds_row(&s, TargetMode::Likely, 4, rd::FLASHLIGHT, None).unwrap();
+    assert_eq!(
+        row,
+        rd::KindsRow {
+            kinds: rd::Kinds::Likely,
+            count: 4,
+            button: rd::FLASHLIGHT,
+            switched: None,
+        }
+    );
+    let v = View {
+        kinds: Some(row),
+        ..view(&s, Options::DEFAULT, Some(Miss::NotPrimed))
+    };
+    let values = rd::values(&v);
+    assert_eq!(
+        values.get(rd::KINDS).unwrap().text,
+        "Targets: Likely (4)  \u{e105}\u{e105}"
+    );
+    assert_eq!(values.get(INFO).unwrap().text, "Not primed");
+    // A switch in the state does not take the miss line.
+    let switched = State {
+        switched: Some(TargetMode::Common),
+        ..s.clone()
+    };
+    let v = view(&switched, Options::DEFAULT, Some(Miss::NotPrimed));
+    assert_eq!(v.kinds, None);
+    assert_eq!(rd::values(&v).get(INFO).unwrap().text, "Not primed");
+    // Common on a map with none proven: the row says 0.
+    let none = kinds_row(&s, TargetMode::Common, 0, rd::FLASHLIGHT, None).unwrap();
+    assert_eq!(rd::kinds_text(&none), "Targets: Common (0)  \u{e105}\u{e105}");
+    // Before the scan is ready, and on a map with no spot, no row.
+    let scanning = State {
+        scan: ScanState::Scanning,
+        ..s.clone()
+    };
+    assert_eq!(kinds_row(&scanning, TargetMode::All, 4, rd::FLASHLIGHT, None), None);
+    let empty = State { bounce: 0, crouch: 0, ..s.clone() };
+    assert_eq!(kinds_row(&empty, TargetMode::All, 4, rd::FLASHLIGHT, None), None);
+    // The flashlight is X on Bumper Jumper, White on every other layout.
+    use crate::superbounce_ghost::{BUTTON, BUTTON_BUMPER_JUMPER};
+    assert_eq!(flashlight_glyph(BUTTON), rd::FLASHLIGHT);
+    assert_eq!(flashlight_glyph(BUTTON_BUMPER_JUMPER), rd::FLASHLIGHT_BUMPER_JUMPER);
     assert_eq!(
         [TargetMode::Common, TargetMode::Likely, TargetMode::All].map(kinds),
         rd::Kinds::EVERY
     );
+}
+
+/// A switch flashes the row from the tick it first shows in the state; a
+/// switch to another mode starts the flash again; it ends with the
+/// state's switch.
+#[test]
+fn the_targets_row_flashes_from_the_switch() {
+    use hud_kit_core::model::{Pulse, Style};
+    let mut f = SwitchFlash::default();
+    assert_eq!(f.step(None, 10), None);
+    assert_eq!(f.step(Some(TargetMode::All), 11), Some(11));
+    assert_eq!(f.step(Some(TargetMode::All), 40), Some(11));
+    assert_eq!(f.step(Some(TargetMode::Common), 50), Some(50));
+    assert_eq!(f.step(None, 111), None);
+    assert_eq!(f.step(Some(TargetMode::Common), 200), Some(200));
+    let s = State {
+        bounce: 3,
+        ..on()
+    };
+    let row = kinds_row(&s, TargetMode::All, 23, rd::FLASHLIGHT, Some(11)).unwrap();
+    let x = rd::kinds_value(&row);
+    assert_eq!(x.text, "Targets: All (23)  \u{e105}\u{e105}");
+    assert_eq!((x.style, x.since_tick), (Style::Flash(Pulse::Help), 11));
+}
+
+/// Off the seam and out of the assist's reach the fall row says so, with
+/// no arrow and the bar kept; off it and fixable it keeps its arrow; a
+/// caught landing is on the seam whatever the verdict.
+#[test]
+fn out_of_reach_shows_for_a_miss_and_not_for_a_fixable_landing() {
+    let mut s = on();
+    s.airborne = true;
+    let mut p = predicted([9.5, 0.0, 2.0], 2.7);
+    s.landing = Some(p);
+    assert!(matches!(fall(&s).unwrap().steer, Steer::Off { .. }), "fixable");
+    p.verdict = Course::Miss;
+    s.landing = Some(p);
+    let f = fall(&s).unwrap();
+    assert_eq!(f.steer, Steer::OutOfReach);
+    assert!(close(f.speed, 0.5));
+    let values = rd::values(&view(&s, Options::DEFAULT, None));
+    assert_eq!(values.get(STEER).unwrap().text, rd::OUT_OF_REACH);
+    assert!(values.get(FALL).unwrap().shown);
+    // Caught: on the seam.
+    let mut caught = predicted([10.02, 0.3, 2.0], 6.0);
+    caught.verdict = Course::Miss;
+    s.landing = Some(caught);
+    assert_eq!(fall(&s).unwrap().steer, Steer::OnSeam);
 }
 
 /// The line-up points at the seam's landing point, not the edge's nearest
@@ -515,6 +759,10 @@ fn the_approach_guide_is_the_states_with_its_option() {
         velocity: [0.0; 3],
         airborne: false,
         primed: true,
+        // The centre on the origin: the heights below are the depth
+        // rule's own.
+        lift: 0.0,
+        stick: [0.0; 2],
     };
     s.guide = guide(&body, &spot);
     let v = view(&s, Options::DEFAULT, None).guide.unwrap();
@@ -580,6 +828,8 @@ fn the_guides_chance_is_carried_but_not_shown() {
         velocity: [0.3, 0.0, -5.3],
         airborne: true,
         primed: true,
+        lift: 0.0,
+        stick: crate::superbounce_flight::keep([0.3, 0.0]),
     };
     let mut s = on();
     s.airborne = true;
@@ -675,13 +925,13 @@ fn miss_line(l: &Landing) -> Option<Miss> {
     }
 }
 
-/// A hop at a seam's foot files a landing too; within two seconds of the
+/// A hop at a seam's foot files a landing too; within the hold of the
 /// real miss it does not replace it, unless it came in faster.
 #[test]
 fn a_new_miss_does_not_replace_a_younger_one_unless_it_came_in_faster() {
     let slow = |had: f32, tick| landing(LandingResult::TooSlow, tick, [0.0, 0.0, had]);
     let too_slow = |had| Some(Miss::TooSlow { had, need: 16.5 });
-    let mut s = on();
+    let mut s = alive();
     let mut info = Info::default();
     s.last_landing = Some(slow(0.0, 1));
     assert_eq!(info.step(&s, 1, miss_line), None, "the first state");
@@ -690,7 +940,7 @@ fn a_new_miss_does_not_replace_a_younger_one_unless_it_came_in_faster() {
     assert_eq!(info.step(&s, 10, miss_line), too_slow(12.0));
     s.last_landing = Some(slow(6.3, 130));
     assert_eq!(info.step(&s, 40, miss_line), too_slow(12.0));
-    // The hop did not restart the clock: the real line still goes four
+    // The hop did not restart the clock: the real line still goes five
     // seconds after it came up.
     assert_eq!(info.step(&s, 10 + INFO_TICKS, miss_line), None);
     // A faster one replaces it.
@@ -701,10 +951,10 @@ fn a_new_miss_does_not_replace_a_younger_one_unless_it_came_in_faster() {
     // A miss with no speed in is not higher than one with.
     s.last_landing = Some(landing(LandingResult::Missed, 220, [0.0; 3]));
     assert_eq!(info.step(&s, 220, miss_line), too_slow(15.0));
-    // After MISS_KEEP_TICKS any miss replaces it.
+    // After MISS_HOLD_TICKS any miss replaces it.
     s.last_landing = Some(slow(3.0, 300));
     assert_eq!(
-        info.step(&s, 210 + MISS_KEEP_TICKS, miss_line),
+        info.step(&s, 210 + MISS_HOLD_TICKS, miss_line),
         too_slow(3.0)
     );
 }

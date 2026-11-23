@@ -764,8 +764,9 @@ edge, and the point to come down on is 0.1 before it along the seam's
 `drift`, the side the landing comes from (`superbounce_assist::aim_at`,
 `AIM_BACK`); a V's arm has its own drift, away from the side it is
 approached from, so each arm's point is on its approach side. Along a
-long strip the point slides to where the fall comes down and keeps its
-place across the strip (`stand_near`).
+long strip the point slides to where the fall comes down, flown on the
+[flight model](#the-flight-model) with the stick held as it is, and
+keeps its place across the strip (`stand_near`).
 
 Every recorded bounce came down moving across the seam along its drift,
 at 0.3 to 1.3 units/s. A landing in the catch that comes down slower
@@ -960,8 +961,13 @@ it is a Monster Bounce; each Bounced goes as `on bounced(p)`.
 **State.** On or off is decided when a game starts and again every 30
 ticks (so a guest's late host block counts); off, a tick costs a counter
 and a flag. On, each tick reads the first local player's unit, its
-position, whether its biped is airborne (biped flags bit 0, as
-`world.object`'s `physics.airborne` reads it), its velocity, its
+origin (object `+0x64`, `superbounce_mode::OBJECT_POSITION`: the point a
+teleport places and the frame of every spot's heights), how far its
+bounding sphere's centre (`+0x30`, `OBJECT_CENTRE`) sits over that
+origin, whether its biped is airborne (biped flags bit 0, as
+`world.object`'s `physics.airborne` reads it), its velocity, the stick
+it holds (the unit's throttle, turned into world axes by the aim's yaw,
+for the [flight model](#the-flight-model)), its
 aim (the vector, and as a yaw: the first-person camera looks along it),
 its flashlight action and the word of its
 one pair against the level (pair `+0x0c`,
@@ -1009,21 +1015,24 @@ kit and feeds it each tick from the mode's state (`view`); with the mode
 off every element is hidden. Launch and drop are on the strips' labels
 in the world and in the agent API, not on the HUD.
 
-**The readout.** Three rows right of the motion tracker, a second HUD on
+**The readout.** Three rows right of the motion tracker and a fourth
+over the arming bar, a second HUD on
 the kit ([hud-kit.md](hud-kit.md#the-superbounce-readout);
 `crates/extensions/game/src/superbounce_readout.rs`), fullscreen only:
 
 | Row | Shows when | Says |
 |---|---|---|
+| targets | the scan is ready and the map has a spot | the kinds of seam the [targets](#targets) are on, how many of them, and the flashlight's glyph twice, the double tap that switches them: `Targets: Likely (4)  (W)(W)`; it flashes for two seconds after a switch |
 | speed | moving | an arrow for the way of travel against the aim and the horizontal speed in metres a second, `(arrow) 7.2 m/s`; while falling, the fall speed after it |
-| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way to push and how far the landing is from the seam's [landing point](#the-landing-point), `(arrow) 0.40 m`; no percentage follows |
-| miss | for four seconds after a landing by a strip that did not bounce, until the next fall toward a strip | `Not primed`, `Missed seam by 0.31 m` (the origin's distance to the edge), `Too slow: 12.4 of 16.5 m/s` (the speed in and the strip's need) or `No bounce: on seam at 17.2 m/s` |
+| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the landing with the stick held as it is ([the flight model](#the-flight-model)) is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, `Out of reach` (no arrow, the bar kept) when it is off the seam and the stick cannot bring it in (the prediction's `Course::Miss`), else an arrow for the way to push and how far the landing is from the seam's [landing point](#the-landing-point), `(arrow) 0.40 m`; no percentage follows |
+| miss | after a landing by a strip that did not bounce: held three seconds, then until the next real fall toward a strip (falling at 1 unit/s or faster with a landing predicted), five seconds at most; a bounce takes it down at once. A hop, a jump or a step off a kerb in those three seconds leaves it, as does a landing with no line to give. Between lives its clock stops, so it stays through the respawn countdown | `Not primed`, `Missed seam by 0.31 m` (the origin's distance to the edge), `Too slow: 12.4 of 16.5 m/s` (the speed in and the strip's need), `No bounce: on seam at 17.2 m/s`, or `Fell through at 17.2 m/s`, which outranks the others: it replaces any line, and only a bounce replaces it. In the hold another miss replaces the line only with a higher speed in |
 
 Nothing of the mode's HUD is in the middle of the screen but the arming
 bar, at Assault's place, and the game's navpoints, which are where their
 spots are. The readout's three navpoints are the seam
-[targets](#targets). Each row is an [option](#the-huds-options) of the
-variant.
+[targets](#targets). Each row but the targets row is an
+[option](#the-huds-options) of the variant: the targets row answers the
+player's own press.
 
 ```sh
 h2 hud preview superbounce --state all --mode all --out DIR
@@ -1068,8 +1077,10 @@ while falling the [lock-on](#lock-on), the slot's outline.
 - The spot is the navpoint's: not primed, the nearest crouch spot;
   primed, the chosen strip, which the
   [fall assist](#hold-x-the-fall-assist) steers onto.
-- No other spot is drawn: no field of rings, no lines between spots.
-  The whole level's spots are on the flashlight
+- No other spot has a marker: no field of rings, no lines between
+  spots. While primed, each seam of the targets' set has a line on its
+  collision edge ([Seam lines](#seam-lines)). The whole level's spots
+  are on the flashlight
   ([The bounce view](#the-bounce-view)), when the player asks.
 - Not primed and further than 6 world units from the next crouch spot
   (`NEAR_RANGE`), nothing is drawn in the world; the HUD's navpoint
@@ -1164,25 +1175,73 @@ list is classed once per scan, file change and mode.
 0.4 s (12 ticks from one let-go to the next, `DOUBLE_TICKS`) move the
 mode on: common, likely, all and round again
 (`superbounce_targets::Switch`, `TargetMode::next`). The variant's
-option is where a game starts; the player's switch lasts that game. For
-two seconds after it the readout's last row says which kinds are shown,
-`Targets: common`, `Targets: likely` or `Targets: all`, in place of its
-other lines ([hud-kit.md](hud-kit.md#the-superbounce-readout)). The
+option is where a game starts; the player's switch lasts that game. The
+readout's targets row, over the arming bar, always says which kinds are
+shown, how many seams of them the map has, and how to change them, the
+flashlight's glyph twice: `Targets: Likely (4)  (W)(W)`, with X's glyph
+on Bumper Jumper ([hud-kit.md](hud-kit.md#the-superbounce-readout)). It
+shows once the scan is ready and the map has a spot; `common` on a map
+with nothing proven reads `Targets: Common (0)`. A switch names the new
+kinds on the row at once and flashes it for two seconds. The
 flashlight is the mode's one button: the game binds it on every input
 set and layout, a tap is the bounce view's pulse and a hold its marks
 and the tag, and after two taps a biped's light is as it was.
 
-**Reachable.** Of the mode's seams, the two nearest the player can
-reach from their height are marked (`superbounce_targets::choose`,
-`sbr.target.1` and `sbr.target.2`): the feet are at least the seam's
-`fall` above its `stand`, less 0.05 (`reachable`; the [speed](#speed)
-model's drop for a strip with no measured one). Only height is judged,
-not the way there. A V's arm counts only from across its bisector, as
-the mode's own marks. A seam out of reach has no navpoint; climb, and it
-gets one. The seam under the mode's own navpoint is not marked twice.
-Before the player is primed no seam is marked
-(`superbounce_mode::primed_marks`): there is nothing to land yet. The
-tag's navpoint stays.
+**Navpoints.** Two seams have one: the chosen strip (the mode's own,
+on the ground) and the tag. The other seams of the set are
+[seam lines](#seam-lines), not navpoints: `sbr.target.1` and
+`sbr.target.2` are the [second bounce](#the-second-bounce)'s ranked
+seams, in the flight after a bounce, and are empty otherwise
+(`superbounce_mode::on_tick`). `superbounce_targets::choose` still
+works out the two nearest seams the player can reach from their height
+(`reachable`: the feet at least the seam's `fall` above its `stand`,
+less 0.05), which the approach guide falls back on.
+
+#### Seam lines
+
+While primed, every seam of the targets' set has a line on the map,
+drawn on its collision edge from vertex to vertex, 0.02 over it: the
+edge the bounce happens on, to the float the map stores
+([the target](#the-target-the-collision-edge)). The rules are
+`crates/extensions/game/src/superbounce_seams.rs` (`lines`, `segments`),
+pure; `superbounce_world::frame` draws them (`seam_callouts`) in the
+HUD's colour through the world-line pass, with the sight test the other
+marks have (a line behind the level is dim).
+
+| Seam | Line |
+|---|---|
+| the chosen strip | 4 px, full alpha at any distance, with a tick across each end as wide as the catch (0.1 either side) |
+| any other seam of the set | 2.5 px at 0.6 alpha, fading from 25 units out to nothing at 45 |
+| a seam with no length (a busy point, a V's tip) | a cross on its vertex, 0.1 each way |
+
+A V's arm has its line only from across its bisector, as its marks.
+Switching the targets' kinds changes the lines at once: the set is the
+one the readout's `Targets` row names.
+
+#### The faced seam
+
+Primed, with no tag and no strip being fallen onto, the chosen strip is
+the seam of the targets' set the player faces
+(`superbounce_seams::faced`, kept tick to tick by `Facing`;
+`superbounce_mode::faced_target`), so the navpoint, the takeoff, the
+approach guide, the bold seam line and the fall assist follow where the
+player is going. A tag outranks it, and so does the strip a flight is
+predicted onto.
+
+- **The heading** is the aim's yaw; moving over 0.5 units/s, the aim
+  and the way of travel together.
+- **A seam's cost** is the angle between the heading and the nearest
+  point of its edge, in radians, plus 0.02 for each unit of distance
+  to that point. Seams over 50 degrees off the heading or over 25 units
+  away are not faced; one whose edge is within 0.5 is, whatever the
+  heading. The lowest cost wins.
+- **Kept.** The seam faced the tick before is 0.15 radians ahead, so
+  the choice does not flicker as the aim crosses between two. With no
+  seam in the cone the last one stays while it is in the set, and in
+  the air it never changes: a jump keeps the seam it left for.
+
+With no seam ever faced, the chosen strip is the nearest strip the
+player's floor is high enough for (`superbounce_charge::nav_target`).
 
 **The tag.** Holding the flashlight (8 ticks, the hold that opens
 [the bounce view](#the-bounce-view)) while aiming at one of the mode's
@@ -1214,16 +1273,15 @@ touchdown, rising or falling.
 **Reached.** A seam of the [targets](#targets)' mode is reached
 (`judge`) when:
 
-- the flight comes down to the seam's height within 8 s, at the speed
-  the seam needs or faster (`√(vz² + 2 × 4.15 × height)` against
-  `need_of`, the [one threshold](#speed) for a scanned strip). A seam
-  over the apex, or just under it, is not;
-- the seam's [landing point](#the-landing-point) nearest the coasting
-  landing (`superbounce_assist::stand_near`, `aim_at`) is within what
-  the stick can move
-  the landing in the time left: half the
-  [fall assist](#hold-x-the-fall-assist)'s air acceleration (3 units/s²,
-  an estimate) times the time squared, plus its 0.4 slack;
+- the flight, flown on the [flight model](#the-flight-model) with the
+  stick held as it is, comes down to the seam's height within 8 s, at
+  the speed the seam needs or faster (the touchdown speed of its last
+  free row against `need_of`, the [one threshold](#speed) for a scanned
+  strip). A seam over the apex, or just under it, is not;
+- the pursuit of the seam's [landing point](#the-landing-point) nearest
+  that landing (`superbounce_assist::stand_near`, `aim_at`;
+  `superbounce_flight::pursue`) comes down in the seam's catch: the
+  stick, as measured, can get it there;
 - no floor under the flight's apex covers the point
   (`superbounce_assist::covered`);
 - a V's arm, only from across its bisector.
@@ -1246,7 +1304,7 @@ each other only the better.
 - the fall row is the best seam's line-up
   (`superbounce_readout::line_up`): the bar is the touchdown speed there
   over its need, and beside it `On seam` when the flight comes down in
-  its catch coasting, `(arrow) Drift` when it does so without the seam's
+  its catch with the stick held as it is, `(arrow) Drift` when it does so without the seam's
   drift, else an arrow for the way to steer to its
   [landing point](#the-landing-point) and how far.
 
@@ -1271,13 +1329,13 @@ Where to leave from is a bar on the floor, the world's
 | Mark | Where | Says |
 |---|---|---|
 | the pipper, a small ring with a cross | where the player's path touches down, on the seam's floor | in the air, the landing itself; on the ground, only while the cue counts to a jump's line, where that jump lands |
-| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`) |
+| the box, four corner brackets | on the seam's collision edge, at the point of it beside the landing point ([The landing point](#the-landing-point)), turned along the edge, 0.6 long and as wide as the catch (0.2): the edge runs through its middle, under the [seam line](#seam-lines) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`) |
 | the ticks, three dashes | from the pipper toward the box | how far off the landing is: they shorten as the two close and go when the landing is caught |
 | the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit while the player moves that way |
 
 **Which seam** (`superbounce_guide::target`). The seam a fall is
 predicted onto (the state's `landing`); else, while primed, the chosen
-strip (the mode's navpoint); else the nearest of the tagged seam and the
+strip (the mode's navpoint: the tag, else [the faced seam](#the-faced-seam)); else the nearest of the tagged seam and the
 target navpoints' seams within 6 units ([Targets](#targets)).
 
 **When** (`superbounce_guide::strength`). While primed, at any
@@ -1289,25 +1347,29 @@ fullscreen only, as the readout is, and the variant's `approach_guide`
 [option](#the-huds-options) turns them off.
 
 **The impact** (`superbounce_guide::impact`). The body's free flight is
-stepped a game tick at a time under the sim's fall model
-(`sim_bench::drops::fall_model`): each tick the fall speed gains
-4.171 / 30 units/s and the body moves its velocity over 30. The flight
-ends on the last tick whose next would be at or under the height the
-seam stops the body at (`Seam::contact`): that tick's row is the **last
-free row**, its place is the pipper's and its fall speed is the
-touchdown speed. A test steps a drop from each of the fall model's
-heights and gets the model's row and speed. On the ground the flight is
-the jump pressed on the takeoff's line, and only while the cue counts to
-it (`Takeoff::leaves_at`): the run carried to the line and 5 ticks on,
-its horizontal velocity kept, 3.08 units/s up
-(`bots::bounce_route::JUMP_VZ`). Otherwise there is no pipper and no
-ticks on the ground: the floor underfoot is not the seam's, so a jump
-from anywhere else says nothing. Positions are the
-body's bounding-sphere centre, as the mode's state and the drops'
-records have it. The surface is the seam's alone: its floor, 0.03 over
-the edge's height (`FALL_CLEARANCE`), and by the edge the far face
-below. No other geometry is probed, so a landing on something else on
-the way is not seen, which is why the pipper stays by the seam.
+flown on the [flight model](#the-flight-model) with the stick the player
+holds: each tick the fall speed gains 4.171 / 30 units/s and the
+sideways velocity steps toward what the stick asks for. The flight ends
+on the last tick whose next would be at or under the height the seam
+stops the body at (`Seam::contact`): that tick's row is the **last free
+row**, its place is the pipper's and its fall speed is the touchdown
+speed. A test steps a drop from each of the fall model's heights and
+gets the model's row and speed. On the ground the flight is the jump
+pressed on the takeoff's line, and only while the cue counts to it
+(`Takeoff::leaves_at`): the run carried to the line and 5 ticks on, 3.08
+units/s up (`bots::bounce_route::JUMP_VZ`), the stick held that keeps
+the run going. Otherwise there is no pipper and no ticks on the ground:
+the floor underfoot is not the seam's, so a jump from anywhere else says
+nothing. The flight is the body's origin (object `+0x64`), the frame of
+the spots' heights; the bounding sphere's centre rides over it by the
+lift the mode reads (about 0.4, `CENTRE_LIFT` when it cannot be read).
+`Seam::contact` gives the height the centre is stopped at, and the
+flight takes the lift off it: off the catch, the floor, with the origin
+0.03 over the edge's height (`FALL_CLEARANCE`); in the catch, the
+drops' measured rule, which is in the centre's frame: 0.03 over the
+edge, or where the far face stops it first (**Depth**, below). No
+other geometry is probed, so a landing on something else on the way is
+not seen, which is why the pipper stays by the seam.
 
 **Lined up** (`superbounce_guide::caught`). The last free row is within
 the seam's catch of its edge (`superbounce::catch_miss`), either side:
@@ -1319,7 +1381,10 @@ the next tick goes deep into it
 ([notes/2026-11-22-seam-drop-depth.md](notes/2026-11-22-seam-drop-depth.md)).
 The rule is in the seam's own frame, so it reads any seam with a drift:
 with `past` the row's place past the edge along the drift (negative
-before it) and `over` its height over the edge, the row is **deep** when
+before it) and `over` its height over the edge, both for the body's
+bounding-sphere centre (the row's origin plus the lift: the drops'
+records, which the numbers come from, are the centre's), the row is
+**deep** when
 
 ```text
 over − 0.75 × past < 0.445
@@ -1404,9 +1469,10 @@ against the drift.
 **The two flights.** The lip is put on the floor under it
 (`superbounce_capsule::Room::floor_at`, within 0.1, `SAME_FLOOR`; none
 there, no takeoff). Both flights are at the run's speed, the run's own,
-else 0.8 units/s (`WALK_UP`, the speed the
-[fall assist](#hold-x-the-fall-assist) crosses a strip at), along the
-lip's heading, under the [impact](#the-approach-guide)'s fall model:
+else 0.8 units/s (`WALK_UP`, a walking approach), along the lip's
+heading, flown on the [flight model](#the-flight-model) holding the
+stick that keeps that run going (`superbounce_guide::solve`), as the
+[impact](#the-approach-guide) is:
 
 - **a walk-off** from the lip, when it is an edge: the floor 0.1 past it
   (`EDGE_PROBE`) is not its own;
@@ -1570,20 +1636,19 @@ show it and hold the button without a pad.
 player's X is held
 (pad X, keyboard E by default; the `BUTTON` constant), the player is
 airborne and falling (vertical speed at most 0.5 units/s), and a bounce spot
-passes the reach cone (`judge`):
+passes the reach cone (`judge`), each part flown on the
+[flight model](#the-flight-model):
 
-- it is below the player, and the time to fall to its height is at most
-  3 s (`fall_time`, from the height and vertical speed under gravity
-  4.15 units/s²);
+- it is below the player, and the flight with the stick held as it is
+  comes down to its height within 3 s (`MAX_TIME`);
 - its point to land on is within 3 units sideways. A strip bounces along
   its whole length, so the point is the stand point moved along the
-  strip's edge to where the coasting landing comes down, a capsule's
+  strip's edge to where that flight comes down, a capsule's
   radius (0.175) inside its ends (`stand_near`): a fall onto one end of a
   long strip is not pulled to its middle;
-- the landing the player would have if the stick were let go (`predicted_landing`,
-  coasting for that time) is within what the stick can move in the time left:
-  half the air acceleration times the fall time squared, plus 0.4 units. The
-  cone is wider the longer the fall;
+- the pursuit of the aim (`superbounce_flight::pursue`) comes down
+  within 0.4 units of it (`HOLD_SLACK`): the stick, as measured, can make
+  up the rest in the time left. The cone is wider the longer the fall;
 - no floor is between the player and the point (`covered`): the highest
   floor under it, up to 0.5 over the player's feet
   (`superbounce_capsule::Room::floor_at`), is no more than 0.3 above it.
@@ -1600,7 +1665,7 @@ is judged, and of those that pass (`choose`):
 2. else the strip the HUD marks, the navpoint's and the world marker's
    ([Floor marks](#floor-marks); `set_marked`, from the mode each tick),
    so the pull is toward the mark the player sees;
-3. else the strip the coasting landing misses by least, one the fall is
+3. else the strip the held landing misses by least, one the fall is
    fast enough for (touchdown speed at least its `need`) before one it is
    too slow for.
 
@@ -1610,17 +1675,16 @@ with its verdict, and the read the assist last engaged on
 
 **The steer.** The aim is the strip's
 [landing point](#the-landing-point) (`aim_at`: a measured landing as it
-is, a scan's point 0.1 units back along the spot's drift), crossed at
-0.8 units/s along the drift. A PD controller (`steer`,
-5 rad/s, damping 0.8) tracks the line that arrives there: the position the
-player would be at, the time left before touchdown, moving at the arrival
-velocity. It asks for a horizontal acceleration in world axes;
-`world_to_stick` turns it into the left stick in the aim's frame (forward is
-`(cos yaw, sin yaw)`, right `(sin yaw, -cos yaw)`) by dividing by the air
-acceleration (`AIR_ACCEL`, 3 units/s², an estimate of what a full stick
-does in the air) and cutting it back to the unit disc. Without a stick that
-strong the player misses; with one stronger the gains still land close
-(simulated at 0.7 to 1.4 times the estimate).
+is, a scan's point 0.1 units back along the spot's drift). Each read
+the stick is the [flight model](#the-flight-model)'s pursuit of it
+(`superbounce_flight::pursue`): the velocity that covers the rest of the
+way in the ticks left, as a stick, in world axes. In the air the stick
+asks for a velocity, not a push, so `world_to_stick` turns it as it is
+into the left stick in the aim's frame (forward is `(cos yaw, sin yaw)`,
+right `(sin yaw, -cos yaw)`), cut back to the unit disc. Read again each
+tick, the pursuit corrects what the last one left: a simulated fall
+against an air stick 0.7 to 1.4 times the measured one still lands
+within 0.1 of the aim.
 
 **The button.** While the assist is engaged X reads as released, so the
 button does not reload or pick up. Once it has engaged, X stays released
@@ -1649,9 +1713,55 @@ never runs in a replay. The `superbounce-assist` feature has no guest hooks,
 so a film's hook digest does not include it, and it is snapshot-stateless:
 the swallowed-button latch and the test hold are momentary.
 
-The gains, the air acceleration and the stick's dead zone in the guest
-have not been measured in the game; they are the first thing to tune in a
-lab run.
+The air stick's numbers are the bots' measured ones
+([The flight model](#the-flight-model)); the guest's own dead zone on a
+replaced stick is not measured, and is the first thing to check in a lab
+run.
+
+### The flight model
+
+Every landing the mode predicts is flown one game tick at a time on one
+model (`crates/extensions/game/src/superbounce_flight.rs`): the approach
+guide's [impact](#the-approach-guide) and [takeoff](#the-takeoff), the
+[fall assist](#hold-x-the-fall-assist)'s gate and stick, the
+[landing](#landings) a fall is headed for and the
+[second bounce](#the-second-bounce)'s seams. Each tick:
+
+1. the fall speed gains 4.171 / 30 units/s (`FALL_GRAVITY`, the sim's
+   fall model, `sim_bench::drops`);
+2. the sideways velocity steps toward the stick times 1.2 units/s
+   (`AIR_TOP`) by at most 0.035 units/s (`AIR_ACCEL`, 1.05 units/s²);
+   a stick under 0.2 (`MIN_STICK`) is no stick, so a let-go stick
+   brakes the body to a stop at that rate;
+3. the body moves its new velocity over 30.
+
+The air stick's numbers are the bots' drill runs'
+(`bots::bounce_route`, [notes/2026-11-21-bot-bounce-sim.md](notes/2026-11-21-bot-bounce-sim.md)):
+0.035 units/s a tick in every run, braking and pushing, and flights held
+at 0.9 to 1.3 under a full stick. So the air does not keep a run: a
+run-jump at 2.0 units/s and 3.08 up, which would coast 2.87 on in the 43
+ticks back to its floor, brakes to 1.2 with the stick held on (2.01 on)
+and toward a stop with it let go (1.76), and a test holds those numbers.
+The flight
+ends on the last free row: the last tick whose next would be at or under
+the surface.
+
+- **Held** (`hold`): the stick the player holds, read from the unit's
+  throttle each tick and turned into world axes by the aim's yaw
+  (`held`). Without a read, the stick that keeps the velocity
+  (`keep`: the velocity over 1.2, cut to the unit disc).
+- **Pursued** (`pursue`): the stick each tick that heads for a point:
+  the velocity that covers the rest of the way in the ticks left of a
+  plumb fall to it, as a stick. It ends on the point when the stick can
+  get there, and as near as it can when it cannot; that miss is what the
+  fall assist and the second bounce gate on, and its first stick is the
+  assist's and the landing's `steer`.
+
+The flight is the body's origin (object `+0x64`). The bounding sphere's
+centre (`+0x30`) rides about 0.4 over it and moves with the pose; the
+approach guide's [depth](#the-approach-guide) rule is measured on the
+centre, so the guide adds the
+lift the mode reads to a row before it reads the depth.
 
 ## Open
 
@@ -1872,10 +1982,10 @@ catch; its `need` is the [one threshold](#speed). How a landing is shown is in
 under them.
 
 - **On course.** The state's `landing` (`superbounce_assist::predict_on`)
-  is there whenever the player is airborne and falling, primed or not:
+  is there whenever the player is airborne, rising or falling, primed or not:
   of the strips below with no floor between
   ([the assist's rule](#hold-x-the-fall-assist)) and a point within
-  3 units of the coasting landing, the one it lands nearest the slot of,
+  3 units of the landing with the stick held as it is, the one it lands nearest the slot of,
   with its `verdict`
   (`OnSlot`, `Fixable` by the assist's reach gate, else `Miss`), `speed`
   and `need`, and the strip's `edge`, `stand` and `fall`. `miss` is how
@@ -1905,6 +2015,28 @@ under them.
   ([Covered seams](#covered-seams)). The HUD says it in the notification list, and
   `superbounce.state` returns the last landing as `last_landing`: the
   outcome, the touchdown's game tick and the origin.
+- **Through the floor.** A primed fall can go through a seam's floor
+  instead of bouncing (Zanzibar's crack, [Zanzibar's
+  window](#zanzibars-window-trace-lab-play); a seam on Ascension). It
+  never stops falling, or stops for a tick and sinks on, so no window
+  closes on it; it is filed at once as `through`
+  (`superbounce_charge::through`, `LandingResult::Through`), on the
+  tick the origin crosses from at or above the edge's height less 0.3
+  (`SINK`) to below it, within 0.3 of the edge horizontally
+  (`THROUGH_RADIUS`), moving down (the tick before falling at 1 unit/s
+  or more, or a touchdown by the strip open) and primed (the word −3 on
+  the tick before or on that touchdown's tick before). The height is
+  the edge's at its point nearest the origin. 0.3 is deeper than any
+  measured bounce's sink (0.07 to 0.23 under the floor, [Traces](#traces-trace)
+  and [the touchdown tick](#the-touchdown-tick-trace-stepped)), so a
+  bounce's dip is never one; the radius is the catch (0.1) and the
+  capsule's radius (0.175), rounded, and the Zanzibar fall came down
+  0.048 off its crease. A touchdown the fall follows was the seam hit:
+  `through` replaces its verdict, with its tick and origin; otherwise
+  the tick is the crossing's and the origin the tick before's. A
+  touchdown under that floor within 0.5 of the edge after it is the
+  same fall, not a landing. The speed in, the fall carried down to the
+  edge's height, is on `Through::speed_in` (`Tracker::last_through`).
 - **Off-spot bounces.** A primed bounce no marked strip accounts for
   (none within 0.5, or the origin outside the catch of the one there
   is) is a seam the marks don't know yet. The mode keeps the first local
@@ -2292,8 +2424,8 @@ Eight medals: **Superbounce** for every bounce; **Double Bounce**,
 **Triple Bounce**, **Quad Bounce**, **Chain Bounce** and
 **Bouncetacular** for the second to the sixth bounce with no ground
 between them; **Monster Bounce**, for a bounce that launches well above
-a normal one; and **Bounced**, for a fall out of the map during a
-bounce. They are awarded to every player in the game, bots included,
+a normal one; and **Bounced**, for a fall out of the map, or through a
+strip's floor, during a bounce. They are awarded to every player in the game, bots included,
 while the mode is on. The player sees a medal as Halo 2 shows its own, a
 line of the notification list with a medal glyph ([hud-kit.md](hud-kit.md),
 "The medals"); the film and Live count them. The announcer speaks each
@@ -2365,6 +2497,8 @@ Sixteen pair reads a tick at most, only while the mode is on.
   - a tick with the airborne bit clear, from the third tick after the
     bounce's touchdown on, the tick its window closes (`CLEAR_FROM`; a
     soft landing at the top of the flight is no touchdown);
+  - a fall through a strip's floor (`through`, [Landings](#landings)),
+    which arms a Bounced (below);
   - the player's unit changing or going (a death, a respawn, a
     vehicle), or its origin moving more than 3 units in a tick
     (`TELEPORT`: a teleporter, `sim.state.set`);
@@ -2411,8 +2545,9 @@ live and site lists of the eight ids are `BOUNCE_MEDALS` (`medals.rs`,
 **Bounced** (`bounced`) is not on the chain's table: it is its own
 event, `Event::Bounced`. It is earned when, for a player who was
 attempting a bounce, the unit goes (the player's unit reads none) or is
-replaced by another (a death and a respawn on one tick), and on the
-tick before that:
+replaced by another (a death and a respawn on one tick), and either of
+two things led to it. The first is a fall off the map: on the tick
+before the unit went,
 
 - the unit was airborne, and
 - falling at 1 unit/s or more (`TOUCHDOWN_VZ`, the touchdown's own
@@ -2420,12 +2555,32 @@ tick before that:
 - the chain was live, or the word was −3 (primed: the player was going
   for a bounce).
 
-So the window is one tick: the last tick the unit was read, which must
-be a primed or chained fall. A fall out of the map is a death in the
-air, with no touchdown before it; a death on the ground, a death
+The second is a fall through a strip's floor: the `through` of
+[Landings](#landings) (`superbounce_charge::through`: the origin crosses
+0.3 under the edge within 0.3 of it, moving down, primed or in a live
+chain) arms a Bounced, and the unit going within 300 game ticks
+(`superbounce_chain::BOUNCED_TICKS`, 10 s) earns it, whatever the
+airborne bit, the word or the vertical speed read by then. A body that
+goes through a seam ends up under the world: the level pair is gone or
+rebuilt, the body slides or rests on something there with no fall
+speed, and the Guardians kill it a second or more later, so the
+first rule never holds on its last tick. The 10 s covers the Guardians,
+a kill barrier and a fatal landing below. A bounce disarms it, as does
+a teleport (`TELEPORT`), and so does living past the 300 ticks: the
+player dropped through to a floor below and survived. A touchdown under
+that floor within 0.5 of the edge is the same fall and is not judged.
+The touchdown the fall through follows, if one was open, was the seam
+hit: it is dropped, not judged. The fall through ends the chain, and the
+award's `chain` is the count of the chain it ended, 0 if none was live.
+
+So the first rule's window is one tick: the last tick the unit was read,
+which must be a primed or chained fall. A fall out of the map is a death
+in the air, with no touchdown before it; a death on the ground, a death
 climbing off a bounce, or a death of an unprimed player falling earns
-none. The award's `chain` is the live chain's count, 0 if there was
-none, and the chain ends. What killed the player is not read: a primed
+none, unless a fall through armed it. Its award's `chain` is the live
+chain's count, 0 if there was none, and the chain ends. One death earns
+one Bounced: where both rules hold, the armed one gives it, with the
+chain it ended. What killed the player is not read: a primed
 player shot dead in a fall earns it too, as does one who drops off a
 ledge while primed (supposed: that falling out of the map kills the
 unit and clears the player's unit before the next tick, rather than
@@ -2615,7 +2770,7 @@ the map-view set of 2026-11-21 (concepts 1, 3, 4 and 6).
 | Nothing | Two blips on the tracker, drawn as the game's own are, filled dots: the next spot (the navpoint's) is a dot with a ring round it, and the spot after it, the landing a next crouch spot pairs with, a smaller, fainter dot. One out of the tracker's range sits on its rim, toward the spot. No other spot is on the tracker (`tracker_blips`, `TRACKER_MARKS`). Hidden while the variant turns the tracker off. |
 | Tap the flashlight | A scan pulse. A ring leaves the player at 40 units a second and crosses the tracker; each spot in the world lights as it passes, settles and is gone 4 s after it lit. |
 | Hold the flashlight | Every spot on the level is marked in the world: a small upright ring or diamond with its distance in metres (none past 40 m), dashed and dimmer when a wall is between it and the player, a chevron over or under it for a floor above or below, and a dashed line from each crouch spot to its landing. The tracker grows to twice its size into a map: the floors from the collision within 50 m and from 2.5 units below to 1.5 above the player's feet, their outline, the spots and pairs, every proven spot out of range on its rim, turned so ahead is up. Let go and it shrinks back. |
-| Tap the flashlight twice | Each tap pulses, and the pair switches the kinds of seam the target navpoints show ([Targets](#targets)). |
+| Tap the flashlight twice | Each tap pulses, and the pair switches the kinds of seam the seam lines show ([Targets](#targets)). |
 
 Proven spots are drawn at full strength, likely ones at half, as the
 mode's other marks. Everything is in the HUD's colour (`0x00468c84`,

@@ -362,6 +362,7 @@ mod tests {
             velocity: [0.0, 0.0, if airborne { -2.0 } else { 0.0 }],
             yaw: 0.0,
             airborne,
+            stick: [0.0; 2],
         }
     }
 
@@ -514,9 +515,10 @@ mod tests {
         let reach = Reach {
             time: 0.5,
             aim: [0.0, -0.1],
-            arrive: [0.0, 0.8],
             landing: [0.4, 0.2],
             miss: 0.5,
+            stick: [-0.6, -0.8],
+            short: 0.0,
         };
         let b = body([0.4, 0.2, 1.0], true);
         let out = callouts(&[s], &b, true, Some((&s, &reach)), false, true, &LOOK);

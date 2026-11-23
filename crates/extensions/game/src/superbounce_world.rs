@@ -833,10 +833,52 @@ pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout>
         takeoff: s.takeoff,
         guide: s.guide.as_ref().map(|g| g.seam.edge),
     };
-    let mut out = figures(&targets(spots, primed, chosen, next), &scene, &look);
+    // The chosen strip may be a seam of the targets' set the mode does
+    // not mark (the faced seam): it is looked for among both.
+    let shown = crate::superbounce_targets::current();
+    let all: Vec<Spot> = spots
+        .iter()
+        .chain(shown.iter().map(|t| &t.spot))
+        .copied()
+        .collect();
+    let mut out = figures(&targets(&all, primed, chosen, next), &scene, &look);
+    // Primed, every seam of the set has a line on its collision edge
+    // (docs/game/superbounce.md, "Seam lines").
+    if primed {
+        out.extend(seam_callouts(
+            &crate::superbounce_seams::lines(&shown, at, chosen),
+            &look,
+        ));
+    }
     let room = crate::superbounce_mode::current_room();
     occlude(&mut out, eye_of(at), |a, b| room.blocked(a, b));
     out
+}
+
+/// The chosen seam's line: its width, pixels at 1080p.
+pub const SEAM_WIDTH: f32 = 4.0;
+/// Another seam's line.
+pub const SEAM_WIDTH_OTHER: f32 = 2.5;
+
+/// The seam lines as callouts: each line's segments
+/// (`superbounce_seams::segments`: the collision edge, vertex to vertex,
+/// and the chosen seam's end ticks) in the HUD's colour at the line's
+/// alpha, the chosen seam's [`SEAM_WIDTH`] wide and the others'
+/// [`SEAM_WIDTH_OTHER`]. No label and no fade of the style's own: the
+/// line's alpha has the distance in it.
+pub fn seam_callouts(lines: &[crate::superbounce_seams::SeamLine], look: &Look) -> Vec<Callout> {
+    lines
+        .iter()
+        .map(|l| {
+            let width = if l.chosen { SEAM_WIDTH } else { SEAM_WIDTH_OTHER };
+            callout(
+                crate::superbounce_seams::segments(l),
+                crate::superbounce_seams::anchor(l),
+                look.colour,
+                bold(look, width, l.alpha),
+            )
+        })
+        .collect()
 }
 
 /// Marks the map hides from the eye: each callout whose anchor `blocked(eye,
@@ -942,6 +984,35 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
+    }
+
+    /// A seam line's callout is the collision edge itself, vertex to
+    /// vertex: the chosen seam's bold with its end ticks, another's
+    /// thinner at its own alpha, neither with a label or a distance fade.
+    #[test]
+    fn a_seam_line_is_drawn_on_the_collision_edge() {
+        use crate::superbounce_seams::{LIFT as SEAM_LIFT, SeamLine};
+        let edge = [[1.0, 5.0, -3.2], [3.0, 5.0, -3.2]];
+        let line = |chosen, alpha| SeamLine {
+            edge,
+            stand: [2.0, 4.976, -3.19],
+            chosen,
+            alpha,
+        };
+        let out = seam_callouts(&[line(false, 0.6), line(true, 1.0)], &LOOK);
+        assert_eq!(out.len(), 2);
+        let on_edge = [[1.0, 5.0, -3.2 + SEAM_LIFT], [3.0, 5.0, -3.2 + SEAM_LIFT]];
+        assert_eq!(out[0].edges, vec![on_edge]);
+        assert_eq!((out[0].style.width, out[0].style.alpha), (SEAM_WIDTH_OTHER, 0.6));
+        assert_eq!(out[1].edges[0], on_edge);
+        assert_eq!(out[1].edges.len(), 3);
+        assert_eq!((out[1].style.width, out[1].style.alpha), (SEAM_WIDTH, 1.0));
+        for c in &out {
+            assert_eq!(c.color, LOOK.colour);
+            assert!(c.label.is_none() && c.style.fade.is_none());
+            // The anchor is on the edge, by the landing point.
+            assert_eq!(c.anchor, [2.0, 5.0, -3.2 + SEAM_LIFT]);
+        }
     }
 
     fn scene() -> Scene {

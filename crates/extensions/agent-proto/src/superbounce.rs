@@ -551,15 +551,19 @@ pub enum LandingResult {
     TooSlow,
     /// Primed, in the slot, fast enough, no bounce.
     NoBounce,
+    /// Went through the seam's floor: primed, by the edge, and no launch.
+    /// Filed on the tick the origin crossed 0.3 under the edge.
+    Through,
 }
 
 /// A landing, filed when its launch window closes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Landing {
     pub result: LandingResult,
-    /// The game tick of the touchdown.
+    /// The game tick of the touchdown; for `through`, the touchdown's it
+    /// followed, else the tick the origin crossed.
     pub tick: u32,
-    /// The origin on the tick before touchdown, world units.
+    /// The origin on the tick before `tick`, world units.
     pub at: [f64; 3],
 }
 
@@ -1584,6 +1588,7 @@ mod tests {
             (LandingResult::Missed, "missed"),
             (LandingResult::TooSlow, "too_slow"),
             (LandingResult::NoBounce, "no_bounce"),
+            (LandingResult::Through, "through"),
         ] {
             assert_eq!(serde_json::to_value(r).unwrap(), name);
         }

@@ -503,6 +503,7 @@ fn the_reticle_locks_with_the_landing() {
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
             fall: 1.0,
+            steer: [0.0; 2],
         })
     };
     let s = State {

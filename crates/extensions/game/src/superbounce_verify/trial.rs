@@ -528,5 +528,6 @@ pub fn landing_name(r: LandingResult) -> &'static str {
         LandingResult::Missed => "missed",
         LandingResult::TooSlow => "too_slow",
         LandingResult::NoBounce => "no_bounce",
+        LandingResult::Through => "through",
     }
 }
