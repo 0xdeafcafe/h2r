@@ -1583,7 +1583,7 @@ stored: players use their own disc for the base.
 | `PUT /v1/mappacks/{id}` | admin or operator token, `lxm: content.moderate`; a pack `{name, description?, authors?, released?, source_url?, images?}`, or `null` to clear | 200 `{ok, position}`; ids are 1 to 64 of a-z, 0-9 and -; 400 when malformed |
 | `GET /v1/mappacks/{id}/images/{n}` | read rule | the pack's `n`th image; 404 if none |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
-| `GET /v1/hoppers/clankers` | read rule | `{hoppers: [{hopper_id, playlist_id, players, teams, ranks_as?}]}`: the served file's clanker hoppers (live-matchmaking.md §6.8) |
+| `GET /v1/hoppers/clankers` | read rule | `{hoppers: [{hopper_id, playlist_id, players, teams, ranked, ranks_as?}]}`: the served file's clanker hoppers and which ones rank their games (live-matchmaking.md §6.8) |
 
 Uploads (`PUT /v1/content`) stream to `<data>/tmp`, hashed as they
 arrive, and the SHA-256 of the body must be the path's (400 otherwise).

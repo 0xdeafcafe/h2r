@@ -2051,7 +2051,8 @@ mod tests {
     #[test]
     fn an_unused_slot_becomes_a_playlist_the_game_loads_from_a_template() {
         let mut file = HopperFile::default_set();
-        let i = defaults::playlists().len();
+        let i = HOPPERS - 1;
+        file.clear_hopper(i).unwrap();
         assert!(file.is_unused(i).unwrap());
         // Untouched unused slots never block an edit elsewhere.
         let mut other = patch(0, vec![keep(&file, 0, 0)]);
@@ -2081,7 +2082,7 @@ mod tests {
         let d = file.descriptor(i).unwrap();
         assert_eq!(check_descriptor(&d), vec![]);
         assert_eq!(d.hopper_type, 4);
-        assert_eq!(d.playlist_id, 12);
+        assert_eq!(d.playlist_id, 17);
         assert_eq!(file.text(i).unwrap().title, "Modtacular");
         let entries = file.entries(i).unwrap();
         assert_eq!(entries.len(), 2);
@@ -2136,7 +2137,9 @@ mod tests {
     #[test]
     fn clearing_a_playlist_leaves_an_unused_slot_and_valid_ones_stay_valid() {
         let mut file = HopperFile::default_set();
-        let i = defaults::playlists().len();
+        let i = HOPPERS - 1;
+        file.clear_hopper(i).unwrap();
+        let blank = file.image().to_vec();
         apply_patch(
             &mut file,
             &create(i, 1, "Solo", vec![record(10, 1, "rumble_slayer")]),
@@ -2146,7 +2149,7 @@ mod tests {
         clear.hoppers[0].records = None;
         clear.hoppers[0].clear = true;
         apply_patch(&mut file, &clear).unwrap();
-        assert!(file.image() == HopperFile::default_set().image());
+        assert_eq!(file.image(), blank);
         // `clear` with anything else is refused.
         let mut both = patch(0, vec![keep(&file, 0, 0)]);
         both.hoppers[0].clear = true;
@@ -2188,7 +2191,8 @@ mod tests {
         // What the web builder sends for a new playlist: the template and
         // its own fields back, which change nothing.
         let mut file = HopperFile::default_set();
-        let i = defaults::playlists().len();
+        let i = HOPPERS - 1;
+        file.clear_hopper(i).unwrap();
         for d in &t {
             let p = HoppersPatch {
                 hoppers: vec![HopperPatch {
@@ -2325,7 +2329,7 @@ mod tests {
 
     #[test]
     fn clanker_marks_follow_the_served_file() {
-        // The built-in lineup: its three clanker playlists, by index.
+        // The built-in lineup: its eight clanker playlists, by index.
         let defaults = HopperFile::default_set();
         let marks = clanker_hoppers(Some(&defaults));
         let ids: Vec<(u32, u32)> = marks
@@ -2333,7 +2337,19 @@ mod tests {
             .iter()
             .map(|h| (h.hopper_id, h.playlist_id))
             .collect();
-        assert_eq!(ids, [(8, 9), (9, 10), (10, 11)]);
+        assert_eq!(
+            ids,
+            [
+                (8, 9),
+                (9, 10),
+                (10, 11),
+                (11, 12),
+                (12, 13),
+                (13, 14),
+                (14, 15),
+                (15, 16),
+            ]
+        );
         // No file: none; nor a blank one.
         assert_eq!(clanker_hoppers(None), ClankerHoppers::default());
         assert_eq!(

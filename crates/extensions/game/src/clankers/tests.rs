@@ -791,6 +791,7 @@ fn hopper(hopper_id: u32, players: u32, teams: u32) -> live_proto::hopper::clank
         playlist_id: hopper_id + 1,
         players,
         teams,
+        ranked: true,
         ranks_as: None,
     }
 }

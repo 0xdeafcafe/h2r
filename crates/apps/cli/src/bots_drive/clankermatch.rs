@@ -5,8 +5,8 @@
 //! * the Live menu's Clankermatch row (row 2), A. The game says
 //!   `clankermatch: the playlists are the clanker hoppers` and opens the
 //!   OptiMatch playlist list with only the clanker hoppers on it, in
-//!   hopper order (Clanker Slayer, Teams, Doubles on rows 0 to 2 with the
-//!   built-in lineup). The list is the first settled screen after A; its
+//!   hopper order (Rumble Pit, Team Slayer, Team Skirmish on rows 0 to 2
+//!   for the drive's three aliases). The list is the first settled screen after A; its
 //!   cursor row is its list value's low 16 bits, or, when that reads as no
 //!   row, the DOWN presses sent from row 0;
 //! * to the planned playlist's row, A; the HLE's search starts

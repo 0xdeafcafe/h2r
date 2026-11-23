@@ -563,6 +563,7 @@ mod tests {
                     playlist_id: hopper_id + 1,
                     players: 8,
                     teams: 0,
+                    ranked: true,
                     ranks_as: None,
                 })
                 .collect(),

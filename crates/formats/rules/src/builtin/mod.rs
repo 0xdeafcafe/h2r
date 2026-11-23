@@ -100,6 +100,7 @@ pub const MATCHMAKING: &[Matchmaking] = &[
     Matchmaking { key: "rumble_slayer", engine: 2, source: include_str!("matchmaking/rumble_slayer.rules") },
     Matchmaking { key: "team_slayer", engine: 2, source: include_str!("matchmaking/team_slayer.rules") },
     Matchmaking { key: "team_snipers", engine: 2, source: include_str!("matchmaking/team_snipers.rules") },
+    Matchmaking { key: "team_heavies", engine: 2, source: include_str!("matchmaking/team_heavies.rules") },
     Matchmaking { key: "oddball", engine: 3, source: include_str!("matchmaking/oddball.rules") },
     Matchmaking { key: "teamball", engine: 3, source: include_str!("matchmaking/teamball.rules") },
     Matchmaking { key: "king_of_the_hill", engine: 4, source: include_str!("matchmaking/king_of_the_hill.rules") },

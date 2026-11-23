@@ -2092,7 +2092,19 @@ mod tests {
             .iter()
             .map(|h| (h.hopper_id, h.playlist_id))
             .collect();
-        assert_eq!(ids, [(8, 9), (9, 10), (10, 11)]);
+        assert_eq!(
+            ids,
+            [
+                (8, 9),
+                (9, 10),
+                (10, 11),
+                (11, 12),
+                (12, 13),
+                (13, 14),
+                (14, 15),
+                (15, 16),
+            ]
+        );
 
         let now = live_server::app::now;
         let key = KeyPair::generate();
@@ -2120,7 +2132,7 @@ mod tests {
         let id = started["game_id"].as_str().unwrap().to_string();
         let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
         assert_eq!(g["kind"], "clankermatch", "{g}");
-        assert_eq!(g["playlist"], "Clanker Slayer", "{g}");
+        assert_eq!(g["playlist"], "Rumble Pit", "{g}");
         let (_, list) = call("GET", "/v1/games".into(), None, String::new()).await;
         let item = list["items"]
             .as_array()

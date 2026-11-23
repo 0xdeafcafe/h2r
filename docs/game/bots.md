@@ -4528,8 +4528,9 @@ the playlist's player limit.
 
 1. **Stats.** A Clankermatch game is its own kind: flagged in the events
    (`GameRecorded` carries `kind: "clankermatch"`) and in the read model,
-   so it can be split out later. For now it counts in career totals, rank
-   and leaderboards together with human games.
+   so it can be split out later. It counts in career totals. A game in a
+   clanker playlist whose server mark says `ranked` also moves that
+   playlist's own rank and leaderboard; unranked training games move none.
 2. **Bot identities.** Bots get made-up gamertags, marked by a glyph that
    says "bot". We pick **U+2699 GEAR** (⚙). Common system fonts on the web carry
    it, and it is in the Basic Multilingual Plane, as Halo 2's UTF-16 names
@@ -4740,7 +4741,7 @@ For a clanker hopper (`live_hle::clankermatch`):
    (`bots::lobby::party_players`, `+0x1118`: every console of the party
    and its guests, never a phantom), read twice a second by the frame
    hook (`Driver::set_party`) and followed until the first bot sits; one
-   person while it cannot be read. Clanker Doubles is three bots for one
+   person while it cannot be read. Team Skirmish is three bots for one
    person and two for a party of two: a bot for every human but the host
    would take the seat of the party's second console, whose join the full
    session then refuses. The log says `clankermatch: 4 seats, the party
@@ -4967,9 +4968,9 @@ gamertags, emblems and ranks. The flag clears when the fill ends.
 
 **Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
 
-1. `live: clankermatch: clanker hoppers [8, 9, 10]` at logon (or `the
-   server sent no clanker hoppers` / `no clanker hoppers from the
-   server`): the marks.
+1. `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`
+   at logon (or `the server sent no clanker hoppers` / `no clanker hoppers
+   from the server`): the marks.
 2. `clankermatch: the playlists are the clanker hoppers`: the row's (or
    the switch's) press.
 3. `live: clankermatch: searching clanker playlist 8: no one to find; the
@@ -5015,7 +5016,7 @@ balance, Quickmatch's hopper, the Switch To: Clankermatch row's place,
 press and plan order), `-p game --lib clankers::tests::a_clankermatch`
 (the fill: one roster, phantoms only, one bot at a time, no controller
 port, balanced teams around the host, the handoff, the end, a refused
-roster, the match-only flag, Clanker Doubles for a party of two, the
+roster, the match-only flag, Team Skirmish for a party of two, the
 party followed until the first bot sits, the stall line;
 `a_full_party_plays_a_clankermatch_without_bots`), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
@@ -5036,7 +5037,7 @@ party),
 `-p live-proto bots hopper::clankers`, `-p live-telemetry
 games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
 bots_drive coop_drive`, and the server's: `-p live-server --test
-clankermatch` (Clanker Doubles from roster to ranked game for a party
+clankermatch` (Team Skirmish from roster to ranked game for a party
 of one and of two), `-p live-worker a_clankermatch_game`.
 
 ### 8.5 Game run (checklist)
@@ -5057,17 +5058,18 @@ actions in step 8 separately.
    (`custom games: opening the browser`); the same for Co-op Campaign.
    Mods opens as Content Download did.
 3. OptiMatch lists the eight human playlists and no Clanker one.
-4. Clankermatch lists only Clanker Slayer, Clanker Teams and Clanker
-   Doubles (the log: `clankermatch: the playlists are the clanker
-   hoppers`; at logon `live: clankermatch: clanker hoppers [8, 9, 10]`).
-5. Pick Clanker Slayer: the retail search screen runs for 4 to 20 s
+4. Clankermatch lists Rumble Pit, Team Slayer, Team Skirmish, Team Snipers,
+   Big Team Battle, Big Team Heavies, Solo Training and Team Training (the
+   log: `clankermatch: the playlists are the clanker hoppers`; at logon
+   `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`).
+5. Pick Rumble Pit: the retail search screen runs for 4 to 20 s
    (`live: clankermatch: searching clanker playlist 8 ...`), then the
    game hosts its own lobby (does it? in every type: FFA and teams).
 6. The match lobby fills with rostered phantoms (seven for Slayer), the
    countdown starts, and port 0 remains the only local user. Check each
    gear and gamertag in the lobby, scoreboard and carnage report.
-7. In Clanker Teams check 4 v 4, with phantoms on both teams. In Clanker
-   Doubles check 2 v 2 with three phantoms. Returning to the party should
+7. In Team Slayer check 4 v 4, with phantoms on both teams. In Team
+   Skirmish check 2 v 2 with three phantoms. Returning to the party should
    leave only the human there.
 8. Let the match start on its own. Check the carnage report lists the
    bots and the site shows the Clankermatch playlist and BOT marks.
@@ -5193,12 +5195,13 @@ range); sbmm-ranked owns how bots are ranked and arbitration.
    descriptor: every byte there is a game field the validator
    (`0x193560`) reads, and the game never needs to know. The mark is in
    the server's hopper source, beside the descriptor it writes:
-   `clankers: Option<Clankers>` on the playlist, with
-   `Clankers { ranks_as: Option<u32> }`, where `ranks_as` is the playlist
-   id of the human hopper whose standing it shares (`None`: its own rank
-   playlist). The server serves the mark with the hopper list (per
-   descriptor index), and live-hle reads it for the menu row's filter
-   (§8.3) and for the search (§8.4).
+   `clankers: Option<Clankers>` on the playlist, with `Clankers { ranked:
+   bool, ranks_as: Option<u32> }`. `ranked` says whether finished games move
+   a standing; the descriptor remains an unranked type so one human and bots
+   can fill the lobby. `ranks_as` is the playlist id of the human hopper
+   whose standing it shares (`None`: its own rank playlist). The server
+   serves the mark with the hopper list (per descriptor index), and live-hle
+   reads it for the menu row's filter (§8.3) and for the search (§8.4).
 
    **Disagreement, small:** §8.4 has the clanker hopper carry the *same*
    descriptor playlist id (`+0x08`) as the human hopper. Two descriptors
@@ -6890,20 +6893,19 @@ which is how `h2 bots verdict` knows which verdict to print.
 
 **Server state.** None to set up: the run's fresh store has no published
 hopper file, so the server serves the built-in lineup
-(`live_server::default_hopper`), whose hoppers 8, 9 and 10 are Clanker
-Slayer, Clanker Teams and Clanker Doubles, marked on
-`GET /v1/hoppers/clankers`. The harness reads the marks before it starts
-the game, checks the playlist asked for is marked and on the row the plan
-expects (the Clankermatch list shows only the clanker hoppers, in index
-order: rows 0, 1, 2), and stops at once if not. The game runs with
+(`live_server::default_hopper`), whose hoppers 8..15 are the eight clanker
+playlists, marked on `GET /v1/hoppers/clankers`. The harness reads the marks
+before it starts the game, checks the playlist asked for is marked and on
+the row the plan expects (the Clankermatch list shows only the clanker
+hoppers, in index order), and stops at once if not. The game runs with
 `--set clankers.enabled=false`: the page's Clankers stay off and only the
 fill seats bots.
 
 | `--playlist` | Hopper | Row | Players | Phantoms |
 |---|---|---|---|---|
-| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 |
-| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 |
-| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 |
+| slayer | 8 Rumble Pit (FFA) | 0 | 2 to 8 | 7 |
+| teams | 9 Team Slayer (2 teams) | 1 | 2 to 8 | 7 |
+| doubles | 10 Team Skirmish (2 teams) | 2 | 2 to 4 | 3 |
 
 **The drive** (`crates/apps/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
 and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
@@ -6927,7 +6929,7 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 | # | Check | Passes on |
 |---|---|---|
 | 1 | Signed in to Xbox Live | `live: playing as Tester` |
-| 2 | Clanker hoppers listed (server and game) | `bots-test: server clanker hoppers [8, 9, 10]` and `live: clankermatch: clanker hoppers [8, 9, 10]`, both with the plan's hopper |
+| 2 | Clanker hoppers listed (server and game) | `bots-test: server clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]` and `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`, both with the plan's hopper |
 | 3 | The Clankermatch row opened the clanker playlists | `clankermatch: the playlists are the clanker hoppers`, and no `the server named no clanker hoppers: the list is empty` |
 | 4 | The clanker search started | `live: clankermatch: searching clanker playlist H` with the plan's H |
 | 5 | The search ended with this console hosting | `live: session S advertised` after the search, and `clankers: clankermatch: hosting clanker playlist H (session S)` |

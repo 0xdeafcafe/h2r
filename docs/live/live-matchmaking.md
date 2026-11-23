@@ -628,57 +628,70 @@ is separate and goes to stats; an entry's "record id" is a map id. So
 
 ### 6.8 The default set
 
-`HopperFile::default_set()` builds a complete file from nothing: eleven
-playlists in hoppers 0..10, playlist ids 1..11 (eight human playlists, then
-three clanker ones), status 0, the game's skill
-ceiling and wait/timeout values, the game's start-wait table, maps from
-the Halo 2 disc, and variants that are the records of scripts (6.5, 6.6).
+`HopperFile::default_set()` builds a complete file from nothing: sixteen
+playlists in hoppers 0..15, playlist ids 1..16 (eight human playlists, then
+eight clanker ones), status 0, the game's skill ceiling and wait/timeout
+values, the game's start-wait table, maps from the Halo 2 disc and
+Multiplayer Map Pack, and variants that are the records of scripts (6.5,
+6.6). Clanker Big Team Battle combines Slayer and the big-map objective
+variants in one playlist rather than having a separate Big Team Objective.
 
-| # | Title | Type | Size | Entries |
-|---|---|---|---|---|
-| 0 | Rumble Pit | 2 | 4..8 players, alone | Rumble Slayer, Oddball, King of the Hill |
-| 1 | Team Slayer | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Team Slayer |
-| 2 | Team Skirmish | 4 | 2 x 2, parties 1..2 (2 kept as a team) | Team Slayer, Teamball |
-| 3 | Team Snipers | 4 | 2 x 3..4, parties 1..4 | Team Snipers |
-| 4 | Big Team Battle | 4 | 2 x 5..8, parties 1..5 | Team Slayer, Classic CTF, Assault, Territories |
-| 5 | Team Objective | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
-| 6 | Free for All | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
-| 7 | Unranked Teams | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
-| 8 | Clanker Slayer | 1 | 2..8, the rest bots | Rumble Slayer |
-| 9 | Clanker Teams | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
-| 10 | Clanker Doubles | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer |
+| # | Title | Kind | Type | Size | Entries |
+|---|---|---|---|---|---|
+| 0 | Rumble Pit | Human, ranked | 2 | 4..8 players, alone | Rumble Slayer, Oddball, King of the Hill |
+| 1 | Team Slayer | Human, ranked | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Team Slayer |
+| 2 | Team Skirmish | Human, ranked | 4 | 2 x 2, parties 1..2 (2 kept as a team) | Team Slayer, Teamball |
+| 3 | Team Snipers | Human, ranked | 4 | 2 x 3..4, parties 1..4 | Team Snipers |
+| 4 | Big Team Battle | Human, ranked | 4 | 2 x 5..8, parties 1..5 | Team Slayer, Classic CTF, Assault, Territories |
+| 5 | Team Objective | Human, ranked | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
+| 6 | Free for All | Human, unranked | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
+| 7 | Unranked Teams | Human, unranked | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
+| 8 | Rumble Pit | Clanker, ranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
+| 9 | Team Slayer | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
+| 10 | Team Skirmish | Clanker, ranked | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer, Teamball |
+| 11 | Team Snipers | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Snipers |
+| 12 | Big Team Battle | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Slayer, Classic CTF, Assault, Territories |
+| 13 | Big Team Heavies | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Heavies |
+| 14 | Solo Training | Clanker, unranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
+| 15 | Team Training | Clanker, unranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer, Classic CTF, Team King, Teamball |
 
-Hoppers 8..10 are **clanker hoppers** (Clankermatch, docs/game/bots.md
-§8): one human or a party, and bots the host runs in every other seat.
-Titles fit the descriptor's 16-byte title slot (15 bytes and a NUL), so
-"Clanker Doubles" stands for 2 x 2. They are unranked types because the
-ranked types' rules are for filling a game with people (ranked teams need
-two a team and bound parties; ranked free for all is solo); a lone human
-with bots needs a team of one and uneven teams while the bots join. The
-server still ranks a Clankermatch game from its record (below). The mark
-is not a game field: it is `Playlist::clankers` in the server's source
-(`Clankers { ranks_as }`, bots.md §9.4 item 1), all three with their own
-standing (`ranks_as` unset).
+Hoppers 8..15 are **clanker hoppers** (Clankermatch, docs/game/bots.md
+§8): one human or a party, and bots the host runs in every other seat. The
+Clankermatch screen supplies the Clanker context, so their canonical titles
+fit the descriptor's 16-byte title slot (15 bytes and a NUL). Their
+descriptions say **Ranked Clanker** or **Unranked Clanker**. Every clanker
+descriptor is an unranked type because the ranked types' rules are for
+filling a game with people (ranked teams need two a team and bound parties;
+ranked free for all is solo); a lone human with bots needs a team of one
+and uneven teams while the bots join.
+
+Ranking is a separate server-side mark, not the descriptor type:
+`Playlist::clankers` holds `Clankers { ranked, ranks_as }` (bots.md §9.4
+item 1). Hoppers 8..13 have `ranked: true` and each keeps a standing of its
+own (`ranks_as` unset), separate from the human playlists. Training hoppers
+14 and 15 have `ranked: false` and never change a standing.
 
 `GET /v1/hoppers/clankers` (read like `/v1/hoppers/pins`) serves the marks
 as `ClankerHoppers` (`crates/live/live-proto/src/hopper/clankers.rs`):
-`{"hoppers": [{"hopper_id", "playlist_id", "players", "teams",
+`{"hoppers": [{"hopper_id", "playlist_id", "players", "teams", "ranked",
 "ranks_as"?}]}`, by descriptor index, for the hopper file served now. A
-published file keeps a mark only where it has the default's playlist id
-at that index; with no file, or one that does not parse, the list is
-empty. live-hle reads it for the Clankermatch row's filter, the search
-and the lobby fill. A game recorded with `kind: "clankermatch"` (and the
-hopper's `playlist_id`) is its own kind in the read model and the stats
-totals (`clankermatch`, apart from `matchmaking`), counts in its playlist
-and every career number, and ranks like a ranked matchmaking game
-(§8.4, the same arbitration round) in its clanker hopper's playlist, or
-`ranks_as`'s; the game's stats read (§8.3) answers a clanker hopper's
-playlist id with that standing.
+published file keeps a mark only where it has the default's playlist id at
+that index; with no file, or one that does not parse, the list is empty.
+live-hle reads it for the Clankermatch row's filter, the search and the
+lobby fill. A game recorded with `kind: "clankermatch"` (and the hopper's
+`playlist_id`) is its own kind in the read model and the stats totals
+(`clankermatch`, apart from `matchmaking`) and counts in its playlist and
+every career number. When its mark is ranked it also ranks like a ranked
+matchmaking game (§8.4, the same arbitration round) in its clanker hopper's
+playlist, or `ranks_as`'s; the game's stats read (§8.3) answers a ranked
+clanker hopper's playlist id with that standing and an unranked one's with
+no rows.
 
 Tests check it against the validator port, the per-entry checks
-(`HopperFile::problems`: retail map ids, weights, the variant clean-up),
-a byte-exact build → parse → build, and that every field reads back from
-its offset. The server serves it while no file is published (§6.9);
+(`HopperFile::problems`: base-disc and Map Pack map ids, weights, the
+variant clean-up), the base-disc compatibility rotation, a byte-exact
+build → parse → build, and that every field reads back from its offset. The
+server serves it while no file is published (§6.9);
 `h2 live hopper defaults --out FILE [--raw]` writes it.
 
 ### 6.9 Serving
@@ -692,9 +705,10 @@ a fresh server. Nothing is written to the log until someone publishes;
 
 ### 6.10 Building playlists, and custom maps in them
 
-The 16 slots are fixed; a slot of type 0 is no hopper, and the default
-set leaves indexes 11..15 so (playlists 12..16 in the builders). The web builder (`web/src/admin/HopperBuilder.tsx`)
-and the editor's playlist tool (`hopper_edit::model`) work the same way:
+The 16 slots are fixed; a slot of type 0 is no hopper. The default set fills
+every slot, so a new default playlist first clears the slot it replaces. The
+web builder (`web/src/admin/HopperBuilder.tsx`) and the editor's playlist
+tool (`hopper_edit::model`) work the same way:
 
 - **A new playlist** is made in an unused slot from a template
   (`defaults::templates`, the eight human playlists of §6.8): its whole
@@ -1002,16 +1016,17 @@ filter, not a migration. Career totals count them as well; `kind:
 "clankermatch"` keeps those games apart in the games log.
 
 **Clanker playlists.** The server publishes clanker playlists as their
-own hoppers (bots.md §8.3), each with a playlist id of its own. The
-mark is in the server's hopper source, not in the game's descriptor:
-`clankers: { ranks_as: Option<u32> }` (bots.md §9.4). `ranks_as` is
-the playlist id of the human hopper whose standing it shares; that
-hopper is its *rank playlist*. A clankermatch game is ranked under the
-rank playlist, and `GET /v1/rank-stats` answers the clanker playlist's
-id with the rank playlist's standing, so the lobby shows one rank for
-both (rule 1). With `ranks_as: None` the clanker hopper is its own rank
-playlist. (An earlier draft shared the descriptor id `+0x08` instead;
-two descriptors with one id is untested against the game's validator.)
+own hoppers (bots.md §8.3), each with a playlist id of its own. The mark is
+in the server's hopper source, not in the game's descriptor: `clankers:
+{ ranked: bool, ranks_as: Option<u32> }` (bots.md §9.4). Only a mark with
+`ranked: true` ranks games or answers rank-stat reads. `ranks_as` is the
+playlist id of the human hopper whose standing it shares; that hopper is its
+*rank playlist*. A clankermatch game is ranked under the rank playlist, and
+`GET /v1/rank-stats` answers the clanker playlist's id with the rank
+playlist's standing, so the lobby shows one rank for both (rule 1). With
+`ranks_as: None` the clanker hopper is its own rank playlist. (An earlier
+draft shared the descriptor id `+0x08` instead; two descriptors with one id
+is untested against the game's validator.)
 
 **Matched to yours (rule 2).** The roster picks bots for the human's
 standing in the rank playlist:
@@ -1064,11 +1079,6 @@ that is not rostered, so `rank_game` sees only accepted bots.
 3. Leaderboard rows, `GET /v1/accounts/{bot}/ranks` and its history
    carry `bot: true` for a bot, with the bot's gamertag; a bot's xuid
    or gamertag finds its pages.
-
-**Still to build, once the bots lane has them:** `kind:
-"clankermatch"` (not yet in `GAME_KINDS`) ranked under its rank
-playlist, and clanker playlist ids answered on `GET /v1/rank-stats`
-with the `ranks_as` standing (the mark is not in the hopper source yet).
 
 #### Arbitration (built)
 
@@ -1289,8 +1299,12 @@ Each write uses a fresh `sessions.write` token.
 
 ### Map Pack rotations
 
-The playlist catalog reads map IDs from the owner's Map Pack. The same
-hopper and playlist ID serve every player. The server offers older
+The playlist catalog reads map IDs from the owner's Map Pack. The default
+rotations include all nine in suitable human and clanker playlists:
+Containment (1000), Warlock (1010), Sanctuary (1020), Turf (1030), Backwash
+(1040), Elongation (1050), Relic (1060), Terminal (1070) and Gemini (1080).
+Every such playlist keeps base-disc entries too. The same hopper and
+playlist ID serve every player. The server offers older
 clients a disc-only file. The HLE requests the full rotation, detects
 hoppers with add-on entries and supplies a disc-only download to a
 console without the pack. Solo searches on those hoppers enter the QoS

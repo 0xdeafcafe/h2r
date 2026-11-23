@@ -2219,7 +2219,7 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
     );
 }
 
-/// Clanker Doubles through the title's calls (docs/game/bots.md §8.4):
+/// Clanker Team Skirmish through the title's calls (docs/game/bots.md §8.4):
 /// the console hosts a four-seat match session of descriptor 10, which
 /// reads as a 2 v 2 clanker hopper, and the round the full lobby makes
 /// registers on the server for the host and for a party member's console,

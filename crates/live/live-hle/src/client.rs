@@ -2752,9 +2752,9 @@ mod tests {
 
         let (full, hoppers) = console_hopper_file(bytes.clone(), true).unwrap();
         assert_eq!(full, bytes);
-        assert_eq!(hoppers, 1);
+        assert_eq!(hoppers, 0xffff, "every default playlist has pack entries");
         let (disc, hoppers) = console_hopper_file(bytes, false).unwrap();
-        assert_eq!(hoppers, 1, "the client still sees which slot needs the queue");
+        assert_eq!(hoppers, 0xffff, "the client still sees which slots need the queue");
         let disc = HopperFile::parse(&disc).unwrap();
         assert_eq!(disc.entry_count(0).unwrap(), 1);
         assert_eq!(disc.slot(0, 0).unwrap(), file.slot(0, 1).unwrap());
