@@ -553,6 +553,11 @@ struct Verified {
     /// Where the files are: the bots directory ([`set_verified_dir`]).
     dir: Option<PathBuf>,
     maps: HashMap<String, Arc<Vec<Entry>>>,
+    /// Why a map's verified file is not written over: it did not read (a
+    /// damaged file, a newer version's). An older version's file is not
+    /// here: it reads as empty and the next write replaces it
+    /// ([`load_verified`]).
+    refused: HashMap<String, String>,
     /// The learned files read from there ([`learned_for`]).
     learned: HashMap<String, Arc<Vec<learned::Entry>>>,
 }
@@ -572,6 +577,7 @@ pub fn set_verified_dir(dir: PathBuf) {
     if v.dir.as_ref() != Some(&dir) {
         v.dir = Some(dir);
         v.maps.clear();
+        v.refused.clear();
         v.learned.clear();
         GENERATION.fetch_add(1, Ordering::Release);
     }
@@ -584,7 +590,7 @@ pub fn verified_dir() -> Option<PathBuf> {
 }
 
 /// Reads `map`'s verified file from `dir`; empty when there is none. A
-/// damaged file reads as empty, with the reason.
+/// file that does not read (damaged, another version's) is the reason.
 pub fn read_verified(dir: &Path, map: &str) -> Result<Vec<Entry>, String> {
     match std::fs::read_to_string(dir.join(verified_file_name(map))) {
         Ok(text) => verified::parse(&text),
@@ -593,8 +599,44 @@ pub fn read_verified(dir: &Path, map: &str) -> Result<Vec<Entry>, String> {
     }
 }
 
+/// `map`'s verified file in `dir` as a writer keeps it: its entries, and
+/// why it is not to be written over. No file is no entries. A file of an
+/// older version ([`verified::older`]: positions in another frame) is not
+/// read and not converted: it is no entries, named in the log, and the
+/// next write ([`store_verified`]) replaces it; its spots come back as the
+/// bounce search and `superbounce.verify` batches try them again. A file
+/// that does not read otherwise (damaged, a newer version's) is no
+/// entries, named in the log, and is not written over.
+fn load_verified(dir: &Path, map: &str) -> (Vec<Entry>, Option<String>) {
+    let path = dir.join(verified_file_name(map));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), None),
+        Err(e) => {
+            eprintln!("bots: {} not read, and not written over: {e}", path.display());
+            return (Vec::new(), Some(e.to_string()));
+        }
+    };
+    match (verified::parse(&text), verified::older(&text)) {
+        (Ok(entries), _) => (entries, None),
+        (Err(_), Some(version)) => {
+            eprintln!(
+                "bots: {} is a verified file of version {version}, not read; the next write \
+                 replaces it",
+                path.display()
+            );
+            (Vec::new(), None)
+        }
+        (Err(why), None) => {
+            eprintln!("bots: {} not read, and not written over: {why}", path.display());
+            (Vec::new(), Some(why))
+        }
+    }
+}
+
 /// What `map`'s verified file says (any case): read once from the
-/// verified directory, then kept; empty with no directory or no file.
+/// verified directory, then kept; empty with no directory or no file, and
+/// empty for a file that does not read ([`load_verified`]).
 pub fn verified_for(map: &str) -> Arc<Vec<Entry>> {
     let key = map.to_ascii_lowercase();
     let mut v = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
@@ -603,10 +645,14 @@ pub fn verified_for(map: &str) -> Arc<Vec<Entry>> {
         return Arc::clone(e);
     }
     let entries = match &v.dir {
-        Some(dir) if !key.is_empty() => read_verified(dir, &key).unwrap_or_else(|why| {
-            eprintln!("bots: {key}'s verified spots not read: {why}");
-            Vec::new()
-        }),
+        Some(dir) if !key.is_empty() => {
+            let (entries, refused) = load_verified(dir, &key);
+            match refused {
+                Some(why) => v.refused.insert(key.clone(), why),
+                None => v.refused.remove(&key),
+            };
+            entries
+        }
         _ => Vec::new(),
     };
     let entries = Arc::new(entries);
@@ -614,30 +660,47 @@ pub fn verified_for(map: &str) -> Arc<Vec<Entry>> {
     entries
 }
 
-/// Merges `new` into `map`'s verified entries ([`verified::merge`]), writes
-/// the file when there is a verified directory, and bumps the
+/// Merges `new` into `map`'s verified entries ([`verified::merge`]), keeps
+/// them, writes the file when there is a verified directory, and bumps the
 /// [`generation`] so brains read their spots again. The path written, if
-/// any.
+/// any. A file of an older version is replaced; one that did not read
+/// otherwise ([`load_verified`]) is not written over, and that is the
+/// error.
 pub fn store_verified(map: &str, new: &[Entry]) -> std::io::Result<Option<PathBuf>> {
     let key = map.to_ascii_lowercase();
     let old = verified_for(&key);
     let merged = verified::merge(&old, new);
-    let dir = verified_dir();
+    let (dir, refused) = {
+        let guard = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
+        let v = guard.as_ref();
+        (
+            v.and_then(|v| v.dir.clone()),
+            v.and_then(|v| v.refused.get(&key).cloned()),
+        )
+    };
     let written = match &dir {
         Some(dir) if !key.is_empty() => {
-            std::fs::create_dir_all(dir)?;
             let path = dir.join(verified_file_name(&key));
-            crate::autonav::write_atomic(&path, verified::to_text(&merged).as_bytes())?;
-            Some(path)
+            match refused {
+                Some(why) => Err(std::io::Error::other(format!(
+                    "{} not written over: it did not read ({why})",
+                    path.display()
+                ))),
+                None => std::fs::create_dir_all(dir)
+                    .and_then(|_| {
+                        crate::autonav::write_atomic(&path, verified::to_text(&merged).as_bytes())
+                    })
+                    .map(|_| Some(path)),
+            }
         }
-        _ => None,
+        _ => Ok(None),
     };
     let mut v = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
     v.get_or_insert_with(Verified::default)
         .maps
         .insert(key, Arc::new(merged));
     GENERATION.fetch_add(1, Ordering::Release);
-    Ok(written)
+    written
 }
 
 // ---- the learned files ----
@@ -767,10 +830,7 @@ pub fn reload_in(dir: &Path, map: &str) -> Reloaded {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_string(),
         Err(e) => format!("unread: {e}"),
     };
-    let verified = read_verified(dir, &key).unwrap_or_else(|why| {
-        eprintln!("bots: {key}'s verified spots not read: {why}");
-        Vec::new()
-    });
+    let (verified, refused) = load_verified(dir, &key);
     let learned = read_learned(dir, &key).unwrap_or_else(|why| {
         eprintln!("bots: {key}'s learned file not read: {why}");
         Vec::new()
@@ -783,6 +843,10 @@ pub fn reload_in(dir: &Path, map: &str) -> Reloaded {
     let mut v = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
     let v = v.get_or_insert_with(Verified::default);
     v.maps.insert(key.clone(), Arc::new(verified));
+    match refused {
+        Some(why) => v.refused.insert(key.clone(), why),
+        None => v.refused.remove(&key),
+    };
     v.learned.insert(key, Arc::new(learned));
     GENERATION.fetch_add(1, Ordering::Release);
     out

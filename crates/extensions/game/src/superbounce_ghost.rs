@@ -722,7 +722,9 @@ pub fn file_name(map: &str) -> String {
 #[derive(Clone, Debug, Default)]
 struct Kept {
     ghosts: Arc<Vec<Ghost>>,
-    /// Why the file was not read; it is not written over then.
+    /// Why the file was not read (a damaged file, a newer version's); it
+    /// is not written over then. An older version's file is no error: it
+    /// reads as empty and the next run kept replaces it.
     error: Option<String>,
     /// The directory it was read from.
     dir: Option<PathBuf>,
@@ -743,10 +745,21 @@ fn read(dir: Option<&PathBuf>, map: &str) -> Kept {
     let Some(d) = dir else {
         return Kept::default();
     };
-    let (ghosts, error) = match std::fs::read_to_string(d.join(file_name(map))) {
-        Ok(text) => match file::parse(&text) {
-            Ok(g) => (g, None),
-            Err(why) => (Vec::new(), Some(why)),
+    let path = d.join(file_name(map));
+    let (ghosts, error) = match std::fs::read_to_string(&path) {
+        Ok(text) => match (file::parse(&text), file::older(&text)) {
+            (Ok(g), _) => (g, None),
+            // An older version is not converted: the next run kept starts
+            // a fresh file in its place.
+            (Err(_), Some(v)) => {
+                eprintln!(
+                    "superbounce: {} is a ghosts file of version {v}, not read; the next run \
+                     kept replaces it",
+                    path.display()
+                );
+                (Vec::new(), None)
+            }
+            (Err(why), None) => (Vec::new(), Some(why)),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
         Err(e) => (Vec::new(), Some(e.to_string())),
@@ -797,12 +810,25 @@ pub fn reload(map: &str) -> (usize, usize) {
 fn keep(map: &str, g: Ghost) -> bool {
     let key = map.to_ascii_lowercase();
     let mut k = kept(&key);
+    if !offer_kept(&mut k, &key, g) {
+        return false;
+    }
+    lock(&STORE).get_or_insert_with(HashMap::new).insert(key, k);
+    true
+}
+
+/// Offers `g` to the runs `k` holds of `key`'s map ([`file::offer`]) and,
+/// when it is kept, writes them to `k`'s directory: in place of an older
+/// version's file, which [`read`] took as empty, and never over a file it
+/// could not read (`k.error`: damaged, or a newer version's). Whether it
+/// was kept.
+fn offer_kept(k: &mut Kept, key: &str, g: Ghost) -> bool {
     let mut all = (*k.ghosts).clone();
     if !file::offer(&mut all, g) {
         return false;
     }
     if let (Some(d), None) = (&k.dir, &k.error) {
-        let path = d.join(file_name(&key));
+        let path = d.join(file_name(key));
         let written = std::fs::create_dir_all(d)
             .and_then(|_| bots::autonav::write_atomic(&path, file::to_text(&all).as_bytes()));
         if let Err(e) = written {
@@ -810,7 +836,6 @@ fn keep(map: &str, g: Ghost) -> bool {
         }
     }
     k.ghosts = Arc::new(all);
-    lock(&STORE).get_or_insert_with(HashMap::new).insert(key, k);
     true
 }
 
