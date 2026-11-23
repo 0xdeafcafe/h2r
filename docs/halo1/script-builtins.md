@@ -9,7 +9,7 @@ Addresses below are from the owner's retail Xbox executables.
 
 | Status | Halo 1 builtins | Halo 2 evidence |
 |---|---|---|
-| Built | `unit_open`, `unit_close`, `unit_suspended` | Slots 194, 195, 249 call the unit open, close and suspension routines from `0x2a32a0`, `0x2a32e0` and `0x2a4570`. The first two share the converter's existing checks for absent named units. |
+| Built | `unit_open`, `unit_close`, `unit_suspended` | Slots 194, 195, 249 call the unit open, close and suspension routines from `0x2a32a0`, `0x2a32e0` and `0x2a4570`. The first two share the converter's checks for absent named units. |
 | Built | `unit_enter_vehicle` | Slot 216 dispatches the vehicle entry routine from `0x2a3ad0`. At `0x11ade0` the engine compares the label at offset 4 of each vehicle seat. The converter resolves the script's seat text with the same name function as the rebuilt vehicle seats. |
 | Built | `unit_set_seat` | Halo 1's `0xf11d0` resolves a pose through the six-entry table at `0x1f7684`. Halo 2 slot 234 at `0x2a41a0` writes an animation mode ID. The converter reads the pose names from the Halo 1 XBE and resolves each recognised pose through the converted animation graph's naming rules. An unrecognised pose selects the default mode. |
 | Built | `unit_set_emotion`, `vehicle_riders`, `vehicle_gunner`, `unit_get_total_grenade_count` | Slots 218, 236, 238 and 241. The first sets emotion by its numeric index (`0x10e9f0`), the next returns the rider list (`0x11b040`), and the third searches for the gunner seat type (`0xbadc0`). Slot 241 reads the unit's grenade counts. |
@@ -29,7 +29,7 @@ Names supplied by the unit and object descriptor table use slots 23, 54,
 66, 67, 72, 93, 136, 137, 143, 218, 234, 236, 238, 241, 473, 480, 484, 488,
 491–494, 562, 586, 587, 644, 651 and 710. Slots 194, 195, 216 and 249
 already have names in the shared retail descriptor table.
-The AI-control lane also uses slot 241 for a marked vehicle-count call.
+The AI-control calls also use slot 241 for a marked vehicle-count call.
 Retail grenade counts appear in a10 and the marked AI calls come from
 a30 and b30. The builtin-name census skips the marked operation, leaving the
 retail grenade count as the descriptor name when both share a cache.
@@ -85,7 +85,7 @@ state and travel with the simulation snapshot.
 | Built | `rasterizer_lights_reset_for_new_map` | Converted-campaign slot 687 (`0x2ab130`). H1 invalidates lighting work at `0xec680`. The hook clears the validity byte and previous frame on occupied H2 object render states used by `0x3dfe0`, preserving the owner and live light links. The H2 map reset at `0xc0040` would release registrations. |
 
 The screen setters compile to typed scenario globals, ordinary retail HS
-operations and the existing game clock (888). Start and stop still call the
+operations and the existing game clock (888). Start and stop call the
 retail screen-effect builtins (705 and 709). The renderer reads the state at
 the Halo 2 screen-effect call inside the view render, before the retail pass.
 Model reflection is independent of the fullscreen effect's lifetime.
@@ -122,8 +122,8 @@ wakes `tutorial_moving_1`.
 |---|---|
 | Halo 1 mapped input | At `0xfa00a` mapped control 2 sets packet `+0x18` bit 6 on button-down. The gather at `0xf8a9a` records Action in bit 0 of the control globals. The hold threshold is a separate packet bit. |
 | Halo 1 script | Slot 345 at `0xed420` reads the recorded bit and claims the button. Slot 340 at `0xed520` clears the latch and claim. The input path at `0xf8bb3` consumes the claimed action through release. |
-| Halo 2 v99 | Native slots 488 (`0x2a91c0`) and 479 (`0x2a9020`) implement the test and reset. The packet starts cleared. At `0x186a07` the gather writes mapped action/reload (default X) to packet `+0x20` bit 0 and the hold threshold to bit 1. At `0x187b33` the script sampler reads bit 2. Holding X leaves the script latch clear. |
-| Converted campaign, version 100 | At entry to `0x187b30` the hook records the mapped press in the guest latch. While the button is claimed or suppressed until release it moves the press into bit 2. The native routine at `0x187c9b` can then track release, clear interaction and mark it handled. An unclaimed press continues to ordinary interaction. |
+| Halo 2 native | Native slots 488 (`0x2a91c0`) and 479 (`0x2a9020`) implement the test and reset. The packet starts cleared. At `0x186a07` the gather writes mapped action/reload (default X) to packet `+0x20` bit 0 and the hold threshold to bit 1. At `0x187b33` the script sampler reads bit 2. Holding X leaves the script latch clear. |
+| Converted campaign | At entry to `0x187b30` the hook records the mapped press in the guest latch. While the button is claimed or suppressed until release it moves the press into bit 2. The native routine at `0x187c9b` can then track release, clear interaction and mark it handled. An unclaimed press continues to ordinary interaction. |
 
 The look lesson uses signed pitch and yaw latches and checks all four
 directions (slots 491–495). The pitch-choice lesson uses Accept and
