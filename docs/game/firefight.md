@@ -5,7 +5,8 @@ sets, director (FF2), stage-one offline kit, probe recipe, the host
 runtime (FF4) with its `Game` over the guest bodies of the engine
 entries and the `firefight` feature that runs it, the agent API
 (FF5), the Game Setup row and options page, the HUD's mode blob, view and
-its HUD kit HUD (FF8), and the dedicated host's whole-pack
+its HUD kit HUD (FF8), the mode state in the host log and the host log
+in films (AN14), and the dedicated host's whole-pack
 admission and bundled kits (FF10) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
 Code: `crates/formats/firefight` defines and validates wave sets, compiles
@@ -416,8 +417,9 @@ named with `--film` records. Otherwise the simulation world's mode
 decides (docs/live/live-coop.md): `Replica` for a synchronous client (3),
 `Client` for a distributed client (5), and `Host` otherwise. A session's
 [default recording](film-format.md#recording-every-game) and its replay
-take the role by the mode. No transport carries the host's entries to a replica
-yet, so a replica applies none. After each tick the host publishes its
+take the role by the mode. A film's playback gets the host's entries from
+the film ("Theater"); no transport carries them to a synchronous peer
+yet, so a peer applies none. After each tick the host publishes its
 log head (`actor_net::publish_log_head`) for the actor channel's
 digest. A tick boundary's number is the game
 time's tick count plus one before the tick and the count after it, so
@@ -484,7 +486,14 @@ A snapshot is refused while a match runs.
    replay them.
 5. **Received entries** (`Host::receive`) are checked against the chain.
    The host refuses them: it writes its own log.
-6. **The Clankers** are told of the match (`runtime::bot_context`,
+6. **The mode state** rides in the log. After each step the host
+   appends the HUD's mode blob as a `ModeState` entry for the next tick
+   when it differs from the last one it appended (`Host::note_mode`,
+   from `runtime::post_tick`). Applying one makes no engine call; it
+   sets the blob the machine holds (`Host::mode_state`), which a replica
+   publishes for its HUD after each pre-tick. The operator cannot append
+   one: the agent API's commands have no such variant.
+7. **The Clankers** are told of the match (`runtime::bot_context`,
    `bots::firefight::set_context`): the player teams, the actors' team,
    the bases, each team's lives and whether a wave is on. The runtime
    sends it at the start and whenever it changes, and clears it when the
@@ -818,10 +827,11 @@ banner) read, and each other local user's are its own
 (`Handle::publish_for`), so each split-screen player's pill shows its
 own lives. Each user's notes go to that user. With no match, no player
 for the user or a blob it cannot read, that user's elements are hidden;
-the reason for an unreadable blob is logged once. Replicas and
-films have no director and so no blob until the host log carries the
-mode state (AN14). A distributed client gets the blob over the actor
-channel.
+the reason for an unreadable blob is logged once. A replica, a
+film's playback among them, has no director: it draws the blob of the
+last `ModeState` entry it applied, one tick after the host's own HUD
+shows it, since the entry is for the next tick. A distributed client
+gets the blob over the actor channel.
 
 ### Live
 
@@ -878,9 +888,28 @@ channel.
 ### Theater
 
 The host's film replays the match, actors included, and holds every
-director command as a recorded log entry (ai-networking.md, "Theater").
-The Theater HUD reads round, wave, lives and score from the recorded
-mode blob.
+host log entry the machine applied, the mode state among them
+(`game::firefight::film`). Each is a Firefight entry record
+(`live_proto::film::stream::FIREFIGHT`, tag 8): the entry's canonical
+JSON at the film tick it was applied. The runtime keeps the entries each
+pre-tick applies and the theater's recorder writes them into that tick
+(`Tick::firefight`); a machine recording no film keeps the latest 4,096.
+The public view of a film leaves them out.
+
+A film's playback runs the mode as a replica: no director, nothing
+appended. When a film tick completes the playback reads the next one and
+hands its Firefight records over (`film::deliver`); the runtime's next
+pre-tick takes them into the replica's log (`Host::receive`), which
+applies each at its own tick, so the entries apply on the tick they did
+on the host. The Theater HUD draws the recorded mode blob.
+`a_film_replays_entries_at_their_ticks` plays a scripted match, records
+it, writes the records through a film time chunk and replays them: the
+same engine calls, the same log and, at every tick, the host's blob.
+Playback starts from the match's first entry: the replica's log is
+checked against a genesis made from the local Game Setup's definition
+and seed, so a film whose match differs is refused at its first entry,
+and a seek or rewind inside a match does not restore the replica's
+log.
 
 ## Interfaces
 
@@ -1008,6 +1037,9 @@ point: it needs the kit, the director and probe P2.
 - That Slayer's lives and rounds can be driven from outside as described.
 - Tag headroom per map with the kit applied.
 - Everything ai-networking.md lists.
+- That a film's playback starts the match before the first Firefight
+  record is handed over, and that the hook order puts the hand-over
+  before the next tick's pre-tick in a real playback.
 - That actors on a third team fight both player teams of a team game,
   and that a squad's `ff_hunt_NN` order makes it push into that base.
 - That the engine spawns each team at the starting locations whose team

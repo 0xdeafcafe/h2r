@@ -674,6 +674,7 @@ fn dead_tape(path: &Path) {
                     closing_events: vec![],
                     post_hash: None,
                     forge: vec![],
+                    firefight: vec![],
                 },
             )
             .unwrap();

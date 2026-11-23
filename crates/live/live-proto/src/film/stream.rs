@@ -20,6 +20,13 @@ pub const CLOCK: u8 = 6;
 pub const FORGE: u8 = 7;
 pub const FORGE_WELCOME: u8 = 0;
 pub const FORGE_ITEM: u8 = 1;
+/// The "Firefight entry" record (docs/game/firefight.md, "Theater"): one
+/// entry of the Firefight host log, its canonical JSON
+/// (`host_log::Entry::canonical_bytes`), at the tick the machine applied
+/// it. A film's playback applies the entries, the mode state among them,
+/// as a synchronous peer does. A consumer that does not know the tag skips
+/// it, and the public view leaves it out.
+pub const FIREFIGHT: u8 = 8;
 pub const LIFECYCLE_EVENT: u8 = 0;
 pub const STATS_EVENT: u8 = 1;
 /// Lifecycle observations between the last completed tick and the end of recording.

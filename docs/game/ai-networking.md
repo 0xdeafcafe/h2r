@@ -1,6 +1,6 @@
 # AI over the network
 
-Status: Partly built. The probe methods (AN0), shared host log (AN1), actor channel (AN2), distributed host capture (AN3), client puppet adapter (AN4), Live tunnel transport (AN5), actor kill events (AN6) the client's receive path with digests and resync (AN7) and the `actors.net` readout (AN8) are implemented. AN11 traces the creature slot. AN12 implements the creature probe and replication-version gate. P7 is pending.
+Status: Partly built. The probe methods (AN0), shared host log (AN1), actor channel (AN2), distributed host capture (AN3), client puppet adapter (AN4), Live tunnel transport (AN5), actor kill events (AN6) the client's receive path with digests and resync (AN7), the `actors.net` readout (AN8) and the host log in films with the mode state in it (AN14) are implemented. AN11 traces the creature slot. AN12 implements the creature probe and replication-version gate. P7 is pending.
 Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/actors.rs` and `crates/extensions/game/src/actor_net/report.rs` (`actors.net`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/formats/host-log` (host log), `crates/live/actor-net/src/wire.rs`, `set.rs`, `budget.rs` and `digest.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture), `crates/extensions/game/src/actor_net/client.rs` (client puppets), `crates/extensions/game/src/actor_net/link.rs` (per-peer scheduling) and `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` (transport), and `crates/rewrites/sim-objects/src/damage.rs` (actor kills), `crates/extensions/game/src/actor_net/creature.rs` (slot 17), `crates/extensions/game/src/replication_admission.rs` (guest admission) and `crates/live/live-hle/src/qos.rs` (Live QoS). Tests: each crate's own, on invented data.
 Switch: `agent-net`, `actor-net` and `creature-probe`, listed in [switches.md](../runtime/switches.md).
 
@@ -366,15 +366,16 @@ the replicated bodies.
   host's machine from its recorded receives and random draws. Actors run
   inside the host's guest, so the film already holds them: no pose
   stream is added.
-- **Host log entries are recorded**, one tagged record per entry at its
-  tick in the film's `TICK` stream, beside the inputs (a tag allocated
-  in `live_proto::film::stream`, next to Forge's entry tag). Playback
-  applies the recorded entries and never runs the director. A seek
-  restores a keyframe, whose arena holds every squad the entries placed,
-  and replays entries after it.
-- **Actor channel records** (`Line`, `Posture`, the mode blob) are
-  recorded too, so Theater's HUD shows the wave and the web player can
-  caption dialogue without re-deriving them.
+- **Host log entries are recorded**, one `FIREFIGHT` record (tag 8 in
+  `live_proto::film::stream`, after Forge's) per entry the machine
+  applied, at that tick in the film's `TICK` stream, beside the inputs.
+  The mode blob is one of them (`ModeState`), so Theater's HUD shows the
+  wave. Playback hands each tick's records over before the tick, applies
+  them as a replica and never runs the director
+  ([firefight.md](firefight.md#theater)). A seek or rewind inside a match
+  does not restore the replica's log.
+- **Actor channel records** (`Line`, `Posture`) are to be recorded too,
+  so the web player can caption dialogue without re-deriving them.
 - **Web Theater** already draws actors: telemetry frames carry up to 128
   actor rows (**Code**, `live_proto::game::FrameActor`).
 - **Actor kills** come from the body-depleting damage report on a unit
@@ -587,7 +588,7 @@ under a day, M one to three days, L a week.
 | **AN5** | Transport: the tunnel frame kind, send on the host's post-tick, receive queue on clients, `Key` on join and on request | S | AN2 | `crates/live/live-hle/src/tunnel*.rs`, `crates/extensions/game/src/actor_net/link.rs` | `frames_of_another_kind_are_ignored`, `a_key_request_is_answered_once_a_second_at_most`, `no_tunnel_means_no_channel`, `lost_actor_frames_converge_on_the_next_key`, `reordered_actor_frames_cannot_rewind_a_newer_key`, `a_tunnel_down_retires_the_peer_and_rejoin_gets_a_key`, `a_client_without_the_channel_keeps_receiving_retail_datagrams` | two fake peers over the simulated link (`crates/live/coop`'s) converge under loss and reorder |
 | **AN6** | Actor events: `SimEvent::ActorKilled {unit, character, killer, weapon}`, the film `Event` variant, the telemetry row | S | nothing | `crates/rewrites/sim-objects/src/events.rs`, `crates/live/live-proto/src/film/events.rs`, `crates/live/live-telemetry/` | `a_fatal_damage_to_an_actor_unit_is_one_actor_killed`, `a_player_death_is_not_an_actor_kill`, `actor_killed_round_trips_in_a_film` | on a fake guest, one fatal damage report on a unit with an actor yields exactly one event with the killer's player |
 | **AN7** | Digests and resync: the host's `Digest` every 30 ticks with the mode's log head, the client's check, its key requests, closing a diverged channel; the client half wired to the Live inbox | M | AN2, AN4, AN5 | `crates/live/actor-net/src/digest.rs`, `crates/extensions/game/src/actor_net/{mod,host,client}.rs`, `crates/extensions/game/src/firefight/runtime.rs`, `crates/apps/boot/src/registration.rs` | `the_state_hash_is_fnv_1a_64`, `a_wrong_state_or_count_asks_for_a_key`, `three_mismatches_in_a_row_with_keys_between_diverge`, `mismatches_while_the_key_is_on_its_way_ask_again_and_never_diverge`, `a_digest_rides_every_thirtieth_host_tick_with_the_log_head`, `a_lost_delta_is_found_by_the_next_digest_and_repaired_by_a_key`, `a_wrong_digest_asks_for_a_key`, `a_packet_that_cannot_apply_asks_for_a_key`, `three_mismatches_end_the_session`, `a_key_still_on_its_way_is_asked_for_again_without_ending_the_channel`, `actor_net_is_on_unless_switched_off_with_the_host_capture_and_the_client_puppets` | over a fake host and client, a lost delta is found by the next digest and repaired by one key; boot's plan installs the client half with the feature |
-| **AN14** | Films: the host-log record tag, recording and playback apply | M | AN1, AN7 | `crates/live/live-proto/src/film/stream.rs`, `crates/live/film/` | `a_film_replays_entries_at_their_ticks`, `playback_never_runs_a_producer` | a recorded fake session replays to the same log head and mode state hash |
+| **AN14** | Films: the host-log record tag, recording and playback apply; the mode state as a host-log entry | M | AN1, AN7 | `crates/live/live-proto/src/film/stream.rs` (`FIREFIGHT`), `crates/live/film/src/blam/` (`Tick::firefight`), `crates/formats/firefight/src/director.rs` (`Command::ModeState`), `crates/extensions/game/src/firefight/{film,host,runtime}.rs`, `crates/extensions/game/src/theater/{record,replay}.rs` | `a_film_replays_entries_at_their_ticks`, `playback_never_runs_a_producer`, `the_mode_state_is_appended_when_it_changes`, `an_entry_is_its_canonical_json_and_reads_back`, `firefight_entry_records_round_trip_through_a_time_chunk_in_record_order`, `a_firefight_entry_is_never_public` | a recorded fake session replays to the same log and, at every tick, the host's mode blob ([firefight.md](firefight.md#theater)) |
 | **AN8** | `actors.net`, its doc section and `h2 agent` examples | S | AN3, AN4, AN5, AN7 | `crates/extensions/agent/src/actors.rs` (new), `crates/extensions/game/src/actor_net/report.rs` (new), `crates/live/actor-net/src/budget.rs` (`Stats`), `agent-api.md` | `host_reports_per_client_rates`, `client_reports_puppets_and_waiting`, `outside_a_distributed_game_the_role_is_off`, `stats_count_what_was_sent_and_dropped`, `host_peers_are_reported_in_peer_order_with_their_window_as_the_rate` | the method answers on a fake host and a fake client |
 | **AN9** | `mp-jip-probe`: lift the in-game join refusal on a distributed host behind a feature, log each stage | S | P1 | `crates/extensions/game/src/mp_jip_probe.rs` (new) | `the_refusal_is_lifted_only_for_a_distributed_session_with_the_feature_on` | P6 can be run |
 | **AN10** | Distributed join in progress, built from P6's answer | M | AN9, P6 | decided by P6 | decided by P6 | a third fake peer joining gets a `Key` and equal puppet tables |

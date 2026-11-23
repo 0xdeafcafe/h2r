@@ -77,6 +77,7 @@ fn sample(tick: u64) -> Tick {
         closing_events: vec![],
         post_hash: Some(0xfe00 + tick),
         forge: vec![],
+        firefight: vec![],
     }
 }
 
@@ -822,5 +823,30 @@ fn a_forge_record_from_a_producer_is_written_and_read_back() {
 fn a_forge_record_of_an_unknown_subtype_is_refused() {
     let mut chunk = stream::ChunkWriter::new(1, 1).unwrap();
     chunk.record(1, stream::FORGE, &[9, 1]).unwrap();
+    assert!(unified::decode(&chunk.finish(), 1, 1).is_err());
+}
+
+#[test]
+fn firefight_entry_records_round_trip_through_a_time_chunk_in_record_order() {
+    let mut ticks: Vec<Tick> = (1..=3).map(sample).collect();
+    ticks[2].firefight = vec![b"{\"seq\":1}".to_vec(), b"{\"seq\":2}".to_vec()];
+    let extra = vec![unified::TickRecords::default(); 3];
+    let raw = unified::encode(&ticks, &extra).unwrap();
+    let back = unified::decode(&raw, 1, 3).unwrap();
+    assert_eq!(back[2].firefight, ticks[2].firefight);
+    assert!(back[0].firefight.is_empty() && back[1].firefight.is_empty());
+    assert_eq!(back[2].post_hash, ticks[2].post_hash);
+}
+
+#[test]
+fn firefight_entries_have_one_source_and_are_never_empty() {
+    let mut extra = vec![unified::TickRecords::default(); 1];
+    extra[0].during.push(RecordData {
+        tag: stream::FIREFIGHT,
+        payload: b"{}".to_vec(),
+    });
+    assert!(unified::encode(&[sample(1)], &extra).is_err());
+    let mut chunk = stream::ChunkWriter::new(1, 1).unwrap();
+    chunk.record(1, stream::FIREFIGHT, &[]).unwrap();
     assert!(unified::decode(&chunk.finish(), 1, 1).is_err());
 }

@@ -321,6 +321,8 @@ impl Recording {
                 closing_events: Vec::new(),
                 post_hash,
                 forge: Vec::new(),
+                // The Firefight host log's entries applied this tick.
+                firefight: crate::firefight::film::take(),
             },
             records,
             clock,

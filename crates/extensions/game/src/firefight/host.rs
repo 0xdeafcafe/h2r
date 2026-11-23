@@ -268,6 +268,10 @@ pub struct Host {
     /// The Firefight team each squad slot was last sent at (`Target`; 0
     /// with one team): its cleanup hunt goes to that team's base.
     targets: [u8; SQUAD_SLOTS],
+    /// The mode blob of the last `ModeState` entry applied here.
+    mode: Option<Vec<u8>>,
+    /// The mode blob of the last `ModeState` entry the host appended.
+    mode_sent: Option<Vec<u8>>,
 }
 
 impl Host {
@@ -323,6 +327,8 @@ impl Host {
             finished: false,
             respawns: 0,
             targets: [0; SQUAD_SLOTS],
+            mode: None,
+            mode_sent: None,
         })
     }
 
@@ -366,6 +372,35 @@ impl Host {
     /// The sequence number of the last entry applied here.
     pub fn applied(&self) -> u32 {
         self.applied
+    }
+
+    /// The mode blob the last applied `ModeState` entry carried: what a
+    /// replica or a film's playback draws (docs/game/firefight.md, "The
+    /// HUD").
+    pub fn mode_state(&self) -> Option<&[u8]> {
+        self.mode.as_deref()
+    }
+
+    /// On the host, after [`Host::post_tick`]: append the step's mode blob
+    /// as a `ModeState` entry for the next tick, when it differs from the
+    /// last one appended. Returns whether it appended. Elsewhere nothing is
+    /// appended: the host writes the log.
+    pub fn note_mode(&mut self, tick: u32, blob: &[u8]) -> Result<bool, host_log::Error> {
+        if self.role != Role::Host || self.mode_sent.as_deref() == Some(blob) {
+            return Ok(false);
+        }
+        let head = self.log.head();
+        self.log.push(Entry {
+            seq: head.next_seq()?,
+            tick: tick.saturating_add(1).max(head.tick),
+            author: None,
+            op: Command::ModeState {
+                blob: blob.to_vec(),
+            },
+            prev_hash: head.hash,
+        })?;
+        self.mode_sent = Some(blob.to_vec());
+        Ok(true)
     }
 
     pub fn kit(&self) -> &Kit {
@@ -595,6 +630,11 @@ impl Host {
             Command::Score { player, points, .. } => game.credit_score(*player, *points),
             Command::Respawn { player } => game.respawn(*player),
             Command::Finish { outcome } => game.end_game(*outcome),
+            // The game takes no call: the HUD draws the blob.
+            Command::ModeState { blob } => {
+                self.mode = Some(blob.clone());
+                Ok(())
+            }
         }
     }
 }
