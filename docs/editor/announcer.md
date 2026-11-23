@@ -7,9 +7,12 @@ Switch: none. The key is read from the Keychain; there is no environment variabl
 Studio makes an announcer line from text: a voice says it, Studio trims
 it, brings it to the loudness of the retail announcer, saves it in the
 format of our announcer clips (`art/announcer/README.md`), plays it and
-says how it sits against the retail lines. The window (View > Announcer)
-and the agent API (`voice.say`, `voice.list`, `voice.commit`, in
-[agent-api.md](agent-api.md)) go through the same `App` methods.
+says how it sits against the retail lines. The Voices window (View >
+Voices, the announcer engine) and the agent API (`voice.say`, `voice.list`,
+`voice.commit`, in [agent-api.md](agent-api.md)) go through the same `App`
+methods. The same pipeline says a game character's lines with a local
+clone (`Engine::Clone`, `voice.clone.say`); that engine, its dataset and
+its model are in [voice-cloning.md](voice-cloning.md).
 
 ## The voice
 
@@ -61,7 +64,9 @@ out of the shell history. A Keychain that cannot be read (access denied, no
    is the cache key. `<data root>/announcer/cache/<key>.wav` (44.1 kHz mono
    16-bit, as the voice said it) and `<key>.json` (what was asked) hold an
    earlier answer; a hit makes no call and needs no key. `fresh` asks again
-   and replaces the entry.
+   and replaces the entry. Only an answer that passes the trim and the
+   normalise below is kept: a silent line is an error and is never served
+   from the cache.
 2. **Trim.** Samples under -50 dBFS are silence. 20 ms of it stays at the
    start and 60 ms at the end.
 3. **Measure and normalise.** One gain brings the line's integrated
@@ -101,5 +106,6 @@ commit are the user's.
 
 - The window waits while the voice is asked; there is no progress or
   cancel.
-- Only Fish Audio, only the Keychain, only macOS.
+- Only Fish Audio among services, only the Keychain, only macOS. The other
+  engine is local ([voice-cloning.md](voice-cloning.md)).
 - No per-line voice settings beyond `speed` and `model`.

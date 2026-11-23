@@ -101,7 +101,7 @@ pub struct Studio {
     pub map_list: map_list::MapListUi,
     /// The Sound window over the Tags tool's selected `snd!`.
     sound: sound::SoundUi,
-    /// The Announcer window (View > Announcer).
+    /// The Voices window (View > Voices): the announcer and the clones.
     announcer: announcer::AnnouncerUi,
 }
 
@@ -521,7 +521,7 @@ impl Studio {
             menu_action(ui, app, MenuCommand::Overlay, None, app.overlay_shown(), actions);
             ui.separator();
             if ui.menu_item_enabled_selected_no_shortcut(
-                format!("{} Announcer", icon::SOUND),
+                format!("{} Voices", icon::SOUND),
                 self.announcer.open,
                 true,
             ) {

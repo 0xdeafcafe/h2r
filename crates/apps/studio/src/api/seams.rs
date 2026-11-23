@@ -49,8 +49,11 @@
 //!   when asked ([`super::models`]); read-only, so no actions.
 //!   `model.colors`, `model.emblem` and `custom.*` are planned
 //!   (docs/editor/agent-api.md).
-//! - **the Announcer**: `voice.say`, `voice.list` and `voice.commit`
-//!   ([`super::voice`]) over `app::announcer`.
+//! - **the Announcer** and **Voices**: `voice.say`, `voice.list`,
+//!   `voice.commit`, `voice.characters`, `voice.dataset.build`,
+//!   `voice.dataset.status`, `voice.clone.train` and `voice.clone.say`
+//!   ([`super::voice`], [`super::voice_clone`]) over `app::announcer`
+//!   and `app::voices`.
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::perform`]: crate::App::perform
@@ -124,4 +127,7 @@ pub fn register(api: &mut Api) {
     // The Announcer: a line said by a voice, made a clip and kept
     // (app::announcer).
     api.register(Box::new(super::voice::Voice));
+    // Voices: game characters cloned from the disc: datasets, the local
+    // model's jobs and lines (app::voices).
+    api.register(Box::new(super::voice_clone::VoiceClone));
 }

@@ -1,16 +1,25 @@
-//! Announcer lines from text: the voice source (Fish Audio) behind the
-//! [`VoiceSource`] trait, its key in the macOS Keychain ([`key`]), the
-//! audio clean-up ([`audio`]) and the cache of what a voice already said.
-//! The pipeline that ties them to the open map's sounds is
-//! `app::announcer`; the agent API's `voice.*` and the Announcer panel
-//! both go through it. docs/editor/announcer.md.
+//! Lines from text: the voice sources behind the [`VoiceSource`] trait
+//! (Fish Audio, [`fish`]; a local clone of a game character, [`clone`]),
+//! Fish Audio's key in the macOS Keychain ([`key`]), the audio clean-up
+//! ([`audio`]) and the cache of what a voice already said. The clone's
+//! training data is built by [`dataset`] from the user's own disc, and its
+//! model runs in a Python process Studio installs and drives
+//! ([`sidecar`]). The pipeline that ties them to the open map's sounds is
+//! `app::announcer` (and `app::voices` for the clone's datasets and
+//! jobs); the agent API's `voice.*` and the Voices window both go through
+//! it. docs/editor/announcer.md, docs/editor/voice-cloning.md.
 //!
-//! Nothing here touches the network except [`fish`], and nothing in a
-//! test reaches it: the tests use [`fake::Fake`].
+//! Nothing here touches the network except [`fish`] and the clone's
+//! one-time install ([`sidecar::Managed`]), and nothing in a test reaches
+//! either: the tests use [`fake::Fake`] and [`fake::FakeLauncher`]. Disc
+//! audio, the datasets and the clone's weights never leave the machine.
 
 pub mod audio;
+pub mod clone;
+pub mod dataset;
 pub mod fish;
 pub mod key;
+pub mod sidecar;
 
 #[cfg(test)]
 pub mod fake;
@@ -43,6 +52,30 @@ pub struct Request {
     pub model: Option<String>,
     /// 1.0 is the voice's own pace.
     pub speed: f32,
+    /// The clone's reference line, whose delivery it copies: a dataset
+    /// clip id or a source tag (`None`: the clone picks one). Fish Audio
+    /// does not use it.
+    pub reference: Option<String>,
+}
+
+/// Who says a line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Engine {
+    /// Fish Audio's service ([`fish::Fish`]).
+    #[default]
+    Fish,
+    /// The local clone of a game character ([`clone::CloneVoice`]); the
+    /// request's `voice` is the character's id.
+    Clone,
+}
+
+impl Engine {
+    pub fn id(self) -> &'static str {
+        match self {
+            Engine::Fish => "fish",
+            Engine::Clone => "clone",
+        }
+    }
 }
 
 impl Request {
@@ -53,6 +86,7 @@ impl Request {
             voice: DEFAULT_VOICE.to_owned(),
             model: None,
             speed: 1.0,
+            reference: None,
         }
         .checked()
     }
@@ -90,12 +124,19 @@ impl Request {
                 SPEED_RANGE.0, SPEED_RANGE.1
             )));
         }
+        if let Some(r) = &self.reference
+            && (r.trim().is_empty() || r.len() > 256 || r.chars().any(char::is_control))
+        {
+            return Err(VoiceError::Invalid(
+                "reference: a dataset clip id or a sound tag path".into(),
+            ));
+        }
         Ok(self)
     }
 
     /// The cache key: a digest of every setting that changes the audio.
     pub fn key(&self) -> String {
-        let canon = format!(
+        let mut canon = format!(
             "h2-announcer-line\0{}\0{}\0{:.2}\0pcm16-mono-{}\0{}",
             self.voice,
             self.model.as_deref().unwrap_or("default"),
@@ -103,6 +144,10 @@ impl Request {
             audio::RATE,
             self.text
         );
+        if let Some(r) = &self.reference {
+            canon.push_str("\0reference\0");
+            canon.push_str(r);
+        }
         Sha256::of(canon.as_bytes()).to_string()
     }
 }
@@ -114,8 +159,9 @@ pub struct Pcm {
     pub samples: Vec<i16>,
 }
 
-/// Where lines come from. Fish Audio in Studio ([`fish::Fish`]), a
-/// synthetic signal in the tests (`fake::Fake`).
+/// Where lines come from. Fish Audio ([`fish::Fish`]) or the local clone
+/// ([`clone::CloneVoice`]) in Studio, a synthetic signal in the tests
+/// (`fake::Fake`).
 pub trait VoiceSource {
     /// Says `req`. This is the only call that costs anything.
     fn say(&mut self, req: &Request) -> Result<Pcm, VoiceError>;
@@ -143,6 +189,13 @@ pub enum VoiceError {
     Audio(String),
     /// A file could not be read or written.
     Io(String),
+    /// The local clone is not ready: its model is not installed (an
+    /// install has been started), or the character has no dataset yet.
+    Setup(String),
+    /// Another clone job (install, transcription, training) is running.
+    Busy(String),
+    /// The local model failed: what its sidecar said.
+    Model(String),
 }
 
 impl fmt::Display for VoiceError {
@@ -153,7 +206,10 @@ impl fmt::Display for VoiceError {
             | VoiceError::Invalid(s)
             | VoiceError::Network(s)
             | VoiceError::Audio(s)
-            | VoiceError::Io(s) => f.write_str(s),
+            | VoiceError::Io(s)
+            | VoiceError::Setup(s)
+            | VoiceError::Busy(s)
+            | VoiceError::Model(s) => f.write_str(s),
             VoiceError::Api { status, message } => {
                 write!(f, "Fish Audio answered {status}: {message}")
             }
@@ -204,6 +260,7 @@ impl Cache {
             "voice": req.voice,
             "model": req.model,
             "speed": req.speed,
+            "reference": req.reference,
         });
         write_atomic(
             &self.dir.join(format!("{key}.json")),
@@ -239,6 +296,7 @@ impl Cache {
                 voice: voice.to_owned(),
                 model: v["model"].as_str().map(str::to_owned),
                 speed: v["speed"].as_f64().unwrap_or(1.0) as f32,
+                reference: v["reference"].as_str().map(str::to_owned),
             };
             let at = e
                 .metadata()

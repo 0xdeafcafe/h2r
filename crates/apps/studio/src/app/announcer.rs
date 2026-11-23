@@ -7,7 +7,8 @@
 //! A line is made in steps, each a pure piece in [`crate::voice`]:
 //! 1. **Ask**: the cache (`<data root>/announcer/cache`) is read first; a
 //!    line the voice has already said is not asked for again. Only a miss
-//!    calls the [`VoiceSource`], and so needs the key.
+//!    calls the [`VoiceSource`], and so needs the key. Only an answer that
+//!    passes the trim and the normalise below is kept in the cache.
 //! 2. **Trim** the silence off both ends.
 //! 3. **Measure** against the retail announcer lines of the open map
 //!    (`sound.measure`'s reference set, `sound\dialog\multiplayer\flavor`),
@@ -21,6 +22,13 @@
 //!
 //! [`App::voice_commit`] is the separate, explicit step that copies a line
 //! into `art/announcer/<clip>.wav` for `git add`.
+//!
+//! With [`Engine::Clone`] the voice is a game character's local clone
+//! (`voice::clone`, `app::voices`): the cache and the lines are under
+//! `<data root>/voices/<character>`, a miss needs the sidecar installed
+//! instead of a key, and the target loudness is the median of the
+//! character's own lines in its dataset ([`App::character_target`]).
+//! docs/editor/voice-cloning.md.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,7 +38,9 @@ use serde_json::{Value, json};
 use super::App;
 use super::audition::{Clip, SoundError};
 use crate::api::sound_measure::{self, meter};
-use crate::voice::{self, Cache, DEFAULT_VOICE, Request, VoiceError, VoiceSource, audio};
+use crate::voice::{
+    self, Cache, DEFAULT_VOICE, Engine, Request, VoiceError, VoiceSource, audio, dataset,
+};
 
 /// What the retail announcer's median loudness was measured at, when no
 /// map is open to measure it from (`art/announcer/README.md`, LUFS).
@@ -77,7 +87,8 @@ pub struct SayParams {
     pub voice: Option<String>,
     pub model: Option<String>,
     pub speed: Option<f32>,
-    /// Where to save the WAV; relative to `<data root>/announcer`.
+    /// Where to save the WAV; relative to the engine's directory
+    /// (`<data root>/announcer`, or `<data root>/voices/<character>`).
     pub out: Option<PathBuf>,
     /// The clip id the line is for (`superbounce`): names the file and
     /// says how to add it.
@@ -87,13 +98,18 @@ pub struct SayParams {
     pub target_lufs: Option<f64>,
     /// Ask the voice again even when the cache has the line.
     pub fresh: bool,
+    /// Who says it. With [`Engine::Clone`], `voice` is the character's id
+    /// and the line is saved under `<data root>/voices/<character>`.
+    pub engine: Engine,
+    /// The clone's reference line (a dataset clip id or source tag).
+    pub reference: Option<String>,
 }
 
 /// The loudness a line is brought to, and where it came from.
 #[derive(Clone, Debug)]
 pub struct Target {
     pub lufs: f64,
-    /// `given`, `retail`, `our clips` or `fallback`.
+    /// `given`, `retail`, `our clips`, `character` or `fallback`.
     pub from: &'static str,
     /// Lines the target is the median of.
     pub lines: usize,
@@ -245,13 +261,55 @@ impl App {
         }
     }
 
+    /// The loudness a character's line is brought to: `given`, else the
+    /// median of the character's own lines in its dataset (each measured
+    /// from the disc's permutation, trimmed, by `sound.measure`'s meter).
+    pub fn character_target(&self, character: &str, given: Option<f64>) -> Target {
+        let lines = dataset::read_manifest(
+            &self.voices_dir().join(character).join(dataset::MANIFEST),
+        )
+        .unwrap_or_default();
+        let s = dataset::summarize(&lines);
+        let (lufs, from, why) = match (given, s.lufs) {
+            (Some(g), _) => (g, "given", None),
+            (None, Some(l)) => (l.p50, "character", None),
+            (None, None) => (
+                FALLBACK_LUFS,
+                "fallback",
+                Some(format!("{character} has no dataset to measure")),
+            ),
+        };
+        Target {
+            lufs,
+            from,
+            lines: if from == "character" { s.lines } else { 0 },
+            lufs_spread: s.lufs,
+            peak_spread: s.peak,
+            why,
+        }
+    }
+
     /// Makes a line, in the steps of this module's header.
     pub fn voice_say(&mut self, p: SayParams) -> Result<Said, VoiceError> {
+        let clone = p.engine == Engine::Clone;
+        let voice = if clone {
+            let c = p.voice.as_deref().ok_or_else(|| {
+                VoiceError::Invalid("character: whose voice says it (cortana, masterchief)".into())
+            })?;
+            dataset::check_id(c)?.to_owned()
+        } else {
+            p.voice.clone().unwrap_or_else(|| DEFAULT_VOICE.to_owned())
+        };
         let req = Request {
             text: p.text.trim().to_owned(),
-            voice: p.voice.clone().unwrap_or_else(|| DEFAULT_VOICE.to_owned()),
-            model: p.model.clone(),
+            model: if clone {
+                Some(self.voices.clone.model_tag(&voice))
+            } else {
+                p.model.clone()
+            },
+            voice,
             speed: p.speed.unwrap_or(1.0),
+            reference: if clone { p.reference.clone() } else { None },
         }
         .checked()?;
         let clip_id = p.clip.as_deref().map(check_clip_id).transpose()?;
@@ -260,7 +318,11 @@ impl App {
         {
             return Err(VoiceError::Invalid("target_lufs: -60 to 0".into()));
         }
-        let dir = self.announcer_dir();
+        let dir = if clone {
+            self.voices_dir().join(&req.voice)
+        } else {
+            self.announcer_dir()
+        };
         let cache = Cache::new(&dir);
         let key = req.key();
         let raw_file = cache.wav(&key);
@@ -283,8 +345,12 @@ impl App {
         let (raw, cached) = match kept {
             Some(pcm) => (pcm, true),
             None => {
-                let pcm = self.announcer.source.say(&req)?;
-                cache.put(&req, &pcm)?;
+                let pcm = if clone {
+                    self.voice_clone_ready()?;
+                    self.voices.clone.say(&req)?
+                } else {
+                    self.announcer.source.say(&req)?
+                };
                 (pcm, false)
             }
         };
@@ -301,14 +367,25 @@ impl App {
         let (trimmed_pcm, trimmed) =
             audio::trim_silence(&raw.samples, raw.rate, audio::HEAD_PAD_MS, audio::TAIL_PAD_MS)
                 .ok_or_else(|| VoiceError::Audio("the line is silent".into()))?;
-        let target = self.announcer_target(p.target_lufs);
+        let target = if clone {
+            self.character_target(&req.voice, p.target_lufs)
+        } else {
+            self.announcer_target(p.target_lufs)
+        };
         let n = audio::normalise(&trimmed_pcm, raw.rate, target.lufs, audio::CEILING_DBFS)?;
+        // Only an answer that passed the trim and the normalise is kept:
+        // a silent or broken line is never served from the cache again.
+        if !cached {
+            cache.put(&req, &raw)?;
+        }
         let levels = meter::measure(&n.pcm, 1, raw.rate);
+        let character_lines = format!("{}'s lines on the disc", req.voice);
         let verdict = meter::verdict(
             &levels,
             target.lufs_spread,
             target.peak_spread,
             match target.from {
+                _ if clone => character_lines.as_str(),
                 "retail" => "the retail announcer lines",
                 "our clips" => "our announcer clips",
                 _ => "the announcer's mix",

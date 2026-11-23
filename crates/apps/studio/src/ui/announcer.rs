@@ -1,16 +1,22 @@
-//! The Announcer window: type a line, have the voice say it, hear it, and
-//! see how it sits against the retail announcer. Making a line is the
-//! app's ([`crate::app::announcer`]); the agent API's `voice.say` makes it
-//! the same way. View > Announcer opens it.
+//! The Voices window: type a line, have a voice say it (Fish Audio's
+//! announcer voice, or a game character's local clone), hear it, and see
+//! how it sits against the lines it should match. Making a line is the
+//! app's ([`crate::app::announcer`], [`crate::app::voices`]); the agent
+//! API's `voice.say` and `voice.clone.say` make it the same way. View >
+//! Voices opens it.
 //!
 //! The window waits while the voice is asked (a few seconds); a line the
-//! voice already said comes back at once from the cache.
+//! voice already said comes back at once from the cache. The clone's
+//! install, transcription and fine-tune run in the background; the
+//! window shows their progress.
 use dear_imgui_rs::{Condition, Ui};
 
 use crate::app::App;
 use crate::app::announcer::{Playback, SayParams, Said};
+use crate::app::voices::BuildParams;
 use crate::theme::{self, icon};
-use crate::voice::{self, VoiceError};
+use crate::voice::dataset::CHARACTERS;
+use crate::voice::{self, Engine, VoiceError};
 
 /// The window's state.
 #[derive(Default)]
@@ -21,6 +27,14 @@ pub struct AnnouncerUi {
     clip: String,
     /// A voice other than the default, or empty.
     voice: String,
+    /// Who says it.
+    engine: Engine,
+    /// The character cloned ([`CHARACTERS`]).
+    character: usize,
+    /// The clone's reference line, or empty.
+    reference: String,
+    /// What the last dataset build or fine-tune start said.
+    clone_note: Option<Result<String, String>>,
     last: Option<Result<Said, VoiceError>>,
     /// What committing the last line said.
     committed: Option<Result<String, String>>,
@@ -35,7 +49,7 @@ pub fn window(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
     if !st.open {
         return;
     }
-    ui.window("Announcer###announcer")
+    ui.window("Voices###announcer")
         .size([460.0, 420.0], Condition::FirstUseEver)
         .build(|| {
             body(ui, app, st);
@@ -46,34 +60,160 @@ pub fn window(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
         });
 }
 
+/// The clone's half: the character, its dataset and fine-tune, and the
+/// background job's progress.
+fn clone_panel(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
+    let c = &CHARACTERS[st.character.min(CHARACTERS.len() - 1)];
+    ui.set_next_item_width(220.0);
+    if let Some(_combo) = ui.begin_combo("##voices-character", c.name) {
+        for (i, ch) in CHARACTERS.iter().enumerate() {
+            if ui.selectable_config(ch.name).selected(i == st.character).build() {
+                st.character = i;
+            }
+        }
+    }
+    ui.same_line();
+    if ui.button("Build dataset##voices-build") {
+        let r = app.voice_dataset_build(BuildParams {
+            character: c.id.to_owned(),
+            asr: true,
+            ..BuildParams::default()
+        });
+        st.clone_note = Some(
+            r.map(|v| {
+                format!(
+                    "{} clips ({} min with text, {} to transcribe) from {} tags",
+                    v["kept"], v["dataset"]["minutes"], v["dataset"]["pending_asr"], v["tags"]
+                )
+            })
+            .map_err(|e| e.to_string()),
+        );
+    }
+    ui.same_line();
+    if ui.button("Fine-tune##voices-train") {
+        st.clone_note = Some(
+            app.voice_clone_train(c.id, None, None)
+                .map(|v| format!("Fine-tuning on {} minutes (job {})", v["minutes"], v["job"]))
+                .map_err(|e| e.to_string()),
+        );
+    }
+    let status = app.voice_dataset_status(Some(c.id)).ok();
+    if let Some(s) = &status {
+        let d = &s["datasets"][0];
+        if d["built"] == true {
+            ui.text_disabled(format!(
+                "Dataset: {} lines, {} min with text ({} subtitles, {} transcribed, {} waiting){}",
+                d["dataset"]["lines"],
+                d["dataset"]["minutes"],
+                d["dataset"]["from_subtitle"],
+                d["dataset"]["from_asr"],
+                d["dataset"]["pending_asr"],
+                if d["model"]["trained"] == true { ", fine-tuned" } else { "" }
+            ));
+        } else {
+            ui.text_disabled("No dataset yet: Build dataset reads the disc's lines.");
+        }
+        ui.text_disabled(format!(
+            "Local model ({}): {}",
+            s["sidecar"]["backend"].as_str().unwrap_or_default(),
+            s["sidecar"]["state"].as_str().unwrap_or_default()
+        ));
+        let j = &s["job"];
+        if j.is_object() {
+            let total = j["total"].as_u64().unwrap_or(0);
+            let line = format!(
+                "Job {} ({}): {} {}{}",
+                j["id"],
+                j["kind"].as_str().unwrap_or_default(),
+                j["state"].as_str().unwrap_or_default(),
+                j["stage"].as_str().unwrap_or_default(),
+                if total > 0 {
+                    format!(" {}/{}", j["done"], total)
+                } else {
+                    String::new()
+                }
+            );
+            match j["state"].as_str() {
+                Some("failed") => ui.text_colored(
+                    theme::WARN,
+                    format!("{line}: {}", j["why"].as_str().unwrap_or_default()),
+                ),
+                _ => ui.text_disabled(line),
+            }
+            if let Some(t) = j["text"].as_str() {
+                ui.text_disabled(t);
+            }
+        }
+    }
+    match &st.clone_note {
+        Some(Ok(t)) => ui.text_wrapped(t),
+        Some(Err(t)) => ui.text_colored(theme::WARN, format!("{} {t}", icon::ALERT)),
+        None => {}
+    }
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##voices-reference", &mut st.reference)
+        .hint("Reference line: a dataset clip id or sound tag (default: picked)")
+        .build();
+}
+
 fn body(ui: &Ui, app: &mut App, st: &mut AnnouncerUi) {
+    if ui.radio_button_bool("Announcer (Fish Audio)", st.engine == Engine::Fish) {
+        st.engine = Engine::Fish;
+    }
+    ui.same_line();
+    if ui.radio_button_bool("Game character (local clone)", st.engine == Engine::Clone) {
+        st.engine = Engine::Clone;
+    }
+    let clone = st.engine == Engine::Clone;
     ui.text_disabled(format!(
         "{} lines are saved under {}",
         icon::SOUND,
-        app.announcer_dir().display()
+        if clone {
+            app.voices_dir().display().to_string()
+        } else {
+            app.announcer_dir().display().to_string()
+        }
     ));
+    if clone {
+        clone_panel(ui, app, st);
+    }
     ui.set_next_item_width(-1.0);
     ui.input_text("##announcer-text", &mut st.text)
-        .hint("What the announcer says")
+        .hint(if clone { "What the character says" } else { "What the announcer says" })
         .build();
     ui.set_next_item_width(160.0);
     ui.input_text("##announcer-clip", &mut st.clip)
         .hint("Clip id, e.g. superbounce")
         .build();
-    ui.same_line();
-    ui.set_next_item_width(-1.0);
-    ui.input_text("##announcer-voice", &mut st.voice)
-        .hint("Voice id (default announcer voice)")
-        .build();
+    if !clone {
+        ui.same_line();
+        ui.set_next_item_width(-1.0);
+        ui.input_text("##announcer-voice", &mut st.voice)
+            .hint("Voice id (default announcer voice)")
+            .build();
+    }
 
     let can = !st.text.trim().is_empty();
     if ui.button(format!("{} Say it##announcer-say", icon::SOUND)) && can {
-        let params = SayParams {
-            text: st.text.clone(),
-            voice: (!st.voice.trim().is_empty()).then(|| st.voice.trim().to_owned()),
-            clip: (!st.clip.trim().is_empty()).then(|| st.clip.trim().to_owned()),
-            play: true,
-            ..SayParams::default()
+        let params = if clone {
+            SayParams {
+                text: st.text.clone(),
+                voice: Some(CHARACTERS[st.character.min(CHARACTERS.len() - 1)].id.to_owned()),
+                clip: (!st.clip.trim().is_empty()).then(|| st.clip.trim().to_owned()),
+                reference: (!st.reference.trim().is_empty())
+                    .then(|| st.reference.trim().to_owned()),
+                engine: Engine::Clone,
+                play: true,
+                ..SayParams::default()
+            }
+        } else {
+            SayParams {
+                text: st.text.clone(),
+                voice: (!st.voice.trim().is_empty()).then(|| st.voice.trim().to_owned()),
+                clip: (!st.clip.trim().is_empty()).then(|| st.clip.trim().to_owned()),
+                play: true,
+                ..SayParams::default()
+            }
         };
         st.last = Some(app.voice_say(params));
         st.committed = None;
