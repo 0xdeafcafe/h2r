@@ -2167,7 +2167,7 @@ mod tests {
         constant.vertex.constants[20][0] += 1.0;
         assert_eq!(base.change_to(&constant), ProgramChange::Constants);
         let mut colour = base.clone();
-        colour.pixel = constant.pixel.clone();
+        colour.pixel = constant.pixel;
         colour.def.constant0[0] ^= 1;
         assert_eq!(base.change_to(&colour), ProgramChange::None, "the definition's constants reach the GPU through the uniforms");
         let mut bitmap = base.clone();
