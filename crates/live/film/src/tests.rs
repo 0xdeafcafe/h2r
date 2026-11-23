@@ -661,6 +661,207 @@ fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
     assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 50);
 }
 
+/// An unsealed v3 tape, as a hard kill leaves it: the envelopes written so
+/// far and no indexes. Capture marks at ticks 50, 200 and 280; the track
+/// writer holds ticks 257..=300 unflushed, so the tape's last flushed tick
+/// is 256 and the last mark it can end at is 200.
+fn dead_tape(path: &std::path::Path) -> Vec<Entry> {
+    use blam::{Tick, TrackWriter};
+    let mut tape_header = header(7);
+    tape_header.version = 3;
+    tape_header.meta.source = Source::Local;
+    tape_header.player_features = true;
+    let mut tape = Writer::new(fs::File::create(path).unwrap(), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    let mut track = TrackWriter::default();
+    for n in 1..=300u64 {
+        track
+            .push(
+                &mut tape,
+                Tick {
+                    tick: n,
+                    inputs: vec![],
+                    events: vec![],
+                    closing_events: vec![],
+                    post_hash: None,
+                    forge: vec![],
+                },
+            )
+            .unwrap();
+        if n.is_multiple_of(30) {
+            tape.chunk(
+                HASH,
+                &Check {
+                    tick: n,
+                    sim: Some(n),
+                    calls: 0,
+                },
+            )
+            .unwrap();
+        }
+        if matches!(n, 50 | 200 | 280) {
+            // The recorder flushes its call batch, then writes the mark.
+            tape.chunk(
+                NETR,
+                &vec![Call {
+                    index: match n {
+                        50 => 0,
+                        200 => 1,
+                        _ => 2,
+                    },
+                    op: "Recv".into(),
+                    thread: 7,
+                    args: vec![2],
+                    result: Ok(1),
+                    outputs: vec![],
+                }],
+            )
+            .unwrap();
+            tape.chunk(
+                MARK,
+                &Mark::D3dBarrier {
+                    slices: n * 2,
+                    tick: n,
+                    saved: true,
+                },
+            )
+            .unwrap();
+        }
+    }
+    let index = tape.index.clone();
+    drop(tape);
+    index
+}
+
+#[test]
+fn an_unsealed_tape_is_sealed_to_its_last_flushed_capture() {
+    let dir = Temp::new();
+    let path = dir.0.join("auto-tape.h2film");
+    let index = dead_tape(&path);
+    // The tape's own view of itself fails: no footer, no front.
+    assert!(Reader::open(&path).is_err());
+
+    assert!(recover_tape(&path).unwrap());
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(reader.header.meta.id, "7");
+    assert_eq!(reader.header.meta.length_ticks, 200);
+    assert!(reader.header.tape_id.is_none());
+    let front = reader.front.as_ref().unwrap();
+    assert_eq!((front.id.as_str(), front.started_ms), ("7", 7));
+    assert!(front.summary.players.is_empty(), "no descriptor survived");
+    // The end falls back past the mark whose chunk never flushed (280) to
+    // the last one the tape holds whole (200), inside the chunk 129..=256.
+    let playback = Playback::load(reader).unwrap();
+    assert_eq!(playback.end, Some((400, 200, 2)));
+    assert_eq!(playback.capture_points(), [50, 200]);
+    let chunks = &playback.reader.ranges.as_ref().unwrap().chunks;
+    assert_eq!(chunks.first().unwrap().scene, 1);
+    let last = chunks.last().unwrap();
+    assert!((last.first..=last.last).contains(&200), "the end's chunk stays whole");
+    assert_eq!(last.last, 256);
+    // The staged copy is gone and the tape's bytes end where the film does.
+    assert!(staging_files(&path).is_empty());
+    assert_eq!(index.iter().filter(|e| e.tag == TICK).count(), 2);
+}
+
+#[test]
+fn a_tape_cut_mid_frame_seals_to_the_capture_before_the_torn_chunk() {
+    let dir = Temp::new();
+    let path = dir.0.join("auto-tape.h2film");
+    let index = dead_tape(&path);
+    // Cut inside the second time chunk's envelope, so the tape's last
+    // flushed tick falls to 128 and the mark at 200 cannot end a film.
+    let second = index
+        .iter()
+        .filter(|e| e.tag == range::TICK)
+        .nth(1)
+        .unwrap();
+    let len = fs::metadata(&path).unwrap().len();
+    let tape = fs::File::options().write(true).open(&path).unwrap();
+    tape.set_len(second.offset + 4).unwrap();
+    drop(tape);
+    assert!(len > second.offset + 4);
+
+    assert!(recover_tape(&path).unwrap());
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(reader.header.meta.length_ticks, 50);
+    let playback = Playback::load(reader).unwrap();
+    assert_eq!(playback.end, Some((100, 50, 1)));
+    assert_eq!(playback.capture_points(), [50]);
+    // The checkpoint at 60 sits before the kept chunk in the file; it is
+    // past the end and must not survive into the film.
+    let chunks = &playback.reader.ranges.as_ref().unwrap().chunks;
+    assert_eq!(chunks.last().unwrap().last, 128);
+}
+
+#[test]
+fn a_tape_with_a_truncated_tail_seals_where_the_whole_chunks_end() {
+    let dir = Temp::new();
+    let path = dir.0.join("auto-tape.h2film");
+    dead_tape(&path);
+    // The dead session's last write is torn: everything after the last
+    // capture mark loses its tail. The recovery ignores the partial bytes.
+    let len = fs::metadata(&path).unwrap().len();
+    let tape = fs::File::options().write(true).open(&path).unwrap();
+    tape.set_len(len - 3).unwrap();
+    drop(tape);
+
+    assert!(recover_tape(&path).unwrap());
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(reader.header.meta.length_ticks, 200);
+    let playback = Playback::load(reader).unwrap();
+    assert_eq!(playback.end, Some((400, 200, 2)));
+}
+
+#[test]
+fn a_tape_with_no_capture_to_end_at_is_not_a_film() {
+    let dir = Temp::new();
+    // Nothing but the boot header and the start manifest.
+    let bare = dir.0.join("auto-bare.h2film");
+    let mut tape_header = header(9);
+    tape_header.version = 3;
+    let mut tape = Writer::new(fs::File::create(&bare).unwrap(), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    drop(tape);
+    assert!(!recover_tape(&bare).unwrap());
+
+    // Ticks and checkpoints, but no game ever captured: a session that
+    // died in the menus leaves no film.
+    let menus = dir.0.join("auto-menus.h2film");
+    let mut tape = Writer::new(fs::File::create(&menus).unwrap(), &tape_header).unwrap();
+    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    let mut track = blam::TrackWriter::default();
+    for n in 1..=40u64 {
+        track
+            .push(
+                &mut tape,
+                blam::Tick {
+                    tick: n,
+                    inputs: vec![],
+                    events: vec![],
+                    closing_events: vec![],
+                    post_hash: None,
+                    forge: vec![],
+                },
+            )
+            .unwrap();
+    }
+    drop(tape);
+    assert!(!recover_tape(&menus).unwrap());
+    // A failed or empty recovery leaves the file as it was.
+    assert!(menus.is_file());
+    assert!(staging_files(&menus).is_empty());
+}
+
+/// The recovery staging files beside `path` (each test's own directory).
+fn staging_files(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "recover"))
+        .collect()
+}
+
 /// Only a cut's final header may name another boot header: a v3 film whose
 /// boot `HEAD` has another ID is still refused.
 #[test]

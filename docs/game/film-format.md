@@ -66,11 +66,12 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   the header's start time, which for a game's film is its game's start,
   newest first.
 - **The library cap.** Before each game's film is written, and before a
-  session records, the library keeps the 24 newest unsaved default films,
-  so the new one makes 25, the Recent tab's length. A default film or tape
-  a stopped session left unsealed for an hour is removed. Saved films,
-  films named with `--film` and downloaded archives are never removed. The
-  keyframe cache keeps its own cap,
+  session records, the library first recovers what a stopped session left
+  (below), then keeps the 24 newest unsaved default films, so the new one
+  makes 25, the Recent tab's length. A default film or tape a stopped
+  session left unsealed for an hour is removed when nothing of it could be
+  recovered. Saved films, films named with `--film` and downloaded
+  archives are never removed. The keyframe cache keeps its own cap,
   [`theater.cache_cap_gib`](settings-menu.md#theater-keyframe-cache).
 - **Player features stay on.** A film named with `--film` turns off Live
   session links, the Custom Game Browser advertisements and its filters,
@@ -109,11 +110,25 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   (`theater::Session::seal_on_drop`) across its slice loop, so an error
   exit or a panic that skips the final finish cuts the game in play and
   deletes the tape as a clean exit does. A SIGTERM, a window close and
-  Cmd-Q all end the run through the loop's teardown. Only a hard kill
-  (SIGKILL, a power loss) leaves an unsealed tape; the library prune
-  removes it after an hour, and nothing recovers a film from it, because
-  the ranges directory and the per-game descriptors of an unsealed tape
-  live in the recorder's memory, not in the file.
+  Cmd-Q all end the run through the loop's teardown. A hard kill (SIGKILL,
+  a power loss) still leaves an unsealed tape; the next session that
+  records recovers it (`autorecord::recover`, `film::recover_tape`), once
+  the tape has been idle past the abandoned interval, so a running
+  recording is never touched.
+- **A recovered tape keeps its playable part.** The recorder holds the
+  public ranges directory, the per-game descriptors and up to 127 unflushed
+  ticks in memory, so an unsealed tape is envelopes and nothing else.
+  Recovery rebuilds both directories from the chunks, rewrites the kept
+  envelopes contiguously as a film of its own, and ends the film at the
+  tape's last D3D capture mark whose tick a flushed chunk covers: the
+  recorder flushes its call batch and every checkpoint before such a mark,
+  so its slice, tick and call counts are exact, and at most 150 ticks of
+  the game are lost. Everything past that mark is dropped, including
+  checkpoints and call batches recorded past it, so a replay is never
+  asked for state the tape does not hold. A recovered film lists with no
+  map, variant or scores, and opens at boot; a tape with no such mark —
+  a session that died outside a game — is deleted, as a session that
+  played no game leaves no film.
 
 What Theater's Recent tab shows:
 
@@ -170,7 +185,9 @@ cuts it at each game's end (`State::cut_game` in
    one: a map unload, or a new game whose game-over latch is clear. A
    multiplayer game left before its end is dropped from the description
    when the guest leaves its map; its ticks stay on the tape and it never
-   becomes a film.
+   becomes a film. A campaign mission left in play is cut when the guest
+   leaves its map, as a game's end is, so the next mission describes
+   itself instead of inheriting the left one's start and map.
 
 A cut is an ordinary sealed v3 film whose final header has its own `id`,
 its game's start as `started_ms`, and `tape_id`, the tape's ID. Its boot

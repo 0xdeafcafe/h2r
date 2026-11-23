@@ -37,6 +37,13 @@ pub(super) struct Capture {
     /// the guest leaves it (a map unload, or a new game's globals).
     between_games: bool,
     left: bool,
+    /// A campaign mission left in play: the recorder cuts its film at the
+    /// next slice's check, so the next mission describes itself instead of
+    /// inheriting this one's start and map.
+    cut_left: bool,
+    /// The described game was read off a mounted map. Only a game the
+    /// guest was seen in can be left.
+    on_map: bool,
 }
 
 impl Capture {
@@ -72,6 +79,8 @@ impl Capture {
             games,
             between_games: false,
             left: false,
+            cut_left: false,
+            on_map: false,
         }
     }
 
@@ -92,6 +101,7 @@ impl Capture {
         self.host_machine = None;
         self.archived_on_live = false;
         self.between_games = true;
+        self.on_map = false;
     }
 
     /// The guest still shows the game whose film was just cut.
@@ -103,6 +113,13 @@ impl Capture {
     /// its observations are dropped with it.
     pub(super) fn take_left(&mut self) -> bool {
         std::mem::take(&mut self.left)
+    }
+
+    /// Whether a campaign mission was left in play since the last call:
+    /// its film is cut, keeping the mission, where a left multiplayer game
+    /// is dropped.
+    pub(super) fn take_cut_left(&mut self) -> bool {
+        std::mem::take(&mut self.cut_left)
     }
 
     /// A default recording's multiplayer game the player left before its
@@ -120,6 +137,13 @@ impl Capture {
         self.descriptor.map.name = level.into();
         self.descriptor.mode = mode;
         self.variant_name = "Slayer".into();
+    }
+
+    /// The fixture's stand-in for the game having been observed on a
+    /// mounted map, without which leaving it cannot be seen.
+    #[cfg(test)]
+    pub(super) fn on_map_for_test(&mut self) {
+        self.on_map = true;
     }
 
     pub(super) fn finish_map(&mut self) -> Result<()> {
@@ -161,6 +185,16 @@ impl Capture {
                 self.next_game();
                 self.between_games = false;
                 self.left = true;
+            } else if self.games
+                && self.on_map
+                && self.descriptor.match_start_tick.is_some()
+                && matches!(self.descriptor.mode, Mode::Campaign | Mode::CoopCampaign)
+            {
+                // A campaign mission left in play keeps its descriptor for
+                // the cut; a multiplayer game left before its end is
+                // dropped above instead. Only a game seen on a mounted map
+                // can be left, and only a default recording cuts one.
+                self.cut_left = true;
             }
             return Ok(events);
         };
@@ -170,6 +204,7 @@ impl Capture {
             }
             self.between_games = false;
         }
+        self.on_map = true;
         let s = bots::lobby::game_session(g).ok().filter(|&s| {
             s != 0
                 && g.u32(s.wrapping_add(net::STATE))

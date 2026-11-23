@@ -425,7 +425,10 @@ impl Dialogs {
                 });
                 s.texts.push(PaneText {
                     id: "preview".into(),
-                    rect: [30, 60, 150, 340],
+                    // A caption strip along the preview box's bottom edge:
+                    // 270 wide, the room the fit ellipsizes to, and one
+                    // line tall.
+                    rect: [-72, 60, -100, 330],
                     font: 1,
                     colour: [0.78, 0.84, 0.89],
                     right: false,

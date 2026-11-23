@@ -450,6 +450,183 @@ fn a_session_that_goes_away_without_a_teardown_cuts_the_game_in_play() {
 }
 
 #[test]
+fn a_campaign_mission_left_mid_session_is_cut_and_the_next_describes_itself() {
+    let dir = Temp::new("left-campaign");
+    let tape = dir.0.join("auto-tape.h2film");
+    let auto = local(&dir, &tape, true);
+    let guest = crate::theater::tests::arena();
+    ticks(&auto, &guest, 40);
+    // A mission starts at tick 10 and is left (Save & Exit): the guest
+    // leaves its map without the retail game-over latch.
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(10, "deltahalo", film::blam::Mode::Campaign);
+        rec.meta.on_map_for_test();
+    }
+    ticks(&auto, &guest, 30);
+    auto.finish(140, false).unwrap();
+    let films = cut_films(&dir.0);
+    assert_eq!(films.len(), 1, "the left mission keeps its film");
+    assert_eq!(films[0].1.front.as_ref().unwrap().match_start_tick, Some(10));
+    {
+        let s = auto.lock();
+        let Mode::Record(rec) = &s.mode else { panic!("a recording") };
+        assert!(
+            rec.meta.descriptor().match_start_tick.is_none(),
+            "the next mission describes itself"
+        );
+    }
+    // The next mission is a film of its own, not this one's sequel.
+    {
+        let mut s = auto.lock();
+        let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
+        rec.meta.start_for_test(80, "scarab", film::blam::Mode::Campaign);
+        rec.meta.on_map_for_test();
+    }
+    ticks(&auto, &guest, 10);
+    auto.finish(160, false).unwrap();
+    let films = cut_films(&dir.0);
+    assert_eq!(films.len(), 2);
+    let entry = film::LibraryEntry::read(&films[1].0).unwrap();
+    assert_eq!(entry.meta.map, "scarab");
+    auto.finish(170, true).unwrap();
+    assert!(!tape.exists());
+}
+
+/// An unsealed tape as a hard kill leaves it: a boot header, the start
+/// manifest, three time chunks' worth of ticks with the third still
+/// pending, and a capture mark inside the second chunk.
+fn dead_tape(path: &Path) {
+    use film::blam::{Tick, TrackWriter};
+    use film::tape::{Call, Check, Mark};
+    let header = film::Header {
+        version: 3,
+        meta: film::FilmMeta {
+            id: "dead".into(),
+            map: String::new(),
+            variant: String::new(),
+            started_ms: 1,
+            length_ticks: 0,
+            players: vec![],
+            source: film::Source::Local,
+            image_stamp: "image".into(),
+        },
+        title_id: 2,
+        xbe_sha256: "xbe".into(),
+        runtime_stamp: String::new(),
+        simulation_hooks: None,
+        guest_image: None,
+        epoch_100ns: 0,
+        lease_id: None,
+        game_id: None,
+        xnet_addr: "127.0.0.1:3074".into(),
+        transfers_per_slice: 5000,
+        lobby: false,
+        lobby_machine_start: false,
+        host_bots: false,
+        telemetry: false,
+        telemetry_hooks: None,
+        render_hooks: None,
+        live_service: false,
+        features: String::new(),
+        player_features: true,
+        tape_id: None,
+    };
+    let mut tape = film::Writer::new(fs::File::create(path).unwrap(), &header).unwrap();
+    tape.chunk(film::DATA, &film::manifest::Manifest::default()).unwrap();
+    let mut track = TrackWriter::default();
+    for n in 1..=300u64 {
+        track
+            .push(
+                &mut tape,
+                Tick {
+                    tick: n,
+                    inputs: vec![],
+                    events: vec![],
+                    closing_events: vec![],
+                    post_hash: None,
+                    forge: vec![],
+                },
+            )
+            .unwrap();
+        if n.is_multiple_of(30) {
+            tape.chunk(
+                film::HASH,
+                &Check {
+                    tick: n,
+                    sim: Some(n),
+                    calls: 0,
+                },
+            )
+            .unwrap();
+        }
+        if n == 200 {
+            tape.chunk(
+                film::NETR,
+                &vec![Call {
+                    index: 0,
+                    op: "Recv".into(),
+                    thread: 7,
+                    args: vec![],
+                    result: Ok(1),
+                    outputs: vec![],
+                }],
+            )
+            .unwrap();
+            tape.chunk(
+                film::MARK,
+                &Mark::D3dBarrier {
+                    slices: 400,
+                    tick: 200,
+                    saved: true,
+                },
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn the_next_session_recovers_tapes_a_stopped_one_left() {
+    let dir = Temp::new("recover");
+    let dead = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
+    dead_tape(&dead);
+    // A tape a running session is still writing every few seconds: recent,
+    // so never touched.
+    let running = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_100)));
+    dead_tape(&running);
+    // A session that died before any game captured: nothing to keep.
+    let menus = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_200)));
+    fs::write(&menus, [0u8; 512]).unwrap();
+    // A sealed film stays as it is.
+    let sealed_path = dir.0.join("auto-sealed.h2film");
+    local(&dir, &sealed_path, false).finish(1, true).unwrap();
+
+    let hours_ago = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
+    for path in [&dead, &menus] {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(hours_ago)
+            .unwrap();
+    }
+
+    let recovered = recover(&dir.0, SystemTime::now());
+    assert_eq!(recovered, vec![dead.clone()]);
+    let entry = film::LibraryEntry::read(&dead).unwrap();
+    assert_eq!(entry.meta.length_ticks, 200, "sealed to its last capture mark");
+    assert_eq!(entry.meta.map, "", "no descriptor survives a dead session");
+    assert!(!menus.exists(), "a tape with no game is deleted, not listed");
+    assert!(
+        running.exists() && film::LibraryEntry::read(&running).is_err(),
+        "a live tape is untouched"
+    );
+    assert!(film::LibraryEntry::read(&sealed_path).is_ok());
+}
+
+#[test]
 fn an_unsealed_tape_a_stopped_session_left_is_never_listed() {
     let dir = Temp::new("unsealed");
     let tape = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
