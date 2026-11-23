@@ -245,10 +245,10 @@ pickup notification names the rifle in text. The multiplayer globals'
 weapon list selects starting weapons and placement substitutions. The
 resolved object's tag supplies its HUD string IDs.
 
-The converted Blood Gulch assault rifle and shotgun had zeroes in
-these fields, and the scenario carried no `hmt `. Halo 1 has the
+The converted Blood Gulch assault rifle and shotgun have zeroes in
+these fields, and the scenario carries no `hmt `. Halo 1 has the
 templates in `hudg +0xf0`, the item text list in `hudg +0x94` and the
-weapon icon atlas in `hudg +0xa4` (V). `PickupText` now builds a
+weapon icon atlas in `hudg +0xa4` (V). `PickupText` builds a
 shared event `hmt ` from those resources. It attaches the tag to
 `scnr +0x208` before pruning and binds the route IDs to the rebuilt
 item slots. Both the pinned and fresh writers carry that reference.
@@ -356,8 +356,9 @@ simulation thread writes the control bits and blink start ticks from
 scripts. The render thread reads the resulting guest state and uses
 the native draw calls.
 
-The code and regression tests are ready for the integration pass. The
-evidence here comes from static inspection of the two discs and XBEs.
+The evidence on this page comes from static inspection of the two discs
+and XBEs; a game run has not shown it.
+
 ## Commands
 
 The campaign import installs the converted lists. `h2 h1 tags` lists

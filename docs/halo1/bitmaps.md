@@ -204,32 +204,29 @@ lightmap bitmap reference (`sbsp+0x00`), its tag, and per Halo 1 lightmap
 the page it samples, `None` for `-1`. `convert_bitmap` on that tag gives
 the Halo 2 lightmap bitmap, one image per page, R5G6B5 2D.
 
-The structure writer (`h1convert::structure`) does not use them yet: it
-writes one lightmap group with no bitmap, and every cluster's render info
-entry stays `{-1, -1}`. What it has to do to show them, from
-[lighting.md](../formats/lighting.md) and [structure-bsp.md](../formats/structure-bsp.md):
+The structure writer (`h1convert::structure`, from
+[lighting.md](../formats/lighting.md) and
+[structure-bsp.md](../formats/structure-bsp.md)):
 
-1. Install the converted lightmap bitmap (`Converted::install`) and
-   reference it from the lightmap group's bitmap reference (`ltmp` group
+1. Installs the converted lightmap bitmap (`Converted::install`) and
+   references it from the lightmap group's bitmap reference (`ltmp` group
    `+0x18`, datum at `+0x1c`).
-2. Per cluster, write render info entries `{page, palette}`: `i16` page =
+2. Per cluster, writes render info entries `{page, palette}`: `i16` page =
    the Halo 1 lightmap's image, `i8` palette = `-1` (Halo 1 pages are
-   R5G6B5 colour, not P8 indices: no palette). Today every entry is
-   `{-1, -1}`.
-3. Keep each Halo 1 lightmap's materials with its page: geometry from
+   R5G6B5 colour, not P8 indices: no palette).
+3. Keeps each Halo 1 lightmap's materials with its page: geometry from
    different lightmaps can share a part only when they share a page (rare,
    but it happens once on the disc). The
-   lightmap texture coordinates the writer already copies (stream `1f`)
+   lightmap texture coordinates the writer copies (stream `1f`)
    are page-relative, in [0, 1].
-4. Lightmaps with no page (`None`, `-1` in Halo 1: sky and unlit surfaces)
-   keep `{-1, -1}`.
+4. Leaves lightmaps with no page (`None`, `-1` in Halo 1: sky and unlit
+   surfaces) at `{-1, -1}`.
 
-Done in `h1convert` (docs/halo1/multiplayer.md, "Lightmap"). The open
-question is settled from the executable: nothing needs P8. The renderer
-stores the page whatever the palette and binds one only when named (E
-`0x0004d40a`), and the CPU query that lights objects looks a sample up in
-a palette only when the image is P8 (E `0x000d309a`). The pages go in as
-R5G6B5, unquantized.
+Nothing needs P8: the renderer stores the page whatever the palette and
+binds one only when named (E `0x0004d40a`), and the CPU query that lights
+objects looks a sample up in a palette only when the image is P8 (E
+`0x000d309a`). The pages go in as R5G6B5, unquantized
+([multiplayer.md](multiplayer.md), "Lightmap").
 
 ## Tests
 
