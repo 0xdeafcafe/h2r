@@ -139,6 +139,8 @@ fn across(values: &[f32]) -> Vec<Vector> {
         .map(|&v| {
             let mut p = [0.0; N];
             p[ACROSS] = v;
+            // Inside the default ranges, as every other axis's 0 is.
+            p[VZ] = 5.4;
             p
         })
         .collect()
@@ -148,12 +150,12 @@ fn across(values: &[f32]) -> Vec<Vector> {
 fn refinement_halves_the_widest_gaps_between_opposite_outcomes() {
     let mut ax = axes();
     ax[ACROSS].step = 0.0;
-    // Bounces under 0: the edge is between -0.02 and 0.04, and nothing
-    // else is a pair of opposite outcomes' nearest.
+    // Bounces under 0: the edge is between -0.02 and 0.04. Every other
+    // nearest pair of opposite outcomes has a point between its two.
     let points = across(&[-0.09, -0.05, -0.02, 0.04, 0.07]);
     let labels = [Some(true), Some(true), Some(true), Some(false), Some(false)];
     let new = sample::refine(&points, &labels, &ax, &HUMAN, 10, MIN_GAP);
-    assert!(!new.is_empty());
+    assert_eq!(new.len(), 1, "{new:?}");
     assert!((new[0][ACROSS] - 0.01).abs() < 1e-6, "{:?}", new[0]);
     // Every new point lies between a bounce and a failure.
     for p in &new {
@@ -174,7 +176,9 @@ fn refinement_halves_the_widest_gaps_between_opposite_outcomes() {
 
 #[test]
 fn refinement_needs_both_outcomes_and_a_gap() {
-    let ax = axes();
+    let mut ax = axes();
+    // No grid: a midpoint is exactly its pair's mean.
+    ax[ACROSS].step = 0.0;
     let points = across(&[-0.05, 0.0, 0.05]);
     // All one outcome, or none known: nothing to refine.
     assert!(sample::refine(&points, &[Some(true); 3], &ax, &HUMAN, 10, MIN_GAP).is_empty());
@@ -854,6 +858,7 @@ unprimed = 4
 min_support = 3
 [axes]
 along = [0.0, 0.0]
+v_drift = [0.3, 0.3]
 v_side = [0.0, 0.0]
 vz = [5.4, 5.4]
 yaw = [0.0, 0.0]
@@ -965,20 +970,33 @@ fn the_job_forks_once_a_variant_and_runs_every_trial_from_the_fork() {
     assert_eq!(r.sites.len(), 4);
     for (i, s) in r.sites.iter().enumerate() {
         assert_eq!(s.rank as usize, i + 1);
-        assert_eq!(s.verdict, Verdict::Provable, "{s:?}");
         assert_eq!(s.reproducibility, Some(1.0));
         assert_eq!(s.replay_mismatches, 0);
         assert_eq!((s.unprimed, s.unprimed_bounced), (4, 0));
         assert!(s.variants.iter().all(|v| v.agrees == Some(true)));
+        assert_eq!(s.best_launch, 9.0);
+        // Both variants agree at every point, so a site is provable when
+        // a window has its support among these few points, else fragile.
+        if s.verdict != Verdict::Provable {
+            assert_eq!(s.verdict, Verdict::Fragile, "{s:?}");
+            assert!(s.window.is_none() && s.ease == 0.0, "{s:?}");
+            continue;
+        }
         let w = s.window.as_ref().unwrap();
         assert!(w.centre[ACROSS] > BAND[0] && w.centre[ACROSS] < BAND[1], "{w:?}");
-        assert!(s.ease > 0.0 && s.ease <= 2.6, "{}", s.ease);
+        // The band is five steps wide; a sparse sample may miss its edge
+        // by a step or two.
+        assert!(s.ease > 0.0 && s.ease <= 4.5, "{}", s.ease);
         let p = s.press.as_ref().unwrap();
-        // The drift is across the edge: the takeoff's room is the band's.
-        assert!(p.position > 0.0 && p.position <= 0.0502, "{p:?}");
+        // The drift is across the edge, so the takeoff's room is the
+        // window's range across it: out to the first failure sampled
+        // beside the window, so no narrower than the window itself and
+        // no wider than what was sampled.
+        assert!(p.position >= 2.0 * s.ease * HUMAN[ACROSS] - 1e-4, "{p:?}");
+        assert!(p.position <= 0.2 + 1e-4, "{p:?}");
         assert!((p.aim[1] - w.centre[ACROSS]).abs() < 1e-5);
-        assert_eq!(s.best_launch, 9.0);
     }
+    assert!(r.sites.iter().any(|s| s.verdict == Verdict::Provable), "{r:?}");
     assert!(r.sites.windows(2).all(|w| w[0].ease >= w[1].ease));
     // The same run again is the same block: the search is deterministic.
     let mut again = Job::new(&job_config(), "testmap", 3).unwrap();
@@ -1019,7 +1037,13 @@ fn a_busy_capture_is_asked_again_and_then_given_up_by_name() {
     assert!(run.trials.iter().all(|t| !(t.site < 3 && t.variant == 0)));
     // A site with one variant is still ranked, on that variant alone.
     let r = summarize(&[run]);
-    assert!(r.sites.iter().all(|s| s.verdict == Verdict::Provable), "{r:?}");
+    assert!(
+        r.sites
+            .iter()
+            .all(|s| matches!(s.verdict, Verdict::Provable | Verdict::Fragile)),
+        "{r:?}"
+    );
+    assert!(r.sites.iter().any(|s| s.verdict == Verdict::Provable), "{r:?}");
 }
 
 #[test]

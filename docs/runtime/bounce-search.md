@@ -143,8 +143,9 @@ samples the same points whichever shard it lands in.
 
 Each refinement round (`sample::refine`) takes, for every point, its
 nearest point of the other outcome, and adds the midpoint of each such
-pair, the widest pairs first. A pair nearer than 0.05 human steps is
-left alone. Three rounds halve the uncertainty of the region's edge
+pair that has no other point between its two (inside the ball whose
+diameter is the pair), the widest pairs first. A pair nearer than 0.05
+human steps is left alone. Three rounds halve the uncertainty of the region's edge
 three times where it is widest.
 
 ### The region and the ease
@@ -164,7 +165,9 @@ of speed, 10 degrees of facing.
   be off at once, either way, and still bounce on every variant. It is
   the number sites are ranked by.
 - **Per-axis tolerances** (`Window::bounds`): each axis's own range with
-  the others kept within the window, to the first failure either way.
+  the others kept within the window, to the first sampled failure either
+  way. They are never narrower than the window, and wider than the true
+  region where no failure was sampled beside it.
 - **The press** (`report::Press`), in what a player controls:
   `position`, the room along the drift for the place the fall starts
   from; `sideways`, the room across it; `speed`, the range of speed along

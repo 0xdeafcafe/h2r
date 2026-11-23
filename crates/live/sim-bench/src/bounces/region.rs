@@ -211,8 +211,9 @@ pub fn extent(points: &[(Vector, Class)]) -> Option<[[f32; 2]; N]> {
     any.then_some(out)
 }
 
-/// Along `axis` with every other axis within the window's `radius` steps
-/// of its centre: the share of the points with an outcome that are
+/// Along `axis` with every other axis inside the window's `radius` steps
+/// of its centre (the failure that bounds the window is at the radius,
+/// and is not inside): the share of the points with an outcome that are
 /// [`Class::All`], and how many there were. For the depth axis, sampled
 /// over one tick of fall, this is the share of tick phases that bounce at
 /// the window's aim.
@@ -229,7 +230,9 @@ pub fn share_along(
             continue;
         }
         let beside = (0..N).all(|k| {
-            k == axis || !active[k] || (p[k] - w.centre[k]).abs() / scale[k] <= w.radius
+            k == axis
+                || !active[k]
+                || (p[k] - w.centre[k]).abs() / scale[k] < w.radius * 0.999
         });
         if beside {
             n += 1;

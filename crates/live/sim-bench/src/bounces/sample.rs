@@ -162,10 +162,13 @@ pub fn distance(a: &Vector, b: &Vector, scale: &[f32; N]) -> f32 {
 
 /// New points on the edge of the bounce region: for every point, its
 /// nearest point of the other outcome ([`distance`] under `scale`); each
-/// such pair further apart than `min_gap` gives its midpoint, the widest
-/// pairs first, at most `want`. `bounced[i]` is `None` for a point with
-/// no outcome (it takes no part). A midpoint that is already a point is
-/// left out. No pair of opposite outcomes, no points.
+/// such pair further apart than `min_gap` with no other point between
+/// them gives its midpoint, the widest pairs first, at most `want`.
+/// "Between" is the ball whose diameter is the pair: a point with an
+/// outcome inside it is nearer the midpoint than the pair is, so the
+/// midpoint would say little that point doesn't. `bounced[i]` is `None`
+/// for a point with no outcome (it takes no part). A midpoint that is
+/// already a point is left out. No pair of opposite outcomes, no points.
 pub fn refine(
     points: &[Vector],
     bounced: &[Option<bool>],
@@ -221,9 +224,19 @@ pub fn refine(
             continue;
         }
         seen.push((i, j));
+        let mut centre = [0.0f32; N];
+        for a in 0..N {
+            centre[a] = (points[i][a] + points[j][a]) / 2.0;
+        }
+        let between = yes.iter().chain(&no).any(|&k| {
+            k != i && k != j && distance(&centre, &points[k], scale) < d / 2.0 * 0.999
+        });
+        if between {
+            continue;
+        }
         let mut mid = [0.0f32; N];
         for (a, axis) in axes.iter().enumerate() {
-            mid[a] = axis.snap((points[i][a] + points[j][a]) / 2.0);
+            mid[a] = axis.snap(centre[a]);
         }
         if points.contains(&mid) || out.contains(&mid) {
             continue;
