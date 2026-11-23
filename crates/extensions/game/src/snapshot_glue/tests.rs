@@ -267,12 +267,12 @@ fn a_v3_kernel_keyframe_is_refused_before_the_live_and_guest_parts_run() {
         out.section(Tag::new(name), 1, Codec::Stored, 99u64.to_le_bytes().to_vec())
             .unwrap();
     }
-    out.section(kernel::snapshot::KCORE, 3, Codec::Zstd, vec![0; 32])
+    out.section(kernel::snapshot::KCORE, 4, Codec::Zstd, vec![0; 32])
         .unwrap();
     let bytes = out.finish().unwrap();
     let snap = Snapshot::open(&bytes, w.shelf.build()).unwrap();
     let error = load_parts_with_base(&mut parts, &snap, None, None).unwrap_err();
-    assert!(error.contains("kcore has version 3"), "{error}");
+    assert!(error.contains("kcore has version 4"), "{error}");
     assert!(w.take_log().is_empty());
     assert_eq!(w.value("livefilm").get(), 0);
     assert_eq!(w.value("guest").get(), 0);

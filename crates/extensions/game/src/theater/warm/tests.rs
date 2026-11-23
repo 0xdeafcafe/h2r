@@ -178,14 +178,14 @@ fn an_incompatible_kernel_section_skips_the_ring_ram_restore() {
     let mut sections = fixture.barrier(0);
     snapshot::guest::save_layout(&mut sections, &fixture.rt.memory()).unwrap();
     sections
-        .section(kernel::snapshot::KCORE, 3, snapshot::Codec::Stored, vec![])
+        .section(kernel::snapshot::KCORE, 4, snapshot::Codec::Stored, vec![])
         .unwrap();
     let bytes = sections.finish().unwrap();
     let snap = Snapshot::open(&bytes, fixture.shelf.build()).unwrap();
     let error = boot
         .load_ring_sections(&snap, |_, _| panic!("RAM restore ran before kernel validation"))
         .unwrap_err();
-    assert!(error.contains("kcore has version 3"), "{error}");
+    assert!(error.contains("kcore has version 4"), "{error}");
 }
 
 /// Record the tick stream, play it back, and capture the running machine at

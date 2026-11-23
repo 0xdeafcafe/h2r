@@ -28,7 +28,9 @@ pub use snapshot::Error as CodecError;
 pub const KCORE: Tag = Tag::new("kcore");
 pub const MACHINE: Tag = Tag::new("machine");
 /// 2: the raw disk's written sectors follow the periodic schedules.
-const KCORE_VERSION: u32 = 2;
+/// 3: open files carry their changed flag and, open for writing, their
+/// contents.
+const KCORE_VERSION: u32 = 3;
 const MACHINE_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
@@ -280,6 +282,8 @@ persist_struct!(SavedFile {
     position,
     directory,
     search,
+    changed,
+    contents,
 });
 persist_struct!(VfsState {
     next_handle,
