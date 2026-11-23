@@ -762,16 +762,18 @@ game itself starts as the lobby's Start Game starts any custom game.
 ### The HUD
 
 The HUD shows a banner for the stage, the enemies left, the lives and a
-notification for a new round or a lost life (`firefight/hud.rs`). All of
-it is a function of the **mode blob**, `hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
+notification for a new round, a skull switched on or a lost life
+(`firefight/hud.rs`). All of it is a function of the **mode blob**,
+`hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
 intermission, won, lost, team 0 won, team 1 won, draw), the round and
 wave with their totals, whether the wave is a boss wave, the actors
-alive plus those still in the reserve while a wave is on, the team
-count, and the lives (the shared pool, each player's own up to eight
+alive plus those still in the reserve while a wave is on, the skulls on
+(a bit a session skull index, only the nine of `hud::FIREFIGHT_SKULLS`),
+the team count, and the lives (the shared pool, each player's own up to eight
 players, or each team's pool). With two teams the blob carries both
 scores and a mask of team 1's slots, so each viewer sees its own team's
-pool. Version 2 encodes to 13 bytes with one shared pool, 36 with eight
-players' own lives, 25 with two team pools and 46 with two teams and
+pool. Version 3 encodes to 17 bytes with one shared pool, 40 with eight
+players' own lives, 29 with two team pools and 50 with two teams and
 eight players' own lives, inside the actor channel's 63-byte mode
 state. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
 and "DRAW". The points are the game's own score display's and
@@ -803,7 +805,7 @@ The HUD is the HUD kit's `firefight` HUD
 | `ff.banner` (`Banner`) | GET READY, WAVE n, BOSS WAVE, FINISH THEM, WAVE COMPLETE, ROUND COMPLETE, VICTORY, GAME OVER, and the two-team ends; none while the wave is fought. The game shows it for three seconds from when it changes |
 | `ff.lives.pill`, `.end`, `.count` | the viewer's lives while the match is on, in a pill cut from the frag pill at the grenade row's next place, the count in the LCD font (99 at most); the time warning's flash at 1 and 0 |
 | `ff.enemies.pill`, `.end`, `.count` | the enemies left while a wave is on, in the same pill 30 pixels on |
-| `ff.note` (`Message`) | "Round 2 of 3" when a round starts, "A life lost" or "n lives lost" (`huds::firefight::notes`) |
+| `ff.note` (`Message`) | "Round 2 of 3" when a round starts, "Mythic skull on" for each skull switched on (the skull menu's name, `hud::skull_name`; the skulls on at the start send none), "A life lost" or "n lives lost" (`huds::firefight::notes`) |
 
 The kit's checks (`h2 hud preview firefight --state all --mode all`)
 hold it in every state and screen mode, and the kit's runtime draws it.

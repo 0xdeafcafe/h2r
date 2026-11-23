@@ -29,7 +29,7 @@
 use std::sync::{Arc, Mutex};
 
 use ::firefight::director::Phase;
-use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector};
+use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector, Skull};
 use engine::memory::{GuestMemory, MemFault};
 use hud_kit_core::huds::firefight::{self as kit, Firefight};
 
@@ -39,7 +39,7 @@ pub use hud_kit_core::model::{Style, Value, Values};
 use crate::hud_kit::{self, Handle};
 
 /// The blob's format.
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 /// The actor channel's mode state holds this many bytes at most.
 pub const MAX_BLOB: usize = 63;
 /// Players whose own lives the blob carries when lives are not shared.
@@ -89,9 +89,40 @@ pub struct Mode {
     pub boss: bool,
     /// Actors alive and still to be placed, while a wave is on; else 0.
     pub left: u16,
+    /// The skulls on, one bit a session skull index ([`skull_mask`]).
+    pub skulls: u32,
     pub lives: Lives,
     /// Two teams' points and members; none with one team.
     pub teams: Option<Teams>,
+}
+
+/// Every skull Firefight turns on, by its session skull index.
+pub const FIREFIGHT_SKULLS: [Skull; 9] = [
+    Skull::Assassins,
+    Skull::Thunderstorm,
+    Skull::Famine,
+    Skull::Blind,
+    Skull::Ghost,
+    Skull::Catch,
+    Skull::Mythic,
+    Skull::Angry,
+    Skull::LowGravity,
+];
+
+/// The bits a blob's skulls may have: [`FIREFIGHT_SKULLS`]'.
+pub const SKULL_BITS: u32 = {
+    let mut m = 0;
+    let mut i = 0;
+    while i < FIREFIGHT_SKULLS.len() {
+        m |= 1 << FIREFIGHT_SKULLS[i] as u8;
+        i += 1;
+    }
+    m
+};
+
+/// The skulls in `on` as the blob's bits.
+pub fn skull_mask<'a>(on: impl IntoIterator<Item = &'a Skull>) -> u32 {
+    on.into_iter().fold(0, |m, s| m | 1 << *s as u8)
 }
 
 /// Why a blob could not be made or read.
@@ -133,8 +164,10 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes before the teams and lives: version, stage, round, rounds, wave,
-/// waves, flags, left (2), the team count.
-const HEAD: usize = 10;
+/// waves, flags, left (2), the skulls (4), the team count.
+const HEAD: usize = 14;
+/// Where the team count is.
+const TEAM_COUNT: usize = HEAD - 1;
 /// The two teams' part, when the team count is 2: each team's points (4
 /// each) and the second team's slot bits (2).
 const TEAMS: usize = 4 * MAX_TEAMS + 2;
@@ -211,6 +244,7 @@ impl Mode {
             } else {
                 0
             },
+            skulls: skull_mask(&state.skulls),
             lives,
             teams,
         })
@@ -228,6 +262,7 @@ impl Mode {
             if self.boss { FLAG_BOSS } else { 0 },
         ];
         out.extend_from_slice(&self.left.to_le_bytes());
+        out.extend_from_slice(&self.skulls.to_le_bytes());
         match &self.teams {
             None => out.push(1),
             Some(teams) => {
@@ -293,7 +328,11 @@ impl Mode {
             return Err(Error::Field("flags"));
         }
         let left = u16::from_le_bytes([bytes[7], bytes[8]]);
-        let (teams, at) = match bytes[9] {
+        let skulls = u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]);
+        if skulls & !SKULL_BITS != 0 {
+            return Err(Error::Field("skulls"));
+        }
+        let (teams, at) = match bytes[TEAM_COUNT] {
             1 => (None, HEAD),
             2 => {
                 let end = HEAD + TEAMS;
@@ -366,6 +405,7 @@ impl Mode {
             waves,
             boss: bytes[6] & FLAG_BOSS != 0,
             left,
+            skulls,
             lives,
             teams,
         })
@@ -440,6 +480,7 @@ pub fn view_of(mode: &Mode, local: u8) -> View {
         wave: mode.wave,
         boss: mode.boss,
         left: mode.left,
+        skulls: mode.skulls,
         lives: lives_of(mode, local),
     }
 }
@@ -486,13 +527,19 @@ impl Feed {
             None => None,
         };
         let notes = match &view {
-            Some(v) => kit::notes(self.last.as_ref(), v),
+            Some(v) => kit::notes(self.last.as_ref(), v, skull_name),
             None => Vec::new(),
         };
         let values = view.as_ref().map_or_else(kit::hidden, kit::values);
         self.last = view;
         (values, notes)
     }
+}
+
+/// A skull's name by its session skull index, as the skull menu and the
+/// pickup message name it (`crate::skulls::SKULLS`).
+pub fn skull_name(index: u8) -> Option<&'static str> {
+    crate::skulls::SKULLS.get(usize::from(index)).map(|d| d.label)
 }
 
 /// The roster slot of local user 0's player, if the game lists one.
