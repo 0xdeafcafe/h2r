@@ -129,6 +129,17 @@ observer, where the game thread's host stack still holds guest frames.
 That also means a save requested while the agent has the game paused
 inside the tick observer first steps to the slice end.
 
+The request must come from a tick observer (or later), not from a
+`before` on `GAME_TICK`. Once any feature observes the tick, the tick
+chain calls the original through its shadow with an after-hooks
+continuation (`hooks::install::AFTER_HOOKS`) that stays live until the
+original returns, so a slice a `before` ends stops inside the tick with
+that continuation live, and the quiescence check refuses it on every tick
+(`crates/hooking/hooks/tests/install.rs`,
+`a_slice_asked_before_the_tick_ends_inside_its_after_hooks`). The bounce
+search's fork keeps its ask from its `before` and ends the slice from its
+tick observer ([bounce-search.md, "The fork"](bounce-search.md#the-fork)).
+
 
 ## Inventory
 
@@ -643,14 +654,20 @@ bytes and checks that damaged bytes change nothing. The kinds, and what
 each one holds:
 
 - **Stateless**: observers, and rewrites whose state is all in guest memory
-  or fixed at build (`engine-leaves`, `ui-strings`, `settings-rows`).
+  or fixed at build (`engine-leaves`, `ui-strings`, `settings-rows`, and
+  the Halo 1 effects `h1-flag`, `h1-glow`, `h1-lightning` and
+  `h1-sound-promotion`, whose panels, random seeds and promotion credits
+  come from guest memory and tags).
 - **Forbid while live**: host state that is live only between hooks or while
   a screen is up (`cheats` while a cheat is on, the co-op features while
   armed, `h1-health` while a damage update is between its hooks,
-  `render-timing` while a render stage is open).
+  `live-map-pack-rotation` while a hopper block read is between its
+  hooks, `render-timing` while a render stage is open).
 - **Section**: host state a load puts back (`skulls`, `skulls-custom`,
   `skulls-mp`, `hud`, `h1-hud`, `lockstep`'s counters, `agent`'s view of the
-  game, `loaded_map`, `aim-assist`, and `sim-ext`'s extension records with
+  game, `loaded_map`, `aim-assist`, `game-variants`' listing of the store
+  variants the guest's variant list names (not the store on disk, and not
+  the sim's script block, which is the run's setting), and `sim-ext`'s extension records with
   their checkpoint-slot copies, empty when there are none;
   [sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob").
 

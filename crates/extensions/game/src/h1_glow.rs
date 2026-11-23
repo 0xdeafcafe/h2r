@@ -14,6 +14,9 @@ impl Feature for H1Glow {
         Manifest::new("h1-glow", "Halo 1 marker-chain glows").doc("docs/halo1/objects.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Reads the volume queue and the tag, writes the sprites. Its
+        // random numbers are seeded from the owner and the tag each call.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.raw()
             .before(
                 &points::LIGHT_VOLUME_SPRITES,

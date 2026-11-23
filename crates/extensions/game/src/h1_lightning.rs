@@ -16,6 +16,9 @@ impl Feature for H1Lightning {
         Manifest::new("h1-lightning", "Halo 1 marker lightning").doc("docs/halo1/objects.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Reads the queue and the tag, writes the ribbon. Its random
+        // numbers are seeded from the owner and the marker each call.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.raw()
             .before(
                 &points::LIGHTNING_QUEUE,

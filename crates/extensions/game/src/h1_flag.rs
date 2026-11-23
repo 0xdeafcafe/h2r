@@ -17,6 +17,10 @@ impl Feature for H1Flag {
         Manifest::new("h1-flag", "Halo 1 cloth panels").doc("docs/halo1/objects.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Every panel, point and seam is in the guest's cloth array and
+        // tags. The async integration's guest calls are continuations,
+        // which the machine's own check refuses while one runs.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.raw().before(
             &points::CLOTH_INTEGRATE,
             "integrate source cloth points",

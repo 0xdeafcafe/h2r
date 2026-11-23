@@ -9,9 +9,13 @@
 //!   out each seat's act: the drops' (the pair word, the stop, the level,
 //!   the pad, the teleport) and the search's two more, the body's whole
 //!   velocity and crouch on the pad. When the job asks for a fork it
-//!   keeps the ask and ends the slice (`Runtime::request_preempt`).
+//!   keeps the ask; the tick observer `sim: bounces fork` marks it due
+//!   once the tick has returned ([`fork_due`]) and ends the slice
+//!   (`Runtime::request_preempt`). Inside the tick the game thread is in
+//!   the tick chain's after-hooks continuation, which no save can carry,
+//!   so a slice that ends there leaves the ask waiting.
 //! - [`between_slices`], called by the boot loop with the machine at
-//!   hand, a few transfers into that tick. It saves the whole machine
+//!   hand, a few transfers after that tick. It saves the whole machine
 //!   into a ring entry, or puts one back (docs/runtime/bounce-search.md,
 //!   "The fork"): guest RAM by the Theater ring's page pool over the
 //!   write watch (`theater::ring`), every other part by its snapshot
@@ -52,11 +56,45 @@ struct State {
     last_tick: Option<u64>,
     saved: bool,
     /// The fork the job asked for this tick, for [`between_slices`].
-    ask: Option<ForkAsk>,
+    fork: Fork,
     /// What came of it, for the next tick.
     done: Option<ForkDone>,
     /// `None` while [`between_slices`] works on it.
     ring: Option<Ring<Sections>>,
+}
+
+/// The fork the job asked for, and whether its tick has returned.
+#[derive(Default)]
+struct Fork {
+    ask: Option<ForkAsk>,
+    /// The tick that asked has returned ([`fork_due`]): until then the
+    /// game thread is inside the tick (in its chain's after-hooks
+    /// continuation), and a slice that ends there for any reason is no
+    /// place to save.
+    due: bool,
+}
+
+impl Fork {
+    /// The job's ask this tick, before the tick runs.
+    fn asked(&mut self, ask: Option<ForkAsk>) {
+        *self = Fork { ask, due: false };
+    }
+    /// The tick returned: true when an ask waits.
+    fn tick_returned(&mut self) -> bool {
+        self.due = self.ask.is_some();
+        self.due
+    }
+    fn pending(&self) -> bool {
+        self.due && self.ask.is_some()
+    }
+    /// The ask, once its tick has returned.
+    fn take(&mut self) -> Option<ForkAsk> {
+        if !self.due {
+            return None;
+        }
+        self.due = false;
+        self.ask.take()
+    }
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -75,7 +113,7 @@ pub fn set(map: &str, job: Job) {
         refused: BTreeMap::new(),
         last_tick: None,
         saved: false,
-        ask: None,
+        fork: Fork::default(),
         done: None,
         ring: Some(Ring::new(RING_CAP)),
     });
@@ -149,10 +187,9 @@ fn velocity(m: &mut dyn GuestMemory, b: &Body, v: [f32; 3]) {
     }
 }
 
-/// What [`tick`] came to: whether the job asked for a fork (the caller
-/// ends the slice), and whether the job is over (the match should end).
+/// What [`tick`] came to: whether the job is over (the match should
+/// end). A fork it asked for waits in [`fork_pending`].
 pub struct Ticked {
-    pub fork: bool,
     pub done: bool,
 }
 
@@ -160,13 +197,9 @@ pub struct Ticked {
 pub fn tick(g: &mut runtime::Guest, seats: &[Seat]) -> Ticked {
     let mut guard = lock();
     let Some(st) = guard.as_mut() else {
-        return Ticked {
-            fork: false,
-            done: false,
-        };
+        return Ticked { done: false };
     };
     let quiet = |st: &State| Ticked {
-        fork: st.ask.is_some(),
         done: st.job.finished(),
     };
     let Ok(tick) = crate::telemetry::game_tick(g) else {
@@ -284,13 +317,21 @@ pub fn tick(g: &mut runtime::Guest, seats: &[Seat]) -> Ticked {
             }
         }
     }
-    st.ask = step.fork;
+    st.fork.asked(step.fork);
     quiet(st)
 }
 
-/// Whether a fork waits for the boot loop ([`between_slices`]).
+/// After the tick returned (the tick observer `sim: bounces fork`): the
+/// fork this tick asked for, if any, may be carried out from here on.
+/// True when one waits: the caller ends the slice.
+pub fn fork_due() -> bool {
+    lock().as_mut().is_some_and(|s| s.fork.tick_returned())
+}
+
+/// Whether a fork waits for the boot loop ([`between_slices`]): asked,
+/// and its tick has returned.
 pub fn fork_pending() -> bool {
-    lock().as_ref().is_some_and(|s| s.ask.is_some())
+    lock().as_ref().is_some_and(|s| s.fork.pending())
 }
 
 /// What [`between_slices`] did to the machine.
@@ -401,7 +442,8 @@ pub fn between_slices(machine: &mut BootMachine<'_>) -> Forked {
         let Some(st) = guard.as_mut() else {
             return Forked::Nothing;
         };
-        let Some(ask) = st.ask.take() else {
+        // Nothing until the tick that asked has returned.
+        let Some(ask) = st.fork.take() else {
             return Forked::Nothing;
         };
         let Some(ring) = st.ring.take() else {
@@ -534,6 +576,31 @@ mod tests {
             assert_eq!((e.trials, e.ok), (p.trials, p.ok));
         }
         assert!(superbounce::verified::parse(&b::verified_text(&[])).unwrap().is_empty());
+    }
+
+    /// A slice that ends inside the tick that asked (its time ran out
+    /// before the tick returned) leaves the ask waiting; the boot loop
+    /// carries it out only after the tick observer has seen the tick
+    /// return, and once.
+    #[test]
+    fn a_fork_waits_for_its_tick_to_return() {
+        let ask = b::ForkAsk::Capture { key: 3 };
+        let mut f = super::Fork::default();
+        assert!(!f.tick_returned());
+        f.asked(Some(ask));
+        assert!(!f.pending());
+        assert_eq!(f.take(), None, "inside the tick");
+        assert!(f.tick_returned());
+        assert!(f.pending());
+        assert_eq!(f.take(), Some(ask));
+        assert!(!f.pending());
+        assert_eq!(f.take(), None);
+        // The next tick's ask starts not due, whatever came before.
+        f.asked(Some(ask));
+        assert!(f.tick_returned());
+        f.asked(None);
+        assert!(!f.tick_returned());
+        assert_eq!(f.take(), None);
     }
 
     #[test]

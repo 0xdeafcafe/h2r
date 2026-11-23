@@ -977,7 +977,7 @@ impl TrialRun {
 // ---- the fork ----
 
 /// What the job asks of the machine, carried out between two slices just
-/// after the tick's hooks.
+/// after the tick that asked has returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForkAsk {
     /// Save the whole machine as it is, under `key`.
