@@ -12,6 +12,8 @@ serde_json.workspace = true
 host-dirs.workspace = true
 # The host.memory handlers both socket servers share (src/memory_serve.rs).
 mem-watch.workspace = true
+# render.picture's shared-memory ring (src/picture.rs).
+memmap2 = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 socket2 = "0.6"

@@ -38,6 +38,7 @@ pub mod host_memory;
 pub mod memory_forensics;
 pub mod memory_serve;
 pub mod hot;
+pub mod picture;
 pub mod live;
 mod load;
 mod pad;
@@ -606,6 +607,9 @@ pub enum EventKind {
     Map,
     Bsp,
     Pause,
+    /// `render.picture`'s per-frame events. They go to the connection that
+    /// opened the picture; subscribing adds nothing.
+    Picture,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -645,6 +649,8 @@ pub enum Event {
         /// (the controller let go or disconnected).
         why: String,
     },
+    /// A ring picture published a frame (`render.picture.open`).
+    Picture(picture::PictureEvent),
 }
 
 impl Event {
@@ -654,6 +660,7 @@ impl Event {
             Event::Map { .. } => EventKind::Map,
             Event::Bsp { .. } => EventKind::Bsp,
             Event::Paused { .. } | Event::Resumed { .. } => EventKind::Pause,
+            Event::Picture(_) => EventKind::Picture,
         }
     }
 }

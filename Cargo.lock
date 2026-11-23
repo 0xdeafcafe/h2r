@@ -64,6 +64,7 @@ dependencies = [
  "hooks",
  "hot-render",
  "hot-tags",
+ "image",
  "input",
  "libc",
  "lifted",
@@ -92,6 +93,7 @@ version = "0.1.0"
 dependencies = [
  "host-dirs",
  "mem-watch",
+ "memmap2",
  "serde",
  "serde_json",
  "socket2",
