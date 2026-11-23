@@ -6,8 +6,7 @@
 // `give` is untraced, so the new weapon arrives at the player's next spawn
 // through `set_loadout`, not on the kill's tick.
 //
-// Entries a host cannot make yet (`verify::unhostable`):
-//   set_loadout      traced (0x19eda0)
+// Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Gun Game" 1
 carrier slayer
 requires player.weapons

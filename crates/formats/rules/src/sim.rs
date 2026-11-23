@@ -185,7 +185,7 @@ struct Wants {
     /// alive or the kill counts, or has things to carry.
     combat: bool,
     /// Players walk into and out of the labelled objects: it reads
-    /// `inside`, or handles `enter` or `leave`.
+    /// `inside` or `ticks_held`, or handles `enter` or `leave`.
     zones: bool,
     /// Players pick objectives up and drop them: it handles `pickup` or
     /// `drop`, or reads an objective's carrier.
@@ -205,7 +205,10 @@ impl Wants {
             || calls(ir, id::KILLS)
             || calls(ir, id::DEATHS)
             || carry;
-        let zones = on(Event::Enter) || on(Event::Leave) || calls(ir, id::INSIDE);
+        let zones = on(Event::Enter)
+            || on(Event::Leave)
+            || calls(ir, id::INSIDE)
+            || calls(ir, id::TICKS_HELD);
         Wants {
             combat,
             zones,

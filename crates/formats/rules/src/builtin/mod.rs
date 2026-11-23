@@ -140,8 +140,9 @@ pub const ALL: &[Builtin] = &[
 
 /// The scripts that are built-in variants, in list order: the entries the
 /// game's variant list gets at load (`docs/game/rules-variants.md`,
-/// "Built-in list entries"). `engine` is the carrier's engine index. Gun
-/// Game, VIP, Race and Siege stay examples and are not listed.
+/// "Built-in list entries"). `engine` is the carrier's engine index. The
+/// scripted modes after the settings scripts (Superbounce, Siege) are
+/// examples too, so `examples()` names them by key.
 pub const LISTED: &[Builtin] = &[
     Builtin { name: "Zombies", engine: 2, source: ZOMBIES },
     Builtin { name: "Hide and Seek", engine: 7, source: HIDE_AND_SEEK },
@@ -157,6 +158,7 @@ pub const LISTED: &[Builtin] = &[
     Builtin { name: "Glitch Hunt", engine: 2, source: GLITCH_HUNT },
     Builtin { name: "Bumper Cars", engine: 2, source: BUMPER_CARS },
     Builtin { name: "Superbounce", engine: 2, source: SUPERBOUNCE },
+    Builtin { name: "Siege", engine: 2, source: SIEGE },
 ];
 
 /// The built-in script source for a retail engine index, for the engines

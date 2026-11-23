@@ -10,7 +10,9 @@
 //! document (a Forge session loads its draft at its first tick,
 //! `forge_glue`), so the host's census is the flags' built-in labels. The
 //! game holds no tag paths (they are only in the map file), so its census
-//! has no tags; no entry a host makes takes a tag.
+//! has no tags. The one entry a host makes that takes a tag,
+//! `set_loadout`, names it by the multiplayer weapon list's value, which
+//! the game maps to its own tag (`super::world::loadout`).
 //!
 //! [`Table`] is what the script reads: each labelled thing with its handle,
 //! its placement id, its number and its team designator. A handle is
@@ -168,6 +170,11 @@ impl Table {
         (handle & HANDLE != 0)
             .then(|| self.things.iter().find(|t| t.handle() == handle))
             .flatten()
+    }
+
+    /// Every labelled thing, in census order.
+    pub fn things(&self) -> &[Thing] {
+        &self.things
     }
 
     pub fn len(&self) -> usize {

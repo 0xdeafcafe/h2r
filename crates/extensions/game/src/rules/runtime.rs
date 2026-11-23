@@ -33,7 +33,9 @@
 //! - [`Runtime::bounces`] after each game tick, from the superbounce
 //!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
 //!   Bounced on the tick its chain files it.
-//! - [`Runtime::post_tick`] after each game tick: timers, then `on tick`.
+//! - [`Runtime::post_tick`] after each game tick: the roster's and the
+//!   zones' changes (`on death`, `on spawn`, `on leave`, `on enter`;
+//!   `super::world::zones`), then timers, then `on tick`.
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
 //!
 //! The agent API's `rules.reload` (`super::reload`) calls
@@ -59,8 +61,8 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 
 use ::rules::caps::{self, Kind, Status as EntryStatus, id};
-use ::rules::ir::{Event, Ir, Op, Scoring};
-use ::rules::vm::{Arg, Call as VmCall, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
+use ::rules::ir::{Event, Ir, Op, Scoring, TagGroup};
+use ::rules::vm::{Arg, Call as VmCall, Fired, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
 use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
 use agent_proto::rules as wire;
@@ -71,6 +73,7 @@ use variants::ext::{Ext, Mode};
 
 use super::census::{self, Table};
 use super::guest;
+use super::world::zones::{self, Change, Seen, Zones};
 use crate::firefight::runtime::read_players;
 use forge_doc::LabelledThing;
 
@@ -96,6 +99,12 @@ pub const DELIVERED: &[Event] = &[
     Event::Tick,
     Event::Bounce,
     Event::Bounced,
+    // From the roster and the zones at each tick's end
+    // (`super::world::zones`).
+    Event::Spawn,
+    Event::Death,
+    Event::Enter,
+    Event::Leave,
 ];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
@@ -114,6 +123,9 @@ pub const READS: &[u16] = &[
     id::LABEL_OF,
     id::ZONE_ID,
     id::OBJECT_TEAM,
+    // The zone test and the roster's units (`super::world::zones`).
+    id::INSIDE,
+    id::PLAYER_OF,
 ];
 /// The action entries this runtime makes.
 pub const ACTIONS: &[u16] = &[
@@ -133,6 +145,8 @@ pub const ACTIONS: &[u16] = &[
     id::MESSAGE,
     id::MESSAGE_TEAM,
     id::MESSAGE_ALL,
+    // The multiplayer list's weapons (`super::world::loadout`).
+    id::SET_LOADOUT,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -246,8 +260,8 @@ pub fn examples() -> &'static [Builtin] {
 /// `engine`. A built-in entry's record names one by its prefix
 /// (`crate::community_variants::write_blocks`), so a game on it, or on a
 /// copy of it, runs it (docs/game/rules-variants.md, "Built-in list
-/// entries"). Superbounce is an example too; [`compiled_in`] finds it
-/// there first.
+/// entries"). Superbounce and Siege are examples too; [`compiled_in`]
+/// finds them there first.
 pub fn listed() -> &'static [Builtin] {
     static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
     BUILT.get_or_init(|| {
@@ -344,6 +358,13 @@ pub enum Call {
     /// a show cue, made at the boundary by [`Runtime::pre_tick`]
     /// (`super::world::show`).
     Message(super::world::show::Outgoing),
+    /// `set_loadout`: the player's living unit gets the weapons, by tag
+    /// path (`super::world::loadout`).
+    SetLoadout {
+        player: u8,
+        primary: Option<String>,
+        secondary: Option<String>,
+    },
 }
 
 impl Call {
@@ -364,6 +385,7 @@ impl Call {
             },
             Call::End => "end_round",
             Call::Message(_) => "message",
+            Call::SetLoadout { .. } => "set_loadout",
         }
     }
 }
@@ -419,6 +441,25 @@ pub fn unhostable_refusal(ir: &Ir) -> Option<String> {
 
 /// What this runtime does not do yet, of a script every host could run.
 fn runtime_refusal(ir: &Ir) -> Option<String> {
+    // `set_loadout` gives only the multiplayer list's weapons
+    // (`super::world::loadout`): a script that calls it and names another
+    // weapon is refused at the start, by the weapon's path.
+    let loads = ir
+        .handlers
+        .iter()
+        .flat_map(|h| &h.code)
+        .any(|op| matches!(op, Op::Call { entry, .. } if *entry == id::SET_LOADOUT));
+    if loads
+        && let Some(t) = ir
+            .tags
+            .iter()
+            .find(|t| t.group == TagGroup::Weapon && ::rules::weapons::of_path(&t.path).is_none())
+    {
+        return Some(format!(
+            "the script names the weapon {}, and set_loadout gives only the multiplayer list's weapons",
+            t.path
+        ));
+    }
     for hd in &ir.handlers {
         if !DELIVERED.contains(&hd.event) {
             return Some(format!(
@@ -484,6 +525,9 @@ pub struct GuestGame<'a> {
     /// recorded pad plays), so none is made (docs/game/rules-world-api.md,
     /// "Films and Theater").
     film: bool,
+    /// The map's zones, for `inside` and `ticks_held`; none reads as a map
+    /// with none (`super::world::zones`).
+    pub zones: Option<&'a Zones>,
 }
 
 impl<'a> GuestGame<'a> {
@@ -494,7 +538,14 @@ impl<'a> GuestGame<'a> {
             error: None,
             table: None,
             film: false,
+            zones: None,
         }
+    }
+
+    /// The same game whose zones are `zones`.
+    pub fn with_zones(mut self, zones: &'a Zones) -> Self {
+        self.zones = Some(zones);
+        self
     }
 
     /// The same game whose labelled things are `table`.
@@ -557,6 +608,13 @@ impl Game for GuestGame<'_> {
         guest::variant(self.m, field).unwrap_or(0)
     }
 
+    /// The one team whose living players alone are inside `zone`
+    /// ([`Zones::holder`]).
+    fn zone_holder(&self, zone: u32) -> Option<u8> {
+        let zones = self.zones?;
+        zones.holder(zone, &zones::bodies(self.m))
+    }
+
     fn read(&mut self, call: &VmCall) -> i32 {
         let m = self.m;
         let p = player(call, 0);
@@ -607,6 +665,18 @@ impl Game for GuestGame<'_> {
                 }
                 _ => ::rules::ty::NONE,
             },
+            // The player's living unit inside the zone.
+            id::INSIDE => match (p, call.args.get(1), self.zones) {
+                (Some(p), Some(Arg::Object(Some(zone))), Some(z)) => zones::bodies(m)
+                    .iter()
+                    .any(|b| b.slot == p && z.contains(*zone, b.at))
+                    as i32,
+                _ => 0,
+            },
+            id::PLAYER_OF => match call.args.first() {
+                Some(Arg::Object(Some(o))) => zones::player_of(m, *o).map_or(::rules::ty::NONE, i32::from),
+                _ => ::rules::ty::NONE,
+            },
             _ => 0,
         }
     }
@@ -637,6 +707,19 @@ impl Game for GuestGame<'_> {
             }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
+            id::SET_LOADOUT => {
+                let tag = |n: usize| match call.args.get(n) {
+                    Some(Arg::Tag(t)) => t.clone(),
+                    _ => None,
+                };
+                let (primary, secondary) = (tag(1), tag(2));
+                p.filter(|_| primary.is_some() || secondary.is_some())
+                    .map(|player| Call::SetLoadout {
+                        player,
+                        primary,
+                        secondary,
+                    })
+            }
             // A bot order is a hint to a phantom's brain on the host. It is
             // not replayed: a film plays each seat's recorded pad instead.
             id::BOT_GO | id::BOT_HOLD | id::BOT_FOLLOW | id::BOT_ATTACK | id::BOT_FREE => {
@@ -678,6 +761,10 @@ pub struct Running {
     post: Option<u32>,
     /// The map's labelled things the script reads.
     pub table: Table,
+    /// The zones of the map's flags (`super::world::zones`).
+    pub zones: Zones,
+    /// What the VM was last told of the roster and the zones.
+    seen: Seen,
     /// What the start gate checked, and for which teams: a swap is checked
     /// against them again.
     census: ::rules::labels::Census,
@@ -1080,6 +1167,7 @@ impl Runtime {
             return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
         }
         let census = census::census(&things);
+        let zones = Zones::read(m, &table);
         // The record's option bits are its script's; a carried script has
         // no options, so the built-in plays its own defaults.
         let options = if script.mode == Mode::Rules && carried.is_none() {
@@ -1096,6 +1184,7 @@ impl Runtime {
         let error = {
             let mut g = GuestGame::new(m, &mut pending)
                 .with_table(&table)
+                .with_zones(&zones)
                 .with_film(self.film);
             // The first round began inside `GAME_ACTIVATE` (its round
             // reset, `ENGINE_ROUND_RESET`, ran before this observer), so
@@ -1118,6 +1207,8 @@ impl Runtime {
             pre: None,
             post: None,
             table,
+            zones,
+            seen: Seen::default(),
             census,
             teams,
             carried,
@@ -1190,10 +1281,15 @@ impl Runtime {
         r.vm.begin_tick(tick);
         {
             let Running {
-                vm, pending, table, ..
+                vm,
+                pending,
+                table,
+                zones,
+                ..
             } = &mut **r;
             let mut g = GuestGame::new(m, pending)
                 .with_table(table)
+                .with_zones(zones)
                 .with_film(self.film);
             vm.flush_queue(&mut g);
         }
@@ -1249,10 +1345,15 @@ impl Runtime {
         let tick = r.vm.ext().tick;
         let error = {
             let Running {
-                vm, pending, table, ..
+                vm,
+                pending,
+                table,
+                zones,
+                ..
             } = &mut **r;
             let mut g = GuestGame::new(m, pending)
                 .with_table(table)
+                .with_zones(zones)
                 .with_film(self.film);
             f(vm, &mut g);
             g.error
@@ -1338,18 +1439,28 @@ impl Runtime {
         }
     }
 
-    /// After the game tick: timers, then `on tick`.
+    /// After the game tick: what changed on the roster and in the zones
+    /// since the VM was last told (`on death`, `on spawn`, `on leave`, `on
+    /// enter`; [`zones::events`]), then timers, then `on tick`. A script
+    /// with no handler for an event has none of it worked out.
     pub fn post_tick(&mut self, m: &dyn GuestMemory) {
         let Some(tick) = bots::guest::game_tick(m) else {
             return;
         };
-        match &mut self.status {
-            Status::Running(r) if r.post != Some(tick) => r.post = Some(tick),
+        let mut seen = match &mut self.status {
+            Status::Running(r) if r.post != Some(tick) => {
+                r.post = Some(tick);
+                std::mem::take(&mut r.seen)
+            }
             _ => return,
-        }
+        };
         self.run(m, |vm, g| {
+            tell(vm, g, &mut seen);
             vm.update(g);
         });
+        if let Status::Running(r) = &mut self.status {
+            r.seen = seen;
+        }
     }
 
     /// The async body's outcome: what the authority check answered, and
@@ -1521,6 +1632,38 @@ impl Runtime {
     }
 }
 
+/// Tells the VM what changed since `seen`, in [`zones::events`]' order,
+/// marking each change it heard. A zone event the VM carries to the next
+/// tick stays unmarked, so it is told again.
+fn tell(vm: &mut Vm, g: &mut GuestGame<'_>, seen: &mut Seen) {
+    let wants = |e: Event| vm.ir().handlers.iter().any(|h| h.event == e);
+    let roster = wants(Event::Spawn) || wants(Event::Death);
+    let zoned = wants(Event::Enter) || wants(Event::Leave);
+    if !roster && !zoned {
+        return;
+    }
+    let (alive, listed) = zones::alive_mask(g.m);
+    seen.keep_listed(listed);
+    let now = match (zoned, g.zones, g.table) {
+        (true, Some(z), Some(t)) => {
+            let bodies = zones::bodies(g.m);
+            z.occupancy(&bodies, |h| t.get(h).is_some_and(|thing| thing.label.is_some()))
+        }
+        _ => Default::default(),
+    };
+    for change in zones::events(seen, alive, listed, &now) {
+        let input = match change {
+            Change::Death(p) => Input::Death(p),
+            Change::Spawn(p) => Input::Spawn(p),
+            Change::Leave { zone, unit } => Input::Leave { zone, object: unit },
+            Change::Enter { zone, unit } => Input::Enter { zone, object: unit },
+        };
+        if vm.fire(g, input) != Fired::Carried {
+            seen.told(change);
+        }
+    }
+}
+
 /// Before the tick: the authority check when asked, then each call in
 /// order. Returns the answer and the calls the engine refused.
 pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, String)>) {
@@ -1557,6 +1700,11 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
             // (`super::world::show::publish`); one reaching this far makes
             // no engine call.
             Call::Message(_) => Ok(()),
+            Call::SetLoadout {
+                player,
+                ref primary,
+                ref secondary,
+            } => super::world::loadout::give(cx, player, primary.as_deref(), secondary.as_deref()).await,
         };
         if let Err(e) = result {
             refused.push((call.name().to_string(), e.to_string()));

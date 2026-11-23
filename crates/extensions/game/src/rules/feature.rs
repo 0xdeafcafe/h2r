@@ -180,6 +180,13 @@ impl hooks::Feature for Rules {
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use hooks::Flow;
         use std::sync::atomic::Ordering;
+        // The placement `set_loadout` builds each weapon in
+        // (`super::world::loadout`).
+        let scratch = b.guest_alloc(
+            super::world::loadout::SCRATCH_SIZE,
+            ::runtime::guest::Permissions::RW,
+        )?;
+        super::world::loadout::set_scratch(scratch);
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
         let scripts = Arc::clone(&self.scripts);

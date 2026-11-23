@@ -4,9 +4,7 @@
 // docs/game/rules-engine.md, "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`):
-//   player_of        traced (unit `+0x13c`)
 //   spawn_areas      untraced (the PLAYER_SPAWN_LOCATION rule)
-// `on enter` waits on the zone tests (not built).
 rules "Race" 1
 carrier slayer
 requires player.spawn

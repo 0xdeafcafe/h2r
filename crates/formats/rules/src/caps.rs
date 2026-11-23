@@ -216,7 +216,7 @@ use self::Order::{Now, Queued};
 const ON_JUGGERNAUT: &[u8] = &[7];
 const ON_ODDBALL: &[u8] = &[3];
 
-use self::Status::{Named, NotBuilt, Traced, Untraced};
+use self::Status::{Named, Traced, Untraced};
 use crate::ty::Ty::{Bool, Class, Fixed, Int, Label, Object, Player, Squad, Tag, Team, Text};
 
 pub mod id {
@@ -316,12 +316,9 @@ pub const ENTRIES: &[Entry] = &[
     read(id::LABEL_NUMBER, "label_number", &[Object], Int, Named),
     read(id::LABEL_OF, "label_of", &[Object], Label, Named),
     read(id::ZONE_ID, "zone_id", &[Object], Int, Named),
-    // Answered by the VM from the zone test (`Game::zone_holder`), which
-    // no host has yet: the VM's own, over a game-side part not built.
-    Entry {
-        status: NotBuilt,
-        ..vm(id::TICKS_HELD, "ticks_held", &[Object, Team], Int)
-    },
+    // Answered by the VM from the zone test (`Game::zone_holder`); the
+    // host's is `game::rules::world::zones`, over the labelled flags.
+    vm(id::TICKS_HELD, "ticks_held", &[Object, Team], Int),
     read(id::SQUAD_ALIVE, "squad_alive", &[Squad], Int, Named),
     // Actions.
     act(id::SCORE, "score", &[Player, Int], None, Now, Named),
@@ -332,7 +329,11 @@ pub const ENTRIES: &[Entry] = &[
     act(id::RESPAWN, "respawn", &[Player], None, Now, Named),
     act(id::SET_GRAVITY, "set_gravity", &[Fixed], Some("game.traits"), Now, Named),
     act(id::SET_TEAM, "set_team", &[Player, Team], Some("player.team"), Now, Untraced),
-    act(id::SET_LOADOUT, "set_loadout", &[Player, Tag, Tag], Some("player.weapons"), Now, Traced),
+    // A weapon of the multiplayer weapon list (`crate::weapons`): its tag
+    // through `STARTING_WEAPON_PICK` (`0x19eda0`) by its setting value, then
+    // made and added to the unit as `sim.give` does (`0xb7930`, `0xb7b40`,
+    // `0xcd0c0`; `game::rules::world::loadout`).
+    act(id::SET_LOADOUT, "set_loadout", &[Player, Tag, Tag], Some("player.weapons"), Now, Named),
     act(id::GIVE, "give", &[Player, Tag], Some("player.weapons"), Now, Untraced),
     act(id::TAKE, "take", &[Player, Object], Some("player.weapons"), Now, Traced),
     act(id::CREATE, "create", &[Tag, Object], Some("objects.create"), Queued, Traced),
@@ -365,11 +366,13 @@ pub const ENTRIES: &[Entry] = &[
     // through its designator (`E+0x10`, `engine::objectives::DESIGNATOR_TEAMS`);
     // neutral (8) reads as none.
     read(id::OBJECT_TEAM, "object_team", &[Object], Team, Named),
-    // The player's living unit inside a zone object: a labelled volume, a
-    // territory marker's capture volume, or a hill corner's hill.
-    read(id::INSIDE, "inside", &[Player, Object], Bool, NotBuilt),
-    // The player whose unit an object is (unit `+0x13c`).
-    read(id::PLAYER_OF, "player_of", &[Object], Player, Traced),
+    // The player's living unit inside a zone object: the host's zone test
+    // (`game::rules::world::zones`), a flag's cylinder or the polygon of a
+    // numbered label's corners.
+    read(id::INSIDE, "inside", &[Player, Object], Bool, Named),
+    // The player whose unit an object is: the roster's units (the player
+    // datum's unit), so no unit field is read.
+    read(id::PLAYER_OF, "player_of", &[Object], Player, Named),
     // Create an objective at a placement and register it with a team, as
     // the CTF/Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do.
     act(id::SPAWN_OBJECTIVE, "spawn_objective", &[Tag, Object, Team], None, Queued, Traced),
@@ -740,7 +743,7 @@ mod tests {
                 assert!(capability(cap, API_VERSION).is_some(), "{cap}");
             }
             // A VM built-in is the VM's own, unless its game-side part is
-            // not built (`ticks_held` over the zone test).
+            // not built.
             if a.status == Status::VmOnly {
                 assert_eq!(a.kind, Kind::VmOnly, "{}", a.name);
             }
@@ -880,12 +883,16 @@ mod tests {
     }
 
     #[test]
-    fn ticks_held_is_the_vms_over_a_zone_test_not_built() {
+    fn ticks_held_is_the_vms_over_the_hosts_zone_test() {
         let e = entry(id::TICKS_HELD, API_VERSION).unwrap();
         assert_eq!(e.kind, Kind::VmOnly);
-        assert_eq!(e.status, Status::NotBuilt);
-        assert!(!e.status.hostable());
+        assert_eq!(e.status, Status::VmOnly);
+        assert!(e.status.hostable());
         assert_eq!(e.args, &[Object, Team]);
+        // The zone reads and the loadout are made by a host too.
+        for name in ["inside", "player_of", "set_loadout"] {
+            assert!(entry_named(name).unwrap().status.hostable(), "{name}");
+        }
     }
 
     /// The two-team Firefight entries hold 70 to 74, after the bot orders

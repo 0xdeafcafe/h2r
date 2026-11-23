@@ -308,14 +308,17 @@ a map that lacks or breaks a label or tag the script needs blocks the
 game (`Status::Blocked`, below), and no rules play, the carrier's
 included. Last, a script is refused when it needs what this runtime does
 not do yet (`runtime::host_refusal`): an event other than `init`,
-`round_start`, `kill`, `quit`, `timer`, `tick`, `bounce` and `bounced`; a read other than the scores,
+`round_start`, `kill`, `quit`, `timer`, `tick`, `bounce`, `bounced`,
+`spawn`, `death`, `enter` and `leave`; a read other than the scores,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
-`is_objective`, `carrier_of` and the label reads (`label_number`,
-`label_of`, `zone_id`, `object_team`); an action other than `score`,
-`end_round`, `set_lives`, `respawn`, `role_traits` and
-`reset_objective`; a
-variant field other than `team_play`, `score_limit`, `time_limit` and
-`lives`, whose record offsets are not traced; a `grant`.
+`is_objective`, `carrier_of`, the label reads (`label_number`,
+`label_of`, `zone_id`, `object_team`), `inside` and `player_of`; an
+action other than `score`, `end_round`, `set_lives`, `respawn`,
+`role_traits`, `reset_objective`, the bot orders, the messages and
+`set_loadout`; a variant field other than `team_play`, `score_limit`,
+`time_limit` and `lives`, whose record offsets are not traced; a
+`grant`; a script that calls `set_loadout` and names a weapon off the
+multiplayer weapon list (`rules::weapons`), by the weapon's path.
 Then the VM starts with the record's option bits and seed 0 (as
 Firefight's, until the session carries one), `on init` runs, then the
 first round's `on round_start` (that round's reset ran inside
@@ -379,12 +382,25 @@ label (not starting locations); `o.number` is the label's number (0 when
 none); `zone.label` is the script's label of that text; `zone.id` the
 placement id; `o.team` a flag's team through its designator
 (`E+0x10 + 2d`), or an objective record's `+4` on CTF and Assault, with
-neutral as `none`. `inside`, the zone tests behind `on enter` and
-`on leave`, and `ticks_held` stay refused: no zone has a volume a host
-can test. Forge trigger volumes are not in the document, and no netgame
-flag's capture volume is traced outside the engines' own occupancy
-(King's mask `K+0x1a8` for the hill in play, Territories' site bytes
-`T+0x95+8p`), which answers only on its own carrier.
+neutral as `none`.
+
+**Zones.** `inside`, `ticks_held`, `on enter` and `on leave` test the
+host's zones (`rules/world/zones.rs`), each one a labelled netgame flag:
+the host's census has no Forge document at a game's start, so no zone is
+a trigger volume. The flags that share a label and a number, three or
+more of them (a hill's corners, `hill_corner` 0 to 7), are one zone: the
+convex hull of their positions across the floor, from 0.5 world units
+under the lowest corner to 1.5 over the highest. Every other flag is an
+upright cylinder of radius 1.0 world unit, from 0.5 under it to 1.5 over
+it. The sizes are ours and not verified: retail's capture volumes
+(Territories' marker `T+0/+0x20/+0x40`) are not traced, and the engines'
+own occupancy (King's mask `K+0x1a8`, Territories' site bytes
+`T+0x95+8p`) answers only on its own carrier. A body is a living
+player's unit (`firefight::runtime::read_players`: the unit's position
+while its body is not depleted). `inside(p, zone)` is whether p's body
+is in the zone; `ticks_held`'s zone test (`Game::zone_holder`) is the
+one team whose bodies alone are in it; `player_of(o)` is the roster
+player whose unit `o` is, living or not.
 
 A Live host (`variant_ext::part`) puts the running blob's full hash on
 its session at every start (`Hle::set_session_rules`, none when no
@@ -406,7 +422,7 @@ Firefight sits inside.
 | `on round_start`, each round after the first | an observer after `ENGINE_ROUND_RESET` (`0x157ae0`), the engine's round reset, which the round state machine `0x15c550` calls as a round begins | at the next tick boundary |
 | `on quit` | an observer before `ENGINE_PLAYER_LEFT` (`0x157de0`): the player's salted datum in ESI, the player already off the roster (player `+2` bit 1) | at the next tick boundary |
 | `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: each bounce and Bounced its medal chain files that tick (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
-| `on timer`, then `on tick` | an observer after `GAME_TICK` | at the next tick boundary |
+| `on death`, `on spawn`, `on leave`, `on enter`, then `on timer`, then `on tick` | an observer after `GAME_TICK`: the roster's and the zones' changes since the last tick (`runtime::tell`, `world::zones::events`), then the per-tick group | at the next tick boundary |
 | `on init`, then the first `on round_start` | the start observer | at the first tick boundary |
 
 This differs from "Order" in one way, for every handler: a call is made
@@ -417,6 +433,21 @@ boundary after the kill and a read in the same handler does not see it.
 A mode 2 script on a lifted carrier is therefore not a parity game:
 running the handlers inside the carrier's callbacks is what makes one.
 
+**The roster's and the zones' events.** After each game tick the runtime
+compares the roster and the zones with what it last told the VM
+(`world::zones::Seen`, kept outside guest memory) and tells it the
+changes in this order: `on death` for each player still listed whose
+unit no longer lives, `on spawn` for each whose unit lives again (every
+living player at the first tick), `on leave` and then `on enter` for
+each unit that left or entered a zone whose label the script declares.
+A hill's corners are one zone, which its first corner by handle reports,
+so a unit entering a hill is told once. A player that leaves the roster
+has no `on death`. A zone event over the VM's 64 a tick is carried and
+told again at the next tick. A script with no handler for any of these
+events has none of it worked out. The changes are seen at a tick's end,
+so a spawn's `set_loadout` lands at the next boundary, a tick after the
+unit appears.
+
 The calls: `score(p, n)` is `SCORE_ADD` (`0x15b7c0`) with `n` in EAX,
 clamped to ±30,000, and the salted player datum; `set_lives(p, n)`
 writes player `+0x1ac` and marks the player entity's lives bit through
@@ -425,6 +456,23 @@ Firefight's bodies (`firefight::guest::respawn`, `end_game`), and the
 winner is not passed, since naming one is not traced. A script error
 ends the round the same way. A call the engine refuses is kept, with its
 tick and entry name, in `rules.state`'s `errors`.
+
+`set_loadout(p, primary, secondary)` (`rules/world/loadout.rs`) gives
+p's living unit the weapons of the multiplayer weapon list by their tag
+paths (`rules::weapons`, the starting-weapon values 3 to 19 the variant
+editor offers). For each, the game's own `STARTING_WEAPON_PICK`
+(`0x19eda0`) answers the value's tag from the map's multiplayer globals,
+as the spawn's weapon pass asks it; the weapon is made and added as a
+starting profile does (`placement_data_new` `0xb7930`, `object_new`
+`0xb7b40`, `unit_add_weapon` `0xcd0c0`), and deleted (`0xb8540`) when
+the unit refuses it. The primary goes in mode 2, which empties the
+unit's weapon slots first and readies it, the secondary in mode 1 beside
+it (mode 2 when there is no primary). The placement is built in 256
+bytes of guest memory the feature allocates at install. A unit that is
+gone, a value the map's list has no weapon for and a refused weapon are
+refused calls. What mode 2 does with the weapons it empties is not
+traced, so the listed scripts that give loadouts spawn players unarmed
+(`starting_weapon = none`).
 
 `role_traits(p, on)` (`rules/roles.rs`) is Juggernaut's own role setter,
 `JUGGERNAUT_ROLE_SET` (`0x192970`), with the salted player datum in EAX
@@ -1033,8 +1081,18 @@ on enter(goal, o) {
 on timer(clock) { end_round(team 1) }
 ```
 
-The whole mode, with respawn waves and loadouts per team, is
-`crates/formats/rules/src/builtin/siege.rules`.
+The built-in Siege (`crates/formats/rules/src/builtin/siege.rules`,
+listed in Party Games) is the part of this a host runs. Its zones come
+from every Territories and CTF map's own flags, so it needs no kit: the
+attackers take `sites` of the map's territories (each held alone for
+the capture time in all, by `ticks_held`), then hold the defenders' CTF
+flag stand (`label base: zones per team = "ctf_flag_spawn"`,
+`base[team 1]`) for the capture time to win. Each phase has its own
+clock, and a clock that runs out wins it for the defenders. Each side
+spawns with its own loadout (`on spawn`, `set_loadout`), and the winners
+score a point each, so the post-game names them. It opens no barriers
+and moves no spawn areas (`delete`, `create` and `spawn_areas` are not
+hostable, "The engine API"), and it has no core to carry.
 
 ### A Forge graph is the same IR
 
@@ -1203,12 +1261,12 @@ Reads:
 | objects by label; `zone.label`, `zone.id`, `o.number` | the host's labelled things (`rules/census.rs`): netgame flags in guest memory and the session's Forge document | named |
 | `is_objective(o)`; objective records (object, team, carrier); `o.carrier` (`carrier_of`); `for each objectives` | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
 | `o.team` (`object_team`): an objective's team, or a flag placement's team through its designator | record `+4` (CTF, Assault); `E+0x10` (`engine::objectives::DESIGNATOR_TEAMS`, bots.md section 3.7) | named |
-| `player_of(o)`: the player whose unit an object is | unit `+0x13c` (bots.md section 3.7) | traced |
-| `inside(p, zone)`: a living unit inside a labelled volume, a territory marker's capture volume, or a hill corner's hill | zone tests, as below | not built: no zone has a volume a host can test ("The host runtime", "Label reads") |
-| zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built: Forge trigger volumes are not in the document, and no flag's capture volume is traced |
+| `player_of(o)`: the player whose unit an object is | the roster's units (`firefight::runtime::read_players`, the player datum's unit) | named |
+| `inside(p, zone)`: a living unit inside a labelled flag's zone: a hill's polygon or a flag's cylinder | zone tests, as below | named |
+| zone tests: who is in a labelled zone, behind `inside`, `on enter`, `on leave` and `ticks_held` | the host's zones over the flags' positions (`rules/world/zones.rs`, "The host runtime", "Zones"); the sizes are ours, since no flag's capture volume is traced; Forge trigger volumes are not in the host's census | named |
 | netgame flags by type and team | `scnr+0x118` (`engine::objectives`); query `0x19ec40` | named; traced |
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
-| events of the tick | hooks on `PLAYER_KILLED` `0x15ce70`, `PLAYER_SPAWN` `0x14f2e0`; `SimRead::events` once sim-rewrite section 7 exists | named; not built |
+| events of the tick | `PLAYER_KILLED` `0x15ce70` for `on kill`; the roster's units each tick for `on spawn` and `on death` (`runtime::tell`); `SimRead::events` once sim-rewrite section 7 exists | named |
 | squads: actors alive, `on squad_dead`, `on actor_kill`, `on actor_assist` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
 | `zone_seen(z)`, `zone_distance(z)`, `zone_team_distance(z, team)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order, and a zone's distance from one player team | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
 | `on bounce(p, spot, chain, monster)`, `on bounced(p)` | a detector of the traced signature: capsule below the floor, then +8 to +13 units/s upward the next tick ([superbounce.md](superbounce.md#summary), **Trace**); the launch rule itself is Open there | traced; detector not built |
@@ -1226,7 +1284,7 @@ Actions:
 | traits for the match: damage, shield, health | `variant_ext` hooks, as gravity | named | `game.traits` |
 | traits per player; movement speed | answer `ENGINE_TRAIT_QUERY` `0x24dda0` (vtable `+0x8c`; every engine's own `+0x8c` falls back to it); speed has no reader found (game-options.md "Not built") | named point | `player.traits` |
 | `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced | `player.team` |
-| `set_loadout` | starting-weapon routine `0x19eda0` | traced | `player.weapons` |
+| `set_loadout(p, primary, secondary)`: the multiplayer list's weapons, by tag path | `STARTING_WEAPON_PICK` `0x19eda0` for the tag, then the starting profile's give (`0xb7930`, `0xb7b40`, `unit_add_weapon` `0xcd0c0`; `rules/world/loadout.rs`) | named | `player.weapons` |
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
 | `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050` (object, team; no check for a duplicate), `0x15e130`, `0x15e250`, `0x15e460`; every object a host script can name is already registered, since Forge labels are not built | traced | core |
 | `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as Oddball's `0x2bc1f0` does: placement `0xb7930`, `0xb7b40`, `0x15e050`, `0xa7870`. Not built: the host resolves no tag path to a tag datum (the loaded map's names are only in its file), and has no `at` but a registered objective | traced | core |
@@ -1235,7 +1293,7 @@ Actions:
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
-| loadout chosen at spawn | `set_loadout`, plus a picker screen of ours | traced; picker not built | `player.weapons` |
+| loadout chosen at spawn | `on spawn` and `set_loadout`, plus a picker screen of ours | named; picker not built | `player.weapons` |
 | `give(p, tag)`: a weapon into a living player's hands | no entry proven. The pickup's attach routine `0x10ca80` (item, new unit) is on record as an observer only (**E**, [bots.md](bots.md) "Weapon taken") | untraced | `player.weapons` |
 | `take(p, weapon)` | the inventory removal `0xce920`, reached from the drop path `0xe8de0` (**E**, bots.md, the dual-wield drop); a call outside a drop is not proven | traced | `player.weapons` |
 | player body per team (Spartan, Elite) | `PLAYER_SPAWN` chooses the unit type; what it reads is not traced | untraced | `player.disguise` |
@@ -1256,7 +1314,7 @@ VM built-ins reach no engine entry (status **VM-only**):
 | `count(set)`, `first(set)`, `len(table)`, `min(a, b)`, `max(a, b)`, `clamp(v, lo, hi)` | over a finite set or a constant table; `first` follows the `for each` order and gives `none` for an empty set; `min`, `max` and `clamp` take all `int`s or all `time`s |
 | `pick(set, n)` | `n` members drawn with the VM's generator |
 | `seconds(n)`, `whole_seconds(t)`, `ticks(t)` | `n` times the tick rate, as `time`; `t` divided by the tick rate (rounded toward zero), and `t` itself, as `int` |
-| `ticks_held(zone, team)` | a counter the VM keeps in `RulesExt` per zone and team: each tick from the first one a script names the zone, the team the game reports holding it alone (`Game::zone_holder`) gains a tick. Counts clear at the round's end; at most 32 zones are counted, and a 33rd is a script error. `none` or a team out of range reads 0. A host refuses a script that calls it (`caps` status not built) until the host has a zone test to answer `zone_holder` |
+| `ticks_held(zone, team)` | a counter the VM keeps in `RulesExt` per zone and team: each tick from the first one a script names the zone, the team the game reports holding it alone (`Game::zone_holder`) gains a tick. Counts clear at the round's end; at most 32 zones are counted, and a 33rd is a script error. `none` or a team out of range reads 0. The host answers `zone_holder` with its zone test ("The host runtime", "Zones"). The host delivers no `round_end`, so its counts run for the whole game; a script that ends the round with `end_round` ends the game |
 | `squad(n)`, `team n`, `text n` | constants: a kit squad slot, a team index, a string-table index |
 | `fmt_player`, `fmt_team`, `fmt_int`, `fmt_time`, `fmt_enum` | a message's hole values, which the compiler emits before a `message` call and a script cannot name; the VM queues at most four for that message, and the verifier refuses a run not shown at once by a message whose holes it matches ([rules-language-types.md](rules-language-types.md#messages)) |
 | `now()` | the tick the host began (`Vm::begin_tick`), as `time` |
@@ -1847,10 +1905,10 @@ tests only.
 |---|---|---|
 | Slayer | nothing | |
 | Oddball | `spawn_objective`; `role_traits`, made only on Juggernaut | the Oddball globals; the reset delay is a script option |
-| King of the Hill | `label_number`, `inside` | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
+| King of the Hill | the record's `king_moving_hill`, whose offset the host does not read | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
 | Juggernaut | nothing | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores; the record's own Juggernaut settings (the script's options take their defaults); a Juggernaut out of lives keeps the role |
-| CTF and Assault | `object_team`, `inside`, `spawn_objective`; `reset_objective`, made only on Oddball; `role_traits`, made only on Juggernaut | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
-| Territories | `register_objective`, `inside` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
+| CTF and Assault | `spawn_objective`; `reset_objective`, made only on Oddball; `role_traits`, made only on Juggernaut | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
+| Territories | `register_objective` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
 
 **Parity method.** The lifted engine is the oracle. A headless match is
 recorded once (seed and per-seat inputs), then run twice from the same
@@ -2018,12 +2076,14 @@ rather than by engine: `infection.rules`, `gun_game.rules`,
 `vip.rules`, `siege.rules`, `race.rules`, `bounce_hunt.rules` and
 `superbounce.rules`. Each compiles, verifies and fits a tick
 (`tests/engines.rs`), and each header names the entries a host cannot
-make yet. VIP, Bounce Hunt and Superbounce call none. VIP waits on
-the match edit log, and Bounce Practice on the host runtime's
-`round_start` and `set_gravity`. Superbounce runs. The examples are
-compiled into the game, so a record names one by its hash prefix with
-no store or fetch; a record with no mode never runs one. Prop Hunt has
-no script.
+make yet. VIP, Bounce Hunt, Superbounce, Siege and Gun Game call none.
+VIP waits on the match edit log, and Bounce Practice on the host
+runtime's `round_start` and `set_gravity`. Superbounce and Siege run,
+and are listed (`builtin::LISTED`, [rules-variants.md](rules-variants.md#built-in-list-entries)).
+The examples are compiled into the game, so a record names one by its
+hash prefix with no store or fetch; a record with no mode never runs
+one. `tests/modes.rs` plays the listed modes over scenarios on the fake
+game (the JSON files in `tests/scenarios/`). Prop Hunt has no script.
 
 - **Race.** Halo 1's race track points are dropped at conversion
   ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and
@@ -2044,19 +2104,20 @@ no script.
   body swap and `camera` are all untraced, and damage forwarding needs
   an event the API lacks. The native renderer can skip drawing a biped;
   its hitboxes and collision stay until the engine work is done.
-- **A phased attack-and-defend mode**, with the mechanics of Halo:
-  Reach's Invasion and none of its assets or text. "Invasion" is Reach's
-  name; ours is open (working name: Siege).
+- **Siege**, a phased attack-and-defend mode with the mechanics of
+  Halo: Reach's Invasion and none of its assets or text ("Phases: attack
+  and defend").
 
 The phased mode is the check that the API is wide enough:
 
 | Mechanic | In a script | API status |
 |---|---|---|
 | up to three phases, a timer each | a global `int` and a `timer` | the VM alone |
-| capture zones, then a core carried to a goal | zone tests as Territories; the objective registry as CTF and Assault | traced |
+| capture zones, then a goal | the host's zone tests and `ticks_held`, over the map's territory and CTF flags | named; the built-in Siege |
+| a core carried to a goal | the objective registry as CTF and Assault | traced |
 | the map opens per phase | delete and create barriers at labels | not built (Forge labels, barriers) |
 | spawn areas switch per phase | `spawn_areas` | named point; rule untraced |
-| loadouts per team, chosen at spawn | `set_loadout` and traits; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits | traced; picker screen not built |
+| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits | named; the built-in Siege; picker screen not built |
 | team respawn waves | hold respawns with the lives gates, release on a timer | named |
 | two species teams | Halo 2's multiplayer has Spartan and Elite bodies (live-gamestate.md); forcing one per team | untraced |
 

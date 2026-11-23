@@ -24,6 +24,7 @@ pub mod sim;
 pub mod ty;
 pub mod verify;
 pub mod vm;
+pub mod weapons;
 pub mod workbench;
 
 pub use content::Sha256;

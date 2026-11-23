@@ -290,15 +290,17 @@ entries; retail uses 0 to 38 and the store 94 to 100).
 | Bumper Cars | slayer | carrier | `party` | `starting_weapon = none` is one of our added choices; without `variant_options` the entry is left out, as today |
 | Glitch Hunt | slayer | carrier | `research` | |
 | Bounce Practice | slayer | carrier | `research` | `bounce_practice.rules`: settings only; the bounce-scoring script is `bounce_hunt.rules` |
-| Zombies | slayer | carrier | `party` | the honour rules stay in `about`. `infection.rules` enforces them but waits on `set_team` (untraced) and `set_loadout` (`verify::unhostable`) |
+| Zombies | slayer | carrier | `party` | the honour rules stay in `about`. `infection.rules` enforces them but waits on `set_team` (untraced, `verify::unhostable`) |
 | Sun King | king | carrier | none | |
 | Wheeeeee! | oddball | carrier | none | |
 | Clint Eastwood | juggernaut | carrier | none | |
 | Hide and Seek | juggernaut | carrier | `party` | a row's list is Slayer's and Juggernaut's variant lists filtered (slice 12); a `list` line on any other carrier is the error `list.carrier` |
 | Superbounce | slayer | script | `research` | `superbounce.rules` gains its settings; the table's are deleted |
+| Siege | slayer | script | `party` | `siege.rules`: the map's territory and CTF flags are its zones, so every Territories and CTF map plays it ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); players spawn unarmed (`starting_weapon = none`, our added choice) and `set_loadout` arms each side |
 
-Gun Game, VIP, Race and Siege stay examples (`builtin::examples`) and
-are not listed: each waits on entries no host makes yet.
+Siege, like Superbounce, is a scripted mode after the settings scripts
+and is an example too (`builtin::examples`). Gun Game, VIP and Race stay
+examples and are not listed.
 
 ### The default Live lineup
 
