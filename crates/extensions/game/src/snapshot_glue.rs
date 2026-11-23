@@ -442,6 +442,7 @@ impl Host<'_> {
         parts.push(Box::new(KernelPart {
             m,
             rebuilders,
+            plan,
             prepared: None,
         }));
         parts.push(Box::new(FeaturesPart {
@@ -791,7 +792,21 @@ impl Part for GuestPart<'_> {
 struct KernelPart<'a> {
     m: &'a mut kernel::Machine,
     rebuilders: &'a kernel::snapshot::Rebuilders,
+    plan: &'a hooks::Plan,
     prepared: Option<Box<dyn FnOnce(&mut kernel::Machine)>>,
+}
+
+/// One kernel blocker as a deferral line, with the hooked point behind an
+/// after-hooks continuation named when the plan knows it: a line that says
+/// only a shadow address cannot be acted on.
+fn kernel_blocker(b: &kernel::quiesce::Blocker, plan: &hooks::Plan) -> String {
+    if let kernel::quiesce::Blocker::Continuation { origin, target, .. } = b
+        && *origin == hooks::install::AFTER_HOOKS
+        && let Some(point) = plan.describe_target(*target)
+    {
+        return format!("{b} ({point})");
+    }
+    b.to_string()
 }
 
 impl Part for KernelPart<'_> {
@@ -806,7 +821,7 @@ impl Part for KernelPart<'_> {
             .quiescent()
             .blockers
             .iter()
-            .map(ToString::to_string)
+            .map(|b| kernel_blocker(b, self.plan))
             .collect()
     }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
