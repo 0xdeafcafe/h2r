@@ -225,6 +225,8 @@ pub struct Maintenance {
     pub props_writes: u64,
     /// Phantom names or looks written back into the session's player records.
     pub identity_writes: u64,
+    /// Phantom handicaps put back to none in the session's player records.
+    pub handicap_writes: u64,
     /// Phantoms moved to keep the lobby's teams even.
     pub team_moves: u64,
     /// The 8-byte chunks of the `0xc8` peer properties that differed on any
@@ -242,8 +244,8 @@ pub const CHURN_FRAMES: u32 = 30;
 pub fn churn_line(frames: u32, m: &Maintenance) -> String {
     format!(
         "bots: phantoms: the session's membership was rewritten on {frames} frames in a row \
-         (totals: properties {}, identities {}, team moves {}; property chunks {:#x})",
-        m.props_writes, m.identity_writes, m.team_moves, m.props_diff_chunks
+         (totals: properties {}, identities {}, handicaps {}, team moves {}; property chunks {:#x})",
+        m.props_writes, m.identity_writes, m.handicap_writes, m.team_moves, m.props_diff_chunks
     )
 }
 
@@ -804,6 +806,7 @@ impl Phantoms {
                     p.peer_hint = Some(peer);
                     repairs.props(session::write_peer(m, s, peer, host.as_ref(), &p.peer_identity)?);
                     repairs.identity(session::write_identity(m, s, peer, &p.peer_identity)?);
+                    repairs.handicap(session::write_no_handicap(m, s, peer)?);
                 }
                 None => {
                     p.made = false;
@@ -851,6 +854,7 @@ impl Phantoms {
                     p.peer_hint = Some(stale);
                     repairs.props(session::write_peer(m, s, stale, host.as_ref(), &p.peer_identity)?);
                     repairs.identity(session::write_identity(m, s, stale, &p.peer_identity)?);
+                    repairs.handicap(session::write_no_handicap(m, s, stale)?);
                     p.made = true;
                     p.waiting = None;
                     log.push(format!(
@@ -945,6 +949,7 @@ struct Repairs {
     props_writes: u64,
     props_chunks: u32,
     identity_writes: u64,
+    handicap_writes: u64,
     team_moves: u64,
 }
 
@@ -960,14 +965,19 @@ impl Repairs {
         self.identity_writes += u64::from(wrote);
     }
 
+    fn handicap(&mut self, wrote: bool) {
+        self.handicap_writes += u64::from(wrote);
+    }
+
     fn any(&self) -> bool {
-        self.props_writes + self.identity_writes + self.team_moves > 0
+        self.props_writes + self.identity_writes + self.handicap_writes + self.team_moves > 0
     }
 
     fn count(&self, m: &mut Maintenance) {
         m.props_writes += self.props_writes;
         m.props_diff_chunks |= self.props_chunks;
         m.identity_writes += self.identity_writes;
+        m.handicap_writes += self.handicap_writes;
         m.team_moves += self.team_moves;
     }
 }
