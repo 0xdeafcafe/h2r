@@ -24,6 +24,7 @@ evidence. No disassembly listings or game data.
 | [anim-sampling.md](anim-sampling.md) | animation sampling `0x2798a0` and everything below it | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim`, default off |
 | [skeleton-walk.md](skeleton-walk.md) | `bd090`'s node loop over the pose matrix `0x1421f0` and the composition `0x142a60` | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim.skeleton`, default on wherever `bd090` runs natively |
 | [markers.md](markers.md) | `b8d30`'s marker lookup: the group scan `1d8f00` and the transform fill `1d8f50` | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim`, wherever the marker port or the subsystem entry runs |
+| [palette.md](palette.md) | `16760c`'s first-person bone palette: the identity fill and the model-node overlay | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim`, wherever the first-person pose port runs |
 
 ## Fault behaviour
 

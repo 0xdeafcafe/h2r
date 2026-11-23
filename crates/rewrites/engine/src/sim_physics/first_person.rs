@@ -127,7 +127,13 @@ pub(super) fn copy_node<const N:usize>(g:&mut Guest,src:u32,dst:u32,backwards:bo
     Ok(())
 }
 
-fn palette(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+pub(crate) fn palette(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+    // Phase 1c: the fill and overlays as one Rust call
+    // (engine::sim_anim::palette). The port's own loops run when it
+    // declines.
+    if let Some(transfer)=crate::sim_anim::palette::run(c,g)? {
+        return Ok(transfer);
+    }
     let nodes=c.eax as i16 as i32 as u32;
     let slot=g.u32(c.ebp+12)?;
     let user=g.u32(c.ebp+8)?;

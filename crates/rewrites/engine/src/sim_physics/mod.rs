@@ -9,7 +9,7 @@ mod colors;
 mod havok;
 mod solver_rows;
 mod solver_pairs;
-mod first_person;
+pub(crate) mod first_person;
 mod pose_layers;
 mod light;
 mod support;
