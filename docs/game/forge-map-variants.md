@@ -196,11 +196,12 @@ between it and a row.
 | Item spawner | item: a collection or an object tag | `item` | **E** | nothing |
 | Item spawner | respawn time; 0 is the collection's own | `respawn time` | **E** | nothing |
 | Item spawner | return time: how long an object may be away from its spot | `abandon limit` | **E** | nothing |
-| Item spawner | place at start | `respawn mode` | **E** that 0 and 1 differ; their meaning is **S** | slice D1 |
-| Item spawner | game types | four game-type slots after the flags (**C**: the public layout's names) | **S** | slice D1 |
+| Item spawner | place at start | none: the reset `0x15ad30` spawns every matching entry at the start, whatever its mode | **E** (scenario-editor.md section 2) | left out |
+| Item spawner | respawn trigger: what starts the countdown while the object is out | `respawn mode`: 0 the object moved from its spot or an object bit set, 1 another object bit set; the bits are not named | **E** for the paths; **S** for the bits' meaning | a row in D3 once the bits are named |
+| Item spawner | game types | `game type 1` to `game type 4` (`+0x04`), read by the matcher `0x15a090` | **E** (scenario-editor.md section 2, `map::scenario_layout::game_types`) | nothing |
 | Item spawner | spare clips, team | none in the entry (**C**: the public layout has neither) | **S** | a Forge property; slice D4 |
 | Starting point | team | `team` | **V**, **C** | nothing |
-| Starting point | game types | four pairs of game type and spawn type after the team (**C**) | **S** | slice D1 |
+| Starting point | game types | none read; the public layout's slots after the team (**C**) are kept, not typed | **E**: no reader of the block found reads those bytes, and the spawn chooser `0x14ef00` weighs every entry (scenario-editor.md section 2); that no other code reads them is **S** | left out |
 | Starting point | weight | none in the entry (**C**) | **S** | a Forge property; slice D4 |
 | Goal | role: the netgame flag's type | `type` | **V**, **C**; the roles traced are in `forge_doc::builtin_label` | nothing |
 | Goal | team | `team` | **V**, **C** | nothing |
@@ -237,13 +238,16 @@ engines, or all of them.
 
 | Kind | Where the set lives | Who filters in a match |
 |---|---|---|
-| Item spawner, starting point | the entry's game-type slots | the engine, as retail (**S** until D1 reads the matcher both blocks pass their slots to) |
+| Item spawner | the entry's game-type slots | the engine, as retail: the tick skips an entry the matcher `0x15a090` does not match (**E**) |
+| Starting point | nowhere: no retail reader of a game type was found (**E**, **S**, as in "Fields by kind") | not filtered |
 | Goal, teleporter | the flag's type: a flag is its game type's by what it is | the engine: each game engine walks the types it reads |
 | Object | the `games` property | the materialiser, at build time |
 
-- **The set and the slots.** An entry has four slots, each one engine
-  or a group value (**C**, **S**). `forge_doc::games::encode(set)`
-  (new) gives the slots for a set: a group value when one equals the
+- **The set and the slots.** An item spawner has four slots, each an
+  engine's code or a group value: 12 every engine, 13 and 14 every
+  engine but CTF and Assault, which match each other's code; King of
+  the Hill's code is 0 (**E**, `map::scenario_layout::game_types`).
+  `forge_doc::games::encode(set)` (new) gives the slots for a set: a group value when one equals the
   set, else one slot an engine. A set that needs more than four slots
   is refused with "An item can name four game types at most."
   `decode(slots)` gives the set back, and an entry whose slots hold a
@@ -260,7 +264,8 @@ engines, or all of them.
   game of its type.
 - **A new thing's set.** A goal's is its role's. An item spawner or a
   starting point made in a session starts as all game types, as the
-  map's own mostly are (**S**: a disc census in D1 says how the retail
+  map's own mostly are (**S**: the ignored test
+  `disc_item_game_types_and_respawn_modes_census` prints how the retail
   maps use the slots).
 - **Objects.** A scenery, crate or machine placement has no game-type
   field (**C**). With a `games` property the materialiser builds the
@@ -586,9 +591,11 @@ above follow.
   `crates/live/live-hle/src/maps.rs` (`MapGate::check`).
 - **C**: Halo 3's map variants, their fields and the separate game
   variant: forge.md 1.1 and its sources.
-- **C**: the game-type slots of the two blocks and the absence of a
-  team, a clip count and a weight: field names of the public Halo 2
-  scenario layout. Nothing is built on them before D1.
+- **E**: the item spawner's game-type slots, the matcher and the respawn
+  modes: scenario-editor.md section 2 and
+  [notes/2026-11-23-item-game-types.md](notes/2026-11-23-item-game-types.md).
+- **C**: the absence of a team, a clip count and a weight: field names of
+  the public Halo 2 scenario layout.
 - **Design**: the print, the `Entry` family, the inert row in a
   session, the tier, the pick's forms, the refusals.
 
@@ -601,7 +608,9 @@ above follow.
   entry has out.
 - That a starting point's or a goal's write in the loaded scenario is
   read in the round it is made, or only from the next.
-- The game-type slots, the matcher and the respawn modes (D1).
+- How the retail maps use the game-type slots and respawn modes: the
+  census `disc_item_game_types_and_respawn_modes_census` has not been run.
+- What the object bits that arm respawn modes 0 and 1 mean.
 - A weapon's reserve field and the spawn chooser's rule (D5).
 - How long a variant takes to build on a real map, and that the lobby
   can wait for it without a hold a player notices.

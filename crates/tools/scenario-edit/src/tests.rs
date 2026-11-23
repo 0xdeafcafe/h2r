@@ -1172,6 +1172,151 @@ fn disc_scenarios_read_and_fields_are_plausible() {
     );
 }
 
+/// The matcher `0x0015a090` as read (docs/game/notes/2026-11-23-item-game-types.md).
+#[test]
+fn game_type_matcher_follows_the_engine_routine() {
+    use layout::game_types::{ENGINE_CODES, first_match, slot_matches};
+    // A slot names an engine's code, the two flag codes stand for each
+    // other, 12 is every engine and 13 and 14 every engine but 1 and 9.
+    for code in ENGINE_CODES {
+        let flag = code == 1 || code == 9;
+        for slot in -1..=15i16 {
+            let want = i32::from(slot) == code
+                || (flag && (slot == 1 || slot == 9))
+                || slot == 12
+                || (!flag && (slot == 13 || slot == 14));
+            assert_eq!(slot_matches(slot, Some(code)), want, "{slot} {code}");
+        }
+    }
+    assert!(slot_matches(9, Some(1)) && slot_matches(1, Some(9)));
+    assert!(!slot_matches(13, Some(9)) && slot_matches(14, Some(2)));
+    // King of the Hill's code is 0, so a slot of 4 matches nothing.
+    assert!(slot_matches(0, Some(0)));
+    assert!(ENGINE_CODES.iter().all(|&c| !slot_matches(4, Some(c))));
+    // With no engine object only a slot of 0 matches, 12 included.
+    assert!(slot_matches(0, None));
+    assert!(!slot_matches(12, None) && !slot_matches(2, None));
+    // The first matching slot wins; none leaves the entry out.
+    assert_eq!(first_match(&[3, 12, 2, 0], Some(2)), Some(1));
+    assert_eq!(first_match(&[0, 0, 0, 0], Some(2)), None);
+    assert_eq!(first_match(&[2, 0, 0, 0], None), Some(1));
+    assert_eq!(first_match(&[], Some(2)), None);
+}
+
+#[test]
+fn item_game_type_slots_are_the_typed_fields() {
+    use layout::game_types::{ITEM_SLOTS, SLOT_COUNT, item_slots};
+    let kind = BlockKind::NetgameEquipment;
+    let mut s = read(fixture());
+    for (k, v) in [12i64, 2, 13, 0].into_iter().enumerate() {
+        s.set(kind, 0, &format!("game type {}", k + 1), Value::Int(v))
+            .unwrap();
+    }
+    let entry = s.block(kind).entry(0).unwrap();
+    assert_eq!(item_slots(entry), Some([12, 2, 13, 0]));
+    assert_eq!(item_slots(&entry[..ITEM_SLOTS as usize + 7]), None);
+    let def = layout::block(kind);
+    for k in 0..SLOT_COUNT {
+        let f = def.field(&format!("game type {}", k + 1)).unwrap();
+        assert_eq!(f.offset, ITEM_SLOTS + 2 * k as u32);
+        assert_eq!(f.ty, layout::FieldType::I16);
+    }
+}
+
+/// The D1 census (docs/game/forge-map-variants.md, "Slices"): every
+/// multiplayer scenario on the owner's disc (`H2_DISC`, else
+/// `disc/halo2.iso`), read-only. Each netgame equipment slot must lie in
+/// the matcher's range and each respawn mode in the tick's; the counts
+/// say how the retail maps use them. Starting locations' bytes from
+/// `+0x12` to `+0x2a` have no engine reader; their values are printed,
+/// not checked.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_item_game_types_and_respawn_modes_census() {
+    use layout::game_types::{ENGINE_CODES, MAX, SLOT_COUNT, first_match, item_slots};
+    use std::collections::BTreeMap;
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (mut checked, mut items) = (0, 0usize);
+    let mut slot_values: BTreeMap<i16, usize> = BTreeMap::new();
+    let mut slot_sets: BTreeMap<[i16; SLOT_COUNT], usize> = BTreeMap::new();
+    let mut modes: BTreeMap<i64, usize> = BTreeMap::new();
+    let mut per_engine: BTreeMap<i32, usize> = BTreeMap::new();
+    let mut in_no_engine = 0usize;
+    let mut never = 0usize;
+    let mut start_words: BTreeMap<(usize, i16), usize> = BTreeMap::new();
+    let mut starts = 0usize;
+    for (name, source) in maps {
+        let mut m = source.open().unwrap();
+        if m.header().cache_type != map::CacheType::Multiplayer {
+            continue;
+        }
+        let s = Scenario::read(&mut m).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let kind = BlockKind::NetgameEquipment;
+        let block = s.block(kind);
+        let mut line = BTreeMap::new();
+        for i in 0..block.len() {
+            let slots = item_slots(block.entry(i).unwrap()).unwrap();
+            for (k, &v) in slots.iter().enumerate() {
+                assert!(
+                    (0..=MAX).contains(&v),
+                    "{name} netgame equipment {i} game type {}: {v}",
+                    k + 1
+                );
+                *slot_values.entry(v).or_default() += 1;
+            }
+            *slot_sets.entry(slots).or_default() += 1;
+            let mode = s.get(kind, i, "respawn mode").unwrap().as_int().unwrap();
+            assert!(
+                i16::try_from(mode).is_ok_and(|m| layout::RESPAWN_MODES.contains(&m)),
+                "{name} netgame equipment {i} respawn mode: {mode}"
+            );
+            *modes.entry(mode).or_default() += 1;
+            let mut any = false;
+            for code in ENGINE_CODES {
+                if first_match(&slots, Some(code)).is_some() {
+                    *per_engine.entry(code).or_default() += 1;
+                    *line.entry(code).or_insert(0usize) += 1;
+                    any = true;
+                }
+            }
+            if first_match(&slots, None).is_some() {
+                in_no_engine += 1;
+            }
+            if !any {
+                never += 1;
+            }
+            items += 1;
+        }
+        eprintln!(
+            "{name}: {} items; in a game per engine code {line:?}",
+            block.len()
+        );
+        let starting = s.block(BlockKind::StartingLocations);
+        for i in 0..starting.len() {
+            let e = starting.entry(i).unwrap();
+            for at in (0x12..=0x2a).step_by(2) {
+                let v = i16::from_le_bytes([e[at], e[at + 1]]);
+                *start_words.entry((at, v)).or_default() += 1;
+            }
+            starts += 1;
+        }
+        checked += 1;
+    }
+    assert!(checked > 0);
+    eprintln!("{checked} multiplayer scenarios, {items} netgame equipment entries");
+    eprintln!("slot values (value: slots): {slot_values:?}");
+    eprintln!("respawn modes (mode: entries): {modes:?}");
+    eprintln!("entries in a game per engine code: {per_engine:?}");
+    eprintln!("entries with no engine object: {in_no_engine}; in no engine's game: {never}");
+    let mut sets: Vec<_> = slot_sets.into_iter().collect();
+    sets.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!("slot sets, most used first: {sets:?}");
+    eprintln!("{starts} starting locations; (offset, value): count");
+    for ((at, v), n) in start_words {
+        eprintln!("  +{at:#04x} {v}: {n}");
+    }
+}
+
 fn names(s: &Scenario) -> Vec<(i16, i16)> {
     (0..s.names.len())
         .map(|n| s.names.target(n).unwrap())
