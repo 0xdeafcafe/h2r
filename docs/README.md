@@ -310,6 +310,9 @@ Reading and converting Halo 1 data:
 - [realtime-edits.md](editor/realtime-edits.md): design for sending geometry, placement add and remove, collision and texture edits to the running game without a reload: the raw overlay, the edit arena, the agent methods and the build slices
 - [tag-workspace.md](editor/tag-workspace.md): design for Studio as the whole tools suite: tags extracted from the user's disc into a local tree on first start and again when layouts improve, layers, edit files, projects, kits as build steps, the incremental map build, what the game can run, and the build slices
 - [content-stage.md](editor/content-stage.md): design for the content stage, the first map built from the tree: a test map of ours from `art/stage`, `stage.*` in Studio (open, shoot, listen, run), the fixed cameras and checks, and its slices
+- [live-editors.md](editor/live-editors.md): design for an editor and a preview for every tag kind: the kind registry, what each kind has and lacks, the subject, and how one write reaches Studio's preview, its own game and an attached game
+- [game-view.md](editor/game-view.md): design for the game's picture inside Studio: the frame ring and stream (`render.picture`), editor mode and Studio's own game, attached mode, input and cameras
+- [playtest.md](editor/playtest.md): design for headless bot matches on the map being edited: static checks, the spatial trace, heatmaps, spawn, flow, sightline, item and stuck-spot overlays, seeds, before and after, and what a fresh map needs
 - Notes: [tag-field-names.md](editor/notes/tag-field-names.md) (the sources of tag field names, their links and licences)
 
 ## Working on the repository (`dev/`)
