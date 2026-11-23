@@ -1816,8 +1816,13 @@ friendship through the existing CLI or web UI first.
 
 MessageEnumerate presents each pending invite as a type-3, 64-byte summary from
 the real inviter XUID/gamertag, and each text message from a friend as a type-1
-summary (creation flag 8, has text) from the sender, together newest first and
-at most 100 (`Invites::inbox`). GetNotificationEx returns one type-3 notification
+summary from the sender, together newest first and at most 100
+(`Invites::inbox`). The summary's message flags word at +36 holds HAS_TEXT
+(`0x8`) for a text message and nothing for an invite; neither sets HAS_VOICE.
+The message screen's voice line does not read the summary: it shows when
+the account voice check `0x001906da` fails for the screen's controller, or
+when detail property `0x03c2` reads 1 and attachment `0x09c1` exists
+(`0x002c74f9`), and neither property is answered here. GetNotificationEx returns one type-3 notification
 per invite; repeated polls return FALSE with cleared output. Details owns a
 snapshot task, and DetailsGetResultsProperty returns the required session-ID
 property `0x0581` of an invitation, or the text property `0x06c4` (a NUL-ended

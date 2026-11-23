@@ -932,32 +932,61 @@ impl Item {
         }
     }
 }
-/// A text message's 64-byte summary: laid out as an invitation's, with
-/// the generic message type and the has-text creation flag (8) where an
-/// invitation has its own.
-fn text_summary(v: &TextMessage, id: u32) -> [u8; 64] {
+/// XONLINE_MSG_FLAG_HAS_TEXT: the message carries a text property. The
+/// same bit the title passes to MessageCreate for a text message.
+const MSG_FLAG_HAS_TEXT: u32 = 0x8;
+
+// Research point: the XONLINE_MSG_SUMMARY layout.
+//
+// The XDK's own MessageEnumerate (0x003aa282) builds each 64-byte summary
+// in 0x003a8453: +0 sender XUID (8), +8 the XUID's flags word, +12 the
+// message type (byte), +16 the context (8), +24 the sent FILETIME, +32 the
+// message ID, +36 dwMessageFlags (with 0x100 added from the inbox's
+// own state), +40 the sender's title ID, +44 the expiry minutes (u16),
+// +46 the details size (u16), +48 the gamertag (15 chars). The title's
+// converter 0x0008ebd0 copies flag bits 0..8 of +36 into its own message
+// record (+0x1c), maps any of the top byte to 0x200 and the type at +12
+// to 0x400 << (type - 1); +46 is copied to record +0x3a and not tested in
+// the inbox code. Opening a message calls MessageDetails with flags-to-set
+// 0x10 (read), the public XONLINE_MSG_FLAG_* numbering where 0x4 is
+// HAS_VOICE and 0x8 HAS_TEXT. So the flags word is +36, and +46 is not a
+// flags field.
+//
+// The voice line is not read from the summary at all. The message screen's
+// update (0x002c74f9) shows its "Voice message" line only when the byte at
+// screen +0x7eb4 is set, and sets it in two places: when the account check
+// 0x001906da (docs/live/live-voice.md 1.2) fails for the screen's
+// controller (0x002c75ed), or when detail property 0x03c2 reads 1 and the
+// attachment property 0x09c1 answers or needs a download (0x002c766b).
+// `property` answers neither 0x03c2 nor 0x09c1, so no voice is offered
+// from here.
+fn summary_bytes(
+    from: u64,
+    kind: u8,
+    sent_at: i64,
+    id: u32,
+    flags: u32,
+    gamertag: &str,
+) -> [u8; 64] {
     let mut b = [0; 64];
-    b[..8].copy_from_slice(&v.from.0.to_le_bytes());
-    b[12] = 1;
-    b[24..32].copy_from_slice(&filetime(v.sent_at).to_le_bytes());
+    b[..8].copy_from_slice(&from.to_le_bytes());
+    b[12] = kind;
+    b[24..32].copy_from_slice(&filetime(sent_at).to_le_bytes());
     b[32..36].copy_from_slice(&id.to_le_bytes());
-    b[46..48].copy_from_slice(&8u16.to_le_bytes());
+    b[36..40].copy_from_slice(&flags.to_le_bytes());
     b[40..44].copy_from_slice(&0x4d530064u32.to_le_bytes());
-    let n = v.gamertag.len().min(15);
-    b[48..48 + n].copy_from_slice(&v.gamertag.as_bytes()[..n]);
+    let n = gamertag.len().min(15);
+    b[48..48 + n].copy_from_slice(&gamertag.as_bytes()[..n]);
     b
 }
+/// A text message's 64-byte summary: the generic message type (1) with
+/// only the has-text flag; no voice flag.
+fn text_summary(v: &TextMessage, id: u32) -> [u8; 64] {
+    summary_bytes(v.from.0, 1, v.sent_at, id, MSG_FLAG_HAS_TEXT, &v.gamertag)
+}
+/// A game invitation's 64-byte summary: type 3, no text and no voice flag.
 fn summary(v: &Invite, id: u32) -> [u8; 64] {
-    let mut b = [0; 64];
-    b[..8].copy_from_slice(&v.from.0.to_le_bytes());
-    b[12] = 3;
-    b[24..32].copy_from_slice(&filetime(v.sent_at).to_le_bytes());
-    b[32..36].copy_from_slice(&id.to_le_bytes());
-    b[46..48].copy_from_slice(&16u16.to_le_bytes());
-    b[40..44].copy_from_slice(&0x4d530064u32.to_le_bytes());
-    let n = v.gamertag.len().min(15);
-    b[48..48 + n].copy_from_slice(&v.gamertag.as_bytes()[..n]);
-    b
+    summary_bytes(v.from.0, 3, v.sent_at, id, 0, &v.gamertag)
 }
 
 #[cfg(test)]
@@ -974,6 +1003,44 @@ mod tests {
             sent_at: 1_700_000_000,
             answer: None,
         }
+    }
+    #[test]
+    fn summaries_put_flags_at_36_with_has_text_only_for_text_and_never_voice() {
+        let text = TextMessage {
+            id: 4,
+            from: Xuid(0x0009000000000003),
+            to: Xuid(0x0009000000000002),
+            gamertag: "Writer".into(),
+            text: "hi".into(),
+            sent_at: 1_700_000_000,
+        };
+        let flags = |b: &[u8; 64]| u32::from_le_bytes(b[36..40].try_into().unwrap());
+        let t = text_summary(&text, 7);
+        let i = summary(&invite(), 8);
+        // dwMessageFlags: HAS_TEXT (0x8) for a text message, nothing for an
+        // invitation; HAS_VOICE (0x4) for neither.
+        assert_eq!(flags(&t), MSG_FLAG_HAS_TEXT);
+        assert_eq!(flags(&i), 0);
+        assert_eq!(flags(&t) & 0x4, 0);
+        // The details size (+46) and expiry (+44) stay zero.
+        assert_eq!(t[44..48], [0; 4]);
+        assert_eq!(i[44..48], [0; 4]);
+        // The fields that already worked keep their places.
+        assert_eq!((t[12], i[12]), (1, 3));
+        assert_eq!(t[..8], 0x0009000000000003u64.to_le_bytes());
+        assert_eq!(i[..8], 0x0009000000000001u64.to_le_bytes());
+        assert_eq!(u32::from_le_bytes(t[32..36].try_into().unwrap()), 7);
+        assert_eq!(u32::from_le_bytes(i[32..36].try_into().unwrap()), 8);
+        assert_eq!(
+            u32::from_le_bytes(t[40..44].try_into().unwrap()),
+            0x4d530064
+        );
+        assert_eq!(
+            u64::from_le_bytes(i[24..32].try_into().unwrap()),
+            filetime(1_700_000_000)
+        );
+        assert_eq!(&t[48..54], b"Writer");
+        assert_eq!(&i[48..52], b"Host");
     }
     #[test]
     fn accepted_layout_preserves_uid_flags_padding_and_consumes_only_after_a_valid_write() {
