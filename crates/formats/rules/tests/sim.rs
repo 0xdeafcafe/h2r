@@ -113,8 +113,12 @@ fn a_match_holds_only_events_the_script_can_notice() {
 
     let m = sim::simulate(builtin::BOUNCE_HUNT, &setup(4, 0, 1)).unwrap();
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Bounce { .. })));
-    // Siege gives a loadout at each spawn and counts time in zones.
-    assert_eq!(events(builtin::SIEGE), [Event::Spawn, Event::Enter, Event::Leave]);
+    // Siege gives a loadout at each spawn, counts time in zones, and
+    // starts a respawn wave at each death.
+    assert_eq!(
+        events(builtin::SIEGE),
+        [Event::Kill, Event::Spawn, Event::Death, Event::Enter, Event::Leave]
+    );
     let m = sim::simulate(builtin::SIEGE, &setup(8, 0, 1)).unwrap();
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Spawn(_))));
     assert!(m.scenario.steps.iter().any(|s| matches!(s.input, Input::Enter { .. })));

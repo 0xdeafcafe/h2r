@@ -223,17 +223,28 @@ impl FakeGame {
     /// runs: a kill marks its victim dead and counts the victim's death and
     /// the killer's kill (a suicide counts no kill), a death marks the
     /// player dead (either takes the player out of every zone and drops
-    /// what they carried), a spawn alive, a join seats a living player on
+    /// what they carried, and takes one of the player's lives when the
+    /// variant counts them), a spawn alive, a join seats a living player on
     /// team 0, an `enter` or `leave` of a player's unit moves the player
     /// in or out of the zone, and a `pickup` or `drop` of a registered
     /// objective sets or clears its carrier. [`FakeGame::after`] removes a
     /// player who quit.
-    pub fn apply(&mut self, input: &Input) {
+    ///
+    /// Returns whether the event reached the game: the engine holds a dead
+    /// player's spawn while the variant's lives setting is positive and the
+    /// player has none left (`PLAYER_OUT_OF_LIVES`), so a held spawn
+    /// changes nothing and fires no handler. Only the script's
+    /// `respawn` lets a held player back.
+    pub fn apply(&mut self, input: &Input) -> bool {
         match *input {
             Input::Kill { victim, killer } => {
+                let lives = self.variant("lives") > 0;
                 if let Some(v) = self.players.get_mut(&victim) {
                     v.alive = false;
                     v.deaths = v.deaths.saturating_add(1);
+                    if lives {
+                        v.lives = v.lives.saturating_sub(1);
+                    }
                 }
                 if let Some(k) = killer
                     && k != victim
@@ -244,8 +255,12 @@ impl FakeGame {
                 self.down(victim);
             }
             Input::Death(p) => {
+                let lives = self.variant("lives") > 0;
                 if let Some(v) = self.players.get_mut(&p) {
                     v.alive = false;
+                    if lives {
+                        v.lives = v.lives.saturating_sub(1);
+                    }
                 }
                 self.down(p);
             }
@@ -262,6 +277,9 @@ impl FakeGame {
                 }
             }
             Input::Spawn(p) => {
+                if self.holds(p) {
+                    return false;
+                }
                 if let Some(v) = self.players.get_mut(&p) {
                     v.alive = true;
                 }
@@ -284,6 +302,13 @@ impl FakeGame {
             }
             _ => {}
         }
+        true
+    }
+
+    /// Whether the engine holds `p`'s respawn: the variant's lives setting
+    /// is positive and the player has none left.
+    fn holds(&self, p: u8) -> bool {
+        self.variant("lives") > 0 && self.players.get(&p).is_some_and(|v| v.lives <= 0)
     }
 
     /// What the engine does after the handler of `input`: a quit removes
@@ -419,6 +444,8 @@ impl Game for FakeGame {
             Some(Arg::Player(Some(p))) => Some(*p),
             _ => None,
         };
+        // `respawn` gives one life, which the next death takes again.
+        let counts_lives = self.variant("lives") > 0;
         let Some(player) = slot.and_then(|s| self.players.get_mut(&s)) else {
             return;
         };
@@ -426,7 +453,12 @@ impl Game for FakeGame {
             (id::SCORE, Some(Arg::Int(n))) => player.score = player.score.saturating_add(*n),
             (id::SET_TEAM, Some(Arg::Team(Some(t)))) => player.team = *t,
             (id::SET_LIVES, Some(Arg::Int(n))) => player.lives = *n,
-            (id::RESPAWN, _) => player.alive = true,
+            (id::RESPAWN, _) => {
+                player.alive = true;
+                if counts_lives {
+                    player.lives = player.lives.max(1);
+                }
+            }
             _ => {}
         }
     }
@@ -443,17 +475,49 @@ mod tests {
     #[test]
     fn a_kill_counts_and_a_spawn_revives() {
         let mut g = FakeGame::with_players(2);
-        g.apply(&Input::Kill { victim: 1, killer: Some(0) });
+        assert!(g.apply(&Input::Kill { victim: 1, killer: Some(0) }));
         assert!(!g.players[&1].alive);
         assert_eq!((g.players[&0].kills, g.players[&1].deaths), (1, 1));
-        g.apply(&Input::Kill { victim: 0, killer: Some(0) });
+        assert!(g.apply(&Input::Kill { victim: 0, killer: Some(0) }));
         assert_eq!(g.players[&0].kills, 1, "a suicide counts no kill");
-        g.apply(&Input::Spawn(1));
+        assert!(g.apply(&Input::Spawn(1)));
         assert!(g.players[&1].alive);
-        g.apply(&Input::Join(4));
+        assert!(g.apply(&Input::Join(4)));
         assert!(g.players[&4].alive);
         g.after(&Input::Quit(4));
         assert!(!g.players.contains_key(&4));
+    }
+
+    #[test]
+    fn a_variant_that_counts_lives_holds_respawns() {
+        let mut g = FakeGame::with_players(2);
+        g.variant.insert("lives".into(), 1);
+        for p in g.players.values_mut() {
+            p.lives = 1;
+        }
+        // A death takes the life; the engine's own respawn try is held,
+        // changes nothing and reports nothing.
+        assert!(g.apply(&Input::Kill { victim: 0, killer: Some(1) }));
+        assert!(!g.players[&0].alive);
+        assert_eq!(g.players[&0].lives, 0);
+        assert!(!g.apply(&Input::Spawn(0)), "out of lives");
+        assert!(!g.players[&0].alive);
+        // The script's `respawn` gives one life back; the next death
+        // takes it again.
+        let respawn = Call {
+            entry: crate::caps::entry(id::RESPAWN, crate::caps::API_VERSION).unwrap(),
+            args: vec![Arg::Player(Some(0))],
+        };
+        g.act(&respawn);
+        assert!(g.players[&0].alive);
+        assert_eq!(g.players[&0].lives, 1);
+        assert!(g.apply(&Input::Death(0)));
+        assert!(!g.players[&0].alive);
+        assert_eq!(g.players[&0].lives, 0);
+        // A variant that does not count lives never holds a spawn.
+        g.variant.insert("lives".into(), 0);
+        assert!(g.apply(&Input::Spawn(0)));
+        assert!(g.players[&0].alive);
     }
 
     #[test]
