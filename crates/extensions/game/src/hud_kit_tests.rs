@@ -850,12 +850,12 @@ fn a_notification_is_the_inserts_call_with_its_text() {
     assert!(NOTES_PER_TICK >= 16);
 }
 
-/// The insert copies 63 units: a longer text, a second line, an empty
+/// The insert keeps 62 units: a longer text, a second line, an empty
 /// text and a fifth user are refused, not cut.
 #[test]
 fn a_notification_the_game_cannot_keep_is_refused() {
-    assert_eq!(note_fits(0, &"a".repeat(63)), Ok(()));
-    assert!(note_fits(0, &"a".repeat(64)).is_err());
+    assert_eq!(note_fits(0, &"a".repeat(62)), Ok(()));
+    assert!(note_fits(0, &"a".repeat(63)).is_err());
     assert!(note_fits(0, "one\ntwo").is_err());
     assert!(note_fits(0, "").is_err());
     assert!(note_fits(USERS, "Primed").is_err());

@@ -111,7 +111,7 @@ Who writes the state (E):
 | `0x0024ca1d` (EAX user, ECX text, key, sound) | copies the text to `+0x220`, sets `+0x444`, clears `+0x440`; a new key (`+0x448`) restarts the fade at `+0x446` and plays the sound |
 | `0x0024c98c` (EAX user, shown) | shows or hides the prompt each frame, from `0x00191976` |
 | `0x0024cbbf` (EDI string id, user) | queues a notification; called for an item's pickup text (`0x00191fcf`) and by `0x001df40d`. It looks the id up (`0x0013925f`) and calls `0x0024cbee` |
-| `0x0024cbee` (EAX user, text) | queues a notification from UTF-16 text: takes a slot (`0x0024ccdb`), copies up to 63 characters to `+4`, sets the start tick, `+0x82`, clears `+0x84` and `+0x85`, gives `+0x83` the next value of the byte at `[0x005023f4] + 0x1385`, and clears the user's `+0x44e`. Ten callers; the game-event one is `0x0019e9c0` (below) |
+| `0x0024cbee` (EAX user, text) | queues a notification from UTF-16 text: takes a slot (`0x0024ccdb`), copies up to 62 characters and a zero to `+4` (through `0x0013fac0` with 63, `0x0024cc24`), sets the start tick, `+0x82`, clears `+0x84` and `+0x85`, gives `+0x83` the next value of the byte at `[0x005023f4] + 0x1385`, and clears the user's `+0x44e`. Ten callers; the game-event one is `0x0019e9c0` (below) |
 | `0x0024caac` (EAX user, singular, plural, count) | the same for a line that counts: adds the count to `+0x86`, sets `+0x84`, and shows the plural once the count is over 1 |
 | `0x0024ccdb` (state, singular, plural) | the slot: the first of the four that is not active; with both texts, an active counting entry already showing that text (the repeat); else the active entry with the oldest start tick, which it ends |
 | `0x0024cc73` (EAX user, ECX text, ticks) | sets the timed centred text: copies the text to `+0x454` through `0x0013fac0` with 63 (62 units and a zero), the game tick (`[0x00510c54] +8`) to `+0x450` and `+0x4d8`, 1 to `+0x4d2`, the next value of the byte at `[0x005023f4] + 0x1385` to `+0x4d3` (stepping it), and the ticks, its one stack argument, to `+0x4dc`; `ret 4` |
@@ -538,10 +538,10 @@ the same text. So a `Message` is sent with `Handle::notify(user, text)`,
 once per line, for a local user, and not by `publish`. Its element is in
 the `Hud` for the checks and the preview, whose states give it a text
 (`Value::text`); `longest` is the widest line it is ever sent. A text
-of at most 63 UTF-16 units and one line is sent whole; a longer one, or
+of at most 62 UTF-16 units and one line is sent whole; a longer one, or
 one with a line break, is refused by the `prompt` check and by
 `Handle::notify` (`hud_kit_core::model::message_fault`; E `0x0024cbee`
-copies 63). A sender with no HUD of its own, such as a rules script's `message`
+keeps 62). A sender with no HUD of its own, such as a rules script's `message`
 ([rules-world-api.md](rules-world-api.md#the-show-channel)), queues the
 same line through `hud_kit::notify(user, text)`.
 
@@ -552,7 +552,7 @@ changes. The game draws it for `model::BANNER_TICKS` (90, three seconds;
 Design), fading, and then it is gone; the same text published again
 keeps the line it started, and a hidden value lets it run out. A text of
 at most 62 UTF-16 units (`model::BANNER_UNITS`: the game's copy keeps
-one fewer than the 63 it is given) and one line is written whole; a
+one fewer than the 63 it is given) and one line is written whole, as a notification's; a
 longer one, or a line break, is refused by the `prompt` check and not
 written (`model::banner_fault`). The preview draws it centred across the
 frame with its top 40 pixels above the frame's bottom
@@ -926,7 +926,7 @@ the check, the elements and the state and mode:
 | own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over`; two HUDs one of which names the other in `Describe::never_with` (a monitor's and a biped's, which are never shown together) are not compared with each other |
 | one layout | every state has a value for every element and for nothing else, and every element id is used once |
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
-| prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` or `Banner` one (the game's prompt line draws no line break; the banner is one centred line), and fits the frame's width (less the training box's margin); a `Message` has at most 63 UTF-16 units and a `Banner` 62 |
+| prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` or `Banner` one (the game's prompt line draws no line break; the banner is one centred line), and fits the frame's width (less the training box's margin); a `Message` or a `Banner` has at most 62 UTF-16 units |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding. A gauge shown puts pixels down: one whose picture no code of ours draws, or draws at another size, is a finding |
 | world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` and `Team` are on world marks alone, `Team` of a team the game has. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
@@ -1343,7 +1343,7 @@ h2 hud preview superbounce --state medal-chain --mode all --out DIR
 
 The `glyphs` check covers the eight code points in both fonts (the disc
 test also reads them from the patched `conduit-13` and `conduit-12`:
-`the_glyphs_are_in_the_fonts`), `prompt` the line's width and its 63
+`the_glyphs_are_in_the_fonts`), `prompt` the line's width and its 62
 units, and `drawn` that the line puts pixels down.
 
 ### The runtime, for this HUD

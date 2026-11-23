@@ -173,7 +173,7 @@ pub const POINT_LEN: u32 = 0x38;
 pub const POINT_AT: u32 = 0x24;
 
 /// The notification insert (E `0x0024cbee`): EAX the local user, the
-/// UTF-16 text's address its one stack argument (`ret 4`); it copies 63
+/// UTF-16 text's address its one stack argument (`ret 4`); it copies 62
 /// units into a slot of the user's list (docs/game/hud-kit.md,
 /// "Messages").
 pub const NOTIFY: u32 = 0x0024_cbee;
@@ -182,8 +182,10 @@ pub const USERS: u32 = 4;
 /// Our guest memory for the texts of a tick's notifications: one slot
 /// each of [`NOTE_LEN`] bytes.
 pub const NOTES_LEN: u32 = 0x1000;
-/// One text's slot: [`MESSAGE_UNITS`] units and the zero.
-pub const NOTE_LEN: u32 = (MESSAGE_UNITS as u32 + 1) * 2;
+/// One text's slot: room for [`MESSAGE_UNITS`] units and the zero, and
+/// one unit more, so 32 slots fill the memory.
+pub const NOTE_LEN: u32 = 0x80;
+const _: () = assert!(NOTE_LEN as usize >= (MESSAGE_UNITS + 1) * 2);
 /// The notifications sent at one tick at most; more wait for the next.
 pub const NOTES_PER_TICK: usize = (NOTES_LEN / NOTE_LEN) as usize;
 
@@ -356,7 +358,7 @@ impl Handle {
     /// the game's list, as a retail pickup or medal line is. Sent at the
     /// top of the next tick through the game's insert ([`NOTIFY`]); two
     /// calls are two lines. Refused (false, and logged) for a user over
-    /// [`USERS`], an empty text, or one [`message_fault`] refuses (over 63
+    /// [`USERS`], an empty text, or one [`message_fault`] refuses (over 62
     /// units, more than one line).
     pub fn notify(&self, user: u32, text: &str) -> bool {
         notify(user, text)

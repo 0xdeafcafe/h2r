@@ -629,8 +629,8 @@ fn per_shot(
                 texts.push(("its text".to_owned(), t.clone()));
             }
             for (what, t) in texts {
-                // A notification is one line the game copies 63 units of,
-                // a banner one of 62.
+                // A notification or a banner is one line the game keeps
+                // 62 units of.
                 let units = match e.kind {
                     Kind::Message { .. } => crate::model::message_fault(&t),
                     Kind::Banner { .. } => crate::model::banner_fault(&t),
