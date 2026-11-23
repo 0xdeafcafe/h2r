@@ -150,7 +150,8 @@ fn hill_holders_keep_more_of_it_the_more_cautious_they_are() {
         &me([1.0, 0.0, 0.0], 0),
         &[],
         true,
-        Temper { caution, &Outlook::default(), ..CALM },
+        &Outlook::default(),
+        Temper { caution, ..CALM },
     ) {
         Some(Goal::Hold(c, r)) => {
             assert_eq!(c, [0.0; 3]);
