@@ -86,11 +86,11 @@ fn a_forge_move_makes_the_guest_calls_of_world_object_set() {
             up: Some(up),
         },
     );
-    let (w, id, guard) = forge_vehicle();
+    let (w, id, first) = forge_vehicle();
     let (forge, forge_calls) = trace(
         w,
         Call::Forge {
-            guard,
+            guard: first,
             steps: vec![ForgeStep::Move { target: ForgeTarget::Live(id), frame }],
         },
     );
@@ -138,11 +138,11 @@ fn a_forge_base_move_makes_the_guest_calls_of_world_object_set() {
 fn a_forge_delete_makes_the_guest_calls_of_world_object_delete() {
     let (w, id) = vehicle();
     let (agent, agent_calls) = trace(w, Call::ObjectDelete { id });
-    let (w, id, guard) = forge_vehicle();
+    let (w, id, first) = forge_vehicle();
     let (forge, forge_calls) = trace(
         w,
         Call::Forge {
-            guard,
+            guard: first,
             steps: vec![ForgeStep::Delete { target: ForgeTarget::Live(id) }],
         },
     );
