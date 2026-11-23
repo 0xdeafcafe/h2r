@@ -1,12 +1,14 @@
 // Siege: the phased attack-and-defend mode, with the mechanics of Halo:
 // Reach's Invasion and none of its assets or text. Team 0 attacks, team 1
-// defends. The map's own flags are the objectives, so every map with
-// Territories and CTF flags plays it with no kit: the attackers take
-// `sites` of the territories (any of them, each held alone for the capture
-// time in all), then hold the defenders' CTF flag stand for the capture
-// time to win. Each phase has its own clock; the defenders win when one
-// runs out. Each side spawns with its own loadout. The winners score a
-// point each, so the post-game's scores name them.
+// defends. The map's own flags are the objectives, so a map needs no kit:
+// the attackers take `sites` of its territories (any of them, each held
+// alone for the capture time in all), then hold the defenders' CTF flag
+// stand for the capture time to win. A map with no flag stand stops at
+// the sites: taking them all wins it. Each phase has its own clock; the
+// defenders win when one runs out. Each side spawns with its own loadout,
+// and its dead come back together in waves: the variant's one life holds
+// a death's respawn, and the side's wave timer releases it. The winners
+// score a point each, so the post-game's scores name them.
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
@@ -19,25 +21,32 @@ teams 2
 list party
 requires player.weapons, hud.message
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
-quick respawn_time, phase_time, capture_time, sites
+quick respawn_time, wave_time, phase_time, capture_time, sites
 
 // Players spawn unarmed and `on spawn` gives each side its loadout, so
-// the spawn's own weapons are never made and dropped.
+// the spawn's own weapons are never made and dropped. One life a round
+// holds each death's respawn back, so a side's dead wait for its wave.
 settings {
     team_play = true
     score_limit = none
     time_limit = none
+    lives = 1
     starting_weapon = none
     secondary_weapon = none
 }
 
-// What the map supplies: its territory flags and each team's CTF flag stand.
-label site: zones at least 1 = "territory"
-label base: zones per team = "ctf_flag_spawn"
+// What the map supplies, when it has it: its territory flags and each
+// team's CTF flag stands. Neither is required, so every map starts: with
+// no territory the assault goes straight to the flag stand, with no
+// stand the sites are the whole assault, and with neither the round is a
+// draw at its start.
+label site: zones = "territory"
+label base: zones = "ctf_flag_spawn"
 
 option phase_time: time 60s..600s = 180s "Phase time" "How long the attackers have for each phase"
 option capture_time: time 5s..60s = 15s "Capture time" "How long the attackers hold a site or the flag stand alone to take it"
 option sites: int 1..4 = 2 "Sites" "How many territories the attackers take before the final assault"
+option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait to come back together"
 
 table loadouts: (side: team, primary: weapon, secondary: weapon) = [
     (team 0, "objects/weapons/rifle/battle_rifle/battle_rifle", "objects/weapons/pistol/magnum/magnum"),
@@ -49,6 +58,12 @@ global var phase: int = 0
 global var needed: int = 0
 global var clock: timer
 global var over: bool = false
+// Whether the map gives the attackers a flag stand to storm.
+global var assault: bool = false
+// Each side's respawn wave, running while that side has dead to bring
+// back.
+global var wave0: timer
+global var wave1: timer
 object var taken: bool = false
 
 fn begin(n: int) {
@@ -64,12 +79,38 @@ fn win(side: team) {
     end_round(side)
 }
 
+// A death starts the side's wave when none is running. The variant's one
+// life, which the death took, holds the respawn until the wave releases
+// it; `respawn` gives the life back and the engine does the spawning.
+fn hold(p: player) {
+    if p.team == team 0 and wave0 == 0t { wave0 = wave_time }
+    if p.team == team 1 and wave1 == 0t { wave1 = wave_time }
+}
+
+// The side's dead come back together.
+fn release(side: team) {
+    if not over {
+        for each players p where p.team == side and not p.alive { respawn(p) }
+    }
+}
+
 on round_start {
     over = false
     for each site s { s.taken = false }
     needed = min(sites, count(site))
-    begin(0)
-    message(all, "Sites to take: {needed}. Then the defenders' flag")
+    assault = base[team 1] != none
+    if needed > 0 or assault {
+        begin(0)
+        if assault {
+            message(all, "Sites to take: {needed}. Then the defenders' flag")
+        } else {
+            message(all, "Sites to take: {needed}")
+        }
+    } else {
+        over = true
+        message(all, "This map has nothing to take: Siege needs territories or a flag stand")
+        end_round(none)
+    }
 }
 
 on tick {
@@ -80,12 +121,15 @@ on tick {
                 begin(phase + 1)
                 if phase < needed {
                     message(all, "The attackers took a site")
-                } else {
+                } else if assault {
                     message(all, "Final assault: the defenders' flag")
+                } else {
+                    message(all, "The attackers took every site")
+                    win(team 0)
                 }
             }
         }
-    } else if not over {
+    } else if not over and assault {
         if let goal = base[team 1] and ticks_held(goal, team 0) >= capture_time {
             message(all, "The attackers took the flag")
             win(team 0)
@@ -98,6 +142,22 @@ on timer(clock) {
         message(all, "The defenders held")
         win(team 1)
     }
+}
+
+on kill(victim) {
+    hold(victim)
+}
+
+on death(p) {
+    hold(p)
+}
+
+on timer(wave0) {
+    release(team 0)
+}
+
+on timer(wave1) {
+    release(team 1)
 }
 
 on spawn(p) {

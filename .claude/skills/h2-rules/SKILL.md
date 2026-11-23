@@ -213,7 +213,9 @@ error (`scenario: unknown field ...`) and every field is optional.
   `{"actor_kill": {"killer": 0, "class": "elite"}}`, `{"actor_assist":
   {"killer": 0, "assist": 1, "class": "elite"}}`, `"round_end"`.
 - A kill marks the victim dead and counts its death and the killer's
-  kill; a spawn marks the player alive; a quit removes the player. The
+  kill; a spawn marks the player alive, unless the engine holds it (the
+  variant's `lives` positive and none left, when only the script's
+  `respawn` brings the player back); a quit removes the player. The
   dead and the departed leave every zone and drop what they carry; a
   `pickup` or `drop` of an objective sets or clears its carrier. A zone
   that living players of one team alone are inside is held by it, which

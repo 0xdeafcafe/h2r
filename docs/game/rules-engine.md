@@ -1086,11 +1086,17 @@ listed in Party Games) is the part of this a host runs. Its zones come
 from every Territories and CTF map's own flags, so it needs no kit: the
 attackers take `sites` of the map's territories (each held alone for
 the capture time in all, by `ticks_held`), then hold the defenders' CTF
-flag stand (`label base: zones per team = "ctf_flag_spawn"`,
+flag stand (`label base: zones = "ctf_flag_spawn"`,
 `base[team 1]`) for the capture time to win. Each phase has its own
 clock, and a clock that runs out wins it for the defenders. Each side
 spawns with its own loadout (`on spawn`, `set_loadout`), and the winners
-score a point each, so the post-game names them. It opens no barriers
+score a point each, so the post-game names them. Neither label states a
+requirement, so every map starts: with no territory the assault goes
+straight to the flag stand, with no flag stand taking every site wins
+it, and with neither the round draws at its start with a message. The
+variant's `lives = 1` holds each death's respawn (the engine's own
+lives gate), and each side's dead come back together when its wave
+timer (`wave_time`) runs out (`respawn`). It opens no barriers
 and moves no spawn areas (`delete`, `create` and `spawn_areas` are not
 hostable, "The engine API"), and it has no core to carry.
 
@@ -1688,9 +1694,12 @@ Tooling:
   ends with the per-tick group; queued calls are made at the start of
   the next tick and after the last. The fake game is the one the
   workbench steps (`scenario::step` runs a tick for both): a kill marks
-  the victim dead and counts its death and the killer's kill, a spawn
-  marks the player alive, `round_time_left` counts down a tick at a
-  time, and a zone a living team alone is inside is the one
+  the victim dead and counts its death and the killer's kill (each
+  taking one of the victim's lives when the variant's `lives` field is
+  positive), a spawn marks the player alive unless the engine holds it
+  (out of lives under a positive `lives` field, when only the script's
+  `respawn` brings the player back), `round_time_left` counts down a
+  tick at a time, and a zone a living team alone is inside is the one
   `ticks_held` counts.
   `h2 sim` runs a script in a headless match. Each built-in script has
   scenario tests beside its source.
@@ -1781,7 +1790,8 @@ Game Types**. The layout, its states and its copy are described in
   flushed, the tick's events fire in order, then `update` runs timers
   and `on tick`. A kill marks
   its victim dead and counts a kill and a death, a spawn marks the player
-  alive, a join seats one and a quit removes one after its handler. The
+  alive unless the engine holds it (the variant's `lives` positive and
+  none left), a join seats one and a quit removes one after its handler. The
   trace keeps the ticks in which a handler other than `on tick` ran, a
   call was made, a variable or player row changed (a timer counting
   down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
@@ -2136,7 +2146,7 @@ The phased mode is the check that the API is wide enough:
 | the map opens per phase | delete and create barriers at labels | not built (Forge labels, barriers) |
 | spawn areas switch per phase | `spawn_areas` | named point; rule untraced |
 | loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits | named; the built-in Siege; picker screen not built |
-| team respawn waves | hold respawns with the lives gates, release on a timer | named |
+| team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
 | two species teams | Halo 2's multiplayer has Spartan and Elite bodies (live-gamestate.md); forcing one per team | untraced |
 
 ## Forge labels
