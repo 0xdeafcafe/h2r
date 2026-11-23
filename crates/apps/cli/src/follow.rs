@@ -112,7 +112,7 @@ pub struct Supervisor {
     stopping: bool,
 }
 
-fn clip(s: &str, n: usize) -> String {
+pub(crate) fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {
@@ -307,6 +307,10 @@ pub trait Launcher {
     fn launch(&mut self, build: &Build) -> Result<()>;
     /// Ask the game to stop (it closes like Cmd+Q).
     fn terminate(&mut self);
+    /// The running game's process id, 0 if none or unknown.
+    fn pid(&self) -> u32 {
+        0
+    }
     /// Return only once the game and its process group are gone: ask
     /// again, then SIGKILL after a grace period, and reap it.
     fn shutdown(&mut self) {}
@@ -407,7 +411,7 @@ pub fn first_error(log: &str) -> String {
 // The real thing: git, cargo, the child process and the status file.
 
 /// Flags of `h2 play` that take a value (to find the disc among the args).
-const PLAY_VALUE_FLAGS: &[&str] = &[
+pub(crate) const PLAY_VALUE_FLAGS: &[&str] = &[
     "--out",
     "--data",
     "--slices",
@@ -473,7 +477,7 @@ fn parse_args(args: Vec<String>) -> Result<FollowArgs> {
 
 /// The disc, `--out` and `--data` the child's arguments name (last wins,
 /// as in `h2 play`), with play's defaults.
-fn play_paths(play: &[String]) -> (Option<PathBuf>, PathBuf, Option<PathBuf>) {
+pub(crate) fn play_paths(play: &[String]) -> (Option<PathBuf>, PathBuf, Option<PathBuf>) {
     let (mut disc, mut out, mut data) = (None, std::env::temp_dir().join("h2boot"), None);
     let mut it = play.iter();
     while let Some(a) = it.next() {
@@ -500,10 +504,10 @@ fn default_cache() -> Result<PathBuf> {
 
 /// Appends a line to `<cache>/logs/follow.log` and prints it.
 #[derive(Clone)]
-struct Log(Arc<Mutex<Option<fs::File>>>);
+pub(crate) struct Log(Arc<Mutex<Option<fs::File>>>);
 
 impl Log {
-    fn open(path: &Path) -> Self {
+    pub(crate) fn open(path: &Path) -> Self {
         let f = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -511,7 +515,7 @@ impl Log {
             .ok();
         Self(Arc::new(Mutex::new(f)))
     }
-    fn line(&self, msg: &str) {
+    pub(crate) fn line(&self, msg: &str) {
         eprintln!("follow: {msg}");
         if let Some(f) = self.0.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             let t = std::time::SystemTime::now()
@@ -523,9 +527,9 @@ impl Log {
 }
 
 /// How long one SIGTERM'd build step gets before SIGKILL.
-const BUILD_GRACE: Duration = Duration::from_secs(3);
+pub(crate) const BUILD_GRACE: Duration = Duration::from_secs(3);
 /// How long the game gets to close (its report included) before SIGKILL.
-const GAME_GRACE: Duration = Duration::from_secs(15);
+pub(crate) const GAME_GRACE: Duration = Duration::from_secs(15);
 /// Local git commands; a fetch has its own, `--fetch-timeout`-like limit.
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -536,7 +540,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 /// that, so SIGTERM to its group would stay pending. The group is published
 /// under the same lock [`Owned::cancel`] takes, so a cancel either stops
 /// the spawn or reaches the child.
-struct Owned {
+pub(crate) struct Owned {
     state: Mutex<OwnedState>,
     /// Wakes [`Owned::sleep`] on a cancel.
     cancelled_cv: std::sync::Condvar,
@@ -567,7 +571,7 @@ fn prepare(cmd: &mut Command) {
 }
 
 impl Owned {
-    fn new(grace: Duration) -> Self {
+    pub(crate) fn new(grace: Duration) -> Self {
         Self {
             state: Mutex::default(),
             cancelled_cv: std::sync::Condvar::new(),
@@ -580,7 +584,7 @@ impl Owned {
     }
 
     /// Starts `cmd` in its own group, unless cancelled.
-    fn spawn(&self, cmd: &mut Command) -> io::Result<std::process::Child> {
+    pub(crate) fn spawn(&self, cmd: &mut Command) -> io::Result<std::process::Child> {
         prepare(cmd);
         let mut s = self.lock();
         if s.cancelled {
@@ -602,14 +606,14 @@ impl Owned {
 
     /// Stop the running process (SIGTERM, then SIGKILL after the grace
     /// period, from [`Owned::wait`]) and refuse new ones until [`Owned::reset`].
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.lock().cancelled = true;
         self.cancelled_cv.notify_all();
         self.signal(libc::SIGTERM);
     }
 
     /// Sleeps for `d` unless cancelled first; returns whether it was.
-    fn sleep(&self, d: Duration) -> bool {
+    pub(crate) fn sleep(&self, d: Duration) -> bool {
         let s = self.lock();
         let (s, _) = self
             .cancelled_cv
@@ -618,11 +622,11 @@ impl Owned {
         s.cancelled
     }
 
-    fn reset(&self) {
+    pub(crate) fn reset(&self) {
         self.lock().cancelled = false;
     }
 
-    fn cancelled(&self) -> bool {
+    pub(crate) fn cancelled(&self) -> bool {
         self.lock().cancelled
     }
 
@@ -632,7 +636,7 @@ impl Owned {
     /// the group is killed before the leader is reaped (under the lock
     /// [`Owned::signal`] takes, so no signal can reach a reused id).
     /// Returns the status and whether it timed out.
-    fn wait(
+    pub(crate) fn wait(
         &self,
         child: &mut std::process::Child,
         timeout: Option<Duration>,
@@ -723,7 +727,7 @@ fn git_owned(dir: &Path, args: &[&str], owned: &Owned, timeout: Duration) -> Res
     Ok(out.trim().to_string())
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
     git_owned(dir, args, &Owned::new(BUILD_GRACE), GIT_TIMEOUT)
 }
 
@@ -855,14 +859,14 @@ struct GitCargoBuilder {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-struct Step<'a> {
-    log_path: &'a Path,
-    owned: &'a Owned,
+pub(crate) struct Step<'a> {
+    pub(crate) log_path: &'a Path,
+    pub(crate) owned: &'a Owned,
 }
 
 impl Step<'_> {
     /// Runs `cmd` in its own process group, output to the build log.
-    fn run(&self, what: &str, cmd: &mut Command) -> Result<(), String> {
+    pub(crate) fn run(&self, what: &str, cmd: &mut Command) -> Result<(), String> {
         let log = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -894,13 +898,13 @@ pub(crate) fn niced(program: impl AsRef<std::ffi::OsStr>) -> Command {
 }
 
 /// `p` is a directory and not a symlink.
-fn real_dir(p: &Path) -> bool {
+pub(crate) fn real_dir(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
 }
 
 /// Removes entries of `dir` (a real directory of the cache) not in `keep`.
 /// An entry that is a symlink is unlinked, never followed.
-fn prune(dir: &Path, keep: &[PathBuf], log: &Log) {
+pub(crate) fn prune(dir: &Path, keep: &[PathBuf], log: &Log) {
     if !real_dir(dir) {
         log.line(&format!(
             "not pruning {}: not a plain directory",
@@ -928,7 +932,7 @@ fn prune(dir: &Path, keep: &[PathBuf], log: &Log) {
 /// last game. Only for an `out` that doesn't exist yet; the emit deletes
 /// shards the new generator no longer makes. Best effort: if the clone
 /// fails, the partial copy is removed and the emit writes everything.
-fn seed_sources(prev: &Path, out: &Path, log: &Log) {
+pub(crate) fn seed_sources(prev: &Path, out: &Path, log: &Log) {
     let (from, to) = (prev.join("src"), out.join("src"));
     if prev == out || !real_dir(&from) || fs::symlink_metadata(out).is_ok() {
         return;
@@ -1260,22 +1264,30 @@ impl Builder for GitCargoBuilder {
 }
 
 /// Starts `h2 play` children with the user's arguments, plus the build's
-/// `--out`, the data dir and the status file.
-struct ChildLauncher {
-    play: Vec<String>,
-    data: Option<PathBuf>,
-    fresh_data: Option<PathBuf>,
-    status: PathBuf,
-    log: Log,
-    tx: Sender<Event>,
-    owned: Arc<Owned>,
-    waiter: Option<std::thread::JoinHandle<()>>,
-    launches: u32,
-    /// The last child's pid (tests check it is gone).
-    last_pid: u32,
+/// `--out`, the data dir and the status file. Shared with `--watch`
+/// (`watch.rs`), whose events are its own: `exited` makes the event a
+/// child's exit code is sent as.
+pub(crate) struct ChildLauncher<E = Event> {
+    pub(crate) play: Vec<String>,
+    pub(crate) data: Option<PathBuf>,
+    pub(crate) fresh_data: Option<PathBuf>,
+    pub(crate) status: PathBuf,
+    pub(crate) log: Log,
+    pub(crate) tx: Sender<E>,
+    pub(crate) exited: fn(i32) -> E,
+    pub(crate) owned: Arc<Owned>,
+    pub(crate) waiter: Option<std::thread::JoinHandle<()>>,
+    pub(crate) launches: u32,
+    /// The last child's pid (tests check it is gone; `--watch` finds its
+    /// agent socket by it).
+    pub(crate) last_pid: u32,
 }
 
-impl Launcher for ChildLauncher {
+impl<E: Send + 'static> Launcher for ChildLauncher<E> {
+    fn pid(&self) -> u32 {
+        self.last_pid
+    }
+
     fn launch(&mut self, build: &Build) -> Result<()> {
         use std::os::unix::process::ExitStatusExt;
         if let Some(w) = self.waiter.take() {
@@ -1309,7 +1321,7 @@ impl Launcher for ChildLauncher {
             .spawn(&mut cmd)
             .with_context(|| format!("running {}", build.exe.display()))?;
         self.last_pid = child.id();
-        let (tx, owned) = (self.tx.clone(), Arc::clone(&self.owned));
+        let (tx, owned, exited) = (self.tx.clone(), Arc::clone(&self.owned), self.exited);
         self.waiter = Some(
             std::thread::Builder::new()
                 .name("follow-child".into())
@@ -1318,7 +1330,7 @@ impl Launcher for ChildLauncher {
                         Ok((s, _)) => s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0)),
                         Err(_) => 1,
                     };
-                    let _ = tx.send(Event::ChildExited(code));
+                    let _ = tx.send(exited(code));
                 })?,
         );
         Ok(())
@@ -1339,9 +1351,9 @@ impl Launcher for ChildLauncher {
 }
 
 /// Writes the status file atomically (write, then rename).
-struct StatusFile {
-    path: PathBuf,
-    log: Log,
+pub(crate) struct StatusFile {
+    pub(crate) path: PathBuf,
+    pub(crate) log: Log,
 }
 
 impl StatusSink for StatusFile {
@@ -1358,10 +1370,11 @@ impl StatusSink for StatusFile {
     }
 }
 
-/// SIGINT and SIGTERM become [`Event::Interrupt`]. Blocked before any
-/// thread starts, so only this thread sees them; every process the
-/// supervisor starts gets an empty mask back ([`prepare`]).
-fn watch_signals(tx: Sender<Event>) {
+/// SIGINT and SIGTERM become `interrupt()` ([`Event::Interrupt`] here,
+/// its own event under `--watch`). Blocked before any thread starts, so
+/// only this thread sees them; every process the supervisor starts gets an
+/// empty mask back ([`prepare`]).
+pub(crate) fn watch_signals<E: Send + 'static>(tx: Sender<E>, interrupt: fn() -> E) {
     // SAFETY: plain libc signal-mask calls on a local, initialised set.
     let set = unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
@@ -1378,7 +1391,7 @@ fn watch_signals(tx: Sender<Event>) {
                 let mut sig = 0;
                 // SAFETY: `set` is a valid set; sigwait only writes `sig`.
                 if unsafe { libc::sigwait(&set, &mut sig) } != 0
-                    || tx.send(Event::Interrupt).is_err()
+                    || tx.send(interrupt()).is_err()
                 {
                     return;
                 }
@@ -1387,8 +1400,9 @@ fn watch_signals(tx: Sender<Event>) {
         .expect("spawning the signal watcher");
 }
 
-/// Holds `<cache>/lock` for the supervisor's life: one follower per cache.
-fn lock(cache: &Path) -> Result<fs::File> {
+/// Holds `<cache>/lock` for the supervisor's life: one follower (or one
+/// watcher, `what` naming it) per cache.
+pub(crate) fn lock(cache: &Path, what: &str) -> Result<fs::File> {
     use std::os::fd::AsRawFd;
     let f = fs::OpenOptions::new()
         .create(true)
@@ -1397,7 +1411,7 @@ fn lock(cache: &Path) -> Result<fs::File> {
         .open(cache.join("lock"))?;
     // SAFETY: flock on a file descriptor we own.
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        bail!("another `h2 play --follow` is using {}", cache.display());
+        bail!("another `h2 play {what}` is using {}", cache.display());
     }
     Ok(f)
 }
@@ -1427,7 +1441,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             );
         }
     }
-    let _lock = lock(&cache)?;
+    let _lock = lock(&cache, "--follow")?;
     let log = Log::open(&cache.join("logs/follow.log"));
     // A persistent object cache, so a new emit only compiles changed C.
     if std::env::var_os("H2_OBJ_CACHE").is_none() {
@@ -1436,7 +1450,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
 
     let (tx, rx) = channel();
-    watch_signals(tx.clone());
+    watch_signals(tx.clone(), || Event::Interrupt);
     let watch = Watch {
         repo: repo.clone(),
         remote: f.remote,
@@ -1486,6 +1500,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         status: status.clone(),
         log: log.clone(),
         tx,
+        exited: Event::ChildExited,
         owned: Arc::new(Owned::new(GAME_GRACE)),
         waiter: None,
         launches: 0,
@@ -2211,6 +2226,7 @@ mod tests {
             status: root.join("status"),
             log: Log::open(&root.join("follow.log")),
             tx: tx.clone(),
+            exited: Event::ChildExited,
             owned: Arc::new(Owned::new(Duration::from_millis(300))),
             waiter: None,
             launches: 0,
@@ -2570,6 +2586,7 @@ fn main() {
             status: status.clone(),
             log: log.clone(),
             tx: tx.clone(),
+            exited: Event::ChildExited,
             owned: Arc::new(Owned::new(GAME_GRACE)),
             waiter: None,
             launches: 0,

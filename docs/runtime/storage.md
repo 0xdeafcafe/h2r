@@ -41,7 +41,7 @@ What lives where:
 - Cache: the agent socket and its `inputs/` and `captures/`
   (`agent_proto::cache_dir`), the pipeline cache
   (`d3d::pipeline_store`), `snapshots/` (`H2_SNAPSHOTS` names another), the
-  bots' shared nav cache `bots/`, the lab socket and `lab/`, `follow/` and
+  bots' shared nav cache `bots/`, the lab socket and `lab/`, `follow/`, `watch/` and
   `xtask-ledger/`.
 - Config: the lab driver's paired hosts, `lab/peers/`.
 

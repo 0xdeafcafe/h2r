@@ -465,6 +465,137 @@ a scratch repository whose `cli` crate is a stand-in `h2`:
 `app::overlay` tests dismissal, the restart offer and rasterising. A GPU test
 draws the banner over a frame and reads back the blend.
 
+## Watching the checkout: `h2 play --watch`
+
+```sh
+h2 play --watch /abs/path/to/disc/halo2.iso
+```
+
+Plays as `h2 play` does, and meanwhile watches your own checkout: its
+working tree and its git state. When a burst of edits, or a `git pull`,
+has settled, it does only what the changed files need: a rules script is
+reloaded into the running game, the live web app is rebuilt, and a Rust or
+generator change rebuilds `h2` in the checkout (and the game code when the
+new `h2` says it must), then offers the same "Update ready" banner as
+`--follow`. F5 restarts into it; F6 hides the banner. Everything after the
+watch flags is passed to `h2 play` as is.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--repo PATH` | the checkout containing the current directory | Checkout to watch. |
+| `--quiet MS` | 1500 (minimum 200) | How long the files must be quiet before a change set is taken. |
+| `--fresh-data` | off | Each launch gets an empty data dir under the cache (otherwise the user's `--data`). |
+| `--cache DIR` | `watch/<hash of the checkout's path>` in the cache directory | Where logs, builds and generated games live. |
+
+`--watch` and `--follow` are separate supervisors; giving both is an
+error.
+
+What each changed path asks for (`watch::classify`, relative to the
+checkout's top; the first row that matches wins):
+
+| Paths | Action |
+| --- | --- |
+| any `target/`, `node_modules/`, `buck-out/`, `__pycache__/`, `.direnv/`, `.devenv*` component; `.claude/worktrees/`, `web/dist/`, `out/`, `extracted/`, `disc/`, `.tools/`; `.git/objects/`, `logs/`, `worktrees/`, `modules/`, `lfs/`; editor droppings (`*~`, `*.swp`, `.#*`, `4913`, `.DS_Store`) | ignored |
+| the rest of `.git` (HEAD, refs, the index, operation markers) | holds the settle timer open; builds nothing |
+| `crates/formats/rules/src/builtin/*.rules` | hot: `rules.reload`; also rebuilds `h2`, which bakes it |
+| any other `*.rules` | hot: `rules.reload` |
+| `docs/`, `*.md` | nothing |
+| `web/test/`, `web/bench/`, `web/mock/` | nothing |
+| the rest of `web/` | hot: `bun install --frozen-lockfile`, `bun run build` (with `--live-local`) |
+| a `tests`, `benches` or `examples` component; `tests.rs`, `*_tests.rs`, `*_test.rs` | nothing |
+| `crates/formats/xbe/src/`, `crates/recompiler/`, `crates/runtime/runtime/include/`, `crates/runtime/recomp/c/`, `crates/runtime/recomp/build.rs`, `crates/runtime/recomp/src/render_entries.rs` | game image: rebuild `h2`, then the game code if its stamp moved |
+| the rest of `crates/`, `assets/`, `.cargo/`; `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | host: rebuild `h2` |
+| anything else (`scripts/`, `deploy/`, `editors/`, ...) | nothing |
+
+The game-image rows are the directories `crates/runtime/recomp/build.rs`
+hashes into the generator's stamp; the two lists are kept in step.
+
+How it works (crates/apps/cli `watch.rs`):
+
+- **Supervisor.** As `--follow`'s: the game runs as a child with
+  `--follow-status`, in its own process group, and the same Ctrl-C, close
+  and restart rules apply (`follow::ChildLauncher`, `follow::StatusFile`,
+  `follow::watch_signals`). The first child is the `h2` you started.
+- **Watching.** `notify` watches the checkout recursively: FSEvents on
+  macOS, inotify on Linux. A linked worktree's own git dir, which lies
+  outside it, is watched too (not recursively). Paths in the git dir count
+  as `.git/...`.
+- **Settling.** Every event that is not ignored, git's own included,
+  restarts a quiet period of `--quiet` milliseconds (`watch::Debounce`).
+  While the git dir holds `index.lock`, `HEAD.lock`, `MERGE_HEAD`,
+  `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD` or `REVERT_HEAD`,
+  nothing is taken, and the quiet period starts again once they are gone,
+  so a pull or a rebase settles once, after its last write. A merge left
+  with conflicts waits until it is committed or aborted. The changed paths
+  are then one change set, classified into a plan (`watch::Plan`). When the
+  watcher reports lost events (FSEvents' rescan flag), the plan rebuilds
+  `h2` and checks the game code.
+- **Hot, no restart.** One thread runs hot work in order, against the
+  game's agent socket: `$H2_AGENT` when it names one, none when it is off,
+  else the child's `agents/<pid>.sock`
+  ([agent-api.md](agent-api.md#finding-a-game)). A rules script is
+  compiled first (a compile error is the banner's), then, if the game's
+  `rules.state` runs a script of the same name, sent with `rules.reload`
+  (`{source, mode: auto}`): in place when its state keeps its shape, else
+  the game restarts on the same map and variant
+  ([rules-engine.md](../game/rules-engine.md#reloading-a-running-script)).
+  `ctf.rules` makes both Capture the Flag and Assault
+  (`rules::builtin::sources_of`). The banner says "Reloaded <name> (in
+  place)" or "(restarted)", or "Reload failed: <error>". A web change runs
+  bun in the checkout's `web/` when the game was started with
+  `--live-local` and no `H2_LIVE_WEB`; the embedded server reads
+  `web/dist` at each request, so the next page load has it ("Web app
+  rebuilt"). That is so only while the running `h2` serves this checkout's
+  `web/dist`: one built from this checkout does.
+- **Building.** One build at a time. Changes that arrive during a build
+  are merged into one queued plan, built when it finishes, and a failed
+  build's plan is carried into the next one. A build runs `nice -n 15 cargo
+  build --release -p cli` in the checkout, with its own target dir
+  (`CARGO_TARGET_DIR`, else `target`), so it is incremental and uses the
+  machine's rustc wrapper (kache); `CARGO_BUILD_JOBS` is half the cores
+  unless you have set it. The new `h2 build <disc> --out <current game>
+  --check` then says whether the current game code is still its own. If
+  not, it runs `nice h2 build <disc> --out <cache>/gen/<n>`: a new dir,
+  since the running game has the old dylib mapped, seeded with an APFS
+  clone of the last game's `src/` so the emit rewrites only changed files,
+  and with `H2_OBJ_CACHE` (default `obj` in the cache directory, shared
+  with your other builds), so only changed shards compile
+  ([BUILD-CACHE.md](../lifter/BUILD-CACHE.md)). `H2_OPT`, `H2_TIER` and the
+  rest of your environment pass through. The new `h2` is copied to
+  `<cache>/builds/<n>/` and offered: "Update ready: local changes (h2) -
+  press F5 to restart", or "(h2 and the game code)". A build that left
+  `h2` as it was and the game code current offers nothing. "Rebuilding
+  h2..." or "Rebuilding h2 and the game code..." shows meanwhile.
+- **Failures.** A failed build shows "Local build failed: <first error
+  line>" and the game keeps running; `logs/build-<n>.log` has the whole
+  output.
+- **Safety.** It never writes to the checkout's sources, index or refs; the
+  only writes there are cargo's target dir and, for the web app, `web/dist`
+  and `web/node_modules`. A lock file in the cache allows one watcher per
+  checkout. Its cache is not `--follow`'s, so the two can run side by side.
+  `logs/watch.log` holds the supervisor's events.
+
+Tests: `watch/tests.rs` covers the classifier table above, the plans, the
+paths of a linked worktree's git dir, the debounce (a burst, a git
+operation in progress, git or ignored events alone, a rescan), the
+operation markers, and the supervisor over fakes: docs only (nothing), a
+rules script (hot, no restart), a built-in script (hot and a build), a
+host change (build, offer, F5), a failure (the game keeps running; the
+plan is carried), changes merged into a queued build, an unchanged build,
+close and interrupt, and `drive` end to end. The watcher, cargo, `h2
+build` and the agent socket are not exercised by tests.
+
+Hot reloading `h2` or the game code in place is not built. The game code
+is a dylib whose functions the guest's threads are always inside, and
+whose static data (dispatch tables, the guest's code addresses) the host
+holds pointers into, so a swap needs every guest thread parked at a known
+point and the host's tables rebuilt; the boundary where that holds is the
+one machine snapshots use, between ticks with the guest parked
+([snapshots.md](snapshots.md)). Restoring a snapshot taken by the old
+module into a new one is only sound when the guest memory layout is the
+same, which the stamp does not promise. Host Rust has no stable ABI, so
+swapping it means a process restart or a narrow C-ABI plugin boundary.
+
 ## Presentation
 
 `D3DDevice_Swap` -> `GfxBackend::present` -> present hook -> `FrameSink`:

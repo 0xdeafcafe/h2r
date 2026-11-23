@@ -336,7 +336,8 @@ For the embedded server only, before starting, it builds the web app (`bun insta
 `bun run build`) when `web/dist` is missing or was built from a different
 `web/` tree (`web/dist/.h2-web-tree` records it; with uncommitted changes
 under `web/` an existing build is kept). `h2 play --follow` does the same
-in each commit's build, so the banner's "Update ready" includes it. Without
+in each commit's build, so the banner's "Update ready" includes it, and
+`h2 play --watch --live-local` rebuilds it in the checkout when `web/` changes. Without
 bun it says how to install it and runs without the web app; `H2_LIVE_WEB`
 points at a build of your own and skips this.
 

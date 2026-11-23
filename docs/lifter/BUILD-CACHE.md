@@ -312,7 +312,10 @@ cache, with the object cache at `<cache>/objcache`. A new `gen/<short>`
 starts as an APFS clone (`cp -cR`) of the last game's `src/`, so the emit
 rewrites only the files that commit changed, and the unchanged ones share
 their blocks with the last game. If the clone fails, the emit writes every
-file as before.
+file as before. `h2 play --watch` does the same for the user's checkout,
+into `gen/<n>` of its cache, with the object cache at `H2_OBJ_CACHE` or
+`obj` in the cache directory
+([app.md](../runtime/app.md#watching-the-checkout-h2-play---watch)).
 
 ## Rust dependency builds
 
