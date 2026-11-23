@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slice M1 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1); everything else named here as new is not.
+Status: Design, slices M1 and M2 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), and `resolve`, which lowers entry ops for `replay` (M2); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`), `crates/extensions/agent/src/forge/local.rs` (`ForgeWorld`), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -121,13 +121,24 @@ built; `Property` is slice D4's:
 `Placement::Add` stays the one way to make an entry, and its `OpId` is
 the new entry's name.
 
-- **Replay lowers them.** `forge_doc::resolve` (new) walks the ops
-  keeping each identity's running index through appends and
-  swap-removes, as `ForgeDoc::links` does for final indices, and hands
-  the adapter the `Placement::Set` or `Placement::Remove` of that
-  running index. `forge_doc::Apply` and both adapters keep their two
-  methods. `EntryOp::Reset` lowers to nothing: the fold leaves out the
-  ops it covers, as it leaves out a retracted op.
+- **Replay lowers them.** `forge_doc::resolve`
+  (`crates/formats/forge-doc/src/resolve.rs`) walks the ops keeping
+  each identity's running index through appends and swap-removes, as
+  `ForgeDoc::links` does for final indices, and gives each entry op the
+  `Placement::Set` or `Placement::Remove` of that running index
+  (`Resolved::lowered`); `replay` hands those to the adapter in op
+  order. `forge_doc::Apply` keeps its two required methods.
+  `EntryOp::Reset` lowers to nothing, and so does every entry op a
+  later reset of the same entry covers, as the fold leaves out a
+  retracted op. Placement ops by running index are never covered;
+  their indices are read in the document with the covered ops left
+  out.
+- **Replay checks the prints first.** `Resolved::prints` lists every
+  base entry an entry op, a link or a label names with a print, once.
+  `replay` passes them to `Apply::prints` before the first edit, and
+  the adapter calls `check_print` on each against the entry as the
+  base map has it. An adapter without the method refuses a document
+  with a print as `Refusal::Unsupported("print")`.
 - **The session writes only `EntryOp` ops and adds.** `Placement::Set`
   and `Placement::Remove` by running index stay in the format for the
   editor's scripts and `h2 forge build`, where one author writes one
@@ -150,9 +161,8 @@ the new entry's name.
   entry has one print in a document. With a map, the adapter adds the
   print check (`forge_doc::check_print`), the tag behind a reference
   and the block's count and limit.
-- **Until `resolve`.** `forge_doc::replay` refuses an entry op as
-  unsupported, so no adapter applies one before slice M2.
-  `ForgeDoc::links` and `labels` already follow entry removals, and
+- **Undo.** `forge_doc::inverse` retracts an entry op as it does any
+  other. `ForgeDoc::links` and `labels` follow entry removals, and
   leave out a removal that a later `Reset` covers.
 
 ### Applying an edit in a session
@@ -451,7 +461,8 @@ Every machine builds the map from its own disc; no built byte travels
 ## Interfaces
 
 - **`forge-doc`**: `Endpoint::Base.print`, `print`, `check_print`, `Edit::Entry`,
-  `EntryOp`, `Property`, `resolve`, `Refusal::Print`, `games::{GameSet,
+  `EntryOp`, `Property`, `resolve`, `Resolved`, `Printed`,
+  `Apply::prints`, `Refusal::Print`, `games::{GameSet,
   encode, decode}`, `Tier`, `ForgeDoc::tier`, `play_form`,
   `session_form`.
 - **`forge`**: `Thing {id: Endpoint, kind, own, frame, fields, changed}`,
