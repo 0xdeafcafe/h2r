@@ -152,6 +152,7 @@ pub(super) fn cut(
     let header = cut_header(tape, &summary, tick, rec.game_started_ms);
     let dir = rec.file.parent().unwrap_or(Path::new(".")).to_owned();
     let now = SystemTime::now();
+    recover(&dir, now);
     if let Err(error) = prune(&dir, KEEP, now) {
         eprintln!("theater: could not make room in the film library: {error:#}");
     }
@@ -262,6 +263,60 @@ pub fn remove_as(dir: &Path, path: &Path, id: Option<&str>) -> anyhow::Result<()
         Some(id) => film::sidecar::remove_film_with(dir, id, delete),
         None => delete(),
     }
+}
+
+/// Seal the playable part of every unsealed tape a stopped session left in
+/// `dir` (docs/game/film-format.md, "An exit without a teardown still
+/// seals"): a hard kill is the one end the boot loop's in-process seal
+/// cannot cover. A tape idle past the abandoned interval — a running
+/// recording writes a chunk every few seconds, so a live tape is never
+/// touched — is sealed in place by [`film::recover_tape`], ending at its
+/// last D3D capture mark. A tape with no playable game is deleted, as a
+/// session that played no game leaves no film; one that cannot be read at
+/// all is left for the prune. Returns the sealed films.
+pub fn recover(dir: &Path, now: SystemTime) -> Vec<PathBuf> {
+    let mut sealed = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return sealed,
+        Err(e) => {
+            eprintln!("theater: could not look for tapes to recover: {e}");
+            return sealed;
+        }
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|t| t.is_file())
+            || !is_auto(&path)
+            || saved(&path)
+            || film::LibraryEntry::read(&path).is_ok()
+        {
+            continue;
+        }
+        let idle = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age >= ABANDONED_AFTER);
+        if !idle {
+            continue;
+        }
+        match film::recover_tape(&path) {
+            Ok(true) => {
+                eprintln!("theater: recovered a film a stopped session left: {}", path.display());
+                sealed.push(path);
+            }
+            Ok(false) => {
+                if let Err(error) = remove(dir, &path) {
+                    eprintln!("theater: could not remove {}: {error:#}", path.display());
+                }
+            }
+            Err(error) => eprintln!("theater: could not recover {}: {error:#}", path.display()),
+        }
+    }
+    sealed
 }
 
 /// Make room for one more automatic film: keep the `keep - 1` newest

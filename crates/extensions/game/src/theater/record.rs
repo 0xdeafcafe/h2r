@@ -297,6 +297,11 @@ impl Recording {
         if self.meta.take_left() {
             self.unified.next_game();
         }
+        if self.meta.take_cut_left() {
+            // The mission's film is cut at the next slice's check, as a
+            // game's end is (docs/game/film-format.md, "One film per game").
+            self.match_over = true;
+        }
         let inputs = self.frame.actions.take().unwrap_or_default();
         let out = self.out.as_mut().context("engine tape is closed")?;
         let match_start = self.meta.descriptor().match_start_tick;

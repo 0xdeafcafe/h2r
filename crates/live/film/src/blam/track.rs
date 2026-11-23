@@ -12,25 +12,31 @@ use std::{
     path::Path,
 };
 
+/// Ticks after the last scene checkpoint at which the next chunk that
+/// begins a scene must take a full public baseline
+/// ([`TrackWriter::needs_pose_baseline`]). `crate::recover` re-derives the
+/// same placement from a tape's chunks, so the two must agree.
+pub(crate) const SCENE_REFRESH_TICKS: u64 = 1800;
+
 /// One entry per independent compressed block. For KEYF, count is zero and
 /// tick names the restored state. The digest covers the uncompressed payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Block {
-    tick: u64,
-    count: u16,
-    offset: u64,
-    sha256: String,
+pub(crate) struct Block {
+    pub(crate) tick: u64,
+    pub(crate) count: u16,
+    pub(crate) offset: u64,
+    pub(crate) sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    ram_anchor: Option<u64>,
+    pub(crate) ram_anchor: Option<u64>,
     /// Hash of the adjacent private IPRV, when one was needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    identity_sha256: Option<String>,
+    pub(crate) identity_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct Directory {
-    blocks: Vec<Block>,
-    keyframes: Vec<Block>,
+pub(crate) struct Directory {
+    pub(crate) blocks: Vec<Block>,
+    pub(crate) keyframes: Vec<Block>,
 }
 
 fn validate_header(descriptor: &MatchHeader) -> Result<()> {
@@ -90,7 +96,7 @@ impl TrackWriter {
         }
         let next_chunk = self.directory.blocks.len() + usize::from(!self.pending.is_empty());
         self.pose_checkpoint.is_none_or(|(first, index)| {
-            self.tick.saturating_add(1) - first >= 1800
+            self.tick.saturating_add(1) - first >= SCENE_REFRESH_TICKS
                 || next_chunk - index >= crate::range::MAX_SCENE_CHUNKS
         })
     }
