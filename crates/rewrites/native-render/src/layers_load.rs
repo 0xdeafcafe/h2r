@@ -187,7 +187,7 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
         out.materials.insert(shader.0, Arc::clone(&material));
         resolved.insert(m, material);
     }
-    for layer in layer_pass::LAYERS {
+    for layer in layer_pass::LAYERS.into_iter().chain([layer_pass::BLOOM_LAYER]) {
         let mut data = LayerData::default();
         let mut refused: BTreeMap<String, usize> = BTreeMap::new();
         // A pass that leaves `CULLMODE` unset draws with the cull the layer

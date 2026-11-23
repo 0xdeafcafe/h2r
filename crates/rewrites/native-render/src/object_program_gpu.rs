@@ -173,13 +173,13 @@ impl SubpartRanges {
 }
 
 /// The world layers besides 3 whose passes an object item draws natively
-/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8 and
-/// 20, and from the sorted list's handlers the camouflage's 18 and 19
+/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8, 20
+/// and 17 (`layer_pass::BLOOM_LAYER`), and from the sorted list's handlers the camouflage's 18 and 19
 /// and the hologram's 21 (docs/graphics/native-water-fog.md). In layer 5 an item whose model has
 /// a PRT block draws its pass's PRT variant ([`LitLayerPass::prt`]) with
 /// the stream and constants the geometry draw adds
 /// (`frame_scene::PrtStream`).
-pub const OBJECT_LAYERS: [u8; 8] = [1, PRT_LAYER, 7, 8, 20, CAMO_LAYER, CAMO_MODULATE_LAYER, HOLOGRAM_LAYER];
+pub const OBJECT_LAYERS: [u8; 9] = [1, PRT_LAYER, 7, 8, 20, crate::layer_pass::BLOOM_LAYER, CAMO_LAYER, CAMO_MODULATE_LAYER, HOLOGRAM_LAYER];
 
 /// Active camouflage, the layer the sorted handler `0x00041cc0` draws its
 /// records' camouflage passes in (`scene_extract::layout::world_layers::sorted_site`).

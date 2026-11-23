@@ -1,4 +1,4 @@
-//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20, the
+//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8, 20 and 17, the
 //! first person's layers 1, 7, 8 and 20, and the sorted transparent list's
 //! camouflage layers 18 and 19 and hologram layer 21, drawn from the scene's plan instead of the guest's
 //! draws under the layer call (docs/graphics/framescene.md, slice 4;
@@ -39,8 +39,9 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "frame-scene.layers";
 
-/// The layers taken.
-pub const LAYERS: [u32; 5] = [1, 5, 7, 8, 20];
+/// The scene's layers taken: 1, 5, 7, 8 and 20 around layer 3, and the
+/// late layer 17 (`layer_pass::BLOOM_LAYER`).
+pub const LAYERS: [u32; 6] = [1, 5, 7, 8, 20, 17];
 
 /// The first person's layers taken: `0x0003fdf0`'s calls besides layer
 /// 3, which `native_first_person` owns. It calls layers 1, 3, 8, 20 and
@@ -261,7 +262,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20, the first person's 1, 7, 8 and 20 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8, 20 and 17, the first person's 1, 7, 8 and 20 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -324,6 +325,13 @@ mod tests {
         assert_eq!(caller(3, 0x0004_0136), None, "native_first_person's");
         assert_eq!(caller(3, 0x0002_bed5), None, "native_objects' and the world's");
         assert_eq!(caller(1, 0x0002_bd5c), None, "an alternate view's");
+    }
+
+    #[test]
+    fn the_stage_takes_the_scenes_late_layer_17() {
+        assert_eq!(caller(17, 0x0002_c30b), Some(LayerCaller::Scene));
+        assert_eq!(caller(17, 0x0002_c010), None, "another layer's return");
+        assert_eq!(caller(16, 0x0002_c0e9), None, "the fog's late layer is native_fog's");
     }
 
     #[test]

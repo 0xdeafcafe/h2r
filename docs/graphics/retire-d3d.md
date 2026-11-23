@@ -66,7 +66,8 @@ these per caller with every stage on: the column "Count" says what exists.
 | Particles `0x0023ed5c`, decals `0x00044161`, effect quads and contrails `0x0004b252`, `0x0004b28c` | inline quads and strips | the draw packet | iteration, property evaluation, ribbon construction, the per-view update `0x00174420`; unknown builders | not broken out |
 | Lens flares: writer `0x00020bb0`, reader `0x00020770` | a counted draw between an inline begin and `EndVisibilityTest` | the pixel counter, on the GPU | the counted draw, the report slots, `GetVisibilityTestResult` | none |
 | Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
-| `0x0002dd30`, `0x0002df00`, layer 17 | quads into a target of their own, a stipple | none | never claimed | none |
+| `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | counted draws and quads into the target `[0x00485602]`, a stipple | none | never claimed | none |
+| Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse | none |
 | HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | the quad's vertices | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
 | UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | the quad, the backdrop fans, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
 | Fade `0x00040890`, menu rectangles and bars (`0x0004b252` from `0x00052ce7`), outlines `0x0001ed98` | immediate fans, a line strip | the geometry | state setup, the line state | none |
@@ -476,8 +477,8 @@ reference page.
   effects seed and the particle stamps decide how much guest code R1 and
   R2 can drop. If they cannot be reproduced in order, the guest functions
   that make them keep running and those slices save less.
-- **Code nobody has read.** Layers 17, 18, 19 and 21, `0x0002dd30`,
-  `0x0002df00`, four untraced `Begin` callers, `0x0002c370`'s seven calls
+- **Code nobody has read.** The flare writer's callbacks (`0x0002e540`,
+  `0x0002e9e0`) and the flare draw `0x00046ea0`, three more untraced `Begin` callers, `0x0002c370`'s seven calls
   and `0x0003c3c0`. R5's size is a guess until they are read.
 - **The UI is large.** The widget system is the guest's and stays. R7
   ports only its drawing, but every widget kind and every screen has to
