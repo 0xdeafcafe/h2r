@@ -394,7 +394,12 @@ mod tests {
         assert_eq!(shadow.func, AlphaFunc::Greater);
         assert!(!shadow.linear);
         assert_eq!(shadow.address, [ShadowAddress::Clamp; 2]);
-        assert_eq!(p.dims[0], Some(shaders::psh::TextureDim::D2));
+        // `dims` are the stages the pixel shader samples (this test's
+        // default combiner samples none); the bound stage is the option's.
+        assert_eq!(
+            p.pixel_options.texture_dims[0],
+            Some(shaders::psh::TextureDim::D2)
+        );
     }
 
     #[test]
