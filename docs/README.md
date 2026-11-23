@@ -165,6 +165,7 @@ are under [Reviews](#reviews).
 - [guest-layout.md](engine/guest-layout.md): `crates/hooking/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
 - [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`) behind `impl.sim.native.anim`: the contract, the decoded clips and the disc sweep
 - [skeleton-walk.md](engine/skeleton-walk.md): `bd090`'s skeleton walk (node records to node matrices) as one Rust call, `sim_anim::build_matrices`, behind `impl.sim.native.anim.skeleton`
+- [markers.md](engine/markers.md): `b8d30`'s marker lookup (the group scan `1d8f00` and the transform fill `1d8f50`) as one Rust call, `sim_anim::model_markers`, behind `impl.sim.native.anim`
 - [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
 - [sim-review.md](engine/sim-review.md): typed simulation state and the experimental leaf compiler contract
 - [sim-tier-experiment.md](engine/sim-tier-experiment.md): the sim-tier experiment: the tick's leaves compiled under a looser contract (`emit::sim`), checked against the interpreter and timed against the hand ports

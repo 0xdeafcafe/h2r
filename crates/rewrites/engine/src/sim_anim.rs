@@ -22,6 +22,11 @@
 //! [`skeleton`] is phase 1b: the skeleton walk of `bd090`, the node records
 //! turned into node matrices by `sim_anim::build_matrices`
 //! (docs/engine/skeleton-walk.md).
+//!
+//! [`markers`](markers) is phase 1c's first slice: `b8d30`'s marker lookup
+//! with the group scan and transform fill of `1d8f00` and `1d8f50` by
+//! `sim_anim::model_markers` (docs/engine/markers.md).
+pub mod markers;
 pub mod skeleton;
 
 use crate::function_eval::constant::{ONE, SMALL};

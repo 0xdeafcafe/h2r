@@ -2,7 +2,10 @@
 
 Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
 with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
-only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. The plan replaces the verdict in
+only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. Phase 1c's
+marker lookup — `b8d30` with the scan `1d8f00` and the fill `1d8f50` —
+is built, with tests only ([markers.md](markers.md)); the unit pose, aim
+and first-person parts of 1c are not. The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
@@ -375,8 +378,9 @@ as runtime before).
   ([feature-engine.md](feature-engine.md), "Calling code that is still
   recompiled"). They come over type by type, biped and weapon first.
 - *Also in this phase:* the object-function evaluator (`bab40`, `108d90`,
-  `bcc20`), lights (`c1400`, `c0c80`, which subsume `impl.sim.static-light`'s
-  bypass) and markers (`b8d30`).
+  `bcc20`) and lights (`c1400`, `c0c80`, which subsume
+  `impl.sim.static-light`'s bypass); the markers `b8d30` belong to
+  phase 1c ([markers.md](markers.md)).
 - *Parallelism.* Pose and matrix passes run per object in hierarchy waves.
 
 **Sound sim (phase 4).**
@@ -599,7 +603,17 @@ entry the port calls `sim_anim::build_matrices` through
 object ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs the same loop
 for the animation graph's own callers (219 and 182 visible samples into
 `1421f0` and `142a60`) and is 1b's remaining part; `native_transform_compose`
-and `native_pose_matrix` retire with it. 1d's step 0 is the write set of `1c66a0`, `1c6560` and
+and `native_pose_matrix` retire with it.
+
+1c's marker slice follows the same shape: the marker port
+(`sim_native::marker`, `b8d30`) stays the vehicle, and where it would
+call `1d8f50` it calls `sim_anim::model_markers` through
+`engine::sim_anim::markers` — the scan `1d8f00` and the transform fill
+`1d8f50` as one gather, kernel call and scatter, and the basis leaf
+`141e10` beside the pose and composition leaves
+([markers.md](markers.md)). The unit pose `112070`, the aim update
+`111650` and the first-person pair `16760c`/`166d75` are 1c's remaining
+parts. 1d's step 0 is the write set of `1c66a0`, `1c6560` and
 `1cd590` (channel state in object data) and the readers of the graph
 resolve results.
 

@@ -58,5 +58,11 @@ sim-core = { workspace = true, features = ["override"] }
 name = "it"
 path = "tests/it.rs"
 
+# Its own binary: it flips the marker kernel's process-global switch on,
+# which `sim_native_differential`'s stubbed marker cases need off.
+[[test]]
+name = "marker_differential"
+path = "tests/marker_differential.rs"
+
 [lints]
 workspace = true

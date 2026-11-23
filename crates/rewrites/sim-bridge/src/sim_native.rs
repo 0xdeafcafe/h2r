@@ -102,6 +102,8 @@ impl Feature for SimNative {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         sim::set_simd(simd_on(b.switches()));
         engine::sim_anim::skeleton::set_enabled(skeleton_on(b.switches()));
+        let anim = anim_on(b.switches());
+        engine::sim_anim::markers::set_enabled(anim);
         let query_on = b
             .switches()
             .implementation("sim.native_collision_query", false);
@@ -113,6 +115,9 @@ impl Feature for SimNative {
                 && (COLLISION_ENTRIES.iter().any(|(p, _, _)| p.base == point.base)
                     || point.base == points::COLLISION_BSP_SEGMENT.base)
             {
+                continue;
+            }
+            if anim && point.base == points::SIM_MARKER_TRANSFORMS.base {
                 continue;
             }
             if crate::sim_objects::owns(b.switches(), point.base) {
@@ -150,7 +155,6 @@ impl Feature for SimNative {
                     .context_only();
             }
         }
-        let anim = anim_on(b.switches());
         if anim {
             install_anim(b);
         }
@@ -195,9 +199,12 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 }
 
 /// `impl.sim.native.anim`: animation sampling, phase 1a of the simulation
-/// rewrite (docs/engine/anim-sampling.md). It replaces the stream call
-/// `0x2798a0` and everything under it, so the per-function codec,
-/// evaluator and stream ports it covers are test oracles only.
+/// rewrite (docs/engine/anim-sampling.md), and phase 1c's marker lookup
+/// (docs/engine/markers.md). It replaces the stream call `0x2798a0` and
+/// everything under it, and takes over `b8d30` (the marker port
+/// `sim.native_marker_transforms` with `sim_anim::model_markers` inside),
+/// so the per-function codec, evaluator, stream and marker ports it
+/// covers are test oracles only.
 pub const ANIM: &str = "sim.native.anim";
 
 fn anim_on(switches: &hooks::Switches) -> bool {
@@ -234,6 +241,19 @@ fn install_anim(b: &mut Builder) {
                 {
                     return Ok(transfer);
                 }
+            }
+            original(cpu, ctx, addr)
+        })
+        .context_only();
+    // The marker lookup, run by the register-level port with the Rust
+    // kernel inside it (phase 1c). Its per-function switch stays for the
+    // oracle; this entry wins when both are on.
+    let marker = &points::SIM_MARKER_TRANSFORMS;
+    b.raw()
+        .implement(marker, ANIM, move |cpu, ctx, addr| {
+            if addr == marker.base && sim::supported(cpu) {
+                let mut mem = ctx.memory();
+                return sim::marker::transforms(cpu, &mut *mem);
             }
             original(cpu, ctx, addr)
         })
@@ -364,13 +384,28 @@ mod tests {
         let plan = registry.build(&Base).unwrap();
         let stream = &plan.chains[&points::SIM_ANIMATION_STREAM.base];
         assert_eq!(stream.implement.as_ref().unwrap().label, ANIM);
+        // The marker lookup runs under the subsystem switch too.
+        let marker = &plan.chains[&points::SIM_MARKER_TRANSFORMS.base];
+        assert_eq!(marker.implement.as_ref().unwrap().label, ANIM);
         for (point, label) in ANIM_INVALIDATE {
             let chain = &plan.chains[&point.base];
             assert!(chain.implement.is_none());
             assert_eq!(chain.observe_before.len(), 1, "{label}");
         }
-        assert_eq!(plan.chains.len(), 1 + ANIM_INVALIDATE.len());
+        assert_eq!(plan.chains.len(), 2 + ANIM_INVALIDATE.len());
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
+
+        // The subsystem owns the shared point: with the per-function
+        // marker port also on, only the subsystem entry installs.
+        let switches = Switches::defaults()
+            .with(&format!("impl.{ANIM}"), true)
+            .with("impl.sim.native_marker_transforms", true);
+        let mut registry = Registry::new(switches);
+        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let marker = &plan.chains[&points::SIM_MARKER_TRANSFORMS.base];
+        assert_eq!(marker.implement.as_ref().unwrap().label, ANIM);
+        assert_eq!(plan.chains.len(), 2 + ANIM_INVALIDATE.len());
 
         // The retired per-function switches are gone from the table.
         for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
