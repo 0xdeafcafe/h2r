@@ -253,14 +253,14 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
-| `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop` |
+| `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop`, `measure {tag \| clip \| path, range?, permutation?, class?, limit?}` ([Content checks](#content-checks)) |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
-| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)) |
+| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)); `check {screen?, state?, aspect?}` ([Content checks](#content-checks)) |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
@@ -268,6 +268,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `rules` | `open {path? \| starter? \| source?, discard?}`, `get {text?}`, `set {source}`, `save {path?, reload?}`, `format`, `reload {mode?}`: the game type script editor ([editor-guide.md](editor-guide.md#game-type-scripts)) |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
+| `check` | `run {what?, target?}`: every content check in one list ([Content checks](#content-checks)) |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
@@ -874,6 +875,104 @@ bad params), and ours (`studio_proto::code`):
 | 14 | `FAILED` | it ran and failed (I/O, a map that doesn't read) |
 | 15 | `NO_GPU` | nothing renders here |
 
+## Content checks
+
+An agent building content (the Pogo Stick's sounds, a screen of ours, a
+HUD kit element) measures and checks it here before handing it back:
+`sound.measure`, `ui.check`, `hud.check`, and `check.run` for all of
+them at once.
+
+**`sound.measure`** (`api/sound_measure.rs`) takes one of `tag` (a
+`snd!` of the map the Tags tool shows, decoded by the audition as
+`sound.read` decodes it), `clip` (one of our WAV clips as the game
+embeds them: `pogo/compress`, `pogo/spring`, `pogo/settle` from
+`boot::pogo_sound::CLIPS`, `announcer/<medal>` from
+`boot::medal_announcer::CLIPS`) or `path` (a WAV file, such as one
+`scripts/pogo-sounds.py` just wrote). WAVs are read by the game's
+`parse_wav`: 16-bit PCM, one or two channels; a Git LFS pointer is
+`FAILED` and names `git lfs pull`. A tag is measured in every
+permutation of `range` (default 0), or the one `permutation` names;
+the loudest is the one compared. It answers:
+
+- `levels`: `peak_dbfs` (the largest sample, full scale 32768),
+  `rms_dbfs` (every sample of every channel), `lufs` (integrated
+  loudness), `max_momentary_lufs` (the loudest 400 ms block),
+  `duration_ms`, `clipped` (samples at 32767 or -32768), `frames`,
+  `rate`, `channels`. Levels are to one decimal place; silence is -120.
+- `reference`: the open map's `snd!` tags of the same class (the
+  header's `+2` byte, unnamed: [sound.md](../formats/sound.md)), or of
+  every class for a clip or file, or of `class`. Up to `limit` (default
+  32, at most 512) of them, spread evenly over the map's tag order, are
+  decoded (range 0, permutation 0) and measured. It gives the class,
+  how many there are (`considered`), `decoded`, `skipped` (a codec
+  stream without the game's executable), the `lufs` and `peak_dbfs`
+  spreads (`p10`, `p50`, `p90`, `max`, nearest rank) and the three
+  loudest. With no map open it gives `why`.
+- `verdict`: `loud` when the loudness is over the reference's p90 by
+  more than 1 dB, `quiet` when under its p10 by more than 6 dB, else
+  `ok`; `no_reference` with nothing decoded. `over_p90_db` and
+  `peak_over_p90_db` are the margins, and `text` says it ("louder than
+  the p90 of the map's sounds by 7.2 dB").
+
+The loudness is ITU-R BS.1770-4's (`api/sound_measure/meter.rs`): each
+channel K-weighted (the high shelf and high pass, their coefficients
+derived for the clip's rate from the 48 kHz design, as libebur128 does),
+mean square over 400 ms blocks stepped 100 ms, blocks under -70 LUFS
+dropped, then blocks more than 10 LU under the remaining mean,
+`-0.691 + 10 log10` of the mean of the rest. Each channel weighs 1, so
+a mono 997 Hz sine reads its RMS level and a stereo one 3 dB more. A
+clip shorter than 400 ms is one block. Clips and tags are compared
+sample for sample: the game's gain, distance and mixing are not
+applied.
+
+**`ui.check`** (`api/ui_check.rs`) checks our screens (`screen`, and
+`state`, narrow it) in every state with the unsaved edits
+(`UiScreens::check_state`: the edited docs in scope, the disc's art
+and fonts when a disc is open, else the synthetic source). The checks
+are the kit's (`boot::ui_kit::findings::of_state`;
+[ui-builder.md](../game/ui-builder.md) "The checks"): text overflowing
+its rect (`fit`), overlapping texts, widgets outside the title-safe
+area (`unsafe`), contrast under 2.5, missing glyphs and unregistered
+string ids, art drawn past its rect or off screen, and the design
+system's rules. Each finding has `code` `ui.<check>.<kind>`
+(`ui.layout.unsafe`, `ui.layout.fit`, `ui.layout.text_overlap`,
+`ui.content.missing_glyph`), `severity` (`error`; `warning` for the
+design system's `consistency`; `note` for a layout note), `message`,
+`target` (`screen/state`), `path` (the screen's file under
+`assets/ui/screens/`), and the `screen`, `state`, `check`, `kind` and
+widget `ids`. A state that does not draw is `ui.draw`. `checked` lists
+each state with its count and the checks the source could not run
+(`skipped`). `aspect` is `4:3`, `16:9` or `both` (the default); the
+host fits a menu uniformly into a centred 4:3 area at any window
+aspect ([high-resolution.md](../graphics/high-resolution.md), "HUD and
+UI"), so the layout checked is the 640 by 480 one and `aspects` says
+which fit each aspect asked is.
+
+**`hud.check`** gives each finding's `code` beside its text:
+`off_screen`, `outside_frame`, `art_overlap`, `text_overlap` or
+`text_spills` (`hud_edit::checks`).
+
+**`check.run {what?, target?}`** (`api/checks.rs`) runs every check of
+`CHECKS` (or one area's: `models`, `sounds`, `ui`, `hud`) and answers
+`{findings, counts, ran, skipped}`. A finding is `{area, code,
+severity, message, target, path?}`, worst first; `counts` has `error`,
+`warning`, `note`, `total` and `by_area`; `ran` names each check with
+its count; `skipped` each check that could not run and why, and each
+area with no check registered. `target` narrows every check to one
+thing; a check it does not fit is skipped. The checks:
+
+| Area | Check | What it checks |
+|---|---|---|
+| `sounds` | `sound.measure` | each of our clips (or the clip id, id prefix such as `pogo`, or `snd!` tag `target` names) against the open map's sounds: `sound.loud` (a warning, an error past 6 dB over the p90), `sound.clipping`, `sound.unreadable`, `sound.no_reference` (a note) |
+| `ui` | `ui.check` | every state of our screens, or `target` (`screen` or `screen/state`) |
+| `hud` | `hud.check` | the HUD the HUD tool shows, at its state (`hud.<code>`); skipped with no map open there |
+| `hud` | `hud.kit` | every kit HUD (or `target`) in every state and screen mode over the kit's synthetic map, as `h2 hud sheet --synthetic` checks them (`hud_kit::check::all`): `hud.kit.<check>` errors, and a note for each check the synthetic map cannot run |
+
+A check is a row of `CHECKS`: `ContentCheck { area, name, run }`,
+`run` being `fn(&mut App, Option<&str>) -> Result<Vec<Finding>,
+String>`. The `models` area has no row yet; `check.run` lists it under
+`skipped`.
+
 ## Extension points
 
 `crates/apps/studio/src/api/seams.rs`. A tool implements `api::Provider`:
@@ -1107,7 +1206,9 @@ identical profiles.
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs`, `api/sound.rs`, `api/hud.rs` and `api/scripts.rs` the Tags,
   sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's,
-  `api/ui_edit.rs` the UI Screens tool's edits.
+  `api/ui_edit.rs` the UI Screens tool's edits. `api/sound_measure.rs`
+  (with `sound_measure/meter.rs`), `api/ui_check.rs` and `api/checks.rs`:
+  the content checks.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
@@ -1144,6 +1245,15 @@ system temp directory):
   document, render (refused in a Git checkout), save as and re-open; and
   the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
+- the content checks on invented signals and layouts: a half-scale
+  997 Hz sine reads -6.02 dBFS peak and -9.03 dBFS RMS and LUFS, a
+  stereo one 3 dB louder, silence -120, a full-scale square every sample
+  clipped, a WAV file against the invented map's sound `loud`
+  (`api::sound_measure::tests`); a text past the title-safe area, one
+  too long for its rect and two on each other named `ui.layout.unsafe`,
+  `ui.layout.fit` and `ui.layout.text_overlap` (`api::ui_check::tests`);
+  `check.run`'s order, counts and skips over invented checks
+  (`api::checks::tests`);
 - `view.layers` validates changes atomically, shares the Halo 1 menu switch,
   and changes the invented map’s snapshot pixels on a machine with a GPU;
 - `volume.list` reads the invented map's two volumes, kill trigger and BSP
