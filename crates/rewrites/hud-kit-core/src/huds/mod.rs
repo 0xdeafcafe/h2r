@@ -3,6 +3,7 @@
 
 use crate::model::Describe;
 
+pub mod forge_readout;
 pub mod pill_block;
 pub mod superbounce;
 pub mod superbounce_all;
@@ -15,6 +16,7 @@ pub fn all() -> Vec<Box<dyn Describe>> {
     vec![
         Box::new(superbounce::Superbounce),
         Box::new(superbounce_readout::Readout),
+        Box::new(forge_readout::Readout),
     ]
 }
 

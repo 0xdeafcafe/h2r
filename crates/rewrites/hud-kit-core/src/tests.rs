@@ -492,3 +492,265 @@ fn a_notification_is_one_line_of_at_most_63_units() {
     assert_eq!(message_fault(&medal), None);
     assert!(message_fault("two\nlines").is_some());
 }
+
+/// The Forge readout (`huds::forge_readout`, slice H1): its states, the
+/// texts a view gives, the widest each row may be and what an overrun
+/// drops.
+mod forge_readout_tests {
+    use crate::huds::forge_readout::{self as fr, Readout, View};
+    use crate::huds::superbounce_readout as sb;
+    use crate::model::*;
+    use crate::Mode;
+
+    const NAMES: [&str; 14] = [
+        "idle",
+        "aim-object",
+        "aim-spawner",
+        "aim-starting-point-red",
+        "aim-goal-hill",
+        "aim-teleporter",
+        "aim-other-game-type",
+        "hold-allowed",
+        "hold-refused",
+        "hold-snapped",
+        "refused",
+        "budget-low",
+        "near-full",
+        "zone",
+    ];
+
+    fn shown(v: &Values, id: &str) -> Option<String> {
+        let x = v.get(id).unwrap();
+        x.shown.then(|| x.text.clone())
+    }
+
+    fn view(name: &str) -> View {
+        fr::views().into_iter().find(|(n, _)| *n == name).unwrap().1
+    }
+
+    fn chars(s: &str) -> usize {
+        s.chars().count()
+    }
+
+    /// The checks the core can make without a disc: the model is sound,
+    /// every state values every element once, the states are the
+    /// document's, and the world check's rules hold (a pose names a
+    /// world mark and has no fault; a world mark a state shows has a
+    /// pose and one it hides has none). The rest (fit, glyphs, frame,
+    /// own, modes, drawn) are `h2 hud check`'s, on the disc.
+    #[test]
+    fn every_state_passes_every_check() {
+        let h = fr::hud();
+        assert!(h.problems().is_empty(), "{:?}", h.problems());
+        let states = Readout.states();
+        let names: Vec<_> = states.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, NAMES);
+        assert!(Readout.multiplayer_only().is_some());
+        for (name, v) in &states {
+            assert!(v.layout_problems(&h).is_empty(), "{name}: {:?}", v.layout_problems(&h));
+            let poses = Readout.world(name);
+            for (id, pose) in &poses {
+                let e = h.element(id).unwrap_or_else(|| panic!("{name}: a pose for {id}"));
+                assert!(e.kind.world().is_some(), "{name}: {id} is not a world mark");
+                assert_eq!(pose.fault(), None, "{name} {id}");
+            }
+            for e in h.elements.iter().filter(|e| e.kind.world().is_some()) {
+                let has_pose = poses.iter().any(|(id, _)| *id == e.id);
+                assert_eq!(v.get(e.id).unwrap().shown, has_pose, "{name} {}", e.id);
+            }
+            for e in h.elements.iter().filter(|e| e.kind.world().is_none()) {
+                assert_ne!(v.get(e.id).unwrap().style, Style::Go, "{name} {}", e.id);
+            }
+        }
+    }
+
+    /// The rows sit at the superbounce readout's three places, bottom
+    /// left, fullscreen only.
+    #[test]
+    fn the_rows_are_the_superbounce_readouts() {
+        let h = fr::hud();
+        for (id, y) in [
+            (fr::NAME_ROW, sb::SPEED_UP),
+            (fr::FACTS, sb::FALL_UP),
+            (fr::GUIDE, sb::INFO_UP),
+        ] {
+            let at = h.element(id).unwrap().at;
+            assert_eq!(at.anchor, Anchor::BottomLeft, "{id}");
+            assert_eq!((at.half, at.quarter), (None, None), "{id}");
+            assert_eq!(at.offset(Mode::Full), Some((sb::LEFT, y)), "{id}");
+        }
+    }
+
+    /// A table of states and the three texts their views give (`None`
+    /// is hidden).
+    #[test]
+    fn a_view_gives_its_three_texts() {
+        let up = '\u{e2b0}';
+        let spawner = "Item spawner  Respawn 30 s  Slayer, CTF";
+        let held = "X 12.34  Y -5.60  Z 1.20  Yaw 90";
+        let goal = "Goal  Hill  Neutral  Order 2";
+        let some = |s: &str| Some(s.to_owned());
+        type Row = (&'static str, Option<&'static str>, Option<&'static str>, Option<String>);
+        let table: [Row; 14] = [
+            ("idle", None, None, None),
+            ("aim-object", Some("Crate, Metal, Small"), Some("Object  Scenery"), some("From the map, moved")),
+            ("aim-spawner", Some("Rocket Launcher"), Some(spawner), some("From the map")),
+            (
+                "aim-starting-point-red",
+                Some("Starting point"),
+                Some("Starting point  Red team  Slayer, CTF"),
+                some("From the map"),
+            ),
+            ("aim-goal-hill", Some("Hill 2 corner 3"), Some(goal), some("From the map, changed")),
+            ("aim-teleporter", Some("Teleporter"), Some("Teleporter  Sender  Channel 3"), some("Added")),
+            ("aim-other-game-type", Some("Rocket Launcher"), Some(spawner), some("Not in Slayer")),
+            (
+                "hold-allowed",
+                Some("Rocket Launcher"),
+                Some(held),
+                Some(format!("{up} 0.85 m  Snap off  World axes")),
+            ),
+            ("hold-refused", Some("Rocket Launcher"), Some(held), some("Too close to another spawner")),
+            (
+                "hold-snapped",
+                Some("Rocket Launcher"),
+                Some(held),
+                Some(format!("{up} 0.50 m  Snap 0.25  World axes")),
+            ),
+            ("refused", Some("Rocket Launcher"), Some(held), some("Item spawners are full (100).")),
+            ("budget-low", Some("Rocket Launcher"), Some(held), some("3 item spawners left")),
+            ("near-full", None, None, None),
+            ("zone", Some("Hill 2 corner 3"), Some(goal), some("From the map, changed")),
+        ];
+        assert_eq!(table.iter().map(|r| r.0).collect::<Vec<_>>(), NAMES);
+        for (name, n, f, g) in &table {
+            let v = fr::values(&view(name));
+            assert_eq!(shown(&v, fr::NAME_ROW).as_deref(), *n, "{name} name");
+            assert_eq!(shown(&v, fr::FACTS).as_deref(), *f, "{name} facts");
+            assert_eq!(shown(&v, fr::GUIDE), *g, "{name} guide");
+        }
+    }
+
+    /// A height under the ground has the down arrow; the local axes are
+    /// named; a budget of one is singular and a budget with nothing held
+    /// says nothing.
+    #[test]
+    fn the_hold_line_and_the_budget_line_have_their_words() {
+        let mut v = view("hold-snapped");
+        let h = v.hold.as_mut().unwrap();
+        h.height = -0.4;
+        h.axes = fr::Axes::Local;
+        assert_eq!(fr::guide_text(&v).unwrap(), "\u{e2b4} 0.40 m  Snap 0.25  Local axes");
+        let mut v = view("budget-low");
+        v.budget.as_mut().unwrap().left = 1;
+        assert_eq!(fr::guide_text(&v).unwrap(), "1 item spawner left");
+        v.hold = None;
+        assert_eq!(fr::guide_text(&v).unwrap(), "From the map");
+    }
+
+    /// The marks: what each state shows of them.
+    #[test]
+    fn the_marks_follow_the_thing_and_the_hold() {
+        let marks = |name: &str| {
+            let v = fr::values(&view(name));
+            let on: Vec<&str> = fr::MARKS.iter().copied().filter(|id| v.get(id).unwrap().shown).collect();
+            (on, v)
+        };
+        assert_eq!(marks("idle").0, Vec::<&str>::new());
+        assert_eq!(marks("aim-spawner").0, [fr::SEL]);
+        assert_eq!(marks("aim-starting-point-red").0, [fr::SEL, fr::RING, fr::FACE]);
+        let (on, v) = marks("hold-allowed");
+        assert_eq!(on, [fr::SEL, fr::UNDER, fr::FROM]);
+        assert_eq!(v.get(fr::SEL).unwrap().style, Style::Go);
+        assert_eq!(v.get(fr::FROM).unwrap().style, Style::Dim);
+        let (_, v) = marks("hold-refused");
+        assert_eq!(v.get(fr::SEL).unwrap().style, Style::Inactive);
+        // On the ground there is nothing under it.
+        assert!(!marks("refused").0.contains(&fr::UNDER));
+        let (_, v) = marks("near-full");
+        assert!(fr::NEARS.iter().all(|id| v.get(id).unwrap().shown));
+        let (_, v) = marks("idle");
+        let near: Vec<_> = fr::NEARS.iter().take(3).map(|id| shown(&v, id).unwrap()).collect();
+        assert_eq!(near, ["Spawn Red", "Flag Blue", "Hill 2"]);
+        assert_eq!(v.get(fr::NEARS[2]).unwrap().style, Style::Inactive);
+        assert!(!v.get(fr::NEARS[3]).unwrap().shown);
+    }
+
+    /// No text is wider than its `longest`, by its characters (the
+    /// `fit` check measures the pixels on the disc's font): in every
+    /// state, in the widest numbers and in free text over a row.
+    #[test]
+    fn no_text_is_wider_than_its_longest() {
+        let h = fr::hud();
+        let check = |what: &str, v: &Values| {
+            for e in &h.elements {
+                let x = v.get(e.id).unwrap();
+                if let (true, Some(l)) = (x.shown, e.kind.longest()) {
+                    assert!(chars(&x.text) <= chars(l), "{what} {}: {:?}", e.id, x.text);
+                }
+            }
+        };
+        for (name, v) in Readout.states() {
+            check(name, &v);
+        }
+        // The widest numbers, and numbers that are not.
+        let mut v = view("hold-snapped");
+        let hold = v.hold.as_mut().unwrap();
+        hold.position = [-1e9, f32::NAN, 1e9];
+        hold.height = f32::INFINITY;
+        v.target.as_mut().unwrap().yaw = 1e9;
+        let widest = fr::values(&v);
+        check("widest numbers", &widest);
+        assert_eq!(shown(&widest, fr::FACTS).unwrap(), "X -999.99  Y 0.00  Z 999.99  Yaw 280");
+        // Free text over a row's width: words dropped whole.
+        let mut v = view("refused");
+        v.refusal = Some("This map has no room for another item spawner of any kind at all".into());
+        v.target.as_mut().unwrap().name = "A very long name from a tag that goes on and on and on".into();
+        v.near = vec![fr::Near {
+            label: "Assault Rifle Spawner".into(),
+            team: Some("Neutral".into()),
+            in_game_type: true,
+        }];
+        let long = fr::values(&v);
+        check("long text", &long);
+        assert_eq!(shown(&long, fr::GUIDE).unwrap(), "This map has no room for another item");
+        assert_eq!(shown(&long, fr::NAME_ROW).unwrap(), "A very long name from a tag");
+        assert_eq!(shown(&long, fr::NEARS[0]).unwrap(), "Assault Rifle");
+    }
+
+    /// An overrun drops the last fact whole, last first, and never
+    /// cuts one; the kind stays.
+    #[test]
+    fn an_overrun_drops_the_last_fact_whole() {
+        let start = |team: &str, types: &str| {
+            let mut v = view("aim-starting-point-red");
+            v.target.as_mut().unwrap().thing = fr::Thing::StartingPoint {
+                team: team.into(),
+                types: types.into(),
+            };
+            fr::facts_text(&v).unwrap()
+        };
+        // Fits: all three.
+        assert_eq!(start("Red team", "Slayer, CTF"), "Starting point  Red team  Slayer, CTF");
+        // The game types overrun: they go, the team stays.
+        let types = "Slayer, CTF, Oddball, KotH, Assault, Juggernaut";
+        assert_eq!(start("Neutral team", types), "Starting point  Neutral team");
+        assert_eq!(start("Red team", types), "Starting point  Red team");
+        // The team alone overruns too: the kind stays, nothing is cut.
+        let team = "A team whose name is far too long for the row";
+        assert_eq!(start(team, types), "Starting point");
+        for t in [start("Red team", types), start(team, types)] {
+            assert!(!t.contains("..."), "{t}");
+            assert!(chars(&t) <= chars(fr::FACTS_LONGEST), "{t}");
+        }
+        // Held: the widest position and the heading still fit; a fact
+        // that did not would go heading first (`fit_facts`).
+        let mut v = view("hold-allowed");
+        v.hold.as_mut().unwrap().position = [-999.0, -999.0, -999.0];
+        assert_eq!(fr::facts_text(&v).unwrap(), "X -999.00  Y -999.00  Z -999.00  Yaw 90");
+        assert_eq!(fr::fit_facts(&["X 1".into(), "Y".repeat(50)], fr::FACTS_LONGEST), "X 1");
+        // Empty facts are skipped, so a spawner with no game types
+        // leaves no gap.
+        assert_eq!(start("Red team", ""), "Starting point  Red team");
+    }
+}
