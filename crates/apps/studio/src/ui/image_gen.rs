@@ -157,7 +157,7 @@ fn body(ui: &Ui, app: &mut App, dialogs: bool, actions: &mut Vec<Action>) {
         return;
     };
     let report = job.report();
-    theme::section(ui, &format!("Image {id}"));
+    theme::section(ui, format!("Image {id}"));
     match job.state_name() {
         "running" => ui.text(format!(
             "Generating... {} s",
