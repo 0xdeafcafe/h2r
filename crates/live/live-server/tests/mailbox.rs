@@ -486,8 +486,8 @@ async fn text_messages_show_in_the_log_only_to_their_two_accounts() {
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
     let kinds = |u: Option<&User>| {
         let h = &h;
+        let headers: Vec<_> = u.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
         async move {
-            let headers: Vec<_> = u.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
             let r = h
                 .call(Method::GET, "/v1/events", &headers, Body::empty())
                 .await;
