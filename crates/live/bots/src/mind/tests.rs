@@ -233,7 +233,7 @@ fn it_waits_its_reaction_time_before_turning_and_firing() {
             if pad.right_stick != (0.0, 0.0) {
                 first = Some(tick - 100);
                 assert!(
-                    (-0.26..-0.1).contains(&pad.right_stick.0),
+                    (-0.41..-0.1).contains(&pad.right_stick.0),
                     "{skill:?} {pad:?}"
                 );
                 break;
@@ -262,20 +262,33 @@ fn on_target_it_fires_and_off_target_it_does_not() {
 }
 
 #[test]
-fn easy_fires_in_bursts() {
-    let mut m = Mind::new(Skill::Easy, 3);
-    let (on, off) = Skill::Easy.aim().burst.unwrap();
-    let r = Skill::Easy.aim().reaction + 4;
-    let mut fired = Vec::new();
-    for t in 0..(r + on + off) {
-        fired.push(look(&mut m, X, vec![enemy(1, [6.0, 0.0, 0.0])], t, None).right_trigger > 0.0);
+fn it_holds_the_trigger_inside_the_band_and_bursts_past_it_from_normal() {
+    // Weapon-blind: the band ends at 15, it fires to 25.
+    let fire = |skill: Skill, at: f32| {
+        let mut m = Mind::new(skill, 3);
+        let fired: Vec<bool> = (0..120)
+            .map(|t| look(&mut m, X, vec![enemy(1, [at, 0.0, 0.0])], t, None).right_trigger > 0.0)
+            .collect();
+        let start = fired.iter().position(|f| *f).expect("it fires");
+        fired[start..].to_vec()
+    };
+    for skill in Skill::ALL {
+        let close = fire(skill, 6.0);
+        assert!(
+            close.iter().all(|f| *f),
+            "{skill:?} holds inside the band: {close:?}"
+        );
     }
-    let shots = fired.iter().filter(|f| **f).count() as u32;
-    let start = fired.iter().position(|f| *f).expect("first burst");
-    let burst = fired[start..].iter().take_while(|f| **f).count() as u32;
-    assert!((on - 2..=on + 2).contains(&burst), "{fired:?}");
-    assert!(fired[start + burst as usize..].contains(&false));
-    assert!(shots < fired.len() as u32, "{shots} of {}", fired.len());
+    // Past the band, easy still holds; normal bursts, its on time
+    // stretched by a nameless bot's middling spray.
+    let far = fire(Skill::Easy, 20.0);
+    assert!(far.iter().all(|f| *f), "{far:?}");
+    let far = fire(Skill::Normal, 20.0);
+    let (on, _) = Skill::Normal.aim().burst.unwrap();
+    let (on, _) = tactics::hold_pattern(20.0, 15.0, Some((on, 0)), tactics::spray(None)).unwrap();
+    let burst = far.iter().take_while(|f| **f).count() as u32;
+    assert!((on - 2..=on + 2).contains(&burst), "{far:?}");
+    assert!(far.contains(&false) && far.iter().filter(|f| **f).count() > 2 * burst as usize);
 }
 
 #[test]

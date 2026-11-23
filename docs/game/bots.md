@@ -936,7 +936,8 @@ bot that is shot fights back. A brain makes a fresh mind each match
 does not start it. A bare `Mind::new` (the tests') has none.
 
 A bot with a known grenade in stock can throw at 3–12 world units. It
-looks for a cluster, an enemy running toward it, or the last position
+looks for a cluster, an enemy within 6 units walking at it (faster than
+0.8 a second, heading within about 37° of it: `grenades::Mark::closing_on`), or the last position
 where an enemy disappeared within two seconds. Both chasing and holding
 the corner present that opportunity. In these short windows Normal has
 about one chance per second before temperament, collision, aiming and the
@@ -944,7 +945,8 @@ eight-second cooldown. Otherwise a single visible target gets the skill's
 ordinary per-minute rate, tripled on Normal and up when pushing with a
 short gun. The thrower checks the predicted blast and checks the actual
 aim and friendly positions again before pressing LT. A dual-wielding bot
-can drop the left gun to open its throwing hand.
+drops the left gun to open its throwing hand only against a group, or
+when the left gun is dry with nothing to load.
 
 #### Personality and temperament
 
@@ -1025,10 +1027,12 @@ on a stick.
 | motor/controller delay (ticks) | 2 | 2 | 2 | 1 |
 | continuous delay (ms at 30 Hz) | 167 | 167 | 133 | 100 |
 | button-edge timing σ (ms) | 8 | 6 | 4.5 | 3 |
-| tracking error (std. dev. of the angle) | large | medium | small | very small |
-| lead (fraction of the needed lead) | 0.3 | 0.6 | 0.85 | 1.0 |
-| flick overshoot | large | some | little | little |
-| recoil and burst control | sprays | bursts | paced | paced |
+| tracking error (std. dev. of the angle at 5 units, rad) | 0.10 | 0.06 | 0.035 | 0.02 |
+| lead (fraction of the needed lead: flight and own delay) | 0.3 | 0.6 | 0.85 | 1.0 |
+| turn asked per radian of error (rad/s) | 4.8 | 7.5 | 10.5 | 13.5 |
+| flick overshoot (mean, test plant) | 10% | 7% | 6% | 5% |
+| automatic inside the gun's band | held | held | held | held |
+| automatic past the band (ticks on, off) | held | 24, 8 | 16, 8 | 12, 8 |
 | grenades (arc solve) | rarely, poor | sometimes | often, good | often, good |
 | weapon choice by range | clear mismatches | yes | yes | yes |
 
@@ -1046,11 +1050,70 @@ tick of scatter on a button edge. Later decisions on the same target use
 the same continuous pipeline. A brief occlusion keeps the reaction
 clock and clears the velocity sample.
 
-The right thumb takes several ticks to cross the stick well. Large flicks
-carry a little past the target before settling. Small correlated errors and
-the occasional larger misread vary by skill. Fast crossings leave more
-tracking lag than slow ones. Both virtual pads use the game's stick response, look acceleration and
-aim assist at sensitivity 3 (§5.1).
+Both virtual pads use the game's stick response, look acceleration and
+aim assist at sensitivity 3 (§5.1). The hand steers by a model of that
+response (`mind::look::RESPONSE`): on each axis, stick travel against
+turn rate, piecewise linear from the 0.13 dead zone. Its rows are seeded
+from the one measured point, about 9°/s in yaw and 5°/s in pitch at half
+stick before aim assist (§5.1), and the nominal 3 rad/s at full yaw
+stick, with pitch at 5/9 of yaw throughout. The full-stick ends are a
+guess until a stick sweep on each axis, read from `sim.player.list`'s
+`aim`, replaces the rows. The hand asks for the skill's `gain` × 3 rad/s
+per radian of error and reads the stick for that off the table; under
+0.012 rad/s the thumb rests. The right thumb takes several ticks to cross
+the stick: the skill's travel a tick (0.15 to 0.25 of the stick), and on a
+tracked target more than 0.3 rad off, 0.4 a tick at every skill
+(`mind::look::FLICK_STEP`), under the pad's 0.45, so a large flick is at
+full stick on its third tick.
+
+On a still target the thumb settles instead of correcting every tick
+(`mind::look::rest_band`). Once the error the hand sees is under
+`clamp(0.2 / d, 0.004, 0.04)` radians it lets the stick go, and takes it
+up again only past twice that. A target whose bearing moves faster than
+0.05 rad/s gets no rest. A steady hand mostly rests on a still target;
+a shaky one's own error keeps it outside the band and correcting, as a
+player's thumb stays still on a target it is on.
+
+The view is late. The mind sees an observation `perception_ticks` old,
+its own facing included, and a report lands `motor_ticks` later. The hand
+keeps the modelled turn of its last 16 reports and adds the turn of the
+last `perception_ticks + motor_ticks` of them to the facing the view
+shows (`Hand::ahead`) before it measures the error, so it does not swing
+past a target it has already turned to. The same predicted facing turns
+the walk into the left stick and aims a look with no target. A small
+integral term takes off a standing offset that the table's error leaves:
+it gathers the error the hand sees at 1/s while that error is under
+0.1 rad and the thumb is not resting, adds at most 0.05 rad, and clears
+when the target is lost.
+
+Large flicks carry a little past the target before settling. Small
+correlated errors and the occasional larger misread vary by skill.
+`error` is their spread at 5 world units. Further out the angle shrinks
+to `error × (0.2 + 0.8 × 5 / d)` (`mind::look::spread_scale`), so a hand
+misses a far target by a smaller angle and a larger distance.
+
+The aim point leads a moving target by the skill's `lead` fraction of
+its velocity times the shot's flight time plus the hand's own delay,
+`perception_ticks + motor_ticks` (`mind::look::lead_time`). The hand
+adds no lag of its own.
+
+**The fire cone** (`mind::look::fire_cone`). The trigger is pulled while
+the aim is within `clamp(0.35 × (1 + looseness) / d, 0.012, fire_cone + 0.3)`
+radians of the aim point: half a body's width as an angle, wider for a
+forgiving gun (looseness as in §3.4.1's inputs: sniper 0, precise 0.15,
+blast and unknown 0.5, spray 0.7, shotgun and sword 1). With a rifle that
+is about 1.2° at 20 units and 7.7° at 3. The skill's `fire_cone` only caps
+it at point blank.
+
+**Holding the trigger** (`tactics::hold_pattern`, `tactics::Hold`). An
+automatic inside its gun's band is held until the target or the magazine
+is gone, at every skill. Past the band Easy holds anyway; Normal, Heroic
+and Legendary fire the skill's bursts, the on time 0.7 to 1.5 times the
+table's as the name's spray (`tactics::spray`: half its aggression, half
+its reaction jitter) runs from 0 to 1. Once down, a held trigger stays
+down while the aim is within 2.2 fire cones, and through 4 ticks outside
+that or with the shot blocked or out of range. A burst let go before its
+end is finished by the next press, without waiting out its gap.
 
 At the controller boundary, each stick stays within its unit circle and
 can travel at most 0.45 stick radii per tick. A full reversal takes at
@@ -1069,13 +1132,17 @@ only land on the current tick. Two edges on the same boundary can erase a
 short tap. Sticks use the nominal motor delay. The same seed, samples and
 tuning reproduce the same input.
 
+A tuning file's `burst_on` and `burst_off` set the bursts past the band;
+`burst = false` holds the trigger at every range, and `burst = true` on
+Easy uses Normal's 24 on, 8 off.
+
 `bots::tuning::Tuning` exposes `perception_ticks`, `motor_ticks`,
 `button_sigma_ms`, `stick_step`, `thumb_switch_ticks`, `phantom_ping_ms`
 and `phantom_jitter_ms`. The sim accepts these in bot tuning files
 ([sim.md](../runtime/sim.md#bot-parameters-from-a-file)).
 
-Lead comes from the target's velocity and the weapon's projectile speed,
-read from the tag at load; hitscan needs no lead. A grenade's throw is
+Lead comes from the target's velocity, the weapon's projectile speed,
+read from the tag at load, and the hand's delay. A grenade's throw is
 flown against the map's collision (bounces, the fuse, a plasma sticking)
 and its aim searched until it goes off at the target; the bot throws only
 when one does (built: `bots::grenades`, "Built: weapon skill" in §10).
@@ -1204,26 +1271,36 @@ units clamped to −1..1. The hand maps `[yaw, pitch]` to the right stick
 No fire gate: the trigger stays with the shared fire cone, so the
 comparison measures aim alone.
 
-The pending-turn input is what separates the two models most. A view is
-`perception_ticks` old and a report lands `motor_ticks` later: five ticks
-at easy and normal, four at heroic, three at legendary. The code aim
-steers on the old view as if it were current. The net subtracts the turn
-it has already asked for. In a scratch model of the nominal stick curve
-with that delay, written while the weights were designed, the code aim
-swung past a still target and at heroic and legendary gain kept swinging.
-No test asserts that and no game run has shown it: the real stick
-response has look acceleration and aim assist that the nominal model
-leaves out. The comparison is what says.
+A view is `perception_ticks` old and a report lands `motor_ticks` later:
+five ticks at easy and normal, four at heroic, three at legendary. Both
+models count the turn they have asked for that the view does not show
+yet. The net takes 0.9 of it off its error, counted on the nominal radial
+curve its weights were designed against (3 rad/s at full stick, about
+54°/s at half). The code takes all of it off, counted on the response
+table (§3.4). The 2026-11-20 comparison ran before the code counted it:
+that code steered on the old view as if it were current, and in the test
+plant a 0.95 rad flick swung 37–54% past a still target where the code
+now goes 5–10% past.
 
 **Tests.** `cargo test -p bots aim_net` covers the network alone: the
 same bits for the same inputs, no stick for no error or inside the dead
 band, sign and axis, saturation, the gain order by skill, each named
 unit's effect, and the table's shape. `cargo test -p bots look` runs both
-models through one kinematic harness (the nominal stick curve, the view
-as late as the skill's delays): determinism, the code aim untouched by
-the switch, the net landing a 0.95 rad flick and settling sooner and
-closer at each higher skill, tracking a strafing and a crossing target,
-and the mood scaling of its error.
+models through one kinematic harness (the view as late as the skill's
+delays; the code on the response table, the net on the nominal curve):
+determinism, the code aim untouched by the switch, the net landing a
+0.95 rad flick and settling sooner and closer at each higher skill,
+tracking a strafing and a crossing target, and the mood scaling of its
+error. The code aim's own tests run on a plant with the response table
+and the late view: a flick that does not swing past
+(`a_flick_on_a_late_view_does_not_swing_past`), pitch held as well as yaw
+with a height gap, the error's angle shrinking with range, a
+strafing target led for the hand's delay, the thumb resting on a still
+target and not on a crossing one
+(`on_a_still_target_the_thumb_rests_and_on_a_moving_one_it_tracks`), and
+a large flick at full stick by its third tick
+(`a_large_flick_takes_the_thumb_to_full_stick_at_once`). The code's
+thumb, resting on target, is no busier than the net's on a flick.
 
 **The comparison.**
 
@@ -1266,7 +1343,7 @@ legendary. A net that makes easy bots sharp has lost the difficulty
 ladder whatever its K/D.
 
 The loser is deleted, not kept behind the switch. If the net wins, the
-default becomes `net`, then the code's tracking lag and flick offset go.
+default becomes `net`, then the code's flick offset and integral term go.
 If the code wins, `bots::aim_net`, the switch and the hand's net state
 go. The aim-motion rows and `arm_swap` stay either way.
 
@@ -1384,8 +1461,9 @@ it shoots to (world units):
 | sniper | 12 to 60 | 0 to 80 | 5 |
 | blast | 5 to 25 | 2.5 to 35 | 5 |
 
-An identified SMG fires within its aim-assist reach, bounded to 4.5–9
-world units. A plasma rifle or plasma pistol (by identity), or any
+An identified SMG keeps its target within its aim-assist reach, bounded
+to 4.5–9 world units, and fires to 1.6 times that (14.4 at most), in
+bursts past the band from Normal up (§3.4). A plasma rifle or plasma pistol (by identity), or any
 automatic whose projectile is slower than 150 world units a second,
 keeps its target within 6 and fires to 10 at most
 (`weapons::SLOW_BOLT_BAND`, `SLOW_BOLT_FIRE`): a strafing target steps out
@@ -1414,8 +1492,10 @@ a second of observed motion, capped at two units of advance.
    the other gun alone can reach or it improves relative range fit by more than 0.3
    (0.6 on Easy). With similarly suitable guns the bot keeps its choice;
 5. **reload**: calm (no enemy in view for 1.5 s) and under 35% of a
-   magazine with a reserve; or a lull (no enemy in view for 0.5 s) and
-   under 60%; or the enemy beyond the gun's range and under 35%;
+   magazine with a reserve; or calm, no enemy in view at all and under
+   90% (`arms::TACTICAL_RELOAD`: the reload after a fight); or a lull
+   (no enemy in view for 0.5 s) and under 60%; or the enemy beyond the
+   gun's range and under 35%;
 6. no enemy in view, calm or a lull, and no power weapon (rating 4 and
    up) carried: a power weapon within 25 it does not carry: **seek** it;
    holding the better of two guns, **switch** first, so the one dropped
@@ -1473,9 +1553,12 @@ each life. Staying near a declined gun or seeing it again keeps that
 choice. A respawned pickup gets a fresh roll. An active plasma-pistol
 combo or grenade throw keeps priority. In combat they take a pair only
 within pickup distance and inside both guns' effective bands. Either hand can charge the pistol.
-Against a group, a target beyond the left gun's band, or a recently lost
-target, the thrower first solves a safe grenade arc. It taps Y and waits
-for the left slot to clear before using the grenade trigger.
+Only against a group (another enemy within 2.5 of the target), or with
+the left gun dry and nothing to load, does the bot trade the left gun for
+a grenade: the thrower first solves a safe grenade arc, taps Y and waits
+for the left slot to clear before using the grenade trigger. A lone enemy
+walking in, out of the left gun's band or lost for a moment keeps both
+guns on it.
 
 The placement table has no last-taken timestamp. The host keeps the last
 successful take per placement, with these two read-only gameplay observers:
@@ -2683,7 +2766,8 @@ and B for the bomb, are **[guess]** in the phantom action path pending a
 game run. The phantom lane already maps these pad buttons and triggers
 to actions (§5.1). [Original Xbox manual](https://halo.wiki.gallery/images/7/76/H2_Human_Manual.pdf)
 
-A gunner aims and shoots (the gun's trigger held in the skill's bursts); a
+A gunner aims and shoots (the gun's trigger held within 15 units and in
+the skill's bursts beyond, §3.4); a
 passenger shoots its own gun as on foot. With nothing to shoot they look
 where the enemy was last seen, else ahead.
 
@@ -5083,11 +5167,11 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      | | Easy | Normal | Heroic | Legendary |
      |---|---|---|---|---|
      | reaction (ticks; 30 a second) | 14 | 10 | 7 | 5 |
-     | error spread (radians) | 0.10 | 0.06 | 0.035 | 0.02 |
+     | error spread (radians, at 5 units) | 0.10 | 0.06 | 0.035 | 0.02 |
      | lead | 0.3 | 0.6 | 0.85 | 1.0 |
      | stick gain | 1.6 | 2.5 | 3.5 | 4.5 |
-     | fires within | 10° | 7° | 5° | 4° |
-     | trigger | 12 on, 18 off | 24 on, 8 off | held | held |
+     | fire cone cap at point blank | 10° + 0.3 rad | 7° + 0.3 rad | 5° + 0.3 rad | 4° + 0.3 rad |
+     | automatic past its band | held | 24 on, 8 off | 16 on, 8 off | 12 on, 8 off |
      | grenades a minute | 0.5 | 1 | 2 | 3 |
 
      Until its reaction time has passed the bot stands still and does not
@@ -5096,7 +5180,8 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      every 8 s. While fighting it strafes, kept on the nav mesh.
    - Tests (`cargo test -p bots`): the skills get better in order; a wall
      hides an enemy, and so does the bot's back; the reaction time before
-     turning and firing; firing on target and not off it; Easy's bursts;
+     turning and firing; firing on target and not off it; the trigger held
+     inside the band and burst past it;
      more lead at a higher skill, with a fixed seed; chasing the last
      known position, then forgetting it; roaming to a reachable polygon; a
      teammate never a target; a dead bot lets go of every input; grenades
@@ -5119,7 +5204,7 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
         strafes and fires. Get close: it melees. At mid range it sometimes
         throws a grenade.
      6. Repeat with Difficulty set to Easy and Legendary:
-        Easy is slow to react, sprays in bursts and misses a lot; Legendary
+        Easy is slow to react, sprays and misses a lot; Legendary
         turns fast and hits most shots.
      7. Run Ivory Tower and Midship too (jumps and drops). Note any spot a
         bot gets stuck in for good, with the map and roughly where.
@@ -5513,8 +5598,9 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      carbine, shotgun, sniper, rockets, the plasma pistol's quick
      shots) pulls the trigger for 2 ticks and let go, every `30 / rate` ticks (at least
      4; 8 when the rate is unknown) plus the skill's pace (Easy 12,
-     Normal 6, Heroic 3, Legendary 1 tick). Automatics keep the skill's
-     bursts. A blade uses the sword slash and lunge inputs above.
+     Normal 6, Heroic 3, Legendary 1 tick). Automatics are held inside
+     the gun's band and burst past it from Normal up (§3.4). A blade uses
+     the sword slash and lunge inputs above.
    - **No dry fire.** The trigger stays up with an empty magazine or a
      dead battery; it reloads or switches instead. It fires only in the
      weapon's range: a shotgun no further than 8, rockets never nearer
@@ -5554,6 +5640,7 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      `rockets_are_put_away_close_up`,
      `an_empty_magazine_in_a_fight_switches_when_that_is_faster`,
      `a_lull_reloads_a_half_empty_magazine`,
+     `calm_with_nobody_in_view_tops_up_a_used_magazine`,
      `an_enemy_out_of_reach_is_time_to_reload`,
      `a_power_weapon_nearby_is_taken_and_the_worse_gun_dropped`,
      `dry_it_goes_for_the_better_gun_a_little_further_off`,
@@ -5637,7 +5724,8 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      (`cone_range`, `pull_range`): a magnum, shotgun, plasma or
      rifle is good to its reach (kept within half and one and a half
      times its role's band end) and fires to 1.6 times that. An identified
-     SMG closes to its effective band, capped at 9 units, before firing. A
+     SMG closes to its effective band (4.5 to 9 units) and fires to 1.6
+     times it. A
      sniper or splash weapon starts with its role's range. The first
      barrel's projectile caps all firearm ranges at the nearer positive
      value of its air damage endpoint and maximum travel. With both
@@ -5669,8 +5757,13 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
    - **Dual wielding** (unit `+0x213`, the left hand's slot, traced in
      docs/live/live-gamestate.md and `boot::touch_glue`). The left gun
      reads as `Arms::left`; the left trigger fires it with the right's
-     aim (a charge gun charges and lets go on target, a once-per-pull
-     gun is pulled at its rate, an automatic held); no grenades then.
+     aim (`weapons::LeftHand`: a charge gun charges and lets go on target,
+     a once-per-pull gun is pulled at its rate). An automatic in the left
+     hand goes down and up with the right trigger when the right is held
+     on an automatic too, and otherwise on the right's hold pattern and
+     hysteresis (§3.4). An empty left magazine with rounds in reserve gets
+     one short pull to start its reload, again after 1.5 s if it is still
+     empty. No grenades then.
      The pickup policy, hold-Y action and grenade trade are traced in §3.6.
    - Tests: `-p bots --lib grenades` (`a_grenade_falls_as_gravity_says`,
      `a_frag_bounces_on_and_goes_off_its_fuse_after_the_first_touch`,

@@ -147,11 +147,19 @@ impl Mind {
             let held = me.arms.and_then(|a| a.held);
             // A passenger shoots its own gun; the driver and a gunner the
             // vehicle's.
+            // Held inside the gun's band (a vehicle's: the weapon-blind
+            // one), in bursts beyond it (tactics::hold_pattern).
+            let spray = tactics::spray(self.profile_weights());
             let (pull, in_range, speed_of_shot) = if riding.role == SeatRole::Passenger {
-                let shot = Shot::of(held, me.arms.is_some(), &style, aim.burst, SHOT_SPEED);
+                let band_far =
+                    held.map_or(crate::arms::Role::Unknown.band().1, |g| g.reach().band.1);
+                let hold = tactics::hold_pattern(dist, band_far, aim.burst, spray);
+                let shot = Shot::of(held, me.arms.is_some(), &style, hold, SHOT_SPEED);
                 (shot.pull, shot.in_range(dist) && shot.ready, shot.speed)
             } else {
-                (Pull::Hold(aim.burst), dist < FIRE_RANGE, SHOT_SPEED)
+                let band_far = crate::arms::Role::Unknown.band().1;
+                let hold = tactics::hold_pattern(dist, band_far, aim.burst, spray);
+                (Pull::Hold(hold), dist < FIRE_RANGE, SHOT_SPEED)
             };
             let projected = add(target, scale(vel, aim.lead * dist / speed_of_shot));
             let clear = |at| map.is_none_or(|m| m.walls.clear(eye, at));
@@ -178,7 +186,10 @@ impl Mind {
             let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
             let guns = !driver || spec.driver_guns;
             if guns && in_range && shot_clear {
-                if self.fight.trigger(p.tick, pull, off < cone) {
+                if self
+                    .fight
+                    .trigger(p.tick, pull, off < cone, off < tactics::HOLD_CONE * cone)
+                {
                     pad.right_trigger = 1.0;
                 }
             } else {

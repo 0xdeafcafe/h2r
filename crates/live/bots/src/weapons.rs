@@ -66,13 +66,15 @@ pub fn reach(p: &Profile) -> Reach {
     let (flo, fhi) = role.fire_range();
     let r = p.cone_range.max(p.pull_range);
     let mut reach = match role {
-        // A confirmed SMG is a short-range automatic. Its magnetism can
-        // reach beyond the distance where sustained fire is worth the rounds.
+        // A confirmed SMG is a short-range automatic: the movement closes
+        // to its band (its magnetism's reach, 4.5 to 9), and it fires past
+        // that as any gun does, in bursts (tactics::hold_pattern), to the
+        // role's fire range at most.
         _ if p.dual == Some(crate::arms::DualGun::Smg) => {
             let far = if r > 0.0 { r.clamp(4.5, 9.0) } else { 9.0 };
             Reach {
                 band: (lo, far),
-                fire: (0.0, far),
+                fire: (0.0, (far * FIRE_PAST_BAND).min(fhi)),
                 lunge: 0.0,
             }
         }
@@ -614,28 +616,83 @@ impl Combo {
 /// The left trigger when dual wielding: Halo 2 fires the left-hand gun
 /// with it (and throws no grenades). A charge gun (the plasma pistol) is
 /// held to charge and let go on target; a once-per-pull gun is pulled
-/// and let go at its rate; an automatic is held.
-#[derive(Clone, Debug, Default)]
+/// and let go at its rate; an automatic is held on the right hand's hold
+/// pattern, or with the right trigger when that is held too. An empty
+/// magazine with rounds in reserve gets one pull, which starts the
+/// reload.
+#[derive(Clone, Debug)]
 pub struct LeftHand {
     next: u32,
     until: u32,
     charge: Option<u32>,
+    hold: crate::tactics::Hold,
+    rng: crate::mind::feel::Rng,
+    /// No pull on an empty magazine before this tick.
+    dry_next: Option<u32>,
+}
+
+impl Default for LeftHand {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            until: 0,
+            charge: None,
+            hold: Default::default(),
+            rng: crate::mind::feel::Rng::new(0x6c65_6674),
+            dry_next: None,
+        }
+    }
+}
+
+/// What the left trigger is for this tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LeftAim {
+    /// The target is clear and in the left gun's fire range.
+    pub in_range: bool,
+    /// The aim is in the fire cone...
+    pub on: bool,
+    /// ...or near it (`tactics::HOLD_CONE` cones).
+    pub near: bool,
+    /// The hold pattern of an automatic (`tactics::hold_pattern`).
+    pub pattern: Option<(u32, u32)>,
+    /// The right trigger, when it is held on an automatic too: an
+    /// automatic in the left hand goes down and up with it.
+    pub right: Option<bool>,
 }
 
 /// After an overcharge from the left hand, the next charge waits this
 /// long (ticks).
 pub const LEFT_RECHARGE: u32 = 15;
+/// A pull on an empty left magazine that did not start a reload is tried
+/// again after this long (ticks).
+pub const LEFT_DRY_RETRY: u32 = 45;
 
 impl LeftHand {
     pub fn reset(&mut self) {
         *self = LeftHand::default();
     }
 
-    /// Whether the left trigger is down this tick, wanting to fire
-    /// (`want`: on target and in range) with `gun` in the left hand.
-    pub fn trigger(&mut self, tick: u32, gun: &Gun, want: bool) -> bool {
+    /// Whether the left trigger is down this tick with `gun` in the left
+    /// hand.
+    pub fn trigger(&mut self, tick: u32, gun: &Gun, aim: LeftAim) -> bool {
+        let want = aim.in_range && aim.on;
+        if gun.ammo.empty_magazine() {
+            self.charge = None;
+            self.hold.stop(tick);
+            if tick < self.until {
+                return true;
+            }
+            if self.dry_next.is_none_or(|t| tick >= t) {
+                self.until = tick + crate::tactics::PULL_TICKS;
+                self.dry_next = Some(tick + LEFT_DRY_RETRY);
+                return true;
+            }
+            return false;
+        }
+        self.dry_next = None;
         if !gun.ammo.ready() {
             self.charge = None;
+            self.hold.stop(tick);
             return false;
         }
         match gun.profile.trigger {
@@ -672,7 +729,19 @@ impl LeftHand {
                 }
                 false
             }
-            Trigger::Automatic | Trigger::Unknown => want,
+            Trigger::Automatic | Trigger::Unknown => match aim.right {
+                Some(right) => {
+                    self.hold.stop(tick);
+                    right && aim.in_range
+                }
+                None => self.hold.step(
+                    tick,
+                    aim.pattern,
+                    want,
+                    aim.in_range && aim.near,
+                    &mut self.rng,
+                ),
+            },
             Trigger::Absent => false,
         }
     }

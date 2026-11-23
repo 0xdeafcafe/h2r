@@ -82,7 +82,7 @@ impl Skill {
                 lead: 0.3,
                 gain: 1.6,
                 fire_cone: 10f32.to_radians(),
-                burst: Some((12, 18)),
+                burst: None,
                 grenades_per_minute: 0.5,
             },
             Skill::Normal => Aim {
@@ -100,7 +100,7 @@ impl Skill {
                 lead: 0.85,
                 gain: 3.5,
                 fire_cone: 5f32.to_radians(),
-                burst: None,
+                burst: Some((16, 8)),
                 grenades_per_minute: 2.0,
             },
             Skill::Legendary => Aim {
@@ -109,7 +109,7 @@ impl Skill {
                 lead: 1.0,
                 gain: 4.5,
                 fire_cone: 4f32.to_radians(),
-                burst: None,
+                burst: Some((12, 8)),
                 grenades_per_minute: 3.0,
             },
         }
@@ -121,15 +121,22 @@ impl Skill {
 pub struct Aim {
     /// Nominal reaction in ticks. The actual delay is sampled on acquisition.
     pub reaction: u32,
-    /// The tracking error's spread (radians): a slowly wandering offset.
+    /// The tracking error's spread (radians) at 5 world units: a slowly
+    /// wandering offset, smaller as an angle further out
+    /// (`mind::look::spread_scale`).
     pub error: f32,
-    /// How much of the needed lead it gives a moving target.
+    /// How much of the needed lead it gives a moving target: the shot's
+    /// flight and its own delay (`mind::look::lead_time`).
     pub lead: f32,
-    /// Fraction of full turn rate requested per radian of aim error.
+    /// The turn requested per radian of aim error, as a fraction of the
+    /// nominal full-stick 3 rad/s (`mind::look`).
     pub gain: f32,
-    /// Fires while the aim is this close to the target.
+    /// The widest fire cone, at point blank, less 0.3 rad: further out
+    /// the cone is the body's width (`mind::look::fire_cone`).
     pub fire_cone: f32,
-    /// Trigger on and off ticks, or `None` to hold it.
+    /// A held trigger's on and off ticks beyond the gun's band, or `None`
+    /// to hold it there too; inside the band it is held at every skill
+    /// (`tactics::hold_pattern`).
     pub burst: Option<(u32, u32)>,
     pub grenades_per_minute: f32,
 }
@@ -693,6 +700,8 @@ impl Mind {
         }
         let eye = up(me.position, EYE);
         let facing = angles(me.aim);
+        // Where the view will face when this tick's reports land (mind::look).
+        let ahead = self.hand.ahead(self.skill, facing);
         let behavior = self.decisions.behavior();
         let style = Style::with_behavior(self.skill, behavior);
         // The target (crate::decisions): the team's split, trades and
@@ -919,7 +928,15 @@ impl Mind {
                 // The weapon in hand (tactics): the trigger, the lead
                 // speed, the range it shoots at, and head, chest or feet.
                 let held = me.arms.and_then(|a| a.held);
-                let shot = Shot::of(held, me.arms.is_some(), &style, aim.burst, SHOT_SPEED);
+                // Held inside the gun's band, in the skill's bursts beyond
+                // it (tactics::hold_pattern), longer for a spraying name.
+                let spray = tactics::spray(weights);
+                let span = len(sub(up(o.position, CHEST), eye));
+                let band_far = |g: Option<arms::Gun>| {
+                    g.map_or(arms::Role::Unknown.band().1, |g| g.reach().band.1)
+                };
+                let hold = tactics::hold_pattern(span, band_far(held), aim.burst, spray);
+                let shot = Shot::of(held, me.arms.is_some(), &style, hold, SHOT_SPEED);
                 // Rockets at a vehicle (bots.md, Vehicles; mind::ride): its
                 // middle, no lead, held until locked.
                 let locking = self.lock_on(&o, held, eye, me.aim, p.tick, aim.fire_cone);
@@ -943,7 +960,12 @@ impl Mind {
                     Some(_) => [0.0; 3],
                     None => self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel),
                 };
-                let projected = add(target, scale(vel, aim.lead * dist / shot.speed));
+                // The lead covers the shot's flight and the hand's own
+                // delay (mind::look::lead_time).
+                let projected = add(
+                    target,
+                    scale(vel, look::lead_time(self.skill, dist, shot.speed)),
+                );
                 let (led, shot_clear) = if clear(projected) {
                     (projected, true)
                 } else {
@@ -958,7 +980,11 @@ impl Mind {
                 let mut finishing = false;
                 if reacted {
                     let off = angle_between(sub(led, eye), me.aim);
-                    let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
+                    // The body's width at this range (mind::look::fire_cone);
+                    // a trigger already down stays down a little wider
+                    // (tactics::HOLD_CONE).
+                    let cone = look::fire_cone(aim.fire_cone, dist, shot.role);
+                    let wide = tactics::HOLD_CONE * cone;
                     // B is the quick sword slash at arm's length. A target
                     // beyond that needs the sword's RT lunge.
                     let sword_lunge = blade
@@ -970,15 +996,24 @@ impl Mind {
                     // Fire while near the target: never dry, only in the
                     // weapon's range.
                     let can_fire = shot_clear && shot.in_range(dist) && shot.ready && !melee;
+                    // A held trigger rides out a blocked tick or the range
+                    // edge as it rides out the aim leaving the cone.
+                    let can_hold = shot.ready && !melee && self.fight.holding();
                     let fired = if sword_lunge {
                         self.fight.trigger(
                             p.tick,
                             tactics::Pull::Tap(crate::weapons::MELEE_EVERY),
                             off < cone,
+                            off < wide,
                         )
-                    } else if can_fire {
-                        let locked = locking.is_none_or(|(_, locked)| locked);
-                        self.fight.trigger(p.tick, shot.pull, off < cone && locked)
+                    } else if can_fire || can_hold {
+                        let locked = can_fire && locking.is_none_or(|(_, locked)| locked);
+                        self.fight.trigger(
+                            p.tick,
+                            shot.pull,
+                            off < cone && locked,
+                            off < wide && locked,
+                        )
                     } else {
                         self.fight.stop_trigger(p.tick);
                         false
@@ -1051,7 +1086,9 @@ impl Mind {
                     // A sword fly uses the blade's trigger to lunge.
                     let sword_fly =
                         blade && shot_clear && combo.trick == Some(crate::glitches::Trick::SwordFly);
-                    if (can_fire || sword_lunge || sword_fly) && combo.trigger.unwrap_or(fired) {
+                    if (can_fire || can_hold || sword_lunge || sword_fly)
+                        && combo.trigger.unwrap_or(fired)
+                    {
                         pad.right_trigger = 1.0;
                     }
                     if combo.switch {
@@ -1066,19 +1103,39 @@ impl Mind {
                     if combo.jump {
                         pad.buttons.set(JUMP, true);
                     }
-                    // Dual wielding: the left trigger fires the left gun.
+                    // Dual wielding: the left trigger fires the left gun, on
+                    // the right's hold pattern; an automatic in each hand
+                    // goes down and up with the right trigger.
                     if let Some(l) = me.arms.and_then(|a| a.left) {
                         let (lo, hi) = l.reach().fire;
                         let left_in_range = shot_clear && (lo..hi).contains(&dist) && !melee;
+                        let aimed = |in_range| crate::weapons::LeftAim {
+                            in_range,
+                            on: off < cone,
+                            near: off < wide,
+                            pattern: match shot.pull {
+                                tactics::Pull::Hold(pattern) => pattern,
+                                _ => {
+                                    tactics::hold_pattern(span, band_far(Some(l)), aim.burst, spray)
+                                }
+                            },
+                            right: None,
+                        };
+                        let mut right_down = pad.right_trigger > 0.0;
                         if l.profile.dual == Some(arms::DualGun::Smg)
                             && let Some(right) =
                                 held.filter(|g| g.profile.dual == Some(arms::DualGun::PlasmaPistol))
                         {
-                            let firing =
-                                can_fire && self.paired_pistol.trigger(p.tick, &right, off < cone);
-                            pad.right_trigger = if firing { 1.0 } else { 0.0 };
+                            right_down =
+                                self.paired_pistol.trigger(p.tick, &right, aimed(can_fire));
+                            pad.right_trigger = if right_down { 1.0 } else { 0.0 };
                         }
-                        if left_in_range && self.left.trigger(p.tick, &l, off < cone) {
+                        let paired = matches!(shot.pull, tactics::Pull::Hold(_));
+                        let left = crate::weapons::LeftAim {
+                            right: paired.then_some(right_down),
+                            ..aimed(left_in_range)
+                        };
+                        if self.left.trigger(p.tick, &l, left) {
                             pad.left_trigger = 1.0;
                         }
                     }
@@ -1417,17 +1474,17 @@ impl Mind {
             self.left.reset();
             self.paired_pistol.reset();
         }
+        // The left gun is traded for a grenade only against a group, or
+        // when it is dry with nothing to reload: never for one enemy
+        // walking in, which both guns are for.
         let trade_left = dual.is_some_and(|l| {
-            mark.is_some_and(|m| {
-                !m.seen
-                    || m.closing_on(me.position)
-                    || len(sub(m.at, me.position)) > l.reach().band.1
-                    || seen
-                        .iter()
+            l.ammo.dry()
+                || mark.is_some_and(|m| {
+                    seen.iter()
                         .filter(|o| len(sub(o.position, m.at)) < crate::grenades::GROUP)
                         .count()
                         >= 2
-            })
+                })
         });
         let nade = self.grenade.step_with_left(
             &crate::grenades::Moment {
@@ -1571,7 +1628,7 @@ impl Mind {
             } else {
                 None
             };
-            aim_error = look_angles.map(|to| angle_error(facing, to));
+            aim_error = look_angles.map(|to| angle_error(ahead, to));
         }
         pad.right_stick = self.hand.steer(self.skill, aim_error, dt);
         if aim_error.is_none() && walk.is_none() && seen.is_empty() && pad.buttons.bits() == 0 {
@@ -1606,7 +1663,7 @@ impl Mind {
             jump || dodge.is_some(),
             |d| map.is_none_or(|m| crate::moves::bend_clear(m, me.position, d)),
         );
-        pad.left_stick = movement_stick(walk, facing.0);
+        pad.left_stick = movement_stick(walk, ahead.0);
         // An emote over a dumb death: stand, crouch in rhythm, nothing
         // else. Never while an objective is live for it: carrying,
         // guarding, hunting a carrier, in or going to the hill.
