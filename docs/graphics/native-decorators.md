@@ -1,7 +1,7 @@
 # Native decorators: the BSP's grass and rocks in layer 3
 
 Status: Built, not verified in a run. The read, the build's implementation lookup, extraction, the plan, the loader, the recording and the glue that reserves the pass and skips the guest's items are built and unit-tested; no frame has been compared with the D3D path.
-Code: `crates/rewrites/scene-extract/src/layout/decorators.rs` (`read`, `registers`, `implementation`, `set_geometry`), `crates/rewrites/scene-extract/src/decorators.rs` (`extract`, `clear_slots`), `crates/rewrites/frame-scene/src/decorator.rs`, `crates/rewrites/native-render/src/decorators.rs` (`plan`), `crates/rewrites/native-render/src/decorators_load.rs` (`decorator_look`, `compile`, `buffers`), `crates/rewrites/native-render/src/decorators_gpu.rs` (`MaterialGpu`, `bind`, `encode`), `crates/rewrites/render-bridge/src/native_decorators.rs` (the observer), `crates/extensions/game/src/native_decorators_glue.rs` (the host). Tests: the unit tests of those files.
+Code: `crates/rewrites/scene-extract/src/layout/decorators.rs` (`read`, `registers`, `implementation`, `set_geometry`), `crates/rewrites/scene-extract/src/decorators.rs` (`extract`, `clear_slots`), `crates/rewrites/frame-scene/src/decorator.rs`, `crates/rewrites/native-render/src/decorators.rs` (`plan`), `crates/rewrites/native-render/src/decorators_load.rs` (`decorator_look`, `skip_holds`, `compile`, `buffers`), `crates/rewrites/native-render/src/decorators_gpu.rs` (`MaterialGpu`, `bind`, `encode`), `crates/rewrites/render-bridge/src/native_decorators.rs` (the observer, `plan_held`), `crates/extensions/game/src/native_decorators_glue.rs` (the host). Tests: the unit tests of those files.
 Switch: `impl.render.native` (the stage; extraction runs with the frame step, `frame-scene`).
 
 Model decorators are the structure BSP's placed scatter: each placement is
@@ -130,7 +130,18 @@ same reads, in the same order.
 9. **The glue** (`render_bridge::native_decorators`, an observer before
    the layer draw, after the frame step's and the native world's, and
    `native_decorators_glue`). At the scene's layer 3, the open view's
-   materials are made ready, the view is planned over the ready ones,
+   materials are made ready, and of those the host keeps the ones whose
+   guest draws a skip leaves out without changing a render state the
+   device holds (`Host::holds`, `decorators_load::skip_holds`): the
+   draw's shader begin sets its pass's list and its engine-driven values
+   without comparing them with the device (`0x0001a170`), the next pass
+   switch or layer setup restores the implementation's restore list
+   (`0x00018900`), and the draw leaves `TwoSidedLighting` off
+   (`0x0004ebb4`), so a material is kept only when every state of both
+   lists, at the values the draw sets (`DecoratorLook::leaves`), and
+   `TwoSidedLighting` off already hold at the call, the rule the world
+   layers' items follow (`layer_pass::skip_holds`). The view is planned
+   over the kept ones (`render_bridge::native_decorators::plan_held`),
    and the host reserves one external pass (stage `World`) as the fog's
    does: the device must be W-buffered, the stage palettes the load
    expanded palettized stage bitmaps through must still be bound
@@ -176,7 +187,9 @@ same reads, in the same order.
   `scene_decorator_views_native` (views the stage drew),
   `scene_decorator_items_skipped` (items the guest skipped),
   `scene_decorator_draws_unready` (draws left to the guest: their
-  material is not ready) and `scene_decorator_views_declined` (views the
+  material is not ready), `scene_decorator_draws_state` (draws left to
+  the guest because skipping them would change a render state the device
+  holds) and `scene_decorator_views_declined` (views the
   host left to the D3D path) ([agent-api.md](../runtime/agent-api.md)).
 - The load prints one line (`native-decorators: … layer-3 passes load;
   on the D3D path: …`), and each reason a material stays on the D3D path
@@ -188,8 +201,13 @@ same reads, in the same order.
 
 - The stage draws all of a view's planned decorators or none: a refusal
   at the ask or on any copy leaves every item to the D3D path. Draws
-  whose material is not ready stay the guest's while the rest draw
-  natively.
+  whose material is not ready, or whose skip would change a render state
+  the device holds, stay the guest's while the rest draw natively.
+- The skip's state rule covers the device's render states only. The
+  draw also leaves the engine input table pointer `[0x00485a58]` at 0
+  (`0x0001bd50`), the lightmap page at -1, `v11..v15`, `c[53]`, its
+  stream, shader and stage textures, which a skip leaves as the draws
+  before it left them.
 - A pass's engine-driven render and stage states go over its own
   (`engine_states::apply_static`): each value from the material's
   inputs, the render values after the pass's list where `pass_state`
@@ -237,6 +255,12 @@ same reads, in the same order.
 
 ## Not verified
 
+- That every guest draw after a skipped placement sets what it reads of
+  the state the rule above does not cover (the engine input table
+  pointer, the vertex data `v11..v15`, `c[53]`).
+- That the render states at a placement's place in the sorted layer are
+  those at the layer-3 call, where `skip_holds` reads them: the layer's
+  guest draws sorted before it may change them.
 - That the `f64` steps give the x87 results bit for bit under the game's
   precision control.
 - Whether `0x0012de70` ever gives a block that is not marked resident

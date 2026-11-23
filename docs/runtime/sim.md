@@ -397,7 +397,9 @@ h2 sim run docs/runtime/sim-examples/firefight-beavercreek-crossfire.toml
 - `skill`: easy, normal, heroic, legendary (`bots::mind::Skill`);
 - the aim table's numbers for that skill, each optional: `reaction`
   (ticks), `error` (radians), `lead`, `gain`, `fire_cone_deg`,
-  `burst_on`/`burst_off` (ticks; `burst = false` holds the trigger),
+  `burst_on`/`burst_off` (ticks an automatic fires and rests past its
+  gun's band; inside the band it is held; `burst = false` holds it at
+  every range),
   `grenades_per_minute`;
 - `awareness` (0..1; the decisions' sense of the fight, per skill now);
 - the personality, each optional (0..1): `aggression`, `caution`,

@@ -299,7 +299,8 @@ argument the pass setup takes keeps the item on D3D, and so does a record
 marking the stencil or toggling the auxiliary state, which this draw does
 not reproduce. `LitObjects::plan_item` draws the topology and subparts
 the record picks as a scene part does (`part_ranges`; the first-person
-models keep each part's subparts and its strip decoded as a list), and
+models keep each part's subparts, its strip decoded as a list and a
+strip part's subparts as the list draw joins them), and
 resolves every constant and every inherited `EntryStates` field before
 `Host::draw` returns. The mask walk
 runs on a `MaskPreview`, leaving guest RAM untouched while each required

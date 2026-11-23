@@ -462,9 +462,27 @@ fn normal_recognizes_an_enemy_rush_group_or_lost_sight_as_a_throw_opportunity() 
         }, &Floor(0.0), Skill::Normal);
         hand.last.is_some()
     };
-    let rush = Mark { vel: [-1.0, 0.0, 0.0], ..mark };
+    // A rush is a walk at the bot from inside 6 units; the same walk
+    // further out, a strafe or a crawl is not.
+    let closing = |at: f32, vel: Vec3| {
+        let m = Mark {
+            at: [at, 0.0, 0.0],
+            vel,
+            seen: true,
+        };
+        m.closing_on([0.0; 3])
+    };
+    let rush = Mark {
+        at: [5.0, 0.0, 0.0],
+        vel: [-1.0, 0.0, 0.0],
+        ..mark
+    };
     assert!(rush.closing_on([0.0; 3]));
-    assert!(!Mark { vel: [0.0, 1.0, 0.0], ..mark }.closing_on([0.0; 3]));
+    assert!(!closing(7.0, [-1.0, 0.0, 0.0]), "7 units out");
+    assert!(!closing(5.0, [0.0, 1.0, 0.0]));
+    assert!(!closing(5.0, [-0.5, 0.0, 0.0]));
+    assert!(!closing(5.0, [-1.0, 1.2, 0.0]), "mostly across");
+    assert!(closing(5.0, [-4.0, 1.2, 0.0]), "fast, mostly at it");
     assert!(ready(rush, &[], &[]));
     assert!(ready(mark, &cluster, &[]));
     assert!(ready(Mark { seen: false, ..mark }, &[], &[]));

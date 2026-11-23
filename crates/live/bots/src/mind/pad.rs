@@ -150,6 +150,7 @@ impl Feet {
         desired: Option<[f32; 2]>,
         dt: u32,
         slow: f32,
+        push: f32,
         immediate: bool,
         safe: impl FnOnce([f32; 2]) -> bool,
     ) -> [f32; 2] {
@@ -161,7 +162,9 @@ impl Feet {
             self.stop();
             return self.walk;
         }
-        let want = limit(desired, 1.0).map(|a| a * self.pace * slow);
+        // `push` (0 to 1) closes the thumb's own shortfall to full stick.
+        let thumb = self.pace + (1.0 - self.pace) * push.clamp(0.0, 1.0);
+        let want = limit(desired, 1.0).map(|a| a * thumb * slow);
         let delta = limit(
             [want[0] - self.walk[0], want[1] - self.walk[1]],
             self.slew * dt.clamp(1, 3) as f32,

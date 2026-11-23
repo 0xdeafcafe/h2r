@@ -40,13 +40,18 @@ pub const PULL_TICKS: u32 = 2;
 pub const PULL_MIN: u32 = 4;
 /// Pulls this far apart when the weapon's rate is not known.
 pub const PULL_DEFAULT: u32 = 8;
+/// A held trigger, once down, stays down while the aim is within this
+/// many fire cones of the aim point...
+pub const HOLD_CONE: f32 = 2.2;
+/// ...and through this many ticks outside that.
+pub const HOLD_GRACE: u32 = 4;
 
 /// No grenade at a target with a teammate this close to it.
 pub const FRIENDLY_SPLASH: f32 = 3.0;
 /// Pre-aims at where an enemy went out of view within this (world units)...
 pub const PRE_AIM_RANGE: f32 = 15.0;
 /// ...while walking no more than this far (radians) away from facing it.
-pub const PRE_AIM_CONE: f32 = 100.0 * std::f32::consts::PI / 180.0;
+pub const PRE_AIM_CONE: f32 = 45.0 * std::f32::consts::PI / 180.0;
 
 /// What skill changes in the fight, beyond the aim model.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -116,7 +121,8 @@ impl Style {
 /// How the trigger is worked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pull {
-    /// Held, in the skill's bursts (`None`: held throughout).
+    /// Held, in bursts of on and off ticks ([`hold_pattern`]; `None`:
+    /// held throughout).
     Hold(Option<(u32, u32)>),
     /// Pulled for 2–3 ticks. The number is the minimum time between
     /// starts: holding a once-per-pull trigger fires only one shot.
@@ -145,13 +151,13 @@ pub struct Shot {
 
 impl Shot {
     /// For the gun in hand (`None`: arms not read, the weapon-blind
-    /// behaviour), with the skill's `burst` for a held trigger and the
-    /// lead speed `default_speed` when the projectile is not known.
+    /// behaviour), with `hold` for a held trigger ([`hold_pattern`]) and
+    /// the lead speed `default_speed` when the projectile is not known.
     pub fn of(
         held: Option<Gun>,
         read: bool,
         style: &Style,
-        burst: Option<(u32, u32)>,
+        hold: Option<(u32, u32)>,
         default_speed: f32,
     ) -> Shot {
         let role = held.map_or(Role::Unknown, |g| g.role());
@@ -166,7 +172,7 @@ impl Shot {
                 Pull::Tap(every.max(PULL_MIN).saturating_add(style.pace))
             }
             crate::arms::Trigger::Absent if role == Role::Blade => Pull::Never,
-            _ => Pull::Hold(burst),
+            _ => Pull::Hold(hold),
         };
         let height = match role {
             Role::Precise | Role::Sniper if style.head => HEAD,
@@ -192,6 +198,142 @@ impl Shot {
     pub fn in_range(&self, d: f32) -> bool {
         (self.range.0..self.range.1).contains(&d)
     }
+}
+
+/// How a held trigger is worked on a target `dist` away with a gun whose
+/// band ends at `band_far`: inside the band it is held until the target
+/// or the magazine is gone, at every skill; beyond it, the skill's `burst`
+/// (`None`, Easy's: held anyway), its on time stretched by a spraying
+/// name's `spray` (0 to 1, [`spray`]) from 0.7 to 1.5 times.
+pub fn hold_pattern(
+    dist: f32,
+    band_far: f32,
+    burst: Option<(u32, u32)>,
+    spray: f32,
+) -> Option<(u32, u32)> {
+    let (on, off) = burst?;
+    if dist <= band_far {
+        return None;
+    }
+    let stretch = 0.7 + 0.8 * spray.clamp(0.0, 1.0);
+    Some((((on as f32) * stretch).round().max(1.0) as u32, off))
+}
+
+/// How much a name lets the trigger run (0 to 1): its aggression and its
+/// reaction jitter, half each; 0.5 with no name.
+pub(crate) fn spray(weights: Option<crate::name_profile::Weights>) -> f32 {
+    weights.map_or(0.5, |w| 0.5 * w.aggression + 0.5 * w.reaction_jitter)
+}
+
+/// A held trigger: down on target, kept down through a near miss
+/// ([`HOLD_CONE`], [`HOLD_GRACE`]), in bursts when it has a pattern. A
+/// burst let go before its end is suspended: the next press finishes it
+/// without waiting out the gap.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Hold {
+    down: bool,
+    /// Where the burst under way ends (`None`: held until let go).
+    until: Option<u32>,
+    /// The gap that follows the burst under way.
+    gap: u32,
+    /// The rest of a burst let go early.
+    rest: Option<u32>,
+    /// The first tick of this run outside the near cone.
+    strayed: Option<u32>,
+    /// No press before this tick.
+    next: Option<u32>,
+}
+
+impl Hold {
+    pub(crate) fn down(&self) -> bool {
+        self.down
+    }
+
+    /// Let go, if down, and press again no sooner than two ticks on.
+    pub(crate) fn stop(&mut self, tick: u32) {
+        if self.down {
+            let release = tick.wrapping_add(2);
+            if self.next.is_none_or(|next| reached(release, next)) {
+                self.next = Some(release);
+            }
+        }
+        let next = self.next;
+        *self = Hold {
+            next,
+            ..Hold::default()
+        };
+    }
+
+    /// Whether the trigger is down this tick: pressed when `on` (the aim
+    /// in the fire cone), kept down while `near` (within [`HOLD_CONE`]
+    /// cones) or for [`HOLD_GRACE`] ticks without.
+    pub(crate) fn step(
+        &mut self,
+        tick: u32,
+        pattern: Option<(u32, u32)>,
+        on: bool,
+        near: bool,
+        rng: &mut Rng,
+    ) -> bool {
+        if self.down {
+            if self.until.is_some_and(|until| reached(tick, until)) {
+                *self = Hold {
+                    next: Some(tick.wrapping_add(self.gap)),
+                    ..Hold::default()
+                };
+                return false;
+            }
+            // Out past the band mid-hold: this hold becomes a burst.
+            if self.until.is_none()
+                && let Some(burst) = pattern
+            {
+                let (hold, gap) = draw(rng, burst);
+                self.until = Some(tick.wrapping_add(hold));
+                self.gap = gap;
+            }
+            if near {
+                self.strayed = None;
+                return true;
+            }
+            let strayed = *self.strayed.get_or_insert(tick);
+            if tick.wrapping_sub(strayed) < HOLD_GRACE {
+                return true;
+            }
+            let rest = self
+                .until
+                .map(|until| until.wrapping_sub(tick))
+                .filter(|&rest| rest > 0 && rest < 1 << 16);
+            *self = Hold {
+                rest,
+                gap: self.gap,
+                next: Some(tick.wrapping_add(2)),
+                ..Hold::default()
+            };
+            return false;
+        }
+        if !on || self.next.is_some_and(|next| !reached(tick, next)) {
+            return false;
+        }
+        self.down = true;
+        self.strayed = None;
+        match (pattern, self.rest.take()) {
+            (None, _) => self.until = None,
+            (Some(_), Some(rest)) => self.until = Some(tick.wrapping_add(rest)),
+            (Some(burst), None) => {
+                let (hold, gap) = draw(rng, burst);
+                self.until = Some(tick.wrapping_add(hold));
+                self.gap = gap;
+            }
+        }
+        true
+    }
+}
+
+/// One burst's on and gap ticks: the pattern's, give or take two.
+fn draw(rng: &mut Rng, (on, off): (u32, u32)) -> (u32, u32) {
+    let hold = rng.ticks(on.saturating_sub(2).max(1), on.saturating_add(2).max(1));
+    let gap = rng.ticks(off.saturating_sub(2).max(1), off.saturating_add(2).max(1));
+    (hold, gap)
 }
 
 /// Plan the weapon draw for where an approaching opponent will be when
@@ -267,7 +409,7 @@ pub struct Tactics {
     pull: Option<Pull>,
     next_pull: Option<u32>,
     pull_until: Option<u32>,
-    holding: bool,
+    hold: Hold,
     /// For the movement: the range (min, max, world units) to keep the
     /// target at, from the held weapon ([`crate::arms::preferred_range`]).
     pub band: (f32, f32),
@@ -329,7 +471,7 @@ impl Tactics {
             pull: None,
             next_pull: None,
             pull_until: None,
-            holding: false,
+            hold: Hold::default(),
             band: (0.0, 0.0),
             wants_cover: false,
         }
@@ -342,12 +484,29 @@ impl Tactics {
         self.focus_with_jitter(id, tick, skill, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn focus_with_jitter(
         &mut self,
         id: u32,
         tick: u32,
         skill: Skill,
         jitter: Option<f32>,
+    ) -> u32 {
+        self.focus_alert(id, tick, skill, jitter, false)
+    }
+
+    /// The tick the reaction to `id` ends, sampled once when the bot takes
+    /// notice, `jitter` the name's reaction trait. `alert` when the mind
+    /// has a reason to expect someone (a tracker dot near, a hit from out
+    /// of view): a fresh notice is then as quick as one in the middle of a
+    /// fight.
+    pub(crate) fn focus_alert(
+        &mut self,
+        id: u32,
+        tick: u32,
+        skill: Skill,
+        jitter: Option<f32>,
+        alert: bool,
     ) -> u32 {
         self.known.retain(|n| tick.wrapping_sub(n.last) <= FORGET);
         let prior = self.known.iter().position(|n| n.id == id);
@@ -357,10 +516,11 @@ impl Tactics {
             self.known[i].last = tick;
             return self.known[i].ready;
         }
-        let alert = self
-            .known
-            .iter()
-            .any(|n| tick.wrapping_sub(n.last) <= GRACE);
+        let alert = alert
+            || self
+                .known
+                .iter()
+                .any(|n| tick.wrapping_sub(n.last) <= GRACE);
         // Two uniform rolls put most reactions near the middle. Being
         // prepared shifts the distribution down without removing the floor.
         let nominal = skill.aim().reaction;
@@ -406,44 +566,59 @@ impl Tactics {
         self.pull = None;
         self.next_pull = None;
         self.pull_until = None;
-        self.holding = false;
+        self.hold = Hold::default();
         self.wants_cover = false;
     }
 
     /// Break the pull when the target disappears or firing is impossible.
     pub(crate) fn stop_trigger(&mut self, tick: u32) {
-        if self.pull_until.take().is_some() || self.holding {
+        if self.pull_until.take().is_some() {
             let release = tick.wrapping_add(2);
             if self.next_pull.is_none_or(|next| reached(release, next)) {
                 self.next_pull = Some(release);
             }
         }
-        self.holding = false;
+        self.hold.stop(tick);
     }
 
-    /// Whether the trigger is down this tick. Tap lengths and recovery
-    /// gaps vary. Burst starts are relative to when the bot lines up a shot.
-    pub fn trigger(&mut self, tick: u32, pull: Pull, want: bool) -> bool {
-        if self.pull != Some(pull) {
-            let was_down = self.pull_until.is_some() || self.holding;
+    /// Whether a held trigger is down (it rides out a near miss).
+    pub(crate) fn holding(&self) -> bool {
+        self.hold.down()
+    }
+
+    /// Whether the trigger is down this tick, with the aim `on` the fire
+    /// cone and `near` it ([`HOLD_CONE`] cones). Tap lengths and recovery
+    /// gaps vary. Burst starts are relative to when the bot lines up a
+    /// shot; a held trigger stays down through a near miss ([`Hold`]).
+    pub fn trigger(&mut self, tick: u32, pull: Pull, on: bool, near: bool) -> bool {
+        // A held trigger whose pattern changes (the target crossing the
+        // band's end) is the same hold.
+        let changed = match (self.pull, pull) {
+            (Some(Pull::Hold(_)), Pull::Hold(_)) => false,
+            (Some(was), now) => was != now,
+            (None, _) => true,
+        };
+        if changed {
+            let was_down = self.pull_until.is_some() || self.hold.down();
             self.pull = Some(pull);
             self.pull_until = None;
-            self.holding = false;
+            self.hold = Hold::default();
             self.next_pull = was_down.then_some(tick.wrapping_add(2));
+            self.hold.next = self.next_pull;
         }
+        self.pull = Some(pull);
         let ready = self.next_pull.is_none_or(|t| reached(tick, t));
         match pull {
             Pull::Never => false,
-            Pull::Hold(None) => {
-                self.holding = want && ready;
-                self.holding
-            }
+            Pull::Hold(pattern) => self
+                .hold
+                .step(tick, pattern, on, near, &mut self.trigger_rng),
             Pull::Tap(every) => {
                 if self.pull_until.is_some_and(|t| !reached(tick, t)) {
                     return true;
                 }
                 self.pull_until = None;
-                if !want || !ready {
+                if !on || !ready {
                     return false;
                 }
                 let hold = self.trigger_rng.ticks(2, 3);
@@ -456,24 +631,6 @@ impl Tactics {
                             .max(hold + gap),
                     ),
                 );
-                true
-            }
-            Pull::Hold(Some((on, off))) => {
-                if self.pull_until.is_some_and(|t| !reached(tick, t)) && want {
-                    return true;
-                }
-                self.pull_until = None;
-                if !want || !ready {
-                    return false;
-                }
-                let hold = self
-                    .trigger_rng
-                    .ticks(on.saturating_sub(2).max(1), on.saturating_add(2).max(1));
-                let gap = self
-                    .trigger_rng
-                    .ticks(off.saturating_sub(2).max(1), off.saturating_add(2).max(1));
-                self.pull_until = Some(tick.wrapping_add(hold));
-                self.next_pull = Some(tick.wrapping_add(hold).wrapping_add(gap));
                 true
             }
         }

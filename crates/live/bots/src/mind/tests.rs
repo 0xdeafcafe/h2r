@@ -222,29 +222,94 @@ fn a_wall_hides_an_enemy_and_so_does_its_back() {
 }
 
 #[test]
-fn it_waits_its_reaction_time_before_turning_and_firing() {
+fn it_keeps_moving_and_starts_turning_before_it_may_fire() {
     for skill in Skill::ALL {
         let mut m = Mind::new(skill, 7);
-        let at = [4.0, 4.0, 0.0];
-        let mut first = None;
-        for tick in 100..130 {
-            let pad = look(&mut m, X, vec![enemy(1, at)], tick, None);
-            assert_eq!(pad.right_trigger, 0.0, "{skill:?} tick {tick}");
-            if pad.right_stick != (0.0, 0.0) {
-                first = Some(tick - 100);
-                assert!(
-                    (-0.26..-0.1).contains(&pad.right_stick.0),
-                    "{skill:?} {pad:?}"
-                );
-                break;
-            }
+        // Chasing a sighting dead ahead (no map: straight at it).
+        m.last_seen = Some((9, [12.0, 0.0, 0.0], 0));
+        for tick in 60..70 {
+            let pad = look(&mut m, X, vec![], tick, None);
+            assert_eq!(m.doing, Doing::Chase([12.0, 0.0, 0.0]), "{skill:?}");
+            assert!(
+                tick < 63 || pad.left_stick.1 > 0.5,
+                "{skill:?} walks: {pad:?}"
+            );
         }
-        let delay = first.expect("starts moving the thumb");
+        // Someone new off to the left: a fresh reaction.
+        let at = [4.0, 4.0, 0.0];
+        look(&mut m, X, vec![enemy(1, at)], 70, None);
+        let (_, ready) = m.target.expect("noticed");
+        let delay = ready - 70;
         assert!(
             (tactics::MIN_REACTION..=18).contains(&delay),
             "{skill:?} {delay}"
         );
-        assert!(matches!(m.doing, Doing::Fight(1)));
+        let mut turned = false;
+        for tick in 71..ready {
+            let pad = look(&mut m, X, vec![enemy(1, at)], tick, None);
+            assert!(matches!(m.doing, Doing::Fight(1)));
+            assert_eq!(pad.right_trigger, 0.0, "{skill:?} tick {tick}");
+            assert!(!pad.buttons.contains(MELEE), "{skill:?} tick {tick}");
+            // The feet keep the walk they had; the thumb turns left.
+            assert!(
+                pad.left_stick.0.hypot(pad.left_stick.1) > 0.5,
+                "{skill:?} tick {tick}: {pad:?}"
+            );
+            assert!(pad.right_stick.0 <= 0.0, "{skill:?} tick {tick}: {pad:?}");
+            turned |= pad.right_stick.0 < -0.05;
+        }
+        assert!(turned, "{skill:?}");
+    }
+}
+
+#[test]
+fn shot_from_behind_it_turns_to_the_shooter_within_ten_ticks() {
+    for skill in Skill::ALL {
+        let mut m = Mind::new(skill, 21);
+        let mut aim = X;
+        let p = |shield: f32, aim: Vec3, tick: u32| Perception {
+            me: Some(Me {
+                position: [0.0; 3],
+                aim,
+                shield,
+                ..Me::default()
+            }),
+            observations: crate::brain::Observations {
+                player: Some((0, 0)),
+                ..Default::default()
+            },
+            tick,
+            ..Perception::default()
+        };
+        // Behind and to the left, out of view; its own shots are not it.
+        let own = ShotSound {
+            at: [0.5, -0.5, EYE],
+            tick: 10,
+            shooter: Some(0),
+        };
+        let shot = ShotSound {
+            at: [-6.0, 2.0, EYE],
+            tick: 9,
+            shooter: Some(4),
+        };
+        m.step_with_cues(&p(1.0, aim, 9), None, &[], &[]);
+        // Hit once, at tick 10: the shield stays down after.
+        for tick in 10..=20 {
+            let pad = m.step_with_cues(&p(0.8, aim, tick), None, &[shot, own], &[]);
+            assert!(!matches!(m.doing, Doing::Fight(_)));
+            assert_eq!(pad.right_trigger, 0.0);
+            if tick <= 12 {
+                assert!(pad.right_stick.0 < -0.05, "{skill:?} tick {tick}: {pad:?}");
+            }
+            aim = crate::grenades::direction(
+                aim[1].atan2(aim[0]) - turn_rate(pad.right_stick).0 / TICKS,
+                0.0,
+            );
+        }
+        let yaw = aim[1].atan2(aim[0]);
+        assert!(yaw > 0.3, "{skill:?} turned left toward it: {yaw}");
+        // A sighting now is an alert one.
+        assert!(m.alert_until.is_some_and(|until| until > 20));
     }
 }
 
@@ -262,20 +327,33 @@ fn on_target_it_fires_and_off_target_it_does_not() {
 }
 
 #[test]
-fn easy_fires_in_bursts() {
-    let mut m = Mind::new(Skill::Easy, 3);
-    let (on, off) = Skill::Easy.aim().burst.unwrap();
-    let r = Skill::Easy.aim().reaction + 4;
-    let mut fired = Vec::new();
-    for t in 0..(r + on + off) {
-        fired.push(look(&mut m, X, vec![enemy(1, [6.0, 0.0, 0.0])], t, None).right_trigger > 0.0);
+fn it_holds_the_trigger_inside_the_band_and_bursts_past_it_from_normal() {
+    // Weapon-blind: the band ends at 15, it fires to 25.
+    let fire = |skill: Skill, at: f32| {
+        let mut m = Mind::new(skill, 3);
+        let fired: Vec<bool> = (0..120)
+            .map(|t| look(&mut m, X, vec![enemy(1, [at, 0.0, 0.0])], t, None).right_trigger > 0.0)
+            .collect();
+        let start = fired.iter().position(|f| *f).expect("it fires");
+        fired[start..].to_vec()
+    };
+    for skill in Skill::ALL {
+        let close = fire(skill, 6.0);
+        assert!(
+            close.iter().all(|f| *f),
+            "{skill:?} holds inside the band: {close:?}"
+        );
     }
-    let shots = fired.iter().filter(|f| **f).count() as u32;
-    let start = fired.iter().position(|f| *f).expect("first burst");
-    let burst = fired[start..].iter().take_while(|f| **f).count() as u32;
-    assert!((on - 2..=on + 2).contains(&burst), "{fired:?}");
-    assert!(fired[start + burst as usize..].contains(&false));
-    assert!(shots < fired.len() as u32, "{shots} of {}", fired.len());
+    // Past the band, easy still holds; normal bursts, its on time
+    // stretched by a nameless bot's middling spray.
+    let far = fire(Skill::Easy, 20.0);
+    assert!(far.iter().all(|f| *f), "{far:?}");
+    let far = fire(Skill::Normal, 20.0);
+    let (on, _) = Skill::Normal.aim().burst.unwrap();
+    let (on, _) = tactics::hold_pattern(20.0, 15.0, Some((on, 0)), tactics::spray(None)).unwrap();
+    let burst = far.iter().take_while(|f| **f).count() as u32;
+    assert!((on - 2..=on + 2).contains(&burst), "{far:?}");
+    assert!(far.contains(&false) && far.iter().filter(|f| **f).count() > 2 * burst as usize);
 }
 
 #[test]
@@ -1379,6 +1457,7 @@ fn a_gunshot_can_turn_the_head_without_creating_a_target() {
     let report = [ShotSound {
         at: [0.0, 4.0, EYE],
         tick: 0,
+        shooter: Some(3),
     }];
     let mut looked = false;
     let mut investigated = false;
@@ -1684,12 +1763,12 @@ fn radar_use_is_sampled_per_glance_with_the_names_probability() {
         let mut seen = 0;
         for scan in 0..256 {
             p.tick = 10 * scan;
-            p.observations.radar = Some(at);
+            p.observations.radar = vec![at];
             mind.glance_at_tracker(&p, 10, chance);
             let looked = mind.radar;
             seen += usize::from(looked.is_some());
             // A different dot between glances gives no extra rolls.
-            p.observations.radar = Some([4., 0., 0.]);
+            p.observations.radar = vec![[4., 0., 0.]];
             for _ in 1..10 {
                 p.tick += 1;
                 mind.glance_at_tracker(&p, 10, chance);
@@ -1844,4 +1923,395 @@ fn hunters_go_for_the_marked_juggernaut_and_it_hunts_only_whom_it_sees() {
     let mut big = Mind::new(Skill::Legendary, 4);
     big.step(&p(2, 1 << 2), None);
     assert!(!matches!(big.doing, Doing::Play(_)), "{:?}", big.doing);
+}
+
+// ---- the motion tracker (mind::tracker) ----
+
+#[test]
+fn a_missed_glance_keeps_the_dot() {
+    let mut mind = Mind::new(Skill::Normal, 41);
+    let mut p = Perception {
+        me: me([0.0; 3], X),
+        ..Perception::default()
+    };
+    p.observations.radar = vec![[0.0, 6.0, 0.0]];
+    assert!(mind.glance_at_tracker(&p, 10, 1.0));
+    // Missed glances read nothing new and forget nothing.
+    for tick in [10, 20, 30, 40] {
+        p.tick = tick;
+        assert!(!mind.glance_at_tracker(&p, 10, 0.0));
+        assert_eq!(mind.radar, None);
+        assert_eq!(
+            mind.tracker.nearest([0.0; 3], tick),
+            Some([0.0, 6.0, 0.0]),
+            "tick {tick}"
+        );
+    }
+    assert_eq!(
+        mind.tracker.nearest([0.0; 3], tracker::KEEP_TICKS + 1),
+        None
+    );
+}
+
+#[test]
+fn a_dot_behind_stops_the_reload_and_turns_it() {
+    let a = armed(rounds(5, 40), None);
+    let run = |dot: Option<Vec3>| {
+        let mut m = Mind::new(Skill::Legendary, 1);
+        if let Some(at) = dot {
+            m.tracker.saw(&[at], None, 0, 15);
+        }
+        let (mut reloaded, mut turned) = (false, false);
+        for tick in 0..90 {
+            let mut p = Perception {
+                me: Some(Me {
+                    position: [0.0; 3],
+                    aim: X,
+                    arms: Some(a),
+                    ..Me::default()
+                }),
+                tick,
+                ..Perception::default()
+            };
+            p.observations.radar = dot.into_iter().collect();
+            let pad = m.step(&p, None);
+            reloaded |= m.kit == Kit::Reload || pad.buttons.contains(RELOAD);
+            turned |= pad.right_stick.0 < -0.3;
+        }
+        (reloaded, turned)
+    };
+    assert!(run(None).0, "calm, it reloads");
+    // Two units behind and a little left: on its guard, it turns to it.
+    assert_eq!(run(Some([-2.0, 0.5, 0.0])), (false, true));
+}
+
+#[test]
+fn a_dot_makes_the_next_sighting_alert() {
+    let ready = |dot: bool| {
+        let mut m = Mind::new(Skill::Easy, 9);
+        if dot {
+            m.tracker.saw(&[[-2.0, 2.0, 0.0]], None, 0, 15);
+        }
+        look(&mut m, X, vec![], 0, None);
+        look(&mut m, X, vec![enemy(1, [6.0, 0.0, 0.0])], 1, None);
+        m.target.expect("noticed").1
+    };
+    assert_eq!(ready(true) + 2, ready(false));
+}
+
+#[test]
+fn nothing_at_the_dot_checks_the_floor_above() {
+    let square = |z: f32| {
+        Poly::new(vec![
+            [0.0, 0.0, z],
+            [10.0, 0.0, z],
+            [10.0, 10.0, z],
+            [0.0, 10.0, z],
+        ])
+    };
+    let map = MapData {
+        nav: NavMesh::new(vec![square(0.0), square(3.0)], vec![]),
+        ..Default::default()
+    };
+    let mut m = Mind::new(Skill::Normal, 2);
+    // The dot is at its own height, where nobody is: the floor above.
+    m.tracker.saw(&[[5.5, 5.0, 0.0]], None, 0, 15);
+    let p = Perception {
+        me: me([5.0, 5.0, 0.0], X),
+        tick: 1,
+        ..Perception::default()
+    };
+    m.step(&p, Some(&map));
+    assert_eq!(m.doing, Doing::Support([5.5, 5.0, 3.0]));
+}
+
+// ---- looking where it walks ----
+
+#[test]
+fn chasing_round_a_corner_it_looks_at_the_corner_not_the_wall() {
+    // A corridor east, then north round a corner; walls on the inside of
+    // the corner. The enemy went out of view up the north leg.
+    let a = Poly::new(vec![
+        [0.0, 0.0, 0.0],
+        [12.0, 0.0, 0.0],
+        [12.0, 2.0, 0.0],
+        [0.0, 2.0, 0.0],
+    ]);
+    let b = Poly::new(vec![
+        [10.0, 2.0, 0.0],
+        [12.0, 2.0, 0.0],
+        [12.0, 12.0, 0.0],
+        [10.0, 12.0, 0.0],
+    ]);
+    let (p, q) = ([10.0, 2.0, 0.0], [12.0, 2.0, 0.0]);
+    let edge = |from, to| Edge {
+        from,
+        to,
+        a: p,
+        b: q,
+        kind: crate::nav::Kind::Walk,
+    };
+    let inside = [
+        [-1.0, 2.0, 0.0],
+        [10.0, 2.0, 0.0],
+        [10.0, 2.0, 3.0],
+        [-1.0, 2.0, 3.0],
+    ];
+    let side = [
+        [10.0, 2.0, 0.0],
+        [10.0, 13.0, 0.0],
+        [10.0, 13.0, 3.0],
+        [10.0, 2.0, 3.0],
+    ];
+    let map = MapData {
+        nav: NavMesh::new(vec![a, b], vec![edge(0, 1), edge(1, 0)]),
+        walls: Walls::from_polygons([&inside[..], &side[..]]),
+        ..Default::default()
+    };
+    let at = [2.0, 1.0, 0.0];
+    let last = [11.0, 6.0, 0.0];
+    let mut m = Mind::new(Skill::Normal, 4);
+    m.last_seen = Some((9, last, 0));
+    let step = |m: &mut Mind, aim: Vec3, tick: u32| {
+        let p = Perception {
+            me: me(at, aim),
+            tick,
+            ..Perception::default()
+        };
+        m.step(&p, Some(&map))
+    };
+    step(&mut m, X, 60);
+    assert_eq!(m.doing, Doing::Chase(last));
+    let face = m.last_walk.expect("walking").face;
+    // The old cone would have stared at the wall the enemy is behind.
+    assert!(tactics::pre_aim(at, last, Some(face)).is_some());
+    assert!(!map.walls.clear(up(at, EYE), up(last, CHEST)));
+    // Facing the way it walks, it is asked to turn nowhere.
+    let l = face[0].hypot(face[1]);
+    let aim = [face[0] / l, face[1] / l, 0.0];
+    for tick in 61..69 {
+        let pad = step(&mut m, aim, tick);
+        assert_eq!(m.doing, Doing::Chase(last));
+        assert!(pad.right_stick.0.abs() < 0.15, "tick {tick}: {pad:?}");
+    }
+}
+
+#[test]
+fn a_glance_at_the_tracker_ends() {
+    use crate::brain::Order;
+    let map = MapData {
+        nav: floor(),
+        ..Default::default()
+    };
+    let mut m = Mind::new(Skill::Legendary, 6);
+    m.decisions.set_order(Some(Order::Go([18.0, 5.0, 0.0])));
+    // A new dot three units to the right of the walk.
+    m.tracker.saw(&[[2.0, 2.0, 0.0]], None, 0, 15);
+    let mut right = false;
+    for tick in 0..45 {
+        // Walking east along the route.
+        let at = [2.0 + 0.07 * tick as f32, 5.0, 0.0];
+        let p = Perception {
+            me: me(at, X),
+            tick,
+            ..Perception::default()
+        };
+        let pad = m.step(&p, Some(&map));
+        assert!(matches!(m.doing, Doing::Play(_)), "{:?}", m.doing);
+        if tick < 10 {
+            right |= pad.right_stick.0 > 0.2;
+        }
+        if tick >= 25 {
+            assert!(pad.right_stick.0.abs() < 0.1, "tick {tick}: {pad:?}");
+        }
+    }
+    assert!(right, "it glanced at the dot");
+}
+
+#[test]
+fn along_an_l_shaped_route_it_faces_the_way_it_walks() {
+    // Two corridors 25 long at a right angle; the bot walks the route
+    // with its own thumbs (the game's turning as the hand models it).
+    const WALK: f32 = 2.25;
+    let a = Poly::new(vec![
+        [0.0, 0.0, 0.0],
+        [26.0, 0.0, 0.0],
+        [26.0, 3.0, 0.0],
+        [0.0, 3.0, 0.0],
+    ]);
+    let b = Poly::new(vec![
+        [23.0, 3.0, 0.0],
+        [26.0, 3.0, 0.0],
+        [26.0, 28.0, 0.0],
+        [23.0, 28.0, 0.0],
+    ]);
+    let (p, q) = ([23.0, 3.0, 0.0], [26.0, 3.0, 0.0]);
+    let edge = |from, to| Edge {
+        from,
+        to,
+        a: p,
+        b: q,
+        kind: crate::nav::Kind::Walk,
+    };
+    let map = MapData {
+        nav: NavMesh::new(vec![a, b], vec![edge(0, 1), edge(1, 0)]),
+        ..Default::default()
+    };
+    let goal = [24.5, 27.0, 0.0];
+    let mut m = Mind::new(Skill::Normal, 3);
+    let mut at = [1.0, 1.5, 0.0];
+    let mut yaw = 0.0f32;
+    let (mut walking, mut aligned) = (0u32, 0u32);
+    for tick in 0..1200 {
+        // The search it is on stays fresh: it investigates up the route.
+        m.search = Some((goal, tick));
+        let p = Perception {
+            me: me(at, [yaw.cos(), yaw.sin(), 0.0]),
+            tick,
+            ..Perception::default()
+        };
+        let pad = m.step(&p, Some(&map));
+        // The left stick back into the world: the walk it made.
+        let (lx, ly) = pad.left_stick;
+        let (s, c) = yaw.sin_cos();
+        let w = [lx * s + ly * c, -lx * c + ly * s];
+        let speed = w[0].hypot(w[1]);
+        if speed > 0.3 && matches!(m.doing, Doing::Support(_)) {
+            walking += 1;
+            let off = wrap(w[1].atan2(w[0]) - yaw).abs();
+            aligned += u32::from(off < 30f32.to_radians());
+        }
+        at = [
+            at[0] + w[0] * WALK / TICKS,
+            at[1] + w[1] * WALK / TICKS,
+            0.0,
+        ];
+        yaw -= turn_rate(pad.right_stick).0 / TICKS;
+        if dist_xy(at, goal) < 1.0 {
+            break;
+        }
+    }
+    assert!(dist_xy(at, goal) < 1.0, "got there: {at:?}");
+    assert!(walking > 300, "{walking}");
+    assert!(aligned * 10 >= walking * 9, "{aligned} of {walking}");
+}
+
+// ---- verticality ----
+
+#[test]
+fn it_does_not_walk_under_the_ledge() {
+    // A floor, a ramp up at its far north end, and a ledge 3 up east of
+    // the floor: the ledge's cliff faces the floor.
+    let quad = |v: [[f32; 3]; 4]| Poly::new(v.to_vec());
+    let floor = quad([
+        [0.0, 0.0, 0.0],
+        [10.0, 0.0, 0.0],
+        [10.0, 14.0, 0.0],
+        [0.0, 14.0, 0.0],
+    ]);
+    let ramp = quad([
+        [10.0, 12.0, 0.0],
+        [14.0, 12.0, 3.0],
+        [14.0, 14.0, 3.0],
+        [10.0, 14.0, 0.0],
+    ]);
+    let ledge = quad([
+        [14.0, 0.0, 3.0],
+        [30.0, 0.0, 3.0],
+        [30.0, 14.0, 3.0],
+        [14.0, 14.0, 3.0],
+    ]);
+    let mut edges = Vec::new();
+    for (from, to, a, b) in [
+        (0, 1, [10.0, 12.0, 0.0], [10.0, 14.0, 0.0]),
+        (1, 2, [14.0, 12.0, 3.0], [14.0, 14.0, 3.0]),
+    ] {
+        for (f, t) in [(from, to), (to, from)] {
+            edges.push(Edge {
+                from: f,
+                to: t,
+                a,
+                b,
+                kind: crate::nav::Kind::Walk,
+            });
+        }
+    }
+    let map = MapData {
+        nav: NavMesh::new(vec![floor, ramp, ledge], edges),
+        ..Default::default()
+    };
+    let foe = [28.0, 5.0, 3.0];
+    let mut m = Mind::new(Skill::Legendary, 8);
+    let mut routed = None;
+    for tick in 0..30 {
+        let p = Perception {
+            me: me([4.0, 5.0, 0.0], X),
+            others: vec![enemy(1, foe)],
+            tick,
+            ..Perception::default()
+        };
+        m.step(&p, Some(&map));
+        assert_eq!(m.doing, Doing::Fight(1));
+        if let Some(goal) = m.follower.as_ref().and_then(Follower::goal) {
+            routed = Some((goal, m.last_walk.expect("walking").walk));
+            break;
+        }
+    }
+    let (goal, walk) = routed.expect("it takes the route");
+    assert_eq!(goal, foe);
+    // Toward the ramp to the north, not east under the cliff.
+    assert!(walk[1] > walk[0].abs() * 0.5, "{walk:?}");
+}
+
+/// A bot on a long straight run: the most stick it pushed, and whether
+/// it hopped.
+fn run(weights: Option<crate::name_profile::Weights>) -> (f32, bool) {
+    use crate::brain::Order;
+    let map = MapData {
+        nav: NavMesh::new(
+            vec![Poly::new(vec![
+                [0.0, 0.0, 0.0],
+                [80.0, 0.0, 0.0],
+                [80.0, 10.0, 0.0],
+                [0.0, 10.0, 0.0],
+            ])],
+            vec![],
+        ),
+        ..Default::default()
+    };
+    let mut m = Mind::new(Skill::Legendary, 6);
+    m.profile_weights = weights;
+    m.decisions.set_order(Some(Order::Go([78.0, 5.0, 0.0])));
+    let (mut most, mut hopped) = (0.0f32, false);
+    for tick in 0..900 {
+        let at = [2.0 + 0.07 * tick as f32, 5.0, 0.0];
+        let p = Perception {
+            me: me(at, X),
+            tick,
+            ..Perception::default()
+        };
+        let pad = m.step(&p, Some(&map));
+        assert!(matches!(m.doing, Doing::Play(_)), "{:?}", m.doing);
+        most = most.max(pad.left_stick.0.hypot(pad.left_stick.1));
+        hopped |= pad.buttons.contains(JUMP);
+    }
+    (most, hopped)
+}
+
+#[test]
+fn a_named_bot_runs_at_full_stick_and_hops_as_its_name_likes() {
+    let named = |jump| {
+        let mut w = crate::name_profile::Weights::from([0.5; 12]);
+        w.jump = jump;
+        Some(w)
+    };
+    let (most, hopped) = run(named(1.0));
+    assert!(most > 0.99, "{most}");
+    assert!(hopped);
+    let (_, hopped) = run(named(0.0));
+    assert!(!hopped);
+    // Without a name the thumb keeps its own pace and the route's cruise.
+    let (most, hopped) = run(None);
+    assert!(most < 0.97, "{most}");
+    assert!(!hopped);
 }

@@ -328,6 +328,29 @@ pub(crate) fn perception_into(
     grenades: &mut Vec<crate::incoming::Grenade>,
     vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
 ) -> R<()> {
+    perception_with(
+        m,
+        machine,
+        sense_grenades,
+        out,
+        grenades,
+        vehicle_headers,
+        crate::sound::firing,
+    )
+}
+
+/// [`perception_into`] with the players who fired lately (`firing`: the
+/// slot mask at a tick) given: the motion tracker shows them as it shows
+/// movement.
+pub(crate) fn perception_with(
+    m: &dyn GuestMemory,
+    machine: [u8; 6],
+    sense_grenades: bool,
+    out: &mut Perception,
+    grenades: &mut Vec<crate::incoming::Grenade>,
+    vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
+    firing: fn(u32) -> u16,
+) -> R<()> {
     out.me = None;
     out.teams = false;
     out.tick = 0;
@@ -336,7 +359,8 @@ pub(crate) fn perception_into(
     out.observations.ahead = false;
     out.observations.service_rate = None;
     out.observations.pickups_scanned = false;
-    out.observations.radar = None;
+    out.observations.radar.clear();
+    out.observations.radar_range = None;
     out.observations.ground_grenades.clear();
     out.observations.contacts.clear();
     out.observations.supply_players.clear();
@@ -475,7 +499,12 @@ pub(crate) fn perception_into(
         if unzoomed && let Some(sensor) = sensor
             && radar::enabled(m, globals, flags, out.objective.as_ref())
         {
-            out.observations.radar = sensor.contact(out, moving);
+            // A firing player shows whether it moves or not, crouched too.
+            let shown = moving | firing(out.tick);
+            let mut dots = std::mem::take(&mut out.observations.radar);
+            sensor.contacts(out, shown, &mut dots);
+            out.observations.radar = dots;
+            out.observations.radar_range = Some(sensor.range());
         }
     } else {
         out.observations.supplies = None;

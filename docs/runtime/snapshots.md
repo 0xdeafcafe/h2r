@@ -194,10 +194,10 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 
 | State | Where | Decision | Why |
 |---|---|---|---|
-| Open files: path, mount, options, position, enumeration cursor, delete flag | `Vfs::objects: OpenFile`, `vfs/src/lib.rs` | Save | Re-open by device and path on load, keeping `vfs::Handle` and kernel handle numbers. Read-only objects only: a save refuses while one is open for writing or deletion. |
+| Open files: path, mount, options, position, enumeration cursor, changed flag | `Vfs::objects: OpenFile`, `vfs/src/lib.rs` | Save | Re-open by device and path on load, keeping `vfs::Handle` and kernel handle numbers. A file open for writing is saved whole and written back before the re-open: the title keeps `z:\preferences.dat` open for writing (GENERIC_READ and GENERIC_WRITE, FILE_OPEN_IF) from boot to exit and rewrites it in place. A save refuses a writable file over `vfs::MAX_CARRIED_BYTES` (1 MiB; a cache slot being copied) and an object that may delete. |
 | Delete-pending sets, next handle | `Vfs::pending`, `cleanup_pending`, `next_handle` | Save | `next_handle` built; a save refuses while a delete is pending. |
 | Host file descriptors, write-behind queue, reservations | `HostBackend`, `WriteBehind`, `vfs/src/host.rs`, `write_behind.rs` | Rebuild | Flush (`vfs::flush_pending_metadata`) before saving. |
-| Files on the host disk (saves, cache partitions) | the data root | Not in the snapshot | A load after the game wrote a save or a cache file sees the newer file. A save refuses while a file is open for writing (above); closed files are not recorded. |
+| Files on the host disk (saves, cache partitions) | the data root | Not in the snapshot | A load after the game wrote a save or a cache file sees the newer file. Only files open for writing at the save are carried (above); closed files are not recorded. |
 | Editor play copy | `MapOverrideBackend`, `vfs/src/state.rs` | Refuse | An active file preparation, reservation or published binding prevents save and restore, including snapshot-based rewind and film keyframe capture. Cancelling preparation releases its claim immediately. A closed DVD source can still supply a resident cache slot. Restart without the binding to use snapshots. Startup directory overrides resolve through the boot mount. |
 | Unlinked editor placement preview | `agent/src/sim/calls/placement.rs` | Refuse | An outstanding preview or an interrupted creation whose result is unknown prevents save and restore. A different scenario clears it. Deleting a multiplayer preview also clears it. A checkpoint may still hold a deleted campaign preview on the same mission. |
 
@@ -381,7 +381,7 @@ writes are atomic (temporary file, then rename).
 Code: `crates/runtime/kernel/src/snapshot.rs`; tests: `crates/runtime/kernel/tests/snapshot.rs`.
 
 - `Machine::save_snapshot` requires a quiescent machine. It writes the
-  sections `kcore` (version 2) and `machine` on the snapshot crate's
+  sections `kcore` (version 3) and `machine` on the snapshot crate's
   codec, and `load_snapshot` reads them. The `Persist` trait and
   `persist_struct!` destructure every saved struct without `..`, and
   `save_core` destructures `Core` whole, so a new field does not compile
@@ -407,11 +407,18 @@ Code: `crates/runtime/kernel/src/snapshot.rs`; tests: `crates/runtime/kernel/tes
   generation and the reuse order, so tokens made after a load are the
   saved run's. A live closure that is not rebuildable refuses the save; a
   load with no rebuilder for an origin changes nothing.
-- `vfs::Vfs::state` and `restore_state`: open objects by device and path
-  with handle numbers, options, position and search cursor (directory
-  entries are read again at load). Refuses while an object can write or
-  delete, or a delete is pending; a load looks every file up before it
-  closes anything.
+- `vfs::Vfs::state` and `restore_state` (`crates/runtime/vfs/src/state.rs`):
+  open objects by device and path with handle numbers, options, position,
+  search cursor (directory entries are read again at load) and changed
+  flag. A file object that can write, or wrote, carries the file's bytes
+  (`SavedFile::contents`, up to `MAX_CARRIED_BYTES`). Refuses a larger
+  one, an object with delete access or delete-on-close, and a pending
+  delete. A load looks every file up before it closes anything; the
+  apply closes the open objects, writes each carried file back at its
+  saved length (creating it if it is gone, leaving it if it holds them
+  already) and re-opens the objects. A host write that fails there is
+  logged and the object is re-opened on what the file holds. Tests:
+  `crates/runtime/vfs/tests/state.rs`.
 - `xapi::snapshot` (`crates/platform/xapi/src/snapshot.rs`): the `xapi` section.
   Pad handles (token, port, last state), `next_handle`, the gamepad and
   communicator change words, each port's published state and polling
@@ -703,8 +710,9 @@ re-keys them.
 
 - A snapshot loads only into the same build and switches, into a machine
   that is already booted; a mismatch refuses and changes nothing.
-- **Host files**: the snapshot does not cover the data root. Loading after
-  the game wrote a save or a cache partition file can diverge.
+- **Host files**: the snapshot does not cover the data root, only the
+  files open for writing at the save. Loading after the game wrote and
+  closed a save or a cache partition file can diverge.
 - **Run-time reservations**: an HLE crate that reserves physical memory on
   first use (a movie arena, say) makes earlier and later snapshots
   incompatible with a machine in the other state. The load refuses with the

@@ -1691,8 +1691,9 @@ h2 agent render.parity '{"arm": true}'
   did not read), `scene_decorator_draws`, `scene_decorator_instances`,
   `scene_decorator_remainder`, and the decorator stage's
   `scene_decorator_views`, `scene_decorator_views_native`,
-  `scene_decorator_items_skipped`, `scene_decorator_draws_unready` and
-  `scene_decorator_views_declined` (native-decorators.md),
+  `scene_decorator_items_skipped`, `scene_decorator_draws_unready`,
+  `scene_decorator_draws_state` and `scene_decorator_views_declined`
+  (native-decorators.md),
   `scene_light_extract_views`, `scene_light_extract_ns` and
   `scene_light_extract_unread` (candidate extraction attempts, their
   elapsed nanoseconds and attempts that return no candidates because

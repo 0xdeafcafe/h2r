@@ -7,7 +7,10 @@
 //!   way for long, predictable stretches and sometimes just stands;
 //!   Legendary changes often and at random.
 //! - **Range**: closes in from beyond the weapon's range, backs off inside
-//!   it ([`preferred_range`], a seam for the weapons decision).
+//!   it ([`preferred_range`], a seam for the weapons decision). The near
+//!   edge is measured in 3D and nothing straight over or under it is
+//!   backed away from; more than [`HEIGHT_GAP`] over or under, a step that
+//!   would lose sight of the enemy is not taken.
 //! - **Hit reactions**: a shield drop is a hit. It may reverse the strafe
 //!   at once (a juke) or (at range) crouch for a moment.
 //! - **Retreat and reload**: backs away to a spot the enemy cannot see
@@ -77,7 +80,7 @@ impl Style {
         );
         self.stand *= 1.0 - 0.35 * weights.strafe;
         self.juke += 0.3 * weights.strafe * (1.0 - self.juke);
-        self.jump = weights.jump * 0.35;
+        self.jump = weights.jump * FIGHT_HOP;
     }
 
     pub fn of(skill: Skill) -> Style {
@@ -130,6 +133,8 @@ pub const REACT_COOLDOWN: u32 = 20;
 pub const JUMP_TICKS: u32 = 3;
 /// ...and not again for this long.
 pub const JUMP_COOLDOWN: u32 = 45;
+/// A new strafe hops with this chance times the name's jump weight.
+pub const FIGHT_HOP: f32 = 0.5;
 /// Crouches on a hit only this far from the enemy...
 pub const CROUCH_RANGE: f32 = 8.0;
 /// ...for this long.
@@ -149,6 +154,10 @@ const JUMP_PROBES: [f32; 3] = [0.5, 1.0, 1.6];
 pub const LEDGE: f32 = 0.5;
 /// Walls are checked at this height over the floor.
 pub const KNEE: f32 = 0.35;
+/// An enemy more than this over or under is on another level: no step
+/// that loses sight of it (but backing off), and the mind walks the
+/// route up or down to close in (`mind::CLIMB_GAP`).
+pub const HEIGHT_GAP: f32 = 1.0;
 
 /// What the feet need to know.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -268,6 +277,11 @@ impl Moves {
         let to = [i.foe[0] - i.at[0], i.foe[1] - i.at[1]];
         let flat = norm2(to).max(1e-6);
         let f = [to[0] / flat, to[1] / flat];
+        let rise = i.foe[2] - i.at[2];
+        // The near edge is the real distance; straight over or under it,
+        // a step back only loses the enemy.
+        let reach = flat.hypot(rise);
+        let overhead = rise.abs() > flat;
         let mut out = FightMove::default();
 
         // A hit: juke or crouch, at the skill's odds.
@@ -323,7 +337,7 @@ impl Moves {
                 if flat < far { -0.5 } else { 0.0 }
             } else if flat > far {
                 1.0
-            } else if flat < near {
+            } else if reach < near && !overhead {
                 -0.7 * st.keep
             } else {
                 0.0
@@ -369,6 +383,25 @@ impl Moves {
                 d = fwd;
             } else if standable(m, i.at, back) {
                 d = back;
+            } else {
+                d = [0.0, 0.0];
+            }
+        }
+
+        // On another level: a step that loses sight of the enemy is not
+        // taken (the other side, else stand), but backing off.
+        if rise.abs() > HEIGHT_GAP
+            && !i.retreat
+            && !i.reloading
+            && norm2(d) > 1e-3
+            && sees(m, i.at, i.foe)
+            && !sees(m, step(i.at, d), i.foe)
+        {
+            let along = d[0] * f[0] + d[1] * f[1];
+            let other = [2.0 * along * f[0] - d[0], 2.0 * along * f[1] - d[1]];
+            if standable(m, i.at, other) && sees(m, step(i.at, other), i.foe) {
+                self.side = -self.side;
+                d = other;
             } else {
                 d = [0.0, 0.0];
             }
@@ -425,6 +458,25 @@ impl Moves {
 /// Whether `tick` is at or past `until`, across the counter's wrap.
 fn reached(tick: u32, until: u32) -> bool {
     tick.wrapping_sub(until) < u32::MAX / 2
+}
+
+/// From a body at `at`, the eye has a clear line to the chest or the head
+/// of a player standing at `foe`.
+fn sees(m: &MapData, at: Vec3, foe: Vec3) -> bool {
+    let eye = [at[0], at[1], at[2] + EYE];
+    [CHEST, crate::mind::HEAD]
+        .into_iter()
+        .any(|h| m.walls.clear(eye, [foe[0], foe[1], foe[2] + h]))
+}
+
+/// Where a step along `d` from `at` puts the body: the first footing probe.
+fn step(at: Vec3, d: [f32; 2]) -> Vec3 {
+    let l = norm2(d).max(1e-6);
+    [
+        at[0] + PROBES[0] * d[0] / l,
+        at[1] + PROBES[0] * d[1] / l,
+        at[2],
+    ]
 }
 
 /// The floor under a biped at `at` (its height), if on the mesh.

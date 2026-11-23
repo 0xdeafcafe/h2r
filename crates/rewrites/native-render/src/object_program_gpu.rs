@@ -84,19 +84,79 @@ pub struct LitPart {
 pub struct SubpartRanges {
     pub first: u16,
     pub ranges: Vec<Range<u32>>,
+    /// A strip part's subparts as a record without bit 9 draws a choice
+    /// of them ([`ListedRanges`]); `None` for a list part.
+    pub listed: Option<ListedRanges>,
+}
+
+/// A strip part's subparts in its buffers as the emitter's list draw
+/// reads them (`0x0004db68`): `indices` the section's indices from the
+/// subparts' lowest to their highest, verbatim, and per subpart its first
+/// index and count within them ([`ListedSubparts`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListedRanges {
+    pub indices: Range<u32>,
+    pub spans: Vec<(u32, u32)>,
 }
 
 impl SubpartRanges {
-    /// The index ranges `chosen` draws, ascending, adjacent ones joined
-    /// (one packet each), empty ones left out; an error when `chosen` is
-    /// not over these subparts.
-    pub fn drawn(&self, chosen: Subparts) -> Result<Vec<Range<u32>>, String> {
+    fn chooses(&self, chosen: Subparts) -> Result<(), String> {
         if chosen.first != self.first || usize::from(chosen.count) != self.ranges.len() {
             return Err(format!(
                 "the record chooses subparts {}+{}, the part's are {}+{}",
                 chosen.first, chosen.count, self.first, self.ranges.len()
             ));
         }
+        Ok(())
+    }
+
+    /// The index ranges a record without bit 9 draws for `chosen` on a
+    /// strip part, as the emitter's list loop `0x0004db68` does: the
+    /// chosen subparts in order, a run of index-contiguous ones (each
+    /// starting where the last ended) one `TRIANGLELIST` draw of its
+    /// indices verbatim, so its `n / 3` whole triangles; a run with none
+    /// draws nothing. An error when `chosen` is not over these subparts or
+    /// the part has no list of them.
+    pub fn drawn_as_list(&self, chosen: Subparts) -> Result<Vec<Range<u32>>, String> {
+        self.chooses(chosen)?;
+        let listed = self.listed.as_ref().ok_or("the part's subparts have no list natively")?;
+        if listed.spans.len() != self.ranges.len() {
+            return Err("the part's listed subparts are not its subparts".into());
+        }
+        let base = listed.indices.start;
+        let mut out: Vec<Range<u32>> = Vec::new();
+        let mut flush = |(start, end): (u32, u32)| {
+            let whole = (end - start) / 3 * 3;
+            if whole > 0 {
+                out.push(base + start..base + start + whole);
+            }
+        };
+        let mut run: Option<(u32, u32)> = None;
+        for n in chosen.drawn() {
+            let (start, count) = listed.spans[usize::from(n)];
+            run = match run {
+                Some((first, end)) if start == end => Some((first, end + count)),
+                Some(done) => {
+                    flush(done);
+                    Some((start, start + count))
+                }
+                None => Some((start, start + count)),
+            };
+        }
+        if let Some(done) = run {
+            flush(done);
+        }
+        if out.iter().any(|r| r.end > listed.indices.end) {
+            return Err("the part's listed subparts lie outside their indices".into());
+        }
+        Ok(out)
+    }
+
+    /// The index ranges `chosen` draws, ascending, adjacent ones joined
+    /// (one packet each), empty ones left out; an error when `chosen` is
+    /// not over these subparts.
+    pub fn drawn(&self, chosen: Subparts) -> Result<Vec<Range<u32>>, String> {
+        self.chooses(chosen)?;
         let mut out: Vec<Range<u32>> = Vec::new();
         for n in chosen.drawn() {
             let r = self.ranges[usize::from(n)].clone();
@@ -239,7 +299,9 @@ impl LitModelInput {
                 let Some(buffer) = self.buffers.get(buffer) else { return false };
                 let fits = |range: &Range<u32>| range.start <= range.end && range.end as usize <= buffer.indices.len();
                 program < self.programs.len() && fits(indices)
-                    && subparts.is_none_or(|subparts| subparts.ranges.iter().all(fits))
+                    && subparts.is_none_or(|subparts| {
+                        subparts.ranges.iter().all(fits) && subparts.listed.as_ref().is_none_or(|l| fits(&l.indices))
+                    })
                     && listed.is_none_or(fits)
             })
         };
@@ -1375,24 +1437,19 @@ impl<'a> PartInputs<'a> {
 /// topology) and chooses `chosen` of its subparts. The emitter `0x0004daa0`
 /// draws a part as a strip only with bit 9 and the part's triangle-list
 /// flag clear (`0x0004d5e2`), so a strip part whose record lacks bit 9
-/// draws its indices as a list. Its chosen subparts would then join into
-/// one list (`0x0004db68`), which is not built. A list part draws as a
-/// list whatever the record says.
+/// draws its indices as a list, and its chosen subparts as the list loop
+/// `0x0004db68` joins them ([`SubpartRanges::drawn_as_list`]). A list
+/// part draws as a list whatever the record says.
 fn part_ranges(
     whole: &Range<u32>, subparts: Option<&SubpartRanges>, listed: Option<&Range<u32>>, strip: Option<bool>,
     chosen: Option<Subparts>,
 ) -> Result<Vec<Range<u32>>, String> {
-    match (listed, strip) {
-        (Some(_), Some(false)) if chosen.is_some() => {
-            Err("the record draws a strip part's chosen subparts as one list".into())
-        }
-        (Some(listed), Some(false)) => Ok(vec![listed.clone()]),
-        _ => match chosen {
-            None => Ok(vec![whole.clone()]),
-            Some(chosen) => {
-                subparts.ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)
-            }
-        },
+    let native = || subparts.ok_or("the record chooses subparts and the part has none natively");
+    match (listed, strip, chosen) {
+        (Some(_), Some(false), Some(chosen)) => native()?.drawn_as_list(chosen),
+        (Some(listed), Some(false), None) => Ok(vec![listed.clone()]),
+        (_, _, None) => Ok(vec![whole.clone()]),
+        (_, _, Some(chosen)) => native()?.drawn(chosen),
     }
 }
 
@@ -1546,14 +1603,32 @@ pub struct LitSection<'a> {
 pub struct LitSubparts {
     pub first: u16,
     pub triangles: Vec<Vec<[u16; 3]>>,
+    /// A strip part's subparts as a record without bit 9 draws a choice
+    /// of them; `None` for a list part.
+    pub listed: Option<ListedSubparts>,
+}
+
+/// A strip part's subparts as the emitter's list loop reads them for a
+/// record without bit 9 (`0x0004db68`): it joins a run of
+/// index-contiguous chosen subparts into one `TRIANGLELIST` draw of the
+/// section's indices, so a triangle can span two subparts and a run's
+/// last `n % 3` indices draw nothing. `indices` holds the section's
+/// indices from the subparts' lowest to their highest, verbatim; `spans`
+/// each subpart's first index (from the lowest) and count.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListedSubparts {
+    pub indices: Vec<u16>,
+    pub spans: Vec<(u32, u32)>,
 }
 
 /// The subparts of `part` (a section's part, over the section's `indices`
 /// and `subparts`) as [`LitSubparts`]: each decoded alone in the part's
-/// topology. `None` when it has none or more than [`Subparts::MAX`], when
-/// one does not lie in the indices, or when a list part's subpart is not
-/// whole triangles (the guest joins index-contiguous chosen subparts into
-/// one list, which would then cut its triangles differently).
+/// topology, and a strip part's also as the list draw reads them
+/// ([`ListedSubparts`]). `None` when it has none or more than
+/// [`Subparts::MAX`], when one does not lie in the indices, or when a
+/// list part's subpart is not whole triangles (the guest joins
+/// index-contiguous chosen subparts into one list, which would then cut
+/// its triangles differently).
 pub fn lit_subparts(
     indices: &[u16], subparts: &[tags::geometry::Subpart], part: &tags::geometry::Part,
 ) -> Option<LitSubparts> {
@@ -1564,6 +1639,7 @@ pub fn lit_subparts(
     let first = usize::from(part.first_subpart);
     let list = part.is_triangle_list();
     let mut triangles = Vec::with_capacity(count);
+    let mut spans = Vec::with_capacity(count);
     for sub in subparts.get(first..first + count)? {
         let start = usize::from(sub.first_index);
         let run = indices.get(start..start + usize::from(sub.index_count))?;
@@ -1571,8 +1647,17 @@ pub fn lit_subparts(
             return None;
         }
         triangles.push(if list { tags::geometry::list_triangles(run) } else { tags::geometry::strip_triangles(run) });
+        spans.push((start, run.len()));
     }
-    Some(LitSubparts { first: part.first_subpart, triangles })
+    let listed = (!list).then(|| {
+        let low = spans.iter().map(|&(start, _)| start).min().unwrap_or(0);
+        let high = spans.iter().map(|&(start, n)| start + n).max().unwrap_or(low);
+        ListedSubparts {
+            indices: indices[low..high].to_vec(),
+            spans: spans.iter().map(|&(start, n)| ((start - low) as u32, n as u32)).collect(),
+        }
+    });
+    Some(LitSubparts { first: part.first_subpart, triangles, listed })
 }
 
 /// A strip `part`'s indices (over the section's `indices`) decoded as a
@@ -1652,9 +1737,8 @@ pub fn lit_model(
             let start = list.len() as u32;
             list.extend(triangles.iter().flatten().map(|&i| u32::from(i)));
             let whole = start..list.len() as u32;
-            let subparts = s.subparts.get(part).map(|sub| SubpartRanges {
-                first: sub.first,
-                ranges: sub
+            let subparts = s.subparts.get(part).map(|sub| {
+                let ranges = sub
                     .triangles
                     .iter()
                     .map(|t| {
@@ -1662,7 +1746,15 @@ pub fn lit_model(
                         list.extend(t.iter().flatten().map(|&i| u32::from(i)));
                         start..list.len() as u32
                     })
-                    .collect(),
+                    .collect();
+                // A strip part's subparts as the list draw reads them,
+                // verbatim after their own triangles.
+                let listed = sub.listed.as_ref().map(|l| {
+                    let start = list.len() as u32;
+                    list.extend(l.indices.iter().map(|&i| u32::from(i)));
+                    ListedRanges { indices: start..list.len() as u32, spans: l.spans.clone() }
+                });
+                SubpartRanges { first: sub.first, ranges, listed }
             });
             let listed = s.listed.get(part).map(|t| {
                 let start = list.len() as u32;
@@ -2225,8 +2317,16 @@ mod tests {
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
             parts: vec![(0, 5, vec![[2, 1, 0]]), (1, 0, vec![[0, 1, 2]]), (2, 3, vec![[0, 2, 1]]), (3, 1, vec![[1, 2, 0]])],
-            // Part 2's subparts 7..10, the second empty.
-            subparts: HashMap::from([(2, LitSubparts { first: 7, triangles: vec![vec![[0, 2, 1]], Vec::new(), vec![[2, 1, 0]]] })]),
+            // Part 2's subparts 7..10, the second empty, and as the list
+            // draw reads them.
+            subparts: HashMap::from([(
+                2,
+                LitSubparts {
+                    first: 7,
+                    triangles: vec![vec![[0, 2, 1]], Vec::new(), vec![[2, 1, 0]]],
+                    listed: Some(ListedSubparts { indices: vec![0, 2, 1, 2, 1, 0], spans: vec![(0, 3), (3, 0), (3, 3)] }),
+                },
+            )]),
             listed: HashMap::new(),
         };
         // An opaque pass: no blending, depth written (both must be set).
@@ -2268,7 +2368,11 @@ mod tests {
         assert_eq!(b.registers, vec![0, 1, 2]);
         assert_eq!(b.decoded(1, 0), [1.0, 0.0, 0.0, 1.0], "vertex 1's position");
         assert_eq!(b.decoded(1, 1), [0.5, 0.5, 0.0, 1.0]);
-        assert_eq!(b.indices, vec![0, 1, 2, 0, 2, 1, 0, 2, 1, 2, 1, 0, 1, 2, 0], "material 5 is not lit here; part 2's subparts follow it");
+        assert_eq!(
+            b.indices,
+            vec![0, 1, 2, 0, 2, 1, 0, 2, 1, 2, 1, 0, 0, 2, 1, 2, 1, 0, 1, 2, 0],
+            "material 5 is not lit here; part 2's subparts and their list follow it"
+        );
         assert_eq!(input.parts.len(), 2);
         let p = &input.parts[0];
         assert_eq!((p.section, p.part, p.indices.clone()), (4, 1, 0..3));
@@ -2277,7 +2381,8 @@ mod tests {
         let p = &input.parts[1];
         assert_eq!((p.part, p.indices.clone()), (2, 3..6));
         assert_eq!(p.implementations, [Some((2, 0)), None, None, None, None]);
-        assert_eq!(p.subparts, Some(SubpartRanges { first: 7, ranges: vec![6..9, 9..9, 9..12] }));
+        let listed = ListedRanges { indices: 12..18, spans: vec![(0, 3), (3, 0), (3, 3)] };
+        assert_eq!(p.subparts, Some(SubpartRanges { first: 7, ranges: vec![6..9, 9..9, 9..12], listed: Some(listed) }));
         assert!(input.programs.iter().all(|p| p.pass.program.inputs == 0b111));
         assert_eq!(asked[0], (map::TagId(0xe000_0002), 0, 0));
     }
@@ -2416,7 +2521,7 @@ mod tests {
         let mut strip = part(4, 0, [Some((0, 0)), None, None, None, None]);
         strip.indices = 0..9;
         strip.listed = Some(9..12);
-        strip.subparts = Some(SubpartRanges { first: 0, ranges: vec![12..15, 15..18] });
+        strip.subparts = Some(SubpartRanges { first: 0, ranges: vec![12..15, 15..18], listed: None });
         let parts = [strip];
         let f = frame();
         let item = |flags, subparts| ItemDraw { index: 0, object: 0, key: key(4, 0, 0), rows: vec![[1.0f32; 4]; 3], flags, subparts };
@@ -2443,10 +2548,16 @@ mod tests {
         let strip = lit_subparts(&indices, &subparts, &part(0, 1, 2)).unwrap();
         assert_eq!(strip.first, 1);
         assert_eq!(strip.triangles, [vec![[0, 1, 2], [1, 3, 2], [2, 3, 4]], vec![[5, 6, 7], [6, 8, 7]]]);
+        // And as the list draw reads them: the indices they span, verbatim.
+        let listed = strip.listed.unwrap();
+        assert_eq!((listed.indices, listed.spans), (indices.to_vec(), vec![(0, 5), (5, 4)]));
+        let later = lit_subparts(&indices, &[sub(6, 2), sub(2, 3)], &part(0, 0, 2)).unwrap().listed.unwrap();
+        assert_eq!((later.indices, later.spans), (vec![2, 3, 4, 5, 6, 7], vec![(4, 2), (0, 3)]), "from the lowest");
         // A list part's subparts must be whole triangles.
         let whole = [sub(0, 3), sub(3, 6)];
         let list = lit_subparts(&indices, &whole, &part(PART_FLAG_TRIANGLE_LIST, 0, 2)).unwrap();
         assert_eq!(list.triangles, [vec![[0, 1, 2]], vec![[3, 4, 5], [6, 7, 8]]]);
+        assert_eq!(list.listed, None, "a list part draws its own");
         assert!(lit_subparts(&indices, &subparts, &part(PART_FLAG_TRIANGLE_LIST, 1, 2)).is_none());
         // None, too many, or outside the indices.
         assert!(lit_subparts(&indices, &subparts, &part(0, 0, 0)).is_none());
@@ -2472,20 +2583,97 @@ mod tests {
     }
 
     /// The ranges a part draws by the record's topology: a strip part
-    /// drawn as a list takes its listed range, not with chosen subparts;
-    /// a list part and a strip drawn as a strip their own.
+    /// drawn as a list takes its listed range, and its chosen subparts'
+    /// listed runs; a list part and a strip drawn as a strip their own.
     #[test]
     fn a_part_draws_the_ranges_of_the_topology_its_record_picks() {
-        let subparts = SubpartRanges { first: 2, ranges: vec![10..13, 13..19] };
+        let listed = ListedRanges { indices: 30..39, spans: vec![(0, 5), (5, 4)] };
+        let subparts = SubpartRanges { first: 2, ranges: vec![10..13, 13..19], listed: Some(listed) };
         let chosen = Subparts { first: 2, count: 2, visible: 0b10 };
         let strip = |strip, chosen| part_ranges(&(0..9), Some(&subparts), Some(&(20..26)), strip, chosen);
         assert_eq!(strip(Some(true), None), Ok(vec![0..9]));
         assert_eq!(strip(Some(true), Some(chosen)), Ok(vec![13..19]));
         assert_eq!(strip(None, None), Ok(vec![0..9]), "in its own topology");
         assert_eq!(strip(Some(false), None), Ok(vec![20..26]), "as a list");
-        assert!(strip(Some(false), Some(chosen)).unwrap_err().contains("one list"));
+        assert_eq!(strip(Some(false), Some(chosen)), Ok(vec![35..38]), "its chosen subpart's whole triangles");
+        let both = Subparts { visible: 0b11, ..chosen };
+        assert_eq!(strip(Some(false), Some(both)), Ok(vec![30..39]), "two index-contiguous subparts, one list");
+        let unlisted = SubpartRanges { listed: None, ..subparts.clone() };
+        let refused = part_ranges(&(0..9), Some(&unlisted), Some(&(20..26)), Some(false), Some(chosen));
+        assert!(refused.unwrap_err().contains("no list"));
         let list = |strip| part_ranges(&(0..9), None, None, strip, None);
         assert_eq!((list(Some(false)), list(None)), (Ok(vec![0..9]), Ok(vec![0..9])));
+    }
+
+    /// The emitter's list loop `0x0004db68` (`h2 disasm`), over a part's
+    /// own subparts: per visible subpart in order, a run grows while the
+    /// next starts one past the run's last index (`ebx + 1`), and each run
+    /// is one `TRIANGLELIST` draw of its `ebx - esi + 1` indices, its
+    /// `n / 3` triangles.
+    fn guest_list_loop(indices: &[u16], subparts: &[tags::geometry::Subpart], visible: u64) -> Vec<[u16; 3]> {
+        let mut out = Vec::new();
+        let mut draw = |esi: i64, ebx: i64| {
+            let run = &indices[esi as usize..(ebx + 1) as usize];
+            out.extend(run.chunks_exact(3).map(|t| [t[0], t[1], t[2]]));
+        };
+        let (mut esi, mut ebx) = (-1i64, -1i64);
+        for (n, sub) in subparts.iter().enumerate() {
+            if visible >> n & 1 == 0 {
+                continue;
+            }
+            let (first, count) = (i64::from(sub.first_index), i64::from(sub.index_count));
+            if esi == -1 {
+                (esi, ebx) = (first, first + count - 1);
+            } else if first == ebx + 1 {
+                ebx = first + count - 1;
+            } else {
+                draw(esi, ebx);
+                (esi, ebx) = (first, first + count - 1);
+            }
+        }
+        if esi != -1 {
+            draw(esi, ebx);
+        }
+        out
+    }
+
+    /// A strip part's chosen subparts drawn by a record without bit 9:
+    /// every choice gives the triangles the guest's list loop draws, a
+    /// triangle spanning two joined subparts and a run's partial one left
+    /// out, through the part's listed indices in the buffer.
+    #[test]
+    fn a_strip_parts_chosen_subparts_draw_the_triangles_the_list_loop_draws() {
+        use tags::geometry::{Part, Subpart};
+        let sub = |first_index, index_count| Subpart { first_index, index_count, unknown_4: 0xffff, part: 0 };
+        // 0 and 1 contiguous (5 and 4 indices: a triangle spans them), 2
+        // after a gap, 3 empty and contiguous with 2, 4 contiguous with 3.
+        let subparts = [sub(1, 5), sub(6, 4), sub(11, 4), sub(15, 0), sub(15, 3)];
+        let indices: Vec<u16> = (0..18).map(|i| 100 + i).collect();
+        let part = Part {
+            kind: 1, flags: 0, material: 0, first_index: 1, index_count: 17, first_subpart: 0, subpart_count: 5, raw: Vec::new(),
+        };
+        let lit = lit_subparts(&indices, &subparts, &part).unwrap();
+        let listed = lit.listed.clone().unwrap();
+        // The buffer as the lit build lays it out: other indices first.
+        let base = 7u32;
+        let mut buffer: Vec<u16> = vec![0; base as usize];
+        buffer.extend(&listed.indices);
+        let ranges = SubpartRanges {
+            first: 0,
+            ranges: vec![0..0; 5],
+            listed: Some(ListedRanges { indices: base..buffer.len() as u32, spans: listed.spans }),
+        };
+        for visible in 0..32u64 {
+            let chosen = Subparts { first: 0, count: 5, visible };
+            let drawn = ranges.drawn_as_list(chosen).unwrap();
+            let native: Vec<[u16; 3]> = drawn
+                .iter()
+                .flat_map(|r| buffer[r.start as usize..r.end as usize].chunks_exact(3).map(|t| [t[0], t[1], t[2]]))
+                .collect();
+            assert_eq!(native, guest_list_loop(&indices, &subparts, visible), "visible {visible:#07b}");
+            assert!(drawn.iter().all(|r| r.len() % 3 == 0 && !r.is_empty()));
+        }
+        assert!(ranges.drawn_as_list(Subparts { first: 1, count: 5, visible: 1 }).is_err(), "another part's subparts");
     }
 
     #[test]
@@ -2839,7 +3027,7 @@ mod tests {
 
     #[test]
     fn chosen_subparts_draw_their_ranges_joined_where_adjacent() {
-        let sub = SubpartRanges { first: 4, ranges: vec![10..13, 13..19, 19..19, 19..22, 22..28] };
+        let sub = SubpartRanges { first: 4, ranges: vec![10..13, 13..19, 19..19, 19..22, 22..28], listed: None };
         let chosen = |visible| Subparts { first: 4, count: 5, visible };
         assert_eq!(
             sub.drawn(chosen(0b1_1111)).unwrap().as_slice(),
@@ -2861,7 +3049,7 @@ mod tests {
         let passes = [equal_pass(0)];
         let pass_of = |i: usize| passes.get(i).map(|p| (p, None::<&InheritedState>));
         let mut with = part(4, 1, [Some((0, 0)), None, None, None, None]);
-        with.subparts = Some(SubpartRanges { first: 2, ranges: vec![6..9, 9..12] });
+        with.subparts = Some(SubpartRanges { first: 2, ranges: vec![6..9, 9..12], listed: None });
         let without = part(4, 0, [Some((0, 0)), None, None, None, None]);
         let parts = [without, with];
         let f = frame();
@@ -2893,7 +3081,7 @@ mod tests {
         input.parts[0].implementations[0] = Some((1, 0));
         assert!(!input.valid_draw_references());
         input.parts[0].implementations[0] = Some((0, 0));
-        input.parts[0].subparts = Some(SubpartRanges { first: 0, ranges: std::iter::once(1..4).collect() });
+        input.parts[0].subparts = Some(SubpartRanges { first: 0, ranges: std::iter::once(1..4).collect(), listed: None });
         assert!(!input.valid_draw_references());
         input.parts[0].subparts = None;
         input.parts[0].indices = 2..4;

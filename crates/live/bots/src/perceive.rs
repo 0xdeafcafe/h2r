@@ -3,7 +3,7 @@
 use crate::brain::{Me, Perception, Vec3};
 use crate::cache::MapData;
 use crate::emote::Kill;
-use crate::mind::{CHEST, EYE, NOTICE_CONE, NOTICE_NEAR};
+use crate::mind::{CHEST, EYE, HEAD, NOTICE_CONE, NOTICE_NEAR};
 use crate::vehicle::{Sight, read::SeatBuffers};
 
 pub(crate) fn player_bit(id: u32) -> u16 {
@@ -21,6 +21,12 @@ fn sight_line(me: Me, at: Vec3, height: f32) -> Option<(Vec3, Vec3)> {
 
 pub(crate) fn in_view(me: Me, at: Vec3, height: f32, map: Option<&MapData>) -> bool {
     map.is_some_and(|m| sight_line(me, at, height).is_some_and(|(a, b)| m.walls.clear(a, b)))
+}
+
+/// A player standing at `at` is in view when its chest or its head is
+/// (docs/game/bots.md, section 3.1): a head over a parapet is seen.
+pub(crate) fn body_in_view(me: Me, at: Vec3, map: Option<&MapData>) -> bool {
+    in_view(me, at, CHEST, map) || in_view(me, at, HEAD, map)
 }
 
 #[cfg(test)]
@@ -56,7 +62,10 @@ pub(crate) fn observe_for_brain(
     let seen = p
         .others
         .iter()
-        .filter(|o| !crate::firefight::is_actor(o.id) && visible(o.position, CHEST))
+        .filter(|o| {
+            !crate::firefight::is_actor(o.id)
+                && p.me.is_some_and(|me| body_in_view(me, o.position, map))
+        })
         .fold(0, |mask, o| mask | player_bit(o.id));
     let seen_player = |id| seen & player_bit(id) != 0;
     p.observations
@@ -196,7 +205,10 @@ pub(crate) mod honesty {
             let mut mind = crate::mind::Mind::new(skill, 15);
             let mut p = Perception {
                 me: Some(Me::default()),
-                observations: Observations { radar: Some([0., 4., 0.]), ..Default::default() },
+                observations: Observations {
+                    radar: vec![[0., 4., 0.]],
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             let mut turned = false;

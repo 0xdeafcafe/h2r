@@ -43,7 +43,7 @@ pub use reads::PathReads;
 pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use sim_store::SimStoreBackend;
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
-pub use state::{SavedFile, StateError, VfsState};
+pub use state::{MAX_CARRIED_BYTES, SavedFile, StateError, VfsState};
 pub use status::{Error, Result};
 pub use types::*;
 pub use variants::{ContentVariants, SandboxChoice, VariantFile, VariantFiles, VariantPair};

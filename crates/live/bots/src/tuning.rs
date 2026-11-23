@@ -15,7 +15,7 @@ use crate::decisions::Personality;
 use crate::mind::{Aim, Skill};
 
 /// The burst a tuning asks for when the skill's table holds the trigger
-/// (normal's).
+/// at every range (easy's), normal's.
 pub const DEFAULT_BURST: (u32, u32) = (24, 8);
 
 /// The timing and physical limits of a brain's normal Xbox pad.
@@ -286,7 +286,8 @@ pub struct Tuning {
     pub gain: Option<f32>,
     /// Radians.
     pub fire_cone: Option<f32>,
-    /// `Some(false)`: hold the trigger. `Some(true)`: fire in bursts.
+    /// `Some(false)`: hold the trigger at every range. `Some(true)`: fire
+    /// in bursts beyond the gun's band (inside it the trigger is held).
     pub burst: Option<bool>,
     /// Burst on and off ticks; either one implies bursts.
     pub burst_on: Option<u32>,
@@ -464,22 +465,23 @@ mod tests {
             burst_on: Some(5),
             ..Tuning::default()
         };
-        // Easy's off time kept; heroic holds, so normal's.
-        assert_eq!(on.aim(Skill::Easy.base_aim()).burst, Some((5, 18)));
+        // Heroic's off time kept; easy holds at every range, so normal's.
         assert_eq!(on.aim(Skill::Heroic.base_aim()).burst, Some((5, 8)));
+        assert_eq!(on.aim(Skill::Easy.base_aim()).burst, Some((5, 8)));
         let yes = Tuning {
             burst: Some(true),
             ..Tuning::default()
         };
         assert_eq!(
             yes.aim(Skill::Legendary.base_aim()).burst,
-            Some(DEFAULT_BURST)
+            Skill::Legendary.base_aim().burst
         );
+        assert_eq!(yes.aim(Skill::Easy.base_aim()).burst, Some(DEFAULT_BURST));
         let zero = Tuning {
             burst_on: Some(0),
             ..Tuning::default()
         };
-        assert_eq!(zero.aim(Skill::Easy.base_aim()).burst, Some((1, 18)));
+        assert_eq!(zero.aim(Skill::Easy.base_aim()).burst, Some((1, 8)));
     }
 
     #[test]

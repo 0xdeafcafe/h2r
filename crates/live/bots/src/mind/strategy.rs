@@ -109,7 +109,8 @@ impl Mind {
 
     /// With no one to fight and no objective: in order, recover shields,
     /// regroup after backing off, the bot's own lead (hold the angle, then
-    /// chase), a teammate's fight, supplies, a sound or a guess, moving
+    /// chase), a teammate's fight, a tracker dot, supplies, a sound or a
+    /// guess, moving
     /// with a teammate, a firing position, roaming.
     fn between_fights(
         &self,
@@ -158,6 +159,15 @@ impl Mind {
             }
         }
         if let Some(at) = support {
+            return Doing::Support(at);
+        }
+        // A dot on the tracker (mind::tracker) before supplies, a firing
+        // position or roaming: go and see who it is.
+        if let Some(at) = self
+            .tracker
+            .goal(me.position, p.tick)
+            .filter(|at| !self.stuck.blocked(*at, p.tick))
+        {
             return Doing::Support(at);
         }
         if calm

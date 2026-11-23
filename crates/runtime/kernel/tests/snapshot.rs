@@ -356,11 +356,11 @@ fn a_loaded_machine_runs_the_same_slices_as_the_saved_one() {
 }
 
 #[test]
-fn mounted_snapshots_keep_version_two_and_refuse_closed_editor_copies() {
+fn mounted_snapshots_keep_version_three_and_refuse_closed_editor_copies() {
     let (host, machine) = boot(0);
     let bytes = save(&host, &machine).unwrap();
     let snap = Snapshot::open(&bytes, &build()).unwrap();
-    assert_eq!(snap.section(kernel::snapshot::KCORE).unwrap().unwrap().0, 2);
+    assert_eq!(snap.section(kernel::snapshot::KCORE).unwrap().unwrap().0, 3);
     let (fresh, mut target) = boot(0);
     load(&fresh, &mut target, &bytes).unwrap();
 
@@ -379,13 +379,13 @@ fn incompatible_and_truncated_kernel_sections_leave_guest_ram_intact() {
     let good = save(&source, &machine).unwrap();
     let snap = Snapshot::open(&good, &build()).unwrap();
     let (fresh, mut target) = boot(0);
-    for version in [3, 2] {
+    for version in [4, 3] {
         let mut out = SnapshotWriter::new(snap.header.clone());
         for tag in snap.tags() {
             let (mut v, mut raw) = snap.section(tag).unwrap().unwrap();
             if tag == kernel::snapshot::KCORE {
                 v = version;
-                if version == 2 {
+                if version == 3 {
                     raw.pop().unwrap();
                 }
             }
