@@ -158,11 +158,9 @@ same sealed scene, in `retail` and in `e3` lighting
 
 - `ground`, `front`, `side`, `orbit-N`, `ruler`, `third`: a private
   world view at the layout's eye (`render.view {eye, yaw, pitch, fov}`,
-  a new game method on `spectator_view`, which `render.spawn_view`
-  already uses), then `render.capture`
+  on the same `spectator_view` camera as `render.spawn_view`), then
+  `render.capture`
   ([agent-api.md](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)).
-  Until `render.view` exists these use `render.spawn_view {index}` on
-  the cameras' starting locations.
 - `first`: the player's own view holding the item, with the HUD.
 - `hud-full`, `hud-low`, `hud-empty`: `first` with the shield and ammo
   set by `sim.state.set`, for HUD kit elements and `nhdt` edits.
@@ -213,9 +211,9 @@ repository.
 
 - **Studio builds** with `workspace::build` (`project.build`) and
   **calls its own game:** `maps.load`, `session.wait`, `session` pause
-  and step, `render.view` (new), `render.spawn_view`, `render.capture`,
+  and step, `render.view`, `render.spawn_view`, `render.capture`,
   `render.compare`, `sim.state.set`, the give call, `world` queries,
-  `audio.meter` (new), `rules.reload`, `edit.*`.
+  `audio.meter`, `rules.reload`, `edit.*`.
 - **New game methods**, both wanted by later agents and tests, so the
   API grows rather than the stage working around it:
   `render.view {eye, yaw, pitch, fov?}` or `{reset}` (act), and
@@ -289,9 +287,11 @@ repository.
 - **The fast tier's floats.** Whether clang's module and the fast tier
   draw the same pixels at a paused tick is not known; references record
   the tier and compare only within it.
-- **Headless sound.** Host cues are dropped on a run with no audio
-  device (`pogo_sound`). `audio.meter` needs the mixer to run into a
-  null sink there.
+- **Headless sound.** A run with no audio device renders the mixer
+  into a null sink and `audio.meter` meters it; a clock-only run (a
+  light host or sim) renders no samples and the meter answers
+  `UNAVAILABLE`, so the stage's own game must not be one
+  ([audio.md](../audio/audio.md#metering-the-mixer)).
 - **Loading into a running game.** Queueing a package map from inside
   a game is unverified ([test-maps.md](../game/test-maps.md#not-verified)).
   The fallback is `game.menu`, then the load.

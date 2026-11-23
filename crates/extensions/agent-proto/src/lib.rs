@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod audio;
 mod client;
 pub mod discover;
 #[cfg(any(unix, windows))]
@@ -66,6 +67,7 @@ pub use render::{
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
     SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
     SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,
+    ViewParams, ViewRequest,
 };
 
 use serde::{Deserialize, Serialize};
@@ -287,6 +289,9 @@ pub mod method {
     pub const RENDER_CAPTURE: &str = "render.capture";
     /// Position the world camera at a loaded player starting location.
     pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
+    /// Position the world camera at an explicit eye and heading, or release
+    /// it ([`crate::ViewParams`]).
+    pub const RENDER_VIEW: &str = "render.view";
     /// Arm a sequence of headless display presents, including in-between frames.
     pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
     /// Read the number of display frames written by a clip capture.
@@ -307,6 +312,9 @@ pub mod method {
     pub const AUDIO_LISTENERS: &str = "audio.listeners";
     /// Active guest looping sounds, their transitions and host output health.
     pub const AUDIO_LOOPS: &str = "audio.loops";
+    /// The host mixer's output level over a window, or of a host clip it
+    /// starts ([`crate::audio::MeterParams`]).
+    pub const AUDIO_METER: &str = "audio.meter";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.

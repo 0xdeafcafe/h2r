@@ -233,6 +233,8 @@ pub mod pogo_pose;
 pub mod pogo_pose_glue;
 pub mod pogo_ride;
 pub mod pogo_sound;
+// `audio.meter`: the host mixer's output level (docs/audio/audio.md).
+pub mod mixer_meter;
 pub mod pogo_skeleton;
 pub mod superbounce_assist;
 pub mod superbounce_capsule;

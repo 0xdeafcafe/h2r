@@ -12,8 +12,10 @@
 //! [`VOICES`] at a time: a touchdown's clank and the bounce's spring three
 //! ticks later overlap. A cue heard less than [`RETRIGGER_TICKS`] ago is
 //! not started again, so two local players landing on one tick, or a
-//! cue given twice, sound once. Without audio (a headless run) cues are
-//! dropped.
+//! cue given twice, sound once. A clock-only run (a light host or sim)
+//! renders no audio and drops the cues; a run with no device plays them
+//! into a `NullSink`, where `audio.meter` ([`crate::mixer_meter`]) meters
+//! them.
 //!
 //! **Level.** A host buffer is mixed at its own volume and nothing else:
 //! none of the sound class gain, mix-bin volumes and headroom the game

@@ -1070,10 +1070,17 @@ fn run_configured(
             (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
         }
     };
+    // The output's PCM tap: `audio.meter` (mixer_meter.rs) and, when a
+    // film records, its sound. A clock-only output renders no PCM.
     #[cfg(feature = "local-io")]
-    if let (Some(audio), Some(capture)) = (&mut ds, &host.film_capture) {
-        let capture = capture.clone();
-        audio.output.tap_samples(move |pcm| capture.audio(pcm));
+    if let Some(audio) = &mut ds {
+        let film = host.film_capture.clone();
+        audio.output.tap_samples(move |pcm| {
+            game::mixer_meter::feed(pcm);
+            if let Some(capture) = &film {
+                capture.audio(pcm);
+            }
+        });
     }
     if let Some(audio) = &ds {
         let mixer = audio.mixer();
@@ -1092,6 +1099,8 @@ fn run_configured(
             game::medal_announcer::connect(audio.mixer());
             // The Pogo Stick's piston sounds too (pogo_sound.rs).
             game::pogo_sound::connect(audio.mixer());
+            // `audio.meter` meters this mixer's output (mixer_meter.rs).
+            game::mixer_meter::connect(audio.mixer());
         }
     }
     let local_forge =
@@ -1266,6 +1275,10 @@ fn run_configured(
     #[cfg(feature = "local-io")]
     if let (Some(a), Some(audio)) = (&agent, &ds) {
         dsound_glue::add_agent_methods(&a.agent, audio.mixer());
+    }
+    // audio.meter: UNAVAILABLE where the mixer renders no samples.
+    if let Some(a) = &agent {
+        game::mixer_meter::add_agent_method(&a.agent);
     }
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).

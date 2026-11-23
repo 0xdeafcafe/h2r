@@ -1040,7 +1040,8 @@ the loudest is the one compared. It answers:
   `peak_over_p90_db` are the margins, and `text` says it ("louder than
   the p90 of the map's sounds by 7.2 dB").
 
-The loudness is ITU-R BS.1770-4's (`api/sound_measure/meter.rs`): each
+The loudness is ITU-R BS.1770-4's (`crates/platform/audio/src/meter.rs`,
+shared with the game's `audio.meter`): each
 channel K-weighted (the high shelf and high pass, their coefficients
 derived for the clip's rate from the 48 kHz design, as libebur128 does),
 mean square over 400 ms blocks stepped 100 ms, blocks under -70 LUFS
@@ -1416,11 +1417,11 @@ actions and the API's make identical profiles.
   `api/ui_edit.rs` the UI Screens tool's edits, `api/preview.rs` and
   `api/preview/run.rs` the previews in a paired game (tested in
   `api/preview/tests.rs` against the agent's real server with invented
-  host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
-  `api/ui_check.rs` and `api/checks.rs`: the content checks.
-  `api/models.rs`: `model.*` (its renders through
-  `scenario_edit::native_view::preview`). `api/playtest.rs`: the playtest
-  checks (`app/playtest_static.rs`).
+  host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`,
+  the verdict over the audio crate's meter), `api/ui_check.rs` and
+  `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
+  renders through `scenario_edit::native_view::preview`).
+  `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`).
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

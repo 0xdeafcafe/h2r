@@ -66,7 +66,7 @@ connection to hold `session.claim`.
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
-| `render.spawn_view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.spawn_view`, `render.view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.residual` | read | [Residual D3D work](#renderresidual-residual-d3d-work) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -89,6 +89,7 @@ connection to hold `session.claim`.
 | `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.lobby.tabs`, `ui.browser.filters`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
+| `audio.meter` | read | [`audio.meter`](#audiometer) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
@@ -1619,6 +1620,9 @@ h2 agent frame compare off/frame-03000.png on/frame-03000.png --diff d.png  # no
 h2 agent render.spawn_view '{"index": 0}'
 h2 agent render.capture '{}'
 h2 agent render.spawn_view '{"reset": true}'
+h2 agent render.view '{"eye": [12.5, -3, 2.2], "yaw": 1.57, "pitch": -0.2, "fov": 70}'
+h2 agent render.capture '{}'
+h2 agent render.view '{"reset": true}'
 h2 agent render.capture '{"tick": 9000}'
 h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
 h2 agent render.capture '{"lighting":"retail"}' # latest sealed scene, private draw
@@ -1632,6 +1636,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
+| `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
@@ -1665,6 +1670,22 @@ h2 agent render.parity '{"arm": true}'
   gives `UNAVAILABLE`, and a session that draws no world frames times out.
   `crates/extensions/game/src/agent_spawn_view.rs` shares Theater's
   playerless world view in `spectator_view.rs`.
+- **`render.view`.** Places the same private camera at an explicit eye
+  in world units. `yaw` is the heading about +z in radians, from +x
+  towards +y; `pitch` is up from level, within ±1.55. `fov` is the
+  horizontal lens in degrees, 1 to 150; without it the view keeps the
+  drawn view's own lens and the reply gives `fov: null`. The reply
+  echoes the pose drawn, with `yaw` wrapped into 0 to 2π. It answers
+  when the world renderer accepts the view, and a following
+  `render.capture {}` takes the next tick's frame from that eye. The
+  camera is drawn only while the scenario it was placed in is loaded.
+  `render.view` and `render.spawn_view` select one camera: either
+  replaces the other, and a pending request answers `INTERRUPTED` when
+  it is replaced, reset (by either method) or released by the next game
+  activation. Missing, non-finite or out-of-range params, or `reset`
+  with a pose, give `INVALID_PARAMS`; no loaded scenario gives
+  `UNAVAILABLE`. Types: `ViewParams` and its `check` in
+  `crates/extensions/agent-proto/src/render.rs`.
 - **`render.capture`.** With `lighting: "retail" | "e3"`, the native
   renderer draws a sealed scene into a private target. The default is
   the latest sealed scene. An explicit `tick` selects that exact scene
@@ -2795,6 +2816,43 @@ Sample the main menu before and after an audible change. Compare present
 numbers in `transitions` and `menu_changes` with the output counters and
 their last-change times to identify the selection change, idle-triggered
 restart or gap at the device.
+
+### `audio.meter`
+
+The level of the host mixer's output bus: the stereo samples
+DirectSound's output renders, before the device, so a run with no audio
+device meters the same samples
+([audio.md](../audio/audio.md#metering-the-mixer)). A game method in
+`crates/extensions/game/src/mixer_meter.rs`; types in
+`crates/extensions/agent-proto/src/audio.rs`.
+
+```sh
+h2 agent audio.meter '{"window_ms": 1000}'
+h2 agent audio.meter '{"play": "pogo/spring"}'
+```
+
+| Params | Result |
+|---|---|
+| `{window_ms?}`: 50 to 5000, default 1000 | `{window_ms, frames, rate, channels, peak_dbfs, rms_dbfs, lufs, max_momentary_lufs, clipped}` |
+| `{play}`: a host clip | the same, with `play: {clip, duration_ms}` |
+
+- **A window.** Meters the latest `window_ms` of output. The capture
+  starts with the first request and keeps 10 seconds, so the first call
+  answers once that much has been rendered.
+- **`play`.** Starts a host clip in the mixer as the game plays it:
+  `pogo/compress`, `pogo/spring`, `pogo/settle` or `announcer/<medal id>`
+  (an unknown name's error lists them). It answers when the clip has
+  played, metering from the call to its end plus 20 ms, with anything
+  else the game played meanwhile. `window_ms` is that span. The clip is
+  removed from the mixer when the method answers or times out.
+- **Levels.** Peak and RMS in dBFS, integrated loudness and the loudest
+  400 ms block in LUFS (ITU-R BS.1770-4, the meter Studio's
+  `sound.measure` uses), each to 0.1 dB; silence reads -120. `clipped`
+  counts samples at or past full scale.
+- **Errors.** A clock-only run (a light host or sim) renders no samples:
+  `UNAVAILABLE`. So is a clip still a Git LFS pointer, or one over
+  5 seconds. Bad params and unknown clips are `INVALID_PARAMS`. Audio
+  time is logical, so a paused game does not answer until it runs.
 
 ## HaloScript state
 
