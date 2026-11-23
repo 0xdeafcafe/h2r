@@ -126,8 +126,9 @@ fn row(block: BlockKind, index: u32, fields: Vec<Value>) -> BaseRow {
     }
 }
 
-/// The invented map's rows: weapons 0 and 1, starting point 0, and the
-/// netgame flags 0 (a teleporter sender) and 1 (a CTF flag spawn).
+/// The invented map's rows: weapons 0 and 1, starting point 0, the netgame
+/// flags 0 (a teleporter sender on channel 1), 1 (a CTF flag spawn) and 2
+/// (a teleporter receiver on channel 3), and item spawner 0.
 pub(crate) fn rows() -> Vec<BaseRow> {
     let weapon = |index: u32, x: f32| {
         row(
@@ -143,7 +144,7 @@ pub(crate) fn rows() -> Vec<BaseRow> {
             ],
         )
     };
-    let flag = |index: u32, ty: i64, team: i64| {
+    let flag = |index: u32, ty: i64, team: i64, identifier: i64| {
         row(
             BlockKind::NetgameFlags,
             index,
@@ -152,10 +153,18 @@ pub(crate) fn rows() -> Vec<BaseRow> {
                 float(0.),
                 Value::Int(ty),
                 Value::Int(team),
-                Value::Int(1),
+                Value::Int(identifier),
             ],
         )
     };
+    let mut spawner = vec![Value::Int(0)];
+    spawner.extend([12, 12, 12, 12, 0, 30, 0].map(Value::Int));
+    spawner.extend([
+        Value::Int(0),
+        vec3([0., 6., 0.]),
+        vec3([0., 0., 0.]),
+        Value::Tag(Some(tag("itmc", r"fixture\rifles"))),
+    ]);
     vec![
         weapon(0, -3.),
         weapon(1, 4.),
@@ -169,8 +178,10 @@ pub(crate) fn rows() -> Vec<BaseRow> {
                 Value::Int(-1),
             ],
         ),
-        flag(0, 7, 8),
-        flag(1, 0, 1),
+        flag(0, 7, 8, 1),
+        flag(1, 0, 1, 0),
+        flag(2, 8, 8, 3),
+        row(BlockKind::NetgameEquipment, 0, spawner),
     ]
 }
 
@@ -211,7 +222,8 @@ fn open_with(base: BaseRows) -> Session {
             (BlockKind::Weapons, 2),
             (BlockKind::Crates, 0),
             (BlockKind::StartingLocations, 1),
-            (BlockKind::NetgameFlags, 2),
+            (BlockKind::NetgameFlags, 3),
+            (BlockKind::NetgameEquipment, 1),
         ]),
         world: Some(WorldBounds {
             min: [-20.; 3],
@@ -259,6 +271,8 @@ fn things_list_the_maps_own_entries_then_the_added_ones() {
             (BlockKind::StartingLocations, ThingKind::StartingPoint, true),
             (BlockKind::NetgameFlags, ThingKind::Teleporter, true),
             (BlockKind::NetgameFlags, ThingKind::Goal, true),
+            (BlockKind::NetgameFlags, ThingKind::Teleporter, true),
+            (BlockKind::NetgameEquipment, ThingKind::ItemSpawner, true),
             (BlockKind::Crates, ThingKind::Object, false),
         ]
     );
@@ -282,8 +296,8 @@ fn things_list_the_maps_own_entries_then_the_added_ones() {
     );
     assert_eq!(things[2].frame.rotation, [1.5, 0., 0.]);
     assert!(!things[1].changed);
-    assert_eq!(things[5].id, Endpoint::Added(added));
-    assert!(things[5].changed);
+    assert_eq!(things[7].id, Endpoint::Added(added));
+    assert!(things[7].changed);
 }
 
 #[test]

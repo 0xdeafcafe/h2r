@@ -9,7 +9,7 @@ use forge_doc::{
 use crate::things::{self, Kept, Own, OwnMap};
 use crate::{
     BaseRows, Frame, Linkable, OpId, PaletteItem, PlacedObject, Teleporter, Thing, ThingKind,
-    World, files, links, scene,
+    World, files, links, props, scene,
 };
 
 #[derive(Clone, Debug)]
@@ -414,6 +414,74 @@ impl Session {
         }
         self.held = Some((thing.id.identity(), tick));
         Ok(())
+    }
+
+    /// Set a property of a thing ([`props`]): one `EntryOp::Set` of the
+    /// field it writes. A name the table does not have, or one the thing's
+    /// kind does not show, is refused.
+    pub fn set_field(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        name: &str,
+        value: Value,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        let prop = props::prop(name)
+            .filter(|p| p.read(&thing).is_some())
+            .ok_or_else(|| format!("This {} has no {name}.", thing.kind.name()))?;
+        if prop.read(&thing) == Some(&value) {
+            return Ok(());
+        }
+        let op = prop
+            .op(&thing, value)
+            .ok_or_else(|| format!("This {} has no {name}.", thing.kind.name()))?;
+        let ops = self.ops(vec![Edit::Entry(op)])?;
+        self.edit(world, tick, ops, None)
+    }
+
+    /// Remove a thing, own or added. A linked entry cannot be removed, so
+    /// its links end in the same undo step. In the world an own entry's row
+    /// is made inert, and an undo writes the kept row back.
+    pub fn remove(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        let mut edits: Vec<_> = self
+            .links_naming(thing.id)
+            .into_iter()
+            .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
+            .collect();
+        edits.push(Edit::Entry(EntryOp::Remove { target: thing.id }));
+        let ops = self.ops(edits)?;
+        self.edit(world, tick, ops, None)
+    }
+
+    /// Restore original: drop the effect of every entry op on an own entry,
+    /// removed or changed, so it is as the map has it. Its links and label
+    /// stay.
+    pub fn reset(&mut self, world: &mut impl World, tick: u32, id: Endpoint) -> Result<(), String> {
+        self.restore(world)?;
+        let Endpoint::Base { block, index, .. } = id.identity() else {
+            return Err("Only the map's own things can be restored.".into());
+        };
+        let row = self.base.row(block, index)?;
+        if !self.own.contains_key(&(block, index)) {
+            return Err("This is already as the map has it.".into());
+        }
+        let target = Endpoint::Base {
+            block,
+            index,
+            print: Some(row.print),
+        };
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Reset { target })])?;
+        self.edit(world, tick, ops, None)
     }
 
     /// Put a held thing back where the document has it.

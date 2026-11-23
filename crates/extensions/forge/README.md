@@ -15,6 +15,7 @@ The local in-game Forge session: the monitor camera, an Objects tool, a Links to
 - `src/files.rs`: the saved Forge files.
 - `src/scene.rs`: the placement blocks in scenario order, appended on Add and swap-removed on Remove.
 - `src/things.rs`: the things: the loaded map's own entries and the added ones, the rows the session keeps, and the base calls that bring the world to the document.
+- `src/props.rs`: the properties a thing shows by name, and the one entry op each writes.
 - `src/look.rs`: how placed objects look.
 
 ## Tests

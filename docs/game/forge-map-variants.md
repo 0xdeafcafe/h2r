@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M5, M7 and M8 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), and `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8); everything else named here as new is not.
+Status: Design, slices M1 to M8 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), and `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld` and its base calls), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -251,6 +251,15 @@ between it and a row.
 `map::scenario_layout` is the one table of field names, offsets and
 types; a field joins it with its evidence, and scenario-editor.md
 section 2 is where the page for it is.
+
+`forge::props` (`crates/extensions/forge/src/props.rs`) is the rows
+built: position and rotation (the block's rotation or facing) on every
+kind, object, item, respawn time, return time, team, role and order,
+each with the kinds it is on, how it reads a thing and the one
+`EntryOp::Set` it writes. Game types joins it in D3, and the rows a
+Forge property backs in D4 and D5. A teleporter's channel is its link's
+(the Links tool), not a row. `Session::set_field` takes a row's name
+and refuses one the thing's kind does not have.
 
 ### Properties without a retail field
 

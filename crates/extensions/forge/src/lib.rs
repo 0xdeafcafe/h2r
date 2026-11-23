@@ -7,6 +7,7 @@ pub mod camera;
 mod files;
 mod links;
 pub mod look;
+pub mod props;
 mod scene;
 mod session;
 mod things;
@@ -106,3 +107,6 @@ mod tests;
 
 #[cfg(test)]
 mod base_tests;
+
+#[cfg(test)]
+mod props_tests;
