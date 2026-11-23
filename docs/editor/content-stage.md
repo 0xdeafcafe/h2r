@@ -1,6 +1,6 @@
 # The content stage: a test map of ours that Studio drives the game on
 
-Status: Design. Nothing here is built; "Build slices" is the order to build it in, and "Open questions" lists what the owner still has to choose.
+Status: In progress. Slices S1 and S2 are built: the layout (`stage_kit::layout`), the faces that are both the render mesh and the collision (`stage_kit::mesh`), the textures (`stage_kit::texture`), and the flat-lit map over a base (`stage_kit::kit`, `stage_kit::map`, `h2 tags build --project`). The rest is design; "Build slices" is the order to build it in, and "Open questions" lists what the owner still has to choose.
 Code: `crates/tools/stage-kit` (the map's own tags), `art/stage/` (its sources and its project), `crates/tools/workspace` (the build), `crates/apps/studio/src/api/stage.rs` (`stage.*`). Tests: `crates/tools/stage-kit/src/tests.rs`, `crates/tools/stage-kit/tests/disc.rs` (`#[ignore]`), `api::tests` in Studio.
 Switch: none. The stage is built on first use. It is the first project of the [tag workspace](tag-workspace.md).
 
@@ -36,7 +36,7 @@ or tag of the stage comes from a disc.
 
 | Part | What it is | Built by |
 |---|---|---|
-| Floor | a 64 by 64 world-unit slab per bay. A checker of 1-unit squares, a heavier line every 5, and the distance from the bay's origin painted every 5 units along both axes | `stage_kit::mesh` to `h1convert::structure::{meshes, pack, Structure::write}` for `sbsp`; `collision_build::build_with` and `mopp::build_structure` for collision |
+| Floor | a 64 by 64 world-unit slab per bay. A checker of 1-unit squares, a heavier line every 5, and the distance from the bay's origin painted every 5 units along both axes | `stage_kit::mesh` to `h1convert::structure::{pack, Structure::write}` for `sbsp` (`stage_kit::kit::install`); `collision_build::build` and `h1convert::convert::structure_mopp` for collision |
 | Sky | a dome of ours: a horizon line, a vertical gradient, N/E/S/W letters, and a sun disc where the day bay's light comes from | a `mode` through `h1_assets::models::mode::convert_model`, installed as the scenario's sky as `h1convert::sky` installs a converted one |
 | Scale references | a pillar as tall as the standing player (read from the base map's biped when the stage is built, so no figure is in the repository), a 1-unit cube, a wall ruled every 0.1 unit, a doorway of the player's size | `stage_kit::mesh`, part of the `sbsp` |
 | Movement references | ramps at 15, 30 and 45 degrees, a stair of 0.1, 0.2 and 0.3-unit steps, a ledge at each of four heights, a 10-unit drop | the same |
@@ -56,6 +56,19 @@ builds make the same bytes. It writes a `derived` map package
 report beside its receipt: the layout (every pad, camera and reference
 with its point), each kit's tags, costs and pad, and the build key.
 Nothing it writes is in a Git checkout.
+
+Until the workspace lands, the build is `stage_kit::map::build`, for the
+stage kit alone (`h2 tags build --project art/stage/project.toml`, from
+the disc's base map or a tag tree). It edits the base's scenario into
+the stage's: the base's placements, netgame flags, light fixtures, decorators and
+BSP switch volumes cleared,
+its palettes' entries nulled, its trigger volumes parked, one structure
+BSP naming the stage's `sbsp` and `ltmp`, and the starting locations
+replaced by each bay's spawn and then its camera eyes. The base's
+scenario, `sbsp` and `ltmp` are hidden from the closure, so the tags
+reached from `matg` and the kept groups come from the base and the stage
+adds its own. `stage_kit::map::package` writes the package and
+`report.json`.
 
 With no tree extracted yet, the build reads the base map straight from
 the disc (`tags::repo::MapSource`, the same `TagSource`), so the stage

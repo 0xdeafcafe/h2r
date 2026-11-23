@@ -1,0 +1,12 @@
+# The content stage's project (docs/editor/tag-workspace.md, "Projects";
+# docs/editor/content-stage.md). Built with:
+#
+#   h2 tags build --project art/stage/project.toml [--disc ISO | --repo DIR]
+#
+# which writes the package <data>/maps/stage/ (stage_kit::map::package).
+name = "stage"
+mode = "fresh"                       # closure over the base, nothing pinned
+base = "lockout"                     # the disc map: globals, variants, header template
+scenario = 'scenarios\multi\stage\stage'
+kits = ["stage"]                     # ContentKit names, in order
+output = "package"                   # a map package under <data>/maps/
