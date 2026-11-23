@@ -54,6 +54,8 @@ connection to hold `session.claim`.
 | `superbounce.view_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.ghosts` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.ghost_show` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `pogo.state` | read | [`pogo`](#pogo-superbounces-pogo-stick) |
+| `pogo.test` | act | [`pogo`](#pogo-superbounces-pogo-stick) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -98,7 +100,7 @@ connection to hold `session.claim`.
 | `player.goto_status` | read | [`player.goto`](#playergoto-drive-the-player-somewhere) |
 | `player.mark`, `player.recall` | act | [Saved places](#saved-places-playermark-and-playerrecall) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
-| `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
+| `forge.status`, `forge.things`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
@@ -853,8 +855,8 @@ with `INVALID_PARAMS`) answers from the state the
 | `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
 | `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
 | `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed: the chosen strip, [superbounce.md](../game/superbounce.md#floor-marks)), `distance` (world units), `fall` (a strip's drop, world units; 0 for a crouch spot) |
-| `takeoff` | while primed on the ground, where to jump from for the chosen strip; absent when none is found. Nothing is drawn there |
-| `guide` | the [approach guide](../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `will_bounce`), `jump` (the landing is a jump's from where the player stands), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift), `chance` (the bounce's predicted [chance](../game/superbounce.md#the-chance) in a fall, 0 to 1: the call's confidence) and `chance_capped` (the seam has no measured landing and `chance` was cut to 0.6), on the ground the [jump cue](../game/superbounce.md#the-jump-cue): `jump_in` (game ticks until the box says `Jump now`, 0 on the line), `cue` (the box's words, settled: `Walk to line`, `Jump in 0.7 s` or `Jump now`) and `takeoff` (where to press jump: `at`, the line's centre on the ground, `heading`, the run's direction, `half`, half the band along it, `speed`, the ground speed it is for, and `walk`, a walk-up's line up the drift with no count), and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift, `chance` on the ground, while not primed, on a seam with no drift, with no landing by the seam and in a fall slower than 5.2 units/s, `takeoff` and `cue` in the air, while not primed and where no jump from the player's height bounces, and `jump_in` too while standing or moving away |
+| `takeoff` | while primed on the ground, where to leave from for the chosen strip, on its floor ([The takeoff](../game/superbounce.md#the-takeoff)); absent when none is found. The world's bar is drawn there |
+| `guide` | the [approach guide](../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `will_bounce`), `jump` (the player is on the ground: the landing is the jump's from the takeoff's line), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift), `chance` (the bounce's predicted [chance](../game/superbounce.md#the-chance) in a fall, 0 to 1: the call's confidence) and `chance_capped` (the seam has no measured landing and `chance` was cut to 0.6), on the ground the [jump cue](../game/superbounce.md#the-jump-cue): `jump_in` (game ticks until the box says `Jump now`, 0 on the line, while it counts), `cue` (the box's words, settled: `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now` or `Walk off`) and `takeoff` (the [takeoff](../game/superbounce.md#the-takeoff): `at`, the line's centre on its floor, `heading`, the way to run over it, `half`, half the band along it, `speed`, the ground speed it is for, and `walk`, the cue is not a count), and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift, `chance` on the ground, while not primed, on a seam with no drift, with no landing by the seam and in a fall slower than 5.2 units/s, `impact` to `speed` on the ground too unless the cue counts, `takeoff` and `cue` in the air, while not primed and where no takeoff is found for the seam, and `jump_in` too while the cue is not a count. The guide is absent while not primed |
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
 | `last_landing` | the last touchdown within 0.5 of a strip, or primed bounce anywhere, filed when its launch window (the touchdown tick and the 3 after) closes: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the touchdown's game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
 | `off_spot` | the local player's last 16 bounces no marked strip accounts for (none within 0.5, or outside the catch of the one there is), oldest first; absent when none: the touchdown's `tick`, the origin `at`, the `edge` of the scanned bounce spot within 0.5 (absent with none), `speed_in` and `launch` ([superbounce.md](../game/superbounce.md#landings)) |
@@ -1101,6 +1103,36 @@ h2 agent superbounce.reload
 h2 agent superbounce.reload '{"map":"zanzibar"}'
 h2 agent superbounce.tune '{"bounce_speed":5.0,"catch":0.15}'
 h2 agent superbounce.tune '{"bounce_speed":null,"catch":null,"launch_gain":null}'
+```
+
+## `pogo`: Superbounce's Pogo Stick
+
+`pogo.state` (access: read; no parameters) says what the Pogo Stick is
+doing ([pogo-stick.md](../game/pogo-stick.md);
+`crates/extensions/game/src/pogo_agent.rs`; wire types in
+`crates/extensions/agent-proto/src/pogo.rs`), as of the last tick:
+
+| Field | Meaning |
+|---|---|
+| `active` | the superbounce mode is on; `riders` is empty while off |
+| `option`, `style` | the script's `pogo` and `pogo_style` options as the variant set them: whether a spawn is given a stick, and which look (`unsc`, `covenant`, `forerunner`) |
+| `map` | the loaded map's name; absent without one |
+| `weapons` | the three sticks' weapon tags in the loaded map, in the order `unsc`, `covenant`, `forerunner`; empty when the map does not carry the kit (the `pogo` feature off, or the map refused), and then no stick is given |
+| `riders` | every player holding a stick, the local players first: `player` (the slot), `local`, `unit` and `weapon` (object handles for `world.object`), `style`, `phase` (`carried`, `mount`, `ride`, `compress`, `spring`, `dismount`), `mounted` (0 in the hands to 1 on the stick), `compress` (0 the piston out to 1 in), `flare` (1 on a bounce's tick, fading), `tuck`, `trick` (absent without one: `id`, `name`, `progress` 0 to 1, half at the apex) and `posed` (the riding pose is drawn over the game's own) |
+| `camera` | the chase camera: `on` (a local player holds a stick), `drawn` (the last frame was drawn from it; false headless, in split screen and under Forge's or Theater's camera), `room` (the share of the boom the level leaves room for) and `share` (the boom's share now, eased) |
+| `tricks` | the ids `pogo.test` takes |
+
+`pogo.test {"trick": "<id>"}` (access: act) shows a trick from its start
+on the first local player's stick, whatever that player is doing: on the
+ground the player is shown on the stick for the trick's length. It is
+presentation only: no bounce is filed, and nothing is sent or recorded.
+The answer is `{player, trick, name}`. Refused while the superbounce mode
+is off, for an id that is no trick, and when no local player holds a
+stick.
+
+```sh
+h2 agent pogo.state
+h2 agent pogo.test '{"trick":"backflip"}'
 ```
 
 ## `profile`: where a frame goes
@@ -4088,19 +4120,22 @@ feature is enabled.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. An inactive session returns `{session:"inactive", reason}` |
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, and `dirty` edits since the last save or load. An inactive session returns `{session:"inactive", reason}` |
+| `forge.things` (read) | `{kind?, changed?}` or omitted | `{things, left_out}`. `things` is every thing of the session (the map's own entries in block and index order, then the added ones), or those of one `kind` (`object`, `item_spawner`, `starting_point`, `goal`, `teleporter`), or with `changed` those an entry op changes (`true`, which includes every added one) or not (`false`). Each is `{id, block, kind, own, changed, position, rotation, fields}`: `id` is the endpoint an entry op's `target` names, `{base:{block, index, print}}` or `{added: op}`; `fields` maps each layout field name to its value as the document writes one. A removed entry is not listed. `left_out` is each block of the map that did not read, as `"block: reason"`; its entries are not things |
 | `forge.doc` (read) | `{}` or omitted | `{document}`, the folded Forge document including confirmed edits |
 | `forge.log` (read) | `{since?}` | `{entries}` in sequence order, starting strictly after `since` (default zero) |
 | `forge.input` (act) | `{action}` or `{movement?, look?, roll?, rotating?}` | `{queued:true}` when the current local session accepts one monitor input |
-| `forge.propose` (act) | `{op, was?}` | `{entry}` on acceptance, or a refusal with its reason |
+| `forge.propose` (act) | `{op, was?}` | `{entry}` on acceptance, or a refusal: its sentence as the message and `{code, message}` as the error's `data`. `op` may be an entry op (`{"entry":{"set":{target, write}}}`, `remove` or `reset`) naming a thing by its `forge.things` `id` |
 | `forge.look` (read) | `{seat?}` | The monitor look: `{session, look, drawn_as, saved, catalogue, locks}`, and `notice`, `catalogue_note` and `problems` when there are any. `look` is the session's look, or with no session the saved one as this machine can use it. `drawn_as` is what other players see: `{as: "model" \| "marker" \| "hidden", reason?}`. `saved` is `{look, source}` as the profile holds it. `catalogue` is each model of the census: `{key, name, source, sha256, variants, colours, light, nodes, triangles, available, refusal?}`. `locks` maps each locked field to its reason. A `seat` other than 0 is refused: offline there is one seat |
 | `forge.look.set` (act) | `{reset?, save?, model?, variant?, primary?, secondary?, tint?, light?, light_colour?}` | `{look, changed, saved, drawn_as}`: the look as accepted. `reset: true` is the default look (the marker in the seat's colour) and takes no field. `variant: null` clears the variant. `save: true` also writes the profile (`not_saved` says why when the file was not written). A refusal is an error whose `data` is `{code, message, ...fields}`: `monitor_look_invalid` (`field`, `reason`), `monitor_look_locked` (`field`, `reason`) or `monitor_look_no_session` outside a Forge session; the look stays as it was |
 | `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
 
 The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
 `properties`, `tools`, `settings`, `undo`, `redo` and `link`. `palette`
-opens the object menu and `properties` the aimed or held object's
-Properties, as X does by what is aimed at; `tools` opens the Tools
+opens the object menu and `properties` the aimed or held thing's
+Properties, as X does by what is aimed at. In the Objects tool `accept`
+picks up the thing aimed at, own or added, mark or body, and drops it,
+and `delete` removes it; `tools` opens the Tools
 picker and `settings` the Tool settings. `link` switches to the Links
 tool; there `accept` starts a link on the aimed teleporter flag or
 placed machine and makes it on the second, `delete` removes the aimed
@@ -4130,6 +4165,22 @@ undo and redo, run at the next tick through the `world.object.set` and
 no longer resolves by kind and salt is refused as `forge_object_gone`
 before any guest call. A block with no `world.object` kind (sound
 scenery) is refused as `forge_object_kind`.
+
+An entry op edits one of the map's own things
+([forge-map-variants.md](../game/forge-map-variants.md), "Applying an
+edit in a session"): read its `id` from `forge.things`, whose print the
+session checks against the row it kept when it opened. A set of its
+position or rotation moves it, a removal makes its row inert and a reset
+puts the kept row back, at the next tick. A refused input or proposal
+carries its name in `data.code` (`agent_proto::forge::refusal`):
+
+| Code | Refused because |
+|---|---|
+| `forge_print` | the entry's print is not the one the op carries: the map's entry is not the one the edit was made on |
+| `forge_was` | the target's value is not the one `was` names |
+| `forge_left_out` | the entry's block did not read when the session opened (`forge.things` `left_out`) |
+| `forge_object_gone`, `forge_object_kind`, `forge_object_held` | the game call's: the live object no longer resolves, its block has no live objects, or the own entry's object is held or attached |
+| `forge_refused` | any other: the message says why |
 
 A teleporter link or unlink, or the undo of one, writes each changed
 flag's identifier into the loaded scenario at the same tick, after the
@@ -4238,7 +4289,9 @@ reason: kill | assist | player_kill}`, `respawn {player}` and `finish
 {outcome: won | lost | {team_won: {team}} | draw}`. `target` picks the
 player team a slot's squad goes for, and its next `hunt` heads for that
 team's base (team 0's until one is set); `team_lives` sets one team's
-shared pool. It is appended at the tick after the last one
+shared pool and `lives` the one-team pool or a player's own lives, in
+the director, so its next respawns spend from the new count (a team at 0
+waits for the wave to end). It is appended at the tick after the last one
 the runtime stepped, with the author `agent`, and applied before that
 tick like the director's own. `director: "hold"` stops the director
 stepping, so only appended commands reach the game; `"run"` starts it
@@ -4247,7 +4300,10 @@ again. A director change applies before the command. Refusals:
 a replica (only the host writes the log), `INVALID_PARAMS` for a command
 of another shape, a class or zone the kit lacks, a `target` team the
 kit has no base for, a `team_lives` team above 1, and params with
-neither field. An engine refusal comes later, in `firefight.state`'s `errors`.
+neither field. An engine refusal comes later, in `firefight.state`'s `errors`,
+as does a `lives` or `team_lives` the match keeps no such count for (a
+player's own lives with shared lives, a shared pool with lives each
+player's own, a player the director has not seen).
 
 **Kit.** Read from the loaded scenario on any machine: `slots` gives
 each of the sixteen slots' scenario squad index (`null` where the kit

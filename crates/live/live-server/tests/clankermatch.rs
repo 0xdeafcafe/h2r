@@ -109,6 +109,7 @@ async fn host_session(h: &Harness, u: &User) -> String {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     };
     let r = h
@@ -261,6 +262,7 @@ async fn doubles_session(h: &Harness, u: &User, filled: u32) -> String {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     };
     let r = h

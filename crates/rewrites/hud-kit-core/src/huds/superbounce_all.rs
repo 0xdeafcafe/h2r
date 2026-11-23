@@ -148,7 +148,7 @@ mod tests {
 
     /// The approach guide's nine moments pose the marks they show; the
     /// others have none. Before the jump the box has the jump cue; in a
-    /// fall the guide's percentage, after the call.
+    /// fall the call, with no percentage.
     #[test]
     fn the_guides_moments_pose_their_marks() {
         use crate::huds::superbounce_guide as guide;
@@ -180,11 +180,11 @@ mod tests {
         assert_eq!(label("17-guide-lined-up"), "Jump in 0.1 s");
         assert_eq!(label("28-guide-jump-now"), "Jump now");
         assert_eq!(label("29-guide-walk-to-line"), "Walk to line");
-        assert_eq!(label("18-guide-falling-caught"), "Will bounce 82%");
-        assert_eq!(label("19-guide-too-shallow"), "Too shallow 30%");
-        assert_eq!(label("20-guide-off-line"), "5%");
-        assert_eq!(label("26-guide-on-the-cut"), "Will bounce 52%");
-        assert_eq!(label("27-guide-scan-only"), "Will bounce 60%");
+        assert_eq!(label("18-guide-falling-caught"), "Will bounce");
+        assert_eq!(label("19-guide-too-shallow"), "Too shallow");
+        assert_eq!(label("20-guide-off-line"), "");
+        assert_eq!(label("26-guide-on-the-cut"), "Will bounce");
+        assert_eq!(label("27-guide-scan-only"), "Will bounce");
         for (name, v) in All.states() {
             let poses = All.world(name);
             for id in guide::MARKS {

@@ -296,6 +296,55 @@ impl Director {
         &self.def
     }
 
+    /// Set a team's shared pool from outside the director: a `TeamLives`
+    /// the host applies, an operator's among them. The engine keeps no team
+    /// pool, so this is the pool: the next step spends respawns from it,
+    /// and a team at 0 waits for the wave to end. Its own `TeamLives` set
+    /// the pool it already holds. Refused for a team the definition does
+    /// not have, and when lives are not shared.
+    pub fn set_team_pool(&mut self, team: u8, pool: u16) -> std::result::Result<(), String> {
+        if team >= self.def.teams {
+            return Err(format!(
+                "the match has {} player team(s), not team {team}",
+                self.def.teams
+            ));
+        }
+        if !self.def.lives.shared {
+            return Err("lives are each player's own, not a team's pool".into());
+        }
+        self.state.pools[usize::from(team)] = pool;
+        Ok(())
+    }
+
+    /// Set the shared pool of one team (`player` none) or a player's own
+    /// lives from outside the director: a `Lives` the host applies.
+    /// Refused where the definition keeps no such count: a shared pool
+    /// with two teams (that is `TeamLives`), a player's own lives when
+    /// lives are shared, and a player the director has not seen.
+    pub fn set_lives(&mut self, player: Option<u8>, pool: u16) -> std::result::Result<(), String> {
+        let shared = self.def.lives.shared;
+        match player {
+            None if !shared => Err("lives are each player's own: name the player".into()),
+            None if self.two_teams() => {
+                Err("with two teams each team has its own pool: set it with team_lives".into())
+            }
+            None => {
+                self.state.pools[0] = pool;
+                Ok(())
+            }
+            Some(_) if shared => Err("lives are a shared pool, not each player's own".into()),
+            Some(slot) => {
+                let p = self
+                    .state
+                    .players
+                    .get_mut(&slot)
+                    .ok_or_else(|| format!("the director has not seen player {slot}"))?;
+                p.lives = pool;
+                Ok(())
+            }
+        }
+    }
+
     /// Actors the director counts as alive.
     pub fn live_actors(&self) -> u16 {
         self.state.slots.iter().map(slot_alive).sum()

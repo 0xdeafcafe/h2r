@@ -10,6 +10,7 @@ use hud_kit_core::huds::superbounce_readout::{
 use superbounce::{Kind, Vec3};
 
 use super::*;
+use engine::GuestMemory as _;
 use crate::superbounce_mode::{Course, Predicted, ScanState};
 use crate::superbounce_options::TargetMode;
 use crate::superbounce_second::Ranked;
@@ -507,8 +508,8 @@ fn the_approach_guide_is_the_states_with_its_option() {
     assert_eq!(view(&s, Options::DEFAULT, None).guide, None);
     assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(_, p)| p.is_none()));
     // Primed on the ground a unit before the seam: the box on its landing
-    // point, the pipper where a jump from here comes down, ticks between
-    // them, the arrow unlit.
+    // point, the arrow unlit; the floor underfoot is not the seam's, so
+    // no pipper and no ticks (`superbounce_guide::guide_from`).
     let body = Body {
         position: [9.0, 0.0, 2.03],
         velocity: [0.0; 3],
@@ -517,39 +518,38 @@ fn the_approach_guide_is_the_states_with_its_option() {
     };
     s.guide = guide(&body, &spot);
     let v = view(&s, Options::DEFAULT, None).guide.unwrap();
-    assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, true, true, Some(false)));
-    // From the seam's own floor no jump comes down fast enough: no
-    // percentage, no jump cue, no takeoff line.
+    assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, false, false, Some(false)));
     assert_eq!((v.chance, v.cue, v.takeoff), (None, None, false));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
-    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true, true, true, true, false]);
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true, false, false, true, false]);
+    assert!(!values.get(PIPPER).unwrap().shown && !values.get(TICKS).unwrap().shown);
     assert_eq!(values.get(BOX).unwrap().style, Style::Dim);
     assert_eq!(values.get(BOX).unwrap().text, "");
     let poses = guide_poses(&s, Options::DEFAULT);
     assert_eq!(poses.map(|(id, _)| id), MARKS);
-    assert!(poses.iter().all(|(id, p)| p.is_some() == (*id != TAKEOFF)));
+    assert!(poses.iter().all(|(id, p)| p.is_some() == (*id == BOX || *id == DRIFT)));
     let at = |id: &str| poses.iter().find(|(i, _)| *i == id).unwrap().1.unwrap().at;
     assert_eq!(at(BOX), [10.0, 0.0, 2.0]);
-    assert_eq!(at(PIPPER), [9.0, 0.0, 2.0]);
-    assert!(at(TICKS)[0] > 9.0 && at(TICKS)[0] < 10.0 && at(DRIFT)[0] > 10.0);
-    // Standing on a ledge 3.45 over the seam: the walk-up's takeoff line
-    // up the drift, short of the seam, across +X, and `Walk to line`.
+    assert!(at(DRIFT)[0] > 10.0);
+    // Standing on a ledge 3.45 over the seam with its takeoff: the box
+    // says `Walk to line`; the takeoff is the world's bar, not a mark.
     let ledge = Body {
         position: [7.0, 0.0, 5.45],
         ..body
     };
-    s.guide = guide(&ledge, &spot);
+    let takeoff = crate::superbounce_guide::Takeoff {
+        at: [8.0, 0.0, 5.45 - crate::superbounce_guide::CLEARANCE],
+        heading: [1.0, 0.0],
+        half: 0.03,
+        speed: 0.8,
+        leave: crate::superbounce_guide::Leave::Jump,
+        checked: true,
+    };
+    s.guide = crate::superbounce_guide::guide_from(&ledge, &spot, Some(takeoff));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
     assert_eq!(values.get(BOX).unwrap().text, "Walk to line");
-    let t = guide_poses(&s, Options::DEFAULT)
-        .into_iter()
-        .find(|(id, _)| *id == TAKEOFF)
-        .and_then(|(_, p)| p)
-        .unwrap();
-    assert_eq!(t.along, [1.0, 0.0]);
-    assert!(t.at[0] > 7.5 && t.at[0] < 9.5, "{:?}", t.at);
-    assert!((t.at[2] - (5.45 - crate::superbounce_guide::CLEARANCE)).abs() < 1e-5);
-    assert!(values.get(TAKEOFF).unwrap().shown);
+    assert!(!values.get(TAKEOFF).unwrap().shown);
+    assert!(guide_poses(&s, Options::DEFAULT).iter().all(|(id, p)| *id != TAKEOFF || p.is_none()));
     // The variant's option takes all of it away.
     let off = Options {
         approach_guide: false,
@@ -561,11 +561,12 @@ fn the_approach_guide_is_the_states_with_its_option() {
     assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [false; 5]);
 }
 
-/// In a primed fall the guide's percentage is on the box after its call
-/// and on the fall row after the steer line; a seam with no measured
-/// landing is capped at 60%; the variant's option takes it off both.
+/// In a primed fall the box shows the guide's call alone and the fall
+/// row the steer line alone: the chance is carried (a seam with no
+/// measured landing capped at 60%) but no label shows it; the variant's
+/// option hides the box.
 #[test]
-fn the_guides_percentage_is_on_the_box_and_the_fall_row() {
+fn the_guides_chance_is_carried_but_not_shown() {
     use crate::superbounce_guide::{Body, guide};
     use hud_kit_core::huds::superbounce_guide::{BOX, Call};
     let scan = Spot {
@@ -591,15 +592,17 @@ fn the_guides_percentage_is_on_the_box_and_the_fall_row() {
     assert_eq!(s.guide.unwrap().call, Call::WillBounce);
     assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(93));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce 93%", "On seam 93%"));
+    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce", rd::ON_SEAM));
     // The scan's seam: the cap.
     s.guide = guide(&body, &scan);
+    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(60));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce 60%", "On seam 60%"));
+    assert_eq!((on_box.as_str(), row.as_str()), ("Will bounce", rd::ON_SEAM));
     // Too shallow.
     s.guide = guide(&Body { position: [9.95, 0.0, 2.43], ..body }, &measured);
+    assert_eq!(view(&s, Options::DEFAULT, None).guide.unwrap().chance, Some(14));
     let (on_box, row) = texts(&s, Options::DEFAULT);
-    assert_eq!((on_box.as_str(), row.as_str()), ("Too shallow 14%", "On seam 14%"));
+    assert_eq!((on_box.as_str(), row.as_str()), ("Too shallow", rd::ON_SEAM));
     // With the guide off the row is as it was, and the box is hidden.
     let off = Options {
         approach_guide: false,
@@ -659,4 +662,108 @@ fn the_charge_segments_are_the_modes_charge() {
     assert_eq!(segments(&none), None);
     let scanning = State { scan: ScanState::Scanning, ..s };
     assert_eq!(segments(&scanning), None);
+}
+
+fn miss_line(l: &Landing) -> Option<Miss> {
+    match l.result {
+        LandingResult::Bounce => None,
+        LandingResult::TooSlow => Some(Miss::TooSlow {
+            had: l.at[2],
+            need: 16.5,
+        }),
+        _ => Some(Miss::Missed { by: 0.3 }),
+    }
+}
+
+/// A hop at a seam's foot files a landing too; within two seconds of the
+/// real miss it does not replace it, unless it came in faster.
+#[test]
+fn a_new_miss_does_not_replace_a_younger_one_unless_it_came_in_faster() {
+    let slow = |had: f32, tick| landing(LandingResult::TooSlow, tick, [0.0, 0.0, had]);
+    let too_slow = |had| Some(Miss::TooSlow { had, need: 16.5 });
+    let mut s = on();
+    let mut info = Info::default();
+    s.last_landing = Some(slow(0.0, 1));
+    assert_eq!(info.step(&s, 1, miss_line), None, "the first state");
+    // The real landing, then a hop at 6.3 m/s a second later.
+    s.last_landing = Some(slow(12.0, 100));
+    assert_eq!(info.step(&s, 10, miss_line), too_slow(12.0));
+    s.last_landing = Some(slow(6.3, 130));
+    assert_eq!(info.step(&s, 40, miss_line), too_slow(12.0));
+    // The hop did not restart the clock: the real line still goes four
+    // seconds after it came up.
+    assert_eq!(info.step(&s, 10 + INFO_TICKS, miss_line), None);
+    // A faster one replaces it.
+    s.last_landing = Some(slow(14.0, 200));
+    assert_eq!(info.step(&s, 200, miss_line), too_slow(14.0));
+    s.last_landing = Some(slow(15.0, 210));
+    assert_eq!(info.step(&s, 210, miss_line), too_slow(15.0));
+    // A miss with no speed in is not higher than one with.
+    s.last_landing = Some(landing(LandingResult::Missed, 220, [0.0; 3]));
+    assert_eq!(info.step(&s, 220, miss_line), too_slow(15.0));
+    // After MISS_KEEP_TICKS any miss replaces it.
+    s.last_landing = Some(slow(3.0, 300));
+    assert_eq!(
+        info.step(&s, 210 + MISS_KEEP_TICKS, miss_line),
+        too_slow(3.0)
+    );
+}
+
+/// Only the targets within 40 degrees of the aim keep their navpoint; the
+/// game would clamp the others onto the tracker and the readout.
+#[test]
+fn the_targets_outside_the_aim_cone_are_cleared() {
+    let mark = |at: Vec3| Some(Mark { at, distance: 10.0 });
+    let polar = |deg: f32| {
+        let a = deg.to_radians();
+        mark([10.0 * a.cos(), 10.0 * a.sin(), 0.0])
+    };
+    let mut s = on();
+    s.position = Some([0.0; 3]);
+    // Straight ahead (+X) and 39 degrees to the left.
+    s.marks.targets = [polar(0.0), polar(39.0)];
+    assert_eq!(ahead(&s), s.marks.targets);
+    // 41 degrees to the right, and behind.
+    s.marks.targets = [polar(-41.0), polar(180.0)];
+    assert_eq!(ahead(&s), [None, None]);
+    // The aim turns with the yaw: the one behind is now ahead.
+    s.yaw = Some(PI);
+    assert_eq!(ahead(&s), [None, s.marks.targets[1]]);
+    // The view's numbers follow.
+    let v = view(&s, Options::DEFAULT, None);
+    assert_eq!(v.targets, [None, Some(10.0 * M)]);
+    // With no position known, none is cleared.
+    s.position = None;
+    assert_eq!(ahead(&s), s.marks.targets);
+}
+
+/// The waypoint area's bottom is raised with the mode on and put back
+/// with it off, and never lowered below the map's own.
+#[test]
+fn the_waypoint_bottom_inset_is_raised_while_the_mode_is_on() {
+    use engine::testing::FakeGuest;
+    assert_eq!(waypoint_inset(10.0, false), 10.0);
+    assert_eq!(waypoint_inset(10.0, true), WAYPOINT_BOTTOM_INSET);
+    assert_eq!(waypoint_inset(120.0, true), 120.0);
+    // The offset is the hudg definition's `waypoint_bottom_inset`.
+    let def = tags::defs::Defs::builtin()
+        .group(map::FourCC(*b"hudg"))
+        .unwrap();
+    assert_eq!(
+        def.field("waypoint_bottom_inset").unwrap().offset,
+        HUDG_WAYPOINT_BOTTOM_INSET
+    );
+
+    const HUDG: u32 = 0x7e00_0000;
+    let pointer = engine::points::HUD_GLOBALS_TAG.base;
+    let at = HUDG + HUDG_WAYPOINT_BOTTOM_INSET;
+    let mut g = FakeGuest::new();
+    g.map(HUDG, 0x1000).map(pointer, 4);
+    g.put_u32(pointer, HUDG).put_f32(at, 4.0);
+    keep_waypoint_inset(&mut g, true);
+    assert_eq!(g.f32(at), Ok(WAYPOINT_BOTTOM_INSET));
+    keep_waypoint_inset(&mut g, true);
+    assert_eq!(g.f32(at), Ok(WAYPOINT_BOTTOM_INSET));
+    keep_waypoint_inset(&mut g, false);
+    assert_eq!(g.f32(at), Ok(4.0), "the map's own is put back");
 }

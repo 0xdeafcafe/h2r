@@ -1,6 +1,6 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
-Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training and navpoint channels, and the superbounce HUD on them with its medals ("The medals"). Not built: the colour hook and the flash, the pointer's turn, the navpoint's number, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
+Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training and navpoint channels, and the superbounce HUD on them with its medals ("The medals"). Not built: the colour hook and the flash, the pointer's turn, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
 Code: `crates/rewrites/hud-kit-core` (the model, the HUDs, the templates, the record compiler), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/h2-tools/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
@@ -522,7 +522,7 @@ world mark, drawn by the window ("World marks"):
 | `Message` | a notification in the pickup list, top left, that fades | the notification queue (`0x0024cbbf`) |
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
-| `Navpoint` | the game's arrow pointing down at a point of the world, its waypoint marker above, a whole number above that | the navpoint list (`0x0024da7d`, below in "The navpoint"), the number the kit's |
+| `Navpoint` | the game's arrow pointing down at a point of the world and its waypoint marker above | the navpoint list (`0x0024da7d`, below in "The navpoint") |
 | `WorldMark` | lines lying on the level's geometry, a label over them | the window's world-line pass (`hud_kit_world`, below in "World marks") |
 
 Their texts are UTF-16 with the font's button glyphs or action tokens.
@@ -608,7 +608,7 @@ present takes the marks to draw now (`hud_kit::world_marks_now(mode)`:
 the world mark elements of the registered HUDs whose value is shown,
 that have a pose and whose place has the screen mode) and gives the
 pass their lines (`hud_kit_world::lines`: 2.5 pixels wide at 1080p with
-a glow, the label 0.25 over the point). With no pose set it costs one
+a glow, the label 0.25 under the point). One label a seam: of the marks within 0.75 of each other only the first with a label keeps it. A label that projects into the HUD's top-left or bottom-left block is left out (`hud_kit_world::HUD_BLOCKS`, `label_under_hud`, asked by the pass that projects the anchors). With no pose set it costs one
 atomic load (`hud_kit::any_world_marks`). Nothing is written to guest
 memory.
 
@@ -716,7 +716,7 @@ does the rest:
      the loaded scenario no longer points at the copy, the slot is
      skipped (kind 15): the draw does not check a kind-0 slot's index
      against the block's count. The game draws its own arrow and marker
-     there; the kit's number is not drawn.
+     there; no number is drawn with it.
    - `Message`: `Handle::notify(user, text)` queues the line (a user
      under 4, a text `message_fault` passes; else refused and logged).
      At the top of the next tick a before-hook on `GAME_TICK` writes
@@ -1065,10 +1065,9 @@ its notification list:
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
 | `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
-| `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, until a crouch step begins; the reason is the loss's notification |
+| `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, from 60 ticks after it (the reason's notification shows first), until a crouch step begins |
 | `Prompt` | Press (X) to show ghost | with the `superbounce-ghost` feature on (off by default), looking at the chosen strip when it has a ghost run, and no recipe step is on the line (it replaces "Hold (crouch) and walk under"; [superbounce.md](superbounce.md#ghost-runs)); (B) on the Bumper Jumper layout |
 | `Prompt` | Press (X) to stop ghost | while a ghost run plays, as above; (B) on Bumper Jumper |
-| `Message` | Charging... | a recipe step begins (near, under or held, not primed) after none: the arming bar comes up |
 | `Message` | Primed! | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` (`sb.medal`) | a medal line (below, "The medals") | a bounce, or a Bounced |
@@ -1082,8 +1081,8 @@ game does, so the prompt reads "Let go of" and a pair of sticks. A
 prompt of the game's own wins the line.
 A landing has no notification: a bounce's line is its medal, and why
 another did not bounce is the readout's line
-("The superbounce readout"). "Charging..." and "Primed!" are the shape of
-Assault's pair, "Bomb is arming..." and "Bomb armed!" (V:
+("The superbounce readout"). A recipe step has no notification: the arming bar
+and the prompt say it. "Primed!" is the shape of Assault's "Bomb armed!" (V:
 `multiplayer\multiplayer_globals`), in the same list.
 
 ### The arming bar
@@ -1225,10 +1224,10 @@ point; while primed, the chosen strip's (`superbounce_mode`'s
 `nav_target`: the nearest strip the player's floor is high enough for,
 else the nearest, and while falling the strip the predicted landing is
 on), the same strip the world's landing mark and lock-on are on
-([superbounce.md](superbounce.md#floor-marks)). Its number is whole
-metres: over a crouch spot the distance to it, over a strip the drop to
-come from (the strip's `fall`, 0 for a standing jump), as "3" over the
-crease in the design. Halo 2 draws a navpoint in
+([superbounce.md](superbounce.md#floor-marks)). The navpoint carries
+no number: its screen place is the game's, clamped into the waypoint
+area, which the kit does not read, so nothing of the kit's can sit over
+it. Halo 2 draws a navpoint in
 `0x0024e59f` (E, called per slot from `0x0024da7d`): it projects the
 point (`0x0002b400`, `0x0002b460`), clamps it into the waypoint area
 (`hudg` `waypoint_*_inset`, `+0xec`..`+0xf8`), then draws three HUD
@@ -1254,17 +1253,18 @@ All three are on screen together. Their colour is the user's HUD colour:
 `0x0024da7d` fills the record's four colours from `0x0013927e`, which
 the shader gets at `0x004e6950` and `0x004e695c`; their alpha is the
 user's HUD alpha (`0x004e69c0`) times the navpoint's opacity (1.0). The
-game draws no number with a navpoint: the distance is the kit's, whole
-metres in font 6, as the grenade counts are whole (the count fonts have
-no `.`, D: `h2 font MSLCD-14 '1.2'`).
+game draws no number with a navpoint, and the kit draws none: the
+distance is on the superbounce readout's lines (`sbr.tag`,
+`sbr.target.*`), whole metres, as the grenade counts are whole (the count
+fonts have no `.`, D: `h2 font MSLCD-14 '1.2'`).
 
 The preview draws at a sample point (`NAVPOINT_SAMPLE`, right of and
-above the frame's centre) the arrow with its tip on the point, the
-marker's in-view sequence 1 pixel above it (`NAVPOINT_GAP`) and "12"
-over a crouch spot or "3" over a strip (`SAMPLE_DISTANCE_M`,
-`SAMPLE_DROP_M`) centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
+above the frame's centre) the arrow with its tip on the point and the
+marker's in-view sequence 1 pixel above it (`NAVPOINT_GAP`), the texels
 times the notifications' colour (the same `0x0013927e`; S: that the HUD
-shader multiplies). The outline is not drawn (decoding 8). It is
+shader multiplies). The preview alone also draws a sample number over the
+marker (`SAMPLE_DISTANCE_M`, `SAMPLE_DROP_M`, `NAVPOINT_NUMBER_GAP`) to
+size the stack; it is not in the game. The outline is not drawn (decoding 8). It is
 `Normal` over either target, and hidden while scanning and without a
 target.
 
@@ -1273,7 +1273,7 @@ target.
 | State | Arming bar | Prompt, message | Navpoint | Tutorial |
 |---|---|---|---|---|
 | `not-primed` | hidden | | crouch spot, "12" | |
-| `near` | 0, ease | Hold (crouch) and walk under; Charging... | crouch spot, "1" | |
+| `near` | 0, ease | Hold (crouch) and walk under | crouch spot, "1" | |
 | `under` | 1/3, ease | Let go of (crouch) | crouch spot, "1" | |
 | `held` | 2/3, ease | Walk out to stand up | crouch spot, "1" | |
 | `primed-ending` | 1, ending | Primed! | strip, "3" | |
@@ -1325,14 +1325,14 @@ feeds it each tick from `superbounce_mode`'s state through one adapter,
 | State (`superbounce_mode::State`) | View |
 |---|---|
 | `scan` | ready with spots, ready with none (`NoStrips`), failed, else scanning |
-| `charge` (phase, fill) | the charge, as it is; the arming bar from the phase tick to tick (`ArmTrack`: the run out when a step gives way to no charge); on a recipe step begun, one `Handle::notify` of "Charging..." |
-| `verb` | the prompt's verb (a crouch step, keep moving, charge again); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
+| `charge` (phase, fill) | the charge, as it is; the arming bar from the phase tick to tick (`ArmTrack`: the run out when a step gives way to no charge) (`ArmTrack`), and the primed ending once per priming: after its 18 ticks the bar is hidden until the charge is next primed, in the air or on the ground (`EndingOnce`) |
+| `verb` | the prompt's verb (a crouch step, keep moving, charge again, held back for 60 ticks after a loss so its reason shows first: `after_reason`); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
 | `word` | on its change to −3, one `Handle::notify` of "Primed!" |
 | the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick; the HUD keeps the last loss past the 150 ticks the state has it. One `Handle::notify` per loss, by its tick |
 | `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
 | `medals` (the awards newer than the last sent) | `sb.medal`: the last local award's highest medal at its tick; one `Handle::notify` per award of a local player, to its user: the line of its highest medal ([superbounce.md](superbounce.md#medals)). With the variant's `medals` option off no medal line is sent, and an award made then is not sent later |
 
-Charging, primed and the loss go to user 0, the first local player's,
+Primed and the loss go to user 0, the first local player's,
 whose state the mode tracks. The first state after the mode comes on is
 not news: what it already holds is not sent (`superbounce_hud::Sent`).
 
@@ -1343,7 +1343,7 @@ newer than the last it saw (`superbounce_hud::watch`).
 What shows in the game: the arming bar through the recipe, the prompt
 verbs, the navpoint (the game's arrow and marker, no number) and, when
 asked for, the tutorial's training text, and in the notification list
-"Charging...", "Primed!", a loss's reason and the medals. The charge
+"Primed!", a loss's reason and the medals. The charge
 itself is on the readout's segments.
 `superbounce.state` has a loss's reason as `lost_reason` and the medals
 as `medals`.
@@ -1421,7 +1421,7 @@ same screen modes.
 | `sbr.seg.1` to `sbr.seg.9` | gauge, an arc of the charge ring (`font::ring`) | round the tracker ("The charge segments") | how far the player is through priming, and how long the charge has left |
 | `sbr.speed` | text, font 6 | (101, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
 | `sbr.fall` | meter, the battery strip's last 64 columns | (101, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
-| `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)). On a fall toward the approach guide's seam, the guide's percentage after it, `On seam 82%` (`steer_line`, `fall_chance`; "The approach guide") |
+| `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)) (`steer_text`). It carries no percentage: the approach guide's box has the one verdict ("The approach guide") |
 | `sbr.info` | text, font 6 | (101, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)). For two seconds after the player switches the kinds of seam shown, `Targets: common`, `Targets: likely` or `Targets: all` in place of either ([superbounce.md](superbounce.md#targets)) |
 | `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
 | `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
@@ -1458,7 +1458,7 @@ guide's (the walk up counting to the takeoff line, lined up a tick
 short of it, falling and caught, falling too shallow, and off the
 line), the twenty-first to the twenty-fifth the priming states the
 others lack (near, held, the primed ending, the warning and the loss),
-the twenty-sixth and twenty-seventh the guide's percentage at its two
+the twenty-sixth and twenty-seventh the guide's call at its two
 marked values (a fall just under the depth cut, and one onto a seam no
 run has landed on, at the scan-only cap), and the last two the takeoff
 line: on it with `Jump now`, and standing off it with `Walk to line`. A
@@ -1477,11 +1477,11 @@ through `superbounce_readout::view`:
 |---|---|
 | `velocity`, `yaw`, `airborne` | the speed line (`speed`) |
 | `landing` (the assist's prediction), while airborne | the bar and the steer line (`fall`): `speed` over `need`; off the seam (`miss()` over 0) the way to `aim`, the seam's landing point; caught, the way to drift when `wants_drift()`, else on the seam |
-| `last_landing` (result, tick, origin) | the miss line (`miss`, `Info`): put up when a landing is filed, taken down after 120 ticks, by the next fall toward a seam, or by a bounce |
-| `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances |
+| `last_landing` (result, tick, origin) | the miss line (`miss`, `Info`): put up when a landing is filed, taken down after 120 ticks, by the next fall toward a seam, or by a bounce; a miss within 60 ticks of the line shown replaces it only with a higher speed in |
+| `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances; a target outside 40 degrees of the aim is cleared (`ahead`), and while the mode is on the `hudg`'s `waypoint_bottom_inset` (`+0xf0`) is raised to 80 so the one arrow the game clamps to the edge clears the tracker, the speed row and the score plate (`keep_waypoint_inset`, from the kit's tick) |
 | `switched` (`superbounce_targets::Switch`, for 60 ticks after a double tap of the flashlight) | the switch's line (`kinds`), over the ranked line and the miss line |
 | `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
-| `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`): on the ground its jump cue on the box; in a fall its chance as a whole percentage on the box and, on a fall toward its seam, after the steer line; and its marks' poses (`guide_poses`, `Handle::world_mark`) |
+| `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`): on the ground its jump cue on the box; in a fall its call on the box (no percentage, and none on the steer line); and its marks' poses (`guide_poses`, `Handle::world_mark`) |
 | `charge`, `scan`, the spot counts | the charge segments (`superbounce_readout::segments`): the charge's stage, once the scan is ready and the map has a spot |
 
 The miss line's numbers are worked out beside the tracker's verdict:
@@ -1620,7 +1620,7 @@ are built.
 
 | Element | Shape | Pose | Values |
 |---|---|---|---|
-| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Go` with `Will bounce` or `Jump now` (`box_value`, `go`, `Call`, `Cue`). Before the jump the label is the jump cue: `Walk to line`, `Jump in 0.7 s` (tenths of a second, `tenths`, at most `9.9`) or `Jump now` (`cue_text`). In a fall it ends with the guide's percentage, `Will bounce 82%` or `Too shallow 30%`, and with no call is the percentage alone, `5%` (`box_text`); the widest is `Too shallow 100%` |
+| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Go` with `Will bounce` or `Jump now` (`box_value`, `go`, `Call`, `Cue`). Before the jump the label is the jump cue: `Walk to line`, `Jump in 0.7 s` (tenths of a second, `tenths`, at most `9.9`) or `Jump now` (`cue_text`). `Cue::Label` is any other cue as the game words it (`Climb up`, `Walk off`), shown as it is. In a fall it is the call alone, `Will bounce` or `Too shallow`, with no percentage, and none with no call (`box_text`); the widest is `Jump in 9.9 s` |
 | `sbr.guide.pipper` | `Pipper` | at the predicted landing on the seam's floor, radius 0.06 | shown while a landing is predicted by the seam; `Go` with the box |
 | `sbr.guide.ticks` | `Ticks` | from the pipper's ring toward the box's centre, over the distance between them, 0.6 at most (`ticks_run`) | shown while the landing is not caught; under a run of 0.02 it has no pose |
 | `sbr.guide.drift` | `Arrow` | 0.06 outside the box on the drift's side, pointing along the drift | `Normal` while the player moves the drift's way, `Dim` when not; hidden on a seam with no drift |
@@ -1635,13 +1635,11 @@ its strength. The marks are fullscreen only, as the readout is.
 
 `Guide::chance` is the bounce's predicted chance in a fall as a whole
 percentage (`percent`, 0 to 100), or none where the rules give none
-([superbounce.md](superbounce.md#the-chance)). The kit only writes it:
-on the box's label, and on the readout's steer line
-(`superbounce_readout::steer_line`) while the fall row is the guide's
-seam's, which it is not in the flight after a bounce
-(`fall_chance`). `Guide::cue` is the jump cue on the ground
-([superbounce.md](superbounce.md#the-jump-cue)), settled by the game;
-the kit writes it on the box's label in place of a percentage.
+([superbounce.md](superbounce.md#the-chance)). The kit carries it and
+shows it nowhere: the call is the one verdict, so the box and the fall
+row carry no percentage beside the lock. `Guide::cue` is the jump cue on
+the ground ([superbounce.md](superbounce.md#the-jump-cue)), settled by the
+game; the kit writes it on the box's label.
 
 ## Interfaces
 
@@ -1816,10 +1814,7 @@ Each slice is code and tests only; the coordinator compiles and runs.
    `Inactive` and `Flash` draw; the corner turn. Before coding, decodings
    4 and 7. Tests: a `Dim` text's alpha; a flash at the record's phases;
    four corners turned by a quarter turn.
-3. **The navpoint's number.** The number drawn at the projected point
-   after `0x0024e59f` returns (decoding 8). Tests on `FlatMemory`: the
-   number's place.
-4. **Preview fidelity.** Decodings 3 and 5, so the preview draws the
+3. **Preview fidelity.** Decodings 3 and 5, so the preview draws the
    training box's frame and a retail widget's own flash; `h2 hud
    compare` against a `render.frame` capture, as the UI builder's
    fidelity loop.

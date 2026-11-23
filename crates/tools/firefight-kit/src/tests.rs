@@ -4,7 +4,7 @@ use content::Library;
 use h1campaign::ai::h2::ScenarioAi;
 use map::build::{BspField, FixupKind};
 use std::fs;
-use tags::pathfinding::PathfindingData;
+use tags::pathfinding::{PathfindingData, Ref};
 
 /// Invented starts: one by each flag stand on its team, one untagged in the
 /// middle.
@@ -155,13 +155,33 @@ fn two_builds_of_one_map_are_byte_equal() {
             .all(|s| s.normal_count == 0 && s.insane_count == 0)
     );
     assert_eq!(ai.character_palette, [map.tag(ai::ELITE_PATH).unwrap().id]);
+    // Each floor has 51 walkable surfaces: the arena's 49, an island off
+    // its east edge and a floor no start reaches.
+    assert_eq!(first.costs.sectors_generated, 2 * 51);
+    assert!(first.costs.padding < 0x1100, "{}", first.costs);
+    let mut kept = 0;
     for index in 0..2 {
         let name = format!("court_{index}");
         let bsp = map.tag(name.as_str()).unwrap().id;
         let sectors = PathfindingData::read(&mut map, bsp).unwrap().unwrap();
         assert_eq!(sectors.checksum, 100 + index);
-        assert!(!sectors.sectors.is_empty());
-        assert!(sectors.validate(None).is_empty());
+        assert!(sectors.validate(Some(51)).is_empty());
+        // The far floor has no sector on either BSP. The arena's BSP keeps
+        // the arena alone; the other keeps what the starts reach.
+        assert_eq!(sectors.refs[50], Ref::NONE);
+        if index == 0 {
+            assert_eq!(sectors.sectors.len(), 49);
+        } else {
+            assert!((49..=50).contains(&sectors.sectors.len()));
+        }
+        kept += sectors.sectors.len();
+    }
+    assert_eq!(first.costs.sectors_kept, kept);
+    // Every firing position names a kept sector.
+    for zone in &ai.zones {
+        for p in &zone.firing_positions {
+            assert!(p.sector < 49, "{}: sector {}", zone.name, p.sector);
+        }
     }
     let probe = build_package(&base, "court", Mode::Probe, &config, &dir, "probe", false).unwrap();
     assert_ne!(probe.id, first.id);
@@ -202,7 +222,11 @@ fn a_map_without_headroom_is_refused_with_the_cost() {
         .expect("must refuse")
         .to_string();
     for part in [
-        "exceeds tag headroom",
+        "exceeds tag headroom by ",
+        "the biggest part is ",
+        "of 102 generated",
+        "tag index ",
+        "padding ",
         "sectors ",
         "zones ",
         "squads ",
@@ -257,4 +281,26 @@ fn the_kit_writes_each_start_its_base_team() {
         [red.bases.points[1], red.bases.points[0]]
     );
     assert_ne!(red.bytes, blue.bytes);
+}
+
+#[test]
+fn a_live_index_tail_moves_only_the_group_table() {
+    // Retail maps have data right after their tag entries: the new
+    // character's entry cannot grow the table in place.
+    let base = fixture();
+    let mut map = Map::from_reader(Cursor::new(&base)).unwrap();
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let pin = set.pinned.as_mut().unwrap();
+    let end = pin.index_entries_end as usize;
+    pin.index[end] = 0x5a;
+    let base = set.build().unwrap().0;
+    let built = build(&base, "court", Mode::Kit, &Config::default()).unwrap();
+    // Five groups with `char`, 12 bytes each, instead of 16 bytes a tag.
+    assert_eq!(built.costs.index, 5 * 12);
+    let mut map = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
+    map.validate_checksum().unwrap();
+    assert_eq!(map.groups().len(), 5);
+    let ai = ScenarioAi::read_map(&mut map).unwrap();
+    assert_eq!(ai.character_palette, [map.tag(ai::ELITE_PATH).unwrap().id]);
+    assert_eq!(ai.squads.len(), 16);
 }

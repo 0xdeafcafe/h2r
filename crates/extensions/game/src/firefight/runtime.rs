@@ -227,12 +227,61 @@ pub fn team_play(m: &dyn GuestMemory) -> Option<bool> {
 pub fn teams_refusal(teams: u8, team_play: Option<bool>) -> Option<&'static str> {
     match (teams > 1, team_play) {
         (false, _) | (true, Some(true)) => None,
-        (true, Some(false)) => {
-            Some("two Firefight teams need a team game: turn Team Play on in the game variant")
-        }
+        (true, Some(false)) => Some(
+            "two Firefight teams need a team game, and Team Play did not turn on for this game",
+        ),
         (true, None) => Some("two Firefight teams need a team game, and the variant's team play could not be read"),
     }
 }
+
+/// The options block's variant flags (`options + 0x134 + 0x48`), which
+/// the game copies into the globals at activation, team play in bit 0.
+pub const OPTIONS_VARIANT_FLAGS: u32 = bots::guest::VARIANT_FLAGS;
+
+/// Whether a multiplayer game about to start on a map that carries the kit
+/// (`kit`) must be a team game for Game Setup's Firefight choices: two
+/// player teams with Firefight on. One team plays whatever the variant
+/// says.
+pub fn wants_team_play(options: &Options, kit: bool) -> bool {
+    kit && options.enabled && options.player_teams() > 1
+}
+
+/// The variant flags `flags` with team play on, when `wanted` and it is
+/// off; none when nothing changes.
+pub fn with_team_play(flags: u32, wanted: bool) -> Option<u32> {
+    use live_proto::hopper::variant::flag::TEAM_PLAY;
+    (wanted && flags & TEAM_PLAY == 0).then_some(flags | TEAM_PLAY)
+}
+
+/// The Firefight match a game about to start plays, as the session data
+/// names it (`NewSession.firefight`, docs/game/firefight.md, "Live"): the
+/// definition Game Setup's choices give, its id, teams and difficulty, and
+/// the kit version. None when Firefight is off, the map lacks the kit, or
+/// the choices give no definition.
+pub fn session_firefight(options: &Options, kit: bool) -> Option<live_proto::session::Firefight> {
+    if !kit || !options.enabled {
+        return None;
+    }
+    let def = options.definition().ok()?;
+    let id = def.id().ok()?;
+    use ::firefight::Difficulty as D;
+    Some(live_proto::session::Firefight {
+        set: def.name.clone(),
+        id: id.to_string(),
+        teams: def.teams,
+        difficulty: match options.difficulty {
+            D::Easy => 0,
+            D::Normal => 1,
+            D::Heroic => 2,
+            D::Legendary => 3,
+        },
+        kit: ::firefight::KIT_VERSION,
+    })
+}
+
+/// Where the match a game about to start plays goes: on a Live host, its
+/// session's advertisement (`live_hle::Hle::set_session_firefight`).
+pub type SessionSink = dyn Fn(Option<live_proto::session::Firefight>) + Send + Sync;
 
 /// The character palette row whose tag is `character`.
 fn palette_row(m: &dyn GuestMemory, character: u32) -> Option<u16> {
@@ -383,12 +432,15 @@ impl Game for GuestGame<'_> {
     fn credit_score(&mut self, player: u8, points: u32) -> anyhow::Result<()> {
         self.defer(Call::Score { player, points })
     }
-    /// The pool is the director's: the HUD reads it from the mode blob, and
-    /// the engine holds a respawn by the variant's lives setting.
+    /// The pool is the director's ([`Host`] sets it there): the HUD reads
+    /// it from the mode blob, and the engine holds every respawn by the
+    /// variant's lives setting until the director's `Respawn`.
     fn set_lives(&mut self, _player: Option<u8>, _pool: u16) -> anyhow::Result<()> {
         Ok(())
     }
-    /// As [`Game::set_lives`]: the team's pool is in the mode blob only.
+    /// As [`Game::set_lives`]: the engine keeps no team pool, so a team's is
+    /// the director's, which spends it on that team's respawns and holds
+    /// them at 0 (`Director::set_team_pool`).
     fn set_team_lives(&mut self, _team: u8, _pool: u16) -> anyhow::Result<()> {
         Ok(())
     }
@@ -455,6 +507,8 @@ pub struct Runtime {
     options: Box<options::Source>,
     /// Where scores and the result go.
     reports: Box<ReportSink>,
+    /// Where the match a game about to start plays is published.
+    session: Box<SessionSink>,
 }
 
 /// The loaded map's name, from the cache header copy.
@@ -489,12 +543,19 @@ impl Runtime {
             // is the settings' defaults: Holdout, Normal, skulls on.
             options: Box::new(|| Ok(Options::default())),
             reports: Box::new(|_| {}),
+            session: Box::new(|_| {}),
         }
     }
 
     /// Where the host's scores and result go (`Report`).
     pub fn set_reports(&mut self, reports: Box<ReportSink>) {
         self.reports = reports;
+    }
+
+    /// Where the match a game about to start plays is published
+    /// ([`SessionSink`]).
+    pub fn set_session(&mut self, session: Box<SessionSink>) {
+        self.session = session;
     }
 
     /// Where the match's choices come from (`options::source`).
@@ -526,6 +587,37 @@ impl Runtime {
             Status::Running(m) => Some(m),
             _ => None,
         }
+    }
+
+    /// A game is about to start (`GAME_ACTIVATE`, before the game copies
+    /// `options`, the options block, into its globals): two Firefight
+    /// teams on a kit map turn the variant's team play on there, so the
+    /// game plays as teams and [`teams_refusal`] has nothing to refuse.
+    /// Game Setup's Firefight choices decide, as they do the match. A
+    /// film's playback, another mode, a map without the kit and one team
+    /// leave the options as they are. It also publishes the match this
+    /// game plays ([`session_firefight`], none for any other game) to the
+    /// session sink. Returns the line to log when it wrote.
+    pub fn activate(&self, m: &mut dyn GuestMemory, options: u32, film: bool) -> Option<String> {
+        if film || m.u32(options).ok()? != MODE_MULTIPLAYER {
+            return None;
+        }
+        let chosen = (self.options)().ok();
+        let kit = guest::read_kit(&*m).ok().flatten().is_some();
+        // Every multiplayer start: a game that is not Firefight clears the
+        // last one's.
+        (self.session)(chosen.as_ref().and_then(|o| session_firefight(o, kit)));
+        let chosen = chosen?;
+        let at = options.wrapping_add(OPTIONS_VARIANT_FLAGS);
+        let flags = m.u32(at).ok()?;
+        let on = with_team_play(flags, wants_team_play(&chosen, kit))?;
+        Some(match m.set_u32(at, on) {
+            Ok(()) => "firefight: two teams: Team Play is on for this game".to_string(),
+            Err(e) => format!(
+                "firefight: two teams: Team Play could not be turned on: {}",
+                fault(e)
+            ),
+        })
     }
 
     /// A game started. Returns the line to log.

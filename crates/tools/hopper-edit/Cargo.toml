@@ -13,6 +13,9 @@ live-proto.workspace = true
 map.workspace = true
 editor-core = { path = "../editor-core" }
 variants = { path = "../../formats/variants" }
+# The built-in Firefight wave sets a hopper may carry (mode 1 by the
+# definition's hash prefix; docs/game/firefight.md, "Live").
+firefight = { path = "../../formats/firefight" }
 
 [lints]
 workspace = true

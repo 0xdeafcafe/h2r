@@ -43,6 +43,7 @@ fn new() -> NewSession {
         ping_ms: None,
         variant_ext: None,
         rules: None,
+        firefight: None,
         browser: None,
     }
 }
@@ -613,6 +614,100 @@ async fn sessions_carry_the_hosts_rules_hash() {
             .await
             .status,
         StatusCode::BAD_REQUEST
+    );
+}
+
+/// A host's Firefight match (docs/game/firefight.md, "Live") is kept on
+/// its session and listed; an update replaces it, `clear_firefight` drops
+/// it, and a malformed one is refused at create and at update. The Worker
+/// runs these routes too (`a_firefight_session_seats_balanced_clankers_on_the_worker`).
+#[tokio::test]
+async fn sessions_carry_the_hosts_firefight_match() {
+    use live_proto::session::Firefight;
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let first = Firefight {
+        set: "Holdout".into(),
+        id: "ab".repeat(32),
+        teams: 1,
+        difficulty: 1,
+        kit: 2,
+    };
+    let mut n = new();
+    for bad in [
+        Firefight {
+            teams: 3,
+            ..first.clone()
+        },
+        Firefight {
+            id: "AB".repeat(32),
+            ..first.clone()
+        },
+        Firefight {
+            difficulty: 4,
+            ..first.clone()
+        },
+        Firefight {
+            set: String::new(),
+            ..first.clone()
+        },
+    ] {
+        n.firefight = Some(bad.clone());
+        assert_eq!(
+            create(&h, &a, &n).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad:?}"
+        );
+    }
+    n.firefight = Some(first.clone());
+    let r = create(&h, &a, &n).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["session_id"].as_str().unwrap().to_owned();
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(
+        listed["items"][0]["advertisement"]["firefight"],
+        serde_json::to_value(&first).unwrap()
+    );
+    let second = Firefight {
+        set: "Crossfire".into(),
+        id: "cd".repeat(32),
+        teams: 2,
+        difficulty: 3,
+        kit: 2,
+    };
+    let up = json!({ "firefight": second });
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, up)])
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(
+        listed["items"][0]["advertisement"]["firefight"],
+        serde_json::to_value(&second).unwrap()
+    );
+    let bad = json!({"firefight": {"set": "Crossfire", "id": "00", "teams": 2,
+        "difficulty": 1, "kit": 2}});
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, bad)])
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let clear = json!({"clear_firefight": true});
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, clear)])
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert!(
+        listed["items"][0]["advertisement"]
+            .get("firefight")
+            .is_none(),
+        "{listed}"
     );
 }
 

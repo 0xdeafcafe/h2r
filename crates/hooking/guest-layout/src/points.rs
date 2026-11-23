@@ -1343,6 +1343,13 @@ points! { ALL;
     /// `PLAYER_SPAWN_LOCATION`, the unit; AL 0 when no location was free.
     /// Clears the first-spawn bit (`0x14f6c1`) when it spawned.
     PLAYER_SPAWN @ 0x0014_f2e0: [fn(player: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// The tag a starting weapon value names, for the spawn's weapon pass
+    /// (`0x19ef40`): 0 or over 20 the profile's own weapon, 1 none (-1),
+    /// 2 a random slot of the multiplayer globals' weapon list that is not
+    /// `other` (it calls itself, returning to `0x19ee18`), 3 to 20 slot
+    /// `value - 3`. The pass calls it for the secondary from `0x19f03d` and
+    /// `0x19f076` and for the primary from `0x19f051` and `0x19f05e`.
+    STARTING_WEAPON_PICK @ 0x0019_eda0: [fn(default: stack 0, value: stack 1, other: stack 2) -> eax ret 12]; "docs/game/pogo-stick.md";
     /// The best free starting location for a player (handle in ECX): AX the
     /// index into `scnr+0x100`, `0xffff` when every spot is blocked.
     PLAYER_SPAWN_LOCATION @ 0x0014_ef00: [fn(player: ecx, unit: stack 0, a: stack 1, b: stack 2) -> eax ret 12]; "docs/live/live-coop.md";

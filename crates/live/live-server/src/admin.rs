@@ -962,14 +962,39 @@ fn unscripted(v: &variants::record::GameVariant) -> Option<String> {
     let what = match mode {
         Mode::Rules => return None,
         Mode::None => "mode 0, no rules script".to_string(),
-        Mode::Firefight => "mode 1, Firefight".to_string(),
+        Mode::Firefight => match firefight_set(v) {
+            Some(def) if def.teams > 1 && !v.team_play() => {
+                return Some(format!(
+                    "the variant \"{}\" plays the Firefight wave set {}, which has two player \
+                     teams, so it needs team play",
+                    v.name(),
+                    def.name
+                ));
+            }
+            Some(_) => return None,
+            None => "mode 1, Firefight, naming no built-in wave set".to_string(),
+        },
         Mode::Unknown(n) => format!("mode {n}, a mode this build does not know"),
     };
     Some(format!(
         "the variant \"{}\" has {what}; a hopper plays only variants that run a rules script \
-         (mode 2: build one with `h2 variants port` or `bundle_for_script`)",
+         (mode 2: build one with `h2 variants port` or `bundle_for_script`) or a built-in \
+         Firefight wave set (mode 1)",
         v.name()
     ))
+}
+
+/// The built-in Firefight wave set a mode-1 variant names by its hash
+/// prefix (`firefight::builtin::by_prefix`); none for another mode or an
+/// unknown prefix. Such an entry runs no rules script, so the script
+/// policy and the map census have nothing to check.
+fn firefight_set(v: &variants::record::GameVariant) -> Option<firefight::Def> {
+    match v.ext_state() {
+        variants::ext::Block::Ext(e) if e.script.mode == variants::ext::Mode::Firefight => {
+            firefight::builtin::by_prefix(e.script.prefix)
+        }
+        _ => None,
+    }
 }
 
 /// Every entry of each playlist a patch names: its variant must run a
@@ -1020,6 +1045,9 @@ pub fn check_scripts_of(
             let Block::Ext(e) = v.ext_state() else {
                 continue;
             };
+            if firefight_set(&v).is_some() {
+                continue;
+            }
             let prefix: String = e.script.prefix.iter().map(|b| format!("{b:02x}")).collect();
             check(&prefix, context).map_err(|err| ApiError {
                 code: err.code,
@@ -1073,6 +1101,9 @@ pub fn blocked_pairs(
             let Block::Ext(e) = v.ext_state() else {
                 continue;
             };
+            if firefight_set(&v).is_some() {
+                continue;
+            }
             let prefix: String = e.script.prefix.iter().map(|b| format!("{b:02x}")).collect();
             let problems: Vec<String> = match ir_of(&prefix) {
                 Err(err) => vec![err.message],
@@ -1651,9 +1682,10 @@ mod tests {
         .unwrap();
         let mut e = v.ext();
         e.script.mode = variants::ext::Mode::Firefight;
+        e.script.prefix = [0x5a; 8];
         v.set_ext(&e).unwrap();
         let why = unscripted(&v).unwrap();
-        assert!(why.contains("mode 1, Firefight"), "{why}");
+        assert!(why.contains("mode 1, Firefight, naming no built-in"), "{why}");
         assert!(why.contains("\"Fire\""), "{why}");
         // The map gate names the same entry.
         let slayer = || Ok(rules::compile(rules::builtin::SLAYER).unwrap());
@@ -1664,6 +1696,61 @@ mod tests {
         let file = HopperFile::default_set();
         let all: Vec<usize> = (0..defaults::playlists().len()).collect();
         check_scripts_of(&file, &all, |_, _| Ok(())).unwrap();
+    }
+
+    /// Entry `j` of playlist `i` as the built-in Firefight set `n`: a Slayer
+    /// record whose extension is mode 1 with the set's hash prefix, team
+    /// play as given.
+    fn firefight_slot(file: &mut HopperFile, i: usize, j: usize, n: usize, team_play: bool) {
+        use live_proto::hopper::variant::GameType;
+        let def = &firefight::builtin::definitions()[n];
+        let stock = VariantRecord::stock(GameType::Slayer, &def.name);
+        let mut v = variants::record::GameVariant::from_bytes(stock.bytes()).unwrap();
+        let mut e = v.ext();
+        e.script = variants::ext::Script {
+            mode: variants::ext::Mode::Firefight,
+            prefix: def.id().unwrap().0[..8].try_into().unwrap(),
+            options: 0,
+        };
+        v.set_ext(&e).unwrap();
+        let mut bytes = v.to_bytes();
+        let at = variants::record::FLAGS_AT;
+        bytes[at] = (bytes[at] & !1) | u8::from(team_play);
+        let mut slot = file.slot(i, j).unwrap().to_vec();
+        set_slot_entry(
+            &mut slot,
+            &Entry {
+                map_id: 10,
+                weight: 1,
+                map_name: String::new(),
+                variant: VariantRecord::from_bytes(&bytes).unwrap(),
+            },
+        )
+        .unwrap();
+        file.set_slot(i, j, &slot).unwrap();
+    }
+
+    /// A hopper takes a built-in Firefight set (mode 1 naming its hash
+    /// prefix), Crossfire among them, with no script to hold to the policy
+    /// or the census; Crossfire needs team play, and an unknown prefix is
+    /// refused (`a_hopper_takes_scripted_variants_only`).
+    #[test]
+    fn a_hopper_takes_the_builtin_firefight_sets() {
+        let mut file = base_file();
+        let mut p = patch(0, vec![]);
+        p.hoppers[0].records = None;
+        firefight_slot(&mut file, 0, 0, 0, false);
+        firefight_slot(&mut file, 0, 1, 3, true);
+        check_scripts(&file, &p, |_, _| panic!("a Firefight set has no rules script")).unwrap();
+        let no_ir = |_: &str| -> ApiResult<rules::ir::Ir> { panic!("no IR") };
+        let hit = blocked_pairs(&file, &[0], None, no_ir, |_| None).unwrap();
+        assert!(hit.is_empty(), "{hit:?}");
+        // Crossfire has two player teams: without team play it is refused.
+        firefight_slot(&mut file, 0, 1, 3, false);
+        let err = check_scripts(&file, &p, |_, _| Ok(())).unwrap_err();
+        assert!(err.message.starts_with("playlist 1 entry 2: "), "{}", err.message);
+        assert!(err.message.contains("Crossfire"), "{}", err.message);
+        assert!(err.message.contains("needs team play"), "{}", err.message);
     }
 
     #[test]

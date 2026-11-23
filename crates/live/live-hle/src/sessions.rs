@@ -67,6 +67,9 @@ pub struct LocalSession {
     /// next game runs (docs/game/rules-engine.md, "Carrying a script"), when
     /// the host set one.
     pub rules: Option<String>,
+    /// The Firefight match the host's next game plays (docs/game/
+    /// firefight.md, "Live"), when it is one.
+    pub firefight: Option<live_proto::session::Firefight>,
     /// The host's current multiplayer setup for Live browser filters.
     pub browser: Option<BrowserMetadata>,
 }
@@ -180,6 +183,9 @@ pub(crate) struct Sessions {
     /// The host's rules IR hash for its next game, for new and updated
     /// advertisements.
     rules: Option<String>,
+    /// The Firefight match of the host's next game, for new and updated
+    /// advertisements; None when it is not Firefight.
+    firefight: Option<live_proto::session::Firefight>,
     /// Reads them afresh (boot: the signed-in profiles' choice) each time
     /// the game advertises or updates a lobby.
     skulls_probe: Option<SkullsProbe>,
@@ -424,6 +430,39 @@ impl Sessions {
                 }
             }
             record.session.rules = Some(rules.clone());
+        }
+    }
+    /// The Firefight match of the game the host is starting, or None when
+    /// it is not Firefight: new advertisements carry it, and open ones are
+    /// updated now (`clear_firefight` when it went), so guests that look
+    /// again play the same match.
+    pub fn set_firefight(
+        &mut self,
+        firefight: Option<live_proto::session::Firefight>,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.firefight = firefight;
+        self.background.retain(|p| p.take().is_none());
+        for (id, record) in &mut self.records {
+            if record.session.firefight == self.firefight {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        firefight: self.firefight.clone(),
+                        clear_firefight: self.firefight.is_none(),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.firefight = self.firefight.clone();
         }
     }
     /// The host's variant options for the game it is starting (boot, at
@@ -1092,6 +1131,7 @@ impl Sessions {
                             ping_ms: self.coop.as_ref().and(self.coop_ping),
                             variant_ext: self.variant_ext.clone(),
                             rules: self.rules.clone(),
+                            firefight: self.firefight.clone(),
                             browser: None,
                         },
                     )
@@ -1111,6 +1151,9 @@ impl Sessions {
                 if self.rules.is_some() {
                     session.rules = self.rules.clone();
                 }
+                // The host's own choice, which may be none: a lobby that
+                // left Firefight stops advertising it.
+                session.firefight = self.firefight.clone();
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
                 session.map_id = map_id;
@@ -1206,6 +1249,17 @@ impl Sessions {
                                         .get(&id)
                                         .is_none_or(|r| r.session.rules.as_ref() != Some(v))
                                 }),
+                                // Only a change; clear when it went.
+                                firefight: session.firefight.clone().filter(|v| {
+                                    self.records
+                                        .get(&id)
+                                        .is_none_or(|r| r.session.firefight.as_ref() != Some(v))
+                                }),
+                                clear_firefight: session.firefight.is_none()
+                                    && self
+                                        .records
+                                        .get(&id)
+                                        .is_some_and(|r| r.session.firefight.is_some()),
                                 browser: {
                                     // A background selection update may already be ahead
                                     // of this title update in the worker.
@@ -1812,6 +1866,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         ping_ms: s.ping_ms,
         variant_ext: s.variant_ext.clone(),
         rules: s.rules.clone(),
+        firefight: s.firefight.clone(),
         browser: s.browser.clone(),
     }
 }
@@ -2069,6 +2124,7 @@ mod tests {
                 ping_ms: None,
                 variant_ext: None,
                 rules: None,
+                firefight: None,
                 browser: None,
             }),
             key: [0; 16],

@@ -7,9 +7,18 @@
 //!   player is within [`NEAR_RANGE`] of it (`Crouch`, with an approach
 //!   arrow). Further away, nothing.
 //! - **Primed**: the chosen strip (the navpoint's, which the fall assist
-//!   steers onto): a bold ring with the footprint ring in it and the
-//!   strip's own line through it. On the ground a pin stands over it with
-//!   `Land, 3 m` (the drop).
+//!   steers onto): the footprint ring and the strip's own line through
+//!   it. On the ground, from a floor high enough, a pin stands over it
+//!   with `Land, 3 m` (the drop). While the approach guide is on the
+//!   strip, its box is the strip's only mark.
+//! - **The takeoff**, primed on the ground: a bar across the floor where
+//!   to leave for the strip, `Jump from here` or `Drop from here`
+//!   (`superbounce_guide::place`). From a floor too low for the strip,
+//!   the pin and the navpoint are on the takeoff instead, and the strip
+//!   has no label.
+//! - Rings and pins fade out as the eye comes within [`NEAR_GONE`] of
+//!   them, so none fills the screen or runs off its top; a mark the map
+//!   hides from the eye is drawn dim with no label ([`occlude`]).
 //! - **The lock-on**, while primed and falling: the slot's outline, corner
 //!   brackets round the crease that close in as the predicted landing
 //!   nears it, red and `Locked` within the slot at the speed it needs
@@ -18,7 +27,7 @@
 //!   run per guest tick.
 //!
 //! The builders are pure: [`ring`], [`arrowhead`], [`strip_bar`],
-//! [`brackets`], [`lock_box`] and [`takeoff`] make geometry, [`figures`]
+//! [`brackets`], [`lock_box`] and [`lip`] make geometry, [`figures`]
 //! puts a frame's together from the target spot ([`Item`]) and the
 //! player's [`Scene`], and [`frame`] reads both from the mode. What the
 //! scanner and the mode's state give is read in one place, [`contract`].
@@ -32,6 +41,7 @@ use superbounce::{Kind, Spot, Vec3};
 
 use crate::superbounce_charge::HIGH_SLACK;
 use crate::superbounce_font::{self as hud, Look};
+use crate::superbounce_guide::{Lip, Takeoff};
 use crate::superbounce_mode::{DIM, FADE_FAR, FADE_NEAR, NavKind, State};
 use crate::superbounce_prompts::{Callout, FLAT_FALL, LABEL_RAISE, TAKEOFF_BACK, whole_metres};
 
@@ -50,23 +60,38 @@ pub const LIKELY: f32 = 0.5;
 pub const PRIMED_CROUCH: f32 = 0.2;
 /// A strip's strength when the player's floor is too low to reach it.
 pub const CLIMB: f32 = 0.5;
-/// The next spot's marker: its ring's radius, and the pin standing over
-/// it, from [`PIN_FOOT`] to [`PIN_TOP`] above the floor, its label over
-/// the top.
-pub const MARK_RADIUS: f32 = 0.35;
-pub const PIN_FOOT: f32 = 0.3;
-pub const PIN_TOP: f32 = 1.2;
+/// The next spot's marker is one footprint ring ([`CAPSULE_RADIUS`]),
+/// and a pin standing over it from [`PIN_FOOT`] to [`PIN_TOP`] above the
+/// floor, its label over the top.
+pub const PIN_FOOT: f32 = 0.2;
+pub const PIN_TOP: f32 = 0.8;
+/// Rings and pins fade out as the eye nears them: full from
+/// [`NEAR_FULL`] away, gone within [`NEAR_GONE`] ([`near_fade`]).
+pub const NEAR_GONE: f32 = 1.5;
+pub const NEAR_FULL: f32 = 2.5;
+/// The eye over the feet, for the fade and the sight test
+/// (`superbounce_ghost::EYE_HEIGHT`).
+pub const EYE: f32 = crate::superbounce_ghost::EYE_HEIGHT;
+/// The takeoff bar: half its length across the run, and its arrow's size
+/// and gap ahead of it.
+pub const BAR_HALF: f32 = 0.3;
+pub const BAR_ARROW: f32 = 0.12;
+pub const BAR_ARROW_GAP: f32 = 0.1;
 /// Not primed, the next crouch spot is marked once the player is within
 /// this of it; running about further away, nothing is drawn in the world.
 pub const NEAR_RANGE: f32 = 6.0;
 /// The strip's line through the landing marker: half its length along the
 /// edge (at most half the edge).
 pub const CREASE_HALF: f32 = 0.26;
-/// The take-off search: the step out from the strip, how far it looks,
-/// and how far above the player's feet a floor still counts.
+/// The lip search ([`lip`]): the step out from the strip, how far it
+/// looks, how far over the strip's fall a floor still counts, and the
+/// fan of ways it tries, in degrees off the first (against the drift).
 pub const TAKEOFF_STEP: f32 = 0.05;
 pub const TAKEOFF_REACH: f32 = 4.0;
-pub const TAKEOFF_TOP: f32 = 0.5;
+pub const TAKEOFF_ABOVE: f32 = 1.0;
+pub const LIP_FAN: [f32; 12] = [
+    0.0, 30.0, -30.0, 60.0, -60.0, 90.0, -90.0, 120.0, -120.0, 150.0, -150.0, 180.0,
+];
 /// A crouch spot's approach arrow: this far out from its marker's ring,
 /// and its size.
 pub const APPROACH_OUT: f32 = 0.15;
@@ -160,6 +185,11 @@ pub struct Scene {
     /// The stand point of the spot the navpoint is over: a crouch spot
     /// while not primed, the chosen strip while primed.
     pub next: Option<Vec3>,
+    /// The chosen strip's takeoff (`superbounce_guide::place`), primed on
+    /// the ground.
+    pub takeoff: Option<Takeoff>,
+    /// The edge of the seam the approach guide is on, while it shows.
+    pub guide: Option<[Vec3; 2]>,
 }
 
 /// What the scanner's spots and the mode's state carry, read in one
@@ -412,47 +442,61 @@ impl Ease {
     }
 }
 
-/// Where to jump from for a strip at `stand` with `fall` and `drift`, for
-/// a player whose feet are at `player`, with `floor(xy, top)` the height
-/// of the highest floor under `xy` at or below `top`
-/// (`superbounce_capsule::Room::floor_at`).
+/// Where to look for the takeoff of a strip at `stand` with `fall` and
+/// `drift`, for a player whose feet are at `player`, with `floor(xy,
+/// top)` the height of the highest floor under `xy` at or below `top`
+/// (`superbounce_capsule::Room::floor_at`): the lip the approach guide
+/// places the takeoff from (`superbounce_guide::place`).
 ///
 /// - A strip a standing jump reaches (`fall` at most [`FLAT_FALL`]): the
 ///   prompts' take-off, [`TAKEOFF_BACK`] back from the stand point
-///   against the drift.
-/// - Else: out from the strip toward the player (against the drift when
-///   the player is over it), in steps of [`TAKEOFF_STEP`] up to
-///   [`TAKEOFF_REACH`], the first floor at least `fall` above the strip
-///   (less [`HIGH_SLACK`]) and no more than [`TAKEOFF_TOP`] above the
-///   player's feet: the lip of the ledge to come from. The take-off is a
-///   footprint back from that lip, on its floor.
+///   against the drift (toward the player with none), heading at the
+///   strip.
+/// - Else: out from the strip against the drift first, then through
+///   [`LIP_FAN`] round it (round the way to the player with no drift),
+///   in steps of [`TAKEOFF_STEP`] up to [`TAKEOFF_REACH`], the first floor
+///   at least `fall` above the strip (less [`HIGH_SLACK`]) and at most
+///   [`TAKEOFF_ABOVE`] over that: the lip of the ledge to come from,
+///   heading back at the strip. The player's own height does not limit
+///   it: a lip over the player is the one to climb to.
 ///
 /// `None` when no floor is found that way.
-pub fn takeoff(
+pub fn lip(
     stand: Vec3,
     fall: f32,
     drift: [f32; 2],
     player: Vec3,
     floor: impl Fn([f32; 2], f32) -> Option<f32>,
-) -> Option<Vec3> {
+) -> Option<Lip> {
     if !stand.iter().chain(&player).all(|v| v.is_finite()) {
         return None;
     }
-    let back = flat_unit([-drift[0], -drift[1]]);
+    let toward = flat_unit([player[0] - stand[0], player[1] - stand[1]]);
+    let back = flat_unit([-drift[0], -drift[1]])
+        .or(toward)
+        .unwrap_or([1.0, 0.0]);
+    let found = |at: Vec3, out: [f32; 2]| Lip {
+        at,
+        heading: [-out[0], -out[1]],
+        speed: None,
+        run: None,
+    };
     if !(fall > FLAT_FALL) {
-        return Some(offset(stand, back.unwrap_or([0.0; 2]), TAKEOFF_BACK));
+        let at = offset(stand, back, TAKEOFF_BACK);
+        let z = floor([at[0], at[1]], stand[2] + TAKEOFF_ABOVE).unwrap_or(stand[2]);
+        return Some(found([at[0], at[1], z], back));
     }
-    let d = flat_unit([player[0] - stand[0], player[1] - stand[1]]).or(back)?;
     let need = stand[2] + fall - HIGH_SLACK;
-    let top = player[2] + TAKEOFF_TOP;
+    let top = stand[2] + fall + TAKEOFF_ABOVE;
     let steps = (TAKEOFF_REACH / TAKEOFF_STEP).round() as usize;
-    (1..=steps).find_map(|i| {
-        let s = i as f32 * TAKEOFF_STEP;
-        let lip = floor([stand[0] + d[0] * s, stand[1] + d[1] * s], top).filter(|z| *z >= need)?;
-        let s = s + CAPSULE_RADIUS;
-        let at = [stand[0] + d[0] * s, stand[1] + d[1] * s];
-        let z = floor(at, top).filter(|z| *z >= need).unwrap_or(lip);
-        Some([at[0], at[1], z])
+    LIP_FAN.iter().find_map(|deg| {
+        let (sin, cos) = deg.to_radians().sin_cos();
+        let d = [back[0] * cos - back[1] * sin, back[0] * sin + back[1] * cos];
+        (1..=steps).find_map(|i| {
+            let at = offset(stand, d, i as f32 * TAKEOFF_STEP);
+            let z = floor([at[0], at[1]], top).filter(|z| *z >= need)?;
+            Some(found([at[0], at[1], z], d))
+        })
     })
 }
 
@@ -513,11 +557,31 @@ fn callout(edges: Vec<[Vec3; 2]>, anchor: Vec3, color: [f32; 3], style: LineStyl
     }
 }
 
-/// The marker of the next spot, at `at`: a bold ring of [`MARK_RADIUS`]
-/// on the floor (pulsing with `pulse`), the footprint ring inside it,
-/// and with `pin` a pin standing over it with `label` at its top. Without
-/// the pin the label, if any, is over the ring. Three callouts with the
-/// pin, two without: the ring, the footprint, the pin.
+/// How much of a ring or a pin `distance` from the eye shows: 1 from
+/// [`NEAR_FULL`] out, 0 within [`NEAR_GONE`], straight between. A mark
+/// at the feet would fill the screen, and a pin over the head runs off
+/// its top.
+pub fn near_fade(distance: f32) -> f32 {
+    if !distance.is_finite() {
+        return 1.0;
+    }
+    ((distance - NEAR_GONE) / (NEAR_FULL - NEAR_GONE)).clamp(0.0, 1.0)
+}
+
+/// `style` with its alpha scaled by `fade`.
+fn faded(mut style: LineStyle, fade: f32) -> LineStyle {
+    style.alpha *= fade;
+    style
+}
+
+/// The marker of the next spot, at `at`: the footprint ring of
+/// [`CAPSULE_RADIUS`] on the floor (pulsing with `pulse`), and with `pin`
+/// a pin standing over it with `label` at its top. Without the pin the
+/// label, if any, is on the ring. The ring fades by `ring_fade`, the pin
+/// and its label by the eye's distance to its top ([`near_fade`]);
+/// whatever has faded out is left out. Two callouts with the pin, one
+/// without: the ring, the pin.
+#[allow(clippy::too_many_arguments)]
 fn marker(
     out: &mut Vec<Callout>,
     at: Vec3,
@@ -525,35 +589,42 @@ fn marker(
     label: Option<String>,
     pin: bool,
     pulse: Option<Pulse>,
+    ring_fade: f32,
+    eye: Vec3,
     look: &Look,
 ) {
     let top = up(at, PIN_TOP);
-    let mut ring_style = bold(look, 3.5, 1.0);
+    let mut ring_style = bold(look, 3.0, 1.0);
     ring_style.glow = Some(Glow {
         width: 3.0,
         alpha: 0.35,
     });
     ring_style.pulse = pulse;
-    let mut outer = callout(ring(at, MARK_RADIUS, false), top, colour, ring_style);
-    let footprint = callout(
+    let mut footprint = callout(
         ring(at, CAPSULE_RADIUS, false),
-        at,
+        up(at, LIFT),
         colour,
-        bold(look, 1.5, 0.8),
+        faded(ring_style, ring_fade),
     );
-    if !pin {
-        outer.label = label;
-        out.extend([outer, footprint]);
+    let pin_fade = near_fade(distance3(eye, top));
+    if !pin || pin_fade <= 0.0 {
+        footprint.label = label.filter(|_| !pin);
+        if ring_fade > 0.0 {
+            out.push(footprint);
+        }
         return;
+    }
+    if ring_fade > 0.0 {
+        out.push(footprint);
     }
     let mut stem = callout(
         vec![[up(at, PIN_FOOT), top]],
         up(top, LABEL_RAISE),
         colour,
-        bold(look, 2.0, 0.9),
+        faded(bold(look, 2.0, 0.9), pin_fade),
     );
     stem.label = label;
-    out.extend([outer, footprint, stem]);
+    out.push(stem);
 }
 
 /// The strip's own line through `centre` along `along`, `half` each way,
@@ -563,13 +634,27 @@ pub fn strip_bar(centre: Vec3, along: [f32; 2], half: f32) -> Vec<[Vec3; 2]> {
     vec![[offset(c, along, -half), offset(c, along, half)]]
 }
 
-/// The chosen strip: the marker with the strip's line through it. On the
-/// ground it has its pin and `Land, 3 m`. In the air it has neither: the
-/// lock speaks, and it is red while the lock holds.
+/// The eye of a player whose feet are at `at`.
+fn eye_of(at: Vec3) -> Vec3 {
+    up(at, EYE)
+}
+
+/// The chosen strip: its footprint ring with the strip's line through
+/// it. On the ground, from a floor high enough ([`high_enough`]), or with
+/// no takeoff to go to, it has its pin and `Land, 3 m`; from a floor too
+/// low with a takeoff, neither: the takeoff has the pin. In the air it
+/// has neither: the lock speaks, and it is red while the lock holds.
+/// While the approach guide is on the strip, the guide's box is its only
+/// mark, and none of this is drawn. The ring fades near the eye
+/// ([`near_fade`]).
 fn landing_figure(out: &mut Vec<Callout>, s: &Strip, scene: &Scene, look: &Look) {
+    if scene.guide == Some(s.edge) {
+        return;
+    }
     let locked = scene.landing.is_some_and(|l| l.locked);
     let colour = if locked { RED } else { look.colour };
-    let label = (!scene.airborne).then(|| {
+    let climb = !high_enough(scene.at[2], s) && scene.takeoff.is_some();
+    let label = (!scene.airborne && !climb).then(|| {
         if s.fall > FLAT_FALL {
             format!("Land, {} m", whole_metres(s.fall))
         } else {
@@ -577,19 +662,59 @@ fn landing_figure(out: &mut Vec<Callout>, s: &Strip, scene: &Scene, look: &Look)
         }
     });
     let pin = label.is_some();
-    marker(out, s.stand, colour, label, pin, None, look);
-    out.push(callout(
-        strip_bar(s.stand, along_of(s.edge), crease_half(s.edge)),
-        s.stand,
-        colour,
-        bold(look, 3.0, 1.0),
-    ));
+    let eye = eye_of(scene.at);
+    let fade = near_fade(distance3(eye, s.stand));
+    marker(out, s.stand, colour, label, pin, None, fade, eye, look);
+    if fade > 0.0 {
+        out.push(callout(
+            strip_bar(s.stand, along_of(s.edge), crease_half(s.edge)),
+            s.stand,
+            colour,
+            faded(bold(look, 3.0, 1.0), fade),
+        ));
+    }
+}
+
+/// The takeoff bar: a line across the floor at `t.at`, [`BAR_HALF`] each
+/// way across the run, and an arrow just past it along the run, the way
+/// to leave; `Jump from here` or `Drop from here` on it. With `pin` (the
+/// player's floor is too low for the strip) a pin stands over it with the
+/// label at its top instead. The bar does not fade: it is what to stand
+/// on. An unchecked takeoff (no modelled flight from it bounces) is dim.
+pub fn takeoff_figure(out: &mut Vec<Callout>, t: &Takeoff, pin: bool, eye: Vec3, look: &Look) {
+    let Some(h) = flat_unit(t.heading) else {
+        return;
+    };
+    let across = [-h[1], h[0]];
+    let c = up(t.at, LIFT);
+    let alpha = if t.checked { 1.0 } else { DIM };
+    let mut edges = vec![[offset(c, across, -BAR_HALF), offset(c, across, BAR_HALF)]];
+    edges.extend(arrowhead(offset(t.at, h, BAR_ARROW_GAP), h, BAR_ARROW));
+    let label = t.leave.label().to_owned();
+    let mut bar = callout(edges, up(t.at, LIFT), look.colour, bold(look, 3.5, alpha));
+    let pin_fade = near_fade(distance3(eye, up(t.at, PIN_TOP)));
+    if !pin || pin_fade <= 0.0 {
+        bar.label = Some(label);
+        out.push(bar);
+        return;
+    }
+    out.push(bar);
+    let top = up(t.at, PIN_TOP);
+    let mut stem = callout(
+        vec![[up(t.at, PIN_FOOT), top]],
+        up(top, LABEL_RAISE),
+        look.colour,
+        faded(bold(look, 2.0, 0.9 * alpha), pin_fade),
+    );
+    stem.label = Some(label);
+    out.push(stem);
 }
 
 /// The crouch spot to go to: the marker with `Crouch`, and an approach
 /// arrow outside it, pointing in until the button is up, then out. Under
-/// the lip (`phase` under or held) the ring pulses.
-fn crouch_figure(out: &mut Vec<Callout>, c: &Crouch, phase: Option<Phase>, look: &Look) {
+/// the lip (`phase` under or held) the ring pulses. Its ring does not
+/// fade near the eye: under the lip is where it pulses. Its pin does.
+fn crouch_figure(out: &mut Vec<Callout>, c: &Crouch, phase: Option<Phase>, eye: Vec3, look: &Look) {
     let under = matches!(phase, Some(Phase::Under | Phase::Held));
     let pulse = under.then_some(Pulse {
         period: 0.8,
@@ -602,6 +727,8 @@ fn crouch_figure(out: &mut Vec<Callout>, c: &Crouch, phase: Option<Phase>, look:
         Some("Crouch".into()),
         true,
         pulse,
+        1.0,
+        eye,
         look,
     );
     if let Some(o) = flat_unit(c.out) {
@@ -609,7 +736,7 @@ fn crouch_figure(out: &mut Vec<Callout>, c: &Crouch, phase: Option<Phase>, look:
         let dir = if leaving { o } else { [-o[0], -o[1]] };
         out.push(callout(
             arrowhead(
-                offset(c.stand, o, MARK_RADIUS + APPROACH_OUT),
+                offset(c.stand, o, CAPSULE_RADIUS + APPROACH_OUT),
                 dir,
                 APPROACH_SIZE,
             ),
@@ -628,26 +755,34 @@ fn crouch_figure(out: &mut Vec<Callout>, c: &Crouch, phase: Option<Phase>, look:
 ///   marker, `Crouch` and its approach arrow. The charge's phase shows on
 ///   it within [`PHASE_RANGE`]. Further away, nothing.
 /// - Primed, it is the chosen strip (`scene.chosen`): the marker and its
-///   line, with `Land, 3 m` on the ground. In a fall the slot's outline is
-///   the [`Ease`]'s, drawn per present ([`lock_callouts`]).
+///   line, with `Land, 3 m` on the ground ([`landing_figure`]), and on the
+///   ground its takeoff's bar ([`takeoff_figure`]). In a fall the slot's
+///   outline is the [`Ease`]'s, drawn per present ([`lock_callouts`]).
+/// - In the air nothing of a crouch spot is drawn: a crouch is for the
+///   ground.
 /// - No other spot is drawn, whatever its kind.
 pub fn figures(items: &[Item], scene: &Scene, look: &Look) -> Vec<Callout> {
     let mut out = Vec::new();
+    let eye = eye_of(scene.at);
     for item in items {
         match item {
             Item::Strip(s) if scene.primed && scene.chosen == Some(s.stand) => {
+                if let Some(t) = scene.takeoff.filter(|_| !scene.airborne) {
+                    takeoff_figure(&mut out, &t, !high_enough(scene.at[2], s), eye, look);
+                }
                 landing_figure(&mut out, s, scene, look);
                 return out;
             }
             Item::Crouch(c)
                 if !scene.primed
+                    && !scene.airborne
                     && scene.next == Some(c.stand)
                     && distance3(scene.at, c.stand) <= NEAR_RANGE =>
             {
                 let phase = scene
                     .phase
                     .filter(|_| horizontal(scene.at, c.stand) <= PHASE_RANGE);
-                crouch_figure(&mut out, c, phase, look);
+                crouch_figure(&mut out, c, phase, eye, look);
                 return out;
             }
             _ => {}
@@ -695,8 +830,26 @@ pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout>
         landing: contract::landing(s).filter(|_| primed && s.airborne && falling),
         chosen,
         next,
+        takeoff: s.takeoff,
+        guide: s.guide.as_ref().map(|g| g.seam.edge),
     };
-    figures(&targets(spots, primed, chosen, next), &scene, &look)
+    let mut out = figures(&targets(spots, primed, chosen, next), &scene, &look);
+    let room = crate::superbounce_mode::current_room();
+    occlude(&mut out, eye_of(at), |a, b| room.blocked(a, b));
+    out
+}
+
+/// Marks the map hides from the eye: each callout whose anchor `blocked(eye,
+/// anchor)` says is behind a polygon is drawn dim ([`DIM`] of its alpha)
+/// and loses its label, so a mark behind a hill does not read as being on
+/// its near face (`superbounce_capsule::Room::blocked`).
+pub fn occlude(out: &mut [Callout], eye: Vec3, blocked: impl Fn(Vec3, Vec3) -> bool) {
+    for c in out.iter_mut() {
+        if blocked(eye, c.anchor) {
+            c.style.alpha *= DIM;
+            c.label = None;
+        }
+    }
 }
 
 /// The lock-on's target box this tick: primed, airborne and falling onto
@@ -777,6 +930,7 @@ pub fn lock_callouts(b: &LockBox, look: &Look) -> Vec<Callout> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::superbounce_guide::Leave;
     use gfx::world_lines::LabelFace;
     use std::time::Duration;
 
@@ -800,6 +954,8 @@ mod tests {
             landing: None,
             chosen: None,
             next: None,
+            takeoff: None,
+            guide: None,
         }
     }
 
@@ -908,14 +1064,11 @@ mod tests {
         assert_eq!(crouch_strength(false, true), LIKELY * PRIMED_CROUCH);
     }
 
-    /// Not primed: one marker, on the crouch spot the navpoint is over;
-    /// the other crouch spots are small faint rings, the strips are not
-    /// drawn.
     /// Not primed: one marker, on the crouch spot the navpoint is over,
     /// and nothing of any other spot.
     #[test]
     fn not_primed_the_marker_is_on_the_next_crouch_spot_alone() {
-        let next = crouch(1.0, true);
+        let next = crouch(4.0, true);
         let items = [
             Item::Crouch(next.clone()),
             Item::Strip(strip(1.5, 1.0)),
@@ -927,16 +1080,15 @@ mod tests {
             ..scene()
         };
         let out = figures(&items, &s, &LOOK);
-        // The marker (ring, footprint, pin) and its arrow.
-        assert_eq!(out.len(), 3 + 1);
+        // The marker (one footprint ring, the pin) and its arrow.
+        assert_eq!(out.len(), 2 + 1);
         assert_eq!(labels(&out), ["Crouch"]);
-        let bold = rings(&out, next.stand, MARK_RADIUS);
-        assert_eq!(bold.len(), 1);
-        assert!(bold[0].style.fade.is_none() && bold[0].style.width > 3.0);
-        assert_eq!(bold[0].style.alpha, 1.0);
-        assert_eq!(rings(&out, next.stand, CAPSULE_RADIUS).len(), 1);
+        let ring = rings(&out, next.stand, CAPSULE_RADIUS);
+        assert_eq!(ring.len(), 1);
+        assert!(ring[0].style.fade.is_none() && ring[0].style.width >= 3.0);
+        assert_eq!(ring[0].style.alpha, 1.0);
         // The pin stands over it with the label at its top.
-        let pin = &out[2];
+        let pin = &out[1];
         assert_eq!(pin.edges.len(), 1);
         let [foot, top] = pin.edges[0];
         assert!(close(foot[2], PIN_FOOT) && close(top[2], PIN_TOP));
@@ -946,6 +1098,12 @@ mod tests {
         assert!(out.iter().all(|c| c.color == LOOK.colour));
         // With no next spot, nothing at all.
         assert!(figures(&items, &scene(), &LOOK).is_empty());
+        // In the air, nothing: a crouch is for the ground.
+        let air = Scene {
+            airborne: true,
+            ..s
+        };
+        assert!(figures(&items, &air, &LOOK).is_empty());
     }
 
     /// Running about unprimed away from the next spot, the world is bare.
@@ -978,15 +1136,21 @@ mod tests {
         // The arrow points in (-X, `out` is +X) until the button is up.
         let arrow = |phase| {
             let out = at(phase, 0.0);
-            let [wing, tip] = out[3].edges[0];
+            let [wing, tip] = out.last().unwrap().edges[0];
             (tip[0] - wing[0]).signum()
         };
         assert_eq!(arrow(None), -1.0);
         assert_eq!(arrow(Some(Phase::Under)), -1.0);
         assert_eq!(arrow(Some(Phase::Held)), 1.0);
         // It sits outside the ring, on the way out.
-        let [_, tip] = at(None, 0.0)[3].edges[0];
-        assert!(tip[0] > 0.5 + MARK_RADIUS);
+        let [_, tip] = at(None, 0.0).last().unwrap().edges[0];
+        assert!(tip[0] > 0.5 + CAPSULE_RADIUS);
+        // Standing on the spot the pin has faded out (it would run off
+        // the top of the screen); the ring stays, to pulse under the lip.
+        let near = at(Some(Phase::Under), 0.5);
+        assert_eq!(near.len(), 2);
+        assert!(labels(&near).is_empty());
+        assert_eq!(rings(&near, c.stand, CAPSULE_RADIUS).len(), 1);
         // Under the lip the ring pulses; standing away it does not.
         assert!(at(Some(Phase::Under), 0.0)[0].style.pulse.is_some());
         assert!(at(None, 0.0)[0].style.pulse.is_none());
@@ -1011,12 +1175,12 @@ mod tests {
             ..scene()
         };
         let out = figures(&items, &s, &LOOK);
-        // Ring, footprint, pin, the strip's line.
-        assert_eq!(out.len(), 4);
+        // The footprint ring, the pin, the strip's line.
+        assert_eq!(out.len(), 3);
         assert_eq!(labels(&out), ["Land, 3 m"]);
-        assert_eq!(rings(&out, chosen.stand, MARK_RADIUS).len(), 1);
+        assert_eq!(rings(&out, chosen.stand, CAPSULE_RADIUS).len(), 1);
         assert!(out.iter().all(|c| horizontal(c.anchor, chosen.stand) < 0.5));
-        let [a, b] = out[3].edges[0];
+        let [a, b] = out[2].edges[0];
         assert!(close(a[0], 3.0) && close(b[0], 3.0) && a[1] < b[1]);
         let flat = Scene {
             chosen: Some([5.0, 0.0, 0.0]),
@@ -1032,8 +1196,8 @@ mod tests {
         assert!(figures(&items, &none, &LOOK).is_empty());
         let unprimed = Scene { primed: false, ..s };
         assert!(figures(&items, &unprimed, &LOOK).is_empty());
-        // In the air there is no pin and no label: ring, footprint and
-        // line; the lock-on is the slot's outline.
+        // In the air there is no pin and no label: ring and line; the
+        // lock-on is the slot's outline.
         let air = Scene {
             airborne: true,
             falling: true,
@@ -1041,7 +1205,7 @@ mod tests {
             ..s
         };
         let out = figures(&items, &air, &LOOK);
-        assert_eq!(out.len(), 3);
+        assert_eq!(out.len(), 2);
         assert!(labels(&out).is_empty());
         let rising = Scene {
             airborne: true,
@@ -1171,41 +1335,230 @@ mod tests {
         assert_eq!(ease_lock(None, t1), None);
     }
 
-    /// The take-off for a fall is the lip of the nearest floor high enough,
-    /// toward the player, a footprint back on it; a standing jump's is
-    /// 0.2 back against the drift.
+    /// A ledge at z 2 from x 1 on, over a floor at z 0.
+    fn ledge(xy: [f32; 2], top: f32) -> Option<f32> {
+        let z = if xy[0] >= 0.99 { 2.0 } else { 0.0 };
+        (z <= top).then_some(z)
+    }
+
+    /// The lip search: against the drift first, the first floor high
+    /// enough for the fall and no higher than a unit over it, wherever
+    /// the player is; then a fan round it; a standing jump's is 0.2 back
+    /// against the drift. Each heads back at the strip.
     #[test]
-    fn the_takeoff_is_on_the_ledge_toward_the_player() {
-        // A ledge at z 2 from x 1 on; the strip at the origin needs 1.5.
-        let floor = |xy: [f32; 2], top: f32| {
-            let z = if xy[0] >= 0.99 { 2.0 } else { 0.0 };
-            (z <= top).then_some(z)
+    fn the_lip_is_found_against_the_drift_then_in_a_fan() {
+        // The strip at the origin drifts -X and needs 1.5: the ledge is
+        // behind it, against the drift.
+        let l = lip([0.0; 3], 1.5, [-1.0, 0.0], [-3.0, 0.0, 0.0], ledge).unwrap();
+        assert!((l.at[0] - 1.0).abs() <= TAKEOFF_STEP, "{l:?}");
+        assert!(close(l.at[1], 0.0) && close(l.at[2], 2.0));
+        assert_eq!(l.heading, [-1.0, 0.0]);
+        assert_eq!((l.speed, l.run), (None, None));
+        // From below the ledge (the player on the strip's floor) it is
+        // found all the same: the review's frames 67 to 87.
+        let below = lip([0.0; 3], 1.5, [-1.0, 0.0], [0.0, 0.5, 0.0], ledge).unwrap();
+        assert_eq!(below.at, l.at);
+        // Drifting +X the ledge is with the drift: the fan finds it 120
+        // degrees round, heading back at the strip.
+        let fan = lip([0.0; 3], 1.5, [1.0, 0.0], [-3.0, 0.0, 0.0], ledge).unwrap();
+        assert!(fan.at[0] > 0.98 && close(fan.at[2], 2.0), "{fan:?}");
+        let r = fan.at[0].hypot(fan.at[1]);
+        assert!(close(fan.heading[0], -fan.at[0] / r) && close(fan.heading[1], -fan.at[1] / r));
+        assert!(close(fan.at[0] / r, 0.5), "{fan:?}");
+        // Too low a ledge for the fall: none. One far over it: none.
+        assert_eq!(lip([0.0; 3], 2.5, [-1.0, 0.0], [0.0; 3], ledge), None);
+        assert_eq!(lip([0.0; 3], 0.5, [-1.0, 0.0], [0.0; 3], ledge), None);
+        // A standing jump: the prompts' take-off, heading at the strip.
+        let t = lip([0.0; 3], 0.0, [0.0, 2.0], [5.0, 5.0, 0.0], ledge).unwrap();
+        assert!(close(t.at[1], -TAKEOFF_BACK) && close(t.at[0], 0.0));
+        assert_eq!(t.heading, [0.0, 1.0]);
+        assert_eq!(lip([f32::NAN; 3], 1.5, [1.0, 0.0], [0.0; 3], ledge), None);
+    }
+
+    fn takeoff_at(x: f32, leave: Leave, checked: bool) -> Takeoff {
+        Takeoff {
+            at: [x, 0.0, 2.0],
+            heading: [-1.0, 0.0],
+            half: 0.05,
+            speed: 0.8,
+            leave,
+            checked,
+        }
+    }
+
+    /// Primed on the ground the takeoff is a bar across the floor with
+    /// `Jump from here` or `Drop from here`. From a floor too low for the
+    /// strip, the pin is on the takeoff and the strip has no `Land`; from
+    /// one high enough the strip keeps its pin and label, and the bar its
+    /// label on the floor. In the air there is no bar.
+    #[test]
+    fn the_takeoff_is_a_bar_on_the_floor_with_the_pin_when_too_low() {
+        let chosen = strip(0.0, 1.5);
+        let items = [Item::Strip(chosen)];
+        let t = takeoff_at(1.2, Leave::Drop, true);
+        let low = Scene {
+            primed: true,
+            at: [-4.0, 0.0, 0.0],
+            chosen: Some(chosen.stand),
+            next: Some(chosen.stand),
+            takeoff: Some(t),
+            ..scene()
         };
-        let t = takeoff([0.0; 3], 1.5, [1.0, 0.0], [3.0, 0.0, 2.0], floor).unwrap();
+        let out = figures(&items, &low, &LOOK);
+        assert_eq!(labels(&out), ["Drop from here"]);
+        // The bar lies across the run at the takeoff, with its arrow.
+        let bar = &out[0];
+        let [a, b] = bar.edges[0];
+        assert!(close(a[0], 1.2) && close(b[0], 1.2) && close((a[1] - b[1]).abs(), 2.0 * BAR_HALF));
+        assert!(close(a[2], 2.0 + LIFT) && bar.edges.len() == 3);
+        // The pin is over the takeoff, its label at its top.
+        let pin = out.iter().find(|c| c.label.is_some()).unwrap();
+        assert!(close(pin.anchor[0], 1.2) && pin.anchor[2] > 2.0 + PIN_TOP);
+        // The strip: its ring and line, no label.
+        assert_eq!(rings(&out, chosen.stand, CAPSULE_RADIUS).len(), 1);
+        // A jump's takeoff says so.
+        let jump = Scene {
+            takeoff: Some(takeoff_at(1.2, Leave::Jump, true)),
+            ..low
+        };
+        assert_eq!(labels(&figures(&items, &jump, &LOOK)), ["Jump from here"]);
+        // High enough: the strip keeps `Land`, the bar its label on the
+        // floor, with no pin.
+        let high = Scene {
+            at: [4.0, 0.0, 2.0],
+            ..low
+        };
+        let out = figures(&items, &high, &LOOK);
+        assert_eq!(labels(&out), ["Drop from here", "Land, 5 m"]);
+        assert!(close(out[0].anchor[2], 2.0 + LIFT));
+        // No takeoff found: the strip keeps `Land`, high enough or not.
+        let none = Scene {
+            takeoff: None,
+            ..low
+        };
+        assert_eq!(labels(&figures(&items, &none, &LOOK)), ["Land, 5 m"]);
+        // An unchecked takeoff is dim.
+        let guess = Scene {
+            takeoff: Some(takeoff_at(1.2, Leave::Drop, false)),
+            ..low
+        };
+        assert_eq!(figures(&items, &guess, &LOOK)[0].style.alpha, DIM);
+        // In the air: no bar.
+        let air = Scene {
+            airborne: true,
+            ..low
+        };
+        assert!(labels(&figures(&items, &air, &LOOK)).is_empty());
         assert!(
-            (t[0] - (1.0 + CAPSULE_RADIUS)).abs() < TAKEOFF_STEP,
-            "{t:?}"
+            figures(&items, &air, &LOOK)
+                .iter()
+                .all(|c| c.anchor[0] < 0.5)
         );
-        assert!(close(t[1], 0.0) && close(t[2], 2.0));
-        // Too low a ledge for the fall: none.
+    }
+
+    /// While the approach guide is on the strip, the guide's box is its
+    /// only mark: no ring, no line, no pin; the takeoff bar stays.
+    #[test]
+    fn while_the_guide_is_on_the_strip_only_its_box_marks_it() {
+        let chosen = strip(0.0, 1.5);
+        let items = [Item::Strip(chosen)];
+        let s = Scene {
+            primed: true,
+            at: [4.0, 0.0, 2.0],
+            chosen: Some(chosen.stand),
+            next: Some(chosen.stand),
+            takeoff: Some(takeoff_at(1.2, Leave::Jump, true)),
+            guide: Some(chosen.edge),
+            ..scene()
+        };
+        let out = figures(&items, &s, &LOOK);
+        assert_eq!(labels(&out), ["Jump from here"]);
+        assert!(rings(&out, chosen.stand, CAPSULE_RADIUS).is_empty());
+        assert!(out.iter().all(|c| horizontal(c.anchor, chosen.stand) > 1.0));
+        // On another seam the strip is marked as ever.
+        let other = Scene {
+            guide: Some([[9.0, 0.0, 0.0], [9.0, 1.0, 0.0]]),
+            ..s
+        };
         assert_eq!(
-            takeoff([0.0; 3], 2.5, [1.0, 0.0], [3.0, 0.0, 2.0], floor),
-            None
+            rings(
+                &figures(&items, &other, &LOOK),
+                chosen.stand,
+                CAPSULE_RADIUS
+            )
+            .len(),
+            1
         );
-        // A floor above the player's reach (over TAKEOFF_TOP) does not count.
+    }
+
+    /// Rings and pins fade out as the eye nears them: gone within 1.5
+    /// units, full from 2.5. A strip at the feet is not drawn, and its pin
+    /// does not run off the top of the screen.
+    #[test]
+    fn rings_and_pins_fade_out_near_the_eye() {
+        assert_eq!(near_fade(0.0), 0.0);
+        assert_eq!(near_fade(NEAR_GONE), 0.0);
+        assert!(close(near_fade(2.0), 0.5));
+        assert_eq!(near_fade(NEAR_FULL), 1.0);
+        assert_eq!(near_fade(40.0), 1.0);
+        let chosen = strip(0.0, 0.0);
+        let items = [Item::Strip(chosen)];
+        let at = |x: f32| Scene {
+            primed: true,
+            at: [x, 0.0, 0.0],
+            chosen: Some(chosen.stand),
+            next: Some(chosen.stand),
+            ..scene()
+        };
+        // Standing on it: nothing.
+        assert!(figures(&items, &at(0.3), &LOOK).is_empty());
+        // Half way through the fade: the ring at half strength.
+        let x = (2.0f32.powi(2) - EYE.powi(2)).sqrt();
+        let out = figures(&items, &at(x), &LOOK);
+        let ring = rings(&out, chosen.stand, CAPSULE_RADIUS);
+        assert!(close(ring[0].style.alpha, 0.5), "{}", ring[0].style.alpha);
+        // Far off: full.
+        let out = figures(&items, &at(6.0), &LOOK);
         assert_eq!(
-            takeoff([0.0; 3], 1.5, [1.0, 0.0], [3.0, 0.0, 1.0], floor),
-            None
+            rings(&out, chosen.stand, CAPSULE_RADIUS)[0].style.alpha,
+            1.0
         );
-        // Over the strip: against the drift.
-        let t = takeoff([0.0; 3], 1.5, [-1.0, 0.0], [0.0, 0.0, 2.0], floor).unwrap();
-        assert!(t[0] > 1.0);
-        // A standing jump: the prompts' take-off.
-        let t = takeoff([0.0; 3], 0.0, [0.0, 2.0], [5.0, 5.0, 0.0], floor).unwrap();
-        assert!(close(t[1], -TAKEOFF_BACK) && close(t[0], 0.0));
-        assert_eq!(
-            takeoff([f32::NAN; 3], 1.5, [1.0, 0.0], [0.0; 3], floor),
-            None
-        );
+    }
+
+    /// A mark the map hides from the eye is dim and has no label; one in
+    /// sight is as it was.
+    #[test]
+    fn a_mark_behind_geometry_is_dim_and_unlabelled() {
+        let chosen = strip(0.0, 0.0);
+        let s = Scene {
+            primed: true,
+            at: [6.0, 0.0, 0.0],
+            chosen: Some(chosen.stand),
+            next: Some(chosen.stand),
+            ..scene()
+        };
+        let shown = figures(&[Item::Strip(chosen)], &s, &LOOK);
+        assert_eq!(labels(&shown), ["Land"]);
+        // A wall at x 3 between the eye and the strip.
+        let room = crate::superbounce_capsule::Room::new(&[superbounce::Poly {
+            verts: vec![
+                [3.0, -2.0, -1.0],
+                [3.0, 2.0, -1.0],
+                [3.0, 2.0, 3.0],
+                [3.0, -2.0, 3.0],
+            ],
+            normal: [1.0, 0.0, 0.0],
+        }]);
+        let eye = [6.0, 0.0, EYE];
+        let mut hidden = shown.clone();
+        occlude(&mut hidden, eye, |a, b| room.blocked(a, b));
+        assert!(labels(&hidden).is_empty());
+        for (h, c) in hidden.iter().zip(&shown) {
+            assert!(close(h.style.alpha, c.style.alpha * DIM));
+        }
+        // With nothing in the way, nothing changes.
+        let mut seen = shown.clone();
+        occlude(&mut seen, eye, |_, _| false);
+        assert_eq!(seen, shown);
     }
 }

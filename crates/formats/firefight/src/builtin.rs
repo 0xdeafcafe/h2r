@@ -57,6 +57,14 @@ pub fn definitions() -> [Def; 4] {
     .map(Preset::definition)
 }
 
+/// The built-in definition whose id ([`Def::id`]) starts with `prefix`:
+/// what a mode-1 variant extension names (docs/game/firefight.md, "Live").
+pub fn by_prefix(prefix: [u8; 8]) -> Option<Def> {
+    definitions()
+        .into_iter()
+        .find(|d| d.id().is_ok_and(|id| id.0[..8] == prefix))
+}
+
 /// `def` played by `teams` player teams (1 or 2, clamped): with two, a
 /// player kill scores the set's own points, or [`PLAYER_KILL_POINTS`]
 /// when it has none; with one, nothing.

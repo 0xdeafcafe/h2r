@@ -17,6 +17,52 @@ pub mod method {
     pub const LOOK: &str = "forge.look";
     pub const LOOK_SET: &str = "forge.look.set";
     pub const MONITORS: &str = "forge.status.monitors";
+    pub const THINGS: &str = "forge.things";
+}
+
+/// The kinds of thing `forge.things` names, as its `kind` filter and each
+/// thing's `kind` spell them (docs/game/forge-map-variants.md, "Things").
+pub const THING_KINDS: [&str; 5] = [
+    "object",
+    "item_spawner",
+    "starting_point",
+    "goal",
+    "teleporter",
+];
+
+/// The names a refused Forge edit carries in its error's `data.code`
+/// (docs/runtime/agent-api.md, "Local Forge session").
+pub mod refusal {
+    /// The live object the edit names no longer resolves by kind and salt.
+    pub const OBJECT_GONE: &str = "forge_object_gone";
+    /// The edit names a block whose live objects `world.object.*` cannot
+    /// resolve.
+    pub const OBJECT_KIND: &str = "forge_object_kind";
+    /// The own entry's live object is held or attached.
+    pub const OBJECT_HELD: &str = "forge_object_held";
+    /// The map's entry is not the one the edit was made on: its print
+    /// differs.
+    pub const PRINT: &str = "forge_print";
+    /// The edit names an entry of a block the session could not read.
+    pub const LEFT_OUT: &str = "forge_left_out";
+    /// The target's value is not the one `was` names.
+    pub const WAS: &str = "forge_was";
+    /// Any other refusal: the message says why.
+    pub const REFUSED: &str = "forge_refused";
+}
+
+/// `forge.things`: every thing of the session, or those of one kind, or
+/// only those the document changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThingsParams {
+    /// One of [`THING_KINDS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// `true` lists only the changed things (own entries an entry op
+    /// changes, and every added one); `false` only the unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<bool>,
 }
 
 /// One monitor input. Directions are normalized axes in camera space.
@@ -129,6 +175,23 @@ pub enum ProbeReply {
 mod tests {
     use super::*;
     use serde_json::{from_value, json, to_value};
+
+    #[test]
+    fn things_params_take_a_kind_and_changed_and_nothing_else() {
+        for value in [
+            json!({}),
+            json!({"kind": "goal"}),
+            json!({"changed": true}),
+            json!({"kind": "object", "changed": false}),
+        ] {
+            assert_eq!(
+                to_value(from_value::<ThingsParams>(value.clone()).unwrap()).unwrap(),
+                value
+            );
+        }
+        assert!(from_value::<ThingsParams>(json!({"block": "weapons"})).is_err());
+        assert!(from_value::<ThingsParams>(json!({"changed": "yes"})).is_err());
+    }
 
     #[test]
     fn probe_params_allow_only_fields_of_the_selected_probe() {

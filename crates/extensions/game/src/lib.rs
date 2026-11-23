@@ -224,6 +224,16 @@ pub mod speaker_setting;
 #[cfg(feature = "local-io")]
 pub mod steam_speaker;
 pub mod stopgaps;
+pub mod pogo;
+pub mod pogo_agent;
+pub mod pogo_camera;
+pub mod pogo_loadout;
+pub mod pogo_mode;
+pub mod pogo_pose;
+pub mod pogo_pose_glue;
+pub mod pogo_ride;
+pub mod pogo_sound;
+pub mod pogo_skeleton;
 pub mod superbounce_assist;
 pub mod superbounce_capsule;
 pub mod superbounce_chain;

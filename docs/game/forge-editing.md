@@ -110,7 +110,7 @@ the tool in use.
 
 | Tool | Aims at | Slice |
 |---|---|---|
-| Objects | placed objects; the map's own objects, item spawners, starting points and goals ([forge-map-variants.md](forge-map-variants.md), "Things"); and, in a kit session, new spawns, goals and item entries | built for placed objects; M5 to M9; P2 |
+| Objects | placed objects; the map's own objects, item spawners, starting points and goals ([forge-map-variants.md](forge-map-variants.md), "Things"); and, in a kit session, new spawns, goals and item entries | built for placed objects and the map's own things (M5 to M9); P2 |
 | Links | teleporter flags and machines, then every port | built (F6); F7 |
 | Volumes | trigger volumes, boundaries, barriers | F7, F8 |
 | Emitters | emitters | F7 |

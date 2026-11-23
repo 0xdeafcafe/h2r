@@ -176,6 +176,12 @@ pub struct NewSession {
     /// that sends none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<String>,
+    /// The Firefight match the host's next game plays (docs/game/
+    /// firefight.md, "Live"): the wave set, its player teams, the
+    /// difficulty and the kit version, so every machine plays the same
+    /// one. Left out by a host whose next game is not Firefight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<Firefight>,
     /// Optional facts for custom game discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserMetadata>,
@@ -229,6 +235,60 @@ impl VariantExt {
             block: crate::sign::hex(block),
             key: format!("{key:016x}"),
         }
+    }
+}
+/// The most bytes a Firefight wave set's name has ([`Firefight::set`]), as
+/// the `firefight` crate's validator bounds a definition's name.
+pub const FIREFIGHT_SET_MAX: usize = 128;
+/// The Firefight match a host's next game plays ([`NewSession::firefight`]).
+/// A guest checks it against its own copy: the definition's hash names the
+/// exact wave set (with the host's teams and starting lives), the kit
+/// version the map the host built.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Firefight {
+    /// The wave set's name (`firefight::Def::name`), e.g. `Crossfire`.
+    pub set: String,
+    /// The SHA-256 of the definition the host plays (`firefight::Def::id`),
+    /// 64 lowercase hex digits.
+    pub id: String,
+    /// Player teams: 1, or 2 ([`crate::firefight::MAX_TEAMS`]).
+    pub teams: u8,
+    /// 0 easy, 1 normal, 2 heroic, 3 legendary ([`DIFFICULTIES`]).
+    pub difficulty: u8,
+    /// The Firefight kit's version (`firefight_kit::KIT_VERSION`) the
+    /// host's map carries; at least 1.
+    pub kit: u32,
+}
+impl Firefight {
+    pub fn validate(&self) -> Result<(), String> {
+        let set_ok = !self.set.trim().is_empty()
+            && self.set.len() <= FIREFIGHT_SET_MAX
+            && !self.set.chars().any(char::is_control);
+        if !set_ok {
+            return Err(format!(
+                "firefight set is a name of 1 to {FIREFIGHT_SET_MAX} bytes"
+            ));
+        }
+        if !valid_rules_hash(&self.id) {
+            return Err("firefight id is a 64-digit SHA-256, lowercase hex".into());
+        }
+        if !(1..=crate::firefight::MAX_TEAMS).contains(&self.teams) {
+            return Err(format!(
+                "firefight teams is 1 to {}",
+                crate::firefight::MAX_TEAMS
+            ));
+        }
+        if usize::from(self.difficulty) >= DIFFICULTIES.len() {
+            return Err("firefight difficulty is 0 to 3".into());
+        }
+        if self.kit == 0 {
+            return Err("firefight kit is a version from 1".into());
+        }
+        Ok(())
+    }
+    pub fn difficulty_name(&self) -> &'static str {
+        DIFFICULTIES[usize::from(self.difficulty).min(DIFFICULTIES.len() - 1)]
     }
 }
 /// The highest round trip a session reports; anything slower is this.
@@ -334,6 +394,13 @@ pub struct Update {
     /// keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<String>,
+    /// The Firefight match for the next game ([`NewSession::firefight`]);
+    /// absent keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<Firefight>,
+    /// The host's next game is not Firefight: drops [`NewSession::firefight`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clear_firefight: bool,
     /// Replaces all browser metadata. An empty object clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserMetadata>,
@@ -399,6 +466,9 @@ impl NewSession {
         }
         if self.rules.as_deref().is_some_and(|r| !valid_rules_hash(r)) {
             return Err("rules is a 64-digit SHA-256, lowercase hex".into());
+        }
+        if let Some(f) = &self.firefight {
+            f.validate()?;
         }
         if let Some(c) = &self.campaign {
             if !self.is_coop() {
@@ -532,6 +602,14 @@ impl Session {
         if let Some(v) = &u.rules {
             next.rules = Some(v.clone());
         }
+        if u.clear_firefight {
+            if u.firefight.is_some() {
+                return Err("cannot set and clear firefight in the same update".into());
+            }
+            next.firefight = None;
+        } else if let Some(v) = &u.firefight {
+            next.firefight = Some(v.clone());
+        }
         if let Some(browser) = &u.browser {
             next.browser = (browser != &BrowserMetadata::default()).then(|| browser.clone());
         }
@@ -628,6 +706,7 @@ mod tests {
             ping_ms: None,
             variant_ext: None,
             rules: None,
+            firefight: None,
             browser: None,
         }
     }
@@ -893,6 +972,127 @@ mod tests {
         assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
         assert_eq!(s.advertisement.rules.as_deref(), Some(hash.as_str()));
         assert!(s.apply(UPDATED, &json!({"rules": "abc"}), "", 104).is_err());
+    }
+    fn crossfire() -> Firefight {
+        Firefight {
+            set: "Crossfire".into(),
+            id: "ab".repeat(32),
+            teams: 2,
+            difficulty: 2,
+            kit: 2,
+        }
+    }
+    #[test]
+    fn firefight_match_round_trips_and_is_left_out_when_none() {
+        let old = json!({"addr":null,"port":3074,"host_address":vec![0u8;36],
+            "slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},
+            "attributes":{},"map":"lockout"});
+        let n: NewSession = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(n.firefight, None);
+        assert!(serde_json::to_value(&n).unwrap().get("firefight").is_none());
+        let f = crossfire();
+        let mut with = old;
+        with["firefight"] = serde_json::to_value(&f).unwrap();
+        assert_eq!(
+            with["firefight"],
+            json!({"set": "Crossfire", "id": "ab".repeat(32), "teams": 2,
+                "difficulty": 2, "kit": 2})
+        );
+        let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+        assert_eq!(n.validate(), Ok(()));
+        assert_eq!(n.firefight.as_ref(), Some(&f));
+        assert_eq!(f.difficulty_name(), "heroic");
+        let back: NewSession = serde_json::from_value(serde_json::to_value(&n).unwrap()).unwrap();
+        assert_eq!(back, n);
+        with["firefight"]["extra"] = json!(1);
+        assert!(serde_json::from_value::<NewSession>(with).is_err());
+    }
+    #[test]
+    fn firefight_match_is_validated() {
+        let mut n = new();
+        n.firefight = Some(crossfire());
+        assert_eq!(n.validate(), Ok(()));
+        let one = Firefight {
+            set: "Holdout".into(),
+            teams: 1,
+            difficulty: 0,
+            kit: 1,
+            ..crossfire()
+        };
+        n.firefight = Some(one);
+        assert_eq!(n.validate(), Ok(()));
+        let bad: [(&str, fn(&mut Firefight)); 11] = [
+            ("empty set", |f| f.set.clear()),
+            ("blank set", |f| f.set = "  ".into()),
+            ("long set", |f| f.set = "x".repeat(FIREFIGHT_SET_MAX + 1)),
+            ("control in set", |f| f.set = "Cross\nfire".into()),
+            ("short id", |f| f.id = "ab".repeat(31)),
+            ("upper id", |f| f.id = "AB".repeat(32)),
+            ("not hex", |f| f.id = "zz".repeat(32)),
+            ("no teams", |f| f.teams = 0),
+            ("three teams", |f| f.teams = 3),
+            ("difficulty 4", |f| f.difficulty = 4),
+            ("kit 0", |f| f.kit = 0),
+        ];
+        for (what, spoil) in bad {
+            let mut f = crossfire();
+            spoil(&mut f);
+            assert!(f.validate().is_err(), "{what}");
+            n.firefight = Some(f);
+            assert!(n.validate().is_err(), "{what}");
+        }
+        let longest = Firefight {
+            set: "x".repeat(FIREFIGHT_SET_MAX),
+            ..crossfire()
+        };
+        assert_eq!(longest.validate(), Ok(()));
+    }
+    #[test]
+    fn firefight_match_updates_keep_replace_and_clear_it() {
+        let mut s = session("observed", "203.0.113.5", Visibility::Public);
+        assert!(
+            serde_json::to_value(Update::default())
+                .unwrap()
+                .get("firefight")
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(Update::default())
+                .unwrap()
+                .get("clear_firefight")
+                .is_none()
+        );
+        let f = crossfire();
+        let up = serde_json::to_value(Update {
+            firefight: Some(f.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(s.apply(UPDATED, &up, "", 102).unwrap());
+        assert_eq!(s.advertisement.firefight, Some(f.clone()));
+        // Absent keeps it.
+        assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
+        assert_eq!(s.advertisement.firefight, Some(f.clone()));
+        // A bad one fails and changes nothing.
+        let mut bad = serde_json::to_value(&f).unwrap();
+        bad["teams"] = json!(3);
+        assert!(
+            s.apply(UPDATED, &json!({"firefight": bad}), "", 104)
+                .is_err()
+        );
+        assert_eq!(s.advertisement.firefight, Some(f.clone()));
+        // Set and clear at once is refused; clear drops it.
+        let both = json!({"firefight": f, "clear_firefight": true});
+        assert!(s.apply(UPDATED, &both, "", 105).is_err());
+        assert!(
+            s.apply(UPDATED, &json!({"clear_firefight": true}), "", 106)
+                .unwrap()
+        );
+        assert_eq!(s.advertisement.firefight, None);
+        assert!(
+            !s.apply(UPDATED, &json!({"clear_firefight": true}), "", 107)
+                .unwrap()
+        );
     }
     #[test]
     fn skulls_are_optional_checked_and_updated() {

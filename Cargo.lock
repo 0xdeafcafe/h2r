@@ -693,6 +693,7 @@ dependencies = [
  "native-render",
  "perf",
  "png",
+ "pogo-kit",
  "recomp",
  "render-bridge",
  "runtime",
@@ -1045,6 +1046,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "perf",
  "png",
+ "pogo-kit",
  "ring",
  "rules",
  "rustls",
@@ -2118,6 +2120,7 @@ dependencies = [
  "anyhow",
  "bots",
  "content",
+ "firefight",
  "h1campaign",
  "h1convert",
  "hs",
@@ -2450,6 +2453,7 @@ dependencies = [
  "native-render",
  "perf",
  "png",
+ "pogo-kit",
  "recomp",
  "render-bridge",
  "rules",
@@ -3042,6 +3046,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "editor-core",
+ "firefight",
  "live-proto",
  "map",
  "thiserror 2.0.21",
@@ -3950,6 +3955,7 @@ dependencies = [
  "bytes",
  "content",
  "coop",
+ "firefight",
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
@@ -5324,6 +5330,26 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide 0.8.9",
+]
+
+[[package]]
+name = "pogo-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "content",
+ "h1-assets",
+ "h1convert",
+ "h1map",
+ "h1objects",
+ "map",
+ "png",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tags",
+ "vfs",
+ "xiso",
 ]
 
 [[package]]

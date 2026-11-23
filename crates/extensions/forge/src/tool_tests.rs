@@ -334,3 +334,253 @@ fn push_and_pull_move_the_hold_distance_within_the_wall_and_the_near_gap() {
     );
     assert_eq!(big.near(), 3. + NEAR_GAP);
 }
+
+// ---- aiming at every thing (docs/game/forge-map-variants.md, slice M9) ----
+
+use crate::base_tests::{self as base, Call};
+use crate::tool::{MARK_RADIUS, Show, in_game};
+use crate::{BlockKind, Endpoint, Session, Thing, ThingKind, Value};
+
+/// The invented map of `base_tests` (weapons at x -3 and 4 on the x axis, a
+/// starting point at y -4, the netgame flags 0, 1 and 2 at x 0, 1 and 2 on
+/// y 5: a teleporter sender, a CTF flag spawn and a teleporter receiver,
+/// and an item spawner of every game type at y 6) with an added crate at
+/// (6, -4, 0) whose palette item is a sphere of radius 1.
+fn things_map() -> (Session, Tool, Endpoint) {
+    let mut session = base::open(base::rows());
+    let mut world = base::Fake::default();
+    let id = session
+        .place(
+            &mut world,
+            1,
+            0,
+            Frame {
+                position: [6., -4., 0.],
+                rotation: [0.; 3],
+            },
+        )
+        .unwrap();
+    let mut tool = Tool::with_extents(Arc::from(vec![Extent {
+        radius: 1.,
+        offset: [0.; 3],
+    }]));
+    tool.monitor = true;
+    (session, tool, Endpoint::Added(id))
+}
+
+/// What the reticle picks from `position`, looking along `yaw`, with a wall
+/// `wall` units away if any.
+fn aim_from(
+    session: &Session,
+    tool: &mut Tool,
+    position: [f32; 3],
+    yaw: f32,
+    wall: Option<f32>,
+) -> Option<Endpoint> {
+    tool.camera = Some(Camera {
+        position,
+        yaw,
+        pitch: 0.,
+    });
+    tool.update_with_surface(session, 2, Input::default(), |_| wall)
+        .unwrap();
+    tool.aimed_thing.map(Endpoint::identity)
+}
+
+#[test]
+fn the_nearest_thing_within_its_pick_radius_wins() {
+    let (session, mut tool, crate_id) = things_map();
+    let weapon = |i| Some(Endpoint::base(BlockKind::Weapons, i));
+    let flag = |i| Some(Endpoint::base(BlockKind::NetgameFlags, i));
+    let start = Some(Endpoint::base(BlockKind::StartingLocations, 0));
+    let spawner = Some(Endpoint::base(BlockKind::NetgameEquipment, 0));
+    let north = std::f32::consts::FRAC_PI_2;
+    let this = Show::ThisGameType;
+    // Engine indices: 1 CTF, 2 Slayer.
+    type Row = (
+        [f32; 3],
+        f32,
+        Option<f32>,
+        Option<i32>,
+        Show,
+        Option<Endpoint>,
+    );
+    // (eye, yaw, wall, game, show, what the reticle picks)
+    let table: [Row; 11] = [
+        // Two weapons on the line: the nearer.
+        ([-10., 0., 0.], 0., None, None, this, weapon(0)),
+        // The nearer is outside its pick radius (0.5, widened 0.012 a
+        // unit), the farther within its own, wider at its distance.
+        ([-10., 0.6, 0.], 0., None, None, this, weapon(1)),
+        // A wall before the first weapon: nothing.
+        ([-10., 0., 0.], 0., Some(5.), None, this, None),
+        // The marks: a teleporter, a starting point, an item spawner.
+        ([-10., 5., 0.], 0., None, Some(1), this, flag(0)),
+        ([0., -10., 0.], north, None, None, this, start),
+        ([-10., 6., 0.], 0., None, Some(2), this, spawner),
+        // A starting point's mark passed by, and the added crate behind
+        // it, whose sphere is wider.
+        ([-10., -3.2, 0.], 0., None, None, this, Some(crate_id)),
+        // The CTF flag spawn is CTF's: aimed at in CTF, passed over in
+        // Slayer for the teleporter behind it, aimed at in Slayer with Show
+        // at All.
+        ([0.5, 5., 0.], 0., None, Some(1), this, flag(1)),
+        ([0.5, 5., 0.], 0., None, Some(2), this, flag(2)),
+        (
+            [0.5, 5., 0.],
+            0.,
+            None,
+            Some(2),
+            Show::AllGameTypes,
+            flag(1),
+        ),
+        // With no game type known, every thing is this game type's.
+        ([0.5, 5., 0.], 0., None, None, this, flag(1)),
+    ];
+    for (i, (eye, yaw, wall, game, show, want)) in table.into_iter().enumerate() {
+        tool.game = game;
+        tool.set_show(show);
+        assert_eq!(
+            aim_from(&session, &mut tool, eye, yaw, wall),
+            want,
+            "row {i}"
+        );
+        let added = match want {
+            Some(Endpoint::Added(id)) => Some(id),
+            _ => None,
+        };
+        assert_eq!(
+            tool.aimed, added,
+            "row {i}: `aimed` is an added object only"
+        );
+    }
+    assert_eq!(MARK_RADIUS, 0.5);
+}
+
+fn thing(kind: ThingKind, fields: Vec<(&'static str, Value)>) -> Thing {
+    Thing {
+        id: Endpoint::base(BlockKind::NetgameEquipment, 0),
+        block: BlockKind::NetgameEquipment,
+        kind,
+        own: true,
+        frame: Frame::default(),
+        fields,
+        changed: false,
+    }
+}
+
+#[test]
+fn a_things_game_types_are_its_slots_or_its_flag_type() {
+    let spawner = |slots: [i64; 4]| {
+        thing(
+            ThingKind::ItemSpawner,
+            vec![
+                ("game type 1", Value::Int(slots[0])),
+                ("game type 2", Value::Int(slots[1])),
+                ("game type 3", Value::Int(slots[2])),
+                ("game type 4", Value::Int(slots[3])),
+            ],
+        )
+    };
+    let goal = |ty: i64| thing(ThingKind::Goal, vec![("type", Value::Int(ty))]);
+    // Engine indices: 1 CTF, 2 Slayer, 3 Oddball, 4 King of the Hill,
+    // 7 Juggernaut, 8 Territories, 9 Assault.
+    let all: &[i32] = &[1, 2, 3, 4, 7, 8, 9];
+    let table: [(Thing, &[i32], &[i32]); 9] = [
+        (spawner([12, 12, 12, 12]), all, &[]),
+        (spawner([2, -1, -1, -1]), &[2], &[1, 3, 4, 9]),
+        // 13 is every engine but CTF and Assault.
+        (spawner([13, -1, -1, -1]), &[2, 3, 4, 7, 8], &[1, 9]),
+        // King of the Hill's slot is 0, its index 4.
+        (spawner([0, -1, -1, -1]), &[4], &[2]),
+        // CTF's slot matches Assault's engine, as the matcher has it.
+        (spawner([1, -1, -1, -1]), &[1, 9], &[2]),
+        (goal(0), &[1], &[2, 9]),
+        // A hill corner.
+        (goal(13), &[4], &[1, 2]),
+        // A teleporter's type is every game type's.
+        (goal(7), all, &[]),
+        (thing(ThingKind::StartingPoint, vec![]), all, &[]),
+    ];
+    for (i, (t, has, lacks)) in table.iter().enumerate() {
+        for &game in *has {
+            assert!(in_game(t, Some(game)), "row {i} is in game type {game}");
+        }
+        for &game in *lacks {
+            assert!(
+                !in_game(t, Some(game)),
+                "row {i} is not in game type {game}"
+            );
+        }
+        assert!(in_game(t, None), "row {i}: no game type known");
+    }
+}
+
+/// A on the map's own weapon picks it up without a word to the world; the
+/// drop is one `MoveThing`, which the session makes one base move; delete
+/// on an own thing is a `Remove`, and X opens its Properties.
+#[test]
+fn an_own_thing_is_picked_up_dropped_removed_and_opened_like_an_added_one() {
+    let (mut session, mut tool, _) = things_map();
+    let mut world = base::Fake::default();
+    let weapon = Endpoint::base(BlockKind::Weapons, 0);
+    assert_eq!(
+        aim_from(&session, &mut tool, [-10., 0., 0.], 0., None),
+        Some(weapon)
+    );
+    assert_eq!(
+        tool.update(&session, 3, press(Action::Properties)).unwrap(),
+        Some(Command::Properties)
+    );
+    tool.update(&session, 4, press(Action::Accept)).unwrap();
+    assert_eq!(tool.held_thing.map(Endpoint::identity), Some(weapon));
+    assert_eq!(tool.held, None, "an own thing is not an added object");
+    assert_eq!(
+        tool.ghost.unwrap().position,
+        [-3., 0., 0.],
+        "pickup never moves it"
+    );
+    assert_eq!(
+        tool.extent(&session),
+        Some(Extent::default()),
+        "a rifle the Objects palette lacks"
+    );
+    let forward = Input {
+        movement: [0., 1., 0.],
+        seconds: 0.1,
+        ..Default::default()
+    };
+    tool.update(&session, 5, forward).unwrap();
+    assert!(
+        world.calls.is_empty(),
+        "a hold is the tool's until the drop"
+    );
+    let cmd = tool
+        .update(&session, 6, press(Action::Accept))
+        .unwrap()
+        .unwrap();
+    let Command::MoveThing { id, frame } = cmd else {
+        panic!("expected the drop of an own thing, not {cmd:?}")
+    };
+    assert_eq!(id.identity(), weapon);
+    assert!(id.print().is_some(), "an own thing is named with its print");
+    assert!((frame.position[0] + 2.4).abs() < 1e-4, "{frame:?}");
+    session.move_thing(&mut world, 6, id, frame).unwrap();
+    tool.applied(&cmd);
+    assert_eq!(tool.held_thing, None);
+    assert_eq!(world.calls, [Call::BaseMove(BlockKind::Weapons, 0, frame)]);
+    // Aimed at where it was dropped, delete is its removal.
+    let cmd = tool
+        .update(&session, 7, press(Action::Delete))
+        .unwrap()
+        .unwrap();
+    assert_eq!(cmd, Command::Remove { id });
+    session.remove(&mut world, 7, id).unwrap();
+    tool.applied(&cmd);
+    assert_eq!(world.calls[1..], [Call::BaseInert(BlockKind::Weapons, 0)]);
+    // A removed thing is not aimed at: the next weapon on the line is.
+    assert_eq!(
+        aim_from(&session, &mut tool, [-10., 0., 0.], 0., None),
+        Some(Endpoint::base(BlockKind::Weapons, 1))
+    );
+}

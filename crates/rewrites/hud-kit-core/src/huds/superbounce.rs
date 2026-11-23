@@ -8,9 +8,9 @@
 //!   wall time (`crate::motion`; [`ArmTrack`]);
 //! - the recipe's verbs on the game's prompt line, the bound button drawn
 //!   by the game;
-//! - the results ("Charging..." as the arming bar comes up, "Primed!",
-//!   lost) and the medals (a bounce's medal glyph and line, as a retail
-//!   multi-kill's) in the game's notification list;
+//! - the results ("Primed!", lost) and the medals (a bounce's medal
+//!   glyph and line, as a retail multi-kill's) in the game's notification
+//!   list;
 //! - a navpoint over the next thing to do, the nearest crouch spot while
 //!   not primed and the chosen strip while primed, the game's arrow
 //!   pointing down at it and its waypoint marker above, a number in whole
@@ -122,9 +122,8 @@ pub const PROMPT_STOP_GHOST_B: &str = "Press \u{e101} to stop ghost";
 /// The prompt line's widest verb: the most characters.
 pub const PROMPT_LONGEST: &str = PROMPT_CHARGE_AGAIN;
 
-/// The notifications. Charging and primed are Assault's pair's shape
-/// ("Bomb is arming..." and "Bomb armed!", `multiplayer_globals`).
-pub const MESSAGE_CHARGING: &str = "Charging...";
+/// The notifications. Primed is Assault's "Bomb armed!" shape
+/// (`multiplayer_globals`).
 pub const MESSAGE_PRIMED: &str = "Primed!";
 pub const MESSAGE_LOST: &str = "Charge lost";
 pub const MESSAGE_LOST_STOOD_STILL: &str = "Charge lost: you stood still";
@@ -342,8 +341,6 @@ pub enum Target {
 /// ([`super::superbounce_readout::Miss`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Note {
-    /// The arming bar came up: a recipe step began.
-    Charging,
     Primed,
     ChargeLost(Lost),
 }
@@ -351,7 +348,6 @@ pub enum Note {
 impl Note {
     pub fn text(self) -> String {
         match self {
-            Note::Charging => MESSAGE_CHARGING.into(),
             Note::Primed => MESSAGE_PRIMED.into(),
             Note::ChargeLost(Lost::StoodStill) => MESSAGE_LOST_STOOD_STILL.into(),
             Note::ChargeLost(Lost::Crouched) => MESSAGE_LOST_CROUCHED.into(),
@@ -634,13 +630,7 @@ pub fn views() -> Vec<(&'static str, View)> {
     };
     vec![
         ("not-primed", not_primed.clone()),
-        (
-            "near",
-            View {
-                note: Some((Note::Charging, 1)),
-                ..step(Phase::Near, FILL_NEAR, Verb::HoldAndWalkUnder)
-            },
-        ),
+        ("near", step(Phase::Near, FILL_NEAR, Verb::HoldAndWalkUnder)),
         ("under", step(Phase::Under, FILL_UNDER, Verb::LetGoOfCrouch)),
         ("held", step(Phase::Held, FILL_HELD, Verb::WalkOutToStand)),
         (
@@ -896,8 +886,7 @@ mod tests {
             m.shown.then(|| (m.text.clone(), m.since_tick))
         };
         assert_eq!(msg("primed-full"), Some((MESSAGE_PRIMED.into(), 1)));
-        assert_eq!(msg("near"), Some((MESSAGE_CHARGING.into(), 1)));
-        assert_eq!(Note::Charging.text(), "Charging...");
+        assert_eq!(msg("near"), None);
         assert_eq!(Note::Primed.text(), "Primed!");
         assert_eq!(msg("lost"), Some((MESSAGE_LOST.into(), 2)));
         assert_eq!(
@@ -914,7 +903,7 @@ mod tests {
         }
         assert_eq!(msg("bounced"), None);
         assert_eq!(msg("under"), None);
-        for m in [MESSAGE_CHARGING, MESSAGE_PRIMED] {
+        for m in [MESSAGE_PRIMED] {
             assert!(crate::model::message_fault(m).is_none(), "{m}");
             assert!(m.len() <= MESSAGE_LONGEST.len(), "{m}");
         }

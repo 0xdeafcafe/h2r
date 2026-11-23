@@ -740,8 +740,8 @@ fn two_teams_need_team_play_and_a_base_each() {
     two_team_map(&mut m, false);
     assert_eq!(
         it.lock().start(&mut m, false),
-        "firefight: off on firefight-probe: two Firefight teams need a team game: \
-         turn Team Play on in the game variant"
+        "firefight: off on firefight-probe: two Firefight teams need a team game, \
+         and Team Play did not turn on for this game"
     );
     assert!(!it.lock().state().running);
     // Team play on, but a kit with no bases.
@@ -758,6 +758,145 @@ fn two_teams_need_team_play_and_a_base_each() {
     assert_eq!((director.teams, director.pools), (2, vec![10, 10]));
     assert_eq!(teams_refusal(1, None), None, "one team needs no team game");
     assert!(teams_refusal(2, None).is_some());
+}
+
+/// The options block the game is about to copy at activation, its mode
+/// and its variant's flags.
+const OPTIONS: u32 = 0x1007_0000;
+
+fn options_block(m: &mut FakeGuest, mode: u32, flags: u32) {
+    m.map(OPTIONS, 0x200)
+        .put_u32(OPTIONS, mode)
+        .put_u32(OPTIONS + OPTIONS_VARIANT_FLAGS, flags);
+}
+
+/// Two Firefight teams on a kit map turn the variant's team play on before
+/// the game copies its options, so the match starts as teams instead of
+/// being refused. Other flags stay; a variant already on is left alone.
+#[test]
+fn two_teams_turn_team_play_on_before_the_game_starts() {
+    let (it, _) = shared(false);
+    crossfire(&it);
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, false);
+    options_block(&mut m, MODE_MULTIPLAYER, 0x40);
+    assert_eq!(
+        it.lock().activate(&mut m, OPTIONS, false).as_deref(),
+        Some("firefight: two teams: Team Play is on for this game")
+    );
+    let flags = m.u32(OPTIONS + OPTIONS_VARIANT_FLAGS).unwrap();
+    assert_eq!(flags, 0x41);
+    assert_eq!(
+        it.lock().activate(&mut m, OPTIONS, false),
+        None,
+        "already on"
+    );
+    // The game copies the options into its globals; the match runs.
+    m.put_u32(VARIANT_FLAGS, flags);
+    let line = it.lock().start(&mut m, false);
+    assert!(
+        line.starts_with("firefight: on on firefight-probe as Host"),
+        "{line}"
+    );
+    assert_eq!(it.lock().state().director.unwrap().teams, 2);
+}
+
+/// One team, Firefight off, a map without the kit, another mode and a
+/// film's playback leave team play as the variant has it; Teams set to two
+/// on a one-team wave set turns it on.
+#[test]
+fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
+    let unchanged = |options: Options, kit: bool, mode: u32, film: bool| {
+        let (it, _) = shared(false);
+        it.lock().set_options(Box::new(move || Ok(options)));
+        let (mut m, _) = guest(kit, 1);
+        options_block(&mut m, mode, 0);
+        let line = it.lock().activate(&mut m, OPTIONS, film);
+        let flags = m.u32(OPTIONS + OPTIONS_VARIANT_FLAGS).unwrap();
+        assert_eq!(line.is_none(), flags == 0, "{line:?}");
+        flags == 0
+    };
+    let two = Options {
+        wave_set: 3,
+        ..Options::default()
+    };
+    let mp = MODE_MULTIPLAYER;
+    assert!(unchanged(Options::default(), true, mp, false), "one team");
+    assert!(unchanged(two, false, mp, false), "no kit");
+    assert!(unchanged(two, true, 1, false), "a campaign game");
+    assert!(unchanged(two, true, mp, true), "a film");
+    let off = Options {
+        enabled: false,
+        ..two
+    };
+    assert!(unchanged(off, true, mp, false), "Firefight off");
+    let one = Options {
+        teams: Some(1),
+        ..two
+    };
+    assert!(unchanged(one, true, mp, false), "Crossfire by one team");
+    let holdout_two = Options {
+        teams: Some(2),
+        ..Options::default()
+    };
+    assert!(!unchanged(holdout_two, true, mp, false), "Teams set to two");
+    assert!(wants_team_play(&holdout_two, true));
+    assert_eq!(with_team_play(1, true), None);
+    assert_eq!(with_team_play(0, false), None);
+    assert_eq!(with_team_play(0x10, true), Some(0x11));
+}
+
+/// Each multiplayer start publishes the match it plays for the session
+/// data (a Live host's `NewSession.firefight`): the set, its id, teams,
+/// difficulty and the kit version on a kit map with Firefight on, none
+/// otherwise, so a stale match does not linger. A film publishes nothing.
+#[test]
+fn each_multiplayer_start_names_its_match_for_the_session() {
+    type Sent = Arc<Mutex<Vec<Option<live_proto::session::Firefight>>>>;
+    let start = |options: Options, kit: bool, film: bool| {
+        let (it, _) = shared(false);
+        let sent: Sent = Arc::default();
+        let seen = Arc::clone(&sent);
+        it.lock().set_options(Box::new(move || Ok(options)));
+        it.lock()
+            .set_session(Box::new(move |f| seen.lock().unwrap().push(f)));
+        let (mut m, _) = guest(kit, 1);
+        options_block(&mut m, MODE_MULTIPLAYER, 1);
+        it.lock().activate(&mut m, OPTIONS, film);
+        let out = sent.lock().unwrap().clone();
+        out
+    };
+    let crossfire = Options {
+        wave_set: 3,
+        difficulty: ::firefight::Difficulty::Heroic,
+        ..Options::default()
+    };
+    let sent = start(crossfire, true, false);
+    let def = crossfire.definition().unwrap();
+    let expected = live_proto::session::Firefight {
+        set: "Crossfire".into(),
+        id: def.id().unwrap().to_string(),
+        teams: 2,
+        difficulty: 2,
+        kit: ::firefight::KIT_VERSION,
+    };
+    assert_eq!(sent, [Some(expected.clone())]);
+    assert_eq!(expected.validate(), Ok(()));
+    assert_eq!(session_firefight(&crossfire, true), Some(expected));
+    // Holdout: one team.
+    let one = start(Options::default(), true, false);
+    assert_eq!(
+        one[0].as_ref().map(|f| (f.set.as_str(), f.teams)),
+        Some(("Holdout", 1))
+    );
+    // No kit, or Firefight off: the session names no match.
+    assert_eq!(start(crossfire, false, false), [None]);
+    let off = Options {
+        enabled: false,
+        ..crossfire
+    };
+    assert_eq!(start(off, true, false), [None]);
+    assert!(start(crossfire, true, true).is_empty(), "a film");
 }
 
 /// The Clankers are told the match: the player teams, the actors' team,

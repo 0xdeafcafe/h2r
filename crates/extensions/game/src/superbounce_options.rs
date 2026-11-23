@@ -7,12 +7,18 @@
 //! ([`crate::variant_ext::in_game`]), its script reference, the script's
 //! IR ([`crate::rules::header::superbounce_options`]).
 //!
+//! The Pogo Stick's two options (docs/game/pogo-stick.md) are read the
+//! same way and kept with them: [`Options::pogo`] and
+//! [`Options::pogo_style`].
+//!
 //! Every piece is on unless a variant turns it off. A game with the mode
 //! on takes [`Options::DEFAULT`] for each piece its script does not
 //! declare, so a script that declares none of them, or only some, shows
 //! the rest.
 
 use std::sync::atomic::{AtomicU16, Ordering};
+
+use pogo_kit::Style;
 
 use engine::GuestMemory;
 use ::rules::ir::Ir;
@@ -26,6 +32,10 @@ pub const MEDALS: &str = "medals";
 pub const SECOND_BOUNCE: &str = "second_bounce";
 pub const APPROACH_GUIDE: &str = "approach_guide";
 pub const CHARGE_SEGMENTS: &str = "charge_segments";
+/// The Pogo Stick as the secondary weapon (docs/game/pogo-stick.md).
+pub const POGO: &str = "pogo";
+/// Which stick: the script's `PogoStyle` enum, in [`Style`]'s order.
+pub const POGO_STYLE: &str = "pogo_style";
 
 /// Which seams get a target navpoint, by what is known about them
 /// ([`crate::superbounce_targets::Class`]). The script's `Targets` enum,
@@ -93,6 +103,11 @@ pub struct Options {
     /// The charge segments round the motion tracker
     /// (`hud_kit_core::huds::superbounce_segments`).
     pub charge_segments: bool,
+    /// Players spawn with the Pogo Stick as the secondary weapon
+    /// ([`crate::pogo_loadout`]).
+    pub pogo: bool,
+    /// The stick the game hands out.
+    pub pogo_style: Style,
 }
 
 impl Default for Options {
@@ -102,7 +117,7 @@ impl Default for Options {
 }
 
 impl Options {
-    /// Every piece on, the likely targets.
+    /// Every piece on, the likely targets, the UNSC stick.
     pub const DEFAULT: Options = Options {
         targets: TargetMode::Likely,
         velocity: true,
@@ -112,6 +127,8 @@ impl Options {
         second_bounce: true,
         approach_guide: true,
         charge_segments: true,
+        pogo: true,
+        pogo_style: Style::Unsc,
     };
 
     /// The options a record's option bits `bits` give for the script
@@ -130,6 +147,12 @@ impl Options {
             second_bounce: on(SECOND_BOUNCE, d.second_bounce),
             approach_guide: on(APPROACH_GUIDE, d.approach_guide),
             charge_segments: on(CHARGE_SEGMENTS, d.charge_segments),
+            pogo: on(POGO, d.pogo),
+            // A value the enum does not have keeps the default.
+            pogo_style: ir
+                .option_value(bits, POGO_STYLE)
+                .and_then(Style::from_index)
+                .unwrap_or(d.pogo_style),
         }
     }
 
@@ -139,6 +162,11 @@ impl Options {
             TargetMode::Likely => 1,
             TargetMode::All => 2,
         };
+        let s = match self.pogo_style {
+            Style::Unsc => 0,
+            Style::Covenant => 1,
+            Style::Forerunner => 2,
+        };
         t | (self.velocity as u16) << 2
             | (self.alignment as u16) << 3
             | (self.miss_info as u16) << 4
@@ -146,6 +174,8 @@ impl Options {
             | (self.second_bounce as u16) << 6
             | (self.approach_guide as u16) << 7
             | (self.charge_segments as u16) << 8
+            | (self.pogo as u16) << 9
+            | s << 10
     }
 
     fn unpack(b: u16) -> Options {
@@ -158,6 +188,8 @@ impl Options {
             second_bounce: b & 1 << 6 != 0,
             approach_guide: b & 1 << 7 != 0,
             charge_segments: b & 1 << 8 != 0,
+            pogo: b & 1 << 9 != 0,
+            pogo_style: Style::from_index(i32::from(b >> 10 & 3)).unwrap_or(Style::Unsc),
         }
     }
 }
@@ -201,6 +233,8 @@ mod tests {
         assert!(Options::DEFAULT.velocity && Options::DEFAULT.medals);
         assert!(Options::DEFAULT.approach_guide && Options::DEFAULT.charge_segments);
         assert_eq!(Options::DEFAULT.targets, TargetMode::Likely);
+        assert!(Options::DEFAULT.pogo);
+        assert_eq!(Options::DEFAULT.pogo_style, Style::Unsc);
     }
 
     /// A variant turns each piece off by its name, and picks the targets.
@@ -234,6 +268,16 @@ mod tests {
                 Options { targets: mode, ..d }
             );
         }
+        // The stick, and each style by the enum value of its id.
+        assert_eq!(with(POGO, OptionValue::Bool(false)), Options { pogo: false, ..d });
+        assert_eq!(ir.option_values(13), Style::ALL.map(Style::id));
+        for style in Style::ALL {
+            assert_eq!(
+                with(POGO_STYLE, OptionValue::Name(style.id().into())),
+                Options { pogo_style: style, ..d }
+            );
+            assert_eq!(Style::from_index(style.index() as i32), Some(style));
+        }
         // The scoring options do not move a HUD piece.
         assert_eq!(with("bounce_points", OptionValue::Int(5)), d);
     }
@@ -260,8 +304,17 @@ mod tests {
                     second_bounce: bits & 16 != 0,
                     approach_guide: bits & 32 != 0,
                     charge_segments: bits & 64 != 0,
+                    ..Options::DEFAULT
                 };
                 assert_eq!(Options::unpack(o.pack()), o);
+            }
+        }
+        for pogo_style in Style::ALL {
+            for pogo in [false, true] {
+                for d in [Options::DEFAULT, Options::unpack(0)] {
+                    let o = Options { pogo, pogo_style, ..d };
+                    assert_eq!(Options::unpack(o.pack()), o);
+                }
             }
         }
     }

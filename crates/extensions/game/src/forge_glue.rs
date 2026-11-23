@@ -216,7 +216,13 @@ impl Driver {
             if let Some(name) = self.draft.take() {
                 e.load_draft(tick, name);
             }
-            e.tick(tick, bsp, crate::forge_screens::ui_up(m));
+            // The session's game type decides which things the tool aims
+            // at (docs/game/forge-map-variants.md, "Game types").
+            let game = GameGlobals::current(m)
+                .ok()
+                .flatten()
+                .and_then(|g| g.options().variant().engine(m).ok());
+            e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
         }
     }
 }
@@ -392,6 +398,10 @@ impl LocalApi for Backend {
         Ok(self
             .read(Editor::status)
             .unwrap_or_else(|reason| json!({"session":"inactive","reason":reason})))
+    }
+
+    fn session(&self) -> Result<Arc<forge::Session>, String> {
+        self.read(|e| e.session.clone())
     }
 
     fn document(&self) -> Result<ForgeDoc, String> {

@@ -15,3 +15,4 @@ pub mod build;
 pub mod compare;
 pub mod generate;
 pub mod geom;
+pub mod trim;

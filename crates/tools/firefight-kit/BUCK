@@ -40,6 +40,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/hs:hs",
         "//crates/formats/map:map",
         "//crates/formats/pathfind:pathfind",
@@ -66,6 +67,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/hs:hs",
         "//crates/formats/map:map",
         "//crates/formats/pathfind:pathfind",

@@ -277,6 +277,52 @@ fn generated_data_survives_the_map_builder() {
 }
 
 #[test]
+fn trimming_keeps_the_chosen_sectors_and_their_rings() {
+    use pathfind::trim::{NONE, keep_sectors};
+    let bsp = level();
+    let pf = generate(&bsp, 2, 9, &Options::default()).unwrap();
+    assert_eq!(pf.sectors.len(), 3);
+    // Keeping everything changes nothing.
+    assert_eq!(keep_sectors(&pf, &[true; 3]).unwrap().0, pf);
+    // Drop the second floor square (surface 1).
+    let (kept, sector_of) = keep_sectors(&pf, &[true, false, true]).unwrap();
+    assert_eq!(sector_of, [0, NONE, 1]);
+    let problems = kept.validate(Some(bsp.surfaces.len()));
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(kept.sectors.len(), 2);
+    // The first square's four sides and the raised square's four; the
+    // dropped square's own three sides and four corners go.
+    assert_eq!(kept.links.len(), 8);
+    assert_eq!(kept.vertices.len(), 8);
+    // The side the two squares shared is one-sided now, its dropped side
+    // looping on itself.
+    let shared: Vec<_> = kept
+        .links
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| (l.left_sector, l.right_sector) == (0, NONE))
+        .collect();
+    assert!(!shared.is_empty());
+    for (i, l) in shared {
+        assert_eq!(usize::from(l.reverse_link), i);
+    }
+    // One ref per collision surface; the dropped square's is none.
+    assert_eq!(kept.refs.len(), pf.refs.len());
+    assert_eq!(kept.refs[0], Ref::sector(0));
+    assert_eq!(kept.refs[1], Ref::NONE);
+    assert_eq!(kept.refs[4], Ref::sector(1));
+    assert_eq!(kept.instance_refs, pf.instance_refs);
+    assert_eq!(kept.checksum, 9);
+    assert_eq!(round_trip(&kept), kept);
+    // Every flag cleared leaves no sectors and every ref none.
+    let (none, _) = keep_sectors(&pf, &[false; 3]).unwrap();
+    assert!(none.sectors.is_empty() && none.links.is_empty() && none.vertices.is_empty());
+    assert!(none.refs.iter().all(|&r| r == Ref::NONE));
+    // A flag per sector, and generated data only.
+    assert!(keep_sectors(&pf, &[true; 2]).is_err());
+}
+
+#[test]
 fn the_builder_refuses_undescribed_children() {
     let bsp = level();
     let mut pf = generate(&bsp, 0, 0, &Options::default()).unwrap();

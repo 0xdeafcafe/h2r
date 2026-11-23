@@ -1669,6 +1669,7 @@ mod tests {
             ping_ms: None,
             variant_ext: None,
             rules: None,
+            firefight: None,
             browser: None,
         })
         .unwrap();
@@ -1851,6 +1852,191 @@ mod tests {
         assert_eq!(carried["match_id"], next_id);
         assert_eq!(carried["bots"][0]["xuid"], bot["xuid"]);
         assert_eq!(carried["bots"][0]["gamertag"], bot["gamertag"]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Firefight sessions on the Worker's composition, as on a machine
+    /// (live-server's `firefight_sessions_seat_clankers_on_player_teams_only`
+    /// and `sessions_carry_the_hosts_firefight_match`, docs/game/
+    /// firefight.md, "Live"): the session keeps and lists the host's match,
+    /// a roster for it seats every bot on a player team, balanced across
+    /// two, and once the host clears the match its bots take no team.
+    #[tokio::test]
+    async fn a_firefight_session_seats_balanced_clankers_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::lxm;
+        use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("firefight-seats");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json");
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = |m: &str| issue_token(&key, &author, "live.test", m, now());
+        let crossfire = live_proto::session::Firefight {
+            set: "Crossfire".into(),
+            id: "ab".repeat(32),
+            teams: 2,
+            difficulty: 1,
+            kit: 2,
+        };
+        let mut lobby = live_proto::session::NewSession {
+            addr: Some("192.168.2.4".parse().unwrap()),
+            port: 3074,
+            host_address: vec![0; 36],
+            slots: live_proto::session::Slots {
+                public_filled: 1,
+                public_open: 7,
+                ..Default::default()
+            },
+            attributes: Default::default(),
+            flags: "custom".into(),
+            hopper_id: None,
+            map: Some("beavercreek".into()),
+            name: Some("Firefight".into()),
+            language: None,
+            visibility: Default::default(),
+            map_id: None,
+            skulls: None,
+            campaign: None,
+            ping_ms: None,
+            variant_ext: None,
+            rules: None,
+            firefight: Some(live_proto::session::Firefight {
+                teams: 9,
+                ..crossfire.clone()
+            }),
+            browser: None,
+        };
+        let (status, _) = call(
+            "POST",
+            "/v1/sessions".into(),
+            Some(token(lxm::SESSIONS_WRITE)),
+            serde_json::to_string(&lobby).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 400, "three teams are refused, as on a machine");
+        lobby.firefight = Some(crossfire.clone());
+        let (status, session) = call(
+            "POST",
+            "/v1/sessions".into(),
+            Some(token(lxm::SESSIONS_WRITE)),
+            serde_json::to_string(&lobby).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 201, "{session}");
+        let session_id = session["session_id"].as_str().unwrap().to_string();
+        let (status, read) = call(
+            "GET",
+            format!("/v1/sessions/{session_id}"),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(status, 200, "{read}");
+        assert_eq!(
+            read["session"]["advertisement"]["firefight"],
+            serde_json::to_value(&crossfire).unwrap()
+        );
+        let teams = |roster: &Value| -> Vec<Value> {
+            roster["bots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["team"].clone())
+                .collect()
+        };
+        let ask = |count: u32| {
+            call(
+                "POST",
+                "/v1/games/bots".into(),
+                Some(token(lxm::GAMES_WRITE)),
+                serde_json::json!({"session_id": session_id, "count": count}).to_string(),
+            )
+        };
+        let (status, roster) = ask(5).await;
+        assert_eq!(status, 201, "{roster}");
+        assert_eq!(
+            teams(&roster),
+            [0, 1, 0, 1, 0].map(|t| serde_json::json!(t))
+        );
+        // The host leaves Firefight: the session drops the match, and a
+        // roster names no team again.
+        let cleared = live_proto::sign::EventBody::at_unix(
+            &key,
+            &author,
+            &live_proto::session::stream(&session_id),
+            live_proto::session::UPDATED,
+            serde_json::json!({"clear_firefight": true}),
+            now(),
+        );
+        let r = live_server::http::router(live.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{session_id}/events"))
+                    .header("content-type", "application/jose")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(lxm::SESSIONS_WRITE)),
+                    )
+                    .body(Body::from(live_proto::sign::sign_batch(&key, &[cleared])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 201);
+        let (_, read) = call(
+            "GET",
+            format!("/v1/sessions/{session_id}"),
+            None,
+            String::new(),
+        )
+        .await;
+        assert!(
+            read["session"]["advertisement"].get("firefight").is_none(),
+            "{read}"
+        );
+        let (status, roster) = ask(2).await;
+        assert_eq!(status, 201, "{roster}");
+        assert_eq!(teams(&roster), [Value::Null, Value::Null]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
