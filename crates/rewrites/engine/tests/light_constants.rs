@@ -6,7 +6,7 @@
 //! check against the original is `light_constants_differential.rs`.
 
 use engine::FlatMemory;
-use engine::light_constants::{BoundsQuery, Call, Fpu, constant, global, light_globals};
+use engine::light_constants::{BoundsQuery, Call, Fpu, LightGlobals, constant, global, light_globals};
 use engine::memory::GuestMemory;
 
 const ARRAY: u32 = 0x0058_0000;
@@ -179,4 +179,17 @@ fn colours_between_one_and_two_are_halved() {
     assert_eq!(m.u32(global::FRAME + 4 * 19).unwrap(), (-0.25f32).to_bits());
     assert_eq!(m.u32(global::ZERO).unwrap(), 0);
     assert_eq!(m.u8(global::RECTANGLE_VALID).unwrap(), 0);
+}
+
+#[test]
+fn the_stored_block_reads_back_what_a_call_left() {
+    let mut m = world();
+    frame_block(&mut m, LOOSE_FRAME, [0.5, 0.25, 1.0], [0.9, 0.2, 0.2], 1.5);
+    let g = light_globals(&m, &call(LOOSE_FRAME, u32::MAX), FPU, &mut |_| None).unwrap();
+    g.write(&mut m).unwrap();
+    let stored = LightGlobals::stored(&m).unwrap();
+    let sphere = [0, 1, 2, 3].map(|i| m.u32(global::SPHERE + 4 * i).unwrap());
+    assert_eq!(stored, LightGlobals { sphere: Some(sphere), ..g.clone() });
+    assert_eq!(stored.frame_constants(&m).unwrap(), g.frame_constants(&m).unwrap());
+    assert_eq!(stored.colour_b_input(), g.colour_b_input());
 }

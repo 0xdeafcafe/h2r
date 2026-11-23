@@ -241,6 +241,38 @@ impl LightGlobals {
         [0, 1, 2].map(|i| self.frame[FRAME_COLOUR_B + i])
     }
 
+    /// The block as a call left it in memory: what [`Self::write`] stores,
+    /// read back (the sphere always). For a caller whose call has run, as
+    /// the first-person lights' (`0x000404b0`, its call at `0x0004057e`),
+    /// whose light volume is a local of its own frame.
+    pub fn stored(m: &dyn GuestMemory) -> Result<Self, MemFault> {
+        use global::*;
+        fn words<const N: usize>(m: &dyn GuestMemory, at: u32) -> Result<[u32; N], MemFault> {
+            let mut out = [0u32; N];
+            for (i, w) in out.iter_mut().enumerate() {
+                *w = m.u32(at + 4 * i as u32)?;
+            }
+            Ok(out)
+        }
+        Ok(Self {
+            definition: m.u32(DEFINITION)?,
+            context_word: m.u16(CONTEXT_WORD)?,
+            driver: m.u32(DRIVER)?,
+            colour_a: words(m, COLOUR_A)?,
+            colour_b: words(m, COLOUR_B)?,
+            scale: m.u32(SCALE)?,
+            falloff: words(m, FALLOFF)?,
+            frame: words(m, FRAME)?,
+            frame_copy_a: words(m, FRAME_COPY_A)?,
+            frame_copy_b: words(m, FRAME_COPY_B)?,
+            mode: m.u32(MODE)?,
+            rectangle: words(m, RECTANGLE)?,
+            rectangle_valid: m.u8(RECTANGLE_VALID)? != 0,
+            sphere: Some(words(m, SPHERE)?),
+            shadow: m.u8(SHADOW)?,
+        })
+    }
+
     /// Stores the block as the original does (everything but the scissor).
     pub fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         use global::*;
