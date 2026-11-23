@@ -6,15 +6,21 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use map::{Map, ResourceFile};
-use tags::repo::{MapSource, SharedFiles, TagRepo, compare, store_map};
+use tags::repo::extract::MapWork;
+use tags::repo::store::{EXTRACT_FILE, PutReport};
+use tags::repo::{EXTRACT_VERSION, Layouts, MapSource, SharedFiles, TagRepo, compare, update};
 use tags::schema::Schema;
 
 use crate::safe_out::{self, OutDir};
 
 const USAGE: &str = "usage:
-  h2 tags extract [disc.iso|file.map ...] --out REPO [--maps a,b] [--verify]
+  h2 tags extract [disc.iso|file.map ...] --out REPO [--maps a,b] [--verify] [--update]
       every tag of every map into REPO (one file per tag, raw by hash);
-      identical tags are stored once, others as variants (see the report)
+      identical tags are stored once, others as variants (see the report).
+      REPO/extract.toml records the map files, the extractor version and
+      each group's layout hash; --update extracts only what moved (a new
+      or changed map, a map an interrupted run did not finish, the groups
+      whose layout changed) and does nothing when nothing did
   h2 tags build REPO SCENARIO --out FILE.map [--map NAME] [--compare disc.iso] [--onto disc.iso] [--force]
       the map of SCENARIO (e.g. scenarios\\multi\\lockout\\lockout) from REPO
       alone, by closure from the scenario and the globals; header values,
@@ -52,6 +58,15 @@ impl Source {
     fn open(&self) -> Result<DiscMap> {
         Map::from_region(BufReader::new(File::open(&self.path)?), self.base, self.len)
             .with_context(|| format!("parsing {}", self.stem))
+    }
+
+    /// SHA-256 of the map file's bytes (hex): the disc's identity.
+    fn file_hash(&self) -> Result<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = File::open(&self.path)?;
+        f.seek(SeekFrom::Start(self.base))?;
+        tags::repo::extract::file_hash(f.take(self.len))
+            .with_context(|| format!("hashing {}", self.stem))
     }
 }
 
@@ -134,6 +149,7 @@ fn extract(args: &[String]) -> Result<()> {
     let mut out = None;
     let mut wanted: Option<Vec<String>> = None;
     let mut verify = false;
+    let mut only_moved = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -148,6 +164,7 @@ fn extract(args: &[String]) -> Result<()> {
                 )
             }
             "--verify" => verify = true,
+            "--update" => only_moved = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -175,17 +192,58 @@ fn extract(args: &[String]) -> Result<()> {
         bail!("no maps to extract");
     }
     let mut repo = TagRepo::create(&out)?;
+    let hashing = std::time::Instant::now();
+    let mut disc = Vec::with_capacity(maps.len());
+    for s in &maps {
+        disc.push((s.stem.clone(), s.file_hash()?));
+    }
+    let layouts = Layouts::new(schema);
+    let plan = tags::repo::plan(&repo, &layouts, &disc, !only_moved)?;
+    if plan.is_empty() {
+        println!(
+            "{}: up to date ({} maps, extractor {EXTRACT_VERSION}, file hashes read in {:.1?}); nothing to extract",
+            out.display(),
+            disc.len(),
+            hashing.elapsed()
+        );
+        return Ok(());
+    }
+    if plan.reset {
+        println!(
+            "{}: no record under extractor {EXTRACT_VERSION} and this tag file format; emptying the tree (raw resources kept)",
+            out.display()
+        );
+    }
+    for w in &plan.maps {
+        match &w.groups {
+            None => println!("plan {:<24} whole map ({:?})", w.map, w.why),
+            Some(g) => println!(
+                "plan {:<24} {} groups whose layout moved: {}",
+                w.map,
+                g.len(),
+                g.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        }
+    }
     let mut sh = shared(schema, &all)?;
     let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize, 0u64);
-    let mut conflicts: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     let started = std::time::Instant::now();
-    for s in maps {
-        let t = std::time::Instant::now();
-        let mut src = MapSource::new(schema, s.open()?, &mut sh)?;
-        let r = store_map(&mut repo, &mut src, &s.stem, verify)?;
+    let mut t = std::time::Instant::now();
+    let mut open = |stem: &str| -> tags::repo::Result<DiscMap> {
+        let src = all
+            .iter()
+            .find(|s| s.stem == stem)
+            .ok_or_else(|| tags::repo::Error::Invalid(format!("{stem}.map is not an input")))?;
+        src.open()
+            .map_err(|e| tags::repo::Error::Invalid(format!("{e:#}")))
+    };
+    let mut on_map = |w: &MapWork, r: &PutReport| {
         println!(
             "{:<24} {:>5} new {:>5} same {:>4} variants {:>2} lossy {:>2} refused  raw {:>5} new ({} MB)  {:.1?}",
-            s.stem,
+            w.map,
             r.new,
             r.same,
             r.variants.len(),
@@ -198,39 +256,41 @@ fn extract(args: &[String]) -> Result<()> {
         for (k, why) in &r.refused {
             println!("    refused {k}: {why}");
         }
-        for k in r.variants.keys() {
-            conflicts
-                .entry(k.to_string())
-                .or_default()
-                .push(s.stem.clone());
-        }
         totals.0 += r.new;
         totals.1 += r.same;
         totals.2 += r.variants.len();
         totals.3 += r.lossy.len();
         totals.4 += r.refused.len();
         totals.5 += r.raw_new.1;
-    }
+        t = std::time::Instant::now();
+    };
+    let done = update(
+        &mut repo,
+        &plan,
+        &layouts,
+        schema,
+        &mut sh,
+        &mut open,
+        verify,
+        &mut on_map,
+    )?;
     println!(
-        "{} tags new, {} identical to a stored one, {} variants ({} keys), {} lossy, {} refused; raw {} MB; {:.1?}",
+        "{} maps: {} tags new, {} identical to a stored one, {} variants, {} lossy, {} refused; raw {} MB; {} main files settled; {:.1?}",
+        done.maps,
         totals.0,
         totals.1,
         totals.2,
-        conflicts.len(),
         totals.3,
         totals.4,
         totals.5 >> 20,
+        done.settled.promoted,
         started.elapsed()
     );
-    let mut lines = String::new();
-    for (k, maps) in &conflicts {
-        lines.push_str(&format!("{k}\t{}\n", maps.join(",")));
-    }
-    let report = out.join("conflicts.txt");
-    std::fs::write(&report, lines)?;
     println!(
-        "conflicts (same path, other contents; per map) listed in {}",
-        report.display()
+        "{} keys with variants (same path, other contents; per map) listed in {}; versions in {}",
+        done.settled.conflicts,
+        out.join("conflicts.txt").display(),
+        out.join(EXTRACT_FILE).display()
     );
     Ok(())
 }

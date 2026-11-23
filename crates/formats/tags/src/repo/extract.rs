@@ -19,6 +19,13 @@
 //! one (with two known pairs the inference misses: a bitmap's first level of
 //! detail, a sound chunk). Locale rows and text use their descriptors.
 //! Otherwise the next raw start of the file gives the length.
+//!
+//! Versions: [`plan`] compares the tree's `extract.toml`
+//! ([`super::store::ExtractRecord`]) with the disc and this build's
+//! [`EXTRACT_VERSION`], tag file format and per-group [`Layouts`], and
+//! [`update`] does the work: a map whole, or only the groups whose layout
+//! hash moved. A map is recorded after its manifest, so an interrupted run
+//! redoes the map it was in.
 use super::store::PutReport;
 use super::{
     Body, Error, LooseTag, Node, Origin, RawRes, Region, Result, TagKey, TagSource, Tree, Value,
@@ -29,7 +36,7 @@ use crate::schema::{
     visit, walk,
 };
 use map::{FourCC, Map, ResourceFile, TagId};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Seek};
 
 /// A raw-size field the schema does not pair: `(group, block path, raw
@@ -948,13 +955,14 @@ impl<R: Read + Seek> TagSource for MapSource<'_, R> {
 /// Extract every tag of `src` (the map `stem`) into `repo`, with its
 /// manifest, header, low-detail region, group table and string IDs. With
 /// `verify`, each stored file is read back and must decode to the same tag.
+/// The manifest is written last.
 pub fn store_map<R: Read + Seek>(
     repo: &mut super::TagRepo,
     src: &mut MapSource<'_, R>,
     stem: &str,
     verify: bool,
 ) -> Result<PutReport> {
-    use super::store::{Manifest, Stored};
+    use super::store::Manifest;
     let mut report = PutReport::default();
     src.keep_raw = true;
     let h = src.map.map.header().clone();
@@ -979,60 +987,398 @@ pub fn store_map<R: Read + Seek>(
     repo.merge_strings(&src.strings)?;
     let ids: Vec<TagId> = src.tags.iter().map(|t| t.id).collect();
     for id in ids {
-        let tag = match src.extract(id)? {
-            Ok(t) => t,
-            Err(r) => {
-                report.refused.push((r.key.clone(), r.why.clone()));
-                m.refused.push((r.key, r.why));
-                continue;
-            }
-        };
-        for (hash, bytes) in src.take_raw() {
-            let rr = RawRes {
-                origin: Origin::Local,
-                len: bytes.len() as u32,
-                hash,
-            };
-            if !repo.has_raw(&rr) {
-                repo.put_raw(&bytes)?;
-                report.raw_new.0 += 1;
-                report.raw_new.1 += bytes.len() as u64;
-            }
+        match store_one(repo, src, id, verify, &mut report)? {
+            Ok(entry) => m.tags.push(entry),
+            Err(r) => m.refused.push(r),
         }
-        if let Some(t) = tag.tree()
-            && !t.losses.is_empty()
-        {
-            report.lossy.push(tag.key.clone());
-        }
-        let variant = match repo.put(&tag)? {
-            Stored::New => {
-                report.new += 1;
-                None
-            }
-            Stored::Same => {
-                report.same += 1;
-                None
-            }
-            Stored::Variant(v) => {
-                report.variants.insert(tag.key.clone(), v.clone());
-                Some(v)
-            }
-        };
-        if verify {
-            let p = repo.path_of(&tag.key, variant.as_deref());
-            let back = super::format::decode(&std::fs::read(&p)?)?;
-            if back != tag {
-                return Err(Error::Invalid(format!(
-                    "{} did not read back the same",
-                    tag.key
-                )));
-            }
-        }
-        m.tags.push((tag.key, variant));
     }
     repo.put_manifest(&m, &header)?;
     src.keep_raw = false;
     Ok(report)
+}
+
+/// Re-extract only the tags of `groups` from `src` (the map `stem`, already
+/// extracted once from the same file). Its manifest keeps every other
+/// entry and is rewritten last; header, group table and string IDs stay.
+pub fn store_groups<R: Read + Seek>(
+    repo: &mut super::TagRepo,
+    src: &mut MapSource<'_, R>,
+    stem: &str,
+    groups: &BTreeSet<FourCC>,
+    verify: bool,
+) -> Result<PutReport> {
+    let old = repo.manifest(stem)?;
+    let kept: HashMap<TagKey, Option<String>> = old
+        .tags
+        .iter()
+        .filter(|(k, _)| !groups.contains(&k.group))
+        .cloned()
+        .collect();
+    let mut m = old.clone();
+    m.tags.clear();
+    m.refused.retain(|(k, _)| !groups.contains(&k.group));
+    let mut report = PutReport::default();
+    src.keep_raw = true;
+    let tags: Vec<(TagId, FourCC, TagKey)> = src
+        .tags
+        .iter()
+        .map(|t| {
+            let key = TagKey::new(t.group, t.name.clone().unwrap_or_default());
+            (t.id, t.group, key)
+        })
+        .collect();
+    for (id, group, key) in tags {
+        if !groups.contains(&group) {
+            // Refused before: stays in `refused`.
+            if let Some(v) = kept.get(&key) {
+                m.tags.push((key, v.clone()));
+            }
+            continue;
+        }
+        match store_one(repo, src, id, verify, &mut report)? {
+            Ok(entry) => m.tags.push(entry),
+            Err(r) => m.refused.push(r),
+        }
+    }
+    repo.write_manifest(&m)?;
+    src.keep_raw = false;
+    Ok(report)
+}
+
+/// Extract and store one tag: its manifest entry, or why it was refused.
+fn store_one<R: Read + Seek>(
+    repo: &mut super::TagRepo,
+    src: &mut MapSource<'_, R>,
+    id: TagId,
+    verify: bool,
+    report: &mut PutReport,
+) -> Result<std::result::Result<(TagKey, Option<String>), (TagKey, String)>> {
+    use super::store::Stored;
+    let tag = match src.extract(id)? {
+        Ok(t) => t,
+        Err(r) => {
+            report.refused.push((r.key.clone(), r.why.clone()));
+            return Ok(Err((r.key, r.why)));
+        }
+    };
+    for (hash, bytes) in src.take_raw() {
+        let rr = RawRes {
+            origin: Origin::Local,
+            len: bytes.len() as u32,
+            hash,
+        };
+        if !repo.has_raw(&rr) {
+            repo.put_raw(&bytes)?;
+            report.raw_new.0 += 1;
+            report.raw_new.1 += bytes.len() as u64;
+        }
+    }
+    if let Some(t) = tag.tree()
+        && !t.losses.is_empty()
+    {
+        report.lossy.push(tag.key.clone());
+    }
+    let variant = match repo.put(&tag)? {
+        Stored::New => {
+            report.new += 1;
+            None
+        }
+        Stored::Same => {
+            report.same += 1;
+            None
+        }
+        Stored::Variant(v) => {
+            report.variants.insert(tag.key.clone(), v.clone());
+            Some(v)
+        }
+    };
+    if verify {
+        let p = repo.path_of(&tag.key, variant.as_deref());
+        let back = super::format::decode(&std::fs::read(&p)?)?;
+        if back != tag {
+            return Err(Error::Invalid(format!(
+                "{} did not read back the same",
+                tag.key
+            )));
+        }
+    }
+    Ok(Ok((tag.key, variant)))
+}
+
+/// The extractor's version. Change it when what the extractor makes of the
+/// same map and schema changes other than through a group's layout (the
+/// walker, raw lengths, aliases): every map is extracted again.
+pub const EXTRACT_VERSION: u32 = 1;
+
+/// The extractor's own per-group inputs beside the schema: the raw-size
+/// pairs it adds and the groups whose sizes it distrusts.
+fn extractor_extra(group: FourCC) -> String {
+    let mut s = String::new();
+    for (g, path, raw, size, mask) in SIZE_OVERRIDES {
+        if *g == group.0 {
+            s.push_str(&format!(
+                "size override {path:x?} {raw:#x} {size:#x} {mask:#x}\n"
+            ));
+        }
+    }
+    if NOISY_SIZES.iter().any(|g| **g == group.0) {
+        s.push_str("noisy sizes\n");
+    }
+    s
+}
+
+/// The layout hash of each group as this build extracts it: the schema's
+/// ([`crate::schema::hash`]) and the extractor's own additions.
+pub struct Layouts<'s> {
+    hashes: crate::schema::hash::LayoutHashes<'s>,
+}
+
+impl<'s> Layouts<'s> {
+    /// Over `schema`.
+    pub fn new(schema: &'s Schema) -> Self {
+        Layouts {
+            hashes: crate::schema::hash::LayoutHashes::new(schema),
+        }
+    }
+
+    /// The hash of `group` (64 hex digits).
+    pub fn hash(&self, group: FourCC) -> String {
+        super::hex(&self.hashes.of(group, &extractor_extra(group)))
+    }
+}
+
+/// Why a map is in a [`Plan`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// Never extracted (or its manifest is gone).
+    New,
+    /// Extracted from another file.
+    FileChanged,
+    /// The tree was extracted under another extractor or format version.
+    Versions,
+    /// Asked for (a run without `--update`).
+    Forced,
+    /// These groups' layout hashes moved.
+    Layouts,
+}
+
+/// One map's work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapWork {
+    /// Map stem.
+    pub map: String,
+    /// SHA-256 of its file (hex).
+    pub file: String,
+    /// Why.
+    pub why: Why,
+    /// Only these groups; `None`: the whole map.
+    pub groups: Option<BTreeSet<FourCC>>,
+}
+
+/// What a run does to bring a tree up to date with a disc and this build.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Empty the tree first ([`super::TagRepo::reset`]): no record, or one
+    /// under another extractor or format version.
+    pub reset: bool,
+    /// Maps to extract, in extraction order.
+    pub maps: Vec<MapWork>,
+}
+
+impl Plan {
+    /// Nothing to do.
+    pub fn is_empty(&self) -> bool {
+        !self.reset && self.maps.is_empty()
+    }
+}
+
+/// Compare the tree's record with the disc and this build. `disc` is each
+/// wanted map's stem and file hash ([`file_hash`]). A map never extracted,
+/// extracted from another file, or not finished is taken whole; a map
+/// whose groups' layout hashes moved has those groups taken again; with
+/// `force` every map is taken whole. A tree with no record, or one under
+/// another extractor or format version, is emptied and every map taken.
+pub fn plan(
+    repo: &super::TagRepo,
+    layouts: &Layouts<'_>,
+    disc: &[(String, String)],
+    force: bool,
+) -> Result<Plan> {
+    let record = repo.extract_record()?;
+    let current = record
+        .as_ref()
+        .filter(|r| r.extractor == EXTRACT_VERSION && r.format == super::format::VERSION);
+    let reset = current.is_none();
+    let mut stems: Vec<String> = disc.iter().map(|(s, _)| s.clone()).collect();
+    super::store::extraction_order(&mut stems);
+    let mut maps = Vec::new();
+    for stem in stems {
+        let file = disc
+            .iter()
+            .find(|(s, _)| *s == stem)
+            .map(|(_, h)| h.clone())
+            .expect("from disc");
+        let whole = |why| MapWork {
+            map: stem.clone(),
+            file: file.clone(),
+            why,
+            groups: None,
+        };
+        let Some(rec) = current else {
+            maps.push(whole(if record.is_some() {
+                Why::Versions
+            } else {
+                Why::New
+            }));
+            continue;
+        };
+        let Some(m) = rec.maps.get(&stem).filter(|_| repo.has_manifest(&stem)) else {
+            maps.push(whole(Why::New));
+            continue;
+        };
+        if m.file != file {
+            maps.push(whole(Why::FileChanged));
+            continue;
+        }
+        if force {
+            maps.push(whole(Why::Forced));
+            continue;
+        }
+        let moved: BTreeSet<FourCC> = m
+            .groups
+            .iter()
+            .filter(|(g, r)| layouts.hash(**g) != r.layout)
+            .map(|(g, _)| *g)
+            .collect();
+        if !moved.is_empty() {
+            maps.push(MapWork {
+                groups: Some(moved),
+                ..whole(Why::Layouts)
+            });
+        }
+    }
+    Ok(Plan { reset, maps })
+}
+
+/// SHA-256 of a map file's bytes (hex), read in pieces.
+pub fn file_hash(mut r: impl Read) -> Result<String> {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(super::hex(&h.finalize()))
+}
+
+/// The record of a map after this run: groups taken in this run get this
+/// build's layout hash and the run's counts; with `only`, the other groups
+/// keep `old`'s entries.
+fn map_record<R: Read + Seek>(
+    src: &MapSource<'_, R>,
+    layouts: &Layouts<'_>,
+    file: &str,
+    report: &PutReport,
+    only: Option<&BTreeSet<FourCC>>,
+    old: Option<&super::store::MapRecord>,
+) -> super::store::MapRecord {
+    use super::store::{GroupRecord, MapRecord};
+    let mut groups: BTreeMap<FourCC, GroupRecord> = BTreeMap::new();
+    for t in &src.tags {
+        if only.is_some_and(|o| !o.contains(&t.group)) {
+            continue;
+        }
+        groups
+            .entry(t.group)
+            .or_insert_with(|| GroupRecord {
+                layout: layouts.hash(t.group),
+                ..Default::default()
+            })
+            .tags += 1;
+    }
+    for k in &report.lossy {
+        if let Some(g) = groups.get_mut(&k.group) {
+            g.lossy += 1;
+        }
+    }
+    for (k, _) in &report.refused {
+        if let Some(g) = groups.get_mut(&k.group) {
+            g.refused += 1;
+        }
+    }
+    if let (Some(only), Some(old)) = (only, old) {
+        for (g, r) in &old.groups {
+            if !only.contains(g) {
+                groups.insert(*g, r.clone());
+            }
+        }
+    }
+    MapRecord {
+        file: file.to_owned(),
+        groups,
+    }
+}
+
+/// What [`update`] did.
+#[derive(Clone, Debug, Default)]
+pub struct Updated {
+    /// Maps extracted (whole or by group).
+    pub maps: usize,
+    /// The tree was emptied first.
+    pub reset: bool,
+    /// What settling the main files did ([`super::TagRepo::settle`]).
+    pub settled: super::store::Settled,
+}
+
+/// Run a [`plan`]: empty the tree if it says so, extract each map (whole,
+/// or only its moved groups), record each map once its manifest is
+/// written, then settle the main files. `open` gives a map by stem;
+/// `on_map` is told of each map done. An empty plan reads the manifests and
+/// writes nothing.
+pub fn update<R: Read + Seek>(
+    repo: &mut super::TagRepo,
+    plan: &Plan,
+    layouts: &Layouts<'_>,
+    schema: &Schema,
+    shared: &mut SharedFiles<R>,
+    open: &mut dyn FnMut(&str) -> Result<Map<R>>,
+    verify: bool,
+    on_map: &mut dyn FnMut(&MapWork, &PutReport),
+) -> Result<Updated> {
+    if plan.reset {
+        repo.reset(EXTRACT_VERSION, super::format::VERSION)?;
+    }
+    for work in &plan.maps {
+        let map = open(work.map.as_str())?;
+        let mut src = MapSource::new(schema, map, shared)?;
+        let old = repo
+            .extract_record()?
+            .and_then(|r| r.maps.get(&work.map).cloned());
+        let report = match &work.groups {
+            None => store_map(repo, &mut src, &work.map, verify)?,
+            Some(g) => store_groups(repo, &mut src, &work.map, g, verify)?,
+        };
+        let rec = map_record(
+            &src,
+            layouts,
+            &work.file,
+            &report,
+            work.groups.as_ref(),
+            old.as_ref(),
+        );
+        repo.record_map(&work.map, rec)?;
+        on_map(work, &report);
+    }
+    let settled = repo.settle()?;
+    Ok(Updated {
+        maps: plan.maps.len(),
+        reset: plan.reset,
+        settled,
+    })
 }
 
 /// How a rebuilt map compares with its source.

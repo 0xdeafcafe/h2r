@@ -5,7 +5,7 @@ from scratch. Proven offline on the owner's disc (below); the Halo 1
 converter assembles its levels from the repository
 (`crates/tools/h1campaign/src/scratch.rs`), and the builder's open points are in
 [map-builder.md](map-builder.md), "Not verified".
-Code: `crates/formats/tags/src/repo.rs`. Switch: none.
+Code: `crates/formats/tags/src/repo.rs`, `crates/formats/tags/src/schema/hash.rs` (layout hashes). Switch: none.
 Evidence labels are those of
 [map-format.md](map-format.md): **V** checked on the owner's disc, **Design**
 an implementation choice.
@@ -97,7 +97,8 @@ compare by content (`format::encode`, `format::decode`).
 <repo>/raw/<hh>/<sha256>         raw resource bytes, by hash
 <repo>/maps/<map>.txt            what a retail map held (manifest)
 <repo>/maps/<map>.header         its 0x800-byte header
-<repo>/conflicts.txt             per key with variants, the maps that differ (h2 tags extract)
+<repo>/conflicts.txt             per key with variants, the maps that differ
+<repo>/extract.toml              the disc's identity and the versions it was extracted under
 ```
 
 Path backslashes become directories. A group whose bytes are not all
@@ -108,14 +109,16 @@ globals, low-detail region (by raw hash), index word `+0x14`, every tag in
 slot order with its variant (or `-`), and the tags that could not be
 extracted.
 
-**Variants (Design).** A key's main file is the first content extracted
-for it: the shared caches first (`mainmenu`, `shared`,
-`single_player_shared`), then the other maps in name order. A map whose tag
+**Variants (Design).** A key's main file is the content of the first map
+that holds it, in extraction order (`store::extraction_order`): the shared
+caches first (`mainmenu`, `shared`, `single_player_shared`), then the other
+maps in name order. A map whose tag
 has other contents gets a variant file, and its manifest names it.
 `TagRepo::for_map(dir, map)` reads that map's variants, so a retail map
 rebuilds from exactly its own tags; `TagRepo::open` reads main files only,
 which is what a new map (a converted Halo 1 level) builds from.
-`conflicts.txt` lists every key with variants and the maps that have them.
+`conflicts.txt` lists every key with variants and the maps that have them;
+`TagRepo::settle` rewrites it from the manifests after every extraction.
 Identical tags are stored once whatever map they came from.
 
 Why tags differ between maps, **V** (lockout against `01a_tutorial`):
@@ -129,7 +132,7 @@ variant is right.
 ## Extraction (`h2 tags extract`)
 
 ```sh
-h2 tags extract disc/halo2.iso --out ~/h2-data/tags [--maps lockout,01a_tutorial] [--verify]
+h2 tags extract disc/halo2.iso --out ~/h2-data/tags [--maps lockout,01a_tutorial] [--verify] [--update]
 ```
 
 Every map on the disc (or the `.map` files given, with shared caches found
@@ -167,6 +170,56 @@ like local ones, with their origin kept. A shared cache's own resources
 are named by that cache and offset too, as every level names them, so a
 tag reads the same from the cache and from a level. `--verify` reads every stored file
 back and checks it decodes to the same tag.
+
+## Versions (`extract.toml`, `--update`)
+
+The tree is a cache of the disc under one build's knowledge of the
+formats. `extract.toml` says which disc and which knowledge:
+
+```toml
+extractor = 1                    # tags::repo::EXTRACT_VERSION
+format = 1                       # the tag file format version
+
+[maps."lockout"]
+file = "<SHA-256 of lockout.map>"
+
+[maps."lockout".groups]
+"bitm" = { layout = "<layout hash>", tags = 1301, lossy = 0, refused = 0 }
+```
+
+A group's **layout hash** (`extract::Layouts`, over
+`schema::hash::LayoutHashes`) is the SHA-256 of its layout in the schema
+text form, the extractor's raw-size pairs and distrusted sizes for the
+group, and, for a group with a raw field, every group's raw-field paths
+(a raw resource with no stored length runs to the next raw start, and any
+group's raw pointers are those starts). A group with no layout hashes as
+`none`, so gaining one moves it. `EXTRACT_VERSION` covers the rest of the
+extractor (the walker, aliases, raw lengths) and is raised by hand when
+that changes what the same map and schema give.
+
+`extract::plan` compares the record with the disc (each map file's
+SHA-256) and this build:
+
+| Case | Work |
+|---|---|
+| no record, or another `extractor` or `format` | empty the tree (tag files, manifests, group and string tables; raw resources by hash stay), then every map whole |
+| a map with no record or no manifest (new, or a run stopped inside it) | that map whole |
+| a map whose file hash changed | that map whole |
+| a map whose groups' layout hashes moved | those groups' tags only (`extract::store_groups`); the manifest keeps its other entries |
+| nothing moved | nothing: no map is opened and no file written |
+
+`extract::update` runs the plan one map at a time. A map's manifest is
+written after its tags and its record after its manifest, so a run
+stopped anywhere redoes only the map it was in. Without `--update`, every
+wanted map is taken whole. `--maps` limits the plan to those maps; an
+emptied tree keeps none of the others.
+
+Taking some maps again can leave a key's main file holding content no
+longer first in extraction order. `TagRepo::settle`, last in every
+update, moves maps that read the old main file to a variant of it,
+writes the first map's content as the main file, and points that map's
+entries at it, in that order, so it can be stopped and run again. Every
+map reads the same tags before and after.
 
 ## Building (`h2 tags build`)
 
@@ -227,7 +280,13 @@ Unit tests: every kind of tag file round-trips and re-encodes to the same
 bytes; truncated, unknown-version and foreign files are refused; closure
 follows references and reports missing tags; loose tags built into a map
 and read back with a schema extract to the same canonical form and raw
-bytes; a repository keeps a variant and reads it for its map only.
+bytes; a repository keeps a variant and reads it for its map only. On
+invented maps: unchanged input plans nothing and writes nothing; a run
+stopped at a map redoes that map only, and a changed map file is taken
+whole alone; a moved layout hash takes that group's tags only, in every
+map; settling makes the first map's content the main file with every map
+reading what it read. The disc test extracts through the same plan and
+checks that planning again (`--update`) finds nothing to do.
 
 **Extraction and rebuild, V** (2026-11-17, lockout and `01a_tutorial`
 into one repository; every stored file read back and decoded equal):
