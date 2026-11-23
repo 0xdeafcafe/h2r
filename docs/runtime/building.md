@@ -132,14 +132,22 @@ The variables are listed under Cross-build target directories in [switches.md](s
 ## The `h2` command
 
 `.cargo/config.toml` defines an alias, so `cargo h2 <command>` is
-`cargo run --release -q -p cli -- <command>`. `cargo install --locked
---path crates/apps/cli` installs the same program as `h2`.
+`cargo run --release -q -p cli -- <command>`. The offline map, tag and
+script tools (`rules`, `variants`, `maps`, `tags`, `firefight`, `forge
+build`, `hud`, `shader` and the rest) are a second binary, `h2-tools`, that
+`h2` runs with the same words; `cargo h2-tools <tool>` builds and runs only
+that one ([cli-tools.md](cli-tools.md)). Install both, into one directory:
+
+```sh
+cargo install --locked --path crates/apps/cli
+cargo install --locked --path crates/apps/h2-tools
+```
 
 ```sh
 cargo h2 info                    # title, sections, libraries
 cargo h2 ls                      # files on the disc
-cargo h2 maps                    # map headers and tag counts
-cargo h2 tags <map> [group]      # tags in a map
+cargo h2-tools maps              # map headers and tag counts
+cargo h2-tools tags <map> [group] # tags in a map
 cargo h2 extract                 # copy the disc's files to disc/extracted/
 cargo h2 analyze                 # function discovery and coverage
 cargo h2 lift --stats            # lowering coverage

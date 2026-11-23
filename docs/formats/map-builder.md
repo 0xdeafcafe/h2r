@@ -326,7 +326,7 @@ own folder under the disc's file name, so the override serves it for that
 level:
 
 ```sh
-cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --map lockout
+cargo h2-tools map testbuild disc/halo2.iso --out ~/h2-testmaps --map lockout
 ```
 
 | Folder | What changed from the disc's map | Risk it tests |
@@ -352,9 +352,9 @@ Run each one (Lockout is multiplayer, so this starts a local Slayer game,
 H2_MAP_DIR=~/h2-testmaps/moved cargo h2 play disc/halo2.iso --level lockout
 H2_MAP_DIR=~/h2-testmaps/fresh cargo h2 play disc/halo2.iso --level lockout
 # only if fresh fails:
-cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-tail
+cargo h2-tools map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-tail
 H2_MAP_DIR=~/h2-testmaps/fresh-keep-tail cargo h2 play disc/halo2.iso --level lockout
-cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-header
+cargo h2-tools map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-header
 H2_MAP_DIR=~/h2-testmaps/fresh-keep-header cargo h2 play disc/halo2.iso --level lockout
 ```
 

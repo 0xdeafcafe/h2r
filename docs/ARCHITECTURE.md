@@ -186,6 +186,8 @@ the workspace checks are in
 | `app-icon` | apps | The app icon for the unbundled Mac windows (h2 play, h2-editor) from art/app-icon |  |  |
 | `boot` | apps | The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached | [BOOT.md](runtime/BOOT.md) | done |
 | `cli` (bin `h2`) | apps | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) † |  | done |
+| `cli-common` | apps | What the h2 and h2-tools binaries share: the default disc, opening it and its maps, and no-clobber exporter output (docs/runtime/cli-tools.md) | [cli-tools.md](runtime/cli-tools.md) |  |
+| `h2-tools` (bin `h2-tools`) | apps | The h2-tools binary: the offline map, tag and script tools `h2 <tool>` runs, linked without the game (docs/runtime/cli-tools.md) | [cli-tools.md](runtime/cli-tools.md) |  |
 | `h2host` (staticlib `h2host`) | apps | The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer | [tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md) | in progress |
 | `live-mirror` | apps | The editor's live object and player stream, sample store and interpolation |  |  |
 | `studio` (bin `h2-editor`) | apps | h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists | [editor.md](editor/editor.md) | in progress |

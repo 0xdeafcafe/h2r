@@ -132,8 +132,10 @@ the workflow (`BUCK2_TAG`, `BUCK2_SHA256`, installed by
 - `rules` runs `python3 scripts/update-buck.py --check` and `git diff
   --exit-code`, so a Cargo change without its regenerated `BUCK` files and
   `third-party/rust/` fails.
-- `build` runs `buck2 build -c build_mode.mode=release //crates/apps/cli:h2`,
-  the Linux and SteamOS desktop binary ([linux.md](../runtime/linux.md)).
+- `build` runs `buck2 build -c build_mode.mode=release //crates/apps/cli:h2
+  //crates/apps/h2-tools:h2-tools`, the Linux and SteamOS desktop binary
+  and the tools it runs ([linux.md](../runtime/linux.md),
+  [cli-tools.md](../runtime/cli-tools.md)).
 
 The game module (`//platform/linux:module`) and the SteamOS package
 (`//platform/steamos:run`) read the disc, so CI never builds them.

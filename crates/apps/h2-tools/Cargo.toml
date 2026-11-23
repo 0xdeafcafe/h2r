@@ -1,0 +1,53 @@
+[package]
+name = "h2-tools"
+description = "The h2-tools binary: the offline map, tag and script tools `h2 <tool>` runs, linked without the game (docs/runtime/cli-tools.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "h2-tools"
+path = "src/main.rs"
+
+# Only crates that read or write map, tag, script and disc files: no
+# runtime, renderer, audio or agent server (docs/runtime/cli-tools.md).
+[dependencies]
+anyhow.workspace = true
+# The default disc, disc maps and no-clobber output, shared with h2.
+cli-common = { path = "../cli-common" }
+content.workspace = true
+# `h2 firefight kit`: the disc's map region, image or extracted folder.
+vfs.workspace = true
+map.workspace = true
+tags.workspace = true
+xiso.workspace = true
+xbe.workspace = true
+hs.workspace = true
+shaders = { path = "../../formats/shaders" }
+# `h2 extract-shaders`: the corpus's content hashes.
+sha2.workspace = true
+serde_json.workspace = true
+# `h2 firefight kit` (docs/game/firefight.md).
+firefight-kit = { path = "../../tools/firefight-kit" }
+# `h2 testmap`, `h2 firefight kit --probe`, `h2 forge build|check`.
+scenario-edit = { path = "../../tools/scenario-edit" }
+forge-doc.workspace = true
+forge-build.workspace = true
+# `h2 hud preview` and `h2 hud sheet` (docs/game/hud-kit.md).
+hud-kit = { path = "../../tools/hud-kit" }
+# `h2 superbounce scan` (docs/game/superbounce.md, "Spots in the geometry").
+superbounce = { path = "../../live/superbounce" }
+# `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
+rules.workspace = true
+settings = { path = "../../formats/settings" }
+# `h2 variants port`: self-contained .h2variant files (variants_cmd.rs).
+variants = { path = "../../formats/variants" }
+# `h2 rules lsp`: the stdio language server over `rules::ide`.
+lsp-server.workspace = true
+lsp-types.workspace = true
+# `h2 rules editors install` downloads the extensions' release.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[lints]
+workspace = true

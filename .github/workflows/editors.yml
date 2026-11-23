@@ -5,7 +5,7 @@ name: Editors
 # language server they start. A push to master also attaches the .vsix and
 # the Zed extension to the rolling `editors-latest` release, which
 # `h2 rules editors install` downloads when no local build exists
-# (crates/apps/cli/src/rules_editors.rs, EDITORS_RELEASE).
+# (crates/apps/h2-tools/src/rules_editors.rs, EDITORS_RELEASE).
 
 on:
   push:
@@ -13,15 +13,15 @@ on:
     paths:
       - "editors/**"
       - "crates/formats/rules/src/ide/**"
-      - "crates/apps/cli/src/rules_lsp.rs"
-      - "crates/apps/cli/src/rules_editors.rs"
+      - "crates/apps/h2-tools/src/rules_lsp.rs"
+      - "crates/apps/h2-tools/src/rules_editors.rs"
       - ".github/workflows/editors.yml"
   pull_request:
     paths:
       - "editors/**"
       - "crates/formats/rules/src/ide/**"
-      - "crates/apps/cli/src/rules_lsp.rs"
-      - "crates/apps/cli/src/rules_editors.rs"
+      - "crates/apps/h2-tools/src/rules_lsp.rs"
+      - "crates/apps/h2-tools/src/rules_editors.rs"
       - ".github/workflows/editors.yml"
   workflow_dispatch:
 
@@ -140,7 +140,7 @@ jobs:
       - name: rules::ide
         run: cargo test --locked -p rules --lib ide
       - name: h2 rules lsp and h2 rules editors
-        run: cargo test --locked -p cli --no-default-features --features host --bin h2 rules_
+        run: cargo test --locked -p h2-tools --bin h2-tools rules_
 
   # Master only: the rolling release `h2 rules editors install` downloads
   # from. The tag moves to this commit; the assets are replaced.

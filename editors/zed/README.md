@@ -8,10 +8,12 @@ go-to-definition, references, rename, code actions and formatting from
 
 ## Install
 
-1. Install `h2`, from an h2recomp checkout:
+1. Install `h2` and the `h2-tools` it runs the language server from, from
+   an h2recomp checkout:
 
    ```sh
    cargo install --locked --path crates/apps/cli
+   cargo install --locked --path crates/apps/h2-tools
    ```
 
 2. Install Rust through rustup with the WebAssembly target Zed builds

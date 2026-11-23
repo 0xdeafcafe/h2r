@@ -1,0 +1,21 @@
+[package]
+name = "cli-common"
+description = "What the h2 and h2-tools binaries share: the default disc, opening it and its maps, and no-clobber exporter output (docs/runtime/cli-tools.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+map.workspace = true
+xiso.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true

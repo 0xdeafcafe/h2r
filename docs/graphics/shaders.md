@@ -20,7 +20,7 @@ written for NV2A features (vertex microcode, register combiners, texture-stage
 ## What Halo 2 stores
 
 Everything here was checked against the retail disc (cache build
-`02.09.27.09809`, all 30 maps). `h2 extract-shaders` (`crates/apps/cli/src/extract_shaders.rs`) reproduces it,
+`02.09.27.09809`, all 30 maps). `h2 extract-shaders` (`crates/apps/h2-tools/src/extract_shaders.rs`) reproduces it,
 reading the maps with `crates/formats/map`. It
 reads your own disc image at run time and writes the corpus, a manifest
 and a provenance record to a directory you choose (keep it in `$TMPDIR`; no

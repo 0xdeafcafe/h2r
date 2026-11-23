@@ -62,7 +62,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("looks") {
-        return crate::forge_looks::run(args[1..].to_vec());
+        // It reads the disc the way Live's art extractor does
+        // (crates/apps/cli/src/forge_looks.rs), so it runs in h2.
+        bail!("h2 forge looks runs in h2 itself: h2 forge looks [--disc <iso>] [--json]");
     }
     let args = parse(args)?;
     let file = File::open(&args.document)

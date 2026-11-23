@@ -53,6 +53,7 @@ Put the image in `disc/`, which is git-ignored. `cp -c` clones it without using 
 git clone https://github.com/0xdeafcafe/h2r && cd h2r
 mkdir -p disc && cp -c ~/Downloads/your.iso disc/halo2.iso
 cargo install --locked --path crates/apps/cli
+cargo install --locked --path crates/apps/h2-tools
 ```
 
 Then play:

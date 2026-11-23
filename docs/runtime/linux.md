@@ -18,8 +18,12 @@ Build `h2` with [Buck2](https://buck2.build) inside the
 udev, Vulkan, Wayland and X11 libraries, and the module toolchain.
 
 ```sh
-devenv shell -- buck2 build -c build_mode.mode=release //crates/apps/cli:h2 --show-output
+devenv shell -- buck2 build -c build_mode.mode=release //crates/apps/cli:h2 //crates/apps/h2-tools:h2-tools --show-output
 ```
+
+`h2` runs the map, tag and script tools from the `h2-tools` binary in its
+own directory ([cli-tools.md](cli-tools.md)), so copy both outputs to one
+directory.
 
 Inside devenv, `build_mode.steamos` is on by default: `h2` links against
 the Steam Runtime sysroot with the system dynamic loader

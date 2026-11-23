@@ -404,7 +404,7 @@ fn extract(iso_path: &Path, out: &Path, force: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let entries = x.entries().map_err(|e| e.to_string())?;
     let mut prov = String::new();
-    let _ = writeln!(prov, "tool\tcli/src/extract_shaders.rs");
+    let _ = writeln!(prov, "tool\th2-tools/src/extract_shaders.rs");
     let _ = writeln!(prov, "iso_size\t{iso_len}");
     let _ = writeln!(prov, "iso_partition_offset\t{:#x}", x.partition_offset());
     if let Some(xbe) = entries

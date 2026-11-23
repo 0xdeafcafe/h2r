@@ -1449,7 +1449,7 @@ Tooling:
   script into the paired game ("Reloading a running script"). The blob
   carries an optional line table for messages; the VM ignores it.
 - **Command line**: `h2 rules` is pure over its inputs and needs no
-  disc (`crates/apps/cli/src/rules_cmd.rs`).
+  disc (`crates/apps/h2-tools/src/rules_cmd.rs`).
   - `h2 rules check <file.rules>` compiles and verifies. Every error
     `rules::diagnose` finds prints as `file:line:col: message [code]`,
     and the exit status is 1; warnings print the same way with
@@ -1481,7 +1481,7 @@ Tooling:
     scripts (`builtin::examples`, as `example <key>: <name>`), or prints
     one by name, engine index or key.
   - `h2 rules lsp` is a language server on stdin and stdout
-    (`crates/apps/cli/src/rules_lsp.rs`, over `lsp-server`). It keeps
+    (`crates/apps/h2-tools/src/rules_lsp.rs`, over `lsp-server`). It keeps
     each open document and applies incremental changes in UTF-16
     positions (`ide::offset`), publishes diagnostics on open and change
     (each with its code and a `codeDescription` link to
@@ -1497,7 +1497,7 @@ Tooling:
   - `h2 rules editors [status|install [vscode|zed] [--build]]` installs
     the VS Code extension and prints the Zed steps, or says what is
     installed and whether `h2 rules lsp` starts
-    (`crates/apps/cli/src/rules_editors.rs`;
+    (`crates/apps/h2-tools/src/rules_editors.rs`;
     [rules-editors.md](../editor/rules-editors.md)).
 - **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
   is pure over source text, and the language server, Live's

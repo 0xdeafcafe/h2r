@@ -400,7 +400,7 @@ cargo run -p tags --example verify_disc -- disc/halo2.iso
 Dump one tag to the terminal, quoting its full cache path:
 
 ```sh
-cargo h2 tag <map> '<folder>\<subfolder>\<tag-name>' scnr --disc <disc.iso>
+cargo h2-tools tag <map> '<folder>\<subfolder>\<tag-name>' scnr --disc <disc.iso>
 ```
 
 `h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]`
