@@ -1,5 +1,5 @@
 //! The bounce search's report (`bounces.json`, `bounces.md`,
-//! `bounces.verified`; docs/runtime/bounce-search.md, "The report"):
+//! `bounces.verified`; docs/runtime/bounce-search.md, "The command"):
 //! every run's trials pooled, each site's bounce region, its window and
 //! what the window is to a player, and the sites ranked.
 
