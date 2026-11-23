@@ -16,15 +16,6 @@ use variants::save::SaveStore;
 use super::bundle::Bundle;
 use super::store::Store;
 
-/// `variants.port.script`'s value: `keep` (0) or `builtin` (1).
-pub fn script_setting(v: i64) -> PortScript {
-    if v == 1 {
-        PortScript::Builtin
-    } else {
-        PortScript::Keep
-    }
-}
-
 /// `v` as a bundle named `name` with `description`, its script per
 /// `script` (`variants::portable::port`), or why not.
 pub fn port(

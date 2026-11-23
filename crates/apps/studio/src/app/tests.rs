@@ -366,17 +366,16 @@ fn the_variant_tool_builds_from_the_fallback_and_undoes_through_actions() {
         app.variants.as_ref().unwrap().current().unwrap().get(id),
         Some(was)
     );
-    // Our options (the extension block), then undo.
-    let low = variants::ext::Ext {
-        gravity: 50,
-        ..Default::default()
-    };
-    app.dispatch(Action::SetVariantExt(low));
-    assert_eq!(app.variants.as_ref().unwrap().current().unwrap().ext(), low);
+    // The extras are settings rows, then undo.
+    let before = app.variants.as_ref().unwrap().current().unwrap().ext();
+    app.dispatch(Action::SetVariantRow("gravity".into(), 50));
+    let after = app.variants.as_ref().unwrap().current().unwrap().ext();
+    assert_eq!(after.gravity, 50);
+    assert_eq!(after.script, before.script);
     app.dispatch(Action::Undo);
     assert_eq!(
         app.variants.as_ref().unwrap().current().unwrap().ext(),
-        variants::ext::Ext::default()
+        before
     );
 }
 

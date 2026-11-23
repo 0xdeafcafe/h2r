@@ -382,11 +382,12 @@ fn option_row(ui: &Ui, o: &OptionView) -> Option<i32> {
     }
 }
 
-/// Our options the record has no field for, in its extension block
-/// (docs/game/game-options.md section 3). Only the ones the game applies
-/// are shown (gravity, damage, shield and health, unlimited grenades);
-/// the rest arrive with their slices. Team count (setting 93) is a record field with no retail row,
-/// shown here too. Returns the action for what the user changed.
+/// The `hx` extras the settings table has rows for (gravity, damage,
+/// shield, health, unlimited grenades; docs/game/game-options.md section
+/// 3) and the team count (setting 93, also a table row). Each is edited
+/// as its settings row ([`Action::SetVariantRow`]), the way a script's
+/// `settings` block names it; the extras no row stores are not shown.
+/// Returns the action for what the user changed.
 fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
     if !ui.collapsing_header("More options (h2recomp)##variant-ext", TreeNodeFlags::NONE) {
         return None;
@@ -401,7 +402,7 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
         );
     }
     let now = v.ext();
-    let mut next = now;
+    let mut out = None;
     let flags = TableFlags::ROW_BG | TableFlags::BORDERS_INNER_V;
     let _t = ui.begin_table_with_flags("##variant-ext-table", 2, flags)?;
     ui.table_setup_column(
@@ -414,56 +415,61 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
         TableColumnFlags::NONE,
         Some(TableColumnWidth::Stretch(1.0)),
     );
-    ui.table_next_row();
-    ui.table_next_column();
-    ui.align_text_to_frame_padding();
-    ui.text("Gravity (%)");
-    ui.set_item_tooltip(
-        "Gravity for everyone, as a percent of the game's. The Low Gravity \
-         skull halves it again. Applied by the host and on Live (not on \
-         System Link, where every machine plays the game's own).",
-    );
-    ui.table_next_column();
-    ui.set_next_item_width(-1.0);
-    let mut g = i32::from(now.gravity);
     let (lo, hi) = (*ext::GRAVITY.start(), *ext::GRAVITY.end());
-    if ui.slider_i32("##ext-gravity", &mut g, i32::from(lo), i32::from(hi)) {
-        next.gravity = g.clamp(lo.into(), hi.into()) as u16;
-    }
-    let (lo, hi) = (*ext::PERCENT.start(), *ext::PERCENT.end());
-    for (label, id, tip, value) in [
+    let (plo, phi) = (*ext::PERCENT.start(), *ext::PERCENT.end());
+    for (row, label, id, tip, value, range) in [
         (
+            "gravity",
+            "Gravity (%)",
+            "##ext-gravity",
+            "Gravity for everyone, as a percent of the game's. The Low Gravity \
+             skull halves it again. Applied by the host and on Live (not on \
+             System Link, where every machine plays the game's own).",
+            i32::from(now.gravity),
+            (lo, hi),
+        ),
+        (
+            "damage",
             "Damage (%)",
             "##ext-damage",
-            "Damage every player deals, as a percent of the game's.",
-            &mut next.damage,
+            "Damage every player deals, as a percent of the game's. Players \
+             only (vehicles keep theirs). Applied by the host and its guests \
+             on Live (not on System Link).",
+            i32::from(now.damage),
+            (plo, phi),
         ),
         (
+            "shield",
             "Shields (%)",
             "##ext-shield",
-            "How much every player's shield holds, as a percent of the game's.",
-            &mut next.shield,
+            "How much every player's shield holds, as a percent of the game's. \
+             Players only (vehicles keep theirs). Applied by the host and its \
+             guests on Live (not on System Link).",
+            i32::from(now.shield),
+            (plo, phi),
         ),
         (
+            "health",
             "Health (%)",
             "##ext-health",
-            "How much every player's body holds, as a percent of the game's.",
-            &mut next.health,
+            "How much every player's body holds, as a percent of the game's. \
+             Players only (vehicles keep theirs). Applied by the host and its \
+             guests on Live (not on System Link).",
+            i32::from(now.health),
+            (plo, phi),
         ),
     ] {
         ui.table_next_row();
         ui.table_next_column();
         ui.align_text_to_frame_padding();
         ui.text(label);
-        ui.set_item_tooltip(format!(
-            "{tip} Players only (vehicles keep theirs). Applied by the host and \
-             its guests on Live (not on System Link)."
-        ));
+        ui.set_item_tooltip(tip);
         ui.table_next_column();
         ui.set_next_item_width(-1.0);
-        let mut x = i32::from(*value);
-        if ui.slider_i32(id, &mut x, i32::from(lo), i32::from(hi)) {
-            *value = x.clamp(lo.into(), hi.into()) as u16;
+        let mut x = value;
+        if ui.slider_i32(id, &mut x, i32::from(range.0), i32::from(range.1)) {
+            let x = x.clamp(range.0.into(), range.1.into());
+            out = Some(Action::SetVariantRow(row.into(), x));
         }
     }
     ui.table_next_row();
@@ -477,13 +483,13 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
     ui.table_next_column();
     let mut on = now.unlimited_grenades;
     if ui.checkbox("##ext-grenades", &mut on) {
-        next.unlimited_grenades = on;
+        out = Some(Action::SetVariantRow(
+            "unlimited_grenades".into(),
+            i32::from(on),
+        ));
     }
     let teams = team_count_row(ui, v);
-    if next != now {
-        return Some(Action::SetVariantExt(next));
-    }
-    teams.map(|t| Action::SetSetting(record::TEAM_COUNT, t))
+    out.or_else(|| teams.map(|t| Action::SetVariantRow("team_count".into(), t)))
 }
 
 /// Team count (setting 93, `+0xb4`): how many teams the game makes,

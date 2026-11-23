@@ -896,37 +896,6 @@ pub static THEATER_RING_MIB: Def = Def {
     menu: None,
 };
 
-/// How saved variants are ported into the game-variant store at boot
-/// (`crate::game_variants::port`): `keep` their retail rules, or attach the
-/// built-in script of their engine.
-pub static VARIANTS_PORT_SCRIPT: Def = Def {
-    key: "variants.port.script",
-    label: "Ported Variants' Script",
-    help: "What a saved variant ported into the game-variant store at boot runs: \
-           keep (its engine's own rules) or builtin (the engine's built-in rules script).",
-    kind: Kind::Choice(&[
-        Choice {
-            value: 0,
-            name: "keep",
-            label: "Keep",
-        },
-        Choice {
-            value: 1,
-            name: "builtin",
-            label: "Built-in Script",
-        },
-    ]),
-    default: Value::Int(0),
-    env: Some("H2_VARIANTS_PORT_SCRIPT"),
-    flag: None,
-    aliases: &[],
-    parse_env: None,
-    apply: Apply::Restart,
-    scope: Scope::Host,
-    tier: Tier::User,
-    menu: None,
-};
-
 /// Whether the superbounce HUD's tutorial steps have been seen
 /// (docs/game/superbounce.md, "The superbounce game type").
 /// `superbounce_hud` sets it when the last step closes; `false` shows the
@@ -1033,7 +1002,6 @@ pub static ALL: &[&Def] = &[
     &COOP_JOIN_IN_PROGRESS,
     &COOP_LOOK_PREDICTION,
     &THEATER_RING_MIB,
-    &VARIANTS_PORT_SCRIPT,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
@@ -1373,11 +1341,9 @@ mod tests {
                 ("H2_VOICE_INPUT_VOLUME", "50"),
                 ("H2_VOICE_OUTPUT_VOLUME", "80"),
                 ("H2_THEATER_RING_MIB", "128"),
-                ("H2_VARIANTS_PORT_SCRIPT", "builtin"),
             ],
         );
         assert_eq!(s.get(THEATER_RING_MIB.key), Some(Value::Int(128)));
-        assert_eq!(s.get(VARIANTS_PORT_SCRIPT.key), Some(Value::Int(1)));
         {
             use crate::voice_settings::*;
             let h = VoiceHandles::new(&s);

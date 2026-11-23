@@ -926,7 +926,7 @@ mod tests {
 
     #[test]
     fn eligibility_follows_the_scripts_capabilities() {
-        let plain = portable::port(&fists(), None, None, PortScript::Keep).unwrap();
+        let plain = portable::Bundle::new(&fists(), "Fists", "", None).unwrap();
         assert_eq!(eligible(&plain), ["custom", "hopper", "ranked"]);
         let slayer = portable::port(&fists(), None, None, PortScript::Builtin).unwrap();
         assert_eq!(eligible(&slayer), ["custom", "hopper", "ranked"]);

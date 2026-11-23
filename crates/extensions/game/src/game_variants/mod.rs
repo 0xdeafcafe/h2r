@@ -66,8 +66,6 @@ pub struct Boot {
     /// saves `<data>/disk/Partition1/UDATA/4D530064`.
     pub data_root: PathBuf,
     pub live: Option<Arc<live_hle::Hle>>,
-    /// `variants.port.script`.
-    pub port: port::PortScript,
 }
 
 /// Opens the store, ports the saved variants on a thread of its own, and
@@ -94,7 +92,8 @@ pub fn install(registry: &mut hooks::Registry, boot: Boot) -> anyhow::Result<boo
         variants::save::SaveStore::root_under(&boot.data_root),
         None,
     );
-    let script = boot.port;
+    // Every saved variant is ported with its engine's built-in script.
+    let script = port::PortScript::Builtin;
     let to = store();
     let _ = std::thread::Builder::new()
         .name("h2-game-variants-port".into())

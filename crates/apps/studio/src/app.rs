@@ -282,8 +282,10 @@ pub enum Action {
     CopyBuiltin(String),
     SetVariantName(String),
     SetSetting(SettingId, i32),
-    /// Set the open variant's h2recomp options (its extension block).
-    SetVariantExt(variants::ext::Ext),
+    /// Set one row of the script settings table on the open variant
+    /// (`variants::panel::VariantEditor::set_row`): the `hx` extras are
+    /// edited as these rows.
+    SetVariantRow(String, i32),
     /// Write the open variant to the save storage.
     SaveVariant,
     /// Back to the variant as last loaded or saved.
@@ -1276,7 +1278,7 @@ impl App {
             | Action::CopyBuiltin(_)
             | Action::SetVariantName(_)
             | Action::SetSetting(..)
-            | Action::SetVariantExt(_)
+            | Action::SetVariantRow(..)
             | Action::SaveVariant
             | Action::RevertVariant
             | Action::DeleteVariant
@@ -1566,7 +1568,10 @@ impl App {
                 .set_setting(id, v)
                 .map(|()| None)
                 .map_err(|e| e.to_string()),
-            Action::SetVariantExt(x) => e.set_ext(&x).map(|()| None).map_err(|e| e.to_string()),
+            Action::SetVariantRow(name, value) => e
+                .set_row(&name, value)
+                .map(|()| None)
+                .map_err(|e| e.to_string()),
             Action::SaveVariant => e.save().map(|()| None).map_err(|e| e.to_string()),
             Action::RevertVariant => {
                 e.revert();

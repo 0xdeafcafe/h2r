@@ -37,7 +37,6 @@ An `impl.` name is an implementation switch
 | `H2_MAPPACK_ISO`, `H2_MAPPACK_DATA` | Editor Map Pack ISO override and installed Map Pack test-data root (`crates/tools/editor-core/src/mappack.rs`, `crates/apps/studio/src/app/map_pack_tests.rs`). |
 | `H2_IMPORT_JOBS` | Parallel jobs for Halo 1 import (`crates/apps/cli/src/h1_import.rs`). |
 | `H2_CLOUD_SAVES=0` | Keep saves on this machine during Live play (`crates/apps/cli/src/play_cloud.rs`). |
-| `variants.port.script`, `H2_VARIANTS_PORT_SCRIPT` | How saved variants are ported into the game-variant store at boot: `keep` (default; their engine's own rules) or `builtin` (the engine's built-in rules script named and carried). ([Live game variants in the game](../game/rules-engine.md#live-game-variants-in-the-game)) |
 | `game-variants` | On by default; `-game-variants` turns it off. Writes a game-variant store variant's options and script reference on the game at its start ([Live game variants in the game](../game/rules-engine.md#live-game-variants-in-the-game)). |
 | `H2_LIVE_SERVER` | Service selected by `h2 play --live`. Use a URL or `off` ([app.md](app.md)). |
 | `forge` | On by default; `-forge` turns it off. The [local Forge session](../game/forge-design.md#the-ui) on offline multiplayer maps: D-pad Up or Tab toggles the monitor. The party lobby has a FORGE mode, and the Xbox Live menu a Forge row, while it is on ([the lobbies](../game/forge-firefight-ui.md#the-lobbies)); `-forge` removes both. Light hosts, film replays and lockstep runs never have it. |

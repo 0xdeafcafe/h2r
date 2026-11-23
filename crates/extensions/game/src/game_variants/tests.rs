@@ -48,7 +48,7 @@ fn record(name: &str, score: i32) -> GameVariant {
 
 /// `record(name, score)` as a bundle, carrying `blob` when given.
 fn bundle(name: &str, score: i32, blob: Option<Vec<u8>>) -> Bundle {
-    let script = blob.map_or(PortScript::Keep, PortScript::Ir);
+    let script = blob.map_or(PortScript::Builtin, PortScript::Ir);
     variants::portable::port(&record(name, score), None, Some("Made by a player"), script).unwrap()
 }
 
@@ -143,7 +143,7 @@ fn saved_variants_port_once_and_the_saves_are_left_alone() {
     let saves = SaveStore::new(&saves_root, None);
 
     let (mut s, _) = Store::open(&store_root);
-    let report = port::port_saves(&mut s, &saves, &PortScript::Keep);
+    let report = port::port_saves(&mut s, &saves, &PortScript::Builtin);
     assert_eq!(report.ported, 2, "{report:?}");
     assert_eq!(report.skipped, 0);
     assert_eq!(report.refused.len(), 1, "{report:?}");
@@ -157,12 +157,12 @@ fn saved_variants_port_once_and_the_saves_are_left_alone() {
     // The next boot: the bundles are on disk, nothing is ported again.
     let (mut again, _) = Store::open(&store_root);
     assert_eq!(again.entries().len(), 2);
-    let report = port::port_saves(&mut again, &saves, &PortScript::Keep);
+    let report = port::port_saves(&mut again, &saves, &PortScript::Builtin);
     assert_eq!((report.ported, report.skipped), (0, 2), "{report:?}");
 
     // A save edited since is a new source.
     write_save(&saves_root, "AAAA", &record("Fast", 30));
-    let report = port::port_saves(&mut again, &saves, &PortScript::Keep);
+    let report = port::port_saves(&mut again, &saves, &PortScript::Builtin);
     assert_eq!((report.ported, report.skipped), (1, 1), "{report:?}");
 
     // `builtin` attaches the engine's built-in script.

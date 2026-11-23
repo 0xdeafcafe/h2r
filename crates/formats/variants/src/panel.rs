@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use crate::ext::{Ext, Mode};
+use crate::ext::Mode;
 use crate::portable::{self, PortableError};
 use crate::record::{GameType, GameVariant, RecordError, SettingId};
 use crate::save::{SaveError, SaveStore, SavedVariant};
@@ -53,8 +53,8 @@ pub enum EditError {
 enum Target {
     Name,
     Setting(SettingId),
-    /// One extension option (its index in [`ext_changed`]).
-    Ext(u8),
+    /// One row of the script settings table.
+    Row(u16),
     /// One of the script's options (its index in the IR): dragging it is
     /// one step, and a different option is another.
     ScriptOption(u8),
@@ -63,26 +63,11 @@ enum Target {
 impl Target {
     /// Runs of edits to the same target merge into one undo step.
     fn merges(self) -> bool {
-        matches!(self, Target::Name | Target::Ext(_) | Target::ScriptOption(_))
+        matches!(
+            self,
+            Target::Name | Target::Row(_) | Target::ScriptOption(_)
+        )
     }
-}
-
-/// Which extension option differs between `a` and `b` (the first one).
-fn ext_changed(a: &Ext, b: &Ext) -> u8 {
-    let fields = [
-        a.gravity != b.gravity,
-        a.damage != b.damage,
-        a.shield != b.shield,
-        a.health != b.health,
-        a.speed != b.speed,
-        a.unlimited_grenades != b.unlimited_grenades,
-        a.primary != b.primary,
-        a.secondary != b.secondary,
-        a.team_size != b.team_size,
-        a.superbounce != b.superbounce,
-        a.script != b.script,
-    ];
-    fields.iter().position(|&d| d).unwrap_or(fields.len()) as u8
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +104,9 @@ impl VariantEditor {
                 let mut v = schema
                     .build(b)
                     .unwrap_or_else(|_| schema.new_variant(b.game_type));
+                // A built-in plays its engine's built-in script: the record
+                // names it, so a copy of it does too.
+                let _ = portable::attach_builtin(&mut v);
                 v.set_builtin_flag(true);
                 v
             })
@@ -217,6 +205,14 @@ impl VariantEditor {
         });
     }
 
+    /// Attaches the engine's built-in script to `v` when it names none
+    /// ([`portable::attach_builtin`]); says why when it cannot.
+    fn attach(&mut self, v: &mut GameVariant) {
+        if let Err(err) = portable::attach_builtin(v) {
+            self.status = Some((true, format!("no script attached: {err}")));
+        }
+    }
+
     pub fn open_builtin(&mut self, i: usize) {
         if let Some(v) = self.builtins.get(i).cloned() {
             self.copy_name = format!("{} copy", strip_icon(&v.name()));
@@ -226,8 +222,16 @@ impl VariantEditor {
 
     pub fn open_saved(&mut self, i: usize) {
         if let Some(s) = self.saved.get(i) {
-            let (dir, v, signed) = (s.dir.clone(), s.contents.variant.clone(), s.contents.signed);
+            let (dir, mut v, signed) =
+                (s.dir.clone(), s.contents.variant.clone(), s.contents.signed);
+            // A save with no script is opened with its engine's built-in
+            // attached, as an edit that is not saved yet.
+            let base = v.clone();
+            self.attach(&mut v);
             self.open(Origin::Saved(dir), v);
+            if let Some(d) = self.doc.as_mut() {
+                d.base = base;
+            }
             if !signed {
                 self.status = Some((
                     true,
@@ -238,11 +242,36 @@ impl VariantEditor {
         }
     }
 
-    /// A new, unsaved variant of `ty` with the type's defaults.
+    /// A new, unsaved variant of `ty`: the record of its engine's built-in
+    /// script ([`portable::record_for`]), named "New <type>". A type with
+    /// no built-in script gets the type's defaults, and the status says it
+    /// has no script.
     pub fn new_variant(&mut self, ty: GameType) {
-        let mut v = self.schema.new_variant(ty);
-        let _ = v.set_name(&format!("New {}", ty.label()));
-        self.open(Origin::New, v);
+        let name = format!("New {}", ty.label());
+        let scripted = u8::try_from(ty.engine())
+            .ok()
+            .and_then(rules::builtin::builtin)
+            .map(|src| {
+                let ir = rules::compile(src).map_err(|e| EditError::ScriptOption(e.to_string()))?;
+                let mut v = portable::record_for_named(&ir, &name, &[])?;
+                v.set_builtin_flag(false);
+                Ok::<_, EditError>(v)
+            });
+        match scripted {
+            Some(Ok(v)) => self.open(Origin::New, v),
+            other => {
+                let mut v = self.schema.new_variant(ty);
+                let _ = v.set_name(&name);
+                self.open(Origin::New, v);
+                self.status = Some((
+                    true,
+                    match other {
+                        Some(Err(err)) => format!("no script attached: {err}"),
+                        _ => format!("{} has no built-in script; the variant has none", ty.label()),
+                    },
+                ));
+            }
+        }
     }
 
     /// A new, unsaved variant of a script: the record
@@ -312,11 +341,26 @@ impl VariantEditor {
         self.edit(Target::Name, |v| v.set_name(name))
     }
 
-    /// Sets our extension options (docs/game/game-options.md section 3).
-    /// The game's own rules clear the block.
-    pub fn set_ext(&mut self, e: &Ext) -> Result<(), EditError> {
-        let now = self.current().map(GameVariant::ext).unwrap_or_default();
-        self.edit(Target::Ext(ext_changed(&now, e)), |v| v.set_ext(e))
+    /// Sets the settings-table row `name` (`rules::settings::TABLE`: what
+    /// a script's `settings` block names, including the `hx` extras
+    /// gravity, damage, shield, health and unlimited grenades) to `value`.
+    /// A run of edits to one row is one undo step. Refused as a script's
+    /// setting is: unknown, not on this carrier, out of range.
+    pub fn set_row(&mut self, name: &str, value: i32) -> Result<(), EditError> {
+        let Some((index, _)) = rules::settings::named(name) else {
+            return Err(EditError::ScriptOption(format!("no setting named {name}")));
+        };
+        let read_only = self.is_read_only();
+        let doc = self.doc.as_mut().ok_or(EditError::NoVariant)?;
+        if read_only {
+            return Err(EditError::ReadOnly);
+        }
+        let mut next = doc.variant.clone();
+        portable::set_row(&mut next, index, value)?;
+        self.edit(Target::Row(index), |v| {
+            *v = next;
+            Ok(())
+        })
     }
 
     /// Sets option `index` of the script `ir` (which the open variant
@@ -436,6 +480,7 @@ impl VariantEditor {
     pub fn import(&mut self, text: &str) -> Result<(), EditError> {
         let (mut v, problems) = portable::import(text)?;
         v.set_builtin_flag(false);
+        self.attach(&mut v);
         self.open(Origin::New, v);
         if !problems.is_empty() {
             self.status = Some((
@@ -779,51 +824,70 @@ mod tests {
     }
 
     #[test]
-    fn extension_options_edit_and_undo_per_option() {
+    fn extras_edit_as_settings_rows_and_undo_per_row() {
         let mut e = VariantEditor::new(schema(), None);
         e.open_builtin(0);
-        assert!(matches!(
-            e.set_ext(&Ext {
-                gravity: 50,
-                ..Ext::default()
-            }),
-            Err(EditError::ReadOnly)
-        ));
+        assert!(matches!(e.set_row("gravity", 50), Err(EditError::ReadOnly)));
         e.new_variant(GameType::Slayer);
+        let start = e.current().unwrap().ext();
+        assert_eq!(start.script.mode, Mode::Rules);
         // Dragging gravity is one step; then damage is another.
         for g in [90, 70, 50] {
-            e.set_ext(&Ext {
-                gravity: g,
-                ..Ext::default()
-            })
-            .unwrap();
+            e.set_row("gravity", g).unwrap();
         }
-        let both = Ext {
-            gravity: 50,
-            damage: 200,
-            ..Ext::default()
-        };
-        e.set_ext(&both).unwrap();
-        assert_eq!(e.current().unwrap().ext(), both);
+        e.set_row("damage", 200).unwrap();
+        let now = e.current().unwrap().ext();
+        assert_eq!((now.gravity, now.damage), (50, 200));
+        assert_eq!(now.script, start.script, "the script reference stays");
         assert!(e.undo());
         assert_eq!(e.current().unwrap().ext().gravity, 50);
         assert_eq!(e.current().unwrap().ext().damage, 100);
         assert!(e.undo());
-        assert_eq!(e.current().unwrap().ext(), Ext::default());
-        assert!(e.current().unwrap().ext_block().iter().all(|&b| b == 0));
-        // Out of range is refused and changes nothing.
+        assert_eq!(e.current().unwrap().ext(), start);
+        // Out of range, an unknown row and a row of another carrier are
+        // refused and change nothing.
+        assert!(matches!(e.set_row("gravity", 1), Err(EditError::Import(_))));
         assert!(matches!(
-            e.set_ext(&Ext {
-                gravity: 1,
-                ..Ext::default()
-            }),
-            Err(EditError::Record(RecordError::ExtRange("gravity")))
+            e.set_row("nope", 1),
+            Err(EditError::ScriptOption(_))
         ));
+        assert!(matches!(
+            e.set_row("juggernaut_movement", 1),
+            Err(EditError::Import(_))
+        ));
+        assert_eq!(e.current().unwrap().ext(), start);
         // It travels through export and import.
-        e.set_ext(&both).unwrap();
+        e.set_row("gravity", 50).unwrap();
+        let want = e.current().unwrap().ext();
         let text = e.export_current().unwrap();
         e.import(&text).unwrap();
-        assert_eq!(e.current().unwrap().ext(), both);
+        assert_eq!(e.current().unwrap().ext(), want);
+    }
+
+    #[test]
+    fn every_way_in_gives_a_scripted_record() {
+        let mut e = VariantEditor::new(schema(), None);
+        let named = |e: &VariantEditor| e.script_prefix().is_some();
+        let builtin = rules::compile(rules::builtin::SLAYER).unwrap();
+        let prefix: [u8; 8] = builtin.id().0[..8].try_into().unwrap();
+        // New.
+        e.new_variant(GameType::Slayer);
+        assert!(named(&e) && e.script_prefix() == Some(prefix));
+        assert_eq!(
+            e.current().unwrap().ext().script.options,
+            builtin.default_options()
+        );
+        // Open a built-in, then copy it.
+        e.open_builtin(0);
+        assert_eq!(e.script_prefix(), Some(prefix));
+        e.copy_builtin("Mine").unwrap();
+        assert_eq!(e.script_prefix(), Some(prefix));
+        // Import a version-1 file of a record with no script.
+        let mut plain = GameVariant::blank(GameType::Slayer);
+        plain.set_name("Plain").unwrap();
+        e.import(&portable::export(&plain)).unwrap();
+        assert_eq!(e.script_prefix(), Some(prefix));
+        assert_eq!(e.current().unwrap().ext().script.mode, Mode::Rules);
     }
 
     #[test]

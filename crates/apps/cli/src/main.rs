@@ -248,7 +248,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           scenario runner, the record a script makes,
                           language server and editor extensions
                           (docs/game/rules-engine.md)
-  variants port <input>... [--script builtin|keep|FILE] [-o DIR]
+  variants port <input>... [--script builtin|FILE] [-o DIR]
                           self-contained .h2variant files from records, saves,
                           hopper slots or old files; --all-builtins from the
                           disc (docs/editor/variants.md)

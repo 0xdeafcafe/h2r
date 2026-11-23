@@ -92,7 +92,8 @@ async fn flow(timers: Timers) {
     assert_eq!(r.json()["id"], id);
 
     // An unlisted one, from a whole file.
-    let file = portable::port(&plain_king(), None, Some("No script"), PortScript::Keep).unwrap();
+    let plain = plain_king();
+    let file = portable::Bundle::new(&plain, &plain.name(), "No script", None).unwrap();
     let r = send(
         &h,
         Method::POST,

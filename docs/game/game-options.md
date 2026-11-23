@@ -431,8 +431,10 @@ guests"):
   being edited (`boot::variant_page` under "The variant editor's page list").
 - **Studio** (`crates/apps/studio/src/ui/variants.rs`): a "More options
   (h2recomp)" section under the pages edits the block through
-  `VariantEditor::set_ext` (undoable; a drag on one option is one step).
-  It shows only what the game applies (gravity, damage, shield and health,
+  `VariantEditor::set_row` (undoable; a drag on one row is one step):
+  each extra is the settings-table row a script's `settings` block names
+  ([rules-variants.md](rules-variants.md#the-settings-block)), and the
+  record names its script (mode 2). It shows only what the game applies (gravity, damage, shield and health,
   unlimited grenades, team count); a block the
   game would ignore shows a warning and an `Issue::Ext`. `issues()` also
   has our own rule (respawn 0 with cycling).
