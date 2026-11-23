@@ -163,20 +163,85 @@ fn siege_holds_each_death_for_its_sides_wave() {
     assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag"]);
 }
 
-/// A map with no territory, or no flag stand for a team, is no Siege map.
+/// A map with no territory starts at the final assault: the attackers
+/// hold the defenders' flag stand and win.
 #[test]
-fn siege_needs_a_territory_and_each_teams_flag_stand() {
+fn siege_with_no_territories_goes_straight_at_the_flag_stand() {
     let (ir, _) = siege(&[]);
     let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
-    s.map.as_mut().unwrap().retain(|t| t.label != "territory" && t.object != 21);
-    match scenario::run(ir, &s) {
-        Err(scenario::RunError::Map(problems)) => {
-            assert_eq!(problems.len(), 2, "{problems:?}");
-            assert!(problems[0].contains("territory"), "{problems:?}");
-            assert!(problems[1].contains("ctf_flag_spawn"), "{problems:?}");
-        }
-        other => panic!("{:?}", other.map(|r| r.ended_at)),
-    }
+    s.map.as_mut().unwrap().retain(|t| t.label != "territory");
+    s.ticks = vec![ScenarioTick::default(); 1000];
+    s.ticks[0].events = vec![
+        ScenarioEvent::Spawn(0),
+        ScenarioEvent::Spawn(1),
+        ScenarioEvent::Enter { zone: 21, object: 100 },
+    ];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 0. Then the defenders' flag",
+            "The attackers took the flag",
+        ]
+    );
+    let end = r.ended_at.expect("the flag ends it");
+    assert!((449..=451).contains(&end), "{end}");
+    assert_eq!(calls(&r, "end_round").len(), 1);
+    assert_eq!(r.game.players[&0].score, 1);
+    assert_eq!(r.game.players[&1].score, 0);
+}
+
+/// A map with no flag stand stops at the sites: taking them all wins it
+/// for the attackers.
+#[test]
+fn siege_with_no_flag_stand_wins_at_the_last_site() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.map.as_mut().unwrap().retain(|t| t.label != "ctf_flag_spawn");
+    s.ticks = vec![ScenarioTick::default(); 1000];
+    s.ticks[0].events = vec![
+        ScenarioEvent::Spawn(0),
+        ScenarioEvent::Spawn(1),
+        ScenarioEvent::Enter { zone: 10, object: 100 },
+    ];
+    s.ticks[451].events = vec![
+        ScenarioEvent::Leave { zone: 10, object: 100 },
+        ScenarioEvent::Enter { zone: 11, object: 100 },
+    ];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2",
+            "The attackers took a site",
+            "The attackers took every site",
+        ]
+    );
+    let end = r.ended_at.expect("the last site ends it");
+    assert!((899..=902).contains(&end), "{end}");
+    assert_eq!(calls(&r, "end_round").len(), 1);
+    assert_eq!(r.game.players[&0].score, 1);
+    assert_eq!(r.game.players[&1].score, 0);
+}
+
+/// A map with neither label starts and draws at once: nothing to take.
+#[test]
+fn siege_draws_at_once_on_a_map_with_nothing_to_take() {
+    let (ir, _) = siege(&[]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.map.as_mut().unwrap().clear();
+    s.ticks = vec![ScenarioTick::default(); 3];
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        lines(&r),
+        ["This map has nothing to take: Siege needs territories or a flag stand"]
+    );
+    assert_eq!(calls(&r, "end_round"), [(0, &[Arg::Team(None)][..])]);
+    assert_eq!(r.game.players[&0].score, 0);
+    assert_eq!(r.game.players[&1].score, 0);
 }
 
 // ---- Gun Game ----
