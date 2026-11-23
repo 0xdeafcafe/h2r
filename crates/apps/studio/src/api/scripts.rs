@@ -2,17 +2,23 @@
 //! registered in [`super::seams`]): the open map's globals and scripts,
 //! a definition's source with its links, following one, who uses a name,
 //! the builtins and where their names come from, and the documentation
-//! listing to name builtins from. Read only; selection and following go
-//! through `Action::Script`, the window's path.
-//! docs/editor/rich-editors.md, "Scripts"; docs/editor/agent-api.md.
+//! listing to name builtins from; `script.external` writes the working
+//! copy VS Code and Zed edit and opens it, and `script.working` reads
+//! back what a save there changed (`app::external`). The map is read
+//! only; selection and following go through `Action::Script`, the
+//! window's path. docs/editor/rich-editors.md, "Scripts";
+//! docs/editor/editor-guide.md, "Scripts in VS Code and Zed";
+//! docs/editor/agent-api.md.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use agent_proto::RpcError;
 use hs::{Item, NameFrom};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
+use super::game_script::{commands, editor_params};
 use super::params::block_name;
 use super::scenario::refused;
 use super::{MethodDef, P, Provider, Reply, err};
@@ -84,6 +90,20 @@ const METHODS: &[MethodDef] = &[
         r#"{"path":"string|null","doc":"object|null","log":"[string]"}"#,
         r#"{"path":null}"#,
     ),
+    def(
+        m::SCRIPT_EXTERNAL,
+        "Write every script and global of the open map to the working copy (<data root>/scripts/<map>/<map>.hsc, with the h2hs.json context h2 hs lsp checks it against; a copy holding edits is kept) and open it in VS Code (editor code), Zed (zed) or any editor (auto, the default) at definition name (default: the one shown). launch false only answers the file and the commands that would open it. REFUSED when launching and no such editor is found",
+        r#"{"name?":"string","editor?":"code|zed|auto","launch?":"boolean"}"#,
+        r#"{"path":"string","context":"string","line":"integer","editor":"code|zed|auto","commands":"[{program,args,line}]","launched":"boolean","working":"object (script.working's answer)"}"#,
+        r#"{"name":"main","launch":false}"#,
+    ),
+    def(
+        m::SCRIPT_WORKING,
+        "The working copy, read and checked now: its file, whether it holds edits, which definitions differ from the map's (changed, added, removed), its problems against the context, and stale when the map's scripts changed under edits. The map is not written: that needs the script compiler (slices H2, H3). open false when no working copy is open",
+        "{}",
+        r#"{"open":"boolean","map?":"string","path?":"string","edited?":"boolean","changed?":"[string]","added?":"[string]","removed?":"[string]","problems?":"[{line,col,severity,message,code}]","stale?":"boolean","summary?":"string"}"#,
+        "null",
+    ),
 ];
 
 impl Provider for Scripts {
@@ -113,9 +133,46 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             "log": log,
         }));
     }
+    if method == m::SCRIPT_WORKING {
+        app.check_working_copy(Instant::now(), true);
+        return Ok(working(app));
+    }
     loaded(app)?;
     match method {
         m::SCRIPT_LIST => list(app, p.opt_str("filter")?.unwrap_or("")),
+        m::SCRIPT_EXTERNAL => {
+            let (only, editor, launch) = editor_params(p)?;
+            let name = match p.opt_str("name")? {
+                Some(n) => {
+                    pick(app, Some(n))?;
+                    Some(n)
+                }
+                None => None,
+            };
+            let (path, line, launches) = app
+                .open_scripts_in_editor(name, only, false)
+                .map_err(|why| err(code::FAILED, why))?;
+            let cmds = commands(&launches);
+            if launch {
+                if launches.is_empty() {
+                    return Err(err(code::REFUSED, crate::app::rules_edit::no_editor(only)));
+                }
+                if let Some(w) = &mut app.scripts.external {
+                    w.launched = Some(crate::app::rules_edit::launch(launches));
+                }
+                app.info(format!("Opening {} at line {line}", path.display()));
+            }
+            let context = path.with_file_name(hs::ide::CONTEXT_FILE);
+            Ok(json!({
+                "path": path.display().to_string(),
+                "context": context.display().to_string(),
+                "line": line,
+                "editor": editor,
+                "commands": cmds,
+                "launched": launch,
+                "working": working(app),
+            }))
+        }
         m::SCRIPT_SOURCE => {
             let item = pick(app, p.opt_str("name")?)?;
             app.perform(Action::Script(ScriptAction::Select(item)), false)
@@ -232,6 +289,42 @@ fn pick(app: &App, name: Option<&str>) -> Result<Item, RpcError> {
             .selected
             .ok_or_else(|| err(code::INVALID_PARAMS, "name: none is shown; give one")),
     }
+}
+
+/// `script.working`'s answer: the working copy as last read.
+fn working(app: &App) -> Value {
+    let Some(w) = &app.scripts.external else {
+        return json!({ "open": false });
+    };
+    let problems: Vec<Value> = w
+        .problems
+        .iter()
+        .map(|d| {
+            json!({
+                "line": d.range.start.line + 1,
+                "col": d.range.start.character + 1,
+                "severity": match d.severity {
+                    hs::ide::severity::ERROR => "error",
+                    hs::ide::severity::WARNING => "warning",
+                    _ => "information",
+                },
+                "message": d.message,
+                "code": d.code,
+            })
+        })
+        .collect();
+    json!({
+        "open": true,
+        "map": w.map,
+        "path": w.path.display().to_string(),
+        "edited": !w.changes.is_empty(),
+        "changed": w.changes.changed,
+        "added": w.changes.added,
+        "removed": w.changes.removed,
+        "problems": problems,
+        "stale": w.stale,
+        "summary": w.summary(),
+    })
 }
 
 fn item_kind(item: Item) -> &'static str {

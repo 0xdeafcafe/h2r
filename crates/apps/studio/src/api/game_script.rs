@@ -5,10 +5,14 @@
 //! open a file, a built-in or text; read it with its problems and check
 //! report; set, format and save it; and reload it into the paired game.
 //! `rules.reload` answers once the reload is queued for the game link;
-//! `rules.get`'s `reload` reads the game's answer. docs/editor/agent-api.md,
-//! docs/editor/editor-guide.md ("Game type scripts").
+//! `rules.get`'s `reload` reads the game's answer. `rules.external` opens
+//! the script in VS Code or Zed, and `rules.run` runs it over a scenario
+//! on the fake game, as `h2 rules run` does; the editor extensions'
+//! commands call both (`h2 rules lsp`). docs/editor/agent-api.md,
+//! docs/editor/editor-guide.md ("Game type scripts", "Scripts in VS Code
+//! and Zed").
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use agent_proto::rules::{ReloadMode, Reloaded};
 use serde_json::{Value, json};
@@ -16,7 +20,7 @@ use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, err};
 use crate::App;
-use crate::app::rules_edit::{self, ReloadState, RulesEditor};
+use crate::app::rules_edit::{self, DiskPoll, Launch, ReloadState, RulesEditor, Watch};
 
 /// The script editor provider.
 #[derive(Default)]
@@ -79,10 +83,24 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::RULES_RELOAD,
-        "Compile and verify the script, then send it to the paired game's rules.reload: in place when the game's state keeps its shape, else restart (mode auto); in_place refuses rather than restart. Answers once queued; rules.get's reload has the game's answer",
-        r#"{"mode?":"auto|in_place|restart"}"#,
+        "Compile and verify the script, then send it to the paired game's rules.reload: in place when the game's state keeps its shape, else restart (mode auto); in_place refuses rather than restart. With path (an outside editor's save), the file as saved first: read into the open script when it is that file (UNSAVED when it has other unsaved edits here), else opened (UNSAVED unless discard while the open script has unsaved edits) and watched. Answers once queued; rules.get's reload has the game's answer",
+        r#"{"mode?":"auto|in_place|restart","path?":"string","discard?":"boolean"}"#,
         r#"{"queued":"string (the blob's SHA-256)"}"#,
         r#"{"mode":"auto"}"#,
+    ),
+    def(
+        m::RULES_EXTERNAL,
+        "Open the script in VS Code (editor code), Zed (zed) or any editor (auto, the default), at line (default: the cursor's): saved to its file, or a new one under the data root, which is watched both ways. launch false only answers the file and the commands that would open it. REFUSED when launching and no such editor is found",
+        r#"{"editor?":"code|zed|auto","line?":"integer","launch?":"boolean"}"#,
+        r#"{"path":"string","line":"integer","col":"integer","editor":"code|zed|auto","commands":"[{program,args,line}]","launched":"boolean"}"#,
+        r#"{"editor":"auto","launch":false}"#,
+    ),
+    def(
+        m::RULES_RUN,
+        "Run a script over a scenario on the fake game, as h2 rules run does: scenario is a scenario file's path or the scenario itself; the script is source, else the file at path, else the open script. label names it in the printout; trace adds every call",
+        r#"{"scenario":"string|object","source?":"string","path?":"string","label?":"string","trace?":"boolean"}"#,
+        r#"{"ok":"boolean","result":"string","text":"string","ticks":"integer","calls":"integer","label":"string"}"#,
+        r#"{"scenario":{"ticks":[{}]}}"#,
     ),
 ];
 
@@ -126,6 +144,11 @@ fn mode_name(m: ReloadMode) -> &'static str {
 }
 
 fn call(app: &mut App, method: &str, p: &P) -> Reply {
+    match method {
+        m::RULES_EXTERNAL => return external(app, p),
+        m::RULES_RUN => return run(app, p),
+        _ => {}
+    }
     let r = &mut app.rules;
     match method {
         m::RULES_OPEN => {
@@ -179,14 +202,162 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             Ok(state(r, false))
         }
         m::RULES_RELOAD => {
-            if let Some(s) = p.opt_str("mode")? {
-                r.mode = mode(s)?;
+            // The mode is checked before the file is taken.
+            let wanted = p.opt_str("mode")?.map(mode).transpose()?;
+            if let Some(path) = p.opt_str("path")? {
+                take_file(r, Path::new(path), p.bool("discard")?)?;
+            }
+            if let Some(want) = wanted {
+                r.mode = want;
             }
             let hash = r.queue_reload().map_err(refused)?;
             Ok(json!({ "queued": hash }))
         }
         _ => unreachable!("checked against METHODS"),
     }
+}
+
+/// Whether `a` and `b` name the same file.
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || a.canonicalize()
+            .ok()
+            .is_some_and(|x| b.canonicalize().ok() == Some(x))
+}
+
+/// `rules.reload`'s `path`: the file as an outside editor saved it, into
+/// the editor. The open script's own file is read now (not at the next
+/// poll), and refused while unsaved edits here differ from it; another
+/// file is opened, unless the open script has unsaved edits and not
+/// `discard`, and watched like one "Open in VS Code" opened.
+fn take_file(r: &mut RulesEditor, path: &Path, discard: bool) -> Result<(), agent_proto::RpcError> {
+    if let Some(own) = r.path.clone().filter(|p| same_file(p, path)) {
+        let disk = std::fs::read_to_string(&own)
+            .map_err(|e| err(code::FAILED, format!("{}: {e}", own.display())))?;
+        if r.disk_text(disk) == DiskPoll::Asked {
+            return Err(err(
+                code::UNSAVED,
+                format!(
+                    "{} changed on disk and has other unsaved edits in Studio: pick which to keep in the Game type script window",
+                    own.display()
+                ),
+            ));
+        }
+        // Read now: the next poll has nothing more to take.
+        let seen = rules_edit::modified(&own);
+        match r.watch.as_mut().filter(|w| w.path == own) {
+            Some(w) => w.seen = seen,
+            None => r.watch = Some(Watch::new(own, seen)),
+        }
+        return Ok(());
+    }
+    if r.dirty() && !discard {
+        return Err(err(
+            code::UNSAVED,
+            format!(
+                "{} has unsaved edits in Studio: save it, or pass discard: true to open {}",
+                r.title,
+                path.display()
+            ),
+        ));
+    }
+    r.open_path(path).map_err(|e| err(code::FAILED, e))?;
+    r.watch = Some(Watch::new(path.to_path_buf(), rules_edit::modified(path)));
+    Ok(())
+}
+
+/// The ways to open a file, on the wire.
+pub fn commands(launches: &[Launch]) -> Vec<Value> {
+    launches
+        .iter()
+        .map(|l| {
+            json!({
+                "program": l.program.display().to_string(),
+                "args": l.args,
+                "line": l.describe(),
+            })
+        })
+        .collect()
+}
+
+/// The `editor` param as `code`, `zed` or (`None`) any, its wire name,
+/// and `launch` (default true).
+pub fn editor_params(p: &P) -> Result<(Option<&'static str>, &'static str, bool), agent_proto::RpcError> {
+    let only = rules_edit::editor_param(p.opt_str("editor")?.unwrap_or("auto"))
+        .map_err(|e| err(code::INVALID_PARAMS, e))?;
+    let launch = match p.get("launch") {
+        Some(_) => p.bool("launch")?,
+        None => true,
+    };
+    Ok((only, only.unwrap_or("auto"), launch))
+}
+
+/// `rules.external`.
+fn external(app: &mut App, p: &P) -> Reply {
+    let (only, editor, launch) = editor_params(p)?;
+    let line = p
+        .opt_u64("line")?
+        .map(|l| u32::try_from(l).unwrap_or(u32::MAX));
+    let root = app.data_root();
+    let (path, (line, col), launches) = app
+        .rules
+        .external_launches(&root, only, line)
+        .map_err(|e| err(code::FAILED, e))?;
+    let cmds = commands(&launches);
+    if launch {
+        if launches.is_empty() {
+            return Err(refused(rules_edit::no_editor(only)));
+        }
+        app.rules.launched = Some(rules_edit::launch(launches));
+        app.info(format!("Opening {}", path.display()));
+    }
+    Ok(json!({
+        "path": path.display().to_string(),
+        "line": line,
+        "col": col,
+        "editor": editor,
+        "commands": cmds,
+        "launched": launch,
+    }))
+}
+
+/// `rules.run`.
+fn run(app: &mut App, p: &P) -> Reply {
+    let scenario = match p.get("scenario") {
+        Some(Value::String(path)) => std::fs::read_to_string(path)
+            .map_err(|e| err(code::FAILED, format!("scenario: {path}: {e}")))?,
+        Some(v @ Value::Object(_)) => v.to_string(),
+        Some(v) => {
+            return Err(err(
+                code::INVALID_PARAMS,
+                format!("scenario: expected a file's path or a scenario object, not {v}"),
+            ));
+        }
+        None => return Err(err(code::INVALID_PARAMS, "scenario is required")),
+    };
+    let (src, label) = if let Some(src) = p.opt_str("source")? {
+        (src.to_owned(), p.opt_str("path")?.map(str::to_owned))
+    } else if let Some(path) = p.opt_str("path")? {
+        let text = std::fs::read_to_string(PathBuf::from(path))
+            .map_err(|e| err(code::FAILED, format!("{path}: {e}")))?;
+        (text, Some(path.to_owned()))
+    } else {
+        (app.rules.text.clone(), Some(app.rules.title.clone()))
+    };
+    let label = p
+        .opt_str("label")?
+        .map(str::to_owned)
+        .or(label)
+        .unwrap_or_default();
+    let r = rules_edit::run_scenario(&src, &scenario, p.bool("trace")?).map_err(refused)?;
+    Ok(json!({
+        "ok": r.ok,
+        "result": r.outcome,
+        "text": r.text,
+        "ticks": r.ticks,
+        "calls": r.calls,
+        "label": label,
+    }))
 }
 
 /// `rules.get`'s answer.

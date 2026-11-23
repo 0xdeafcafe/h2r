@@ -2,7 +2,9 @@
 //! "Scripts"): the globals and scripts with a search, the builtins and
 //! where their names come from, and in the Inspector the selected
 //! definition's source with every name a link. Read only; each panel is
-//! one scrolling body.
+//! one scrolling body. "Open in VS Code" and "Open in Zed" write the
+//! scripts as a working copy and open it there (`app::external`); what a
+//! save there changed shows under the buttons.
 
 use dear_imgui_rs::{ListClipper, MouseButton, MouseCursor, TreeNodeFlags, Ui};
 use hs::{Item, NameFrom};
@@ -52,6 +54,7 @@ pub fn list(
         hs::RETAIL_NODES
     ));
     ui.text_disabled(format!("{} {}", icon::FILE, l.executable));
+    external_row(ui, app, l, actions);
     ui.set_next_item_width(-1.0);
     ui.input_text("##scripts-filter", &mut st.filter)
         .hint(format!("{} Search names and source", icon::SEARCH))
@@ -97,6 +100,37 @@ pub fn list(
         builtins(ui, l, st);
     }
     doc_row(ui, app, Some(l), dialogs, actions);
+}
+
+/// "Open in VS Code" and "Open in Zed", and the working copy's state.
+fn external_row(ui: &Ui, app: &App, l: &Loaded, actions: &mut Vec<Action>) {
+    if ui.button("Open in VS Code##scripts-code") {
+        actions.push(Action::Script(ScriptAction::OpenInEditor(Some("code"))));
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Write every script and global to a working copy and open it in VS Code\nat the one shown. The extension (h2 rules editors install) checks it\nagainst this map's builtins and names, and asks Studio where a name is\nused. Each save there comes back here. Writing scripts into the map\nneeds the script compiler, which is not built yet.",
+        );
+    }
+    ui.same_line();
+    if ui.button("Open in Zed##scripts-zed") {
+        actions.push(Action::Script(ScriptAction::OpenInEditor(Some("zed"))));
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text("As Open in VS Code, in Zed.");
+    }
+    let Some(w) = app.scripts.external.as_ref().filter(|w| w.map == l.map) else {
+        return;
+    };
+    ui.text_disabled(format!("{} {}", icon::FILE, w.path.display()));
+    let color = if w.changes.is_empty() { theme::DIM } else { theme::WARN };
+    ui.text_colored(color, w.summary());
+    if w.stale {
+        ui.text_colored(
+            theme::WARN,
+            "The map's scripts changed since the working copy was written; Studio left your edits in it.",
+        );
+    }
 }
 
 fn builtins(ui: &Ui, l: &Loaded, st: &mut ScriptsUi) {

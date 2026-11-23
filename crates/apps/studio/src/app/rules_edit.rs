@@ -9,9 +9,10 @@
 //! ([`spans`], [`problems`], [`byte_at`], [`position_at`],
 //! [`reload_params`], [`rank`], [`expand_snippet`], [`completion_choices`],
 //! [`apply_text_edits`], [`rename_edit`], [`definition_at`],
-//! [`occurrences`], [`hover_blocks`], and for "Open in editor"
-//! [`script_file_name`], [`external_path`], [`editor_launches`],
-//! [`launch_step`] and [`disk_change`]).
+//! [`occurrences`], [`hover_blocks`], and for "Open in VS Code", "Open
+//! in Zed" and "Open in editor" [`script_file_name`], [`external_path`],
+//! [`editor_launches_at`], [`launch_step`] and [`disk_change`]; and
+//! [`run_scenario`] for `rules.run`).
 //!
 //! Every change the editor makes to the text (a completion, a quick fix,
 //! a rename, the formatter, an open) is an [`Edit`]: the whole new text
@@ -189,6 +190,12 @@ pub struct RulesEditor {
     pub conflict: Option<String>,
     /// The outside editor's start, filled by its thread ([`launch`]).
     pub launched: Option<Launched>,
+    /// Edits here go to the watched file once typing pauses
+    /// ([`RulesEditor::sync_out`]), so the outside editor sees them.
+    pub sync_to_file: bool,
+    /// The text waiting to go to the file, and since when it has been
+    /// that.
+    pending: Option<(String, Instant)>,
 }
 
 impl Default for RulesEditor {
@@ -217,6 +224,8 @@ impl Default for RulesEditor {
             watch: None,
             conflict: None,
             launched: None,
+            sync_to_file: true,
+            pending: None,
         }
     }
 }
@@ -807,6 +816,54 @@ impl RulesEditor {
         self.saved = disk;
     }
 
+    /// Studio's edits to the watched file: once the text has stayed the
+    /// same for [`SYNC_AFTER`] with unsaved edits, it is saved to its file
+    /// (no reload into the game: that is a save's or Reload's). Nothing
+    /// while the file and the buffer disagree ([`Self::conflict`]), or with
+    /// [`Self::sync_to_file`] off. Returns whether it wrote.
+    pub fn sync_out(&mut self, now: Instant) -> bool {
+        let watched = self.watch.as_ref().is_some_and(|w| self.path.as_ref() == Some(&w.path));
+        if !self.sync_to_file || !watched || self.conflict.is_some() || !self.dirty() {
+            self.pending = None;
+            return false;
+        }
+        match &self.pending {
+            Some((text, since)) if *text == self.text => {
+                if now.saturating_duration_since(*since) < SYNC_AFTER {
+                    return false;
+                }
+            }
+            _ => {
+                self.pending = Some((self.text.clone(), now));
+                return false;
+            }
+        }
+        self.pending = None;
+        self.save(None).is_ok()
+    }
+
+    /// "Open in VS Code" and "Open in Zed" (`only`), or "Open in editor"
+    /// (`None`): the script's file ([`Self::prepare_external`]) and the
+    /// ways to open it at `line` (1-based; the cursor's line and column
+    /// when `None`).
+    pub fn external_launches(
+        &mut self,
+        data_root: &Path,
+        only: Option<&str>,
+        line: Option<u32>,
+    ) -> Result<(PathBuf, At, Vec<Launch>), String> {
+        let path = self.prepare_external(data_root)?;
+        let at = match line {
+            Some(l) => (l.max(1), 1),
+            None => {
+                let p = position_at(&self.text, self.cursor);
+                (p.line + 1, p.character + 1)
+            }
+        };
+        let launches = editor_launches_here_at(&path, Some(at), only);
+        Ok((path, at, launches))
+    }
+
     /// The outside editor's start, once its thread has an answer: how it
     /// was opened, or why nothing opened it.
     pub fn take_launched(&mut self) -> Option<Result<String, String>> {
@@ -818,6 +875,13 @@ impl RulesEditor {
 
 /// How often the watched file is checked.
 pub const WATCH_EVERY: Duration = Duration::from_secs(1);
+
+/// How long the text stays the same before Studio's edits go to the
+/// watched file ([`RulesEditor::sync_out`]).
+pub const SYNC_AFTER: Duration = Duration::from_secs(1);
+
+/// Where a file opens in an outside editor: a 1-based line and column.
+pub type At = (u32, u32);
 
 /// How long a started editor has to fail before it counts as open: a
 /// GUI editor keeps running, `code` and `open` exit at once with success.
@@ -1035,12 +1099,8 @@ pub fn extension_installed(
     }
 }
 
-/// What "Open in editor" tries, in order: VS Code (`code`) or Zed
-/// (`zed`) where `find` finds it and it has the rules extension
-/// (`has_extension`), then `$VISUAL` and `$EDITOR` (a terminal editor is
-/// passed over: there is no terminal to run it in), then `code` and
-/// `zed` where `find` finds them, then on macOS `open -t` (the default
-/// text editor). The same command twice is tried once.
+/// [`editor_launches_at`] with the file opened at its start, from any
+/// editor.
 pub fn editor_launches(
     file: &Path,
     env: impl Fn(&str) -> Option<String>,
@@ -1048,7 +1108,67 @@ pub fn editor_launches(
     has_extension: impl Fn(&str) -> bool,
     macos: bool,
 ) -> Vec<Launch> {
+    editor_launches_at(file, None, None, env, find, has_extension, macos)
+}
+
+/// The words VS Code (`code -g file:line:col`) and Zed (`zed
+/// file:line:col`) open a file at a place with; other editors get the
+/// file alone.
+pub fn goto_args(editor: &str, file: &str, at: Option<At>) -> Vec<String> {
+    match (editor, at) {
+        ("code", Some((l, c))) => vec!["-g".into(), format!("{file}:{l}:{c}")],
+        ("zed", Some((l, c))) => vec![format!("{file}:{l}:{c}")],
+        _ => vec![file.to_owned()],
+    }
+}
+
+/// `code` or `zed` from an API's `editor` word (`vscode` is `code`);
+/// `auto` is `None`.
+pub fn editor_param(word: &str) -> Result<Option<&'static str>, String> {
+    match word {
+        "code" | "vscode" => Ok(Some("code")),
+        "zed" => Ok(Some("zed")),
+        "auto" => Ok(None),
+        other => Err(format!("editor: expected code, zed or auto, not {other}")),
+    }
+}
+
+/// Why nothing opens a file in `only` (or in any editor).
+pub fn no_editor(only: Option<&str>) -> String {
+    match only {
+        Some("code") => "VS Code was not found: install it, or put its code command on PATH (VS Code's \"Shell Command: Install 'code' command in PATH\")".into(),
+        Some("zed") => "Zed was not found: install it, or put its zed command on PATH (Zed's \"cli: install\")".into(),
+        _ => "no editor was found: install VS Code or Zed with the extension (h2 rules editors install), or set $VISUAL or $EDITOR to a GUI editor".into(),
+    }
+}
+
+/// What opening a file tries, in order. With `only` (`code` or `zed`),
+/// that editor where `find` finds it, at `at`. Otherwise ("Open in
+/// editor"): VS Code or Zed where `find` finds it and it has the
+/// extension (`has_extension`), then `$VISUAL` and `$EDITOR` (a terminal
+/// editor is passed over: there is no terminal to run it in), then `code`
+/// and `zed` where `find` finds them, then on macOS `open -t` (the default
+/// text editor). VS Code and Zed open the file at `at`. The same command
+/// twice is tried once.
+pub fn editor_launches_at(
+    file: &Path,
+    at: Option<At>,
+    only: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+    find: impl Fn(&str) -> Option<PathBuf>,
+    has_extension: impl Fn(&str) -> bool,
+    macos: bool,
+) -> Vec<Launch> {
     let file_arg = file.display().to_string();
+    if let Some(name) = only {
+        return find(name)
+            .map(|program| Launch {
+                program,
+                args: goto_args(name, &file_arg, at),
+            })
+            .into_iter()
+            .collect();
+    }
     let mut out: Vec<Launch> = Vec::new();
     for name in ["code", "zed"] {
         if has_extension(name)
@@ -1056,7 +1176,7 @@ pub fn editor_launches(
         {
             out.push(Launch {
                 program,
-                args: vec![file_arg.clone()],
+                args: goto_args(name, &file_arg, at),
             });
         }
     }
@@ -1082,7 +1202,7 @@ pub fn editor_launches(
         if let Some(program) = find(name) {
             out.push(Launch {
                 program,
-                args: vec![file_arg.clone()],
+                args: goto_args(name, &file_arg, at),
             });
         }
     }
@@ -1101,16 +1221,47 @@ pub fn editor_launches(
     unique
 }
 
-/// [`editor_launches`] with this process's environment.
-pub fn editor_launches_here(file: &Path) -> Vec<Launch> {
+/// [`editor_launches_at`] with this process's environment: a program on
+/// `PATH` (and Homebrew's), else the command inside the app
+/// ([`bundled_programs`]).
+pub fn editor_launches_here_at(file: &Path, at: Option<At>, only: Option<&str>) -> Vec<Launch> {
     let dirs = program_dirs(std::env::var("PATH").ok().as_deref());
-    editor_launches(
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let macos = cfg!(target_os = "macos");
+    editor_launches_at(
         file,
+        at,
+        only,
         |k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()),
-        |name| find_program(name, &dirs, |p| p.is_file()),
+        |name| {
+            find_program(name, &dirs, |p| p.is_file()).or_else(|| {
+                bundled_programs(name, home.as_deref(), macos)
+                    .into_iter()
+                    .find(|p| p.is_file())
+            })
+        },
         extension_installed_here,
-        cfg!(target_os = "macos"),
+        macos,
     )
+}
+
+/// Where the `code` and `zed` commands are inside their apps on macOS, in
+/// `/Applications` and `~/Applications`, for an app whose command is not
+/// on `PATH`.
+pub fn bundled_programs(name: &str, home: Option<&Path>, macos: bool) -> Vec<PathBuf> {
+    if !macos {
+        return Vec::new();
+    }
+    let inside = match name {
+        "code" => "Visual Studio Code.app/Contents/Resources/app/bin/code",
+        "zed" => "Zed.app/Contents/MacOS/cli",
+        _ => return Vec::new(),
+    };
+    let mut out = vec![Path::new("/Applications").join(inside)];
+    if let Some(h) = home {
+        out.push(h.join("Applications").join(inside));
+    }
+    out
 }
 
 /// [`extension_installed`] in this user's home.
@@ -1211,6 +1362,34 @@ fn run_launches(launches: &[Launch], out: &Launched) {
         "no editor opened the script: install VS Code or Zed with the rules extension (h2 rules editors install), or set $VISUAL or $EDITOR to a GUI editor"
             .into(),
     ));
+}
+
+/// What `rules.run` answers: whether the run ended without a script
+/// error, how it ended, and the printout `h2 rules run` prints
+/// (`rules::scenario::RunResult::printout`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScenarioRun {
+    pub ok: bool,
+    pub outcome: String,
+    pub text: String,
+    pub ticks: usize,
+    pub calls: usize,
+}
+
+/// Runs `src` over a scenario (`rules::scenario`'s JSON) on the fake
+/// game, as `h2 rules run` does.
+pub fn run_scenario(src: &str, scenario_json: &str, trace: bool) -> Result<ScenarioRun, String> {
+    let (ir, _) = rules::build(src).map_err(|e| format!("the script does not build: {e}"))?;
+    let scenario: rules::scenario::Scenario =
+        serde_json::from_str(scenario_json).map_err(|e| format!("scenario: {e}"))?;
+    let r = rules::scenario::run(ir, &scenario).map_err(|e| format!("the scenario did not run: {e}"))?;
+    Ok(ScenarioRun {
+        ok: r.script_error.is_none(),
+        outcome: r.outcome(),
+        text: r.printout(trace),
+        ticks: r.ticks.len(),
+        calls: r.total_calls(),
+    })
 }
 
 /// A completion's text without snippet placeholders (`${1:name}` becomes

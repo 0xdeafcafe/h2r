@@ -23,6 +23,7 @@ pub mod map_cards;
 pub mod map_pack;
 pub mod modeling;
 pub mod playtest_static;
+pub mod external;
 pub mod rules_edit;
 pub mod scripts;
 pub mod shared_refs;

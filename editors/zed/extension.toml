@@ -3,12 +3,16 @@ name = "H2 Rules"
 version = "0.1.0"
 schema_version = 1
 authors = ["Alexander Forbes-Reed"]
-description = "Game type scripts (.rules) for h2recomp: highlighting, outline and the `h2 rules lsp` language server."
+description = "Game type scripts (.rules) and HaloScript (.hsc) for h2recomp: highlighting, outline and the `h2 rules lsp` and `h2 hs lsp` language servers."
 repository = "https://github.com/0xdeafcafe/h2r"
 
 [language_servers.h2-rules-lsp]
 name = "h2 rules lsp"
 languages = ["Rules"]
+
+[language_servers.h2-hs-lsp]
+name = "h2 hs lsp"
+languages = ["HaloScript"]
 
 [grammars.rules]
 repository = "https://github.com/0xdeafcafe/h2r"

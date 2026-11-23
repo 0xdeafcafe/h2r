@@ -104,7 +104,7 @@ the final result through that directory.
 | `H2_PACK_LINGER_S` | supervisor idle timeout in seconds, default 60; Live demand holds and cleanup last 60 seconds ([host-halving.md](../live/host-halving.md#warm-capacity-from-demand)) |
 | `H2_PACK_MAX_MATCHES`, `H2_PACK_MEMORY_MIB`, `H2_PACK_VCPUS`, `LIVE_HOST_PACK_MATCHES` | supervisor slot, memory and CPU budgets; Live selects the class limit or a lower slot count ([dedicated-host.md](../live/dedicated-host.md#packed-hosts)) |
 | `MALLOC_ARENA_MAX`, `MALLOC_TRIM_THRESHOLD_` | Linux glibc host lease defaults of 2 arenas and 131072 bytes; explicit allocator settings take precedence ([host-halving.md](../live/host-halving.md#halving-the-memory)) |
-| `H2_STUDIO` | Editor agent socket path when `--socket` is absent (`crates/apps/studio-proto/src/lib.rs`, [editor API](../editor/agent-api.md)). |
+| `H2_STUDIO` | Editor agent socket path when `--socket` is absent (`crates/apps/studio-proto/src/lib.rs`, [editor API](../editor/agent-api.md)); `h2 rules lsp` and `h2 hs lsp` call Studio there for the editor extensions' commands ([rules-editors.md](../editor/rules-editors.md#commands-that-talk-to-studio)). |
 | `H2_IMAGEGEN` | The editor's image generator: `codex` (the default, the Codex CLI on the user's ChatGPT sign-in) or `fake` (a picture drawn from the prompt, to try the flow with no generator) (`crates/apps/studio/src/imagegen.rs`, [Generating images](../editor/agent-api.md#generating-images)). |
 | `H2_FFMPEG` | Selects the local ffmpeg executable for movie conversion (`crates/formats/movies/src/install.rs`). |
 | `H2_LAB_JOB_ID`, `H2_LAB_JOB_NAME` | The lab passes its run ID (for example, `0007`) and job label to the game for its window title and memory reports. |

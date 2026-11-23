@@ -282,7 +282,13 @@ with where the name comes from (below); an unnamed one is
 `(#builtin:<index> ...)`. **Script documentation** picks the listing
 builtin names may come from, with a file dialog, and says what it
 named. **Edit** and **Compile** (slice H3) are not built: the tab is read
-only.
+only. **Open in VS Code** and **Open in Zed** write every global and
+script to a working copy (`scripts/<map>/<map>.hsc` under the data root,
+with the `h2hs.json` context `h2 hs lsp` checks it against) and open it
+there; each save comes back to the tab as the definitions that differ
+from the map's and the file's problems (`app/external.rs`;
+[editor-guide.md, "Scripts in VS Code and Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
+Those edits reach the map once the compiler below exists.
 
 **The data.** `crates/formats/hs`: `Scenario::read` decodes the node
 table, string data, scripts, globals and tag references (`wire::Node`,
@@ -562,6 +568,8 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `script.uses` | `{kind, name}` | `{uses: [{name, item, count}]}`: the definitions that name a script, global, object name, volume or tag; `recording` is refused until slice K1 |
 | `script.builtins` | `{filter?, unnamed?}` | `{builtins: [{index, name, label, from, returns, parameters, own_arguments, call, usage}], named_by_map, named_by_doc, unnamed, doc}` |
 | `script.doc` | `{path}` | `{path, doc, log}`: names builtins from the listing at `path` (`null`: none) |
+| `script.external` | `{name?, editor?, launch?}` | `{path, context, line, editor, commands, launched, working}`: writes the working copy and opens it in `code`, `zed` or any editor (`auto`) at the definition |
+| `script.working` | `{}` | `{open, map, path, edited, changed, added, removed, problems, stale, summary}`: the working copy read and checked now; `{open: false}` with none |
 | `sound.read` | `{tag, range?, permutation?, bins?}` | the header, every pitch range's permutations `{encoded_bytes, chunks}`, for one permutation `{channels, rate, frames, duration_ms, peaks}` or its `refusal`, and `playback`; slice A2 adds `mouth` |
 | `sound.play` | `{tag, range?, permutation?, from_ms?}` | `{playing, frames, rate, channels, duration_ms, from_ms, output}`; `output` is `headless` when `Audition::headless` is set (tests, the API's own examples), which plays to nothing in real time |
 | `sound.stop` | `{}` | `{stopped}` |

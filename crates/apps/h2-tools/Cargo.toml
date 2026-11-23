@@ -46,6 +46,10 @@ variants = { path = "../../formats/variants" }
 # `h2 rules lsp`: the stdio language server over `rules::ide`.
 lsp-server.workspace = true
 lsp-types.workspace = true
+# `h2 rules lsp` and `h2 hs lsp`: the commands that ask Studio over its
+# socket (studio_link.rs), a client only.
+agent-proto = { path = "../../extensions/agent-proto" }
+studio-proto = { path = "../studio-proto" }
 # `h2 rules editors install` downloads the extensions' release.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 

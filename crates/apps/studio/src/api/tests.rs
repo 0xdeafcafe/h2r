@@ -195,12 +195,17 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::SCRIPT_FOLLOW
         | m::SCRIPT_USES
         | m::SCRIPT_BUILTINS
-        | m::SCRIPT_DOC => {
+        | m::SCRIPT_DOC
+        | m::SCRIPT_EXTERNAL
+        | m::SCRIPT_WORKING => {
             // The invented map with scripts and the invented executable.
             let dir = t.path("scripts");
             std::fs::create_dir_all(&dir).unwrap();
             let map = crate::app::scripts::tests::scripted_source(&dir, true);
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            if name == m::SCRIPT_WORKING {
+                c(m::SCRIPT_EXTERNAL, json!({"launch": false}));
+            }
         }
         m::COLLISION_SURFACES | m::COLLISION_AT | m::COLLISION_SELECT | m::COLLISION_OBJECTS => {
             let map = t.path("collision.map");
@@ -4882,4 +4887,145 @@ fn collision_boxes_chain_save_and_clear_as_modeling_actions() {
     saved.validate_checksum().unwrap();
     let back = geometry_edit::level_collision::read(&mut saved, tag).unwrap();
     assert_eq!(back.level, edit.added.level);
+/// An outside editor's save: `text`, with a modification time `secs`
+/// ahead, so Studio's watch sees a new one.
+fn save_as_editor(path: &Path, text: &str, secs: u64) {
+    std::fs::write(path, text).unwrap();
+    let f = std::fs::File::options().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(secs))
+        .unwrap();
+}
+
+#[test]
+fn a_game_type_script_opens_in_vs_code_reloads_from_its_save_and_runs_a_scenario() {
+    let t = Temp::new("rules-external");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    call(&mut api, &mut app, m::RULES_OPEN, json!({"starter": "slayer"}));
+
+    // Its file under the data root, and the commands that open it at the
+    // line; nothing is started with launch false.
+    let v = call(
+        &mut api,
+        &mut app,
+        m::RULES_EXTERNAL,
+        json!({"editor": "code", "line": 4, "launch": false}),
+    );
+    let path = PathBuf::from(v["path"].as_str().unwrap());
+    assert!(path.starts_with(t.path("data")), "{v}");
+    assert_eq!((v["line"].clone(), v["col"].clone()), (json!(4), json!(1)));
+    assert_eq!(v["editor"], "code");
+    assert_eq!(v["launched"], false);
+    for c in v["commands"].as_array().unwrap() {
+        assert_eq!(c["args"][0], "-g", "{c}");
+        assert!(c["args"][1].as_str().unwrap().ends_with(":4:1"), "{c}");
+    }
+    assert_eq!(app.rules.watch.as_ref().map(|w| w.path.clone()), Some(path.clone()));
+    assert_eq!(
+        code_of(api.call(&mut app, m::RULES_EXTERNAL, json!({"editor": "emacs"}))),
+        code::INVALID_PARAMS
+    );
+
+    // VS Code's Reload in game: the save is read before the reload.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let theirs = text.replace("Slayer", "Theirs");
+    std::fs::write(&path, &theirs).unwrap();
+    let p = path.display().to_string();
+    let v = call(&mut api, &mut app, m::RULES_RELOAD, json!({"path": p}));
+    assert!(v["queued"].is_string(), "{v}");
+    assert_eq!(app.rules.text, theirs);
+    assert!(!app.rules.dirty());
+
+    // Edits here that the file does not have: refused, both kept.
+    app.rules.set_text(theirs.replace("Theirs", "Mine"));
+    std::fs::write(&path, theirs.replace("Theirs", "Disk")).unwrap();
+    assert_eq!(
+        code_of(api.call(&mut app, m::RULES_RELOAD, json!({"path": p}))),
+        code::UNSAVED
+    );
+    assert!(app.rules.text.contains("Mine"));
+
+    // Another file: opened and watched, unless edits here would be lost.
+    let other = t.path("invented_other.rules");
+    std::fs::write(&other, ::rules::builtin::SLAYER).unwrap();
+    let o = other.display().to_string();
+    assert_eq!(
+        code_of(api.call(&mut app, m::RULES_RELOAD, json!({"path": o}))),
+        code::UNSAVED
+    );
+    call(&mut api, &mut app, m::RULES_RELOAD, json!({"path": o, "discard": true, "mode": "restart"}));
+    assert_eq!(app.rules.path.as_deref(), Some(other.as_path()));
+    assert_eq!(app.rules.watch.as_ref().map(|w| w.path.clone()), Some(other.clone()));
+    assert_eq!(app.rules.text, ::rules::builtin::SLAYER);
+
+    // A scenario file over the open script, as h2 rules run prints it.
+    let case = t.path("invented_case.json");
+    std::fs::write(&case, r#"{"ticks":[{},{},{}]}"#).unwrap();
+    let v = call(
+        &mut api,
+        &mut app,
+        m::RULES_RUN,
+        json!({"scenario": case.display().to_string(), "trace": true}),
+    );
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["ticks"], 3);
+    assert_eq!(v["label"], "invented_other.rules");
+    assert!(v["text"].as_str().unwrap().starts_with("tick 0: "), "{v}");
+    // Text that does not build, and a scenario that is neither.
+    assert_eq!(
+        code_of(api.call(&mut app, m::RULES_RUN, json!({"scenario": {"ticks": []}, "source": "rules"}))),
+        code::REFUSED
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::RULES_RUN, json!({"scenario": 3}))),
+        code::INVALID_PARAMS
+    );
+}
+
+#[test]
+fn scenario_scripts_open_as_a_working_copy_and_its_saves_read_back() {
+    let t = Temp::new("script-external");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let dir = t.path("scripts");
+    std::fs::create_dir_all(&dir).unwrap();
+    let map = crate::app::scripts::tests::scripted_source(&dir, true);
+    call(&mut api, &mut app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+    assert_eq!(call(&mut api, &mut app, m::SCRIPT_WORKING, json!({})), json!({"open": false}));
+
+    let v = call(
+        &mut api,
+        &mut app,
+        m::SCRIPT_EXTERNAL,
+        json!({"name": "helper", "editor": "zed", "launch": false}),
+    );
+    let path = PathBuf::from(v["path"].as_str().unwrap());
+    assert_eq!(path.extension().and_then(|e| e.to_str()), Some("hsc"));
+    assert!(path.starts_with(t.path("data")), "{v}");
+    assert!(Path::new(v["context"].as_str().unwrap()).is_file(), "{v}");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let line = v["line"].as_u64().unwrap();
+    assert!(text.lines().nth(line as usize - 1).unwrap().contains("helper"), "{line}: {text}");
+    for c in v["commands"].as_array().unwrap() {
+        assert!(c["args"][0].as_str().unwrap().ends_with(&format!(":{line}:1")), "{c}");
+    }
+    assert_eq!(v["working"]["open"], true);
+    assert_eq!(v["working"]["edited"], false, "{v}");
+    assert_eq!(
+        code_of(api.call(&mut app, m::SCRIPT_EXTERNAL, json!({"name": "invented_none", "launch": false}))),
+        code::INVALID_PARAMS
+    );
+
+    // A save in the editor: script.working reads and compares it.
+    save_as_editor(
+        &path,
+        &format!("{text}\n(script static void invented_added\n  (helper))\n"),
+        5,
+    );
+    let v = call(&mut api, &mut app, m::SCRIPT_WORKING, json!({}));
+    assert_eq!(v["edited"], true, "{v}");
+    assert_eq!(v["added"], json!(["invented_added"]));
+    assert_eq!(v["changed"], json!([]));
+    assert_eq!(v["stale"], false);
+    assert!(v["summary"].as_str().unwrap().contains("invented_added added"), "{v}");
 }

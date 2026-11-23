@@ -3,8 +3,9 @@
 //! extension in VS Code (a `.vsix` built in `editors/vscode/`, else the
 //! one on the `editors-latest` release, else one built with npm) and
 //! prints the steps for Zed, which installs a dev extension from its own
-//! command palette only. `status` says what is installed and whether
-//! `h2 rules lsp` starts. The functions that decide and print are pure,
+//! command palette only. The one extension serves `.rules` scripts and
+//! Studio's HaloScript working copies (`.hsc`). `status` says what is
+//! installed and whether `h2 rules lsp` and `h2 hs lsp` start. The functions that decide and print are pure,
 //! so tests read them without a process.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -33,8 +34,8 @@ const LSP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const USAGE: &str = "usage: h2 rules editors [status]
        h2 rules editors install [vscode|zed] [--build]
-  status says whether VS Code and Zed have the rules extension and whether
-  h2 rules lsp starts.
+  status says whether VS Code and Zed have the extension and whether
+  h2 rules lsp and h2 hs lsp start.
   install puts the extension in VS Code with code --install-extension: the
   newest .vsix in editors/vscode/, else the editors-latest release's, else
   one built there with npm (--build builds first). For Zed it prints the
@@ -60,10 +61,11 @@ pub fn run(words: &[String]) -> Result<()> {
     match sub.unwrap_or("status") {
         "status" => {
             let code_ext = env.code.as_deref().and_then(|c| list_extensions(c).ok());
-            let lsp = std::env::current_exe()
-                .map_err(|e| e.to_string())
-                .and_then(|exe| lsp_starts(&exe));
+            let exe = std::env::current_exe().map_err(|e| e.to_string());
+            let lsp = exe.clone().and_then(|exe| lsp_starts(&exe, "rules"));
             print!("{}", status_text(&env, code_ext.as_deref(), &lsp));
+            let hs = exe.and_then(|exe| lsp_starts(&exe, "hs"));
+            print!("{}", server_line("h2 hs lsp", &hs));
             Ok(())
         }
         _ => {
@@ -299,7 +301,7 @@ pub(crate) fn zed_steps(env: &Env) -> String {
     s.push_str("     \"zed: install dev extension\".\n");
     s.push_str(&format!("  3. Pick the folder {folder}\n"));
     s.push_str("  4. Open a .rules file: Zed starts h2 rules lsp (`h2` on PATH, else\n");
-    s.push_str("     ~/.cargo/bin/h2).\n");
+    s.push_str("     ~/.cargo/bin/h2). A HaloScript working copy (.hsc) starts h2 hs lsp.\n");
     s
 }
 
@@ -326,11 +328,16 @@ pub(crate) fn status_text(env: &Env, code_listing: Option<&str>, lsp: &Result<St
         (Some(_), false) => s.push_str("Zed: no extension; run h2 rules editors install zed\n"),
         (None, false) => s.push_str("Zed: not found\n"),
     }
-    match lsp {
-        Ok(name) => s.push_str(&format!("h2 rules lsp: starts ({name})\n")),
-        Err(why) => s.push_str(&format!("h2 rules lsp: does not start: {why}\n")),
-    }
+    s.push_str(&server_line("h2 rules lsp", lsp));
     s
+}
+
+/// Whether a language server started: its name, or why not.
+pub(crate) fn server_line(command: &str, started: &Result<String, String>) -> String {
+    match started {
+        Ok(name) => format!("{command}: starts ({name})\n"),
+        Err(why) => format!("{command}: does not start: {why}\n"),
+    }
 }
 
 /// A JSON-RPC message in LSP's framing.
@@ -384,10 +391,11 @@ pub(crate) fn server_name(answer: &Value) -> Result<String, String> {
     .to_string())
 }
 
-/// Starts `exe rules lsp`, asks `initialize`, and shuts it down.
-fn lsp_starts(exe: &Path) -> Result<String, String> {
+/// Starts `exe <tool> lsp` (`rules` or `hs`), asks `initialize`, and
+/// shuts it down.
+fn lsp_starts(exe: &Path, tool: &str) -> Result<String, String> {
     let mut child = Command::new(exe)
-        .args(["rules", "lsp"])
+        .args([tool, "lsp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -492,6 +500,7 @@ mod tests {
         assert!(s.ends_with("h2 rules lsp: does not start: no answer\n"), "{s}");
         let s = status_text(&env(false, false, false), None, &ok);
         assert!(s.starts_with("VS Code: not found\nZed: not found\n"), "{s}");
+        assert_eq!(server_line("h2 hs lsp", &Ok("h2 hs lsp 0.1.0".into())), "h2 hs lsp: starts (h2 hs lsp 0.1.0)\n");
     }
 
     #[test]
