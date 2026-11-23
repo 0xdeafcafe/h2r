@@ -384,7 +384,7 @@ impl Dialogs {
                 DialogBase::Large,
             ),
             Parent::Look {
-                held,
+                held: _,
                 rows: look,
                 models,
             } => {
@@ -419,17 +419,17 @@ impl Dialogs {
                     art: Art::Solid {
                         rgba: [16, 24, 36, 255],
                     },
-                    at: [100, 40],
-                    size: [160, 120],
+                    at: [60, 30],
+                    size: [280, 130],
                     depth: 0,
                 });
                 s.texts.push(PaneText {
                     id: "preview".into(),
-                    rect: [40, 100, 160, 260],
+                    rect: [30, 60, 150, 340],
                     font: 1,
                     colour: [0.78, 0.84, 0.89],
                     right: false,
-                    text: name,
+                    text: text_fit::line(&name, 270),
                 });
                 s
             }

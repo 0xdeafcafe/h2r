@@ -345,13 +345,16 @@ impl<A: Admit, L: Lane> Node<A, L> {
         });
     }
 
-    /// The host sends the accepted look of `seat` to everyone (`None`) or
-    /// to one lane (a joiner learning the table).
-    pub fn send_look(&mut self, look: MonitorLook, seat: Option<Seat>) {
-        match seat {
-            Some(seat) => self.send_down(seat, Down::Look { seat: seat.0, look }),
-            None => self.broadcast_down(Down::Look { seat: 0, look }),
-        }
+    /// The host sends `of`'s accepted look to every joined lane, itself
+    /// the message's seat.
+    pub fn send_look(&mut self, of: u8, look: MonitorLook) {
+        self.broadcast_down(Down::Look { seat: of, look });
+    }
+
+    /// The host sends `of`'s accepted look to one lane alone: a joiner
+    /// learning the table as it stands.
+    pub fn send_look_to(&mut self, lane: Seat, of: u8, look: MonitorLook) {
+        self.send_down(lane, Down::Look { seat: of, look });
     }
 
     /// The host refuses `seat`'s proposed look, to that seat alone.
