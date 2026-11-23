@@ -267,6 +267,12 @@ impl Editor {
         self
     }
 
+    /// The edit arena, for a user that places its own extents in it
+    /// (`edit.collision.stage`); `None` in a game without one.
+    pub fn shared_arena(&self) -> Option<arena::Shared> {
+        self.arena.clone()
+    }
+
     /// Ties the arena to the map activation [`Self::at_epoch`] last saw: a
     /// new map releases every extent and unmaps its pages.
     pub fn bind_arena(&mut self, g: &mut Guest) {
