@@ -1462,6 +1462,29 @@ the map like any other edit. What to know:
 - Sounds only import into the map they came from.
 - If anything is refused, nothing changes.
 
+### Announcer lines
+
+**View > Announcer** opens a window that makes announcer lines from text.
+Type the line, give a clip id (such as `superbounce`) if it is for one,
+and press **Say it**. The voice says it, Studio trims the silence, brings
+it to the loudness of the retail announcer lines of the open map and plays
+it. The window shows the level it reached, how far it is from the retail
+lines, and where the file is. The same text and voice give the earlier
+file back from the cache without asking the service again.
+
+The voice is Fish Audio's, and its key is in your Keychain. The first
+time, the window shows the command to add it:
+
+```
+security add-generic-password -s fish-audio -a "$USER" -w '<your-fish-audio-key>'
+```
+
+Lines are saved under `<data>/announcer/`, outside any checkout. **Copy
+into the checkout** (the same as `voice.commit` in the
+[agent API](agent-api.md)) puts a line with a clip id at
+`art/announcer/<clip>.wav` for you to `git add`; nothing else writes
+there. [announcer.md](announcer.md) has the rest.
+
 ## 10. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
@@ -1497,6 +1520,7 @@ uses, `~/Library/Application Support/h2recomp/data`.
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
 | Exported tags (tag bundles) | Wherever you save the `.h2tag` (never inside a Git checkout); `<data>/tag-bundles/` when an agent gives no path | Not directly: import it in the Tags tool and save the map. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
+| Announcer lines | `<data>/announcer/` (`cache/`, `lines/`, `clips/`) | Not directly: copy one into `art/announcer/` of a checkout with the Announcer window or `voice.commit`, then build. |
 | The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |
 
 Your disc image is only ever read.

@@ -75,6 +75,8 @@ superbounce = { path = "../../live/superbounce" }
 # The Map Pack's content directory (`T:\$c`) on the host.
 vfs.workspace = true
 serde_json.workspace = true
+# The announcer voice: Fish Audio's text to speech over HTTPS (src/voice/fish.rs).
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../../extensions/agent-proto" }

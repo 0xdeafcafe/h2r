@@ -15,6 +15,7 @@ mod palette;
 mod play;
 mod playlists;
 mod sound;
+mod announcer;
 pub mod scripts;
 pub mod tags;
 mod ui_screens;
@@ -99,6 +100,8 @@ pub struct Studio {
     pub map_list: map_list::MapListUi,
     /// The Sound window over the Tags tool's selected `snd!`.
     sound: sound::SoundUi,
+    /// The Announcer window (View > Announcer).
+    announcer: announcer::AnnouncerUi,
 }
 
 impl Studio {
@@ -133,6 +136,7 @@ impl Studio {
             scripts: scripts::ScriptsUi::default(),
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::default(),
+            announcer: announcer::AnnouncerUi::default(),
         }
     }
 
@@ -234,6 +238,7 @@ impl Studio {
         // The seam for sound audition until the tag view tabs exist
         // (docs/editor/rich-editors.md, "One seam for every rich view").
         sound::window(ui, app, &mut self.sound);
+        announcer::window(ui, app, &mut self.announcer);
         // After the Map tab: Game in the same frame would take its focus.
         if focus_game && self.want_tab.is_none() {
             self.focus_game = false;
@@ -511,6 +516,13 @@ impl Studio {
             }
             menu_action(ui, app, MenuCommand::Overlay, None, app.overlay_shown(), actions);
             ui.separator();
+            if ui.menu_item_enabled_selected_no_shortcut(
+                format!("{} Announcer", icon::SOUND),
+                self.announcer.open,
+                true,
+            ) {
+                self.announcer.open = !self.announcer.open;
+            }
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
             }
