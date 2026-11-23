@@ -335,8 +335,7 @@ pub fn declaration_streams(
 ) -> Result<Vec<StreamLayout>, D3dError> {
     let mut by_stream: Vec<StreamLayout> = Vec::new();
     for reg in 0..16usize {
-        let (stream, offset, format) =
-            (vaf[4 * reg], vaf[4 * reg + 1], vaf[4 * reg + 2] & 0xFF);
+        let (stream, offset, format) = (vaf[4 * reg], vaf[4 * reg + 1], vaf[4 * reg + 2] & 0xFF);
         if format == 0x02 {
             continue; // D3DVSDT_NONE
         }
@@ -798,7 +797,12 @@ pub enum SwallowRefusal {
 
 impl SwallowRefusal {
     pub const ALL: [Self; 6] = [
-        Self::Admission, Self::Shape, Self::CallBoundary, Self::Dependency, Self::Resource, Self::Encode,
+        Self::Admission,
+        Self::Shape,
+        Self::CallBoundary,
+        Self::Dependency,
+        Self::Resource,
+        Self::Encode,
     ];
 
     pub fn index(self) -> usize {
@@ -825,9 +829,15 @@ pub struct SwallowTarget {
 pub trait SwallowPass: crate::backend::ExternalPass {
     /// Need the first original's resolved inputs (such as an opaque
     /// framebuffer snapshot) alongside the live post attachments.
-    fn entry_samples(&self) -> bool { false }
+    fn entry_samples(&self) -> bool {
+        false
+    }
 
-    fn validate(&self, _originals: &[SwallowOriginal<'_>], _slots: &[Option<SwallowTarget>]) -> Result<(), String> {
+    fn validate(
+        &self,
+        _originals: &[SwallowOriginal<'_>],
+        _slots: &[Option<SwallowTarget>],
+    ) -> Result<(), String> {
         Ok(())
     }
 }
@@ -937,7 +947,10 @@ impl ExternalRefusal {
 
     /// Its index in [`ALL`](Self::ALL) and [`Stats::external_refusals`].
     pub fn index(self) -> usize {
-        ExternalRefusal::ALL.iter().position(|&r| r == self).unwrap_or(0)
+        ExternalRefusal::ALL
+            .iter()
+            .position(|&r| r == self)
+            .unwrap_or(0)
     }
 
     pub fn describe(self) -> &'static str {
@@ -947,7 +960,9 @@ impl ExternalRefusal {
             }
             ExternalRefusal::NoColour => "no colour target is bound",
             ExternalRefusal::NoDepth => "no depth is bound and the pass needs one",
-            ExternalRefusal::Header => "the colour target's header or the device's Z scale is unreadable",
+            ExternalRefusal::Header => {
+                "the colour target's header or the device's Z scale is unreadable"
+            }
             ExternalRefusal::Targets => "the bound targets have no host surfaces",
             ExternalRefusal::Backend => "the backend refused it (a target it cannot draw into)",
             ExternalRefusal::Failed => "the backend failed",
@@ -956,7 +971,8 @@ impl ExternalRefusal {
 }
 
 /// The refusals logged so far (a bit per [`ExternalRefusal::index`]).
-static EXTERNAL_REFUSALS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static EXTERNAL_REFUSALS_LOGGED: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
 /// One Direct3D device.
 pub struct Device<B: Backend> {
@@ -1185,11 +1201,15 @@ struct ScopeState {
 pub struct DrawScope(Arc<ScopeState>);
 
 impl DrawScope {
-    pub fn committed(&self) -> bool { self.0.committed.load(AtomicOrdering::Acquire) }
+    pub fn committed(&self) -> bool {
+        self.0.committed.load(AtomicOrdering::Acquire)
+    }
 }
 
 impl Drop for DrawScope {
-    fn drop(&mut self) { self.0.closed.store(true, AtomicOrdering::Release); }
+    fn drop(&mut self) {
+        self.0.closed.store(true, AtomicOrdering::Release);
+    }
 }
 
 struct ExternalBinding<S> {
@@ -1206,7 +1226,13 @@ struct QueuedExternalStats {
 }
 
 impl<S: Copy + Eq> ExternalBinding<S> {
-    fn same_draw_writes(&self, header: u32, color: S, depth: Option<S>, writes_depth: bool) -> bool {
+    fn same_draw_writes(
+        &self,
+        header: u32,
+        color: S,
+        depth: Option<S>,
+        writes_depth: bool,
+    ) -> bool {
         self.colors.as_slice() == [(header, color)]
             && self.depth_write == writes_depth
             && self.surfaces.color == color
@@ -1217,7 +1243,10 @@ impl<S: Copy + Eq> ExternalBinding<S> {
     }
 }
 
-pub(crate) fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
+pub(crate) fn complete_recordings(
+    plan: &crate::ExternalPlan,
+    c: &[crate::ExternalRecording],
+) -> bool {
     let copies = matches!(c, [one] if one.copy == crate::TargetCopy::Reference || one.single_display)
         || matches!(c, [r, d] if r.copy == crate::TargetCopy::Reference && d.copy == crate::TargetCopy::Display);
     copies && c.iter().all(|r| plan.complete(r.copy, r.ranges))
@@ -1247,7 +1276,9 @@ impl<B: Backend> PreparedExternal<'_, B> {
             self.device.present_cameras.color_written(surface);
             self.device.mark_color_written(header);
         }
-        if self.binding.depth_write { self.device.mark_depth_written(); }
+        if self.binding.depth_write {
+            self.device.mark_depth_written();
+        }
         self.device.stats.external_passes += 1;
     }
 }
@@ -1275,7 +1306,11 @@ impl<B: Backend> SceneReservation<'_, B> {
     pub fn commit(self) {
         let (kind, ranges) = (self.stage.plan.stage, self.stage.plan.ranges);
         if !self.device.backend.queue_scene_stage(self.stage) {
-            crate::scene_stage::dropped(kind, ranges, "the render thread stopped taking scene stages");
+            crate::scene_stage::dropped(
+                kind,
+                ranges,
+                "the render thread stopped taking scene stages",
+            );
             return;
         }
         for (header, surface) in self.binding.colors {
@@ -1458,8 +1493,14 @@ impl<B: Backend> Device<B> {
     /// Counters.
     pub fn stats(&self) -> Stats {
         let mut stats = self.stats;
-        stats.external_passes += self.queued_external_stats.committed.load(AtomicOrdering::Relaxed);
-        stats.external_passes_dropped += self.queued_external_stats.dropped.load(AtomicOrdering::Relaxed);
+        stats.external_passes += self
+            .queued_external_stats
+            .committed
+            .load(AtomicOrdering::Relaxed);
+        stats.external_passes_dropped += self
+            .queued_external_stats
+            .dropped
+            .load(AtomicOrdering::Relaxed);
         stats
     }
 
@@ -2009,7 +2050,9 @@ impl<B: Backend> Device<B> {
         match self.drain(mem, false) {
             Ok(_) => Ok(()),
             Err(e) => {
-                self.swallow_abort(SwallowRefusal::Dependency, || "push stream interrupted the post call".into())?;
+                self.swallow_abort(SwallowRefusal::Dependency, || {
+                    "push stream interrupted the post call".into()
+                })?;
                 self.fault = Some(format!(
                     "{e} (push-buffer command at {:#010x})",
                     self.consumed
@@ -2080,7 +2123,9 @@ impl<B: Backend> Device<B> {
         match self.drain(mem, true) {
             Ok(Some(cb)) => {
                 self.stats.push_callbacks += 1;
-                self.swallow_abort(SwallowRefusal::Dependency, || "push callback interrupted the post call".into())?;
+                self.swallow_abort(SwallowRefusal::Dependency, || {
+                    "push callback interrupted the post call".into()
+                })?;
                 // Like any other write-back failure (KickOff, Swap, ...),
                 // not latched: the targets stay dirty and the next call
                 // tries again. The callback waits with them.
@@ -2094,7 +2139,9 @@ impl<B: Backend> Device<B> {
                 // Everything queued before this entry has been recorded:
                 // the depth now is what the draws so far left.
                 if !self.pending_external.is_empty() {
-                    self.swallow_abort(SwallowRefusal::Dependency, || "an external job interrupted the post call".into())?;
+                    self.swallow_abort(SwallowRefusal::Dependency, || {
+                        "an external job interrupted the post call".into()
+                    })?;
                 }
                 for pass in std::mem::take(&mut self.pending_external) {
                     self.issue_external_pass(mem, pass);
@@ -2128,7 +2175,11 @@ impl<B: Backend> Device<B> {
     /// deliver where it was queued) or the push buffer has no room for the
     /// fragment (the game would make room first): the caller keeps the
     /// D3D path.
-    pub fn light_passes_tail(&mut self, mem: &mut dyn GuestMemory, clip: [u32; 2]) -> Result<bool, D3dError> {
+    pub fn light_passes_tail(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        clip: [u32; 2],
+    ) -> Result<bool, D3dError> {
         const E: &str = "render_light_passes tail";
         self.live(E)?;
         let dev = mem.read_u32(self.cfg.layout.p_device)?;
@@ -2145,7 +2196,10 @@ impl<B: Backend> Device<B> {
         // pointer, which it advances.
         let put = mem.read_u32(dev + field::PUT)?;
         if put >= mem.read_u32(dev + field::THRESHOLD)? {
-            return Err(D3dError::invalid(E, "no push-buffer room for the viewport fragment"));
+            return Err(D3dError::invalid(
+                E,
+                "no push-buffer room for the viewport fragment",
+            ));
         }
         mem.write_u32(dev + field::CLIP_PROGRAM, clip[0])?;
         mem.write_u32(dev + field::CLIP_PROGRAM + 4, clip[1])?;
@@ -2191,11 +2245,15 @@ impl<B: Backend> Device<B> {
     /// Enter a guest helper that emits a single candidate draw. Drain earlier
     /// packets before arming it. A nested helper supersedes the outer candidate.
     pub fn begin_draw_scope(
-        &mut self, mem: &mut dyn GuestMemory, admission: Arc<dyn crate::DrawAdmission>,
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        admission: Arc<dyn crate::DrawAdmission>,
     ) -> Result<Option<DrawScope>, D3dError> {
         let drained = self.begin_external_boundary(mem);
         self.scoped_admission = None;
-        if !drained? { return Ok(None); }
+        if !drained? {
+            return Ok(None);
+        }
         let scope = Arc::new(ScopeState::default());
         self.scoped_admission = Some((scope.clone(), admission));
         Ok(Some(DrawScope(scope)))
@@ -2203,8 +2261,16 @@ impl<B: Backend> Device<B> {
 
     /// Drain this helper's inline emission while its call identity is still
     /// live. Returns true only after the native replacement has committed.
-    pub fn end_draw_scope(&mut self, mem: &mut dyn GuestMemory, scope: DrawScope) -> Result<bool, D3dError> {
-        if self.scoped_admission.as_ref().is_some_and(|(s, _)| Arc::ptr_eq(s, &scope.0)) {
+    pub fn end_draw_scope(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        scope: DrawScope,
+    ) -> Result<bool, D3dError> {
+        if self
+            .scoped_admission
+            .as_ref()
+            .is_some_and(|(s, _)| Arc::ptr_eq(s, &scope.0))
+        {
             let drained = self.begin_external_boundary(mem);
             self.scoped_admission = None;
             drained?;
@@ -2215,9 +2281,14 @@ impl<B: Backend> Device<B> {
     /// Drain work preceding the hook and reserve an entire replacement. A pending
     /// guest callback must run first. It remains queued on refusal.
     pub fn prepare_external_pass(
-        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        plan: crate::ExternalPlan,
+        pass: Box<dyn crate::ExternalPass>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
-        if !self.begin_external_boundary(mem)? { return Ok(None); }
+        if !self.begin_external_boundary(mem)? {
+            return Ok(None);
+        }
         self.prepare_external_inner(mem, plan, pass, None, None)
     }
 
@@ -2235,7 +2306,10 @@ impl<B: Backend> Device<B> {
     /// At an already drained packet boundary, use the slot handles held with
     /// the original packets. A rebound or missing slot refuses the whole call.
     pub fn prepare_external_bound(
-        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        plan: crate::ExternalPlan,
+        pass: Box<dyn crate::ExternalPass>,
         slots: Vec<Option<B::Surface>>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
         self.prepare_external_inner(mem, plan, pass, Some(slots), None)
@@ -2243,8 +2317,12 @@ impl<B: Backend> Device<B> {
 
     /// Held draw packets retain their final viewport in guest pixels.
     pub fn prepare_external_bound_at(
-        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
-        slots: Vec<Option<B::Surface>>, rect: (u32, u32, u32, u32),
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        plan: crate::ExternalPlan,
+        pass: Box<dyn crate::ExternalPass>,
+        slots: Vec<Option<B::Surface>>,
+        rect: (u32, u32, u32, u32),
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
         self.prepare_external_inner(mem, plan, pass, Some(slots), Some(rect))
     }
@@ -2267,28 +2345,42 @@ impl<B: Backend> Device<B> {
     /// Nothing is queued until [`SceneReservation::commit`]; dropping the
     /// reservation cancels it.
     pub fn reserve_scene_stage(
-        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        plan: crate::ExternalPlan,
+        mut pass: Box<dyn crate::ExternalPass>,
     ) -> Result<Option<SceneReservation<'_, B>>, D3dError> {
-        if !self.queues_scene_stages(plan.stage) || plan.ranges == 0 || !self.backend.accepts_scene_pass(&*pass) {
+        if !self.queues_scene_stages(plan.stage)
+            || plan.ranges == 0
+            || !self.backend.accepts_scene_pass(&*pass)
+        {
             return Ok(None);
         }
         self.swallow_external_boundary()?;
-        let _extract = timeline::native::Timer::start(plan.stage, timeline::native::Metric::ExtractNs);
+        let _extract =
+            timeline::native::Timer::start(plan.stage, timeline::native::Metric::ExtractNs);
         let Ok(binding) = self.bind_external(mem, &plan, &mut *pass, None) else {
             return Ok(None);
         };
         let (x, y, w, h) = binding.request.rect;
         let (sw, sh) = binding.request.surface_size;
-        if w == 0 || h == 0 || x.checked_add(w).is_none_or(|r| r > sw) || y.checked_add(h).is_none_or(|b| b > sh) {
+        if w == 0
+            || h == 0
+            || x.checked_add(w).is_none_or(|r| r > sw)
+            || y.checked_add(h).is_none_or(|b| b > sh)
+        {
             return Ok(None);
         }
         let s = &binding.surfaces;
         let slots_valid = s.slots.len() == s.slot_sizes.len()
-            && s.slots.iter().zip(&s.slot_sizes).all(|(slot, size)| match (slot, size) {
-                (None, None) => true,
-                (Some(_), Some((w, h))) => *w != 0 && *h != 0,
-                _ => false,
-            });
+            && s.slots
+                .iter()
+                .zip(&s.slot_sizes)
+                .all(|(slot, size)| match (slot, size) {
+                    (None, None) => true,
+                    (Some(_), Some((w, h))) => *w != 0 && *h != 0,
+                    _ => false,
+                });
         if !slots_valid {
             return Ok(None);
         }
@@ -2301,21 +2393,32 @@ impl<B: Backend> Device<B> {
             plan,
             pass: Arc::new(std::sync::Mutex::new(pass)),
         };
-        Ok(Some(SceneReservation { device: self, stage, binding }))
+        Ok(Some(SceneReservation {
+            device: self,
+            stage,
+            binding,
+        }))
     }
 
     fn external_binding(
-        &mut self, mem: &mut dyn GuestMemory, plan: &crate::ExternalPlan, pass: &mut dyn crate::ExternalPass,
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        plan: &crate::ExternalPlan,
+        pass: &mut dyn crate::ExternalPass,
         held: Option<&[Option<B::Surface>]>,
     ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
-        let _timer = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
+        let _timer =
+            timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
         self.bind_external(mem, plan, pass, held)
     }
 
     /// [`Self::external_binding`], untimed: a scene stage charges it to its
     /// extraction ([`Self::reserve_scene_stage`]).
     fn bind_external(
-        &mut self, mem: &mut dyn GuestMemory, plan: &crate::ExternalPlan, pass: &mut dyn crate::ExternalPass,
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        plan: &crate::ExternalPlan,
+        pass: &mut dyn crate::ExternalPass,
         held: Option<&[Option<B::Surface>]>,
     ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
         let request = self.external_ready(mem, pass.colour_only())?;
@@ -2323,40 +2426,77 @@ impl<B: Backend> Device<B> {
         if (pass.colour_only() && writes.depth_stencil) || plan.ranges == 0 {
             return Err(ExternalRefusal::Targets);
         }
-        let color = self.surface_for(mem, "external colour", self.render_target, false).map_err(|_| ExternalRefusal::Targets)?;
-        let depth = if pass.colour_only() { color } else {
-            self.surface_for(mem, "external depth", self.depth_stencil, true).map_err(|_| ExternalRefusal::NoDepth)?
+        let color = self
+            .surface_for(mem, "external colour", self.render_target, false)
+            .map_err(|_| ExternalRefusal::Targets)?;
+        let depth = if pass.colour_only() {
+            color
+        } else {
+            self.surface_for(mem, "external depth", self.depth_stencil, true)
+                .map_err(|_| ExternalRefusal::NoDepth)?
         };
         let mut sampled = Vec::new();
         for header in pass.sampled() {
-            let (_, s) = self.rtt_level(mem, header, 0).ok().flatten().ok_or(ExternalRefusal::Targets)?;
+            let (_, s) = self
+                .rtt_level(mem, header, 0)
+                .ok()
+                .flatten()
+                .ok_or(ExternalRefusal::Targets)?;
             sampled.push(s);
         }
         let mut colors = Vec::new();
-        if writes.color { colors.push((self.render_target, color)); }
+        if writes.color {
+            colors.push((self.render_target, color));
+        }
         let mut slots = Vec::with_capacity(plan.slots.len());
         let mut slot_sizes = Vec::with_capacity(plan.slots.len());
         for slot in &plan.slots {
-            let Some(slot) = slot else { slots.push(None); slot_sizes.push(None); continue };
-            if slot.header == 0 { return Err(ExternalRefusal::Header); }
-            let s = self.surface_for(mem, "external slot", slot.header, false).map_err(|_| ExternalRefusal::Targets)?;
-            if slot.written && !colors.contains(&(slot.header, s)) { colors.push((slot.header, s)); }
-            let desc = self.header_desc(mem, slot.header).map_err(|_| ExternalRefusal::Header)?;
+            let Some(slot) = slot else {
+                slots.push(None);
+                slot_sizes.push(None);
+                continue;
+            };
+            if slot.header == 0 {
+                return Err(ExternalRefusal::Header);
+            }
+            let s = self
+                .surface_for(mem, "external slot", slot.header, false)
+                .map_err(|_| ExternalRefusal::Targets)?;
+            if slot.written && !colors.contains(&(slot.header, s)) {
+                colors.push((slot.header, s));
+            }
+            let desc = self
+                .header_desc(mem, slot.header)
+                .map_err(|_| ExternalRefusal::Header)?;
             slot_sizes.push(Some((desc.width, desc.height)));
             slots.push(Some(s));
         }
-        if held.is_some_and(|held| held != slots.as_slice()) { return Err(ExternalRefusal::Targets); }
+        if held.is_some_and(|held| held != slots.as_slice()) {
+            return Err(ExternalRefusal::Targets);
+        }
         pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
         pass.depth_clip(self.depth_clip(mem, request.z_scale));
         Ok(ExternalBinding {
-            surfaces: crate::ExternalSurfaces { color, depth, sampled, slots, slot_sizes },
-            request, colors, depth_write: writes.depth_stencil,
+            surfaces: crate::ExternalSurfaces {
+                color,
+                depth,
+                sampled,
+                slots,
+                slot_sizes,
+            },
+            request,
+            colors,
+            depth_write: writes.depth_stencil,
         })
     }
 
     fn prepare_external_inner(
-        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
-        slots: Option<Vec<Option<B::Surface>>>, rect: Option<(u32, u32, u32, u32)>,
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        plan: crate::ExternalPlan,
+        mut pass: Box<dyn crate::ExternalPass>,
+        slots: Option<Vec<Option<B::Surface>>>,
+        rect: Option<(u32, u32, u32, u32)>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
         self.swallow_external_boundary()?;
         let items = pass.items(plan.ranges) as u64;
@@ -2365,14 +2505,21 @@ impl<B: Backend> Device<B> {
             Err(why) => {
                 self.refuse_external(why);
                 plan.stage.count(timeline::native::Metric::Examined, items);
-                plan.stage.count(timeline::native::Metric::RefusedResources, items);
+                plan.stage
+                    .count(timeline::native::Metric::RefusedResources, items);
                 return Ok(None);
             }
         };
-        if let Some(rect) = rect { binding.request.rect = rect; }
+        if let Some(rect) = rect {
+            binding.request.rect = rect;
+        }
         let commands = match self.backend.prepare_external(
-            binding.surfaces.clone(), binding.request, [None; 4], &plan,
-            crate::TargetCopy::Reference, Arc::new(std::sync::Mutex::new(pass)),
+            binding.surfaces.clone(),
+            binding.request,
+            [None; 4],
+            &plan,
+            crate::TargetCopy::Reference,
+            Arc::new(std::sync::Mutex::new(pass)),
         ) {
             Ok(commands) => commands,
             Err(_) => {
@@ -2384,15 +2531,23 @@ impl<B: Backend> Device<B> {
     }
 
     fn external_reservation(
-        &mut self, plan: crate::ExternalPlan, binding: ExternalBinding<B::Surface>,
+        &mut self,
+        plan: crate::ExternalPlan,
+        binding: ExternalBinding<B::Surface>,
         commands: Option<Vec<crate::ExternalRecording>>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
         let Some(recordings) = commands.filter(|c| complete_recordings(&plan, c)) else {
             self.refuse_external(ExternalRefusal::Backend);
             return Ok(None);
         };
-        for &(_, surface) in &binding.colors { self.materialize_display_copy(surface)?; }
-        Ok(Some(PreparedExternal { device: self, binding, recordings }))
+        for &(_, surface) in &binding.colors {
+            self.materialize_display_copy(surface)?;
+        }
+        Ok(Some(PreparedExternal {
+            device: self,
+            binding,
+            recordings,
+        }))
     }
 
     /// Render-state slot `slot` (guest numbering) as the setters stored it
@@ -2435,7 +2590,10 @@ impl<B: Backend> Device<B> {
     /// `0x3f53d0` and `_FrontFace` `0x3f5450` store them in the guest's
     /// render-state array), decoded as draws decode them. `None` when a
     /// slot does not read or holds a value outside its enum.
-    pub fn cull_state(&self, mem: &dyn GuestMemory) -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
+    pub fn cull_state(
+        &self,
+        mem: &dyn GuestMemory,
+    ) -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
         use gfx::state::RenderStateType as R;
         let table = RenderStateTable::default();
         let mut rs = gfx::state::RenderState::default();
@@ -2477,7 +2635,12 @@ impl<B: Backend> Device<B> {
         }
         let va = self.cfg.address_map.to_virtual(p.resource.data);
         let bytes = mem.read_vec(va, 4 * p.entries() as usize).ok()?;
-        Some(bytes.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+        Some(
+            bytes
+                .chunks_exact(4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect(),
+        )
     }
 
     /// Asks for `pass` to draw into the bound colour target and depth with
@@ -2518,7 +2681,10 @@ impl<B: Backend> Device<B> {
         if s.call.is_none() {
             let writes = s.pass.writes();
             if s.drop || writes.color || writes.depth_stencil {
-                return Err(D3dError::invalid("swallow", "an unscoped observer must be read-only"));
+                return Err(D3dError::invalid(
+                    "swallow",
+                    "an unscoped observer must be read-only",
+                ));
             }
         }
         self.interrupt_swallow()?;
@@ -2527,7 +2693,9 @@ impl<B: Backend> Device<B> {
             self.swallow_refused(SwallowRefusal::Dependency);
             return Ok(false);
         }
-        let Some(&last) = s.targets.iter().max() else { return Ok(false) };
+        let Some(&last) = s.targets.iter().max() else {
+            return Ok(false);
+        };
         if s.drop {
             let ready = if s.pass.colour_only() {
                 self.external_ready(mem, true).map(|_| ())
@@ -2565,13 +2733,23 @@ impl<B: Backend> Device<B> {
     /// A new post call interrupts the previous one even when the new call
     /// has no native plan. The original prefix stays before pending pushes.
     pub fn interrupt_swallow(&mut self) -> Result<(), D3dError> {
-        self.swallow_abort(SwallowRefusal::CallBoundary, || "another post call entered".into())
+        self.swallow_abort(SwallowRefusal::CallBoundary, || {
+            "another post call entered".into()
+        })
     }
 
     /// Finishes a post call before its caller runs another command. A
     /// final pushed draw may still be queued at the guest return.
-    pub fn finish_swallow(&mut self, mem: &mut dyn GuestMemory, entry: u32, esp: u32) -> Result<(), D3dError> {
-        if !self.swallowing.as_ref().and_then(|s| s.plan.call)
+    pub fn finish_swallow(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: u32,
+        esp: u32,
+    ) -> Result<(), D3dError> {
+        if !self
+            .swallowing
+            .as_ref()
+            .and_then(|s| s.plan.call)
             .is_some_and(|call| call.entry == entry && call.esp == esp)
         {
             return Ok(());
@@ -2580,16 +2758,24 @@ impl<B: Backend> Device<B> {
             Ok(None) => {}
             Ok(Some(cb)) => {
                 self.undelivered = Some(cb);
-                return self.swallow_abort(SwallowRefusal::Dependency, || "post call returned with a push callback".into());
+                return self.swallow_abort(SwallowRefusal::Dependency, || {
+                    "post call returned with a push callback".into()
+                });
             }
             Err(error) => {
-                self.swallow_abort(SwallowRefusal::Dependency, || "post call's push drain failed".into())?;
+                self.swallow_abort(SwallowRefusal::Dependency, || {
+                    "post call's push drain failed".into()
+                })?;
                 return Err(error);
             }
         }
-        let Some(s) = self.swallowing.as_ref() else { return Ok(()) };
+        let Some(s) = self.swallowing.as_ref() else {
+            return Ok(());
+        };
         if s.next != s.plan.targets.len() {
-            return self.swallow_abort(SwallowRefusal::CallBoundary, || "post call returned before its last planned draw".into());
+            return self.swallow_abort(SwallowRefusal::CallBoundary, || {
+                "post call returned before its last planned draw".into()
+            });
         }
         self.swallow_commit(mem)
     }
@@ -2616,15 +2802,21 @@ impl<B: Backend> Device<B> {
         ret: u32,
         has_return_hook: impl FnOnce(u32) -> bool,
     ) -> Result<(), D3dError> {
-        let Some(s) = self.swallowing.as_mut() else { return Ok(()) };
-        let Some(call) = s.plan.call else { return Ok(()) };
+        let Some(s) = self.swallowing.as_mut() else {
+            return Ok(());
+        };
+        let Some(call) = s.plan.call else {
+            return Ok(());
+        };
         let cookie = mem.read_u32(call.esp).ok();
         let owns_call = match s.return_cookie {
             Some(saved) => cookie == Some(saved),
             None => cookie.is_some_and(has_return_hook),
         };
         if esp >= call.esp || ret == call.ret || !owns_call {
-            return self.swallow_abort(SwallowRefusal::CallBoundary, || format!("D3D caller {ret:#010x} left the post call"));
+            return self.swallow_abort(SwallowRefusal::CallBoundary, || {
+                format!("D3D caller {ret:#010x} left the post call")
+            });
         }
         s.return_cookie = cookie;
         s.end_return = Some(ret);
@@ -2640,40 +2832,64 @@ impl<B: Backend> Device<B> {
         // The dedicated render-state adapters all call set_render_state.
         // They only change state for later draws; held packets already
         // contain their resolved state.
-        if crate::abi::RENDER_STATE_SETTERS.iter().any(|&(_, name, _)| entry == name)
+        if crate::abi::RENDER_STATE_SETTERS
+            .iter()
+            .any(|&(_, name, _)| entry == name)
             || entry.starts_with("D3DDevice_SetVertexData")
             || entry.starts_with("D3DDevice_SetVertexShader")
             || entry.starts_with("D3DDevice_SetTextureState")
             || entry.starts_with("D3DDevice_SetRenderTarget")
-            || matches!(entry,
-                "D3DDevice_Begin" | "D3DDevice_End" | "D3DDevice_SetTexture" | "D3DDevice_SetPalette"
-                | "D3DDevice_SetRenderState_Simple" | "D3DDevice_SetShaderConstantMode"
-                | "D3DDevice_SetViewport" | "D3DDevice_SetScissors" | "D3DDevice_SetPixelShader"
-                | "D3DDevice_LoadVertexShaderProgram" | "D3DDevice_SelectVertexShaderDirect"
-                | "D3D_MakeRequestedSpace" | "D3D viewport push fragment" | "D3D push fragment (0x3f6390)"
-                | "D3D_UpdateProjectionViewportTransform" | "D3D transform/viewport push (0x3f6f40)"
-                | "D3D commit deferred state (0x400fa0)")
+            || matches!(
+                entry,
+                "D3DDevice_Begin"
+                    | "D3DDevice_End"
+                    | "D3DDevice_SetTexture"
+                    | "D3DDevice_SetPalette"
+                    | "D3DDevice_SetRenderState_Simple"
+                    | "D3DDevice_SetShaderConstantMode"
+                    | "D3DDevice_SetViewport"
+                    | "D3DDevice_SetScissors"
+                    | "D3DDevice_SetPixelShader"
+                    | "D3DDevice_LoadVertexShaderProgram"
+                    | "D3DDevice_SelectVertexShaderDirect"
+                    | "D3D_MakeRequestedSpace"
+                    | "D3D viewport push fragment"
+                    | "D3D push fragment (0x3f6390)"
+                    | "D3D_UpdateProjectionViewportTransform"
+                    | "D3D transform/viewport push (0x3f6f40)"
+                    | "D3D commit deferred state (0x400fa0)"
+            )
         {
             return Ok(());
         }
-        self.swallow_abort(SwallowRefusal::Dependency, || format!("{entry} is a post transaction boundary"))
+        self.swallow_abort(SwallowRefusal::Dependency, || {
+            format!("{entry} is a post transaction boundary")
+        })
     }
 
     fn swallow_external_boundary(&mut self) -> Result<(), D3dError> {
-        self.swallow_abort(SwallowRefusal::Dependency, || "external boundary inside the post call".into())
+        self.swallow_abort(SwallowRefusal::Dependency, || {
+            "external boundary inside the post call".into()
+        })
     }
 
     pub(crate) fn swallow_entry_failed(&mut self, entry: &'static str) {
-        if let Err(error) = self.swallow_abort(SwallowRefusal::Dependency, || format!("{entry} failed during the post call")) {
+        if let Err(error) = self.swallow_abort(SwallowRefusal::Dependency, || {
+            format!("{entry} failed during the post call")
+        }) {
             eprintln!("d3d: replaying the post originals after {entry} failed: {error}");
         }
     }
 
     fn swallow_fate(&mut self, d: &ImmediateDraw, push: bool) -> Result<Fate, D3dError> {
-        let Some(s) = self.swallowing.as_mut() else { return Ok(Fate::Drawn) };
+        let Some(s) = self.swallowing.as_mut() else {
+            return Ok(Fate::Drawn);
+        };
         let target = self.render_target;
         let Some(&slot) = s.plan.targets.get(s.next) else {
-            self.swallow_abort(SwallowRefusal::Shape, || "extra draw before the post call returned".into())?;
+            self.swallow_abort(SwallowRefusal::Shape, || {
+                "extra draw before the post call returned".into()
+            })?;
             return Ok(Fate::Drawn);
         };
         let slot = usize::from(slot);
@@ -2681,14 +2897,31 @@ impl<B: Backend> Device<B> {
             Some(h) => h == target,
             None => target != 0 && !s.headers.contains(&Some(target)),
         };
-        let (primitive, vertices) = s.plan.shapes.get(s.next).copied().unwrap_or((s.plan.primitive, s.plan.vertices));
+        let (primitive, vertices) = s
+            .plan
+            .shapes
+            .get(s.next)
+            .copied()
+            .unwrap_or((s.plan.primitive, s.plan.vertices));
         let end = s.plan.end_returns.get(s.next).copied().flatten();
         let origin = s.plan.call.is_none()
-            || if push { end.is_none() } else { end.is_some() && end == s.end_return };
-        if !origin || !into || !d.inline.is_empty() || d.primitive != primitive || d.vertices.len() != vertices {
+            || if push {
+                end.is_none()
+            } else {
+                end.is_some() && end == s.end_return
+            };
+        if !origin
+            || !into
+            || !d.inline.is_empty()
+            || d.primitive != primitive
+            || d.vertices.len() != vertices
+        {
             let detail = format!(
                 "draw {} of {}: planned {primitive:?} x{vertices} into slot {slot}, got {:?} x{}{}{}",
-                s.next, s.plan.targets.len(), d.primitive, d.vertices.len(),
+                s.next,
+                s.plan.targets.len(),
+                d.primitive,
+                d.vertices.len(),
                 if into { "" } else { ", into another target" },
                 if origin { "" } else { ", from another emitter" },
             );
@@ -2698,7 +2931,11 @@ impl<B: Backend> Device<B> {
         s.headers[slot] = Some(target);
         s.holding = s.plan.drop;
         self.stats.swallowed_draws += 1;
-        Ok(if s.holding { Fate::Held } else { Fate::Observed })
+        Ok(if s.holding {
+            Fate::Held
+        } else {
+            Fate::Observed
+        })
     }
 
     fn swallow_refused(&mut self, reason: SwallowRefusal) {
@@ -2714,8 +2951,14 @@ impl<B: Backend> Device<B> {
         Stage::Post.count(metric, 1);
     }
 
-    fn swallow_abort(&mut self, reason: SwallowRefusal, detail: impl FnOnce() -> String) -> Result<(), D3dError> {
-        let Some(s) = self.swallowing.take() else { return Ok(()) };
+    fn swallow_abort(
+        &mut self,
+        reason: SwallowRefusal,
+        detail: impl FnOnce() -> String,
+    ) -> Result<(), D3dError> {
+        let Some(s) = self.swallowing.take() else {
+            return Ok(());
+        };
         if matches!(reason, SwallowRefusal::Shape | SwallowRefusal::CallBoundary) {
             self.stats.swallow_mismatches += 1;
         }
@@ -2728,7 +2971,9 @@ impl<B: Backend> Device<B> {
     fn swallow_replay(&mut self, packets: Vec<SwallowPacket<B>>) -> Result<(), D3dError> {
         for p in packets {
             let textures = std::array::from_fn(|i| {
-                p.snapshots[i].as_ref().or_else(|| p.keys[i].and_then(|k| p.cached.get(&k)).map(|c| &c.host))
+                p.snapshots[i]
+                    .as_ref()
+                    .or_else(|| p.keys[i].and_then(|k| p.cached.get(&k)).map(|c| &c.host))
             });
             let entry = p.draw.entry;
             let writes_color = p.draw.state.render.color_write.xbox_value() != 0;
@@ -2744,8 +2989,12 @@ impl<B: Backend> Device<B> {
                         self.present_cameras.color_written(p.color);
                     }
                 }
-                DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
-                DrawOutcome::Unsupported(detail) => return Err(D3dError::Unimplemented { entry, detail }),
+                DrawOutcome::Skipped(reason) => {
+                    self.events.push(Event::DrawSkipped { entry, reason })
+                }
+                DrawOutcome::Unsupported(detail) => {
+                    return Err(D3dError::Unimplemented { entry, detail });
+                }
             }
             for (key, texture) in p.cached {
                 self.cache.entry(key).or_insert(texture);
@@ -2763,19 +3012,33 @@ impl<B: Backend> Device<B> {
         color: B::Surface,
         draw: &ResolvedDraw,
     ) -> Result<(), D3dError> {
-        let Some(s) = self.swallowing.as_mut() else { return Ok(()) };
+        let Some(s) = self.swallowing.as_mut() else {
+            return Ok(());
+        };
         let header = self.render_target;
         let identity = PixelContainer::read(mem, header)?.identity();
-        let target = SwallowSurface { surface: color, header, identity, size: (draw.target.width, draw.target.height) };
+        let target = SwallowSurface {
+            surface: color,
+            header,
+            identity,
+            size: (draw.target.width, draw.target.height),
+        };
         let slot = usize::from(s.plan.targets[s.next]);
         if s.surfaces[slot].is_some_and(|old| old != target)
-            || s.surfaces.iter().enumerate().any(|(i, t)| i != slot && t.is_some_and(|t| t.surface == color))
+            || s.surfaces
+                .iter()
+                .enumerate()
+                .any(|(i, t)| i != slot && t.is_some_and(|t| t.surface == color))
         {
-            return self.swallow_abort(SwallowRefusal::Resource, || format!("post target slot {slot} changed generation or aliased another slot"));
+            return self.swallow_abort(SwallowRefusal::Resource, || {
+                format!("post target slot {slot} changed generation or aliased another slot")
+            });
         }
         s.surfaces[slot] = Some(target);
         let Some(z_scale) = self.guest_z_scale(mem) else {
-            return self.swallow_abort(SwallowRefusal::Resource, || "post target's Z scale is unreadable".into());
+            return self.swallow_abort(SwallowRefusal::Resource, || {
+                "post target's Z scale is unreadable".into()
+            });
         };
         let v = draw.viewport;
         let request = crate::backend::ExternalPassRequest {
@@ -2798,14 +3061,18 @@ impl<B: Backend> Device<B> {
         header: u32,
         sample_sign: Option<u32>,
     ) -> Result<bool, D3dError> {
-        let Some(s) = self.swallowing.as_ref() else { return Ok(false) };
+        let Some(s) = self.swallowing.as_ref() else {
+            return Ok(false);
+        };
         if s.packets.is_empty() || header == 0 {
             return Ok(false);
         }
         let live = PixelContainer::read(mem, header).ok();
         let desc = live.and_then(|pc| crate::texdesc::from_header(pc.format, pc.size).ok());
         let start = live.map(|pc| u64::from(self.cfg.address_map.to_virtual(pc.resource.data)));
-        let len = desc.as_ref().and_then(|d| crate::texdesc::total_size(d).ok());
+        let len = desc
+            .as_ref()
+            .and_then(|d| crate::texdesc::total_size(d).ok());
         let overlaps = |base: u32, bytes: u32| {
             start.zip(len).is_none_or(|(a, n)| {
                 let b = u64::from(base);
@@ -2814,7 +3081,9 @@ impl<B: Backend> Device<B> {
         };
         let mut samples_held = false;
         let conflicts = s.surfaces.iter().flatten().any(|t| {
-            let Ok(current) = PixelContainer::read(mem, t.header) else { return true };
+            let Ok(current) = PixelContainer::read(mem, t.header) else {
+                return true;
+            };
             if current.identity() != t.identity {
                 return true;
             }
@@ -2822,8 +3091,13 @@ impl<B: Backend> Device<B> {
                 if !overlaps(level.data, level.len()) {
                     return false;
                 }
-                if self.rtt_stores.get(&t.header).is_some_and(|stores| !stores.is_empty())
-                    || self.tracker.dirty_since(level.data, level.len(), level.generation)
+                if self
+                    .rtt_stores
+                    .get(&t.header)
+                    .is_some_and(|stores| !stores.is_empty())
+                    || self
+                        .tracker
+                        .dirty_since(level.data, level.len(), level.generation)
                 {
                     return true;
                 }
@@ -2853,7 +3127,8 @@ impl<B: Backend> Device<B> {
                 // Resolving an exact direct sample never reads the guest
                 // pixels. A clean alias cannot trigger a write-back.
                 let same = direct.is_some_and(|(selected, source)| {
-                    selected == t.header && source.surface == t.surface
+                    selected == t.header
+                        && source.surface == t.surface
                         && !self.dirty_level_overlap(selected, &source)
                 });
                 samples_held |= same;
@@ -2865,7 +3140,9 @@ impl<B: Backend> Device<B> {
             sample_sign.is_some() && overlaps(base, FRAME_DATA_SPAN)
         });
         if conflicts {
-            self.swallow_abort(SwallowRefusal::Resource, || format!("resource {header:#010x} needs the original post pixels"))?;
+            self.swallow_abort(SwallowRefusal::Resource, || {
+                format!("resource {header:#010x} needs the original post pixels")
+            })?;
             return Ok(false);
         }
         Ok(samples_held)
@@ -2880,8 +3157,13 @@ impl<B: Backend> Device<B> {
         if self.swallowing.is_none() {
             return Ok(());
         }
-        if target != self.render_target && !self.rtt_lazy() && self.rtt.contains_key(&self.render_target) {
-            self.swallow_abort(SwallowRefusal::Dependency, || "target switch writes back the original post pixels".into())?;
+        if target != self.render_target
+            && !self.rtt_lazy()
+            && self.rtt.contains_key(&self.render_target)
+        {
+            self.swallow_abort(SwallowRefusal::Dependency, || {
+                "target switch writes back the original post pixels".into()
+            })?;
         }
         self.swallow_resource(mem, target, None)?;
         self.swallow_resource(mem, depth, None)?;
@@ -2891,11 +3173,17 @@ impl<B: Backend> Device<B> {
     fn swallow_before_destroy(&mut self, header: u32) -> Result<(), D3dError> {
         let uses_resource = self.swallowing.as_ref().is_some_and(|s| {
             s.surfaces.iter().flatten().any(|t| {
-                t.header == header || self.rtt.get(&t.header).is_some_and(|level| level.parent == header)
+                t.header == header
+                    || self
+                        .rtt
+                        .get(&t.header)
+                        .is_some_and(|level| level.parent == header)
             })
         });
         if uses_resource {
-            self.swallow_abort(SwallowRefusal::Dependency, || format!("post draw resource {header:#010x} is being destroyed"))?;
+            self.swallow_abort(SwallowRefusal::Dependency, || {
+                format!("post draw resource {header:#010x} is being destroyed")
+            })?;
         }
         Ok(())
     }
@@ -2908,7 +3196,9 @@ impl<B: Backend> Device<B> {
 
         let s = self.swallowing.as_ref().expect("post call at return");
         if s.last.is_none() || (s.plan.drop && s.packets.len() != s.plan.targets.len()) {
-            return self.swallow_abort(SwallowRefusal::Shape, || "post call did not resolve all its draws".into());
+            return self.swallow_abort(SwallowRefusal::Shape, || {
+                "post call did not resolve all its draws".into()
+            });
         }
         if s.plan.drop {
             for target in s.surfaces.iter().flatten() {
@@ -2917,17 +3207,34 @@ impl<B: Backend> Device<B> {
                     // way out. Check the actual host level it drew into.
                     level.surface == target.surface && level.identity == target.identity
                 } else {
-                    PixelContainer::read(mem, target.header).is_ok_and(|pc| pc.identity() == target.identity)
+                    PixelContainer::read(mem, target.header)
+                        .is_ok_and(|pc| pc.identity() == target.identity)
                 };
                 if !live {
-                    return self.swallow_abort(SwallowRefusal::Resource, || "post target changed before return".into());
+                    return self.swallow_abort(SwallowRefusal::Resource, || {
+                        "post target changed before return".into()
+                    });
                 }
             }
-            let originals: Vec<_> = s.packets.iter().map(|p| SwallowOriginal { draw: &p.draw, source_data: p.source_data, sampled: p.sampled }).collect();
-            let slots: Vec<_> = s.surfaces.iter().map(|slot| slot.map(|t| SwallowTarget {
-                data: self.cfg.address_map.to_virtual(t.identity[0]),
-                size: t.size,
-            })).collect();
+            let originals: Vec<_> = s
+                .packets
+                .iter()
+                .map(|p| SwallowOriginal {
+                    draw: &p.draw,
+                    source_data: p.source_data,
+                    sampled: p.sampled,
+                })
+                .collect();
+            let slots: Vec<_> = s
+                .surfaces
+                .iter()
+                .map(|slot| {
+                    slot.map(|t| SwallowTarget {
+                        data: self.cfg.address_map.to_virtual(t.identity[0]),
+                        size: t.size,
+                    })
+                })
+                .collect();
             if let Err(detail) = s.plan.pass.validate(&originals, &slots) {
                 return self.swallow_abort(SwallowRefusal::Resource, || detail);
             }
@@ -2941,7 +3248,10 @@ impl<B: Backend> Device<B> {
 
         if !s.plan.drop {
             let writes_color = pass.writes().color;
-            match self.backend.external_pass(color, color, Vec::new(), request, pass) {
+            match self
+                .backend
+                .external_pass(color, color, Vec::new(), request, pass)
+            {
                 Ok(true) => {
                     if writes_color {
                         self.present_cameras.color_written(color);
@@ -2958,24 +3268,45 @@ impl<B: Backend> Device<B> {
             stage: Stage::Post,
             view: u32::MAX,
             ranges: s.packets.len(),
-            slots: s.surfaces.iter().map(|slot| slot.map(|slot| ExternalSlot { header: slot.header, written: true })).collect(),
+            slots: s
+                .surfaces
+                .iter()
+                .map(|slot| {
+                    slot.map(|slot| ExternalSlot {
+                        header: slot.header,
+                        written: true,
+                    })
+                })
+                .collect(),
         };
         let surfaces = ExternalSurfaces {
             color,
             depth: color,
             sampled: Vec::new(),
-            slots: s.surfaces.iter().map(|slot| slot.map(|t| t.surface)).collect(),
+            slots: s
+                .surfaces
+                .iter()
+                .map(|slot| slot.map(|t| t.surface))
+                .collect(),
             slot_sizes: s.surfaces.iter().map(|slot| slot.map(|t| t.size)).collect(),
         };
         let textures = std::array::from_fn(|i| {
             let first = s.packets.first().filter(|_| entry_samples)?;
-            if !first.sampled[i] { return None; }
+            if !first.sampled[i] {
+                return None;
+            }
             first.snapshots[i].as_ref().or_else(|| {
-                first.keys[i].and_then(|key| first.cached.get(&key)).map(|texture| &texture.host)
+                first.keys[i]
+                    .and_then(|key| first.cached.get(&key))
+                    .map(|texture| &texture.host)
             })
         });
         let recordings = self.backend.prepare_external(
-            surfaces, request, textures, &plan, TargetCopy::Reference,
+            surfaces,
+            request,
+            textures,
+            &plan,
+            TargetCopy::Reference,
             Arc::new(std::sync::Mutex::new(pass)),
         );
         if let Ok(Some(recordings)) = recordings
@@ -3018,13 +3349,19 @@ impl<B: Backend> Device<B> {
             return Ok(Some(packet));
         }
         let draw = &packet.draw;
-        if depth_dependency || draw.hw.zpass_count_enable || !draw.state.bad.is_empty()
-            || self.depth_color.is_some_and(|c| c.header == self.render_target)
+        if depth_dependency
+            || draw.hw.zpass_count_enable
+            || !draw.state.bad.is_empty()
+            || self
+                .depth_color
+                .is_some_and(|c| c.header == self.render_target)
             || (packet.depth.is_some()
                 && (draw.state.render.depth_mode != gfx::state::DepthBufferMode::Disabled
                     || draw.state.render.stencil.enable))
         {
-            self.swallow_abort(SwallowRefusal::Dependency, || "post draw has an unsupported state or device dependency".into())?;
+            self.swallow_abort(SwallowRefusal::Dependency, || {
+                "post draw has an unsupported state or device dependency".into()
+            })?;
             return Ok(Some(packet));
         }
         packet.source_data = std::array::from_fn(|stage| {
@@ -3062,7 +3399,10 @@ impl<B: Backend> Device<B> {
         let i = why.index();
         self.stats.external_refusals[i] += 1;
         if EXTERNAL_REFUSALS_LOGGED.fetch_or(1 << i, Ordering::Relaxed) & (1 << i) == 0 {
-            eprintln!("d3d: an external pass was dropped: {} (logged once)", why.describe());
+            eprintln!(
+                "d3d: an external pass was dropped: {} (logged once)",
+                why.describe()
+            );
         }
     }
 
@@ -3083,7 +3423,9 @@ impl<B: Backend> Device<B> {
         if !colour_only && self.depth_stencil == 0 {
             return Err(ExternalRefusal::NoDepth);
         }
-        let d = self.header_desc(mem, self.render_target).map_err(|_| ExternalRefusal::Header)?;
+        let d = self
+            .header_desc(mem, self.render_target)
+            .map_err(|_| ExternalRefusal::Header)?;
         let z_scale = self.guest_z_scale(mem).ok_or(ExternalRefusal::Header)?;
         let v = self.viewport;
         Ok(crate::backend::ExternalPassRequest {
@@ -3100,13 +3442,16 @@ impl<B: Backend> Device<B> {
     /// from their creation params, just as `surface_for` uses their live handles.
     #[cfg(feature = "gpu")]
     pub fn external_pipeline_target(
-        &self, mem: &dyn GuestMemory,
+        &self,
+        mem: &dyn GuestMemory,
     ) -> Option<(wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat)> {
         if self.render_target == 0 || self.depth_stencil == 0 {
             return None;
         }
         let (device, _) = self.backend.upload_device()?;
-        let color = if self.render_target == self.back_header || self.frame_headers.contains(&self.render_target) {
+        let color = if self.render_target == self.back_header
+            || self.frame_headers.contains(&self.render_target)
+        {
             D3DFormat::from_raw(self.params?.back_buffer_format)?
         } else {
             self.header_desc(mem, self.render_target).ok()?.format
@@ -3117,7 +3462,35 @@ impl<B: Backend> Device<B> {
             self.header_desc(mem, self.depth_stencil).ok()?.format
         };
         let caps = gfx::translate::Capabilities::from_features(device.features());
-        Some((device, gfx::surface::color_surface_format(color)?, gfx::surface::depth_surface_format(depth, caps)?))
+        Some((
+            device,
+            gfx::surface::color_surface_format(color)?,
+            gfx::surface::depth_surface_format(depth, caps)?,
+        ))
+    }
+
+    /// Formats for a colour-only native pass and the backend's scratch depth.
+    #[cfg(feature = "gpu")]
+    pub fn external_pipeline_colour_target(
+        &self,
+        mem: &dyn GuestMemory,
+    ) -> Option<(wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat)> {
+        if self.render_target == 0 {
+            return None;
+        }
+        let (device, _) = self.backend.upload_device()?;
+        let color = if self.render_target == self.back_header
+            || self.frame_headers.contains(&self.render_target)
+        {
+            D3DFormat::from_raw(self.params?.back_buffer_format)?
+        } else {
+            self.header_desc(mem, self.render_target).ok()?.format
+        };
+        Some((
+            device,
+            gfx::surface::color_surface_format(color)?,
+            wgpu::TextureFormat::Depth32Float,
+        ))
     }
 
     /// The device's depth full scale (`+0x948`), the D24 one when it is
@@ -3125,10 +3498,18 @@ impl<B: Backend> Device<B> {
     fn guest_z_scale(&self, mem: &dyn GuestMemory) -> Option<f32> {
         let dev = mem.read_u32(self.cfg.layout.p_device).ok()?;
         let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).ok()?);
-        Some(if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 })
+        Some(if z_scale.is_finite() && z_scale > 0.0 {
+            z_scale
+        } else {
+            16_777_215.0
+        })
     }
 
-    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) -> bool {
+    fn issue_external_pass(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        mut pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> bool {
         pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
         if let Some(z_max) = self.guest_z_scale(mem) {
             pass.depth_clip(self.depth_clip(mem, z_max));
@@ -3140,7 +3521,12 @@ impl<B: Backend> Device<B> {
         let sampled = pass
             .sampled()
             .into_iter()
-            .map(|header| self.rtt_level(mem, header, 0).ok().flatten().map(|(_, surface)| surface))
+            .map(|header| {
+                self.rtt_level(mem, header, 0)
+                    .ok()
+                    .flatten()
+                    .map(|(_, surface)| surface)
+            })
             .collect();
         let issued = match self.external_ready(mem, colour_only) {
             Err(why) => Err(why),
@@ -3150,8 +3536,13 @@ impl<B: Backend> Device<B> {
                 // gives it a scratch depth; `Backend::external_pass`).
                 Ok((color, depth)) => match if colour_only { Some(color) } else { depth } {
                     None => Err(ExternalRefusal::NoDepth),
-                    Some(_) if writes.color && self.materialize_display_copy(color).is_err() => Err(ExternalRefusal::Failed),
-                    Some(depth) => match self.backend.external_pass(color, depth, sampled, request, pass) {
+                    Some(_) if writes.color && self.materialize_display_copy(color).is_err() => {
+                        Err(ExternalRefusal::Failed)
+                    }
+                    Some(depth) => match self
+                        .backend
+                        .external_pass(color, depth, sampled, request, pass)
+                    {
                         Ok(true) => {
                             if writes.color {
                                 self.present_cameras.color_written(color);
@@ -3167,8 +3558,12 @@ impl<B: Backend> Device<B> {
         match issued {
             Ok(()) => {
                 self.stats.external_passes += 1;
-                if writes.color { self.mark_color_written(self.render_target); }
-                if writes.depth_stencil && !colour_only { self.mark_depth_written(); }
+                if writes.color {
+                    self.mark_color_written(self.render_target);
+                }
+                if writes.depth_stencil && !colour_only {
+                    self.mark_depth_written();
+                }
                 true
             }
             Err(why) => {
@@ -3189,7 +3584,10 @@ impl<B: Backend> Device<B> {
         crate::backend::DepthClip {
             range: crate::hw::w_clip_range(&self.hw, z_max),
             clamp: crate::hw::clamps_depth(control),
-            w_buffered: self.hw.control0.map(|c| c & crate::hw::CONTROL0_Z_PERSPECTIVE != 0),
+            w_buffered: self
+                .hw
+                .control0
+                .map(|c| c & crate::hw::CONTROL0_Z_PERSPECTIVE != 0),
         }
     }
 
@@ -3329,7 +3727,9 @@ impl<B: Backend> Device<B> {
                             self.push_slot(mem, slot, w)?;
                         }
                         None if m == crate::hw::method::CLEAR_REPORT_VALUE => {
-                            self.swallow_abort(SwallowRefusal::Dependency, || "pixel report interrupted the post call".into())?;
+                            self.swallow_abort(SwallowRefusal::Dependency, || {
+                                "pixel report interrupted the post call".into()
+                            })?;
                             self.clear_report(c.at, w)?;
                             self.stats.hw_methods += 1;
                         }
@@ -3472,7 +3872,8 @@ impl<B: Backend> Device<B> {
         self.live("D3D_CommitState")?;
         self.sync_push_buffer(mem)?;
         self.refresh_pushed(mem)?;
-        self.stats.state_words += (RENDER_STATE_SLOTS + crate::layout::STAGES * crate::layout::STAGE_SLOTS) as u64;
+        self.stats.state_words +=
+            (RENDER_STATE_SLOTS + crate::layout::STAGES * crate::layout::STAGE_SLOTS) as u64;
         // `0x401013`: the commit keeps the bits it does not consume, the
         // vertex-format and binding bits (`0x70`) that `CDevice_SetStateVB`
         // (`0x401030`, native) reads, and the two top bits.
@@ -3616,13 +4017,15 @@ impl<B: Backend> Device<B> {
     /// changes no resources. PUT must already be consumed and the device's
     /// pushed state initialized, so no guest vertex, texture, push command
     /// or shadow data can be consumed ahead of a dirty-watch boundary.
-    pub fn try_opaque_simple(
-        &mut self, mem: &dyn GuestMemory, header: u32, value: u32,
-    ) -> bool {
-        if !self.created || self.pushed.is_none() || self.fault.is_some()
+    pub fn try_opaque_simple(&mut self, mem: &dyn GuestMemory, header: u32, value: u32) -> bool {
+        if !self.created
+            || self.pushed.is_none()
+            || self.fault.is_some()
             || self.swallowing.is_some()
-            || self.active_callback.is_some() || self.undelivered.is_some()
-            || !self.pending_destroys.is_empty() || !self.display.pending.is_empty()
+            || self.active_callback.is_some()
+            || self.undelivered.is_some()
+            || !self.pending_destroys.is_empty()
+            || !self.display.pending.is_empty()
             || !self.pending_external.is_empty()
             || mem.read_u32(self.cfg.layout.device + field::PUT).ok() != Some(self.consumed)
         {
@@ -3651,7 +4054,10 @@ impl<B: Backend> Device<B> {
     }
 
     fn commit_simple(
-        &mut self, mem: &dyn GuestMemory, header: u32, value: u32,
+        &mut self,
+        mem: &dyn GuestMemory,
+        header: u32,
+        value: u32,
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_SetRenderState_Simple";
         let method = header & 0x3_FFFF;
@@ -4506,8 +4912,13 @@ impl<B: Backend> Device<B> {
         let compatible = self.indexed_geometry.is_some()
             && gfx::surface::color_surface_format(c.format).is_some()
             && depth.as_ref().is_some_and(|d| {
-                d.width == c.width && d.height == c.height
-                    && gfx::surface::depth_surface_format(d.format, gfx::translate::Capabilities::ALL).is_some()
+                d.width == c.width
+                    && d.height == c.height
+                    && gfx::surface::depth_surface_format(
+                        d.format,
+                        gfx::translate::Capabilities::ALL,
+                    )
+                    .is_some()
             });
         #[cfg(not(feature = "gpu"))]
         let compatible = false;
@@ -5198,23 +5609,31 @@ impl<B: Backend> Device<B> {
         };
         let identity = pc.identity();
         if self.backend.uses_texture_placeholders() {
-            if self.cache.get(&key).is_some_and(|cached| {
-                cached.identity == identity && cached.palette == pal
-            }) {
+            if self
+                .cache
+                .get(&key)
+                .is_some_and(|cached| cached.identity == identity && cached.palette == pal)
+            {
                 self.stats.texture_hits += 1;
                 return Ok((key, info));
             }
-            let host = self.backend.texture_placeholder(&desc).map_err(D3dError::Backend)?;
-            self.cache.insert(key, CachedTexture {
-                identity,
-                palette: pal,
-                va,
-                len,
-                generation: self.tracker.generation(),
-                hash: 0,
-                info,
-                host,
-            });
+            let host = self
+                .backend
+                .texture_placeholder(&desc)
+                .map_err(D3dError::Backend)?;
+            self.cache.insert(
+                key,
+                CachedTexture {
+                    identity,
+                    palette: pal,
+                    va,
+                    len,
+                    generation: self.tracker.generation(),
+                    hash: 0,
+                    info,
+                    host,
+                },
+            );
             return Ok((key, info));
         }
         let policy = self.cfg.upload;
@@ -5507,14 +5926,18 @@ impl<B: Backend> Device<B> {
         self.stats.resolved_draws += u64::from(native.is_none());
         // Consume the candidate even when it proves empty, clipped or unresolved.
         let scoped = if native.is_none() {
-            self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire))
+            self.scoped_admission
+                .take()
+                .filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire))
         } else {
             None
         };
         if self.swallowing.as_ref().is_some_and(|s| !s.holding)
             && !matches!(entry, "inline Begin/End" | "D3DDevice_End")
         {
-            self.swallow_abort(SwallowRefusal::Shape, || format!("{entry} drew during the post call"))?;
+            self.swallow_abort(SwallowRefusal::Shape, || {
+                format!("{entry} drew during the post call")
+            })?;
         }
         if parts.vertex_count == 0 {
             self.swallow_abort(SwallowRefusal::Shape, || "empty post draw".into())?;
@@ -5550,7 +5973,8 @@ impl<B: Backend> Device<B> {
                     bound[stage] = 0;
                     continue;
                 }
-                let samples_held = self.swallowing.is_some() && sampled[stage]
+                let samples_held = self.swallowing.is_some()
+                    && sampled[stage]
                     && self.swallow_resource(mem, header, Some(extras[stage].color_sign))?;
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
@@ -5571,7 +5995,9 @@ impl<B: Backend> Device<B> {
                         continue;
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
-                        self.swallow_abort(SwallowRefusal::Resource, || format!("post sample at stage {stage}: {reason}"))?;
+                        self.swallow_abort(SwallowRefusal::Resource, || {
+                            format!("post sample at stage {stage}: {reason}")
+                        })?;
                         if native.is_none() {
                             self.stats.draws += 1;
                             self.events.push(Event::DrawSkipped { entry, reason });
@@ -5590,7 +6016,9 @@ impl<B: Backend> Device<B> {
                     continue;
                 }
                 if samples_held {
-                    self.swallow_abort(SwallowRefusal::Resource, || format!("post stage {stage} could not bind held level {header:#010x}"))?;
+                    self.swallow_abort(SwallowRefusal::Resource, || {
+                        format!("post stage {stage} could not bind held level {header:#010x}")
+                    })?;
                 }
                 if let Some((info, level)) =
                     self.rtt_depth_texture(mem, header, extras[stage].color_sign)?
@@ -5599,7 +6027,9 @@ impl<B: Backend> Device<B> {
                     depth_levels[stage] = Some(level);
                     continue;
                 }
-                if let Some((info, t)) = self.rtt_alias_texture(mem, header, extras[stage].color_sign)? {
+                if let Some((info, t)) =
+                    self.rtt_alias_texture(mem, header, extras[stage].color_sign)?
+                {
                     texture_info[stage] = Some(info);
                     snapshots[stage] = Some(t);
                     continue;
@@ -5607,7 +6037,8 @@ impl<B: Backend> Device<B> {
                 self.flush_for_texture(mem, header, WritebackCause::Sample)?;
                 let palette = self.palettes[stage];
                 let sign = extras[stage].color_sign;
-                let prepared = prepared.and_then(|p| p.textures[stage])
+                let prepared = prepared
+                    .and_then(|p| p.textures[stage])
                     .and_then(|p| self.prepared_texture(mem, p, header, palette, sign));
                 let (k, i) = match prepared {
                     Some(binding) => binding,
@@ -5627,8 +6058,12 @@ impl<B: Backend> Device<B> {
             _ => self.target_info(mem)?,
         };
         #[cfg(feature = "gpu")]
-        let retail_constants = self.projection
-            .for_draw(&mut shader, self.ui_fit.is_none() && (target.width, target.height) == (640, 480))
+        let retail_constants = self
+            .projection
+            .for_draw(
+                &mut shader,
+                self.ui_fit.is_none() && (target.width, target.height) == (640, 480),
+            )
             .map(|constants| (constants, self.projection_factor()));
         #[cfg(not(feature = "gpu"))]
         let retail_constants = None;
@@ -5670,15 +6105,25 @@ impl<B: Backend> Device<B> {
             textures: bound.map(|t| (t != 0).then_some(t)),
             texture_info,
             retail_constants,
-            ui_fit: self.ui_fit.filter(|_| {
-                (target.width, target.height) == (640, 480) && !copies_a_frame
-            }),
+            ui_fit: self
+                .ui_fit
+                .filter(|_| (target.width, target.height) == (640, 480) && !copies_a_frame),
             glyph_cache,
         };
-        let (mut draw, snapshots) = if self.swallowing.as_ref().is_some_and(|s| s.plan.call.is_some()) {
+        let (mut draw, snapshots) = if self
+            .swallowing
+            .as_ref()
+            .is_some_and(|s| s.plan.call.is_some())
+        {
             let packet = SwallowPacket {
-                color, depth, draw, snapshots, keys, cached: HashMap::default(),
-                source_data: [None; 4], sampled,
+                color,
+                depth,
+                draw,
+                snapshots,
+                keys,
+                cached: HashMap::default(),
+                source_data: [None; 4],
+                sampled,
             };
             let depth_dependency = writes_depth
                 || aliases.iter().any(Option::is_some)
@@ -5690,16 +6135,25 @@ impl<B: Backend> Device<B> {
         } else {
             (draw, snapshots)
         };
-        let admission = if self.swallowing.is_some() || (native.is_none() && scoped.is_none() && self.admissions.is_empty())
-            || !draw.state.bad.is_empty() || self.hw.zpass_count_enable
+        let admission = if self.swallowing.is_some()
+            || (native.is_none() && scoped.is_none() && self.admissions.is_empty())
+            || !draw.state.bad.is_empty()
+            || self.hw.zpass_count_enable
         {
             None
         } else {
-            let owner = prepared.and(self.opaque_world_admission).and_then(|i| self.admissions.get(i));
+            let owner = prepared
+                .and(self.opaque_world_admission)
+                .and_then(|i| self.admissions.get(i));
             let snapshot = crate::DrawSnapshot {
-                draw: &draw, vertex_shader: self.vertex_shader, pixel_shader: self.pixel_shader,
-                bound_textures: self.textures, sampled_stages: sampled, palettes: self.palettes,
-                color_header: self.render_target, depth_header: self.depth_stencil,
+                draw: &draw,
+                vertex_shader: self.vertex_shader,
+                pixel_shader: self.pixel_shader,
+                bound_textures: self.textures,
+                sampled_stages: sampled,
+                palettes: self.palettes,
+                color_header: self.render_target,
+                depth_header: self.depth_stencil,
             };
             if let Some(owner) = owner {
                 crate::backend::admit_draw(owner.as_ref(), &snapshot)
@@ -5708,7 +6162,9 @@ impl<B: Backend> Device<B> {
             } else if let Some((_, stage)) = &scoped {
                 crate::backend::admit_draw(stage.as_ref(), &snapshot)
             } else {
-                self.admissions.iter().find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot))
+                self.admissions
+                    .iter()
+                    .find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot))
             }
         };
         let mut fallback_reason = "packet admission";
@@ -5716,16 +6172,21 @@ impl<B: Backend> Device<B> {
             use timeline::native::Metric;
             if (pass.indexed_tail().is_some_and(|tail| tail.remaining > 1)
                 || pass.requires_independent_samples())
-                && (reads_frame_copy || !self.independent_samples(mem, &sampled)) {
+                && (reads_frame_copy || !self.independent_samples(mem, &sampled))
+            {
                 plan.stage.count(Metric::RefusedResources, 1);
                 return None;
             }
             match self.external_binding(mem, &plan, &mut *pass, None) {
-                Ok(binding) if native.is_none()
-                    || (binding.surfaces.color == color
-                        && binding.depth_write == writes_depth
-                        && (!writes_depth || depth == Some(binding.surfaces.depth))
-                        && binding.colors.iter().all(|&(h, s)| h == self.render_target && s == color)) =>
+                Ok(binding)
+                    if native.is_none()
+                        || (binding.surfaces.color == color
+                            && binding.depth_write == writes_depth
+                            && (!writes_depth || depth == Some(binding.surfaces.depth))
+                            && binding
+                                .colors
+                                .iter()
+                                .all(|&(h, s)| h == self.render_target && s == color)) =>
                 {
                     Some((plan, pass, binding))
                 }
@@ -5755,12 +6216,14 @@ impl<B: Backend> Device<B> {
         });
         self.stats.draws += u64::from(native.is_none());
         let replacement = replacement.filter(|(plan, pass, _)| {
-            let missing = (0..4).any(|i| sampled[i] && draw.textures[i].is_some() && textures[i].is_none());
+            let missing =
+                (0..4).any(|i| sampled[i] && draw.textures[i].is_some() && textures[i].is_none());
             if missing {
                 fallback_reason = "sampled texture unavailable";
                 let items = pass.items(plan.ranges) as u64;
                 plan.stage.count(timeline::native::Metric::Examined, items);
-                plan.stage.count(timeline::native::Metric::RefusedResources, items);
+                plan.stage
+                    .count(timeline::native::Metric::RefusedResources, items);
             }
             !missing
         });
@@ -5771,9 +6234,12 @@ impl<B: Backend> Device<B> {
             // producer's packet is the draw its guest code would issue, so the
             // suppression commits here and the worker draws one or the other.
             let tail = pass.indexed_tail();
-            let fallback = if tail.is_none() && scoped.is_none()
+            let fallback = if tail.is_none()
+                && scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
-                && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
+                && !(parts.indexed_esp.is_some()
+                    && compatible_geometry_target
+                    && (self.indexed_geometry_scope)())
             {
                 pass.resolved_fallback()
             } else {
@@ -5784,12 +6250,24 @@ impl<B: Backend> Device<B> {
                 let material = prepared.map(|p| p.material);
                 let stats = Arc::clone(&self.queued_external_stats);
                 let queued = crate::backend::QueuedExternalDraw {
-                    surfaces: binding.surfaces.clone(), request: binding.request, plan: plan.clone(),
-                    pass: pass.clone(), fallback, fallback_depth: depth, finished: Box::new(move |fallback| {
-                        let count = if fallback.is_some() { &stats.dropped } else { &stats.committed };
+                    surfaces: binding.surfaces.clone(),
+                    request: binding.request,
+                    plan: plan.clone(),
+                    pass: pass.clone(),
+                    fallback,
+                    fallback_depth: depth,
+                    finished: Box::new(move |fallback| {
+                        let count = if fallback.is_some() {
+                            &stats.dropped
+                        } else {
+                            &stats.committed
+                        };
                         count.fetch_add(1, AtomicOrdering::Relaxed);
                         if let Some(shader) = material {
-                            timeline::native::world_packet(shader, fallback.map(|_| "worker recording"));
+                            timeline::native::world_packet(
+                                shader,
+                                fallback.map(|_| "worker recording"),
+                            );
                         }
                     }),
                 };
@@ -5797,24 +6275,46 @@ impl<B: Backend> Device<B> {
                     self.present_cameras.color_written(color);
                     self.mark_written(writes_depth);
                     self.stats.claimed_draws += u64::from(native.is_none());
-                    if let Some((_, committed)) = native.as_mut() { **committed = true; }
+                    if let Some((_, committed)) = native.as_mut() {
+                        **committed = true;
+                    }
                     *streams = draw.streams;
                     return Ok(());
                 }
             }
             let commands = self.backend.prepare_external(
-                binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference, pass,
+                binding.surfaces.clone(),
+                binding.request,
+                textures,
+                &plan,
+                crate::TargetCopy::Reference,
+                pass,
             );
-            if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
+            if let Ok(Some(recordings)) = commands
+                && complete_recordings(&plan, &recordings)
+            {
                 // The original first draw is still intact. On a stale
                 // cursor or a stack fault, drop every unpublished copy.
                 if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
-                    for &(_, surface) in &binding.colors { self.materialize_display_copy(surface)?; }
-                    PreparedExternal { device: self, binding, recordings }.commit();
-                    if let Some(p) = prepared { timeline::native::world_packet(p.material, None); }
+                    for &(_, surface) in &binding.colors {
+                        self.materialize_display_copy(surface)?;
+                    }
+                    PreparedExternal {
+                        device: self,
+                        binding,
+                        recordings,
+                    }
+                    .commit();
+                    if let Some(p) = prepared {
+                        timeline::native::world_packet(p.material, None);
+                    }
                     self.stats.claimed_draws += u64::from(native.is_none());
-                    if let Some((_, committed)) = native.as_mut() { **committed = true; }
-                    if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
+                    if let Some((_, committed)) = native.as_mut() {
+                        **committed = true;
+                    }
+                    if let Some((scope, _)) = scoped {
+                        scope.committed.store(true, AtomicOrdering::Release);
+                    }
                     *streams = draw.streams;
                     return Ok(());
                 }
@@ -5831,7 +6331,10 @@ impl<B: Backend> Device<B> {
         let original = if let Some(esp) = parts.indexed_esp
             && compatible_geometry_target
             && depth.is_some()
-            && sampled.iter().zip(&textures).all(|(&read, texture)| !read || texture.is_some())
+            && sampled
+                .iter()
+                .zip(&textures)
+                .all(|(&read, texture)| !read || texture.is_some())
             && let Some(hook) = &mut self.indexed_geometry
             && let Some(geometry) = hook(mem, esp, &draw)
         {
@@ -5998,13 +6501,23 @@ impl<B: Backend> Device<B> {
     fn independent_samples(&self, mem: &dyn GuestMemory, sampled: &[bool; 4]) -> bool {
         let targets = [self.render_target, self.depth_stencil];
         for (&read, &texture) in sampled.iter().zip(&self.textures) {
-            if !read || texture == 0 { continue; }
-            let Ok((start, end)) = self.resource_span(mem, texture) else { return false };
+            if !read || texture == 0 {
+                continue;
+            }
+            let Ok((start, end)) = self.resource_span(mem, texture) else {
+                return false;
+            };
             for &target in &targets {
-                if target == 0 { continue; }
-                let Ok((a, b)) = self.resource_span(mem, target) else { return false };
+                if target == 0 {
+                    continue;
+                }
+                let Ok((a, b)) = self.resource_span(mem, target) else {
+                    return false;
+                };
                 // The resource decoder uses a one-byte span for unknown layouts.
-                if end - start <= 1 || b - a <= 1 || (start < b && a < end) { return false; }
+                if end - start <= 1 || b - a <= 1 || (start < b && a < end) {
+                    return false;
+                }
             }
         }
         true
@@ -6014,26 +6527,48 @@ impl<B: Backend> Device<B> {
     /// leader's current stream bindings. Use the normal index rebasing,
     /// vertex base, address translation and write-tracked stream cache.
     pub fn indexed_siblings(
-        &mut self, mem: &dyn GuestMemory, ranges: &[(u32, u32)],
+        &mut self,
+        mem: &dyn GuestMemory,
+        ranges: &[(u32, u32)],
     ) -> Result<Vec<crate::backend::IndexedStreams>, D3dError> {
         const E: &str = "native light geometry";
-        if ranges.is_empty() { return Ok(Vec::new()); }
-        if ranges.len() > 2560 { return Err(D3dError::invalid(E, "too many parts")); }
+        if ranges.is_empty() {
+            return Ok(Vec::new());
+        }
+        if ranges.len() > 2560 {
+            return Err(D3dError::invalid(E, "too many parts"));
+        }
         let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
         let (layout, _, sources) = self.vertex_setup(mem, E)?;
         let mut out = Vec::with_capacity(ranges.len());
         let mut budget = 32u64 << 20;
         for &(addr, count) in ranges {
             vertex_limit(E, count)?;
-            if count < 3 { return Err(D3dError::invalid(E, "incomplete part")); }
+            if count < 3 {
+                return Err(D3dError::invalid(E, "incomplete part"));
+            }
             let (lo, hi, indices) = self.index_list(mem, addr, span(E, count, 2)?)?;
-            base.checked_add(u32::from(hi)).ok_or_else(|| D3dError::invalid(E, "vertex base overflow"))?;
+            base.checked_add(u32::from(hi))
+                .ok_or_else(|| D3dError::invalid(E, "vertex base overflow"))?;
             let window = u32::from(hi) - u32::from(lo) + 1;
-            let bytes = u64::from(count) * 4 + sources.iter().map(|s| u64::from(s.stride) * u64::from(window)).sum::<u64>();
-            budget = budget.checked_sub(bytes).ok_or_else(|| D3dError::invalid(E, "vertex window budget"))?;
-            let streams = sources.iter().map(|s| self.read_stream(mem, E, s, base + u32::from(lo), window))
+            let bytes = u64::from(count) * 4
+                + sources
+                    .iter()
+                    .map(|s| u64::from(s.stride) * u64::from(window))
+                    .sum::<u64>();
+            budget = budget
+                .checked_sub(bytes)
+                .ok_or_else(|| D3dError::invalid(E, "vertex window budget"))?;
+            let streams = sources
+                .iter()
+                .map(|s| self.read_stream(mem, E, s, base + u32::from(lo), window))
                 .collect::<Result<Vec<_>, _>>()?;
-            out.push(crate::backend::IndexedStreams { layout: layout.clone(), vertex_count: window, streams, indices });
+            out.push(crate::backend::IndexedStreams {
+                layout: layout.clone(),
+                vertex_count: window,
+                streams,
+                indices,
+            });
         }
         Ok(out)
     }
@@ -6300,7 +6835,9 @@ impl<B: Backend> Device<B> {
         let fate = self.swallow_fate(&d, push.is_some())?;
         let result = self.immediate_draw(mem, entry, d);
         if result.is_err() {
-            self.swallow_abort(SwallowRefusal::Dependency, || "resolving an original draw failed".into())?;
+            self.swallow_abort(SwallowRefusal::Dependency, || {
+                "resolving an original draw failed".into()
+            })?;
         }
         result?;
         if let Some(s) = self.swallowing.as_mut()
@@ -6691,9 +7228,21 @@ mod depth_write_tests {
     #[test]
     fn queued_fallback_requires_identical_guest_writes() {
         let mut binding = ExternalBinding {
-            surfaces: crate::ExternalSurfaces { color: 1, depth: 2, slots: vec![], slot_sizes: vec![], sampled: vec![] },
-            request: crate::ExternalPassRequest { rect: (0, 0, 1, 1), surface_size: (1, 1), display_projection_factor: 1.0, z_scale: 1.0 },
-            colors: vec![(11, 1)], depth_write: true,
+            surfaces: crate::ExternalSurfaces {
+                color: 1,
+                depth: 2,
+                slots: vec![],
+                slot_sizes: vec![],
+                sampled: vec![],
+            },
+            request: crate::ExternalPassRequest {
+                rect: (0, 0, 1, 1),
+                surface_size: (1, 1),
+                display_projection_factor: 1.0,
+                z_scale: 1.0,
+            },
+            colors: vec![(11, 1)],
+            depth_write: true,
         };
         assert!(binding.same_draw_writes(11, 1, Some(2), true));
         assert!(!binding.same_draw_writes(11, 1, None, true));

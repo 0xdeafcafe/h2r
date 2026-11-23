@@ -1,10 +1,10 @@
 # Native shadows
 
-Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 on a single 1x retail GPU backend; pixel parity and timing are not verified.
-Code: `crates/rewrites/render-bridge/src/native_shadows.rs`, `crates/extensions/game/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `crates/rewrites/render-bridge/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
+Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 on a single 1x retail GPU backend, and draws whole layer-10 groups from the scene without a guest geometry handler; pixel parity and timing are not verified.
+Code: `crates/rewrites/render-bridge/src/native_shadows.rs`, `crates/extensions/game/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `native_lights_glue.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`, `shadow_look.rs`, `shadow_scene.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `native_render::shadow_look`, `shadow_scene`, `light_gpu`, `crates/rewrites/render-bridge/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The stage keeps the game's gather, template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
+The stage keeps the game's gather, template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. At layer 10's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. The guest's target begin, clear and end still run. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
 
 ## How it works
 

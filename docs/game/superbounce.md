@@ -1485,8 +1485,7 @@ On the ground the call stops at lined up: the landing is the jump's from
 the line at the player's own speed, and its phase moves with every step.
 There is no touchdown-speed cutoff and no percentage. The readout's bar
 is full while the drop is in the 3.35 to 3.60 window and fades over the
-next unit outside it; its info row says `Drop 10.5 m  Edge 0.06 m`, green
-inside the window. **Depth**, above, remains the takeoff solver's
+next unit outside it; its info row says `Drop 10.5 m  Edge 0.06 m`. **Depth**, above, remains the takeoff solver's
 heuristic and the agent API's legacy chance, not the airborne HUD call.
 
 Fullscreen, while the guide is on a seam the [lock-on](#lock-on)'s

@@ -29,6 +29,8 @@
 //! its scene-copy and reflection inputs supplied per view
 //! ([`water_gpu`]).
 
+#[cfg(feature = "gpu")]
+pub mod base_look;
 pub mod camera;
 pub mod cull;
 pub mod decal;
@@ -38,13 +40,11 @@ pub mod decorators;
 #[cfg(feature = "gpu")]
 pub mod decorators_gpu;
 #[cfg(feature = "gpu")]
-pub mod base_look;
-#[cfg(feature = "gpu")]
 pub mod decorators_load;
-#[cfg(feature = "gpu")]
-pub mod engine_states;
 pub mod effect_geometry;
 pub mod effect_immediate;
+#[cfg(feature = "gpu")]
+pub mod engine_states;
 pub mod fog;
 #[cfg(feature = "gpu")]
 pub mod fog_gpu;
@@ -58,35 +58,25 @@ pub mod glow;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod hud;
+pub mod instances;
 #[cfg(feature = "gpu")]
 pub mod layer_pass;
 #[cfg(feature = "gpu")]
 pub mod layers_load;
-#[cfg(feature = "gpu")]
-pub mod stage_images;
-#[cfg(feature = "gpu")]
-pub mod ui_gpu;
-pub mod instances;
 pub mod light_choice;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
 pub mod light_list;
-pub mod light_scene;
 #[cfg(feature = "gpu")]
 pub mod light_look;
 #[cfg(feature = "gpu")]
 pub mod light_models;
+pub mod light_scene;
 pub mod lights;
 #[cfg(feature = "gpu")]
 pub mod load;
 #[cfg(feature = "gpu")]
 pub mod look;
-#[cfg(feature = "gpu")]
-pub mod pass_state;
-#[cfg(feature = "gpu")]
-pub mod program;
-#[cfg(feature = "gpu")]
-pub mod pipelines;
 pub mod model;
 #[cfg(feature = "gpu")]
 pub mod model_gpu;
@@ -99,19 +89,30 @@ pub mod object_program_gpu;
 #[cfg(feature = "gpu")]
 pub mod object_state;
 pub mod object_streams;
-pub mod particles;
 #[cfg(feature = "gpu")]
 pub mod particle_gpu;
+pub mod particles;
+#[cfg(feature = "gpu")]
+pub mod pass_state;
+#[cfg(feature = "gpu")]
+pub mod pipelines;
+#[cfg(feature = "gpu")]
+pub mod program;
 #[cfg(feature = "gpu")]
 pub mod screen_gpu;
 #[cfg(feature = "gpu")]
 pub mod screen_look;
 #[cfg(feature = "gpu")]
 pub mod shadow_gpu;
+#[cfg(feature = "gpu")]
+pub mod shadow_look;
+pub mod shadow_scene;
 pub mod shadows;
 pub mod showcase;
 #[cfg(feature = "gpu")]
 pub mod showcase_gpu;
+#[cfg(feature = "gpu")]
+pub mod stage_images;
 pub mod sun_casters;
 pub mod sun_tiles;
 #[cfg(feature = "gpu")]
@@ -122,9 +123,14 @@ pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_streams;
 #[cfg(feature = "gpu")]
+pub mod ui_gpu;
+#[cfg(feature = "gpu")]
 pub mod water_gpu;
 pub mod world;
 #[cfg(feature = "gpu")]
 pub mod world_layers_gpu;
 
-pub use scene_extract::layout::{aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, post, skip, world_layers, world_ranges};
+pub use scene_extract::layout::{
+    aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, post, skip,
+    world_layers, world_ranges,
+};

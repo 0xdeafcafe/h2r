@@ -1,18 +1,21 @@
 # Native shadow layers from the scene
 
-Status: Design. Nothing here is built: the shadow stage records layers 10, 11 and 14 from the guest's resolved draws ([native-shadows.md](native-shadows.md)).
-Code: `native_render::shadow_look` (the compiler), `native_render::shadow_scene` (the plan), `render_bridge::native_shadows::draw_alone` and `boot::native_shadows_glue` (the recorder). Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `crates/rewrites/render-bridge/tests/native_shadows.rs`.
+Status: Partly built. `ShadowPass` and its extraction are in the scene, and layer 10 draws from its whole scene group at all three sites with no guest geometry handler; the disc census, layers 11 and 14 from the scene, the native filter and private chains are not built, and parity with D3D is not verified.
+Code: `crates/rewrites/native-render/src/shadow_look.rs`, `shadow_scene.rs`, `light_models.rs`, `light_gpu.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/render-bridge/src/native_shadows.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_shadows_glue.rs`. Tests: `native_render::shadow_look`, `shadow_scene`, `light_gpu`, `scene_extract::light_groups`, `render_bridge::native_shadows`, `crates/rewrites/native-render/tests/shadow_gpu.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The shadow stage draws a shadow layer from its gathered group in the frame
-scene (`frame_scene::LightGroup`) with no guest geometry handler run, as the
-light stage draws layers 12 and 13 ([native-lights.md](native-lights.md),
-"Gathered groups in the scene"). It needs a compiler for the shadow passes
-from tags, the device state the layer's begin sets, and an answer for the
-guest render targets the casters go into. The one rule: at every point a
-guest draw or the freeze reads target 9 or 10, that target holds what the
-guest's own casters would have left there, until a whole chain is native
-and takes targets of its own.
+The shadow stage draws caster layer 10 from its gathered group in the
+frame scene (`frame_scene::LightGroup`) with no guest geometry handler
+run, as the light stage draws layers 12 and 13
+([native-lights.md](native-lights.md), "Gathered groups in the scene").
+`native_render::shadow_look` compiles the caster passes from tags,
+`shadow_scene` plans the group, and `native_lights_glue::shadow_alone`
+reserves the packets on the guest target before the walk empties the
+entry loop. The guest's begin, clear and end still run. Layers 11 and 14
+keep their resolved draws. The one rule: at every point a guest draw or
+the freeze reads target 9 or 10, that target holds what the guest's own
+casters would have left there, until a whole chain is native and takes
+targets of its own.
 
 Evidence labels as in [docs-style.md](../meta/docs-style.md): **E**
 (`h2 disasm`), **Code**, **S**, **Design**.
@@ -77,11 +80,12 @@ Three callers draw the layers, each through the layer begin `0x00044370`
 
 ### The compiler
 
-`native_render::shadow_look` compiles one program per layer,
+`native_render::shadow_look` compiles layer-10 programs by
 implementation, vertex shader and vertex classification, the way
 `native_render::light_look::compile_light` does for layers 12 and 13: the
 template pass's vertex microcode over the stream's declaration, its
-pixel side through `shaders::psh`, and its state block.
+pixel side through `shaders::psh`, and its state block. The receiver
+compiler for layers 11 and 14 is planned.
 
 | Layer | Geometry | Implementations | Inputs beyond the material |
 |---|---|---|---|
@@ -114,14 +118,14 @@ pixel side through `shaders::psh`, and its state block.
 - **Layer 14** compiles as a receiver without shadow inputs, into the
   view's target with depth writes.
 - **Geometry.** Structure entries draw from the world's parts
-  (`boot::native_lights_glue`'s `Structure`). Model entries draw from
-  the per-map model parts the light passes build
-  (`native_render::light_models`); the map worker adds the vertex
-  shaders that layers 10, 11 and 14 of each part's material name, so
-  each has a vertex buffer for its classification.
-- **Refusals** are named (`shadow_look::Refusal`): a program that does
-  not translate, an engine texture other than 8, 10 and 13, a state the
-  pipeline does not model, a classification with no buffer.
+  (`native_lights_glue`'s `Held`). Model entries draw from the per-map
+  model parts the light passes build (`native_render::light_models`);
+  the map worker adds the vertex shaders that layer 10 of each part's
+  material names, so each has a vertex buffer for its classification.
+- **Refusals** are named (`light_look::LightRefusal`,
+  `shadow_scene::Refusal`): a program that does not translate, any engine
+  texture in a caster, a state the pipeline does not model, or a
+  classification with no buffer.
 
 ### The plan and the state
 
@@ -131,8 +135,8 @@ kept, adjacent list ranges of one stream, binding, class and pose joined.
 A group with a remainder is refused; its layer keeps its handlers.
 
 The scene carries what the layer's begin decided, so the plan needs no
-device (**Design**). `frame_scene::LightGroup` gains `pass:
-Option<ShadowPass>` for layers 10, 11 and 14:
+device. `frame_scene::LightGroup` holds `pass: Option<ShadowPass>` for
+layers 10, 11 and 14:
 
 - the bound target (`0x004858b4`) and, for layer 10, its kind (depth or
   colour mask, by the pass flags) and size;
@@ -202,7 +206,8 @@ At the layer's build, with the group in the scene and whole,
    build every pipeline. A missing one refuses.
 4. For layer 11, take the receiver term's frozen map
    (`ReceiverTerm::sampled`); `None` refuses.
-5. Issue one pass (`Device::external_pass_now`). `false` refuses.
+5. Reserve one sealed packet run on every required target copy
+   (`Device::prepare_external_bound`). `None` refuses.
 6. Hand the guest's entry loop no entries.
 
 A refusal at 1 to 5 issues nothing and leaves the layer on the gathered
@@ -257,14 +262,14 @@ when measured).
 Each slice lands under `impl.render.native`. The checks are the
 coordinator's; lanes write code and tests.
 
-| Slice | Built | Draws change |
+| Slice | Status | Draws change |
 |---|---|---|
-| 1 | `ShadowPass` in the scene and its extraction | no |
-| 2 | `shadow_look`, the model parts' shadow buffers, the tag census | no |
-| 3 | layer 10 alone, all three sites | casters from the scene |
-| 4 | layers 11 and 14 alone | receivers from the scene |
-| 5 | the object filter native, swallowed | the filter's quads |
-| 6 | private chains with the entries' replacement | targets |
+| 1 | Built: `ShadowPass` in the scene and its extraction | no |
+| 2 | Partly built: `shadow_look` and the model parts' shadow buffers; the tag census is not built | no |
+| 3 | Built: layer 10 alone at all three sites, with parity unverified | casters from the scene |
+| 4 | Planned: layers 11 and 14 alone | receivers from the scene |
+| 5 | Planned: the object filter native, swallowed | the filter's quads |
+| 6 | Planned: private chains with the entries' replacement | targets |
 
 **Slice 1.**
 - Tests (synthetic memory): `scene_extract::light_groups` reads each
@@ -277,25 +282,22 @@ coordinator's; lanes write code and tests.
   over the gate corpus (extraction only reads).
 
 **Slice 2.**
-- Tests: each row of the compiler's table from an invented template;
-  the receiver's stage 13 gives the WGSL of the golden
-  `crates/formats/shaders/tests/golden/shadow_retail.wgsl`; each
-  refusal by name.
-- Disc census (`#[ignore]`, counters only): over every map, each
-  shader, layer, implementation and classification the materials name
-  compiles or is counted by refusal; which implementations occur per
-  layer and geometry; how many passes set a stencil or offset state.
-  It answers the two **S** items on implementations and stencil.
-- `render.scene` counters: `scene_shadow_programs`,
-  `scene_shadow_program_refused_<cause>`.
+- Tests: an invented caster pass compiles valid WGSL with the projection
+  in `c[40..48]`, and a material that overwrites those registers is
+  refused (`native_render::shadow_look`). The receiver compiler is not
+  built.
+- Disc census: not built. It still needs to cover every map, shader,
+  layer, implementation and classification, count each refusal, and
+  answer the two **S** items on implementations and stencil. Its proposed
+  `scene_shadow_program*` counters are not present.
 
 **Slice 3.**
-- GPU differential (`crates/rewrites/native-render/tests/shadow_gpu.rs`):
-  the same casters as a planned group and as resolved draws, depth map
-  and colour mask, all four channels and stencil equal; with the offset
-  on and off; a W-depth program.
-- Bridge tests: every refusal of steps 1 to 5 leaves the entry loop's
-  count; a whole group empties it.
+- Tests: `native_render::light_gpu` renders a tiny caster scene and checks
+  its pixels and projection uniforms; `native_render::shadow_scene`
+  checks pass-state refusals; `render_bridge::native_shadows` checks that
+  a whole group commits and a refusal keeps the handlers. The planned
+  differential of a planned group against resolved draws, including depth,
+  colour mask, stencil and bias, is not run here.
 - `render.scene` counters: `scene_shadow_layers_alone_10`,
   `scene_shadow_alone_refused_<cause>` (`remainder`, `stream`, `pose`,
   `program`, `state`, `target`, `callback`, `device`),
@@ -349,9 +351,9 @@ coordinator's; lanes write code and tests.
   with `LightGroup::pass` and `projection`; the world's parts and
   `native_render::light_models`; the receiver term of
   `boot::native_shadows_glue`.
-- **Out.** External passes on the D3D device (`external_pass_now`,
-  `swallow`) through slice 5; a `Producer` and `SampledMap` per
-  generation from slice 6.
+- **Out.** Sealed external packet runs on the D3D device
+  (`prepare_external_bound`), with `swallow` planned for the filter; a
+  `Producer` and `SampledMap` per generation from slice 6.
 - **Guest points.** `LAYER_BUILD` (where a group is drawn alone),
   `LIGHT_GEOMETRY_DRAW` (`0x0004d0b0`, not run for a layer drawn
   alone), `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW`, and one new point for

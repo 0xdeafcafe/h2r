@@ -3,10 +3,11 @@
 //! every `mode` tag's drawn opaque parts through
 //! [`native_render::light_models::light_model`], with the vertex
 //! programs of the classifications their sections take and the stage
-//! images of their materials' lit passes. A light layer drawn from its
-//! scene group alone ([`super::Glue::alone`]) draws an object entry from
-//! these; until the load is done, or for a part it does not hold, the
-//! layer keeps its handlers.
+//! images of their materials' lit and caster passes. A light or shadow
+//! layer drawn from its scene group alone ([`super::Glue::alone`] and
+//! [`super::Glue::shadow_alone`]) draws an object entry from these; until
+//! the load is done, or for a part it does not hold, the layer keeps its
+//! handlers.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc};
@@ -18,6 +19,7 @@ use native_render::light_models::{LightModels, ModelSection, SectionPart, light_
 use native_render::look;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_streams::{StreamData, StreamFormats, classification};
+use native_render::shadow_look::CASTER_LAYER;
 use render_bridge::native_map_work;
 use tags::material::{EngineInputs, ShaderLibrary, TextureSource};
 use tags::model::RenderModelGeometry;
@@ -75,13 +77,19 @@ impl Loader {
     /// A view sees the same models for the whole frame. The worker sends
     /// only after uploading the section buffers for this device.
     pub fn get(
-        &self, name: &str, device: &wgpu::Device, formats: impl FnOnce() -> Option<StreamFormats>,
+        &self,
+        name: &str,
+        device: &wgpu::Device,
+        formats: impl FnOnce() -> Option<StreamFormats>,
         palettes: impl FnOnce() -> StagePalettes,
     ) -> Option<Arc<ModelLights>> {
         let generation = native_map_work::generation();
         let frame = timeline::frames();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(load) = state.as_mut().filter(|load| load.map == name && load.generation == generation) {
+        if let Some(load) = state
+            .as_mut()
+            .filter(|load| load.map == name && load.generation == generation)
+        {
             if load.ready.is_none() && load.checked_frame != Some(frame) {
                 load.ready = load.result.try_recv().ok();
                 load.checked_frame = Some(frame);
@@ -91,7 +99,11 @@ impl Loader {
         let _handoff = timeline::setup::dispatch();
         let (send, result) = mpsc::channel();
         let retired = state.replace(Load {
-            map: name.to_string(), generation, result, checked_frame: Some(frame), ready: None,
+            map: name.to_string(),
+            generation,
+            result,
+            checked_frame: Some(frame),
+            ready: None,
         });
         drop(state);
         let formats = formats();
@@ -101,14 +113,20 @@ impl Loader {
         let launched = background::spawn("native-lights models", move || {
             drop(retired);
             let Some(formats) = formats else {
-                eprintln!("native-lights: {name}: the game's stream formats do not read; object entries keep their handlers");
+                eprintln!(
+                    "native-lights: {name}: the game's stream formats do not read; object entries keep their handlers"
+                );
                 return;
             };
             let _setup = timeline::setup::Stage::Lights.worker();
             match load(&name, generation, &formats, &palettes, &device) {
-                Ok(loaded) => { let _ = send.send(Arc::new(loaded)); }
+                Ok(loaded) => {
+                    let _ = send.send(Arc::new(loaded));
+                }
                 Err(why) if generation == native_map_work::generation() => {
-                    eprintln!("native-lights: {name}: model parts not loaded ({why}); object entries keep their handlers");
+                    eprintln!(
+                        "native-lights: {name}: model parts not loaded ({why}); object entries keep their handlers"
+                    );
                 }
                 Err(_) => {}
             }
@@ -120,17 +138,19 @@ impl Loader {
     }
 }
 
-/// The vertex shaders and stage bitmaps of a material's lit passes
-/// (layers 12 and 13, first level of detail), resolved with default
-/// inputs as the world's load reads them.
+/// The vertex shaders and stage bitmaps of a material's lit and caster
+/// passes (layers 10, 12 and 13, first level of detail), resolved with
+/// default inputs as the world's load reads them.
 fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize, TagId, u32)>) {
-    let Ok(material) = lib.material(shader, None) else { return Default::default() };
+    let Ok(material) = lib.material(shader, None) else {
+        return Default::default();
+    };
     let mut shaders = Vec::new();
     let mut bitmaps = Vec::new();
     for imp in material
         .layers
         .iter()
-        .filter(|l| l.lod == 0 && (l.layer == DIFFUSE_LAYER || l.layer == SPECULAR_LAYER))
+        .filter(|l| l.lod == 0 && matches!(l.layer, CASTER_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER))
         .flat_map(|l| &l.passes)
         .flat_map(|p| &p.implementations)
     {
@@ -148,12 +168,24 @@ fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize
     (shaders, bitmaps)
 }
 
-fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePalettes, device: &wgpu::Device) -> Result<ModelLights, String> {
+fn load(
+    name: &str,
+    generation: u64,
+    formats: &StreamFormats,
+    palettes: &StagePalettes,
+    device: &wgpu::Device,
+) -> Result<ModelLights, String> {
     let (mut map, files) = crate::native_map::open(name).map_err(|e| e.to_string())?;
     let mut raw = Raw(files);
-    let mut lib = ShaderLibrary::read(&mut map).map_err(|e| format!("the shader tags do not read ({e})"))?;
+    let mut lib =
+        ShaderLibrary::read(&mut map).map_err(|e| format!("the shader tags do not read ({e})"))?;
     let meta = tags::object::Metadata::read(&mut map).ok();
-    let modes: Vec<TagId> = map.tags().iter().filter(|t| t.group.0 == *b"mode").map(|t| t.id).collect();
+    let modes: Vec<TagId> = map
+        .tags()
+        .iter()
+        .filter(|t| t.group.0 == *b"mode")
+        .map(|t| t.id)
+        .collect();
     let mut out = ModelLights {
         retire: Some(crate::native_map::retire_queue().map_err(|e| e.to_string())?),
         models: LightModels::default(),
@@ -183,30 +215,58 @@ fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePa
                 texcoord: bounds.filter(|_| flags & 2 != 0).map(|c| c.texcoord_bounds),
             };
             let g = &s.geometry;
-            let slots = g.vertex_buffers.iter().map(|b| b.slot + 1).max().unwrap_or(0);
+            let slots = g
+                .vertex_buffers
+                .iter()
+                .map(|b| b.slot + 1)
+                .max()
+                .unwrap_or(0);
             let mut streams = vec![None; slots];
             for b in &g.vertex_buffers {
-                streams[b.slot] = Some((b.type_id, StreamData { bytes: g.data(b), stride: usize::from(b.stride) }));
+                streams[b.slot] = Some((
+                    b.type_id,
+                    StreamData {
+                        bytes: g.data(b),
+                        stride: usize::from(b.stride),
+                    },
+                ));
             }
             let mut section_parts = Vec::new();
             for (k, p) in g.parts.iter().enumerate() {
                 if k >= 16 || !p.is_drawn() || p.kind == native_render::load::PART_TRANSPARENT {
                     continue;
                 }
-                let Some(shader) = geo.materials.get(usize::from(p.material)).map(|m| m.shader.id) else { continue };
-                let (vertex_shaders, bitmaps) = passes.entry(shader).or_insert_with(|| lit_passes(&mut lib, shader)).clone();
+                let Some(shader) = geo
+                    .materials
+                    .get(usize::from(p.material))
+                    .map(|m| m.shader.id)
+                else {
+                    continue;
+                };
+                let (vertex_shaders, bitmaps) = passes
+                    .entry(shader)
+                    .or_insert_with(|| lit_passes(&mut lib, shader))
+                    .clone();
                 if vertex_shaders.is_empty() {
                     continue;
                 }
                 if !out.instances.contains_key(&shader.0)
                     && let Ok(s) = lib.shader(shader)
                 {
-                    out.instances.insert(shader.0, (shader, EngineInputs::for_shader(&s)));
+                    out.instances
+                        .insert(shader.0, (shader, EngineInputs::for_shader(&s)));
                 }
                 for key in bitmaps {
                     let (stage, bitmap, image) = key;
                     if !out.images.contains_key(&key)
-                        && let Some((pixels, expanded)) = light_image(&mut map, &mut raw.0, bitmap, image as usize, stage, &palettes[stage])
+                        && let Some((pixels, expanded)) = light_image(
+                            &mut map,
+                            &mut raw.0,
+                            bitmap,
+                            image as usize,
+                            stage,
+                            &palettes[stage],
+                        )
                     {
                         out.images.insert(key, pixels);
                         if expanded {
@@ -222,15 +282,22 @@ fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePa
                     let read = (|| {
                         let address = map.tag(vs).ok()?.location?.address;
                         let meta = lib.metadata();
-                        let class = classification(key.1, key.2, look::classification_count(meta, address)?)?;
+                        let class = classification(
+                            key.1,
+                            key.2,
+                            look::classification_count(meta, address)?,
+                        )?;
                         let semantics = look::vertex_semantics(meta, address, class)?;
                         let code = look::vertex_program(meta, address, class)?;
                         Some((class, semantics, code))
                     })();
-                    programs.insert(key, read.map(|(class, semantics, code)| {
-                        out.microcode.insert((vs, class), code);
-                        (class, semantics)
-                    }));
+                    programs.insert(
+                        key,
+                        read.map(|(class, semantics, code)| {
+                            out.microcode.insert((vs, class), code);
+                            (class, semantics)
+                        }),
+                    );
                 }
                 section_parts.push(SectionPart {
                     part: k as u8,
@@ -258,7 +325,9 @@ fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePa
         if sections.is_empty() {
             continue;
         }
-        let semantics = |vs: TagId, geometry: u16, influences: u8| programs.get(&(vs, geometry, influences)).cloned().flatten();
+        let semantics = |vs: TagId, geometry: u16, influences: u8| {
+            programs.get(&(vs, geometry, influences)).cloned().flatten()
+        };
         let (model, why) = light_model(&sections, formats, &semantics);
         if hooks::native_verbose() {
             for w in &why {
