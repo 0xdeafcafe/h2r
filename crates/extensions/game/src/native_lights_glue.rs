@@ -62,6 +62,9 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     admission: Arc<LightAdmission>,
     /// The map's model parts for object entries ([`models`]).
     models: models::Loader,
+    /// A live edit's image refresh is running ([`Glue::refresh_edits`]);
+    /// edits wait in the queue until it ends, so they apply in order.
+    refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Why a light keeps its D3D passes.
@@ -390,6 +393,57 @@ fn structure_key(e: &LightEntry) -> Option<(Owner, u8)> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Applies the queued live edits to what the lights hold
+    /// (docs/editor/realtime-edits.md, "The native refresh") once the
+    /// world's lights are resident and no refresh is running: an edited
+    /// `mode` makes the model parts load again from the map file, which
+    /// the raw overlay serves edited; each edited image is decoded again
+    /// at the stages the lit passes sample it, on a worker, and the
+    /// built passes' textures and the gels are rewritten in place.
+    fn refresh_edits(&self, mem: &dyn GuestMemory) {
+        use render_bridge::native_edits::{self, Consumer, Edit};
+        if !native_edits::pending(Consumer::Lights) || self.refreshing.load(Ordering::Acquire) {
+            return;
+        }
+        let current = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            crate::native_world_glue::current_ready_keyed(&state, mem)
+        };
+        let Some((ready, key)) = current else { return };
+        let Some(lights) = ready.lights.get().cloned() else { return };
+        let Some((_, queue)) = ready.upload_device.clone() else { return };
+        let edits = native_edits::drain(Consumer::Lights);
+        if edits.iter().any(|e| matches!(e, Edit::Model { .. })) {
+            self.models.invalidate();
+        }
+        let images: Vec<(TagId, u32)> = edits
+            .iter()
+            .filter_map(|e| match *e {
+                Edit::Image { bitmap, image } => Some((TagId(bitmap), image)),
+                _ => None,
+            })
+            .collect();
+        if images.is_empty() {
+            return;
+        }
+        self.refreshing.store(true, Ordering::Release);
+        let refreshing = Arc::clone(&self.refreshing);
+        let launched = background::spawn("native-lights edits", move || {
+            match crate::native_map::open(key.map()) {
+                Ok((mut map, mut files)) if key.current() => {
+                    lights.refresh_images(&mut map, &mut files, &queue, &images);
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("native-lights: the map does not open for a live edit ({e}); the lights keep their textures"),
+            }
+            refreshing.store(false, Ordering::Release);
+        });
+        if let Err(e) = launched {
+            self.refreshing.store(false, Ordering::Release);
+            eprintln!("native-lights: could not start the live edit refresh ({e}); the lights keep their textures until the map reloads");
+        }
+    }
+
     fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> Result<(), Keep> {
         let Dispatch { light, serial, layer, shader_gel, view_target, sorted } = dispatch;
         let mut d = self.device.lock().map_err(|_| Keep::Unsupported("device unavailable"))?;
@@ -433,6 +487,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> bool {
+        self.refresh_edits(&*mem);
         let shader_gel = dispatch.shader_gel.is_some();
         let result = self.reserve(mem, dispatch);
         let ok = result.is_ok();
@@ -786,6 +841,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         order: Mutex::default(),
         admission,
         models: models::Loader::default(),
+        refreshing: Arc::default(),
     }));
 }
 
@@ -881,6 +937,38 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
+    /// Whether the world's light set holds a gel made from `datum`'s
+    /// bitmap.
+    pub fn has_gel(&self, datum: u32) -> bool {
+        self.gels.contains_key(&datum)
+    }
+
+    /// Decodes again each of `edited` (bitmap, image) at the stages the
+    /// lit passes sample it, as the load decoded it, and rewrites the
+    /// built passes' textures with it ([`materials::Resolver`]); the
+    /// passes built later take it too. A stage whose image no longer
+    /// decodes keeps its pixels. The gels are rewritten by the world's
+    /// refresh, which holds the light set.
+    pub fn refresh_images<R: std::io::Read + std::io::Seek>(
+        &self, map: &mut Map<R>, files: &mut assets::ResourceFiles, queue: &wgpu::Queue, edited: &[(TagId, u32)],
+    ) {
+        let mut decoded = HashMap::new();
+        for &(stage, bitmap, image) in self.images.keys().filter(|(_, b, i)| edited.contains(&(*b, *i))) {
+            match light_image(map, files, bitmap, image as usize, stage, &self.palettes[stage]) {
+                Some((pixels, _)) => {
+                    decoded.insert((stage, bitmap, image), pixels);
+                }
+                None => eprintln!(
+                    "native-lights: bitmap {:#010x} image {image} no longer decodes at stage {stage}; the lights keep its pixels",
+                    bitmap.0
+                ),
+            }
+        }
+        if !decoded.is_empty() {
+            self.resolver.refresh_images(queue, &decoded);
+        }
+    }
+
     /// Upload map textures and start a resolver tied to this device and BSP.
     pub fn upload_engine_textures(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> LightSet {
         let mut set = LightSet::new(device, queue, self.normalization.as_deref(), self.attenuation.as_deref());

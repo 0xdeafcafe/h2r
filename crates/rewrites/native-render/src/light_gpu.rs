@@ -271,6 +271,22 @@ pub fn model_vertex(mut u: VertexUniforms, nodes: &[Row], decompression: [Row; 3
 const LIGHT_PROGRAM: ShaderId = ShaderId(u32::MAX - 5);
 
 impl LightGpu {
+    /// The textures this pass's stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels, each once: what a
+    /// live edit rewrites ([`crate::gpu::rewrite_held`]).
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        let want = LightStage::Bitmap { bitmap, image };
+        let mut out: Vec<crate::gpu::Held> = Vec::new();
+        for (n, stage) in self.program.stages.iter().enumerate() {
+            let Some(view) = self.stage_views[n].as_ref().filter(|_| *stage == want) else { continue };
+            let t = view.texture().clone();
+            if !out.iter().any(|(o, ..)| *o == t) {
+                out.push((t, n, self.program.signed[n]));
+            }
+        }
+        out
+    }
+
     /// Uploads `program`, its uniforms in group 0 laid out as
     /// `uniforms_layout` ([`uniforms_layout`]: one buffer per run, dynamic
     /// offsets); `None` when a stage's bitmap does not decode.
@@ -564,6 +580,15 @@ impl LightSet {
     /// The material worker builds every pass against this set's layout.
     pub fn uniforms_layout(&self) -> &wgpu::BindGroupLayout {
         &self.uniforms_layout
+    }
+
+    /// Rewrites gel `datum`'s texture in place with `image` as the
+    /// upload made it. `Ok(0)` when the set has no such gel; a changed
+    /// size, level count or format refuses.
+    pub fn rewrite_gel(&self, queue: &wgpu::Queue, datum: u32, image: &Image) -> Result<usize, crate::gpu::ImageRefusal> {
+        let Some(view) = self.gels.get(&datum) else { return Ok(0) };
+        crate::gpu::rewrite_texture(queue, view.texture(), image)?;
+        Ok(1)
     }
 
     pub fn upload_gel(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, datum: u32, image: &Image) {

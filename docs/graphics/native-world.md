@@ -72,8 +72,14 @@ world is resident and no refresh is running, and a worker applies it
   `gpu::rewrite_texture`). Another size, level count or format is refused
   with a log line and the texture keeps its pixels until the map reloads.
 
-The refresh covers the layer-3 world. The fog, water, layers, lights and
-decorators keep the textures they loaded, E3's sun receivers
+The same image refresh reaches the lightmap pages (`GpuWorld::rewrite_page`:
+the page decoded again through each palette the load held, written into
+every texture that holds it), the fog, water and layer stage images
+(`GpuWorld::held`) and the lights' gels (`GpuWorld::rewrite_gel`). The
+lights' pass textures and the decorators' are rewritten by their own glue,
+and a decorator's geometry is prepared again after a model or section
+edit ([realtime-edits.md](../editor/realtime-edits.md), "The native
+refresh"). E3's sun receivers
 (`native_render::sun_casters::SunWorld`) keep the geometry they loaded
 until the world reloads, and the editor's preview
 (`GpuWorld::set_section_vertices`) moves vertices without recomputing

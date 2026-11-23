@@ -66,6 +66,9 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     gpu: (wgpu::Device, wgpu::Queue),
     generation: Mutex<u64>,
     entry: Mutex<Option<LayerEntry>>,
+    /// A live edit's image refresh is running ([`Glue::refresh_edits`]);
+    /// edits wait in the queue until it ends, so they apply in order.
+    refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -123,6 +126,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     set,
                     next: None,
                     tried: Default::default(),
+                    requested: Default::default(),
                     worker,
                 });
             }
@@ -133,6 +137,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             state.activate(timeline::frames());
             (Arc::clone(&state.set), Arc::clone(&state.models))
         };
+        self.refresh_edits(&models);
         let used = models
             .palettes
             .lock()
@@ -172,11 +177,66 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         Some(set)
     }
 
+    /// Applies the queued live edits to the first-person models
+    /// (docs/editor/realtime-edits.md, "The native refresh"): an edited
+    /// `mode` that was asked for is asked of the loader again, which
+    /// reads it from the map file the raw overlay serves edited and
+    /// replaces it in the draw set; each edited image is decoded again
+    /// and its textures rewritten, on a worker
+    /// ([`native_first_person_load::refresh_images`]).
+    fn refresh_edits(&self, models: &Arc<Models>) {
+        use render_bridge::native_edits::{self, Consumer, Edit};
+        if !native_edits::pending(Consumer::FirstPerson) || self.refreshing.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let (name, map_generation) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(state) = state.as_ref().filter(|s| s.map_generation == render_bridge::native_map_work::generation()) else {
+                return;
+            };
+            (state.name.clone(), state.map_generation)
+        };
+        let edits = native_edits::drain(Consumer::FirstPerson);
+        let mut images = Vec::new();
+        {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(state) = state.as_ref() else { return };
+            for edit in edits {
+                match edit {
+                    Edit::Model { tag } => {
+                        if let Some(&asked) = state.requested.get(&(tag as u16))
+                            && let Some(worker) = &state.worker
+                        {
+                            let _ = worker.send(asked);
+                        }
+                    }
+                    Edit::Image { bitmap, image } => images.push((map::TagId(bitmap), image)),
+                    Edit::Section { .. } => {}
+                }
+            }
+        }
+        if images.is_empty() {
+            return;
+        }
+        self.refreshing.store(true, std::sync::atomic::Ordering::Release);
+        let refreshing = Arc::clone(&self.refreshing);
+        let (models, queue) = (Arc::clone(models), self.gpu.1.clone());
+        let launched = background::spawn("native-first-person edits", move || {
+            native_first_person_load::refresh_images(&name, map_generation, &models, &images, &queue);
+            refreshing.store(false, std::sync::atomic::Ordering::Release);
+        });
+        if let Err(e) = launched {
+            self.refreshing.store(false, std::sync::atomic::Ordering::Release);
+            eprintln!("native-first-person: could not start the live edit refresh ({e}); the models keep their pixels until the map reloads");
+        }
+    }
+
     fn want(&self, model: u32) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(state) = state.as_mut() else {
             return;
         };
+        state.requested.insert(model as u16, model);
         if state.tried.insert(model as u16)
             && let Some(worker) = &state.worker
         {
@@ -274,6 +334,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state,
         generation: Mutex::new(0),
         entry: Mutex::new(None),
+        refreshing: Arc::default(),
     }));
 }
 

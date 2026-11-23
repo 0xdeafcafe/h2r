@@ -97,7 +97,12 @@ or whose node count changed, leaves the native path
 guest memory, and the log says why. An edited image is decoded again at
 each stage that samples it and every program texture made from it is
 rewritten in place (`LitObjects::rewrite_image`); another size, level
-count or format keeps the loaded pixels until the map reloads. The
+count or format keeps the loaded pixels until the map reloads. First
+person follows the same rules on its own set
+(`native_first_person_glue::refresh_edits`): an edited model is asked of
+its loader again under its first key, from a map opened again, and an
+edited image is decoded again and rewritten
+(`native_first_person_load::refresh_images`). The
 editor's and Theater's `GpuModels` replace a model under its index with
 `GpuModels::replace_model`. The sun's caster models
 (`native_render::sun_casters`) keep the geometry they loaded.

@@ -104,6 +104,10 @@ pub struct Ready {
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
     pub palettes: StagePalettes,
+    /// The BSP's lightmap bitmap and the palettes its pages expand
+    /// through, when it has pages: what a live edit of a page decodes
+    /// again ([`decode_pages`]).
+    lightmaps: Option<(TagId, Vec<[u32; 256]>)>,
 }
 
 impl Drop for Ready {
@@ -145,7 +149,14 @@ pub struct BspKey {
 }
 
 impl BspKey {
-    fn current(&self) -> bool {
+    /// The name of the map this world loaded from: what a glue that
+    /// decodes a live edit's images again opens.
+    pub(crate) fn map(&self) -> &str {
+        &self.map
+    }
+
+    /// Whether the world this key made is still the loaded one.
+    pub(crate) fn current(&self) -> bool {
         self.generation == native_map_work::generation()
             && self.bsp_generation == native_map_work::bsp_generation()
     }
@@ -162,6 +173,14 @@ pub fn current_ready<'a>(state: &'a MapState, mem: &dyn GuestMemory) -> Option<&
         && active_bsp_index(mem) == Some(key.index)
         && crate::health::read_map_name(mem, &mut [0; 32]).ok().as_deref() == Some(key.map.as_str()))
         .then_some(ready)
+}
+
+/// [`current_ready`] with its key, for a glue that applies a live edit to
+/// the world's copies on a worker (it opens the key's map and checks
+/// [`BspKey::current`] before it writes).
+pub fn current_ready_keyed(state: &MapState, mem: &dyn GuestMemory) -> Option<(Arc<Ready>, BspKey)> {
+    let ready = current_ready(state, mem)?;
+    Some((Arc::clone(ready), state.key.clone()?))
 }
 
 /// The host: the device and the current world.
@@ -468,6 +487,42 @@ fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit])
     plan
 }
 
+/// The pages of the BSP's lightmap bitmap that `images` edits, each
+/// decoded again through every palette the load held, as the load decodes
+/// them ([`decode_lightmap`]); a page that does not decode says why.
+/// Another bitmap's image is not a page.
+fn decode_pages<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>, files: &mut assets::ResourceFiles, ready: &Ready, images: &[(TagId, u32)],
+) -> Vec<(LightmapKey, Result<Image, String>)> {
+    let Some((bitmap, palettes)) = ready.lightmaps.as_ref() else { return Vec::new() };
+    let edited: Vec<u16> = images
+        .iter()
+        .filter(|(tag, _)| tag.0 & 0xffff == bitmap.0 & 0xffff)
+        .filter_map(|&(_, image)| u16::try_from(image).ok())
+        .collect();
+    if edited.is_empty() {
+        return Vec::new();
+    }
+    let read = tags::DecodedTag::read(map, *bitmap)
+        .map_err(|e| format!("the BSP lightmap bitmap does not read ({e})"))
+        .and_then(|tag| match tag.data {
+            tags::TagData::Bitmap(b) => Ok(b),
+            _ => Err("the BSP lightmap tag is not a bitmap".to_owned()),
+        });
+    let mut out = Vec::new();
+    for page in edited {
+        for (n, palette) in palettes.iter().enumerate() {
+            let Ok(palette_index) = u8::try_from(n) else { break };
+            let decoded = read.as_ref().map_err(Clone::clone).and_then(|b| {
+                let image = b.images.get(usize::from(page)).ok_or("no such lightmap bitmap page")?;
+                decode_lightmap(image, palette, files, true)
+            });
+            out.push((LightmapKey { page, palette: palette_index }, decoded));
+        }
+    }
+    out
+}
+
 /// Applies one drain of live edits to `ready`, the world of `key`: the
 /// sections decoded again and replaced in place with their bounds
 /// recomputed (the GPU world's and the admission's), the images decoded
@@ -514,6 +569,15 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
             ((bitmap, image), native_render::stage_images::decode_stages(&mut map, &mut raw.0, &ready.palettes, bitmap, image, &at))
         })
         .collect();
+    let pages = decode_pages(&mut map, &mut raw.0, ready, &plan.images);
+    // A gel is image 0 of its bitmap, uploaded as the lights' load decoded
+    // it (no palette).
+    let gels: Vec<(TagId, Image)> = plan
+        .images
+        .iter()
+        .filter(|&&(bitmap, image)| image == 0 && ready.lights.get().is_some_and(|l| l.has_gel(bitmap.0)))
+        .filter_map(|&(bitmap, _)| Some((bitmap, light_image(&mut map, &mut raw.0, bitmap, 0, 0, &None)?.0)))
+        .collect();
     if !key.current() {
         return;
     }
@@ -537,6 +601,35 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
         if let Err(why) = gpu.rewrite_image(queue, *bitmap, *image, pixels) {
             eprintln!(
                 "native-world: {} BSP {}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
+                key.map, key.index, bitmap.0
+            );
+        }
+    }
+    for (page, decoded) in &pages {
+        match decoded {
+            Ok(pixels) => {
+                if let Err(why) = gpu.rewrite_page(queue, *page, pixels) {
+                    eprintln!(
+                        "native-world: {} BSP {}: lightmap page {} palette {} keeps its pixels until the map reloads ({why:?})",
+                        key.map, key.index, page.page, page.palette
+                    );
+                }
+            }
+            // It did not decode at load either, or no longer does: the
+            // D3D path draws what used it.
+            Err(why) if !gpu.page_textures(*page).is_empty() => {
+                eprintln!(
+                    "native-world: {} BSP {}: lightmap page {} palette {} does not decode ({why}); it keeps its pixels",
+                    key.map, key.index, page.page, page.palette
+                );
+            }
+            Err(_) => {}
+        }
+    }
+    for (bitmap, pixels) in &gels {
+        if let Err(why) = gpu.rewrite_gel(queue, bitmap.0, pixels) {
+            eprintln!(
+                "native-world: {} BSP {}: gel {:#010x} keeps its pixels until the map reloads ({why:?})",
                 key.map, key.index, bitmap.0
             );
         }
@@ -1099,6 +1192,7 @@ fn load_ready(
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
+        lightmaps: lightmap_bitmap.map(|bitmap| (bitmap, lightmap_palettes.clone())),
     }))) { return Ok(()); }
     let bsp = key.clone();
     native_render::sun_casters::set_world(

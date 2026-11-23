@@ -231,3 +231,39 @@ fn a_rewritten_texture_samples_its_new_texels_and_a_size_change_is_refused() {
         assert_eq!(gpu::check_rewrite(&bc, &other), Err(ImageRefusal::Format));
     }
 }
+
+/// What every holder shares: a held texture is written once however many
+/// holders list it, a signed stage is biased as at load, a stage with no
+/// decode refuses the lot, and a size change writes nothing
+/// (docs/editor/realtime-edits.md, "The native refresh").
+#[test]
+fn held_textures_are_rewritten_all_or_nothing_and_each_once() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (a, b) = (rgba_texture(&ctx, 1, 1, 1), rgba_texture(&ctx, 1, 1, 1));
+    let held: Vec<gpu::Held> = vec![
+        (a.clone(), 0, [false; 4]),
+        (a.clone(), 0, [false; 4]),
+        (b.clone(), 2, [true, false, false, false]),
+    ];
+    assert_eq!(gpu::held_stages(&held), vec![0, 2]);
+    let decoded = std::collections::HashMap::from([
+        (0, Image::solid([10, 20, 30, 40])),
+        (2, Image::solid([10, 20, 30, 40])),
+    ]);
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &held, &decoded), Ok(2), "the shared texture once");
+    assert_eq!(read(&ctx, &a, 0), vec![10, 20, 30, 40]);
+    assert_eq!(read(&ctx, &b, 0), vec![10 ^ 0x80, 20, 30, 40], "the signed channel is biased");
+
+    let bigger = std::collections::HashMap::from([
+        (0, Image::solid([1, 1, 1, 1])),
+        (2, Image::level(2, 2, vec![9; 16]).unwrap()),
+    ]);
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &held, &bigger), Err(ImageRefusal::Size));
+    assert_eq!(read(&ctx, &a, 0), vec![10, 20, 30, 40], "refused: the first texture is untouched too");
+    let missing = std::collections::HashMap::from([(0, Image::solid([1, 1, 1, 1]))]);
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &held, &missing), Err(ImageRefusal::NotDecoded));
+    assert_eq!(gpu::rewrite_held(&ctx.queue, &[], &decoded), Ok(0));
+}

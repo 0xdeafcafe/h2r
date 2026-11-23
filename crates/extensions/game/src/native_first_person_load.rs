@@ -55,6 +55,10 @@ pub struct MapState {
     pub set: Arc<NativeSet>,
     pub next: Option<(u64, Arc<NativeSet>)>,
     pub tried: HashSet<u16>,
+    /// The definition each requested model was asked for by, by index: a
+    /// live edit of its `mode` asks the worker for it again under the
+    /// same key.
+    pub requested: HashMap<u16, u32>,
     pub worker: Option<mpsc::Sender<u32>>,
 }
 
@@ -96,7 +100,7 @@ pub fn spawn_worker(
         }
         let (mut opened, mut uploads) = {
             let _timer = timeline::setup::Stage::Objects.worker();
-            match open(&name, palettes, formats) {
+            match open(&name, palettes.clone(), formats.clone()) {
                 Ok(o) => (o, LitObjects::new(&device)),
                 Err(e) => {
                     eprintln!("native-first-person: {name}: map not opened ({e}); first person stays on D3D");
@@ -106,11 +110,25 @@ pub fn spawn_worker(
         };
         *models.lit.lock().unwrap_or_else(|e| e.into_inner()) = Some(uploads.empty_with_layout());
         let (mut loaded, mut refused) = (0u32, 0u32);
+        let mut asked = HashSet::new();
         while let Ok(definition) = rx.recv() {
             if map_generation != render_bridge::native_map_work::generation() {
                 return;
             }
             let _timer = timeline::setup::Stage::Objects.worker();
+            // A model asked for again is a live edit's reload
+            // (docs/editor/realtime-edits.md, "The native refresh"): the
+            // map is opened again, so the geometry is read as the raw
+            // overlay serves it now.
+            if !asked.insert(definition) {
+                match open(&name, palettes.clone(), formats.clone()) {
+                    Ok(reopened) => opened = reopened,
+                    Err(e) => {
+                        eprintln!("native-first-person: {name}: a live edit's map does not open ({e}); the model keeps its loaded geometry");
+                        continue;
+                    }
+                }
+            }
             let result = load_model(&mut opened, definition).and_then(|cpu| {
                 let parts = set_parts(&cpu.lit);
                 if let Some(texture) = cpu.normalization {
@@ -165,6 +183,63 @@ pub fn spawn_worker(
         eprintln!("native-first-person: {name}: {loaded} models native, {refused} left to the D3D path");
     }).ok()?;
     Some(tx)
+}
+
+/// Applies the images of one drain of live edits to `models`, the first-person
+/// models of map `name` loaded at map generation `map_generation`
+/// (docs/editor/realtime-edits.md, "The native refresh"): each image is
+/// decoded again, from the map file the raw overlay serves edited, at the
+/// stages that sample it (through the palettes the load expanded
+/// through), and its textures are rewritten in place. An image whose size,
+/// levels or format changed keeps its pixels until the map reloads, and
+/// says so.
+pub fn refresh_images(
+    name: &str, map_generation: u64, models: &Models, images: &[(TagId, u32)], queue: &wgpu::Queue,
+) {
+    let current = || map_generation == render_bridge::native_map_work::generation();
+    if images.is_empty() || !current() {
+        return;
+    }
+    let (mut map, files) = match native_map::open(name) {
+        Ok(opened) => opened,
+        Err(e) => {
+            eprintln!("native-first-person: {name}: a live edit's map does not open ({e}); the models keep their pixels");
+            return;
+        }
+    };
+    let mut raw = Raw(files);
+    let palettes = models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // Which stages sample each image, read under the lock; the decodes
+    // run without it.
+    let stages: Vec<((TagId, u32), Vec<usize>)> = {
+        let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lit) = lit.as_ref() else { return };
+        images.iter().map(|&(bitmap, image)| ((bitmap, image), lit.image_stages(bitmap, image))).collect()
+    };
+    let decoded: Vec<_> = stages
+        .into_iter()
+        .filter(|(_, at)| !at.is_empty())
+        .map(|((bitmap, image), at)| {
+            let pixels = native_render::stage_images::decode_stages(&mut map, &mut raw.0, &palettes, bitmap, image, &at);
+            ((bitmap, image), pixels)
+        })
+        .collect();
+    if decoded.is_empty() || !current() {
+        return;
+    }
+    {
+        let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lit) = lit.as_ref() else { return };
+        for ((bitmap, image), pixels) in &decoded {
+            if let Err(why) = lit.rewrite_image(queue, *bitmap, *image, pixels) {
+                eprintln!(
+                    "native-first-person: {name}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
+                    bitmap.0
+                );
+            }
+        }
+    }
+    queue.submit([]);
 }
 
 /// The native set's entries by the section and geometry part a record names.

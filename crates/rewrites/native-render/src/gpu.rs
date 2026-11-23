@@ -438,6 +438,69 @@ pub fn rewrite_texture(queue: &wgpu::Queue, t: &wgpu::Texture, image: &Image) ->
     Ok(())
 }
 
+/// A texture made from a decoded stage image: the stage that sampled it
+/// and the channels stored biased in it ([`crate::program::bias_signed`]).
+/// What each holder reports for a live edit, and [`rewrite_held`] writes.
+pub type Held = (wgpu::Texture, usize, [bool; 4]);
+
+/// The stages of `held`, ascending, each once: what the glue decodes for
+/// an edited image.
+pub fn held_stages(held: &[Held]) -> Vec<usize> {
+    let mut stages: Vec<usize> = held.iter().map(|&(_, n, _)| n).collect();
+    stages.sort_unstable();
+    stages.dedup();
+    stages
+}
+
+/// Rewrites every texture of `held` in place with `decoded` (by stage),
+/// biased for its signed channels as at upload. Every texture is checked
+/// before the first write; a size, level count or format change refuses
+/// them all (docs/editor/realtime-edits.md, "The native refresh"). A
+/// texture listed twice is written once. Returns how many were written.
+pub fn rewrite_held(queue: &wgpu::Queue, held: &[Held], decoded: &HashMap<usize, Image>) -> Result<usize, ImageRefusal> {
+    // `wgpu::Texture` hashes and compares by its id, not its interior state.
+    #[allow(clippy::mutable_key_type)]
+    let mut seen = std::collections::HashSet::new();
+    let mut writes = Vec::new();
+    for (t, n, signed) in held {
+        if !seen.insert((t.clone(), *n)) {
+            continue;
+        }
+        let mut pixels = decoded.get(n).ok_or(ImageRefusal::NotDecoded)?.clone();
+        crate::program::bias_signed(&mut pixels, *signed);
+        check_rewrite(t, &pixels)?;
+        writes.push((t, pixels));
+    }
+    for (t, pixels) in &writes {
+        rewrite_texture(queue, t, pixels)?;
+    }
+    Ok(writes.len())
+}
+
+/// The textures behind the pages a set bound (a page that did not decode
+/// has none), by page.
+pub(crate) fn page_textures_of(
+    pages: &HashMap<LightmapKey, Option<wgpu::TextureView>>,
+) -> HashMap<LightmapKey, wgpu::Texture> {
+    pages.iter().filter_map(|(&k, v)| Some((k, v.as_ref()?.texture().clone()))).collect()
+}
+
+/// Rewrites each of `pages` (the textures that hold one lightmap page)
+/// in place with `image`, all or nothing as [`rewrite_held`]. Returns how
+/// many were written.
+pub fn rewrite_pages(queue: &wgpu::Queue, pages: &[wgpu::Texture], image: &Image) -> Result<usize, ImageRefusal> {
+    #[allow(clippy::mutable_key_type)]
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<&wgpu::Texture> = pages.iter().filter(|t| seen.insert((*t).clone())).collect();
+    for t in &unique {
+        check_rewrite(t, image)?;
+    }
+    for t in &unique {
+        rewrite_texture(queue, t, image)?;
+    }
+    Ok(unique.len())
+}
+
 impl GpuWorld {
     /// Uploads `world` once. `base_map` gives a material's base map and
     /// `lightmap` a page through its palette; `None` draws white (the
@@ -692,19 +755,39 @@ impl GpuWorld {
         Ok(run)
     }
 
-    /// The stages of the material programs that sample image `image` of
+    /// Every texture of the world that is made from image `image` of
+    /// `bitmap`: the material programs' stages, the fog's, each layer's
+    /// and the water's.
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<Held> {
+        let mut held = self.programs.as_ref().map_or_else(Vec::new, |p| p.held(bitmap, image));
+        if let Some(f) = &self.fog {
+            held.extend(f.held(bitmap, image));
+        }
+        let mut layers: Vec<_> = self.layers.iter().collect();
+        layers.sort_by_key(|(l, _)| **l);
+        for (_, f) in layers {
+            held.extend(f.held(bitmap, image));
+        }
+        if let Some(w) = &self.water {
+            held.extend(w.held(bitmap, image));
+        }
+        held
+    }
+
+    /// The stages of the world's textures that sample image `image` of
     /// `bitmap`, ascending, each once: what [`GpuWorld::rewrite_image`]
     /// needs decoded (a palettized image expands through its stage's
     /// palette).
     pub fn image_stages(&self, bitmap: map::TagId, image: u32) -> Vec<usize> {
-        self.programs.as_ref().map_or_else(Vec::new, |p| p.image_stages(bitmap, image))
+        held_stages(&self.held(bitmap, image))
     }
 
     /// Rewrite every texture made from image `image` of `bitmap` with
     /// `decoded` (by stage, [`GpuWorld::image_stages`]), each signed
-    /// variant biased as at load. All or nothing: a texture whose size,
-    /// level count or format differs refuses the lot. Returns how many
-    /// textures were written.
+    /// variant biased as at load, in the material programs, the fog, the
+    /// layers and the water. All or nothing: a texture whose size, level
+    /// count or format differs refuses the lot. Returns how many textures
+    /// were written.
     pub fn rewrite_image(
         &self,
         queue: &wgpu::Queue,
@@ -712,7 +795,39 @@ impl GpuWorld {
         image: u32,
         decoded: &HashMap<usize, Image>,
     ) -> Result<usize, ImageRefusal> {
-        self.programs.as_ref().map_or(Ok(0), |p| p.rewrite_image(queue, bitmap, image, decoded))
+        rewrite_held(queue, &self.held(bitmap, image), decoded)
+    }
+
+    /// The textures that hold lightmap page `key`: the material programs',
+    /// the fog's, each layer's and the water's.
+    pub fn page_textures(&self, key: LightmapKey) -> Vec<wgpu::Texture> {
+        let mut pages = self.programs.as_ref().map_or_else(Vec::new, |p| p.page_textures(key));
+        if let Some(f) = &self.fog {
+            pages.extend(f.page_textures(key));
+        }
+        let mut layers: Vec<_> = self.layers.iter().collect();
+        layers.sort_by_key(|(l, _)| **l);
+        for (_, f) in layers {
+            pages.extend(f.page_textures(key));
+        }
+        if let Some(w) = &self.water {
+            pages.extend(w.page_textures(key));
+        }
+        pages
+    }
+
+    /// Rewrite every texture of lightmap page `key` with `image` (the
+    /// page decoded through its palette, as at load). Returns how many
+    /// textures were written; a changed size or format refuses them all.
+    pub fn rewrite_page(&self, queue: &wgpu::Queue, key: LightmapKey, image: &Image) -> Result<usize, ImageRefusal> {
+        rewrite_pages(queue, &self.page_textures(key), image)
+    }
+
+    /// Rewrite gel `datum`'s texture with `image` (image 0 of the gel's
+    /// bitmap, as the light set uploaded it). Returns how many were
+    /// written: none when the world has no light set or no such gel.
+    pub fn rewrite_gel(&self, queue: &wgpu::Queue, datum: u32, image: &Image) -> Result<usize, ImageRefusal> {
+        self.lights.as_ref().map_or(Ok(0), |l| l.rewrite_gel(queue, datum, image))
     }
 
     fn write_run(&self, queue: &wgpu::Queue, run: crate::world::SectionRun) {
