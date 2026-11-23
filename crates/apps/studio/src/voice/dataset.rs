@@ -234,7 +234,7 @@ impl Rules {
         if dirs.iter().any(|d| self.folders.iter().any(|f| f == d)) {
             return true;
         }
-        speaker_code(&n).is_some_and(|c| self.codes.iter().any(|x| *x == c))
+        speaker_code(&n).is_some_and(|c| self.codes.contains(&c))
     }
 
     pub fn json(&self) -> Value {
