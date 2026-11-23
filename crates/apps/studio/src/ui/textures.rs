@@ -17,6 +17,7 @@ use dear_imgui_rs::{Key, MouseButton, TextureId, TreeNodeFlags, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 use map::TagId;
 
+use crate::app::image_gen::ImageAction;
 use crate::app::textures::{BitmapAction, PaintTool};
 use crate::app::{Action, App};
 use crate::theme::{self, Fonts, icon};
@@ -583,6 +584,15 @@ pub fn inspector(
                 path,
             }));
         }
+        ui.same_line();
+        if ui.button(format!("{} Generate...##tex-generate", icon::ZAP)) {
+            let name = app.textures.open.get(&tag).map(|o| o.name.clone()).unwrap_or_default();
+            actions.push(Action::Image(ImageAction::Open {
+                bitmap: name,
+                image: layer.image as usize,
+            }));
+        }
+        ui.set_item_tooltip("Make a new picture for this image from a prompt and references you pick");
         d.end();
         ui.same_line();
         if ui.button(format!("{} Export...##tex-export", icon::SAVE)) {

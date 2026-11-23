@@ -15,6 +15,9 @@
 //! - [`theme`]: the dark theme, bundled fonts and icons.
 //! - [`headless`]: renders real frames offscreen to PNG (screenshots),
 //!   with [`script`]ed input aimed at widgets that [`probe`] finds.
+//! - [`imagegen`]: image generation (the Codex CLI, or a fake for
+//!   tests): a picture made from a prompt and references, fitted to a
+//!   bitmap slot.
 //! - [`api`]: the agent API: every edit as a JSON method on a local
 //!   socket, answered by the window or by `h2-editor --serve`
 //!   (docs/editor/agent-api.md).
@@ -26,6 +29,7 @@ pub mod app;
 pub mod camera;
 pub mod fields;
 pub mod headless;
+pub mod imagegen;
 pub mod play;
 pub mod probe;
 pub mod script;

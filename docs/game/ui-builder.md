@@ -1011,6 +1011,19 @@ The first three pages open from Game Setup, so their about line is the
 Game Setup row's help (`settings.caller.help`): the row and the window
 always agree.
 
+**A new icon.** A page's icon is one of `mp_games2`'s eleven images.
+Studio's **Generate image...** makes a picture in their style from the
+icons the user picks as references
+([editor-guide.md](../editor/editor-guide.md#generating-an-image),
+`image.generate` in [agent-api.md](../editor/agent-api.md#generating-images)).
+It goes into one of the eleven images of the user's `mainmenu` map, fitted
+to its 40 by 40 and its format, and shows in the UI Screens picture and a
+paired game before it is kept. A picture for an icon `mp_games2` does not
+have is made at `size [40, 40]` with no slot and kept as art with its
+provenance (`image.accept {save}`). Studio adds no image to a bitmap, so
+such an icon reaches the game when map injection generates the tag and
+its art into the maps.
+
 **Drawn over the panel.** The draw sorts a pane's widgets by depth, then
 render depth bias, then type, text (6) before bitmap (8)
 (docs/formats/ui.md "What a screen, pane and widget are"). A text block

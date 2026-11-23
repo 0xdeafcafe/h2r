@@ -245,6 +245,45 @@ impl UiScreens {
         self.shot = None;
     }
 
+    /// The bitmap and image widget `id` of the screen shown draws, read
+    /// through the disc: the slot a generated picture goes into.
+    pub fn widget_bitmap(&mut self, id: &str) -> Option<(String, usize)> {
+        let w = self.edit_widget(id).ok()?;
+        let boot::ui_kit::view::Kind::Art { art, .. } = &w.kind else {
+            return None;
+        };
+        let (name, image) = self.disc()?.art_bitmap(art)?;
+        Some((name, usize::try_from(image).ok()?))
+    }
+
+    /// Draws `rgba` (`width` by `height`) for image `image` of the
+    /// bitmap at `bitmap` in every picture from now on, or the disc's
+    /// own pixels again with `None`: a generated picture previewed in
+    /// place. False when the disc has no such bitmap.
+    pub fn show_image(
+        &mut self,
+        bitmap: &str,
+        image: usize,
+        rgba: Option<(u32, u32, Vec<u8>)>,
+    ) -> bool {
+        let Ok(index) = i16::try_from(image) else {
+            return false;
+        };
+        let Some(disc) = self.disc() else {
+            return false;
+        };
+        let img = rgba.map(|(width, height, rgba)| preview::Image {
+            width,
+            height,
+            rgba,
+        });
+        let shown = disc.set_image(bitmap, index, img);
+        if shown {
+            self.redraw();
+        }
+        shown
+    }
+
     /// The picture of the pick, drawn when it changed.
     pub fn shot(&mut self) -> Option<&Shot> {
         if self.edit.ours.poll() {
