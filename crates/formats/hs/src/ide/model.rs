@@ -474,7 +474,7 @@ impl<'a> Model<'a> {
                         "{name} takes {} argument{}{}, not {}",
                         b.parameters.len(),
                         if b.parameters.len() == 1 { "" } else { "s" },
-                        if b.parameters.is_empty() { String::new() } else { format!(" ({})", b.call_form()) },
+                        if b.parameters.is_empty() { String::new() } else { format!(" {}", b.call_form()) },
                         args.len()
                     ),
                 );
