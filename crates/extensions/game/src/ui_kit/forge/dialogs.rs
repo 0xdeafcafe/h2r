@@ -413,6 +413,8 @@ impl Dialogs {
                     visible: 3,
                 };
                 s.style = ValueStyle::Setting;
+                // The dialog draws only the list's window unless it scrolls.
+                s.scrolls = true;
                 // The preview: a Scene3d widget the compositor places in
                 // the game (the look drawn by the native renderer); the
                 // spec carries its frame and its model's name, which the
