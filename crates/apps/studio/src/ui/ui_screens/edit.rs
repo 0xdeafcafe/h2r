@@ -555,6 +555,7 @@ pub fn widget_list(ui: &Ui, app: &mut App, st: &mut EditUi, actions: &mut Vec<Ac
                 format!("{}  {short}", w.id)
             }
             Kind::Art { .. } => w.id.clone(),
+            Kind::Scene3d { name } => format!("{}  3D: {name}", w.id),
         };
         if ui
             .selectable_config(format!("{label}##ui-w-{}", w.id))
