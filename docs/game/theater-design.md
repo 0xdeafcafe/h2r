@@ -115,6 +115,7 @@ The same container also holds the film: the inputs (tag 1) and digests
 | The film selector and film page in the game's own menus | Built | [theater.md](theater.md#in-game-theater) |
 | Compatibility: XBE digest, guest image contract, `h2-sim/2`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
 | Live: host film upload, film lists, pins, clips as tick ranges, public range reads for the web viewer | Built | [live-api.md](../live/live-api.md#theater) |
+| The action-column codec: `ChunkEncoder`, `ChunkDecoder` and `h2 film stat --fields`, a chunk of 256 ticks of 92-byte actions as predicted, grid-modelled planes under one zstd frame | Built; the film file that carries it (slice 12) is not | `crates/live/film/src/columns.rs`, [input-film.md](input-film.md#the-encoding) |
 | Engine-level playback (a film played without its machine section) and arena keyframes | Not built | "Before and after the sim rewrite"; [sim-rewrite.md](../engine/sim-rewrite.md) section 7 (`sim_state::Keyframe`) |
 
 Three gaps remain:

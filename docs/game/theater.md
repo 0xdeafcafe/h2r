@@ -257,7 +257,9 @@ cold and disables warm restores until the viewer leaves the film.
 Fast-forward compares the recorded hashes and runs without host pacing. The
 coordinator should also seek backwards across a received packet while
 paused and resume. `h2 film stat FILE` lists embedded keyframes, recorded
-D3D barriers and per-stream tape counts, byte totals and operations. The
+D3D barriers and per-stream tape counts, operations and bytes in the
+JSON and binary encodings, and `h2 film stat --fields FILE...` the change
+rate and stored bytes of each action field. The
 [measurement procedure](notes/theater-seek.md) uses both tools.
 
 At match end the host uploads the sealed recording under the lease's
