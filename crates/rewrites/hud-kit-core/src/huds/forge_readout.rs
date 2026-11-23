@@ -13,29 +13,25 @@
 //!   the ground, the snap and the axes) or why it cannot go there; a
 //!   hold that starts with a tenth of the budget or less left, the
 //!   limit that binds; after a refusal, its sentence ([`guide_text`]).
-//! - `fgr.sel`, `fgr.ring`, `fgr.face`, `fgr.under`, `fgr.from` and
-//!   `fgr.near.1` to `.12`: world marks ([`sample_poses`] gives the
-//!   preview's poses; the runtime gives the real ones).
+//! - `fgr.sel`, `fgr.ring`, `fgr.face`, `fgr.under`, `fgr.from`,
+//!   `fgr.near.1` to `.12` and `fgr.zone.1` to `.8`: world marks
+//!   ([`sample_poses`] gives the preview's poses; the runtime gives the
+//!   real ones). A near mark is in its team's colour (`Style::Team`), so
+//!   its label is short; where the map gives the team no colour the
+//!   runtime keeps the team in the label. The zone marks are
+//!   `Shape::Line` edges between the corners of the hill or territory
+//!   the aimed goal belongs to ([`View::zone`]).
 //!
 //! The readout is fullscreen only, a HUD of its own beside the monitor's
-//! `forge` HUD as the superbounce readout is beside its HUD.
+//! `forge` HUD as the superbounce readout is beside its HUD. Its rows
+//! are at the superbounce readout's places, and the two never show
+//! together (a monitor has no bounce to read, the superbounce readout is
+//! for a player's biped): [`Readout::never_with`] declares it, so the
+//! `own` check does not compare them.
 //!
 //! [`View`] is what it shows; the game's runtime (`game::forge_readout`,
 //! slice H3) fills it from what the session publishes each tick, so
 //! `forge.status` and the HUD cannot disagree.
-//!
-//! TODO(H2/K5): `fgr.zone.1` to `.8`, the hill or territory outline, are
-//! `Shape::Line` marks and K5 adds that shape; [`View::zone`] already
-//! carries the corners, and the `zone` state has them, but no element
-//! draws them yet. Add the eight elements, their values and their
-//! sample poses with the shape.
-//!
-//! TODO(H2/K5): `Describe::never_with` (the two readouts never show
-//! together, so the `own` check must not compare their rows) and
-//! `Style::Team(u8)` (a near mark in its team's colour). Until the
-//! first, the `own` check sees this HUD's rows on the superbounce
-//! readout's; until the second a near mark's team is in its label
-//! ([`near_text`]).
 
 use crate::model::{Anchor, Describe, Element, Font, Hud, Justify, Kind, Place, Style, Value, Values};
 use crate::world::{Pose, Shape};
@@ -71,6 +67,20 @@ pub const NEARS: [&str; NEAR] = [
 ];
 /// The single world marks, in draw order.
 pub const MARKS: [&str; 5] = [SEL, RING, FACE, UNDER, FROM];
+/// How many zone lines.
+pub const ZONE: usize = 8;
+/// The zone lines: the outline of the hill or territory the aimed goal
+/// belongs to, an edge between each pair of corners in order.
+pub const ZONES: [&str; ZONE] = [
+    "fgr.zone.1",
+    "fgr.zone.2",
+    "fgr.zone.3",
+    "fgr.zone.4",
+    "fgr.zone.5",
+    "fgr.zone.6",
+    "fgr.zone.7",
+    "fgr.zone.8",
+];
 
 /// The rows' tops from the frame's bottom, the superbounce readout's:
 /// y 376, 397 and 418 fullscreen.
@@ -83,7 +93,8 @@ pub const GUIDE_UP: i16 = INFO_UP;
 pub const NAME_LONGEST: &str = "Assault Rifle Ammo Cache Crate";
 pub const FACTS_LONGEST: &str = "Starting point  Neutral  Slayer, CTF, KotH";
 pub const GUIDE_LONGEST: &str = "Item spawners are full (100) in this map.";
-/// The widest near mark label: an item's name and a team.
+/// The widest near mark label: an item's name, with room for the team
+/// where the map gives it no colour and the label carries it.
 pub const NEAR_LONGEST: &str = "Rocket Launcher Red";
 
 /// The separator between a row's parts.
@@ -213,10 +224,13 @@ pub struct Budget {
 /// spawner with nothing out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Near {
-    /// `Spawn`, `Flag`, `Hill 2`, the item's name.
+    /// `Spawn`, `Flag`, `Hill 2`, the item's name. Short: the team is the
+    /// mark's colour; where the map gives the team no colour the runtime
+    /// adds it here.
     pub label: String,
-    /// The team's name, until `Style::Team` (TODO(H2/K5)).
-    pub team: Option<String>,
+    /// The thing's team, `0..world::TEAMS`: the mark's colour
+    /// (`Style::Team`). `None` is the user's HUD colour.
+    pub team: Option<u8>,
     /// Whether the thing is in the session's game type.
     pub in_game_type: bool,
 }
@@ -233,7 +247,9 @@ pub struct View {
     /// The nearest things, nearest first; at most [`NEAR`] show.
     pub near: Vec<Near>,
     /// The corners of the hill or territory the aimed goal belongs to,
-    /// in order (TODO(H2/K5): drawn as `Shape::Line` marks).
+    /// in order. An edge between each pair in turn is a `Shape::Line`
+    /// mark, so a closed outline ends with the first corner again; at
+    /// most [`ZONE`] edges show.
     pub zone: Vec<[f32; 3]>,
 }
 
@@ -358,13 +374,30 @@ pub fn guide_text(v: &View) -> Option<String> {
     Some(fit_words(&line, GUIDE_LONGEST))
 }
 
-/// A near mark's label: its label and, until `Style::Team`, its team.
+/// A near mark's label: its label alone. The team is the mark's colour
+/// (`Style::Team`), so the label stays short; where the map gives the
+/// team no colour the runtime puts the team in the label itself.
 pub fn near_text(n: &Near) -> String {
-    let t = match &n.team {
-        Some(team) => format!("{} {team}", n.label),
-        None => n.label.clone(),
-    };
-    fit_words(&t, NEAR_LONGEST)
+    fit_words(&n.label, NEAR_LONGEST)
+}
+
+/// A near mark's style: `Inactive` out of the session's game type, else
+/// its team's colour, or the user's HUD colour with no team.
+pub fn near_style(n: &Near) -> Style {
+    if !n.in_game_type {
+        Style::Inactive
+    } else {
+        match n.team {
+            Some(t) => Style::Team(t),
+            None => Style::Normal,
+        }
+    }
+}
+
+/// How many zone edges `v` shows: one between each pair of corners in
+/// order, at most [`ZONE`].
+pub fn zone_edges(v: &View) -> usize {
+    v.zone.len().saturating_sub(1).min(ZONE)
 }
 
 /// The elements, in draw order: the three rows, then the marks.
@@ -382,6 +415,7 @@ pub fn hud() -> Hud {
         mark(FROM, Shape::Bracket, ""),
     ];
     elements.extend(NEARS.iter().map(|id| mark(*id, Shape::Pipper, NEAR_LONGEST)));
+    elements.extend(ZONES.iter().map(|id| mark(*id, Shape::Line, "")));
     Hud {
         name: NAME,
         elements,
@@ -421,14 +455,14 @@ pub fn values(v: &View) -> Values {
         out.set(
             id,
             match v.near.get(i) {
-                Some(n) => Value::text(near_text(n)).styled(if n.in_game_type {
-                    Style::Normal
-                } else {
-                    Style::Inactive
-                }),
+                Some(n) => Value::text(near_text(n)).styled(near_style(n)),
                 None => Value::hidden(),
             },
         );
+    }
+    let edges = zone_edges(v);
+    for (i, id) in ZONES.iter().enumerate() {
+        out.set(id, shown(i < edges));
     }
     out
 }
@@ -469,6 +503,13 @@ pub fn sample_poses(v: &View) -> Vec<(&'static str, Pose)> {
         let (col, row) = ((i % 6) as f32, (i / 6) as f32);
         out.push((*id, Pose::at([-1.5 + 0.6 * col, 1.0 + 0.6 * row, 0.0], [0.08, 0.0])));
     }
+    for (i, id) in ZONES.iter().enumerate().take(zone_edges(v)) {
+        let [a, b] = [v.zone[i], v.zone[i + 1]];
+        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0];
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let len = d[0].hypot(d[1]);
+        out.push((*id, Pose::at(mid, [len / 2.0, 0.0]).heading(d)));
+    }
     out
 }
 
@@ -484,10 +525,10 @@ fn target(name: &str, thing: Thing, source: Source, radius: f32, ring: Option<f3
     }
 }
 
-fn near(label: &str, team: Option<&str>, in_game_type: bool) -> Near {
+fn near(label: &str, team: Option<u8>, in_game_type: bool) -> Near {
     Near {
         label: label.into(),
-        team: team.map(Into::into),
+        team,
         in_game_type,
     }
 }
@@ -574,19 +615,16 @@ pub fn views() -> Vec<(&'static str, View)> {
         singular: "item spawner".into(),
         plural: "item spawners".into(),
     });
+    // The sample teams: 0 red, 1 blue.
     let idle = View {
-        near: vec![
-            near("Spawn", Some("Red"), true),
-            near("Flag", Some("Blue"), true),
-            near("Hill 2", None, false),
-        ],
+        near: vec![near("Spawn", Some(0), true), near("Flag", Some(1), true), near("Hill 2", None, false)],
         ..View::default()
     };
     let full = View {
         near: (1..=NEAR)
             .map(|i| match i % 4 {
-                0 => near("Rocket Launcher", Some("Red"), true),
-                1 => near("Spawn", Some("Blue"), true),
+                0 => near("Rocket Launcher", Some(0), true),
+                1 => near("Spawn", Some(1), true),
                 2 => near("Flag", None, false),
                 _ => near(&format!("Hill {i}"), None, true),
             })
@@ -594,7 +632,18 @@ pub fn views() -> Vec<(&'static str, View)> {
         ..View::default()
     };
     let mut zone = aim(hill.clone());
-    zone.zone = vec![[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]];
+    // A closed outline of nine corners, so every zone line shows.
+    zone.zone = vec![
+        [-1.0, -1.0, 0.0],
+        [0.0, -1.4, 0.0],
+        [1.0, -1.0, 0.0],
+        [1.4, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.4, 0.0],
+        [-1.0, 1.0, 0.0],
+        [-1.4, 0.0, 0.0],
+        [-1.0, -1.0, 0.0],
+    ];
     vec![
         ("idle", idle),
         ("aim-object", aim(object)),
@@ -630,6 +679,14 @@ impl Describe for Readout {
 
     fn multiplayer_only(&self) -> Option<&'static str> {
         Some("Forge edits a multiplayer map's own placements")
+    }
+
+    /// The rows are at the superbounce readout's places; the two never
+    /// show together (a monitor has no bounce to read, the superbounce
+    /// readout is for a player's biped), so the `own` check does not
+    /// compare them.
+    fn never_with(&self) -> &'static [&'static str] {
+        &[super::superbounce_readout::NAME]
     }
 
     fn world(&self, state: &str) -> Vec<(&'static str, Pose)> {

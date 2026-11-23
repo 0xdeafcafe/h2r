@@ -752,9 +752,101 @@ mod forge_readout_tests {
         assert!(fr::NEARS.iter().all(|id| v.get(id).unwrap().shown));
         let (_, v) = marks("idle");
         let near: Vec<_> = fr::NEARS.iter().take(3).map(|id| shown(&v, id).unwrap()).collect();
-        assert_eq!(near, ["Spawn Red", "Flag Blue", "Hill 2"]);
+        assert_eq!(near, ["Spawn", "Flag", "Hill 2"]);
         assert_eq!(v.get(fr::NEARS[2]).unwrap().style, Style::Inactive);
         assert!(!v.get(fr::NEARS[3]).unwrap().shown);
+    }
+
+    /// A near mark in the session's game type draws in its team's colour
+    /// (`Style::Team`), or the user's HUD colour with no team, and its
+    /// label stays short; out of the game type it is `Inactive`,
+    /// whatever its team.
+    #[test]
+    fn a_near_mark_is_in_its_teams_colour() {
+        let team = |team: Option<u8>, in_game_type: bool| {
+            fr::near_style(&fr::Near {
+                label: "Spawn".into(),
+                team,
+                in_game_type,
+            })
+        };
+        assert_eq!(team(Some(0), true), Style::Team(0));
+        assert_eq!(team(Some(7), true), Style::Team(7));
+        assert_eq!(team(None, true), Style::Normal);
+        assert_eq!(team(Some(0), false), Style::Inactive);
+        assert_eq!(team(None, false), Style::Inactive);
+        // The label is the label: the team is the colour, not the text.
+        let n = fr::Near {
+            label: "Flag".into(),
+            team: Some(1),
+            in_game_type: true,
+        };
+        assert_eq!(fr::near_text(&n), "Flag");
+        let v = fr::values(&view("idle"));
+        assert_eq!(v.get(fr::NEARS[0]).unwrap().style, Style::Team(0));
+        assert_eq!(v.get(fr::NEARS[1]).unwrap().style, Style::Team(1));
+    }
+
+    /// The zone marks are `Shape::Line` elements: an edge between each
+    /// pair of corners in order, at most eight, hidden with fewer than
+    /// two corners; the `zone` state's closed outline shows all eight.
+    #[test]
+    fn the_zone_marks_follow_the_corners() {
+        let h = fr::hud();
+        for id in fr::ZONES {
+            assert_eq!(h.element(id).unwrap().kind.world(), Some(crate::world::Shape::Line), "{id}");
+        }
+        let edges = |corners: &[[f32; 3]]| {
+            let mut v = view("zone");
+            v.zone = corners.to_vec();
+            let values = fr::values(&v);
+            let on: Vec<&str> = fr::ZONES.iter().copied().filter(|id| values.get(id).unwrap().shown).collect();
+            (fr::zone_edges(&v), on, values)
+        };
+        let (n, on, _) = edges(&view("zone").zone);
+        assert_eq!((n, on.len()), (fr::ZONE, fr::ZONE), "the zone state shows every line");
+        let (n, on, _) = edges(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]);
+        assert_eq!((n, on), (2, vec![fr::ZONES[0], fr::ZONES[1]]));
+        for corners in [&[][..], &[[0.0, 0.0, 0.0]][..]] {
+            let (n, on, _) = edges(corners);
+            assert_eq!((n, on.len()), (0, 0));
+        }
+        let ten: Vec<[f32; 3]> = (0..10).map(|i| [i as f32, 0.0, 0.0]).collect();
+        let (n, on, _) = edges(&ten);
+        assert_eq!((n, on.len()), (fr::ZONE, fr::ZONE), "the pool caps the edges");
+    }
+
+    /// A shown zone line has a sample pose: the edge's midpoint, its
+    /// direction and half its length, which `world::edges` draws as the
+    /// segment between the two corners.
+    #[test]
+    fn a_zone_lines_pose_is_the_edge() {
+        let v = view("zone");
+        let poses = fr::sample_poses(&v);
+        let z = v.zone;
+        for (i, id) in fr::ZONES.iter().enumerate() {
+            let (_, pose) = poses.iter().find(|(p, _)| p == id).unwrap_or_else(|| panic!("{id}"));
+            let [a, b] = [z[i], z[i + 1]];
+            let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0];
+            let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+            assert_eq!(pose.at, mid, "{id}");
+            assert_eq!(pose.half, [len / 2.0, 0.0], "{id}");
+            let drawn = crate::world::edges(crate::world::Shape::Line, pose);
+            let close = |p: [f32; 3], q: [f32; 3]| {
+                p.iter().zip(q).all(|(x, y)| (x - y).abs() < 1e-4)
+            };
+            assert_eq!(drawn.len(), 1, "{id}");
+            assert!(close(drawn[0][0], [a[0], a[1], a[2] + crate::world::LIFT]), "{id} from");
+            assert!(close(drawn[0][1], [b[0], b[1], b[2] + crate::world::LIFT]), "{id} to");
+        }
+    }
+
+    /// The rows are at the superbounce readout's places, so the readout
+    /// declares it: the two never show together, and the `own` check
+    /// does not compare them.
+    #[test]
+    fn the_readout_declares_the_superbounce_readout() {
+        assert!(Readout.never_with().contains(&sb::NAME));
     }
 
     /// No text is wider than its `longest`, by its characters (the
@@ -789,7 +881,7 @@ mod forge_readout_tests {
         v.target.as_mut().unwrap().name = "A very long name from a tag that goes on and on and on".into();
         v.near = vec![fr::Near {
             label: "Assault Rifle Spawner".into(),
-            team: Some("Neutral".into()),
+            team: Some(7),
             in_game_type: true,
         }];
         let long = fr::values(&v);
