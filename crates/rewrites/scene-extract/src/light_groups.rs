@@ -376,7 +376,7 @@ pub fn shadow_filter(
         .ok()?
         .0;
     let size = |index| {
-        let at = glow::TARGETS.checked_add(index.checked_mul(glow::TARGET_STRIDE)?)?;
+        let at = engine::shadow_constants::global::TARGETS.checked_add(index.checked_mul(engine::shadow_constants::global::TARGET_STRIDE)?)?;
         let width = mem.u32(at.checked_add(0x80)?).ok()?;
         let height = mem.u32(at.checked_add(0x84)?).ok()?;
         (width != 0 && height != 0).then_some([width, height])
@@ -832,7 +832,8 @@ mod tests {
 
     #[test]
     fn the_object_filter_carries_its_quads_combiner_signs_and_final_copy() {
-        use engine::glow::{TARGET_STRIDE, TARGETS};
+        use engine::GuestMemory as _;
+        use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};
         let mut m = engine::FlatMemory::new(0, 0x0060_0000);
         for (at, value) in [
             (engine::glow::constant::ONE, 1.0f32.to_bits()),

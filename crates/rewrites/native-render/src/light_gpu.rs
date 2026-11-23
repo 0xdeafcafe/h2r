@@ -756,8 +756,10 @@ impl LightSet {
             pipeline.1.previous_frame()?.as_ref()?;
             let textures = if let Some(map) = d.shadow_map {
                 let key = (map.view.clone(), static_gel);
-                if let Some((_, group)) =
-                    pass.shadow_groups.iter().find(|(cached, _)| cached == &key
+                if let Some((_, group)) = pass
+                    .shadow_groups
+                    .iter()
+                    .find(|(cached, _)| cached == &key)
                 {
                     group.clone()?
                 } else {

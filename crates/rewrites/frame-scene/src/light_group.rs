@@ -172,12 +172,17 @@ pub struct ShadowFilterDraw {
     pub spread: u32,
 }
 
+fn serialize_words<S: serde::Serializer>(words: &[u32], s: S) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(words, s)
+}
+
 /// The object filter's ping-pong quads and final copy, with the combiner
 /// and tap signs the native quad shader needs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct ShadowFilter {
     pub draws: Vec<ShadowFilterDraw>,
     pub copy: Option<(u32, u32)>,
+    #[serde(serialize_with = "serialize_words")]
     pub combiner: [u32; SHADOW_COMBINER_WORDS],
     pub signs: [u32; 2],
     /// The colour-mask target's guest size (targets 10 and 11).
