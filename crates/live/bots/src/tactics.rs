@@ -228,6 +228,29 @@ pub(crate) fn melee_window(
     dist < reach && angle < 0.85
 }
 
+/// A softened target this close is run down for the beatdown with an
+/// automatic, a shotgun or nothing read (world units)...
+pub const FINISH_PUSH: f32 = 6.0;
+/// ...and with a rifle only this close: further out its headshot finishes.
+pub const FINISH_PUSH_RIFLE: f32 = 2.5;
+
+/// Whether to stop strafing and run straight in on a target whose shield
+/// is down (or that has taken a long burst), as a player finishes with a
+/// melee instead of letting the shield come back. Never with a sniper, a
+/// splash weapon or a sword (the sword has its own lunge).
+pub(crate) fn finish_push(held: Option<Gun>, dist: f32, softened: bool) -> bool {
+    if !softened {
+        return false;
+    }
+    let reach = match held.map(|g| (g.role(), g.ready())) {
+        None | Some((_, false)) => FINISH_PUSH,
+        Some((Role::Spray | Role::Scatter | Role::Unknown, true)) => FINISH_PUSH,
+        Some((Role::Precise, true)) => FINISH_PUSH_RIFLE,
+        Some(_) => 0.0,
+    };
+    dist < reach
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Notice {
     id: u32,

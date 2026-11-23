@@ -872,9 +872,43 @@ A bot can fire at a visible opponent while walking toward the hill,
 guarding its flag or escorting a carrier. Target choice combines the
 existing range, turn and stickiness costs with the objective, teammates'
 calls, recent kills and visible openings. A bot that loses sight plays its
-objective first. In Slayer it can recover shields, respond to a call,
-regroup after withdrawing, collect a due supply, hold an angle, investigate
-its last sighting, or roam. A team call alone never authorizes a shot.
+objective first. In Slayer (`Mind::between_fights`,
+`crates/live/bots/src/mind/strategy.rs`) it then takes, in order: recover
+shields; regroup with the nearest teammate after withdrawing or while
+afraid; its own lead (hold the angle it lost the target round, then chase
+the last sighting); a teammate's call or a trade; a due supply or loose
+grenades; a heard shot or a guessed respawn; move up with the lower-slot
+teammate when that one is more than 10 to 19 units away; a firing
+position; roam. A teammate's call never pulls a bot off a fresh lead of
+its own, and trailing a teammate comes only once nothing else is left. A
+team call alone never authorizes a shot.
+
+#### Finishing and breaking off
+
+A target whose shield is down is run down, not strafed at while its
+shield comes back. The bot reads the shield from the visible contact (at
+or under 0.25), or counts it as down after twice the melee finish's pulls
+on target (`weapons::Combo::softened`: 6 at Legendary, about 1.6 s of
+automatic fire). With an automatic, a shotgun or nothing loaded it runs
+straight in from within 6 units; with a rifle only from within 2.5,
+since its headshot finishes further out; never with a sniper, splash gun
+or sword (`tactics::finish_push`). Running in uses the rush footwork and
+the plasma reach for the melee (1.17 units), so the melee lands. It
+does not run in while carrying or withdrawing, and it keeps firing on
+the way.
+
+The bot withdraws when it sees more enemies within 8 plus 12 times its
+awareness units than it has teammates there with a clear line, plus a
+margin of one or two from its caution, aggression and drive. A softened
+target overrides that when the bot's own shield is at least 0.5 and it is
+outnumbered by no more than one beyond the margin. The Juggernaut never
+withdraws (posture Press).
+
+Recovering shields, it backs away from the last sighting for 1.5 s after
+losing sight (`mind::RECOVER_BACK_TICKS`), then stands and watches that
+way until the shield is back. Fear sends a bot off on its own only while
+its shield is under the recovery line (0.9); with a full shield a fearful
+bot regroups with a teammate if there is one, else follows its own lead.
 
 Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
@@ -1347,7 +1381,13 @@ it shoots to (world units):
 | blast | 5 to 25 | 2.5 to 35 | 5 |
 
 An identified SMG fires within its aim-assist reach, bounded to 4.5–9
-world units. Beyond that the movement closes distance or the player draws
+world units. A plasma rifle or plasma pistol (by identity), or any
+automatic whose projectile is slower than 150 world units a second,
+keeps its target within 6 and fires to 10 at most
+(`weapons::SLOW_BOLT_BAND`, `SLOW_BOLT_FIRE`): a strafing target steps out
+of slow bolts ([round 1 on Midship](notes/2026-11-23-bots-natural-round1.md):
+the plasma rifle hit 0.42 of its shots under 3 units, 0.17 from 3 to 12
+and almost none beyond). Beyond that the movement closes distance or the player draws
 another weapon. For a visible approaching enemy, the draw considers half
 a second of observed motion, capped at two units of advance.
 
@@ -1386,6 +1426,15 @@ Seeking walks there along the nav mesh. A weapon of a kind it already
 carries is walked over: the game moves its ammunition across by itself
 (`0x101740`). One of another kind is taken by holding X on it (within 0.5
 world units) for at most 1 s; the dry one in hand is dropped for it.
+
+**Trips that fail** (`crates/live/bots/src/mind/errand.rs`). A walk to a
+weapon may take 3 s plus 20 ticks per world unit of the straight line at
+its start. A bot within 1 unit of it for 1.5 s while the weapons decision
+still wants it has not got it: a walk-over that gives nothing, a weapon
+on a ledge or in a wall. A held X that takes nothing in 1 s ends the same
+way. The weapon (its object) is then refused for 30 s and its spot
+blacklisted for 10 s, so the bot goes back to fighting and roaming
+instead of walking the same trip again.
 
 The presses are Halo 2's Default layout (X reload and action, Y switch,
 B melee, A jump, left stick click crouch), which every bot's profile is
@@ -1569,10 +1618,14 @@ finish a capture already under way, then take an unowned or hostile site.
 Break equal priorities by distance. The bot holds its position inside
 the chosen volume while fighting. FFA ownership follows the player slot.
 
-**Juggernaut.** Hunters engage the visible Juggernaut and ignore fellow
-hunters. On a transfer, the new Juggernaut can rush a visible hunter
-while firing, then melee up close. Movement bonuses come from the game
-variant. The role mask alone reveals no target position to the planner.
+**Juggernaut.** Every other player sees the Juggernaut by its waypoint,
+so a hunter's goal is the Juggernaut wherever it is: it walks to it with
+no one in view and fights it on sight. Hunters ignore fellow hunters. The
+Juggernaut has no marks on the others: it hunts the nearest hunter in its
+own view, and roams otherwise (`juggernaut_quarry`,
+`crates/live/bots/src/mind/strategy.rs`). It never withdraws, runs at a
+visible hunter while firing, then melees up close. Movement bonuses come
+from the game variant.
 
 **Picking up.** Approach the chosen item and hold X while it remains
 loose within pickup range. `0x1517ec..0x1518d6` gives a nonzero
@@ -5775,6 +5828,20 @@ Natural feel ("Built: natural feel (sol)" in §10):
     crouch-walk, a brief delay before X or Y, and spaced melee swings.
     Leave it waiting and check the lobby selection and respawn remain
     under the human's control.
+
+Finishing fights (§3.3, "Finishing and breaking off"), Slayer on Midship
+and Lockout:
+
+32. A bot that has your shield down closes in and melees instead of
+    strafing at range while your shield comes back.
+33. A plasma rifle bot does not fire at you across the map; it closes to a
+    few metres first.
+34. A bot that loses you round a corner holds the corner or follows you
+    before it answers a teammate's call or walks back to a teammate.
+35. In Juggernaut, hunters head for the Juggernaut even when it is out of
+    sight, and the Juggernaut does not back away from two hunters.
+36. No bot stands on a weapon, or walks back and forth to one, for more
+    than a couple of seconds.
 
 ### 11.2 Objectives in play (checklist)
 

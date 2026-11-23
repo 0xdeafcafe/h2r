@@ -1703,3 +1703,143 @@ fn radar_use_is_sampled_per_glance_with_the_names_probability() {
     assert!(low > 0 && high > low + 80 && high < 256, "{low} vs {high}");
     assert_eq!(scans(0.8), high);
 }
+
+// ---- finishing fights (bots.md §3.3, "Finishing and breaking off") ----
+
+#[test]
+fn a_target_with_its_shield_down_is_run_down_not_strafed() {
+    let map = MapData {
+        nav: floor(),
+        ..MapData::default()
+    };
+    let mut auto = armed(rounds(36, 108), None);
+    auto.held.as_mut().unwrap().profile = crate::arms::Profile {
+        trigger: crate::arms::Trigger::Automatic,
+        pellets: 1,
+        shot_speed: 400.0,
+        ..Default::default()
+    };
+    // Inside the band, even the pressing one's: only the finish closes.
+    let forward = |shield: f32| {
+        let mut m = Mind::new(Skill::Legendary, 5);
+        (0..40u32)
+            .map(|tick| {
+                let mut p = Perception {
+                    me: Some(Me {
+                        position: [5.0, 5.0, 0.0],
+                        arms: Some(auto),
+                        ..Me::default()
+                    }),
+                    others: vec![enemy(1, [7.5, 5.0, 0.0])],
+                    tick,
+                    ..Perception::default()
+                };
+                p.observations.contacts = vec![crate::brain::Contact {
+                    weapon: None,
+                    id: 1,
+                    aim: [-1.0, 0.0, 0.0],
+                    shield: Some(shield),
+                    empty_magazine: false,
+                    crouching: false,
+                }];
+                m.step(&p, Some(&map)).left_stick.1
+            })
+            .collect::<Vec<_>>()
+    };
+    let soft = forward(0.1);
+    assert!(soft[30..].iter().all(|&f| f > 0.8), "runs in: {soft:?}");
+    let full = forward(1.0);
+    assert!(full[30..].iter().all(|&f| f.abs() < 0.3), "strafes: {full:?}");
+}
+
+#[test]
+fn recovering_out_of_sight_it_stands_and_watches_instead_of_walking_off() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    let p = |shield, others, tick| Perception {
+        me: Some(Me {
+            position: [0.0; 3],
+            aim: X,
+            shield,
+            ..Me::default()
+        }),
+        others,
+        tick,
+        ..Perception::default()
+    };
+    m.step(&p(1.0, vec![enemy(1, [6.0, 0.0, 0.0])], 0), None);
+    let pad = m.step(&p(0.1, vec![], 5), None);
+    assert!(pad.left_stick.1 < -0.5, "backs away: {:?}", pad.left_stick);
+    let mut pad = pad;
+    for tick in 6..RECOVER_BACK_TICKS + 30 {
+        pad = m.step(&p(0.1, vec![], tick), None);
+        assert_eq!(m.doing, Doing::Recover([6.0, 0.0, 0.0]), "tick {tick}");
+    }
+    assert!(
+        pad.left_stick.0.hypot(pad.left_stick.1) < 0.05,
+        "stands: {:?}",
+        pad.left_stick
+    );
+}
+
+#[test]
+fn a_weapon_stood_on_that_does_not_come_is_given_up_for_a_while() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    let a = armed(rounds(0, 0), None);
+    // Same kind: walked over, not held on. The test's arms never refill,
+    // as a walk-over that gives nothing would leave them.
+    let rifle = Pickup {
+        id: 79,
+        position: [5.0, 0.0, 0.0],
+        gun: Gun {
+            def: RIFLE,
+            ammo: rounds(36, 36),
+            ..Default::default()
+        },
+    };
+    let at = [4.8, 0.0, 0.0];
+    for t in 0..errand::ON_IT_TICKS {
+        with(&mut m, at, a, vec![], vec![rifle], t);
+        assert_eq!(m.doing, Doing::Rearm(rifle.position), "tick {t}");
+    }
+    for t in errand::ON_IT_TICKS + 1..errand::ON_IT_TICKS + 400 {
+        with(&mut m, at, a, vec![], vec![rifle], t);
+        assert_ne!(m.doing, Doing::Rearm(rifle.position), "tick {t}");
+    }
+    // Refused for a while, not for ever.
+    with(&mut m, at, a, vec![], vec![rifle], errand::ON_IT_TICKS + errand::REFUSE_TICKS + 5);
+    assert_eq!(m.doing, Doing::Rearm(rifle.position));
+}
+
+fn juggernaut(me: u32, mask: u16) -> Objective {
+    Objective {
+        game: Game::Juggernaut,
+        state: crate::objective::State::Juggernauts(mask),
+        me,
+        items: vec![],
+        spots: vec![],
+        hill: None,
+    }
+}
+
+#[test]
+fn hunters_go_for_the_marked_juggernaut_and_it_hunts_only_whom_it_sees() {
+    // The Juggernaut (slot 2) behind, out of sight: its waypoint shows it.
+    let behind = [-20.0, 0.0, 0.0];
+    let p = |me_slot: u32, mask: u16| Perception {
+        me: me([0.0; 3], X),
+        others: vec![Seen {
+            id: if me_slot == 1 { 2 } else { 1 },
+            team: 0,
+            position: behind,
+        }],
+        objective: Some(juggernaut(me_slot, mask)),
+        ..Perception::default()
+    };
+    let mut hunter = Mind::new(Skill::Legendary, 4);
+    hunter.step(&p(1, 1 << 2), None);
+    assert_eq!(hunter.doing, Doing::Play(Goal::Hunt(2, behind)));
+    // The Juggernaut has no mark on the others: nobody in view, no hunt.
+    let mut big = Mind::new(Skill::Legendary, 4);
+    big.step(&p(2, 1 << 2), None);
+    assert!(!matches!(big.doing, Doing::Play(_)), "{:?}", big.doing);
+}

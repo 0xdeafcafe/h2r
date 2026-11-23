@@ -239,14 +239,16 @@ impl Decisions {
                 help: f.me.shield < 0.4 || self.hit.is_some_and(|t| f.p.tick.wrapping_sub(t) < 30),
             });
         self.report = self.voice.report(call, self.behavior().radio_interval());
+        let (support, trail) = if chosen.is_none() && f.goal.is_none() {
+            f.support(self)
+        } else {
+            (None, None)
+        };
         Intent {
             chosen,
             anchor: chosen.and_then(|o| f.leash(o, self.personality)),
-            support: if chosen.is_none() && f.goal.is_none() {
-                f.support(self)
-            } else {
-                None
-            },
+            support,
+            trail,
         }
     }
 
@@ -282,7 +284,12 @@ impl Decisions {
 pub(crate) struct Intent {
     pub chosen: Option<Seen>,
     pub anchor: Option<(Vec3, f32)>,
+    /// A teammate's fight to join (a call or a trade), or, regrouping,
+    /// the nearest teammate.
     pub support: Option<Vec3>,
+    /// The lower-slot teammate this bot moves with when it has nothing
+    /// of its own to do (`mind::strategy`, after its own leads).
+    pub trail: Option<Vec3>,
 }
 
 fn clear(map: Option<&MapData>, mut a: Vec3, mut b: Vec3) -> bool {
@@ -402,6 +409,10 @@ impl Fight<'_> {
     }
 
     fn posture(&self, d: &Decisions, o: Seen) -> Posture {
+        // The Juggernaut is built to take on everyone: it never backs off.
+        if self.p.objective.as_ref().is_some_and(|g| g.am_juggernaut()) {
+            return Posture::Press;
+        }
         let behavior = d.behavior();
         let traits = behavior.personality;
         let drive = behavior.drive();
@@ -431,7 +442,12 @@ impl Fight<'_> {
         // In FFA a mutually engaged pair is an opening, until a third enemy joins.
         let distracted_pair =
             !self.p.teams && enemies == 2 && self.me.shield >= 0.65 && self.engaged(o);
-        if enemies > friends + margin && !distracted_pair {
+        // A target with its shield down is a kill to take, not a reason
+        // to leave, unless the odds are worse than one extra enemy.
+        let finishing = self.me.shield >= 0.5
+            && self.opening(o, traits)
+            && enemies <= friends + margin + 1;
+        if enemies > friends + margin && !distracted_pair && !finishing {
             return Posture::Withdraw;
         }
         if behavior.fear() > 0.28 && friends == 0 && self.me.shield < 0.86 {
@@ -448,8 +464,13 @@ impl Fight<'_> {
         }
     }
 
-    fn support(&self, d: &Decisions) -> Option<Vec3> {
-        let (id, team) = self.p.observations.player.filter(|_| self.p.teams)?;
+    /// Between fights: a teammate's fight to join or, regrouping, the
+    /// nearest teammate (`.0`); else the lower-slot teammate to move with
+    /// (`.1`), which the mind takes only after its own leads.
+    fn support(&self, d: &Decisions) -> (Option<Vec3>, Option<Vec3>) {
+        let Some((id, team)) = self.p.observations.player.filter(|_| self.p.teams) else {
+            return (None, None);
+        };
         let regroup = d.disengaging(self.p.tick) || d.behavior().fear() > 0.28;
         let reach = (12.0 + 20.0 * d.personality.teamwork) * (0.5 + awareness(self.skill));
         if !regroup
@@ -459,16 +480,16 @@ impl Fight<'_> {
                 .filter(|c| distance(self.me.position, c.at) < reach)
                 .min_by_key(|c| (!c.help, self.p.tick.wrapping_sub(c.tick), c.sender))
         {
-            return Some(c.at);
+            return (Some(c.at), None);
         }
         if !regroup
             && let Some((_, at, tick)) = d.trade
             && self.p.tick.wrapping_sub(tick) < 90
             && distance(self.me.position, at) < reach
         {
-            return Some(at);
+            return (Some(at), None);
         }
-        let mate = self
+        let Some(mate) = self
             .p
             .others
             .iter()
@@ -476,13 +497,17 @@ impl Fight<'_> {
             .min_by(|a, b| {
                 distance(self.me.position, a.position)
                     .total_cmp(&distance(self.me.position, b.position))
-            })?;
+            })
+        else {
+            return (None, None);
+        };
         let gap = if regroup {
             3.0
         } else {
             10.0 + 9.0 * (1.0 - d.personality.teamwork)
         };
-        (distance(self.me.position, mate.position) > gap).then_some(mate.position)
+        let far = (distance(self.me.position, mate.position) > gap).then_some(mate.position);
+        if regroup { (far, None) } else { (None, far) }
     }
 
     fn leash(&self, target: Seen, traits: Personality) -> Option<(Vec3, f32)> {
