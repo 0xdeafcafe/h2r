@@ -10,6 +10,7 @@ mod content_maps;
 mod dir_disc;
 mod disc;
 mod host;
+mod journal;
 mod film_map;
 #[cfg(unix)]
 pub use film_map::DetachedMapReader;
@@ -34,6 +35,7 @@ pub use content_maps::{ContentMap, ContentMaps};
 pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc, open_disc_with_mapping};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
+pub use journal::{FileReference, MAX_JOURNAL_BYTES};
 pub use map_override::{
     MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, OverlaySummary,
     PreparedMapRebind, RawOverlay, ReservedMapRebind,
@@ -214,6 +216,9 @@ pub struct Vfs {
     /// The raw overlay reads serve through ([`RawOverlay::global`] unless
     /// [`Vfs::set_raw_overlay`] gave another).
     raw_overlay: Option<RawOverlay>,
+    /// Large files open for writing that snapshots carry by reference
+    /// (docs/runtime/snapshots.md, "vfs and storage").
+    journals: journal::Journals,
 }
 impl Vfs {
     /// Additional logical bytes across the three host-backed cache partitions.
@@ -223,6 +228,18 @@ impl Vfs {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Bytes the snapshot journal holds: what changes since a capture
+    /// overwrote in files carried by reference ([`FileReference`]), at most
+    /// [`MAX_JOURNAL_BYTES`].
+    pub fn journal_bytes(&self) -> u64 {
+        self.journals.bytes()
+    }
+
+    /// This VFS's identity in the [`FileReference`]s it captures.
+    pub fn journal_instance(&self) -> u64 {
+        self.journals.instance()
     }
 
     /// Serves reads through `overlay` instead of the process's (tests).
@@ -416,6 +433,7 @@ impl Vfs {
         {
             return Err(Error::SharingViolation);
         }
+        self.journals.forget_mount(index);
         self.mounts[index].backend.format()
     }
     /// Replaces the seed directories [`Config::cache_seed`] gave (for a VFS
@@ -444,6 +462,7 @@ impl Vfs {
         {
             return Err(Error::SharingViolation);
         }
+        self.journals.forget_mount(index);
         let backend = &mut self.mounts[index].backend;
         let mut placed = 0;
         for seed in &self.cache_seed {
@@ -759,6 +778,12 @@ impl Vfs {
         let opened = (|| {
             Ok(if existing.is_some() {
                 if overwriting {
+                    self.journals.before(
+                        self.mounts[mount].backend.as_mut(),
+                        mount,
+                        &key,
+                        journal::Change::SetLen(0),
+                    );
                     self.mounts[mount]
                         .backend
                         .overwrite_allocated(&path, allocation, handle)?;
@@ -780,6 +805,12 @@ impl Vfs {
                     CreateInformation::Opened
                 }
             } else {
+                self.journals.before(
+                    self.mounts[mount].backend.as_mut(),
+                    mount,
+                    &key,
+                    journal::Change::SetLen(0),
+                );
                 self.mounts[mount].backend.create_allocated(
                     &path,
                     options.directory == Some(true),
@@ -874,6 +905,12 @@ impl Vfs {
                 .values()
                 .any(|f| f.mount == object.mount && f.key == object.key)
         {
+            self.journals.before(
+                self.mounts[object.mount].backend.as_mut(),
+                object.mount,
+                &object.key,
+                journal::Change::SetLen(0),
+            );
             let result = self.mounts[object.mount].backend.remove(&object.path);
             self.pending.remove(&key);
             self.cleanup_pending.remove(&key);
@@ -1034,7 +1071,12 @@ impl Vfs {
         if file.options.access.0 & (Access::WRITE.0 | Access::APPEND.0) == 0 {
             return Err(Error::AccessDenied);
         }
-        let (mount, path, position) = (file.mount, file.path.clone(), file.position);
+        let (mount, path, key, position) = (
+            file.mount,
+            file.path.clone(),
+            file.key.clone(),
+            file.position,
+        );
         let append_only = !file.options.access.contains(Access::WRITE);
         let at = if append_only || offset == Offset::EndOfFile {
             self.mounts[mount].backend.stat(&path)?.end_of_file
@@ -1048,6 +1090,15 @@ impl Vfs {
         if at > i64::MAX as u64 {
             return Err(Error::InvalidParameter);
         }
+        self.journals.before(
+            self.mounts[mount].backend.as_mut(),
+            mount,
+            &key,
+            journal::Change::Write {
+                at,
+                len: buffer.len() as u64,
+            },
+        );
         let len = self.mounts[mount].backend.write_at(&path, at, buffer)?;
         let object = self.object_mut(handle)?;
         object.position = at + len as u64;
@@ -1059,7 +1110,13 @@ impl Vfs {
         if !file.options.access.contains(Access::WRITE) {
             return Err(Error::AccessDenied);
         }
-        let (mount, path) = (file.mount, file.path.clone());
+        let (mount, path, key) = (file.mount, file.path.clone(), file.key.clone());
+        self.journals.before(
+            self.mounts[mount].backend.as_mut(),
+            mount,
+            &key,
+            journal::Change::SetLen(size),
+        );
         self.mounts[mount].backend.set_len(&path, size)?;
         self.object_mut(handle)?.changed = true;
         Ok(())

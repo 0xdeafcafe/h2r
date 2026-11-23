@@ -5,17 +5,19 @@
 //! same numbers. A file open for writing also carries its whole contents
 //! (up to [`MAX_CARRIED_BYTES`]), and a load writes them back before it
 //! re-opens the file: the title keeps `z:\preferences.dat` open for
-//! writing all the time it runs. While a delete is pending, or an object
-//! may delete, the host disk holds state the snapshot does not, so the
-//! save is refused.
+//! writing all the time it runs. A larger one (a map cache slot) is
+//! carried by reference and put back from the VFS's journal of the bytes
+//! changes overwrote since (`journal.rs`). While a delete is pending, or
+//! an object may delete, the host disk holds state the snapshot does not,
+//! so the save is refused.
 use crate::{
-    Access, Backend, CreateDisposition, Enumeration, Error, Handle, OpenFile, OpenOptions,
-    ShareAccess, Vfs, path, wildcard_matches,
+    Access, Backend, CreateDisposition, Enumeration, Error, FileReference, Handle, OpenFile,
+    OpenOptions, ShareAccess, Vfs, journal::Plan, path, wildcard_matches,
 };
 
-/// The largest file a snapshot carries for an object open for writing.
-/// The title's own (`preferences.dat`) is 0x1fc bytes; a cache slot being
-/// copied is hundreds of MB and refuses the save.
+/// The largest file a snapshot carries the bytes of, for an object open
+/// for writing. The title's own (`preferences.dat`) is 0x1fc bytes; a map
+/// cache slot (180 MB) is carried by reference ([`FileReference`]).
 pub const MAX_CARRIED_BYTES: u64 = 1 << 20;
 
 /// The VFS's file objects and handle numbering.
@@ -49,9 +51,13 @@ pub struct SavedFile {
     /// The object wrote to the file since it was opened (reported as
     /// written at its last close).
     pub changed: bool,
-    /// The file's bytes when the object can write to it, or wrote to it:
-    /// written back at load, before the object is re-opened.
+    /// The file's bytes when the object can write to it, or wrote to it,
+    /// and they are at most [`MAX_CARRIED_BYTES`]: written back at load,
+    /// before the object is re-opened.
     pub contents: Option<Vec<u8>>,
+    /// Such a file when it is larger: put back at load from the journal
+    /// of the capturing VFS, or checked by its fingerprint.
+    pub reference: Option<FileReference>,
 }
 
 /// Why the VFS cannot be saved or loaded.
@@ -63,8 +69,14 @@ pub enum StateError {
     MapBinding(String),
     #[error("{0} is open for deletion")]
     Deletable(String),
-    #[error("{path} is open for writing and holds {bytes} bytes, more than a snapshot carries")]
-    TooLarge { path: String, bytes: u64 },
+    /// Changed since the capture by more than the journal keeps
+    /// ([`crate::MAX_JOURNAL_BYTES`]), or captured by another VFS, and its
+    /// fingerprint differs.
+    #[error(
+        "{path} no longer holds the bytes the snapshot saw, and the VFS journal \
+         no longer reaches back to them"
+    )]
+    Unjournaled { path: String },
     #[error("{path} cannot be read for the snapshot: {error}")]
     Read { path: String, error: Error },
     #[error("a delete is pending on {0} paths")]
@@ -90,7 +102,9 @@ impl Vfs {
     }
 
     /// The open objects, or why they cannot be saved. A file open for
-    /// writing is read whole into its [`SavedFile::contents`].
+    /// writing is read whole into its [`SavedFile::contents`], or, past
+    /// [`MAX_CARRIED_BYTES`], recorded as a [`SavedFile::reference`]: its
+    /// changes from here on are journaled.
     pub fn state(&mut self) -> Result<VfsState, StateError> {
         self.check_snapshot_maps()?;
         let pending = self.pending.len() + self.cleanup_pending.len();
@@ -108,23 +122,26 @@ impl Vfs {
                 return Err(StateError::Deletable(format!("{device}\\{}", f.path)));
             }
             let writes = Access::WRITE.0 | Access::APPEND.0;
-            let contents = if !f.directory && (f.options.access.0 & writes != 0 || f.changed) {
-                let named = || format!("{device}\\{}", f.path);
-                let read = |error| StateError::Read {
-                    path: named(),
-                    error,
+            let (contents, reference) =
+                if !f.directory && (f.options.access.0 & writes != 0 || f.changed) {
+                    let read = |error| StateError::Read {
+                        path: format!("{device}\\{}", f.path),
+                        error,
+                    };
+                    let bytes = mount.backend.stat(&f.path).map_err(read)?.end_of_file;
+                    if bytes > MAX_CARRIED_BYTES {
+                        let reference = self
+                            .journals
+                            .capture(mount.backend.as_mut(), f.mount, &f.key, &f.path, bytes)
+                            .map_err(read)?;
+                        (None, Some(reference))
+                    } else {
+                        let contents = read_whole(mount.backend.as_mut(), &f.path, bytes);
+                        (Some(contents.map_err(read)?), None)
+                    }
+                } else {
+                    (None, None)
                 };
-                let bytes = mount.backend.stat(&f.path).map_err(read)?.end_of_file;
-                if bytes > MAX_CARRIED_BYTES {
-                    return Err(StateError::TooLarge {
-                        path: named(),
-                        bytes,
-                    });
-                }
-                Some(read_whole(mount.backend.as_mut(), &f.path, bytes).map_err(read)?)
-            } else {
-                None
-            };
             objects.push(SavedFile {
                 id,
                 device: device.clone(),
@@ -142,6 +159,7 @@ impl Vfs {
                     .map(|e| (e.pattern.clone(), e.next as u64)),
                 changed: f.changed,
                 contents,
+                reference,
             });
         }
         Ok(VfsState {
@@ -163,7 +181,10 @@ impl Vfs {
     /// Resolve the saved objects on this mount before the machine writes guest RAM.
     /// Apply the returned file table to this VFS at the same slice boundary.
     /// The apply writes back each carried file ([`SavedFile::contents`]),
-    /// creating it if it is gone, after the open objects close.
+    /// creating it if it is gone, and rewinds each referenced one
+    /// ([`SavedFile::reference`]) through the journal, after the open
+    /// objects close. A referenced file that can be neither rewound nor
+    /// matched by its fingerprint refuses the load.
     pub fn prepare_restore(
         &mut self,
         state: &VfsState,
@@ -179,6 +200,8 @@ impl Vfs {
         let mut reopened = Vec::with_capacity(state.objects.len());
         // Carried files, one per path (duplicate objects carry the same bytes).
         let mut writes: Vec<(usize, String, Vec<u8>)> = Vec::new();
+        // Referenced files, one per path: mount, key, path, what to do.
+        let mut rewinds: Vec<(usize, String, String, Plan)> = Vec::new();
         for f in &state.objects {
             let mount = self
                 .mounts
@@ -191,14 +214,16 @@ impl Vfs {
             };
             path::components(&f.path).map_err(reopen)?;
             let backend = &mut self.mounts[mount].backend;
-            let is_directory = match backend.stat(&f.path) {
-                Ok(info) => info.is_directory(),
-                // A carried file is created again at apply.
-                Err(Error::ObjectNameNotFound) if f.contents.is_some() => false,
+            let carried = f.contents.is_some() || f.reference.is_some();
+            let (is_directory, length) = match backend.stat(&f.path) {
+                Ok(info) => (info.is_directory(), Some(info.end_of_file)),
+                // A carried file is created again at apply; a referenced
+                // one, if the journal saw it removed.
+                Err(Error::ObjectNameNotFound) if carried => (false, None),
                 Err(error) => return Err(reopen(error)),
             };
-            if f.contents.is_some() {
-                if f.directory {
+            if carried {
+                if f.directory || (f.contents.is_some() && f.reference.is_some()) {
                     return Err(StateError::Invalid);
                 }
                 if backend.read_only() {
@@ -225,13 +250,25 @@ impl Vfs {
                     })
                 }
             };
+            let key = f.path.to_ascii_lowercase();
+            if let Some(reference) = &f.reference
+                && !rewinds.iter().any(|(m, k, _, _)| *m == mount && *k == key)
+            {
+                let plan = self
+                    .journals
+                    .plan(backend.as_mut(), mount, &key, &f.path, reference, length)
+                    .ok_or_else(|| StateError::Unjournaled {
+                        path: format!("{}\\{}", f.device, f.path),
+                    })?;
+                rewinds.push((mount, key.clone(), f.path.clone(), plan));
+            }
             let disposition = CreateDisposition::try_from(f.disposition).map_err(reopen)?;
             reopened.push((
                 f.id,
                 OpenFile {
                     mount,
                     path: f.path.clone(),
-                    key: f.path.to_ascii_lowercase(),
+                    key,
                     options: OpenOptions {
                         access: Access(f.access),
                         share: ShareAccess(f.share),
@@ -264,12 +301,19 @@ impl Vfs {
             }
             for (mount, path, bytes) in writes {
                 let m = &mut vfs.mounts[mount];
-                if let Err(error) = write_whole(m.backend.as_mut(), &path, &bytes) {
-                    eprintln!(
+                match write_whole(m.backend.as_mut(), &path, &bytes) {
+                    Ok(false) => {}
+                    // Small again: a journal of it no longer applies.
+                    Ok(true) => vfs.journals.forget(mount, &path.to_ascii_lowercase()),
+                    Err(error) => eprintln!(
                         "vfs: snapshot load: {}\\{path} not written back: {error}",
                         m.device
-                    );
+                    ),
                 }
+            }
+            for (mount, key, path, plan) in rewinds {
+                let backend = vfs.mounts[mount].backend.as_mut();
+                vfs.journals.apply(backend, mount, &key, &path, plan);
             }
             for (id, file) in reopened {
                 if !file.directory {
@@ -299,12 +343,13 @@ fn read_whole(backend: &mut dyn Backend, path: &str, len: u64) -> Result<Vec<u8>
 /// Make the file at `path` hold exactly `bytes`, creating it if it is gone.
 /// A file that holds them already is left alone (a rewind that the game
 /// did not write past costs a read). The bytes are not synced: as with
-/// the guest's own writes, durability is the guest's flush.
-fn write_whole(backend: &mut dyn Backend, path: &str, bytes: &[u8]) -> Result<(), Error> {
+/// the guest's own writes, durability is the guest's flush. True if it
+/// wrote.
+fn write_whole(backend: &mut dyn Backend, path: &str, bytes: &[u8]) -> Result<bool, Error> {
     match backend.stat(path) {
         Ok(info) if info.end_of_file == bytes.len() as u64 => {
             if read_whole(backend, path, info.end_of_file)? == bytes {
-                return Ok(());
+                return Ok(false);
             }
         }
         Ok(_) => {}
@@ -319,5 +364,5 @@ fn write_whole(backend: &mut dyn Backend, path: &str, bytes: &[u8]) -> Result<()
             n => at += n,
         }
     }
-    Ok(())
+    Ok(true)
 }
