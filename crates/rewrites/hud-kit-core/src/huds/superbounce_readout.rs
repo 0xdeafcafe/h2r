@@ -21,7 +21,7 @@
 //!   over the tagged seam and over the two nearest seams the player can
 //!   reach.
 //!
-//! - `sbr.guide.*`: the approach guide, four world marks on the seam the
+//! - `sbr.guide.*`: the approach guide, five world marks by the seam the
 //!   player is going for ([`super::superbounce_guide`]).
 //!
 //! Nothing is in the middle of the screen: the rows are bottom left, and
@@ -501,10 +501,15 @@ pub fn views() -> Vec<(&'static str, View)> {
     // The approach guide's moments: the rows as they are then, with the
     // guide's marks (`superbounce_guide::samples`).
     let rows = |name: &str| match name {
-        "guide-approach" | "guide-lined-up" => View {
-            speed: Some(running),
+        "guide-approach" | "guide-lined-up" | "guide-jump-now" => View {
+            speed: Some(Speed {
+                heading: 0.0,
+                across: 0.5,
+                down: None,
+            }),
             ..View::default()
         },
+        "guide-walk-to-line" => View::default(),
         "guide-off-line" => fall(
             0.97,
             Steer::Off {
@@ -765,13 +770,14 @@ mod tests {
         assert_eq!(shown("idle", TARGET_1), None);
     }
 
-    /// The approach guide's marks are the readout's last four elements,
+    /// The approach guide's marks are the readout's last elements,
     /// hidden in every state but the guide's moments, which pose every
     /// mark they show.
     #[test]
     fn the_guide_is_in_its_moments_alone() {
         let h = hud();
-        let ids: Vec<_> = h.elements[h.elements.len() - 4..].iter().map(|e| e.id).collect();
+        let n = guide::MARKS.len();
+        let ids: Vec<_> = h.elements[h.elements.len() - n..].iter().map(|e| e.id).collect();
         assert_eq!(ids, guide::MARKS);
         for id in guide::MARKS {
             let e = h.element(id).unwrap();
@@ -792,10 +798,17 @@ mod tests {
         assert_eq!(moments, guide::samples().len());
         assert_eq!(shown("guide-falling-caught", guide::BOX).unwrap(), "Will bounce 82%");
         assert_eq!(shown("guide-too-shallow", guide::BOX).unwrap(), "Too shallow 30%");
-        // Before the jump the box has the percentage alone.
-        assert_eq!(shown("guide-lined-up", guide::BOX).unwrap(), "62%");
-        assert_eq!(shown("guide-approach", guide::BOX).unwrap(), "13%");
         assert_eq!(shown("guide-scan-only", guide::BOX).unwrap(), "Will bounce 60%");
+        // Before the jump the box has the jump cue, and the takeoff line
+        // shows.
+        assert_eq!(shown("guide-approach", guide::BOX).unwrap(), "Jump in 0.7 s");
+        assert_eq!(shown("guide-lined-up", guide::BOX).unwrap(), "Jump in 0.1 s");
+        assert_eq!(shown("guide-jump-now", guide::BOX).unwrap(), "Jump now");
+        assert_eq!(shown("guide-walk-to-line", guide::BOX).unwrap(), "Walk to line");
+        for name in ["guide-approach", "guide-lined-up", "guide-jump-now", "guide-walk-to-line"] {
+            assert!(shown(name, guide::TAKEOFF).is_some(), "{name}");
+        }
+        assert_eq!(shown("guide-falling-caught", guide::TAKEOFF), None);
     }
 
     /// The fall row ends with the guide's percentage on a fall toward

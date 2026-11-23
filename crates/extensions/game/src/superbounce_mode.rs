@@ -453,8 +453,16 @@ pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbou
         past: g.depth.map(|d| f64::from(d.past)),
         across: g.across.map(f64::from),
         chance: g.chance.map(|c| f64::from(c.value)),
-        chance_jumps: g.chance.and_then(|c| c.jumps),
         chance_capped: g.chance.is_some_and(|c| c.capped),
+        jump_in: g.takeoff.and_then(|t| t.jump_in()),
+        cue: g.cue.map(hud_kit_core::huds::superbounce_guide::cue_text),
+        takeoff: g.takeoff.map(|t| agent_proto::superbounce::TakeoffLine {
+            at: v3(t.at),
+            heading: t.heading.map(f64::from),
+            half: f64::from(t.half),
+            speed: f64::from(t.speed),
+            walk: t.walk(),
+        }),
         strength: f64::from(g.strength),
     }
 }
@@ -1295,7 +1303,9 @@ fn on_tick(o: &hooks::Obs) {
     };
     let marks = crate::superbounce_second::over(marks, &second);
     // The approach guide, on the seam the player is going for
-    // (docs/game/superbounce.md, "The approach guide").
+    // (docs/game/superbounce.md, "The approach guide"), its jump cue
+    // settled against the last tick's.
+    let last_guide = lock(&STATE).guide;
     let guide = match (live.position, live.velocity) {
         (Some(position), Some(velocity))
             if crate::superbounce_options::current().approach_guide =>
@@ -1331,6 +1341,7 @@ fn on_tick(o: &hooks::Obs) {
                     },
                     spot,
                 )
+                .map(|g| g.settled(last_guide.as_ref()))
             })
         }
         _ => None,

@@ -1260,7 +1260,8 @@ cannot be changed until its draw record is decoded. The variant's
 ### The approach guide
 
 A pipper and a box on the seam the player is going for, drawn on the
-geometry so the line-up is seen and not guessed. They are four world
+geometry so the line-up is seen and not guessed, and before the jump a
+line on the ground to jump from. They are five world
 marks of the readout HUD, built in the HUD kit
 ([hud-kit.md](hud-kit.md#the-approach-guide)); the rules are
 `crates/extensions/game/src/superbounce_guide.rs`, pure, run by the mode
@@ -1269,9 +1270,10 @@ each tick (`superbounce_guide::guide`, into the state's `guide`).
 | Mark | Where | Says |
 |---|---|---|
 | the pipper, a small ring with a cross | where the player's path touches down, on the seam's floor | on the ground, where a jump now would land; in the air, the landing itself |
-| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it the bounce's predicted [percentage](#the-chance), alone before the jump (`62%`) and after the call in a fall (`Will bounce 82%`) |
+| the box, four corner brackets | on the seam's landing point ([The landing point](#the-landing-point)), turned along the seam's edge, 0.6 long and as wide as the catch (0.2) | dim while the landing is off the seam, lit when it is lined up, and in a fall `Too shallow` or, green, `Will bounce`; under it, before the jump, the [jump cue](#the-jump-cue) (`Walk to line`, `Jump in 0.7 s`, green `Jump now`), and in a fall the bounce's predicted [percentage](#the-chance) after the call (`Will bounce 82%`) |
 | the ticks, three dashes | from the pipper toward the box | how far off the landing is: they shorten as the two close and go when the landing is caught |
 | the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit while the player moves that way |
+| the takeoff line, a bar across the run | on the ground, where to press jump for the landing to bounce ([The jump cue](#the-jump-cue)) | its ends mark the band of presses that bounce; green with `Jump now` |
 
 **Which seam** (`superbounce_guide::target`). The seam a fall is
 predicted onto (the state's `landing`); else, while primed, the chosen
@@ -1355,40 +1357,86 @@ split screen the lock-on's brackets are drawn.
 `superbounce.state` returns the guide as `guide`: the seam's point, the
 call, the pipper, the last free row with its ticks and speed, `caught`,
 `deep` with the margin under the cut and the row's place past the edge,
-the speed along the drift, the fade, and the [chance](#the-chance):
-`chance` (0 to 1), on the ground `chance_jumps` (how many of the 16
-jumps bounce) and `chance_capped` (the scan-only cap cut it). On the
-ground `deep` is the depth of a jump from where the player stands, an
-estimate that is not on the box.
+the speed along the drift, the fade, in a fall the [chance](#the-chance),
+`chance` (0 to 1) and `chance_capped` (the scan-only cap cut it), and on
+the ground the [jump cue](#the-jump-cue): `jump_in` (ticks to `Jump
+now`), `cue` (the box's words) and `takeoff` (the line). On the ground
+`deep` is the depth of a jump from where the player stands, an estimate
+that is not on the box.
 
 Supposed, until a lab run: that the cut and the window hold on seams
 other than Ascension's and above 5.39 units/s, the fastest drop
 measured; that a jump leaves the ground at 3.08 units/s with the run's
-speed kept; where the seam stops the body (`DEPTH_BAND`); and the
-chance's two softnesses and its cap. A
+speed kept, 5 ticks after the press; where the seam stops the body
+(`DEPTH_BAND`); and the chance's two softnesses and its cap. A
 `superbounce.state` poll through a fall beside `sim.drops`' last free
 row for the same drop checks the row and the call.
+
+#### The jump cue
+
+Before the jump the box says when to jump, and a line on the ground
+says where (`superbounce_guide::takeoff`), while primed on a seam with
+a drift. A jump's flight is fixed by where it leaves the floor, so the
+landing window, 0.06 wide, is a band of takeoffs just as wide along the
+run: the cue finds that band and counts down to it, instead of giving a
+share of jumps that would bounce, which reads low on a good line.
+
+**The takeoff line.** Along the player's path, `position + velocity × t`
+at the height they are at, takeoffs are tried 0.005 apart
+(`TAKEOFF_STEP`) out to 3 seconds of the run (`LOOK_AHEAD`), each
+flown as the impact is with the run's speed kept. The band is the first
+run of takeoffs whose landing the box would call `Will bounce`: in the
+catch, touching down at 5.2 units/s or faster, in the landing window
+and deep. Only near the window is every step tried: a stretch of 0.04
+(`TAKEOFF_COARSE`) whose two ends land clear of the window on the same
+side, by 0.12 (`TAKEOFF_CLEAR`), is passed over, and a test checks the
+band is the step-by-step scan's. The search starts 0.3 behind the
+player (`TAKEOFF_BEHIND`), so the band stays put while they cross it. A
+press leaves the floor 5 ticks later (`PRESS_LEAD`, the drill runs' 4
+to 6, [notes/2026-11-21-bot-bounce-sim.md](notes/2026-11-21-bot-bounce-sim.md)),
+so the line is the band moved back by the ground of 5 ticks: where to
+press. It is drawn at the band's middle, across the run, with the
+band's two ends as shorter bars.
+
+**The count.** `Jump in N`, N the time to the line's near end at the
+current ground speed, in tenths of a second rounded up (`Jump in 0.7
+s`): at 30 ticks a second a tenth is three ticks, so the count steps
+smoothly and its last value before `Jump now` is `0.1`. `Jump now`, in
+the go green with the line and the pipper, shows from one tick before
+the player reaches the line (`NOW_EARLY`) until they leave its band, the
+tolerance for the eye and the thumb. A press on the next tick or the
+one after lands in the band.
+
+From a ledge 3.45 over Ascension's seam, walking at 0.3 units/s along
+its drift, a jump carries 0.64 in its 64 ticks, so the takeoffs that
+bounce are 3.29 to 3.35, 0.71 to 0.65 before the edge, and the line is
+0.05 short of them. From y 3.105 that is 14 ticks of walk: the count
+reads `Jump in 0.5 s` and falls a tick at a time to `Jump now` at about the
+thirteenth.
+
+**Standing, or not moving toward a line** (under 0.05 units/s,
+`MOVING`, or with no band on the path within 3 seconds), the line is a
+walk-up's: up the seam's drift toward its landing point at 0.8 units/s
+(`WALK_UP`, the speed the [fall assist](#hold-x-the-fall-assist)
+crosses a strip at), at the player's height. The box says `Walk to
+line`, with no count; the count starts once they move toward a line.
+From the seam's own floor, where a jump comes down at 2.9 units/s, there
+is no line and no cue.
+
+**Steady** (`settle`). The cue is settled against the last tick's on
+the same seam (`Guide::settled`, in the mode): a count a tenth back up,
+`Jump now` against a count of `0.1`, and a count against no line are
+each held for at most 3 ticks (`CUE_GRACE`), so jitter in the player's
+speed does not flicker the box. A count down, a new line, the walk-up
+and the end of `Jump now` show at once; `Jump now` never outlasts its
+band.
 
 #### The chance
 
 A percentage on the box and on the readout's fall row
-(`superbounce_guide::chance`), shown while primed on a seam with a
-drift. It means one thing on the ground and another in the air.
-
-**Before the jump** it is a share (`jump_hits`): of the next 16 ticks
-(`CHANCE_TICKS`, about half a second), how many would bounce if the
-player jumped on that tick. Each tick's jump starts where the run has
-carried the body by then, at the height it is at, and is flown as the
-impact is; it counts when the box would call it: in the catch, touching
-down at 5.2 units/s or faster, in the landing window and deep. Standing
-still every tick's jump is the same one, so the share is all or none.
-Walking at 0.3 units/s along the drift the landings are 0.01 apart and
-six of them are in the window; at 0.6, three. From a ledge 3.45 over Ascension's
-seam, walking in at 0.3 from 0.895, 0.845 and 0.795 before the edge,
-the share is 0, 2 and 6 of 16: it climbs as the run closes on a good
-line. From the seam's own floor it is 0: a jump comes down at 2.9
-units/s. With no tick's jump coming down within 3 units of the seam's
-point there is no percentage.
+(`superbounce_guide::chance`), shown in a fall while primed on a seam
+with a drift. On the ground there is none: the [jump cue](#the-jump-cue)
+is on the box instead.
 
 **In the air** the fall is all but decided, so it is a confidence
 (`confidence`): how far the predicted last free row is from the two
@@ -1444,7 +1492,7 @@ unless a variant turns it off:
 | `miss_info` | bool, on | no miss row |
 | `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](#medals)) |
 | `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
-| `approach_guide` | bool, on | no pipper, box, ticks or drift arrow on the seam, and no percentage on the box or the fall row ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
+| `approach_guide` | bool, on | no pipper, box, ticks, drift arrow or takeoff line, no jump cue, and no percentage on the box or the fall row ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
 | `charge_segments` | bool, on | no segments round the motion tracker ([hud-kit.md](hud-kit.md), "The charge segments"); priming is the arming bar, the prompt line and the notifications |
 
 The host reads them by name where it decides the mode is on, at a game's
