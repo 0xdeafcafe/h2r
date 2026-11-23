@@ -682,6 +682,16 @@ and resolves every live object by kind and salt, as `world.object.set`
 and `.delete` do. It then makes new objects with the ownerless spawn,
 moves with the `world.object.set` body and deletes with the
 `world.object.delete` body (`crates/extensions/agent/src/sim/calls.rs`).
+A move, a delete, an own entry's removal and its restore make the same
+guest calls as `world.object.set`, `.delete` and `.respawn`; the restore
+also writes the entry's placement index, so its object is linked
+(`crates/extensions/agent/src/sim/calls/tests/same_calls.rs`). The
+session guard takes the place of those calls' session checks. Forge
+opens only in an offline local multiplayer game
+(`forge_map::admitted`), where `confirm_peers` and the Live refusals
+never apply, and the guard's map generation and scenario do the work of
+`epoch` and the cache identity. Edits in a network game go through F5's
+log.
 Undo and redo fold F1's inverse ops the same way: undoing a delete makes
 a new object at the stored frame and binds its handle to the same
 `OpId`. The adapter commits the candidate document and log only after
