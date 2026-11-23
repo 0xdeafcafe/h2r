@@ -91,6 +91,12 @@ or a short form:
                          max_channel, mean, first, within_bar (max_channel
                          <= 8 and at most 0.01% differing); --diff writes the
                          difference image; exits 1 when outside the bar
+  picture [--stream] [--width N] [--fps N] [--frames N]
+                         render.picture: show the game's picture in a window,
+                         from a shared-memory ring (--stream, or a tcp://
+                         socket: JPEG frames on the connection); --frames N
+                         reads N frames with no window and prints their sizes,
+                         rate and ticks
   loads [N]              load.timeline: the last N (8) level loads, BSP
                          switches and stalls: stall and settle times, and the
                          bytes read, uploads and compiles in each; a stall
@@ -243,8 +249,23 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if first == "games" {
         return games();
     }
+    // A game over TCP can't share memory: its picture comes as a stream.
+    let remote = socket
+        .clone()
+        .unwrap_or_else(agent_proto::default_socket)
+        .to_string_lossy()
+        .starts_with("tcp://");
     let mut c = connect(socket, timeout)?;
     match first.as_str() {
+        "picture" => {
+            #[cfg(feature = "desktop")]
+            return crate::agent_picture::run(c, &rest[1..], remote);
+            #[cfg(not(feature = "desktop"))]
+            {
+                let _ = (c, remote);
+                bail!("h2 agent picture needs the desktop build");
+            }
+        }
         "-" => script(&mut c),
         "ui-crawl" => crate::agent_ui_crawl::run(&mut c, &rest[1..], timeout),
         "watch" => watch(&mut c, &rest[1..]),

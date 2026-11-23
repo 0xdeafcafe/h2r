@@ -42,6 +42,8 @@ settings = { path = "../../formats/settings" }
 snapshot = { path = "../../runtime/snapshot" }
 # render.compare reads and writes PNGs (src/compare.rs).
 png = { workspace = true }
+# render.picture's stream sends JPEGs (src/render/picture.rs).
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 background.workspace = true
 map.workspace = true

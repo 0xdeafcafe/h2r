@@ -42,7 +42,76 @@ pub(crate) struct Frames {
     counts: Arc<Counters>,
 }
 
+/// The sending end of a binary stream fed by something other than the
+/// mirror (`render.picture`'s stream, `render/picture.rs`): the same
+/// writer, bounded queue and counters as a mirror stream.
+pub(crate) struct FramesTx {
+    tx: SyncSender<Vec<u8>>,
+    counts: Arc<Counters>,
+}
+
+/// What became of a frame offered to a [`FramesTx`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sent {
+    Queued,
+    /// The queue is full: the client is behind. The frame is dropped.
+    Full,
+    /// The writer is gone: the client closed the connection.
+    Gone,
+}
+
+impl FramesTx {
+    pub(crate) fn send(&self, bytes: Vec<u8>) -> Sent {
+        // Increment before publishing: a fast writer can pop immediately.
+        self.counts.queue.fetch_add(1, Relaxed);
+        match self.tx.try_send(bytes) {
+            Ok(()) => Sent::Queued,
+            Err(e) => {
+                self.counts.queue.fetch_sub(1, Relaxed);
+                match e {
+                    mpsc::TrySendError::Full(_) => {
+                        self.counts.dropped.fetch_add(1, Relaxed);
+                        Sent::Full
+                    }
+                    mpsc::TrySendError::Disconnected(_) => Sent::Gone,
+                }
+            }
+        }
+    }
+
+    /// Frames waiting for the writer.
+    pub(crate) fn queued(&self) -> u64 {
+        self.counts.queue.load(Relaxed)
+    }
+
+    /// Frames written whole, and frames dropped on a full queue.
+    pub(crate) fn written(&self) -> (u64, u64) {
+        (self.counts.frames.load(Relaxed), self.counts.dropped.load(Relaxed))
+    }
+
+    /// Ends the stream: the writer stops and closes the connection.
+    pub(crate) fn close(&self) {
+        self.counts.closed.store(true, Relaxed);
+    }
+}
+
 impl Frames {
+    /// A stream of `queue` frames at most in flight, for
+    /// [`crate::server::Output::Upgrade`].
+    pub(crate) fn channel(queue: usize) -> (FramesTx, Frames) {
+        let (tx, rx) = mpsc::sync_channel(queue);
+        let counts = Arc::new(Counters::default());
+        (FramesTx { tx, counts: counts.clone() }, Frames { rx, counts })
+    }
+
+    /// The next queued frame's bytes, as the writer would take them.
+    #[cfg(test)]
+    pub(crate) fn next_bytes(&self, timeout: Duration) -> Option<Vec<u8>> {
+        let bytes = self.rx.recv_timeout(timeout).ok()?;
+        self.counts.queue.fetch_sub(1, Relaxed);
+        Some(bytes)
+    }
+
     /// The next queued frame, as the writer would take it.
     #[cfg(test)]
     pub(crate) fn next(&self, timeout: Duration) -> Option<Frame> {

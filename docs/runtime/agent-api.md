@@ -64,6 +64,7 @@ connection to hold `session.claim`.
 | `render.marks` | read | [`render.marks`](#rendermarks) |
 | `render.frame_layout` | read | [Display raster and texture coordinates](#renderframe_layout) |
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
+| `render.picture.open`, `render.picture.close` | read | [Picture feed](#picture-feed-renderpicture) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.spawn_view`, `render.view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
@@ -124,7 +125,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `host_shot`, `game_load`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `host_shot`, `game_load`, `picture`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`, `Agent::add_connection_read`).
 
 ## Connecting
@@ -1537,6 +1538,88 @@ sequence retains the requested rate.
 
 The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU
 writer is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
+
+### Picture feed: `render.picture`
+
+A client shows the game's presented frames live: Studio's Game panel
+([game-view.md](../editor/game-view.md)) and `h2 agent picture`. Frames
+come from the same handoff `host.screenshot` reads (the window's newest
+published frame), not a sealed scene; for a still at a tick use
+`render.capture`.
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `render.picture.open` | read | `{width?, fps?, transport?}` | `{id, transport, path?, size, format, fps, at}`; then a `picture` event per frame (ring) or binary frames (stream) |
+| `render.picture.close` | read | `{id}` | `{closed}`: whether the picture was open |
+
+`transport` is `ring` (the default) or `stream`. `width` is the widest
+frame wanted, 16 to 2560; a frame keeps its aspect, fits a `width` x
+`width` box and is never scaled up. `fps` is 1 to 60. A ring defaults to
+1280 wide at 60, a stream to 640 wide at 15. `size` is the largest frame,
+`[width, width]`; each frame's own size is in its slot and its event. A
+game with no frame source (no window: `h2 serve`, the Xbox app) answers
+`UNAVAILABLE`.
+
+**Ring.** For a client on the same machine. `path` is a file under the
+cache directory's `pictures/`, mode 0600, named for the process and the
+picture. It holds a 256-byte header (the newest frame number, the
+reader's acknowledgement, a closed flag, each slot's sequence number,
+frame number, tick, present, time and size) and three RGBA8 slots
+(`agent_proto::picture::Ring` has the layout, the writer and the reader).
+Frame `n` goes into slot `n % 3`, written while its sequence number is
+odd. A reader copies the newest slot and keeps the copy only if the
+sequence was even and unchanged across it (`Ring::read_newest`), then
+writes the frame number back as its acknowledgement. The opening
+connection gets, after the reply, one event per frame:
+
+```json
+{"jsonrpc":"2.0","method":"event","params":{"kind":"picture","id":1,"frame":42,
+ "tick":48211,"present":96400,"time_ms":700.4,"width":1280,"height":720}}
+```
+
+Events go only to that connection, whatever it subscribed to, and are
+dropped (not queued) when its queue is full. The frame is in the ring
+either way.
+
+**Stream.** For a game reached over `tcp://`, which cannot share memory.
+Open it on a connection of its own: after the reply line the connection
+switches to length-prefixed binary frames, as `live.subscribe`'s does,
+and takes no more requests; close it from another connection or by
+disconnecting. A connection that holds control, has subscribed to
+events or has requests in flight is refused with `BUSY`, and an
+in-process connection with `UNAVAILABLE`. Each frame is a little-endian
+u32 payload length (at most 16 MiB), then a u32 header length, the
+`picture` event's fields as JSON, and a JPEG (quality 75, no alpha)
+(`agent_proto::picture::read_stream_frame`). At most three frames wait
+for the socket; a frame that finds the queue full is not read back.
+
+**Cost and the idle skip.** A worker thread (`agent-picture`), running
+while any picture is open, reads the newest presented frame back once per
+due frame of the fastest picture, scales it on the CPU by averaging, and
+writes it to every picture that is due. A ring whose newest frame stays
+unacknowledged for a second (`IDLE_AFTER`) and a stream whose queue is
+full are skipped; with nothing due, nothing is read back. The readback
+runs on the worker, not the game thread, on the GPU queue the game
+presents on. Its cost at 60 Hz is not measured.
+
+**Lifetime.** `render.picture.close`, the opening connection closing or
+being dropped, and the game exiting each close the picture: a ring's
+closed flag is set and its file removed, a stream's connection ends.
+
+```sh
+h2 agent picture                           # a window showing the game, from a ring
+h2 agent picture --width 640 --fps 30      # smaller, slower
+h2 agent --socket tcp://10.0.3.29:4720 picture   # a remote game: the stream
+h2 agent picture --frames 60               # no window: sizes, rate and ticks of 60 frames
+```
+
+The methods are answered on the executor (`crates/extensions/agent/src/exec/picture.rs`);
+the pictures, the worker, the scaling and the JPEG are in
+`crates/extensions/agent/src/render/picture.rs`; the wire types, the ring
+and the stream codec in `crates/extensions/agent-proto/src/picture.rs`.
+The window shell and a headless app host attach the frame source at
+`agent_proto::picture::hub` (`crates/apps/app/src/picture.rs`). The client
+is `crates/apps/cli/src/agent_picture.rs`.
 
 ### `render.marks`
 
@@ -5164,7 +5247,9 @@ disasm`) and are research points, not data. Tests that cover the page:
 `crates/extensions/agent/src/sim/tests.rs` (`sim.*`, with the callees played by the
 tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/src/havok.rs` and
 `crates/extensions/agent/src/raw.rs` (synthetic guest memory), `crates/extensions/agent-proto`
-(wire types), `crates/apps/boot/tests/feature_plan.rs` (the observer order).
+(wire types), `crates/apps/boot/tests/feature_plan.rs` (the observer order),
+`crates/extensions/agent/src/render/picture/tests.rs` and `exec/picture.rs`
+(`render.picture` over a synthetic frame source).
 
 ## Not verified
 
@@ -5185,6 +5270,8 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   over synthetic code and memory.
 - `render.compare`, `render.capture`, `render.scene`, `render.parity`,
   `render.residual` and `sim.hashes` against a running game.
+- `render.picture` against a running game, and its readback's cost to the
+  game's frame time: the tests use a synthetic frame source.
 - `maps.test.*` against a running game: the build, the slot and the
   queued load ([test-maps.md](../game/test-maps.md#not-verified)).
 - Not provided: effect, projectile and particle counts; per-subsystem

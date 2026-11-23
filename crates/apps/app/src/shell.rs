@@ -256,6 +256,8 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         host_shot(&parts, &dir, path)
     }));
     let _host_shot = HostShotAttached;
+    // render.picture reads the same handoff back (crate::picture).
+    let _picture = crate::picture::attach(Arc::clone(&shell.shot_parts));
     // host.quit closes the window as its close button does (the lab's
     // takeover, docs/runtime/lab.md).
     struct HostQuitAttached;
@@ -418,6 +420,7 @@ impl Shell {
             epoch: Instant::now(),
             pace_stats: Arc::clone(&self.pace_stats),
             _source: None,
+            _picture: None,
             _discard: None,
         };
         self.audio = Some(audio);

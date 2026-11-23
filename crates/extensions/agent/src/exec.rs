@@ -31,6 +31,7 @@ use serde_json::Value;
 use crate::reader::{GameStatus, Reader, TagNames};
 
 mod mirror;
+mod picture;
 mod lobby_tape;
 pub use lobby_tape::LobbyTape;
 mod snap;
@@ -273,6 +274,8 @@ struct Shared {
 #[derive(Default)]
 struct State {
     live: crate::live::Mirror,
+    /// `render.picture`'s open pictures (`exec/picture.rs`).
+    pictures: Arc<crate::render::picture::Pictures>,
     /// The `camera` layer's source ([`Agent::set_camera_source`]), and why
     /// this run has none ([`Agent::set_camera_unavailable`]).
     cameras: Option<crate::live::CameraSource>,
@@ -459,6 +462,7 @@ impl Agent {
             c.closing = true;
         }
         s.live.close(conn);
+        s.pictures.close_conn(conn);
         input::lock(&s.input).release_menu(conn);
         if s.controller == Some(conn) {
             s.controller = None;
@@ -763,6 +767,8 @@ impl Agent {
         }
         s.recorders.shutdown();
         s.live.close_all();
+        // Ring files go with the game.
+        s.pictures.retain_conns(|_| false);
         s.fail_snapshots();
         s.shutdown = true;
         s.paused = None;
@@ -884,6 +890,7 @@ impl Agent {
         s.ticks += 1;
         s.last_tick = Some(Instant::now());
         s.refresh(reader, Where::Tick);
+        s.pictures.stamp(s.game.tick, s.presents);
         s.track_load();
         let stepping = s.stepping.is_some();
         match s.stepping {
@@ -952,6 +959,7 @@ impl Agent {
             return;
         }
         s.presents = presents;
+        s.pictures.stamp(s.game.tick, presents);
         s.lobby_boundary(reader);
         // A pause asked for while the game isn't ticking (loading) takes
         // hold at the next tick; its limit still runs out here.
@@ -1224,6 +1232,9 @@ impl State {
         }
         self.conns
             .retain(|id, c| !c.dead && (!c.closing || busy.contains(id)));
+        // A picture never outlives its connection.
+        let conns = &self.conns;
+        self.pictures.retain_conns(|c| conns.contains_key(&c));
         // A capture nobody will read is stopped.
         if self
             .capture
@@ -1418,6 +1429,9 @@ impl State {
         if agent_proto::live::METHODS.contains(&m) {
             return self.live_method(conn, req, reader);
         }
+        if agent_proto::picture::METHODS.contains(&m) {
+            return self.picture_method(conn, req);
+        }
         if method::CONTROL.contains(&m) && self.controller != Some(conn) {
             return Some(Err(RpcError::new(
                 code::NOT_CONTROLLER,
@@ -1544,6 +1558,7 @@ impl State {
                             .map(|m| (*m).to_owned()),
                     )
                     .chain(agent_proto::live::METHODS.iter().map(|m| (*m).to_owned()))
+                    .chain(agent_proto::picture::METHODS.iter().map(|m| (*m).to_owned()))
                     .chain(self.host.keys().cloned())
                     .chain(self.connection_reads.keys().cloned())
                     .chain(self.game_methods.keys().cloned())

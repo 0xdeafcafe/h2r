@@ -23,6 +23,8 @@ mod agent_cmd;
 mod agent_ui_crawl;
 mod agent_flight;
 mod agent_maps;
+#[cfg(feature = "desktop")]
+mod agent_picture;
 mod agent_hot_cmd;
 mod agent_raw;
 mod agent_run;

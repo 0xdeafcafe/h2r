@@ -25,6 +25,9 @@
 //!   rendering of its sealed scene, through the host's [`ParitySource`].
 //! - `render.residual`: what the guest front-end still asks `d3d` to do,
 //!   by caller and producer, over a window of presents ([`residual`]).
+//!
+//! `render.picture.*`: the presented frames, live, in a shared-memory ring
+//! or a JPEG stream ([`picture`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -43,6 +46,7 @@ use serde_json::{Map, Value, json};
 use crate::exec::{Access, Agent, DEFER_TICKS_MAX};
 
 pub mod clip;
+pub mod picture;
 pub mod private_graph;
 pub mod residual;
 

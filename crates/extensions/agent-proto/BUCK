@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/formats/host-dirs:host-dirs",
         "//crates/platform/mem-watch:mem-watch",
+        "//third-party/rust:memmap2",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
     ] + select({
@@ -65,6 +66,7 @@ workspace_test(
     deps = [
         "//crates/formats/host-dirs:host-dirs",
         "//crates/platform/mem-watch:mem-watch",
+        "//third-party/rust:memmap2",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
     ] + select({

@@ -1,6 +1,6 @@
 # The game view: the game's picture inside Studio
 
-Status: Design. Nothing here is built. Studio starts and pairs a separate game today ([editor.md](editor.md#play-and-pair)) and shows none of its pixels.
+Status: Partly built. The frame feed (`render.picture`, GV1) is built; the panel, editor mode, input and cameras are not, so Studio starts and pairs a separate game ([editor.md](editor.md#play-and-pair)) and shows none of its pixels.
 Code: `crates/extensions/agent/src/render/picture.rs` and `crates/extensions/agent-proto/src/picture.rs` (the frame feed), `crates/apps/studio/src/play/{launch.rs, picture.rs, input.rs}` and `crates/apps/studio/src/ui/game_view.rs` (the panel), `crates/apps/cli/src/play_cmd.rs` (editor mode). Tests: `agent::render::picture::tests`, `play::picture::tests`, `play::input::tests`, `headless::tests`.
 Switch: none.
 
@@ -36,8 +36,9 @@ window.
   frame with its tick, present number and time.
 - **Remote: frames on the socket.** A game reached over `tcp://` (the
   other Mac through the lab, the Xbox app) cannot share memory.
-  `render.picture.open {transport: "stream"}` sends each frame as a JPEG
-  in a binary event, at the asked rate and size (default 15 a second at
+  `render.picture.open {transport: "stream"}` switches its connection
+  to binary frames, as `live.subscribe` does, and sends each frame there
+  as a JPEG, at the asked rate and size (default 15 a second at
   640 wide).
 - **Why not a shared GPU surface.** An IOSurface shared between the two
   processes' Metal devices avoids the readback and the upload, but it
@@ -155,7 +156,14 @@ Studio ([agent-api.md](agent-api.md)):
 ## Evidence
 
 - The window shell reads its newest published frame back for
-  `host.screenshot` (**Code**, `crates/apps/app/src/shell.rs`).
+  `host.screenshot` (**Code**, `crates/apps/app/src/shell.rs`), and the
+  same handoff feeds `render.picture` (**Code**, `crates/apps/app/src/picture.rs`).
+- The ring's torn-slot guard, the idle skip, the file's removal on close
+  and on a dropped connection, and the stream's JPEG frames are tested
+  over a synthetic frame source (**Code**,
+  `crates/extensions/agent/src/render/picture/tests.rs`,
+  `crates/extensions/agent/src/exec/picture.rs`); `h2 agent picture` is the
+  client ([agent-api.md](../runtime/agent-api.md#picture-feed-renderpicture)).
 - Studio starts `h2 play --level` with a private agent socket and a
   play copy, and restores the player's place after a reload (**Code**,
   `crates/apps/studio/src/play/launch.rs`, `play/playtest.rs`).

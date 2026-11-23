@@ -35,6 +35,7 @@ pub mod overlay;
 pub mod pacing;
 pub mod tile;
 pub mod scale;
+mod picture;
 #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 mod shell;
 #[cfg(target_os = "linux")]
@@ -289,6 +290,8 @@ pub struct GuestHost {
     pace_stats: Arc<Mutex<PaceStats>>,
     /// Keeps a headless channel's receiving end alive.
     _source: Option<FrameSource>,
+    /// A headless host's frames for `render.picture` ([`picture`]).
+    _picture: Option<picture::Attached>,
     /// Consumes a headless host's mixer in real time (the window's host
     /// leaves that to the shell's `AudioOut`).
     _discard: Option<audio_out::DiscardRenderer>,
@@ -302,6 +305,7 @@ impl GuestHost {
     pub fn headless(config: &AppConfig) -> Result<Self, gfx::GfxError> {
         let ctx = GfxContext::headless()?;
         let (sink, source) = frame::channel(&ctx);
+        let picture = picture::attach(Arc::new(Mutex::new(Some((share_context(&ctx), source.clone())))));
         let (input, keyboard) = build_input(config);
         let mixer = Arc::new(Mutex::new(audio::Mixer::new(audio_out::FALLBACK_RATE)));
         let life = Lifecycle::new();
@@ -323,6 +327,7 @@ impl GuestHost {
             epoch: Instant::now(),
             pace_stats: Arc::default(),
             _source: Some(source),
+            _picture: Some(picture),
         })
     }
 
