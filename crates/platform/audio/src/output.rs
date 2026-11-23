@@ -103,11 +103,15 @@ struct Meter {
 /// The game thread keeps the [`Mixer`] and feeds this through
 /// [`Pump`](crate::Pump). This is the API `boot` should use.
 ///
-/// Device changes: a stream error (device unplugged, format changed) marks the
+/// Device changes: a fatal stream error (the device went away) marks the
 /// sink lost; [`AudioSink::maintain`] (called by every pump) then reopens the
-/// default device. It also polls the default device id about twice a second,
-/// so switching the system output follows even when the old device stays
-/// alive. A reopen can change the sample rate; [`Pump`](crate::Pump) notices
+/// default device. Not every stream error is fatal — see
+/// [`fatal_stream_error`]: cpal's CoreAudio backend reports `DeviceChanged`
+/// when the default output changes but its AudioUnit has already rerouted
+/// the stream (it keeps playing), and `Xrun` on a transient overload. The
+/// 500 ms poll below follows a genuine device switch even when the old
+/// device stays alive, so those notices need no reopen. A reopen can change
+/// the sample rate; [`Pump`](crate::Pump) notices
 /// and calls [`Mixer::set_sample_rate`], and the ring is simply recreated
 /// (a few ms of queued audio is dropped). Counters survive reopens.
 ///
@@ -243,6 +247,30 @@ impl DeviceSink {
 /// Whether the default output now differs from the one we opened.
 fn device_changed(now: Option<&(String, u32)>, have_id: &str, have_rate: u32) -> bool {
     now.is_some_and(|(id, rate)| id != have_id || *rate != have_rate)
+}
+
+/// Whether a stream error means the stream is dead and must be reopened.
+///
+/// cpal's CoreAudio backend reports `DeviceChanged` when the default output
+/// device changes — but its DefaultOutput AudioUnit has *already rerouted*
+/// the stream to the new device, which keeps playing; the poll in
+/// [`AudioSink::maintain`] follows the new device's id and rate. It also
+/// reports `Xrun` on a transient processor overload. Treating either as lost
+/// reopened a healthy stream on every route change or overload — on a machine
+/// whose devices flap (a controller's speaker appearing and going), a reopen
+/// a second, each rebuilding the stream and its monitor threads. Everything
+/// else (`DeviceNotAvailable`, `StreamInvalidated`, a backend error) really
+/// is the end of the stream.
+fn fatal_stream_error(kind: cpal::ErrorKind) -> bool {
+    !matches!(kind, cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::Xrun)
+}
+
+/// The stream error callback: a fatal error marks the sink lost so the next
+/// [`AudioSink::maintain`] reopens; anything else leaves the stream alone.
+fn on_stream_error(meter: &Meter, e: &cpal::Error) {
+    if fatal_stream_error(e.kind()) {
+        meter.lost.store(true, Ordering::Relaxed);
+    }
 }
 
 impl AudioSink for DeviceSink {
@@ -406,7 +434,7 @@ where
                 m.ring_frames_peak.fetch_max(queued, Ordering::Relaxed);
                 m.device_us_sum.fetch_add(dev_us, Ordering::Relaxed);
             },
-            move |_e| m_err.lost.store(true, Ordering::Relaxed),
+            move |e| on_stream_error(&m_err, &e),
             None,
         )
         .map_err(dev)
@@ -618,6 +646,50 @@ mod tests {
         sink.maintain();
         assert_eq!(sink.reopen_count(), 1);
         assert!(!sink.meter.lost.load(Ordering::Relaxed), "fresh meter after reopen");
+    }
+
+    #[test]
+    fn only_fatal_stream_errors_mark_the_sink_lost() {
+        for fatal in [
+            cpal::ErrorKind::DeviceNotAvailable,
+            cpal::ErrorKind::StreamInvalidated,
+            cpal::ErrorKind::BackendError,
+            cpal::ErrorKind::Other,
+        ] {
+            let meter = Meter::default();
+            on_stream_error(&meter, &cpal::Error::new(fatal));
+            assert!(meter.lost.load(Ordering::Relaxed), "{fatal:?}");
+        }
+        for transient in [cpal::ErrorKind::DeviceChanged, cpal::ErrorKind::Xrun] {
+            let meter = Meter::default();
+            on_stream_error(&meter, &cpal::Error::new(transient));
+            assert!(!meter.lost.load(Ordering::Relaxed), "{transient:?}");
+        }
+    }
+
+    /// The once-a-second reopen churn this guards against: a route change the
+    /// backend already followed (`DeviceChanged`) or a transient overload
+    /// (`Xrun`) must not reopen a healthy stream.
+    #[test]
+    fn a_route_change_or_overload_never_reopens() {
+        let mut sink = setup(true, Some(("dev-a", 48_000)));
+        for kind in [cpal::ErrorKind::DeviceChanged, cpal::ErrorKind::Xrun] {
+            on_stream_error(&sink.meter, &cpal::Error::new(kind));
+            due(&mut sink);
+            sink.maintain();
+        }
+        assert!(sink.connected());
+        assert_eq!((sink.reopen_count(), OPENS.with(Cell::get)), (0, 1));
+    }
+
+    /// A fatal error still reopens, and the poll then sees the new device.
+    #[test]
+    fn a_fatal_stream_error_reopens() {
+        let mut sink = setup(true, Some(("dev-a", 48_000)));
+        let e = cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable);
+        on_stream_error(&sink.meter, &e);
+        sink.maintain();
+        assert_eq!(sink.reopen_count(), 1);
     }
 
     #[test]

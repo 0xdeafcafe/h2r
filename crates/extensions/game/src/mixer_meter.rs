@@ -207,7 +207,6 @@ fn reply(samples: &[f32], rate: u32, window_ms: u64, play: Option<MeterPlay>) ->
 #[derive(Default)]
 pub struct Meter {
     mixer: Option<Arc<Mutex<audio::Mixer>>>,
-    rate: u32,
     capture: Option<Capture>,
 }
 
@@ -215,13 +214,15 @@ impl Meter {
     pub const fn new() -> Meter {
         Meter {
             mixer: None,
-            rate: 0,
             capture: None,
         }
     }
 
     pub fn connect(&mut self, mixer: Arc<Mutex<audio::Mixer>>) {
-        self.rate = lock(&mixer).sample_rate();
+        // The rate is read lazily in `arm`: `connect` must never lock the
+        // mixer. Boot calls it while it may hold the mixer guard, and a std
+        // mutex locked twice on one thread never returns (cd68951b6 hung
+        // every audible boot that way).
         self.mixer = Some(mixer);
         self.capture = None;
     }
@@ -260,14 +261,16 @@ impl Meter {
     }
 
     fn arm(&mut self) -> Result<&mut Capture, RpcError> {
-        if self.mixer.is_none() || self.rate == 0 {
+        let Some(mixer) = &self.mixer else {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
                 "no mixer output to meter: audio is clock-only (a light host or sim) or DirectSound is off",
             ));
+        };
+        if self.capture.is_none() {
+            self.capture = Some(Capture::new(lock(mixer).sample_rate()));
         }
-        let rate = self.rate;
-        Ok(self.capture.get_or_insert_with(|| Capture::new(rate)))
+        Ok(self.capture.as_mut().expect("armed above"))
     }
 
     /// Starts the WAV `bytes` as a plain 2D buffer and meters from now to
