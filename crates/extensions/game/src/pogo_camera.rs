@@ -92,7 +92,7 @@ pub fn pull_in(pivot: Vec3, offset: Vec3, clear: &dyn Fn(Vec3, Vec3) -> bool) ->
 
 /// The eye's pose moved back by `share` of its boom. The camera looks
 /// the way the eye does.
-pub fn chase(eye: Pose, share: f32) -> Pose {
+pub(crate) fn chase(eye: Pose, share: f32) -> Pose {
     let o = offset(eye.yaw, eye.pitch);
     let share = if share.is_finite() {
         share.clamp(0.0, 1.0)
