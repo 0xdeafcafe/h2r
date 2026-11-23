@@ -899,6 +899,7 @@ mod tests {
             max_jobs: DEFAULT_MAX_JOBS,
             grace: Duration::from_secs(5),
             takeover: super::super::takeover::Config::default(),
+            agents: PathBuf::from("/nonexistent/agents"),
             lan: Some(lan::Listen {
                 addr: "0.0.0.0:29422".parse().unwrap(),
                 name: Some("A & B".into()),
