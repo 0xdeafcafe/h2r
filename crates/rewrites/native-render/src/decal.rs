@@ -109,17 +109,17 @@ mod tests {
     fn packed_decode_is_11_11_10_signed_normalised() {
         assert_eq!(decode_packed(0u32.to_le_bytes()), [0.0, 0.0, 0.0]);
         // The largest positive pattern of each field is exactly 1.
-        let max = 0x3ff | (0x3ff << 11) | (0x1ff << 22);
+        let max: u32 = 0x3ff | (0x3ff << 11) | (0x1ff << 22);
         assert_eq!(decode_packed(max.to_le_bytes()), [1.0, 1.0, 1.0]);
         // All bits set: each field's two's complement is -1 LSB.
         let [x, y, z] = decode_packed(u32::MAX.to_le_bytes());
         assert_eq!([x, y], [-1.0 / 1023.0; 2]);
         assert_eq!(z, -1.0 / 511.0);
         // The most negative pattern of each field clamps to -1.
-        let min = 0x400 | (0x400 << 11) | (0x200 << 22);
+        let min: u32 = 0x400 | (0x400 << 11) | (0x200 << 22);
         assert_eq!(decode_packed(min.to_le_bytes()), [-1.0, -1.0, -1.0]);
         // Half in each field, and one field independent of the others.
-        let half = 0x200 | (0x200 << 11) | (0x100 << 22);
+        let half: u32 = 0x200 | (0x200 << 11) | (0x100 << 22);
         let [x, y, z] = decode_packed(half.to_le_bytes());
         assert_eq!([x, y], [512.0 / 1023.0; 2]);
         assert_eq!(z, 256.0 / 511.0);
