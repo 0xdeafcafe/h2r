@@ -109,7 +109,7 @@ Map tool, or drop a disc image, `.map` file or folder onto the window.
 The window is made of panels that dock together:
 
 - **Tool bar** (under the menu): click **Map**, **Variants**,
-  **Playlists**, **UI** or **HUD** to switch workspaces. The middle names
+  **Playlists**, **UI**, **HUD** or **Textures** to switch workspaces. The middle names
   the open document. A `*` marks unsaved changes. The **game link** is at
   the right end in every tool: click the pill to pair, manage the link or
   choose a running game. Play, Stop, Pause, Step, Resume and the Edit
@@ -583,7 +583,8 @@ While the game runs, the editor stays paired with it:
   moment while it does. A Textures stroke shows mip 0 while you paint and
   the smaller mips when you let go. Undo sends the old geometry or pixels
   back. Each edit sits in the Pending tab until the game has it. A
-  bitmap you resize or reformat, and a geometry edit the save refuses,
+  bitmap you resize or reformat, an image or sequence you add to one,
+  and a geometry edit the save refuses,
   wait for **Play** again.
 
 A game you started yourself is found without any setup. `h2 play` opens
@@ -621,6 +622,38 @@ after the retry window ends.
 An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,
 `pair.disconnect`, `pair.auto`, `pair.playtest`, `pair.settings`, `pair.stop`, `pair.control`
 and `pair.edit` ([agent-api.md](agent-api.md)).
+
+### Edit a map's textures
+
+The **Textures** workspace paints a map's bitmaps and changes their
+shape. The outliner lists the map's bitmaps (an edited one marked `*`);
+click one and the centre is its canvas, the inspector the image's
+format and budget.
+
+- **Painting.** Brush, eraser, line, fill, eyedropper, clone, selection
+  and the colour adjustments paint at mip 0; every edit is one undo
+  step on the Textures document (Cmd+Z). With a game paired and **Edit**
+  on, a stroke shows in the game as you paint (above). **PNG** imports
+  a picture into the image and exports one; **Generate...** makes a
+  picture from a prompt ([Generating an image](#generating-an-image)).
+- **Resize.** Type a width, height and format and press **Resize**: the
+  image saves at that size and format, every layer resampled and every
+  mip written again. One undo step. The line under it says what the
+  image saves as against what is stored.
+- **Add image** appends an image after the bitmap's last, the size and
+  format of the one shown, transparent until you paint, import or
+  generate into it; **New image, generated...** does the same and opens
+  the Generate window on the new image. **Sequences** lists the
+  bitmap's sequences (which images each names, and its sprites) with
+  **Add a sequence** for the selected image. Adding is one undo step
+  each.
+- **Saving.** Edits stay in the editor until the map is saved (**File >
+  Save** or **Save as...**), which writes them into the map. A bitmap
+  that gained an image or a sequence no longer fits where it is stored,
+  so the save writes its whole tag again at the end of the map's
+  metadata: the other images keep their pixels and every other tag its
+  bytes. (modeling.md, "Texture editing"
+  ([modeling.md](modeling.md)).)
 
 ### Your packages in the Maps list
 
@@ -1258,7 +1291,12 @@ opens the **Generate image** window on that image of the map open in
 Studio (for a menu, open your `mainmenu` map first).
 
 1. **Image** is the image the picture goes into; the line under it gives
-   its size and format. The picture is made to fit both.
+   its size and format. The picture is made to fit both. **New image**
+   beside it (or **New image...** on a selected picture here, or **New
+   image, generated...** in the Textures tool) first adds an image to
+   the bitmap, the size and format of this one, and generates into
+   that: for a bitmap that has fewer images than you need, such as
+   `mainmenu`'s eleven game-type icons.
 2. Write the **Prompt**: what the picture shows ("a radar dish").
 3. Pick the **References**: the images whose style the new one should
    match. For a menu icon, tick the other icons of the same bitmap; they

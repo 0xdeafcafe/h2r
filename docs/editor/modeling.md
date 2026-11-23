@@ -341,7 +341,8 @@ behind Allow growing full blocks as well).
 ## Texture editing (`bitmap-edit`)
 
 Status: built (`crates/tools/bitmap-edit`, `crates/platform/assets/src/{encode,write}.rs`,
-`app/textures.rs`, `ui/textures.rs`, `api/bitmaps.rs`). Edits live in the
+`tags::bitmap_grow`, `app/textures.rs`, `ui/textures.rs`, `api/bitmaps.rs`).
+Edits live in the
 editor until a save, which encodes what changed and writes it with the map.
 The live preview is the canvas; the 3D viewport does not show them yet. P8
 pages open read-only.
@@ -403,8 +404,8 @@ pages open read-only.
   `single_player_shared`), which the editor never writes: the LOD's
   stored bytes are read, the spans patched in the copy, the copy appended
   with `MapEditor::append_raw` and the image's LOD pointer word pointed at
-  it. A new size or format (`bitmap.reshape`, an image-level request, not
-  an undo step): every LOD the image stores is encoded whole from the
+  it. A new size or format (`bitmap.reshape`, `bitmap.image.resize`; one
+  undo step): every LOD the image stores is encoded whole from the
   layers resampled to the new size and appended, and the `0x74` image
   record's width, height, format, flags and mip count are patched, with
   each LOD's pointer and size (a LOD the new size cannot hold gets no
@@ -421,6 +422,36 @@ pages open read-only.
   than the edit) is the session's `bitmap_refusal`: the save fails by
   name before it writes. A map that cannot take a new raw block
   (`raw_append_refusal`) refuses a shared-cache copy or a reshape.
+- **Adding images and sequences.** `bitmap.image.add` (the inspector's
+  **Add image**) appends an image after the bitmap's last: its `0x74`
+  record copied from an existing 2D image (`from`, default 0) at a size
+  and format asked for or the source's, its registration point the
+  centre, its texture cache handles `0xffffffff`, no low-detail
+  picture, and a transparent black canvas until something is painted,
+  imported or generated into it (`image.generate` with
+  `image: "new"` adds the slot first). `bitmap.sequence.add` appends a
+  sequence entry (label, first image, count) after the bitmap's last,
+  shaped like its first sequence, with one sprite per image copied from
+  its first sprite when that one has sprites. Both are one undo step
+  each, with the pixels' steps, on the `bitmaps` document.
+- **The save of a grown bitmap.** A bitmap that gained images or
+  sequences no longer fits where it is stored:
+  `tags::bitmap_grow::Parts::split` takes the tag apart into its
+  header, image records, sequence records and sprites (refused, and the
+  bitmap then cannot gain anything — `bitmap.read`'s `movable` says
+  why — when a block lies outside the tag, records share bytes, or a
+  byte no record holds is nonzero, so an unknown payload is never
+  rewritten), `Parts::layout` writes them again as one payload with the
+  new records, and the save writes that whole copy at the end of the
+  metadata (`MapEditor::append_metadata`) and points the tag's index
+  entry at it (`MapEditor::move_tag`; the old bytes stay as dead data,
+  and a patch to them from another tool refuses the save by name). The
+  copy's block pointers are rebased to where it lands; every image's
+  record writes and new pixel blocks (a reshape, an added image's LODs)
+  are made into the copy, their raw blocks appended before it; the
+  stored images' in-place pixel patches still patch their own raw
+  blocks, and every other tag keeps its bytes. References to the tag
+  are by datum and do not move.
 - **Preview.** The viewport's texture for the bitmap
   (`scenario_edit::scene`) is updated from the canvas after each stamp
   (`Queue::write_texture` on the touched rectangle, mips at the stroke's
@@ -429,10 +460,10 @@ pages open read-only.
   cursor's ray (`Session::surface_hit`, or the edit mesh), takes the
   hit's texture coordinate and stamps there; it paints through the same
   canvas.
-- **Deferred.** Layers, text, sprite sheet and sequence editing, a UV
+- **Deferred.** Layers, text, sprite sheet editing and the editing of an
+  existing sequence, a UV
   editor, the low-detail copy (header `+0x158`), which stays as the
-  source's (and so goes stale when the picture changes), a window control
-  for a new size or format (only `bitmap.reshape` asks for one), and a
+  source's (and so goes stale when the picture changes), and a
   LOD 1 or 2 where the map stored no LOD 0.
 
 ## The tools in the window
@@ -465,7 +496,11 @@ pages open read-only.
 - **Textures** (`ToolKind::Textures`). The outliner lists bitmaps (by
   shader use of the selected object when one is selected), the centre is
   the 2D canvas with zoom, pan, channel toggles, mip and face pickers,
-  the inspector the tool's settings and the image's format and budget.
+  the inspector the tool's settings and the image's format and budget,
+  a **Resize** control for the image's size and format, **Add image**
+  and **New image, generated...** after it, and the bitmap's sequences
+  with **Add a sequence** for the selected image ("Adding images and
+  sequences" above).
 - **Keys.** A table in the editor keymap, two
   presets. *Blender* (default in Edit mode): Tab mode; 1, 2, 3 vert,
   edge, face; G, R, S move, rotate, scale, then X, Y, Z to constrain; E
@@ -542,8 +577,10 @@ namespace (player models and looks) is separate and unchanged.
 | `mesh.set_material {material}`, `mesh.uv {matrix \| project}` | |
 | `mesh.ops {target}` | the op log |
 | `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed |
-| `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class (`in_place`, `appended`, `none`) and any reshape |
-| `bitmap.reshape {bitmap, image?, width?, height?, format?}` | asks for a new size or format; a save writes the image whole |
+| `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class (`in_place`, `appended`, `new`, `none`), any reshape, and the sequences; `grown` and `movable` say whether a save moves the tag |
+| `bitmap.reshape {bitmap, image?, width?, height?, format?}`, `bitmap.image.resize {bitmap, image?, size? \| width?, height?, format?}` | asks for a new size or format; a save writes the image whole |
+| `bitmap.image.add {bitmap, from?, size?, format?}` | appends an image copied from `from`; answers its index; a save moves the tag |
+| `bitmap.sequence.add {bitmap, first, count?, label?}` | appends a sequence entry over those images; a save moves the tag |
 | `bitmap.spans {bitmap, image?, face?, slice?, rect?}` | the stored bytes the edits change, by LOD and offset; nothing is written |
 | `bitmap.export {bitmap, image?, mip?, out}`, `bitmap.import {bitmap, image?, path, rect?}` | PNG out and in |
 | `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, erase?}` | one stroke through pixel points, one undo step |

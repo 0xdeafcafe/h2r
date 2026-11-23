@@ -742,7 +742,7 @@ the doc's `settings:` block. It keeps one rule:
 | Part | Widget id | Place | Source |
 |---|---|---|---|
 | Title | `title` | layout 1 header `[190 -253 170 30]` | the doc |
-| Icon | `art.0` | Quick Options' picture `[166 -267 126 -227]`, `mp_games2` image N | `settings.icon` |
+| Icon | `art.0` | Quick Options' picture `[166 -267 126 -227]`, `mp_games2` image N (a name, or `image-N` for an added image) | `settings.icon` |
 | Name | `header.name` | `[163 -224 143 0]`, white, font 1, one line | `settings.name` |
 | About | `header.about` | `[143 -224 123 270]`, pale blue, font 1, one line | `settings.about`, else `settings.caller.help` |
 | Rows | `row.N.*` | skin 2 at (-254, 87), 26 apart, at most 8 (`spacing.settings_rows`) | the doc's rows |
@@ -1011,18 +1011,27 @@ The first three pages open from Game Setup, so their about line is the
 Game Setup row's help (`settings.caller.help`): the row and the window
 always agree.
 
-**A new icon.** A page's icon is one of `mp_games2`'s eleven images.
-Studio's **Generate image...** makes a picture in their style from the
+**A new icon.** A page's icon is one of `mp_games2`'s images: the eleven
+the disc has, or one added to the user's `mainmenu` map in Studio
+(`bitmap.image.add`, docs/editor/modeling.md "Adding images and
+sequences"; `image.generate` with `image: "new"` adds the slot and makes
+the picture in one call). Studio's **Generate image...** makes a picture
+in their style from the
 icons the user picks as references
 ([editor-guide.md](../editor/editor-guide.md#generating-an-image),
 `image.generate` in [agent-api.md](../editor/agent-api.md#generating-images)).
-It goes into one of the eleven images of the user's `mainmenu` map, fitted
+It goes into an image of the user's `mainmenu` map, fitted
 to its 40 by 40 and its format, and shows in the UI Screens picture and a
-paired game before it is kept. A picture for an icon `mp_games2` does not
-have is made at `size [40, 40]` with no slot and kept as art with its
-provenance (`image.accept {save}`). Studio adds no image to a bitmap, so
-such an icon reaches the game when map injection generates the tag and
-its art into the maps.
+paired game before it is kept; a bitmap that gained an image saves with
+its whole tag written again, so the saved map still loads. A picture
+made at `size [40, 40]` with no slot is kept as art with its
+provenance (`image.accept {save}`). The doc names a stock icon
+(`settings.icon`, one of [`NAMES`]) or an added one as `image-N`; an
+index the map does not have leaves the picture's image as the widget
+made it (0, the Spartan), `list_class::set_image` refusing it. A game
+running without the edited `mainmenu` (Forge's pages, a host map) still
+has no icon for the page: one arrives with map injection, which
+generates the tag and its art into the shared maps.
 
 **Drawn over the panel.** The draw sorts a pane's widgets by depth, then
 render depth bias, then type, text (6) before bitmap (8)
