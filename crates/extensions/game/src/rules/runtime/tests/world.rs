@@ -272,8 +272,18 @@ fn a_script_naming_a_weapon_off_the_list_is_refused_by_its_path() {
     assert!(why.contains("set_loadout"), "{why}");
 }
 
+/// Every listed script a host scores runs here: none is listed only to be
+/// refused when the game starts.
 #[test]
-fn the_built_in_siege_is_hostable() {
-    let ir = ::rules::compile(::rules::builtin::SIEGE).unwrap();
-    assert_eq!(host_refusal(&ir), None);
+fn every_listed_scripted_mode_is_hostable() {
+    let mut scripted = Vec::new();
+    for b in ::rules::builtin::LISTED {
+        let ir = ::rules::compile(b.source).unwrap();
+        if ir.header.scoring != ::rules::ir::Scoring::Script {
+            continue;
+        }
+        assert_eq!(host_refusal(&ir), None, "{}", b.name);
+        scripted.push(b.name);
+    }
+    assert!(scripted.contains(&"Siege") && scripted.contains(&"Gun Game"), "{scripted:?}");
 }

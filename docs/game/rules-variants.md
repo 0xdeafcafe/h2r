@@ -296,11 +296,12 @@ entries; retail uses 0 to 38 and the store 94 to 100).
 | Clint Eastwood | juggernaut | carrier | none | |
 | Hide and Seek | juggernaut | carrier | `party` | a row's list is Slayer's and Juggernaut's variant lists filtered (slice 12); a `list` line on any other carrier is the error `list.carrier` |
 | Superbounce | slayer | script | `research` | `superbounce.rules` gains its settings; the table's are deleted |
+| Gun Game | slayer | script | `party` | `gun_game.rules`: a kill gives the next rung's weapon at once (`set_loadout`); players spawn unarmed (`starting_weapon = none`) and the map has no weapons |
 | Siege | slayer | script | `party` | `siege.rules`: the map's territory and CTF flags are its zones, so every Territories and CTF map plays it ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); players spawn unarmed (`starting_weapon = none`, our added choice) and `set_loadout` arms each side |
 
-Siege, like Superbounce, is a scripted mode after the settings scripts
-and is an example too (`builtin::examples`). Gun Game, VIP and Race stay
-examples and are not listed.
+Siege and Gun Game, like Superbounce, are scripted modes after the
+settings scripts and are examples too (`builtin::examples`). VIP and Race
+stay examples and are not listed.
 
 ### The default Live lineup
 

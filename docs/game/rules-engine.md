@@ -2078,8 +2078,8 @@ rather than by engine: `infection.rules`, `gun_game.rules`,
 (`tests/engines.rs`), and each header names the entries a host cannot
 make yet. VIP, Bounce Hunt, Superbounce, Siege and Gun Game call none.
 VIP waits on the match edit log, and Bounce Practice on the host
-runtime's `round_start` and `set_gravity`. Superbounce and Siege run,
-and are listed (`builtin::LISTED`, [rules-variants.md](rules-variants.md#built-in-list-entries)).
+runtime's `round_start` and `set_gravity`. Superbounce, Siege and Gun
+Game run, and are listed (`builtin::LISTED`, [rules-variants.md](rules-variants.md#built-in-list-entries)).
 The examples are compiled into the game, so a record names one by its
 hash prefix with no store or fetch; a record with no mode never runs
 one. `tests/modes.rs` plays the listed modes over scenarios on the fake
@@ -2091,11 +2091,14 @@ game (the JSON files in `tests/scenarios/`). Prop Hunt has no script.
   types**: starting locations carry labels and a script filters on them.
 - **Infection** with a real team switch, and other modes that were
   honour rules.
-- **Gun Game.** `on kill` takes the killer's weapon and gives the next
-  in a constant table: the weapon progression the variant editor cannot
-  express ([community-gametypes.md](community-gametypes.md)). `take` is
-  traced and `give` is not, so until it is the swap happens at the
-  killer's next spawn through `set_loadout`.
+- **Gun Game** (listed in Party Games). `on kill` gives the killer the
+  next weapon of a constant table on the kill's tick through
+  `set_loadout`, whose mode 2 empties the slots first, and `on spawn`
+  gives the player's own rung: the weapon progression the variant editor
+  cannot express ([community-gametypes.md](community-gametypes.md)).
+  Players spawn unarmed and the map has no weapons; a weapon a dead
+  player drops can still be picked up, so leaving it is an honour rule.
+  Every rung is on the multiplayer weapon list (`rules::weapons`).
 - **VIP with powers.** The VIP holds a grant to place and move block-out
   pieces; the hunters hold one to delete vehicles.
 - **Prop Hunt**, the hardest mode here. A hider's biped is hidden, a
@@ -2193,7 +2196,7 @@ Each phase lands by itself and ends on its exit criteria.
 | 10 | Editors: Studio's rules editor, and in-game option rows from the script's option table | a variant made in Studio with a custom script plays from a hopper; the in-game editor changes a script option |
 | 11 | Retire the lifted engines | the retirement criteria above |
 | 12 | Capabilities on Live: the lobby's plain-words list, hopper deny lists, the allow-list's `forge.*` rule, in both homes | a script declaring a denied capability is not offered in that hopper; the parity suite passes in both homes |
-| 13 | Research: `give`, and `take` called outside a drop | each is a named point proven by a differential test; Gun Game swaps weapons on the kill's tick |
+| 13 | Research: `give`, and `take` called outside a drop | each is a named point proven by a differential test |
 | 14 | Forge in a match: grants, the match edit log, the player's tool (after forge-design.md slices F5, F8 and F15) | over a fake game, a granted proposal is stamped and costs one use, and one past the budget, outside the palette or in a ranked session is refused; a film with entries replays to the same `RulesExt` hash |
 | 15 | Research: `hide`, `attach`, the body swap, `camera`, damage forwarding | each is a named point; Prop Hunt plays in a headless match |
 

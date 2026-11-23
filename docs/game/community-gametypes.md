@@ -1,19 +1,19 @@
 # Community game variants
 
-Status: Built. 15 variants, each built from a script in `rules::builtin::LISTED`, are added after the retail built-ins; the unit tests prove the entries land in the `goof` block and their records get their scripts' blocks, and what the game then does with them is in "Not done and risks".
+Status: Built. 16 variants, each built from a script in `rules::builtin::LISTED`, are added after the retail built-ins; the unit tests prove the entries land in the `goof` block and their records get their scripts' blocks, and what the game then does with them is in "Not done and risks".
 Switch: none.
 
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
-hand in custom games, a practice mode (Superbounce) and a scripted
-attack-and-defend mode (Siege), as extra built-ins.
+hand in custom games, a practice mode (Superbounce) and two scripted
+modes (Siege and Gun Game), as extra built-ins.
 Each is a script compiled into the game
 ([rules-variants.md](rules-variants.md#built-in-list-entries)): its list
 entry, its description and its row come from the script, and its record
 names the script. Two rows of ours at the bottom of the game type list
 ([Tweakers](#tweakers)) hold some of them: **Research and Devolution**
 has Bounce Practice, Glitch Hunt and Superbounce, and **Party Games** has
-Zombies, Jousting, Cops and Robbers, Bumper Cars and Siege. The rest are listed
+Zombies, Jousting, Cops and Robbers, Bumper Cars, Siege and Gun Game. The rest are listed
 under their game types. In the
 variant list they carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
@@ -129,12 +129,12 @@ the `button-icons` branch shows how to add one at an unused code point
 Halo 2's editor has no gravity, player speed or infinite ammo for everyone
 (only Juggernaut movement, ball speed and the carrier toggles change speed;
 see the source list). Every classic below is built from settings the editor
-offers, except Bumper Cars' and Siege's unarmed start, one of our added choices
+offers, except the unarmed start of Bumper Cars, Siege and Gun Game, one of our added choices
 ([game-options.md](game-options.md)). Rules a variant cannot enforce (who may use which weapon, switching
 teams on death) were honour rules then and are in the description now.
 
 Each row is one script in `crates/formats/rules/src/builtin/` (a
-`settings` block, `scoring carrier` but for Superbounce and Siege, and its
+`settings` block, `scoring carrier` but for Superbounce, Siege and Gun Game, and its
 description as `about`). Settings a script does not name have the stock
 value of its game type (`GameVariant::stock`); the list entry carries
 every setting the editor offers, so the disc's per-type defaults never
@@ -157,6 +157,7 @@ show through.
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
 | Superbounce | Slayer | Bounce Practice's rules, scored by bounces, with the superbounce HUD's options ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under Research and Devolution ([Tweakers](#tweakers)), not Slayer; its built-in record names the Superbounce rules script, whose header lists it there (`list research`) and turns the mode on (as Bounce Practice's `requires hud.superbounce` does) |
 | Siege | Slayer | team play; no score or time limit; no starting weapon (our added choice) and no secondary, since its script gives each side a loadout at spawn; the attackers take the map's territories, then the defenders' CTF flag stand, each phase on its own clock ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); scored by its script and listed under Party Games (`list party`) |
+| Gun Game | Slayer | no starting weapon (our added choice) and no secondary; nothing on the map; no score limit; its script gives each player the weapon of their rung at spawn and the next rung's on each kill, from the SMG to the energy sword, and the kill past the sword wins; a suicide demotes a rung (an option); listed under Party Games |
 
 Why these, and the sources:
 
@@ -212,9 +213,10 @@ Why these, and the sources:
   the variant would be left out, as any variant with
   a value the game doesn't offer is.
 
-Considered and left out: Michael Jackson (the name), Fiesta and Dodgeball (retail names), Duck Hunt and
-Gun Game (no sourced Halo 2 setup, and Gun Game needs weapon progression
-the editor cannot express), Grifball (Halo 3).
+Considered and left out: Michael Jackson (the name), Fiesta and Dodgeball (retail names), Duck Hunt
+(no sourced Halo 2 setup), Grifball (Halo 3). Gun Game has no sourced
+Halo 2 setup either; its weapon progression is a script, and its
+ladder is ours.
 
 Names avoid the retail ones: Slayer, Team Slayer, Rockets, Swords, Snipers,
 Phantoms, Team Phantoms, Elimination, Phantom Elim, King, Team King,
@@ -343,7 +345,7 @@ Territories, in this order (`community_variants::Row`):
 | Row | Pane title | Description | Built-ins |
 |---|---|---|---|
 | Research and Devolution | RESEARCH AND DEVOLUTION | "Practice the tricks and find the glitches: superbounces, crouch jumps and the maps' secrets." | Bounce Practice, Glitch Hunt, Superbounce |
-| Party Games | PARTY GAMES | "Zombies, jousting, cops and robbers: the party games the community made up for custom games." | Zombies, Jousting, Cops and Robbers, Bumper Cars, Siege, Hide and Seek |
+| Party Games | PARTY GAMES | "Zombies, jousting, cops and robbers: the party games the community made up for custom games." | Zombies, Jousting, Cops and Robbers, Bumper Cars, Siege, Gun Game, Hide and Seek |
 
 Choosing a row opens a variant list of its variants, built-in and saved;
 Slayer's list no longer shows them. Each row is an ordinary list row,

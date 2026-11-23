@@ -134,3 +134,107 @@ fn siege_needs_a_territory_and_each_teams_flag_stand() {
         other => panic!("{:?}", other.map(|r| r.ended_at)),
     }
 }
+
+// ---- Gun Game ----
+
+const GUN_GAME_CLIMB: &str = include_str!("scenarios/gun_game_climb.json");
+
+/// The ladder, bottom to top, as `gun_game.rules` lists it.
+const LADDER: [&str; 12] = [
+    "objects/weapons/rifle/smg/smg",
+    "objects/weapons/rifle/battle_rifle/battle_rifle",
+    "objects/weapons/rifle/covenant_carbine/covenant_carbine",
+    "objects/weapons/rifle/plasma_rifle/plasma_rifle",
+    "objects/weapons/rifle/shotgun/shotgun",
+    "objects/weapons/rifle/sniper_rifle/sniper_rifle",
+    "objects/weapons/rifle/beam_rifle/beam_rifle",
+    "objects/weapons/support_low/brute_shot/brute_shot",
+    "objects/weapons/support_high/rocket_launcher/rocket_launcher",
+    "objects/weapons/pistol/needler/needler",
+    "objects/weapons/pistol/magnum/magnum",
+    "objects/weapons/melee/energy_blade/energy_blade",
+];
+
+fn gun_game(options: &[(&str, bool)]) -> (rules::Ir, Option<u32>) {
+    let ir = rules::compile(builtin::GUN_GAME).unwrap();
+    let given: Vec<(String, OptionValue)> = options
+        .iter()
+        .map(|(k, v)| (k.to_string(), OptionValue::Bool(*v)))
+        .collect();
+    let bits = (!options.is_empty()).then(|| ir.pack_options(&given).unwrap());
+    (ir, bits)
+}
+
+fn loadout(p: u8, path: &str) -> Vec<Arg> {
+    vec![Arg::Player(Some(p)), tag(path), Arg::Tag(None)]
+}
+
+/// Player 0 kills player 1 twelve times: each kill swaps 0's weapon for
+/// the next rung's on the kill's tick, player 1 respawns on the bottom
+/// rung, and the kill past the top rung ends the round.
+#[test]
+fn gun_game_a_kill_climbs_a_rung_at_once_and_the_last_rung_wins() {
+    let (ir, _) = gun_game(&[]);
+    let s: Scenario = serde_json::from_str(GUN_GAME_CLIMB).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let mut want: Vec<(u32, Vec<Arg>)> = vec![(0, loadout(0, LADDER[0])), (0, loadout(1, LADDER[0]))];
+    for (k, rung) in LADDER.iter().enumerate().skip(1) {
+        let at = 10 * k as u32;
+        want.push((at, loadout(0, rung)));
+        want.push((at + 5, loadout(1, LADDER[0])));
+    }
+    let got: Vec<(u32, Vec<Arg>)> = calls(&r, "set_loadout")
+        .into_iter()
+        .filter(|(t, _)| *t < 120)
+        .map(|(t, a)| (t, a.to_vec()))
+        .collect();
+    assert_eq!(got, want);
+    // The twelfth kill, past the sword, ends it with no new weapon.
+    assert!(calls(&r, "set_loadout").iter().all(|(t, _)| *t != 120));
+    assert_eq!(lines(&r), ["player 0 finished the ladder"]);
+    assert_eq!(r.ended_at, Some(120));
+    assert_eq!(calls(&r, "end_round").len(), 1);
+    assert_eq!(r.game.players[&0].score, 12);
+}
+
+/// A suicide sends the player down a rung for the next spawn, unless the
+/// option is off.
+#[test]
+fn gun_game_a_suicide_demotes_unless_the_option_is_off() {
+    let run = |demotes: bool| {
+        let (ir, options) = gun_game(&[("suicide_demotes", demotes)]);
+        let mut s: Scenario = serde_json::from_str(GUN_GAME_CLIMB).unwrap();
+        s.options = options;
+        s.ticks = vec![ScenarioTick::default(); 5];
+        s.ticks[0].events = vec![ScenarioEvent::Spawn(0), ScenarioEvent::Spawn(1)];
+        s.ticks[1].events = vec![ScenarioEvent::Kill { victim: 1, killer: Some(0) }];
+        s.ticks[3].events = vec![ScenarioEvent::Kill { victim: 0, killer: Some(0) }];
+        s.ticks[4].events = vec![ScenarioEvent::Spawn(0)];
+        let r = scenario::run(ir, &s).unwrap();
+        assert_eq!(r.script_error, None);
+        let at_spawn: Vec<Vec<Arg>> = calls(&r, "set_loadout")
+            .into_iter()
+            .filter(|(t, _)| *t == 4)
+            .map(|(_, a)| a.to_vec())
+            .collect();
+        at_spawn
+    };
+    assert_eq!(run(true), [loadout(0, LADDER[0])]);
+    assert_eq!(run(false), [loadout(0, LADDER[1])]);
+}
+
+/// In a team game a kill of a team mate climbs nothing.
+#[test]
+fn gun_game_a_team_kill_climbs_nothing() {
+    let (ir, _) = gun_game(&[]);
+    let mut s: Scenario = serde_json::from_str(GUN_GAME_CLIMB).unwrap();
+    s.variant.insert("team_play".into(), 1);
+    s.players[1].team = 0;
+    s.ticks = vec![ScenarioTick::default(); 3];
+    s.ticks[0].events = vec![ScenarioEvent::Spawn(0), ScenarioEvent::Spawn(1)];
+    s.ticks[1].events = vec![ScenarioEvent::Kill { victim: 1, killer: Some(0) }];
+    let r = scenario::run(ir, &s).unwrap();
+    assert!(calls(&r, "set_loadout").iter().all(|(t, _)| *t == 0));
+    assert_eq!(r.game.players[&0].score, 0);
+}

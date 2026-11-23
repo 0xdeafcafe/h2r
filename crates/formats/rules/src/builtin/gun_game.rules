@@ -3,17 +3,30 @@
 // variant editor cannot express (docs/game/community-gametypes.md).
 // docs/game/rules-engine.md, "Payoff".
 //
-// `give` is untraced, so the new weapon arrives at the player's next spawn
-// through `set_loadout`, not on the kill's tick.
+// A kill swaps the killer's weapon for the next rung's at once
+// (`set_loadout`, mode 2 empties the slots), and every spawn gives the
+// player's own rung, so players spawn unarmed and the map has no weapons.
+// Every rung is on the multiplayer weapon list (`rules::weapons`), the only
+// weapons `set_loadout` gives. A dropped weapon can still be picked up:
+// leaving them is the honour rule it always was.
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Gun Game" 1
 carrier slayer
-requires player.weapons
+list party
+requires player.weapons, hud.message
+about "Every kill moves you up the weapon ladder, from the SMG to the energy sword. A kill with the sword wins. Leave dropped weapons where they lie."
+quick suicide_demotes, time_limit, respawn_time
+
+settings {
+    starting_weapon = none
+    secondary_weapon = none
+    weapons_on_map = none
+    score_limit = none
+}
 
 option suicide_demotes: bool = true "Suicide demotes" "A suicide sends the player down one rung"
 
-// Each path must be a weapon on the map, which is checked at load.
 table ladder: (weapon: weapon) = [
     ("objects/weapons/rifle/smg/smg"),
     ("objects/weapons/rifle/battle_rifle/battle_rifle"),
@@ -33,21 +46,35 @@ table ladder: (weapon: weapon) = [
 const top = len(ladder) - 1
 
 player var level: int = 0
+global var over: bool = false
+
+fn arm(p: player) {
+    set_loadout(p, ladder[min(p.level, top)].weapon, none)
+}
 
 on round_start {
+    over = false
     for each players p { p.level = 0 }
 }
 
 on spawn(p) {
-    set_loadout(p, ladder[min(p.level, top)].weapon, none)
+    arm(p)
 }
 
 on kill(victim, killer) {
-    if killer == none or killer == victim {
+    if over {
+        // The round is over: a kill after the last climbs nothing.
+    } else if killer == none or killer == victim {
         if suicide_demotes and victim.level > 0 { victim.level = victim.level - 1 }
-    } else if not (variant.team_play and killer.team == victim.team) {
-        killer.level = killer.level + 1
-        score(killer, 1)
-        if killer.level > top { end_round(killer.team) }
+    } else if let k = killer and not (variant.team_play and k.team == victim.team) {
+        k.level = k.level + 1
+        score(k, 1)
+        if k.level > top {
+            over = true
+            message(all, "{k} finished the ladder")
+            end_round(k.team)
+        } else if k.alive {
+            arm(k)
+        }
     }
 }
