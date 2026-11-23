@@ -481,8 +481,9 @@ fn coordinates_change_the_ghost_then_drop_once() {
     e.poll(8);
     assert_eq!(e.session.log().len(), 1, "holding writes no op");
     e.choose(9, Choice::CoordinatesDone).unwrap();
-    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
-    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles": []})));
+    // The hold already moved the world, so the drop writes its op and asks
+    // the game for nothing.
+    assert!(calls::lock(&e.calls).drain().is_empty());
     e.poll(10);
     assert_eq!(e.session.log().len(), 2, "the drop is the second op");
     assert_eq!(e.session.objects()[0].frame.position, [2.6, 1.5, 0.0]);
@@ -515,7 +516,7 @@ fn spawn_goal_and_item_properties_write_their_fields() {
         forge_doc::Value::Int(1)
     );
 
-    let goal = Endpoint::base(BlockKind::NetgameFlags, 1);
+    let goal = Endpoint::base(BlockKind::NetgameFlags, 0);
     e.tool.aimed_thing = Some(goal);
     e.choose(3, Choice::Set(Prop::Role, 4)).unwrap();
     finish(&mut e, 4);
