@@ -83,6 +83,7 @@ pub fn local() -> Option<Ridden> {
 pub fn reset() {
     *lock(&RIDERS) = Riders::new();
     lock(&RIDDEN).clear();
+    crate::pogo_camera::reset();
 }
 
 /// The bounce the chain filed for `slot` on this tick: a Bounced (a fall

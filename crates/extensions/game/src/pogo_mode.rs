@@ -9,6 +9,13 @@
 //! the secondary weapon at every spawn. That hook changes the simulation,
 //! so the feature is not a presentation one: a film's hook digest names
 //! it, and every machine in a game must run it.
+//!
+//! **What the player sees** is a second feature, [`PogoView`]
+//! (`pogo-view`), a presentation one: the chase camera while the stick
+//! is held ([`crate::pogo_camera`]). With `pogo` off no stick is ever
+//! held, so it does nothing; `H2_FEATURES=-pogo-view` alone leaves the
+//! stick in the game, carried and seen in first person. The riders
+//! themselves ([`crate::pogo_ride`]) are stepped by the superbounce mode.
 
 /// The feature's name.
 pub const FEATURE: &str = "pogo";
@@ -31,10 +38,41 @@ impl hooks::Feature for Pogo {
     }
 }
 
-/// Adds the feature to `registry`.
+/// The presentation feature's name.
+pub const VIEW_FEATURE: &str = "pogo-view";
+
+/// What the player sees of the stick: the chase camera.
+pub struct PogoView;
+
+impl hooks::Feature for PogoView {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
+            VIEW_FEATURE,
+            "The Pogo Stick's chase camera and riding pose",
+        )
+        .doc("docs/game/pogo-stick.md")
+        // Render hooks on private views only: a recorded film's hook
+        // digest does not include it.
+        .presentation_only()
+    }
+
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        // The riders and the camera's boom restart from the next tick
+        // after a load.
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        crate::pogo_camera::install_hooks(b)?;
+        Ok(())
+    }
+}
+
+/// Adds both features to `registry`.
 pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
     registry
         .add(&Pogo)
         .map(|_| ())
-        .map_err(|e| anyhow::anyhow!("pogo: {e}"))
+        .map_err(|e| anyhow::anyhow!("pogo: {e}"))?;
+    registry
+        .add(&PogoView)
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("pogo-view: {e}"))
 }

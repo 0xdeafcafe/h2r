@@ -1370,6 +1370,19 @@ fn on_tick(o: &hooks::Obs) {
         let guest = o.guest();
         chain::record(&*t, &guest, &awards);
     }
+    // The Pogo Stick's chase camera (docs/game/pogo-stick.md, "The
+    // camera"): on while the local player holds a stick, its boom as
+    // long as the level leaves room for.
+    {
+        use superbounce::view::LineOfSight;
+        let sight = room.view();
+        crate::pogo_camera::on_tick(
+            crate::pogo_ride::local().is_some(),
+            live.position,
+            live.aim,
+            &|from, to| sight.clear(from, to),
+        );
+    }
     *lock(&STATE) = State {
         active: true,
         word: live.word,

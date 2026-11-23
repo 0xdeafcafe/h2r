@@ -225,6 +225,7 @@ pub mod speaker_setting;
 pub mod steam_speaker;
 pub mod stopgaps;
 pub mod pogo;
+pub mod pogo_camera;
 pub mod pogo_loadout;
 pub mod pogo_mode;
 pub mod pogo_ride;
