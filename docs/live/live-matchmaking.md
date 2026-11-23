@@ -629,13 +629,12 @@ is separate and goes to stats; an entry's "record id" is a map id. So
 ### 6.8 The default set
 
 `HopperFile::default_set()` builds a complete file from nothing: sixteen
-playlists in hoppers 0..15, playlist ids 1..16 (seven human playlists, then
-nine clanker ones), status 0, the game's skill ceiling and wait/timeout
+playlists in hoppers 0..15, playlist ids 1..16 (eight human playlists, then
+eight clanker ones), status 0, the game's skill ceiling and wait/timeout
 values, the game's start-wait table, maps from the Halo 2 disc and
 Multiplayer Map Pack, and variants that are the records of scripts (6.5,
-6.6). `DROPPED_HUMAN_PLAYLIST` leaves out the human **Unranked Teams**
-playlist to fit all 16 slots; changing that one id drops a different human
-playlist.
+6.6). Clanker Big Team Battle combines Slayer and the big-map objective
+variants in one playlist rather than having a separate Big Team Objective.
 
 | # | Title | Kind | Type | Size | Entries |
 |---|---|---|---|---|---|
@@ -646,17 +645,17 @@ playlist.
 | 4 | Big Team Battle | Human, ranked | 4 | 2 x 5..8, parties 1..5 | Team Slayer, Classic CTF, Assault, Territories |
 | 5 | Team Objective | Human, ranked | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
 | 6 | Free for All | Human, unranked | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
-| 7 | Rumble Pit | Clanker, ranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
-| 8 | Team Slayer | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
-| 9 | Team Skirmish | Clanker, ranked | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer, Teamball |
-| 10 | Team Snipers | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Snipers |
-| 11 | Big Team Battle | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Slayer, Classic CTF, Assault, Territories |
-| 12 | Big Team Objective | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Classic CTF, Assault, Territories |
+| 7 | Unranked Teams | Human, unranked | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
+| 8 | Rumble Pit | Clanker, ranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
+| 9 | Team Slayer | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
+| 10 | Team Skirmish | Clanker, ranked | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer, Teamball |
+| 11 | Team Snipers | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Snipers |
+| 12 | Big Team Battle | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Slayer, Classic CTF, Assault, Territories |
 | 13 | Big Team Heavies | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Heavies |
 | 14 | Solo Training | Clanker, unranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
 | 15 | Team Training | Clanker, unranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer, Classic CTF, Team King, Teamball |
 
-Hoppers 7..15 are **clanker hoppers** (Clankermatch, docs/game/bots.md
+Hoppers 8..15 are **clanker hoppers** (Clankermatch, docs/game/bots.md
 §8): one human or a party, and bots the host runs in every other seat. The
 Clankermatch screen supplies the Clanker context, so their canonical titles
 fit the descriptor's 16-byte title slot (15 bytes and a NUL). Their
@@ -668,7 +667,7 @@ and uneven teams while the bots join.
 
 Ranking is a separate server-side mark, not the descriptor type:
 `Playlist::clankers` holds `Clankers { ranked, ranks_as }` (bots.md §9.4
-item 1). Hoppers 7..13 have `ranked: true` and each keeps a standing of its
+item 1). Hoppers 8..13 have `ranked: true` and each keeps a standing of its
 own (`ranks_as` unset), separate from the human playlists. Training hoppers
 14 and 15 have `ranked: false` and never change a standing.
 
@@ -712,7 +711,7 @@ web builder (`web/src/admin/HopperBuilder.tsx`) and the editor's playlist
 tool (`hopper_edit::model`) work the same way:
 
 - **A new playlist** is made in an unused slot from a template
-  (`defaults::templates`, the seven human playlists of §6.8): its whole
+  (`defaults::templates`, the eight human playlists of §6.8): its whole
   descriptor (type, sizes, waits, timeout, skill ceiling, a free playlist
   id, `HopperFile::create_from`) and one entry, the template's first. The
   raw fields cannot build a descriptor the validator takes (the skill

@@ -155,9 +155,9 @@ impl CmPlaylist {
     /// (`live_proto::hopper::defaults`).
     pub fn playlist_id(self) -> u32 {
         match self {
-            Self::Slayer => 8,
-            Self::Teams => 9,
-            Self::Doubles => 10,
+            Self::Slayer => 9,
+            Self::Teams => 10,
+            Self::Doubles => 11,
         }
     }
 }

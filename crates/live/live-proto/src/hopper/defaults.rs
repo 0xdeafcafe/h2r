@@ -17,7 +17,7 @@
 //! for small games, 45 s and 300 s for big team games); the playlists,
 //! their sizes, maps and weights are this project's choice.
 //!
-//! After the seven human playlists come nine clanker playlists
+//! After the eight human playlists come eight clanker playlists
 //! (docs/game/bots.md §8, §9.4 item 1): Clankermatch hoppers, where every
 //! other player is a bot the host runs. Their descriptors are ordinary ones;
 //! what makes them clanker hoppers is [`Playlist::clankers`], which the
@@ -320,10 +320,6 @@ fn team(
     }
 }
 
-/// The human playlist left out to fit seven human and nine clanker
-/// playlists in the 16 slots. Change this one id to drop a different one.
-const DROPPED_HUMAN_PLAYLIST: u32 = 8;
-
 /// The default lineup, in hopper order. Playlist ids are 1.. in order.
 pub fn playlists() -> Vec<Playlist> {
     use variants::*;
@@ -587,7 +583,7 @@ pub fn playlists() -> Vec<Playlist> {
     // context, so the canonical titles fit the descriptor's 15-byte limit.
     let clanker = vec![
         Playlist {
-            playlist_id: 8,
+            playlist_id: 9,
             title: "Rumble Pit",
             description: "Ranked Clanker free for all, up to 8. Bots fill every seat your party does not.",
             rules: Rules::FreeForAll {
@@ -600,7 +596,7 @@ pub fn playlists() -> Vec<Playlist> {
             clankers: Some(Clankers::RANKED),
         },
         Playlist {
-            playlist_id: 9,
+            playlist_id: 10,
             title: "Team Slayer",
             description: "Ranked Clanker Team Slayer, four against four. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
@@ -614,7 +610,7 @@ pub fn playlists() -> Vec<Playlist> {
             clankers: Some(Clankers::RANKED),
         },
         Playlist {
-            playlist_id: 10,
+            playlist_id: 11,
             title: "Team Skirmish",
             description: "Ranked Clanker Team Skirmish, two against two. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
@@ -628,7 +624,7 @@ pub fn playlists() -> Vec<Playlist> {
             clankers: Some(Clankers::RANKED),
         },
         Playlist {
-            playlist_id: 11,
+            playlist_id: 12,
             title: "Team Snipers",
             description: "Ranked Clanker Team Snipers, four against four. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
@@ -642,7 +638,7 @@ pub fn playlists() -> Vec<Playlist> {
             clankers: Some(Clankers::RANKED),
         },
         Playlist {
-            playlist_id: 12,
+            playlist_id: 13,
             title: "Big Team Battle",
             description: "Ranked Clanker Big Team Battle on big maps. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
@@ -653,47 +649,6 @@ pub fn playlists() -> Vec<Playlist> {
             base_wait_ms: BIG_WAIT,
             search_timeout_ms: BIG_TIMEOUT,
             entries: big_battle_entries(),
-            clankers: Some(Clankers::RANKED),
-        },
-        Playlist {
-            playlist_id: 13,
-            title: "Big Team Objective",
-            description: "Ranked Clanker CTF, Assault and Territories on big maps. Bots fill the other seats.",
-            rules: Rules::UnrankedTeams {
-                teams: 2,
-                team_size: (1, 8),
-                uneven: true,
-            },
-            base_wait_ms: BIG_WAIT,
-            search_timeout_ms: BIG_TIMEOUT,
-            entries: [
-                on(classic_ctf, &big, 8),
-                on(
-                    assault,
-                    &[
-                        COAGULATION,
-                        ZANZIBAR,
-                        BURIAL_MOUNDS,
-                        CONTAINMENT,
-                        TERMINAL,
-                        RELIC,
-                    ],
-                    5,
-                ),
-                on(
-                    territories,
-                    &[
-                        COAGULATION,
-                        HEADLONG,
-                        WATERWORKS,
-                        BURIAL_MOUNDS,
-                        CONTAINMENT,
-                        TERMINAL,
-                    ],
-                    5,
-                ),
-            ]
-            .concat(),
             clankers: Some(Clankers::RANKED),
         },
         Playlist {
@@ -738,11 +693,7 @@ pub fn playlists() -> Vec<Playlist> {
             clankers: Some(Clankers::UNRANKED),
         },
     ];
-    human
-        .into_iter()
-        .filter(|p| p.playlist_id != DROPPED_HUMAN_PLAYLIST)
-        .chain(clanker)
-        .collect()
+    human.into_iter().chain(clanker).collect()
 }
 
 impl HopperFile {
@@ -866,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lineup_has_seven_human_and_nine_clanker_playlists() {
+    fn the_lineup_has_eight_human_and_eight_clanker_playlists() {
         let lineup = playlists();
         let titles: Vec<&str> = lineup.iter().map(|p| p.title).collect();
         assert_eq!(
@@ -879,12 +830,12 @@ mod tests {
                 "Big Team Battle",
                 "Team Objective",
                 "Free for All",
+                "Unranked Teams",
                 "Rumble Pit",
                 "Team Slayer",
                 "Team Skirmish",
                 "Team Snipers",
                 "Big Team Battle",
-                "Big Team Objective",
                 "Big Team Heavies",
                 "Solo Training",
                 "Team Training",
@@ -893,22 +844,21 @@ mod tests {
         let kinds: Vec<HopperType> = lineup.iter().map(|p| p.rules.hopper_type()).collect();
         assert!(kinds[..6].iter().all(|k| k.ranked()));
         assert!(kinds[6..].iter().all(|k| !k.ranked()));
-        // The human playlists first, then the clanker ones. Seven clanker
+        // The human playlists first, then the clanker ones. Six clanker
         // playlists rank in their own ladders; the two training ones do not.
         let marked: Vec<bool> = lineup.iter().map(|p| p.clankers.is_some()).collect();
-        assert_eq!(marked, (0..16).map(|i| i >= 7).collect::<Vec<bool>>());
+        assert_eq!(marked, (0..16).map(|i| i >= 8).collect::<Vec<bool>>());
         let ranked: Vec<bool> = lineup
             .iter()
             .map(|p| p.clankers.is_some_and(|c| c.ranked))
             .collect();
         assert_eq!(
             ranked,
-            (0..16).map(|i| (7..14).contains(&i)).collect::<Vec<bool>>()
+            (0..16).map(|i| (8..14).contains(&i)).collect::<Vec<bool>>()
         );
         assert!(lineup.iter().all(|p| p.clankers.is_none_or(|c| c.ranks_as.is_none())));
         let ids: Vec<u32> = lineup.iter().map(|p| p.playlist_id).collect();
         assert_eq!(ids, (1..=16).collect::<Vec<u32>>());
-        assert_eq!(DROPPED_HUMAN_PLAYLIST, 8, "the human Unranked Teams playlist");
         let file = HopperFile::default_set();
         let d = file.descriptor(2).unwrap();
         assert_eq!(
@@ -920,7 +870,7 @@ mod tests {
         assert_eq!((d.min_players(), d.max_players()), (Some(10), Some(16)));
         assert_eq!(d.search_timeout_ms, 300_000);
         assert_eq!(d.start_wait(10), Some(45_000));
-        let d = file.descriptor(11).unwrap();
+        let d = file.descriptor(12).unwrap();
         assert_eq!((d.min_players(), d.max_players()), (Some(2), Some(16)));
         assert_eq!(d.max_party(), Some(16), "a clanker party can be any size");
         let d = file.descriptor(0).unwrap();
@@ -1092,8 +1042,8 @@ mod tests {
             file.clear_hopper(HOPPERS),
             Err(HopperError::Hopper(HOPPERS))
         );
-        // Only the seven human playlists are templates.
-        assert!(template(8).is_none(), "clanker playlists are not templates");
-        assert_eq!(templates().len(), 7);
+        // Only the eight human playlists are templates.
+        assert!(template(9).is_none(), "clanker playlists are not templates");
+        assert_eq!(templates().len(), 8);
     }
 }

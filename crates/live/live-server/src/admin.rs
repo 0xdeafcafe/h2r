@@ -2179,7 +2179,7 @@ mod tests {
         );
         assert!(v.iter().all(|d| d.scripted), "every built-in runs its script");
         let t = template_docs();
-        assert_eq!(t.len(), 7);
+        assert_eq!(t.len(), 8);
         for d in &t {
             assert!((1..=5).contains(&d.hopper_type), "{}", d.title);
             assert!(v.iter().any(|b| b.key == d.entry.variant));
@@ -2329,7 +2329,7 @@ mod tests {
 
     #[test]
     fn clanker_marks_follow_the_served_file() {
-        // The built-in lineup: its nine clanker playlists, by index.
+        // The built-in lineup: its eight clanker playlists, by index.
         let defaults = HopperFile::default_set();
         let marks = clanker_hoppers(Some(&defaults));
         let ids: Vec<(u32, u32)> = marks
@@ -2340,7 +2340,6 @@ mod tests {
         assert_eq!(
             ids,
             [
-                (7, 8),
                 (8, 9),
                 (9, 10),
                 (10, 11),

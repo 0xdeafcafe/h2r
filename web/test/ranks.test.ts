@@ -69,7 +69,7 @@ describe("rank sums", () => {
     expect(playlistName("17")).toBe("Playlist 17");
     expect(playlistName("3", { "3": "Snipers Only" })).toBe("Snipers Only");
     expect(Object.keys(DEFAULT_PLAYLISTS)).toHaveLength(16);
-    expect(playlistName("8")).toBe("Team Slayer");
+    expect(playlistName("8")).toBe("Rumble Pit");
     expect(winRate(st({ games: 4, wins: 3 }))).toBe("75%");
     expect(winRate(st())).toBe("–");
   });
@@ -88,10 +88,10 @@ describe("the playlist menu", () => {
     expect(menu.map((p) => p.name)).toEqual(Object.values(DEFAULT_PLAYLISTS));
     expect(menu.filter((p) => p.group === "ranked").map((p) => p.name))
       .toEqual(["Rumble Pit", "Team Slayer", "Team Skirmish", "Team Snipers", "Big Team Battle", "Team Objective"]);
-    expect(menu.filter((p) => p.group === "unranked").map((p) => p.name)).toEqual(["Free for All"]);
+    expect(menu.filter((p) => p.group === "unranked").map((p) => p.name)).toEqual(["Free for All", "Unranked Teams"]);
     expect(menu.filter((p) => p.group === "clanker").map((p) => p.name)).toEqual([
       "Rumble Pit", "Team Slayer", "Team Skirmish", "Team Snipers", "Big Team Battle",
-      "Big Team Objective", "Big Team Heavies", "Solo Training", "Team Training",
+      "Big Team Heavies", "Solo Training", "Team Training",
     ]);
     expect(menu[1]).toMatchObject({ id: "1", size: "2 teams of 3–4", games: ["Team Slayer"] });
     expect(menu[0]).toMatchObject({ id: "0", size: "4–8 players, free for all", games: ["Rumble Slayer", "Oddball", "King of the Hill"] });

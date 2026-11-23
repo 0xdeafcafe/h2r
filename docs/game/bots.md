@@ -4968,12 +4968,12 @@ gamertags, emblems and ranks. The flag clears when the fill ends.
 
 **Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
 
-1. `live: clankermatch: clanker hoppers [7, 8, 9, 10, 11, 12, 13, 14, 15]`
+1. `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`
    at logon (or `the server sent no clanker hoppers` / `no clanker hoppers
    from the server`): the marks.
 2. `clankermatch: the playlists are the clanker hoppers`: the row's (or
    the switch's) press.
-3. `live: clankermatch: searching clanker playlist 7: no one to find; the
+3. `live: clankermatch: searching clanker playlist 8: no one to find; the
    console hosts in N s`: the held search. Missing: the search was not
    the clanker hopper's (check `live: optimatch` lines).
 4. `live: session <id> advertised for ...` after it: the console hosted
@@ -4981,7 +4981,7 @@ gamertags, emblems and ranks. The flag clears when the fill ends.
    instead, which says nothing; step 5 decides.) Neither: the game never
    hosted after the empty search (live-matchmaking.md §7.3 says
    "likely").
-5. `clankers: clankermatch: hosting clanker playlist 7 (session <id>): 7
+5. `clankers: clankermatch: hosting clanker playlist 8 (session <id>): 7
    bots join over N s`: the fill started. Missing with 4 present: the
    advertisement carries no hopper attribute (`Hle::clanker_hosted`).
 6. `clankers: asking Live for 7 bots for session <id>`, then `clankers:
@@ -5057,14 +5057,13 @@ actions in step 8 separately.
    opens as before, and back from it lands on Custom Game Browser
    (`custom games: opening the browser`); the same for Co-op Campaign.
    Mods opens as Content Download did.
-3. OptiMatch lists the seven human playlists and no Clanker one.
+3. OptiMatch lists the eight human playlists and no Clanker one.
 4. Clankermatch lists Rumble Pit, Team Slayer, Team Skirmish, Team Snipers,
-   Big Team Battle, Big Team Objective, Big Team Heavies, Solo Training and
-   Team Training (the log: `clankermatch: the playlists are the clanker
-   hoppers`; at logon `live: clankermatch: clanker hoppers [7, 8, 9, 10, 11,
-   12, 13, 14, 15]`).
+   Big Team Battle, Big Team Heavies, Solo Training and Team Training (the
+   log: `clankermatch: the playlists are the clanker hoppers`; at logon
+   `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`).
 5. Pick Rumble Pit: the retail search screen runs for 4 to 20 s
-   (`live: clankermatch: searching clanker playlist 7 ...`), then the
+   (`live: clankermatch: searching clanker playlist 8 ...`), then the
    game hosts its own lobby (does it? in every type: FFA and teams).
 6. The match lobby fills with rostered phantoms (seven for Slayer), the
    countdown starts, and port 0 remains the only local user. Check each
@@ -6894,7 +6893,7 @@ which is how `h2 bots verdict` knows which verdict to print.
 
 **Server state.** None to set up: the run's fresh store has no published
 hopper file, so the server serves the built-in lineup
-(`live_server::default_hopper`), whose hoppers 7..15 are the nine clanker
+(`live_server::default_hopper`), whose hoppers 8..15 are the eight clanker
 playlists, marked on `GET /v1/hoppers/clankers`. The harness reads the marks
 before it starts the game, checks the playlist asked for is marked and on
 the row the plan expects (the Clankermatch list shows only the clanker
@@ -6904,9 +6903,9 @@ fill seats bots.
 
 | `--playlist` | Hopper | Row | Players | Phantoms |
 |---|---|---|---|---|
-| slayer | 7 Rumble Pit (FFA) | 0 | 2 to 8 | 7 |
-| teams | 8 Team Slayer (2 teams) | 1 | 2 to 8 | 7 |
-| doubles | 9 Team Skirmish (2 teams) | 2 | 2 to 4 | 3 |
+| slayer | 8 Rumble Pit (FFA) | 0 | 2 to 8 | 7 |
+| teams | 9 Team Slayer (2 teams) | 1 | 2 to 8 | 7 |
+| doubles | 10 Team Skirmish (2 teams) | 2 | 2 to 4 | 3 |
 
 **The drive** (`crates/apps/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
 and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
@@ -6930,7 +6929,7 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 | # | Check | Passes on |
 |---|---|---|
 | 1 | Signed in to Xbox Live | `live: playing as Tester` |
-| 2 | Clanker hoppers listed (server and game) | `bots-test: server clanker hoppers [7, 8, 9, 10, 11, 12, 13, 14, 15]` and `live: clankermatch: clanker hoppers [7, 8, 9, 10, 11, 12, 13, 14, 15]`, both with the plan's hopper |
+| 2 | Clanker hoppers listed (server and game) | `bots-test: server clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]` and `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`, both with the plan's hopper |
 | 3 | The Clankermatch row opened the clanker playlists | `clankermatch: the playlists are the clanker hoppers`, and no `the server named no clanker hoppers: the list is empty` |
 | 4 | The clanker search started | `live: clankermatch: searching clanker playlist H` with the plan's H |
 | 5 | The search ended with this console hosting | `live: session S advertised` after the search, and `clankers: clankermatch: hosting clanker playlist H (session S)` |

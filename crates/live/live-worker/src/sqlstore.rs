@@ -2095,7 +2095,6 @@ mod tests {
         assert_eq!(
             ids,
             [
-                (7, 8),
                 (8, 9),
                 (9, 10),
                 (10, 11),
@@ -2121,7 +2120,7 @@ mod tests {
         let token = issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
         let game = serde_json::json!({
             "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Rumble Slayer",
-            "team_play": false, "tick": 0, "kind": "clankermatch", "playlist_id": "7",
+            "team_play": false, "tick": 0, "kind": "clankermatch", "playlist_id": "8",
             "players": [
                 {"index": 0, "name": "Host", "xuid": created["xuid"], "team": 0, "local": true},
                 {"index": 1, "name": "Clanker 1", "team": 1, "local": true, "bot": true}
@@ -2143,7 +2142,7 @@ mod tests {
             .cloned()
             .unwrap_or(Value::Null);
         assert_eq!(item["kind"], "clankermatch", "{list}");
-        assert_eq!(item["playlist_id"], "7", "{list}");
+        assert_eq!(item["playlist_id"], "8", "{list}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

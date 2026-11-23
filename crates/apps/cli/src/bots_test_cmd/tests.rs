@@ -298,19 +298,19 @@ fn the_clankermatch_plans_come_from_the_built_in_lineup() {
     let s = cm_plan(CmPlaylist::Slayer, "Tester").unwrap();
     assert_eq!(
         (s.title.as_str(), s.hopper, s.row, s.min, s.max, s.teams),
-        ("Rumble Pit", 7, 0, 2, 8, 0)
+        ("Rumble Pit", 8, 0, 2, 8, 0)
     );
     assert_eq!((s.bots, s.phantoms()), (7, 7), "phantoms only");
     let t = cm_plan(CmPlaylist::Teams, "Tester").unwrap();
     assert_eq!(
         (t.title.as_str(), t.hopper, t.row, t.max, t.teams),
-        ("Team Slayer", 8, 1, 8, 2)
+        ("Team Slayer", 9, 1, 8, 2)
     );
     assert_eq!((t.bots, t.phantoms()), (7, 7));
     let d = cm_plan(CmPlaylist::Doubles, "Tester").unwrap();
     assert_eq!(
         (d.title.as_str(), d.hopper, d.row, d.max, d.teams),
-        ("Team Skirmish", 9, 2, 4, 2)
+        ("Team Skirmish", 10, 2, 4, 2)
     );
     assert_eq!((d.bots, d.phantoms()), (3, 3));
     for p in [&s, &t, &d] {
@@ -331,12 +331,12 @@ fn the_clankermatch_plans_come_from_the_built_in_lineup() {
         check_marks(p, &marks).unwrap();
     }
     let e = check_marks(&s, &ClankerHoppers::default()).unwrap_err();
-    assert!(format!("{e:#}").contains("not 7 (Rumble Pit)"), "{e:#}");
+    assert!(format!("{e:#}").contains("not 8 (Rumble Pit)"), "{e:#}");
     let only_teams = ClankerHoppers {
         hoppers: marks
             .hoppers
             .iter()
-            .filter(|h| h.hopper_id == 8)
+            .filter(|h| h.hopper_id == 9)
             .copied()
             .collect(),
     };

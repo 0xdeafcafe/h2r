@@ -2220,14 +2220,14 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
 }
 
 /// Clanker Team Skirmish through the title's calls (docs/game/bots.md §8.4):
-/// the console hosts a four-seat match session of descriptor 9, which
+/// the console hosts a four-seat match session of descriptor 10, which
 /// reads as a 2 v 2 clanker hopper, and the round the full lobby makes
 /// registers on the server for the host and for a party member's console,
 /// so neither console's arbitration status fails the match (result 0x11).
 #[test]
 fn a_clanker_doubles_lobby_registers_its_round_for_each_console_of_the_party() {
     use live_proto::optimatch::attr as attr_id;
-    const HOPPER: u32 = 9;
+    const HOPPER: u32 = 10;
     const ROUND: u32 = DATA + 0x12000;
 
     let server = Server::new();
@@ -2297,7 +2297,7 @@ fn a_clanker_doubles_lobby_registers_its_round_for_each_console_of_the_party() {
 fn a_full_clankermatch_target_stays_advertised_until_the_guest_deletes_it() {
     use live_proto::{optimatch::attr as attr_id, session::Session};
 
-    const HOPPER: u32 = 7;
+    const HOPPER: u32 = 8;
     const CAPACITY: u32 = 8;
     const SQUAD_ID: u32 = MATCH_ID + 8;
     const SQUAD_KEY: u32 = MATCH_KEY + 16;
