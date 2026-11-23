@@ -2,9 +2,9 @@
 //! renderer (`impl.render.native`, on by default). No observer mutates
 //! guest state, including on a malformed or partially readable list.
 
-use crate::{native_world::Mem};
-use hooks::{BuildError, Builder, Feature, Manifest};
+use crate::native_world::Mem;
 use engine::{memory::GuestMemory, points, shadow_constants};
+use hooks::{BuildError, Builder, Feature, Manifest};
 use native_render::{
     shadows::{self, Item, Site},
     skip,
@@ -45,6 +45,16 @@ pub trait Host: Send + Sync {
     fn entry(&self, mem: &mut dyn GuestMemory, entry: Option<Entry>);
     fn begin(&self, mem: &mut dyn GuestMemory, layer: Layer);
     fn end(&self, mem: &mut dyn GuestMemory, site: Site, layer: u32);
+    /// Draw a whole layer-10 group from the scene before its handlers.
+    /// Refusal issues nothing and names the counter's category.
+    fn draw_alone(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _view: u32,
+        _group: &crate::native_lights::SceneGroup,
+    ) -> Result<(), &'static str> {
+        Err("device")
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -54,6 +64,81 @@ pub fn set_host(host: Arc<dyn Host>) {
 
 pub fn clear_host() {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+const REFUSALS: [&str; 8] = [
+    "remainder",
+    "stream",
+    "pose",
+    "program",
+    "state",
+    "target",
+    "callback",
+    "device",
+];
+static ALONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REFUSED: [std::sync::atomic::AtomicU64; REFUSALS.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; REFUSALS.len()];
+
+/// Draw a caster group from the scene and empty its guest entry loop on
+/// success. Every refusal leaves the gathered/resolved-draw path intact.
+pub fn draw_alone(
+    mem: &mut dyn GuestMemory,
+    layer: u32,
+    group: &crate::native_lights::SceneGroup,
+) -> bool {
+    use std::sync::atomic::Ordering;
+    if layer != 10 {
+        return false;
+    }
+    let view = mem
+        .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
+        .unwrap_or(u32::MAX);
+    let result = HOST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("device")
+        .and_then(|host| host.draw_alone(mem, view, group));
+    match result {
+        Ok(()) => {
+            ALONE.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        Err(why) => {
+            let n = REFUSALS
+                .iter()
+                .position(|&name| name == why)
+                .unwrap_or(REFUSALS.len() - 1);
+            REFUSED[n].fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
+/// Caster layers committed from the scene, no geometry handler run.
+pub fn drawn_alone() -> u64 {
+    ALONE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `render.scene` counters for scene-caster refusals by category.
+pub fn alone_counters() -> Vec<(&'static str, u64)> {
+    std::iter::once(("scene_shadow_layers_alone_10", drawn_alone()))
+        .chain(REFUSALS.iter().zip(&REFUSED).map(|(name, count)| {
+            let name = match *name {
+                "remainder" => "scene_shadow_alone_refused_remainder",
+                "stream" => "scene_shadow_alone_refused_stream",
+                "pose" => "scene_shadow_alone_refused_pose",
+                "program" => "scene_shadow_alone_refused_program",
+                "state" => "scene_shadow_alone_refused_state",
+                "target" => "scene_shadow_alone_refused_target",
+                "callback" => "scene_shadow_alone_refused_callback",
+                _ => "scene_shadow_alone_refused_device",
+            };
+            (name, count.load(std::sync::atomic::Ordering::Relaxed))
+        }))
+        .chain(std::iter::once(("scene_dropped_shadow_layers", 0)))
+        .collect()
 }
 
 fn capture(mem: &mut dyn GuestMemory, layer: u32, site: Site) -> Option<Layer> {
@@ -142,11 +227,15 @@ impl Feature for NativeShadows {
             })
             .context_only();
         b.raw()
-            .observe_before(&points::ADDITIONAL_SHADOW_CASTERS, "additional shadow caster owner", |_| {
-                if let Some(h) = host() {
-                    h.parent(Some(Site::AdditionalCaster), None);
-                }
-            })
+            .observe_before(
+                &points::ADDITIONAL_SHADOW_CASTERS,
+                "additional shadow caster owner",
+                |_| {
+                    if let Some(h) = host() {
+                        h.parent(Some(Site::AdditionalCaster), None);
+                    }
+                },
+            )
             .context_only();
         b.raw()
             .observe_before(&points::OBJECT_SHADOW_LIST, "object shadow list", |_| {
@@ -157,29 +246,45 @@ impl Feature for NativeShadows {
             })
             .context_only();
         b.raw()
-            .observe_before(&points::GATHER_OBJECT_SHADOWS, "object shadow candidates", |o| {
+            .observe_before(
+                &points::GATHER_OBJECT_SHADOWS,
+                "object shadow candidates",
+                |o| {
+                    let m = o.guest();
+                    let esp = o.cpu.esp;
+                    OBJECT_LIST.set(
+                        (m.u32(esp).ok() == Some(0x0003_3632))
+                            .then(|| m.u32(esp.wrapping_add(4)).ok())
+                            .flatten(),
+                    );
+                },
+            )
+            .context_only();
+        b.raw()
+            .observe_before(&points::OBJECT_SHADOW, "object shadow owner", |o| {
                 let m = o.guest();
                 let esp = o.cpu.esp;
-                OBJECT_LIST.set(
-                    (m.u32(esp).ok() == Some(0x0003_3632))
-                        .then(|| m.u32(esp.wrapping_add(4)).ok())
-                        .flatten(),
-                );
+                let address = o.cpu.esi;
+                let args = [
+                    m.u32(esp.wrapping_add(4)).ok(),
+                    m.u32(esp.wrapping_add(8)).ok(),
+                ];
+                let index = OBJECT_LIST
+                    .get()
+                    .and_then(|base| shadows::object_candidate(base, address, o.cpu.edi));
+                let matched = index.is_some()
+                    && m.u32(esp).ok() == Some(0x0003_364c)
+                    && m.u8(0x0050_9413).ok() == Some(1)
+                    && m.u8(0x0048_5a46).ok() == Some(1)
+                    && args.iter().all(Option::is_some)
+                    && args == [m.u32(address).ok(), m.u32(address.wrapping_add(4)).ok()];
+                let identity = args[0].zip(args[1]).map(|(a, b)| [a, b]);
+                crate::scene_step::object_shadow(&*m, identity.filter(|_| matched));
+                if let Some(h) = host() {
+                    h.parent(matched.then_some(Site::Object), identity);
+                }
             })
             .context_only();
-        b.raw().observe_before(&points::OBJECT_SHADOW, "object shadow owner", |o| {
-            let m = o.guest();
-            let esp = o.cpu.esp;
-            let address = o.cpu.esi;
-            let args = [m.u32(esp.wrapping_add(4)).ok(), m.u32(esp.wrapping_add(8)).ok()];
-            let index = OBJECT_LIST.get().and_then(|base| shadows::object_candidate(base, address, o.cpu.edi));
-            let matched = index.is_some() && m.u32(esp).ok() == Some(0x0003_364c)
-                && m.u8(0x0050_9413).ok() == Some(1) && m.u8(0x0048_5a46).ok() == Some(1)
-                && args.iter().all(Option::is_some) && args == [m.u32(address).ok(), m.u32(address.wrapping_add(4)).ok()];
-            let identity = args[0].zip(args[1]).map(|(a, b)| [a, b]);
-            crate::scene_step::object_shadow(&*m, identity.filter(|_| matched));
-            if let Some(h) = host() { h.parent(matched.then_some(Site::Object), identity); }
-        }).context_only();
         b.raw()
             .observe_before(
                 &points::LIGHT_GEOMETRY_DRAW,
@@ -206,19 +311,29 @@ impl Feature for NativeShadows {
                 },
             )
             .context_only();
-        b.raw().observe_before(&points::LAYER_DRAW, "shadow layer", |o| {
-            let mut mem = o.guest();
-            let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else { return };
-            let Some(site) = mem.u32(o.cpu.esp).ok().and_then(|ret| shadows::site(layer, ret)) else { return };
-            let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if let Some(host) = host {
-                if let Some(data) = capture(&mut *mem, layer, site) {
-                    host.begin(&mut *mem, data);
-                } else {
-                    host.parent(None, None);
+        b.raw()
+            .observe_before(&points::LAYER_DRAW, "shadow layer", |o| {
+                let mut mem = o.guest();
+                let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else {
+                    return;
+                };
+                let Some(site) = mem
+                    .u32(o.cpu.esp)
+                    .ok()
+                    .and_then(|ret| shadows::site(layer, ret))
+                else {
+                    return;
+                };
+                let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if let Some(host) = host {
+                    if let Some(data) = capture(&mut *mem, layer, site) {
+                        host.begin(&mut *mem, data);
+                    } else {
+                        host.parent(None, None);
+                    }
                 }
-            }
-        }).context_only();
+            })
+            .context_only();
         b.raw()
             .observe_before(&points::LAYER_END, "shadow layer end", |o| {
                 let mut mem = o.guest();
@@ -244,5 +359,65 @@ impl Feature for NativeShadows {
             .context_only();
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Stub(Result<(), &'static str>);
+    impl Host for Stub {
+        fn parent(&self, _: Option<Site>, _: Option<[u32; 2]>) {}
+        fn entry(&self, _: &mut dyn GuestMemory, _: Option<Entry>) {}
+        fn begin(&self, _: &mut dyn GuestMemory, _: Layer) {}
+        fn end(&self, _: &mut dyn GuestMemory, _: Site, _: u32) {}
+        fn draw_alone(
+            &self,
+            _: &mut dyn GuestMemory,
+            _: u32,
+            _: &crate::native_lights::SceneGroup,
+        ) -> Result<(), &'static str> {
+            self.0
+        }
+    }
+
+    fn group() -> crate::native_lights::SceneGroup {
+        crate::native_lights::SceneGroup {
+            group: frame_scene::LightGroup {
+                light: 0,
+                layer: 10,
+                site: frame_scene::GroupSite::Light,
+                projection: None,
+                pass: None,
+                entries: 0..0,
+                remainder: 0,
+            },
+            entries: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_whole_caster_group_commits_and_a_refusal_keeps_its_handlers_and_counts() {
+        let mut mem = engine::FlatMemory::new(0, 0x1000);
+        let group = group();
+        set_host(Arc::new(Stub(Ok(()))));
+        let before = drawn_alone();
+        assert!(draw_alone(&mut mem, 10, &group));
+        assert_eq!(drawn_alone(), before + 1);
+        assert!(!draw_alone(&mut mem, 11, &group), "only caster layer 10");
+        assert_eq!(drawn_alone(), before + 1);
+        set_host(Arc::new(Stub(Err("stream"))));
+        assert!(!draw_alone(&mut mem, 10, &group));
+        assert_eq!(drawn_alone(), before + 1);
+        let counters = alone_counters();
+        assert!(
+            counters
+                .iter()
+                .any(|(name, count)| *name == "scene_shadow_alone_refused_stream" && *count > 0)
+        );
+        clear_host();
+        assert!(!draw_alone(&mut mem, 10, &group));
     }
 }

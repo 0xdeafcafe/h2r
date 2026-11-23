@@ -28,21 +28,31 @@ pub use frame_types::{camera, carried};
 pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
 pub use carried::{
-    AuxTarget, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot, SlotAt, SlotEvent, SlotTracker,
-    TargetRef, TargetSample,
+    AuxTarget, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot,
+    SlotAt, SlotEvent, SlotTracker, TargetRef, TargetSample,
 };
 pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};
 pub use late::{
-    DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart, PostEffect, PostParams, WaterState,
+    DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart,
+    PostEffect, PostParams, WaterState,
 };
-pub use layer::{LayerInputs, LayerItem, LayerObjectRefusal, LayerOwner, LayerPass, PRT_FIRST_CONSTANT, PrtStream};
-pub use light::{Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants, LightVolume, SceneLight};
-pub use light_group::{GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow, PROJECTION_ROWS, Topology};
+pub use layer::{
+    LayerInputs, LayerItem, LayerObjectRefusal, LayerOwner, LayerPass, PRT_FIRST_CONSTANT,
+    PrtStream,
+};
+pub use light::{
+    Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants,
+    LightVolume, SceneLight,
+};
+pub use light_group::{
+    GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow,
+    PROJECTION_ROWS, ShadowPass, Topology,
+};
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
 pub use scene::{
-    AuxDepth, Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp, View, ViewCounts, ViewKey,
-    Subparts, ViewKind, WorldState,
+    AuxDepth, Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp,
+    Subparts, View, ViewCounts, ViewKey, ViewKind, WorldState,
 };
 pub use summary::summary_hash;
 

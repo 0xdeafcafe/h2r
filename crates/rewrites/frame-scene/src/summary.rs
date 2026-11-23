@@ -220,7 +220,14 @@ fn light_inputs(h: &mut Fnv, light: &Light) {
         return;
     };
     h.word(1);
-    for v in [&c.position, &c.forward, &c.up, &c.colour_a, &c.colour_b, &c.bounds.0] {
+    for v in [
+        &c.position,
+        &c.forward,
+        &c.up,
+        &c.colour_a,
+        &c.colour_b,
+        &c.bounds.0,
+    ] {
         h.floats(v);
     }
     h.float(c.intensity);
@@ -236,7 +243,14 @@ fn light_inputs(h: &mut Fnv, light: &Light) {
                 h.floats(origin);
                 h.float(*radius);
             }
-            LightVolume::Projected { origin, axis, near, far, far_extent, .. } => {
+            LightVolume::Projected {
+                origin,
+                axis,
+                near,
+                far,
+                far_extent,
+                ..
+            } => {
                 h.floats(origin);
                 h.floats(axis);
                 h.floats(&[*near, *far]);
@@ -274,8 +288,13 @@ fn light_constants(h: &mut Fnv, c: &LightConstants) {
         h.word(word);
     }
     for word in [
-        c.flags, c.mode, c.definition_flags, u32::from(c.definition_8a),
-        u32::from(c.definition_80), c.falloff_0, u32::from(c.animated_gel),
+        c.flags,
+        c.mode,
+        c.definition_flags,
+        u32::from(c.definition_8a),
+        u32::from(c.definition_80),
+        c.falloff_0,
+        u32::from(c.animated_gel),
     ] {
         h.word(word);
     }
@@ -296,6 +315,27 @@ fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
             }
             None => h.word(0),
         }
+        match &g.pass {
+            Some(p) => {
+                h.word(1);
+                for w in [
+                    p.target,
+                    p.size[0],
+                    p.size[1],
+                    p.flags,
+                    p.clip_control,
+                    p.raster,
+                    p.offset_enable,
+                    p.offset_constant,
+                    p.offset_slope,
+                    p.stencil_mode,
+                    p.shadow_function,
+                ] {
+                    h.word(w);
+                }
+            }
+            None => h.word(0),
+        }
         h.word(g.remainder);
         let entries = scene.entries_of(g);
         h.word(entries.len() as u32);
@@ -305,7 +345,13 @@ fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
             owner(h, e.owner);
             h.word(e.model);
             let st = &e.stream;
-            for w in [u32::from(st.section), u32::from(st.part), u32::from(st.vertex_class), st.first_index, st.index_count] {
+            for w in [
+                u32::from(st.section),
+                u32::from(st.part),
+                u32::from(st.vertex_class),
+                st.first_index,
+                st.index_count,
+            ] {
                 h.word(w);
             }
             h.word(st.topology as u32);
@@ -321,7 +367,12 @@ fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
                 }
             }
             let b = &e.binding;
-            for w in [b.shader, u32::from(b.selector), u32::from(b.variant), u32::from(b.implementation)] {
+            for w in [
+                b.shader,
+                u32::from(b.selector),
+                u32::from(b.variant),
+                u32::from(b.implementation),
+            ] {
                 h.word(w);
             }
         }
@@ -340,7 +391,10 @@ fn owner(h: &mut Fnv, o: crate::layer::LayerOwner) {
 }
 
 fn slice_rows<'a>(scene: &'a FrameScene, r: &std::ops::Range<u32>) -> &'a [crate::scene::Row] {
-    scene.rows.get(r.start as usize..r.end as usize).unwrap_or(&[])
+    scene
+        .rows
+        .get(r.start as usize..r.end as usize)
+        .unwrap_or(&[])
 }
 
 fn lighting(h: &mut Fnv, l: Option<&Lighting>) {
@@ -415,16 +469,31 @@ mod tests {
 
     use super::*;
     use crate::builder::{InstanceInput, SceneBuilder};
-    use crate::test_camera::camera;
     use crate::node::NodeMatrix;
     use crate::object::ItemKey;
     use crate::scene::{InstanceKey, SceneId, Stamp, ViewKey, ViewKind};
+    use crate::test_camera::camera;
 
     fn scene(frame: u64, x: f32) -> Arc<FrameScene> {
         let mut b = SceneBuilder::default();
-        b.begin(SceneId { map_epoch: frame, frame, tick: 7 });
-        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera()).unwrap();
-        let nodes = [NodeMatrix { position: [x, 0.0, 0.0], ..NodeMatrix::IDENTITY }];
+        b.begin(SceneId {
+            map_epoch: frame,
+            frame,
+            tick: 7,
+        });
+        b.open_view(
+            ViewKey {
+                kind: ViewKind::Game,
+                player: 0,
+                view: 0,
+            },
+            camera(),
+        )
+        .unwrap();
+        let nodes = [NodeMatrix {
+            position: [x, 0.0, 0.0],
+            ..NodeMatrix::IDENTITY
+        }];
         let i = b
             .push_instance(InstanceInput {
                 key: InstanceKey(9),
@@ -436,16 +505,38 @@ mod tests {
                 defaults: None,
             })
             .unwrap();
-        let key = ItemKey { record: 1, shader: 2, section: 0, part: 0, implementation: 1 };
+        let key = ItemKey {
+            record: 1,
+            shader: 2,
+            section: 0,
+            part: 0,
+            implementation: 1,
+        };
         b.push_part(i, 3, key, 3, &[[1.0, 2.0, 3.0, 4.0]]).unwrap();
-        b.seal(Stamp { published: Some(std::time::Instant::now()), ticks_run: 1 }).unwrap()
+        b.seal(Stamp {
+            published: Some(std::time::Instant::now()),
+            ticks_run: 1,
+        })
+        .unwrap()
     }
 
     #[test]
     fn the_hash_follows_the_content_not_the_process() {
-        assert_eq!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(5, 0.0)), "epoch, frame and stamp do not count");
-        assert_ne!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(1, 0.5)), "a node moved");
-        assert_ne!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(1, -0.0)), "floats by their bits");
+        assert_eq!(
+            summary_hash(&scene(1, 0.0)),
+            summary_hash(&scene(5, 0.0)),
+            "epoch, frame and stamp do not count"
+        );
+        assert_ne!(
+            summary_hash(&scene(1, 0.0)),
+            summary_hash(&scene(1, 0.5)),
+            "a node moved"
+        );
+        assert_ne!(
+            summary_hash(&scene(1, 0.0)),
+            summary_hash(&scene(1, -0.0)),
+            "floats by their bits"
+        );
     }
 
     #[test]
@@ -453,9 +544,21 @@ mod tests {
         use crate::light::{LightStep, LightTarget, SceneLight};
         let with = |stencil| {
             let mut s = (*scene(1, 0.0)).clone();
-            s.light_steps.push(LightStep { layer: 12, stencil, target: LightTarget::View, draws: true });
+            s.light_steps.push(LightStep {
+                layer: 12,
+                stencil,
+                target: LightTarget::View,
+                draws: true,
+            });
             s.lights.push(SceneLight {
-                handle: 4, definition: 5, flags: 0, definition_flags: 0, additional_casters: false, steps: 0..1, guest_selected: true, ..Default::default()
+                handle: 4,
+                definition: 5,
+                flags: 0,
+                definition_flags: 0,
+                additional_casters: false,
+                steps: 0..1,
+                guest_selected: true,
+                ..Default::default()
             });
             s.views[0].lights = 0..1;
             summary_hash(&s)
@@ -469,12 +572,26 @@ mod tests {
         use crate::layer::{LayerInputs, LayerPass};
         let with = |inputs: LayerInputs| {
             let mut s = (*scene(1, 0.0)).clone();
-            s.layer_passes.push(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0, inputs });
+            s.layer_passes.push(LayerPass {
+                layer: 5,
+                stencil_off: false,
+                texaccum: false,
+                items: 0..0,
+                remainder: 0,
+                inputs,
+            });
             s.views[0].layers = 0..1;
             summary_hash(&s)
         };
         let none = with(LayerInputs::default());
-        assert_ne!(with(LayerInputs { time: Some(1.5), ..LayerInputs::default() }), none, "the render time");
+        assert_ne!(
+            with(LayerInputs {
+                time: Some(1.5),
+                ..LayerInputs::default()
+            }),
+            none,
+            "the render time"
+        );
         let mut given = LayerInputs::default();
         given.set_scalar(12, 1.0f32.to_bits());
         assert_ne!(with(given), none, "a given scalar");
@@ -493,15 +610,41 @@ mod tests {
             record: 2,
             owner: LayerOwner::Cluster(3),
             model: u32::MAX,
-            stream: LightStream { section: 3, part: 0, vertex_class: 0, first_index: 0, index_count: 6, topology: Topology::List },
+            stream: LightStream {
+                section: 3,
+                part: 0,
+                vertex_class: 0,
+                first_index: 0,
+                index_count: 6,
+                topology: Topology::List,
+            },
             pose: LightPose::World,
-            binding: LightBinding { shader: 4, selector: 0, variant: 0, implementation: 2 },
+            binding: LightBinding {
+                shader: 4,
+                selector: 0,
+                variant: 0,
+                implementation: 2,
+            },
         };
-        let group = |light, site| LightGroup { light, layer: 10, site, projection: None, entries: 0..1, remainder: 0 };
+        let group = |light, site| LightGroup {
+            light,
+            layer: 10,
+            site,
+            projection: None,
+            pass: None,
+            entries: 0..1,
+            remainder: 0,
+        };
         let base = || {
             let mut s = (*scene(1, 0.0)).clone();
             s.lights.push(SceneLight {
-                handle: 4, definition: 5, flags: 4, definition_flags: 0, additional_casters: false, steps: 0..0, ..Default::default()
+                handle: 4,
+                definition: 5,
+                flags: 4,
+                definition_flags: 0,
+                additional_casters: false,
+                steps: 0..0,
+                ..Default::default()
             });
             s.views[0].lights = 0..1;
             s.light_entries.push(entry.clone());
@@ -517,9 +660,37 @@ mod tests {
         lit.light_entries[0].binding.implementation = 2;
         lit.light_groups[0].projection = Some([[1; 4]; crate::light_group::PROJECTION_ROWS]);
         assert_ne!(summary_hash(&lit), lit_hash, "its projection");
+        let pass_hash = summary_hash(&lit);
+        lit.light_groups[0].pass = Some(crate::light_group::ShadowPass {
+            target: 9,
+            size: [512, 512],
+            flags: 4,
+            clip_control: 1,
+            raster: 2,
+            offset_enable: 3,
+            offset_constant: 4,
+            offset_slope: 5,
+            stencil_mode: 6,
+            shadow_function: 7,
+        });
+        assert_ne!(
+            summary_hash(&lit),
+            pass_hash,
+            "its shadow target and raster state"
+        );
         let mut shadowed = base();
-        shadowed.object_shadows.push(crate::light_group::ObjectShadow { view: 0, identity: [1, 2], groups: 0..1, creature: false, weight_bits: None });
-        shadowed.shadow_groups.push(group(0, GroupSite::ObjectShadow));
+        shadowed
+            .object_shadows
+            .push(crate::light_group::ObjectShadow {
+                view: 0,
+                identity: [1, 2],
+                groups: 0..1,
+                creature: false,
+                weight_bits: None,
+            });
+        shadowed
+            .shadow_groups
+            .push(group(0, GroupSite::ObjectShadow));
         let shadow_hash = summary_hash(&shadowed);
         assert_ne!(shadow_hash, plain, "an object shadow");
         assert_ne!(shadow_hash, lit_hash, "not the light's group");
@@ -530,6 +701,10 @@ mod tests {
         assert_ne!(summary_hash(&shadowed), shadow_hash, "the creature branch");
         shadowed.object_shadows[0].creature = false;
         shadowed.object_shadows[0].weight_bits = Some(0);
-        assert_ne!(summary_hash(&shadowed), shadow_hash, "a weight of zero is not no weight");
+        assert_ne!(
+            summary_hash(&shadowed),
+            shadow_hash,
+            "a weight of zero is not no weight"
+        );
     }
 }
