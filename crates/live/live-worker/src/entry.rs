@@ -36,6 +36,15 @@ use crate::settings::Settings;
 use crate::sockets::{Sockets, pump};
 use crate::sqlstore::SqlStore;
 
+/// A panic in the Worker reaches `wrangler tail` only as "Promise will
+/// never complete"; this hook logs its message and place first.
+fn log_panics() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        std::panic::set_hook(Box::new(|info| worker::console_error!("panic: {info}")));
+    });
+}
+
 /// Every request to the hub: one log, one writer, one read model.
 #[event(fetch)]
 async fn fetch(
@@ -46,6 +55,7 @@ async fn fetch(
     // Every response the Worker returns, the hub's included, passes here:
     // a 4xx or 5xx is logged once with its error code and message, and the
     // path without its query string (live_server::refusals).
+    log_panics();
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
     // The commit this deploy was built from (deploy.sh passes it as
