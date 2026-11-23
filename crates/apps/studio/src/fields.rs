@@ -18,6 +18,7 @@
 //! labelled by type and offset and shown as their value suggests (a
 //! float, an integer or hex), with **Show as** (the dialog) to view them
 //! otherwise.
+pub mod find;
 pub mod picker;
 pub mod row;
 
@@ -75,13 +76,20 @@ impl View {
 }
 
 /// How the panel shows unnamed fields, kept in [`crate::App`] and saved
-/// with the layout (the `[Studio][Tags]` section of the editor's ini).
+/// with the layout (the `[Studio][Tags]` section of the editor's ini),
+/// with the filter row's state, which is not saved.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Settings {
     /// **Show unnamed fields**: every Unnamed fields group open.
     pub unnamed: bool,
     /// `Show as` per group and offset ([`show_as_key`]).
     pub show_as: BTreeMap<String, View>,
+    /// The filter row's **Search fields** text; empty shows the rows.
+    /// Not saved with the layout.
+    pub search: String,
+    /// The filter row's **Changed only**: the fields that differ from the
+    /// file. Not saved with the layout.
+    pub changed: bool,
 }
 
 /// The ini section the settings are saved in, after Dear ImGui's own.
@@ -272,7 +280,7 @@ impl PanelState {
 }
 
 /// Width of the label column, in points.
-const LABEL: f32 = 210.0;
+pub(crate) const LABEL: f32 = 210.0;
 /// Width of the edited dot's column, in points.
 const DOT: f32 = 12.0;
 /// Space between a widget and its unit or chip, in points.

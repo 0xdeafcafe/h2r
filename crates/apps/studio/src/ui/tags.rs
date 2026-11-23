@@ -578,15 +578,7 @@ pub fn fields(
             ui.text_disabled(line);
         }
     }
-    if coverage(doc, id).is_some() {
-        let mut settings = st.panel.settings.clone();
-        if ui.checkbox("Show unnamed fields", &mut settings.unnamed) {
-            st.panel.set_settings(settings);
-        }
-        if ui.is_item_hovered() {
-            ui.set_item_tooltip("Open every element's Unnamed fields group");
-        }
-    } else {
+    if coverage(doc, id).is_none() {
         // No layout: the bytes only.
         if t.bsp.is_some() {
             if let Some(bytes) = doc.read_source(id, t.address, t.size) {
@@ -644,18 +636,84 @@ pub fn fields(
         }
         st.focus = want;
     }
-    // Nothing is pinned over the rows: the header scrolls with them, in
-    // the window (docs/editor/tag-editing.md, "Panels on short windows").
-    fields::panel_with_marks(
-        ui,
-        doc,
-        id,
-        &path,
-        &mut st.panel,
-        actions,
-        fields::PanelRoot::Tags(scene),
-        &mut inspector::tag_field_marks(ui, issues, &mut resolution),
-    );
+    // The filter row sits above the rows: Search fields, Changed only and
+    // Show unnamed fields together.
+    let mut settings = st.panel.settings.clone();
+    ui.set_next_item_width(fields::LABEL);
+    ui.input_text("##field-search", &mut settings.search)
+        .hint(format!("{} Search fields", icon::SEARCH))
+        .build();
+    ui.same_line();
+    ui.checkbox("Changed only", &mut settings.changed);
+    if ui.is_item_hovered() {
+        ui.set_item_tooltip("The fields that differ from the loaded file, lists included");
+    }
+    ui.same_line();
+    ui.checkbox("Show unnamed fields", &mut settings.unnamed);
+    if ui.is_item_hovered() {
+        ui.set_item_tooltip("Open every element's Unnamed fields group");
+    }
+    st.panel.set_settings(settings);
+    if !st.panel.settings.search.is_empty() || st.panel.settings.changed {
+        // Hits replace the rows: a flat list of breadcrumb and value.
+        let found = fields::find::find_from(
+            doc,
+            id,
+            &mut steps.clone(),
+            st.panel.link,
+            issues,
+            &st.panel.settings.search,
+            st.panel.settings.changed,
+            st.panel.settings.unnamed,
+        );
+        if let Some(why) = found.why {
+            ui.text_colored(theme::WARN, why);
+        }
+        clipped_rows(ui, found.hits.len(), |i| {
+            let hit = &found.hits[i];
+            let _id = ui.push_id(hit.row["path"].as_str().unwrap_or_default());
+            // The element's crumbs name where the field is; the header
+            // already names the tag, so its crumb is left out.
+            let trail = hit.breadcrumbs.iter().skip(1).cloned().collect::<Vec<_>>().join(" > ");
+            let label = if trail.is_empty() {
+                hit.row["label"].as_str().unwrap_or_default().to_owned()
+            } else {
+                format!("{trail} > {}", hit.row["label"].as_str().unwrap_or_default())
+            };
+            let value = hit.row["summary"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| hit.row["value"].to_string());
+            if ui.selectable_config(format!("{label}##hit")).build() {
+                let path = hit.row["path"].as_str().unwrap_or_default().to_owned();
+                actions.push(Action::Navigate(NavAction::Go {
+                    tag: id,
+                    path: Some(path),
+                    element: None,
+                }));
+                // Going there shows the field's rows, not the hit list.
+                let mut settings = st.panel.settings.clone();
+                settings.search.clear();
+                settings.changed = false;
+                st.panel.set_settings(settings);
+            }
+            ui.same_line_with_pos(fields::LABEL);
+            ui.text_disabled(&value);
+        });
+    } else {
+        // Nothing is pinned over the rows: the header scrolls with them, in
+        // the window (docs/editor/tag-editing.md, "Panels on short windows").
+        fields::panel_with_marks(
+            ui,
+            doc,
+            id,
+            &path,
+            &mut st.panel,
+            actions,
+            fields::PanelRoot::Tags(scene),
+            &mut inspector::tag_field_marks(ui, issues, &mut resolution),
+        );
+    }
     if let Some(action) = resolution {
         app.pairing.requests.push(Request::Apply(action));
     }

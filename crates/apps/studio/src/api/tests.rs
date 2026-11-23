@@ -811,10 +811,18 @@ fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
     let changed = call(&mut api, &mut app, m::TAG_VIEW, json!({}));
     assert_eq!(changed["unnamed_hidden"], 0);
     assert_eq!(changed["rows"][3]["edited"], true);
-    assert_eq!(
-        code_of(api.call(&mut app, m::TAG_VIEW, json!({"search": "speed"}))),
-        code::INVALID_PARAMS
-    );
+    // The filter row's search drives the hit list; an empty one clears it.
+    let searched = call(&mut api, &mut app, m::TAG_VIEW, json!({"search": "speed"}));
+    assert_eq!(searched["search"], "speed");
+    let hit_paths: Vec<&str> = searched["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(hit_paths, ["speed"]);
+    let back = call(&mut api, &mut app, m::TAG_VIEW, json!({"search": ""}));
+    assert_eq!(back["rows"].as_array().unwrap().len(), 4, "the changed unnamed row is shown");
 
     // A tag nothing names shows its group open: every field is reachable.
     let scenario = format!("{:#010x}", fixture::id(1).0);
@@ -823,6 +831,143 @@ fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
     let rows = unnamed["rows"].as_array().unwrap();
     assert!(!rows.is_empty());
     assert!(rows.iter().all(|r| r["named"] == false && r["editable"] == false));
+}
+
+/// `tag.find` matches the label, the name, the description, the type
+/// words, choice and switch names and the referenced tag's row text, and
+/// `changed` lists the fields that differ from the file — gone after the
+/// edit's undo. `tag.view`'s `search` and `changed` drive the same hit
+/// list, and `field` clears it.
+#[test]
+fn tag_find_matches_words_and_changed_follows_edits() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-find");
+    let (mut app, ..) = tag_tests::app_described(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let find = |api: &mut Api, app: &mut App, query: Option<&str>, path: Option<&str>, changed: bool| {
+        let mut p = json!({ "tag": weap, "changed": changed });
+        if let Some(q) = query {
+            p["query"] = json!(q);
+        }
+        if let Some(e) = path {
+            p["path"] = json!(e);
+        }
+        call(api, app, m::TAG_FIND, p)
+    };
+    let paths = |v: &Value| -> Vec<String> {
+        v["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["path"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // The label (and the name); the description; a choice name; a switch
+    // name; the referenced tag's row text; the type words. Words may sit
+    // in different places, but every word must match somewhere.
+    assert_eq!(paths(&find(&mut api, &mut app, Some("speed"), None, false)), ["speed"]);
+    assert_eq!(
+        find(&mut api, &mut app, Some("speed"), None, false)["hits"][0]["matched"],
+        "Speed"
+    );
+    assert_eq!(paths(&find(&mut api, &mut app, Some("repeats"), None, false)), ["speed"]);
+    assert_eq!(
+        find(&mut api, &mut app, Some("repeats"), None, false)["hits"][0]["matched"],
+        "How fast the trigger repeats."
+    );
+    assert_eq!(paths(&find(&mut api, &mut app, Some("auto"), None, false)), ["mode"]);
+    assert_eq!(paths(&find(&mut api, &mut app, Some("QUIET"), None, false)), ["flags"]);
+    assert_eq!(paths(&find(&mut api, &mut app, Some("kit"), None, false)), ["parts[0].item"]);
+    assert_eq!(
+        paths(&find(&mut api, &mut app, Some("decimal number"), None, false)),
+        ["speed"]
+    );
+    assert_eq!(paths(&find(&mut api, &mut app, Some("fast trigger"), None, false)), ["speed"]);
+    assert!(paths(&find(&mut api, &mut app, Some("speed kit"), None, false)).is_empty());
+    // A hit carries its crumbs and its row.
+    let hit = &find(&mut api, &mut app, Some("kit"), None, false)["hits"][0];
+    assert_eq!(hit["breadcrumbs"], json!(["weap: objects\\test\\blaster", "Parts 0  kit"]));
+    assert_eq!(hit["label"], "Item");
+    assert_eq!(hit["type"], "Tag reference");
+    assert_eq!(hit["matched"], "itmc  kit");
+    // Searching within an element.
+    let inside = find(&mut api, &mut app, Some("value"), Some("parts[0]"), false);
+    assert_eq!(paths(&inside), ["parts[0].value"]);
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_FIND, json!({"tag": weap, "path": "parts[2]"}))),
+        code::INVALID_PARAMS
+    );
+
+    // Changed only: nothing, the edit, then nothing again after its undo.
+    assert_eq!(paths(&find(&mut api, &mut app, None, None, true)), []);
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": weap, "path": "speed", "value": 4.0}));
+    assert_eq!(paths(&find(&mut api, &mut app, None, None, true)), ["speed"]);
+    // Both filters together intersect.
+    assert_eq!(paths(&find(&mut api, &mut app, Some("speed"), None, true)), ["speed"]);
+    assert!(paths(&find(&mut api, &mut app, Some("flags"), None, true)).is_empty());
+    // The panel shows the same hit list.
+    let view = call(&mut api, &mut app, m::TAG_VIEW, json!({"changed": true}));
+    assert_eq!(view["changed"], true);
+    let rows: Vec<&str> = view["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(rows, ["speed"]);
+    // Focusing a field clears the filters: its rows are shown.
+    let focused = call(&mut api, &mut app, m::TAG_VIEW, json!({"field": "speed"}));
+    assert_eq!((focused["search"].as_str(), focused["changed"].as_bool()), (Some(""), Some(false)));
+    assert!(focused["rows"].as_array().unwrap().iter().any(|r| r["path"] == "flags"));
+    app.dispatch(Action::Undo);
+    assert_eq!(paths(&find(&mut api, &mut app, json!({"changed": true}))), []);
+}
+
+/// The search walk stops at 5,000 list items and says so: `tag.find`
+/// answers `truncated` with the sentence, and `tag.view`'s `header`
+/// carries it over the cut rows.
+#[test]
+fn the_field_search_stops_at_its_budget() {
+    use crate::app::tag_tests;
+    use scenario_edit::fixture::{META, META_FILE, put};
+    let t = Temp::new("tag-find-budget");
+    // The weapon's parts grown to 6,000 elements of invented data: the
+    // metadata region grows with them.
+    let mut src = tag_tests::map();
+    let w = META_FILE + 0x1100;
+    let size = 0x2000 + 0x20000;
+    src.resize(META_FILE + size, 0);
+    put(&mut src, 0x8, (META_FILE + size) as u32);
+    put(&mut src, 0x18, size as u32);
+    put(&mut src, w + 8, 6_000);
+    put(&mut src, w + 0xc, META + 0x2000);
+    let (mut app, ..) = tag_tests::app_with_registry(&t.0, src, tag_tests::registry());
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+
+    let found = call(
+        &mut api,
+        &mut app,
+        m::TAG_FIND,
+        json!({"tag": weap, "query": "value", "limit": 10}),
+    );
+    assert_eq!(found["hits"].as_array().unwrap().len(), 10);
+    assert_eq!(found["hits"][0]["path"], "parts[0].value");
+    assert_eq!(found["truncated"], true);
+    assert_eq!(
+        found["why"],
+        "Search stopped after 5,000 list items. Open a list and search there."
+    );
+    // The panel's rows are the walk's hits, and the header carries the
+    // budget's sentence.
+    let view = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "search": "value"}));
+    assert_eq!(view["rows"].as_array().unwrap().len(), 5_000);
+    assert_eq!(
+        view["header"].as_array().unwrap().last(),
+        Some(&json!("Search stopped after 5,000 list items. Open a list and search there."))
+    );
 }
 
 #[test]

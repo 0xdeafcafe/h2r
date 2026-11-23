@@ -77,7 +77,7 @@ What goes through actions, from both sides:
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
 | Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
-| Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
+| Show unnamed fields, Show as, focus a field, the filter row | `App::tag_fields` (`fields::Settings`), `Navigate(Go)`, `fields::find` | the Tags tool's **Show unnamed fields**, **Show as**, **Search fields** and **Changed only** | `tag.view`, `tag.find` |
 | What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
 | An element's or field's bytes; put a field back to the file's value | `tag_api::{bytes_of, reset}` | Data and bytes: **Bytes**, **Reset to file value** | `tag.bytes {tag, path?}`, `tag.reset {tag, path}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
@@ -415,30 +415,53 @@ Notes on some:
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
-- **The field panel.** `tag.view {tag?, path?, field?, unnamed?,
-  show_as?}` drives the Tags tool's panel and returns what it shows.
-  `tag` selects the tag in the Tags tool. `path`, a list element
-  (`parts[1]`, or by offset `+0x8[1]`), shows that element as the whole
-  panel, as its **Open alone** does; empty shows the root. `field`, a
-  `tag.set` path, focuses that field through the navigation (as
-  `nav.go`), which opens its lists and its Unnamed fields group; on its
-  own it is shown from the root. `unnamed` sets **Show unnamed fields**.
-  `show_as: {path, as}` sets how an unnamed value is shown (`decimal`,
-  `whole_number`, `hex`, or null for the guess from its bits), kept for
-  that field of every tag of the group and saved with the layout. With no
-  params it only reads. The result is `{tag, path, breadcrumbs, field,
-  search, changed, unnamed, rows, unnamed_hidden, header}`: `path` is
-  the element shown (by field names, empty for the root), `breadcrumbs`
-  its crumbs as drawn (`weap: objects\test\blaster`, then `Parts 1
-  scope` per list step), `rows` the element's `tag.fields` rows the
-  panel shows, `unnamed_hidden` the
-  unnamed rows in a folded group (`unnamed: true` adds them to `rows`),
-  `field` the focused path, and `header` the header's lines as drawn,
-  without icons: the kind and name, the path with the unsaved count, any
-  browsed, BSP, shared-map and read-only notes, and how a change reaches
-  the game (`Changes are saved with the map.` with no game). The datum
-  and address are not in it. The panel has no search yet, so `search` is
-  null and `changed` false, and those params are refused.
+- **The field panel.** `tag.view {tag?, path?, field?, search?,
+  changed?, unnamed?, show_as?}` drives the Tags tool's panel and
+  returns what it shows. `tag` selects a tag in the Tags tool. `path`,
+  a list element (`parts[1]`, or by offset `+0x8[1]`), shows that
+  element as the whole panel, as its **Open alone** does; empty shows
+  the root. `field`, a `tag.set` path, focuses that field through the
+  navigation (as `nav.go`), which opens its lists and its Unnamed
+  fields group; on its own it is shown from the root, and it clears the
+  filters. `search` sets the filter row's **Search fields** (empty
+  clears it) and `changed` sets **Changed only**; with either on, the
+  hit list replaces the rows, as `tag.find` describes. `unnamed` sets
+  **Show unnamed fields**. `show_as: {path, as}` sets how an unnamed
+  value is shown (`decimal`, `whole_number`, `hex`, or null for the
+  guess from its bits), kept for that field of every tag of the group
+  and saved with the layout. With no params it only reads. The result
+  is `{tag, path, breadcrumbs, field, search, changed, unnamed, rows,
+  unnamed_hidden, header}`: `path` is the element shown (by field
+  names, empty for the root), `breadcrumbs` its crumbs as drawn
+  (`weap: objects\test\blaster`, then `Parts 1 scope` per list step),
+  `rows` the element's `tag.fields` rows the panel shows — with a
+  search or **Changed only** on, the hit list's rows, each a
+  `tag.fields` row of the field it found — `unnamed_hidden` the
+  unnamed rows in a folded group (`unnamed: true` adds them to `rows`;
+  0 with a filter on), `field` the focused path, `search` the panel's
+  search text (empty when none) and `changed` its **Changed only**, and
+  `header` the header's lines as drawn, without icons: the kind and
+  name, the path with the unsaved count, any browsed, BSP, shared-map
+  and read-only notes, how a change reaches the game (`Changes are
+  saved with the map.` with no game), and the search budget's sentence
+  last when the walk stopped. The datum and address are not in it.
+- **Field search.** `tag.find {tag, query?, path?, changed?, unnamed?,
+  limit?}` returns the fields the panel's filter row finds
+  (`fields::find`): `{hits: [{path, breadcrumbs, label, type, value,
+  matched}], truncated, why}`. `query`'s words (case-insensitive) match
+  the label, the name, the description, the type words, the choice and
+  switch names, and the referenced tag's row text; every word must
+  match somewhere, and `matched` names the first candidate that alone
+  holds them all (the label for an empty query and in **Changed
+  only**). The walk covers every element of every list from `path` (a
+  list element to search within; the root by default), to 12 lists
+  below it and 5,000 list items, in the panel's order; reaching the
+  budget sets `truncated` with the sentence in `why`. `changed` keeps
+  only the fields that differ from the loaded file, lists included
+  (with `query`, both must hold). `unnamed` leaves the unnamed rows
+  out; `limit` cuts the hits and sets `truncated`, with `why` only for
+  the budget. A `path` that names no element is refused with
+  `INVALID_PARAMS`.
 - **List elements.** `tag.elements {tag, path, filter?, offset?, limit?}`
   returns a list's elements as the panel's rows show them (`1  scope`):
   `{count, capacity, elements: [{index, title, path}], truncated}`. The
