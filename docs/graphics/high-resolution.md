@@ -74,7 +74,9 @@ viewport, or it reaches one edge and its whole bitmap at its drawn scale is
 at least as long as the viewport. The second case covers the main menu's
 scrolling strips: 1024-texel bitmaps drawn as two pieces that meet where
 the texture wraps. A panel or tab at the edge has a shorter bitmap and keeps
-the fit. Background art keeps the full viewport, as on a widescreen Xbox,
+the fit. Only the UI rectangle site gives the bitmap's texture coordinates:
+an emblem draws a unit quad through the shader quad site, placed by its
+transform, so the shader and screen quad sites use the first case alone. Background art keeps the full viewport, as on a widescreen Xbox,
 so the menu covers the display. The choice is made per quad, before its
 Begin, at the shader quad (`HUD_QUAD_READY`), screen quad
 (`UI_SCREEN_QUAD_READY`) and UI rectangle sites. The UI rectangle

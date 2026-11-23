@@ -269,8 +269,12 @@ const FILL_EDGE: f32 = 1.0;
 /// Four per-corner values: window pixels or normalised texture coordinates.
 type Corners = [[f32; 2]; 4];
 
-/// One menu quad at its draw site: the window-pixel corners and, where the
-/// site has them, the normalised texture coordinates at the same corners.
+/// One menu quad at its draw site: the window-pixel corners and, at the UI
+/// rectangle site, the normalised texture coordinates at the same corners.
+/// The shader and screen quad sites give none: an emblem draws a unit
+/// quad (0..1) through the shader site, placed by its transform, and its
+/// texture coordinates there span about 2e-6, which the bitmap-length test
+/// would take for art far longer than the view (Choose Profile, 2560x1080).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Quad {
     xy: Corners,
@@ -311,23 +315,13 @@ fn is_background(rect: PixelRect, fit: UiFit, quad: &Quad) -> bool {
 }
 
 /// Four vertices from `first`, `stride` bytes apart: the corner at `at`
-/// bytes into each, divided by the word at `w` bytes when given.
-fn read_corners(
-    mem: &impl GuestMemory,
-    first: u32,
-    stride: u32,
-    at: u32,
-    w: Option<u32>,
-) -> Option<Corners> {
+/// bytes into each.
+fn read_corners(mem: &impl GuestMemory, first: u32, stride: u32, at: u32) -> Option<Corners> {
     let mut out = [[0.0; 2]; 4];
     for (i, corner) in out.iter_mut().enumerate() {
         let vertex = first.checked_add(stride.checked_mul(i as u32)?)?;
         let f = |offset: u32| mem.f32(vertex.checked_add(offset)?).ok();
-        let q = match w {
-            Some(w) => f(w).filter(|q| *q > 0.0)?,
-            None => 1.0,
-        };
-        let (x, y) = (f(at)? / q, f(at.checked_add(4)?)? / q);
+        let (x, y) = (f(at)?, f(at.checked_add(4)?)?);
         if !(x.is_finite() && y.is_finite()) {
             return None;
         }
@@ -343,8 +337,8 @@ fn read_corners(
 fn shader_quad(mem: &impl GuestMemory, ebp: u32) -> Option<Quad> {
     let first = ebp.checked_sub(0x70)?;
     Some(Quad {
-        xy: read_corners(mem, first, 0x1c, 0x10, None)?,
-        uv: read_corners(mem, first, 0x1c, 0, Some(0xc)),
+        xy: read_corners(mem, first, 0x1c, 0x10)?,
+        uv: None,
     })
 }
 
@@ -355,8 +349,8 @@ fn shader_quad(mem: &impl GuestMemory, ebp: u32) -> Option<Quad> {
 fn screen_quad(mem: &impl GuestMemory, esp: u32) -> Option<Quad> {
     let first = mem.u32(esp.checked_add(0x18)?).ok()?;
     Some(Quad {
-        xy: read_corners(mem, first, 0x14, 8, None)?,
-        uv: read_corners(mem, first, 0x14, 0, None),
+        xy: read_corners(mem, first, 0x14, 8)?,
+        uv: None,
     })
 }
 
@@ -374,8 +368,8 @@ fn rect_quad(mem: &impl GuestMemory, esp: u32) -> Option<Quad> {
     }
     let first = word(32).filter(|&p| p != 0)?;
     Some(Quad {
-        xy: read_corners(mem, first, 20, 0, None)?,
-        uv: read_corners(mem, first, 20, 8, None),
+        xy: read_corners(mem, first, 20, 0)?,
+        uv: read_corners(mem, first, 20, 8),
     })
 }
 
@@ -1014,6 +1008,8 @@ mod tests {
         assert_eq!(layout.place_quad(textured(0.0, 100.0, 300.0, 300.0, 0.5, 0.5)), None);
         // Without texture coordinates one edge is not enough.
         assert_eq!(layout.place_quad(quad(0.0, 172.0, wrap, 180.0)), None);
+        // An emblem's unit quad at the shader site keeps the fit.
+        assert_eq!(layout.place_quad(quad(0.0, 0.0, 1.0, 1.0)), None);
         assert_eq!(layout.current(), widget);
     }
 
@@ -1034,7 +1030,7 @@ mod tests {
                 .put_f32(at + 0x10, corners[i][0])
                 .put_f32(at + 0x14, corners[i][1]);
         }
-        assert_eq!(shader_quad(&mem, ebp), Some(Quad { xy: corners, uv: Some(uv) }));
+        assert_eq!(shader_quad(&mem, ebp), Some(Quad { xy: corners, uv: None }));
 
         // Screen quad: (u, v), the position, then the colour.
         let (esp, first) = (0x3000, 0x4000);
@@ -1047,7 +1043,7 @@ mod tests {
                 .put_f32(at + 12, corners[i][1])
                 .put_u32(at + 16, 0xffff_ffff);
         }
-        assert_eq!(screen_quad(&mem, esp), Some(Quad { xy: corners, uv: Some(uv) }));
+        assert_eq!(screen_quad(&mem, esp), Some(Quad { xy: corners, uv: None }));
         mem.put_f32(first + 0x14 + 8, f32::NAN);
         assert_eq!(screen_quad(&mem, esp), None);
 
