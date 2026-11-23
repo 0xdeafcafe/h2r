@@ -100,8 +100,17 @@ fn typed_triangle(backend: &mut GfxBackend, x: f32, colour: [f32; 4]) -> ReplayO
     let cache = Arc::new(Cache::default());
     let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
     let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
-    let warm = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
-    assert!(super::record(backend, warm, &draw, [None; 4], &cache), "the typed pipeline compiles");
+    let warm = ExternalSurfaces {
+        color,
+        depth,
+        sampled: vec![],
+        slots: vec![],
+        slot_sizes: vec![],
+    };
+    assert!(
+        super::record(backend, warm, &draw, [None; 4], &cache),
+        "the typed pipeline compiles"
+    );
     backend.flush().unwrap();
     let pass = IndexedPass::new(&draw, cache, 1, None).unwrap();
     ReplayOp::Stage(SceneStage {
@@ -115,7 +124,8 @@ fn typed_triangle(backend: &mut GfxBackend, x: f32, colour: [f32; 4]) -> ReplayO
         request: ExternalPassRequest {
             rect: (0, 0, SIZE, SIZE),
             surface_size: (SIZE, SIZE),
-            display_projection_factor: 1.0, z_scale: 16_777_215.0,
+            display_projection_factor: 1.0,
+            z_scale: 16_777_215.0,
         },
         plan: ExternalPlan {
             stage: timeline::native::Stage::World,
@@ -360,12 +370,28 @@ fn object_shadow_marks_leave_the_retail_draw_and_its_passes_unchanged() {
         op(&mut frame, Slot::Opaque, bind());
         op(&mut frame, Slot::Opaque, clear());
         mark(&mut frame, Some(0));
-        op(&mut frame, Slot::Opaque, guest_triangle(0.5, [0.0, 0.0, 1.0, 1.0], None));
-        op(&mut frame, Slot::Opaque, typed_triangle(backend, 2.0, [1.0, 0.0, 0.0, 1.0]));
+        op(
+            &mut frame,
+            Slot::Opaque,
+            guest_triangle(0.5, [0.0, 0.0, 1.0, 1.0], None),
+        );
+        op(
+            &mut frame,
+            Slot::Opaque,
+            typed_triangle(backend, 2.0, [1.0, 0.0, 0.0, 1.0]),
+        );
         mark(&mut frame, Some(1));
-        op(&mut frame, Slot::Opaque, guest_triangle(-0.5, [0.0, 1.0, 0.0, 1.0], None));
+        op(
+            &mut frame,
+            Slot::Opaque,
+            guest_triangle(-0.5, [0.0, 1.0, 0.0, 1.0], None),
+        );
         mark(&mut frame, None);
-        op(&mut frame, Slot::Opaque, guest_triangle(1.5, [1.0, 1.0, 0.0, 1.0], None));
+        op(
+            &mut frame,
+            Slot::Opaque,
+            guest_triangle(1.5, [1.0, 1.0, 0.0, 1.0], None),
+        );
         frame
     };
     let plain = build(&mut backend, false);
@@ -373,19 +399,49 @@ fn object_shadow_marks_leave_the_retail_draw_and_its_passes_unchanged() {
     assert_eq!(marked.ops.len(), plain.ops.len() + 3);
 
     let mut plain_rows = Observe::default();
-    let without =
-        draw_private_with_observer(&mut backend, &scene, &plain, 1, Lighting::Retail, Some(&mut plain_rows)).unwrap();
+    let without = draw_private_with_observer(
+        &mut backend,
+        &scene,
+        &plain,
+        1,
+        Lighting::Retail,
+        Some(&mut plain_rows),
+    )
+    .unwrap();
     let mut marked_rows = Observe::default();
-    let with =
-        draw_private_with_observer(&mut backend, &scene, &marked, 1, Lighting::Retail, Some(&mut marked_rows)).unwrap();
+    let with = draw_private_with_observer(
+        &mut backend,
+        &scene,
+        &marked,
+        1,
+        Lighting::Retail,
+        Some(&mut marked_rows),
+    )
+    .unwrap();
     assert!(without.report.draws > 0, "the frame drew");
     assert_eq!(with.report, without.report);
-    assert_eq!((with.id, with.scene_hash, with.size), (without.id, without.scene_hash, without.size));
+    assert_eq!(
+        (with.id, with.scene_hash, with.size),
+        (without.id, without.scene_hash, without.size)
+    );
     assert_eq!(with.rgba, without.rgba);
-    let attachments = |o: &Observe| o.rows.iter().map(|r| (r.colour, r.depth)).collect::<Vec<_>>();
+    let attachments = |o: &Observe| {
+        o.rows
+            .iter()
+            .map(|r| (r.colour, r.depth))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(attachments(&marked_rows), attachments(&plain_rows));
     let draws = |o: &Observe, f: &ReplayFrame| {
-        o.rows.iter().map(|r| f.ops[r.ops.clone()].iter().filter(|(_, op)| !op.is_marker()).count()).collect::<Vec<_>>()
+        o.rows
+            .iter()
+            .map(|r| {
+                f.ops[r.ops.clone()]
+                    .iter()
+                    .filter(|(_, op)| !op.is_marker())
+                    .count()
+            })
+            .collect::<Vec<_>>()
     };
     assert_eq!(draws(&marked_rows, &marked), draws(&plain_rows, &plain));
 }
@@ -472,10 +528,13 @@ fn sun_scene_on(epoch: u64, definition: u32, on: frame_scene::LayerOwner) -> Arc
         layer: 11,
         site: GroupSite::ObjectShadow,
         projection: Some(projection),
+        pass: None,
         entries: 0..0,
         remainder: 0,
     };
-    builder.push_shadow_group(group, &[(receiver, Vec::new())]).unwrap();
+    builder
+        .push_shadow_group(group, &[(receiver, Vec::new())])
+        .unwrap();
     builder.set_shadow_weight(0.75).unwrap();
     builder.seal(Stamp::default()).unwrap()
 }
@@ -531,11 +590,19 @@ fn e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged() {
         let mut frame = replay();
         op(&mut frame, Slot::Opaque, bind());
         op(&mut frame, Slot::Opaque, clear());
-        op(&mut frame, Slot::Opaque, guest_triangle(0.0, [0.0, 0.0, 1.0, 1.0], None));
+        op(
+            &mut frame,
+            Slot::Opaque,
+            guest_triangle(0.0, [0.0, 0.0, 1.0, 1.0], None),
+        );
         if marks {
             op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(Some(0)));
         }
-        op(&mut frame, Slot::Opaque, guest_triangle(16.0, [1.0, 0.0, 1.0, 1.0], None));
+        op(
+            &mut frame,
+            Slot::Opaque,
+            guest_triangle(16.0, [1.0, 0.0, 1.0, 1.0], None),
+        );
         if marks {
             op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(None));
         }
@@ -545,20 +612,35 @@ fn e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged() {
 
     let without = draw_private(&mut backend, &scene, &plain, 1, Lighting::Retail).unwrap();
     let with = draw_private(&mut backend, &scene, &marked, 1, Lighting::Retail).unwrap();
-    assert_eq!(rgba(&with, 19, 5), [255, 0, 255, 255], "retail draws the mask");
+    assert_eq!(
+        rgba(&with, 19, 5),
+        [255, 0, 255, 255],
+        "retail draws the mask"
+    );
     assert_eq!(with.rgba, without.rgba);
     assert_eq!(with.report, without.report);
 
     let e3 = draw_private(&mut backend, &scene, &marked, 1, Lighting::E3).unwrap();
     let report = e3.report.e3.unwrap();
     assert_eq!(report.sun_tiles, 1);
-    assert_eq!(report.sun_tile_draws.draws, 1, "a fresh atlas draws the tile");
+    assert_eq!(
+        report.sun_tile_draws.draws, 1,
+        "a fresh atlas draws the tile"
+    );
     assert!(report.sun.draws >= 1, "the caster receives its own tile");
     assert_eq!(rgba(&e3, 19, 5), [0, 0, 0, 255], "the mask is not drawn");
-    assert_eq!(rgba(&e3, 3, 5), [0, 0, 255, 255], "work outside the marks is");
+    assert_eq!(
+        rgba(&e3, 3, 5),
+        [0, 0, 255, 255],
+        "work outside the marks is"
+    );
     let again = draw_private(&mut backend, &scene, &marked, 1, Lighting::E3).unwrap();
     let report = again.report.e3.unwrap();
-    assert_eq!((report.sun_tiles, report.sun_tile_draws.draws), (1, 0), "the tile is kept");
+    assert_eq!(
+        (report.sun_tiles, report.sun_tile_draws.draws),
+        (1, 0),
+        "the tile is kept"
+    );
 
     // No models for the map: every shadow keeps its mask under E3 too.
     set_models(EPOCH, None);
@@ -610,26 +692,49 @@ fn e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world() {
     let mut frame = replay();
     op(&mut frame, Slot::Opaque, bind());
     op(&mut frame, Slot::Opaque, clear());
-    op(&mut frame, Slot::Opaque, guest_triangle(0.0, [0.0, 0.0, 1.0, 1.0], None));
+    op(
+        &mut frame,
+        Slot::Opaque,
+        guest_triangle(0.0, [0.0, 0.0, 1.0, 1.0], None),
+    );
     op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(Some(0)));
-    op(&mut frame, Slot::Opaque, guest_triangle(16.0, [1.0, 0.0, 1.0, 1.0], None));
+    op(
+        &mut frame,
+        Slot::Opaque,
+        guest_triangle(16.0, [1.0, 0.0, 1.0, 1.0], None),
+    );
     op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(None));
 
     let unloaded = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
-    assert_eq!(rgba(&unloaded, 19, 5), [255, 0, 255, 255], "no world: the mask");
+    assert_eq!(
+        rgba(&unloaded, 19, 5),
+        [255, 0, 255, 255],
+        "no world: the mask"
+    );
     assert_eq!(unloaded.report.e3.unwrap().sun_tiles, 0);
 
     set_world(EPOCH, Some(Arc::new(world)));
     let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
     let report = e3.report.e3.unwrap();
     assert_eq!(report.sun_tiles, 1);
-    assert!(report.sun.draws >= 1, "the cluster's ground receives the tile");
+    assert!(
+        report.sun.draws >= 1,
+        "the cluster's ground receives the tile"
+    );
     assert_eq!(rgba(&e3, 19, 5), [0, 0, 0, 255], "the mask is not drawn");
-    assert_eq!(rgba(&e3, 3, 5), [0, 0, 255, 255], "work outside the marks is");
+    assert_eq!(
+        rgba(&e3, 3, 5),
+        [0, 0, 255, 255],
+        "work outside the marks is"
+    );
 
     current.store(false, Ordering::Relaxed);
     let left = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
-    assert_eq!(rgba(&left, 19, 5), [255, 0, 255, 255], "another BSP: the mask");
+    assert_eq!(
+        rgba(&left, 19, 5),
+        [255, 0, 255, 255],
+        "another BSP: the mask"
+    );
     assert_eq!(left.report.e3.unwrap().sun_tiles, 0);
     set_world(EPOCH, None);
     set_models(EPOCH, None);
@@ -723,11 +828,16 @@ fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     let mut display = GfxBackend::new(ctx);
     let colour = display.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
     let depth = display.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
-    display.clear(colour, Some(depth), Clear::all([0.0, 0.0, 1.0, 1.0])).unwrap();
+    display
+        .clear(colour, Some(depth), Clear::all([0.0, 0.0, 1.0, 1.0]))
+        .unwrap();
     // Actual draws leave colour, W and stencil values on the live attachments.
     let mut earlier = triangle(2.0, [1.0, 0.0, 0.0, 1.0], 7, false);
     earlier.state.render.depth_func = CompareFunc::Always;
-    assert_eq!(display.draw(colour, Some(depth), &earlier, [None; 4]), Ok(DrawOutcome::Drawn));
+    assert_eq!(
+        display.draw(colour, Some(depth), &earlier, [None; 4]),
+        Ok(DrawOutcome::Drawn)
+    );
 
     // The sealed interval adds green once, only where both tests succeed.
     // Replaying over the *result* of this draw would add green twice.
@@ -743,17 +853,35 @@ fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     r.dst_blend = BlendFactor::One;
     let mut frame = replay();
     op(&mut frame, Slot::Opaque, bind());
-    op(&mut frame, Slot::Opaque, ReplayOp::Draw {
-        draw: Arc::new(add), textures: [None, None, None, None], camera: CameraUse::Unknown,
-    });
+    op(
+        &mut frame,
+        Slot::Opaque,
+        ReplayOp::Draw {
+            draw: Arc::new(add),
+            textures: [None, None, None, None],
+            camera: CameraUse::Unknown,
+        },
+    );
     let targets = HashMap::from([(MAIN, colour), (Z, depth)]);
     let scene = sealed();
     assert!(frame.initial.is_empty());
-    draw_display_on(&mut display, &scene, &frame, Lighting::Retail, 0, None, None, &targets).unwrap();
+    draw_display_on(
+        &mut display,
+        &scene,
+        &frame,
+        Lighting::Retail,
+        0,
+        None,
+        None,
+        &targets,
+    )
+    .unwrap();
     assert_eq!(display.last_presented(), Some(colour));
     assert_eq!(display.readbacks(), 0);
 
-    display.clear(colour, Some(depth), Clear::all([1.0; 4])).unwrap();
+    display
+        .clear(colour, Some(depth), Clear::all([1.0; 4]))
+        .unwrap();
     display.flush().unwrap();
     display.destroy_surface(colour).unwrap();
     display.destroy_surface(depth).unwrap();
@@ -762,7 +890,10 @@ fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     assert_eq!(rgba(&retail, 0, 0), [0, 0, 255, 255]);
     let blended = rgba(&retail, 4, 4);
     assert_eq!([blended[0], blended[2], blended[3]], [255, 0, 255]);
-    assert!((127..=128).contains(&blended[1]), "green must have been added once");
+    assert!(
+        (127..=128).contains(&blended[1]),
+        "green must have been added once"
+    );
     assert_eq!(retail.rgba, e3.rgba);
     assert_eq!(retail.scene_hash, e3.scene_hash);
     assert!(retail.report.draws > 0 && e3.report.draws > 0);

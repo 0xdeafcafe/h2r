@@ -201,6 +201,9 @@ pub(crate) struct State {
     /// The clanker hoppers the server served last (docs/game/bots.md §8),
     /// for the Clankermatch row's playlists, the search and the lobby fill.
     clankers: crate::clankermatch::Marks,
+    /// The co-op relay asked of the worker and not answered yet: the
+    /// session it is for ([`State::coop_relay`]).
+    relay_ask: Option<(String, Pending)>,
 }
 
 /// The bot accounts leased to this console ([`State::roster_bots`]).
@@ -248,6 +251,7 @@ impl State {
             read_keys: None,
             leased: Leased::default(),
             clankers: Default::default(),
+            relay_ask: None,
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -823,6 +827,43 @@ impl State {
         self.sessions
             .set_coop(campaign, skulls, self.service.as_ref(), session.as_ref());
         let _ = self.set_activity(activity.as_deref());
+    }
+    /// Mark (Some) or unmark (None) this console's open advertisements as
+    /// a Forge-mode lobby's (`flags: "forge"`): a shared Forge session's
+    /// machines may use the co-op relay
+    /// ([`Sessions::set_forge`], docs/game/forge-design.md).
+    pub fn set_forge(&mut self, on: bool) {
+        let session = self.session();
+        self.sessions
+            .set_forge(on, self.service.as_ref(), session.as_ref());
+    }
+    /// Takes this console's unanswered ask for `session`'s co-op relay, if
+    /// it is the session asked ([`State::ask_relay`]). The caller waits on
+    /// the returned [`Pending`] with no state lock held.
+    pub(crate) fn take_relay_ask(&mut self, session: &str) -> Option<Pending> {
+        self.relay_ask
+            .take_if(|(asked, _)| asked == session)
+            .map(|(_, pending)| pending)
+    }
+
+    /// Asks the Live worker for `session`'s co-op relay (its URL and a
+    /// `sessions.relay` token, minted on the worker; nothing is sent to
+    /// the server), unless one is asked for already.
+    pub(crate) fn ask_relay(&mut self, session: &str) {
+        if self.relay_ask.as_ref().is_some_and(|(asked, _)| asked == session) {
+            return;
+        }
+        let connection = self.session();
+        let asked = self.service.as_ref().and_then(|service| {
+            service
+                .coop_relay(connection.as_ref()?, session.to_owned())
+                .ok()
+        });
+        if let Some(pending) = asked {
+            self.relay_ask = Some((session.to_owned(), pending));
+        } else {
+            self.relay_ask = None;
+        }
     }
     pub fn sync_squad_slots(&mut self, slots: crate::SessionSlots) {
         let connection = self.session();

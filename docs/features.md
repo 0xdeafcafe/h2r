@@ -18,7 +18,7 @@ works, and its page says which part. **Design**: written up, not built.
 | --- | --- | --- | --- |
 | Recompiler | XBE analysis (about 18,700 functions), x86 to IR to C11, clang build with source and object caches | Built | [LIFTER](lifter/LIFTER.md), [cache](lifter/BUILD-CACHE.md) |
 | | Native x87 and SSE fast paths, inline guest RAM, direct calls (all on by default) | Built | [x87](lifter/x87-native.md), [memory](perf/guest-memory.md) |
-| | Cranelift fast start with an optimised clang build in the background, opt-in (`H2_TIER=bridge`) | Built | [fast tier](lifter/cranelift-tier.md), [player](runtime/app.md) |
+| | Cranelift fast start with an optimised clang build in the background, opt-in (`H2_TIER=bridge`); inline fast memory, direct calls and native floating point open | Partly built | [fast tier](lifter/cranelift-tier.md), [player](runtime/app.md) |
 | Runtime | Xbox kernel, XAPI, saves and storage replaced in Rust, on a deterministic logical clock with checkpoints | Built | [BOOT](runtime/BOOT.md), [storage](runtime/storage.md) |
 | | Direct3D 8 on wgpu (push buffer, NV2A shaders to WGSL), render thread, merged passes | Built | [d3d](graphics/d3d.md), [graphics](graphics/graphics.md) |
 | | DirectSound mixer, native WMA, Bink playback with optional offline movie conversion | Built | [audio](audio/audio.md), [movies](audio/movies.md) |
@@ -37,22 +37,22 @@ works, and its page says which part. **Design**: written up, not built.
 | | 60 and 120 fps over the 30 Hz tick: the setting, determinism harness, interpolated replay and reprojection | Partly built | [high-framerate](game/high-framerate.md) |
 | Game | Expanded settings screens: Video, Controls, FOV, voice | Built | [settings](game/settings-menu.md) |
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](game/skulls.md) |
-| | 14 community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](game/community-gametypes.md) |
+| | 18 game variants as built-ins, each a rules script: the community classics (Zombies, SWAT and more), a Superbounce practice mode and the scripted Siege, Gun Game, Race and VIP | Built | [variants](game/community-gametypes.md) |
 | | Aim assist strength setting | Built | [aim assist](game/aim-assist.md) |
 | | A Pogo Stick as Superbounce's secondary weapon, in three looks: ridden in the air with a trick for each bounce of a chain, behind a chase camera | Partly built | [pogo stick](game/pogo-stick.md) |
 | | Multiplayer bots (Clankers) join hosted matches as phantom peers, and controller ports stay for people; their nav meshes build in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](game/bots.md) |
 | | Multiplayer Map Pack installed from your own disc (`h2 import-mappack`, or `mappack.iso` beside the disc) | Partly built | [map pack](game/map-pack.md) |
-| | New, edited and patched maps as packages | Built | [maps](game/maps.md) |
+| | New, edited and patched maps as packages, shared over Live, with a Mods screen; `map-variant` content packs and Serenity deltas open | Partly built | [maps](game/maps.md) |
 | | More than one campaign: picker and per-campaign progress | Built | [campaigns](halo1/campaign-picker.md) |
 | | Halo 1 health model and meter | Built | [health](halo1/health.md) |
 | | Theater: `.h2film` recording, in-game library, director cameras and seek from compatible keyframes | Partly built | [theater](game/theater.md), [film format](game/film-format.md) |
-| | Forge document and edit log, plus local validation and package builds with `h2 forge`; in-game tools planned | Partly built | [forge](game/forge.md), [design](game/forge-design.md) |
+| | Forge: the monitor's in-game editing (pick up, manipulate, undo and redo, the object menu, a Properties page) over a document and edit log with `h2 forge` package builds; movement snap, Coordinates and Live sharing are design | Partly built | [editing](game/forge-editing.md), [forge](game/forge.md), [design](game/forge-design.md) |
 | Halo 1 | Halo 1 campaign levels convert offline into Halo 2 maps for the Halo 2 engine, with Halo 1 assets and a Halo 2 setting | Partly built | [campaign](halo1/campaign.md) |
 | | The 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Built | [h1 multiplayer](halo1/multiplayer.md) |
 | | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](halo1/map-format.md), [models](halo1/models.md) |
 | Input | Remappable bindings, input timelines, typing into the game's keyboard | Built | [input](input/input.md) |
 | | Button icons that follow the pad (Xbox, PlayStation, keyboard); extra button layouts | Built | [icons](input/button-icons.md), [layouts](input/controller-layouts.md) |
-| | DualSense: speaker and mute button | Built | [PlayStation](audio/playstation-audio.md) |
+| | DualSense: speaker routing and the mute button; the microphone is a design | Partly built | [PlayStation](audio/playstation-audio.md) |
 | | Steam Controller | Built | [Steam](input/steam-controller.md) |
 | Live | Service: accounts, friends, teams, invites, stats, title files, cloud saves, custom maps, a relay | Built | [live](live/live.md), [API](live/live-api.md) |
 | | In the game: sign-in, matchmaking, custom games browser with saved filters | Built | [matchmaking](live/live-matchmaking.md), [custom games](live/live-custom-games.md) |

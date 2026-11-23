@@ -227,6 +227,8 @@ writes a mark with the outcome after flushing the call batch. Every sixth
 mark is eligible for a whole-machine snapshot if that device capture
 succeeds. The 30 s cadence assumes every interval has an unblocked
 boundary. A dedicated host records the marks and omits the sidecar.
+Captures belong to games: outside one, no boundary is looked for at all
+(`record::Recording::in_game`).
 
 Captures take place between two slices, at a boundary the recording
 already has. The recorder never asks for an early slice end

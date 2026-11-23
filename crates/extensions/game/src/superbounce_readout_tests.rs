@@ -190,25 +190,20 @@ fn a_primed_fall_shows_its_drop_and_nearest_edge() {
     s.airborne = true;
     s.phase = Some(phase(3.45));
     let a = air(&s).unwrap();
-    assert!(a.in_window);
     assert!(close(a.drop, 3.45 * M) && close(a.edge.unwrap(), 0.02 * M));
     let values = rd::values(&view(&s, Options::DEFAULT, Some(Miss::NotPrimed)));
     assert_eq!(values.get(INFO).unwrap().text, "Drop 10.5 m  Edge 0.06 m");
-    // Outside the window the same numbers are not lit green.
+    // Outside the window the same numbers, the bar short of full.
     s.phase = Some(phase(3.1));
-    let a = air(&s).unwrap();
-    assert!(
-        !a.in_window
-            && close(
-                fall(&State {
-                    landing: Some(predicted([9.5, 0.0, 2.0], 2.7)),
-                    ..s.clone()
-                })
-                .unwrap()
-                .window,
-                0.75
-            )
-    );
+    assert!(close(
+        fall(&State {
+            landing: Some(predicted([9.5, 0.0, 2.0], 2.7)),
+            ..s.clone()
+        })
+        .unwrap()
+        .window,
+        0.75
+    ));
     // On the ground, or with the alignment pieces off, there is no air row.
     s.airborne = false;
     assert_eq!(air(&s), None);

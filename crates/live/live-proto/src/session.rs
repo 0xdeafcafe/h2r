@@ -299,6 +299,10 @@ fn custom() -> String {
 /// The session flag of a co-op campaign session (docs/live/live-coop.md,
 /// "Co-op over Live").
 pub const COOP: &str = "coop";
+/// The session flag of a Forge-mode lobby (docs/game/forge-design.md):
+/// a custom game whose shared Forge session's machines may use the co-op
+/// relay.
+pub const FORGE: &str = "forge";
 /// The campaign difficulties, by index.
 pub const DIFFICULTIES: [&str; 4] = ["easy", "normal", "heroic", "legendary"];
 /// What a co-op campaign session plays: the level and the difficulty the
@@ -435,11 +439,17 @@ impl NewSession {
     pub fn is_coop(&self) -> bool {
         self.flags == COOP
     }
+    pub fn is_forge(&self) -> bool {
+        self.flags == FORGE
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.port == 0
             || self.host_address.len() != 36
             || !self.slots.validate()
-            || !matches!(self.flags.as_str(), "custom" | "hopper" | "ranked" | "coop")
+            || !matches!(
+                self.flags.as_str(),
+                "custom" | "hopper" | "ranked" | "coop" | "forge"
+            )
         {
             return Err("invalid session address, slots or flags".into());
         }
@@ -511,7 +521,9 @@ impl Session {
         if self.state != "open" {
             return Err("This game is no longer available.".into());
         }
-        if !matches!(ad.flags.as_str(), "custom" | "coop") || self.matchmaking.is_some() {
+        if !matches!(ad.flags.as_str(), "custom" | "coop" | "forge")
+            || self.matchmaking.is_some()
+        {
             return Err("Join this game through matchmaking.".into());
         }
         let host = if self.host_xuid == Xuid(0) && self.host_gamertag.is_empty()

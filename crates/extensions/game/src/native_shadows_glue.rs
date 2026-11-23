@@ -9,11 +9,11 @@ use crate::{
     native_shadows_scope::{Call as Scope, Gate, State},
 };
 use engine::memory::GuestMemory;
-use render_bridge::native_shadows::{self, Entry, Host, Layer};
 use native_render::{
     shadow_gpu::MapKind,
     shadows::{self, Site},
 };
+use render_bridge::native_shadows::{self, Entry, Host, Layer};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -65,7 +65,9 @@ pub fn configure_single(backend: &mut d3d::GfxBackend) {
     }
 }
 
-pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevice<B>) -> Option<Arc<dyn d3d::DrawAdmission>> {
+pub fn install<B: d3d::backend::Backend + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+) -> Option<Arc<dyn d3d::DrawAdmission>> {
     let gpu = SINGLE_GPU.lock().unwrap_or_else(|e| e.into_inner()).take();
     if enabled() && gpu.is_some() {
         let gate = Arc::new(Gate {
@@ -98,7 +100,7 @@ fn format(mem: &DeviceMemory<'_>, header: u32) -> Option<gfx::D3DFormat> {
 
 /// 0x00014bc0 calls 0x0001dcf0 for the selected level. Its paired
 /// surface for target 9 is the colour alias, and target 10 has no depth.
-fn expected_targets(mem: &dyn GuestMemory, target: u32) -> Option<[u32; 2]> {
+pub(crate) fn expected_targets(mem: &dyn GuestMemory, target: u32) -> Option<[u32; 2]> {
     use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};
     let base = TARGETS.checked_add(TARGET_STRIDE.checked_mul(target)?)?;
     if mem.u32(base + 0x88).ok()? == 0
@@ -263,6 +265,16 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
             }
         }
     }
+
+    fn draw_alone(
+        &self,
+        mem: &mut dyn GuestMemory,
+        view: u32,
+        group: &render_bridge::native_lights::SceneGroup,
+    ) -> Result<(), &'static str> {
+        render_bridge::native_lights::draw_shadow_alone(mem, view, group)
+    }
+
     fn end(&self, mem: &mut dyn GuestMemory, site: Site, layer: u32) {
         let mut d = self.device.lock().unwrap_or_else(|e| e.into_inner());
         let mut mem = DeviceMemory(mem);

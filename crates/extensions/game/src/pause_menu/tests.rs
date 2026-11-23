@@ -159,6 +159,18 @@ fn settings_rows_require_their_class_and_the_correct_pause_feature() {
 }
 
 #[test]
+fn the_pause_rows_are_audited_for_snapshots() {
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+    for mode in [Mode::Campaign, Mode::Multiplayer] {
+        assert!(registry.add(&Settings(mode)).unwrap());
+    }
+    let plan = registry.build(&hooks::Base).unwrap();
+    // They draw their rows from guest memory and keep no host state, so
+    // they must not forbid every keyframe for the whole session.
+    assert!(plan.snapshot_blockers().is_empty(), "{:?}", plan.snapshot_blockers());
+}
+
+#[test]
 fn voice_contains_mute_button_and_uses_the_live_host_settings() {
     let m = model();
     let keys: Vec<_> = m.rows(VOICE_LIST).iter().map(|r| r.kind.clone()).collect();

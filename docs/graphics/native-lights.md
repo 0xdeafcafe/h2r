@@ -1,6 +1,6 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry (and over models, for a group drawn from the scene), the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
+Status: Partly built. Dynamic lights' layers 12 and 13 over cluster and model geometry for a group drawn from the scene, layer 10's caster groups drawn from the scene, the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, the first-person lights and parity with D3D are not.
 Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -173,10 +173,10 @@ state the resolved-draw path refuses. When it draws, the walk hands the guest's 
 entries, so none of the layer's handlers runs, and the layer leaves the
 light's candidate (`render.scene`'s `scene_light_layers_alone` counts
 them). Otherwise the layer takes the gathered or resolved-draw path as
-before. Shadow layers 10, 11 and 14 (the light's, the additional
-casters' and the object shadows') have no recorder from the scene: the
-shadow stage records from resolved draws, so their groups are in the
-scene but their handlers run.
+before. Layer 10 (the light's, the additional casters' and the object
+shadows') draws its whole group from the scene with no handler through
+`shadow_look` and `native_lights_glue::shadow_alone`; layers 11 and 14
+keep their resolved draws and handlers.
 
 Frame stats count completed dynamic lights in `lights_walked_native`,
 `lights_walked_fallback` and `lights_walk_empty`. Each fallback adds

@@ -2218,7 +2218,9 @@ port + 4.
   `lxm: sessions.relay`. A missing, wrong or expired token gets HTTP 401.
   After the upgrade, `{ "kind": "auth", "token": "<jwt>" }` from the same
   account refreshes the socket. Expiry closes it with 4401.
-- The session must be open and created with `flags: "coop"`. The account
+- The session must be open and created with `flags: "coop"` or
+  `flags: "forge"` (a shared Forge session, [forge-design.md](../game/forge-design.md)).
+  The account
   must be its host or a guest who accepted an invitation. The upgrade
   gets HTTP 403 if membership is refused or 404 if the session is missing.
   The relay rechecks membership after connection and closes with 4403

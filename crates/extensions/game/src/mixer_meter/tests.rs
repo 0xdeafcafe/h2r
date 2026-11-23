@@ -11,6 +11,30 @@ fn near(a: f64, b: f64, within: f64) -> bool {
     (a - b).abs() <= within
 }
 
+/// Boot may hold the mixer guard when it connects the meter (cd68951b6:
+/// `connect` locked the mixer again and every audible boot hung). `connect`
+/// must never lock the mixer on the caller's thread; run it on a thread with
+/// a timeout so a regression fails the test instead of hanging it.
+#[test]
+fn connect_never_locks_the_mixer() {
+    let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE)));
+    let _guard = lock(&mixer);
+    let (done, rx) = std::sync::mpsc::channel();
+    let shared = Arc::clone(&mixer);
+    std::thread::spawn(move || {
+        let mut meter = Meter::new();
+        meter.connect(shared);
+        done.send(()).unwrap();
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("connect deadlocked on the locked mixer");
+    // The rate is read lazily, on arm, once the guard is free.
+    drop(_guard);
+    let (mut meter, _) = connected();
+    meter.begin(MeterRequest::Window { ms: 100 }).unwrap();
+    assert!(meter.armed());
+}
+
 fn connected() -> (Meter, Arc<Mutex<audio::Mixer>>) {
     let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE)));
     let mut meter = Meter::new();

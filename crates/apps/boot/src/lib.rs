@@ -18,7 +18,7 @@ pub mod test_maps_recipes;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -1084,26 +1084,18 @@ fn run_configured(
     }
     if let Some(audio) = &ds {
         let mixer = audio.mixer();
-        let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
         if clock_only_audio {
-            mixer.set_packet_clock(
-                (host_light || sim_mode.is_some())
-                    && features
-                        .switches()
-                        .implementation("audio.packet-clock", true),
-            );
+            mixer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_packet_clock(
+                    (host_light || sim_mode.is_some())
+                        && features
+                            .switches()
+                            .implementation("audio.packet-clock", true),
+                );
         } else {
-            mixer.set_hrtf(features.switches().audio_hrtf());
-            mixer.set_distance_reverb(features.switches().distance_reverb());
-            // Our medals' announcer lines play into it (medal_announcer.rs).
-            game::medal_announcer::connect(audio.mixer());
-            // The Pogo Stick's piston sounds too (pogo_sound.rs).
-            game::pogo_sound::connect(audio.mixer());
-            // `audio.meter` meters this mixer's output (mixer_meter.rs).
-            // It locks the mixer to read its rate, so the guard above goes
-            // first: a std mutex locked twice on one thread never returns.
-            drop(mixer);
-            game::mixer_meter::connect(audio.mixer());
+            setup_audible_mixer(&mixer, features.switches());
         }
     }
     // A default recording and its replay both plan Forge (registration::local_forge).
@@ -1865,6 +1857,10 @@ fn run_configured(
         0
     };
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
+    // Cut the game in play and discard the tape even when the loop below
+    // exits by error or panic, skipping its teardown
+    // (`theater::Session::seal_on_drop`).
+    let film_seal = film.as_ref().and_then(|f| f.seal_on_drop());
     let first_slice = film_slices;
     let mut next_slice = film_slices;
     while next_slice < opts.max_slices {
@@ -1922,6 +1918,9 @@ fn run_configured(
                 }
             }
             film_slices = slice + 1;
+            if let Some(seal) = &film_seal {
+                seal.advance(film_slices);
+            }
         }
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
             break;
@@ -2309,6 +2308,26 @@ fn run_configured(
     Ok(report)
 }
 
+/// Audible-audio setup on DirectSound's mixer: the audio switches, then the
+/// game extensions that play into it (our medals' announcer lines,
+/// medal_announcer.rs; the Pogo Stick's piston sounds, pogo_sound.rs) or
+/// meter it (`audio.meter`, mixer_meter.rs).
+///
+/// The mixer guard never spans a `connect` call: one that locked the mixer
+/// again on this thread would hang the boot for good (std mutexes are not
+/// re-entrant; cd68951b6 hung every audible boot until the guard was dropped
+/// first). `audible_mixer_setup_never_deadlocks` guards it.
+fn setup_audible_mixer(mixer: &Arc<Mutex<audio::Mixer>>, switches: &hooks::Switches) {
+    {
+        let mut m = mixer.lock().unwrap_or_else(|e| e.into_inner());
+        m.set_hrtf(switches.audio_hrtf());
+        m.set_distance_reverb(switches.distance_reverb());
+    }
+    game::medal_announcer::connect(Arc::clone(mixer));
+    game::pogo_sound::connect(Arc::clone(mixer));
+    game::mixer_meter::connect(Arc::clone(mixer));
+}
+
 #[cfg(feature = "gpu")]
 fn note_editor_scene_install(link: &agent::editor::EditorLink, installed: &hooks::Installed) {
     if installed.off_reason(render_bridge::scene_step::ID).is_some() {
@@ -2319,6 +2338,24 @@ fn note_editor_scene_install(link: &agent::editor::EditorLink, installed: &hooks
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// cd68951b6: the audible path locked the mixer and then called
+    /// `game::mixer_meter::connect`, which locked the same mutex again, and
+    /// every audible boot hung forever. Run the real setup sequence with a
+    /// real mixer on a thread with a timeout: a deadlock fails the test
+    /// instead of hanging it.
+    #[test]
+    fn audible_mixer_setup_never_deadlocks() {
+        let mixer = Arc::new(Mutex::new(audio::Mixer::new(48_000)));
+        let switches = hooks::Switches::default();
+        let (done, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            setup_audible_mixer(&mixer, &switches);
+            done.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the audible mixer setup deadlocked");
+    }
 
     #[cfg(feature = "gpu")]
     #[test]

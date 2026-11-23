@@ -4,7 +4,8 @@
 
 use coop::Peer;
 use coop::link::{Conditions, FakeClock, sim_pair};
-use coop::wire::BEAT;
+use coop::peer::FORGE_WINDOW;
+use coop::wire::{BEAT, MAX_FORGE};
 
 const SESSION: u32 = 0x00c0_0b02;
 
@@ -88,4 +89,47 @@ fn the_queue_refuses_more_than_it_may_hold_and_queues_nothing() {
     assert!(a.forge_send(&big));
     assert!(!a.forge_send(&[1]));
     assert_eq!(a.forge_unacked(), big.len());
+}
+
+/// A welcome-sized stream crosses in a bounded number of round trips: the
+/// window carries [`FORGE_WINDOW`] runs a round trip, not one, so a stream
+/// of a few kilobytes (a welcome's document and log) joins in seconds on
+/// a relay's round trip, not one run a round trip.
+#[test]
+fn a_welcome_sized_stream_takes_a_bounded_number_of_round_trips() {
+    let clock = FakeClock::default();
+    let (la, lb, _) = sim_pair(
+        &clock,
+        Conditions {
+            latency: 25_000,
+            ..Default::default()
+        },
+        3,
+    );
+    let mut a = Peer::new(la, SESSION, 0, 2);
+    let mut b = Peer::new(lb, SESSION, 1, 2);
+    let stream = bytes(4, 64 << 10);
+    assert!(a.forge_send(&stream));
+    let rtt = 50_000;
+    // One round trip carries a window of runs; a few spare round trips
+    // cover the last ack and the link's first flight.
+    let windows = stream.len().div_ceil(FORGE_WINDOW * MAX_FORGE);
+    let bound = rtt * (windows as u64 + 8);
+    let mut got = Vec::new();
+    let mut elapsed = 0;
+    for _ in 0..40_000 {
+        a.pump();
+        b.pump();
+        got.extend(b.forge_recv());
+        clock.advance(1_000);
+        elapsed += 1_000;
+        if got.len() == stream.len() && a.forge_unacked() == 0 {
+            break;
+        }
+    }
+    assert_eq!(got, stream);
+    assert!(
+        elapsed <= bound,
+        "the stream took {elapsed} µs, over the {bound} µs bound"
+    );
 }

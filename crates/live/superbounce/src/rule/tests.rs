@@ -339,7 +339,7 @@ fn the_drop_from_the_apex_has_a_window() {
 /// A body on the floor jumping up does not land on its own takeoff.
 #[test]
 fn a_jump_comes_down_before_it_is_judged() {
-    let polys = cut_at(5.0);
+    let polys = cut_at(0.0);
     let v = predict([0.0, 0.0, 0.01], [0.0, 0.0, 3.08], [0.0; 2], &polys);
     assert!(
         matches!(v.outcome, Outcome::Landing | Outcome::Stopped),

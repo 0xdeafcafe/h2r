@@ -101,7 +101,6 @@ pub fn air(s: &State) -> Option<rd::Air> {
     let drop = p.drop?;
     Some(rd::Air {
         drop: drop * METRES_PER_UNIT,
-        in_window: superbounce::rule::drop_in_window(drop),
         edge: p.edge.map(|e| e * METRES_PER_UNIT),
     })
 }

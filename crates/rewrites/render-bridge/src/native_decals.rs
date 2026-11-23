@@ -8,12 +8,16 @@
 //! succeeds. Sorted handlers `0x00041cc0` and `0x000423c0` are object/layer
 //! replays, not decals, and are deliberately left alone.
 //!
-//! Refusals are tallied by reason.
+//! Refusals are tallied by reason; the examined, admitted and refused
+//! counts also go to the `decals` stage metrics beside the walk counters in
+//! `render.stats`. The stderr line prints on the first examined draw and
+//! then at most every 10 seconds.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use engine::memory::GuestMemory;
 use engine::points;
@@ -49,6 +53,11 @@ static EXAMINED: AtomicU64 = AtomicU64::new(0);
 static ADMITTED: AtomicU64 = AtomicU64::new(0);
 static REFUSALS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
 
+/// The tally line prints on the stage's first examined draw and then at
+/// most every 10 seconds, however fast the counters move.
+static LAST_LOG: Mutex<Option<Instant>> = Mutex::new(None);
+const LOG_EVERY: Duration = Duration::from_secs(10);
+
 /// `(examined draws, admitted)` and the running refusal tally.
 pub fn counts() -> ((u64, u64), BTreeMap<&'static str, u64>) {
     (
@@ -60,33 +69,51 @@ pub fn counts() -> ((u64, u64), BTreeMap<&'static str, u64>) {
     )
 }
 
+fn log_throttled() {
+    let mut last = LAST_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    if last.is_some_and(|t| now.duration_since(t) < LOG_EVERY) {
+        return;
+    }
+    *last = Some(now);
+    drop(last);
+    let ((examined, admitted), refusals) = counts();
+    eprintln!(
+        "native-decals: {admitted} of {examined} resolved draws native; refusals {refusals:?}"
+    );
+}
+
+/// The stage metric a refusal reason counts under, alongside the walk
+/// counters in `render.stats`.
+fn refused_metric(why: &'static str) -> Metric {
+    match why {
+        "geometry" | "vertex streams" | "vertex declaration" | "vertex bytes" => {
+            Metric::RefusedInputs
+        }
+        "texture kind" | "texture view" | "texture is the target" | "texture group" => {
+            Metric::RefusedResources
+        }
+        _ => Metric::RefusedValidation,
+    }
+}
+
 pub fn note_examined() {
     EXAMINED.fetch_add(1, Ordering::Relaxed);
+    Stage::Decals.count(Metric::Examined, 1);
+    log_throttled();
 }
 
 pub fn note_admitted() {
-    let admitted = ADMITTED.fetch_add(1, Ordering::Relaxed) + 1;
-    if admitted % 1800 == 1 {
-        let ((examined, admitted), refusals) = counts();
-        eprintln!(
-            "native-decals: {admitted} of {examined} resolved draws native; refusals {refusals:?}"
-        );
-    }
+    ADMITTED.fetch_add(1, Ordering::Relaxed);
+    Stage::Decals.count(Metric::Suppressed, 1);
 }
 
 /// Adds an admission or recording failure to the same tally.
 pub fn note_refusal(why: &'static str) {
-    let total = {
-        let mut refusals = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
-        *refusals.entry(why).or_default() += 1;
-        refusals.values().sum::<u64>()
-    };
-    if total % 1800 == 1 {
-        let ((examined, admitted), refusals) = counts();
-        eprintln!(
-            "native-decals: {admitted} of {examined} resolved draws native; refusals {refusals:?}"
-        );
-    }
+    let mut refusals = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
+    *refusals.entry(why).or_default() += 1;
+    drop(refusals);
+    Stage::Decals.count(refused_metric(why), 1);
 }
 
 /// The callback emitting on this thread, if any.
@@ -185,6 +212,18 @@ impl Feature for NativeDecals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refusal_reasons_map_to_stage_metrics() {
+        assert!(matches!(refused_metric("geometry"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("vertex streams"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("vertex declaration"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("vertex bytes"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("texture kind"), Metric::RefusedResources));
+        assert!(matches!(refused_metric("texture is the target"), Metric::RefusedResources));
+        assert!(matches!(refused_metric("blend state"), Metric::RefusedValidation));
+        assert!(matches!(refused_metric("vertex program"), Metric::RefusedValidation));
+    }
 
     #[test]
     fn item_range_uses_the_live_allocator_and_signed_quad_count() {

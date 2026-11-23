@@ -22,7 +22,7 @@ use crate::cinematic::{CinematicTicks, Stream};
 use crate::link::Link;
 use crate::schedule::{Pad, Schedule};
 use crate::tap::ScheduleTap;
-use crate::wire::{BEAT, Datagram, MAX_FORGE, MAX_FRAMES, MAX_HASHES};
+use crate::wire::{BEAT, Datagram, MAX_FRAMES, MAX_HASHES, forge_room};
 
 /// The two machines computed different states for a tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +81,13 @@ impl Hashes {
 /// The most Forge stream bytes waiting for the other machine's
 /// acknowledgement: a welcome's document and log, with room to spare.
 pub const FORGE_OUT_MAX: usize = 24 << 20;
+
+/// The datagrams one flush sends while the Forge lane has unacknowledged
+/// bytes: the first carries the pads, hashes and one run; each of the
+/// rest carries another run, so a long stream (a welcome) crosses in a
+/// few round trips instead of one a run. The pump's cadence bounds the
+/// datagrams a second, which is what the relay allows.
+pub const FORGE_WINDOW: usize = 4;
 
 /// The Forge lane (docs/game/forge-design.md, F5): a reliable ordered byte
 /// stream each way, in the datagram's Forge section, and the machine's
@@ -297,7 +304,9 @@ impl<L: Link> Peer<L> {
 
     /// Sends this machine's unacknowledged frames and hashes, and what it
     /// has of the other's. Sent even with nothing new: it is also the
-    /// acknowledgement and the keep-alive.
+    /// acknowledgement and the keep-alive. The Forge lane's unacknowledged
+    /// runs go with it, [`FORGE_WINDOW`] of them, each a datagram that
+    /// keeps within the wire cap beside whatever else it carries.
     pub fn flush(&mut self) {
         let (first_frame, frames, ack_frame) = {
             let s = self.schedule();
@@ -305,7 +314,7 @@ impl<L: Link> Peer<L> {
             (first, frames, s.remote_end())
         };
         let first_tick = self.acked_tick.max(self.local.first);
-        let hashes = self
+        let hashes: Vec<u64> = self
             .local
             .values
             .iter()
@@ -314,6 +323,10 @@ impl<L: Link> Peer<L> {
             .copied()
             .collect();
         let (first_cinematic, cinematic) = if self.host { self.cinematic.outgoing(MAX_FRAMES) } else { (0, Vec::new()) };
+        let beat = self.forge.beat_out;
+        let end = self.forge.first + self.forge.out.len() as u32;
+        let room = forge_room(frames.len(), hashes.len(), cinematic.len(), beat.is_some());
+        let mut at = self.forge.first;
         let d = Datagram {
             first_cinematic, cinematic,
             ack_cinematic: if self.host { 0 } else { self.cinematic.end() },
@@ -325,12 +338,48 @@ impl<L: Link> Peer<L> {
             first_tick,
             hashes,
             ack_forge: self.forge.end,
-            first_forge: self.forge.first,
-            forge: self.forge.out.iter().take(MAX_FORGE).copied().collect(),
-            beat: self.forge.beat_out,
+            first_forge: at,
+            forge: self.forge.out.iter().take(room).copied().collect(),
+            beat,
         };
         self.link.send(&d.encode());
         self.stats.sent += 1;
+        at += d.forge.len() as u32;
+        for _ in 1..FORGE_WINDOW {
+            if at >= end {
+                break;
+            }
+            // The window's other datagrams carry Forge runs alone: the
+            // pads and hashes went with the first, and the runs after the
+            // first need none beside them.
+            let room = forge_room(0, 0, 0, beat.is_some());
+            let d = Datagram {
+                first_cinematic: 0,
+                cinematic: Vec::new(),
+                ack_cinematic: if self.host { 0 } else { self.cinematic.end() },
+                session: self.session,
+                ack_frame,
+                ack_tick: self.remote.end(),
+                first_frame,
+                frames: Vec::new(),
+                first_tick,
+                hashes: Vec::new(),
+                ack_forge: self.forge.end,
+                first_forge: at,
+                forge: self
+                    .forge
+                    .out
+                    .iter()
+                    .skip((at - self.forge.first) as usize)
+                    .take(room)
+                    .copied()
+                    .collect(),
+                beat,
+            };
+            self.link.send(&d.encode());
+            self.stats.sent += 1;
+            at += d.forge.len() as u32;
+        }
     }
 
     /// Starts the next frame if both ports' pads for it are in hand:

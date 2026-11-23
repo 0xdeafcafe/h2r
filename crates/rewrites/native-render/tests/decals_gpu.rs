@@ -14,9 +14,9 @@ const SIZE: u32 = 64;
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// An opaque decal over `[x, x + 40] x [8, 56]` in `bgra`, clipped to the
+/// An opaque decal over `[x, x + 40] x [8, 56]` in `rgb`, clipped to the
 /// left and right strips of the target; with a texture it takes stage 0's.
-fn decal(x: f32, bgra: [u8; 4], textured: bool) -> Prepared {
+fn decal(x: f32, rgb: [f32; 3], textured: bool) -> Prepared {
     let render = RenderState {
         color_write: ColorWriteMask::from_xbox(0x0001_0101),
         depth_mode: DepthBufferMode::Disabled,
@@ -49,7 +49,7 @@ fn decal(x: f32, bgra: [u8; 4], textured: bool) -> Prepared {
     Prepared {
         mode: Mode::Opaque,
         vertices: corners
-            .map(|[x, y]| Vertex { position: [x, y, 0.5], color: bgra })
+            .map(|[x, y]| Vertex { position: [x, y, 0.5], diffuse: rgb })
             .to_vec(),
         shader: ShaderSnapshot {
             render,
@@ -192,9 +192,9 @@ fn frame(
 
 fn scene(ctx: &gfx::GfxContext) -> Vec<(Prepared, Option<wgpu::TextureView>)> {
     vec![
-        // Red (BGRA), then a textured one that takes the texture's orange.
-        (decal(4., [0, 0, 255, 255], false), None),
-        (decal(20., [255, 255, 255, 255], true), Some(solid_view(ctx, [255, 128, 0, 255]))),
+        // Red, then a textured one that takes the texture's orange.
+        (decal(4., [1., 0., 0.], false), None),
+        (decal(20., [1., 1., 1.], true), Some(solid_view(ctx, [255, 128, 0, 255]))),
     ]
 }
 
@@ -252,7 +252,7 @@ fn a_draw_clipped_away_entirely_is_left_to_the_isolated_recording() {
     };
     let mut cache = DecalCache::default();
     let arena = gfx::ring::UploadPool::default().begin();
-    let mut prepared = decal(4., [0, 0, 255, 255], false);
+    let mut prepared = decal(4., [1., 0., 0.], false);
     prepared.clips.clear();
     let target = PacketTarget {
         color_format: COLOR,
@@ -285,7 +285,7 @@ fn textured_packet(
         z_scale: 1.,
         stage0: Some(view),
     };
-    let prepared = decal(20., [255, 255, 255, 255], true);
+    let prepared = decal(20., [1., 1., 1.], true);
     assert!(matches!(
         cache.draws(&ctx.device, &ctx.queue, &arena, &prepared, CLIP, &target),
         Ok(Some(_))

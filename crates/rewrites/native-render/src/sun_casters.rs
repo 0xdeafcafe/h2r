@@ -684,6 +684,7 @@ mod tests {
                 layer: 11,
                 site: GroupSite::ObjectShadow,
                 projection: projection([1.0, 0.0, 1.0]),
+                pass: None,
                 entries: 0..0,
                 remainder: 0,
             };
@@ -848,7 +849,11 @@ mod tests {
             ]
         );
         let cluster = &got[0];
-        assert_eq!(cluster.mesh.indices.len(), 6, "the opaque part's two triangles");
+        assert_eq!(
+            cluster.mesh.indices.len(),
+            6,
+            "the opaque part's two triangles"
+        );
         assert_eq!(cluster.mesh.positions.len(), 4);
         assert_eq!(cluster.mesh.normals[0], [1.0, 0.0, 0.0]);
         assert_eq!(cluster.centre, [0.5, 0.5, 0.0]);

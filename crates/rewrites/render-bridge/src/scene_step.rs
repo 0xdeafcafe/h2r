@@ -25,8 +25,8 @@ use engine::memory::GuestMemory;
 use engine::points;
 use engine::render_loop::occlusion::guest::{FRAME, VIEW_INDEX};
 use frame_scene::{
-    Camera, Cut, DeviceFog, FrameScene, GroupSite, LateInput, LateLayer, LateMaterial, LatePart, LightStep, SceneBuilder, SceneId,
-    SceneLight, Stamp, View, ViewKey, ViewKind,
+    Camera, Cut, DeviceFog, FrameScene, GroupSite, LateInput, LateLayer, LateMaterial, LatePart,
+    LightStep, SceneBuilder, SceneId, SceneLight, Stamp, View, ViewKey, ViewKind,
 };
 use native_render::object_walk::Entry;
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
@@ -34,6 +34,9 @@ use native_render::world_layers::{Site, layer_site};
 use scene_extract::GuestRead;
 use scene_extract::extract;
 use scene_extract::light_groups::{self, Cause, Sorted};
+/// The shadow pass a light-group layer draws into, read from the guest
+/// (for the glue that checks a caster group before skipping its handlers).
+pub use scene_extract::light_groups::shadow_pass;
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 
@@ -137,6 +140,9 @@ static LIGHT_EXTRACT_UNREAD: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS_WHOLE: AtomicU64 = AtomicU64::new(0);
 static LIGHT_ENTRIES: AtomicU64 = AtomicU64::new(0);
+/// Shadow groups of layers 10, 11 and 14, and whole groups.
+static SHADOW_GROUPS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static SHADOW_GROUPS_WHOLE: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 /// Per late layer (fog, water): views written, of those the gate held,
 /// parts the stage took, and views it took.
 static LATE_VIEWS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
@@ -149,7 +155,8 @@ static POST_EFFECTS: AtomicU64 = AtomicU64::new(0);
 /// Post callees' calls with no `render_screen_effects` of their view in
 /// the scene.
 static POST_UNPLACED: AtomicU64 = AtomicU64::new(0);
-static LIGHT_ENTRY_REMAINDER: [AtomicU64; Cause::ALL.len()] = [const { AtomicU64::new(0) }; Cause::ALL.len()];
+static LIGHT_ENTRY_REMAINDER: [AtomicU64; Cause::ALL.len()] =
+    [const { AtomicU64::new(0) }; Cause::ALL.len()];
 /// `render.scene`'s counter of each [`Cause`], in [`Cause::ALL`]'s order.
 const LIGHT_ENTRY_REMAINDER_NAMES: [&str; Cause::ALL.len()] = [
     "scene_light_entry_remainder_memory",
@@ -201,7 +208,10 @@ pub fn begin(mem: &dyn GuestMemory, present: Option<&Arc<dyn PresentObserver>>) 
         let payload = observer.capture(mem)?;
         Some(PresentViews {
             observer: Arc::downgrade(observer),
-            image: CapturedImage { views: [None; 4], payload },
+            image: CapturedImage {
+                views: [None; 4],
+                payload,
+            },
         })
     });
     with_step(|step| {
@@ -239,7 +249,11 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
         NO_CAMERA.fetch_add(1, Ordering::Relaxed);
         return None;
     };
-    let key = ViewKey { kind, player: 0, view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    let key = ViewKey {
+        kind,
+        player: 0,
+        view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8,
+    };
     let base = m.read_u32(CURRENT_LAYER) == Some(LIGHTMAP_LAYER);
     let (view, observer) = with_step(|step| {
         if !step.builder.is_building() {
@@ -247,7 +261,11 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
             // observer in this plan): the scene starts here.
             begin_step(step, &m);
         }
-        if step.builder.view().is_none_or(|v| v.key != key || v.camera != camera) {
+        if step
+            .builder
+            .view()
+            .is_none_or(|v| v.key != key || v.camera != camera)
+        {
             if step.builder.open_view(key, camera).is_err() {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
                 return None;
@@ -260,7 +278,10 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
         if base && !step.based {
             step.based = true;
             let clusters = extract::layer_clusters(&m, LIGHTMAP_LAYER).unwrap_or_default();
-            let set = step.builder.set_clusters(clusters).and_then(|()| step.builder.set_world(extract::world(&m)));
+            let set = step
+                .builder
+                .set_clusters(clusters)
+                .and_then(|()| step.builder.set_world(extract::world(&m)));
             if set.is_err() {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
             }
@@ -286,7 +307,10 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
             if let Some(present) = &mut step.presentation
                 && let Some(slot) = present.image.views.get_mut(usize::from(key.view))
             {
-                *slot = Some(CapturedView { camera, horizontal_factor });
+                *slot = Some(CapturedView {
+                    camera,
+                    horizontal_factor,
+                });
             }
         });
     }
@@ -300,23 +324,27 @@ fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
         return;
     }
     let m = Ro(mem);
-    let Ok(layer) = u8::try_from(layer) else { return };
+    let Ok(layer) = u8::try_from(layer) else {
+        return;
+    };
     // Every object item takes its owner's lighting: the layer stage's
     // lighting inputs read it, and the lightmap cycle reaches the draw
     // only through it (`frame_scene::LayerInputs`).
-    with_step(|step| match extract::layer(&m, layer, true, &mut step.builder) {
-        Ok(Some(got)) => {
-            LAYERS.fetch_add(1, Ordering::Relaxed);
-            LAYER_ITEMS.fetch_add(u64::from(got.items), Ordering::Relaxed);
-            LAYER_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
-        }
-        Ok(None) => {
-            LAYER_UNREAD.fetch_add(1, Ordering::Relaxed);
-        }
-        Err(_) => {
-            REFUSED.fetch_add(1, Ordering::Relaxed);
-        }
-    });
+    with_step(
+        |step| match extract::layer(&m, layer, true, &mut step.builder) {
+            Ok(Some(got)) => {
+                LAYERS.fetch_add(1, Ordering::Relaxed);
+                LAYER_ITEMS.fetch_add(u64::from(got.items), Ordering::Relaxed);
+                LAYER_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
+            }
+            Ok(None) => {
+                LAYER_UNREAD.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
+        },
+    );
 }
 
 /// The objects of the base layer's sorted walk into the open view (its
@@ -337,15 +365,17 @@ pub fn objects(mem: &dyn GuestMemory, entries: &[Entry]) {
 /// (docs/graphics/native-decorators.md).
 fn decorators(mem: &dyn GuestMemory) {
     let m = Ro(mem);
-    with_step(|step| match scene_extract::decorators::extract(&m, LIGHTMAP_LAYER as u8, &mut step.builder) {
-        Ok(Some(got)) => {
-            DECORATOR_DRAWS.fetch_add(u64::from(got.draws), Ordering::Relaxed);
-            DECORATOR_INSTANCES.fetch_add(u64::from(got.instances), Ordering::Relaxed);
-            DECORATOR_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
-        }
-        Ok(None) => {}
-        Err(_) => {
-            REFUSED.fetch_add(1, Ordering::Relaxed);
+    with_step(|step| {
+        match scene_extract::decorators::extract(&m, LIGHTMAP_LAYER as u8, &mut step.builder) {
+            Ok(Some(got)) => {
+                DECORATOR_DRAWS.fetch_add(u64::from(got.draws), Ordering::Relaxed);
+                DECORATOR_INSTANCES.fetch_add(u64::from(got.instances), Ordering::Relaxed);
+                DECORATOR_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
         }
     });
 }
@@ -369,14 +399,20 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
 /// already hold their final group indices.
 fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
     with_step(|step| {
-        let Some((scene, view)) = step.builder.open() else { return };
+        let Some((scene, view)) = step.builder.open() else {
+            return;
+        };
         if view.key.kind != ViewKind::Game {
             return;
         }
         step.light_open = false;
         let start = Instant::now();
-        let drawn: Vec<u32> = scene.lights_of(view).iter()
-            .filter(|l| l.guest_selected).map(|l| l.handle).collect();
+        let drawn: Vec<u32> = scene
+            .lights_of(view)
+            .iter()
+            .filter(|l| l.guest_selected)
+            .map(|l| l.handle)
+            .collect();
         let eligible = |record, definition, flags| {
             crate::native_scene_lists::light_candidate_eligible(mem, record, definition, flags)
         };
@@ -431,7 +467,8 @@ pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
     if view(mem).is_none() {
         return;
     }
-    let creature = scene_extract::layout::objects::kind(&Ro(mem), identity[0]) == Some(scene_extract::layout::objects::CREATURE);
+    let creature = scene_extract::layout::objects::kind(&Ro(mem), identity[0])
+        == Some(scene_extract::layout::objects::CREATURE);
     with_step(|step| {
         step.light_open = false;
         let pushed = step.builder.push_object_shadow(identity, creature);
@@ -462,7 +499,11 @@ pub fn light_group(
     let layer = u8::try_from(layer).ok()?;
     let m = Ro(mem);
     with_step(|step| {
-        let open = if site == GroupSite::ObjectShadow { step.shadow_open } else { step.light_open };
+        let open = if site == GroupSite::ObjectShadow {
+            step.shadow_open
+        } else {
+            step.light_open
+        };
         if !open || step.builder.view().is_none() {
             return None;
         }
@@ -473,18 +514,40 @@ pub fn light_group(
                 if got.remainder() == 0 {
                     LIGHT_GROUPS_WHOLE.fetch_add(1, Ordering::Relaxed);
                 }
+                if let Some(n) = match layer {
+                    10 => Some(0),
+                    11 => Some(1),
+                    14 => Some(2),
+                    _ => None,
+                } {
+                    SHADOW_GROUPS[n].fetch_add(1, Ordering::Relaxed);
+                    if got.remainder() == 0 {
+                        SHADOW_GROUPS_WHOLE[n].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 for (counter, n) in LIGHT_ENTRY_REMAINDER.iter().zip(got.remainder) {
                     counter.fetch_add(u64::from(n), Ordering::Relaxed);
                 }
                 let scene = step.builder.scene()?;
-                let groups = if site == GroupSite::ObjectShadow { &scene.shadow_groups } else { &scene.light_groups };
+                let groups = if site == GroupSite::ObjectShadow {
+                    &scene.shadow_groups
+                } else {
+                    &scene.light_groups
+                };
                 let group = groups.last()?.clone();
                 if !group.whole() {
                     return None;
                 }
                 let entries = scene.entries_of(&group).to_vec();
-                let rows = entries.iter().map(|e| scene.pose_rows(e).to_vec()).collect();
-                Some(crate::native_lights::SceneGroup { group, entries, rows })
+                let rows = entries
+                    .iter()
+                    .map(|e| scene.pose_rows(e).to_vec())
+                    .collect();
+                Some(crate::native_lights::SceneGroup {
+                    group,
+                    entries,
+                    rows,
+                })
             }
             Err(_) => {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
@@ -499,8 +562,16 @@ pub fn light_group(
 /// layer 3 before it this frame). `None` when no view opens.
 fn late_key(mem: &dyn GuestMemory) -> Option<ViewKey> {
     let m = Ro(mem);
-    let key = ViewKey { kind: ViewKind::Game, player: 0, view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8 };
-    let has = with_step(|step| step.builder.scene().is_some_and(|s| s.views.iter().any(|v| v.key == key)));
+    let key = ViewKey {
+        kind: ViewKind::Game,
+        player: 0,
+        view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8,
+    };
+    let has = with_step(|step| {
+        step.builder
+            .scene()
+            .is_some_and(|s| s.views.iter().any(|v| v.key == key))
+    });
     if !has && open_kind(mem, ViewKind::Game)?.key != key {
         return None;
     }
@@ -533,13 +604,24 @@ pub struct LateStage {
 /// from; `None` when no view opens or the builder refuses, and then the
 /// stage leaves the layer to the guest.
 pub fn late_layer(
-    mem: &dyn GuestMemory, layer: u8, draws: bool, device: DeviceFog, materials: &[LateMaterial], parts: &[LatePart],
+    mem: &dyn GuestMemory,
+    layer: u8,
+    draws: bool,
+    device: DeviceFog,
+    materials: &[LateMaterial],
+    parts: &[LatePart],
 ) -> Option<LateStage> {
     let i = late_index(layer)?;
     let key = late_key(mem)?;
     let items = scene_extract::late::layer_items(&Ro(mem), layer);
     with_step(|step| {
-        let input = LateInput { draws, device, items, materials, parts };
+        let input = LateInput {
+            draws,
+            device,
+            items,
+            materials,
+            parts,
+        };
         let state = match step.builder.set_late(key, layer, input) {
             Ok(s) => s,
             Err(_) => {
@@ -567,7 +649,10 @@ pub fn late_layer(
 pub fn late_kept(mem: &dyn GuestMemory, layer: u8, draws: bool) {
     let Some(key) = late_key(mem) else { return };
     let written = with_step(|step| {
-        step.builder.scene().and_then(|s| s.views.iter().rev().find(|v| v.key == key)).is_some_and(|v| v.late(layer).is_some())
+        step.builder
+            .scene()
+            .and_then(|s| s.views.iter().rev().find(|v| v.key == key))
+            .is_some_and(|v| v.late(layer).is_some())
     });
     if !written {
         late_layer(mem, layer, draws, [None; frame_scene::FOG_WORDS], &[], &[]);
@@ -581,7 +666,14 @@ pub fn late_drawn(key: ViewKey, layer: u8) {
     with_step(|step| match step.builder.late_drawn(key, layer) {
         Ok(()) => {
             LATE_DRAWN[i].fetch_add(1, Ordering::Relaxed);
-            let parts = step.builder.scene().and_then(|s| s.views.iter().rev().find(|v| v.key == key)?.late(layer).cloned());
+            let parts = step.builder.scene().and_then(|s| {
+                s.views
+                    .iter()
+                    .rev()
+                    .find(|v| v.key == key)?
+                    .late(layer)
+                    .cloned()
+            });
             LATE_PARTS[i].fetch_add(parts.map_or(0, |l| l.parts.len() as u64), Ordering::Relaxed);
         }
         Err(_) => {
@@ -611,7 +703,11 @@ pub fn post(mem: &dyn GuestMemory, late: bool, colour: bool) {
 /// The colour pass `0x000214f0` with its seven arguments, under the view's
 /// post passes.
 pub fn post_colour(mem: &dyn GuestMemory, args: [u32; 7]) {
-    let key = ViewKey { kind: ViewKind::Game, player: 0, view: mem.u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    let key = ViewKey {
+        kind: ViewKind::Game,
+        player: 0,
+        view: mem.u32(VIEW_INDEX).unwrap_or(0) as u8,
+    };
     with_step(|step| match step.builder.post_colour(key, args) {
         Ok(()) => {
             POST_COLOUR.fetch_add(1, Ordering::Relaxed);
@@ -626,7 +722,11 @@ pub fn post_colour(mem: &dyn GuestMemory, args: [u32; 7]) {
 /// rows), under the view's post passes.
 pub fn post_effect(mem: &dyn GuestMemory, datum: u32, values: u32, columns: u32, rows: u32) {
     let effect = scene_extract::late::post_effect(&Ro(mem), datum, values, columns, rows);
-    let key = ViewKey { kind: ViewKind::Game, player: 0, view: mem.u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    let key = ViewKey {
+        kind: ViewKind::Game,
+        player: 0,
+        view: mem.u32(VIEW_INDEX).unwrap_or(0) as u8,
+    };
     with_step(|step| match step.builder.push_post_effect(key, effect) {
         Ok(()) => {
             POST_EFFECTS.fetch_add(1, Ordering::Relaxed);
@@ -673,15 +773,25 @@ pub fn seal() {
             return None;
         }
         let tick = id.tick;
-        let ticks_run = step.tick.map_or(0, |t| tick.wrapping_sub(t).min(u32::from(u8::MAX)) as u8);
-        let scene = step.builder.seal(Stamp { published: Some(Instant::now()), ticks_run })?;
+        let ticks_run = step
+            .tick
+            .map_or(0, |t| tick.wrapping_sub(t).min(u32::from(u8::MAX)) as u8);
+        let scene = step.builder.seal(Stamp {
+            published: Some(Instant::now()),
+            ticks_run,
+        })?;
         step.tick = Some(tick);
         // Publish under the same lock that retires the open and sealed scenes.
         // A slow observer may return after a map change.
-        let old = LAST.lock().unwrap_or_else(|e| e.into_inner()).replace(Arc::clone(&scene));
+        let old = LAST
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(Arc::clone(&scene));
         Some((step.sequence, scene, old, step.builder.free_list().clone()))
     });
-    let Some((sequence, scene, old, free)) = sealed else { return };
+    let Some((sequence, scene, old, free)) = sealed else {
+        return;
+    };
     SEALED.fetch_add(1, Ordering::Relaxed);
     let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(o) = observer {
@@ -727,7 +837,9 @@ pub fn forget() {
 
 /// The scene sealed last.
 pub fn last() -> Option<Arc<FrameScene>> {
-    LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+    LAST.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
         .filter(|s| s.id.map_epoch == crate::native_map_work::generation())
         .cloned()
 }
@@ -742,25 +854,96 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_refused_writes", REFUSED.load(Ordering::Relaxed)),
         ("scene_layers", LAYERS.load(Ordering::Relaxed)),
         ("scene_layer_items", LAYER_ITEMS.load(Ordering::Relaxed)),
-        ("scene_layer_remainder", LAYER_REMAINDER.load(Ordering::Relaxed)),
+        (
+            "scene_layer_remainder",
+            LAYER_REMAINDER.load(Ordering::Relaxed),
+        ),
         ("scene_layers_unread", LAYER_UNREAD.load(Ordering::Relaxed)),
-        ("scene_decorator_draws", DECORATOR_DRAWS.load(Ordering::Relaxed)),
-        ("scene_decorator_instances", DECORATOR_INSTANCES.load(Ordering::Relaxed)),
-        ("scene_decorator_remainder", DECORATOR_REMAINDER.load(Ordering::Relaxed)),
-        ("scene_light_extract_views", LIGHT_EXTRACT_VIEWS.load(Ordering::Relaxed)),
-        ("scene_light_extract_ns", LIGHT_EXTRACT_NS.load(Ordering::Relaxed)),
-        ("scene_light_extract_unread", LIGHT_EXTRACT_UNREAD.load(Ordering::Relaxed)),
+        (
+            "scene_decorator_draws",
+            DECORATOR_DRAWS.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_decorator_instances",
+            DECORATOR_INSTANCES.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_decorator_remainder",
+            DECORATOR_REMAINDER.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_light_extract_views",
+            LIGHT_EXTRACT_VIEWS.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_light_extract_ns",
+            LIGHT_EXTRACT_NS.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_light_extract_unread",
+            LIGHT_EXTRACT_UNREAD.load(Ordering::Relaxed),
+        ),
         ("scene_light_groups", LIGHT_GROUPS.load(Ordering::Relaxed)),
-        ("scene_light_groups_whole", LIGHT_GROUPS_WHOLE.load(Ordering::Relaxed)),
+        (
+            "scene_light_groups_whole",
+            LIGHT_GROUPS_WHOLE.load(Ordering::Relaxed),
+        ),
         ("scene_light_entries", LIGHT_ENTRIES.load(Ordering::Relaxed)),
-        ("scene_light_layers_alone", crate::native_lights::drawn_alone()),
-        ("scene_light_objects_alone", crate::native_lights::objects_drawn_alone()),
+        (
+            "scene_light_layers_alone",
+            crate::native_lights::drawn_alone(),
+        ),
+        (
+            "scene_light_objects_alone",
+            crate::native_lights::objects_drawn_alone(),
+        ),
+        (
+            "scene_shadow_groups",
+            SHADOW_GROUPS
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .sum(),
+        ),
+        (
+            "scene_shadow_groups_whole",
+            SHADOW_GROUPS_WHOLE
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .sum(),
+        ),
+        (
+            "scene_shadow_groups_10",
+            SHADOW_GROUPS[0].load(Ordering::Relaxed),
+        ),
+        (
+            "scene_shadow_groups_whole_10",
+            SHADOW_GROUPS_WHOLE[0].load(Ordering::Relaxed),
+        ),
+        (
+            "scene_shadow_groups_11",
+            SHADOW_GROUPS[1].load(Ordering::Relaxed),
+        ),
+        (
+            "scene_shadow_groups_whole_11",
+            SHADOW_GROUPS_WHOLE[1].load(Ordering::Relaxed),
+        ),
+        (
+            "scene_shadow_groups_14",
+            SHADOW_GROUPS[2].load(Ordering::Relaxed),
+        ),
+        (
+            "scene_shadow_groups_whole_14",
+            SHADOW_GROUPS_WHOLE[2].load(Ordering::Relaxed),
+        ),
         ("scene_fog_views", LATE_VIEWS[0].load(Ordering::Relaxed)),
         ("scene_fog_gate_held", LATE_GATED[0].load(Ordering::Relaxed)),
         ("scene_fog_drawn", LATE_DRAWN[0].load(Ordering::Relaxed)),
         ("scene_fog_parts", LATE_PARTS[0].load(Ordering::Relaxed)),
         ("scene_water_views", LATE_VIEWS[1].load(Ordering::Relaxed)),
-        ("scene_water_gate_held", LATE_GATED[1].load(Ordering::Relaxed)),
+        (
+            "scene_water_gate_held",
+            LATE_GATED[1].load(Ordering::Relaxed),
+        ),
         ("scene_water_drawn", LATE_DRAWN[1].load(Ordering::Relaxed)),
         ("scene_water_parts", LATE_PARTS[1].load(Ordering::Relaxed)),
         ("scene_post_views", POST_VIEWS.load(Ordering::Relaxed)),
@@ -770,7 +953,14 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     ]
     .into_iter()
     .chain(crate::native_decorators::counters())
-    .chain(LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(LIGHT_ENTRY_REMAINDER.iter().map(|c| c.load(Ordering::Relaxed))))
+    .chain(crate::native_shadows::alone_counters())
+    .chain(
+        LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(
+            LIGHT_ENTRY_REMAINDER
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed)),
+        ),
+    )
     .collect()
 }
 
@@ -778,7 +968,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
 /// the scene's layers 1, 5, 7, 8 and 20 and the first person's layers
 /// put their items in the scene.
 fn at_layer(mem: &dyn GuestMemory, ret: u32) {
-    let Ok(layer) = mem.u32(CURRENT_LAYER) else { return };
+    let Ok(layer) = mem.u32(CURRENT_LAYER) else {
+        return;
+    };
     match (layer_site(layer, ret), layer) {
         (Site::Scene, LIGHTMAP_LAYER) => {
             if open_kind_at_layer(mem, ViewKind::Game, true).is_some() {
@@ -798,8 +990,11 @@ pub struct FrameSceneStep {
 
 impl Feature for FrameSceneStep {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The frame step's scene: camera, world and objects extracted for the native renderer")
-            .doc("docs/graphics/framescene.md")
+        Manifest::new(
+            ID,
+            "The frame step's scene: camera, world and objects extracted for the native renderer",
+        )
+        .doc("docs/graphics/framescene.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -838,16 +1033,23 @@ impl Feature for FrameSceneStep {
         // thread. Render-timing's scene-call observer on the same point
         // goes first, like at the layer draw.
         b.raw()
-            .observe_before(&points::RENDER_DECAL_MODE, "frame_scene_light_candidates", |o| {
-                let g = o.guest();
-                if g.u32(o.cpu.esp).ok() != Some(DECALS_AFTER_LIGHTS) {
-                    return;
-                }
-                light_candidates(&*g, engine::light_constants::Fpu {
-                    mxcsr: o.cpu.mxcsr,
-                    x87_control: o.cpu.x87.control,
-                });
-            })
+            .observe_before(
+                &points::RENDER_DECAL_MODE,
+                "frame_scene_light_candidates",
+                |o| {
+                    let g = o.guest();
+                    if g.u32(o.cpu.esp).ok() != Some(DECALS_AFTER_LIGHTS) {
+                        return;
+                    }
+                    light_candidates(
+                        &*g,
+                        engine::light_constants::Fpu {
+                            mxcsr: o.cpu.mxcsr,
+                            x87_control: o.cpu.x87.control,
+                        },
+                    );
+                },
+            )
             .after_feature(crate::render_timing::ID)
             .context_only();
         // The view's post passes: `render_screen_effects`' two stack
@@ -856,13 +1058,20 @@ impl Feature for FrameSceneStep {
         b.raw()
             .observe_before(&points::RENDER_SCREEN_EFFECTS, "frame_scene_post", |o| {
                 let g = o.guest();
-                let byte = |n: u32| o.cpu.esp.checked_add(4 + 4 * n).and_then(|a| g.u32(a).ok()).is_some_and(|w| w as u8 != 0);
+                let byte = |n: u32| {
+                    o.cpu
+                        .esp
+                        .checked_add(4 + 4 * n)
+                        .and_then(|a| g.u32(a).ok())
+                        .is_some_and(|w| w as u8 != 0)
+                };
                 let (late, colour) = (byte(0), byte(1));
                 post(&*g, late, colour);
             })
             .context_only()
             .optional();
-        b.raw().observe_after(&points::RENDER_FRAME, "frame_scene_seal", |_| seal());
+        b.raw()
+            .observe_after(&points::RENDER_FRAME, "frame_scene_seal", |_| seal());
         // The census of the entries slices 4 and 5 replace: an option,
         // since its exit observers give those entries an after part.
         if b.switches().feature(crate::entry_census::ID, false) {
@@ -942,7 +1151,10 @@ mod tests {
         };
         let off = text("");
         assert!(!off.contains("entry_census"), "{off}");
-        assert!(off.contains("frame_scene_post"), "the post passes are extracted with or without it\n{off}");
+        assert!(
+            off.contains("frame_scene_post"),
+            "the post passes are extracted with or without it\n{off}"
+        );
         let on = text("frame-scene.census");
         assert!(!off.contains("residual_census"), "{off}");
         for label in [
@@ -997,7 +1209,10 @@ mod tests {
     #[test]
     fn each_light_entry_cause_has_its_counter() {
         for (name, cause) in LIGHT_ENTRY_REMAINDER_NAMES.iter().zip(Cause::ALL) {
-            assert_eq!(name.strip_prefix("scene_light_entry_remainder_"), Some(cause.name()));
+            assert_eq!(
+                name.strip_prefix("scene_light_entry_remainder_"),
+                Some(cause.name())
+            );
         }
     }
 }

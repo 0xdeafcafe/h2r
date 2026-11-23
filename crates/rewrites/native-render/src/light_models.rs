@@ -7,12 +7,13 @@
 //! raw range decoded in its own topology, as the object path decodes it,
 //! `tags::geometry::Geometry::part_triangles`), its decompression rows,
 //! and its vertices once per (vertex shader, classification) its parts'
-//! materials' layer-12 and layer-13 implementations name, gathered
-//! through the declaration that program's input semantics give over the
-//! section's streams ([`crate::object_streams::declaration`],
-//! [`crate::object_streams::gather`]). The pass itself is compiled per
-//! light inputs at run time with that declaration's registers and fetch
-//! ([`crate::light_look::compile_light_model`]).
+//! materials' layer-10, layer-12 and layer-13 implementations name,
+//! gathered through the declaration that program's input semantics give
+//! over the section's streams ([`crate::object_streams::declaration`],
+//! [`crate::object_streams::gather`]). The pass itself is compiled with
+//! that declaration's registers and fetch
+//! ([`crate::light_look::compile_light_model`],
+//! [`crate::shadow_look::compile_shadow_model`]).
 //!
 //! An entry finds its part by its model, section and part
 //! ([`LightModels::part`]); its raw range and topology must be the
@@ -29,7 +30,9 @@ use map::TagId;
 
 use crate::light_gpu::ModelLayout;
 use crate::object_program_gpu::attributes;
-use crate::object_streams::{Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
+use crate::object_streams::{
+    Element, SLOT, StreamData, StreamFormats, declaration, gather, registers,
+};
 
 /// One mode section as the light build reads it.
 #[derive(Clone)]
@@ -76,7 +79,12 @@ pub struct DeviceBuffer {
 
 impl DeviceBuffer {
     pub fn new(bytes: Vec<u8>, usage: wgpu::BufferUsages, label: &'static str) -> Self {
-        Self { bytes, usage, label, held: Mutex::new(None) }
+        Self {
+            bytes,
+            usage,
+            label,
+            held: Mutex::new(None),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -149,7 +157,9 @@ impl LightSection {
     /// The buffer built for `vertex_shader`'s program of classification
     /// `classification`.
     pub fn buffer(&self, vertex_shader: TagId, classification: u32) -> Option<&LightBuffer> {
-        self.buffers.iter().find(|b| b.vertex_shader == vertex_shader && b.classification == classification)
+        self.buffers
+            .iter()
+            .find(|b| b.vertex_shader == vertex_shader && b.classification == classification)
     }
 }
 
@@ -174,7 +184,11 @@ pub fn layout_id(declaration: &[Element]) -> u64 {
 /// declaration `semantics` gives; a vertex shader without a program
 /// there, or whose declaration does not gather, has no buffer (its
 /// entries are not resident). Why each such was left out, as text.
-pub fn light_model(sections: &[ModelSection<'_>], formats: &StreamFormats, semantics: &Semantics<'_>) -> (LightModel, Vec<String>) {
+pub fn light_model(
+    sections: &[ModelSection<'_>],
+    formats: &StreamFormats,
+    semantics: &Semantics<'_>,
+) -> (LightModel, Vec<String>) {
     let mut out = LightModel::default();
     let mut why = Vec::new();
     for s in sections {
@@ -184,12 +198,19 @@ pub fn light_model(sections: &[ModelSection<'_>], formats: &StreamFormats, seman
         for p in &s.parts {
             let start = list.len() as u32;
             list.extend(p.triangles.iter().flatten().map(|&i| u32::from(i)));
-            parts.insert(p.part, LightPart {
-                first_index: p.first_index,
-                index_count: p.index_count,
-                topology: if p.list { Topology::List } else { Topology::Strip },
-                indices: start..list.len() as u32,
-            });
+            parts.insert(
+                p.part,
+                LightPart {
+                    first_index: p.first_index,
+                    index_count: p.index_count,
+                    topology: if p.list {
+                        Topology::List
+                    } else {
+                        Topology::Strip
+                    },
+                    indices: start..list.len() as u32,
+                },
+            );
             for vs in &p.vertex_shaders {
                 if !shaders.contains(vs) {
                     shaders.push(*vs);
@@ -211,11 +232,15 @@ pub fn light_model(sections: &[ModelSection<'_>], formats: &StreamFormats, seman
                 continue;
             }
         };
-        let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
+        let data: Vec<Option<StreamData<'_>>> =
+            s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
         let mut buffers: Vec<LightBuffer> = Vec::new();
         for vs in shaders {
             let Some((classification, sem)) = semantics(vs, s.geometry, s.influences) else {
-                why.push(format!("section {}: vertex shader {vs:?} has no program for its classification", s.index));
+                why.push(format!(
+                    "section {}: vertex shader {vs:?} has no program for its classification",
+                    s.index
+                ));
                 continue;
             };
             let decl = declaration(&sem, &streams);
@@ -228,21 +253,36 @@ pub fn light_model(sections: &[ModelSection<'_>], formats: &StreamFormats, seman
             };
             let regs: Vec<u8> = decl.iter().map(|e| e.register).collect();
             let formats: Vec<_> = decl.iter().map(|e| e.format).collect();
-            let layout = ModelLayout { id: layout_id(&decl), stride: (SLOT * decl.len()) as u64, attributes: attributes(&regs, &formats) };
+            let layout = ModelLayout {
+                id: layout_id(&decl),
+                stride: (SLOT * decl.len()) as u64,
+                attributes: attributes(&regs, &formats),
+            };
             buffers.push(LightBuffer {
                 vertex_shader: vs,
                 classification,
                 declaration: decl,
                 layout,
-                vertices: DeviceBuffer::new(bytemuck::cast_slice(&vertices).to_vec(), wgpu::BufferUsages::VERTEX, "native light model vertices"),
+                vertices: DeviceBuffer::new(
+                    bytemuck::cast_slice(&vertices).to_vec(),
+                    wgpu::BufferUsages::VERTEX,
+                    "native light model vertices",
+                ),
             });
         }
-        out.sections.insert(s.index, LightSection {
-            decompression: s.decompression,
-            parts,
-            indices: DeviceBuffer::new(bytemuck::cast_slice(&list).to_vec(), wgpu::BufferUsages::INDEX, "native light model indices"),
-            buffers,
-        });
+        out.sections.insert(
+            s.index,
+            LightSection {
+                decompression: s.decompression,
+                parts,
+                indices: DeviceBuffer::new(
+                    bytemuck::cast_slice(&list).to_vec(),
+                    wgpu::BufferUsages::INDEX,
+                    "native light model indices",
+                ),
+                buffers,
+            },
+        );
     }
     (out, why)
 }
@@ -257,7 +297,11 @@ impl LightModels {
     /// `entry`'s section and part, when the entry is an object's whose
     /// raw range and topology are the part's.
     pub fn part(&self, entry: &LightEntry) -> Option<(&LightSection, &LightPart)> {
-        let section = self.models.get(&entry.model)?.sections.get(&entry.stream.section)?;
+        let section = self
+            .models
+            .get(&entry.model)?
+            .sections
+            .get(&entry.stream.section)?;
         let part = section.parts.get(&entry.stream.part)?;
         (part.first_index == entry.stream.first_index
             && part.index_count == entry.stream.index_count
@@ -324,9 +368,21 @@ mod tests {
             record: 4,
             owner: LayerOwner::Object(InstanceKey(0xe1e1_0001)),
             model: 0xe100_0007,
-            stream: LightStream { section: 2, part, vertex_class: 0, first_index, index_count, topology },
+            stream: LightStream {
+                section: 2,
+                part,
+                vertex_class: 0,
+                first_index,
+                index_count,
+                topology,
+            },
             pose: LightPose::Rows(0..3),
-            binding: LightBinding { shader: 0xe200_0001, selector: 0, variant: 0, implementation: 0 },
+            binding: LightBinding {
+                shader: 0xe200_0001,
+                selector: 0,
+                variant: 0,
+                implementation: 0,
+            },
         }
     }
 
@@ -361,7 +417,10 @@ mod tests {
         let position = section.buffer(TagId(0xe000_0011), 0).expect("built");
         assert_eq!(position.provided(), 0b1);
         assert_ne!(both.layout.id, position.layout.id);
-        assert!(section.buffer(TagId(0xe000_0010), 1).is_none(), "another classification");
+        assert!(
+            section.buffer(TagId(0xe000_0010), 1).is_none(),
+            "another classification"
+        );
 
         let mut models = LightModels::default();
         models.models.insert(0xe100_0007, model);
@@ -371,6 +430,10 @@ mod tests {
         assert!(models.part(&entry(1, 6, 4, Topology::List)).is_none());
         assert!(models.part(&entry(0, 0, 3, Topology::List)).is_none());
         assert!(models.part(&entry(5, 0, 6, Topology::List)).is_none());
-        assert_ne!(LightModels::stream(&entry(0, 0, 6, Topology::List)), 0, "never the structure's stream");
+        assert_ne!(
+            LightModels::stream(&entry(0, 0, 6, Topology::List)),
+            0,
+            "never the structure's stream"
+        );
     }
 }

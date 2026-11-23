@@ -2440,6 +2440,14 @@ fn paint<'a>(
                     Footprint::of_scratch(&w.id, s, top, top + (lines + 2) * lh)
                 })
             }
+            Kind::Scene3d { name } => {
+                // The offline preview has no GPU scene: the rect and the
+                // model's name stand in for it.
+                c.fill(r, [16, 24, 36, w.alpha]);
+                c.outline(r, [90, 120, 160, w.alpha]);
+                src.text(c, 1, name, r, Justify::Centre, [200, 214, 226], w.alpha);
+                trace.is_some().then(|| Footprint::of_rect(&w.id, r, true))
+            }
         };
         if let (Some(t), Some(f)) = (trace.as_deref_mut(), footprint) {
             t.push(f);

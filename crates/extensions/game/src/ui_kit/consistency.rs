@@ -129,7 +129,7 @@ fn on_palette(c: [u8; 3], palette: &[(&str, [u8; 3])]) -> bool {
 fn texts(v: &View) -> impl Iterator<Item = (&Widget, &str, i16, [u8; 3])> {
     v.widgets.iter().filter(|w| !w.id.starts_with("opener.")).filter_map(|w| match &w.kind {
         view::Kind::Text { text, font, colour, .. } => Some((w, text.as_str(), *font, *colour)),
-        view::Kind::Art { .. } => None,
+        view::Kind::Art { .. } | view::Kind::Scene3d { .. } => None,
     })
 }
 
@@ -630,6 +630,7 @@ fn pattern_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Fin
                     view::Kind::Art { art, .. } => {
                         matches!(art, view::Art::Skin { .. }) || a.layer == view::Layer::Under
                     }
+                    view::Kind::Scene3d { .. } => true,
                     view::Kind::Text { .. } => false,
                 }
                 && crate::ui_kit::layout::area(crate::ui_kit::layout::intersect(ink, a.rect())) * 2

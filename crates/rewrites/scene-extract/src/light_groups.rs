@@ -41,14 +41,16 @@
 //!   is not traced; its layers read the block as it is at their build.
 
 use frame_scene::{
-    BuildError, GroupSite, InstanceKey, LayerOwner, LightBinding, LightEntry, LightGroup, LightPose, LightStream,
-    PROJECTION_ROWS, Row, SceneBuilder, Topology,
+    BuildError, GroupSite, InstanceKey, LayerOwner, LightBinding, LightEntry, LightGroup,
+    LightPose, LightStream, PROJECTION_ROWS, Row, SceneBuilder, ShadowPass, Topology,
 };
 
 use crate::GuestRead;
 use crate::layout::object_nodes::TAG_INSTANCES;
 use crate::layout::objects::{RecordOwner, record_owner, record_rows};
-use crate::layout::skip::{GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
+use crate::layout::skip::{
+    GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS,
+};
 
 /// The structure BSP's pointer.
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
@@ -147,7 +149,8 @@ fn byte(mem: &dyn GuestRead, at: u32) -> R<u8> {
 }
 
 fn half(mem: &dyn GuestRead, at: u32) -> R<u16> {
-    Ok(u16::from(byte(mem, at)?) | u16::from(byte(mem, at.checked_add(1).ok_or(Cause::Memory)?)?) << 8)
+    Ok(u16::from(byte(mem, at)?)
+        | u16::from(byte(mem, at.checked_add(1).ok_or(Cause::Memory)?)?) << 8)
 }
 
 fn at(base: u32, offset: u32) -> R<u32> {
@@ -155,7 +158,9 @@ fn at(base: u32, offset: u32) -> R<u32> {
 }
 
 fn index(base: u32, n: u32, stride: u32) -> R<u32> {
-    n.checked_mul(stride).and_then(|o| base.checked_add(o)).ok_or(Cause::Memory)
+    n.checked_mul(stride)
+        .and_then(|o| base.checked_add(o))
+        .ok_or(Cause::Memory)
 }
 
 fn ptr(mem: &dyn GuestRead, base: u32, offset: u32) -> R<u32> {
@@ -189,7 +194,10 @@ fn material(mem: &dyn GuestRead, shader: u32) -> R<()> {
         return Err(Cause::Material);
     }
     let stem = tag(mem, word(mem, at(shad, 4)?)?, b"stem").map_err(|_| Cause::Material)?;
-    if [0x44, 0x50].into_iter().any(|o| mem.read_u32(stem.wrapping_add(o)) != Some(u32::MAX)) {
+    if [0x44, 0x50]
+        .into_iter()
+        .any(|o| mem.read_u32(stem.wrapping_add(o)) != Some(u32::MAX))
+    {
         return Err(Cause::Material);
     }
     Ok(())
@@ -222,7 +230,12 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
         let bsp = ptr(mem, ACTIVE_BSP, 0)?;
         if flags & 1 << 12 == 0 {
             let info = index(ptr(mem, bsp, 0xa0)?, section, 0xb0)?;
-            (LayerOwner::Cluster(section as u16), section as u16, ptr(mem, info, 0x50)?, LightPose::World)
+            (
+                LayerOwner::Cluster(section as u16),
+                section as u16,
+                ptr(mem, info, 0x50)?,
+                LightPose::World,
+            )
         } else {
             let placement = (key >> 18) & 0x7ff;
             let at_placement = index(ptr(mem, bsp, 0x144)?, placement, 0x58)?;
@@ -232,7 +245,12 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
             }
             let info = index(ptr(mem, bsp, 0x13c)?, u32::from(definition), 0xc8)?;
             let p = placement as u16;
-            (LayerOwner::Placement(p), definition, ptr(mem, info, 0x50)?, LightPose::Placement(p))
+            (
+                LayerOwner::Placement(p),
+                definition,
+                ptr(mem, info, 0x50)?,
+                LightPose::Placement(p),
+            )
         }
     } else {
         let handle = match record_owner(mem, record).ok_or(Cause::Memory)? {
@@ -241,7 +259,12 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
         };
         let mode = tag(mem, model, b"mode")?;
         let base = index(ptr(mem, mode, 0x28)?, section, 0x5c)?;
-        (LayerOwner::Object(InstanceKey(handle)), section as u16, ptr(mem, base, 0x34)?, LightPose::Rows(0..0))
+        (
+            LayerOwner::Object(InstanceKey(handle)),
+            section as u16,
+            ptr(mem, base, 0x34)?,
+            LightPose::Rows(0..0),
+        )
     };
     if flags & 1 << 6 != 0 && word(mem, at(rec, 0x14)?)? != 0 && word(mem, at(data, 8)?)? != 0 {
         return Err(Cause::Subparts);
@@ -258,7 +281,11 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
         LightPose::Rows(_) => record_rows(mem, record).map_err(|_| Cause::Pose)?,
         _ => Vec::new(),
     };
-    let topology = if flags & 1 << 9 != 0 && part_flags & 8 == 0 { Topology::Strip } else { Topology::List };
+    let topology = if flags & 1 << 9 != 0 && part_flags & 8 == 0 {
+        Topology::Strip
+    } else {
+        Topology::List
+    };
     let entry = LightEntry {
         slot: sorted.index,
         record,
@@ -273,7 +300,12 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
             topology,
         },
         pose,
-        binding: LightBinding { shader, selector, variant, implementation: sorted.implementation },
+        binding: LightBinding {
+            shader,
+            selector,
+            variant,
+            implementation: sorted.implementation,
+        },
     };
     Ok((entry, rows))
 }
@@ -290,11 +322,39 @@ pub fn projection(mem: &dyn GuestRead) -> Option<[[u32; 4]; PROJECTION_ROWS]> {
     Some(out)
 }
 
+/// The target and raster words a shadow layer's begin leaves. The layer
+/// build runs after the begin, so these are the words its draws inherit.
+pub fn shadow_pass(mem: &dyn GuestRead, layer: u8) -> Option<ShadowPass> {
+    if !matches!(layer, 10 | 11 | 14) {
+        return None;
+    }
+    use engine::shadow_constants::global::{PASS_FLAGS, TARGET_STRIDE, TARGETS};
+    let target = mem.read_u32(0x0048_58b4)?;
+    let entry = TARGETS.checked_add(target.checked_mul(TARGET_STRIDE)?)?;
+    let width = mem.read_u32(entry.checked_add(0x80)?)?;
+    let height = mem.read_u32(entry.checked_add(0x84)?)?;
+    if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+        return None;
+    }
+    Some(ShadowPass {
+        target,
+        size: [width, height],
+        flags: mem.read_u32(PASS_FLAGS)?,
+        clip_control: mem.read_u32(0x004b_8344)?,
+        raster: mem.read_u32(0x004b_8464)?,
+        offset_enable: mem.read_u32(0x004b_8340)?,
+        offset_constant: mem.read_u32(0x004b_8334)?,
+        offset_slope: mem.read_u32(0x004b_8330)?,
+        stencil_mode: mem.read_u32(0x0046_7010)?,
+        shadow_function: mem.read_u32(0x004b_846c)?,
+    })
+}
+
 /// The sorted entries of `layer` on `list` into a group of the open
 /// view's last light (its last object shadow for
 /// [`GroupSite::ObjectShadow`]): each that reads with its streams, pose and
 /// bindings, the rest the group's remainder by cause. Layers 10 and 11
-/// take the shadow projection.
+/// take the shadow projection; layers 10, 11 and 14 take their pass state.
 pub fn push(
     mem: &dyn GuestRead,
     list: u32,
@@ -307,17 +367,32 @@ pub fn push(
     let mut entries = Vec::with_capacity(sorted.len());
     let items = mem.read_u32(list.wrapping_add(0x14)).filter(|&p| p != 0);
     for &s in sorted {
-        match items.ok_or(Cause::Memory).and_then(|items| entry(mem, items, s)) {
+        match items
+            .ok_or(Cause::Memory)
+            .and_then(|items| entry(mem, items, s))
+        {
             Ok(e) => entries.push(e),
             Err(cause) => {
-                let n = Cause::ALL.iter().position(|&c| c == cause).expect("a cause of ALL");
+                let n = Cause::ALL
+                    .iter()
+                    .position(|&c| c == cause)
+                    .expect("a cause of ALL");
                 out.remainder[n] += 1;
             }
         }
     }
     out.entries = entries.len() as u32;
     let projection = matches!(layer, 10 | 11).then(|| projection(mem)).flatten();
-    let group = LightGroup { light: 0, layer, site, projection, entries: 0..0, remainder: out.remainder() };
+    let pass = shadow_pass(mem, layer);
+    let group = LightGroup {
+        light: 0,
+        layer,
+        site,
+        projection,
+        pass,
+        entries: 0..0,
+        remainder: out.remainder(),
+    };
     match site {
         GroupSite::ObjectShadow => {
             builder.push_shadow_group(group, &entries)?;
@@ -424,7 +499,11 @@ mod tests {
     }
 
     fn sorted(index: u16) -> Sorted {
-        Sorted { index, implementation: 2, vertex_class: 1 }
+        Sorted {
+            index,
+            implementation: 2,
+            vertex_class: 1,
+        }
     }
 
     /// Item 1's record a placement, item 2's an object's rigid part.
@@ -447,10 +526,30 @@ mod tests {
         let mut cam = Mem::default();
         camera_record(&mut cam, 0x1000);
         b.begin(SceneId::default());
-        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, crate::layout::camera::read(&cam, 0x1000).unwrap())
-            .unwrap();
-        let light = SceneLight { handle: 1, definition: 2, flags: 4, definition_flags: 0, additional_casters: true, steps: 0..0, ..Default::default() };
-        let step = LightStep { layer: 10, stencil: None, target: LightTarget::ShadowMap, draws: true };
+        b.open_view(
+            ViewKey {
+                kind: ViewKind::Game,
+                player: 0,
+                view: 0,
+            },
+            crate::layout::camera::read(&cam, 0x1000).unwrap(),
+        )
+        .unwrap();
+        let light = SceneLight {
+            handle: 1,
+            definition: 2,
+            flags: 4,
+            definition_flags: 0,
+            additional_casters: true,
+            steps: 0..0,
+            ..Default::default()
+        };
+        let step = LightStep {
+            layer: 10,
+            stencil: None,
+            target: LightTarget::ShadowMap,
+            draws: true,
+        };
         b.push_light(light, &[step]).unwrap();
     }
 
@@ -460,16 +559,45 @@ mod tests {
         let handle = placement_and_object(&mut m);
         let (cluster, rows) = entry(&m, ITEMS, sorted(0)).unwrap();
         assert!(rows.is_empty());
-        assert_eq!((cluster.owner, cluster.pose.clone(), cluster.record), (LayerOwner::Cluster(2), LightPose::World, 1));
-        assert_eq!(cluster.stream, LightStream {
-            section: 2, part: 0, vertex_class: 1, first_index: 0, index_count: 6, topology: Topology::List,
-        });
-        assert_eq!(cluster.binding, LightBinding { shader: SHADER, selector: 1, variant: 2, implementation: 2 });
+        assert_eq!(
+            (cluster.owner, cluster.pose.clone(), cluster.record),
+            (LayerOwner::Cluster(2), LightPose::World, 1)
+        );
+        assert_eq!(
+            cluster.stream,
+            LightStream {
+                section: 2,
+                part: 0,
+                vertex_class: 1,
+                first_index: 0,
+                index_count: 6,
+                topology: Topology::List,
+            }
+        );
+        assert_eq!(
+            cluster.binding,
+            LightBinding {
+                shader: SHADER,
+                selector: 1,
+                variant: 2,
+                implementation: 2
+            }
+        );
         let (placement, _) = entry(&m, ITEMS, sorted(1)).unwrap();
-        assert_eq!((placement.owner, placement.pose), (LayerOwner::Placement(3), LightPose::Placement(3)));
-        assert_eq!((placement.stream.section, placement.stream.first_index), (1, 8), "the placement's definition");
+        assert_eq!(
+            (placement.owner, placement.pose),
+            (LayerOwner::Placement(3), LightPose::Placement(3))
+        );
+        assert_eq!(
+            (placement.stream.section, placement.stream.first_index),
+            (1, 8),
+            "the placement's definition"
+        );
         let (object, rows) = entry(&m, ITEMS, sorted(2)).unwrap();
-        assert_eq!((object.owner, object.model), (LayerOwner::Object(InstanceKey(handle)), MODEL));
+        assert_eq!(
+            (object.owner, object.model),
+            (LayerOwner::Object(InstanceKey(handle)), MODEL)
+        );
         assert_eq!(object.stream.section, 0);
         assert_eq!(rows.len(), 3, "a rigid record's one matrix");
         assert_eq!(rows[0], [0.0, 3.0, 6.0, 9.0]);
@@ -479,9 +607,15 @@ mod tests {
     fn strip_topology_needs_record_bit_9_on_a_part_without_the_list_flag() {
         let mut m = fixture();
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 1 << 9);
-        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology, Topology::List);
+        assert_eq!(
+            entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology,
+            Topology::List
+        );
         set_half(&mut m, PARTS + 2, 0);
-        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology, Topology::Strip);
+        assert_eq!(
+            entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology,
+            Topology::Strip
+        );
     }
 
     #[test]
@@ -491,19 +625,25 @@ mod tests {
             (&|m| m.w(ITEMS, 0x8484), Cause::Callback),
             (&|m| m.w(rec, 1 << 11), Cause::State),
             (&|m| m.w(rec + 0x18, 0x0001_0000), Cause::State),
-            (&|m| {
-                m.w(rec, 1 << 6);
-                m.w(rec + 0x14, 1);
-                m.w(DATA + 8, 2);
-            }, Cause::Subparts),
+            (
+                &|m| {
+                    m.w(rec, 1 << 6);
+                    m.w(rec + 0x14, 1);
+                    m.w(DATA + 8, 2);
+                },
+                Cause::Subparts,
+            ),
             (&|m| set_half(m, PARTS + 8, 2), Cause::Range),
             (&|m| m.w(DATA + 0x20, 4), Cause::Range),
             (&|m| m.w(POST + 0x3c, 1), Cause::Material),
             (&|m| m.w(STEM + 0x50, 7), Cause::Material),
-            (&|m| {
-                m.w(rec + 4, MODEL);
-                m.w(rec + 0x10, 0);
-            }, Cause::Owner),
+            (
+                &|m| {
+                    m.w(rec + 4, MODEL);
+                    m.w(rec + 0x10, 0);
+                },
+                Cause::Owner,
+            ),
         ];
         for (n, (change, cause)) in cases.into_iter().enumerate() {
             let mut m = fixture();
@@ -513,7 +653,11 @@ mod tests {
         }
         let mut m = fixture();
         m.w(SHAD + 0x14, 1 << 16);
-        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap_err(), Cause::Material, "shader +0x16 bit 0");
+        assert_eq!(
+            entry(&m, ITEMS, sorted(0)).unwrap_err(),
+            Cause::Material,
+            "shader +0x16 bit 0"
+        );
     }
 
     #[test]
@@ -551,19 +695,86 @@ mod tests {
         placement_and_object(&mut m);
         let mut b = SceneBuilder::default();
         scene_with_light(&mut b);
-        assert_eq!(push(&m, LIST, 10, GroupSite::ObjectShadow, &[sorted(2)], &mut b), Err(BuildError::NoShadow));
+        assert_eq!(
+            push(&m, LIST, 10, GroupSite::ObjectShadow, &[sorted(2)], &mut b),
+            Err(BuildError::NoShadow)
+        );
         b.push_object_shadow([7, 8], false).unwrap();
         m.w(OBJECT_SHADOW_WEIGHT, 0.375f32.to_bits());
-        let got = push(&m, LIST, 10, GroupSite::ObjectShadow, &[sorted(2), sorted(0)], &mut b).unwrap();
+        let got = push(
+            &m,
+            LIST,
+            10,
+            GroupSite::ObjectShadow,
+            &[sorted(2), sorted(0)],
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(got.entries, 2);
-        assert_eq!(b.scene().unwrap().object_shadows[0].weight(), None, "layer 10 reads no weight");
+        assert_eq!(
+            b.scene().unwrap().object_shadows[0].weight(),
+            None,
+            "layer 10 reads no weight"
+        );
         push(&m, LIST, 11, GroupSite::ObjectShadow, &[sorted(0)], &mut b).unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         assert!(s.groups_of(0).is_empty());
         let shadow = &s.object_shadows_of(0)[0];
         let group = &s.shadow_groups_of(shadow)[0];
-        assert_eq!((group.layer, group.site, s.entries_of(group).len()), (10, GroupSite::ObjectShadow, 2));
+        assert_eq!(
+            (group.layer, group.site, s.entries_of(group).len()),
+            (10, GroupSite::ObjectShadow, 2)
+        );
         assert_eq!(shadow.weight(), Some(0.375), "layer 11 reads the weight");
+    }
+
+    #[test]
+    fn shadow_layers_read_their_target_and_raster_words_and_lit_layers_do_not() {
+        use engine::shadow_constants::global::{PASS_FLAGS, TARGET_STRIDE, TARGETS};
+        let mut m = Mem::default();
+        for layer in [10, 11, 14] {
+            m.w(0x0048_58b4, 9);
+            m.w(TARGETS + 9 * TARGET_STRIDE + 0x80, 512);
+            m.w(TARGETS + 9 * TARGET_STRIDE + 0x84, 256);
+            m.w(PASS_FLAGS, 0x14);
+            for (n, at) in [
+                0x004b_8344,
+                0x004b_8464,
+                0x004b_8340,
+                0x004b_8334,
+                0x004b_8330,
+                0x0046_7010,
+                0x004b_846c,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                m.w(at, 0x100 + n as u32);
+            }
+            let p = shadow_pass(&m, layer).unwrap();
+            assert_eq!((p.target, p.size, p.flags), (9, [512, 256], 0x14));
+            assert_eq!(
+                (p.clip_control, p.raster, p.offset_enable),
+                (0x100, 0x101, 0x102)
+            );
+            assert_eq!(
+                (
+                    p.offset_constant,
+                    p.offset_slope,
+                    p.stencil_mode,
+                    p.shadow_function
+                ),
+                (0x103, 0x104, 0x105, 0x106)
+            );
+            assert!(p.colour_mask());
+        }
+        assert_eq!(shadow_pass(&m, 12), None);
+        m.0.remove(&(TARGETS + 9 * TARGET_STRIDE + 0x80));
+        assert_eq!(
+            shadow_pass(&m, 10),
+            None,
+            "an unreadable size is not a native pass"
+        );
     }
 }

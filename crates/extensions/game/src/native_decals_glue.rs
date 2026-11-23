@@ -11,8 +11,8 @@ use d3d::backend::{
     DrawAdmission, DrawSnapshot, ExternalAttachments, ExternalDraws, ExternalPlan, ExternalWrites,
 };
 use d3d::shader::VertexProcessing;
-use gfx::vertex::{PrimitiveType, VertexDataType, VertexRegister};
-use native_render::decal::{Mode, VERTEX_SIZE, Vertex};
+use gfx::vertex::{PrimitiveType, StreamLayout, VertexDataType, VertexRegister};
+use native_render::decal::{Mode, VERTEX_SIZE, Vertex, decode_packed};
 use native_render::decal_gpu::{
     ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ShaderSnapshot,
     StageExtras,
@@ -74,6 +74,53 @@ fn clip(r: d3d::PixelRect) -> ClipRect {
     }
 }
 
+/// The resolved draw's vertices, decoded from its one stream. Halo 2's decal
+/// declaration (the attribute list at `0x0043f7b9`, bound with stride 16) is
+/// float3 position at `+0` in `v0` and `NORMPACKED3` at `+12` in `v3`: an
+/// 11:11:10 signed normalised dword, decoded as the NV2A fetches it
+/// ([`decode_packed`]). Any other declaration is refused.
+fn decal_vertices(
+    layout: &StreamLayout,
+    stream: &d3d::backend::StreamBytes,
+    vertex_count: u32,
+) -> Result<Vec<Vertex>, &'static str> {
+    if layout.stride != VERTEX_SIZE as u32
+        || stream.stride != VERTEX_SIZE as u32
+        || layout.attributes.len() != 2
+    {
+        return Err("vertex declaration");
+    }
+    for (register, data_type, offset) in [
+        (VertexRegister::POSITION, VertexDataType::Float3, 0),
+        (VertexRegister::DIFFUSE, VertexDataType::NormPacked3, 12),
+    ] {
+        if !layout
+            .attributes
+            .iter()
+            .any(|a| (a.register, a.data_type, a.offset) == (register, data_type, offset))
+        {
+            return Err("vertex declaration");
+        }
+    }
+    if stream.data.len() != vertex_count as usize * VERTEX_SIZE {
+        return Err("vertex bytes");
+    }
+    Ok(stream
+        .data
+        .as_chunks::<VERTEX_SIZE>()
+        .0
+        .iter()
+        .map(|v| Vertex {
+            position: [
+                f32::from_bits(u32::from_le_bytes(v[0..4].try_into().expect("position"))),
+                f32::from_bits(u32::from_le_bytes(v[4..8].try_into().expect("position"))),
+                f32::from_bits(u32::from_le_bytes(v[8..12].try_into().expect("position"))),
+            ],
+            diffuse: decode_packed(v[12..16].try_into().expect("packed")),
+        })
+        .collect())
+}
+
 fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static str> {
     let d = snapshot.draw;
     // This producer freezes one uniform block for both attachment copies.
@@ -91,43 +138,7 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
     if d.layout.streams.len() != 1 || d.streams.len() != 1 {
         return Err("vertex streams");
     }
-    let layout = &d.layout.streams[0];
-    let stream = &d.streams[0];
-    if layout.stride != VERTEX_SIZE as u32
-        || stream.stride != VERTEX_SIZE as u32
-        || layout.attributes.len() != 2
-    {
-        return Err("vertex declaration");
-    }
-    for (register, data_type, offset) in [
-        (VertexRegister::POSITION, VertexDataType::Float3, 0),
-        (VertexRegister::DIFFUSE, VertexDataType::D3dColor, 12),
-    ] {
-        if !layout
-            .attributes
-            .iter()
-            .any(|a| (a.register, a.data_type, a.offset) == (register, data_type, offset))
-        {
-            return Err("vertex declaration");
-        }
-    }
-    if stream.data.len() != d.vertex_count as usize * VERTEX_SIZE {
-        return Err("vertex bytes");
-    }
-    let vertices = stream
-        .data
-        .as_chunks::<VERTEX_SIZE>()
-        .0
-        .iter()
-        .map(|v| Vertex {
-            position: [
-                f32::from_bits(u32::from_le_bytes(v[0..4].try_into().expect("position"))),
-                f32::from_bits(u32::from_le_bytes(v[4..8].try_into().expect("position"))),
-                f32::from_bits(u32::from_le_bytes(v[8..12].try_into().expect("position"))),
-            ],
-            color: v[12..16].try_into().expect("colour"),
-        })
-        .collect::<Vec<_>>();
+    let vertices = decal_vertices(&d.layout.streams[0], &d.streams[0], d.vertex_count)?;
     let VertexProcessing::Program { microcode, .. } = &d.shader.vertex else {
         return Err("vertex program");
     };
@@ -368,5 +379,99 @@ impl d3d::ExternalPass for DecalPass {
                 .expect("prepared above")
                 .encode(&mut target, clip),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use d3d::backend::{StreamBytes, StreamData};
+    use gfx::vertex::VertexAttribute;
+
+    /// Halo 2's decal declaration (the attribute list at `0x0043f7b9`):
+    /// `v0` float3 at +0, `v3` `NORMPACKED3` at +12, stride 16.
+    fn declaration() -> StreamLayout {
+        StreamLayout {
+            stream: 0,
+            attributes: vec![
+                VertexAttribute {
+                    register: VertexRegister::POSITION,
+                    data_type: VertexDataType::Float3,
+                    offset: 0,
+                },
+                VertexAttribute {
+                    register: VertexRegister::DIFFUSE,
+                    data_type: VertexDataType::NormPacked3,
+                    offset: 12,
+                },
+            ],
+            stride: 16,
+        }
+    }
+
+    fn stream(vertices: &[[u8; VERTEX_SIZE]], stride: u32) -> StreamBytes {
+        StreamBytes {
+            data: StreamData::Owned(vertices.concat()),
+            stride,
+        }
+    }
+
+    fn vertex(position: [f32; 3], packed: u32) -> [u8; VERTEX_SIZE] {
+        let mut v = [0; VERTEX_SIZE];
+        for (i, f) in position.iter().enumerate() {
+            v[4 * i..4 * i + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        v[12..16].copy_from_slice(&packed.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn halo2s_declaration_resolves_native_and_decodes() {
+        let vs = [
+            vertex([1.0, 2.0, 3.0], 0x0000_0000),
+            vertex([-4.0, 0.5, 1e3], 0x7fdf_fbff),
+            vertex([0.0, -1.0, 7.25], 0x8020_0400),
+        ];
+        let got = decal_vertices(&declaration(), &stream(&vs, 16), 3).unwrap();
+        assert_eq!(
+            got,
+            [
+                Vertex { position: [1.0, 2.0, 3.0], diffuse: [0.0, 0.0, 0.0] },
+                Vertex { position: [-4.0, 0.5, 1e3], diffuse: [1.0, 1.0, 1.0] },
+                Vertex { position: [0.0, -1.0, 7.25], diffuse: [-1.0, -1.0, -1.0] },
+            ]
+        );
+    }
+
+    #[test]
+    fn other_declarations_are_refused() {
+        let vs = [vertex([0.0; 3], 0)];
+        // D3DCOLOR instead of NORMPACKED3 (the old assumption).
+        let mut layout = declaration();
+        layout.attributes[1].data_type = VertexDataType::D3dColor;
+        assert_eq!(
+            decal_vertices(&layout, &stream(&vs, 16), 1),
+            Err("vertex declaration")
+        );
+        // A third attribute on a wider vertex.
+        let mut layout = declaration();
+        layout.attributes.push(VertexAttribute {
+            register: VertexRegister::TEXCOORD0,
+            data_type: VertexDataType::Float2,
+            offset: 16,
+        });
+        layout.stride = 24;
+        assert_eq!(
+            decal_vertices(&layout, &stream(&vs, 24), 1),
+            Err("vertex declaration")
+        );
+        // The stream's own stride disagrees.
+        assert_eq!(
+            decal_vertices(&declaration(), &stream(&vs, 20), 1),
+            Err("vertex declaration")
+        );
+        // The bytes do not cover the vertices.
+        let short = StreamBytes { data: StreamData::Owned(vec![0; 12]), stride: 16 };
+        assert_eq!(decal_vertices(&declaration(), &short, 1), Err("vertex bytes"));
     }
 }

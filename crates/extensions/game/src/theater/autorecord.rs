@@ -4,7 +4,9 @@
 //! `h2 play` records each session into the film library when no `--film`
 //! or `H2_FILM_OUT` names a destination. The session's tape runs from boot
 //! to exit and is never listed; each game it plays is cut from it into a
-//! film of its own ([`cut`], "One film per game"). The recording keeps the
+//! film of its own ([`cut`], "One film per game"). The tape's captures
+//! belong to games: outside one, no keyframe or snapshot is attempted
+//! (`record::Recording::in_game`). The recording keeps the
 //! session's player features on (Live session links, browser
 //! advertisements, Firefight's director, the rules start gate, editor
 //! reloads, Forge), and its header says so, so the replay installs the same
