@@ -287,6 +287,10 @@ pub(crate) enum SocialRequest {
     FriendAnswer { from: Xuid, accept: bool },
     /// The signed-in player removes a friend, or withdraws a pending request.
     FriendRemove { friend: Xuid },
+    /// A friend request from the signed-in player to `to`.
+    FriendRequest { to: Xuid },
+    /// The same, to the account with this gamertag (resolved on the server).
+    FriendRequestByName(String),
     Join { from: Xuid, session_id: String },
     JoinLink(String),
 }
@@ -1748,6 +1752,17 @@ impl Worker {
     ) -> Result<(), Error> {
         self.signed_event(user, &live_proto::mailbox::stream(recipient), kind, data)
     }
+    fn friend_requested(&self, user: &Identity, to: Xuid) -> Result<(), Error> {
+        self.account_event(
+            user,
+            types::FRIEND_REQUESTED,
+            serde_json::to_value(live_proto::FriendEventData {
+                from: Xuid(user.xuid),
+                to,
+            })
+            .map_err(|_| Error::Protocol)?,
+        )
+    }
     /// A friend event on the player's own account stream.
     fn account_event(
         &self,
@@ -1872,6 +1887,27 @@ impl Worker {
                     })
                     .map_err(|_| Error::Protocol)?,
                 )?;
+                Ok(Reply::Done)
+            }
+            SocialRequest::FriendRequest { to } => {
+                self.friend_requested(user, *to)?;
+                Ok(Reply::Done)
+            }
+            SocialRequest::FriendRequestByName(tag) => {
+                #[derive(serde::Deserialize)]
+                struct Found {
+                    xuid: Xuid,
+                }
+                let found: Found = self.team_json(
+                    user,
+                    &format!(
+                        "/accounts/{}",
+                        url::form_urlencoded::byte_serialize(tag.as_bytes())
+                            .collect::<String>()
+                            .replace('+', "%20")
+                    ),
+                )?;
+                self.friend_requested(user, found.xuid)?;
                 Ok(Reply::Done)
             }
             SocialRequest::FriendRemove { friend } => {

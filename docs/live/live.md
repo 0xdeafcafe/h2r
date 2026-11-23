@@ -1749,8 +1749,14 @@ TeamMemberRecruitByName (`0x003a8399`/`0x003a83d4`), and GameInviteSend
 bounded ANSI gamertag, plus team/member properties or session ID as appropriate.
 A null optional message on a typed send becomes an empty message of that type.
 The sender must be signed in. With a server configured, GameInviteSend posts
-signed mailbox invitations and its task waits for acknowledgment. Other generic
-message/friend-request captures remain local; clan recruitment has its separate
+signed mailbox invitations and its task waits for acknowledgment. FriendsRequestEx
+and FriendsRequestByNameEx post a signed `FriendRequested` event on the player's
+account stream (`SocialRequest::FriendRequest` / `FriendRequestByName` in
+`crates/live/live-hle/src/client.rs`); the by-name form first reads
+`/v1/accounts/{gamertag}` for the xuid. The task completes when the server has
+the event; an unknown gamertag or xuid completes it with FRIEND_NOT_FOUND
+(`0x80152008`), and a refused request (already friends or pending, a Clanker)
+with INVALID_ARGUMENT. Generic message captures remain local; clan recruitment has its separate
 server-backed Teams path.
 
 Every accepted local send returns a task whose Continue result is

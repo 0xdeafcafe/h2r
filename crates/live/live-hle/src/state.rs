@@ -1558,6 +1558,36 @@ impl State {
                 );
                 self.outbox.attach(m.u32(a[8])?, pending);
             }
+            // A friend request made in the game reaches the server as a
+            // signed event on the player's account stream; the outbox
+            // capture stays for the title's view of the send.
+            if result == 0
+                && matches!(
+                    op,
+                    crate::outbox::Op::FriendRequest | crate::outbox::Op::FriendRequestByName
+                )
+                && let (Some(service), Some(session)) = (&self.service, self.session())
+            {
+                let capture = self.outbox.last().unwrap();
+                let request = match capture.recipients.first() {
+                    Some(crate::outbox::MessageRecipient::User(u)) => {
+                        client::SocialRequest::FriendRequest {
+                            to: live_proto::Xuid(u.xuid),
+                        }
+                    }
+                    Some(crate::outbox::MessageRecipient::Gamertag(tag)) => {
+                        client::SocialRequest::FriendRequestByName(tag.clone())
+                    }
+                    None => unreachable!(),
+                };
+                let out = if op == crate::outbox::Op::FriendRequest {
+                    a[6]
+                } else {
+                    a[4]
+                };
+                let pending = service.social(&session, sender, request);
+                self.outbox.attach(m.u32(out)?, pending);
+            }
             return Ok(result);
         }
         if let Arbitration(op) = op {

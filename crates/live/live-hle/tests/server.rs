@@ -3475,6 +3475,65 @@ fn friend_request_answers_and_removals_are_signed_events() {
         (0..n).all(|i| w.rt.memory().u64(INV_RECORD + i * 86).unwrap() != a.xuid.0)
     });
 }
+#[test]
+fn friend_requests_made_in_the_game_reach_the_server_and_can_be_answered() {
+    let s = Server::new();
+    let a = s.account("Asker");
+    let b = s.account("Answerer");
+    let c = s.account("Namesake");
+    let mut asker = World::new(&s.embedded.url, &[&a]);
+    let mut answerer = World::new(&s.embedded.url, &[&b]);
+    let mut namesake = World::new(&s.embedded.url, &[&c]);
+    asker.logon();
+    answerer.logon();
+    namesake.logon();
+
+    // By xuid: the task completes once the server has the request.
+    let (blo, bhi) = (b.xuid.0 as u32, (b.xuid.0 >> 32) as u32);
+    assert_eq!(
+        asker.call("XOnlineFriendsRequestEx", &[0, blo, bhi, 0, 0, 0, OUT]),
+        0
+    );
+    let task = asker.u32(OUT);
+    assert_eq!(asker.wait(task), TASK_SUCCESS);
+    assert!(friend_events(&s, types::FRIEND_REQUESTED, a.xuid, b.xuid));
+
+    // By name.
+    asker.put(BUFFER, b"Namesake\0");
+    assert_eq!(
+        asker.call("XOnlineFriendsRequestByNameEx", &[0, BUFFER, 0, 0, OUT]),
+        0
+    );
+    let task = asker.u32(OUT);
+    assert_eq!(asker.wait(task), TASK_SUCCESS);
+    assert!(friend_events(&s, types::FRIEND_REQUESTED, a.xuid, c.xuid));
+
+    // An unknown name fails its task with a status, not a crash.
+    asker.put(BUFFER, b"Nobody\0");
+    assert_eq!(
+        asker.call("XOnlineFriendsRequestByNameEx", &[0, BUFFER, 0, 0, OUT]),
+        0
+    );
+    let task = asker.u32(OUT);
+    assert_eq!(asker.wait(task), FRIEND_NOT_FOUND);
+
+    // The answerer sees the request pending and accepts it.
+    guest_until(&mut answerer, |w| {
+        let n = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_RECORD]);
+        (0..n).any(|i| {
+            w.rt.memory().u64(INV_RECORD + i * 86).unwrap() == a.xuid.0
+                && w.u32(INV_RECORD + i * 86 + 28) & 0x80000000 != 0
+        })
+    });
+    friend_record(&answerer, a.xuid);
+    assert_eq!(
+        answerer.call("XOnlineFriendsAnswerRequest", &[0, INV_FRIEND, 0]),
+        0
+    );
+    guest_until(&mut answerer, |_| {
+        friend_events(&s, types::FRIEND_ACCEPTED, a.xuid, b.xuid)
+    });
+}
 fn guest_until(w: &mut World, mut condition: impl FnMut(&mut World) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(6);
     while !condition(w) {
