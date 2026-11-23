@@ -2,9 +2,7 @@
 // kills it (0x192970), Juggernaut traits, and scoring by role.
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
-// Entries a host cannot make yet (`verify::unhostable`): none. The host
-// does not deliver `round_start` or `quit` yet, so it refuses the script by
-// event.
+// Entries a host cannot make yet (`verify::unhostable`): none.
 // Not reproduced: who takes the role after a suicide or a quit is not
 // traced; this script draws one with the VM's generator. Whether retail
 // scores the kill that takes the role is not traced: `take_points` is 0 by
@@ -17,14 +15,17 @@ option take_points: int 0..3 = 0 "Takeover points" "Points for killing the Jugge
 
 global var juggernaut: player? = none
 
+// The role to `p`, taken from the Juggernaut before, if another.
 fn crown(p: player) {
-    if let j = juggernaut { role_traits(j, false) }
+    if let j = juggernaut {
+        if j != p { role_traits(j, false) }
+    }
     juggernaut = p
     role_traits(p, true)
 }
 
+// Each round deals the role again; the last round's Juggernaut gives it up.
 on round_start {
-    juggernaut = none
     for each pick(players, 1) p { crown(p) }
 }
 

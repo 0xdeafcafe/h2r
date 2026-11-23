@@ -2,15 +2,16 @@
 //! game's script and state, and what each moment of the game does with it
 //! (docs/game/rules-engine.md, "The host runtime").
 //!
-//! The feature (`super::feature`) and the superbounce mode call in at six
+//! The feature (`super::feature`) and the superbounce mode call in at eight
 //! moments:
 //!
 //! - [`Runtime::start`] after a successful `GAME_ACTIVATE`: read the
 //!   record's script reference, find the blob, verify it, refuse what no
 //!   host can run, check the map's labels (the start gate), refuse what
-//!   this host cannot run yet by name, start the VM, run `on init` and set
-//!   the `RULES` record. A refusal is kept with its reason and logged; the
-//!   game then plays as the carrier engine's lifted rules. A map the gate
+//!   this host cannot run yet by name, start the VM, run `on init` and the
+//!   first round's `on round_start`, and set the `RULES` record. A
+//!   refusal is kept with its reason and logged; the game then plays as
+//!   the carrier engine's lifted rules. A map the gate
 //!   blocks plays no rules at all: [`Status::Blocked`] keeps every problem,
 //!   no VM is made, and the first tick boundary ends the game
 //!   (docs/game/rules-start-gate.md, "What a blocked start shows"). A
@@ -25,6 +26,10 @@
 //!   also asks `GAME_ENGINE_AUTHORITATIVE`; a machine that is not the
 //!   authority drops the script and its record.
 //! - [`Runtime::kill`] at `PLAYER_KILLED`'s entry: `on kill`.
+//! - [`Runtime::round_start`] at the engine's round reset
+//!   (`ENGINE_ROUND_RESET`) as each later round begins: `on round_start`.
+//! - [`Runtime::quit`] at the engine's player-left notice
+//!   (`ENGINE_PLAYER_LEFT`): `on quit`.
 //! - [`Runtime::bounces`] after each game tick, from the superbounce
 //!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
 //!   Bounced on the tick its chain files it.
@@ -71,10 +76,10 @@ use forge_doc::LabelledThing;
 
 /// The match seed until the session data carries one (as Firefight's).
 pub const SEED: u64 = 0;
-/// Engine indices whose built-in script has passed parity and so runs for
-/// a record with no script mode (rules-engine.md, "A record with no
-/// mode"). Empty: Slayer stays lifted until its port passes.
-pub const PORTED: &[u8] = &[];
+/// Engine indices whose built-in script runs for a record with no script
+/// mode (rules-engine.md, "A record with no mode"): Juggernaut (7), whose
+/// events and entries this host all delivers and makes.
+pub const PORTED: &[u8] = &[7];
 /// The engine refusals `rules.state` keeps.
 pub const ERRORS_KEPT: usize = 16;
 /// The options mode of a multiplayer game (`[GAME_GLOBALS] + 8`).
@@ -84,7 +89,9 @@ pub const MODE_MULTIPLAYER: u32 = 2;
 /// refused at load by the event's name.
 pub const DELIVERED: &[Event] = &[
     Event::Init,
+    Event::RoundStart,
     Event::Kill,
+    Event::Quit,
     Event::Timer,
     Event::Tick,
     Event::Bounce,
@@ -1090,7 +1097,14 @@ impl Runtime {
             let mut g = GuestGame::new(m, &mut pending)
                 .with_table(&table)
                 .with_film(self.film);
+            // The first round began inside `GAME_ACTIVATE` (its round
+            // reset, `ENGINE_ROUND_RESET`, ran before this observer), so
+            // its `on round_start` follows `on init` here; each later
+            // round's comes from [`Runtime::round_start`].
             vm.fire(&mut g, Input::Init);
+            if g.error.is_none() {
+                vm.fire(&mut g, Input::RoundStart);
+            }
             g.error
         };
         let mut running = Running {
@@ -1257,6 +1271,24 @@ impl Runtime {
     pub fn kill(&mut self, m: &dyn GuestMemory, victim: u8, killer: Option<u8>) {
         self.run(m, |vm, g| {
             vm.fire(g, Input::Kill { victim, killer });
+        });
+    }
+
+    /// A later round began (the engine's round reset,
+    /// `ENGINE_ROUND_RESET`): `on round_start`, with its calls kept for
+    /// the next tick boundary. The first round's is [`Runtime::start`]'s.
+    pub fn round_start(&mut self, m: &dyn GuestMemory) {
+        self.run(m, |vm, g| {
+            vm.fire(g, Input::RoundStart);
+        });
+    }
+
+    /// Player `player` left the game (`ENGINE_PLAYER_LEFT`, after the
+    /// engine took it off the roster): `on quit`, with its calls kept for
+    /// the next tick boundary.
+    pub fn quit(&mut self, m: &dyn GuestMemory, player: u8) {
+        self.run(m, |vm, g| {
+            vm.fire(g, Input::Quit(player));
         });
     }
 
