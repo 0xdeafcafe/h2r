@@ -36,6 +36,11 @@ pub const BAR_END: f32 = 0.5;
 /// approach guide"). [`Style::Go`](crate::model::Style::Go) draws in it.
 pub const GO_GREEN: [f32; 3] = [0.35, 0.95, 0.45];
 
+/// How many teams a game has: the teams [`Style::Team`](crate::model::Style::Team)
+/// can name (`0..TEAMS`), the rows of the team colours the game reads
+/// (docs/game/hud-kit.md, "Colours").
+pub const TEAMS: u8 = 8;
+
 /// What a world mark draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shape {
@@ -56,11 +61,20 @@ pub enum Shape {
     /// `half[0]` either side of it along the heading, as shorter lines
     /// ([`BAR_END`] of its length).
     Bar,
+    /// One segment, centred on the point, `half[0]` each way along the
+    /// heading: an edge of an outline, as a hill's or a territory's.
+    Line,
 }
 
 impl Shape {
-    pub const ALL: [Shape; 5] =
-        [Shape::Pipper, Shape::Bracket, Shape::Arrow, Shape::Ticks, Shape::Bar];
+    pub const ALL: [Shape; 6] = [
+        Shape::Pipper,
+        Shape::Bracket,
+        Shape::Arrow,
+        Shape::Ticks,
+        Shape::Bar,
+        Shape::Line,
+    ];
 
     /// The name the JSON and the findings use.
     pub fn name(self) -> &'static str {
@@ -70,6 +84,7 @@ impl Shape {
             Shape::Arrow => "arrow",
             Shape::Ticks => "ticks",
             Shape::Bar => "bar",
+            Shape::Line => "line",
         }
     }
 }
@@ -157,6 +172,8 @@ fn offset(p: Vec3, d: [f32; 2], by: f32) -> Vec3 {
 ///   each [`TICK_DUTY`] of a third of the run.
 /// - [`Shape::Bar`]: the line across the heading through the point, then
 ///   with a band its near and far ends, each [`BAR_END`] as long.
+/// - [`Shape::Line`]: one edge, from `half[0]` behind the point to
+///   `half[0]` ahead of it.
 pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
     if pose.fault().is_some() {
         return Vec::new();
@@ -236,6 +253,12 @@ pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
             }
             out
         }
+        Shape::Line => {
+            if a <= 0.0 {
+                return Vec::new();
+            }
+            vec![[offset(c, u, -a), offset(c, u, a)]]
+        }
     }
 }
 
@@ -244,7 +267,7 @@ pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
 pub fn reach(shape: Shape, pose: &Pose) -> f32 {
     let [a, b] = pose.half;
     match shape {
-        Shape::Pipper | Shape::Ticks => a,
+        Shape::Pipper | Shape::Ticks | Shape::Line => a,
         Shape::Bracket | Shape::Arrow | Shape::Bar => a.hypot(b),
     }
 }
@@ -359,6 +382,21 @@ mod tests {
             assert!(close((end[0][0] + end[1][0]) / 2.0, 1.0), "centred on the point");
         }
         assert!(edges(Shape::Bar, &Pose { half: [0.03, 0.0], ..pose }).is_empty());
+    }
+
+    /// A line is one segment through the point along the heading, `half[0]`
+    /// each way, and none without a length.
+    #[test]
+    fn a_line_is_one_segment_along_its_heading() {
+        let pose = Pose::at([1.0, 2.0, 0.5], [0.5, 0.0]).heading([0.0, 3.0]);
+        let e = edges(Shape::Line, &pose);
+        assert_eq!(e.len(), 1);
+        assert!(close(e[0][0][0], 1.0) && close(e[0][0][1], 1.5), "{:?}", e[0][0]);
+        assert!(close(e[0][1][0], 1.0) && close(e[0][1][1], 2.5), "{:?}", e[0][1]);
+        assert!(close(e[0][0][2], 0.5 + LIFT) && close(e[0][1][2], 0.5 + LIFT));
+        assert!(close(length(&e[0]), 1.0));
+        assert!(edges(Shape::Line, &Pose::at([0.0; 3], [0.0, 0.0])).is_empty());
+        assert_eq!(Shape::Line.name(), "line");
     }
 
     /// Every shape's lines stay within its reach of the point, and a

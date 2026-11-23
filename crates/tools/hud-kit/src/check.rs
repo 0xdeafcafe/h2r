@@ -329,13 +329,33 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             }
         }
         for e in hud.elements.iter().filter(|e| e.kind.world().is_none()) {
-            if v.get(e.id).is_some_and(|x| x.shown && x.style == Style::Go) {
+            let Some(x) = v.get(e.id).filter(|x| x.shown) else {
+                continue;
+            };
+            let colour = match x.style {
+                Style::Go => "the go green".to_owned(),
+                Style::Team(n) => format!("team {n}'s colour"),
+                _ => continue,
+            };
+            r.push(finding(
+                Check::World,
+                Some(*s),
+                None,
+                vec![e.id.to_owned()],
+                format!("{} is a {} in {colour}, a world mark's alone", e.id, e.kind.name()),
+            ));
+        }
+        // A world mark names a team the game has.
+        for e in hud.elements.iter().filter(|e| e.kind.world().is_some()) {
+            if let Some(Style::Team(n)) = v.get(e.id).map(|x| x.style)
+                && n >= hud_kit_core::world::TEAMS
+            {
                 r.push(finding(
                     Check::World,
                     Some(*s),
                     None,
                     vec![e.id.to_owned()],
-                    format!("{} is a {} in the go green, a world mark's alone", e.id, e.kind.name()),
+                    format!("{} is in team {n}'s colour; the game has {} teams", e.id, hud_kit_core::world::TEAMS),
                 ));
             }
         }
@@ -706,6 +726,15 @@ pub fn all(src: &mut Source, ds: &[&dyn Describe], modes: &[Mode]) -> Result<Rep
         out.notes.extend(r.notes);
         out.shots.extend(r.shots);
     }
+    // HUDs that declare they never show together (`Describe::never_with`)
+    // are not compared: a declaration by either one is enough.
+    let never: Vec<(&'static str, &'static [&'static str])> =
+        ds.iter().map(|d| (d.hud().name, d.never_with())).collect();
+    let apart = |a: &str, b: &str| {
+        never
+            .iter()
+            .any(|(n, with)| (*n == a && with.contains(&b)) || (*n == b && with.contains(&a)))
+    };
     // Across HUDs: the areas each claims in any state, per mode.
     let mut claimed: Vec<(&'static str, Mode, &'static str, bool, Rect)> = Vec::new();
     for s in &out.shots {
@@ -718,7 +747,7 @@ pub fn all(src: &mut Source, ds: &[&dyn Describe], modes: &[Mode]) -> Result<Rep
     let mut found = Vec::new();
     for (i, a) in claimed.iter().enumerate() {
         for b in &claimed[i + 1..] {
-            if a.0 == b.0 || a.1 != b.1 || (a.3 && b.3) {
+            if a.0 == b.0 || a.1 != b.1 || (a.3 && b.3) || apart(a.0, b.0) {
                 continue;
             }
             if let Some(x) = a.4.intersect(&b.4) {

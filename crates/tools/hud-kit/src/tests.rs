@@ -1339,3 +1339,120 @@ fn the_world_sample_is_an_oblique_view() {
     let (ho, hx) = (preview::project(&half, [0.0; 3]), preview::project(&half, [1.0, 0.0, 0.0]));
     assert!((hx[0] - ho[0] - preview::WORLD_SCALE / 2.0).abs() < 1e-3);
 }
+
+// ---- K5: line marks, team colours, HUDs that never show together ----
+
+/// A one-text HUD at a fixed place, named, that may declare HUDs it never
+/// shows with.
+struct Apart {
+    name: &'static str,
+    never: &'static [&'static str],
+}
+
+impl Describe for Apart {
+    fn hud(&self) -> Hud {
+        Hud {
+            name: self.name,
+            elements: vec![Element::text("t", Font::Hud, Justify::Start, "AB", bl(10, -150))],
+        }
+    }
+    fn states(&self) -> Vec<(&'static str, Values)> {
+        vec![("s", Values(vec![("t", Value::text("AB"))]))]
+    }
+    fn never_with(&self) -> &'static [&'static str] {
+        self.never
+    }
+}
+
+/// Two HUDs with a text in one place overlap across HUDs: the `own`
+/// check says so. Two that declare each other (`Describe::never_with`)
+/// are not compared; a HUD that declares another the other does not
+/// declare back is not compared with it either, and a third is.
+#[test]
+fn huds_that_declare_each_other_are_not_compared_by_own() {
+    let own = |ds: &[&dyn Describe]| {
+        check::all(&mut synthetic(), ds, &[Mode::Full])
+            .unwrap()
+            .of(Check::Own)
+            .count()
+    };
+    let plain = |name| Apart { name, never: &[] };
+    assert_eq!(own(&[&plain("a"), &plain("b")]), 1);
+    let a = Apart { name: "a", never: &["b"] };
+    let b = Apart { name: "b", never: &["a"] };
+    assert_eq!(own(&[&a, &b]), 0, "each declares the other");
+    assert_eq!(own(&[&a, &plain("b")]), 0, "one declares the other");
+    // Only the pair that declares is let off.
+    assert_eq!(own(&[&a, &b, &plain("c")]), 2);
+}
+
+/// The world check refuses a team colour on a widget or a channel that is
+/// not a world mark, and on a team the game does not have; a line in a
+/// team colour passes.
+#[test]
+fn the_world_check_refuses_team_off_a_world_mark() {
+    use hud_kit_core::world::{Pose, Shape, TEAMS};
+    let line = |id| Element::channel(id, Kind::WorldMark { shape: Shape::Line, longest: "" });
+    let text = Element::text("t", Font::Hud, Justify::Start, "AB", bl(10, -150));
+    let run = |value: Value, element: Element| {
+        let id = element.id;
+        let c = WorldCase {
+            hud: Hud { name: "world", elements: vec![element] },
+            states: vec![("s", Values(vec![(id, value)]))],
+            poses: if id == "l" {
+                vec![("l", Pose::at([0.0; 3], [0.3, 0.0]))]
+            } else {
+                vec![]
+            },
+        };
+        check::hud(&mut synthetic(), &c, &[Mode::Full])
+            .unwrap()
+            .of(Check::World)
+            .map(|f| f.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        run(Value::text("AB").styled(Style::Team(1)), text),
+        ["t is a text in team 1's colour, a world mark's alone"]
+    );
+    assert!(run(Value::shown().styled(Style::Team(TEAMS - 1)), line("l")).is_empty());
+    assert_eq!(
+        run(Value::shown().styled(Style::Team(TEAMS)), line("l")),
+        [format!("l is in team {TEAMS}'s colour; the game has {TEAMS} teams")]
+    );
+    assert_eq!(Style::Team(3).name(), "team 3");
+}
+
+/// The preview draws a line, in a team's stand-in colour: the segment's
+/// middle pixel is that colour, and a second team's differs.
+#[test]
+fn the_preview_draws_a_line_in_a_team_colour() {
+    use hud_kit_core::world::{Pose, Shape};
+    let shot = |team: u8| {
+        let c = WorldCase {
+            hud: Hud {
+                name: "world",
+                elements: vec![Element::channel(
+                    "l",
+                    Kind::WorldMark { shape: Shape::Line, longest: "" },
+                )],
+            },
+            states: vec![("s", Values(vec![("l", Value::shown().styled(Style::Team(team)))]))],
+            poses: vec![("l", Pose::at([0.0; 3], [0.4, 0.0]))],
+        };
+        let r = check::hud(&mut synthetic(), &c, &[Mode::Full]).unwrap();
+        assert!(r.findings.is_empty(), "{:#?}", r.findings);
+        r.shots.into_iter().next().unwrap()
+    };
+    let pixel = |s: &preview::Shot| {
+        let d = s.element("l").unwrap();
+        assert!(d.drawn);
+        assert_eq!(d.world.as_ref().unwrap().edges, 1);
+        let at = preview::project(&s.frame, [0.0, 0.0, 0.02]);
+        let i = ((at[1].round() as u32 * s.canvas.width + at[0].round() as u32) * 4) as usize;
+        s.canvas.rgba[i..i + 3].to_vec()
+    };
+    let (red, blue) = (pixel(&shot(0)), pixel(&shot(1)));
+    assert_eq!(red, preview::PREVIEW_TEAMS[0].to_vec());
+    assert_eq!(blue, preview::PREVIEW_TEAMS[1].to_vec());
+}
