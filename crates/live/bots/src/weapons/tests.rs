@@ -247,34 +247,109 @@ fn a_melee_finishes_a_target_it_has_been_hitting() {
     assert!(!run(Skill::Easy, 10), "Easy never finishes");
 }
 
+/// The left hand's aim: in range, `on` the cone (and near it as well).
+fn aimed(on: bool) -> LeftAim {
+    LeftAim {
+        in_range: true,
+        on,
+        near: on,
+        pattern: None,
+        right: None,
+    }
+}
+
 #[test]
 fn the_left_hand_charges_taps_or_holds_by_its_trigger() {
     let mut l = LeftHand::default();
     let pp = pistol(0.9);
     // Charges for the charge time, then lets go on target.
-    let held: Vec<bool> = (0..40).map(|t| l.trigger(t, &pp, true)).collect();
+    let held: Vec<bool> = (0..40).map(|t| l.trigger(t, &pp, aimed(true))).collect();
     assert!(held[..CHARGE_TICKS as usize].iter().all(|&h| h));
     assert!(!held[CHARGE_TICKS as usize]);
-    // An automatic: while it wants to.
+    // An automatic: held, through a near miss, let go after the grace.
     let mut l = LeftHand::default();
-    assert!(l.trigger(0, &smg(), true) && !l.trigger(1, &smg(), false));
+    assert!(l.trigger(0, &smg(), aimed(true)));
+    let off: Vec<bool> = (1..10)
+        .map(|t| l.trigger(t, &smg(), aimed(false)))
+        .collect();
+    let grace = crate::tactics::HOLD_GRACE as usize;
+    assert!(
+        off[..grace].iter().all(|&d| d) && !off[grace..].iter().any(|&d| d),
+        "{off:?}"
+    );
+    // With the right trigger held on an automatic too, it goes with it.
+    let mut l = LeftHand::default();
+    let with = |right| LeftAim {
+        right: Some(right),
+        ..aimed(false)
+    };
+    assert!(l.trigger(0, &smg(), with(true)) && !l.trigger(1, &smg(), with(false)));
+    let out = LeftAim {
+        in_range: false,
+        ..with(true)
+    };
+    assert!(!l.trigger(2, &smg(), out), "not out of its own range");
     // Once per pull: pulled and let go.
     let mut l = LeftHand::default();
-    let pulls: Vec<bool> = (0..20).map(|t| l.trigger(t, &magnum(), true)).collect();
+    let pulls: Vec<bool> = (0..20)
+        .map(|t| l.trigger(t, &magnum(), aimed(true)))
+        .collect();
     assert!(pulls[0] && pulls[1] && !pulls[2], "{pulls:?}");
     // Empty: never.
     let mut l = LeftHand::default();
-    assert!(!l.trigger(0, &pistol(0.0), true));
+    assert!(!l.trigger(0, &pistol(0.0), aimed(true)));
 }
 
 #[test]
-fn an_identified_smg_closes_distance_past_its_effective_reach() {
+fn an_empty_left_magazine_with_rounds_left_is_pulled_once_to_reload() {
+    let empty = |reserve| {
+        let mut g = smg();
+        g.ammo = Ammo::Rounds {
+            loaded: 0,
+            capacity: 36,
+            reserve,
+            reserve_max: 108,
+        };
+        g
+    };
+    // Off target or on it, the same short pull, and again only if the
+    // magazine is still empty after the retry wait.
+    for on in [false, true] {
+        let mut l = LeftHand::default();
+        let down: Vec<bool> = (0..100)
+            .map(|t| l.trigger(t, &empty(40), aimed(on)))
+            .collect();
+        let pulls: Vec<usize> = (0..down.len())
+            .filter(|&t| down[t] && (t == 0 || !down[t - 1]))
+            .collect();
+        assert_eq!(pulls, [0, 45, 90], "{down:?}");
+        assert_eq!(
+            down.iter().filter(|&&d| d).count() as u32,
+            3 * crate::tactics::PULL_TICKS
+        );
+        // Loaded again: back to the automatic's hold.
+        assert!(l.trigger(100, &smg(), aimed(true)));
+    }
+    // Nothing to load: no pull.
+    let mut l = LeftHand::default();
+    assert!((0..60).all(|t| !l.trigger(t, &empty(0), aimed(true))));
+}
+
+#[test]
+fn an_identified_smg_closes_to_its_band_and_fires_past_it() {
     let mut gun = smg();
     gun.profile.dual = Some(crate::arms::DualGun::Smg);
-    assert_eq!(gun.reach().fire.1, 8.0);
+    // The movement closes to the magnetism's reach; the trigger works a
+    // little past it, in bursts (tactics::hold_pattern).
+    assert_eq!(gun.reach().band.1, 8.0);
+    assert!((gun.reach().fire.1 - 8.0 * FIRE_PAST_BAND).abs() < 1e-4);
     gun.profile.cone_range = 25.0;
-    assert_eq!(gun.reach().fire.1, 9.0);
     assert_eq!(gun.reach().band.1, 9.0);
+    assert!((gun.reach().fire.1 - 9.0 * FIRE_PAST_BAND).abs() < 1e-4);
+    assert!(gun.reach().fire.1 <= Role::Spray.fire_range().1);
+    // A short projectile reach still caps it.
+    gun.profile.damage_reach = 10.0;
+    assert_eq!(gun.reach().fire.1, 10.0);
 }
 
 #[test]

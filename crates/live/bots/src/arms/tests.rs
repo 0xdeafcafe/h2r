@@ -123,6 +123,26 @@ fn a_low_magazine_reloads_only_when_calm() {
 }
 
 #[test]
+fn calm_with_nobody_in_view_tops_up_a_used_magazine() {
+    // A rifle a burst or two down: topped up once the fight is over.
+    let a = arms(Some(gun(BR, rounds(30, 36, 50, 108))), None);
+    assert_eq!(decide(&a, None, true, &[]), Kit::Reload);
+    assert_eq!(decide_by_range(&a, None, true, true, &[]), Kit::Reload);
+    // Not in a lull alone, not with an enemy in view, not under fire.
+    assert_eq!(decide_by_range(&a, None, false, true, &[]), Kit::Fine);
+    assert_eq!(decide(&a, Some(20.0), true, &[]), Kit::Fine);
+    assert_eq!(decide(&a, Some(5.0), false, &[]), Kit::Fine);
+    // Nearly full, or nothing to load: no reload.
+    let b = arms(Some(gun(BR, rounds(34, 36, 50, 108))), None);
+    assert_eq!(decide(&b, None, true, &[]), Kit::Fine);
+    let c = arms(Some(gun(BR, rounds(30, 36, 0, 108))), None);
+    assert_eq!(decide(&c, None, true, &[]), Kit::Fine);
+    // A battery is never reloaded.
+    let d = arms(Some(gun(PP, Ammo::Battery(0.5))), None);
+    assert_eq!(decide(&d, None, true, &[]), Kit::Fine);
+}
+
+#[test]
 fn a_dry_gun_switches_to_the_other() {
     let a = arms(
         Some(gun(BR, rounds(0, 36, 0, 108))),

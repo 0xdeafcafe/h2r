@@ -241,7 +241,7 @@ fn no_grenade_into_a_teammate() {
 }
 
 /// The aim after a tick of the right stick: the game's turning as the
-/// hand models it ([`turn_rate`], the bots' sensitivity), one tick of it.
+/// hand models it ([`turn_rate`], the response table), one tick of it.
 fn turned(aim: Vec3, pad: &HostPadState) -> Vec3 {
     let flat = (aim[0] * aim[0] + aim[1] * aim[1]).sqrt();
     let (rx, ry) = turn_rate(pad.right_stick);
@@ -345,6 +345,123 @@ fn dual_wielding_fires_the_left_gun_and_throws_no_grenades() {
     }
     assert!(left > 100, "{left}");
     assert_eq!(m.grenade.throws, 0);
+}
+
+#[test]
+fn it_holds_fire_when_off_the_body_at_range() {
+    // A rifle, Legendary (head height: the eye's), the aim 3° to the side.
+    let aside = crate::grenades::direction(3f32.to_radians(), 0.0);
+    let fires = |distance: f32| {
+        let mut m = Mind::new(Skill::Legendary, 3);
+        let me = Me {
+            aim: aside,
+            ..bot(Some(holding(Trigger::Single, rounds(36, 108))))
+        };
+        (0..60).any(|t| {
+            step(&mut m, me, vec![enemy(1, [distance, 0.0, 0.0])], false, t).right_trigger > 0.0
+        })
+    };
+    // 3° is a metre off the body at 20 units, a hand's width at 3.
+    assert!(!fires(20.0));
+    assert!(fires(3.0));
+}
+
+/// A dual-wielding bot: an SMG in each hand, a full magazine in the right
+/// and `left` in the left, and four of each grenade.
+fn dual(left: Ammo) -> Me {
+    let smg = |ammo| Gun {
+        def: 0xa003_0003,
+        ammo,
+        profile: Profile {
+            dual: Some(arms::DualGun::Smg),
+            trigger: Trigger::Automatic,
+            pellets: 1,
+            shot_speed: 300.0,
+            ..Profile::default()
+        },
+    };
+    bot(Some(Arms {
+        held: Some(smg(rounds(60, 120))),
+        left: Some(smg(left)),
+        grenades: [4, 4],
+        ..Arms::default()
+    }))
+}
+
+#[test]
+fn an_advancing_enemy_does_not_cost_the_left_gun() {
+    for seed in 1..=6 {
+        let mut m = Mind::new(Skill::Normal, seed);
+        let mut me = dual(rounds(60, 120));
+        let mut left = 0;
+        // Walking straight in from 9 units at 1.5 a second, to 2.5.
+        for t in 0..150u32 {
+            let x = (9.0 - 1.5 * t as f32 / TICKS).max(2.5);
+            let pad = step(&mut m, me, vec![enemy(1, [x, 0.0, 0.0])], false, t);
+            me.aim = turned(me.aim, &pad);
+            assert!(
+                !pad.buttons.contains(SWITCH),
+                "seed {seed} tick {t}: Y drops the left gun"
+            );
+            left += usize::from(pad.left_trigger > 0.0);
+        }
+        assert_eq!(m.grenade.throws, 0, "seed {seed}");
+        assert!(left > 60, "seed {seed}: {left}");
+    }
+}
+
+#[test]
+fn both_triggers_are_down_together() {
+    // Inside the SMG's band (held) and past it (bursts at Normal).
+    for distance in [5.0, 12.0] {
+        let mut m = Mind::new(Skill::Normal, 8);
+        let mut me = dual(rounds(60, 120));
+        let (mut either, mut both) = (0, 0);
+        for t in 0..150u32 {
+            let pad = step(&mut m, me, vec![enemy(1, [distance, 0.0, 0.0])], false, t);
+            me.aim = turned(me.aim, &pad);
+            let (r, l) = (pad.right_trigger > 0.0, pad.left_trigger > 0.0);
+            either += usize::from(r || l);
+            both += usize::from(r && l);
+        }
+        assert!(either > 40, "{distance}: {either}");
+        assert!(both * 10 >= either * 8, "{distance}: {both} of {either}");
+    }
+}
+
+#[test]
+fn an_empty_left_magazine_is_pulled_to_reload() {
+    let mut m = Mind::new(Skill::Legendary, 4);
+    let me = dual(rounds(0, 120));
+    let pulls: Vec<u32> = (0..90u32)
+        .filter(|&t| step(&mut m, me, vec![enemy(1, [5.0, 0.0, 0.0])], false, t).left_trigger > 0.0)
+        .collect();
+    // A short pull, and again only after the retry wait.
+    let starts: Vec<u32> = pulls
+        .iter()
+        .copied()
+        .filter(|&t| t == 0 || !pulls.contains(&(t - 1)))
+        .collect();
+    assert!(!starts.is_empty(), "{pulls:?}");
+    assert!(
+        pulls.len() as u32 <= starts.len() as u32 * crate::tactics::PULL_TICKS,
+        "{pulls:?}"
+    );
+    assert!(
+        starts
+            .windows(2)
+            .all(|w| w[1] - w[0] >= crate::weapons::LEFT_DRY_RETRY),
+        "{pulls:?}"
+    );
+    // A loaded left gun, the aim held well off the target, is not pulled:
+    // the empty one's pull was for the reload, not a shot.
+    let mut m = Mind::new(Skill::Legendary, 4);
+    let mut me = dual(rounds(60, 120));
+    me.aim = crate::grenades::direction(0.5, 0.0);
+    for t in 0..20u32 {
+        let pad = step(&mut m, me, vec![enemy(1, [5.0, 0.0, 0.0])], false, t);
+        assert_eq!(pad.left_trigger, 0.0, "tick {t}");
+    }
 }
 
 #[test]
