@@ -96,7 +96,7 @@ fn every_drop_zone_has_a_path_to_the_middle() {
     let (pf, data) = build_with_pathfinding(&grid(), 0, 7).unwrap();
     let middle = [14., 14., 0.];
     let starts = [middle, [2., 2., 0.]];
-    let arena = choose_zones(&pf, &data, &starts, &[], 2, |_| Some(3)).unwrap();
+    let arena = choose_zones(&pf, &data, &starts, &[], 2, |_| Some(3), &mut |_| {}).unwrap();
     assert!((6..=12).contains(&arena.zones.len()));
     assert!(arena.bases.is_empty());
     let center = data.nav.poly_near(middle).unwrap();
@@ -150,7 +150,16 @@ const BASE_STARTS: [V3; 2] = [[3., 13., 0.], [25., 15., 0.]];
 
 fn based_arena() -> (PathfindingData, MapData, Arena) {
     let (pf, data) = build_with_pathfinding(&grid(), 0, 7).unwrap();
-    let arena = choose_zones(&pf, &data, &BASE_STARTS, &BASES, 2, |_| Some(3)).unwrap();
+    let arena = choose_zones(
+        &pf,
+        &data,
+        &BASE_STARTS,
+        &BASES,
+        2,
+        |_| Some(3),
+        &mut |_| {},
+    )
+    .unwrap();
     (pf, data, arena)
 }
 
@@ -194,7 +203,18 @@ fn every_drop_zone_has_a_path_to_each_base() {
     // A base the drops cannot walk to: the detached island east of the
     // arena has no engine link in, so no component holds both bases.
     let island = [[2., 14., 0.], [30.2, 14., 0.]];
-    assert!(choose_zones(&pf, &data, &BASE_STARTS, &island, 2, |_| Some(3)).is_none());
+    assert!(
+        choose_zones(
+            &pf,
+            &data,
+            &BASE_STARTS,
+            &island,
+            2,
+            |_| Some(3),
+            &mut |_| {}
+        )
+        .is_none()
+    );
 }
 
 #[test]

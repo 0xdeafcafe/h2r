@@ -40,7 +40,7 @@ const MAX_ZONES: usize = 12;
 /// A firing position keeps this far from every player start.
 const SPAWN_CLEARANCE: f32 = 2.0;
 /// A drop's polygon centre keeps this far from every player start.
-const DROP_START_CLEARANCE: f32 = 4.0;
+const DROP_START_CLEARANCE: f32 = 3.0;
 /// A drop's polygon centre keeps a quarter of the bases' separation from
 /// each base, within these bounds.
 const BASE_CLEARANCE: (f32, f32) = (2.0, 8.0);
@@ -86,6 +86,7 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
 
     let mut bsps = Vec::new();
     let mut best = None;
+    let mut why = Vec::new();
     for (index, row) in metadata_block(map, &scnr, BSPS as usize, BSP)?
         .into_iter()
         .enumerate()
@@ -125,6 +126,7 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
             &found.points,
             index.try_into()?,
             cluster,
+            &mut |w| why.push(format!("BSP {index}: {w}")),
         ) && best
             .as_ref()
             .is_none_or(|b: &Arena| arena.rank() > b.rank())
@@ -137,8 +139,11 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
     ensure!(!bsps.is_empty(), "scenario has no structure BSP");
     let arena = best.with_context(|| {
         format!(
-            "need six distinct drop zones off the player starts and both bases ({:?} and {:?}, from {:?}), with a walkable path to each base",
-            found.points[0], found.points[1], found.source
+            "need six distinct drop zones off the player starts and both bases ({:?} and {:?}, from {:?}), with a walkable path to each base: {}",
+            found.points[0],
+            found.points[1],
+            found.source,
+            if why.is_empty() { "no walkable component holds a player start".into() } else { why.join("; ") }
         )
     })?;
     Ok(Navigation {
@@ -239,6 +244,7 @@ fn choose_zones(
     bases: &[V3],
     bsp: i16,
     cluster: impl Fn(V3) -> Option<i16>,
+    why: &mut dyn FnMut(String),
 ) -> Option<Arena> {
     let (graph, edge) = walk_graph(pf, &data.nav);
     let mut spawn_counts = vec![0usize; graph.len()];
@@ -247,7 +253,7 @@ fn choose_zones(
             spawn_counts[k as usize] += 1;
         }
     }
-    let base_polys = bases
+    let Some(base_polys) = bases
         .iter()
         .map(|&b| {
             data.nav
@@ -255,7 +261,11 @@ fn choose_zones(
                 .map(|k| k as usize)
                 .filter(|&k| k < graph.len())
         })
-        .collect::<Option<Vec<usize>>>()?;
+        .collect::<Option<Vec<usize>>>()
+    else {
+        why("a base is on no walkable polygon".into());
+        return None;
+    };
     let clearance = base_clearance(bases);
     let mut owner = vec![usize::MAX; graph.len()];
     let mut best: Option<Arena> = None;
@@ -279,6 +289,21 @@ fn choose_zones(
         // Only player-accessible geometry may supply a drop, even if an
         // isolated decorative island has more boundary polygons. Every base
         // must be on it, so each drop has a walkable path to each base.
+        if players > 0 && component.len() >= MIN_ZONES {
+            let off = base_polys
+                .iter()
+                .enumerate()
+                .filter(|(_, k)| owner[**k] != root)
+                .map(|(i, _)| i.to_string())
+                .collect::<Vec<_>>();
+            if !off.is_empty() {
+                why(format!(
+                    "the area of {} polygons with {players} starts has no walkable path to base {}",
+                    component.len(),
+                    off.join(" or ")
+                ));
+            }
+        }
         if players == 0
             || component.len() < MIN_ZONES
             || base_polys.iter().any(|&k| owner[k] != root)
@@ -315,6 +340,7 @@ fn choose_zones(
             .map(|(i, &k)| sample.base_zone(i, k, bases[i], &graph))
             .collect::<Option<Vec<Zone>>>()
         else {
+            why("a base zone found no firing positions".into());
             continue;
         };
         let mut candidates: Vec<_> = component
@@ -364,7 +390,12 @@ fn choose_zones(
                 }
             }
         }
-        if zones.len() >= MIN_ZONES {
+        if zones.len() < MIN_ZONES {
+            why(format!(
+                "the bases' area has room for {} drop zones of {MIN_ZONES}",
+                zones.len()
+            ));
+        } else {
             best = Some(Arena {
                 starts: players,
                 sectors: component.len(),
