@@ -90,6 +90,13 @@ pub struct DecoratorLooks {
 }
 
 impl DecoratorLooks {
+    /// The shaders the decorator passes were compiled from, by tag index:
+    /// a live edit of one reloads the world (docs/editor/realtime-edits.md,
+    /// "The native refresh").
+    pub fn shaders(&self) -> std::collections::BTreeSet<u16> {
+        self.looks.keys().map(|&(shader, _, _)| shader).collect()
+    }
+
     /// The pass `material` draws with (its shader's, at its detail level
     /// and pass), `None` when the load has none for it.
     fn look(&self, material: &Material) -> Option<&Result<DecoratorLook, String>> {

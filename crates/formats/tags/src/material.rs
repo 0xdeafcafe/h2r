@@ -221,6 +221,22 @@ pub struct Material {
     pub layers: Vec<ResolvedLayer>,
 }
 
+impl Material {
+    /// Whether the material is built from tag `tag`: its shader, its
+    /// template, a pass or an implementation's vertex shader. Matched by
+    /// tag index (the datum's low half), as a guest datum and the map's
+    /// index entry name one tag whatever their salts
+    /// (docs/editor/realtime-edits.md, "The native refresh").
+    pub fn uses(&self, tag: TagId) -> bool {
+        let same = |t: TagId| t.0 & 0xffff == tag.0 & 0xffff;
+        same(self.shader)
+            || same(self.template)
+            || self.layers.iter().flat_map(|l| &l.passes).any(|p| {
+                same(p.pass) || p.implementations.iter().any(|i| i.vertex_shader.is_some_and(same))
+            })
+    }
+}
+
 /// Parameter storage shared by consecutive full material binds. The two
 /// banks are vertex attribute defaults and hardware constants c[18..34].
 /// Texture parameters retain their raw frame until copied to a stage.
@@ -1439,5 +1455,72 @@ fn eval_size(out: &mut [f32; 4], mode: usize, dims: (f32, f32)) {
         16 => (out[0], out[1], out[2]) = (w, h, 1.0),
         17 => (out[0], out[1], out[2]) = (0.0, 0.0, 0.0),
         _ => *out = [0.0; 4],
+    }
+}
+
+#[cfg(test)]
+mod uses_tests {
+    use super::*;
+
+    fn implementation(vertex_shader: Option<TagId>) -> ResolvedImplementation {
+        ResolvedImplementation {
+            index: 0,
+            vertex_shader,
+            textures: [None, None, None, None],
+            stage_states: Vec::new(),
+            render_states: Vec::new(),
+            restore_states: Vec::new(),
+            pixel_shader: [0; PSDEF_SIZE],
+            variant: false,
+            c0_written: 0,
+            c1_written: 0,
+            pixel_constants_from_engine: false,
+            per_draw_inputs: false,
+            input_reads: InputReads::default(),
+            vector_bindings: Vec::new(),
+            scalar_bindings: Vec::new(),
+            vertex_constants: Vec::new(),
+            vertex_defaults: Vec::new(),
+            animated: Vec::new(),
+            engine_render_states: Vec::new(),
+            engine_stage_states: Vec::new(),
+            dimension_bindings: Vec::new(),
+        }
+    }
+
+    /// Invented datums: a shader, its template, two passes (one with no
+    /// implementations) and a vertex shader.
+    fn material() -> Material {
+        Material {
+            shader: TagId(0xe000_0001),
+            template: TagId(0xe000_0002),
+            inputs: EngineInputs::default(),
+            layers: vec![
+                ResolvedLayer {
+                    lod: 0,
+                    layer: 0,
+                    passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0003), implementations: Vec::new() }],
+                },
+                ResolvedLayer {
+                    lod: 0,
+                    layer: 1,
+                    passes: vec![ResolvedPass {
+                        index: 0,
+                        pass: TagId(0xe000_0004),
+                        implementations: vec![implementation(None), implementation(Some(TagId(0xe000_0005)))],
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_material_uses_its_shader_template_passes_and_vertex_shaders() {
+        let m = material();
+        for n in 1..=5 {
+            assert!(m.uses(TagId(0xe000_0000 + n)), "{n}");
+        }
+        assert!(!m.uses(TagId(0xe000_0006)));
+        assert!(m.uses(TagId(0xf123_0003)), "another salt of the same index");
     }
 }

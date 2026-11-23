@@ -59,6 +59,28 @@ struct LayerEntry {
     view: [[f32; 4]; d3d::VIEW_CONSTANTS],
 }
 
+/// A live shader edit (`native_edits::Edit::Shader`;
+/// docs/editor/realtime-edits.md, "The native refresh") drops the
+/// viewmodels' map state: the next ask starts a new load of map `name`,
+/// whose open reads the edited shaders through the metadata overlay, and
+/// its parts draw on the D3D path until it publishes. Their programs are
+/// compiled per model as the load reaches them, so a reload by name is
+/// what rebuilds them.
+fn reload_on_shader_edit(state: &Mutex<Option<MapState>>, name: &str) {
+    use render_bridge::native_edits::{self, Consumer, Edit};
+    if !native_edits::pending(Consumer::FirstPerson) {
+        return;
+    }
+    let edits = native_edits::drain(Consumer::FirstPerson);
+    if !edits.iter().any(|e| matches!(e, Edit::Shader { .. })) {
+        return;
+    }
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    if state.take().is_some() {
+        eprintln!("native-first-person: {name}: a shader edit reloads the viewmodels");
+    }
+}
+
 /// The installed host: current map generation and this call's entry state.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -86,6 +108,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let map_generation = render_bridge::native_map_work::generation();
+        reload_on_shader_edit(&self.state, &name);
         let current = |state: &Option<MapState>| {
             state.as_ref().is_some_and(|s| s.name == name.as_ref() && s.map_generation == map_generation)
         };

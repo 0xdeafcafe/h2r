@@ -4,8 +4,10 @@
 //! The hot-edit glue pushes one [`Edit`] per owner a batch changed, after
 //! the batch applies: a raw owner's ([`Edit::Section`], [`Edit::Model`],
 //! [`Edit::Image`]) and, from the tag-write notice, each tag whose
-//! metadata changed ([`Edit::Tag`]). The native world's glue and the native objects'
-//! glue each drain their own share ([`Consumer`]) at a frame boundary,
+//! metadata changed ([`Edit::Tag`]; a shader's, template's, pass's or
+//! vertex shader's is queued as [`Edit::Shader`]). The native world's
+//! glue, the native objects' glue and the first-person glue each drain
+//! their own share ([`Consumer`]) at a frame boundary,
 //! once their map's copy is resident, and rebuild what the edit touched
 //! from the map file as the raw overlay serves it. Plain integers keep
 //! this crate free of the agent's types.
@@ -43,13 +45,26 @@ pub enum Edit {
     /// its revert. The lifted code and the D3D path read the field where
     /// it lies; this tells the native copies.
     Tag { group: u32, tag: u32 },
+    /// A shader (`shad`), template (`stem`), pass (`spas`) or vertex
+    /// shader (`vrtx`) tag, by datum: the native programs compiled from
+    /// it are refreshed ([`SHADER_GROUPS`]).
+    Shader { tag: u32 },
 }
+
+/// The groups whose [`Edit::Tag`] is queued as [`Edit::Shader`].
+pub const SHADER_GROUPS: [u32; 4] = [
+    u32::from_be_bytes(*b"shad"),
+    u32::from_be_bytes(*b"stem"),
+    u32::from_be_bytes(*b"spas"),
+    u32::from_be_bytes(*b"vrtx"),
+];
 
 impl Edit {
     /// The edit as it is queued: a `mode` section is its model.
     fn normalized(self) -> Self {
         match self {
             Edit::Section { bsp, kind: KIND_MODE, .. } => Edit::Model { tag: bsp },
+            Edit::Tag { group, tag } if SHADER_GROUPS.contains(&group) => Edit::Shader { tag },
             other => other,
         }
     }
@@ -60,6 +75,7 @@ impl Edit {
             Edit::Section { .. } => &[Consumer::World],
             Edit::Model { .. } => &[Consumer::Objects],
             Edit::Image { .. } | Edit::Tag { .. } => &[Consumer::World, Consumer::Objects],
+            Edit::Shader { .. } => &[Consumer::World, Consumer::Objects, Consumer::FirstPerson],
         }
     }
 
@@ -82,17 +98,22 @@ pub enum Consumer {
     World = 0,
     /// `native_objects_glue`: models and the objects' material textures.
     Objects = 1,
+    /// `native_first_person_glue`: the viewmodel's materials.
+    FirstPerson = 2,
 }
+
+/// How many [`Consumer`]s there are.
+const CONSUMERS: usize = 3;
 
 #[derive(Default)]
 struct Queue {
     generation: u64,
-    edits: [Vec<Edit>; 2],
+    edits: [Vec<Edit>; CONSUMERS],
 }
 
 impl Queue {
     const fn new() -> Self {
-        Self { generation: 0, edits: [Vec::new(), Vec::new()] }
+        Self { generation: 0, edits: [Vec::new(), Vec::new(), Vec::new()] }
     }
 
     fn renew(&mut self, generation: u64) {
@@ -195,12 +216,27 @@ mod tests {
     #[test]
     fn a_tag_write_goes_to_both_once() {
         let mut q = Queue::new();
-        let shad = Edit::Tag { group: u32::from_be_bytes(*b"shad"), tag: 0xe111_0001 };
-        q.push(1, shad);
-        q.push(1, shad);
+        let weap = Edit::Tag { group: u32::from_be_bytes(*b"weap"), tag: 0xe111_0001 };
+        q.push(1, weap);
+        q.push(1, weap);
         q.push(1, Edit::Tag { group: u32::from_be_bytes(*b"bitm"), tag: 0xe222_0002 });
         assert_eq!(q.drain(1, Consumer::World).len(), 2);
-        assert_eq!(q.drain(1, Consumer::Objects)[0], shad);
+        assert_eq!(q.drain(1, Consumer::Objects)[0], weap);
+        assert!(q.drain(1, Consumer::FirstPerson).is_empty());
+    }
+
+    #[test]
+    fn a_shader_groups_write_is_a_shader_edit_for_every_native_consumer() {
+        let mut q = Queue::new();
+        for (n, group) in [b"shad", b"stem", b"spas", b"vrtx"].into_iter().enumerate() {
+            q.push(1, Edit::Tag { group: u32::from_be_bytes(*group), tag: 0xe000_0000 + n as u32 });
+        }
+        q.push(1, Edit::Tag { group: u32::from_be_bytes(*b"shad"), tag: 0xe000_0000 });
+        let want: Vec<Edit> = (0..4).map(|n| Edit::Shader { tag: 0xe000_0000 + n }).collect();
+        assert_eq!(q.mask(), 0b111);
+        for consumer in [Consumer::World, Consumer::Objects, Consumer::FirstPerson] {
+            assert_eq!(q.drain(1, consumer), want, "{consumer:?}");
+        }
     }
 
     #[test]

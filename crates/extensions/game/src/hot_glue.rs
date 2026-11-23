@@ -280,7 +280,8 @@ const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
 /// (docs/editor/realtime-edits.md, "Realtime coverage", R8), called with
 /// the guest held right after the edit applied:
 ///
-/// * every tag: `native_edits::Edit::Tag`, for the native copies;
+/// * every tag: `native_edits::Edit::Tag`, for the native copies (a
+///   `shad`, `stem`, `spas` or `vrtx` is queued as `Edit::Shader`, R10);
 /// * `jmad`: the clip store drops the clips keyed inside the tag;
 /// * `nhdt`: the HUD kit copies the edited widget records again;
 /// * `weap`, `matg`: aim assist adopts the edited fields as retail;
