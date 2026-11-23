@@ -29,20 +29,32 @@ pub const MOMENTS: [(&str, &str, &str); 29] = [
     ("11-miss-off-seam", "not-primed", "miss-missed"),
     ("12-miss-not-primed", "not-primed", "miss-not-primed"),
     ("13-second-bounce-targets", "bounced", "second-bounce"),
-    ("14-second-bounce-lined-up", "bounced", "second-bounce-lined-up"),
+    (
+        "14-second-bounce-lined-up",
+        "bounced",
+        "second-bounce-lined-up",
+    ),
     ("15-targets-switched", "primed-full", "targets-switched"),
     ("16-guide-approach", "primed-full", "guide-approach"),
     ("17-guide-lined-up", "primed-full", "guide-lined-up"),
-    ("18-guide-falling-caught", "primed-full", "guide-falling-caught"),
+    (
+        "18-guide-falling-caught",
+        "primed-full",
+        "guide-falling-caught",
+    ),
     ("19-guide-too-shallow", "primed-full", "guide-too-shallow"),
     ("20-guide-off-line", "primed-full", "guide-off-line"),
     ("21-priming-near", "near", "segments-near"),
     ("22-priming-held", "held", "segments-held"),
     ("23-primed-ending", "primed-ending", "segments-primed"),
-    ("24-charge-warning", "primed-still-warning", "segments-warning"),
+    (
+        "24-charge-warning",
+        "primed-still-warning",
+        "segments-warning",
+    ),
     ("25-charge-lost", "lost-stood-still", "segments-lost"),
-    ("26-guide-on-the-cut", "primed-full", "guide-on-the-cut"),
-    ("27-guide-scan-only", "primed-full", "guide-scan-only"),
+    ("26-guide-too-high", "primed-full", "guide-too-high"),
+    ("27-guide-no-drift", "primed-full", "guide-no-drift"),
     ("28-guide-jump-now", "primed-full", "guide-jump-now"),
     ("29-guide-walk-to-line", "primed-full", "guide-walk-to-line"),
 ];
@@ -52,7 +64,9 @@ pub const MOMENTS: [(&str, &str, &str); 29] = [
 /// (`superbounce_segments::segments`); none while the map is scanned or
 /// has no strips.
 pub fn segments_of(state: &str) -> Option<segs::Segments> {
-    let (_, view) = superbounce::views().into_iter().find(|(n, _)| *n == state)?;
+    let (_, view) = superbounce::views()
+        .into_iter()
+        .find(|(n, _)| *n == state)?;
     (view.scan == Scan::Ready).then(|| segs::segments(view.charge))
 }
 
@@ -91,7 +105,10 @@ impl Describe for All {
             e.at.quarter = None;
             e.at.split_origin = None;
         }
-        Hud { name: NAME, elements }
+        Hud {
+            name: NAME,
+            elements,
+        }
     }
 
     fn states(&self) -> Vec<(&'static str, Values)> {
@@ -142,7 +159,11 @@ mod tests {
         let states = All.states();
         assert_eq!(states.len(), MOMENTS.len());
         for (name, v) in states {
-            assert!(v.layout_problems(&hud).is_empty(), "{name}: {:?}", v.layout_problems(&hud));
+            assert!(
+                v.layout_problems(&hud).is_empty(),
+                "{name}: {:?}",
+                v.layout_problems(&hud)
+            );
         }
     }
 
@@ -165,8 +186,8 @@ mod tests {
                 "18-guide-falling-caught",
                 "19-guide-too-shallow",
                 "20-guide-off-line",
-                "26-guide-on-the-cut",
-                "27-guide-scan-only",
+                "26-guide-too-high",
+                "27-guide-no-drift",
                 "28-guide-jump-now",
                 "29-guide-walk-to-line"
             ]
@@ -183,8 +204,8 @@ mod tests {
         assert_eq!(label("18-guide-falling-caught"), "Will bounce");
         assert_eq!(label("19-guide-too-shallow"), "Too shallow");
         assert_eq!(label("20-guide-off-line"), "");
-        assert_eq!(label("26-guide-on-the-cut"), "Will bounce");
-        assert_eq!(label("27-guide-scan-only"), "Will bounce");
+        assert_eq!(label("26-guide-too-high"), "Too high");
+        assert_eq!(label("27-guide-no-drift"), "No drift");
         for (name, v) in All.states() {
             let poses = All.world(name);
             for id in guide::MARKS {
@@ -257,8 +278,16 @@ mod tests {
         let all = All.hud();
         assert_eq!(all.elements.len(), own.len());
         for (e, o) in all.elements.iter().zip(&own) {
-            assert_eq!((e.id, e.at.full, e.at.anchor), (o.id, o.at.full, o.at.anchor));
-            assert_eq!((e.at.half, e.at.quarter, e.at.split_origin), (None, None, None), "{}", e.id);
+            assert_eq!(
+                (e.id, e.at.full, e.at.anchor),
+                (o.id, o.at.full, o.at.anchor)
+            );
+            assert_eq!(
+                (e.at.half, e.at.quarter, e.at.split_origin),
+                (None, None, None),
+                "{}",
+                e.id
+            );
         }
         assert!(own.iter().any(|o| o.at.half.is_some()));
         assert!(!all.uses_grenade_row());

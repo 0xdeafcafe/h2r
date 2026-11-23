@@ -182,6 +182,9 @@ pub struct State {
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     pub landing: Option<Predicted>,
+    /// The bounce rule's verdict, drop from the apex and nearest edge on
+    /// this primed airborne tick; independent of the guide's display option.
+    pub phase: Option<crate::superbounce_guide::Phase>,
     /// The approach guide on the seam the player is going for
     /// ([`crate::superbounce_guide`]); `None` when it is not shown, and
     /// with the variant's `approach_guide` option off.
@@ -232,6 +235,7 @@ impl State {
         navpoint: None,
         takeoff: None,
         landing: None,
+        phase: None,
         guide: None,
         last_landing: None,
         off_spot: Vec::new(),
@@ -971,7 +975,9 @@ pub fn set_override(on: Option<bool>) -> Result<&'static str, &'static str> {
 
 /// Whether the mode is on in the game running now.
 fn on_now(m: &dyn GuestMemory) -> bool {
-    if OVERRIDE.load(Ordering::Relaxed) == FORCE_OFF { return false }
+    if OVERRIDE.load(Ordering::Relaxed) == FORCE_OFF {
+        return false;
+    }
     crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
 }
 
@@ -1502,14 +1508,40 @@ fn on_tick(o: &hooks::Obs) {
         _ => [None; RANKED],
     };
     let marks = crate::superbounce_second::over(marks, &second);
-    // The approach guide, on the seam the player is going for
-    // (docs/game/superbounce.md, "The approach guide"), its jump cue
-    // settled against the last tick's.
-    let last_guide = lock(&STATE).guide;
-    let guide = match (live.position, live.velocity) {
-        (Some(position), Some(velocity))
-            if crate::superbounce_options::current().approach_guide && is_primed =>
-        {
+    // The bounce rule's airborne phase and the approach guide, on the
+    // seam the player is going for (docs/game/superbounce.md, "The
+    // approach guide"), its jump cue settled against the last tick's.
+    let (last_guide, last_apex) = {
+        let previous = lock(&STATE);
+        (previous.guide, previous.phase.map(|p| p.apex))
+    };
+    let guide_body = match (live.position, live.velocity) {
+        (Some(position), Some(velocity)) if is_primed => Some(crate::superbounce_guide::Body {
+            position,
+            velocity,
+            airborne: live.airborne,
+            primed: is_primed,
+            lift: live.lift,
+            stick: stick_of(velocity),
+        }),
+        _ => None,
+    };
+    let phase = guide_body.filter(|b| b.airborne).and_then(|body| {
+        let floors = room.floors_near(
+            [body.position[0], body.position[1]],
+            crate::superbounce_guide::FLOORS_REACH,
+        );
+        crate::superbounce_guide::phase(
+            &body,
+            &crate::superbounce_guide::Air {
+                floors: &floors,
+                apex: last_apex,
+                crouching: live.request,
+            },
+        )
+    });
+    let guide = match guide_body {
+        Some(body) if crate::superbounce_options::current().approach_guide => {
             let seams: Vec<Vec3> = marks
                 .tagged
                 .into_iter()
@@ -1517,7 +1549,7 @@ fn on_tick(o: &hooks::Obs) {
                 .chain(marks.targets.iter().flatten().map(|m| m.at))
                 .collect();
             crate::superbounce_guide::target(
-                position,
+                body.position,
                 is_primed,
                 landing.map(|l| l.stand),
                 nav_target
@@ -1531,19 +1563,13 @@ fn on_tick(o: &hooks::Obs) {
                     spots.iter().chain(shown.iter().map(|t| &t.spot)),
                     at,
                 )?;
-                crate::superbounce_guide::guide_from(
-                    &crate::superbounce_guide::Body {
-                        position,
-                        velocity,
-                        airborne: live.airborne,
-                        primed: is_primed,
-                        lift: live.lift,
-                        stick: stick_of(velocity),
-                    },
+                crate::superbounce_guide::guide_with_phase(
+                    &body,
                     spot,
                     // The takeoff is the chosen strip's: on another seam
                     // there is none.
                     takeoff.filter(|_| strip.is_some_and(|s| s.stand == spot.stand)),
+                    phase,
                 )
                 .map(|g| g.settled(last_guide.as_ref()))
             })
@@ -1613,6 +1639,7 @@ fn on_tick(o: &hooks::Obs) {
         navpoint,
         takeoff,
         landing,
+        phase,
         guide,
         last_landing: step.last_landing,
         off_spot,
@@ -1790,7 +1817,10 @@ mod tests {
         let near = Some(nav(shown[0].at(), NavKind::Strip));
         // Facing the far seam: it is the strip, with its own drop.
         let got = faced_target(near, Some(shown[1].at()), &shown, me).unwrap();
-        assert_eq!((got.at, got.kind, got.fall), (shown[1].at(), NavKind::Strip, 2.43));
+        assert_eq!(
+            (got.at, got.kind, got.fall),
+            (shown[1].at(), NavKind::Strip, 2.43)
+        );
         assert!((got.distance - 12.0).abs() < 1e-5);
         // A seam the mode marks nothing of still gets a strip.
         assert_eq!(
@@ -1803,7 +1833,10 @@ mod tests {
         assert_eq!(faced_target(near, Some([99.0, 0.0, 0.0]), &shown, me), near);
         assert_eq!(faced_target(near, Some(shown[1].at()), &shown, None), near);
         let crouch = Some(nav([1.0, 0.0, 0.0], NavKind::Crouch));
-        assert_eq!(faced_target(crouch, Some(shown[1].at()), &shown, me), crouch);
+        assert_eq!(
+            faced_target(crouch, Some(shown[1].at()), &shown, me),
+            crouch
+        );
     }
 
     /// The mode reads the origin a teleport places, the frame of every
@@ -2336,7 +2369,9 @@ mod tests {
         ];
         let v = [h[0] * t.speed, h[1] * t.speed, vz];
         let stick = crate::superbounce_flight::keep([v[0], v[1]]);
-        impact(at, v, stick, CENTRE_LIFT, |xy| seam.contact(xy, CENTRE_LIFT))
+        impact(at, v, stick, CENTRE_LIFT, |xy| {
+            seam.contact(xy, CENTRE_LIFT)
+        })
         .is_some_and(|i| caught(&seam, &i) && i.speed >= spot.need)
     }
 

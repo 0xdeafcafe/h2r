@@ -21,20 +21,27 @@
 //!   free row ends low enough over the seam for the next tick to go deep
 //!   into it. Its constants are measured on one seam
 //!   (docs/game/notes/2026-11-22-seam-drop-depth.md).
-//! - **The call** ([`call`]): what the box says of the landing.
+//! - **The call** ([`phase_call`]): what the box says of the landing. In
+//!   a primed fall it is the bounce rule's verdict
+//!   (`superbounce::rule::predict`, docs/game/superbounce.md, "The
+//!   bounce rule"), stepped over the floor polygons near the body
+//!   ([`Air`]). [`call`] keeps the depth rule's estimate for takeoff
+//!   placement and the agent API's legacy chance.
+//! - **The drop and the edge** ([`Phase::drop`], [`Phase::edge`]): in
+//!   the air, the drop from the apex to the floor the rule decides on,
+//!   against `superbounce::rule::DROP_MIN` to `DROP_MAX`, and that
+//!   point's distance to the nearest edge of its floor polygon.
 //! - **The takeoff** ([`place`]): a fixed place on a real floor to leave
 //!   for the seam, from a run's lip or the map's ([`Lip`]), flown as a
 //!   walk-off and as a jump; the one that lands in the catch is kept.
 //! - **The jump cue** ([`Cue`], [`settle`]): on the ground, what to do
 //!   to reach the takeoff and leave it, by where the body is against it:
 //!   `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now`, `Walk off`.
-//! - **The chance** ([`chance`]): in the air, the bounce's predicted
-//!   percentage, how sure the call is ([`confidence`]). A seam with no
-//!   measured landing is capped ([`SCAN_ONLY_CAP`]).
 //! - **Visibility** ([`strength`]): primed only.
 
 use hud_kit_core::huds::superbounce_guide::{self as marks, Call, Layout};
-use superbounce::{Kind, Spot, Vec3};
+use superbounce::rule::{self, Outcome, Verdict};
+use superbounce::{Kind, Poly, Spot, Vec3};
 
 use crate::superbounce_assist::{drift_unit, stand_near};
 use crate::superbounce_flight as flight;
@@ -92,14 +99,31 @@ pub const DEPTH_BAND: f32 = 0.135;
 /// bounced at any depth.
 pub const LANDING_WINDOW: [f32; 2] = [-0.07, -0.01];
 /// The slowest touchdown (units/s down) the depth rule is called at:
-/// just under the note's slowest drop, 5.24. Its drops came in at 5.24
-/// to 5.39; faster falls take the same cut, which no drop has measured.
+/// just under the note's slowest drop, 5.24. The takeoff solver and the
+/// agent API's legacy chance still use this measured estimate; the HUD's
+/// phase verdict does not.
 pub const DEPTH_SPEED: f32 = 5.2;
+/// The most a fall is promised, and one minus this the least: no number
+/// of the depth rule's is sure enough for 100 or for 0.
+pub const CONFIDENCE_TOP: f32 = 0.95;
+/// How soft the depth cut is to the confidence: a last free row this far
+/// under the cut reads 84%, as far over it 16%, on it 50%.
+pub const DEPTH_SOFT: f32 = 0.02;
+/// How soft the landing window's ends are to the confidence: a row this
+/// far inside an end reads 84%, on it 50%.
+pub const WINDOW_SOFT: f32 = 0.01;
+/// The most the chance says on a seam with no measured landing (a
+/// scan's `stand`, `Spot::landed` clear).
+pub const SCAN_ONLY_CAP: f32 = 0.6;
 /// The drift hint: the arrow is lit while the body moves along the
-/// seam's drift faster than this. The note's bounces came at drifts of
-/// 0.1 to 0.8 units/s, so the drift has no window of its own: the right
-/// way, at any speed, is all the hint asks.
-pub const DRIFT_HINT: f32 = 0.0;
+/// seam's drift at this or faster (units/s): the bounce rule's full
+/// launch (`superbounce::rule::DRIFT_FULL`; 0.10 leaves +0.07, 0.15
+/// leaves +6.2).
+pub const DRIFT_HINT: f32 = rule::DRIFT_FULL;
+/// How far (units, across the ground) round the body the floor
+/// polygons the rule steps over are taken: further than a fall from the
+/// drop window drifts at the air stick's top.
+pub const FLOORS_REACH: f32 = 4.0;
 
 /// A press of jump leaves the floor this many ticks later: the drill
 /// runs' jumps left it 4 to 6 ticks after the press
@@ -152,28 +176,6 @@ pub const HEADING_COS: f32 = std::f32::consts::FRAC_1_SQRT_2;
 pub const CUE_GRACE: u8 = 3;
 /// The most the count says, in tenths of a second: `Jump in 9.9 s`.
 pub const CUE_MAX: u8 = 99;
-/// The most a fall is promised, and one minus this the least: no number
-/// of the depth rule's is sure enough for 100 or for 0.
-pub const CONFIDENCE_TOP: f32 = 0.95;
-/// How soft the depth cut is to the confidence: a last free row this far
-/// under the cut reads 84%, as far over it 16%, on it 50%. Inferred, not
-/// measured: the cut itself is found to ±0.003
-/// (docs/game/notes/2026-11-22-seam-drop-depth.md), and the rest is the
-/// predicted row's own error, which no run has measured. At this width
-/// the middle of the note's bounce band, 0.04 to 0.05 under the cut,
-/// reads 93 to 94%.
-pub const DEPTH_SOFT: f32 = 0.02;
-/// How soft the landing window's ends are to the confidence: a row this
-/// far inside an end reads 84%, on it 50%. Inferred from the note's
-/// spacing: y 3.93 bounced and 3.92 did not, so an end is known to about
-/// 0.01. The window's middle, 0.03 from each end, reads 95%.
-pub const WINDOW_SOFT: f32 = 0.01;
-/// The most the chance says on a seam with no measured landing (a
-/// scan's `stand`, `Spot::landed` clear). The depth rule's cut and
-/// window are Ascension's proven seam's and are measured nowhere else
-/// (docs/game/notes/2026-11-22-seam-drop-depth.md), so on a seam no run
-/// has landed on, the rule itself is a guess.
-pub const SCAN_ONLY_CAP: f32 = 0.6;
 
 /// The seam the guide is on.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -185,8 +187,8 @@ pub struct Seam {
     pub point: Vec3,
     /// The drift, a unit vector; zero for a seam with none.
     pub drift: [f32; 2],
-    /// A run has measured a landing on it (`Spot::landed`): the chance
-    /// is not capped at [`SCAN_ONLY_CAP`].
+    /// A run has measured a landing on it (`Spot::landed`): the agent
+    /// API's legacy chance is not capped at [`SCAN_ONLY_CAP`].
     pub measured: bool,
 }
 
@@ -344,8 +346,9 @@ impl Depth {
 /// fixed once the body is in the air, so it is known before touchdown.
 /// `None` for a seam with no drift: it has no far face to be deep into.
 ///
-/// This is the one place the bounce's depth condition lives; a seam or a
-/// speed that measures differently changes the constants here.
+/// Measured on Ascension's proven seam alone. The takeoff solver
+/// ([`place`]) ranks flights by it, where no floor polygons are at hand;
+/// a fall's call is the bounce rule's ([`call`]).
 pub fn depth(seam: &Seam, impact: &Impact) -> Option<Depth> {
     if !seam.drifts() {
         return None;
@@ -364,21 +367,56 @@ pub fn caught(seam: &Seam, impact: &Impact) -> bool {
 }
 
 /// Whether the drift arrow is lit for a body moving `across` along the
-/// seam's drift (units/s): the right way ([`DRIFT_HINT`]).
+/// seam's drift (units/s): the right way, fast enough for a full launch
+/// ([`DRIFT_HINT`]).
 pub fn drift_lit(across: f32) -> bool {
-    across > DRIFT_HINT
+    across >= DRIFT_HINT
 }
 
-/// What the box says of `impact` on `seam`.
+/// What the box says of `impact` on `seam`, with `phase` the bounce
+/// rule's verdict on the fall ([`phase`]).
 ///
+/// - In the air, primed, crouch held: [`Call::Crouching`]. A crouch in
+///   the air rebuilds the pair at 0 and ends the prime.
 /// - Off the catch, or with no landing: [`Call::OffLine`].
-/// - On the ground (the landing is a jump's from the takeoff's line):
+/// - On the ground (the landing is a jump's from the takeoff's line), or
+///   not primed: [`Call::LinedUp`]. A jump's phase is not called: it
+///   moves with every step.
+/// - In the air, primed: the verdict's. A bounce is
+///   [`Call::WillBounce`]; a stop in the floor or a landing (the sweep
+///   never came on) [`Call::TooShallow`]; caught over the floor (it came
+///   on too high) [`Call::TooHigh`]; a pop [`Call::OffEdge`]; a level
+///   pinch [`Call::NoDrift`]. With no verdict or no floor,
 ///   [`Call::LinedUp`].
-///   A jump's phase is not called: it moves with every step.
-/// - In the air, primed, on a seam with a depth, at [`DEPTH_SPEED`] or
-///   faster: [`Call::WillBounce`] when the row is in the landing window
-///   and deep, [`Call::TooShallow`] when it is not deep.
-/// - Else [`Call::LinedUp`]: caught, with nothing measured to call.
+pub fn phase_call(
+    seam: &Seam,
+    impact: Option<&Impact>,
+    body: &Body,
+    phase: Option<&Phase>,
+) -> Call {
+    let falling = body.airborne && body.primed;
+    if falling && phase.is_some_and(|p| p.crouching) {
+        return Call::Crouching;
+    }
+    if impact.filter(|i| caught(seam, i)).is_none() {
+        return Call::OffLine;
+    }
+    if !falling {
+        return Call::LinedUp;
+    }
+    match phase.map(|p| p.verdict.outcome) {
+        Some(Outcome::Bounce(_)) => Call::WillBounce,
+        Some(Outcome::Stopped | Outcome::Landing) => Call::TooShallow,
+        Some(Outcome::Caught) => Call::TooHigh,
+        Some(Outcome::Pop) => Call::OffEdge,
+        Some(Outcome::LevelPinch) => Call::NoDrift,
+        Some(Outcome::NoFloor) | None => Call::LinedUp,
+    }
+}
+
+/// The depth rule's call, kept for the takeoff solver and the agent API's
+/// legacy chance. The HUD's airborne call is [`phase_call`], which has no
+/// touchdown-speed cutoff.
 pub fn call(seam: &Seam, impact: Option<&Impact>, airborne: bool, primed: bool) -> Call {
     let Some(i) = impact.filter(|i| caught(seam, i)) else {
         return Call::OffLine;
@@ -391,17 +429,8 @@ pub fn call(seam: &Seam, impact: Option<&Impact>, airborne: bool, primed: bool) 
     }
 }
 
-/// How sure a fall's call is, before the seam's cap ([`cap`]): 0.5 on
-/// the depth cut or on an end of the landing window, rising smoothly to
-/// [`CONFIDENCE_TOP`] deep and in the window's middle, falling to one
-/// minus it shallow or outside. The nearer of the two margins counts,
-/// each over its own softness ([`DEPTH_SOFT`], [`WINDOW_SOFT`]), through
-/// `tanh`. A landing outside the catch (`caught` false) is at the
-/// bottom.
-///
-/// A fall is near-deterministic, so this is not a share of anything: it
-/// is how far the predicted last free row is from the lines that decide
-/// it, against how well those lines are known.
+/// How sure the depth rule's legacy chance is, before the seam's cap
+/// ([`cap`]). This is not the HUD's airborne verdict.
 pub fn confidence(depth: &Depth, caught: bool) -> f32 {
     let low = 1.0 - CONFIDENCE_TOP;
     if !caught || depth.margin.is_nan() || depth.past.is_nan() {
@@ -409,6 +438,105 @@ pub fn confidence(depth: &Depth, caught: bool) -> f32 {
     }
     let m = (depth.margin / DEPTH_SOFT).min(depth.window_margin() / WINDOW_SOFT);
     0.5 + (CONFIDENCE_TOP - 0.5) * m.tanh()
+}
+
+/// The floor polygons near the body and the flight so far: what the
+/// bounce rule steps a fall over. The mode fills it from the map's
+/// collision (`superbounce_capsule::Room::floors_near`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Air<'a> {
+    /// The floor polygons within [`FLOORS_REACH`] of the body.
+    pub floors: &'a [Poly],
+    /// The highest the origin has been since it left the floor; `None`
+    /// when not tracked (the flight's own apex from here is used).
+    pub apex: Option<f32>,
+    /// Crouch is held (unit flags bit 23).
+    pub crouching: bool,
+}
+
+/// The sideways velocity the air stick holds: the stick as the engine
+/// takes it (`superbounce_flight::effective`) times the air's top speed.
+pub fn drift_of(stick: [f32; 2]) -> [f32; 2] {
+    let s = flight::effective(stick);
+    [s[0] * flight::AIR_TOP, s[1] * flight::AIR_TOP]
+}
+
+/// The bounce rule's verdict on `body`'s fall over `air`'s floors
+/// (`superbounce::rule::predict`), holding its stick; `None` on the
+/// ground, not primed, or with no floors.
+pub fn verdict(body: &Body, air: &Air) -> Option<Verdict> {
+    (body.airborne && body.primed && !air.floors.is_empty()).then(|| {
+        rule::predict(
+            body.position,
+            body.velocity,
+            drift_of(body.stick),
+            air.floors,
+        )
+    })
+}
+
+/// Where the verdict decides: the axis's crossing on a floor, else the
+/// origin at the start of the deciding tick.
+fn decided_at(v: &Verdict) -> Vec3 {
+    v.pierce.map_or(v.row, |p| p.at)
+}
+
+/// The drop (units) from the apex to the origin standing on the floor
+/// the verdict decides on: against `superbounce::rule::DROP_MIN` to
+/// `DROP_MAX`. The apex is `air`'s, else the flight's own from here
+/// (`superbounce_flight::apex`). `None` with no floor under that point.
+pub fn drop_from_apex(body: &Body, air: &Air, v: &Verdict) -> Option<f32> {
+    let at = decided_at(v);
+    let e = rule::edge_under(air.floors, [at[0], at[1], at[2] + 0.5])?;
+    let f = air.floors.get(e.poly)?;
+    let n = f.normal;
+    let p = *f.verts.first()?;
+    let floor = p[2] - (n[0] * (at[0] - p[0]) + n[1] * (at[1] - p[1])) / n[2];
+    let here = flight::apex(body.position[2], body.velocity[2]);
+    let apex = air.apex.map_or(here, |a| a.max(here));
+    // The origin stands this far over the floor: the capsule's bottom is
+    // under it by the radius less the bottom sphere's lift.
+    Some(apex - (floor + superbounce::RADIUS - rule::BASE))
+}
+
+/// The distance (units, across the ground) from where the verdict
+/// decides to the nearest edge of its floor polygon
+/// (`superbounce::rule::edge_under`).
+pub fn edge(air: &Air, v: &Verdict) -> Option<f32> {
+    let at = decided_at(v);
+    rule::edge_under(air.floors, [at[0], at[1], at[2] + 0.5]).map(|e| e.distance)
+}
+
+/// The predictor's read on one airborne tick, kept in the mode's state so
+/// the readout does not depend on the approach guide's display option.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Phase {
+    pub verdict: Verdict,
+    /// The drop from the flight's apex to the origin standing on the
+    /// deciding floor, world units; `None` when no such floor is found.
+    pub drop: Option<f32>,
+    /// The deciding point's horizontal distance to that floor's nearest
+    /// edge, world units.
+    pub edge: Option<f32>,
+    /// The highest origin seen in this flight, or the one the current
+    /// vertical velocity reaches.
+    pub apex: f32,
+    pub crouching: bool,
+}
+
+/// The bounce rule's phase verdict, drop and edge for `body` over `air`.
+/// `air.apex` carries the previous tick's [`Phase::apex`] forward.
+pub fn phase(body: &Body, air: &Air) -> Option<Phase> {
+    let verdict = verdict(body, air)?;
+    let here = flight::apex(body.position[2], body.velocity[2]);
+    let apex = air.apex.map_or(here, |a| a.max(here));
+    Some(Phase {
+        verdict,
+        drop: drop_from_apex(body, air, &verdict),
+        edge: edge(air, &verdict),
+        apex,
+        crouching: air.crouching,
+    })
 }
 
 /// The jump cue on the box before the jump: what to do to reach the
@@ -792,7 +920,16 @@ pub fn place(
     let jumped =
         |[lo, hi]: [f32; 2]| line((lo + hi) / 2.0 + lead, (hi - lo) / 2.0, Leave::Jump, true);
     let band = |coarse: bool, good: &dyn Fn(&Impact) -> bool| {
-        band_by(seam, body, [-h[0], -h[1]], up, lift, [0.0, reach], coarse, good)
+        band_by(
+            seam,
+            body,
+            [-h[0], -h[1]],
+            up,
+            lift,
+            [0.0, reach],
+            coarse,
+            good,
+        )
     };
     if drop.is_some_and(|i| bounces(seam, &i)) {
         return Some(dropped);
@@ -948,8 +1085,11 @@ pub struct Guide {
     /// The body's speed along the seam's drift (units/s); `None` for a
     /// seam with none.
     pub across: Option<f32>,
-    /// The bounce's predicted chance in a fall ([`chance`]).
+    /// The bounce's predicted chance in a fall ([`chance`]), for the
+    /// agent API only; the HUD shows the phase verdict instead.
     pub chance: Option<Chance>,
+    /// The bounce rule's verdict, drop and edge on this airborne tick.
+    pub phase: Option<Phase>,
     /// On the ground, the takeoff ([`place`]), when the mode found one
     /// for this seam.
     pub takeoff: Option<Takeoff>,
@@ -1000,7 +1140,6 @@ impl Guide {
             pipper: self.impact.is_some(),
             ticks: self.impact.is_some() && !self.caught(),
             drift: self.across.map(drift_lit),
-            chance: self.chance.map(|c| marks::percent(c.value)),
             cue: self.cue.and_then(kit_cue),
             takeoff: false,
         }
@@ -1047,8 +1186,30 @@ pub fn guide(body: &Body, spot: &Spot) -> Option<Guide> {
 /// pressed on the takeoff's line, and only while the cue counts to it
 /// ([`Cue::counting`]): the floor under the body is not the seam's, so a
 /// jump from anywhere else says nothing. Either is flown with the
-/// player's stick as it is held now.
+/// player's stick as it is held now. Without map polygons this uses the
+/// depth rule's call; the live mode calls [`guide_with_phase`].
 pub fn guide_from(body: &Body, spot: &Spot, takeoff: Option<Takeoff>) -> Option<Guide> {
+    guide_build(body, spot, takeoff, None, false)
+}
+
+/// [`guide_from`] with the bounce rule's `phase`: the airborne call is its
+/// verdict, not the depth rule's speed-gated estimate.
+pub fn guide_with_phase(
+    body: &Body,
+    spot: &Spot,
+    takeoff: Option<Takeoff>,
+    phase: Option<Phase>,
+) -> Option<Guide> {
+    guide_build(body, spot, takeoff, phase, true)
+}
+
+fn guide_build(
+    body: &Body,
+    spot: &Spot,
+    takeoff: Option<Takeoff>,
+    phase: Option<Phase>,
+    by_phase: bool,
+) -> Option<Guide> {
     if spot.kind != Kind::Bounce || !body.primed {
         return None;
     }
@@ -1075,16 +1236,22 @@ pub fn guide_from(body: &Body, spot: &Spot, takeoff: Option<Takeoff>) -> Option<
     let seam = Seam::of(spot, flight.map_or(at, |i| [i.row[0], i.row[1]]));
     let impact = flight
         .filter(|i| (i.row[0] - seam.point[0]).hypot(i.row[1] - seam.point[1]) <= PIPPER_RANGE);
+    let call = if by_phase {
+        phase_call(&seam, impact.as_ref(), body, phase.as_ref())
+    } else {
+        call(&seam, impact.as_ref(), body.airborne, body.primed)
+    };
     Some(Guide {
         seam,
         impact,
         chance: chance(&seam, body, impact.as_ref()),
+        phase,
         takeoff,
         jump_in,
         cue,
         held: 0,
         jump: !body.airborne,
-        call: call(&seam, impact.as_ref(), body.airborne, body.primed),
+        call,
         depth: impact.and_then(|i| depth(&seam, &i)),
         across: seam
             .drifts()

@@ -23,10 +23,10 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use hud_kit_core::huds::superbounce_guide as guide_marks;
 use hud_kit_core::huds::superbounce_readout::{
     self as rd, Fall, KindsRow, Miss, Next, Readout, Speed, Steer, View,
 };
-use hud_kit_core::huds::superbounce_guide as guide_marks;
 use hud_kit_core::huds::superbounce_segments::{self as segs, Segments};
 use hud_kit_core::model::Values;
 use hud_kit_core::world::Pose;
@@ -82,17 +82,40 @@ pub fn speed(s: &State) -> Option<Speed> {
     })
 }
 
+/// The drop bar's fill: the predictor's drop from the apex against the
+/// bounce rule's 3.35 to 3.60 window. No touchdown-speed test remains.
+fn drop_fill(s: &State) -> f32 {
+    rd::window(
+        s.phase.and_then(|p| p.drop).unwrap_or(f32::NAN),
+        [superbounce::rule::DROP_MIN, superbounce::rule::DROP_MAX],
+    )
+}
+
+/// In a primed fall, the drop from the apex and the deciding landing's
+/// distance to its floor polygon's nearest edge, in metres.
+pub fn air(s: &State) -> Option<rd::Air> {
+    if !s.airborne || !s.primed() {
+        return None;
+    }
+    let p = s.phase?;
+    let drop = p.drop?;
+    Some(rd::Air {
+        drop: drop * METRES_PER_UNIT,
+        in_window: superbounce::rule::drop_in_window(drop),
+        edge: p.edge.map(|e| e * METRES_PER_UNIT),
+    })
+}
+
 /// The fall row for `s`: while airborne with a predicted landing, the
-/// touchdown speed over the seam's need, and the coasting landing against
-/// the seam's landing point (`Predicted::aim`): off the seam and out of
-/// the assist's reach (`Course::Miss`), out of reach, with no arrow;
-/// off it and fixable, the way from it to the point against the aim, and
-/// how far; caught and coming down still or against the seam's drift,
-/// the way to drift; else caught.
+/// drop bar and the coasting landing against the seam's landing point
+/// (`Predicted::aim`): off the seam and out of the assist's reach
+/// (`Course::Miss`), out of reach, with no arrow; off it and fixable, the
+/// way from it to the point against the aim, and how far; caught and
+/// coming down still or against the seam's drift, the way to drift; else
+/// caught.
 pub fn fall(s: &State) -> Option<Fall> {
     let p = s.landing.filter(|_| s.airborne)?;
     let yaw = s.yaw.unwrap_or(0.0);
-    let ratio = if p.need > 0.0 { p.speed / p.need } else { 1.0 };
     let steer = if p.miss() > 0.0 && p.verdict == Course::Miss {
         Steer::OutOfReach
     } else if p.miss() > 0.0 {
@@ -109,18 +132,21 @@ pub fn fall(s: &State) -> Option<Fall> {
         Steer::OnSeam
     };
     Some(Fall {
-        speed: ratio,
+        window: drop_fill(s),
         steer,
     })
 }
 
-/// The fall row for the second bounce's best seam `r`: the touchdown
-/// speed the flight gives there over its need, and the line-up as
-/// [`fall`]'s: off the seam, the way to steer against the aim `yaw` and
-/// how far; caught and wanting its drift, the way to drift; else caught.
-pub fn line_up(r: &Ranked, yaw: f32) -> Fall {
+/// The fall row for the second bounce's best seam `r`: the drop bar and
+/// the line-up as [`fall`]'s: off the seam, the way to steer against the
+/// aim `yaw` and how far; caught and wanting its drift, the way to drift;
+/// else caught.
+pub fn line_up(r: &Ranked, yaw: f32, drop: Option<f32>) -> Fall {
     Fall {
-        speed: if r.need > 0.0 { r.speed / r.need } else { 1.0 },
+        window: rd::window(
+            drop.unwrap_or(f32::NAN),
+            [superbounce::rule::DROP_MIN, superbounce::rule::DROP_MAX],
+        ),
         steer: if !r.caught {
             Steer::Off {
                 heading: against_aim(r.steer[0], r.steer[1], yaw),
@@ -245,7 +271,7 @@ pub fn ahead(s: &State) -> [Option<crate::superbounce_targets::Mark>; 2] {
 /// - The speed line: [`speed`], with `velocity`.
 /// - The fall row: in the flight after a bounce the best ranked seam's
 ///   ([`line_up`]), else [`fall`]; with `alignment`.
-/// - The miss line: `info`, with `miss_info`.
+/// - The info row: in a primed fall [`air`], else `info` with `miss_info`.
 /// - The ranked line: [`next`], the state's `second` (which the mode
 ///   leaves empty with `second_bounce` off).
 /// - The targets row: not the state's; the runtime adds it
@@ -262,10 +288,11 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
     View {
         speed: speed(s).filter(|_| o.velocity),
         fall: s.second[0]
-            .map(|r| line_up(&r, s.yaw.unwrap_or(0.0)))
+            .map(|r| line_up(&r, s.yaw.unwrap_or(0.0), s.phase.and_then(|p| p.drop)))
             .or_else(|| fall(s))
             .filter(|_| o.alignment),
         info: info.filter(|_| o.miss_info),
+        air: air(s).filter(|_| o.alignment),
         next: next(s),
         kinds: None,
         tag: metres(s.marks.tag),
@@ -512,7 +539,9 @@ impl Info {
             if l.result == LandingResult::Bounce {
                 self.shown = None;
             } else if let Some(new) = miss(&l)
-                && self.shown.is_none_or(|(old, age)| replaces(&new, &old, age))
+                && self
+                    .shown
+                    .is_none_or(|(old, age)| replaces(&new, &old, age))
             {
                 self.shown = Some((new, 0));
             }

@@ -175,6 +175,36 @@ impl Room {
         best
     }
 
+    /// The floor polygons within `r` of `xy` across the ground: the set
+    /// the bounce rule steps a flight over (`superbounce::rule::predict`,
+    /// `superbounce::rule::floors_near` on the grid's cells). Empty for a
+    /// point that is not a number.
+    pub fn floors_near(&self, xy: [f32; 2], r: f32) -> Vec<Poly> {
+        if !(xy.iter().all(|v| v.is_finite()) && r.is_finite() && r >= 0.0) {
+            return Vec::new();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut near: Vec<Poly> = Vec::new();
+        let mut take = |i: &u32| {
+            if seen.insert(*i) {
+                let f = &self.faces[*i as usize];
+                near.push(Poly {
+                    verts: f.verts.clone(),
+                    normal: f.normal,
+                });
+            }
+        };
+        for x in cell(xy[0] - r)..=cell(xy[0] + r) {
+            for y in cell(xy[1] - r)..=cell(xy[1] + r) {
+                if let Some(v) = self.grid.get(&(x, y)) {
+                    v.iter().for_each(&mut take);
+                }
+            }
+        }
+        self.big.iter().for_each(&mut take);
+        superbounce::rule::floors_near(&near, xy, r)
+    }
+
     /// Whether a polygon stands between `from` and `to`: the segment
     /// between them crosses one, short of the last [`SIGHT_END`] before
     /// `to` (the face a mark lies on, or the edge it is on, does not hide
