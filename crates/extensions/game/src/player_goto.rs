@@ -154,7 +154,7 @@ pub fn target(
             };
             if scanned.is_empty() {
                 return Err(
-                    "no spot scan of this map: turn the mode on (superbounce.set {\"on\":true}) \
+                    "no spot scan of this map: turn the mode on (play a game whose script requires hud.superbounce) \
                      and wait for superbounce.state's scan.status to read ready"
                         .into(),
                 );

@@ -330,7 +330,7 @@ pub(crate) fn register_core_film(
     )
         .context("installing our skulls")?;
     // Firefight on a kit map (docs/game/firefight.md, "The host runtime"):
-    // off unless H2_FEATURES names `firefight`. A film replays the host's
+    // on by default, `-firefight` turns it off. A film replays the host's
     // entries.
     // Its Game Setup row and options page come with it, where there is a
     // settings store to keep the choices.
@@ -436,8 +436,8 @@ pub(crate) fn register_core_film(
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
     // The superbounce game type's HUD plate and spot lines
-    // (docs/game/superbounce.md): idle unless the variant or
-    // H2_SUPERBOUNCE asks for it.
+    // (docs/game/superbounce.md): idle unless the game's script requires
+    // `hud.superbounce`.
     crate::superbounce_mode::install(features, telemetry.clone()).context("installing the superbounce mode")?;
     // Teabags in every game, for the incel medal (docs/game/teabag.md):
     // recorded to Live and the film on the console that records the game.

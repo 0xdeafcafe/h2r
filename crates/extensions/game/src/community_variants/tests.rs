@@ -306,10 +306,6 @@ fn superbounce_is_filed_under_research_by_its_script() {
     );
     assert_eq!(sb.row, Some(Row::Research));
     let ext = sb.ext();
-    assert!(
-        !ext.superbounce,
-        "the script turns the mode on, not the flag"
-    );
     assert!(ext.out_of_range().is_none());
     assert_eq!(Ext::decode(&sb.block()), variants::ext::Block::Ext(ext));
     // Mode 2, naming the compiled-in Superbounce script with its default
@@ -327,15 +323,6 @@ fn superbounce_is_filed_under_research_by_its_script() {
     assert_eq!(row_of("My Bounce", &sb.block()), Some(Row::Research));
     assert_eq!(row_of(&sb.display_name(), &none), Some(Row::Research));
     assert_eq!(row_of("My Bounce", &none), None);
-    let flag_only = Ext {
-        superbounce: true,
-        ..Ext::RETAIL
-    };
-    assert_eq!(
-        row_of("My Bounce", &flag_only.encode()),
-        None,
-        "the flag files nothing"
-    );
 }
 
 #[test]

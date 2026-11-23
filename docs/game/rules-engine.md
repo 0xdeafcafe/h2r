@@ -1923,8 +1923,8 @@ players like any other to a script.
 an exact 30 Hz tick ([high-framerate.md](high-framerate.md)). A script
 hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, reads the scanner's spots as zones, scores
 and times them, and sets traits. That makes Bounce Practice and a trick
-or parkour mode real scripts, and the superbounce flag (bit 2 of the
-block's flags) a script's own choice. The detector's rule is a traced
+or parkour mode real scripts, and the superbounce mode a script's own
+choice (`requires hud.superbounce`). The detector's rule is a traced
 signature, not the launch rule (Open in superbounce.md), so it can miss
 or over-report until it is checked in play.
 

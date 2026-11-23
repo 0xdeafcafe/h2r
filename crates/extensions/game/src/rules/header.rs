@@ -100,20 +100,25 @@ mod tests {
         p
     }
 
-    /// The superbounce script asks for the mode and lists under Research
-    /// and Devolution; no port and no other example does either.
+    /// The Superbounce and Bounce Practice scripts ask for the mode and
+    /// list under Research and Devolution; no port and no other example
+    /// does either.
     #[test]
-    fn only_the_superbounce_script_asks_for_the_mode_and_a_row() {
+    fn only_the_bounce_scripts_ask_for_the_mode_and_a_row() {
         let sb = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+        let practice = ::rules::compile(::rules::builtin::BOUNCE_PRACTICE).unwrap();
         assert!(asks_superbounce(&sb));
+        assert!(asks_superbounce(&practice));
         assert_eq!(list_row(&sb.header), Some(Row::Research));
         for b in runtime::builtins().iter().chain(runtime::examples()) {
             let (ir, _) = ::rules::verify::load(&b.blob).unwrap();
-            let is_sb = ir.id() == sb.id();
-            assert_eq!(asks_superbounce(&ir), is_sb, "{}", ir.header.name);
-            let row = is_sb.then_some(Row::Research);
-            assert_eq!(list_row(&ir.header), row, "{}", ir.header.name);
-            assert_eq!(block_row(&rules_block(prefix(b))), row, "{}", ir.header.name);
+            let asks = ir.id() == sb.id() || ir.id() == practice.id();
+            assert_eq!(asks_superbounce(&ir), asks, "{}", ir.header.name);
+            let row = (ir.id() == sb.id()).then_some(Row::Research);
+            if ir.id() != practice.id() {
+                assert_eq!(list_row(&ir.header), row, "{}", ir.header.name);
+                assert_eq!(block_row(&rules_block(prefix(b))), row, "{}", ir.header.name);
+            }
         }
         assert!(runtime::examples().iter().any(|b| b.id == sb.id()));
         // A block with no script, and one naming a script not here.
@@ -127,7 +132,6 @@ mod tests {
     #[test]
     fn the_superbounce_block_asks_for_the_mode_through_its_script() {
         let ext = crate::community_variants::listed_named("Superbounce").unwrap().ext();
-        assert!(!ext.superbounce);
         assert!(script_asks_superbounce(ext.script));
         assert!(!script_asks_superbounce(Script::default()));
         let port = Script {
@@ -142,6 +146,25 @@ mod tests {
             ..Ext::RETAIL
         };
         assert!(!crate::variant_ext::decide(plain, None, false).superbounce());
+    }
+
+    /// A record written with the old superbounce flag (bit 2 of the
+    /// block's flag byte) and no script leaves the mode off; the same
+    /// record naming the Superbounce script turns it on.
+    #[test]
+    fn the_old_flag_without_a_script_leaves_the_mode_off() {
+        let with_flag = |e: Ext| {
+            let mut b = e.encode();
+            b[3] |= 0b100;
+            let crc = variants::ext::crc32(&b[..LEN - 4]);
+            b[LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+            Ext::in_effect(&b)
+        };
+        let flagged = with_flag(Ext { gravity: 50, ..Ext::RETAIL });
+        assert_eq!(flagged.gravity, 50, "the block still reads");
+        assert!(!crate::variant_ext::decide(flagged, None, false).superbounce());
+        let scripted = with_flag(crate::community_variants::listed_named("Superbounce").unwrap().ext());
+        assert!(crate::variant_ext::decide(scripted, None, false).superbounce());
     }
 
     /// The built-in block's options are the defaults; a copy with a piece
@@ -170,7 +193,7 @@ mod tests {
 
     /// Every listed script's block names a script this machine has, so a
     /// built-in record, and a copy of it, lists under its header's row;
-    /// only Superbounce's asks for the mode.
+    /// only Superbounce's and Bounce Practice's ask for the mode.
     #[test]
     fn each_listed_block_names_its_script_and_its_row() {
         for b in ::rules::builtin::LISTED {
@@ -181,7 +204,8 @@ mod tests {
             assert_eq!(block_row(&block), list_row(&ir.header), "{}", b.name);
             assert_eq!(
                 script_asks_superbounce(Ext::in_effect(&block).script),
-                b.source == ::rules::builtin::SUPERBOUNCE,
+                b.source == ::rules::builtin::SUPERBOUNCE
+                    || b.source == ::rules::builtin::BOUNCE_PRACTICE,
                 "{}",
                 b.name
             );

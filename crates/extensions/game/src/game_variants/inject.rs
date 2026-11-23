@@ -58,6 +58,21 @@ pub struct Listed {
 
 static LISTED: Mutex<Vec<Listed>> = Mutex::new(Vec::new());
 
+/// The block a sim run puts on its game's record ([`set_sim_block`]).
+static SIM_BLOCK: Mutex<Option<[u8; variants::ext::LEN]>> = Mutex::new(None);
+
+fn sim_block() -> Option<[u8; variants::ext::LEN]> {
+    *SIM_BLOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A sim match that plays a rules script (`superbounce = true` plays the
+/// Superbounce script, docs/runtime/sim.md): [`apply_block`] writes
+/// `block`, naming that script, on the game's record at its start. `None`
+/// clears it.
+pub fn set_sim_block(block: Option<[u8; variants::ext::LEN]>) {
+    *SIM_BLOCK.lock().unwrap_or_else(|e| e.into_inner()) = block;
+}
+
 fn listed() -> MutexGuard<'static, Vec<Listed>> {
     LISTED.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -232,6 +247,20 @@ pub fn entries(
 /// is not ours or already carries the block.
 pub fn apply_block<M: Mem>(m: &mut M, options: u32) -> Option<String> {
     let record = options.wrapping_add(crate::variant_ext::OPTIONS_VARIANT);
+    if let Some(block) = sim_block() {
+        // A sim's script (`set_sim_block`) replaces the record's block
+        // whatever variant built it.
+        let at = record.wrapping_add(variants::ext::AT as u32);
+        let mut now = [0u8; variants::ext::LEN];
+        if m.rd(at, &mut now) && now == block {
+            return None;
+        }
+        return Some(if m.wr(at, &block) {
+            format!("game variants: the sim's script is on the record: {}", variants::ext::Ext::in_effect(&block).summary())
+        } else {
+            "game variants: the sim's script block could not be written".to_string()
+        });
+    }
     let mut head = [0u8; 0x48];
     if !m.rd(record, &mut head) {
         return None;

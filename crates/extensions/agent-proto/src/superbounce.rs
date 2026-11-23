@@ -14,8 +14,9 @@ pub mod method {
     /// ([`super::State`]; no params).
     pub const STATE: &str = "superbounce.state";
 
-    /// Turns the mode on or off in the running game, over the game type
-    /// and `H2_SUPERBOUNCE` ([`super::SetParams`], [`super::Set`]).
+    /// Forces the mode off in the running game, or lets the game decide
+    /// again; it never turns the mode on ([`super::SetParams`],
+    /// [`super::Set`]).
     pub const SET: &str = "superbounce.set";
 
     /// The spots the bots know for a map ([`super::SPOTS`]).
@@ -253,8 +254,9 @@ pub struct SecondBounce {
 /// `superbounce.state`'s result.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
-    /// Whether the mode is on: the variant's flag, the built-in
-    /// Superbounce variant, or `H2_SUPERBOUNCE=1`.
+    /// Whether the mode is on: the game's script requires
+    /// `hud.superbounce` (the built-in Superbounce variant's does) and
+    /// `superbounce.set` has not forced it off.
     pub active: bool,
     /// The level pair's word is -3.
     pub primed: bool,
@@ -584,8 +586,9 @@ pub struct OffSpot {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetParams {
-    /// `true` forces the mode on, `false` forces it off, `null` (or absent)
-    /// follows the game again: the variant, its flag and `H2_SUPERBOUNCE`.
+    /// `false` forces the mode off, `null` (or absent) follows the game
+    /// again: its script. `true` is refused: only a script that requires
+    /// `hud.superbounce` turns the mode on.
     #[serde(default)]
     pub on: Option<bool>,
 }
@@ -594,7 +597,7 @@ pub struct SetParams {
 /// on/off check runs every 30 ticks); `superbounce.state` says when.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Set {
-    /// The override now: `on`, `off` or `game`.
+    /// The override now: `off` or `game`.
     pub mode: String,
 }
 

@@ -271,9 +271,8 @@ impl AgentGlue {
                     .expect("superbounce.state serialises"))
             },
         );
-        // Turns the superbounce mode on or off over the game type, so a
-        // run whose environment can't carry H2_SUPERBOUNCE (the lab) can
-        // still use it.
+        // Forces the superbounce mode off over the game type (it can't
+        // force it on: only a script that requires `hud.superbounce` does).
         agent.add_game_method(
             agent_proto::superbounce::method::SET,
             Access::Act,
@@ -284,7 +283,9 @@ impl AgentGlue {
                     serde_json::from_value(params)
                         .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
                 };
-                let mode = crate::superbounce_mode::set_override(p.on).to_string();
+                let mode = crate::superbounce_mode::set_override(p.on)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?
+                    .to_string();
                 Ok(serde_json::to_value(agent_proto::superbounce::Set { mode })
                     .expect("superbounce.set serialises"))
             },

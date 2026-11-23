@@ -2,7 +2,7 @@
 //! the runtime at the game's start and at each tick boundary, and the
 //! agent API's view of it.
 //!
-//! Off unless `H2_FEATURES` names it. On, it starts the mode at each
+//! On by default; `-firefight` turns it off. On, it starts the mode at each
 //! multiplayer game's start where the map carries the kit, and otherwise
 //! keeps the refusal and its reason for `firefight.state`. Its hooks:
 //!

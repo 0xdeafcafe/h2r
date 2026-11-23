@@ -315,8 +315,8 @@ aggression = 0.9
 reaction = 5
 ```
 
-`superbounce = true` (before the tables) turns the superbounce mode on
-for the match: the bots practise bounces instead of fighting
+`superbounce = true` (before the tables) makes the match play the
+Superbounce rules script, which turns the superbounce mode on: the bots practise bounces instead of fighting
 ([Bounce practice](#bounce-practice)). A `[drill]` table (with
 `superbounce = true`) makes them try one site only
 ([The bounce drill](#the-bounce-drill)). A `[train]` table (with
@@ -903,8 +903,9 @@ host makes the command exit unsuccessfully after it writes the comparison.
 
 A match with `superbounce = true` is a practice: every bot practises
 superbounces ([bots.md, "Practising bounces"](../game/bots.md#practising-bounces))
-and nobody fights. `sim_glue::Sim::add_bots` forces the superbounce mode
-on (`superbounce_mode::set_override`), installs the pair reader the
+and nobody fights. `sim_glue::Sim::add_bots` puts the built-in Superbounce script's block
+on the game's record at its start (`game_variants::inject::set_sim_block`),
+so the script turns the superbounce mode on, installs the pair reader the
 route's prime reads (`sim_bots::install_pair_reader`), keeps the medal
 chain's awards for the sim (`superbounce_mode::collect_awards`) and turns
 the tally's bounce counting on. [sim-examples/superbounce-practice.toml](sim-examples/superbounce-practice.toml)
