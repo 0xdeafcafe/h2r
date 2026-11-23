@@ -242,3 +242,39 @@ fn aliased_definitions_share_one_decode_budget() {
     CollisionMesh::read(&view, 0, &mut bytes_left).unwrap();
     assert!(CollisionMesh::read(&view, 0, &mut bytes_left).is_err());
 }
+
+/// A live collision commit (`edit.collision.commit`) replaces the
+/// structure's level collision lines and keeps its instances' lines.
+#[test]
+fn a_committed_level_replaces_only_the_structure_lines() {
+    let level = |x: f32| Bsp {
+        surfaces: vec![Surface { plane: 0, first_edge: 0, flags: 0, breakable_surface: 0xff, material: 0 }],
+        edges: vec![BspEdge {
+            start_vertex: 0,
+            end_vertex: 1,
+            forward_edge: 0,
+            reverse_edge: 0,
+            left_surface: 0,
+            right_surface: u16::MAX,
+        }],
+        vertices: vec![
+            Vertex { point: [x, 0.0, 0.0], edge: 0 },
+            Vertex { point: [x, 1.0, 0.0], edge: 0 },
+        ],
+        ..Bsp::default()
+    };
+    let instance: Edge = [[9.0, 9.0, 9.0], [9.0, 9.0, 8.0]];
+    let mut views = StaticViews::default();
+    views.replace_structure(&level(1.0));
+    views.collision.push(instance);
+    assert_eq!(views.collision, vec![[[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], instance]);
+    let mut grown = level(2.0);
+    grown.vertices.push(Vertex { point: [2.0, 0.0, 1.0], edge: 1 });
+    grown.edges.push(BspEdge { start_vertex: 1, end_vertex: 2, ..grown.edges[0] });
+    views.replace_structure(&grown);
+    assert_eq!(
+        views.collision,
+        vec![[[2.0, 0.0, 0.0], [2.0, 1.0, 0.0]], [[2.0, 1.0, 0.0], [2.0, 0.0, 1.0]], instance]
+    );
+    assert!(views.barriers.is_empty());
+}

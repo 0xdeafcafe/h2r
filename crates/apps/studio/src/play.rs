@@ -22,6 +22,7 @@ pub mod pair;
 pub mod objects;
 pub mod playtest;
 pub(crate) mod presence;
+pub(crate) mod collision_sync;
 pub(crate) mod raw_sync;
 pub(crate) mod select;
 pub mod stream;
@@ -1208,6 +1209,9 @@ impl Play {
             (Purpose::Take { id, at }, result) => self.take_answer(app, id, at, result),
             (Purpose::Object(ticket), result) => self.object_answer(app, ticket, result),
             (Purpose::Edit(id), result) if self.edits.raw.owns(id) => self.raw_answer(app, result),
+            (Purpose::Edit(id), result) if self.edits.collision.owns(id) => {
+                self.collision_answer(app, result)
+            }
             (Purpose::Edit(id), result) => self.batch_answer(app, id, result),
             (Purpose::Reload(id), result) => self.reload_answer(app, id, result),
             (Purpose::Focus, Ok(_)) => {}

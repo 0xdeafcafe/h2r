@@ -12,8 +12,10 @@ implemented; the Modeling window is a section of the map inspector with
 buttons, not yet the gizmo, overlays and keymap below, and has no control
 or API method for **Use for lower LODs** yet. A `coll` BSP and a
 structure's collision are not yet `geometry-edit` targets, so the window,
-`geometry.*` and the session do not reach them; nothing in the editor
-calls `geometry_edit::level_collision` yet. Rebuilding a level's collision
+`geometry.*` and the session do not reach them; no tool makes a
+`geometry_edit::level_collision` edit yet. `Modeling::level_collision`
+holds them (`App::set_level_collision`), and Play sends what it holds to
+a paired game (realtime-edits.md, "The editor"). Rebuilding a level's collision
 and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
