@@ -268,7 +268,7 @@ mod tests {
                 p[0].status.as_str(),
                 p[0].slot.as_str()
             ),
-            (4, 1, "d3d", "opaque")
+            (4, 1, "partial", "opaque")
         );
         assert_eq!(p[1].producer, "hud");
         assert_eq!(p[0].guest_ms, None, "null without render-timing");

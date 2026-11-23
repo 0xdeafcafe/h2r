@@ -189,6 +189,11 @@ pub struct Site {
 pub enum Status {
     /// Replaced: its guest code no longer runs.
     Native,
+    /// Partly replaced: a native stage draws some of its items from the
+    /// scene and their guest draws are skipped; the rest, and the
+    /// producer's own guest code, still run through `d3d`
+    /// ([`layer_status`]).
+    Partial,
     /// Still drawn by the guest front-end through `d3d`.
     D3d,
     /// No registered producer was open.
@@ -199,6 +204,7 @@ impl Status {
     pub fn name(self) -> &'static str {
         match self {
             Status::Native => "native",
+            Status::Partial => "partial",
             Status::D3d => "d3d",
             Status::Unknown => "unknown",
         }
@@ -218,8 +224,9 @@ pub struct Row {
 
 /// The fixed producers, by the inventory in docs/graphics/retire-d3d.md
 /// ("By caller"). The layer draw is a producer per site and layer
-/// ([`Producer::Layer`]). Every row is `d3d` until the slice that replaces
-/// it changes it, in the same commit as its test. Callers the inventory
+/// ([`Producer::Layer`], its status [`layer_status`]). Every row is `d3d`
+/// until the slice that replaces it changes it, in the same commit as its
+/// test. Callers the inventory
 /// names that have no point yet (movies, the flares, target selection,
 /// the untraced `Begin` callers, the first person's own entry) are filed
 /// under the producer around them or `unknown`, and the `callers` table
@@ -345,6 +352,27 @@ pub const LAYER_SITES: [&str; 6] = [
     "other",
 ];
 
+/// The layer draws a native stage draws items of from the scene, skipping
+/// those items' guest draws (slice R1, docs/graphics/retire-d3d.md, "By
+/// caller"), by [`LAYER_SITES`] index: the scene's layers 1, 5, 7, 8 and
+/// 20 (`frame-scene.layers`) and 3 (`native_objects`, `native_world`, the
+/// decorators), and the first person's 1, 7, 8 and 20
+/// (`frame-scene.layers`) and 3 (`native_first_person`). Each is
+/// [`Status::Partial`]: what its stages refuse stays the guest's.
+pub const PARTIAL_LAYERS: [(u8, &[u8]); 2] = [(0, &[1, 3, 5, 7, 8, 20]), (2, &[1, 3, 7, 8, 20])];
+
+/// The status of the layer draw at site `at` ([`LAYER_SITES`]) of `layer`.
+pub fn layer_status(at: u8, layer: u8) -> Status {
+    let partial = PARTIAL_LAYERS
+        .iter()
+        .any(|&(site, layers)| site == at && layers.contains(&layer));
+    if partial {
+        Status::Partial
+    } else {
+        Status::D3d
+    }
+}
+
 /// Who the work is filed under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Producer {
@@ -376,7 +404,8 @@ impl Producer {
     pub fn status(self) -> Status {
         match self {
             Producer::Fixed(i) => REGISTRY.get(i).map_or(Status::Unknown, |r| r.status),
-            Producer::Layer { .. } | Producer::OutsideRender => Status::D3d,
+            Producer::Layer { at, layer } => layer_status(at, layer),
+            Producer::OutsideRender => Status::D3d,
             Producer::Unknown => Status::Unknown,
         }
     }
@@ -1149,6 +1178,10 @@ mod tests {
         let layer = r.producers.unwrap()[&Producer::Layer { at: 0, layer: 3 }].work;
         assert_eq!((layer.claimed, layer.residual), (1, 1));
         assert_eq!(Producer::Layer { at: 0, layer: 3 }.name(), "layer.scene.3");
+        assert_eq!(
+            Producer::Layer { at: 0, layer: 3 }.status(),
+            Status::Partial
+        );
         assert_eq!(r.sites[&0x0004_5000].residual, 1);
     }
 
@@ -1258,6 +1291,34 @@ mod tests {
         c.frame_end();
         let r = close(c, 8);
         assert_eq!(r.unbalanced, 3);
+    }
+
+    #[test]
+    fn the_layer_draws_r1_draws_items_of_are_partial_and_the_rest_d3d() {
+        let status = |at: u8, layer: u8| Producer::Layer { at, layer }.status().name();
+        for layer in [1, 3, 5, 7, 8, 20] {
+            assert_eq!(status(0, layer), "partial", "the scene's layer {layer}");
+        }
+        for layer in [1, 3, 7, 8, 20] {
+            assert_eq!(
+                status(2, layer),
+                "partial",
+                "the first person's layer {layer}"
+            );
+        }
+        assert_eq!(status(2, 5), "d3d", "the first person draws no layer 5");
+        assert_eq!(status(0, 2), "d3d", "the sky and layer 2");
+        assert_eq!(status(1, 1), "d3d", "an alternate view's");
+        assert_eq!(status(3, 12), "d3d", "the light passes'");
+        assert_eq!(status(4, 10), "d3d", "an object shadow's");
+        for r in REGISTRY {
+            assert_eq!(
+                r.status,
+                Status::D3d,
+                "{}: no fixed producer is replaced",
+                r.name
+            );
+        }
     }
 
     #[test]

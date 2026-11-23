@@ -231,7 +231,8 @@ caller, what the guest front-end still asks `d3d` to do.
   `{producer, status, slot, calls, draws, claimed, residual, entries,
   push_words, state_words, clears, binds, copies, uploads, d3d_ms,
   guest_ms}`. `status` is `native`, `d3d` or `unknown` from the registry
-  below. `guest_ms` is the producer's exclusive guest time and is `null`
+  below, or `partial` for a layer draw whose items a native stage draws
+  in part from the scene, skipping their guest draws. `guest_ms` is the producer's exclusive guest time and is `null`
   without `render-timing`. A stage's refusals are not filed by producer;
   the capture's `native_<stage>_refused_*` counters give them by stage.
 - **`callers`**, at most `top`: `{function, sites, entries, draws,
@@ -442,7 +443,10 @@ reference page.
   `d3d` and its counts. Nothing is drawn by a second native
   approximation, and nothing is skipped.
 - **One registry.** A producer's status changes from `d3d` to `native`
-  in the slice that replaces it, in the same commit as its test.
+  in the slice that replaces it, in the same commit as its test. A layer
+  draw some of whose items a stage draws from the scene, skipping their
+  guest draws, is `partial` (`residual_census::PARTIAL_LAYERS`) until
+  the slice leaves it nothing.
   `the_residual_registry_names_every_producer` (new, in `render-bridge`)
   fails when a hook draws for a producer the registry does not list.
 - **A replaced producer cannot fall back.** After its slice, content the
