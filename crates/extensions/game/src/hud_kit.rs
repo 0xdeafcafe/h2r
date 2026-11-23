@@ -974,7 +974,9 @@ pub fn utf16(text: &str, units: usize) -> Vec<u8> {
         .collect()
 }
 
-/// A kit text widget's string and font.
+/// A kit text widget's string and font: a text's is its value's text, a
+/// gauge's the character of its picture for the value's fill as it draws
+/// now (`records::Widget::text`).
 pub fn string(
     mem: &mut dyn GuestMemory,
     sp: u32,
@@ -988,7 +990,9 @@ pub fn string(
     let Some(w) = table.at(widget).filter(|w| w.kind == WidgetKind::Text) else {
         return Ok(false);
     };
-    let text = values(w.hud, w.id).map(|v| v.text).unwrap_or_default();
+    let text = values(w.hud, w.id)
+        .map(|v| w.widget.text(&v))
+        .unwrap_or_default();
     let font = w.font[mode(&*mem)?.index()];
     let font = if font < 0 {
         hud_kit_core::model::Font::Hud.engine()

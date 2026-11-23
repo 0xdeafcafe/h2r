@@ -74,11 +74,11 @@ pub fn arrow(angle: f32) -> char {
 }
 
 /// Pixels between the charge segments' right side and the rows.
-pub const SEGMENTS_GAP: i16 = 6;
+pub const SEGMENTS_GAP: i16 = 12;
 /// The rows' left edge, from the frame's bottom-left corner (48, 444):
 /// beside the motion tracker (`rects::TRACKER`, x 47 to 130),
 /// [`SEGMENTS_GAP`] right of the charge segments' right side
-/// (`superbounce_segments::RIGHT_EDGE`, x 143), at screen x 149.
+/// (`superbounce_segments::RIGHT_EDGE`, x 137), at screen x 149.
 pub const LEFT: i16 = segs::RIGHT_EDGE - segs::CORNER.0 + SEGMENTS_GAP;
 /// The rows' tops from the frame's bottom: y 376, 397 and 418 fullscreen,
 /// a line of font 6 (21) apart, the last ending 5 above the frame's foot.
@@ -614,7 +614,7 @@ mod tests {
                 continue;
             }
             let (x, y) = (48 + e.at.full.0, 444 + e.at.full.1);
-            assert!(x >= 149, "{}: right of the segments' right side, x 134 to 143", e.id);
+            assert!(x >= 149, "{}: right of the segments' right side, x 131 to 137", e.id);
             assert!((376..444).contains(&y), "{}: under the tracker's top, in the frame", e.id);
             assert_eq!(e.outside, 0, "{}: inside the frame", e.id);
         }
@@ -627,8 +627,8 @@ mod tests {
         assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 149 + 64 + 6);
         assert_eq!(
             h.arts().len(),
-            3,
-            "the strip's end at the bar's width and at a segment's, and the navpoints' arrow"
+            2,
+            "the strip's end at the bar's width and the navpoints' arrow; the segments are gauges, with no art"
         );
     }
 
@@ -834,7 +834,7 @@ mod tests {
         assert_eq!(fall_chance(&View { guide: None, ..falling }), None);
     }
 
-    /// The charge segments are nine meters after the bar: the empty ring
+    /// The charge segments are nine gauges after the bar: the empty ring
     /// in every state but `idle`, the guide's moments primed and full,
     /// and their own moments one for each stage.
     #[test]

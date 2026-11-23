@@ -12,7 +12,9 @@
 //! to the two HUD message fonts the superbounce medals (`font::medals`,
 //! U+E2A0..U+E2A8; docs/game/hud-kit.md, "The medals"), and to every
 //! font the HUD's eight direction arrows (`font::arrows`,
-//! U+E2B0..U+E2B7; docs/game/hud-kit.md, "Direction arrows").
+//! U+E2B0..U+E2B7; docs/game/hud-kit.md, "Direction arrows") and the
+//! charge ring's arcs (`font::ring`, U+E2C0..U+E2FE; "The charge
+//! segments").
 
 /// Adds the gear to every font file.
 pub struct GearRewrite;
@@ -20,7 +22,8 @@ pub struct GearRewrite;
 impl GearRewrite {
     /// The font file `name` (a bare name or its path) with the gear and
     /// the Mods list's marks (`font::mod_marks`: new, installed,
-    /// downloading) and the HUD's direction arrows (`font::arrows`) added,
+    /// downloading), the HUD's direction arrows (`font::arrows`) and the
+    /// charge ring's arcs (`font::ring`) added,
     /// and the superbounce medals for a message font
     /// (`font::medals::wants_font`), or `None` if it is not a font or draws
     /// them all already.
@@ -30,6 +33,7 @@ impl GearRewrite {
             font::gear::replacement(&font).into_iter().collect();
         add.extend(font::mod_marks::replacements(&font));
         add.extend(font::arrows::replacements(&font));
+        add.extend(font::ring::replacements(&font));
         if font::medals::wants_font(name) {
             add.extend(font::medals::replacements(&font));
         }
@@ -103,6 +107,18 @@ mod tests {
             let a = f.glyph(unit).unwrap();
             assert_eq!((a.record.width, a.record.height), (12, 12), "U+{unit:04X}");
             assert!(font::arrows::has_glyph(&f, unit));
+        }
+        for segment in 0..font::ring::SEGMENTS {
+            for step in 0..=font::ring::STEPS {
+                let unit = font::ring::unit(segment, step);
+                let a = f.glyph(unit).unwrap();
+                assert_eq!(
+                    (a.record.width, a.record.height),
+                    font::ring::size(segment),
+                    "U+{unit:04X}"
+                );
+                assert!(font::ring::has_glyph(&f, unit));
+            }
         }
         // A font that has it is left alone.
         assert_eq!(r.rewrite("maps\\fonts\\again", &out), None);

@@ -545,10 +545,10 @@ fn the_pill_block_is_beside_the_tracker_and_in_the_grenade_row() {
     assert!(h.element(pill_block::CHARGE).unwrap().drawn);
 }
 
-/// The charge segments on the synthetic sheet: nine pieces of the
-/// strip's end round the tracker's rim and off it, outside the HUD
-/// frame by what they are let and no finding for it; lit as the stage
-/// says.
+/// The charge segments on the synthetic sheet: nine arcs round the
+/// tracker's rim and off it, each the picture the fonts are served with,
+/// outside the HUD frame by what they are let and no finding for it; lit
+/// as the stage says.
 #[test]
 fn the_charge_segments_draw_round_the_tracker() {
     use crate::huds::superbounce_readout::Readout;
@@ -571,17 +571,51 @@ fn the_charge_segments_draw_round_the_tracker() {
     assert!(on_segments.is_empty(), "{on_segments:#?}");
     let shot = |state: &str| r.shots.iter().find(|s| s.state == state).unwrap();
     let frame = Frame::for_mode(Mode::Full);
+    // The tracker's disc and the clear band round it: every pixel within
+    // the rim's radius and the gap, less the arcs' soft edge.
     let rim = crate::rects::TRACKER;
-    for (id, (x, y)) in segs::IDS.into_iter().zip(segs::AT) {
+    let centre = [(rim.x0 + rim.x1) / 2.0, (rim.y0 + rim.y1) / 2.0];
+    let mut disc = render::Cover::new();
+    for y in 340..470 {
+        for x in 30..150 {
+            let (dx, dy) = (x as f32 + 0.5 - centre[0], y as f32 + 0.5 - centre[1]);
+            if dx.hypot(dy) <= rim.width() / 2.0 + f32::from(segs::GAP) - 1.0 {
+                disc.set(x, y);
+            }
+        }
+    }
+    let mut ring = render::Cover::new();
+    for (i, id) in segs::IDS.into_iter().enumerate() {
+        let ((x, y), (w, h)) = (segs::AT[i], segs::SIZE[i]);
         let d = shot("segments-primed").element(id).unwrap();
         let rect = d.rect.unwrap();
         assert!(d.drawn, "{id}");
+        assert_eq!((d.kind, d.font, d.text.as_deref()), ("gauge", Some(6), None), "{id}");
         assert_eq!(
             rect.pixels(),
-            [i32::from(x), i32::from(y), i32::from(x) + 9, i32::from(y) + 8],
+            [x, y, x + w, y + h].map(i32::from),
             "{id}"
         );
-        assert!(rect.intersect(&rim).is_none(), "{id} is over the tracker");
+        assert_eq!(d.reserved.unwrap().pixels(), rect.pixels(), "{id}");
+        // The full picture's opaque pixels, none on the tracker or in the
+        // gap round it, none of another arc's.
+        let cover = d.cover.as_ref().unwrap();
+        let full = segs::glyphs(i).picture(1.0).unwrap();
+        let inked = full.pixels.iter().filter(|p| **p >> 12 >= 4).count();
+        assert!(
+            inked > 30 && cover.count() as usize == inked,
+            "{id}: {} of {inked}",
+            cover.count()
+        );
+        assert_eq!(cover.overlap(&disc), 0, "{id} is over the tracker");
+        assert_eq!(cover.overlap(&ring), 0, "{id} is over another arc");
+        ring.add(cover);
+        // Empty, the faint track: drawn, and no wider than the lit arc.
+        let empty = shot("segments-idle").element(id).unwrap();
+        let track = empty.cover.as_ref().unwrap();
+        assert!(empty.drawn && empty.fill == Some(0.0), "{id}");
+        assert!(track.count() > 15 && track.count() <= cover.count(), "{id}");
+        assert_eq!(track.overlap(cover), track.count(), "{id}: the track is under the arc");
     }
     // The left side and the bottom are outside the frame.
     let first = shot("segments-primed").element(segs::IDS[0]).unwrap().rect.unwrap();
@@ -598,6 +632,50 @@ fn the_charge_segments_draw_round_the_tracker() {
     assert_eq!(fills("segments-primed"), [Some(1.0); 9]);
     assert_eq!(fills("segments-lost"), [Some(0.0); 9]);
     assert!(segs::IDS.iter().all(|id| !shot("idle").element(id).unwrap().drawn));
+    // The wipe's edge: three quarters of the charge is 6.75 arcs, the
+    // seventh part lit, more than the empty track and less than the arc.
+    let count = |state: &str, i: usize| {
+        let d = shot(state).element(segs::IDS[i]).unwrap();
+        let p = segs::glyphs(i).picture(d.fill.unwrap()).unwrap();
+        p.pixels.iter().filter(|p| **p >> 12 > 8).count()
+    };
+    assert_eq!(fills("segments-draining")[6], Some(0.75));
+    assert!(count("segments-draining", 6) > 0);
+    assert!(count("segments-draining", 6) < count("segments-primed", 6));
+    assert_eq!(count("segments-draining", 7), 0);
+}
+
+/// A gauge whose pictures no code of ours draws is a finding, and is not
+/// drawn.
+#[test]
+fn a_gauge_with_no_picture_is_a_finding() {
+    let none = Glyphs {
+        first: u16::from(b'A'),
+        steps: 2,
+        size: (4, 4),
+    };
+    let r = findings(&case(
+        vec![Element::gauge("g", none, bl(10, -150))],
+        &[("g", Value::fill(1.0))],
+    ));
+    let drawn: Vec<_> = r.of(Check::Drawn).map(|f| f.text.clone()).collect();
+    assert!(
+        drawn.len() == 1 && drawn[0].contains("no code of ours draws U+0043"),
+        "{drawn:?}"
+    );
+    // One of the ring's, at its own size, is drawn where it is placed.
+    let r = findings(&case(
+        vec![Element::gauge("g", segs::glyphs(0), bl(10, -150))],
+        &[("g", Value::fill(0.5))],
+    ));
+    assert!(r.of(Check::Drawn).next().is_none(), "{:#?}", r.findings);
+    let d = r.shots[0].element("g").unwrap();
+    let (w, h) = segs::SIZE[0];
+    assert!(d.drawn);
+    assert_eq!(
+        d.rect.unwrap().pixels(),
+        [58, 294, 58 + i32::from(w), 294 + i32::from(h)]
+    );
 }
 
 /// An element let outside the HUD frame may sit that far out and no

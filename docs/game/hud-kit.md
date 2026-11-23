@@ -377,6 +377,9 @@ pub enum Kind {
     Icon { art: Art },
     /// An icon turned to `Value::angle` about its centre.
     Pointer { art: Art },
+    /// A picture of ours that fills with `Value::fill` in steps: a text
+    /// widget whose one character is the picture for the fill ("Gauges").
+    Gauge { glyphs: Glyphs },
     /// The channels (below).
     Message { longest: &'static str },
     Prompt { longest: &'static str },
@@ -416,6 +419,9 @@ pub enum Art {
 }
 pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
 pub enum PillPart { Body, End }       // the pill's first PILL_BODY (20) pixels, its last PILL_END (7)
+/// A gauge's pictures: `steps + 1` characters of ours in the fonts, from
+/// `first`, the empty one, to the full one, each `size` pixels.
+pub struct Glyphs { pub first: u16, pub steps: u8, pub size: (i16, i16) }
 pub enum Style { Normal, Dim, Inactive, Flash(Pulse), Go } // Go: a world mark's green, alone
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
@@ -441,7 +447,7 @@ pub trait Describe {
 
 `records::compile(&Hud, &Templates) -> Result<Compiled, Error>` turns
 the elements into widget records: `0x64` bytes per meter, icon and
-pointer and `0x54` per text, with the element id of each, bitmaps first
+pointer and `0x54` per text and gauge, with the element id of each, bitmaps first
 and texts after, as the game draws them (E `0x0013a532`). It writes the
 fields at the offsets of the `nhdt` definition (`tags::defs`) that
 `hud_edit::layout` reads, and `hud-kit`'s tests read every compiled
@@ -478,7 +484,8 @@ game is given.
 What the bytes leave to the runtime's hooks: the four show words are
 zero, so the retail gate (E `0x0013ac87`) never draws a kit widget on its
 own; every input is 0 ("zero"), and the input hook gives `hud_input1`;
-a text's string is the template's, and the string hook gives the text.
+a text's string is the template's, and the string hook gives the text,
+for a gauge the character of its picture (`records::Widget::text`).
 A text hidden in a screen mode has the font byte -1 there, so the game's
 own text draw skips it (E `0x0022a85b`). A hidden mode keeps the
 fullscreen offset.
@@ -647,7 +654,10 @@ does the rest:
    sprite hook to narrow from both sides.
 5. **String** (`HUD_WIDGET_STRING`, before): the value's text, UTF-16, in
    the element's engine font for the mode, and the four inputs copied to
-   the HUD material's (`0x004e6980`), as the text draw does.
+   the HUD material's (`0x004e6980`), as the text draw does. A gauge's
+   text is the one character of its picture for the value's fill as it
+   draws now (`records::Widget::text`), so an eased fill sweeps through
+   the steps at any frame rate.
 6. **Crop** (`HUD_WIDGET_SPRITE`, before): for a cropped widget the hook
    picks the sprite as the game does (`hud_kit::sprite_pick`: the mode's
    sequence and its first sprite; a sequence with no sprites, its
@@ -748,6 +758,37 @@ disc's fonts have no arrows of their own.
 A `Pointer` element is not used for a direction: the runtime does not
 turn a widget.
 
+### Gauges
+
+A meter is a retail bitmap filled by its shader, so it is a rectangle:
+a strip, or a crop of one. A shape no retail bitmap has, as an arc round
+the motion tracker, is a `Gauge`: a text widget in font byte 0
+(`GAUGE_FONT`, engine font 6) whose string is one character, the picture
+of the shape at the value's fill. The pictures are drawn in code and
+served in every font file by the font rewrite, as the direction arrows
+are, so the game's text draw draws them in the HUD's text colour, in the
+game's own batches, hidden with the HUD.
+
+| | A bitmap of ours in the map | A host mark (`gfx::world_lines::HudMark`) | Glyphs of ours in the fonts |
+|---|---|---|---|
+| Gets into the game by | a new `bitm` in every level's map: the map decomposed and rebuilt at load (`tags::rgba_bitmap`, as mainmenu's level pictures are), and the level maps are over the rewrite's size limit (`vfs::MAX_REWRITE_BYTES`) | the window's own pass | the font rewrite the arrows and the medals use (`bot_mark::GearRewrite`, `font::patch`) |
+| Fill | the meter shader, by a blue ramp along the shape | drawn per frame | a picture per step |
+| Colour, hiding with the HUD, films, the headless host | the game's | not the game's ("Where the kit draws") | the game's |
+
+A `Glyphs` names the run: `first`, the empty picture's UTF-16 unit, then
+one unit a step to the full one at `first + steps`, each `size` pixels.
+`Glyphs::step` picks the nearest step for a fill, and
+`records::Widget::text` is the string for a value. The fill keeps its
+`Motion`: the runtime asks the curve first and picks the step after.
+A picture has no offset across and sits as far above the baseline as the
+font's ascent, so its top-left corner is the widget's point in any font
+(`font::ring::replacements`), and the widget is justified from its
+start.
+
+The pictures the kit has are the charge ring's, `font::ring`: nine arcs,
+seven steps each, at U+E2C0 to U+E2FE, after the arrows ("The charge
+segments").
+
 ### Cost
 
 S, to be measured with `profile` on the lab Mac: one address-range test
@@ -768,7 +809,11 @@ player's retail `nhdt` at a `HudState` (so the tracker, the shield meter
 and the grenade panel are in the picture), then the compiled kit widgets
 through the same draw, `hud_edit::render::draw_answered`, with the
 values given as the runtime's hooks give them (shown, fill, text,
-colour, turn), then the channels: the prompt line and a notification at
+colour, turn), a gauge's picture for its fill at its widget's point
+(`preview::gauge`, from `Glyphs::picture`: the pixels the fonts are
+served with, so the synthetic source draws it too; a flash as `Normal`,
+as a meter's), then the channels:
+the prompt line and a notification at
 their points in font 6 (5 in split screen), and the training box around
 its text. The player `nhdt` is the one a biped's HUD interfaces name,
 `ui\hud\masterchief` when the map has it. The retail HUD is drawn with
@@ -805,9 +850,9 @@ state x mode, `sheet.png` (half-size tiles, a column per mode),
 `sheet.json` (where each tile is) and `checks.json`, and fails on a
 finding. `Source::disc` reads the map (default `lockout`), the fonts and
 the XBE's colour constants from the user's disc (`--disc`, else
-`$H2_DISC`); `Source::synthetic` draws an invented map whose tracker,
-shield meter, grenade pills and counts are flat boxes on the retail
-rectangles and whose `hudg` has an arrow and a marker,
+`$H2_DISC`); `Source::synthetic` draws an invented map whose tracker is
+a flat disc and whose shield meter, grenade pills and counts are flat
+boxes on the retail rectangles and whose `hudg` has an arrow and a marker,
 with `hud_edit`'s fixed-advance stand-in font, so `cargo test` draws the
 sheet without a disc. Output goes to a directory you name outside the
 Git checkout; one inside it is refused.
@@ -834,7 +879,7 @@ the check, the elements and the state and mode:
 | Check | Rule |
 |---|---|
 | fit | every state's text of a text widget is no wider than its `longest`, and the `longest` stays inside the frame's width and meets no other element but the one it is `over` |
-| glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5, a navpoint's number in font 6): not record 0, not the record U+FFFF reads, and no copy of either's bitmap (`font::Font::has_glyph`; MSLCD-14 maps `.`, `-` and `~` to a copy of its box) |
+| glyphs | every character of every `longest` and state text, and every picture of a gauge, is in the element's font (a channel's in fonts 6 and 5, a navpoint's number and a gauge's pictures in font 6): not record 0, not the record U+FFFF reads, and no copy of either's bitmap (`font::Font::has_glyph`; MSLCD-14 maps `.`, `-` and `~` to a copy of its box) |
 | frame | every rectangle, reserved or drawn, is inside the HUD frame and the screen; an element may sit `FRAME_SLACK` (1) pixel outside the frame, as the tracker and the shield meter do (x 47, the frame's left 48), or its own `Element::outside` when that is more (the charge segments, left of and under the tracker) |
 | retail | no widget element's opaque pixels meet a retail widget's at any `HudState` of the sheet (plain, overshield, plasma grenades, zoomed), and no widget element's rectangle meets the reserved rectangles (`PROMPT_LINE`, `TRAINING_BOX`, `H1_HEALTH`, `RETICLE`); the channels are the game's own text and are not checked against them |
 | own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over` |
@@ -842,11 +887,11 @@ the check, the elements and the state and mode:
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
 | prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
-| drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding |
+| drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding. A gauge shown puts pixels down: one whose picture no code of ours draws, or draws at another size, is a finding |
 | world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` is on world marks alone. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
 
 The synthetic source has no fonts, so it skips the glyph check and says
-so, and its retail check is against the flat boxes, not the disc's art.
+so, and its retail check is against the flat disc and boxes, not the disc's art.
 
 The agent API gets one read method, `hud.kit`: the registered HUDs, and
 per element the id, kind, widget address, placed rectangle, text, fill
@@ -1351,18 +1396,18 @@ line's box, and the `modes` check wants every widget of one HUD in the
 same screen modes.
 
 ```text
- x 34  47     130 134  149
+ x 40  47     130 137  149
         .---.
-   =   /     \   =   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
-   =  | track |  =   [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
-   =   \     /   =   Too slow: 12.4 of 16.5 m/s        sbr.info    y 418
-        '---'                                                      y 444
-        = = =                                          sbr.seg.4 to .6   y 447
+   (   /     \   )   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
+   (  | track |  )   [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
+    \  \     /  /    Too slow: 12.4 of 16.5 m/s        sbr.info    y 418
+     \  '---'  /                                                   y 444
+      ' _____ '                                        sbr.seg.4 to .6, to y 450
 ```
 
 | Element | Kind | Place, from the frame's bottom left (48, 444) | Shows |
 |---|---|---|---|
-| `sbr.seg.1` to `sbr.seg.9` | meter, the battery strip's last 9 columns | round the tracker ("The charge segments") | how far the player is through priming, and how long the charge has left |
+| `sbr.seg.1` to `sbr.seg.9` | gauge, an arc of the charge ring (`font::ring`) | round the tracker ("The charge segments") | how far the player is through priming, and how long the charge has left |
 | `sbr.speed` | text, font 6 | (101, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
 | `sbr.fall` | meter, the battery strip's last 64 columns | (101, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
 | `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)). On a fall toward the approach guide's seam, the guide's percentage after it, `On seam 82%` (`steer_line`, `fall_chance`; "The approach guide") |
@@ -1373,7 +1418,7 @@ same screen modes.
 
 Speeds are metres a second and distances metres (a world unit is
 3.048 m). The rows are 21 pixels apart, a line of font 6, the last
-ending 5 above the frame's foot. They start at screen x 149, 6 right of
+ending 5 above the frame's foot. They start at screen x 149, 12 right of
 the segments' right side (`SEGMENTS_GAP`).
 
 ```sh
@@ -1444,41 +1489,66 @@ segments. With the mode off every element is hidden.
 
 The priming indicator
 (`crates/rewrites/hud-kit-core/src/huds/superbounce_segments.rs`): nine
-short meters round the motion tracker's left, bottom and right sides,
-three a side, 4 pixels (`GAP`) clear of its rim (`rects::TRACKER`,
-(47, 360) to (130, 443)), so they are apart from the ring and off the
-tracker's blips. They fill down the left side, along the bottom and up
-the right as the recipe's steps are done, and wipe back the other way
-as the charge runs out.
+arcs round the motion tracker's left, bottom and right sides, three a
+side, concentric with its rim (`rects::TRACKER`, (47, 360) to (130, 443),
+83 across) and 4 pixels (`GAP`) clear of it, so they are apart from the
+ring and off the tracker's blips. They fill down the left side, round
+the bottom and up the right as the recipe's steps are done, and wipe
+back the other way as the charge runs out.
 
 ```text
         .---.
-  1 =  /     \  = 9
-  2 = | track | = 8
-  3 =  \     /  = 7
-        '---'
-       =  =  =
+  1 (  /     \  ) 9
+  2 ( | track | ) 8
+  3  \ \     / /  7
+      \ '---' /
+       ' ___ '
        4  5  6
 ```
 
-| Segments | Screen, top left | From the frame's bottom left (48, 444) |
-|---|---|---|
-| `sbr.seg.1` to `.3`, the left side, top to bottom | x 34; y 384, 403, 422 | (−14, −60), (−14, −41), (−14, −22) |
-| `sbr.seg.4` to `.6`, the bottom, left to right | x 60, 84, 108; y 447 | (12, 3), (36, 3), (60, 3) |
-| `sbr.seg.7` to `.9`, the right side, bottom to top | x 134; y 422, 403, 384 | (86, −22), (86, −41), (86, −60) |
+**Geometry** (`crates/formats/font/src/ring.rs`). The arcs are parts of
+one band about the rim's centre, (88.5, 401.5): its inner radius 45.5,
+the rim's 41.5 and the gap, and its outer 48.5, 3 pixels wide. An angle
+is in degrees from straight down, positive to the right. The band runs
+from 110 up the left side to 110 up the right, so its ends are at y 384:
+13 under the shield meter's band (y 371) and 16 under the arming bar.
+Each arc spans 18 degrees, 14.8 pixels along its middle, its ends cut
+square on a radius. Two arcs of a side are 6 degrees apart, 4.8 pixels at
+the inner edge, and two sides 11 degrees, 8.7 pixels.
 
-**Art.** Each is `Art::StripMeterEnd(9)`: the last 9 columns of the
-energy sword's battery strip, 9 by 8, with the strip's own shader and
-colours ("The charge meter"). No art of ours is in it, and every segment
-lies flat: a side is a ladder of three, not a turned strip. Each is a
-meter, so the segment at the edge of the fill is part lit and the wipe
-is smooth.
+| Segment | Angles | Picture's box on screen, top left, and size | From the frame's bottom left (48, 444) |
+|---|---|---|---|
+| `sbr.seg.1` | −110 to −92 | (40, 384), 6 by 16 | (−8, −60) |
+| `sbr.seg.2` | −86 to −68 | (40, 404), 7 by 16 | (−8, −40) |
+| `sbr.seg.3` | −62 to −44 | (45, 422), 12 by 15 | (−3, −22) |
+| `sbr.seg.4` | −33 to −15 | (62, 439), 15 by 10 | (14, −5) |
+| `sbr.seg.5` | −9 to 9 | (80, 446), 17 by 4 | (32, 2) |
+| `sbr.seg.6` | 15 to 33 | (100, 439), 15 by 10 | (52, −5) |
+| `sbr.seg.7` | 44 to 62 | (120, 422), 12 by 15 | (72, −22) |
+| `sbr.seg.8` | 68 to 86 | (130, 404), 7 by 16 | (82, −40) |
+| `sbr.seg.9` | 92 to 110 | (131, 384), 6 by 16 | (83, −60) |
+
+The boxes are `font::ring::BOXES`, in the rim's own pixels, which a test
+holds to the angles and radii; no two meet, and the right side's are the
+left side's mirrored.
+
+**Art.** Each is a `Gauge` ("Gauges"): `font::ring::draw` rasterises an
+arc's seven pictures, white, with a one-pixel soft edge, at the eight
+alpha levels a font's run bytes carry. Step 0 is the empty track at
+alpha 4 of 15 (`TRACK`); step `k` has the first `k` sixths of the arc's
+length lit, from the end the fill comes from, and the rest the track.
+They are at U+E2C0 to U+E2FE, arc `s`'s step `k` at `0xE2C0 + 7s + k`,
+in every font file the game opens (`bot_mark::GearRewrite`), and the
+text draw gives them the HUD's text colour. No bitmap of ours is in a
+map and nothing is copied from a disc. A fill is drawn as its nearest
+step, so the arc at the edge of the fill is part lit and the wipe moves
+along it, 2.5 pixels a step.
 
 **Outside the frame.** The tracker's rim is on the HUD frame's left
 edge and its foot (x 47 against the frame's 48, y 443 against 444), so
-the left side and the bottom are in the screen's margin: 14 pixels left
-of the frame and 11 under it, inside the 640 by 480 screen. The elements
-say so (`Element::outside(14)`, `superbounce_segments::OUTSIDE`) and the
+the left side and the bottom are in the screen's margin: 8 pixels left
+of the frame and 6 under it, inside the 640 by 480 screen. The elements
+say so (`Element::outside(8)`, `superbounce_segments::OUTSIDE`) and the
 `frame` check holds them to it.
 
 **Stages.** `superbounce_segments::segments` maps the mode's charge
@@ -1491,7 +1561,7 @@ stage and a count of lit segments:
 | `Near` | `Near`: crouched within 1.5 of a crouch spot, the standing capsule fits | 0 | the empty ring; the arming bar is up at 0 |
 | `Under` | `Under`: under the lip, crouch held | 3 | the left side |
 | `Held` | `Held`: crouch let go, the forced crouch | 6 | the left side and the bottom; the right side, the next to light, `Flash(Help)` |
-| `Primed` | `Primed`, fewer than 19 still ticks: over half the charge left | 9 × (1 − `still_ticks` / 38) | all nine moving; standing still wipes them from the right side's top, 4.2 ticks a segment |
+| `Primed` | `Primed`, fewer than 19 still ticks: over half the charge left | 9 × (1 − `still_ticks` / 38) | all nine moving; standing still wipes them from the right side's top, 4.2 ticks a segment, a step of an arc every 0.7 |
 | `Warning` | `Primed`, 19 still ticks or more: `LOW_CHARGE`, the tick the prompt says "Keep moving or lose the charge" | as `Primed`, 4.5 or under | the lit ones `Flash(TimeWarning)`, the timer's warning record |
 | `Lost` | `Lost`: the word left −3, for one second | 0 | all nine empty in `Flash(TimeExpired)`, `Motion::Blink`: three blinks in 500 ms, then gone until the charge's `Lost` ends |
 
@@ -1642,14 +1712,19 @@ particular:
   offset is read as the arrow's length plus one and more not read), the
   outline's art and place, and whether the HUD shader multiplies the
   green arrow's texels by the HUD colour or takes only their alpha.
-- The charge segments: what the strip's shader draws of an unlit
-  segment, and so whether the empty ring reads as a ring or as nothing;
-  that a 9-column crop of the ramp fills evenly; that the host's HUD fit
-  keeps widgets in the screen's margin, left of and under the frame, on
-  a pinned wide window; that the half-size tracker of a split frame is
-  where the segments are not; and the nine more widgets against the
-  `nhdt`'s widget count. The `Held` and `Warning` flashes draw as
-  `Normal` until the colour hook is in.
+- The charge segments: that the game's text draw puts a glyph's
+  top-left corner at the widget's point as the preview does (an arc a
+  pixel or two off is nearer the rim or further from it), draws the whole of a
+  glyph on a line with no letter, and adds no shadow or scale to a text
+  widget's glyph; that the retail tracker's art has
+  nothing opaque in the 4 pixels round its rim, on the disc's `retail`
+  check; how the faint track (alpha 4 of 15) reads over a bright level;
+  that 63 more glyphs in every font file cost the font cache nothing;
+  that the host's HUD fit keeps widgets in the screen's margin, left of
+  and under the frame, on a pinned wide window; that the half-size
+  tracker of a split frame is where the segments are not; and the nine
+  more text widgets against the `nhdt`'s widget count. The `Held` and
+  `Warning` flashes draw as `Normal` until the colour hook is in.
 - The charge meter: that a cropped strip fills as the remap says (the
   blue ramp between the crop's columns is taken as even), what the
   shader draws of the unlit part, and the strip's sequence in split

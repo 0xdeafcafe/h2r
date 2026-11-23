@@ -189,7 +189,10 @@ own, in the unused part of the icon range:
 The superbounce medals take U+E2A0 to U+E2A6, and the Incel medal
 ([teabag.md](../game/teabag.md)) U+E2A7, in `conduit-13` and
 `conduit-12` only (`font::medals`, [hud-kit.md](../game/hud-kit.md),
-"The medals"), through the same rewrite and `apply`.
+"The medals"), through the same rewrite and `apply`. The HUD's direction
+arrows take U+E2B0 to U+E2B7 (`font::arrows`) and the charge ring's arcs
+U+E2C0 to U+E2FE (`font::ring`, [hud-kit.md](../game/hud-kit.md),
+"Gauges"), in every font.
 
 `apply` gives each new code point a new record at the end of the record
 table, moves the pixel data up by the size of those records, fixes every
