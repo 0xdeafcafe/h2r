@@ -20,9 +20,10 @@ fn connect_never_locks_the_mixer() {
     let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE)));
     let _guard = lock(&mixer);
     let (done, rx) = std::sync::mpsc::channel();
+    let shared = Arc::clone(&mixer);
     std::thread::spawn(move || {
         let mut meter = Meter::new();
-        meter.connect(mixer);
+        meter.connect(shared);
         done.send(()).unwrap();
     });
     rx.recv_timeout(std::time::Duration::from_secs(5))
