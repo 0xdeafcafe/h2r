@@ -65,10 +65,8 @@ enum Parent {
         rows: Vec<(String, String)>,
     },
     /// The monitor look page (docs/game/forge-monitor-appearance.md,
-    /// "Choosing it"): the held look, its rows and the model names the
-    /// catalogue offers.
+    /// "Choosing it"): its rows and the model names the catalogue offers.
     Look {
-        held: forge::look::MonitorLook,
         rows: Vec<LookRow>,
         /// The catalogue's model names, in order, beside the marker.
         models: Vec<String>,
@@ -161,7 +159,7 @@ impl Dialogs {
         models.push("Marker".into());
         models.extend(catalogue.iter().map(|e| e.name.clone()));
         Self {
-            parent: Parent::Look { held, rows, models },
+            parent: Parent::Look { rows, models },
             focus: 0,
             picker_focus: None,
         }
@@ -383,11 +381,7 @@ impl Dialogs {
                 self.focus,
                 DialogBase::Large,
             ),
-            Parent::Look {
-                held: _,
-                rows: look,
-                models,
-            } => {
+            Parent::Look { rows: look, models } => {
                 // While a picker is open the preview shows the focused
                 // value, not the held one; B restores it.
                 let previewed = self.picker_focus.map(|focus| {
@@ -399,7 +393,8 @@ impl Dialogs {
                         Some(reason) => {
                             RowSpec::info(row.label, &text_fit::line(reason, 300))
                         }
-                        None => RowSpec::value(row.label, &[&row.value], 0),
+                        None => RowSpec::value(row.label, &[&row.value], 0)
+                            .press(Press::Open("forge.look.row".into())),
                     })
                     .collect();
                 let mut s = rows(LOOK, "MONITOR LOOK", list, self.focus, DialogBase::Large);

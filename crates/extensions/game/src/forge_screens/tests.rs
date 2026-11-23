@@ -302,6 +302,9 @@ fn coordinates_nudge_and_type_numbers() {
     assert_eq!(ask_keyboard(spec.clone()), Chosen::Act);
     let mut guest = FakeGuest::new();
     guest.map(0x5000, 0x100);
+    // The keyboard channel, empty: no keyboard is open, so the typed
+    // text is read.
+    guest.map(crate::keyboard_glue::CHANNEL, 0x10);
     assert!(matches!(step(&guest), Some(Step::Keyboard(_))));
     let buffer = 0x5000;
     hub().keyboard.store(buffer, Ordering::SeqCst);
