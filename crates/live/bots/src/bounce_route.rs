@@ -2250,7 +2250,13 @@ impl OrderRun {
             self.state = State::Drop(Dropping::Line(tick));
         }
         let t = self.tune;
-        let f = flown(&site, from, &t);
+        let mut f = flown(&site, from, &t);
+        if !self.floors.is_empty() {
+            // Fly to the same edge-adjusted aim the rule judges, not back
+            // to the target's original point away from the edge.
+            let near = rule::floors_near(&self.floors, [f.target[0], f.target[1]], FLOOR_REACH);
+            f.target = edge_aim(f.target, &near).0;
+        }
         // Lined up: the bounce rule judges the takeoff before the run.
         if let State::Drop(Dropping::Line(since)) = self.state {
             let lined_up = dist_xy(f.run_up(from), at) <= t.line_up
