@@ -3,10 +3,10 @@
 //! Its screens are the game's (`crate::forge_screens`): it builds their
 //! sheets and acts on their choices.
 use super::{GENERATION, admitted, controls};
-use agent::forge::local::{ForgeEdit, ForgeWorld, Guard, ProposalReply};
+use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
 use forge::tool::{Command, Extent, Tool};
-use forge::{BlockKind, Linkable, OpId, PaletteItem, Session};
+use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
 use std::{
@@ -59,8 +59,8 @@ pub(super) struct Editor {
     notice: Option<(String, u32)>,
     /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
-    /// The object the delete question is about.
-    delete_asked: Option<OpId>,
+    /// The delete or removal the question is about.
+    delete_asked: Option<Command>,
     /// The name the overwrite question is about.
     overwrite_asked: Option<String>,
     /// The log head as last saved or loaded: edits since are not saved.
@@ -151,6 +151,9 @@ impl Editor {
             "session":"local", "role":"editor", "monitor":self.tool.monitor,
             "camera":self.tool.camera.map(|c| json!({"position":c.position,"yaw":c.yaw,"pitch":c.pitch})),
             "aimed":self.tool.aimed, "held":self.tool.held, "placing":self.tool.placing,
+            "aimed_thing":self.tool.aimed_thing, "held_thing":self.tool.held_thing,
+            "show":self.tool.show.name(), "game":self.tool.game,
+            "variant":local_api::variant_status(self.session.document(), self.filename.as_deref(), self.dirty()),
             "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
             "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
             "ui_up":self.ui_up, "dirty":self.dirty(),
@@ -167,16 +170,20 @@ impl Editor {
         })
     }
 
-    fn target(&self) -> Option<(&PaletteItem, forge::Frame)> {
+    /// What is placed, held or aimed at: its name, block and frame (the
+    /// ghost's while it is carried).
+    fn target(&self) -> Option<(String, BlockKind, forge::Frame)> {
         if let Some(index) = self.tool.placing {
-            return Some((
-                self.session.palette().get(index)?,
-                self.tool.ghost.unwrap_or_default(),
-            ));
+            let item = self.session.palette().get(index)?;
+            return Some((label(item), item.block, self.tool.ghost.unwrap_or_default()));
         }
-        let id = self.tool.held.or(self.tool.aimed)?;
-        let obj = self.session.objects().iter().find(|obj| obj.id == id)?;
-        Some((&obj.item, self.tool.ghost.unwrap_or(obj.frame)))
+        let id = self.tool.held_thing.or(self.tool.aimed_thing)?;
+        let thing = self.session.thing(id)?;
+        Some((
+            thing_name(&thing),
+            thing.block,
+            self.tool.ghost.unwrap_or(thing.frame),
+        ))
     }
 
     /// The active links with their ends' final indices, for `forge.status`.
@@ -285,18 +292,16 @@ impl Editor {
         }
         let mode = if self.tool.placing.is_some() {
             Mode::Placing
-        } else if self.tool.held.is_some() {
+        } else if self.tool.held_thing.is_some() {
             Mode::Holding
-        } else if self.tool.aimed.is_some() {
+        } else if self.tool.aimed_thing.is_some() {
             Mode::Aimed
         } else {
             Mode::Idle
         };
         Hud {
             mode,
-            target: self
-                .target()
-                .map_or_else(String::new, |(item, _)| label(item)),
+            target: self.target().map_or_else(String::new, |(name, _, _)| name),
             used: self.session.objects().len(),
             limit: self.session.budget(),
             rebuild: self.session.pending_rebuild(),
@@ -322,13 +327,17 @@ impl Editor {
         if self.tool.links {
             self.tool.link_from.is_none() && self.tool.aimed_link.is_some()
         } else {
-            self.tool.aimed.is_some() || self.tool.held.is_some() || self.tool.placing.is_some()
+            self.tool.aimed_thing.is_some()
+                || self.tool.held_thing.is_some()
+                || self.tool.placing.is_some()
         }
     }
 
     /// Whether B has something to cancel.
     fn cancellable(&self) -> bool {
-        self.tool.held.is_some() || self.tool.placing.is_some() || self.tool.link_from.is_some()
+        self.tool.held_thing.is_some()
+            || self.tool.placing.is_some()
+            || self.tool.link_from.is_some()
     }
 
     fn stage(
@@ -401,9 +410,15 @@ impl Editor {
     }
 
     /// One game tick. `ui_up`: a screen is up over the world, ours or the
-    /// game's (`forge_screens::ui_up`).
-    pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool) {
+    /// game's (`forge_screens::ui_up`). `game`: the session's game type, as
+    /// the variant record's engine index, which decides the things the
+    /// Objects tool aims at.
+    pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool, game: Option<i32>) {
         self.ui_up = ui_up;
+        if self.tool.game != game {
+            self.tool.game = game;
+            self.tool.clear_selection();
+        }
         if !self.listed && !self.busy() {
             self.listed = true;
             let data = self.data.clone();
@@ -538,11 +553,10 @@ impl Editor {
                 self.link_dialog = Some(active.id);
             }
             Properties => {
-                let (item, frame) = self.target().ok_or("Aim at a Forge object.")?;
-                let name = label(item);
+                let (name, block, frame) = self.target().ok_or("Aim at a thing of the map.")?;
                 let sheet = sheet::properties_sheet(
                     &name,
-                    Group::of_block(item.block),
+                    Group::of_block(block),
                     frame.rotation[0].to_degrees(),
                 )
                 .ok_or_else(|| format!("{name} has no properties to set."))?;
@@ -554,27 +568,31 @@ impl Editor {
             DialogUp | DialogDown | DialogAccept | DialogBack => {
                 return Err("A screen is up; it takes the pad.".into());
             }
-            Delete { id }
-                if self.delete_asked.is_none()
-                    && !self.session.links_of(Linkable::Object(id)).is_empty() =>
-            {
+            Delete { .. } | Remove { .. } if self.delete_asked.is_none() && self.linked(&cmd) => {
                 screens::open(sheet::question(Ask::DeleteLinked, ""))?;
-                self.delete_asked = Some(id);
+                self.delete_asked = Some(cmd);
             }
-            _ => {
-                return self.stage(After::Tool(cmd.clone()), move |s, w| match cmd {
-                    Place { item, frame } => s.place(w, tick, item, frame).map(|_| ()),
-                    Move { id, frame } => s.move_object(w, tick, id, frame),
-                    Delete { id } => s.delete(w, tick, id),
-                    Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
-                    Unlink { link } => s.unlink(w, tick, link),
-                    Undo => s.undo(w, tick),
-                    Redo => s.redo(w, tick),
-                    _ => unreachable!("screen commands are routed above"),
-                });
-            }
+            _ => return self.stage(After::Tool(cmd.clone()), move |s, w| run(s, w, tick, cmd)),
         }
         Ok(())
+    }
+
+    /// Whether a delete or a removal names a thing with links, which the
+    /// question asks about first.
+    fn linked(&self, cmd: &Command) -> bool {
+        let thing = match *cmd {
+            Command::Delete { id } => Linkable::Object(id),
+            Command::Remove {
+                id:
+                    Endpoint::Base {
+                        block: BlockKind::NetgameFlags,
+                        index,
+                        ..
+                    },
+            } => Linkable::Teleporter(index),
+            _ => return false,
+        };
+        !self.session.links_of(thing).is_empty()
     }
 
     /// The palette as the object menu lists it: each object's group, name,
@@ -625,13 +643,17 @@ impl Editor {
             }
             Choice::Set(Prop::Heading, i) => {
                 let yaw = HEADINGS.get(i).ok_or("No such heading.")?.to_radians();
-                if self.tool.placing.is_some() || self.tool.held.is_some() {
+                if self.tool.placing.is_some() || self.tool.held_thing.is_some() {
                     self.tool.set_heading(yaw);
                 } else {
-                    let id = self.tool.aimed.ok_or("Aim at a Forge object.")?;
-                    let (_, mut frame) = self.target().ok_or("The object is gone.")?;
+                    let id = self.tool.aimed_thing.ok_or("Aim at a thing of the map.")?;
+                    let (_, _, mut frame) = self.target().ok_or("The thing is gone.")?;
                     frame.rotation[0] = yaw;
-                    return self.command(tick, Command::Move { id, frame });
+                    let cmd = match id {
+                        Endpoint::Added(id) => Command::Move { id, frame },
+                        id => Command::MoveThing { id, frame },
+                    };
+                    return self.command(tick, cmd);
                 }
             }
             Choice::Unlink => {
@@ -642,11 +664,9 @@ impl Editor {
                 ask: Ask::DeleteLinked,
                 yes,
             } => {
-                let id = self.delete_asked.take().ok_or("The object is gone.")?;
+                let cmd = self.delete_asked.take().ok_or("The thing is gone.")?;
                 if yes {
-                    return self.stage(After::Tool(Command::Delete { id }), move |s, w| {
-                        s.delete(w, tick, id)
-                    });
+                    return self.stage(After::Tool(cmd.clone()), move |s, w| run(s, w, tick, cmd));
                 }
             }
             Choice::Answer {
@@ -712,6 +732,50 @@ impl Editor {
             Ok(FileResult::Saved(name, forge::saved_names(&data)?))
         })
     }
+}
+
+/// A tool command's edit of the session: the same path the pad, the agent
+/// and a peer take.
+fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(), String> {
+    use Command::*;
+    match cmd {
+        Place { item, frame } => s.place(w, tick, item, frame).map(|_| ()),
+        Move { id, frame } => s.move_object(w, tick, id, frame),
+        Delete { id } => s.delete(w, tick, id),
+        MoveThing { id, frame } => s.move_thing(w, tick, id, frame),
+        Remove { id } => s.remove(w, tick, id),
+        Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
+        Unlink { link } => s.unlink(w, tick, link),
+        Undo => s.undo(w, tick),
+        Redo => s.redo(w, tick),
+        _ => Err("A screen's command is not an edit.".into()),
+    }
+}
+
+/// A thing's name as the readout and the Properties header show it: the
+/// tag's base name for an object and an item spawner, else its kind.
+fn thing_name(thing: &Thing) -> String {
+    thing
+        .fields
+        .iter()
+        .find_map(|(_, value)| match value {
+            forge::Value::Tag(Some(tag)) => Some(
+                tag.path
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&tag.path)
+                    .replace('_', " "),
+            ),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            let kind = thing.kind.name();
+            let mut chars = kind.chars();
+            chars
+                .next()
+                .map(|c| c.to_uppercase().chain(chars).collect::<String>())
+                .unwrap_or_default()
+        })
 }
 
 fn resolve(session: &Session, tags: &[u32], tag: &forge::TagKey) -> Result<u32, String> {

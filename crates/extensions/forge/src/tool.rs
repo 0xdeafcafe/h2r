@@ -1,9 +1,17 @@
 //! One local player's Objects and Links tools. Only confirming a preview or
 //! a link's second end produces an edit.
+//!
+//! The Objects tool aims at every thing of the session
+//! (docs/game/forge-map-variants.md, "Things"): the map's own objects and
+//! the added ones, and the marks of starting points, goals, teleporters and
+//! item spawners. The nearest thing along the view within its pick radius
+//! wins. A thing of another game type than the session's is aimed at only
+//! with [`Show::AllGameTypes`] ("Game types").
 use std::sync::Arc;
 
-use crate::{BlockKind, Frame, Linkable, Session, camera::Camera};
-use forge_doc::OpId;
+use crate::{BlockKind, Frame, Linkable, Session, Thing, ThingKind, camera::Camera};
+use forge_doc::{Endpoint, OpId, Value};
+use map::scenario_layout::game_types;
 
 /// Full stick deflection, in radians per second for look or object rotation.
 pub const TURN_RATE: f32 = 2.4;
@@ -23,6 +31,102 @@ pub const MIN_HOLD: f32 = 1.0;
 /// The gap kept between the camera and a held object's bounding sphere,
 /// in world units, so the near plane never cuts it.
 pub const NEAR_GAP: f32 = 0.25;
+
+/// The pick radius of a thing with no body of its own, in world units: a
+/// starting point, a goal, a teleporter and an item spawner are aimed at by
+/// their world mark. A spawner's object, when it has one out, lies on its
+/// mark, so the mark picks it too.
+pub const MARK_RADIUS: f32 = 0.5;
+/// The pick radius of a Links tool target, in world units.
+pub const LINK_RADIUS: f32 = 0.25;
+/// How much a pick radius widens per world unit of distance, so a far thing
+/// stays as wide as the central reticle.
+pub const RETICLE_SPREAD: f32 = 0.012;
+
+/// What the Objects tool aims at besides the things of the session's game
+/// type (`forge.show`, docs/game/forge-map-variants.md, "Game types").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Show {
+    /// Only the things the session's game type has.
+    #[default]
+    ThisGameType,
+    /// Every thing.
+    AllGameTypes,
+}
+
+impl Show {
+    /// The setting as `forge.status` names it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ThisGameType => "this_game_type",
+            Self::AllGameTypes => "all_game_types",
+        }
+    }
+}
+
+/// Whether `thing` is one the game type with engine index `game` has (the
+/// variant record's `+0x44`: 1 CTF, 2 Slayer, 3 Oddball, 4 King of the Hill,
+/// 7 Juggernaut, 8 Territories, 9 Assault). With no game type known, every
+/// thing is.
+///
+/// - An item spawner is when one of its four game-type slots matches the
+///   engine, as the engine's matcher decides (`game_types::slot_matches`).
+/// - A goal is its flag type's game type's: CTF's flag spawn and return
+///   (0, 1), Assault's bomb spawn and return (2, 3), Oddball's ball spawn
+///   (4), a territory (10) and a hill corner (11 to 18). A flag type with no
+///   traced reader is in every game type.
+/// - A starting point, a teleporter and an object are in every game type:
+///   no retail reader of a starting point's game type was found, and an
+///   object's set is the `games` property (slice G1).
+pub fn in_game(thing: &Thing, game: Option<i32>) -> bool {
+    let Some(game) = game else {
+        return true;
+    };
+    match thing.kind {
+        ThingKind::ItemSpawner => {
+            // The matcher's code is the engine index but for King of the
+            // Hill, whose code is 0.
+            let code = if game == 4 { 0 } else { game };
+            let slots: Vec<i16> = (1..=game_types::SLOT_COUNT)
+                .filter_map(|n| match field(thing, &format!("game type {n}")) {
+                    Some(Value::Int(v)) => i16::try_from(*v).ok(),
+                    _ => None,
+                })
+                .collect();
+            slots.is_empty()
+                || slots
+                    .iter()
+                    .any(|&slot| game_types::slot_matches(slot, Some(code)))
+        }
+        ThingKind::Goal => match field(thing, "type") {
+            Some(Value::Int(ty)) => goal_games(*ty).is_none_or(|games| games.contains(&game)),
+            _ => true,
+        },
+        ThingKind::StartingPoint | ThingKind::Teleporter | ThingKind::Object => true,
+    }
+}
+
+/// The engine indices whose engines read a netgame flag of type `ty`, or
+/// none for a type every game type keeps (forge-doc's `builtin_label`
+/// names the traced types).
+fn goal_games(ty: i64) -> Option<&'static [i32]> {
+    Some(match ty {
+        0 | 1 => &[1],
+        2 | 3 => &[9],
+        4 => &[3],
+        10 => &[8],
+        11..=18 => &[4],
+        _ => return None,
+    })
+}
+
+fn field<'a>(thing: &'a Thing, name: &str) -> Option<&'a Value> {
+    thing
+        .fields
+        .iter()
+        .find(|(field, _)| *field == name)
+        .map(|(_, value)| value)
+}
 
 /// A palette item's bounding sphere, from its object definition: the
 /// radius and the centre's offset from the object's origin in its own
@@ -117,11 +221,16 @@ pub struct Input {
     pub click: Option<usize>,
 }
 
+/// What a tool's input asks of the session or the screens. `Move` and
+/// `Delete` name an added object; `MoveThing` (`Session::move_thing`) and
+/// `Remove` (`Session::remove`) a thing of the map's own.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Place { item: usize, frame: Frame },
     Move { id: OpId, frame: Frame },
     Delete { id: OpId },
+    MoveThing { id: Endpoint, frame: Frame },
+    Remove { id: Endpoint },
     Link { from: Linkable, to: Linkable },
     Unlink { link: OpId },
     Undo,
@@ -141,8 +250,19 @@ pub enum Command {
 pub struct Tool {
     pub monitor: bool,
     pub camera: Option<Camera>,
+    /// The added object aimed at, when the thing aimed at is one.
     pub aimed: Option<OpId>,
+    /// The added object held, when the thing held is one.
     pub held: Option<OpId>,
+    /// The thing aimed at, own or added.
+    pub aimed_thing: Option<Endpoint>,
+    /// The thing held, own or added.
+    pub held_thing: Option<Endpoint>,
+    /// The session's game type, as the variant record's engine index; none
+    /// when it is not known, and then every thing is this game type's.
+    pub game: Option<i32>,
+    /// What is aimed at besides this game type's things.
+    pub show: Show,
     pub placing: Option<usize>,
     pub ghost: Option<Frame>,
     /// The Links tool is selected instead of the Objects tool.
@@ -174,6 +294,10 @@ impl Default for Tool {
             camera: None,
             aimed: None,
             held: None,
+            aimed_thing: None,
+            held_thing: None,
+            game: None,
+            show: Show::default(),
             placing: None,
             ghost: None,
             links: false,
@@ -201,15 +325,48 @@ impl Tool {
 
     /// The bounding sphere of what is placed or held, if anything.
     pub fn extent(&self, session: &Session) -> Option<Extent> {
-        let index = match (self.placing, self.held) {
-            (Some(index), _) => index,
-            (None, Some(id)) => {
-                let obj = session.objects().iter().find(|o| o.id == id)?;
-                session.palette().iter().position(|p| *p == obj.item)?
-            }
-            (None, None) => return None,
+        match (self.placing, self.held_thing) {
+            (Some(index), _) => Some(self.extents.get(index).copied().unwrap_or_default()),
+            (None, Some(id)) => Some(self.thing_extent(session, &session.thing(id)?)),
+            (None, None) => None,
+        }
+    }
+
+    /// A thing's sphere: an object's palette item's, else its mark's, a
+    /// sphere of [`MARK_RADIUS`]. An object whose tag is not in the Objects
+    /// palette carries [`Extent::default`].
+    pub fn thing_extent(&self, session: &Session, thing: &Thing) -> Extent {
+        if thing.kind != ThingKind::Object {
+            return Extent {
+                radius: MARK_RADIUS,
+                offset: [0.; 3],
+            };
+        }
+        let Some(Value::Tag(Some(tag))) = field(thing, "palette index") else {
+            return Extent::default();
         };
-        Some(self.extents.get(index).copied().unwrap_or_default())
+        session
+            .palette()
+            .iter()
+            .position(|p| p.block == thing.block && p.tag == *tag)
+            .and_then(|i| self.extents.get(i))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Whether the Objects tool aims at `thing`: one of the session's game
+    /// type, or any with [`Show::AllGameTypes`].
+    pub fn shows(&self, thing: &Thing) -> bool {
+        self.show == Show::AllGameTypes || in_game(thing, self.game)
+    }
+
+    /// Choose what is aimed at besides this game type's things. What is
+    /// aimed at or held is let go.
+    pub fn set_show(&mut self, show: Show) {
+        if self.show != show {
+            self.show = show;
+            self.clear_selection();
+        }
     }
 
     pub fn select(&mut self, index: usize) {
@@ -233,7 +390,7 @@ impl Tool {
     }
 
     pub fn set_heading(&mut self, radians: f32) {
-        if radians.is_finite() && (self.placing.is_some() || self.held.is_some()) {
+        if radians.is_finite() && (self.placing.is_some() || self.held_thing.is_some()) {
             self.initial_rotation[0] = radians;
             self.rotation[0] = 0.;
             if let Some(ghost) = &mut self.ghost {
@@ -245,6 +402,7 @@ impl Tool {
     fn cancel(&mut self) {
         self.link_from = None;
         self.held = None;
+        self.held_thing = None;
         self.placing = None;
         self.ghost = None;
         self.initial_rotation = [0.; 3];
@@ -257,6 +415,7 @@ impl Tool {
     pub fn clear_selection(&mut self) {
         self.cancel();
         self.aimed = None;
+        self.aimed_thing = None;
         self.aimed_link = None;
     }
 
@@ -266,6 +425,8 @@ impl Tool {
             Command::Place { .. }
                 | Command::Move { .. }
                 | Command::Delete { .. }
+                | Command::MoveThing { .. }
+                | Command::Remove { .. }
                 | Command::Link { .. }
                 | Command::Unlink { .. }
                 | Command::Undo
@@ -320,7 +481,7 @@ impl Tool {
             self.links = true;
             return Ok(None);
         }
-        let previewing = self.placing.is_some() || self.held.is_some();
+        let previewing = self.placing.is_some() || self.held_thing.is_some();
         let extent = self.extent(session).unwrap_or_default();
         let mut hit = None;
         if let Some(camera) = &mut self.camera {
@@ -339,15 +500,24 @@ impl Tool {
             let surface = surface(*camera).filter(|d| d.is_finite() && *d >= 0.);
             let max_distance = surface.unwrap_or(MAX_HOLD).min(MAX_HOLD);
             let forward = camera.forward();
+            let eye = *camera;
             hit = session
-                .objects()
-                .iter()
-                .filter_map(|obj| {
-                    aim(camera, forward, max_distance, obj.frame.position)
-                        .map(|along| (obj.id, along))
+                .things()
+                .into_iter()
+                .filter(|thing| self.shows(thing))
+                .filter_map(|thing| {
+                    let radius = self.thing_extent(session, &thing).radius;
+                    aim(&eye, forward, max_distance, thing.frame.position, radius)
+                        .map(|along| (thing, along))
                 })
-                .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-            self.aimed = hit.map(|(id, _)| id);
+                // The nearest wins; at one distance, the first in the
+                // session's order of things.
+                .reduce(|best, next| if next.1 < best.1 { next } else { best });
+            self.aimed_thing = hit.as_ref().map(|(thing, _)| thing.id);
+            self.aimed = match self.aimed_thing {
+                Some(Endpoint::Added(id)) => Some(id),
+                _ => None,
+            };
             if previewing {
                 // A new object is carried at its hold distance and a
                 // picked-up one where it was taken, each pushed and pulled
@@ -362,8 +532,8 @@ impl Tool {
                     self.distance = carried(carried(self.distance) + push);
                 }
                 let distance = carried(self.distance);
-                let pos = camera.point(distance);
-                let offset = camera.to_world(self.offset);
+                let pos = eye.point(distance);
+                let offset = eye.to_world(self.offset);
                 let step = self.rotation_step.to_radians();
                 self.ghost = Some(Frame {
                     position: std::array::from_fn(|i| pos[i] + offset[i]),
@@ -375,7 +545,7 @@ impl Tool {
         }
         Ok(match input.action {
             Some(A::Palette) => Some(C::Palette),
-            Some(A::Properties) if self.aimed.is_some() || previewing => Some(C::Properties),
+            Some(A::Properties) if self.aimed_thing.is_some() || previewing => Some(C::Properties),
             Some(A::Menu) => Some(C::Menu),
             Some(A::Back) if previewing => {
                 self.cancel();
@@ -387,34 +557,33 @@ impl Tool {
             Some(A::Settings) => Some(C::Settings),
             Some(A::Undo) => Some(C::Undo),
             Some(A::Redo) => Some(C::Redo),
-            Some(A::Delete) => self.held.or(self.aimed).map(|id| C::Delete { id }),
+            Some(A::Delete) => match self.held_thing.or(self.aimed_thing) {
+                Some(Endpoint::Added(id)) => Some(C::Delete { id }),
+                Some(id) => Some(C::Remove { id }),
+                None => None,
+            },
             Some(A::Accept) => {
                 if let (Some(item), Some(frame)) = (self.placing, self.ghost) {
                     Some(C::Place { item, frame })
-                } else if let (Some(id), Some(frame)) = (self.held, self.ghost) {
-                    Some(C::Move { id, frame })
-                } else if let (Some((id, distance)), Some(camera)) = (hit, self.camera) {
-                    let obj = session
-                        .objects()
-                        .iter()
-                        .find(|o| o.id == id)
-                        .ok_or("Object is no longer present")?;
-                    let near = session
-                        .palette()
-                        .iter()
-                        .position(|p| *p == obj.item)
-                        .and_then(|i| self.extents.get(i))
-                        .copied()
-                        .unwrap_or_default()
-                        .near();
+                } else if let (Some(id), Some(frame)) = (self.held_thing, self.ghost) {
+                    Some(match id {
+                        Endpoint::Added(id) => C::Move { id, frame },
+                        id => C::MoveThing { id, frame },
+                    })
+                } else if let (Some((thing, distance)), Some(camera)) = (hit, self.camera) {
+                    let near = self.thing_extent(session, &thing).near();
                     let distance = distance.max(near);
-                    self.held = Some(id);
+                    self.held_thing = Some(thing.id);
+                    self.held = match thing.id {
+                        Endpoint::Added(id) => Some(id),
+                        _ => None,
+                    };
                     self.distance = distance;
                     let p = camera.point(distance);
                     self.offset =
-                        camera.to_local(std::array::from_fn(|i| obj.frame.position[i] - p[i]));
-                    self.initial_rotation = obj.frame.rotation;
-                    self.ghost = Some(obj.frame);
+                        camera.to_local(std::array::from_fn(|i| thing.frame.position[i] - p[i]));
+                    self.initial_rotation = thing.frame.rotation;
+                    self.ghost = Some(thing.frame);
                     None
                 } else {
                     None
@@ -444,7 +613,9 @@ impl Tool {
                 .map(|o| (Linkable::Object(o.id), o.frame.position));
             self.aimed_link = flags
                 .chain(machines)
-                .filter_map(|(thing, at)| aim(&camera, forward, 80., at).map(|d| (thing, d)))
+                .filter_map(|(thing, at)| {
+                    aim(&camera, forward, 80., at, LINK_RADIUS).map(|d| (thing, d))
+                })
                 .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
                 .map(|(thing, _)| thing);
         }
@@ -494,15 +665,21 @@ impl Tool {
     }
 }
 
-/// How far along the view `at` lies when it is under the reticle.
-fn aim(camera: &Camera, forward: [f32; 3], max_distance: f32, at: [f32; 3]) -> Option<f32> {
+/// How far along the view `at` lies when it is under the reticle: the view
+/// passes within `radius` of it, widened by [`RETICLE_SPREAD`] per unit of
+/// distance so a far thing subtends the central reticle's small angle.
+fn aim(
+    camera: &Camera,
+    forward: [f32; 3],
+    max_distance: f32,
+    at: [f32; 3],
+    radius: f32,
+) -> Option<f32> {
     let d: [f32; 3] = std::array::from_fn(|i| at[i] - camera.position[i]);
     let along: f32 = (0..3).map(|i| d[i] * forward[i]).sum();
     if !(0.1..=max_distance).contains(&along) {
         return None;
     }
     let side: f32 = (0..3).map(|i| (d[i] - along * forward[i]).powi(2)).sum();
-    // The aim target is at least a quarter world unit wide, then grows with
-    // distance so it subtends the same small angle as the central reticle.
-    (side <= (0.25 + along * 0.012).powi(2)).then_some(along)
+    (side <= (radius + along * RETICLE_SPREAD).powi(2)).then_some(along)
 }
