@@ -6,6 +6,9 @@
 //! multiplayer game's start where the map carries the kit, and otherwise
 //! keeps the refusal and its reason for `firefight.state`. Its hooks:
 //!
+//! - `GAME_ACTIVATE`, a `before` while the options are not yet the
+//!   game's: two Firefight teams on a kit map turn the variant's team play
+//!   on ([`Runtime::activate`]).
 //! - `GAME_ACTIVATE`, an observer after a successful start: start or
 //!   refuse the mode ([`Runtime::start`]).
 //! - `GAME_TICK`, a `before` in the default class: apply the due entries;
@@ -113,6 +116,23 @@ impl hooks::Feature for Firefight {
         use std::sync::atomic::Ordering;
         // The two points of a line-of-sight test.
         let scratch = b.guest_alloc(0x20, ::runtime::guest::Permissions::RW)?;
+        let s = Arc::clone(&self.0);
+        b.raw().before(
+            &hooks::points::GAME_ACTIVATE,
+            "Team Play on for two Firefight teams",
+            move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let options = c.cpu.eax;
+                let line = {
+                    let mut mem = rt.memory();
+                    s.lock().activate(&mut *mem, options, s.film)
+                };
+                if let Some(line) = line {
+                    eprintln!("{line}");
+                }
+                Ok(Flow::Continue)
+            },
+        );
         let s = Arc::clone(&self.0);
         b.game().on_start("start Firefight on a kit map", move |o| {
             let mut mem = o.guest();

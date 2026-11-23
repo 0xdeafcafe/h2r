@@ -227,11 +227,30 @@ pub fn team_play(m: &dyn GuestMemory) -> Option<bool> {
 pub fn teams_refusal(teams: u8, team_play: Option<bool>) -> Option<&'static str> {
     match (teams > 1, team_play) {
         (false, _) | (true, Some(true)) => None,
-        (true, Some(false)) => {
-            Some("two Firefight teams need a team game: turn Team Play on in the game variant")
-        }
+        (true, Some(false)) => Some(
+            "two Firefight teams need a team game, and Team Play did not turn on for this game",
+        ),
         (true, None) => Some("two Firefight teams need a team game, and the variant's team play could not be read"),
     }
+}
+
+/// The options block's variant flags (`options + 0x134 + 0x48`), which
+/// the game copies into the globals at activation, team play in bit 0.
+pub const OPTIONS_VARIANT_FLAGS: u32 = bots::guest::VARIANT_FLAGS;
+
+/// Whether a multiplayer game about to start on a map that carries the kit
+/// (`kit`) must be a team game for Game Setup's Firefight choices: two
+/// player teams with Firefight on. One team plays whatever the variant
+/// says.
+pub fn wants_team_play(options: &Options, kit: bool) -> bool {
+    kit && options.enabled && options.player_teams() > 1
+}
+
+/// The variant flags `flags` with team play on, when `wanted` and it is
+/// off; none when nothing changes.
+pub fn with_team_play(flags: u32, wanted: bool) -> Option<u32> {
+    use live_proto::hopper::variant::flag::TEAM_PLAY;
+    (wanted && flags & TEAM_PLAY == 0).then_some(flags | TEAM_PLAY)
 }
 
 /// The character palette row whose tag is `character`.
@@ -529,6 +548,32 @@ impl Runtime {
             Status::Running(m) => Some(m),
             _ => None,
         }
+    }
+
+    /// A game is about to start (`GAME_ACTIVATE`, before the game copies
+    /// `options`, the options block, into its globals): two Firefight
+    /// teams on a kit map turn the variant's team play on there, so the
+    /// game plays as teams and [`teams_refusal`] has nothing to refuse.
+    /// Game Setup's Firefight choices decide, as they do the match. A
+    /// film's playback, another mode, a map without the kit and one team
+    /// leave the options as they are. Returns the line to log when it
+    /// wrote.
+    pub fn activate(&self, m: &mut dyn GuestMemory, options: u32, film: bool) -> Option<String> {
+        if film || m.u32(options).ok()? != MODE_MULTIPLAYER {
+            return None;
+        }
+        let chosen = (self.options)().ok()?;
+        let kit = guest::read_kit(&*m).ok().flatten().is_some();
+        let at = options.wrapping_add(OPTIONS_VARIANT_FLAGS);
+        let flags = m.u32(at).ok()?;
+        let on = with_team_play(flags, wants_team_play(&chosen, kit))?;
+        Some(match m.set_u32(at, on) {
+            Ok(()) => "firefight: two teams: Team Play is on for this game".to_string(),
+            Err(e) => format!(
+                "firefight: two teams: Team Play could not be turned on: {}",
+                fault(e)
+            ),
+        })
     }
 
     /// A game started. Returns the line to log.

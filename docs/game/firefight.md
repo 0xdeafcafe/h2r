@@ -374,6 +374,12 @@ invented guest memory with fake engine callees.
 (`registration::register_core`) and its hooks are on game-thread points
 only:
 
+- a `before` on `GAME_ACTIVATE`, while the options block (EAX) is not
+  yet the game's, turns the variant's team play on when Game Setup's
+  choices are two teams with Firefight on and the map carries the kit
+  (`Runtime::activate`); one team, another mode, a film's playback and a
+  map without the kit leave the options alone. So a two-team match is a
+  team game without the player setting Team Play.
 - an observer after a successful `GAME_ACTIVATE` starts the mode in a
   multiplayer game (options mode 2) through `Host::start`. Outside one
   the runtime is idle; on a map without the kit the refusal is kept with
@@ -410,8 +416,9 @@ A snapshot is refused while a match runs.
 1. **At map load**, `Host::start` refuses the mode on a map without the
    kit, on a kit with no drop zones, and for a definition that names a
    class the kit lacks (`firefight::validate` against the kit's classes).
-   A two-team definition is refused on a variant without team play, when
-   team play cannot be read (`runtime::teams_refusal`), and on a kit with
+   A two-team definition is refused on a variant whose team play the
+   start could not turn on or cannot be read (`runtime::teams_refusal`),
+   and on a kit with
    fewer bases than teams (`Refusal::Bases`). The actors take the kit's
    team unless a player holds it, else the lowest team no player holds;
    with two player teams that is a third team. The host log starts at a genesis hash of
@@ -663,9 +670,9 @@ whatever maps are installed. Switching to it sets the page's
 Firefight choice on and puts the lobby on a kit map; Game Setup then
 lists the Firefight rows, and the variant panel shows the wave set, the
 difficulty and the starting lives in place of Quick Options' lines (the
-first reads "{set} waves, 2 teams" with two teams). The lobby does not
-switch team play on for two teams; a variant without it is refused with
-its reason.
+first reads "{set} waves, 2 teams" with two teams). Two teams play as a
+team game whatever the lobby's variant says: the game's start turns the
+variant's team play on ([The host runtime](#the-host-runtime)).
 
 Clankers sit only on player teams (`clankers::firefight_seat_teams`,
 which tells the bots the team count with
@@ -870,7 +877,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF14** | Home bases in the kit: bases from flag stands, team starts or clusters; drops away from both with a path to each; firing positions facing the nearer base; `ff_base_NN` zones and `ff_hunt_NN` orders; starts rewritten to their base's team; `--home`; Beaver Creek's kit | M | FF3 | `crates/tools/firefight-kit/src/{bases,nav,ai,lib}.rs`, `crates/apps/cli/src/firefight_cmd.rs`, `crates/extensions/game/src/firefight/guest.rs` | `home_base_is_read_from_team_starting_points`, `home_base_prefers_the_ctf_flag_stand`, `the_home_option_swaps_the_bases`, `bases_split_untagged_starts_into_two_clusters`, `starting_locations_take_their_base_team`, `drops_are_chosen_away_from_the_home_base`, `every_drop_zone_has_a_path_to_each_base`, `firing_positions_face_the_nearer_base`, `each_base_has_a_hunt_order_over_its_area`, `the_kit_writes_each_start_its_base_team`, `read_kit_finds_the_bases_and_hunt_orders` | on invented maps the bases, drops and orders read back; the coordinator's Beaver Creek build goes in notes |
 | **FF15** | Two player teams: `Def::teams` and `player_kill` (format 2), validation, Crossfire, per-team pools and scores, targets, team-side zones, two-team ends, the rules-script form and its entries | M | FF2 | `crates/formats/firefight/src/{def,validate,builtin,director,script}.rs`, `crates/formats/rules/src/{caps.rs,lang/sig.rs}`, `crates/formats/firefight/tests/teams.rs` | `two_teams_start_with_a_pool_each_and_spend_their_own`, `a_team_out_of_lives_loses_to_the_other`, `both_teams_out_at_once_go_to_the_higher_score`, `both_teams_out_level_on_score_and_lives_is_a_draw`, `the_last_round_goes_to_the_higher_score_then_lives_then_a_draw`, `player_kills_score_across_the_teams_only`, `squads_are_sent_at_both_teams`, `the_team_fewer_actors_press_gets_the_next_squad`, `a_squad_drops_on_its_target_teams_side`, `a_players_team_is_fixed_when_first_seen`, `two_team_matches_always_end_with_a_team_result`, `team_counts_and_player_kill_points_are_refused_out_of_range`, `two_team_matches_give_the_same_commands`, `two_team_ends_give_the_same_commands`, `a_team_pool_set_from_outside_is_the_one_its_respawns_spend`, `pools_set_from_outside_are_refused_where_the_match_keeps_none` | the director and the script give the same commands over two-team scenarios; every two-team match ends with a team result |
 | **FF16** | Clankers in Firefight: player-team seats only, balanced with two teams; actors as enemies; home-base hold, fall back, rearm, no lone drop-zone trips, regroup on low lives | M | FF4, FF15 | `crates/live/bots/src/firefight.rs` (new), hooks in `crates/live/bots/src/{lib,mind,mind/strategy,perceive,phantom/session}.rs`, [bots.md](bots.md#310-firefight) | `firefight_seats_are_player_teams_only`, `actors_are_seen_as_targets`, `teammates_are_never_targeted`, `two_team_bots_target_the_other_team_and_actors`, `bots_hold_near_their_home_base`, `bots_regroup_when_the_pool_runs_low`, `bots_do_not_wander_to_a_drop_zone_alone`, `actors_are_read_from_the_pool` | on invented perception, bots never take the AI's team and never target a teammate |
-| **FF17** | Two teams in the game: the host's team checks and third AI team, `Observed` per team and player kills, `Target`/`TeamLives`/hunt by base, HUD blob v2 with both scores, the Teams row, Clanker seats, the bots' context, the agent API's two-team state and commands | M | FF4, FF5, FF8, FF15, FF16 | `crates/extensions/game/src/firefight/{host,runtime,hud,options}.rs`, `crates/extensions/game/src/{clankers,lobby_mode,actor_net/squads}.rs`, `crates/extensions/agent-proto/src/firefight.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `observed_carries_each_players_team_and_player_kills`, `zone_team_distance_is_from_each_teams_centre`, `hunt_goes_to_the_targets_base`, `the_actors_take_a_third_team_with_two_player_teams`, `two_teams_need_a_base_each`, `two_teams_need_team_play_and_a_base_each`, `the_clankers_are_told_the_teams_bases_and_lives`, `the_end_report_carries_each_teams_score_and_the_winner`, `two_teams_show_both_scores_and_each_viewer_its_teams_lives`, `the_teams_choice_reaches_the_definition`, `clankers_never_take_the_ai_team`, `two_team_firefight_balances_clankers`, `state_reports_each_teams_pool_and_score`, `command_takes_the_two_team_commands`, `an_operator_team_pool_is_the_one_the_director_spends` | over a fake game a two-team match makes the expected calls; a client's HUD equals the host's in a two-team match |
+| **FF17** | Two teams in the game: the host's team checks and third AI team, `Observed` per team and player kills, `Target`/`TeamLives`/hunt by base, HUD blob v2 with both scores, the Teams row, Clanker seats, the bots' context, the agent API's two-team state and commands | M | FF4, FF5, FF8, FF15, FF16 | `crates/extensions/game/src/firefight/{host,runtime,hud,options}.rs`, `crates/extensions/game/src/{clankers,lobby_mode,actor_net/squads}.rs`, `crates/extensions/agent-proto/src/firefight.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `observed_carries_each_players_team_and_player_kills`, `zone_team_distance_is_from_each_teams_centre`, `hunt_goes_to_the_targets_base`, `the_actors_take_a_third_team_with_two_player_teams`, `two_teams_need_a_base_each`, `two_teams_need_team_play_and_a_base_each`, `the_clankers_are_told_the_teams_bases_and_lives`, `the_end_report_carries_each_teams_score_and_the_winner`, `two_teams_show_both_scores_and_each_viewer_its_teams_lives`, `the_teams_choice_reaches_the_definition`, `clankers_never_take_the_ai_team`, `two_team_firefight_balances_clankers`, `state_reports_each_teams_pool_and_score`, `command_takes_the_two_team_commands`, `an_operator_team_pool_is_the_one_the_director_spends`, `two_teams_turn_team_play_on_before_the_game_starts`, `only_two_firefight_teams_on_a_kit_map_turn_team_play_on` | over a fake game a two-team match makes the expected calls; a client's HUD equals the host's in a two-team match |
 
 FF1 and FF3 start at once, beside AN0, AN1, AN2 and AN6. FF2 follows
 FF1 and AN1. FF9's format half can run beside FF2. FF4 is the join
@@ -903,6 +910,10 @@ point: it needs the kit, the director and probe P2.
   names on retail maps.
 - That Beaver Creek yields six drops away from both bases.
 - Whether team 1 reads as blue in the game, as the HUD's "BLUE" assumes.
+- That team play turned on at `GAME_ACTIVATE` (the scenario is loaded
+  then, so the kit reads) makes a team game of a lobby that was free for
+  all, which team each person then plays on, and that a guest's game
+  agrees with its host's.
 - That the sim finds the kit package's scenario path and the bots load
   Beaver Creek's nav mesh on it.
 - That the game's actor positions, as the Clankers read them, match what
