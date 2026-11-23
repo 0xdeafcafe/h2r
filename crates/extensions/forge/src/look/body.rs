@@ -35,7 +35,7 @@ pub struct Model {
 
 /// A monitor's pose: the camera's position, yaw and pitch
 /// (`forge::camera::Camera`'s shape).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Pose {
     pub position: [f32; 3],
     pub yaw: f32,
@@ -79,7 +79,7 @@ pub struct Draw {
     pub model: Option<u32>,
     /// Where the body sits and how it is turned: the pose with the bob
     /// applied, in the model's rest pose.
-    pub frame: forge::Frame,
+    pub frame: crate::Frame,
     /// A sphere around the body, for culling.
     pub sphere: ([f32; 3], f32),
     /// The change colours, as palette indices: the RGB is read from the

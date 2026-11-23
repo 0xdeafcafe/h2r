@@ -185,24 +185,12 @@ impl Page for DialogPage {
                 model.variant = None;
                 model.tint = 1;
                 model.light = 1;
-                let mut lockless = Dialogs::look(
-                    model.clone(),
-                    &[catalogue("sentinel", true)],
-                    colours.clone(),
-                );
+                let mut lockless = Dialogs::look(model.clone(), &[catalogue("sentinel", true)], &colours);
                 lockless.press(Input::A);
-                let no_colours = Dialogs::look(
-                    model.clone(),
-                    &[catalogue("sentinel", false)],
-                    colours.clone(),
-                );
-                let marker = Dialogs::look(
-                    forge::look::MonitorLook::default_for(2),
-                    &[],
-                    colours,
-                );
+                let no_colours = Dialogs::look(model.clone(), &[catalogue("sentinel", false)], &colours);
+                let marker = Dialogs::look(forge::look::MonitorLook::default_for(2), &[], &colours);
                 vec![
-                    ("open".into(), Dialogs::look(model, &[catalogue("sentinel", true)], vec![])),
+                    ("open".into(), Dialogs::look(model, &[catalogue("sentinel", true)], &colours)),
                     ("picker".into(), lockless),
                     ("locked".into(), no_colours),
                     ("marker".into(), marker),

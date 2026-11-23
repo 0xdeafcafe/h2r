@@ -332,12 +332,12 @@ impl<A: Admit, L: Lane> Node<A, L> {
     /// the model from. The host's answer comes back as [`Monitor::Accepted`]
     /// or [`Monitor::LookRefused`].
     pub fn send_look_up(&mut self, look: MonitorLook, base: Option<String>) {
-        self.send_up(ToHost::Look { look, base });
+        self.send_monitor_up(ToHost::Look { look, base });
     }
 
     /// A guest's monitor pose, sampled at `at` of its render clock.
     pub fn send_pose_up(&mut self, at: f32, pose: Pose, monitor: bool, held: Option<forge_doc::OpId>) {
-        self.send_up(ToHost::Pose {
+        self.send_monitor_up(ToHost::Pose {
             at,
             pose,
             monitor,
@@ -387,7 +387,10 @@ impl<A: Admit, L: Lane> Node<A, L> {
         self.send_down(seat, Down::Notice(text));
     }
 
-    fn send_up(&mut self, message: ToHost) {
+    /// Put a monitor-channel message on the uplink, beside the edit log's
+    /// [`Up`](super::Up) traffic: no nonce, no bookkeeping, dropped only
+    /// when the lane's queue is full.
+    fn send_monitor_up(&mut self, message: ToHost) {
         let Some(uplink) = self.uplink.as_mut() else {
             return;
         };

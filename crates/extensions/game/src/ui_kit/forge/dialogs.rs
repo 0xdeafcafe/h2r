@@ -72,8 +72,6 @@ enum Parent {
         rows: Vec<LookRow>,
         /// The catalogue's model names, in order, beside the marker.
         models: Vec<String>,
-        /// The colour names, by palette index.
-        colours: Vec<String>,
     },
 }
 
@@ -156,19 +154,14 @@ impl Dialogs {
     pub fn look(
         held: forge::look::MonitorLook,
         catalogue: &[forge::look::census::Entry],
-        colours: Vec<String>,
+        colours: &[String],
     ) -> Self {
-        let rows = look_rows(&held, catalogue, &colours);
+        let rows = look_rows(&held, catalogue, colours);
         let mut models = Vec::with_capacity(catalogue.len() + 1);
         models.push("Marker".into());
         models.extend(catalogue.iter().map(|e| e.name.clone()));
         Self {
-            parent: Parent::Look {
-                held,
-                rows,
-                models,
-                colours,
-            },
+            parent: Parent::Look { held, rows, models },
             focus: 0,
             picker_focus: None,
         }
@@ -394,7 +387,6 @@ impl Dialogs {
                 held,
                 rows: look,
                 models,
-                colours: _,
             } => {
                 // While a picker is open the preview shows the focused
                 // value, not the held one; B restores it.

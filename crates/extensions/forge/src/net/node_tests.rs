@@ -12,6 +12,7 @@ use forge_doc::{
 
 use super::film::{self, Replay};
 use super::*;
+use crate::look::session::CanDraw;
 use crate::things::frame_writes;
 use crate::{PaletteItem, Session, SessionAdmit, World};
 
@@ -594,7 +595,8 @@ fn a_lane_that_will_not_take_bytes_ends_its_seat() {
     // The queue to the guest is full: the host cannot tell it anything.
     let (to_host, mut to_guest) = pair(usize::MAX);
     to_guest.cap = 0;
-    let mut stuck = Node::<DocOnly, _>::guest(limits(), "Stuck", to_host).unwrap();
+    let mut stuck = Node::<DocOnly, _>::guest(limits(), "Stuck", CanDraw::default(), to_host)
+            .unwrap();
     host.node.accept(Seat(2), to_guest, Role::Editor).unwrap();
     for tick in 13..=20 {
         host.step(tick).unwrap();
@@ -618,7 +620,7 @@ fn a_taken_seat_or_name_is_refused_and_the_refused_machine_hears_why() {
         Err(NodeError::Refused(NetRefusal::Seat))
     );
     host.node.accept(Seat(2), to_guest, Role::Editor).unwrap();
-    let mut twin = Node::<DocOnly, _>::guest(limits(), "alpha", to_host).unwrap();
+    let mut twin = Node::<DocOnly, _>::guest(limits(), "alpha", CanDraw::default(), to_host).unwrap();
     host.step(13).unwrap();
     alpha.step(13).unwrap();
     let err = twin.tick(13).unwrap_err();
@@ -704,7 +706,10 @@ fn the_beat_survives_the_keep_alive_bytes() {
 #[test]
 fn messages_are_cut_back_out_of_the_byte_stream_whole_and_in_order() {
     let messages = [
-        ToHost::Hello { name: "Alpha".into() },
+        ToHost::Hello {
+            name: "Alpha".into(),
+            can: CanDraw::default(),
+        },
         ToHost::Up(Up::Release),
         ToHost::Up(Up::Hold {
             nonce: 3,

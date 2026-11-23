@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use super::body::Pose;
+pub use super::body::Pose;
 use super::refusal::Refusal;
 use super::{MARKER, MonitorLook, VERSION};
 
@@ -238,7 +238,7 @@ fn between(a: &(f32, Pose), b: &(f32, Pose), now: f32) -> Pose {
 }
 
 /// One seat's pose track.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Track {
     monitor: bool,
     /// In order of their own `at`.
@@ -533,29 +533,53 @@ mod tests {
     // ---- the channel over lanes (the game's glue drives exactly this) ----
 
     /// One end of an in-memory lane pair, as `forge::net`'s tests use.
+    /// One end of an in-memory lane pair: whole messages at once, in
+    /// order; the beat each end reports is the one the other set.
     #[derive(Clone, Default)]
-    struct Pipe(std::rc::Rc<std::cell::RefCell<VecDeque<Vec<u8>>>>);
-
-    fn pipe() -> (Lane, Lane) {
-        let (a, b) = (Pipe::default(), Pipe::default());
-        (
-            Lane(Box::new(SendEnd(a.0.clone(), b.0.clone()))),
-            Lane(Box::new(SendEnd(b.0.clone(), a.0.clone()))),
-        )
+    struct End {
+        /// The queue this end sends into (its peer drains it).
+        out: std::rc::Rc<std::cell::RefCell<VecDeque<u8>>>,
+        /// The queue this end drains (its peer sends into it).
+        inn: std::rc::Rc<std::cell::RefCell<VecDeque<u8>>>,
+        /// The beat this end reports (its peer reads it).
+        beat_out: std::rc::Rc<std::cell::RefCell<Option<crate::net::Beat>>>,
+        /// The beat this end reads (its peer reports it).
+        beat_in: std::rc::Rc<std::cell::RefCell<Option<crate::net::Beat>>>,
     }
 
-    struct SendEnd(
-        std::rc::Rc<std::cell::RefCell<VecDeque<Vec<u8>>>>,
-        std::rc::Rc<std::cell::RefCell<VecDeque<Vec<u8>>>>,
-    );
+    fn pipe() -> (Lane, Lane) {
+        let ab = End::default();
+        let ba = End::default();
+        // A sends into ab's queue and reports ab's beat slot; B sends into
+        // ba's and reports ba's, so each drains and reads the other's.
+        let a = End {
+            out: ab.out.clone(),
+            inn: ba.out.clone(),
+            beat_out: ab.beat_out.clone(),
+            beat_in: ba.beat_out.clone(),
+        };
+        let b = End {
+            out: ba.out.clone(),
+            inn: ab.out.clone(),
+            beat_out: ba.beat_out.clone(),
+            beat_in: ab.beat_out.clone(),
+        };
+        (Box::new(a), Box::new(b))
+    }
 
-    impl crate::net::Lane for SendEnd {
+    impl crate::net::Lane for End {
         fn send(&mut self, bytes: &[u8]) -> bool {
-            self.1.borrow_mut().extend(bytes);
+            self.out.borrow_mut().extend(bytes.iter().copied());
             true
         }
         fn recv(&mut self) -> Vec<u8> {
-            self.0.borrow_mut().drain(..).collect()
+            self.inn.borrow_mut().drain(..).collect()
+        }
+        fn set_beat(&mut self, beat: Option<crate::net::Beat>) {
+            *self.beat_out.borrow_mut() = beat;
+        }
+        fn beat(&self) -> Option<crate::net::Beat> {
+            *self.beat_in.borrow()
         }
     }
 
@@ -622,7 +646,7 @@ mod tests {
         seen
     }
 
-    fn guest_tick(guest: &mut crate::net::Node<forge::net::DocOnly, Lane>) -> Vec<crate::net::Monitor> {
+    fn guest_tick(guest: &mut crate::net::Node<crate::net::DocOnly, Lane>) -> Vec<crate::net::Monitor> {
         let _ = guest.tick(0);
         guest.take_monitors()
     }
@@ -634,8 +658,9 @@ mod tests {
             .unwrap();
         let (a_to_host, a_to_alpha) = pipe();
         let (b_to_host, b_to_bravo) = pipe();
-        let mut alpha = Node::guest(limits(), "Alpha", can(&["abc"]), a_to_alpha).unwrap();
-        let mut bravo = Node::guest(limits(), "Bravo", can(&[]), b_to_bravo).unwrap();
+        let mut alpha = Node::<crate::net::DocOnly, _>::guest(limits(), "Alpha", can(&["abc"]), a_to_alpha)
+            .unwrap();
+        let mut bravo = Node::<crate::net::DocOnly, _>::guest(limits(), "Bravo", can(&[]), b_to_bravo).unwrap();
         host.accept(crate::net::Seat(1), a_to_host, crate::net::Role::Editor)
             .unwrap();
         host.accept(crate::net::Seat(2), b_to_host, crate::net::Role::Editor)
@@ -719,7 +744,8 @@ mod tests {
         let mut host = Node::host(doc(), limits(), crate::net::DocOnly, "Host", 0, 1)
             .unwrap();
         let (a_to_host, a_to_alpha) = pipe();
-        let mut alpha = Node::guest(limits(), "Alpha", can(&["abc"]), a_to_alpha).unwrap();
+        let mut alpha = Node::<crate::net::DocOnly, _>::guest(limits(), "Alpha", can(&["abc"]), a_to_alpha)
+            .unwrap();
         host.accept(Seat(1), a_to_host, crate::net::Role::Editor).unwrap();
         let mut table = Table::host("Host", MonitorLook::default_for(0));
         for _ in 0..4 {
@@ -735,7 +761,8 @@ mod tests {
         // A joiner with nothing joins: the seat resets, everyone is told,
         // and the joiner learns the table.
         let (c_to_host, c_to_charlie) = pipe();
-        let mut charlie = Node::guest(limits(), "Charlie", can(&[]), c_to_charlie).unwrap();
+        let mut charlie = Node::<crate::net::DocOnly, _>::guest(limits(), "Charlie", can(&[]), c_to_charlie)
+            .unwrap();
         host.accept(Seat(2), c_to_host, crate::net::Role::Editor).unwrap();
         for _ in 0..2 {
             host_tick(&mut host, &mut table);
@@ -748,14 +775,14 @@ mod tests {
             "the notice travels: {seen:?}"
         );
         assert!(
-            seen.iter().any(|m| matches!(m, Monitor::Accepted { seat, .. } if seat == Seat(1))),
+            seen.iter().any(|m| matches!(m, Monitor::Accepted { seat, .. } if *seat == Seat(1))),
             "the joiner learns the table"
         );
         // Alpha sees the reset too.
         seen = guest_tick(&mut alpha);
         assert!(
             seen.iter().any(|m| matches!(m, Monitor::Accepted { seat, look, .. }
-                if seat == Seat(1) && look.is_marker()))
+                if *seat == Seat(1) && look.is_marker()))
         );
     }
 }

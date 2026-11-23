@@ -337,7 +337,7 @@ impl Feature for Hooks {
 /// and the palette's RGB.
 fn monitor_start(
     m: &dyn engine::GuestMemory,
-    looks: &forge::look::monitors::Looks,
+    looks: &Looks,
 ) -> editing::MonitorStart {
     let colour = crate::pad_lightbar::seat_colour(m, 0).unwrap_or(0);
     let resolved = looks.session().cloned().unwrap_or_else(|| {
