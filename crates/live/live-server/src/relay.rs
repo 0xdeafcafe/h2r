@@ -6,7 +6,8 @@
 //! - The upgrade request needs a `sessions.relay` bearer token.
 //! - The author must be a member: the session's host, or an account whose
 //!   invitation to this session was accepted. The session must be open and
-//!   advertised with `flags: "coop"`.
+//!   advertised with `flags: "coop"` or `flags: "forge"` (a shared Forge
+//!   session, docs/game/forge-design.md).
 //! - A room holds two members. A member that connects again replaces its
 //!   old socket; a third account is refused.
 //! - A binary message is at most [`MAX_RELAY_MESSAGE`] bytes and a socket
@@ -46,8 +47,10 @@ use crate::http::{CLOSE_UNAUTHORIZED, MAX_WS_MESSAGE, auth_message, bearer, clos
 /// The largest relayed message: a co-op datagram is under 900 bytes
 /// (`coop::wire::MAX_DATAGRAM`).
 pub const MAX_RELAY_MESSAGE: usize = 1200;
-/// The session flag that makes a session a co-op one.
+/// The session flags whose sessions may use the relay: a co-op campaign's
+/// and a Forge-mode lobby's.
 pub const COOP_FLAG: &str = "coop";
+pub const FORGE_FLAG: &str = "forge";
 /// Messages waiting for a slow member before new ones are dropped.
 const QUEUE: usize = 256;
 /// How often an open socket's membership is checked again.
@@ -151,10 +154,15 @@ impl Live {
         let Some(found) = s.sessions.get(session) else {
             return Err(ApiError::new(ErrorCode::NotFound, "no such session"));
         };
-        if found.state != "open" || found.advertisement.flags != COOP_FLAG {
+        if found.state != "open"
+            || !matches!(
+                found.advertisement.flags.as_str(),
+                COOP_FLAG | FORGE_FLAG
+            )
+        {
             return Err(ApiError::new(
                 ErrorCode::Forbidden,
-                "the relay is for open co-op sessions",
+                "the relay is for open co-op and Forge sessions",
             ));
         }
         let invited = || {

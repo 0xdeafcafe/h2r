@@ -10,6 +10,11 @@
 //! the channel carries. A seat that joins later is added
 //! ([`crate::forge_glue::net::add_seat`]), one that leaves is dropped, and
 //! the link closing ends the session ([`crate::forge_glue::net::end`]).
+//! The channel is the direct UDP one, with the Live session's relay
+//! beside it ([`coop::link::Fallback`]) for two machines that cannot
+//! reach each other: the host's advertisements say the session runs
+//! (`flags: "forge"`, [`Transport::forge`]) while it does, which is what
+//! the relay admits.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddrV4;
@@ -30,25 +35,45 @@ const DELAY: u32 = 2;
 
 /// The datagram path of the co-op channel: this machine's end and the
 /// other machines' (the game's Live transport supplies both from XNet,
-/// where the channel is the base port plus `coop::link::COOP_PORT_OFFSET`).
+/// where the channel is the base port plus `coop::link::COOP_PORT_OFFSET`),
+/// with the Live server's relay beside the direct path for two machines
+/// that cannot reach each other.
 pub trait Transport: Send + Sync {
     /// This machine's own co-op channel endpoint, which a link binds.
     fn local(&self) -> Option<SocketAddrV4>;
     /// The other machines of the co-op session, as co-op channel
     /// endpoints: every guest for a host, the host for a guest.
     fn remotes(&self, host: bool) -> Vec<SocketAddrV4>;
-    /// The datagram path to one of them, or none while it cannot be had.
-    fn link(&self, remote: SocketAddrV4) -> Option<Box<dyn coop::link::Link + Send>>;
+    /// The datagram path to one of them, or none while it cannot be had:
+    /// the direct channel, with the session's relay as the fallback a
+    /// silent direct path falls back to.
+    fn link(&self, remote: SocketAddrV4, host: bool) -> Option<Box<dyn coop::link::Link + Send>>;
+    /// A shared Forge session began (or ended) on this machine: the
+    /// advertisements that let the session's machines use the relay follow.
+    fn forge(&self, on: bool) {}
 }
+
+/// How long a direct path stays quiet before the relay carries the
+/// datagrams too (microseconds, as [`coop::link::Fallback`] wants).
+const RELAY_SILENCE: u64 = 3_000_000;
 
 /// The game's transport: the Live HLE's XNet, whose peers are the session's
 /// machines. Every machine serves its lanes from one socket bound at its
 /// own channel (`coop::link::UdpPort`): the host's to each guest, a
-/// guest's to the host.
+/// guest's to the host. Beside the direct path, the Live session's relay
+/// (`coop::relay::RelayLink`, `Hle::coop_relay`) serves one lane — a relay room
+/// holds two machines — connecting on a thread of its own so the game
+/// never waits on it.
 pub struct HleTransport {
     hle: Option<Arc<live_hle::Hle>>,
     /// The one bound socket, and whether binding it has failed already.
     port: Mutex<Bound>,
+    /// The session's relay: the shared slot a background connect fills,
+    /// and the one lane it serves. None until a lane asks for it.
+    relay: Mutex<Option<Relay>>,
+    /// Whether the advertisements last said this console runs a shared
+    /// Forge session, so the HLE is told only on change.
+    forge: Mutex<Option<bool>>,
 }
 
 enum Bound {
@@ -57,12 +82,121 @@ enum Bound {
     Port(Arc<coop::link::UdpPort>),
 }
 
+/// The session's relay, as a lane's fallback path.
+struct Relay {
+    /// The Live session whose room this is.
+    session: String,
+    /// The connected relay, once the background connect lands.
+    link: Arc<Mutex<Option<coop::relay::RelayLink>>>,
+    /// The lane the relay serves: a room holds two machines, so the first
+    /// lane to ask takes it.
+    serves: Option<SocketAddrV4>,
+}
+
 impl HleTransport {
     pub fn new(hle: Option<Arc<live_hle::Hle>>) -> HleTransport {
         HleTransport {
             hle,
             port: Mutex::new(Bound::Untried),
+            relay: Mutex::new(None),
+            forge: Mutex::new(None),
         }
+    }
+
+    /// The Live session whose relay this machine uses: the one it hosts,
+    /// or the one it joined.
+    fn live_session(&self, host: bool) -> Option<String> {
+        let hle = self.hle.as_ref()?;
+        if host {
+            return hle.hosted_session();
+        }
+        match hle.joined(std::time::Duration::ZERO) {
+            live_hle::Joined::Known { session, .. } => Some(session.session_id.clone()),
+            live_hle::Joined::Unknown { session } => Some(session),
+            live_hle::Joined::NotJoined => None,
+        }
+    }
+
+    /// The relay of this machine's Live session, for `remote`'s lane: the
+    /// shared slot a background connect fills. None when no session names
+    /// one, or another lane already has the room (a relay holds two
+    /// machines). A new Live session starts a fresh one.
+    fn relay_for(
+        &self,
+        host: bool,
+        remote: SocketAddrV4,
+    ) -> Option<Arc<Mutex<Option<coop::relay::RelayLink>>>> {
+        let hle = self.hle.as_ref()?;
+        let session = self.live_session(host)?;
+        let mut relay = self.relay.lock().unwrap_or_else(|e| e.into_inner());
+        if relay.as_ref().is_some_and(|r| r.session != session) {
+            *relay = None;
+        }
+        let relay = relay.get_or_insert_with(|| Relay {
+            session: session.clone(),
+            link: Arc::new(Mutex::new(None)),
+            serves: None,
+        });
+        if relay.serves.is_some_and(|served| served != remote) {
+            return None;
+        }
+        relay.serves = Some(remote);
+        if relay.link.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+            let hle = Arc::clone(hle);
+            let slot = Arc::clone(&relay.link);
+            let asked = session;
+            let _ = background::spawn("forge-relay", move || {
+                connect_relay(hle, asked, slot);
+            });
+        }
+        Some(Arc::clone(&relay.link))
+    }
+}
+
+/// Asks the Live worker for the session's relay URL and token until it
+/// answers, connects, and puts the link in `slot`. Gives up after
+/// [`RELAY_TRIES`] answers that refuse, leaving the direct path alone.
+fn connect_relay(
+    hle: Arc<live_hle::Hle>,
+    session: String,
+    slot: Arc<Mutex<Option<coop::relay::RelayLink>>>,
+) {
+    for _ in 0..RELAY_TRIES {
+        if let Some(Ok((url, token))) = hle.coop_relay(&session, std::time::Duration::from_secs(2)) {
+            match coop::relay::RelayLink::connect(&url, &token) {
+                Ok(link) => {
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(link);
+                    eprintln!("forge: the co-op relay of session {session} is up");
+                    return;
+                }
+                Err(e) => eprintln!("forge: the co-op relay of session {session}: {e}"),
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// The relay's answers that refuse before the connector gives up: the
+/// flag the host sets may still be on its way to the server.
+const RELAY_TRIES: usize = 20;
+
+/// The session's relay while it connects: a lane's fallback path that
+/// drops everything until the connect lands, then carries the datagrams.
+struct RelayWhenUp(Arc<Mutex<Option<coop::relay::RelayLink>>>);
+
+impl coop::link::Link for RelayWhenUp {
+    fn send(&mut self, datagram: &[u8]) {
+        if let Some(relay) = self.0.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            relay.send(datagram);
+        }
+    }
+
+    fn recv(&mut self) -> Option<Vec<u8>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|relay| coop::link::Link::recv(relay))
     }
 }
 
@@ -98,7 +232,7 @@ impl Transport for HleTransport {
         endpoints
     }
 
-    fn link(&self, remote: SocketAddrV4) -> Option<Box<dyn coop::link::Link + Send>> {
+    fn link(&self, remote: SocketAddrV4, host: bool) -> Option<Box<dyn coop::link::Link + Send>> {
         let local = self.local()?;
         let mut bound = self.port.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(*bound, Bound::Untried) {
@@ -110,9 +244,34 @@ impl Transport for HleTransport {
                 }
             };
         }
-        match &*bound {
-            Bound::Port(port) => Some(Box::new(port.link_to(std::net::SocketAddr::V4(remote)))),
-            _ => None,
+        let direct = match &*bound {
+            Bound::Port(port) => port.link_to(std::net::SocketAddr::V4(remote)),
+            _ => return None,
+        };
+        drop(bound);
+        // The relay serves one lane beside the direct path: while the
+        // direct path carries the datagrams it stays quiet, and a silent
+        // one falls back to it ([`coop::link::Fallback`]). Until the
+        // background connect lands it carries nothing.
+        match self.relay_for(host, remote) {
+            Some(slot) => Some(Box::new(coop::link::Fallback::new(
+                direct,
+                RelayWhenUp(slot),
+                coop::link::wall_clock(),
+                RELAY_SILENCE,
+            ))),
+            None => Some(Box::new(direct)),
+        }
+    }
+
+    fn forge(&self, on: bool) {
+        let mut said = self.forge.lock().unwrap_or_else(|e| e.into_inner());
+        if *said == Some(on) {
+            return;
+        }
+        *said = Some(on);
+        if let Some(hle) = self.hle.as_ref() {
+            hle.set_forge(on);
         }
     }
 }
@@ -162,6 +321,8 @@ pub struct CoopLink {
     transport: Box<dyn Transport>,
     remotes: Vec<Remote>,
     session: Option<Coop>,
+    /// The advertisements say this console runs a shared Forge session.
+    was_forge: bool,
 }
 
 impl CoopLink {
@@ -170,6 +331,7 @@ impl CoopLink {
             transport,
             remotes: Vec::new(),
             session: None,
+            was_forge: false,
         }
     }
 
@@ -192,8 +354,15 @@ impl CoopLink {
             self.close("the co-op link closed");
             return;
         };
-        if self.session.is_some_and(|s| s != coop) {
+        let before = self.session;
+        if before.is_some_and(|s| s != coop) {
             self.close("a new co-op session began");
+        }
+        if before.is_none() && coop.host && !self.was_forge {
+            // The host's advertisements say a shared Forge session runs,
+            // so the session's machines may use the relay.
+            self.transport.forge(true);
+            self.was_forge = true;
         }
         self.session = Some(coop);
         let endpoints = self.transport.remotes(coop.host);
@@ -294,7 +463,7 @@ impl CoopLink {
     }
 
     fn peer(&self, coop: &Coop, endpoint: SocketAddrV4) -> Option<Arc<Mutex<Wire>>> {
-        let link = self.transport.link(endpoint)?;
+        let link = self.transport.link(endpoint, coop.host)?;
         // The co-op datagram's session tag must match on both machines;
         // the host is port 0 and a guest port 1.
         let port = usize::from(!coop.host);
@@ -310,12 +479,17 @@ impl CoopLink {
     fn close(&mut self, why: &'static str) {
         if self.session.take().is_some() || !self.remotes.is_empty() {
             self.remotes.clear();
+            if self.was_forge {
+                self.transport.forge(false);
+                self.was_forge = false;
+            }
             net::end(why);
         }
     }
 
     /// The game ended or changed its map: drop the lanes without ending
-    /// anything on the network (the game's own end clears the offer).
+    /// anything on the network (the game's own end clears the offer, and
+    /// the session goes on to the next map).
     pub fn reset(&mut self) {
         self.remotes.clear();
         self.session = None;
@@ -393,6 +567,11 @@ mod tests {
         local: SocketAddrV4,
         net: Arc<FakeNet>,
         remotes: Mutex<Vec<SocketAddrV4>>,
+        /// Whether the direct path works; a false one leaves the relay
+        /// (`net`) as the only path, as two machines behind NATs are.
+        direct: Mutex<bool>,
+        /// What `Transport::forge` last said.
+        forge: Mutex<Option<bool>>,
     }
 
     impl FakeTransport {
@@ -401,12 +580,23 @@ mod tests {
                 local,
                 net: Arc::clone(net),
                 remotes: Mutex::new(Vec::new()),
+                direct: Mutex::new(true),
+                forge: Mutex::new(None),
             }
         }
 
         /// What the transport's XNet would say: the machines it knows.
         fn set_remotes(&self, remotes: &[SocketAddrV4]) {
             *self.remotes.lock().unwrap() = remotes.to_vec();
+        }
+
+        /// Takes the direct path down (or brings it back).
+        fn set_direct(&self, up: bool) {
+            *self.direct.lock().unwrap() = up;
+        }
+
+        fn forge(&self) -> Option<bool> {
+            *self.forge.lock().unwrap()
         }
     }
 
@@ -418,8 +608,33 @@ mod tests {
             let _ = host;
             self.remotes.lock().unwrap().clone()
         }
-        fn link(&self, remote: SocketAddrV4) -> Option<Box<dyn coop::link::Link + Send>> {
-            Some(Box::new(self.net.connect(self.local, remote)))
+        fn link(&self, remote: SocketAddrV4, _host: bool) -> Option<Box<dyn coop::link::Link + Send>> {
+            let link = self.net.connect(self.local, remote);
+            if *self.direct.lock().unwrap() {
+                Some(Box::new(link))
+            } else {
+                // The direct path is dead: the relay carries the datagrams
+                // (from the start, as `Fallback` does until direct speaks).
+                Some(Box::new(coop::link::Fallback::new(
+                    Dead,
+                    link,
+                    coop::link::wall_clock(),
+                    3_000_000,
+                )))
+            }
+        }
+        fn forge(&self, on: bool) {
+            *self.forge.lock().unwrap() = Some(on);
+        }
+    }
+
+    /// A direct path that carries nothing.
+    struct Dead;
+
+    impl coop::link::Link for Dead {
+        fn send(&mut self, _datagram: &[u8]) {}
+        fn recv(&mut self) -> Option<Vec<u8>> {
+            None
         }
     }
 
@@ -437,8 +652,11 @@ mod tests {
         fn remotes(&self, host: bool) -> Vec<SocketAddrV4> {
             self.0.remotes(host)
         }
-        fn link(&self, remote: SocketAddrV4) -> Option<Box<dyn coop::link::Link + Send>> {
-            self.0.link(remote)
+        fn link(&self, remote: SocketAddrV4, host: bool) -> Option<Box<dyn coop::link::Link + Send>> {
+            self.0.link(remote, host)
+        }
+        fn forge(&self, on: bool) {
+            self.0.forge(on)
         }
     }
 
@@ -583,6 +801,10 @@ mod tests {
         }
     }
 
+    /// The offer and its changes are one global (`forge_glue::net`), so
+    /// the tests that touch them take this and run one at a time.
+    static NET: Mutex<()> = Mutex::new(());
+
     /// The host opens its session over the offered lanes, as
     /// [`crate::forge_glue::editing::Editor::open_shared`] does.
     fn open_host() -> Hosted {
@@ -649,6 +871,7 @@ mod tests {
 
     #[test]
     fn a_coop_link_opens_the_session_and_a_placement_reaches_the_guest() {
+        let _net = NET.lock().unwrap_or_else(|e| e.into_inner());
         let net = Arc::new(FakeNet::default());
         let mut host = machine(addr(31004), &net, true);
         let mut guest = machine(addr(31014), &net, false);
@@ -717,6 +940,7 @@ mod tests {
 
     #[test]
     fn a_guest_arriving_late_gets_a_lane_and_one_leaving_loses_it() {
+        let _net = NET.lock().unwrap_or_else(|e| e.into_inner());
         let net = Arc::new(FakeNet::default());
         let mut host = machine(addr(31004), &net, true);
         let mut first = machine(addr(31014), &net, false);
@@ -775,6 +999,69 @@ mod tests {
             "the last lane goes and the link's close ends the session"
         );
         assert!(!glue::offered(), "no lane is offered any more");
+        glue::clear();
+    }
+
+    #[test]
+    fn a_dead_direct_path_opens_the_session_over_the_relay() {
+        let _net = NET.lock().unwrap_or_else(|e| e.into_inner());
+        let net = Arc::new(FakeNet::default());
+        let mut host = machine(addr(31004), &net, true);
+        let mut guest = machine(addr(31014), &net, false);
+        host.transport.set_remotes(&[addr(31014)]);
+        guest.transport.set_remotes(&[addr(31004)]);
+        // The two machines cannot reach each other directly: the relay is
+        // the only path, as `Fallback` makes it until direct speaks.
+        host.transport.set_direct(false);
+        guest.transport.set_direct(false);
+        host.link.step(host.coop);
+        assert_eq!(
+            host.transport.forge(),
+            Some(true),
+            "the host's advertisements say a shared Forge session runs"
+        );
+        assert_eq!(guest.transport.forge(), None, "a guest advertises nothing");
+        host.link.step(host.coop);
+        let mut hosted = open_host();
+        guest.link.step(guest.coop);
+        let mut joined = open_guest("guest");
+        for tick in 1..=400 {
+            host.link.step(host.coop);
+            guest.link.step(guest.coop);
+            hosted.step(tick);
+            joined.step(tick);
+            if joined.node.state().is_some() {
+                break;
+            }
+        }
+        assert!(
+            joined.node.state().is_some(),
+            "the guest never joined over the relay"
+        );
+        // A placement on the host reaches the guest over the relay too.
+        hosted
+            .session
+            .place(&mut hosted.world, 400, 0, forge::Frame {
+                position: [4., 5., 6.],
+                rotation: [0.; 3],
+            })
+            .unwrap();
+        for tick in 401..=800 {
+            host.link.step(host.coop);
+            guest.link.step(guest.coop);
+            hosted.step(tick);
+            joined.step(tick);
+            if joined.session.objects().len() == 1 {
+                break;
+            }
+        }
+        assert_eq!(joined.session.objects().len(), 1);
+        // The link closing takes the Forge flag with it.
+        host.transport.set_remotes(&[]);
+        guest.transport.set_remotes(&[]);
+        host.link.step(host.coop);
+        guest.link.step(guest.coop);
+        assert_eq!(host.transport.forge(), Some(false));
         glue::clear();
     }
 

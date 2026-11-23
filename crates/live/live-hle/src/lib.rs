@@ -1023,6 +1023,46 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_coop(campaign, skulls)
     }
+    /// Marks (`true`) or unmarks this console's open advertisements as a
+    /// Forge-mode lobby's (`flags: "forge"`, docs/game/forge-design.md):
+    /// a shared Forge session's machines may use the co-op relay. A
+    /// co-op campaign armed with [`Hle::set_coop`] keeps its own flag.
+    /// No guest memory access.
+    pub fn set_forge(&self, on: bool) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_forge(on)
+    }
+    /// The co-op relay of `session` (docs/live/live-api.md, "Co-op relay"):
+    /// its WebSocket URL and the bearer token for its upgrade, or why this
+    /// console cannot serve one. Asks the Live worker (which mints the
+    /// token itself; nothing is sent to the server), waits up to `wait`
+    /// for its answer, and holds no state lock while it waits and no guest
+    /// memory at all.
+    pub fn coop_relay(
+        &self,
+        session: &str,
+        wait: std::time::Duration,
+    ) -> Option<Result<(String, String), u32>> {
+        let pending = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.take_relay_ask(session)
+        };
+        let Some(pending) = pending else {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ask_relay(session);
+            return None;
+        };
+        let answer = pending.wait(wait)?;
+        Some(match answer {
+            Ok(client::Reply::CoopRelay(answer)) => Ok(answer),
+            Ok(_) => Err(status::TASK_BUSY),
+            Err(e) => Err(e),
+        })
+    }
     /// Co-op ping, the guest's side (docs/live/live-coop.md, "Ping"): one
     /// ping to the host's QoS responder (its XNet endpoint's port + 2),
     /// carrying `report`, our last round trip, for the host to show. The

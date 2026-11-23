@@ -785,7 +785,12 @@ whether the synchronous protocol holds a multiplayer map is **S**.
 
 The session's reliable ordered channel is the co-op datagram's Forge
 lane (`coop::Peer::forge_send` and `forge_recv`): bytes in order, once,
-repeated until acknowledged, 200 bytes a datagram. Every datagram also
+repeated until acknowledged. A datagram carries as many of them as fit
+beside its pads and hashes (`coop::wire::forge_room`, at most
+`coop::wire::MAX_FORGE`, never past the wire cap), and one flush sends a
+window of them (`coop::peer::FORGE_WINDOW`), so a welcome of a few
+kilobytes crosses in a few round trips (`coop`'s forge lane tests bound
+them), not one a round trip. Every datagram also
 carries the beat, the 48-byte log head and stream position
 (`forge::net::Beat`), as the keep-alive; `Host::check` ends the seat
 whose head differs. `forge::net::Node` runs a machine over a
@@ -812,10 +817,18 @@ after the offer is added (`net::add_seat`) and one that leaves is
 dropped (`net::drop_seat`), the running session taking the changes each
 tick; the link closing ends the session (`net::end`). The Forge lane is
 the datagram's own section, so beside it the channel carries nothing of
-the game's. `forge_glue/link.rs`'s tests run the whole of it over a
+the game's. Beside the direct channel, each lane carries the Live
+session's relay (`coop::link::Fallback` around `coop::relay::RelayLink`,
+its URL and `sessions.relay` token from `Hle::coop_relay`) for two
+machines that cannot reach each other directly: the host's
+advertisements say the session runs while it does (`flags: "forge"`,
+`Hle::set_forge`), which is what the relay admits, and a lane's relay
+connects on a thread of its own so the game never waits on it.
+`forge_glue/link.rs`'s tests run the whole of it over a
 fake co-op link: the session opens on both sides, a placement on the
 host reaches the guest, a late guest gets a lane and a leaving one
-loses it, and a closing link ends the session.
+loses it, a closing link ends the session, and a dead direct path
+opens it over the relay.
 
 A shared `forge::Session` (`Session::share`) queues each edit as a
 proposal (`Session::take_outgoing`) rather than applying it, stamps ids
