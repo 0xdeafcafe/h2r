@@ -403,11 +403,14 @@ impl Dialogs {
                     })
                     .collect();
                 let mut s = rows(LOOK, "MONITOR LOOK", list, self.focus, DialogBase::Large);
+                // The panel holds three rows (26 apart, their frames from
+                // the anchor up 30 and down 4) under the title, then the
+                // preview strip over the legend; the rest scroll.
                 s.list = ListPlace::Moved {
                     skin: 2,
-                    anchor: [-253, 0],
+                    anchor: [-253, 38],
                     bitmaps_left_of: i16::MIN,
-                    visible: look.len() as i16,
+                    visible: 3,
                 };
                 s.style = ValueStyle::Setting;
                 // The preview: a Scene3d widget the compositor places in
@@ -419,8 +422,8 @@ impl Dialogs {
                     art: Art::Solid {
                         rgba: [16, 24, 36, 255],
                     },
-                    at: [60, 30],
-                    size: [280, 130],
+                    at: [-240, -22],
+                    size: [480, 58],
                     depth: 0,
                 });
                 s.texts.push(PaneText {
@@ -428,7 +431,7 @@ impl Dialogs {
                     // A caption strip along the preview box's bottom edge:
                     // 270 wide, the room the fit ellipsizes to, and one
                     // line tall.
-                    rect: [-72, 60, -100, 330],
+                    rect: [-50, -135, -78, 135],
                     font: 1,
                     colour: [0.78, 0.84, 0.89],
                     right: false,

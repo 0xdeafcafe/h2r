@@ -282,11 +282,14 @@ fn coordinates_nudge_and_type_numbers() {
         [Choice::Nudge(sheet::Coordinate::X, true)]
     );
     assert_eq!(s.sheet().rows[0].value.as_deref(), Some("1.35"));
-    assert_eq!(
-        s.sideways(3, false)
-            .map(|v| v.contains('-') && v.contains("45")),
-        Some(true)
-    );
+    // Yaw 0.5 rad is 28.65 degrees; the 45 degree snap takes it to -16.35.
+    let yaw: f32 = s
+        .sideways(3, false)
+        .and_then(|v| v.strip_prefix("Yaw: ").map(str::to_owned))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((yaw + 16.35).abs() < 0.01, "{yaw}");
     assert_eq!(
         s.take_choices(),
         [Choice::Nudge(sheet::Coordinate::Yaw, false)]

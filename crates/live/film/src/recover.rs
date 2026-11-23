@@ -114,7 +114,10 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
             .get(&entry.offset)
             .is_some_and(|(first, _)| *first <= end_tick)
     };
+    // The machine index opens with the first header, so it is kept; the
+    // sealed header goes at the end like a live recorder's.
     let mut kept: Vec<Entry> = Vec::with_capacity(entries.len());
+    kept.push(head.clone());
     for (i, entry) in rest.iter().enumerate() {
         let keep = match entry.tag {
             t if t == range::TICK => chunk_kept(entry),

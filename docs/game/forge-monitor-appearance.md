@@ -189,19 +189,17 @@ value picker").
 ```text
  +----------------------------------------------------------+
  | MONITOR LOOK                                             |
- | Model             Sentinel               +-----------+   |
- | Variant           Default                |           |   |
- | Primary colour    <colour>               |  preview  |   |
- | Secondary colour  <colour>               |           |   |
- | Tint              Light                  +-----------+   |
- | Light             Dim                                    |
- | Light colour      <colour>                               |
- |                                                          |
+ | Model             Sentinel                               |
+ | Variant           Default                                |
+ | Primary colour    <colour>              (more rows scroll)|
+ | +------------------------------------------------------+ |
+ | |                      preview                         | |
+ | +------------------------------------------------------+ |
  | (A) Change   (X) Reset   (B) Done                        |
  +----------------------------------------------------------+
 ```
 
-- **Rows.** Each row shows its value in the second column; a colour's
+- **Rows.** The list shows three rows at a time and scrolls through the seven, over the preview strip (`ui_kit/forge/dialogs.rs`, `Parent::Look`): the large panel holds no more. Each row shows its value in the second column; a colour's
   name is the game's own string for that palette index, read at run
   time. A opens the
   kit's value picker over the page (`ui_kit::picker::offer_list`) with
