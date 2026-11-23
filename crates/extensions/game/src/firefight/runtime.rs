@@ -383,12 +383,15 @@ impl Game for GuestGame<'_> {
     fn credit_score(&mut self, player: u8, points: u32) -> anyhow::Result<()> {
         self.defer(Call::Score { player, points })
     }
-    /// The pool is the director's: the HUD reads it from the mode blob, and
-    /// the engine holds a respawn by the variant's lives setting.
+    /// The pool is the director's ([`Host`] sets it there): the HUD reads
+    /// it from the mode blob, and the engine holds every respawn by the
+    /// variant's lives setting until the director's `Respawn`.
     fn set_lives(&mut self, _player: Option<u8>, _pool: u16) -> anyhow::Result<()> {
         Ok(())
     }
-    /// As [`Game::set_lives`]: the team's pool is in the mode blob only.
+    /// As [`Game::set_lives`]: the engine keeps no team pool, so a team's is
+    /// the director's, which spends it on that team's respawns and holds
+    /// them at 0 (`Director::set_team_pool`).
     fn set_team_lives(&mut self, _team: u8, _pool: u16) -> anyhow::Result<()> {
         Ok(())
     }

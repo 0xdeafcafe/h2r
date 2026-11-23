@@ -563,9 +563,25 @@ impl Host {
             // The HUD reads rounds and waves from the mode blob.
             Command::Round { .. } | Command::Wave { .. } => Ok(()),
             Command::Skull { id, on } => game.skull(*id, *on),
-            Command::Lives { player, pool } => game.set_lives(*player, *pool),
+            // The engine keeps no pool: the director's is the pool its
+            // respawns spend, so a `Lives` or `TeamLives` sets it there (the
+            // director's own set the pool it holds; an operator's changes
+            // it). Where no director runs the entry is the game's alone.
+            Command::Lives { player, pool } => {
+                if let Some(director) = self.director.as_mut() {
+                    director
+                        .set_lives(*player, *pool)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                game.set_lives(*player, *pool)
+            }
             Command::TeamLives { team, pool } => {
                 anyhow::ensure!(usize::from(*team) < MAX_TEAMS, "no player team {team}");
+                if let Some(director) = self.director.as_mut() {
+                    director
+                        .set_team_pool(*team, *pool)
+                        .map_err(anyhow::Error::msg)?;
+                }
                 game.set_team_lives(*team, *pool)
             }
             Command::Score { player, points, .. } => game.credit_score(*player, *points),
