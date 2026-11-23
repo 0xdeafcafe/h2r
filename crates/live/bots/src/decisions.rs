@@ -339,6 +339,24 @@ impl Fight<'_> {
         })
     }
 
+    fn oddball(&self) -> bool {
+        self.p
+            .objective
+            .as_ref()
+            .is_some_and(|o| o.game == crate::objective::Game::Oddball)
+    }
+
+    /// Holding the hill or a territory, or on the ball carrier itself:
+    /// people stay in that fight one enemy longer before backing off.
+    fn standing_firm(&self, o: Seen) -> bool {
+        use crate::objective::Game;
+        match (self.goal, self.p.objective.as_ref().map(|ob| ob.game)) {
+            (Some(Goal::Hold(..)), Some(Game::Koth | Game::Territories)) => true,
+            (Some(Goal::Hunt(id, _)), Some(Game::Oddball)) => id == o.id,
+            _ => false,
+        }
+    }
+
     fn opening(&self, o: Seen, traits: Personality) -> bool {
         self.contact(o.id).is_some_and(|r| {
             r.empty_magazine
@@ -392,6 +410,13 @@ impl Fight<'_> {
         if d.map.holder(o.id) {
             weight /= 1.0 + awareness(self.skill);
         }
+        // An Oddball escort screens: the enemy closing on our carrier first.
+        if let Some(Goal::Escort(at)) = self.goal
+            && self.oddball()
+            && distance(o.position, at) < 12.0
+        {
+            weight /= 1.0 + (0.5 + traits.teamwork) * awareness(self.skill);
+        }
         if self.opening(o, traits) {
             weight /= 1.0 + (0.8 + traits.aggression) * awareness(self.skill);
         }
@@ -411,6 +436,7 @@ impl Fight<'_> {
             .seen
             .iter()
             .filter(|e| distance(e.position, self.me.position) <= radius)
+            .filter(|e| !self.p.objective.as_ref().is_some_and(|ob| ob.unarmed(e.id)))
             .count();
         let friends = self
             .p
@@ -423,11 +449,11 @@ impl Fight<'_> {
                     && clear(self.map, self.me.position, a.position)
             })
             .count();
-        let margin = if sense + 0.5 * traits.caution - 0.25 * traits.aggression - drive >= 0.65 {
+        let margin = (if sense + 0.5 * traits.caution - 0.25 * traits.aggression - drive >= 0.65 {
             1
         } else {
             2
-        };
+        }) + usize::from(self.standing_firm(o) && traits.objective_focus * sense >= 0.4);
         // In FFA a mutually engaged pair is an opening, until a third enemy joins.
         let distracted_pair =
             !self.p.teams && enemies == 2 && self.me.shield >= 0.65 && self.engaged(o);
@@ -498,6 +524,12 @@ impl Fight<'_> {
                 Goal::Hold(at, r) => Some((at, r)),
                 _ => None,
             };
+        }
+        // A loose ball (or its spawn): straight for it, shooting on the way.
+        if let Goal::Go(at) = goal
+            && self.oddball()
+        {
+            return Some((at, 0.0));
         }
         let radius = 4.0 + 8.0 * (1.0 - traits.objective_focus * awareness(self.skill));
         match goal {

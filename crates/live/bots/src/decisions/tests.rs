@@ -497,10 +497,13 @@ fn the_hill_is_contested_while_firing_and_a_defender_stays_inside() {
         heading(pad.left_stick).1 < -0.8,
         "toward the hill behind the bot"
     );
-    p.me.as_mut().unwrap().position = [-4.0, 0.0, 0.0];
+    // Inside, near the hill's edge facing the enemy beyond it: it fights
+    // on with its footwork, but no step of it leads out of the hill.
+    p.me.as_mut().unwrap().position = [-2.8, 0.0, 0.0];
     p.tick += 1;
     let pad = m.step(&p, None);
-    assert_eq!(pad.left_stick, (0.0, 0.0));
+    assert!(matches!(m.doing, Doing::Fight(1)));
+    assert!(pad.left_stick.1 <= 1e-3, "no step out: {pad:?}");
     assert_eq!(pad.right_trigger, 1.0);
 }
 

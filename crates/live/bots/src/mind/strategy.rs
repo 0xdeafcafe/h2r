@@ -16,7 +16,7 @@ impl Mind {
         // it stands, in place of the objective's.
         let goal = self.decisions.ordered_goal(p).or_else(|| {
             p.objective.as_ref().and_then(|o| {
-                objective::plan(
+                objective::plan_with(
                     o,
                     &me,
                     if o.game == objective::Game::Juggernaut {
@@ -25,6 +25,7 @@ impl Mind {
                         &p.others
                     },
                     p.teams,
+                    objective::Temper::from(self.decisions.personality),
                 )
             })
         });
