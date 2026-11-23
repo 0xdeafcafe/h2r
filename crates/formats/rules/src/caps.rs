@@ -887,4 +887,42 @@ mod tests {
         assert!(!e.status.hostable());
         assert_eq!(e.args, &[Object, Team]);
     }
+
+    /// The two-team Firefight entries hold 70 to 74, after the bot orders
+    /// (65 to 69), and no other entry shares a number or a name with them:
+    /// a compiled Firefight blob names them by number.
+    #[test]
+    fn two_team_firefight_entries_keep_70_to_74() {
+        let ours = [
+            (id::ZONE_TEAM_DISTANCE, "zone_team_distance"),
+            (id::FF_TARGET, "ff_target"),
+            (id::FF_TEAM_LIVES, "ff_team_lives"),
+            (id::FF_PLAYER_SCORE, "ff_player_score"),
+            (id::FF_TEAM_FINISH, "ff_team_finish"),
+        ];
+        for (n, (number, name)) in (70u16..).zip(ours) {
+            assert_eq!(number, n, "{name}");
+            let e = entry(number, API_VERSION).unwrap();
+            assert_eq!((e.id, e.name), (n, name));
+            let same: Vec<_> = ENTRIES
+                .iter()
+                .filter(|o| o.id == number || o.name == name)
+                .map(|o| o.name)
+                .collect();
+            assert_eq!(same, [name], "entry {n} is {name} alone");
+        }
+        assert_eq!(id::BOT_FREE, 69, "the bot orders end just before");
+        for name in [
+            "ff_target",
+            "ff_team_lives",
+            "ff_player_score",
+            "ff_team_finish",
+        ] {
+            assert_eq!(
+                entry_named(name).unwrap().cap,
+                Some("firefight.director"),
+                "{name}"
+            );
+        }
+    }
 }
