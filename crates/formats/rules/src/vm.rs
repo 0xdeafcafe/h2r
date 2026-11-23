@@ -1551,7 +1551,8 @@ mod tests {
     #[test]
     fn host_writes_change_only_the_named_slots() {
         let src = "rules \"Write\" 1\ncarrier slayer\n\
-                   global var pool: int = 7\nplayer var stock: int = 3\n";
+                   global var pool: int = 7\nplayer var stock: int = 3\n\
+                   on tick { pool = pool }\n";
         let (ir, _) = crate::build(src).unwrap();
         let mut vm = Vm::new(ir, 0, 0).unwrap();
         assert!(vm.set_global("pool", 4));
