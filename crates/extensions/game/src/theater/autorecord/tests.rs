@@ -309,7 +309,7 @@ fn a_game_left_in_play_at_exit_is_cut_at_exit() {
     {
         let mut s = auto.lock();
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
-        rec.meta.start_for_test(12, "zanzibar");
+        rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Campaign);
     }
     auto.finish(80, true).unwrap();
     assert!(!tape.exists());
