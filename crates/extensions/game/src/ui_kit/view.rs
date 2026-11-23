@@ -228,6 +228,13 @@ pub enum Kind {
         /// The image's size the rectangle was made from.
         size: [u16; 2],
     },
+    /// A 3D scene the compositor places in the rect: the monitor look's
+    /// preview (docs/game/forge-monitor-appearance.md, ML6). The offline
+    /// preview has no GPU scene, so it draws the `name` in the rect; the
+    /// kit's checks treat the widget as art.
+    Scene3d {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

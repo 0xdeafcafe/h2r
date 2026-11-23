@@ -1,12 +1,17 @@
-use super::{Hud, LINK, MENU, PALETTE, PROPERTIES};
+use super::{Hud, LINK, LOOK, MENU, PALETTE, PROPERTIES};
 use crate::ui_kit::{
     dialog::{DialogBase, DialogSpec},
     input::{Glyph, Input, Prompt},
     picker,
     spec::{ListPlace, Press, RowSpec, ScreenSpec, ValueStyle},
     text_fit,
-    view::{Art, Opener, PaneArt},
+    view::{Art, Kind, Layer, Opener, PaneArt, Widget},
 };
+
+/// The tint steps, by the look's `tint`.
+pub const TINTS: [&str; 4] = ["None", "Light", "Medium", "Strong"];
+/// The light steps, by the look's `light`.
+pub const LIGHTS: [&str; 3] = ["Off", "Dim", "Bright"];
 
 /// Rotation choices in degrees. Store the index only after confirming a choice.
 pub const ANGLE_STEPS: [f32; 4] = [1., 5., 15., 45.];
@@ -25,6 +30,13 @@ pub enum Action {
     Load(String),
     /// Remove the link the dialog shows.
     Unlink,
+    /// Open the monitor look page (the Forge menu's row).
+    Look,
+    /// The monitor look page: row `0..6` set to its choice
+    /// ([`TINTS`], [`LIGHTS`] and the colour list's indices included).
+    LookSet(usize, usize),
+    /// The monitor look page's reset.
+    LookReset,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +64,28 @@ enum Parent {
     Link {
         rows: Vec<(String, String)>,
     },
+    /// The monitor look page (docs/game/forge-monitor-appearance.md,
+    /// "Choosing it"): the held look, its rows and the model names the
+    /// catalogue offers.
+    Look {
+        held: forge::look::MonitorLook,
+        rows: Vec<LookRow>,
+        /// The catalogue's model names, in order, beside the marker.
+        models: Vec<String>,
+        /// The colour names, by palette index.
+        colours: Vec<String>,
+    },
+}
+
+/// One row of the monitor look page: its value as shown, what it cannot
+/// be and why (the lock), and the values a picker offers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LookRow {
+    pub label: &'static str,
+    pub value: String,
+    /// The lock's sentence, shown as the row's description.
+    pub locked: Option<String>,
+    pub choices: Vec<String>,
 }
 
 /// The parent retains its focus while its picker is open.
@@ -117,6 +151,29 @@ impl Dialogs {
         }
     }
 
+    /// The monitor look page: the held look's rows from the catalogue and
+    /// the palette's colour names.
+    pub fn look(
+        held: forge::look::MonitorLook,
+        catalogue: &[forge::look::census::Entry],
+        colours: Vec<String>,
+    ) -> Self {
+        let rows = look_rows(&held, catalogue, &colours);
+        let mut models = Vec::with_capacity(catalogue.len() + 1);
+        models.push("Marker".into());
+        models.extend(catalogue.iter().map(|e| e.name.clone()));
+        Self {
+            parent: Parent::Look {
+                held,
+                rows,
+                models,
+                colours,
+            },
+            focus: 0,
+            picker_focus: None,
+        }
+    }
+
     pub fn menu(saves: Vec<String>) -> Self {
         Self {
             parent: Parent::Menu { saves },
@@ -134,7 +191,11 @@ impl Dialogs {
                 HEADINGS.len() + usize::from(heading_index(*heading).is_none())
             }
             (Parent::Properties { .. }, Some(_)) => ANGLE_STEPS.len(),
-            (Parent::Menu { .. }, None) => 3,
+            (Parent::Menu { .. }, None) => 4,
+            (Parent::Look { rows, .. }, None) => rows.len(),
+            (Parent::Look { rows, .. }, Some(_)) => {
+                rows[self.focus].choices.len()
+            }
             (Parent::Menu { saves }, Some(_)) => saves.len(),
             (Parent::Link { rows }, _) => rows.len() + 1,
         }
@@ -179,9 +240,20 @@ impl Dialogs {
             (Parent::Properties { .. }, Some(_)) => Effect::Action(Action::RotationStep(index)),
             (Parent::Menu { .. }, None) if index == 0 => Effect::Action(Action::Save),
             (Parent::Menu { .. }, None) if index == 1 => Effect::Action(Action::SaveAs),
+            (Parent::Menu { .. }, None) if index == 3 => Effect::Action(Action::Look),
             (Parent::Menu { .. }, None) => {
                 self.picker_focus = Some(0);
                 Effect::Changed
+            }
+            (Parent::Look { rows, .. }, None) => {
+                if rows[index].locked.is_some() {
+                    return Effect::Ignored;
+                }
+                self.picker_focus = Some(0);
+                Effect::Changed
+            }
+            (Parent::Look { .. }, Some(_)) => {
+                Effect::Action(Action::LookSet(self.focus, index))
             }
             (Parent::Menu { saves }, Some(_)) => Effect::Action(Action::Load(saves[index].clone())),
             (Parent::Link { rows }, _) if index == rows.len() => Effect::Action(Action::Unlink),
@@ -207,6 +279,9 @@ impl Dialogs {
             }
             Input::Back | Input::B if self.picker_focus.take().is_some() => Effect::Changed,
             Input::Back | Input::B => Effect::Action(Action::Close),
+            Input::X if matches!(self.parent, Parent::Look { .. }) && self.picker_focus.is_none() => {
+                Effect::Action(Action::LookReset)
+            }
             _ => Effect::Ignored,
         }
     }
@@ -310,10 +385,50 @@ impl Dialogs {
                     RowSpec::action("Save"),
                     RowSpec::action("Save as"),
                     RowSpec::action("Load").press(Press::Open("forge.load".into())),
+                    RowSpec::action("Monitor look"),
                 ],
                 self.focus,
                 DialogBase::Large,
             ),
+            Parent::Look {
+                held,
+                rows: look,
+                models,
+                colours: _,
+            } => {
+                // While a picker is open the preview shows the focused
+                // value, not the held one; B restores it.
+                let previewed = self.picker_focus.map(|focus| {
+                    preview_look(models, self.focus, focus, &look[0].value)
+                });
+                let list: Vec<_> = look
+                    .iter()
+                    .map(|row| match &row.locked {
+                        Some(reason) => {
+                            RowSpec::info(row.label, &text_fit::line(reason, 300))
+                        }
+                        None => RowSpec::value(row.label, &[&row.value], 0),
+                    })
+                    .collect();
+                let mut s = rows(LOOK, "MONITOR LOOK", list, self.focus, DialogBase::Large);
+                s.list = ListPlace::Moved {
+                    skin: 2,
+                    anchor: [-253, 0],
+                    bitmaps_left_of: i16::MIN,
+                    visible: look.len() as i16,
+                };
+                s.style = ValueStyle::Setting;
+                s.widgets.push(Widget {
+                    id: "preview".into(),
+                    rect: [40, 100, 160, 260],
+                    layer: Layer::Content,
+                    alpha: 255,
+                    kind: Kind::Scene3d {
+                        name: previewed.unwrap_or_else(|| look[0].value.clone()),
+                    },
+                });
+                s
+            }
         };
         over(&mut parent, hud.spec());
         let Some(focus) = self.picker_focus else {
@@ -355,6 +470,17 @@ impl Dialogs {
                 "",
             ),
             Parent::Link { .. } => return parent,
+            Parent::Look { rows, .. } => {
+                let row = &rows[self.focus];
+                choices(
+                    "forge.look.row",
+                    &row.label.to_uppercase(),
+                    &row.choices,
+                    focus,
+                    &row.locked.clone().unwrap_or_default(),
+                    "",
+                )
+            }
             Parent::Menu { saves } => choices(
                 "forge.load",
                 "LOAD",
@@ -367,6 +493,100 @@ impl Dialogs {
         over(&mut picker, parent);
         picker
     }
+}
+
+/// The look page's rows: each field's value as shown, its lock with the
+/// reason a row shows, and the values a picker offers.
+fn look_rows(
+    look: &forge::look::MonitorLook,
+    catalogue: &[forge::look::census::Entry],
+    colours: &[String],
+) -> Vec<LookRow> {
+    use forge::look::locks;
+    let colour = |index: u8| {
+        colours
+            .get(usize::from(index))
+            .cloned()
+            .unwrap_or_else(|| format!("Colour {index}"))
+    };
+    let locked = locks(&look.model, catalogue);
+    let entry = catalogue.iter().find(|e| e.key == look.model);
+    let marker_locks = look.is_marker();
+    let lock = |field: &str, marker: bool| -> Option<String> {
+        if marker {
+            return Some("The marker has none".into());
+        }
+        locked.get(field).cloned()
+    };
+    let mut models = Vec::with_capacity(catalogue.len() + 1);
+    models.push("Marker".into());
+    models.extend(catalogue.iter().map(|e| e.name.clone()));
+    vec![
+        LookRow {
+            label: "Model",
+            value: if look.is_marker() {
+                "Marker".into()
+            } else {
+                entry.map(|e| e.name.clone()).unwrap_or_else(|| look.model.clone())
+            },
+            locked: None,
+            choices: models,
+        },
+        LookRow {
+            label: "Variant",
+            value: look
+                .variant
+                .clone()
+                .unwrap_or_else(|| "Default".into()),
+            locked: lock("variant", marker_locks),
+            choices: entry.map(|e| e.variants.clone()).unwrap_or_default(),
+        },
+        LookRow {
+            label: "Primary colour",
+            value: colour(look.primary),
+            locked: lock("primary", marker_locks),
+            choices: colours.to_vec(),
+        },
+        LookRow {
+            label: "Secondary colour",
+            value: colour(look.secondary),
+            locked: lock("secondary", marker_locks),
+            choices: colours.to_vec(),
+        },
+        LookRow {
+            label: "Tint",
+            value: TINTS[usize::from(look.tint.min(3))].into(),
+            locked: lock("tint", marker_locks),
+            choices: TINTS.iter().map(|s| s.to_string()).collect(),
+        },
+        LookRow {
+            label: "Light",
+            value: LIGHTS[usize::from(look.light.min(2))].into(),
+            locked: lock("light", marker_locks),
+            choices: LIGHTS.iter().map(|s| s.to_string()).collect(),
+        },
+        LookRow {
+            label: "Light colour",
+            value: colour(look.light_colour),
+            locked: lock("light_colour", marker_locks),
+            choices: colours.to_vec(),
+        },
+    ]
+}
+
+/// The preview while a picker is open: the focused value of `row` for
+/// the Model picker, the held model's name for any other. B restores the
+/// held one by closing the picker.
+fn preview_look(
+    models: &[String],
+    row: usize,
+    focus: usize,
+    held_name: &str,
+) -> String {
+    if row == 0 {
+        return models.get(focus).cloned().unwrap_or_else(|| held_name.to_owned());
+    }
+    held_name.to_owned()
 }
 
 fn over(spec: &mut ScreenSpec, parent: ScreenSpec) {

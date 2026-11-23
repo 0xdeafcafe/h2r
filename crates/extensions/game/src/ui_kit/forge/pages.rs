@@ -1,7 +1,7 @@
 //! Named preview states run the same dialog transitions as the shell.
 
 use super::dialogs::Effect;
-use super::{Dialogs, HUD, Hud, LINK, MENU, Mode, PALETTE, PROPERTIES};
+use super::{Dialogs, HUD, Hud, LINK, LOOK, MENU, Mode, PALETTE, PROPERTIES};
 use crate::ui_kit::{
     input::Input,
     page::{Driven, Live, Page, focus_line},
@@ -97,6 +97,7 @@ pub(super) enum DialogPage {
     Properties,
     Menu,
     Link,
+    Look,
 }
 
 impl Page for DialogPage {
@@ -166,6 +167,47 @@ impl Page for DialogPage {
                     ("no-saves".into(), load(Dialogs::menu(vec![]))),
                 ]
             }
+            Self::Look => {
+                let catalogue = |key: &str, colours: bool| forge::look::census::Entry {
+                    key: key.into(),
+                    name: "Sentinel".into(),
+                    source: "05a_deltaapproach".into(),
+                    sha256: "abc123".into(),
+                    variants: vec!["default".into(), "major".into()],
+                    change_colours: colours,
+                    light: true,
+                    nodes: 20,
+                    triangles: 900,
+                };
+                let colours: Vec<String> = (0..18).map(|n| format!("Colour {n}")).collect();
+                let mut model = forge::look::MonitorLook::default_for(3);
+                model.model = "sentinel".into();
+                model.variant = None;
+                model.tint = 1;
+                model.light = 1;
+                let mut lockless = Dialogs::look(
+                    model.clone(),
+                    &[catalogue("sentinel", true)],
+                    colours.clone(),
+                );
+                lockless.press(Input::A);
+                let no_colours = Dialogs::look(
+                    model.clone(),
+                    &[catalogue("sentinel", false)],
+                    colours.clone(),
+                );
+                let marker = Dialogs::look(
+                    forge::look::MonitorLook::default_for(2),
+                    &[],
+                    colours,
+                );
+                vec![
+                    ("open".into(), Dialogs::look(model, &[catalogue("sentinel", true)], vec![])),
+                    ("picker".into(), lockless),
+                    ("locked".into(), no_colours),
+                    ("marker".into(), marker),
+                ]
+            }
             Self::Link => {
                 let row = |label: &str, value: &str| (label.to_string(), value.to_string());
                 vec![
@@ -203,6 +245,7 @@ pub(in crate::ui_kit) fn live(name: &str) -> Option<Box<dyn Live>> {
         PROPERTIES => DialogPage::Properties,
         PALETTE => DialogPage::Palette,
         LINK => DialogPage::Link,
+        LOOK => DialogPage::Look,
         _ => return None,
     };
     Some(Box::new(Driven::new(page)))
