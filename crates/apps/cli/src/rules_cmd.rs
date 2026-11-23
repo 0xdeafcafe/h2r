@@ -1132,8 +1132,9 @@ settings {
         assert!(!text.contains("ctf_flag_type"), "{text}");
         // The record's other settings, which no script names.
         assert!(text.contains("settings no script names (stock):\n"), "{text}");
-        assert!(text.contains("  setting 25: 2\n"), "{text}");
-        assert!(text.contains("  setting 14 (Join in progress): 0\n"), "{text}");
+        assert!(text.contains("  setting 26: 10\n"), "{text}");
+        assert!(!text.contains("  setting 14"), "a named row: {text}");
+        assert_eq!(row_words(&text, "join_in_progress"), ["join_in_progress", "0", "stock"]);
         // The same text twice.
         assert_eq!(settings_text("swat.rules", SWAT).unwrap(), text);
 

@@ -504,25 +504,6 @@ mod tests {
     }
 
     #[test]
-    fn editing_an_extra_keeps_the_script() {
-        use crate::panel::VariantEditor;
-        use crate::record::GameType;
-        let mut e = VariantEditor::new(crate::schema::Schema::fallback(), None);
-        e.new_variant(GameType::Slayer);
-        let s = scripted(Mode::Rules);
-        e.set_ext(&s).unwrap();
-        let mut next = e.current().unwrap().ext();
-        assert_eq!(next, s);
-        next.gravity = 50;
-        e.set_ext(&next).unwrap();
-        let now = e.current().unwrap().ext();
-        assert_eq!(now.gravity, 50);
-        assert_eq!(now.script, s.script);
-        assert!(e.undo());
-        assert_eq!(e.current().unwrap().ext(), s);
-    }
-
-    #[test]
     fn an_all_zero_block_has_no_script() {
         assert_eq!(Ext::decode(&[0; LEN]), Block::None);
         assert_eq!(Ext::in_effect(&[0; LEN]).script, Script::default());

@@ -117,7 +117,7 @@ async fn flow(timers: Timers) {
     )
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
-    assert!(r.error().contains("no rules script"), "{}", r.error());
+    assert!(r.json()["message"].as_str().unwrap_or("").contains("no rules script"), "{}", r.json());
 
     // Nobody posts the event by hand.
     let forged = h.event(
@@ -251,7 +251,7 @@ async fn bad_variants_are_refused() {
     let r = publish(&h, &me, json!({"name": "Hill", "description": "Up", "record_hex": hex, "visibility": "public"}))
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
-    assert!(r.error().contains("no rules script"), "{}", r.error());
+    assert!(r.json()["message"].as_str().unwrap_or("").contains("no rules script"), "{}", r.json());
 
     // A scripted record needs its script, and the script must be the one
     // the prefix names and ride the record's engine.

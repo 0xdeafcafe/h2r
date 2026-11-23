@@ -816,10 +816,10 @@ mod tests {
         assert_eq!(e.current().unwrap(), &start);
         assert!(!e.undo() && e.can_redo());
         // A new edit drops the redo history.
-        e.set_setting(SettingId(89), 0).unwrap();
+        e.set_setting(SettingId(89), 9).unwrap();
         assert!(!e.can_redo());
         // An edit that changes nothing is not a step.
-        e.set_setting(SettingId(89), 0).unwrap();
+        e.set_setting(SettingId(89), 9).unwrap();
         assert!(e.undo() && !e.can_undo());
     }
 
@@ -936,9 +936,13 @@ mod tests {
         let mut e = VariantEditor::new(schema(), None);
         e.new_variant(GameType::Slayer);
         assert!(e.issues().is_empty());
+        // The script's record differs from the schema's defaults already;
+        // the edit adds or changes one row of that diff.
+        let before = e.schema().diff_from_defaults(e.current().unwrap());
         e.set_setting(SettingId(89), 5).unwrap();
         let diff = e.schema().diff_from_defaults(e.current().unwrap());
-        assert_eq!(diff, vec![(SettingId(89), 3, 5)]);
+        let changed: Vec<_> = diff.into_iter().filter(|d| !before.contains(d)).collect();
+        assert_eq!(changed, vec![(SettingId(89), 3, 5)]);
         assert_eq!(
             e.issues(),
             vec![Issue::NotOffered {
@@ -1049,7 +1053,7 @@ mod tests {
 
         // A built-in is read-only.
         e.open_builtin(0);
-        assert!(e.script_prefix().is_none());
+        assert!(e.is_read_only());
         assert!(matches!(
             e.set_script_option(&ir, points, 2),
             Err(EditError::ScriptOption(_) | EditError::ReadOnly)

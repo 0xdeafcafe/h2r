@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn the_variants_are_the_stock_records_with_their_changes() {
-        use variants::*;
+        use super::variants::*;
         let ts = team_snipers();
         assert_eq!(ts.name(), "Team Snipers");
         assert!(ts.team());

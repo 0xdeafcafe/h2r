@@ -173,8 +173,8 @@ pub enum PortableError {
     Setting(String),
     #[error("{0}")]
     Edit(String),
-    /// An `hx` extra no script setting sets (speed, weapon ids, team size,
-    /// the superbounce flag), beside a script.
+    /// An `hx` extra no script setting sets (speed, weapon ids, team
+    /// size), beside a script.
     #[error("the record's extension block has {0}, which no script setting sets")]
     Extras(&'static str),
 }
@@ -553,7 +553,6 @@ fn non_setting_extra(e: &ext::Ext) -> Option<&'static str> {
     let d = ext::Ext::default();
     [
         (e.speed != d.speed, "a movement speed"),
-        (e.superbounce != d.superbounce, "the superbounce flag"),
         (e.primary != d.primary, "a primary weapon id"),
         (e.secondary != d.secondary, "a secondary weapon id"),
         (e.team_size != d.team_size, "a team size"),
@@ -1234,7 +1233,12 @@ mod tests {
         let b = read(&v1).unwrap();
         assert_eq!(b.check().unwrap_err(), PortableError::ScriptMissing);
         assert_eq!(
-            port(&port_input(v1.as_bytes()).unwrap().0, None, None, PortScript::Builtin)
+            port(
+                &port_input(v1.as_bytes()).unwrap().0,
+                None,
+                None,
+                PortScript::Source(rules::builtin::SLAYER.into())
+            )
                 .unwrap()
                 .id(),
             scripted.id()

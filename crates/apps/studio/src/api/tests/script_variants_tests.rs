@@ -77,8 +77,8 @@ fn a_variant_of_a_script_opens_reads_and_edits_by_option_name() {
 }
 
 #[test]
-fn a_variant_with_no_script_reports_none() {
-    let t = Temp::new("script-variant-none");
+fn a_new_variant_names_its_built_in_and_refuses_other_options() {
+    let t = Temp::new("script-variant-new");
     let mut app = app(&t);
     let mut api = Api::new();
     call(
@@ -88,7 +88,8 @@ fn a_variant_with_no_script_reports_none() {
         json!({"variant": {"new": "slayer"}, "discard": true}),
     );
     let got = call(&mut api, &mut app, m::VARIANT_GET, json!({}));
-    assert!(got["script"].is_null(), "{got}");
+    // Every way in gives a scripted record: a new Slayer runs Slayer's.
+    assert_eq!(got["script"]["name"], "Slayer", "{got}");
     assert_eq!(
         code_of(api.call(
             &mut app,
