@@ -44,7 +44,10 @@ fn dialog_page_tables() {
     for (name, s) in DialogPage::Look.states() {
         let spec = DialogPage::Look.spec(&s);
         let v = preview::From::Synthetic.view(&spec, &name).unwrap();
-        assert_eq!(v.widget("preview").is_some(), true, "{name}");
+        // With a picker open the page is the picker's underlay, and its
+        // preview follows the picker's focus.
+        let page = v.underlay.as_deref().unwrap_or(&v);
+        assert!(page.widget("preview").is_some(), "{name}");
         let content = content::check(&spec, &v, preview::From::Synthetic.source());
         assert!(content.is_empty(), "{name}: {content:?}");
         let report = layout::check(&v, preview::From::Synthetic.source(), &layout::Rules::for_spec(&spec));
