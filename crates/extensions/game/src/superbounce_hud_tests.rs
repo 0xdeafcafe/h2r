@@ -401,15 +401,12 @@ fn each_notification_is_sent_once() {
     s.medals.recent = vec![award(1, Some(0), 3, vec![Medal::Superbounce])];
     assert!(sent.notes(Some(&s), None, true).is_empty(), "the first state");
 
-    // A recipe step begins: "Charging...", once; the next step is the
-    // same charge.
+    // A recipe step begins: no line; the arming bar and the prompt say
+    // it, and a "Charging..." would be over "Primed!" seconds later.
     s.charge = charge(ChargePhase::Near, 0.0);
-    assert_eq!(
-        sent.notes(Some(&s), None, true),
-        vec![(0, "Charging...".to_string())]
-    );
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "a recipe step");
     s.charge = charge(ChargePhase::Under, 0.3);
-    assert!(sent.notes(Some(&s), None, true).is_empty(), "the same charge");
+    assert!(sent.notes(Some(&s), None, true).is_empty(), "the next step");
 
     s.word = Some(PRIMED_WORD as u32);
     s.charge = charge(ChargePhase::Primed, 1.0);
@@ -637,4 +634,73 @@ fn in_the_air_the_hud_keeps_the_pill_and_the_lines_and_drops_the_rest() {
     assert!(v.primed);
     assert_eq!(v.note, full.note);
     assert_eq!(v.scan, full.scan);
+}
+
+/// The primed ending plays once per priming: after its run the bar is
+/// hidden, in the air or on the ground, until the charge is primed again.
+#[test]
+fn the_primed_ending_plays_once_per_priming() {
+    let ending = Some(Arm {
+        fill: 1.0,
+        motion: Motion::Ending,
+    });
+    let mut once = EndingOnce::default();
+    for i in 0..ENDING_TICKS {
+        assert_eq!(once.update(ending), ending, "tick {i}");
+    }
+    // The landing shows the bar again: it does not replay.
+    for _ in 0..200 {
+        assert_eq!(once.update(ending), None);
+    }
+    // A loss blinks (its own motion), and the next priming plays again.
+    let blink = Some(Arm {
+        fill: 0.0,
+        motion: Motion::Blink,
+    });
+    assert_eq!(once.update(blink), blink);
+    assert_eq!(once.update(ending), ending);
+    // A recipe step and the mode going off start it over too.
+    for _ in 0..ENDING_TICKS + 5 {
+        once.update(ending);
+    }
+    once.clear();
+    assert_eq!(once.update(ending), ending);
+    assert_eq!(once.update(None), None);
+    assert_eq!(once.update(ending), ending);
+}
+
+/// After a loss the reason shows first; the "charge again" prompt comes
+/// after it, not over it.
+#[test]
+fn the_prompt_waits_for_the_losss_reason() {
+    let lost = mode::Lost {
+        reason: LostReason::Crouched,
+        tick: 100,
+    };
+    let at = |tick| State {
+        tick: Some(tick),
+        verb: Some(mode::Verb::ChargeAgain(lost)),
+        ..ready()
+    };
+    for (tick, held) in [
+        (100, true),
+        (100 + REASON_TICKS - 1, true),
+        (100 + REASON_TICKS, false),
+        (100 + 140, false),
+    ] {
+        let s = at(tick);
+        let v = after_reason(view(&s, None), &s, Some(lost));
+        assert_eq!(v.verb.is_none(), held, "tick {tick}");
+        assert_eq!(v.note, Some((Note::ChargeLost(Lost::Crouched), 100)));
+    }
+    // Another prompt is not held, and with no loss nothing is.
+    let s = State {
+        tick: Some(101),
+        ..ready()
+    };
+    let mut v = view(&s, None);
+    v.verb = Some(Verb::KeepMoving);
+    assert_eq!(after_reason(v, &s, Some(lost)).verb, Some(Verb::KeepMoving));
+    let s = at(101);
+    assert!(after_reason(view(&s, None), &s, None).verb.is_some());
 }

@@ -41,6 +41,9 @@ pub const FEATURE: &str = "superbounce-readout";
 
 /// Ticks the miss line stays: four seconds.
 pub const INFO_TICKS: u64 = 120;
+/// Ticks a miss line holds against another: a second miss within two
+/// seconds of it replaces it only with a higher speed in.
+pub const MISS_KEEP_TICKS: u64 = 60;
 /// Ticks of fall speed kept: over a second, more than the landing's
 /// launch window.
 pub const HISTORY: usize = 48;
@@ -142,6 +145,25 @@ pub fn kinds(m: crate::superbounce_options::TargetMode) -> rd::Kinds {
     }
 }
 
+/// Half the angle, either side of the aim, a seam's navpoint is kept
+/// within: 40 degrees.
+pub const TARGET_CONE: f32 = 40.0 * std::f32::consts::PI / 180.0;
+
+/// The mode's target navpoints for `s` that are within [`TARGET_CONE`] of
+/// the aim. The game clamps an off-screen navpoint to the edge of its
+/// waypoint area, where its arrow lands on the tracker, the readout or the
+/// score plate; one behind or to the side is cleared instead. With no
+/// position or aim known, all are kept.
+pub fn ahead(s: &State) -> [Option<crate::superbounce_targets::Mark>; 2] {
+    s.marks.targets.map(|m| {
+        let m = m?;
+        let (Some(p), Some(yaw)) = (s.position, s.yaw) else {
+            return Some(m);
+        };
+        (against_aim(m.at[0] - p[0], m.at[1] - p[1], yaw).abs() <= TARGET_CONE).then_some(m)
+    })
+}
+
 /// The readout's [`View`] of the mode's state `s` under the variant's
 /// options `o`, with the miss line `info`.
 ///
@@ -173,7 +195,7 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
         next: next(s),
         kinds: s.switched.map(kinds),
         tag: metres(s.marks.tag),
-        targets: s.marks.targets.map(metres),
+        targets: ahead(s).map(metres),
         guide: s.guide.filter(|_| o.approach_guide).map(|g| g.view()),
         segments: segments(s).filter(|_| o.charge_segments),
     }
@@ -202,6 +224,60 @@ pub fn guide_poses(
         .map(|g| guide_marks::poses(&g.layout()))
         .unwrap_or_default();
     guide_marks::MARKS.map(|id| (id, poses.iter().find(|(i, _)| *i == id).map(|(_, p)| *p)))
+}
+
+/// `hudg` `waypoint_bottom_inset` (`+0xf0`,
+/// `crates/formats/tags/src/defs/hudg.txt`): how far the waypoint area's
+/// bottom is moved in from the safe bounds.
+pub const HUDG_WAYPOINT_BOTTOM_INSET: u32 = 0xf0;
+/// The bottom inset with the mode on, in the HUD's 480-high frame: the
+/// area's bottom clears the motion tracker, the speed row and the score
+/// plate (y 376 and down), so the one target arrow the game clamps to the
+/// edge ([`ahead`]) sits above them.
+pub const WAYPOINT_BOTTOM_INSET: f32 = 80.0;
+
+/// The inset to write for a `hudg` that holds `cur` with `orig` the map's
+/// own: the mode's ([`WAYPOINT_BOTTOM_INSET`], never lowering the map's)
+/// while `on`, else the map's.
+pub fn waypoint_inset(orig: f32, on: bool) -> f32 {
+    if on {
+        orig.max(WAYPOINT_BOTTOM_INSET)
+    } else {
+        orig
+    }
+}
+
+/// The `hudg` last seen, the map's own bottom inset, and the value this
+/// wrote there.
+static INSET: Mutex<Option<(u32, f32, f32)>> = Mutex::new(None);
+
+/// Keeps the loaded `hudg`'s waypoint bottom inset at [`waypoint_inset`]
+/// for the mode `on` or off, each tick. The map's own value is read once
+/// per `hudg` and put back when the mode goes off. A map with no `hudg`
+/// loaded is left alone.
+pub fn keep_waypoint_inset(mem: &mut dyn engine::memory::GuestMemory, on: bool) {
+    let Some(h) = mem
+        .u32(engine::points::HUD_GLOBALS_TAG.base)
+        .ok()
+        .filter(|&h| h != 0)
+    else {
+        return;
+    };
+    let at = h.wrapping_add(HUDG_WAYPOINT_BOTTOM_INSET);
+    let Ok(cur) = mem.f32(at) else {
+        return;
+    };
+    let mut seen = lock(&INSET);
+    let orig = match *seen {
+        // The value this wrote: the map's is still the one kept.
+        Some((addr, orig, wrote)) if addr == h && cur == wrote => orig,
+        _ => cur,
+    };
+    let want = waypoint_inset(orig, on);
+    if cur != want && mem.set_f32(at, want).is_err() {
+        return;
+    }
+    *seen = Some((h, orig, want));
 }
 
 /// The values with the mode off: every element hidden.
@@ -278,6 +354,14 @@ pub fn miss(landing: &Landing, spots: &[Spot], vz_before: Option<f32>) -> Option
     }
 }
 
+/// The speed in a miss line carries, metres a second; 0 for one with none.
+fn speed_in_of(m: &Miss) -> f32 {
+    match *m {
+        Miss::TooSlow { had, .. } | Miss::NoBounce { had } => had,
+        _ => 0.0,
+    }
+}
+
 /// The miss line, tick to tick.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Info {
@@ -293,7 +377,8 @@ pub struct Info {
 impl Info {
     /// One tick, the readout's `now`th: a landing filed since the last
     /// tick puts its line up (`miss` works it out; a bounce takes the
-    /// line down), a fall toward a seam on a later tick takes it down,
+    /// line down; a miss within [`MISS_KEEP_TICKS`] of the line shown
+    /// replaces it only with a higher speed in), a fall toward a seam on a later tick takes it down,
     /// and it goes after [`INFO_TICKS`]. The line to show.
     pub fn step(
         &mut self,
@@ -304,7 +389,17 @@ impl Info {
         let landing = s.last_landing.as_ref();
         let tick = landing.map(|l| l.tick);
         if let Some(l) = landing.filter(|_| self.seen && tick != self.landing) {
-            self.shown = miss(l).map(|m| (m, now));
+            // A touchdown at a seam's foot (a hop, a stumble) files a
+            // landing too; it does not wipe out the real miss before it.
+            self.shown = match (miss(l), self.shown) {
+                (Some(new), Some((old, at)))
+                    if now.saturating_sub(at) < MISS_KEEP_TICKS
+                        && speed_in_of(&new) <= speed_in_of(&old) =>
+                {
+                    Some((old, at))
+                }
+                (new, _) => new.map(|m| (m, now)),
+            };
         } else if s.airborne && s.landing.is_some() {
             self.shown = None;
         }
@@ -360,7 +455,7 @@ impl Live {
             self.handle.world_mark(id, pose);
         }
         self.handle.navpoint_at(rd::TAG, s.marks.tag.map(|m| m.at));
-        for (id, m) in rd::TARGETS.iter().zip(s.marks.targets) {
+        for (id, m) in rd::TARGETS.iter().zip(ahead(&s)) {
             self.handle.navpoint_at(id, m.map(|m| m.at));
         }
     }

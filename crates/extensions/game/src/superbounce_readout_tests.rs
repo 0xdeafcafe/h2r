@@ -659,3 +659,107 @@ fn the_charge_segments_are_the_modes_charge() {
     let scanning = State { scan: ScanState::Scanning, ..s };
     assert_eq!(segments(&scanning), None);
 }
+
+fn miss_line(l: &Landing) -> Option<Miss> {
+    match l.result {
+        LandingResult::Bounce => None,
+        LandingResult::TooSlow => Some(Miss::TooSlow {
+            had: l.at[2],
+            need: 16.5,
+        }),
+        _ => Some(Miss::Missed { by: 0.3 }),
+    }
+}
+
+/// A hop at a seam's foot files a landing too; within two seconds of the
+/// real miss it does not replace it, unless it came in faster.
+#[test]
+fn a_new_miss_does_not_replace_a_younger_one_unless_it_came_in_faster() {
+    let slow = |had: f32, tick| landing(LandingResult::TooSlow, tick, [0.0, 0.0, had]);
+    let too_slow = |had| Some(Miss::TooSlow { had, need: 16.5 });
+    let mut s = on();
+    let mut info = Info::default();
+    s.last_landing = Some(slow(0.0, 1));
+    assert_eq!(info.step(&s, 1, miss_line), None, "the first state");
+    // The real landing, then a hop at 6.3 m/s a second later.
+    s.last_landing = Some(slow(12.0, 100));
+    assert_eq!(info.step(&s, 10, miss_line), too_slow(12.0));
+    s.last_landing = Some(slow(6.3, 130));
+    assert_eq!(info.step(&s, 40, miss_line), too_slow(12.0));
+    // The hop did not restart the clock: the real line still goes four
+    // seconds after it came up.
+    assert_eq!(info.step(&s, 10 + INFO_TICKS, miss_line), None);
+    // A faster one replaces it.
+    s.last_landing = Some(slow(14.0, 200));
+    assert_eq!(info.step(&s, 200, miss_line), too_slow(14.0));
+    s.last_landing = Some(slow(15.0, 210));
+    assert_eq!(info.step(&s, 210, miss_line), too_slow(15.0));
+    // A miss with no speed in is not higher than one with.
+    s.last_landing = Some(landing(LandingResult::Missed, 220, [0.0; 3]));
+    assert_eq!(info.step(&s, 220, miss_line), too_slow(15.0));
+    // After MISS_KEEP_TICKS any miss replaces it.
+    s.last_landing = Some(slow(3.0, 300));
+    assert_eq!(
+        info.step(&s, 210 + MISS_KEEP_TICKS, miss_line),
+        too_slow(3.0)
+    );
+}
+
+/// Only the targets within 40 degrees of the aim keep their navpoint; the
+/// game would clamp the others onto the tracker and the readout.
+#[test]
+fn the_targets_outside_the_aim_cone_are_cleared() {
+    let mark = |at: Vec3| Some(Mark { at, distance: 10.0 });
+    let polar = |deg: f32| {
+        let a = deg.to_radians();
+        mark([10.0 * a.cos(), 10.0 * a.sin(), 0.0])
+    };
+    let mut s = on();
+    s.position = Some([0.0; 3]);
+    // Straight ahead (+X) and 39 degrees to the left.
+    s.marks.targets = [polar(0.0), polar(39.0)];
+    assert_eq!(ahead(&s), s.marks.targets);
+    // 41 degrees to the right, and behind.
+    s.marks.targets = [polar(-41.0), polar(180.0)];
+    assert_eq!(ahead(&s), [None, None]);
+    // The aim turns with the yaw: the one behind is now ahead.
+    s.yaw = Some(PI);
+    assert_eq!(ahead(&s), [None, s.marks.targets[1]]);
+    // The view's numbers follow.
+    let v = view(&s, Options::DEFAULT, None);
+    assert_eq!(v.targets, [None, Some(10.0 * M)]);
+    // With no position known, none is cleared.
+    s.position = None;
+    assert_eq!(ahead(&s), s.marks.targets);
+}
+
+/// The waypoint area's bottom is raised with the mode on and put back
+/// with it off, and never lowered below the map's own.
+#[test]
+fn the_waypoint_bottom_inset_is_raised_while_the_mode_is_on() {
+    use engine::testing::FakeGuest;
+    assert_eq!(waypoint_inset(10.0, false), 10.0);
+    assert_eq!(waypoint_inset(10.0, true), WAYPOINT_BOTTOM_INSET);
+    assert_eq!(waypoint_inset(120.0, true), 120.0);
+    // The offset is the hudg definition's `waypoint_bottom_inset`.
+    let def = tags::defs::Defs::builtin()
+        .group(map::FourCC(*b"hudg"))
+        .unwrap();
+    assert_eq!(
+        def.field("waypoint_bottom_inset").unwrap().offset,
+        HUDG_WAYPOINT_BOTTOM_INSET
+    );
+
+    const HUDG: u32 = 0x7e00_0000;
+    let pointer = engine::points::HUD_GLOBALS_TAG.base;
+    let at = HUDG + HUDG_WAYPOINT_BOTTOM_INSET;
+    let mut g = FakeGuest::new();
+    g.map(HUDG, 0x1000).map(pointer, 4);
+    g.put_u32(pointer, HUDG).put_f32(at, 4.0);
+    keep_waypoint_inset(&mut g, true);
+    assert_eq!(g.f32(at), Ok(WAYPOINT_BOTTOM_INSET));
+    keep_waypoint_inset(&mut g, true);
+    assert_eq!(g.f32(at), Ok(WAYPOINT_BOTTOM_INSET));
+    keep_waypoint_inset(&mut g, false);
+    assert_eq!(g.f32(at), Ok(4.0), "the map's own is put back");
+}

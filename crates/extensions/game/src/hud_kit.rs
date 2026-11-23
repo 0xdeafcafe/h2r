@@ -1404,6 +1404,9 @@ fn tick(mem: &mut dyn GuestMemory, points_region: (u32, u32)) -> Result<(), MemF
         *lock(&TRAINING_TEXT) = t.clone();
     }
     write_training(mem, training.is_some())?;
+    // The superbounce target arrows clear the tracker and the readout.
+    let on = crate::superbounce_mode::hud_state().is_some();
+    crate::superbounce_readout::keep_waypoint_inset(mem, on);
     for (k, at) in navpoints_now().into_iter().enumerate() {
         write_navpoint_n(mem, points_region, 0, k as u32, at)?;
     }

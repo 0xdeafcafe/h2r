@@ -997,8 +997,8 @@ side for each of the recipe's steps and wipe back as the charge runs
 out ("The charge segments" in hud-kit.md); Assault's red arming bar
 over the readout's rows, filled by the recipe's steps, with a short
 ending when primed
-("The arming bar" in hud-kit.md); "Charging..." and "Primed!" in the
-notification list, as Assault's "Bomb is arming..." and "Bomb armed!";
+("The arming bar" in hud-kit.md); "Primed!" in the
+notification list, as Assault's "Bomb armed!";
 the step's verb on the game's prompt line ("Hold (crouch) and walk under", "Let go
 of (crouch)", "Walk out to stand up"); and the game's navpoint over a
 crouch spot while not primed, with the distance in metres, and over the
