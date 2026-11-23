@@ -2887,6 +2887,7 @@ dependencies = [
  "settings",
  "sha2 0.10.9",
  "shaders",
+ "stage-kit",
  "studio-proto",
  "superbounce",
  "tags",
@@ -6959,6 +6960,27 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "stage-kit"
+version = "0.1.0"
+dependencies = [
+ "collision-build",
+ "content",
+ "h1-assets",
+ "h1convert",
+ "h1map",
+ "map",
+ "pogo-kit",
+ "scenario-edit",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tags",
+ "thiserror 2.0.21",
+ "toml",
+ "xiso",
+]
 
 [[package]]
 name = "static_assertions"
