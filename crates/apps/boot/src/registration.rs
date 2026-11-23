@@ -170,6 +170,8 @@ pub(crate) fn register_core_film(
             if let Err(error) = result {
                 eprintln!("actor-net: sending host tick {tick}: {error}");
             }
+            // actors.net's view of each peer's budget.
+            crate::actor_net::report::publish_host(tick, link.peers());
         },
         move || reset.reset(),
     )

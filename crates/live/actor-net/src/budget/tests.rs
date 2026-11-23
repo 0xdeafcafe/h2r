@@ -356,3 +356,36 @@ fn promised_lines_and_due_key_both_fit_after_skipping_ticks() {
     assert_eq!(third.records, first.records);
     assert!(encode(&second).unwrap().len() + encode(&third).unwrap().len() <= BYTES_PER_SECOND);
 }
+
+#[test]
+fn stats_count_what_was_sent_and_dropped() {
+    let mut budget = Budget::default();
+    let mut offers = vec![key()];
+    offers.extend(vec![Record::State(vec![1; MAX_STATE_BYTES]); 15]);
+    let sent = budget.schedule(0, &offers).unwrap().unwrap();
+    let bytes = sent.encoded_len().unwrap();
+    assert!(sent.records.len() < offers.len(), "the window drops some");
+    let stats = budget.stats();
+    assert_eq!(stats.packets, 1);
+    assert_eq!(stats.bytes, bytes as u64);
+    assert_eq!(stats.keys, 1);
+    assert_eq!(stats.digests, 0);
+    assert_eq!(stats.records, sent.records.len() as u64);
+    assert_eq!(stats.dropped, (offers.len() - sent.records.len()) as u64);
+    assert_eq!(budget.window_bytes(), bytes);
+
+    // A quiet tick sends nothing and counts nothing.
+    assert!(budget.schedule(1, &[]).unwrap().is_none());
+    assert_eq!(budget.stats(), stats);
+
+    // Once the window has passed, only the new packet is charged.
+    let digest = Record::Digest {
+        log_head: [0; 32],
+        state_hash: 1,
+        actor_count: 0,
+    };
+    let sent = budget.schedule(30, &[digest]).unwrap().unwrap();
+    let stats = budget.stats();
+    assert_eq!((stats.packets, stats.digests), (2, 1));
+    assert_eq!(budget.window_bytes(), sent.encoded_len().unwrap());
+}

@@ -134,6 +134,33 @@ impl Client {
         }
     }
 
+    /// The client's side of `actors.net` (`agent::actors::Client`).
+    pub fn report(&self) -> agent::actors::Client {
+        let actors = self.replica.set().actors().len();
+        let puppets: Vec<_> = self
+            .puppets()
+            .map(|p| agent::actors::Puppet {
+                entity: p.actor.entity,
+                character: p.actor.character,
+                squad: p.actor.squad,
+                team: p.actor.team,
+                posture: p.actor.posture,
+                unit: p.unit.raw(),
+            })
+            .collect();
+        agent::actors::Client {
+            actors,
+            waiting: actors - puppets.len(),
+            puppets,
+            lines_waiting: self.pending_lines.len(),
+            mode_state_bytes: self.mode_state().len(),
+            digest_misses: self.digest.misses(),
+            key_requested: self.wants_key,
+            diverged: self.diverged,
+            host_log_head: self.host_log_head.as_ref().map(agent::actors::hex),
+        }
+    }
+
     /// Close the channel for this match: forget the puppets, the mode
     /// state and anything waiting. Retail replication still carries the
     /// bodies.
@@ -366,9 +393,11 @@ pub fn install(
                     let Some(tick) = tick else {
                         *current = Client::default();
                         crate::firefight::hud::received().set(None);
+                        super::report::clear(agent::actors::Role::Client);
                         return Ok(Flow::Continue);
                     };
                     receive(&mut current, tick);
+                    super::report::publish_client(tick, &current);
                     // The HUD reads the mode state from here, not from the
                     // client, which is taken out of its lock while its
                     // presentation runs.

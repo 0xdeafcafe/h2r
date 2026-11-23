@@ -4,6 +4,7 @@ pub mod client;
 pub mod creature;
 mod dialogue;
 pub mod host;
+pub mod report;
 pub mod squads;
 
 use std::sync::{Arc, Mutex};
@@ -124,6 +125,7 @@ impl Feature for Capture {
             let mut state = ticks.lock().unwrap();
             let Some(tick) = host_tick(&*memory) else {
                 if state.last_tick.is_some() {
+                    report::clear(agent::actors::Role::Host);
                     *state = State::default();
                     in_flight.clear();
                     clear_show_cues();

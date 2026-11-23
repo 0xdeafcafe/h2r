@@ -610,3 +610,41 @@ fn a_new_match_reopens_a_closed_channel() {
     assert!(!client.status().diverged);
     assert_eq!(client.status().digest_misses, 0);
 }
+
+#[test]
+fn the_report_lists_bound_puppets_and_what_waits_for_a_body() {
+    let (mut g, pool) = guest();
+    let mut client = Client::default();
+    let (a, b) = (actor(ENTITY, 0x86), actor(OTHER_ENTITY, 0x86));
+    let unit = bind(&mut g, &pool, ENTITY, BODY);
+    assert!(client.receive(
+        &packet(
+            30,
+            vec![
+                key(vec![a, b]),
+                Record::State(vec![1, 2, 3]),
+                digest_of(&[a, b], &[1, 2, 3]),
+            ]
+        ),
+        10
+    ));
+    let (client, _) = tick(client, g, 10);
+    let report = client.report();
+    assert_eq!(report.actors, 2);
+    assert_eq!(
+        report.puppets,
+        [agent::actors::Puppet {
+            entity: ENTITY,
+            character: 5,
+            squad: 7,
+            team: 9,
+            posture: 0x86,
+            unit: unit.raw(),
+        }]
+    );
+    assert_eq!(report.waiting, 1, "the second body has not arrived");
+    assert_eq!(report.mode_state_bytes, 3);
+    assert_eq!(report.digest_misses, 0);
+    assert!(!report.diverged);
+    assert_eq!(report.host_log_head, Some("03".repeat(32)));
+}

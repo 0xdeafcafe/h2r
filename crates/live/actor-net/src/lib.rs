@@ -7,7 +7,7 @@ pub mod digest;
 pub mod set;
 pub mod wire;
 
-pub use budget::{Budget, BudgetError};
+pub use budget::{Budget, BudgetError, Stats};
 pub use digest::{Check, Verdict};
 pub use set::{ActorSet, Replica, SetError};
 pub use wire::{Actor, ActorChange, Control, Packet, Record, WireError, decode, encode};
