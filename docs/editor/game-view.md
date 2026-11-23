@@ -1,7 +1,7 @@
 # The game view: the game's picture inside Studio
 
 Status: Partly built. The frame feed (`render.picture`, GV1) is built; the panel, editor mode, input and cameras are not, so Studio starts and pairs a separate game ([editor.md](editor.md#play-and-pair)) and shows none of its pixels.
-Code: `crates/extensions/agent/src/render/picture.rs` and `crates/extensions/agent-proto/src/picture.rs` (the frame feed), `crates/apps/studio/src/play/{launch.rs, picture.rs, input.rs}` and `crates/apps/studio/src/ui/game_view.rs` (the panel), `crates/apps/cli/src/play_cmd.rs` (editor mode). Tests: `agent::render::picture::tests`, `play::picture::tests`, `play::input::tests`, `headless::tests`.
+Code: built in `crates/extensions/agent/src/render/picture.rs` and `crates/extensions/agent-proto/src/picture.rs` (the frame feed, `render.picture`); planned in Studio's `play` and `ui` modules (the panel, launch and input, slices GV2 to GV5) and `crates/apps/cli/src/play_cmd.rs` (editor mode). Tests: `agent::render::picture::tests`.
 Switch: none.
 
 Studio has a **Game** panel that shows a running game's own frames, live.
