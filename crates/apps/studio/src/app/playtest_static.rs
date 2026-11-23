@@ -798,7 +798,7 @@ mod tests {
         vec![[a, b, c], [a, c, d]]
     }
 
-    fn layout(nav: &BotNav, starts: Vec<Placed>, flags: &[(u16, u16)]) -> Layout<'_> {
+    fn layout<'a>(nav: &'a BotNav, starts: Vec<Placed>, flags: &'a [(u16, u16)]) -> Layout<'a> {
         Layout {
             census: census(flags, &starts),
             starts,

@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
-use super::meter::{self, Levels, SILENCE_DB};
+use super::meter::{self, Levels};
+use audio::meter::SILENCE_DB;
 use crate::api::{Api, Reply};
 use crate::app::tag_tests;
 

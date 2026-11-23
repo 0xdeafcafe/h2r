@@ -4,7 +4,7 @@
 //! the reference spread and the verdict, which only `sound.measure` and
 //! `check.run` use.
 
-pub use audio::meter::{Levels, SILENCE_DB, measure, round1};
+pub use audio::meter::{Levels, measure, round1};
 
 /// A set of values' spread: nearest-rank percentiles.
 #[derive(Clone, Copy, Debug, PartialEq)]
