@@ -639,8 +639,8 @@ impl Line {
             map: v["map"].as_str().unwrap_or_default().to_owned(),
             permutation: v["permutation"].as_u64().unwrap_or(0) as usize,
             class: v["class"].as_u64().unwrap_or(0) as u8,
-            lufs: v["lufs"].as_f64().unwrap_or(meter::SILENCE_DB),
-            peak_dbfs: v["peak_dbfs"].as_f64().unwrap_or(meter::SILENCE_DB),
+            lufs: v["lufs"].as_f64().unwrap_or(::audio::meter::SILENCE_DB),
+            peak_dbfs: v["peak_dbfs"].as_f64().unwrap_or(::audio::meter::SILENCE_DB),
             low_share: v["low_share"].as_f64().unwrap_or(0.0),
             high_share: v["high_share"].as_f64().unwrap_or(0.0),
         })
