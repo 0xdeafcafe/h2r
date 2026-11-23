@@ -66,3 +66,25 @@ base map. Nothing glows on its own: the plasma, the light core and the
 seams are painted bright in the atlas.
 
 The PNGs are stored in Git LFS (`.gitattributes`).
+
+## Sounds
+
+`compress.wav`, `spring.wav` and `settle.wav`: the piston going in on a
+touchdown, springing out on a bounce, and easing out after a landing with
+no bounce (docs/game/pogo-stick.md, "Sounds"). Each is 44.1 kHz mono 16-bit
+PCM, synthesised by `scripts/pogo-sounds.py` from sine partials and
+filtered noise: no recording or sample goes in.
+
+```sh
+python3 -I scripts/pogo-sounds.py
+```
+
+`--check` exits 1 when a WAV differs from what the script writes. The WAVs
+are stored in Git LFS (`.gitattributes`).
+
+## Poses
+
+`poses.yaml` holds the rider's poses: the bone names by role with their
+aliases, the mounted pose's numbers and each trick's
+(docs/game/pogo-stick.md, "The pose"). They are hand-keyed and have not
+been seen in a game; its header documents every field.

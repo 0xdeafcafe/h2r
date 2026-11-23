@@ -1072,6 +1072,7 @@ fn reset() {
     crate::superbounce_assist::set_marked(None);
     crate::superbounce_view::reset();
     crate::pogo_ride::reset();
+    crate::pogo_sound::reset();
     crate::superbounce_ghost::reset();
     crate::superbounce_targets::reset();
     crate::superbounce_options::set(crate::superbounce_options::Options::DEFAULT);
@@ -1361,7 +1362,9 @@ fn on_tick(o: &hooks::Obs) {
         crate::rules::feature::bounces(m, &awards);
         // The Pogo Stick's riders, on the chain's verdicts
         // (docs/game/pogo-stick.md, "Phases and tricks").
-        crate::pogo_ride::on_tick(m, map.as_deref(), &players, &awards);
+        // The local players' pistons are heard (pogo_sound.rs).
+        let cues = crate::pogo_ride::on_tick(m, map.as_deref(), &players, &awards);
+        crate::pogo_sound::play(&cues);
     }
     // The film and Live get each bounce and Bounced, as the kills.
     if !awards.is_empty()

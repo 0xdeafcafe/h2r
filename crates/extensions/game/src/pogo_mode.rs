@@ -13,7 +13,8 @@
 //! **What the player sees** is a second feature, [`PogoView`]
 //! (`pogo-view`), a presentation one: the chase camera while the stick
 //! is held ([`crate::pogo_camera`]), the riding pose and the tricks
-//! ([`crate::pogo_pose_glue`]). With `pogo` off no stick is ever
+//! ([`crate::pogo_pose_glue`]) and the piston's sounds
+//! ([`crate::pogo_sound`]). With `pogo` off no stick is ever
 //! held, so it does nothing; `H2_FEATURES=-pogo-view` alone leaves the
 //! stick in the game, carried and seen in first person. The riders
 //! themselves ([`crate::pogo_ride`]) are stepped by the superbounce mode.
@@ -64,6 +65,8 @@ impl hooks::Feature for PogoView {
         crate::pogo_camera::install_hooks(b)?;
         // The riders' rows posed for the draw and put back after it.
         crate::pogo_pose_glue::install_hooks(b)?;
+        // The local players' pistons are heard (pogo_sound.rs).
+        crate::pogo_sound::enable();
         Ok(())
     }
 }

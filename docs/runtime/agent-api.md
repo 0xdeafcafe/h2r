@@ -54,6 +54,8 @@ connection to hold `session.claim`.
 | `superbounce.view_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.ghosts` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.ghost_show` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `pogo.state` | read | [`pogo`](#pogo-superbounces-pogo-stick) |
+| `pogo.test` | act | [`pogo`](#pogo-superbounces-pogo-stick) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -1101,6 +1103,36 @@ h2 agent superbounce.reload
 h2 agent superbounce.reload '{"map":"zanzibar"}'
 h2 agent superbounce.tune '{"bounce_speed":5.0,"catch":0.15}'
 h2 agent superbounce.tune '{"bounce_speed":null,"catch":null,"launch_gain":null}'
+```
+
+## `pogo`: Superbounce's Pogo Stick
+
+`pogo.state` (access: read; no parameters) says what the Pogo Stick is
+doing ([pogo-stick.md](../game/pogo-stick.md);
+`crates/extensions/game/src/pogo_agent.rs`; wire types in
+`crates/extensions/agent-proto/src/pogo.rs`), as of the last tick:
+
+| Field | Meaning |
+|---|---|
+| `active` | the superbounce mode is on; `riders` is empty while off |
+| `option`, `style` | the script's `pogo` and `pogo_style` options as the variant set them: whether a spawn is given a stick, and which look (`unsc`, `covenant`, `forerunner`) |
+| `map` | the loaded map's name; absent without one |
+| `weapons` | the three sticks' weapon tags in the loaded map, in the order `unsc`, `covenant`, `forerunner`; empty when the map does not carry the kit (the `pogo` feature off, or the map refused), and then no stick is given |
+| `riders` | every player holding a stick, the local players first: `player` (the slot), `local`, `unit` and `weapon` (object handles for `world.object`), `style`, `phase` (`carried`, `mount`, `ride`, `compress`, `spring`, `dismount`), `mounted` (0 in the hands to 1 on the stick), `compress` (0 the piston out to 1 in), `flare` (1 on a bounce's tick, fading), `tuck`, `trick` (absent without one: `id`, `name`, `progress` 0 to 1, half at the apex) and `posed` (the riding pose is drawn over the game's own) |
+| `camera` | the chase camera: `on` (a local player holds a stick), `drawn` (the last frame was drawn from it; false headless, in split screen and under Forge's or Theater's camera), `room` (the share of the boom the level leaves room for) and `share` (the boom's share now, eased) |
+| `tricks` | the ids `pogo.test` takes |
+
+`pogo.test {"trick": "<id>"}` (access: act) shows a trick from its start
+on the first local player's stick, whatever that player is doing: on the
+ground the player is shown on the stick for the trick's length. It is
+presentation only: no bounce is filed, and nothing is sent or recorded.
+The answer is `{player, trick, name}`. Refused while the superbounce mode
+is off, for an id that is no trick, and when no local player holds a
+stick.
+
+```sh
+h2 agent pogo.state
+h2 agent pogo.test '{"trick":"backflip"}'
 ```
 
 ## `profile`: where a frame goes
