@@ -21,6 +21,10 @@
 //! marker records (the group scan `1d8f00` and the transform fill
 //! `1d8f50` of `b8d30`); the adapter is `engine::sim_anim::markers`.
 //!
+//! [`build_palette`] fills a first-person seat's bone palette (the
+//! identity fill and model-node overlay of `16760c`); the adapter is
+//! `engine::sim_anim::palette`.
+//!
 //! The bar is bit-exact with retail. A call the kernel cannot reproduce
 //! exactly (an operand off the fast path, an unknown codec, the broken
 //! evaluator pair) returns [`Unsupported`] and the guest runs it.
@@ -30,6 +34,7 @@ pub mod clip;
 pub mod codec;
 pub mod kernel;
 pub mod markers;
+pub mod palette;
 pub mod skeleton;
 pub mod store;
 
@@ -39,6 +44,7 @@ pub use kernel::{Effects, Mode, Ops, Record, Request, Secondary, Unsupported, sa
 pub use markers::{
     Constants as MarkerConstants, Marker, Selection, basis, find_group, model_markers, select,
 };
+pub use palette::{Overlay, Palette, build as build_palette};
 pub use skeleton::{Constants, Walk, build_matrices};
 pub use store::ClipStore;
 
@@ -46,5 +52,7 @@ pub use store::ClipStore;
 mod tests;
 #[cfg(test)]
 mod markers_tests;
+#[cfg(test)]
+mod palette_tests;
 #[cfg(test)]
 mod skeleton_tests;

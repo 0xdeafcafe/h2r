@@ -4,8 +4,10 @@ Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
 with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
 only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. Phase 1c's
 marker lookup — `b8d30` with the scan `1d8f00` and the fill `1d8f50` —
-is built, with tests only ([markers.md](markers.md)); the unit pose, aim
-and first-person parts of 1c are not. The plan replaces the verdict in
+is built, with tests only ([markers.md](markers.md)), and so is 1c's
+first-person palette — `16760c`'s identity fill and model-node overlay
+([palette.md](palette.md)); the unit pose, aim and filter parts of 1c
+are not. The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
@@ -611,9 +613,12 @@ call `1d8f50` it calls `sim_anim::model_markers` through
 `engine::sim_anim::markers` — the scan `1d8f00` and the transform fill
 `1d8f50` as one gather, kernel call and scatter, and the basis leaf
 `141e10` beside the pose and composition leaves
-([markers.md](markers.md)). The unit pose `112070`, the aim update
-`111650` and the first-person pair `16760c`/`166d75` are 1c's remaining
-parts. 1d's step 0 is the write set of `1c66a0`, `1c6560` and
+([markers.md](markers.md)). The first-person palette follows it in the same shape: the
+first-person pose port (`sim_physics::first_person`, `16760c`) runs its
+palette step through `engine::sim_anim::palette` and
+`sim_anim::palette` ([palette.md](palette.md)). The unit pose `112070`,
+the aim update `111650` and the first-person filters `166d75` are 1c's
+remaining parts. 1d's step 0 is the write set of `1c66a0`, `1c6560` and
 `1cd590` (channel state in object data) and the readers of the graph
 resolve results.
 
