@@ -228,6 +228,8 @@ pub mod method {
     pub const SCRIPT_USES: &str = "script.uses";
     pub const SCRIPT_BUILTINS: &str = "script.builtins";
     pub const SCRIPT_DOC: &str = "script.doc";
+    pub const SCRIPT_EXTERNAL: &str = "script.external";
+    pub const SCRIPT_WORKING: &str = "script.working";
 
     // The game type script editor (docs/editor/editor-guide.md, "Game
     // type scripts").
@@ -237,6 +239,8 @@ pub mod method {
     pub const RULES_SAVE: &str = "rules.save";
     pub const RULES_FORMAT: &str = "rules.format";
     pub const RULES_RELOAD: &str = "rules.reload";
+    pub const RULES_EXTERNAL: &str = "rules.external";
+    pub const RULES_RUN: &str = "rules.run";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

@@ -2867,6 +2867,7 @@ dependencies = [
 name = "h2-tools"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "anyhow",
  "cli-common",
  "content",
@@ -2884,6 +2885,7 @@ dependencies = [
  "settings",
  "sha2 0.10.9",
  "shaders",
+ "studio-proto",
  "superbounce",
  "tags",
  "ureq",
@@ -3123,6 +3125,8 @@ version = "0.1.0"
 dependencies = [
  "iced-x86",
  "map",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "xbe",
  "xiso",

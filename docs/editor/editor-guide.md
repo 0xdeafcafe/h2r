@@ -961,19 +961,23 @@ type script** window is a tab beside the variant's settings
   The hover wraps at about 60 characters, with code in a monospace
   font. Inside a call, the line under the text shows the call's
   parameters.
-- **Open in editor** saves the script and opens its file in another
-  editor. A script with no file goes to `scripts/<name>.rules` under
-  the data root, named after the script (`slayer.rules`; `slayer-2.rules`
-  when that name is in use). Studio tries, in order: VS Code (`code`)
-  or Zed (`zed`) when it has the rules extension, then `$VISUAL`,
-  `$EDITOR` (skipping a terminal editor such as `vim`, which has no
-  terminal to run in), VS Code, Zed, and on macOS `open -t`
-  (`editor_launches`, `extension_installed`). A command that fails
-  within three seconds hands over to the next. Studio then checks the
-  file once a second. Each save there comes into Studio's text, and into
-  the paired game while **Reload on save** is ticked; the status line
-  shows how the reload went. If Studio's text has unsaved changes too, a
-  row under the title asks: **Keep mine** or **Take the file's**
+- **Open in VS Code** and **Open in Zed** save the script and open its
+  file in that editor at the cursor's line; **Open in editor** opens it
+  in the first editor Studio finds. A script with no file goes to
+  `scripts/<name>.rules` under the data root, named after the script
+  (`slayer.rules`; `slayer-2.rules` when that name is in use). For
+  **Open in editor** Studio tries, in order: VS Code (`code`) or Zed
+  (`zed`) when it has the rules extension, then `$VISUAL`, `$EDITOR`
+  (skipping a terminal editor such as `vim`, which has no terminal to
+  run in), VS Code, Zed, and on macOS `open -t` (`editor_launches_at`,
+  `extension_installed`). A command that fails within three seconds
+  hands over to the next. Studio then checks the file once a second.
+  Each save there comes into Studio's text, and into the paired game
+  while **Reload on save** is ticked; the status line shows how the
+  reload went. Studio's own edits go to the file
+  ([Scripts in VS Code and Zed](#scripts-in-vs-code-and-zed)). If
+  Studio's text has unsaved changes too, a row under the title asks:
+  **Keep mine** or **Take the file's**
   (`crates/apps/studio/src/app/rules_edit.rs`, `prepare_external` and
   `poll_disk`).
 - **VS Code and Zed** edit scripts as well as this window does:
@@ -1027,6 +1031,88 @@ result shows at the bottom of the window and in the Game panel. The
 game refuses a reload in a Theater film, in a matchmade Live game, on a
 guest's machine, and outside a multiplayer game; a Live custom game
 reloads in place only.
+
+### Scripts in VS Code and Zed
+
+Both kinds of script Studio edits open in VS Code or Zed and stay in
+step with Studio while they are open. Studio checks their files once a
+frame, and between API calls when it runs without a window
+(`App::poll_external` in `crates/apps/studio/src/app/external.rs`).
+`h2 rules editors install` puts the extension, with both language
+servers, in VS Code and prints the steps for Zed
+([rules-editors.md](rules-editors.md)).
+
+Studio opens VS Code with `code -g <file>:<line>:<column>` and Zed with
+`zed <file>:<line>:<column>`. It finds each command on `PATH`, in
+Homebrew's `bin`, or inside the app in `/Applications` or
+`~/Applications` (`editor_launches_at`, `bundled_programs` in
+`crates/apps/studio/src/app/rules_edit.rs`).
+
+**Game type scripts** (the Game type script window):
+
+- **Open in VS Code** or **Open in Zed** opens the script's file at the
+  cursor's line. Each save there comes back into Studio, and into the
+  paired game while **Reload on save** is ticked.
+- Edits made in Studio go to the file once typing has paused for a
+  second, while **Write edits to the file** is ticked, as it is by
+  default (`RulesEditor::sync_out`). They are not reloaded into the game
+  until you save or press **Reload**. Nothing is written while the file
+  and Studio's text disagree; the **Keep mine** / **Take the file's** row
+  settles that first.
+- In VS Code, **H2: Reload Script in Game** (in the editor's right-click
+  menu and the command palette) saves the file and has Studio reload it
+  into the paired game, then shows how it went in.
+  **H2: Run Scenario Test...** runs the script over a scenario file on
+  the fake game, as `h2 rules run` does, and shows the printout. In Zed
+  both are code actions (**Cmd+.**). Both need Studio running
+  ([rules-editors.md, "Commands that talk to Studio"](rules-editors.md#commands-that-talk-to-studio)).
+
+**Scenario scripts** (the Scripts tab, see
+[rich-editors.md, "Scripts"](rich-editors.md#scripts)):
+
+- **Open in VS Code** or **Open in Zed** writes a working copy and opens
+  it at the definition shown. The working copy holds every global and
+  script of the open map, as the Scripts tab decompiles them, in
+  `scripts/<map>/<map>.hsc` under the data root.
+- Beside it, `h2hs.json` holds what `h2 hs lsp` checks the file against:
+  - the executable's types, script kinds and builtins, named as the
+    Scripts tab names them, with the documentation listing's text when
+    one is loaded;
+  - the game globals the scripts name;
+  - the scenario's object names, trigger volumes and the other names the
+    scripts spell.
+
+  Both files are made from your own map and executable and stay in the
+  data root.
+- With the extension, the file has problems as you type, such as:
+  - an unknown builtin, type or script kind;
+  - the wrong number of arguments;
+  - an object name or trigger volume the scenario does not have.
+
+  It also has completion of builtins and the scenario's names, hover
+  with each builtin's parameters and documentation, signature help, go
+  to definition and references, rename, the outline, folding and
+  formatting.
+- Each save comes back to the Scripts tab, which shows which definitions
+  differ from the map's (edited, added, removed) and how many errors the
+  file has.
+- The map itself is not changed: writing scripts into a map needs the
+  script compiler, which is not built yet
+  ([rich-editors.md, "Scripts"](rich-editors.md#scripts), slices H2 and
+  H3).
+- When the map's scripts or names change in Studio, the context is
+  written again, and so is the working copy while it holds no edits. A
+  working copy with edits is left as it is, and the Scripts tab says it
+  was made from an older map. Opening it again keeps your edits:
+  `.h2hs-base.hsc` beside it records what Studio last wrote.
+- In VS Code, **H2: Show Uses in Map** lists the definitions that use
+  the name under the cursor, each a link to its place in the file, and
+  **H2: Show in Studio** shows the definition in the Scripts tab. In Zed
+  both are code actions.
+
+Agents do the same through `rules.external`, `rules.run`,
+`rules.reload` with a `path`, `script.external` and `script.working`
+([agent-api.md](agent-api.md)).
 
 ## 6. Playlists (hoppers)
 
@@ -1495,6 +1581,7 @@ uses, `~/Library/Application Support/h2recomp/data`.
 | The Map Pack (read only) | `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` | Installed by `h2 play` or `h2 import-mappack`. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
+| Scripts opened in VS Code or Zed | `<data>/scripts/<name>.rules` (a game type script with no file of its own); `<data>/scripts/<map>/<map>.hsc` and `h2hs.json` (a map's scripts) | Not directly: a game type script reloads into the paired game; a map's scripts are read back into the Scripts tab only. [Scripts in VS Code and Zed](#scripts-in-vs-code-and-zed) |
 | Exported tags (tag bundles) | Wherever you save the `.h2tag` (never inside a Git checkout); `<data>/tag-bundles/` when an agent gives no path | Not directly: import it in the Tags tool and save the map. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
 | The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |

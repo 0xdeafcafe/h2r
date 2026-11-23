@@ -408,6 +408,58 @@ impl RunResult {
     pub fn total_calls(&self) -> usize {
         self.ticks.iter().map(|t| t.calls.len()).sum()
     }
+
+    /// How the run ended, in a sentence: a script error, the round ended
+    /// by the script, or still running.
+    pub fn outcome(&self) -> String {
+        match (self.script_error, self.ended_at) {
+            (Some(e), _) => format!(
+                "script error {:?} at tick {}, handler {}, op {}",
+                e.kind, e.tick, e.handler, e.pc
+            ),
+            (None, Some(t)) => format!("the script ended the round at tick {t}"),
+            (None, None) => "the round was still running".to_owned(),
+        }
+    }
+
+    /// The run as `h2 rules run` prints it, and Studio's `rules.run`
+    /// answers: each tick's calls (with `trace`, each event and call), the
+    /// totals, every player and team, and the outcome.
+    pub fn printout(&self, trace: bool) -> String {
+        use std::fmt::Write;
+        let mut s = String::new();
+        for t in &self.ticks {
+            let _ = writeln!(s, "tick {}: {} calls", t.tick, t.calls.len());
+            if trace {
+                for (event, fired) in &t.fired {
+                    let _ = writeln!(s, "  on {event}: {fired:?}");
+                }
+                for c in &t.calls {
+                    let args: Vec<String> = c.args.iter().map(|a| format!("{a:?}")).collect();
+                    let _ = writeln!(s, "  {}({})", c.entry, args.join(", "));
+                }
+            }
+        }
+        let _ = writeln!(s, "total: {} calls over {} ticks", self.total_calls(), self.ticks.len());
+        for (slot, p) in &self.game.players {
+            let _ = writeln!(
+                s,
+                "player {slot}: team {}, score {}, lives {}, {}",
+                p.team,
+                p.score,
+                p.lives,
+                if p.alive { "alive" } else { "dead" }
+            );
+        }
+        let mut teams = self.game.teams.clone();
+        teams.sort_unstable();
+        for t in teams {
+            let total: i32 = self.game.players.values().filter(|p| p.team == t).map(|p| p.score).sum();
+            let _ = writeln!(s, "team {t}: score {total}");
+        }
+        let _ = writeln!(s, "result: {}", self.outcome());
+        s
+    }
 }
 
 /// Why a scenario did not run.

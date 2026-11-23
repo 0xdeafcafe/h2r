@@ -20,6 +20,7 @@ mod expression;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod h1_conversation;
+pub mod ide;
 mod scenario;
 mod script_doc;
 mod source;

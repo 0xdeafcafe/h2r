@@ -1,6 +1,8 @@
-//! Zed extension for h2recomp's rules language: starts `h2 rules lsp`.
+//! Zed extension for h2recomp's scripts: starts `h2 rules lsp` for the
+//! rules language and `h2 hs lsp` for HaloScript.
 //!
-//! The binary is, in order: the `lsp.h2-rules-lsp.binary.path` setting,
+//! The binary is, in order: the `lsp.<server>.binary.path` setting
+//! (`h2-rules-lsp` or `h2-hs-lsp`),
 //! `h2` on the worktree's `PATH`, then `$HOME/.cargo/bin/h2` (where
 //! `cargo install --locked --path crates/apps/cli` puts it; `h2` runs the
 //! server from the `h2-tools` installed beside it). The extension
@@ -10,8 +12,10 @@
 
 use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
 
-/// The server's id in extension.toml and in the `lsp` settings.
-const SERVER: &str = "h2-rules-lsp";
+/// The rules server's id in extension.toml and in the `lsp` settings.
+const RULES_SERVER: &str = "h2-rules-lsp";
+/// The HaloScript server's id.
+const HS_SERVER: &str = "h2-hs-lsp";
 
 struct H2Rules;
 
@@ -22,16 +26,21 @@ impl zed::Extension for H2Rules {
 
     fn language_server_command(
         &mut self,
-        _id: &LanguageServerId,
+        id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let binary = LspSettings::for_worktree(SERVER, worktree)
+        let name: &str = id.as_ref();
+        let (server, default_args) = match name {
+            HS_SERVER => (HS_SERVER, ["hs", "lsp"]),
+            _ => (RULES_SERVER, ["rules", "lsp"]),
+        };
+        let binary = LspSettings::for_worktree(server, worktree)
             .ok()
             .and_then(|s| s.binary);
         let args = binary
             .as_ref()
             .and_then(|b| b.arguments.clone())
-            .unwrap_or_else(|| vec!["rules".to_string(), "lsp".to_string()]);
+            .unwrap_or_else(|| default_args.iter().map(|a| a.to_string()).collect());
         let env: Vec<(String, String)> = binary
             .as_ref()
             .and_then(|b| b.env.clone())
@@ -50,12 +59,13 @@ impl zed::Extension for H2Rules {
                     match home {
                         Some(home) => format!("{home}/.cargo/bin/h2"),
                         None => {
-                            return Err("h2 is not on PATH. Install it and the \
+                            return Err(format!(
+                                "h2 is not on PATH. Install it and the \
                                 h2-tools it runs with `cargo install --locked --path \
                                 crates/apps/cli` and `cargo install --locked --path \
                                 crates/apps/h2-tools` from an h2recomp checkout, or set \
-                                lsp.h2-rules-lsp.binary.path in Zed's settings."
-                                .to_string())
+                                lsp.{server}.binary.path in Zed's settings."
+                            ))
                         }
                     }
                 }

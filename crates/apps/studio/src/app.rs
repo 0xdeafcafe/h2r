@@ -18,6 +18,7 @@ mod navigation;
 pub mod map_cards;
 pub mod map_pack;
 pub mod modeling;
+pub mod external;
 pub mod rules_edit;
 pub mod scripts;
 pub mod shared_refs;

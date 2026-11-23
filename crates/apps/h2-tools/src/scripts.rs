@@ -8,6 +8,7 @@ use std::{
 
 const USAGE: &str = "usage: h2 hs <map-name-or-file> [--script name] [--disc disc.iso] [--builtins]\n\
        h2 hs --all [--disc disc.iso]\n\
+       h2 hs lsp   (the language server for Studio's .hsc working copies)\n\
 --builtins prints reached builtin signatures; --all checks every disc map\n\
 (codec symmetry plus a source node-count check; no source is printed)";
 
@@ -53,6 +54,9 @@ impl Options {
 }
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) == Some("lsp") {
+        return super::hs_lsp::run();
+    }
     let options = Options::parse(args)?;
     finish_output(run_to(options, &mut io::stdout().lock()))
 }

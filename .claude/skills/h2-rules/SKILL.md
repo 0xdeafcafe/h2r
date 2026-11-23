@@ -311,7 +311,11 @@ account publishes at most 200. Full reference:
 
 Studio's **Game type script** window (a tab beside the Variants tool's
 settings) edits one `.rules` file with colouring, problems, completion,
-hover and the check report. **Open in editor** saves it and opens the file
+hover and the check report. **Open in VS Code** and **Open in Zed** save it
+and open the file there at the cursor; Studio's own edits go to the file a
+second after typing stops. The extension's **H2: Reload Script in Game** and
+**H2: Run Scenario Test...** call Studio over its socket (`rules.reload
+{path}`, `rules.run`). **Open in editor** opens the file
 in VS Code or Zed when one has the rules extension (else `$VISUAL`,
 `$EDITOR`, `code`, `zed`, `open -t`); each save there comes back into
 Studio, and into the paired game while Reload on save is ticked. Agents drive the same state over the editor
@@ -323,6 +327,8 @@ h2 studio rules.set '{"source":"..."}'
 h2 studio rules.get                               # problems, check, reload state
 h2 studio rules.save '{"path":"/tmp/mine.rules"}' # reloads too while reload on save is on
 h2 studio rules.reload '{"mode":"auto"}'          # answers {queued}; rules.get's reload has the game's answer
+h2 studio rules.run '{"scenario":"case.json"}'    # the open script over a scenario, as h2 rules run prints it
+h2 studio rules.external '{"editor":"code","launch":false}'  # its file and the command that opens it
 ```
 
 Studio sends the verified blob to the paired game's `rules.reload`. A

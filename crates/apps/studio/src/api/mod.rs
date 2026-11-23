@@ -876,6 +876,8 @@ impl Api {
         }
         play.update(app);
         app.poll_bot_nav();
+        // Outside editors' saves, as the window polls them each frame.
+        app.poll_external(std::time::Instant::now());
         true
     }
 

@@ -292,7 +292,22 @@ Notes on some:
   call form. `script.doc {path}` names builtins from the user's script
   documentation listing, read from that path now and not stored
   (`null` drops it); its `doc` says how many entries read, agreed with
-  the map's names, disagreed and named.
+  the map's names, disagreed and named. `script.external` writes the
+  working copy VS Code and Zed edit (`<data>/scripts/<map>/<map>.hsc`,
+  with `h2hs.json`, the context `h2 hs lsp` reads, beside it; a copy
+  holding edits is kept) and opens it in `editor` (`code`, `zed`, or
+  `auto`, the default) at the definition `name` (default: the one
+  shown). Its answer has the `path`, the `context` file, the 1-based
+  `line`, the `commands` that open it (`{program, args, line}`) and
+  `working`. `launch: false` starts nothing; launching with no such
+  editor is `REFUSED`, and an unknown `name` is `INVALID_PARAMS`.
+  `script.working` reads the copy now and answers which definitions
+  differ from the map's (`changed`, `added`, `removed`), its `problems`
+  against the context (`line`, `col` from 1, `severity`, `message`,
+  `code`), and `stale` when the map's scripts changed while it held
+  edits; `{open: false}` when none is open. It needs no map. Nothing is
+  written into the map ([editor-guide.md, "Scripts in VS Code and
+  Zed"](editor-guide.md#scripts-in-vs-code-and-zed)).
 - **Variants of a script.** `doc.open {variant: {script: <starter>}}` (a
   `rules.get` starter's name, or `open` for the script in the script
   window) opens a new, unsaved variant of it: the record
@@ -326,6 +341,23 @@ Notes on some:
   in_place | restarted, hash, tick, reasons}` or `{state: refused, why}`
   (not paired, a game without `rules.reload`, or the game's refusal;
   [Rules scripts](../runtime/agent-api.md#rules-scripts)).
+  `rules.reload {path}` is an outside editor's save: when `path` is the
+  open script's file it is read first (`UNSAVED` when Studio has other
+  unsaved edits; the window then asks which to keep); another file is
+  opened and watched, `UNSAVED` over unsaved edits without `discard`.
+  `rules.external {editor?, line?, launch?}` saves the script to its
+  file (or a new one under `<data>/scripts/`), watches it both ways and
+  opens it in `editor` (`code`, `zed`, `auto`) at `line` (default: the
+  cursor's); it answers `path`, `line`, `col`, `editor`, `commands` and
+  `launched`, as `script.external` does. `rules.run {scenario, source?,
+  path?, label?, trace?}` runs a script over a
+  [scenario](../game/rules-engine.md#workbench) on the fake game, as `h2
+  rules run` does: `scenario` is a file's path or the scenario object,
+  and the script is `source`, else the file at `path`, else the open
+  one. It answers `ok` (no script error), `result` (how the run ended),
+  `text` (the printout), `ticks`, `calls` and `label`; a script that
+  does not build is `REFUSED`. The VS Code and Zed commands call these
+  ([rules-editors.md, "Commands that talk to Studio"](rules-editors.md#commands-that-talk-to-studio)).
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
   (`"scnr"`, `"matg"`).

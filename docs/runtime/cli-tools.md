@@ -20,8 +20,8 @@ that stays in `h2`.
 builds the process and replaces `h2` with it (`exec` on Unix; on Windows
 it waits and exits with the tool's status), before `h2` does anything
 else. The tool's standard streams, exit status and signals are therefore
-its own, which `h2 rules lsp` needs: the editors start `h2 rules lsp` and
-talk to it over stdio.
+its own, which `h2 rules lsp` and `h2 hs lsp` need: the editors start
+them and talk to them over stdio.
 
 Where `h2-tools` comes from (`tools::command`):
 
@@ -56,6 +56,7 @@ The commands `h2-tools` runs (`tools::TOOLS`):
 | `testmap` | `testmap_cmd.rs` |
 | `collision`, `superbounce scan`, `hud preview\|sheet` | `collision.rs`, `superbounce_cmd.rs`, `hud_cmd.rs` |
 | `object`, `strings`, `effect`, `lights`, `shader`, `hs` | `object.rs`, `strings.rs`, `effects.rs`, `lights.rs`, `shader.rs`, `scripts.rs` |
+| `hs lsp` | `hs_lsp.rs` (over `hs::ide`), `studio_link.rs` (the editor commands' calls to Studio) |
 | `extract-shaders` | `extract_shaders.rs` |
 
 Two subcommands of those stay in `h2` (`tools::forwards`): `h2 maps
@@ -103,7 +104,7 @@ Building and installing:
 
 ## Not verified
 
-- That `exec` keeps `h2 rules lsp` working from VS Code and Zed: the
+- That `exec` keeps `h2 rules lsp` and `h2 hs lsp` working from VS Code and Zed: the
   forwarding test checks the words and exit status with a script, not an
   editor session.
 - The Windows path (wait, then exit with the tool's status) has no test.
@@ -114,4 +115,4 @@ Building and installing:
 - [build-speed.md](../dev/build-speed.md): why the tools are a binary of
   their own.
 - [rules-editors.md](../editor/rules-editors.md): the editors that start
-  `h2 rules lsp`.
+  `h2 rules lsp` and `h2 hs lsp`.

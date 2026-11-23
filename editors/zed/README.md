@@ -1,10 +1,16 @@
-# H2 Rules for Zed
+# H2 Rules and HaloScript for Zed
 
 A Zed extension for h2recomp's game type scripts (`.rules`): highlighting,
 brackets, indents and the outline from the tree-sitter grammar in
 `editors/tree-sitter-rules`, and diagnostics, completion, hover,
 go-to-definition, references, rename, code actions and formatting from
 `h2 rules lsp`.
+
+It also covers HaloScript working copies (`.hsc`) with the language
+`HaloScript` and the server `h2 hs lsp`. There is no tree-sitter grammar
+for HaloScript yet, so Zed gives it comments, brackets and indents only;
+the server's semantic tokens and features work as for Rules. The Studio
+commands (reload, scenario runs, uses in the map) are VS Code only.
 
 ## Install
 
@@ -57,9 +63,10 @@ reinstall the dev extension.
 
 ## Settings
 
-The server is `h2-rules-lsp`. The extension starts, in order: the
-`binary.path` setting, `h2` on the project's `PATH`, then
-`$HOME/.cargo/bin/h2`, with the arguments `rules lsp`. To name the binary:
+The servers are `h2-rules-lsp` (Rules) and `h2-hs-lsp` (HaloScript). The
+extension starts, in order: the `binary.path` setting, `h2` on the
+project's `PATH`, then `$HOME/.cargo/bin/h2`, with the arguments
+`rules lsp` (`hs lsp` for `h2-hs-lsp`). To name the binary:
 
 ```json
 {
@@ -75,7 +82,7 @@ The server is `h2-rules-lsp`. The extension starts, in order: the
 ```
 
 `arguments` replaces `rules lsp` when it is set; `binary.env` adds
-environment variables.
+environment variables. `h2-hs-lsp` takes the same settings under its own key.
 
 Semantic tokens: `h2 rules lsp` answers `textDocument/semanticTokens/full`.
 The extension API has no hook for them; whether Zed paints them on top of
@@ -86,7 +93,7 @@ grammar works either way.
 ## Troubleshooting
 
 - **The server does not start.** Run **zed: open log** and look for
-  `h2-rules-lsp`. "No such file" means `h2` is not where the extension
+  `h2-rules-lsp` (or `h2-hs-lsp`). "No such file" means `h2` is not where the extension
   looked: the extension runs in a sandbox and cannot check that
   `$HOME/.cargo/bin/h2` exists, so put `h2` on `PATH` or set
   `lsp.h2-rules-lsp.binary.path`.
@@ -108,6 +115,7 @@ grammar works either way.
 - `extension.toml`: the extension, its language server and its grammar.
 - `languages/rules/`: the language's config and queries (`highlights.scm`,
   `brackets.scm`, `indents.scm`, `outline.scm`).
-- `src/lib.rs`: starts `h2 rules lsp`.
+- `languages/haloscript/`: the HaloScript config (no grammar).
+- `src/lib.rs`: starts `h2 rules lsp` or `h2 hs lsp`.
 - `Cargo.toml`: a standalone crate (its own `[workspace]`), not part of
   the repository's root workspace.

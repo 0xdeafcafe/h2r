@@ -2,8 +2,10 @@
 //! stdout (docs/game/rules-engine.md, "Security and usability"; the editor extensions in
 //! docs/editor/rules-editors.md). Incremental document sync in UTF-16
 //! positions; every answer comes from `rules::ide`, as Live's
-//! `POST /v1/rules/ide` does. [`Server::handle`] is the whole protocol
-//! after `initialize`, so tests drive it without a process.
+//! `POST /v1/rules/ide` does. `workspace/executeCommand` runs the
+//! commands that ask Studio: reload the file into the paired game, and
+//! run it over a scenario (`studio_link`). [`Server::handle`] is the
+//! whole protocol after `initialize`, so tests drive it without a process.
 
 use std::collections::HashMap;
 
@@ -19,6 +21,8 @@ use lsp_types::request::{
 };
 use rules::ide::{self, Position};
 use serde_json::{Value, json};
+
+use crate::studio_link::{self, Studio, command};
 
 /// JSON-RPC's and LSP's error codes.
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -91,7 +95,7 @@ fn capabilities() -> Value {
         "documentSymbolProvider": true,
         "documentFormattingProvider": true,
         "documentRangeFormattingProvider": true,
-        "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+        "codeActionProvider": {"codeActionKinds": ["quickfix", "source"]},
         "renameProvider": {"prepareProvider": true},
         "foldingRangeProvider": true,
         "semanticTokensProvider": {
@@ -99,6 +103,7 @@ fn capabilities() -> Value {
             "full": true,
             "range": false,
         },
+        "executeCommandProvider": {"commands": [command::RELOAD, command::RUN_SCENARIO]},
     })
 }
 
@@ -108,10 +113,19 @@ struct Doc {
     version: Option<i64>,
 }
 
-/// The open documents, by URI.
-#[derive(Default)]
+/// The open documents, by URI, and the line to Studio.
 pub(crate) struct Server {
     docs: HashMap<String, Doc>,
+    studio: Box<dyn Studio>,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Server {
+            docs: HashMap::new(),
+            studio: Box::new(studio_link::Socket),
+        }
+    }
 }
 
 impl Server {
@@ -178,15 +192,18 @@ impl Server {
         diagnostics_note(uri, version, Value::Array(list))
     }
 
-    fn request(&self, req: Request) -> Response {
+    fn request(&mut self, req: Request) -> Response {
         match self.answer(&req) {
             Ok(v) => Response::new_ok(req.id, v),
             Err((code, message)) => Response::new_err(req.id, code, message),
         }
     }
 
-    fn answer(&self, req: &Request) -> Result<Value, (i32, String)> {
+    fn answer(&mut self, req: &Request) -> Result<Value, (i32, String)> {
         let method = req.method.as_str();
+        if method == "workspace/executeCommand" {
+            return self.execute(&req.params).map_err(|e| (REQUEST_FAILED, e));
+        }
         let known = [
             Completion::METHOD,
             HoverRequest::METHOD,
@@ -265,19 +282,21 @@ impl Server {
         } else if method == FoldingRangeRequest::METHOD {
             json!(ide::folding_ranges(src))
         } else if method == CodeActionRequest::METHOD {
-            Value::Array(
-                ide::actions(src, range()?)
-                    .into_iter()
-                    .map(|a| {
-                        json!({
-                            "title": a.title,
-                            "kind": a.kind,
-                            "diagnostics": [diagnostic_json(&a.diagnostic)],
-                            "edit": {"changes": {uri: a.edits}},
-                        })
+            let mut out: Vec<Value> = ide::actions(src, range()?)
+                .into_iter()
+                .map(|a| {
+                    json!({
+                        "title": a.title,
+                        "kind": a.kind,
+                        "diagnostics": [diagnostic_json(&a.diagnostic)],
+                        "edit": {"changes": {uri: a.edits}},
                     })
-                    .collect(),
-            )
+                })
+                .collect();
+            // The commands, for an editor that runs them from its code
+            // action menu (Zed).
+            out.extend(studio_actions(uri));
+            Value::Array(out)
         } else if method == PrepareRenameRequest::METHOD {
             let p = ide::prepare_rename(src, pos()?).map_err(|e| (REQUEST_FAILED, e))?;
             json!(p)
@@ -307,6 +326,69 @@ impl Server {
             }
         })
     }
+}
+
+impl Server {
+    /// `workspace/executeCommand`: the commands that ask Studio.
+    fn execute(&mut self, params: &Value) -> Result<Value, String> {
+        let name = params.get("command").and_then(Value::as_str).unwrap_or("");
+        let arg = studio_link::argument(params)?;
+        match name {
+            command::RELOAD => studio_link::reload(self.studio.as_mut(), arg),
+            command::RUN_SCENARIO => {
+                // The text as it is in the editor, saved or not.
+                let mut arg = arg.clone();
+                if arg.get("source").is_none()
+                    && let Some(doc) = arg.get("uri").and_then(Value::as_str).and_then(|u| self.docs.get(u))
+                {
+                    arg["source"] = json!(doc.text);
+                }
+                studio_link::run_scenario(self.studio.as_mut(), &arg)
+            }
+            other => Err(format!("no command {other}")),
+        }
+    }
+}
+
+/// The Studio commands as code actions: reload the file into the game,
+/// and run it over each scenario beside it whose name starts with the
+/// script's (`ctf.rules` and `ctf_capture.json`).
+fn studio_actions(uri: &str) -> Vec<Value> {
+    let Some(path) = studio_link::path_of(uri) else {
+        return Vec::new();
+    };
+    let mut out = vec![json!({
+        "title": "Reload in the game (Studio)",
+        "kind": "source",
+        "command": {"title": "Reload in the game", "command": command::RELOAD, "arguments": [{"uri": uri}]},
+    })];
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut scenarios: Vec<std::path::PathBuf> = path
+        .parent()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "json")
+                && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&stem))
+        })
+        .collect();
+    scenarios.sort();
+    for s in scenarios {
+        let file = s.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        out.push(json!({
+            "title": format!("Run scenario {file} (Studio)"),
+            "kind": "source",
+            "command": {
+                "title": "Run scenario",
+                "command": command::RUN_SCENARIO,
+                "arguments": [{"uri": uri, "scenario": s.display().to_string()}],
+            },
+        }));
+    }
+    out
 }
 
 /// Makes one `contentChanges` entry: a range and its new text, or the
@@ -673,6 +755,45 @@ mod tests {
         assert!(triggers.contains(&json!(".")) && triggers.contains(&json!(" ")));
         assert_eq!(c["semanticTokensProvider"]["legend"]["tokenTypes"].as_array().unwrap().len(), ide::LEGEND.len());
         assert_eq!(r["serverInfo"]["name"], "h2 rules lsp");
+    }
+
+    #[test]
+    fn commands_reload_the_file_and_run_the_open_text_through_studio() {
+        use crate::studio_link::tests::Fake;
+        let mut fake = Fake::default();
+        fake.answers = vec![
+            ("rules.reload", Ok(json!({"queued": "h"}))),
+            ("rules.get", Ok(json!({"reload": {"state": "done", "hash": "h", "mode": "in_place", "tick": 5}}))),
+            (
+                "rules.run",
+                Ok(json!({"ok": true, "result": "the round was still running", "text": "total: 0 calls over 1 ticks\n"})),
+            ),
+        ];
+        let calls = fake.calls.clone();
+        let mut s = Server {
+            studio: Box::new(fake),
+            ..Server::default()
+        };
+        open(&mut s, SRC);
+        let exec = |command: &str, arg: Value| json!({"command": command, "arguments": [arg]});
+        let v = result(s.handle(req(1, "workspace/executeCommand", exec(command::RELOAD, json!({"uri": URI})))));
+        assert_eq!(v["message"], "Reloaded t.rules in place at tick 5");
+        assert_eq!(calls.borrow()[0].1, json!({"path": "/t.rules"}));
+
+        let arg = json!({"uri": URI, "scenario": "/s/case.json"});
+        let v = result(s.handle(req(2, "workspace/executeCommand", exec(command::RUN_SCENARIO, arg))));
+        assert_eq!(v["message"], "case.json: the round was still running");
+        assert_eq!(v["text"], "total: 0 calls over 1 ticks\n");
+        // The editor's text, saved or not, is what runs.
+        let run = calls.borrow().iter().find(|(m, _)| m == "rules.run").cloned().unwrap();
+        assert_eq!(run.1["source"], SRC);
+
+        let r = response(s.handle(req(3, "workspace/executeCommand", exec("h2.other", json!({})))));
+        assert_eq!(r.error.unwrap().code, REQUEST_FAILED);
+        assert_eq!(
+            initialize_result()["capabilities"]["executeCommandProvider"]["commands"],
+            json!([command::RELOAD, command::RUN_SCENARIO])
+        );
     }
 
     #[test]

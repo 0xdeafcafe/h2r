@@ -104,7 +104,7 @@ the final result through that directory.
 | `H2_PACK_LINGER_S` | supervisor idle timeout in seconds, default 60; Live demand holds and cleanup last 60 seconds ([host-halving.md](../live/host-halving.md#warm-capacity-from-demand)) |
 | `H2_PACK_MAX_MATCHES`, `H2_PACK_MEMORY_MIB`, `H2_PACK_VCPUS`, `LIVE_HOST_PACK_MATCHES` | supervisor slot, memory and CPU budgets; Live selects the class limit or a lower slot count ([dedicated-host.md](../live/dedicated-host.md#packed-hosts)) |
 | `MALLOC_ARENA_MAX`, `MALLOC_TRIM_THRESHOLD_` | Linux glibc host lease defaults of 2 arenas and 131072 bytes; explicit allocator settings take precedence ([host-halving.md](../live/host-halving.md#halving-the-memory)) |
-| `H2_STUDIO` | Editor agent socket path when `--socket` is absent (`crates/apps/studio-proto/src/lib.rs`, [editor API](../editor/agent-api.md)). |
+| `H2_STUDIO` | Editor agent socket path when `--socket` is absent (`crates/apps/studio-proto/src/lib.rs`, [editor API](../editor/agent-api.md)); `h2 rules lsp` and `h2 hs lsp` call Studio there for the editor extensions' commands ([rules-editors.md](../editor/rules-editors.md#commands-that-talk-to-studio)). |
 | `H2_FFMPEG` | Selects the local ffmpeg executable for movie conversion (`crates/formats/movies/src/install.rs`). |
 | `H2_LAB_JOB_ID`, `H2_LAB_JOB_NAME` | The lab passes its run ID (for example, `0007`) and job label to the game for its window title and memory reports. |
 | `H2_MEM_SOFT` | Process footprint at which the game, editor or lab host writes a memory report. Defaults to 8 GiB. Sizes accept binary units such as `12G`. Zero disables both the soft limit and sustained-growth alerts. |
