@@ -1270,7 +1270,11 @@ add no event. These streams are reserved: `POST /v1/events` cannot bypass their
 host checks or forge creation/expiry. `PlayerJoined/Left` are available to the
 host API; this HLE slice does not infer those events from UDP traffic.
 
-Presence pings refresh the host's open advertisements in memory. Five minutes
+Presence pings refresh, in memory, the open advertisements the host created
+since its last `SignedIn` (`Model::touch_host_sessions` in
+`crates/live/live-server/src/model.rs`); one left by an earlier run of the
+game gets no refresh. A `SignedIn` starts a new run: presence `since` resets
+to its time, while `PresenceChanged` keeps it. Five minutes
 without a ping or changed session event produces a server-signed
 `SessionExpired`. Pings are not persisted; after restart the deadline comes
 from the last recorded event. Deleted/expired sessions remain readable by ID
