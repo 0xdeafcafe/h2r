@@ -31,7 +31,7 @@ struct Key {
     implementation: u8,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Source {
     Bitmap(TagId, i32),
     Rasterizer(u32, i32),
@@ -44,7 +44,7 @@ enum Source {
     Inherited,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Stages {
     sources: [Source; 4],
     signs: [Option<u32>; 4],
@@ -159,6 +159,35 @@ impl Library {
             }
         }
         out
+    }
+
+    /// Whether `fresh` (a load of the same shaders from the edited map)
+    /// chooses for shader `shader` what this library does: the same
+    /// passes, each with the same programs and stage recipe, or refused
+    /// for the same reason. The library keeps no constants: a
+    /// constants-only edit leaves it the same.
+    pub(super) fn same_for(&self, fresh: &Library, shader: u32) -> bool {
+        let of = |l: &Library| {
+            let mut keys: Vec<Key> = l.passes.keys().copied().filter(|k| k.shader == shader).collect();
+            keys.sort_unstable_by_key(|k| (k.lod, k.layer, k.pass, k.implementation));
+            keys
+        };
+        let keys = of(self);
+        keys == of(fresh)
+            && self.rejected.get(&shader) == fresh.rejected.get(&shader)
+            && keys.iter().all(|k| match (&self.passes[k], &fresh.passes[k]) {
+                (Ok(a), Ok(b)) => {
+                    a.stages == b.stages
+                        && a.classes.len() == b.classes.len()
+                        && a.classes.iter().zip(b.classes.iter()).all(|(x, y)| match (x, y) {
+                            (Some(x), Some(y)) => x[..] == y[..],
+                            (None, None) => true,
+                            _ => false,
+                        })
+                }
+                (Err(a), Err(b)) => a == b,
+                _ => false,
+            })
     }
 
     pub(super) fn is_empty(&self) -> bool {

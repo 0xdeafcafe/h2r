@@ -104,6 +104,14 @@ Default writes the kept retail values back and forgets them. Tests:
 `reapplying_and_switching_never_compound_and_default_restores`,
 `a_reloaded_map_is_its_own_retail`.
 
+**Live edits.** A field the agent's `edit.*` writes is the value the user
+wants in force. The hot-edit glue's tag-write notice
+([realtime-edits.md](../editor/realtime-edits.md), "Realtime coverage")
+calls `aim_assist::tag_written`, and `Remembered::adopt` takes each edited
+field as retail: later activations leave it unscaled while it holds the
+edit's bits. A field that holds what we wrote (a revert put our value
+back) is ours again. Test: `an_edited_field_is_kept_by_the_next_activation`.
+
 ## Multiplayer
 
 Status: built and tested on synthetic memory. Confirmed in the game by the owner (2026-11-17).

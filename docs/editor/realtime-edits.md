@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, the structure activation `sim::calls::Call::ReactivateStructure`, and the editor's send, `play/collision_sync.rs`, fed by the Modeling tool's collision box; its live check has not run) are built; R8 to R17 ("Realtime coverage") are design, and what they build on is cited as **Code**.
-Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs`, `crates/apps/studio/src/play/objects/drive/placements.rs`, `crates/extensions/agent/src/hot/collision.rs`, `crates/extensions/agent/src/debug_views/debug_static.rs`, `crates/live/bots/src/autonav.rs` (`collision_edited`), `crates/apps/studio/src/play/collision_sync.rs` and `crates/apps/studio/src/app/modeling.rs` (`ModelAction::AddCollisionBox`); planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, the structure activation `sim::calls::Call::ReactivateStructure`, and the editor's send, `play/collision_sync.rs`, fed by the Modeling tool's collision box; its live check has not run), R8 (the tag-write notice and its subscribers), R9 (the metadata overlay) and R10 (the native shader refresh) are built, the live checks of R8, R9 and R10 not run; R11 to R17 ("Realtime coverage") are design, and what they build on is cited as **Code**.
+Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs`, `crates/apps/studio/src/play/objects/drive/placements.rs`, `crates/extensions/agent/src/hot/collision.rs`, `crates/extensions/agent/src/debug_views/debug_static.rs`, `crates/live/bots/src/autonav.rs` (`collision_edited`), `crates/apps/studio/src/play/collision_sync.rs` and `crates/apps/studio/src/app/modeling.rs` (`ModelAction::AddCollisionBox`) and `crates/extensions/hot-tags/src/notice.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -74,7 +74,23 @@ map's raw data serve through it (**Code**):
 - the native loaders, whose live opens (`native_map::open`) give each
   selector of `assets::ResourceFiles` a `ResourceOverlay` over the same
   overlay, read at each read and extending the file's length over its
-  appended extents.
+  appended extents, and read the `Map` itself through
+  `vfs::OverlaidReader`, so the metadata a live open decodes holds the
+  overlay's metadata runs.
+
+The overlay holds two kinds of runs. **Raw runs** (`RawOverlay::put`)
+are bytes only the file view holds: section vertices, pixels, appended
+blocks. **Metadata runs** (`RawOverlay::put_metadata`) copy tag writes:
+after every applied tag write and revert, `hot_glue::MetaGlue` reads each
+written span back from guest memory and puts it at its file offset in
+the loaded map, translated through the tag's own region in the map's
+index (`hot_glue::Spaces`: the ordinary metadata, or the region of the
+structure BSP or lightmap the tag is; map-format.md, "BSP and lightmap
+metadata"). A span with no file offset, as in a block moved into the
+edit arena, is left out, so the native `Map` reads a moved block where
+the file has it. Metadata runs are served as raw runs are, and the guest
+reads them when it re-reads a BSP's region from its slot at a switch;
+`edit.overlay` counts them apart (`metadata`, `metadata_bytes`).
 
 The overlay is never applied to a slot copy's source: an overlay served
 on `maps\<name>.map` would be written into the slot file at the next copy
@@ -438,7 +454,7 @@ Wire types in `agent_proto::hot` and `agent_proto::sim::edits`, listed by
 | `edit.raw.append` | act | `{file?, bytes, align?}` | `{id, pointer, len}`: a raw pointer for tag writes; journalled, dropped by revert |
 | `edit.stage.put` | act | `{stage?, bytes}` | `{stage, len}`: appends to a host buffer that dies with the connection or its first use |
 | `edit.arena` | read | none | `{base, len, mapped, used, largest_free, physical_free, physical_floor, moves: [{tag, name, root, address, capacity, stride, len}]}` |
-| `edit.overlay` | read | none | `{entries, bytes, appended, owners: [owner]}` |
+| `edit.overlay` | read | none | `{entries, bytes, appended, metadata, metadata_bytes, owners: [owner]}` |
 | `world.placement.edit` | act | `{block, was_count, count, records: [{index, bytes, was?}], names?: [{name, placement}], delete?: [index], relink?: [{from, to}], create?: [index]}` | `{at, count, capacity, moved?: {address, capacity}, deleted: [id], relinked: [id], created: [{index, object?, linked, created, why?}]}` |
 | `edit.collision.stage` | act | `{target, blocks: {name: {count, bytes}}, leaves?, mopp?, pathfinding?}` | `{stage, bytes, arena: {used, largest_free}}` |
 | `edit.collision.commit` | act | `{stage, mode: append \| rebuild, activate?, was: {name: {count, address}}}` | `{at, mode, activated, freed}`; a commit that activates answers after the switch |
@@ -467,15 +483,59 @@ other machines in the game.
 ### The native refresh
 
 `render_bridge::native_edits::push(Edit)`, with
-`Edit::{Section { bsp: u32, kind: u8, index: u32, grown: bool }, Model { tag: u32 }, Image { bitmap: u32, image: u32 }}`,
-called by the hot-edit glue after a batch applies. `bsp`, `tag` and
+`Edit::{Section { bsp: u32, kind: u8, index: u32, grown: bool }, Model { tag: u32 }, Image { bitmap: u32, image: u32 }, Tag { group: u32, tag: u32 }, Shader { tag: u32 }}`,
+called by the hot-edit glue after a batch applies. `Tag` comes from the
+tag-write notice ("Tag-write notices" below); `group` is the
+four-character code read big-endian. A `Tag` of a `shad`, `stem`,
+`spas` or `vrtx` (`native_edits::SHADER_GROUPS`) is queued as
+`Shader`. `bsp`, `tag` and
 `bitmap` are tag datums (matched by index). `kind` is `KIND_CLUSTER` (0),
 `KIND_INSTANCE_DEF` (1) or `KIND_MODE` (2, with `bsp` the render model's
 datum: queued as `Model`). Edits of one owner merge, a grown section
-staying grown. The glue for the world and for objects drains its share
-(`native_edits::drain(Consumer::World | Consumer::Objects)`;
-`native_world_glue`, `native_objects_glue`); an `Image` goes to both.
-Plain integers keep `render-bridge` free of the agent's types.
+staying grown. Each consumer drains its share
+(`native_edits::drain(Consumer::World | Consumer::Objects | Consumer::FirstPerson)`;
+`native_world_glue`, `native_objects_glue`, `native_first_person_glue`):
+`Section` goes to the world, `Model` to the objects, `Image` and `Tag`
+to both, `Shader` to all three. Plain integers keep `render-bridge` free
+of the agent's types. The world and objects glue drain `Tag` and change
+nothing for it: no part of their copies follows another group's
+metadata field live.
+
+A `Shader` edit refreshes what was compiled from the shader, read again
+through the metadata overlay ("The edit overlay"). A material is built
+from the edited tag when it is that shader or its resolved material
+uses it as template, pass or vertex shader
+(`tags::material::Material::uses`, matched by index):
+
+| Consumer | What a shader edit does |
+|---|---|
+| world material programs | `native_world_glue::refresh_shaders` compiles each native material built from the tag again, as the load does (`material_programs`, limited to those materials), and puts it in place with `GpuWorld::refresh_programs` (`ProgramSet::refresh`). `MaterialProgram::change_to` sorts the change: `Constants` (the vertex and pixel uniforms, the rigid program's vertex constants) rewrites the material's uniform buffers and its rigid slots in place; `Program` (module, stage image, sampler, texture shape, signedness, inputs, pass state, rigid module) builds that material's `Gpu`, rigid program and batch groups again, binding the lightmap pages the load uploaded. Materials that do not use the tag are not touched. All or nothing: a material with no program or a stage that does not decode refuses the lot |
+| world materials on the D3D path | nothing: their draws read the edit from guest memory |
+| fog, water, layers, lights, decorators, opaque pass | they hold their own compiled copy; when one draws an edited shader (`FogView::programs`, `WaterData::programs`, `LayerData::programs`, `LightsWorld::draws_material`, `DecoratorLooks::shaders`, or an opaque pass whose programs or stage recipe differ, `opaque_materials::Library::same_for`) the world reloads (`native_map_work::reload_bsp`), naming them in the log |
+| world, when a refresh cannot hold | an edited material that no longer compiles, or that would draw other parts than it does, reloads the world |
+| objects | `native_objects_glue::refresh_models` loads each resident model with a part whose shader is built from the tag (`LitObjects::model_shaders`) again, as a `Model` edit does |
+| first person | `native_first_person_glue` drops its map state; the next ask loads the viewmodels by map name, through the overlay |
+
+### Tag-write notices
+
+After an `edit.set`, an `edit.batch` or an `edit.revert` applies,
+`hot_tags::Editor` sends one `hot_tags::TagWrite` per tag whose bytes
+changed to the sink given by `Editor::with_tag_writes`
+(`crates/extensions/hot-tags/src/notice.rs`): the tag's group, datum and
+metadata allocation, the guest range from the first changed byte to past
+the last (a moved block's root pair included), each field write's span,
+and whether it was a revert. Unchanged bytes and refused batches send
+nothing. The notice is sent with the guest still held, so a subscriber
+reads the new bytes and writes its own copy at the same boundary.
+`hot_glue::tag_written` hands each notice to the host copies:
+
+| Group | Subscriber | What it does |
+|---|---|---|
+| every tag | `native_edits::push(Edit::Tag)` | queues the tag for the native copies |
+| `jmad` | `engine::sim_anim::STORE.flush_range` | drops the clips keyed inside the tag's allocation; the next lookup decodes them from the guest |
+| `nhdt` | `hud_kit::tag_written` | copies each retail widget block the range overlaps into the HUD kit's copy the root points at (`hud_kit::recopy`) |
+| `weap`, `matg` | `aim_assist::tag_written` | adopts each edited aim-assist field as retail; later activations leave it unscaled while it holds the edit's bits |
+| `sbsp` | `bots::cache::mark_stale` | marks the loaded bot data stale (`bots::cache::stale` says why) until the next map's data replaces it |
 
 ### The editor
 
@@ -567,25 +627,31 @@ The survey of every tag group, with the code each row is read from, is
 What decides coverage beyond geometry, placements, collision and pixels
 (**Code**, cited there):
 
-- **Tag-field writes reach the lifted code and the D3D path, not the
-  native copies.** Live opens read the map's metadata from the plain file
-  (`native_map::open_resolved`); the raw overlay covers the resource
-  files only. Every native loader reads shaders through
-  `tags::material::ShaderLibrary::read`, so a shader field edit shows on
-  D3D draws and not on natively drawn world or object parts.
-- **The native refresh carries raw edits only** (`Section`, `Model`,
-  `Image`), drained by the world and objects glue. First person, light
-  models, decorators, fog, water, layers, lights' textures and lightmap
-  pages do not drain it.
+- **Tag-field writes reach the lifted code and the D3D path at once,
+  and the native copies at their next load.** Live opens read the map's
+  metadata through the overlay's metadata runs
+  (`native_map::open_resolved`), so a native load after a write decodes
+  it. Every native loader reads shaders through
+  `tags::material::ShaderLibrary::read` at load; a shader, template,
+  pass or vertex shader edit refreshes the world's material programs in
+  place and reloads the objects' models, the viewmodels, and the world
+  when its fog, water, layers, lights, decorators or opaque pass draw it
+  ("The native refresh"). Other groups' field edits reach the native
+  copies at their next load.
+- **The native refresh carries raw edits and shader edits** (`Section`,
+  `Model`, `Image`, `Shader`), drained by the world, objects and first
+  person glue. Light models and lightmap pages do not drain it, and a
+  shader refresh never admits a part the load left on the D3D path.
 - **Studio's own viewport rebuilds from geometry previews, markers and
   the live stream**, not from tag field edits or painted pixels.
 - **Studio has no embedded game view.** Play launches the game as a
   child process and pairs with it over the agent socket, as with an
   attached game ([editor.md](editor.md), "Embedded play (not built)").
-- **Host copies outside the renderer** that miss hot edits: the animation
-  clip store (dropped only on an epoch move), the HUD kit's copy of the
-  `nhdt` widget blocks, aim assist's activation writes and the bots' map
-  data. The collision world follows writes by its page watches.
+- **Host copies outside the renderer** follow tag writes through the
+  tag-write notice ("Tag-write notices"): the animation clip store, the
+  HUD kit's copy of the `nhdt` widget blocks and aim assist. The bots'
+  map data is marked stale and not rebuilt. The collision world follows
+  writes by its page watches.
 
 Slices R8 to R17 close these, in the survey's order: shaders first, then
 completed textures and models, Studio's own view, object definitions,
@@ -596,9 +662,9 @@ string IDs touch every cache keyed by tag index (XL, not sliced).
 
 | Slice | Goal | Owns | Tests without the game | Live check | After |
 |---|---|---|---|---|---|
-| **R8** Tag-write notice (S) | after a batch or revert applies, one notice per changed tag (`group`, datum, range) to host subscribers; `native_edits` gains `Tag { group, tag }`; subscribers: the clip store flushes that tag's clips, the HUD kit re-copies edited widget blocks, aim assist adopts an edited field as retail, bot data is marked stale | `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/sim-anim/src/store.rs`, `crates/extensions/game/src/hud_kit.rs`, `crates/extensions/game/src/aim_assist.rs` | fake game: a field batch queues one notice per tag and a revert another; a flushed clip is rebuilt from the edited bytes; aim assist's next activation keeps an edited value | `edit.set` on an `nhdt` widget colour shows on the HUD within a frame | nothing |
-| **R9** Metadata overlay (M) | each applied tag write and revert also enters the raw overlay at the metadata's file offset (ordinary metadata, or the active BSP region's translation); live opens read the `Map` through the overlay; these entries do not refuse snapshots, since guest memory holds the same bytes | `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/game/src/hot_glue.rs` | a `Map` opened after a write reads the written bytes; a revert restores the file's; a BSP-region write lands at that region's offset | `edit.set` then a BSP switch: the native world's shader library holds the edited value | R8 |
-| **R10** Native shader refresh (L) | `native_edits::Edit::Shader { tag }`, queued by R8 for `shad`, `stem`, `spas`, `vrtx`; a constants-only change rewrites the material's uniform buffers; any other change rebuilds the programs of the parts that use it in the world, layers, fog, water, lights, decorators, objects and first person; a consumer that cannot rebuild asks for `reload_bsp` or a model reload | `crates/rewrites/native-render`, `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_world_materials.rs`, `crates/extensions/game/src/native_objects_glue.rs`, the fog, water, layers, lights, decorators and first-person glue | a refreshed `ProgramSet` equals one built from the edited shader; a template change rebuilds only the parts that use it | `edit.set` on `postprocess[0].colors[0].color` of a world shader: `render.frame` with `snap` shows the colour on the native path (`native_world_opaque_*` counters non-zero) | R9 |
+| **R8** Tag-write notice (S; built, live check not run) | after a batch or revert applies, one notice per changed tag (`group`, datum, range) to host subscribers; `native_edits` gains `Tag { group, tag }`; subscribers: the clip store flushes that tag's clips, the HUD kit re-copies edited widget blocks, aim assist adopts an edited field as retail, bot data is marked stale | `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/sim-anim/src/store.rs`, `crates/extensions/game/src/hud_kit.rs`, `crates/extensions/game/src/aim_assist.rs` | fake game: a field batch queues one notice per tag and a revert another; a flushed clip is rebuilt from the edited bytes; aim assist's next activation keeps an edited value | `edit.set` on an `nhdt` widget colour shows on the HUD within a frame | nothing |
+| **R9** Metadata overlay (M; built, live check not run) | each applied tag write and revert also enters the raw overlay at the metadata's file offset (ordinary metadata, or the active BSP region's translation); live opens read the `Map` through the overlay; these entries do not refuse snapshots, since guest memory holds the same bytes | `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/game/src/hot_glue.rs` | a `Map` opened after a write reads the written bytes; a revert restores the file's; a BSP-region write lands at that region's offset | `edit.set` then a BSP switch: the native world's shader library holds the edited value | R8 |
+| **R10** Native shader refresh (L; built, live check not run) | `native_edits::Edit::Shader { tag }`, queued by R8 for `shad`, `stem`, `spas`, `vrtx`; a constants-only change rewrites the material's uniform buffers; any other change rebuilds the programs of the parts that use it in the world, layers, fog, water, lights, decorators, objects and first person; a consumer that cannot rebuild asks for `reload_bsp` or a model reload | `crates/rewrites/native-render`, `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_world_materials.rs`, `crates/extensions/game/src/native_objects_glue.rs`, the fog, water, layers, lights, decorators and first-person glue | a refreshed `ProgramSet` equals one built from the edited shader; a template change rebuilds only the parts that use it | `edit.set` on `postprocess[0].colors[0].color` of a world shader: `render.frame` with `snap` shows the colour on the native path (`native_world_opaque_*` counters non-zero) | R9 |
 | **R11** Textures and models everywhere (M) | the `Image` refresh reaches lightmap pages, fog, water and layer stage images, decorator looks, the lights' textures and first person; first person and light models drain `Model`; decorators drain `Section` and `Model`; the screen-effects slot is keyed by map generation | `crates/rewrites/native-render/src/gpu.rs`, `crates/extensions/game/src/native_first_person_glue.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `crates/extensions/game/src/native_decorators_glue.rs`, `crates/extensions/game/src/native_post_glue.rs` | each holder's texture equals a decode of the edited image; a lightmap page rewrite changes the sampled texel | paint a lightmap page and a first-person weapon texture; both show natively | R2 |
 | **R12** Respawn by definition (M) | `world.object.respawn {definition}`: every placed object of a definition remade linked; held, occupied and engine-made objects listed with why and left to their next creation; Studio's **Respawn now** for `next_spawn` rows of the `obje` family, `hlmt` and `phmo` | `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/calls/placement.rs`, `crates/apps/studio/src/play/objects` | fake game: two placements of one definition both remade with their indices; a held weapon reported, not touched | edit a vehicle's `hlmt` variant and respawn by definition: `world.object` lists the new objects | R3 |
 | **R13** `applies` evidence (M) | `applies=` on group, struct and block lines, with evidence, for `weap`, `proj`, `jpt!`, `vehi`, `bipd`, `effe`, `prt3`, `nhdt`, `matg`, `bitm`, `ligh` | `crates/formats/tags/src/defs` | the definitions' own tests; the share of `not_known` fields per group reported | none: data | nothing |
@@ -638,10 +704,12 @@ string IDs touch every cache keyed by tag index (XL, not sliced).
   a session's [default recording](../game/film-format.md#recording-every-game)
   discards its tape and the game in play; films of games already ended
   stay.
-- **Snapshots.** A non-empty overlay or a used arena extent is host state
-  a machine snapshot does not hold, so both prevent snapshots, rewind and
+- **Snapshots.** An overlay holding raw runs or appended extents
+  (`RawOverlay::holds_raw`) or a used arena extent is host state a
+  machine snapshot does not hold, so both prevent snapshots, rewind and
   film keyframes until the map changes, as a bound play copy does
-  ([snapshots.md](../runtime/snapshots.md)). A used arena extent refuses
+  ([snapshots.md](../runtime/snapshots.md)). Metadata runs do not: guest
+  memory, which the snapshot holds, has the same bytes. A used arena extent refuses
   through the call queue's editor refusal (`Queue::preview_refusal`), once
   an editor has adopted the queue; the overlay's refusal is not built.
 - **Checkpoints.** A campaign revert restores objects with the placement

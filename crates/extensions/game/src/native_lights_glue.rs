@@ -881,6 +881,13 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
+    /// Whether the lights draw world material `material`'s passes: a
+    /// live shader edit of it reloads the world (docs/editor/realtime-edits.md,
+    /// "The native refresh").
+    pub fn draws_material(&self, material: u16) -> bool {
+        self.materials.contains_key(&material)
+    }
+
     /// Upload map textures and start a resolver tied to this device and BSP.
     pub fn upload_engine_textures(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> LightSet {
         let mut set = LightSet::new(device, queue, self.normalization.as_deref(), self.attenuation.as_deref());

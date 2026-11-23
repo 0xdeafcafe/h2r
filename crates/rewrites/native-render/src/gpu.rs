@@ -700,6 +700,30 @@ impl GpuWorld {
         self.programs.as_ref().map_or_else(Vec::new, |p| p.image_stages(bitmap, image))
     }
 
+    /// The program material `material` draws with, if it has one.
+    pub fn material_program(&self, material: u16) -> Option<&crate::program::MaterialProgram> {
+        self.programs.as_ref()?.program(material)
+    }
+
+    /// Puts `edited` (each material's program compiled from an edited
+    /// shader) in place, as [`ProgramSet::refresh`] does: constants
+    /// rewritten in place, other changes rebuilt. Without programs there
+    /// is nothing to refresh, and a non-empty `edited` is refused.
+    pub fn refresh_programs(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        edited: HashMap<u16, crate::program::MaterialProgram>,
+        stage_image: &mut dyn FnMut(crate::look::Stage) -> Option<crate::gpu::Image>,
+        layered: &HashMap<(map::TagId, u32), crate::light_gpu::LayeredImage>,
+    ) -> Result<crate::program::Refreshed, String> {
+        if edited.is_empty() {
+            return Ok(crate::program::Refreshed::default());
+        }
+        let programs = self.programs.as_mut().ok_or("the world draws no material programs")?;
+        programs.refresh(device, queue, &self.world, edited, stage_image, layered)
+    }
+
     /// Rewrite every texture made from image `image` of `bitmap` with
     /// `decoded` (by stage, [`GpuWorld::image_stages`]), each signed
     /// variant biased as at load. All or nothing: a texture whose size,

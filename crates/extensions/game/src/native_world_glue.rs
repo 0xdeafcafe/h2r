@@ -84,6 +84,15 @@ pub struct Ready {
     /// The structure BSP tag this world was loaded from: what a live
     /// edit's `Section` names.
     bsp_tag: Option<TagId>,
+    /// The BSP's material shaders, by world material: what a live
+    /// shader edit's refresh resolves again ([`refresh_shaders`]).
+    shaders: Vec<TagId>,
+    /// The load had no lightmap group: layer 3 drew unlit
+    /// ([`material_programs`]'s `no_lightmap_group`).
+    no_lightmap_group: bool,
+    /// The lightmap pages that decoded at the load, which the program
+    /// set holds: a refreshed program's parts may sample only these.
+    pages: HashSet<LightmapKey>,
     /// The fog of this load (`native_fog_glue`): the compiled layer-16
     /// passes, their fog words and the parts the fog pass draws.
     pub fog: OnceLock<(Arc<crate::native_fog_glue::FogView>, StagePalettes)>,
@@ -437,13 +446,17 @@ struct RefreshPlan {
     sections: Vec<load::SectionOwner>,
     /// Images whose textures are rewritten in place.
     images: Vec<(TagId, u32)>,
+    /// Shader, template, pass and vertex shader tags whose programs are
+    /// refreshed ([`refresh_shaders`]).
+    shaders: Vec<u32>,
 }
 
 /// Sorts `edits` for the world loaded from `bsp`: a section of it is
 /// replaced in place, or reloads the world when its counts grew (or its
 /// kind is unknown); another BSP's section waits for that BSP's own load,
-/// which reads the edited file; an image is rewritten. Tags match by
-/// index, as `native_map::tag_of` does.
+/// which reads the edited file; an image is rewritten; an edited shader
+/// refreshes the programs built from it. Tags match by index, as
+/// `native_map::tag_of` does.
 fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit]) -> RefreshPlan {
     use render_bridge::native_edits::{Edit, KIND_CLUSTER, KIND_INSTANCE_DEF};
     let ours = |tag: u32| bsp.is_some_and(|b| b.0 & 0xffff == tag & 0xffff);
@@ -462,7 +475,10 @@ fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit])
                 plan.reload.get_or_insert(format!("section {kind}:{index} is of an unknown kind"));
             }
             Edit::Image { bitmap, image } => plan.images.push((TagId(bitmap), image)),
-            Edit::Model { .. } => {}
+            Edit::Shader { tag } => plan.shaders.push(tag),
+            // Models are the objects' copy. Another tag's field write
+            // changes nothing this copy reads from metadata live.
+            Edit::Model { .. } | Edit::Tag { .. } => {}
         }
     }
     plan
@@ -476,6 +492,7 @@ fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit])
 /// (`native_map_work::reload_bsp`): until the reload publishes, its parts
 /// keep their D3D draws from guest memory. An image whose size, levels or
 /// format changed keeps its pixels until the map reloads, and says so.
+/// Edited shaders go first ([`refresh_shaders`]).
 fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edits::Edit]) {
     let reload = |why: String| {
         eprintln!("native-world: {} BSP {}: a live edit reloads the world ({why})", key.map, key.index);
@@ -484,6 +501,11 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
     let plan = refresh_plan(ready.bsp_tag, edits);
     if let Some(why) = &plan.reload {
         return reload(why.clone());
+    }
+    if !plan.shaders.is_empty() {
+        if let Err(why) = refresh_shaders(key, ready, &plan.shaders) {
+            return reload(why);
+        }
     }
     if plan.sections.is_empty() && plan.images.is_empty() {
         return;
@@ -550,6 +572,154 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
     drop(guard);
     // Flush the writes before the next admitted draw.
     queue.submit([]);
+}
+
+/// Whether shader `shader` is built from one of the `edited` tags (matched
+/// by index): it is one, or its material uses one
+/// (`tags::material::Material::uses`). A shader that no longer resolves
+/// counts as built from them: the edit may be what broke it. Each answer
+/// is kept in `known`.
+pub(crate) fn shader_edited(
+    lib: &mut tags::material::ShaderLibrary,
+    known: &mut HashMap<TagId, bool>,
+    edited: &[TagId],
+    shader: TagId,
+) -> bool {
+    if let Some(&known) = known.get(&shader) {
+        return known;
+    }
+    let same = edited.iter().any(|t| t.0 & 0xffff == shader.0 & 0xffff);
+    let uses = same || lib.material(shader, None).map(|m| edited.iter().any(|&t| m.uses(t))).unwrap_or(true);
+    known.insert(shader, uses);
+    uses
+}
+
+/// The world materials (by index into `shaders`) whose shader `edited`
+/// says is built from an edited tag, ascending.
+fn edited_materials(shaders: &[TagId], edited: &mut dyn FnMut(TagId) -> bool) -> Vec<u16> {
+    shaders
+        .iter()
+        .enumerate()
+        .filter_map(|(m, &shader)| u16::try_from(m).ok().filter(|_| edited(shader)))
+        .collect()
+}
+
+/// Refreshes the world's material programs built from the edited
+/// `tags` (`Edit::Shader`: shaders, templates, passes, vertex shaders;
+/// docs/editor/realtime-edits.md, "The native refresh"). The shaders are
+/// read again from the map file, which the metadata overlay serves
+/// edited; each native material built from an edited tag is compiled
+/// again as the load compiled it and put in place
+/// (`GpuWorld::refresh_programs`): its uniform buffers rewritten when
+/// only constants changed, its programs rebuilt otherwise. Materials the
+/// load left on the D3D path stay there; their draws read the edit from
+/// guest memory. Err says why the world reloads instead: another of this
+/// load's consumers (the fog, the water, the layers, the lights, the
+/// decorators or the opaque pass) draws an edited shader, or a refreshed
+/// material would draw other parts than it does.
+fn refresh_shaders(key: &BspKey, ready: &Ready, tags: &[u32]) -> Result<(), String> {
+    let Some((device, queue)) = ready.upload_device.as_ref() else { return Ok(()) };
+    let (mut map, mut files) = crate::native_map::open(&key.map).map_err(|e| format!("the map does not open: {e}"))?;
+    let mut lib = tags::material::ShaderLibrary::read(&mut map).map_err(|e| format!("the shader tags do not read ({e})"))?;
+    let edited: Vec<TagId> = tags.iter().map(|&t| TagId(t)).collect();
+    let mut known = HashMap::new();
+    let affected = edited_materials(&ready.shaders, &mut |s| shader_edited(&mut lib, &mut known, &edited, s));
+    if affected.is_empty() {
+        return Ok(());
+    }
+
+    // The consumers that compile their own copy of a shader reload with
+    // the world.
+    let mut users = Vec::new();
+    let draws = |programs: &dyn Fn(u16) -> bool| affected.iter().any(|&m| programs(m));
+    if ready.fog.get().is_some_and(|(fog, _)| draws(&|m| fog.programs.contains_key(&m))) {
+        users.push("the fog");
+    }
+    if ready.water.get().is_some_and(|(water, _)| draws(&|m| water.programs.contains_key(&m))) {
+        users.push("the water");
+    }
+    if ready.layers.get().is_some_and(|(view, _)| draws(&|m| view.layers.values().any(|d| d.programs.contains_key(&m)))) {
+        users.push("the layers");
+    }
+    if ready.lights.get().is_some_and(|lights| draws(&|m| lights.draws_material(m))) {
+        users.push("the lights");
+    }
+    if let Some(decorators) = ready.decorators.get() {
+        let ids: Vec<TagId> = decorators
+            .shaders()
+            .into_iter()
+            .filter_map(|index| map.tags().get(usize::from(index)).map(|t| t.id))
+            .collect();
+        if ids.into_iter().any(|s| shader_edited(&mut lib, &mut known, &edited, s)) {
+            users.push("the decorators");
+        }
+    }
+    if !ready.opaque.is_empty() {
+        let mut shaders: Vec<TagId> = affected.iter().filter_map(|&m| ready.shaders.get(usize::from(m)).copied()).collect();
+        shaders.sort_unstable_by_key(|s| s.0);
+        shaders.dedup();
+        let fresh = opaque_materials::Library::load(&mut map, &shaders);
+        if shaders.iter().any(|s| !ready.opaque.same_for(&fresh, s.0)) {
+            users.push("the opaque pass");
+        }
+    }
+    if !users.is_empty() {
+        return Err(format!("{} draw an edited shader", users.join(", ")));
+    }
+
+    // The native materials among them, and the parts they draw.
+    let (world, native, before) = {
+        let gpu = ready.gpu();
+        let Some(gpu) = gpu.as_ref() else { return Ok(()) };
+        let native: HashSet<u16> = affected.iter().copied().filter(|&m| gpu.material_program(m).is_some()).collect();
+        let w = gpu.world();
+        let world = World {
+            draws: w.draws.iter().filter(|d| native.contains(&d.material)).cloned().collect(),
+            batches: w.batches.iter().filter(|b| native.contains(&b.material)).cloned().collect(),
+            placements: w.placements.clone(),
+            ..Default::default()
+        };
+        let before: HashSet<(Owner, u8)> = world.draws.iter().map(|d| (d.owner, d.part)).collect();
+        (world, native, before)
+    };
+    if native.is_empty() {
+        return Ok(());
+    }
+    let page_ready = |page| {
+        if ready.pages.contains(&page) {
+            Ok(())
+        } else {
+            Err("a part's lightmap page does not decode (page unavailable)".to_owned())
+        }
+    };
+    let mut decoder = StageDecoder::new(ready.palettes.clone());
+    let mut layered = LayeredImages::new();
+    let out = material_programs(&mut map, &mut files, &ready.shaders, &world, &page_ready, &mut decoder,
+        ready.no_lightmap_group, &mut layered, key, Some(&native));
+    if let Some((why, _)) = out.refused.iter().next() {
+        return Err(format!("an edited material no longer compiles ({why})"));
+    }
+    if out.parts != before {
+        return Err("an edited material would draw other parts".into());
+    }
+    if !key.current() {
+        return Ok(());
+    }
+    let images = out.images;
+    let mut guard = ready.gpu();
+    let Some(gpu) = guard.as_mut() else { return Ok(()) };
+    let done = gpu.refresh_programs(device, queue, out.programs, &mut |stage| match stage {
+        Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
+        _ => None,
+    }, &layered)?;
+    drop(guard);
+    // Flush the writes before the next admitted draw.
+    queue.submit([]);
+    eprintln!(
+        "native-world: {} BSP {}: a shader edit refreshed {} materials' constants and rebuilt {} ({} unchanged)",
+        key.map, key.index, done.constants.len(), done.rebuilt.len(), done.unchanged.len()
+    );
+    Ok(())
 }
 
 /// The ordinary ABI takes dirty pages on entry. The sorted handler bypasses
@@ -1023,7 +1193,7 @@ fn load_ready(
             ..Default::default()
         },
         None => material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
-            lightmap_bitmap.is_none(), &mut layered_images, key),
+            lightmap_bitmap.is_none(), &mut layered_images, key, None),
     };
     if !key.current() { return Ok(()); }
     let native: HashSet<u16> = out.programs.keys().copied().collect();
@@ -1078,6 +1248,9 @@ fn load_ready(
         Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
         _ => None,
     };
+    let refresh_shaders_list = shaders.clone();
+    let lightmap_bitmap_missing = lightmap_bitmap.is_none();
+    let page_set: HashSet<LightmapKey> = lightmaps.keys().copied().collect();
     let gpu = {
         let set = ProgramSet::with_layered(&device, &queue, &world, programs, &mut |s| stage_bitmap(&stage_images, s),
             &mut |k| lightmaps.get(&k).cloned(), &layered_images);
@@ -1096,6 +1269,7 @@ fn load_ready(
     };
     if !send(StageReady::World(Arc::new(Ready {
         retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
+        shaders: refresh_shaders_list, no_lightmap_group: lightmap_bitmap_missing, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
@@ -1280,6 +1454,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     no_lightmap_group: bool,
     layered: &mut LayeredImages,
     key: &BspKey,
+    only: Option<&HashSet<u16>>,
 ) -> Programs {
     let mut out = Programs::default();
     let Programs {
@@ -1296,7 +1471,10 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         .filter(|d| matches!(d.owner, Owner::Instance(_)))
         .map(|d| d.material)
         .collect();
-    let materials = world.materials();
+    let mut materials = world.materials();
+    if let Some(only) = only {
+        materials.retain(|m| only.contains(m));
+    }
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(l) => l,
         Err(e) => {
@@ -1482,11 +1660,14 @@ mod tests {
             section(0xe2b4_0013, KIND_CLUSTER, 9, true),
             Edit::Image { bitmap: 0xe000_0100, image: 3 },
             Edit::Model { tag: 0xe000_0200 },
+            Edit::Shader { tag: 0xe000_0300 },
+            Edit::Tag { group: u32::from_be_bytes(*b"weap"), tag: 0xe000_0400 },
         ]);
         assert_eq!(plan, RefreshPlan {
             reload: None,
             sections: vec![load::SectionOwner::Cluster(4), load::SectionOwner::InstanceDefinition(2)],
             images: vec![(TagId(0xe000_0100), 3)],
+            shaders: vec![0xe000_0300],
         });
         let grown = refresh_plan(bsp, &[section(0xe2b4_0012, KIND_CLUSTER, 4, true)]);
         assert!(grown.reload.is_some());
@@ -1494,6 +1675,23 @@ mod tests {
         assert!(unknown.reload.is_some());
         assert_eq!(refresh_plan(None, &[section(0xe2b4_0012, KIND_CLUSTER, 4, true)]), RefreshPlan::default(),
             "no world loaded from a BSP: nothing of it to refresh");
+    }
+
+    /// A template edit picks every world material whose shader is built
+    /// from it, and only those, each shader asked once.
+    #[test]
+    fn an_edited_template_picks_the_materials_built_from_it() {
+        let shaders = [TagId(0xe000_0010), TagId(0xe000_0011), TagId(0xe000_0010), TagId(0xe000_0012)];
+        let mut asked = Vec::new();
+        let mut known = HashMap::new();
+        let picked = edited_materials(&shaders, &mut |s| {
+            *known.entry(s).or_insert_with(|| {
+                asked.push(s);
+                s.0 != 0xe000_0011
+            })
+        });
+        assert_eq!(picked, vec![0, 2, 3]);
+        assert_eq!(asked, vec![TagId(0xe000_0010), TagId(0xe000_0011), TagId(0xe000_0012)]);
     }
 
     /// Whether a native material's part was kept: a

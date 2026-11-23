@@ -637,6 +637,12 @@ does the rest:
    memory (`hud_kit::Header`), so the next install puts it back first
    and leaves one copy, after a machine snapshot too; a root the game
    reloaded is left alone. With no HUD registered nothing is touched.
+   A live edit of a retail record (the agent's `edit.*`) reaches the
+   copy the game draws: the hot-edit glue's tag-write notice calls
+   `hud_kit::tag_written`, and `recopy` copies each retail block the
+   edit overlaps into its copy again
+   ([realtime-edits.md](../editor/realtime-edits.md), "Realtime
+   coverage"; test `an_edited_retail_record_is_copied_again`).
 2. **Gate** (`HUD_WIDGET_GATE`, before, at the widget loop's two calls):
    a widget in the kit's memory is drawn while its value is shown, in a
    style the runtime draws, in a screen mode its place has (one local

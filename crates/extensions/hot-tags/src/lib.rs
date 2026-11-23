@@ -30,16 +30,22 @@
 //! gave it is copied into the edit [`arena`] and its `(count, address)`
 //! pair repointed (`moves` in [`Editor::batch_with`]); writes inside the
 //! moved block count as writes to its tag.
+//!
+//! **Notices.** Host copies of tag bytes (native materials, the clip
+//! store, the HUD kit, aim assist, bot data) learn of an applied edit
+//! through one [`TagWrite`] per changed tag ([`notice`]).
 
 pub mod arena;
 mod batch;
 pub use batch::{BatchError, Move, MoveRoot};
 pub mod index;
 pub mod names;
+pub mod notice;
 pub mod path;
 pub mod raw;
 pub mod value;
 
+pub use notice::{TagWrite, TagWriteSink};
 pub use raw::{RawBatch, RawFiles, RawWrite, Refresh, RefreshSink, Was};
 
 use std::collections::BTreeMap;
@@ -168,6 +174,8 @@ pub struct Editor {
     map_epoch: Option<u64>,
     /// Block moves, by batch id.
     moves: Vec<batch::Moved>,
+    /// Where tag-write notices go ([`Editor::with_tag_writes`]).
+    tag_writes: Option<TagWriteSink>,
 }
 
 fn fault(e: runtime::GuestFault) -> Error {
@@ -674,6 +682,11 @@ impl Editor {
         let bytes = value::encode(&loc.kind, v, &current, &group_of).map_err(Error::invalid)?;
         debug_assert_eq!(bytes.len(), w as usize);
         g.write_bytes(loc.addr, &bytes, 1).map_err(fault)?;
+        if bytes != current {
+            let mut notices = notice::Notices::new(false);
+            notices.field(e.datum, loc.addr, w);
+            self.send_notices(g, notices);
+        }
         let name = self
             .names(g, &idx)
             .and_then(|n| n.name(e.datum))
@@ -778,6 +791,7 @@ impl Editor {
         let mut dropped = Vec::new();
         let mut protected = Vec::new();
         let mut retained = Vec::new();
+        let mut notices = notice::Notices::new(true);
         for index in (0..self.journal.len()).rev() {
             let c = &mut self.journal[index];
             let range = c.range();
@@ -825,6 +839,7 @@ impl Editor {
                 protected.push(range);
             } else {
                 g.write_bytes(c.addr, &c.old_bytes, 1).map_err(fault)?;
+                notices.field(c.tag, c.addr, c.old_bytes.len() as u32);
                 reverted.push(json!({"id": c.id, "at": c.addr, "tag": format!("{:#010x}", c.tag),
                     "path": c.path, "value": c.old, "holds_bytes": value::hex(&c.old_bytes)}));
             }
@@ -834,7 +849,13 @@ impl Editor {
         // moved block is undone before the block moves back), then raw: a
         // grown section's block info points at its old block again before
         // the section is evicted to page it in.
-        self.revert_moves(g, id, scenario, &mut reverted, &mut dropped)?;
+        let moved = self.revert_moves(g, id, scenario, &mut reverted, &mut dropped);
+        for (tag, root) in moved.as_deref().unwrap_or_default() {
+            notices.root(*tag, *root);
+        }
+        // What was put back is in the guest even when a later step fails.
+        self.send_notices(g, notices);
+        moved?;
         self.revert_raw(g, id, &mut reverted, &mut dropped)?;
         Ok(json!({ "reverted": reverted, "dropped": dropped }))
     }

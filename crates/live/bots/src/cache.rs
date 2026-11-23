@@ -12,10 +12,28 @@ use crate::nav::{Build, NavMesh};
 /// cache file loads.
 static CURRENT: std::sync::RwLock<Option<std::sync::Arc<MapData>>> = std::sync::RwLock::new(None);
 
+/// Why the loaded map's data no longer matches its tags, once a live
+/// edit wrote a tag it was built from ([`mark_stale`]).
+static STALE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// Exchange the active pointer. Release the retired map outside any lock
-/// shared with a bot sampling a frame.
+/// shared with a bot sampling a frame. New data is fresh.
 pub(crate) fn replace_current(d: Option<std::sync::Arc<MapData>>) -> Option<std::sync::Arc<MapData>> {
+    *STALE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     std::mem::replace(&mut *CURRENT.write().unwrap_or_else(|e| e.into_inner()), d)
+}
+
+/// A live edit (docs/editor/realtime-edits.md, "Realtime coverage") wrote
+/// a tag the loaded data was built from (the structure BSP's collision):
+/// the bots keep using it, and [`stale`] says why until the next map's
+/// data replaces it. The first reason is kept.
+pub fn mark_stale(why: impl Into<String>) {
+    STALE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| why.into());
+}
+
+/// Why the loaded data is stale, if a live edit made it so.
+pub fn stale() -> Option<String> {
+    STALE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// The loaded map's data.

@@ -4,7 +4,9 @@
 //! Each lookup compares the [`Shape`] it was built from, so a key reused
 //! for a different animation rebuilds. The whole store drops when the
 //! [`Epoch`] moves (map load, checkpoint revert and restore, snapshot
-//! load) and when it grows past [`BUDGET`]. A clip never changes a
+//! load) and when it grows past [`BUDGET`]; a live edit of a `jmad` tag
+//! drops that tag's clips ([`ClipStore::flush_range`],
+//! docs/editor/realtime-edits.md, "Realtime coverage"). A clip never changes a
 //! result, only whether the blob is read again, so flushing is always
 //! safe.
 use crate::clip::{Clip, Layout, Shape};
@@ -99,6 +101,24 @@ impl ClipStore {
             }
         }
         Some(clip)
+    }
+
+    /// Drop the clips keyed inside `[start, end)`: a live edit wrote the
+    /// tag whose metadata lies there, so its keyframe bytes may differ at
+    /// the same shape. The next lookup builds them from the guest again.
+    /// How many went.
+    pub fn flush_range(&self, start: u32, end: u32) -> usize {
+        let mut inner = self.lock();
+        let gone: Vec<u32> = inner.clips.keys().copied().filter(|k| (start..end).contains(k)).collect();
+        for key in &gone {
+            if let Some(clip) = inner.clips.remove(key) {
+                inner.bytes -= clip.footprint();
+            }
+        }
+        if !gone.is_empty() {
+            inner.stats.flushes += 1;
+        }
+        gone.len()
     }
 
     /// Drop every clip.
