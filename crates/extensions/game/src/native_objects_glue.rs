@@ -272,7 +272,7 @@ fn edited_shaders(edits: &[render_bridge::native_edits::Edit]) -> Vec<TagId> {
         .iter()
         .filter_map(|e| match *e {
             Edit::Shader { tag } => Some(TagId(tag)),
-            _ => None,
+            Edit::Section { .. } | Edit::Model { .. } | Edit::Image { .. } | Edit::Tag { .. } => None,
         })
         .collect()
 }

@@ -577,8 +577,10 @@ Its numbers are ported: `engine::colour_pass`
      looked at and translated with its vertex shader's classification-0
      program (below), and the stages' bitmaps decoded; refusals counted by reason, one line on
      stderr. The post glue runs it itself, on a thread of its own at the
-     first screen-effect call on a map (`native_post_glue::EffectsSlot`),
-     with or without the native world.
+     first screen-effect call on a map load (`native_post_glue::EffectsSlot`,
+     keyed by the map's name and `native_map_work::generation`, so a map
+     opened again loads its effects again), with or without the native
+     world.
    - **the engine textures** (`0x00019530`, the jump table at
      `0x00019b68` by id - 1; `native_render::screen_look::engine_texture`):
      1, 9, 14 and 15 the rasterizer data's bitmaps (`+0xc`, `+4`, `+0x14`);

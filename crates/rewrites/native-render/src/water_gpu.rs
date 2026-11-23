@@ -153,6 +153,26 @@ struct WaterMaterial {
 }
 
 impl WaterSet {
+    /// Every texture the passes' stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels, each once.
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        let want = Stage::Bitmap { bitmap, image };
+        let mut materials: Vec<_> = self.materials.iter().collect();
+        materials.sort_by_key(|(m, _)| **m);
+        let mut out = Vec::new();
+        for (_, m) in materials {
+            for (g, _) in &m.passes {
+                g.held(want, &mut out);
+            }
+        }
+        out
+    }
+
+    /// The textures that hold lightmap page `key`.
+    pub fn page_textures(&self, key: LightmapKey) -> Vec<wgpu::Texture> {
+        self.pages.get(&key).and_then(|v| Some(v.as_ref()?.texture().clone())).into_iter().collect()
+    }
+
     /// Uploads `programs` (each material's layer-6 passes and their
     /// compiled programs) for `parts` (the transparents' parts list:
     /// owner and part, index range, lightmap page and material).

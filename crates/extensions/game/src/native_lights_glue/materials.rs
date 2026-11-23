@@ -23,6 +23,17 @@ const LOADING: Keep = Keep::MaterialPending;
 type Images = HashMap<(usize, TagId, u32), Image>;
 type Programs = HashMap<TagId, Vec<u8>>;
 
+/// What a live edit of an image reaches: the light passes the worker has
+/// built (by whether they belong to a model part) and the images it
+/// builds the next ones from.
+#[derive(Default)]
+struct Shared {
+    built: Mutex<Vec<(bool, Weak<Mutex<LightGpu>>)>>,
+    /// Edited stage images by (stage, bitmap, image), which a pass built
+    /// later takes over the load's.
+    edited: Mutex<Images>,
+}
+
 #[derive(Clone)]
 pub(super) struct Resolved {
     pub(super) compiled: Arc<Compiled>,
@@ -118,6 +129,7 @@ struct Queue {
 pub(super) struct Resolver {
     source: Mutex<Option<(ShaderLibrary, Programs)>>,
     queue: OnceLock<Queue>,
+    shared: Arc<Shared>,
 }
 
 impl Resolver {
@@ -125,7 +137,48 @@ impl Resolver {
         Self {
             source: Mutex::new(Some((lib, code))),
             queue: OnceLock::new(),
+            shared: Arc::default(),
         }
+    }
+
+    /// Rewrites the stage textures of the built world passes that sample
+    /// an image of `decoded` (stage images by (stage, bitmap, image), as
+    /// the load decoded them, each through its stage's palette), and
+    /// keeps them for the passes built later. A texture whose size, level
+    /// count or format changed keeps its pixels, and its pass says so.
+    /// Passes of model parts hold the model load's images: they are
+    /// rebuilt by a reload of the models, not here.
+    pub(super) fn refresh_images(&self, queue: &wgpu::Queue, decoded: &Images) {
+        self.shared.edited.lock().unwrap_or_else(|e| e.into_inner()).extend(decoded.iter().map(|(k, v)| (*k, v.clone())));
+        let mut built = self.shared.built.lock().unwrap_or_else(|e| e.into_inner());
+        built.retain(|(_, gpu)| gpu.strong_count() != 0);
+        let mut images: Vec<(TagId, u32)> = decoded.keys().map(|&(_, bitmap, image)| (bitmap, image)).collect();
+        images.sort_by_key(|&(bitmap, image)| (bitmap.0, image));
+        images.dedup();
+        for (model, gpu) in built.iter() {
+            let (false, Some(gpu)) = (*model, gpu.upgrade()) else { continue };
+            let gpu = gpu.lock().unwrap_or_else(|e| e.into_inner());
+            for &(bitmap, image) in &images {
+                let held = gpu.held(bitmap, image);
+                if held.is_empty() {
+                    continue;
+                }
+                let by_stage: HashMap<usize, Image> = decoded
+                    .iter()
+                    .filter(|((_, b, i), _)| (*b, *i) == (bitmap, image))
+                    .map(|(&(stage, ..), pixels)| (stage, pixels.clone()))
+                    .collect();
+                if let Err(why) = native_render::gpu::rewrite_held(queue, &held, &by_stage) {
+                    eprintln!(
+                        "native-lights: bitmap {:#010x} image {image} keeps its pixels in a light pass until the map reloads ({why:?})",
+                        bitmap.0
+                    );
+                }
+            }
+        }
+        drop(built);
+        // Flush the writes before the next admitted draw.
+        queue.submit([]);
     }
 
     pub(super) fn start(
@@ -146,6 +199,7 @@ impl Resolver {
             queue: queue.clone(),
             layout: layout.clone(),
             uploaded: HashMap::new(),
+            shared: Arc::clone(&self.shared),
         };
         let (sender, receiver) = mpsc::sync_channel::<Job>(QUEUE_DEPTH);
         let queue = Queue {
@@ -241,6 +295,7 @@ struct Worker {
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
     uploaded: HashMap<(bool, u64), (Weak<LightProgram>, Weak<Mutex<LightGpu>>)>,
+    shared: Arc<Shared>,
 }
 
 impl Worker {
@@ -313,6 +368,7 @@ impl Worker {
             Some(gpu) => gpu,
             None => {
                 let images = model.map_or(self.images.as_ref(), |lights| &lights.images);
+                let edited = self.shared.edited.lock().unwrap_or_else(|e| e.into_inner());
                 let gpu = LightGpu::new(
                     &self.device,
                     &self.queue,
@@ -322,9 +378,11 @@ impl Worker {
                         let LightStage::Bitmap { bitmap, image } = source else {
                             return None;
                         };
-                        images.get(&(stage, bitmap, image)).cloned()
+                        let key = (stage, bitmap, image);
+                        model.is_none().then(|| edited.get(&key).cloned()).flatten().or_else(|| images.get(&key).cloned())
                     },
                 );
+                drop(edited);
                 // Texture writes can precede a shader validation failure.
                 self.queue.submit([]);
                 let gpu = Arc::new(Mutex::new(
@@ -333,6 +391,11 @@ impl Worker {
                 if self.uploaded.len() >= CAPACITY {
                     self.uploaded.retain(|_, (_, gpu)| gpu.strong_count() != 0);
                 }
+                self.shared
+                    .built
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((model.is_some(), Arc::downgrade(&gpu)));
                 self.uploaded
                     .insert(id, (Arc::downgrade(&program), Arc::downgrade(&gpu)));
                 gpu

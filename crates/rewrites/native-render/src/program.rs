@@ -1096,8 +1096,9 @@ pub struct ProgramSet {
     /// ([`ProgramSet::pipelines`]).
     cull: InheritedCull,
     /// The lightmap pages uploaded for the batch groups, by key (`None`
-    /// for one that did not decode): what a rebuilt material's groups
-    /// bind ([`ProgramSet::refresh`]).
+    /// for one that did not decode): what a rebuilt material's groups bind
+    /// ([`ProgramSet::refresh`]) and a live edit rewrites
+    /// ([`ProgramSet::page_textures`]).
     pages: HashMap<LightmapKey, Option<wgpu::TextureView>>,
 }
 
@@ -1172,6 +1173,18 @@ pub(crate) fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgp
 }
 
 impl Gpu {
+    /// The textures this program's stages sample as `want`, with the stage
+    /// and its signed channels, appended to `out` unless `out` holds them.
+    pub(crate) fn held(&self, want: Stage, out: &mut Vec<crate::gpu::Held>) {
+        for (n, stage) in self.program.stages.iter().enumerate() {
+            let Some(view) = self.stage_views[n].as_ref().filter(|_| *stage == want) else { continue };
+            let t = view.texture().clone();
+            if !out.iter().any(|(o, ..)| *o == t) {
+                out.push((t, n, self.program.signed[n]));
+            }
+        }
+    }
+
     /// Uploads `program`; `None` when a stage's bitmap does not decode.
     pub(crate) fn new(
         device: &wgpu::Device,
@@ -1664,6 +1677,18 @@ impl ProgramSet {
             }
         }
         Ok(done)
+    }
+
+    /// The textures that hold lightmap page `key`, for
+    /// [`crate::gpu::rewrite_pages`].
+    pub fn page_textures(&self, key: LightmapKey) -> Vec<wgpu::Texture> {
+        self.pages.get(&key).and_then(|page| page.as_ref().map(|view| view.texture().clone())).into_iter().collect()
+    }
+
+    /// Every texture the materials' stages sample as image `image` of
+    /// `bitmap`, with the stage and its signed channels, each texture once.
+    pub fn held(&self, bitmap: map::TagId, image: u32) -> Vec<crate::gpu::Held> {
+        self.image_textures(bitmap, image)
     }
 
     /// The stages whose programs sample image `image` of `bitmap`,
@@ -2308,6 +2333,48 @@ mod tests {
         assert_eq!(first_texel(&ctx, &plain), [10, 20, 30, 40], "refused: nothing written");
         assert_eq!(set.rewrite_image(&ctx.queue, bitmap, 1, &HashMap::new()), Err(crate::gpu::ImageRefusal::NotDecoded));
         assert_eq!(set.rewrite_image(&ctx.queue, map::TagId(8), 1, &decoded), Ok(0), "no texture of another bitmap");
+    }
+
+    /// A lightmap page rewritten in place changes the texel the batch
+    /// group samples, and every holder of the page is one texture; a size
+    /// change is refused and writes nothing (docs/editor/realtime-edits.md,
+    /// "The native refresh").
+    #[test]
+    fn a_lightmap_page_rewrite_changes_the_sampled_texel() {
+        use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let page = LightmapKey { page: 3, palette: 1 };
+        let mut b = WorldBuilder::new();
+        b.add_section(
+            Owner::Cluster(0),
+            &SectionInput {
+                positions: vec![[10.0, 2.0, -2.0], [10.0, -2.0, -2.0], [10.0, 2.0, 2.0], [10.0, -2.0, 2.0]],
+                uvs: vec![[0.5; 2]; 4],
+                lightmap_uvs: vec![[0.5; 2]; 4],
+                normals: vec![[-1.0, 0.0, 0.0]; 4],
+                parts: vec![PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
+                ..Default::default()
+            },
+            &Placement::IDENTITY,
+            Some(page),
+        );
+        let world = b.finish();
+        let mut program = compile(&plain_look(), &plain_program()).unwrap();
+        program.dims[..2].fill(Some(TextureDim::D2));
+        program.stages[0] = Stage::Bitmap { bitmap: map::TagId(7), image: 1 };
+        program.stages[1] = Stage::Lightmap;
+        let set = ProgramSet::new(&ctx.device, &ctx.queue, &world, [(0, program)].into(),
+            &mut |_| Some(Image::solid([1, 2, 3, 4])), &mut |_| Some(Image::solid([7, 8, 9, 10])));
+        let held = set.page_textures(page);
+        assert_eq!(held.len(), 1, "one texture holds the page");
+        assert_eq!(first_texel(&ctx, &held[0]), [7, 8, 9, 10]);
+        assert!(set.page_textures(LightmapKey { page: 3, palette: 2 }).is_empty(), "another palette is another page");
+        assert_eq!(crate::gpu::rewrite_pages(&ctx.queue, &held, &Image::solid([70, 80, 90, 100])), Ok(1));
+        assert_eq!(first_texel(&ctx, &held[0]), [70, 80, 90, 100]);
+        let bigger = Image::level(2, 2, vec![99; 16]).unwrap();
+        assert_eq!(crate::gpu::rewrite_pages(&ctx.queue, &held, &bigger), Err(crate::gpu::ImageRefusal::Size));
+        assert_eq!(first_texel(&ctx, &held[0]), [70, 80, 90, 100], "refused: nothing written");
+        assert_eq!(set.held(map::TagId(7), 1).len(), 1, "the stage image is held beside the page");
     }
 
     /// The world's packets (`GpuWorld::selection_draws`) with their view
