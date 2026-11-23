@@ -355,12 +355,81 @@ pub fn compile_section(
 pub fn world_constants_read(look: &PassLook, microcode: &[u8]) -> Result<(), String> {
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let set = set_constants(&look.vertex_constants);
-    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !set(c)) {
+    constants_read(&program)?;
+    if let Some(c) = live_unset_read(&program, &set, dead_texcoords(look)) {
         return Err(format!(
             "vertex program reads c[{c}], which the native pass does not set"
         ));
     }
     Ok(())
+}
+
+/// The texture-coordinate outputs `oT0..oT3` nothing reads: the pass's
+/// pixel shader leaves the stage's texture mode at `NONE`, so the
+/// rasteriser never interpolates or fetches with that stage's
+/// coordinates. A pixel shader that does not decode leaves none dead.
+pub(crate) fn dead_texcoords(look: &PassLook) -> [bool; 4] {
+    match PixelShaderDef::from_bytes(&look.pixel_shader) {
+        Ok(def) => def.decode().texture_modes.map(|m| m == psh::TexMode::None),
+        Err(_) => [false; 4],
+    }
+}
+
+/// The first constant `program` reads that `set` does not name and whose
+/// value can reach something the draw uses, or `None`. The shared world
+/// programs write every stage's texture coordinates (`oT2 = uv ·
+/// c[20].xy + c[20].zw`) whether or not the material has that stage: a
+/// material that binds no transform for it leaves `c[20]` as whatever the
+/// device held, and its pixel shader never reads `oT2`. A read counts only
+/// when a value computed from it reaches an output other than a dead
+/// `oT` (`dead`), `a0.x`, or a constant write. The walk is forward and
+/// never clears a temporary, so a register reused for something else
+/// afterwards stays tainted (refused, never wrongly admitted).
+pub(crate) fn live_unset_read(
+    program: &vsh::Program,
+    set: &impl Fn(u8) -> bool,
+    dead: [bool; 4],
+) -> Option<u8> {
+    use vsh::{IluOp, MacOp, OutDest, OutReg, SrcReg, Unit};
+    let mut tainted = [None::<u8>; 16];
+    let taint = |s: &vsh::Source, tainted: &[Option<u8>; 16]| match s.reg {
+        SrcReg::Const { index, .. } if !set(index) => Some(index),
+        SrcReg::Temp(n) => tainted[usize::from(n) & 15],
+        _ => None,
+    };
+    for i in &program.instructions {
+        let (ra, rb, rc) = i.mac_reads();
+        let first = |picks: [(bool, &vsh::Source); 3]| {
+            picks
+                .into_iter()
+                .filter(|(used, _)| *used)
+                .find_map(|(_, s)| taint(s, &tainted))
+        };
+        let mac = first([(ra, &i.a), (rb, &i.b), (rc, &i.c)]);
+        let ilu = if i.ilu != IluOp::Nop { taint(&i.c, &tainted) } else { None };
+        if i.mac == MacOp::Arl && mac.is_some() {
+            return mac;
+        }
+        if let Some(o) = i.out {
+            let value = match o.unit {
+                Unit::Mac => mac,
+                Unit::Ilu => ilu,
+            };
+            if let Some(c) = value {
+                match o.dest {
+                    OutDest::Output(OutReg::T(k)) if dead.get(usize::from(k)) == Some(&true) => {}
+                    _ => return Some(c),
+                }
+            }
+        }
+        if i.mac_writes_temp() && mac.is_some() {
+            tainted[usize::from(i.mac_temp) & 15] = mac;
+        }
+        if i.ilu_writes_temp() && ilu.is_some() {
+            tainted[usize::from(i.ilu_temp) & 15] = ilu;
+        }
+    }
+    None
 }
 
 /// `pass` with its vertex program's rigid classification `microcode`
@@ -398,7 +467,7 @@ pub fn compile_section_rigid(
         return Err("the rigid vertex program does not read the model rows c[50..52]".into());
     }
     let set = set_constants(&look.vertex_constants);
-    if let Some(c) = read.into_iter().find(|&c| !set(c)) {
+    if let Some(c) = live_unset_read(&program, &set, dead_texcoords(look)) {
         return Err(format!(
             "rigid vertex program reads c[{c}], which the native pass does not set"
         ));
@@ -4040,6 +4109,64 @@ mod tests {
                 .unwrap_err()
                 .contains("relative")
         );
+    }
+
+    /// The world programs' stage-2 coordinate: `oT2.xy = v1 · c[20].xy +
+    /// c[20].zw`, optionally through a temporary, after the position.
+    fn stage_two_program(via_temp: bool, also_pos: bool) -> Vec<u8> {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        let mut v = vec![
+            Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 8),
+            Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+        ];
+        if via_temp {
+            v.push(
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(20)), Some(O::c(20))).to_temp(3, 0xf),
+            );
+            v.push(Inst::mac(MacOp::Mov, Some(O::r(3)), None, None).to_out(false, OutReg::T(2), 3));
+        } else {
+            v.push(
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(20)), Some(O::c(20)))
+                    .to_out(false, OutReg::T(2), 3),
+            );
+        }
+        if also_pos {
+            v.push(Inst::mac(MacOp::Mov, Some(O::c(20)), None, None).to_out(false, OutReg::Pos, 4));
+        }
+        program(&v)
+    }
+
+    #[test]
+    fn an_unset_constant_that_only_feeds_a_dead_texcoord_is_not_a_read() {
+        let read = |look: &PassLook, program: Vec<u8>| world_constants_read(look, &program);
+        const C20: &str = "vertex program reads c[20], which the native pass does not set";
+        // c[20] unbound, stage 2's texture mode NONE (the default): oT2
+        // is never fetched with, directly or through a temporary.
+        let dead = final_look(false);
+        for via_temp in [false, true] {
+            assert_eq!(read(&dead, stage_two_program(via_temp, false)), Ok(()), "{via_temp}");
+        }
+        // The same value also reaching oPos is a live read.
+        assert_eq!(read(&dead, stage_two_program(false, true)).unwrap_err(), C20);
+        // Stage 2 fetching (a 2D projective mode): the coordinate is live.
+        let mut def = PixelShaderDef::from_bytes(&dead.pixel_shader).unwrap();
+        def.texture_modes = 0x01 << 10;
+        let live = PassLook { pixel_shader: def.to_bytes(), ..final_look(false) };
+        for via_temp in [false, true] {
+            assert_eq!(read(&live, stage_two_program(via_temp, false)).unwrap_err(), C20);
+        }
+        // A bound c[20] was never in question.
+        let bound = PassLook {
+            vertex_constants: vec![Register {
+                index: 20,
+                value: [1.0; 4],
+                written: 0xf,
+                origin: tags::material::Origin::Instance,
+            }],
+            ..live
+        };
+        assert_eq!(read(&bound, stage_two_program(false, true)), Ok(()));
     }
 
     /// The rigid classification's shape: `r10 = v0 · c[170] + c[171]`,

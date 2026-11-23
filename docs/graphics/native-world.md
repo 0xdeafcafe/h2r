@@ -635,7 +635,13 @@ and its pipeline completions have crossed a frame boundary.
   - a vertex constant outside the view's `c[0..18]`, the instance's,
     `c[50..52]` and `c[172]` (the structure draw uploads `c[21]`,
     `c[24]`, `c[31]`, `c[174]` and others per draw), or one addressed
-    relative to `a0.x`. 03a's world programs (`lightmap_perpixel_*`,
+    relative to `a0.x`. A read of an unbound constant counts only when
+    its value reaches an output the pass uses (`program::live_unset_read`):
+    the shared world programs compute `oT2` from `c[20]` for every
+    material, and a material with no stage-2 transform leaves `c[20]` unset
+    while its pixel shader's stage-2 texture mode is `NONE`, so `oT2` is
+    never read. A value that reaches `oPos`, another output, `a0.x`, or a
+    stage whose mode is not `NONE` still refuses. 03a's world programs (`lightmap_perpixel_*`,
     classification 0) read `c[0..3]`, `c[5..11]` (view), `c[18..20]`
     (instance) and `c[172]` only;
   - fog: a combiner that reads the fog register, or a definition
