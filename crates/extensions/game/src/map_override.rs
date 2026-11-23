@@ -156,7 +156,7 @@ pub fn active_map_file(
 /// The loaded map's bytes for the telemetry worker: its host region where it
 /// has one, else, for a map the VFS rewrites in memory (the pogo kit, the
 /// screens: no contiguous host file), those bytes. Frame names come from them
-/// (docs/live/live-telemetry.md, "Names").
+/// (docs/live/live-telemetry.md, "Frame species, aim, weapon and shots").
 pub fn active_map_source(
     vfs: &mut vfs::Vfs,
     guest: &runtime::Guest,
