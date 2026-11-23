@@ -618,7 +618,8 @@ M10 each start by reading the retail code for the fields they add, into
   the scenario changes. A film named with `--film` and film playback
   exclude object edits and map reloads. The first edit in a session's
   [default recording](../game/film-format.md#recording-every-game)
-  discards that film instead. After a file reload succeeds, restart the game before
+  discards its tape and the game in play instead; films of games already
+  ended stay. After a file reload succeeds, restart the game before
   signing in to external Live.
 - Continuous writes require Edit. F5 in View can authorize a single
   playtest. `SessionKind::writes` gates host edits. An external Live game

@@ -636,7 +636,8 @@ string IDs touch every cache keyed by tag index (XL, not sliced).
   stream, a render hook or a worker. A film named with `--film` and film
   playback exclude them, as they exclude object edits. The first write in
   a session's [default recording](../game/film-format.md#recording-every-game)
-  discards that film.
+  discards its tape and the game in play; films of games already ended
+  stay.
 - **Snapshots.** A non-empty overlay or a used arena extent is host state
   a machine snapshot does not hold, so both prevent snapshots, rewind and
   film keyframes until the map changes, as a bound play copy does

@@ -70,6 +70,14 @@ pub(super) struct Capture {
     points: CapturePoints,
 }
 
+impl Capture {
+    /// After a game's film is cut: free its RAM anchor
+    /// ([`CapturePoints::release_anchor`]).
+    pub(super) fn next_game(&mut self) {
+        self.points.release_anchor();
+    }
+}
+
 #[derive(Default)]
 pub(super) struct CapturePoints {
     next_attempt: u64,
@@ -85,6 +93,12 @@ impl CapturePoints {
 
     fn retry(&mut self, tick: u64) {
         self.next_attempt = tick.saturating_add(1);
+    }
+
+    /// Free the cut game's RAM anchor. The next game's first snapshot
+    /// starts a new group; the capture ordinals carry on with the tape.
+    pub(super) fn release_anchor(&mut self) {
+        self.ram_anchor = None;
     }
 
     fn mark(&mut self, tick: u64) -> u64 {
@@ -231,6 +245,9 @@ impl Recording {
             self.meta
                 .observe(guest, tick, |source| self.unified.dropped(source))?,
         );
+        if self.meta.take_left() {
+            self.unified.next_game();
+        }
         let inputs = self.frame.actions.take().unwrap_or_default();
         let out = self.out.as_mut().context("engine tape is closed")?;
         let match_start = self.meta.descriptor().match_start_tick;

@@ -378,7 +378,11 @@ retail's distributed protocol as any map package does.
   the session's welcome at its start. The payload is the item's bytes
   (`net::Stamped::to_bytes`). Playback feeds them to a `net::Peer` and
   applies them as the session did. `simulation_hooks` covers Forge's
-  hooks, so a film records whether Forge was installed.
+  hooks, so a film records whether Forge was installed. The film's header
+  decides, on both sides: a session's default recording and its replay
+  install Forge, a film named with `--film` installs it on neither
+  (`registration::local_forge`,
+  [film-format.md](film-format.md#recording-every-game)).
 - `ForgeExt` is in the keyframes and the sim hash through `SimExt`
   (sim-rewrite.md section 7).
 - Theater never edits: writes are refused in playback, as for the

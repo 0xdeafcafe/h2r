@@ -527,6 +527,7 @@ mod tests {
             live_service: false,
             features: String::new(),
             player_features: false,
+            tape_id: None,
         };
         header.meta.image_stamp = STAMP.into();
         for (id, abi) in [("old", "h2-sim/0"), ("current", SIMULATION_ABI)] {

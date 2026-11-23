@@ -5178,7 +5178,7 @@ or a host without the editor map mount returns `REFUSED` with `data.why`.
 A film named with `--film`, film playback and external Live sign-in also
 exclude file binding. A session's
 [default recording](../game/film-format.md#recording-every-game) allows
-it: the first authorized editor write discards that film. After a file binding succeeds, restart
+it: the first authorized editor write discards its tape and the game in play; films of games already ended stay. After a file binding succeeds, restart
 the game before signing in to external Live. Machine snapshots and
 snapshot-based rewind are unavailable while a play copy is bound.
 See [Map overrides](storage.md#map-overrides) and [Changed maps](cache-slots.md#changed-maps).

@@ -45,6 +45,18 @@ impl Capture {
         self.count_drops(source, 1);
     }
 
+    /// A default recording's next game, after its last game's film was cut
+    /// or the player left it: stats, medals and drop counts start again.
+    /// The presentation stream belongs to the tape and carries on.
+    pub(super) fn next_game(&mut self) {
+        self.stats = Default::default();
+        self.drops.clear();
+        self.clock = None;
+        self.final_clock = None;
+        self.ended = false;
+        self.live_session = false;
+    }
+
     fn count_drops(&mut self, source: &'static str, n: u64) {
         if n == 0 {
             return;
