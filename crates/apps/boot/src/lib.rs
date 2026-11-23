@@ -1100,6 +1100,9 @@ fn run_configured(
             // The Pogo Stick's piston sounds too (pogo_sound.rs).
             game::pogo_sound::connect(audio.mixer());
             // `audio.meter` meters this mixer's output (mixer_meter.rs).
+            // It locks the mixer to read its rate, so the guard above goes
+            // first: a std mutex locked twice on one thread never returns.
+            drop(mixer);
             game::mixer_meter::connect(audio.mixer());
         }
     }
