@@ -212,6 +212,7 @@ impl Live {
             last_activity: time.unix_timestamp(),
             state: "open".into(),
             players: BTreeMap::new(),
+            lan: None,
         };
         let stream = session::stream(&id);
         let event = self.server_event(
@@ -1000,9 +1001,11 @@ pub(crate) async fn append(
 pub(crate) async fn detail(
     HttpState(live): Shared,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    req: Request,
 ) -> Result<Response, ApiError> {
-    let token = crate::http::bearer(&headers);
+    let reader = reader_ipv4(&live, &req);
+    let headers = req.headers();
+    let token = crate::http::bearer(headers);
     let viewer = live.read_caller(token)?;
     let state = live.model.read();
     let item = state
@@ -1012,7 +1015,7 @@ pub(crate) async fn detail(
     let item = for_reader(
         &live,
         item,
-        token.is_some() && assignment_endpoint_shows(item, viewer),
+        (token.is_some() && assignment_endpoint_shows(item, viewer)).then_some(reader),
         false,
     );
     Ok(crate::http::json(
@@ -1022,13 +1025,15 @@ pub(crate) async fn detail(
 }
 pub(crate) async fn list(
     HttpState(live): Shared,
-    headers: HeaderMap,
     Query(q): Query<BTreeMap<String, String>>,
+    req: Request,
 ) -> Result<Response, ApiError> {
-    let viewer = live.read_caller(crate::http::bearer(&headers))?;
+    let reader = reader_ipv4(&live, &req);
+    let headers = req.headers();
+    let viewer = live.read_caller(crate::http::bearer(headers))?;
     // A checked bearer is a game (or the operator) looking for a host: it
     // gets the addresses it joins by; an anonymous reader does not.
-    let signed = crate::http::bearer(&headers).is_some();
+    let signed = crate::http::bearer(headers).is_some().then_some(reader);
     let limit = q
         .get("limit")
         .map(|v| v.parse::<usize>())
@@ -1114,7 +1119,7 @@ pub(crate) async fn list(
             && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
             && q.get("visibility")
                 .is_none_or(|v| v == s.advertisement.visibility.as_str())
-            && (!signed || assignment_endpoint_shows(s, viewer))
+            && (signed.is_none() || assignment_endpoint_shows(s, viewer))
             && s.listed_for(viewer, |a, b| state.is_friends(a, b))
     });
     let eligible = listed.filter(|s| {
@@ -1159,7 +1164,7 @@ fn session_page(
     items: Vec<&Session>,
     next: Option<String>,
     variants: Option<Vec<String>>,
-    signed: bool,
+    signed: Option<Option<std::net::Ipv4Addr>>,
     include_browser: bool,
 ) -> Response {
     #[derive(serde::Serialize)]
@@ -1257,10 +1262,32 @@ pub(crate) fn pack_assignment_allows(s: &Session, xuid: Xuid) -> bool {
     })
 }
 
+/// The IPv4 address the server sees a reader at
+/// ([`crate::public::PublicUrl::client_ip`]); an IPv4-mapped IPv6 one
+/// counts.
+fn reader_ipv4(live: &Live, req: &Request) -> Option<std::net::Ipv4Addr> {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
+    match live.policy().public.client_ip(peer, req.headers())? {
+        IpAddr::V4(v) => Some(v),
+        IpAddr::V6(v) => v.to_ipv4_mapped(),
+    }
+}
+
 /// A session as the session endpoints answer it: whole for a signed-in
-/// reader (a game joins by its addresses), without them
-/// ([`strip_addresses`]) for an anonymous one.
-fn for_reader(live: &Live, s: &Session, signed: bool, include_browser: bool) -> serde_json::Value {
+/// reader (`signed` is Some, holding the address the server saw it at; a
+/// game joins by the addresses), without them ([`strip_addresses`]) for
+/// an anonymous one. A signed-in reader at the host's own public address
+/// also gets `lan`, the host's address inside their shared network
+/// ([`Session::lan_for`]).
+fn for_reader(
+    live: &Live,
+    s: &Session,
+    signed: Option<Option<std::net::Ipv4Addr>>,
+    include_browser: bool,
+) -> serde_json::Value {
     let mut v = serde_json::to_value(s).expect("serializes");
     // Older clients strictly decode the advertisement. Send the extra
     // field only to list readers that use its browser query parameters.
@@ -1274,8 +1301,18 @@ fn for_reader(live: &Live, s: &Session, signed: bool, include_browser: bool) -> 
     if let Some(region) = dedicated.dedicated_region {
         v["dedicated_region"] = region.into();
     }
-    if !signed {
-        strip_addresses(&mut v);
+    match signed {
+        None => {
+            strip_addresses(&mut v);
+            if let Some(o) = v.as_object_mut() {
+                o.remove("lan");
+            }
+        }
+        Some(reader) => {
+            if let Some(lan) = reader.and_then(|ip| s.lan_for(ip)) {
+                v["lan"] = serde_json::to_value(lan).expect("serializes");
+            }
+        }
     }
     v
 }

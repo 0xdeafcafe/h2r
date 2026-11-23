@@ -917,7 +917,7 @@ async fn custom_session_has_no_host_player_and_is_bound_to_its_token() {
     let response = crate::sessions::detail(
         axum::extract::State(live.clone()),
         axum::extract::Path(session.session_id.clone()),
-        axum::http::HeaderMap::new(),
+        axum::extract::Request::new(axum::body::Body::empty()),
     )
     .await
     .unwrap();

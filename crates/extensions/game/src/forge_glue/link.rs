@@ -216,12 +216,19 @@ impl Transport for HleTransport {
             // synchronous guest exchanges game traffic with the host only).
             match hle.joined(std::time::Duration::ZERO) {
                 live_hle::Joined::Known { session, .. } => {
-                    let base = SocketAddrV4::new(session.endpoint.addr, session.endpoint.port);
-                    let host = SocketAddrV4::new(
-                        *base.ip(),
-                        base.port().saturating_add(coop::link::COOP_PORT_OFFSET),
-                    );
-                    endpoints.retain(|endpoint| *endpoint == host);
+                    // Its public endpoint, or its LAN one when this console
+                    // is behind the host's NAT (`Session::reach_order`).
+                    let hosts: Vec<_> = session
+                        .reach_order()
+                        .into_iter()
+                        .map(|base| {
+                            SocketAddrV4::new(
+                                *base.ip(),
+                                base.port().saturating_add(coop::link::COOP_PORT_OFFSET),
+                            )
+                        })
+                        .collect();
+                    endpoints.retain(|endpoint| hosts.contains(endpoint));
                 }
                 _ if endpoints.len() == 1 => {}
                 _ => endpoints.clear(),

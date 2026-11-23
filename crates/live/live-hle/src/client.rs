@@ -1395,12 +1395,14 @@ impl Worker {
             return Err(Error::Protocol);
         }
         let kid = crate::sessions::wire_id(session_id).ok_or(Error::Protocol)?;
-        let address = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
         let retry = Step::Retry(Vec::new());
         if !self.map_ready(&row, true) {
             return Ok(retry);
         }
-        let ready = crate::qos::ready_to_join(address, kid, self.replication.get());
+        // The host's LAN address first when the read gave one (this console
+        // is behind the host's NAT), then its public endpoint.
+        let (_, ready) =
+            crate::qos::ready_at(&row.reach_order(), kid, self.replication.get());
         Ok(Step::after_qos(ready, retry, || Outcome::Join {
             rows: vec![row],
             frames_from_host,

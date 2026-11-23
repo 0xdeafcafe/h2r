@@ -230,6 +230,103 @@ async fn session_endpoints_give_addresses_only_to_signed_in_games() {
     assert_eq!(one["session"]["endpoint"]["addr"], LAN);
 }
 
+/// `method uri` from TCP peer `peer` (the address the server sees).
+async fn call_from(
+    h: &Harness,
+    method: Method,
+    uri: &str,
+    auth: Option<(&'static str, String)>,
+    body: Body,
+    peer: &str,
+) -> Value {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let mut req = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .extension(axum::extract::ConnectInfo(
+            peer.parse::<std::net::SocketAddr>().unwrap(),
+        ));
+    if let Some((k, v)) = auth {
+        req = req.header(k, v);
+    }
+    let r = h.app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = r.status();
+    let v: Value =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(status.is_success(), "{uri}: {status} {v}");
+    v
+}
+
+#[tokio::test]
+async fn a_signed_in_reader_behind_the_hosts_nat_gets_its_lan_endpoint() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let neighbour = h.create("Neighbour").await;
+    let stranger = h.create("Stranger").await;
+    // The host's XNADDR carries its LAN address and base port.
+    let mut ad = custom();
+    ad.host_address = vec![0; 36];
+    ad.host_address[..4].copy_from_slice(&[10, 0, 3, 7]);
+    ad.host_address[4..8].copy_from_slice(&[10, 0, 3, 7]);
+    ad.host_address[8..10].copy_from_slice(&3074u16.to_be_bytes());
+    let created = call_from(
+        &h,
+        Method::POST,
+        "/v1/sessions",
+        Some(h.bearer(&host, lxm::SESSIONS_WRITE)),
+        Body::from(serde_json::to_vec(&ad).unwrap()),
+        "203.0.113.8:5000",
+    )
+    .await;
+    let sid = created["session_id"].as_str().unwrap().to_string();
+    assert_eq!(created["session"]["endpoint"]["addr"], "203.0.113.8");
+    assert!(created["session"].get("lan").is_none(), "never stored");
+    let lan = json!({"addr": "10.0.3.7", "port": 3074, "source": "lan"});
+    let detail = format!("/v1/sessions/{sid}");
+
+    // A signed-in reader at the host's public address: the LAN endpoint,
+    // in the list and the detail.
+    for uri in ["/v1/sessions", detail.as_str()] {
+        let v = call_from(
+            &h,
+            Method::GET,
+            uri,
+            Some(h.bearer(&neighbour, lxm::READ)),
+            Body::empty(),
+            "203.0.113.8:6000",
+        )
+        .await;
+        let s = if uri == detail { &v["session"] } else { &v["items"][0] };
+        assert_eq!(s["lan"], lan, "{uri}: {v}");
+        assert_eq!(s["endpoint"]["addr"], "203.0.113.8");
+    }
+    // A signed-in reader on another network: none.
+    for uri in ["/v1/sessions", detail.as_str()] {
+        let v = call_from(
+            &h,
+            Method::GET,
+            uri,
+            Some(h.bearer(&stranger, lxm::READ)),
+            Body::empty(),
+            "198.51.100.20:6000",
+        )
+        .await;
+        let s = if uri == detail { &v["session"] } else { &v["items"][0] };
+        assert!(s.get("lan").is_none(), "{uri}: {v}");
+        assert_eq!(s["endpoint"]["addr"], "203.0.113.8");
+    }
+    // Anonymous, even from the host's own address: no addresses at all.
+    for uri in ["/v1/sessions", detail.as_str()] {
+        let v = call_from(&h, Method::GET, uri, None, Body::empty(), "203.0.113.8:6001").await;
+        let s = if uri == detail { &v["session"] } else { &v["items"][0] };
+        assert!(s.get("lan").is_none(), "{uri}: {v}");
+        assert!(s.get("endpoint").is_none(), "{uri}: {v}");
+        assert!(!v.to_string().contains("10.0.3.7"), "{uri}: {v}");
+    }
+}
+
 #[tokio::test]
 async fn an_events_page_holds_at_most_200() {
     let h = start(

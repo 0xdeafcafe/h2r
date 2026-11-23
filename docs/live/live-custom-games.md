@@ -192,7 +192,7 @@ needs. Phase 1 already implemented each piece it calls:
 | Browser step | Already implemented by |
 |---|---|
 | Search: procedure 1, seven integer columns for IDs 1, 2, 3, 5, 6, 7, 8 | `GET /v1/sessions` ([live.md](live.md), "Client HLE: sessions and server discovery") |
-| Each row's XNADDR | The HLE writes the session's endpoint into it, so the QoS probe and the join go to the advertised address |
+| Each row's XNADDR | The HLE writes the session's endpoint into it, so the QoS probe and the join go to the advertised address. When the server saw this console at the host's public address, `ina` holds the host's LAN address (the read's `lan`) and `inaOnline` the public one; the probe tries the LAN address first and the join goes where the probe was answered ([live-matchmaking.md](live-matchmaking.md) §3.6) |
 | QoS listener data | Answered between HLE peers on UDP base+2 ([live.md](live.md), sockets) |
 | XNKID | The server's session ID. The host registered the same ID through `XOnlineMatchSessionGetInfo` (`0x72f39`), so its find-by-XNKID matches |
 

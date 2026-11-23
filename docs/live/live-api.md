@@ -1333,6 +1333,18 @@ are what a game joins by, so `GET /v1/sessions` and `GET /v1/sessions/{id}`
 give them to a signed-in reader (a `read` bearer: the game's matchmaking
 and join calls) and leave them out for an anonymous one.
 
+A signed-in reader whose address, as the server sees it
+(`policy.public.client_ip`, an IPv4-mapped IPv6 address counting as its
+IPv4), is the session's `endpoint.addr` also gets
+`lan: {addr, port, source: "lan"}`: the address and port in the host's
+XNADDR (`host_address` bytes 0–3 and 8–9). The two consoles sit behind
+one NAT, which seldom loops a public address back inside, so the joiner
+reaches the host at its LAN address. `lan` is given only when that
+address is a private, link-local or shared (100.64/10) one other than
+the endpoint, the port is 1..65529, and the endpoint itself is not a
+local address (`Session::lan_for`). It is computed for each read and is
+never stored or logged; an anonymous reader never gets it.
+
 The log never shows them to anyone but the operator (a server-key token).
 Every other reader of `GET /v1/events`, `/v1/stream` and the snapshot's
 event tail, anonymous, signed in or an admin account, gets each event with

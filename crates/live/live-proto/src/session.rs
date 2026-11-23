@@ -363,6 +363,12 @@ pub struct Session {
     pub state: String,
     #[serde(default)]
     pub players: BTreeMap<Xuid, String>,
+    /// The host's address inside its own network, `source: "lan"`: set
+    /// only in a session read answered to a signed-in reader whose public
+    /// address is the host's ([`Session::lan_for`]), so a console behind
+    /// the host's NAT reaches it without a hairpin. Never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<Endpoint>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -503,7 +509,47 @@ impl Endpoint {
         self.source == "observed" || is_local_ipv4(self.addr)
     }
 }
+/// [`Endpoint::source`] of [`Session::lan`].
+pub const LAN_SOURCE: &str = "lan";
 impl Session {
+    /// The host's endpoint inside its own network, for a reader the server
+    /// saw at `reader`: when that is the host's public address (both
+    /// behind one NAT, which seldom loops traffic back inside), the
+    /// address and port the host's XNADDR (`host_address`) carries, if
+    /// that is a local-network address other than the public one. None
+    /// otherwise, and for a host whose endpoint is already local.
+    pub fn lan_for(&self, reader: Ipv4Addr) -> Option<Endpoint> {
+        if reader != self.endpoint.addr || is_local_ipv4(self.endpoint.addr) {
+            return None;
+        }
+        let x = self.advertisement.host_address.get(..10)?;
+        let addr = Ipv4Addr::new(x[0], x[1], x[2], x[3]);
+        let port = u16::from_be_bytes([x[8], x[9]]);
+        (addr != self.endpoint.addr
+            && is_local_ipv4(addr)
+            && !addr.is_loopback()
+            && (1..=65529).contains(&port))
+        .then(|| Endpoint {
+            addr,
+            port,
+            source: LAN_SOURCE.into(),
+        })
+    }
+    /// The endpoints to reach the host at, in order: its address inside
+    /// the reader's own network when the read gave one ([`Session::lan`]),
+    /// then its public endpoint.
+    pub fn reach_order(&self) -> Vec<std::net::SocketAddrV4> {
+        let public = std::net::SocketAddrV4::new(self.endpoint.addr, self.endpoint.port);
+        let mut order: Vec<_> = self
+            .lan
+            .iter()
+            .map(|l| std::net::SocketAddrV4::new(l.addr, l.port))
+            .collect();
+        if !order.contains(&public) {
+            order.push(public);
+        }
+        order
+    }
     /// Whether `GET /v1/sessions` read by `viewer` includes this session.
     pub fn listed_for(&self, viewer: Option<Xuid>, friends: impl Fn(Xuid, Xuid) -> bool) -> bool {
         self.endpoint.listable()
@@ -810,6 +856,7 @@ mod tests {
             last_activity: 100,
             state: "open".into(),
             players: BTreeMap::new(),
+            lan: None,
         };
         let before = s.clone();
         assert!(!s.apply(UPDATED, &json!({}), "", 101).unwrap());
@@ -848,6 +895,7 @@ mod tests {
             last_activity: 100,
             state: "open".into(),
             players: BTreeMap::new(),
+            lan: None,
         }
     }
     #[test]
@@ -1359,6 +1407,35 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(s.advertisement.visibility, Visibility::Friends);
+    }
+    #[test]
+    fn a_reader_behind_the_hosts_nat_is_given_its_lan_address_first() {
+        let mut s = session("observed", "203.0.113.9", Visibility::Public);
+        // The host's XNADDR: its LAN address and base port.
+        s.advertisement.host_address[..4].copy_from_slice(&[10, 0, 3, 7]);
+        s.advertisement.host_address[4..8].copy_from_slice(&[10, 0, 3, 7]);
+        s.advertisement.host_address[8..10].copy_from_slice(&3074u16.to_be_bytes());
+        let lan = s.lan_for("203.0.113.9".parse().unwrap()).unwrap();
+        assert_eq!(lan.addr, Ipv4Addr::new(10, 0, 3, 7));
+        assert_eq!((lan.port, lan.source.as_str()), (3074, LAN_SOURCE));
+        // Another network gets nothing.
+        assert_eq!(s.lan_for("198.51.100.7".parse().unwrap()), None);
+        // A public XNADDR address is no LAN one.
+        s.advertisement.host_address[..4].copy_from_slice(&[198, 51, 100, 8]);
+        assert_eq!(s.lan_for("203.0.113.9".parse().unwrap()), None);
+        // Nor is a host already on a local endpoint (a LAN-only server).
+        let mut local = session("observed", "10.0.3.7", Visibility::Public);
+        local.advertisement.host_address[..4].copy_from_slice(&[10, 0, 3, 7]);
+        local.advertisement.host_address[8..10].copy_from_slice(&3074u16.to_be_bytes());
+        assert_eq!(local.lan_for("10.0.3.7".parse().unwrap()), None);
+
+        s.lan = Some(lan);
+        let at = |a: &str| a.parse::<std::net::SocketAddrV4>().unwrap();
+        assert_eq!(s.reach_order(), vec![at("10.0.3.7:3074"), at("203.0.113.9:3074")]);
+        s.lan = None;
+        assert_eq!(s.reach_order(), vec![at("203.0.113.9:3074")]);
+        // Never stored: absent from the wire unless a read set it.
+        assert!(serde_json::to_value(&s).unwrap().get("lan").is_none());
     }
 }
 

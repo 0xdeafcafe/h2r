@@ -478,6 +478,7 @@ fn coop_session(skulls: Option<Vec<u8>>) -> live_proto::session::Session {
         last_activity: 0,
         state: "open".into(),
         players: Default::default(),
+        lan: None,
     }
 }
 

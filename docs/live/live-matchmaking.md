@@ -369,7 +369,21 @@ one machine, not production.
 The server itself is easy by design: it needs only its HTTP(S) port, since
 game traffic never relays through it. The assumptions for phase 1:
 
-- **Same LAN:** works today, unchanged (System Link recipe).
+- **Same LAN:** works with no forwarded port. Two consoles behind one
+  NAT share a public address, and most home routers do not loop traffic
+  for their own public address back inside (no hairpin NAT), so the
+  public endpoint is unreachable from the host's own network. A session
+  read by a signed-in console whose public address (as the server sees
+  it, `PublicUrl::client_ip`) is the host's endpoint address carries
+  `lan`: the LAN address and port from the host's XNADDR
+  (`Session::lan_for`, [live-api.md](live-api.md), "Network
+  addresses"). The HLE writes the LAN address into the result XNADDR's
+  `ina` and the public one into `inaOnline`
+  (`crates/live/live-hle/src/sessions.rs` `encode_result`). XNet probes
+  `ina` first and `inaOnline` second, and sends game traffic to the one
+  that answered the QoS lookup (`crates/live/live-hle/src/network.rs`
+  `endpoints`, `reach`). A matchmade join's readiness check uses the
+  same order (`Session::reach_order`, `qos::ready_at`).
 - **Across the internet, phase 1 (direct):** the host must be reachable on
   UDP base..base+6 (3074–3080 by default); that means a forwarded port or
   a routable address. Joiners need only outbound UDP to the host and
@@ -382,11 +396,17 @@ game traffic never relays through it. The assumptions for phase 1:
   as a fallback — the source address the server observed on the host's
   HTTP requests (right IP for non-symmetric NATs; the port must still be
   declared). `SessionCreated.endpoint.source` records which.
-- **Later phases:** server-coordinated UDP hole-punch (the stream
-  WebSocket already reaches both sides to coordinate a simultaneous
-  open), or an opt-in relay. Live.md's open NAT question stands; nothing
-  in the event design depends on which is chosen, because the endpoint is
-  data in the session record.
+- **Host without a forwarded port, joiner on another network:** not
+  reachable. Both direct probes fail, and the browser shows no game.
+  The planned fallback is the session relay
+  (`GET /v1/sessions/{id}/relay`, [live-api.md](live-api.md), "Co-op
+  relay"), carrying the title's UDP channels when direct QoS fails. It
+  is not built: the relay admits only the two members of a co-op or
+  Forge session, and a listed host does not hold a relay socket.
+  Server-coordinated UDP hole-punching (the stream WebSocket reaches
+  both sides) is the other option. Live.md's open NAT question stands;
+  nothing in the event design depends on which is chosen, because the
+  endpoint is data in the session record.
 
 `XOnlineGetNatType` keeps returning the retail unknown value (0); no NAT
 probing is claimed.

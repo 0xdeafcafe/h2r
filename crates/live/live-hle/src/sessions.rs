@@ -1985,9 +1985,18 @@ fn encode_result(s: &live_proto::session::Session, retail: bool) -> Result<Vec<u
         return hr(MATCH_INVALID_SESSION);
     }
     bytes[12..48].copy_from_slice(&s.advertisement.host_address);
-    bytes[12..16].copy_from_slice(&s.endpoint.addr.octets());
+    // The XNADDR's `ina` is where the joiner's XNet reaches the host first,
+    // `inaOnline` where it falls back to (`network::endpoints`): the host's
+    // LAN address when the server saw this console behind the host's NAT
+    // (`Session::lan`), else the public endpoint in both.
+    let (ina, port) = s
+        .lan
+        .as_ref()
+        .filter(|lan| lan.port == s.endpoint.port)
+        .map_or((s.endpoint.addr, s.endpoint.port), |lan| (lan.addr, lan.port));
+    bytes[12..16].copy_from_slice(&ina.octets());
     bytes[16..20].copy_from_slice(&s.endpoint.addr.octets());
-    bytes[20..22].copy_from_slice(&s.endpoint.port.to_be_bytes());
+    bytes[20..22].copy_from_slice(&port.to_be_bytes());
     // XNKEY +0x30 stays zero. HLE sockets use no encryption; the host key
     // never appears in a public event or read response.
     let slots = s.advertisement.slots;
@@ -2122,6 +2131,43 @@ fn parse_result(m: &mut Guest, a: &[u32]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_result_xnaddr_puts_the_lan_address_first_and_the_public_one_second() {
+        let mut xna = vec![0u8; 36];
+        xna[..4].copy_from_slice(&[10, 0, 3, 7]);
+        xna[4..8].copy_from_slice(&[10, 0, 3, 7]);
+        xna[8..10].copy_from_slice(&3074u16.to_be_bytes());
+        let mut row: live_proto::session::Session = serde_json::from_value(serde_json::json!({
+            "session_id": "8000000000000001",
+            "host": "host-account",
+            "host_xuid": "0009000000000001",
+            "host_gamertag": "Host",
+            "xnkid": "8000000000000001",
+            "endpoint": { "addr": "203.0.113.8", "port": 3074, "source": "observed" },
+            "advertisement": {
+                "port": 3074,
+                "host_address": xna,
+                "slots": { "public_open": 7, "public_filled": 1, "private_open": 0, "private_filled": 0 },
+                "attributes": {}
+            },
+            "since": "2026-11-23T00:00:00Z",
+            "last_activity": 0,
+            "state": "open",
+            "lan": { "addr": "10.0.3.7", "port": 3074, "source": "lan" }
+        }))
+        .unwrap();
+        // Behind the host's NAT: ina is the LAN address, inaOnline the public.
+        let bytes = encode_result(&row, true).ok().unwrap();
+        assert_eq!(bytes[12..16], [10, 0, 3, 7]);
+        assert_eq!(bytes[16..20], [203, 0, 113, 8]);
+        assert_eq!(bytes[20..22], 3074u16.to_be_bytes());
+        // Elsewhere: the public endpoint in both.
+        row.lan = None;
+        let bytes = encode_result(&row, true).ok().unwrap();
+        assert_eq!(bytes[12..16], [203, 0, 113, 8]);
+        assert_eq!(bytes[16..20], [203, 0, 113, 8]);
+    }
 
     #[test]
     fn the_picker_requires_a_live_pack_assignment_for_its_hopper() {

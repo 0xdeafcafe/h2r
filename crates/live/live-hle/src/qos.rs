@@ -404,6 +404,42 @@ pub(crate) fn query_why(
     Err(last)
 }
 
+/// Asks `ask` about each of a host's endpoints in order (its LAN address
+/// first when it has one, `network::endpoints`) until one answers: the
+/// index that answered, if any, and each try's result. A version refusal
+/// is an answer too: the host was reached and said no.
+pub(crate) fn first_answer(
+    order: &[SocketAddrV4],
+    mut ask: impl FnMut(SocketAddrV4) -> io::Result<Info>,
+) -> (Option<usize>, Vec<io::Result<Info>>) {
+    let mut tries = Vec::with_capacity(order.len());
+    for (i, &address) in order.iter().enumerate() {
+        let result = ask(address);
+        let answered = match &result {
+            Ok(_) => true,
+            Err(e) => version_refusal(e).is_some(),
+        };
+        tries.push(result);
+        if answered {
+            return (Some(i), tries);
+        }
+    }
+    (None, tries)
+}
+
+/// The first of a host's endpoints (`Session::reach_order`) that answers
+/// a join's QoS lookup, with its readiness; the last refusal or `false`
+/// when none answers.
+pub(crate) fn ready_at(
+    order: &[SocketAddrV4],
+    kid: [u8; 8],
+    local: u16,
+) -> (Option<SocketAddrV4>, Result<bool, replication::IncompatibleVersion>) {
+    let (answered, mut tries) = first_answer(order, |address| query_why(address, kid, 1, local));
+    let reply = tries.pop().unwrap_or_else(|| Err(io::ErrorKind::NotFound.into()));
+    (answered.map(|i| order[i]), join_readiness(reply))
+}
+
 /// The queue uses the same version check as title-driven Live direct and
 /// invited joins. A refusal ends the candidate check before handing it off.
 pub(crate) fn ready_to_join(
@@ -679,6 +715,78 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(reason.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_lookup_tries_the_lan_address_then_the_public_one() {
+        let lan = SocketAddrV4::new(Ipv4Addr::new(10, 0, 3, 7), 3074);
+        let public = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 8), 3074);
+        let lobby = || Info {
+            flags: 0xb,
+            data: LOBBY.to_vec(),
+            ..Info::default()
+        };
+        // The LAN address answers: the public one is never asked.
+        let mut asked = Vec::new();
+        let (at, tries) = first_answer(&[lan, public], |a| {
+            asked.push(a);
+            Ok(lobby())
+        });
+        assert_eq!((at, asked.as_slice(), tries.len()), (Some(0), &[lan][..], 1));
+        // No answer on the LAN: the public endpoint next.
+        let mut asked = Vec::new();
+        let (at, tries) = first_answer(&[lan, public], |a| {
+            asked.push(a);
+            if a == lan {
+                Err(io::ErrorKind::TimedOut.into())
+            } else {
+                Ok(lobby())
+            }
+        });
+        assert_eq!(at, Some(1));
+        assert_eq!(asked, [lan, public]);
+        assert!(tries[0].is_err() && tries[1].is_ok());
+        // A version refusal on the LAN is the host's answer: no second try.
+        let refusal = replication::IncompatibleVersion {
+            local: replication::STOCK,
+            peer: Some(replication::CREATURE_FULL),
+        };
+        let (at, tries) = first_answer(&[lan, public], |_| {
+            Err(io::Error::new(io::ErrorKind::Unsupported, refusal))
+        });
+        assert_eq!((at, tries.len()), (Some(0), 1));
+        // Neither answers: both tried, none answered.
+        let (at, tries) = first_answer(&[lan, public], |_| Err(io::ErrorKind::TimedOut.into()));
+        assert_eq!((at, tries.len()), (None, 2));
+    }
+
+    #[test]
+    fn a_join_probes_the_lan_responder_before_the_public_endpoint() {
+        // The host's responder on loopback stands in for its LAN address;
+        // an unused port for the public one behind a NAT with no hairpin.
+        let listeners = join_listener();
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let lan = SocketAddrV4::new(Ipv4Addr::LOCALHOST, socket.local_addr().unwrap().port() - 2);
+        let responder = std::thread::spawn(move || {
+            let mut input = [0; LOOKUP_REQUEST_LEN];
+            let (n, sender) = socket.recv_from(&mut input).unwrap();
+            let lookup = decode_lookup(&input[..n]).unwrap();
+            let reply = answer_lookup(
+                &listeners,
+                &Asked::default(),
+                JOIN_PEER,
+                &lookup,
+                replication::STOCK,
+            )
+            .unwrap();
+            socket.send_to(&reply, sender).unwrap();
+        });
+        let public = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 9);
+        let (at, ready) = ready_at(&[lan, public], JOIN_KID, replication::STOCK);
+        responder.join().unwrap();
+        assert_eq!(at, Some(lan));
+        assert_eq!(ready, Ok(true));
     }
 
     #[test]
