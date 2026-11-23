@@ -304,6 +304,30 @@ impl Network {
             .map(|(a, (ms, _))| (*a, *ms))
             .collect()
     }
+
+    /// The co-op channel endpoints of the other machines this console's
+    /// XNet knows (`coop::link` binds the base port plus
+    /// [`NetworkConfig::COOP_PORT_OFFSET`]): the guests of a host, the host
+    /// of a guest. This console's own address is left out; a peer whose
+    /// address cannot be read is skipped.
+    pub fn coop_endpoints(&self) -> Vec<SocketAddrV4> {
+        let own = self.config.address;
+        lock(&self.state)
+            .peers
+            .values()
+            .filter_map(|p| endpoint(&p.xna).ok())
+            .filter(|address| *address != own)
+            .map(|address| {
+                SocketAddrV4::new(
+                    *address.ip(),
+                    address
+                        .port()
+                        .checked_add(NetworkConfig::COOP_PORT_OFFSET)
+                        .unwrap_or(u16::MAX),
+                )
+            })
+            .collect()
+    }
     pub fn registered_keys(&self) -> Vec<[u8; 8]> {
         lock(&self.state).keys.keys().copied().collect()
     }

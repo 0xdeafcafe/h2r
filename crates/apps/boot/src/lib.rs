@@ -1264,6 +1264,7 @@ fn run_configured(
             k.vfs(),
             &opts.data_root,
             host.settings.clone(),
+            _live.clone(),
         )?;
     }
     if let Some(a) = &mut agent {

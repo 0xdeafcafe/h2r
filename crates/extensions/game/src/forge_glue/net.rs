@@ -2,10 +2,11 @@
 //! F5): the lanes the co-op link gives it, the offer that opens a session
 //! over them, and the film records the session writes.
 //!
-//! Whoever builds a co-op link between two machines offers the Forge lanes
-//! it carries ([`offer_host`], [`offer_guest`]); the session opens when the
-//! game's Forge feature next ticks in a synchronous network game
-//! ([`crate::forge_map::admitted_shared`]).
+//! The co-op link itself ([`crate::forge_glue::link`]) offers the Forge
+//! lanes it carries ([`offer_host`], [`offer_guest`]) and keeps them
+//! current as seats join and leave ([`add_seat`], [`drop_seat`], [`end`]);
+//! the session opens when the game's Forge feature next ticks in a
+//! synchronous network game ([`crate::forge_map::admitted_shared`]).
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -51,7 +52,19 @@ pub enum Offer {
     Guest(Box<dyn Lane + Send>),
 }
 
+/// A change to the lanes after the offer was made: a seat the link adds or
+/// drops, or the link closing. The session that opened on the offer takes
+/// them each tick; the offer itself the link re-makes, so a session that
+/// opens later finds the lanes as they stand.
+pub enum Change {
+    Add(Seat, Box<dyn Lane + Send>),
+    Drop(Seat),
+    /// The link closed: the session ends. Why.
+    End(&'static str),
+}
+
 static OFFER: Mutex<Option<Offer>> = Mutex::new(None);
+static CHANGES: Mutex<Vec<Change>> = Mutex::new(Vec::new());
 /// A lane is offered, or a session runs on one: Forge is admitted in a
 /// network game while it is set.
 static OFFERED: AtomicBool = AtomicBool::new(false);
@@ -71,19 +84,64 @@ pub fn offer_guest(lane: Box<dyn Lane + Send>) {
     offer(Offer::Guest(lane));
 }
 
-/// Whether a link has offered a Forge channel and the game has not ended.
+/// A guest seat joined the link: the session running on the offer takes
+/// its lane as `seat` when it next ticks.
+pub fn add_seat(seat: Seat, lane: Box<dyn Lane + Send>) {
+    CHANGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Change::Add(seat, lane));
+}
+
+/// A guest seat left the link: the session running on the offer drops
+/// its lane.
+pub fn drop_seat(seat: Seat) {
+    CHANGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Change::Drop(seat));
+}
+
+/// The link closed: the offer goes, and a session running on it ends for
+/// `why` when it next takes its changes.
+pub fn end(why: &'static str) {
+    *OFFER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    OFFERED.store(false, Ordering::Release);
+    CHANGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Change::End(why));
+}
+
+/// Whether a link has offered a Forge channel and the game has not ended:
+/// a session may be running on one, or waiting to
+/// ([`pending`](pending)). Clear when the game ends or the link closes.
 pub fn offered() -> bool {
     OFFERED.load(Ordering::Acquire)
 }
 
+/// Whether an offer waits for the session that opens next: the link
+/// re-makes it every tick while its lanes stand.
+pub fn pending() -> bool {
+    OFFER.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
 /// The session takes the offer as it opens.
 pub(super) fn take() -> Option<Offer> {
+    CHANGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
     OFFER.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
-/// The game ended: the offer and the session's claim on the network go.
+/// The lane changes waiting for the session's next tick, in order.
+pub(super) fn take_changes() -> Vec<Change> {
+    std::mem::take(&mut *CHANGES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The game ended: the offer, its changes and the session's claim on the
+/// network go.
 pub(super) fn clear() {
     *OFFER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    CHANGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
     OFFERED.store(false, Ordering::Release);
 }
 
