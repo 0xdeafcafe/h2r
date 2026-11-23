@@ -222,28 +222,7 @@ fn the_object_menu_lists_groups_by_the_table_and_leaves_empty_ones_out() {
 }
 
 #[test]
-fn properties_come_from_the_table_by_kind() {
-    let labels = |group, kind| {
-        sheet::properties(group, kind)
-            .map(|d| d.label)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        labels(Group::Scenery, forge::ThingKind::Object),
-        ["Coordinates...", "Heading"]
-    );
-    assert_eq!(
-        labels(Group::Spawns, forge::ThingKind::StartingPoint),
-        ["Coordinates...", "Heading", "Team"]
-    );
-    assert_eq!(
-        labels(Group::Goals, forge::ThingKind::Goal),
-        ["Coordinates...", "Heading", "Team", "Role", "Order"]
-    );
-    assert_eq!(
-        labels(Group::Equipment, forge::ThingKind::ItemSpawner),
-        ["Coordinates...", "Heading", "Respawn time"]
-    );
+fn properties_sheet_is_the_docs_rows_titled_by_the_object() {
     let thing = pages::sample_thing(forge::BlockKind::NetgameFlags, forge::ThingKind::Goal);
     let s = sheet::properties_sheet("Beacon", &thing, 90.).unwrap();
     assert_eq!(s.title, "BEACON");

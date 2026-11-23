@@ -288,3 +288,28 @@ fn the_converter_puts_a_doc_drawn_dialogs_title_in_capitals() {
     export::house_rules(&mut d);
     assert_eq!(d.widgets["title"].text.as_deref(), Some("Sign in"));
 }
+
+/// A page's property rows round-trip byte for byte, and each rule of
+/// them is a named error at the row's field.
+#[test]
+fn property_rows_round_trip_and_name_what_is_wrong() {
+    let head = "screen: t\nkind: list\nlayout: controls\nbacking: shell\n";
+    let row = |extra: &str| format!("{head}props:\n  prop.0:\n    text: \"Team\"\n{extra}");
+    let good = row("    on: [goal, starting-point]\n    prop: team\n    open: picker\n    values: [\"None\", \"Red\"]\n");
+    let d = doc(&good).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(to_yaml(&d), good);
+    assert_eq!(d.props["prop.0"].on, ["goal", "starting-point"]);
+    let quoted = row("    prop: \"respawn time\"\n    open: keyboard\n");
+    assert_eq!(to_yaml(&doc(&quoted).unwrap()), quoted);
+    let at = |yaml: String| doc(&yaml).unwrap_err().to_string();
+    let e = at(row("    prop: no-such\n    open: keyboard\n"));
+    assert!(e.contains("props.prop.0.prop"), "{e}");
+    let e = at(row("    on: [bridge]\n    prop: team\n    open: picker\n    values: [\"A\"]\n"));
+    assert!(e.contains("props.prop.0.on"), "{e}");
+    let e = at(row("    prop: team\n    open: wheel\n"));
+    assert!(e.contains("props.prop.0.open"), "{e}");
+    let e = at(row("    prop: team\n    open: picker\n"));
+    assert!(e.contains("props.prop.0.values"), "{e}");
+    let e = at(format!("{head}props:\n  row.0:\n    text: \"A\"\n    prop: team\n    open: keyboard\n"));
+    assert!(e.contains("props.row.0"), "{e}");
+}

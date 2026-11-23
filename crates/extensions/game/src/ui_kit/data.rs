@@ -264,7 +264,38 @@ pub struct ScreenDoc {
     /// Fixed rows, by row id (`row.0`).
     #[serde(default)]
     pub rows: IndexMap<String, RowDoc>,
+    /// A Forge page's rows bound to a property of the thing it shows, by
+    /// id (`prop.0`), in order (docs/game/forge-map-variants-ui.md, "The
+    /// Properties page"). Apart from `rows`, which are fixed by position.
+    #[serde(default)]
+    pub props: IndexMap<String, PropDoc>,
 }
+
+/// A row of a Forge page that is bound to a property of the thing shown:
+/// the kinds it is for, the property, what A does and a picker's values.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropDoc {
+    /// Its label.
+    pub text: String,
+    /// Its description, shown while it has the focus.
+    pub help: Option<String>,
+    /// The kinds of thing it is for ([`PROP_KINDS`]); none is any.
+    #[serde(default)]
+    pub on: Vec<String>,
+    /// The property: a name in `forge::props`, or `coordinates` or
+    /// `heading`, which are not fields.
+    pub prop: String,
+    /// What A does: `picker`, `keyboard`, or the name of a Forge screen.
+    pub open: String,
+    /// A picker's choices, in order; the choice sent is the index.
+    pub values: Option<Vec<String>>,
+}
+
+/// The kinds a [`PropDoc`] may be `on`.
+pub const PROP_KINDS: [&str; 6] = ["any", "object", "spawner", "starting-point", "goal", "teleporter"];
+/// The properties that are not fields of a thing.
+pub const PROP_VIRTUAL: [&str; 2] = ["coordinates", "heading"];
 
 /// A settings dialog's own: which host it sits on, its static header
 /// (icon, name, what the window is for), the row elsewhere that opens it
@@ -582,6 +613,30 @@ impl ScreenDoc {
                 return err(at("open"), "an open row names the screen it opens".into());
             }
             slots_of(&r.text).map_err(|what| DataError::new(&file, &at("text"), what))?;
+        }
+        for (id, p) in &self.props {
+            let at = |field: &str| format!("props.{id}.{field}");
+            if id.strip_prefix("prop.").and_then(|n| n.parse::<usize>().ok()).is_none() {
+                return err(format!("props.{id}"), "a prop id is prop.N".into());
+            }
+            slots_of(&p.text).map_err(|what| DataError::new(&file, &at("text"), what))?;
+            if !PROP_VIRTUAL.contains(&p.prop.as_str()) && forge::props::prop(&p.prop).is_none() {
+                return err(at("prop"), format!("{:?} is no property of forge::props", p.prop));
+            }
+            if let Some(k) = p.on.iter().find(|k| !PROP_KINDS.contains(&k.as_str())) {
+                return err(at("on"), format!("{k:?} is not one of {PROP_KINDS:?}"));
+            }
+            let screen = crate::forge_screens::sheet::Kind::of_screen(&p.open).is_some();
+            if !screen && !matches!(p.open.as_str(), "picker" | "keyboard") {
+                return err(at("open"), format!("{:?} is neither picker, keyboard nor a Forge screen", p.open));
+            }
+            let values = p.values.as_deref().unwrap_or(&[]);
+            if p.open == "picker" && values.is_empty() && p.prop != "heading" {
+                return err(at("values"), "a picker row has values".into());
+            }
+            if p.open != "picker" && !values.is_empty() {
+                return err(at("values"), "only a picker row has values".into());
+            }
         }
         self.validate_settings(design)?;
         let rows = self.rows.len();

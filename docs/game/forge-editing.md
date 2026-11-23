@@ -203,9 +203,10 @@ block's objects have a group (`Group::of_block`).
 
 ## Properties
 
-X on the thing aimed at or held. One list page whose rows come from a
-table by kind (`forge_screens::sheet::PROPERTIES`, read through
-`properties(group, kind)`), so a slice adds rows and no screen. A value row
+X on the thing aimed at or held. One list page whose rows come from its
+doc's `props:` block by kind (`forge_screens::props::rows`,
+[forge-map-variants-ui.md](forge-map-variants-ui.md), "The Properties
+page"), so a slice adds rows and no screen. A value row
 opens a picker; an action row acts and closes.
 
 | Kind | Row | Writes | Class | Slice |

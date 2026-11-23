@@ -24,6 +24,7 @@
 
 pub mod game_menu;
 pub mod pages;
+pub mod props;
 pub mod screen;
 pub mod sheet;
 
