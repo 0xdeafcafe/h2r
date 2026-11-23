@@ -301,6 +301,7 @@ fn coordinates_nudge_and_type_numbers() {
     };
     assert_eq!(ask_keyboard(spec.clone()), Chosen::Act);
     let mut guest = FakeGuest::new();
+    guest.map(0x5000, 0x100);
     assert!(matches!(step(&guest), Some(Step::Keyboard(_))));
     let buffer = 0x5000;
     hub().keyboard.store(buffer, Ordering::SeqCst);

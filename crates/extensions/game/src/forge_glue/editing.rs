@@ -820,7 +820,7 @@ impl Editor {
                     tick,
                     Command::SetField {
                         id,
-                        name: "type",
+                        name: "role",
                         value: forge_doc::Value::Int(i as i64),
                     },
                 );
@@ -831,7 +831,7 @@ impl Editor {
                     tick,
                     Command::SetField {
                         id,
-                        name: "identifier",
+                        name: "order",
                         value: forge_doc::Value::Int(i as i64),
                     },
                 );
