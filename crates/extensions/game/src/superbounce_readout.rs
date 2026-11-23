@@ -4,7 +4,7 @@
 //! each tick from [`superbounce_mode`](crate::superbounce_mode)'s state
 //! through one adapter, [`view`].
 //!
-//! Everything it shows is drawn by Halo 2's own HUD: three rows of the
+//! Everything it shows is drawn by Halo 2's own HUD: four rows of the
 //! player's HUD definition right of the motion tracker, and three of the
 //! game's navpoints. Which pieces show is the variant's
 //! ([`crate::superbounce_options`]): a piece a variant turned off is left
@@ -15,14 +15,16 @@
 //! is the one the landing was by, the distance is the origin's to its
 //! edge, and the speed in is the fall speed on the tick before touchdown
 //! (a short history of the state's, [`History`]) carried down to the
-//! seam's height, as the tracker's own. The line stays [`INFO_TICKS`] and
-//! goes when the next fall toward a seam begins ([`Info`]).
+//! seam's height, as the tracker's own. The line holds
+//! [`MISS_HOLD_TICKS`] against everything but a bounce and a worse miss,
+//! then goes on the next real fall toward a seam, and at [`INFO_TICKS`]
+//! ([`Info`]).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hud_kit_core::huds::superbounce_readout::{
-    self as rd, Fall, Miss, Next, Readout, Speed, Steer, View,
+    self as rd, Fall, KindsRow, Miss, Next, Readout, Speed, Steer, View,
 };
 use hud_kit_core::huds::superbounce_guide as guide_marks;
 use hud_kit_core::huds::superbounce_segments::{self as segs, Segments};
@@ -31,19 +33,27 @@ use hud_kit_core::world::Pose;
 use superbounce::Spot;
 
 use crate::hud_kit::{self, Handle};
-use crate::superbounce_charge::{GRAVITY, Landing, LandingResult, edge_distance_xy, need_of};
+use crate::superbounce_charge::{
+    Course, GRAVITY, Landing, LandingResult, TOUCHDOWN_VZ, edge_distance_xy, need_of,
+};
 use crate::superbounce_mode::{self as mode, METRES_PER_UNIT, State};
-use crate::superbounce_options::Options;
+use crate::superbounce_options::{Options, TargetMode};
 use crate::superbounce_second::Ranked;
 
 /// The feature's id.
 pub const FEATURE: &str = "superbounce-readout";
 
-/// Ticks the miss line stays: four seconds.
-pub const INFO_TICKS: u64 = 120;
-/// Ticks a miss line holds against another: a second miss within two
-/// seconds of it replaces it only with a higher speed in.
-pub const MISS_KEEP_TICKS: u64 = 60;
+/// Ticks the miss line stays at most, while the player is alive: five
+/// seconds.
+pub const INFO_TICKS: u64 = 150;
+/// Ticks the miss line holds: three seconds, time to read it while the
+/// player is still moving. Only a bounce, or a worse miss (a fall
+/// through, or one with a higher speed in), replaces it then; a hop, a
+/// jump or a step off a kerb does not take it down.
+pub const MISS_HOLD_TICKS: u64 = 90;
+/// Ticks in a row with no state the line outlives: under a second. A
+/// longer gap is the mode off.
+pub const GAP_TICKS: u32 = 30;
 /// Ticks of fall speed kept: over a second, more than the landing's
 /// launch window.
 pub const HISTORY: usize = 48;
@@ -74,14 +84,18 @@ pub fn speed(s: &State) -> Option<Speed> {
 
 /// The fall row for `s`: while airborne with a predicted landing, the
 /// touchdown speed over the seam's need, and the coasting landing against
-/// the seam's landing point (`Predicted::aim`): off the seam, the way
-/// from it to the point against the aim, and how far; caught and coming
-/// down still or against the seam's drift, the way to drift; else caught.
+/// the seam's landing point (`Predicted::aim`): off the seam and out of
+/// the assist's reach (`Course::Miss`), out of reach, with no arrow;
+/// off it and fixable, the way from it to the point against the aim, and
+/// how far; caught and coming down still or against the seam's drift,
+/// the way to drift; else caught.
 pub fn fall(s: &State) -> Option<Fall> {
     let p = s.landing.filter(|_| s.airborne)?;
     let yaw = s.yaw.unwrap_or(0.0);
     let ratio = if p.need > 0.0 { p.speed / p.need } else { 1.0 };
-    let steer = if p.miss() > 0.0 {
+    let steer = if p.miss() > 0.0 && p.verdict == Course::Miss {
+        Steer::OutOfReach
+    } else if p.miss() > 0.0 {
         let (dx, dy) = (p.aim[0] - p.at[0], p.aim[1] - p.at[1]);
         Steer::Off {
             heading: against_aim(dx, dy, yaw),
@@ -136,12 +150,73 @@ pub fn next(s: &State) -> [Option<Next>; rd::NEXT] {
 }
 
 /// The readout's name for a target mode.
-pub fn kinds(m: crate::superbounce_options::TargetMode) -> rd::Kinds {
-    use crate::superbounce_options::TargetMode;
+pub fn kinds(m: TargetMode) -> rd::Kinds {
     match m {
         TargetMode::Common => rd::Kinds::Common,
         TargetMode::Likely => rd::Kinds::Likely,
         TargetMode::All => rd::Kinds::All,
+    }
+}
+
+/// The flashlight's glyph for the layout in force, from the ghost's
+/// button (`superbounce_ghost::current_button`, read from the profile's
+/// layout each pad tick): B is the ghost's only on Bumper Jumper, whose
+/// flashlight is X; every other layout's is White.
+pub fn flashlight_glyph(ghost_button: u8) -> char {
+    if ghost_button == crate::superbounce_ghost::BUTTON_BUMPER_JUMPER {
+        rd::FLASHLIGHT_BUMPER_JUMPER
+    } else {
+        rd::FLASHLIGHT
+    }
+}
+
+/// The map is scanned and has a spot: the segments and the targets row
+/// show.
+fn ready(s: &State) -> bool {
+    matches!(s.scan, mode::ScanState::Ready) && s.bounce + s.crouch > 0
+}
+
+/// The targets row for `s`: the kinds in effect `mode`
+/// (`superbounce_targets::mode`, else the variant's option), the `count`
+/// of seams of them on the map (`superbounce_targets::current`), the
+/// flashlight's glyph `button`, and the tick of a switch the state still
+/// carries, `since` ([`SwitchFlash`]). Shown whenever the map is scanned
+/// and has a spot, whatever the variant's options: it answers the
+/// player's own press.
+pub fn kinds_row(
+    s: &State,
+    mode: TargetMode,
+    count: usize,
+    button: char,
+    since: Option<u32>,
+) -> Option<KindsRow> {
+    ready(s).then(|| KindsRow {
+        kinds: kinds(mode),
+        count,
+        button,
+        switched: since,
+    })
+}
+
+/// The start of the targets row's flash: the tick a switch first showed
+/// in the state (`State::switched`, set for
+/// `superbounce_targets::SWITCHED_TICKS` after a double tap).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SwitchFlash {
+    last: Option<TargetMode>,
+    since: u32,
+}
+
+impl SwitchFlash {
+    /// One tick, the game's `tick`: the flash's start while the state
+    /// carries a switch, `None` otherwise. A new switch (another mode)
+    /// starts it again.
+    pub fn step(&mut self, switched: Option<TargetMode>, tick: u32) -> Option<u32> {
+        if switched.is_some() && switched != self.last {
+            self.since = tick;
+        }
+        self.last = switched;
+        switched.map(|_| self.since)
     }
 }
 
@@ -173,8 +248,8 @@ pub fn ahead(s: &State) -> [Option<crate::superbounce_targets::Mark>; 2] {
 /// - The miss line: `info`, with `miss_info`.
 /// - The ranked line: [`next`], the state's `second` (which the mode
 ///   leaves empty with `second_bounce` off).
-/// - The switch's line: the kinds the player has just switched the
-///   targets to (`superbounce_targets::Switch`), over the other lines.
+/// - The targets row: not the state's; the runtime adds it
+///   ([`kinds_row`]).
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
 /// - The approach guide: the state's `guide`, with `approach_guide`. On
@@ -192,7 +267,7 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
             .filter(|_| o.alignment),
         info: info.filter(|_| o.miss_info),
         next: next(s),
-        kinds: s.switched.map(kinds),
+        kinds: None,
         tag: metres(s.marks.tag),
         targets: ahead(s).map(metres),
         guide: s.guide.filter(|_| o.approach_guide).map(|g| g.view()),
@@ -206,8 +281,7 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
 /// and on a map with none. In the air too: primed is worth seeing on the
 /// way down.
 pub fn segments(s: &State) -> Option<Segments> {
-    let ready = matches!(s.scan, mode::ScanState::Ready) && s.bounce + s.crouch > 0;
-    ready.then(|| segs::segments(crate::superbounce_hud::charge(s)))
+    ready(s).then(|| segs::segments(crate::superbounce_hud::charge(s)))
 }
 
 /// The approach guide's marks' poses for `s` under `o`: each of
@@ -350,15 +424,42 @@ pub fn miss(landing: &Landing, spots: &[Spot], vz_before: Option<f32>) -> Option
             })
         }
         LandingResult::NoBounce => Some(Miss::NoBounce { had: had(spot()?)? }),
+        LandingResult::Through => Some(Miss::Through { had: had(spot()?)? }),
     }
 }
 
 /// The speed in a miss line carries, metres a second; 0 for one with none.
 fn speed_in_of(m: &Miss) -> f32 {
     match *m {
-        Miss::TooSlow { had, .. } | Miss::NoBounce { had } => had,
+        Miss::TooSlow { had, .. } | Miss::NoBounce { had } | Miss::Through { had } => had,
         _ => 0.0,
     }
+}
+
+/// Whether a miss line ranks worst: a fall through the seam's floor.
+fn worst(m: &Miss) -> bool {
+    matches!(m, Miss::Through { .. })
+}
+
+/// Whether a new miss `new` takes the place of the line `old`, up `age`
+/// ticks: a fall through replaces any other line and no other line
+/// replaces it (only a bounce takes it down); within [`MISS_HOLD_TICKS`]
+/// a miss of the same rank replaces it only with a higher speed in, and
+/// after the hold any does.
+pub fn replaces(new: &Miss, old: &Miss, age: u64) -> bool {
+    match (worst(new), worst(old)) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => age >= MISS_HOLD_TICKS || speed_in_of(new) > speed_in_of(old),
+    }
+}
+
+/// A real new fall toward a seam: airborne, falling at
+/// `superbounce_charge::TOUCHDOWN_VZ` or faster, with a predicted
+/// landing. Rising, or drifting down slower, is not one, whatever the
+/// prediction.
+pub fn falling_to_seam(s: &State) -> bool {
+    s.airborne && s.vz.is_some_and(|vz| vz <= TOUCHDOWN_VZ) && s.landing.is_some()
 }
 
 /// The miss line, tick to tick.
@@ -367,50 +468,81 @@ pub struct Info {
     /// The state has been seen once: the landing it held then is not
     /// news.
     seen: bool,
-    /// The last landing's tick.
-    landing: Option<u32>,
-    /// The line, and the readout's tick it came up on.
+    /// The last landing seen, whole: a fall through can follow a
+    /// touchdown with that touchdown's tick.
+    landing: Option<Landing>,
+    /// The line, and the ticks it has been up while the player was alive.
     shown: Option<(Miss, u64)>,
+    /// The readout's tick of the last step.
+    last: Option<u64>,
+    /// Ticks in a row with no state ([`Info::absent`]).
+    gap: u32,
 }
 
 impl Info {
-    /// One tick, the readout's `now`th: a landing filed since the last
-    /// tick puts its line up (`miss` works it out; a bounce takes the
-    /// line down; a miss within [`MISS_KEEP_TICKS`] of the line shown
-    /// replaces it only with a higher speed in), a fall toward a seam on a later tick takes it down,
-    /// and it goes after [`INFO_TICKS`]. The line to show.
+    /// One tick, the readout's `now`th. A landing filed since the last
+    /// tick: a bounce takes the line down; a miss `miss` can give a line
+    /// for puts it up unless the line shown holds against it
+    /// ([`replaces`]); a landing with no line to give (no seam by it, no
+    /// speed history) leaves the line as it is. After [`MISS_HOLD_TICKS`]
+    /// a real new fall toward a seam ([`falling_to_seam`]) takes it down,
+    /// and at [`INFO_TICKS`] it goes. Between lives (no position) its
+    /// clock stops, so it stays through the respawn countdown, when the
+    /// player reads it. A state with no landing after one (a new game,
+    /// the mode off and on) starts again. The line to show.
     pub fn step(
         &mut self,
         s: &State,
         now: u64,
         miss: impl FnOnce(&Landing) -> Option<Miss>,
     ) -> Option<Miss> {
-        let landing = s.last_landing.as_ref();
-        let tick = landing.map(|l| l.tick);
-        if let Some(l) = landing.filter(|_| self.seen && tick != self.landing) {
-            // A touchdown at a seam's foot (a hop, a stumble) files a
-            // landing too; it does not wipe out the real miss before it.
-            self.shown = match (miss(l), self.shown) {
-                (Some(new), Some((old, at)))
-                    if now.saturating_sub(at) < MISS_KEEP_TICKS
-                        && speed_in_of(&new) <= speed_in_of(&old) =>
-                {
-                    Some((old, at))
-                }
-                (new, _) => new.map(|m| (m, now)),
-            };
-        } else if s.airborne && s.landing.is_some() {
+        if s.last_landing.is_none() && self.landing.is_some() {
+            *self = Info::default();
+        }
+        self.gap = 0;
+        let dt = self.last.map_or(0, |l| now.saturating_sub(l));
+        self.last = Some(now);
+        if s.position.is_some()
+            && let Some((_, age)) = &mut self.shown
+        {
+            *age = age.saturating_add(dt);
+        }
+        let landing = s.last_landing;
+        if let Some(l) = landing.filter(|l| self.seen && Some(*l) != self.landing) {
+            if l.result == LandingResult::Bounce {
+                self.shown = None;
+            } else if let Some(new) = miss(&l)
+                && self.shown.is_none_or(|(old, age)| replaces(&new, &old, age))
+            {
+                self.shown = Some((new, 0));
+            }
+        } else if self.shown.is_some_and(|(_, age)| age >= MISS_HOLD_TICKS) && falling_to_seam(s) {
             self.shown = None;
         }
         self.seen = true;
-        self.landing = tick.or(self.landing);
-        if self
-            .shown
-            .is_some_and(|(_, at)| now.saturating_sub(at) >= INFO_TICKS)
-        {
+        if landing.is_some() {
+            self.landing = landing;
+        }
+        if self.shown.is_some_and(|(_, age)| age >= INFO_TICKS) {
             self.shown = None;
         }
         self.shown.map(|(m, _)| m)
+    }
+
+    /// A tick with no state. A gap of up to [`GAP_TICKS`] (a new game's
+    /// first ticks, the mode's recheck) keeps the line; a longer one is
+    /// the mode off and clears it. Whether it is cleared.
+    pub fn absent(&mut self) -> bool {
+        let gap = self.gap.saturating_add(1);
+        if gap > GAP_TICKS {
+            *self = Info {
+                gap,
+                ..Info::default()
+            };
+        } else {
+            self.gap = gap;
+        }
+        gap > GAP_TICKS
     }
 }
 
@@ -418,6 +550,7 @@ struct Live {
     handle: Handle,
     history: History,
     info: Info,
+    flash: SwitchFlash,
     ticks: u64,
 }
 
@@ -429,8 +562,12 @@ impl Live {
     fn tick(&mut self) {
         self.ticks += 1;
         let Some(s) = mode::hud_state() else {
-            self.history.clear();
-            self.info = Info::default();
+            // Under a second with no state keeps the miss line and the
+            // speed history; longer is the mode off.
+            if self.info.absent() {
+                self.history.clear();
+            }
+            self.flash = SwitchFlash::default();
             self.handle.publish(hidden());
             for id in [rd::TAG, rd::TARGET_1, rd::TARGET_2] {
                 self.handle.navpoint_at(id, None);
@@ -448,7 +585,17 @@ impl Live {
             miss(l, &mode::current_spots(), history.before(l.tick))
         });
         let o = crate::superbounce_options::current();
-        let v = view(&s, o, info);
+        let since = self.flash.step(s.switched, s.tick.unwrap_or(0));
+        let v = View {
+            kinds: kinds_row(
+                &s,
+                crate::superbounce_targets::mode().unwrap_or(o.targets),
+                crate::superbounce_targets::current().len(),
+                flashlight_glyph(crate::superbounce_ghost::current_button()),
+                since,
+            ),
+            ..view(&s, o, info)
+        };
         self.handle.publish(rd::values(&v));
         for (id, pose) in guide_poses(&s, o) {
             self.handle.world_mark(id, pose);
@@ -493,6 +640,7 @@ pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
         handle,
         history: History::default(),
         info: Info::default(),
+        flash: SwitchFlash::default(),
         ticks: 0,
     };
     registry

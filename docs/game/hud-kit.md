@@ -1397,17 +1397,19 @@ tutorial's step waits.
 A second HUD on the kit, `superbounce-readout`
 (`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): nine
 charge segments round the motion tracker ("The charge segments"), three
-rows right of them,
+rows right of them and a fourth over the arming bar,
 three navpoints and the approach guide's five world marks ("The
 approach guide"), for the first
 local player while the superbounce mode is on. Nothing of it is a panel
 in the middle of the screen: the guide is on the geometry. It is a HUD of its own because it is fullscreen
-only: a half or quarter frame has no three rows free under the prompt
+only: a half or quarter frame has no four rows free under the prompt
 line's box, and the `modes` check wants every widget of one HUD in the
 same screen modes.
 
 ```text
  x 40  47     130 137  149
+                     Targets: Likely (4)  (W)(W)       sbr.kinds   y 326
+                     [=====  arming bar  =====]        sb.arm      y 355 to 368
         .---.
    (   /     \   )   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
    (  | track |  )   [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
@@ -1421,24 +1423,29 @@ same screen modes.
 | `sbr.seg.1` to `sbr.seg.9` | gauge, an arc of the charge ring (`font::ring`) | round the tracker ("The charge segments") | how far the player is through priming, and how long the charge has left |
 | `sbr.speed` | text, font 6 | (101, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
 | `sbr.fall` | meter, the battery strip's last 64 columns | (101, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
-| `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)) (`steer_text`). It carries no percentage: the approach guide's box has the one verdict ("The approach guide") |
-| `sbr.info` | text, font 6 | (101, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)). For two seconds after the player switches the kinds of seam shown, `Targets: common`, `Targets: likely` or `Targets: all` in place of either ([superbounce.md](superbounce.md#targets)) |
+| `sbr.steer` | text, font 6 | (171, −47) | beside the bar: `On seam` when the predicted landing (the stick held as it is) is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way from the landing to the seam's landing point against the aim and how far, `(arrow) 0.40 m` ([superbounce.md](superbounce.md#the-landing-point)) (`steer_text`); `Out of reach`, with no arrow and the bar kept, when the landing is off the seam and the stick cannot bring it in. Its `longest` is `Out of reach`. It carries no percentage: the approach guide's box has the one verdict ("The approach guide") |
+| `sbr.info` | text, font 6 | (101, −26) | why the last landing by a seam did not bounce, held three seconds and up five: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`, `Fell through at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)) |
+| `sbr.kinds` | text, font 6 | (101, −118): y 326, 8 over the arming bar (y 355 to 368) as the speed row is 8 under it | the kinds of seam the seam lines are on, how many seams of them the map has, and the flashlight's glyph twice, the double tap that switches them: `Targets: Likely (4)  (W)(W)` (`kinds_text`). The glyph is White (U+E105), or X (U+E102) on Bumper Jumper, which the button swap redraws as the bound key. Shown whenever the map is scanned and has a spot; for two seconds after a switch it names the new kinds and flashes the help record (`Flash(Help)`, `kinds_value`) ([superbounce.md](superbounce.md#targets)). Its `longest` is `Targets: Common (888)  (W)(W)` |
 | `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
-| `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
+| `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | in the flight after a bounce, the two ranked seams; none otherwise (the set's seams are lines on the map, [superbounce.md](superbounce.md#seam-lines)) |
 | `sbr.guide.box`, `sbr.guide.pipper`, `sbr.guide.ticks`, `sbr.guide.drift`, `sbr.guide.takeoff` | world mark | on the seam the player is going for, and the ground before it | the approach guide ("The approach guide") |
 
 Speeds are metres a second and distances metres (a world unit is
 3.048 m). The rows are 21 pixels apart, a line of font 6, the last
 ending 5 above the frame's foot. They start at screen x 149, 12 right of
-the segments' right side (`SEGMENTS_GAP`).
+the segments' right side (`SEGMENTS_GAP`). Under the arming bar the
+three rows fill the block, so the targets row is over the bar
+(`KINDS_UP`), clear of the Halo 1 health strip and the shield band, which
+end at x 139 and 130.
 
 ```sh
 h2 hud preview superbounce-readout --state all --out DIR
 ```
 
 The preview's states are `idle`, `moving`, `falling-off-seam`,
-`falling-on-seam`, `falling-wants-drift`, the four `miss-` lines, `targets`, `second-bounce`,
-`second-bounce-lined-up`, `targets-switched`, `tagged`, the guide's
+`falling-on-seam`, `falling-out-of-reach`, `falling-wants-drift`, the five `miss-` lines, `targets`, `second-bounce`,
+`second-bounce-lined-up`, `targets-switched` (the row flashing),
+`targets-common-none`, `tagged`, the guide's
 nine (`guide-approach`, `guide-lined-up`, `guide-falling-caught`,
 `guide-too-shallow`, `guide-off-line`, `guide-on-the-cut`,
 `guide-scan-only`, `guide-jump-now` and `guide-walk-to-line`) and the
@@ -1446,14 +1453,15 @@ segments' eight:
 `segments-idle`, `segments-near`, `segments-under`, `segments-held`,
 `segments-primed`, `segments-draining`, `segments-warning` and
 `segments-lost`. `idle` has no ring, as with the variant's
-`charge_segments` off; every other state has the empty one.
+`charge_segments` off; every other state has the empty one, and the
+targets row at the default kinds, `Targets: Likely (4)`.
 
 `h2 hud preview superbounce-all` draws both HUDs in one frame, for the
 preview only and fullscreen only, as the readout is
 (`huds::superbounce_all`, `huds::previews`): twenty-nine moments of a run, each a state of the superbounce HUD beside one of the
 readout's (`MOMENTS`), the thirteenth to the fifteenth the second
-bounce's ranked seams, its line-up and the line after a switch of the
-kinds of seam shown, the sixteenth to the twentieth the approach
+bounce's ranked seams, its line-up and the targets row flashing after a
+switch of the kinds of seam shown, the sixteenth to the twentieth the approach
 guide's (the walk up counting to the takeoff line, lined up a tick
 short of it, falling and caught, falling too shallow, and off the
 line), the twenty-first to the twenty-fifth the priming states the
@@ -1476,10 +1484,11 @@ through `superbounce_readout::view`:
 | State (`superbounce_mode::State`) | View |
 |---|---|
 | `velocity`, `yaw`, `airborne` | the speed line (`speed`) |
-| `landing` (the assist's prediction), while airborne | the bar and the steer line (`fall`): `speed` over `need`; off the seam (`miss()` over 0) the way to `aim`, the seam's landing point; caught, the way to drift when `wants_drift()`, else on the seam |
-| `last_landing` (result, tick, origin) | the miss line (`miss`, `Info`): put up when a landing is filed, taken down after 120 ticks, by the next fall toward a seam, or by a bounce; a miss within 60 ticks of the line shown replaces it only with a higher speed in |
+| `landing` (the assist's prediction), while airborne | the bar and the steer line (`fall`): `speed` over `need`; off the seam (`miss()` over 0) and its `verdict` `Course::Miss`, out of reach; off it and fixable, the way to `aim`, the seam's landing point; caught, the way to drift when `wants_drift()`, else on the seam |
+| `last_landing` (result, tick, origin), `airborne`, `vz`, `position` | the miss line (`miss`, `Info`), below |
 | `marks` (`superbounce_targets::Marks`) | the three navpoints' points (`Handle::navpoint_at`) and their distances; a target outside 40 degrees of the aim is cleared (`ahead`), and while the mode is on the `hudg`'s `waypoint_bottom_inset` (`+0xf0`) is raised to 80 so the one arrow the game clamps to the edge clears the tracker, the speed row and the score plate (`keep_waypoint_inset`, from the kit's tick) |
-| `switched` (`superbounce_targets::Switch`, for 60 ticks after a double tap of the flashlight) | the switch's line (`kinds`), over the ranked line and the miss line |
+| `superbounce_targets::mode` (else the variant's `targets`), `superbounce_targets::current().len()`, the layout (`superbounce_ghost::current_button`), `scan` and the spot counts | the targets row (`kinds_row`, `flashlight_glyph`): shown once the scan is ready and the map has a spot, whatever the variant's options, as it answers the player's own press |
+| `switched` (`superbounce_targets::Switch`, for 60 ticks after a double tap of the flashlight) | the targets row's flash, from the tick the switch first shows (`SwitchFlash`) |
 | `second` (`superbounce_second::Ranked`, in the flight after a bounce) | the ranked line (`next`), and the fall row as the best seam's line-up (`line_up`) in place of the assist's prediction; the mode has put the ranked seams on the two target navpoints |
 | `guide` (`superbounce_guide::Guide`) | the approach guide's values (`Guide::view`): on the ground its jump cue on the box; in a fall its call on the box (no percentage, and none on the steer line); and its marks' poses (`guide_poses`, `Handle::world_mark`) |
 | `charge`, `scan`, the spot counts | the charge segments (`superbounce_readout::segments`): the charge's stage, once the scan is ready and the map has a spot |
@@ -1491,7 +1500,26 @@ its edge, the need is the seam's (`need_of`), and the speed in is the
 fall speed on the tick before touchdown (a 48-tick history of the
 state's `vz`, `History`) carried down to the seam's height under
 gravity (`speed_in`), as the tracker's own. A line whose seam or speed
-is not known is not shown.
+is not known is not shown, and such a landing leaves a line already up.
+
+The miss line's time on screen (`Info::step`):
+
+| Event | Inside the hold (90 ticks, `MISS_HOLD_TICKS`) | After it |
+|---|---|---|
+| a bounce filed | takes the line down | takes it down |
+| a miss filed | replaces it if it is a fall through, or the same kind of line with a higher speed in (`replaces`) | replaces it, unless the line shown is a fall through |
+| a landing with no line (no seam, no speed) | nothing | nothing |
+| a real fall toward a seam: airborne, falling at `TOUCHDOWN_VZ` (1 unit/s) or faster, a landing predicted (`falling_to_seam`) | nothing: the rebound hop, a jump, a step off a kerb | takes it down |
+| 150 ticks up (`INFO_TICKS`) | | takes it down |
+
+A fall through (`Fell through at`) ranks worst: it replaces any line and
+only a bounce replaces it. The clock counts only ticks with a body
+(`position`): between lives it stops, so the line stays through the
+respawn countdown, when the player reads it. A tick with no state
+(`Info::absent`) keeps the line up to 30 ticks in a row (`GAP_TICKS`);
+longer is the mode off and clears it and the speed history. A state with
+no landing after one is a new game (the mode resets its tracker) and
+starts the line again.
 
 A piece the variant's script options turn off is left out of the view
 ([superbounce.md](superbounce.md#the-huds-options)): `velocity` the
@@ -1620,7 +1648,7 @@ are built.
 
 | Element | Shape | Pose | Values |
 |---|---|---|---|
-| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Go` with `Will bounce` or `Jump now` (`box_value`, `go`, `Call`, `Cue`). Before the jump the label is the jump cue: `Walk to line`, `Jump in 0.7 s` (tenths of a second, `tenths`, at most `9.9`) or `Jump now` (`cue_text`). `Cue::Label` is any other cue as the game words it (`Climb up`, `Walk off`), shown as it is. In a fall it is the call alone, `Will bounce` or `Too shallow`, with no percentage, and none with no call (`box_text`); the widest is `Jump in 9.9 s` |
+| `sbr.guide.box` | `Bracket` | on the seam's collision edge beside its landing point, heading along the edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Go` with `Will bounce` or `Jump now` (`box_value`, `go`, `Call`, `Cue`). Before the jump the label is the jump cue: `Walk to line`, `Jump in 0.7 s` (tenths of a second, `tenths`, at most `9.9`) or `Jump now` (`cue_text`). `Cue::Label` is any other cue as the game words it (`Climb up`, `Walk off`), shown as it is. In a fall it is the call alone, `Will bounce` or `Too shallow`, with no percentage, and none with no call (`box_text`); the widest is `Jump in 9.9 s` |
 | `sbr.guide.pipper` | `Pipper` | at the predicted landing on the seam's floor, radius 0.06 | shown while a landing is predicted by the seam; `Go` with the box |
 | `sbr.guide.ticks` | `Ticks` | from the pipper's ring toward the box's centre, over the distance between them, 0.6 at most (`ticks_run`) | shown while the landing is not caught; under a run of 0.02 it has no pose |
 | `sbr.guide.drift` | `Arrow` | 0.06 outside the box on the drift's side, pointing along the drift | `Normal` while the player moves the drift's way, `Dim` when not; hidden on a seam with no drift |

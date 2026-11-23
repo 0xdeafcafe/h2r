@@ -230,11 +230,15 @@ fn the_readout_passes_beside_the_superbounce_hud() {
     let with_ring = |before: &[&'static str], after: &[&'static str]| -> Vec<&'static str> {
         before.iter().chain(&segs::IDS).chain(after).copied().collect()
     };
+    // The targets row too, in every state but `idle`.
     assert_eq!(
         drawn("falling-off-seam", Mode::Full),
-        with_ring(&[readout::FALL], &[readout::SPEED, readout::STEER])
+        with_ring(&[readout::FALL], &[readout::SPEED, readout::STEER, readout::KINDS])
     );
-    assert_eq!(drawn("miss-too-slow", Mode::Full), with_ring(&[], &[readout::INFO]));
+    assert_eq!(
+        drawn("miss-too-slow", Mode::Full),
+        with_ring(&[], &[readout::INFO, readout::KINDS])
+    );
     assert!(drawn("idle", Mode::Full).is_empty());
     for mode in [Mode::Half, Mode::Quarter] {
         assert!(drawn("falling-off-seam", mode).is_empty(), "{mode:?}");
@@ -247,6 +251,17 @@ fn the_readout_passes_beside_the_superbounce_hud() {
         let rect = d.rect.unwrap();
         assert!(rect.x0 >= 149.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
     }
+    // The targets row over the arming bar (y 355 to 368), clear of it,
+    // and right of the Halo 1 health strip and the shield band.
+    let kinds = shot("falling-off-seam", Mode::Full)
+        .element(readout::KINDS)
+        .unwrap()
+        .rect
+        .unwrap();
+    assert!(
+        kinds.x0 >= 149.0 && kinds.y0 >= 326.0 && kinds.y1 <= 355.0,
+        "{kinds:?}"
+    );
 }
 
 /// The combined preview (`h2 hud preview superbounce-all`) in every screen
