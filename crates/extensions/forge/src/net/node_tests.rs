@@ -756,8 +756,8 @@ fn every_refusal_has_a_code_that_names_it() {
         NetRefusal::Clock { now: 1, was: 2 },
     ];
     let codes: std::collections::BTreeSet<_> = refusals.iter().map(NetRefusal::code).collect();
-    // `Doc` has three, two of them the same code.
-    assert_eq!(codes.len(), refusals.len() - 1);
+    // Every refusal, each of `Doc`'s three among them, has its own code.
+    assert_eq!(codes.len(), refusals.len());
     for refusal in &refusals {
         assert!(refusal.code().starts_with("forge_"));
         assert!(refusal.named().starts_with(&format!("{}: ", refusal.code())));
