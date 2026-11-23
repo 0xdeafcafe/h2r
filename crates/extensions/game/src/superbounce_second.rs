@@ -33,8 +33,9 @@ pub const RANKED: usize = NEAREST;
 /// a fall out of the map.
 pub const MAX_TIME: f32 = 8.0;
 /// What the spare speed weighs in the cost against the steer's share of
-/// the reach.
-pub const SPEED_WEIGHT: f32 = 0.5;
+/// the reach (`superbounce_flight::cost`, which the bots' flight net
+/// ranks by too).
+pub const SPEED_WEIGHT: f32 = flight::SPEED_WEIGHT;
 /// A seam this near a better one's point (world units) is the same place
 /// to the eye: one of them is ranked.
 pub const APART: f32 = 1.0;
@@ -124,15 +125,7 @@ pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Option<Ranked> {
     } else {
         [0.0; 2]
     };
-    let reach = flight::hold(body.position, body.velocity, dir, floor)
-        .map_or(0.0, |l| (l.row[0] - landing[0]) * dir[0] + (l.row[1] - landing[1]) * dir[1])
-        .max(0.0);
-    let share = if miss > 1e-6 {
-        (miss / reach.max(1e-3)).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let spare = if speed > 0.0 { need / speed } else { 1.0 };
+    let reach = flight::reach_along(body.position, body.velocity, landing, dir, floor);
     Some(Ranked {
         at,
         distance: ((at[0] - x).powi(2) + (at[1] - y).powi(2) + (at[2] - z).powi(2)).sqrt(),
@@ -144,7 +137,7 @@ pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Option<Ranked> {
         reach,
         speed,
         need,
-        cost: share + SPEED_WEIGHT * spare,
+        cost: flight::cost(miss, reach, need, speed),
     })
 }
 

@@ -395,6 +395,10 @@ fn a_chain_link_is_one_of_the_easiest_and_mostly_another_site() {
         time: 5.0,
         steer: 0.0,
         speed_in: 12.0,
+        miss: 0.0,
+        reach: 6.0,
+        cost: 0.0,
+        sure: true,
     };
     let near = [(a, leg), (b, leg), (c, leg)];
     // Never keen: no chain.
@@ -413,6 +417,43 @@ fn a_chain_link_is_one_of_the_easiest_and_mostly_another_site() {
     // Only itself in reach: back onto it.
     assert_eq!(chain_pick(&a, &near[..1], 1.0, &mut draws(9)), Some(0));
     assert_eq!(chain_pick(&a, &[], 1.0, &mut draws(9)), None);
+}
+
+/// A proven link is relied on: with one in reach the pick is among the
+/// proven ones; with none it goes on a quarter as often, onto a site no
+/// run has proved.
+#[test]
+fn a_chain_relies_on_proven_links_and_seldom_tries_the_rest() {
+    let a = site([0.0; 3]);
+    let b = site([1.0, 0.0, 0.0]);
+    let c = site([2.0, 0.0, 0.0]);
+    let likely = Leg {
+        time: 5.0,
+        steer: 0.0,
+        speed_in: 12.0,
+        miss: 0.0,
+        reach: 6.0,
+        cost: 0.0,
+        sure: false,
+    };
+    let sure = Leg {
+        sure: true,
+        ..likely
+    };
+    // The net's order: the proven one first.
+    let near = [(c, sure), (a, likely), (b, likely)];
+    for seed in 1..200 {
+        if let Some(i) = chain_pick(&a, &near, 1.0, &mut draws(seed)) {
+            assert_eq!(i, 0, "seed {seed}");
+        }
+    }
+    // None proven: a link about CHAIN_LIKELY of the time.
+    let near = [(a, likely), (b, likely), (c, likely)];
+    let went = (1..2000)
+        .filter(|&seed| chain_pick(&a, &near, 1.0, &mut draws(seed)).is_some())
+        .count() as f32
+        / 1999.0;
+    assert!((went - CHAIN_LIKELY).abs() < 0.06, "{went}");
 }
 
 // ---- letting players go first ----

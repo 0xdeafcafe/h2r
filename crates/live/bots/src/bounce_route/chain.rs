@@ -1,34 +1,56 @@
-//! Chains (docs/game/bots.md, "Chains"): after a bounce, the sites the
-//! bot can come down on from its launch without touching the ground, so
-//! a practice route can plan the next bounce of a chain
-//! ([`super::Step::Chain`]).
+//! Chains and the flight net (docs/game/bots.md, "Chains" and "The
+//! flight net"): after a bounce, the sites the bot can come down on from
+//! its launch without touching the ground, so a practice route can plan
+//! the next bounce of a chain ([`super::Step::Chain`]).
 //!
-//! The flight is a [`Trajectory`]: what a launch off one site can reach.
-//! No flight after a bounce has been traced (docs/game/superbounce.md,
-//! "What is known about a second bounce"), so the one built in,
-//! [`Ballistic`], is the conservative model the route's own numbers give:
-//! the launch the site's estimate says, the measured fall gravity
-//! ([`super::FALL_GRAVITY`]), and the measured air control
-//! ([`super::AIR_ACCEL`] up to [`super::AIR_TOP`]), with a margin. It
-//! does not know which touchdown speeds a seam takes after a launch:
-//! [`Ballistic::max_speed_in`] is where a measured window goes.
+//! A leg is a [`Trajectory`]: what a launch off one site can reach. The
+//! one built in, [`Engine`], flies it on the flight model the HUD's
+//! second bounce flies (`superbounce::flight`; docs/game/superbounce.md,
+//! "The flight model" and "The second bounce"), by the same rule: the
+//! launch straight up off the site, the measured gravity and air control,
+//! a touchdown at the next site's need or faster, and a pursuit of the
+//! next site's target that ends in its catch. So a bot and the HUD agree
+//! on which seams a flight reaches.
+//!
+//! The [`Net`] is every leg between a map's sites, made once for a set of
+//! sites: a site's row is the sites its launch reaches, proven ones first
+//! (a bounce a run has proved, which the bots rely on), then the lowest
+//! [`flight::cost`] (the HUD's rank). Sites no run has proved are in the
+//! net, as links a bot takes seldom (`mind::practice::chain_pick`).
 
-use super::{AIR_ACCEL, AIR_TOP, CLEARANCE, FALL_GRAVITY};
+use super::CLEARANCE;
 use crate::spots::{Site, dist_xy};
+use superbounce::flight;
 
 /// The most links a practice route plans after its first bounce.
 pub const LINKS: usize = 3;
+/// The longest leg (seconds): the HUD's second bounce ranks none longer
+/// (`superbounce_second::MAX_TIME`).
+pub const MAX_TIME: f32 = 8.0;
 
 /// One leg of a chain: the flight off one site's launch down onto the
 /// next.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Leg {
-    /// Seconds from the launch to the touchdown.
+    /// Seconds from the launch to the touchdown (its last free row).
     pub time: f32,
-    /// How far sideways (XY) the air stick must move the bot.
+    /// How far sideways (XY) the air stick must move the bot: from where
+    /// the launch comes down with the stick let go to the next target.
     pub steer: f32,
     /// The touchdown's downward speed (world units a second).
     pub speed_in: f32,
+    /// How far the pursuit of the next target comes down from it (world
+    /// units, X and Y): within the catch.
+    pub miss: f32,
+    /// How far the full stick along the steer moves the landing
+    /// (`superbounce::flight::reach_along`).
+    pub reach: f32,
+    /// [`flight::cost`]: the steer's share of the reach and the speed to
+    /// spare, lower easier.
+    pub cost: f32,
+    /// The next site is proven (measured, or a verified entry: the bounce
+    /// search's provable sites): a link the bot can rely on.
+    pub sure: bool,
 }
 
 /// What a launch off a site can reach.
@@ -38,112 +60,196 @@ pub trait Trajectory {
     fn leg(&self, from: &Site, to: &Site) -> Option<Leg>;
 }
 
-/// The built-in flight: straight up at the site's launch, down under
-/// gravity, the air stick moving the bot sideways at most `air_top`
-/// after speeding up at `air_accel`, and only `margin` of that counted.
+/// The flight model's leg (`superbounce::flight`), by the HUD's second
+/// bounce's rule.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Ballistic {
-    pub gravity: f32,
-    pub air_accel: f32,
-    pub air_top: f32,
-    /// The share of the reach counted (0 to 1).
-    pub margin: f32,
+pub struct Engine {
+    /// How far from the next target (X and Y) the pursuit may come down:
+    /// the catch (`superbounce::catch`).
+    pub catch: f32,
+    /// The longest leg, seconds ([`MAX_TIME`]).
+    pub max_time: f32,
     /// The fastest touchdown a seam takes after a launch, when measured;
     /// `None`: any at or over the site's `need`.
     pub max_speed_in: Option<f32>,
 }
 
-impl Default for Ballistic {
-    fn default() -> Ballistic {
-        Ballistic {
-            gravity: FALL_GRAVITY,
-            air_accel: AIR_ACCEL,
-            air_top: AIR_TOP,
-            margin: 0.75,
+impl Default for Engine {
+    fn default() -> Engine {
+        Engine {
+            catch: superbounce::catch(),
+            max_time: MAX_TIME,
             max_speed_in: None,
         }
     }
 }
 
-impl Ballistic {
-    /// How far sideways the air stick moves the bot in `t` seconds from
-    /// standing still sideways, before the margin.
-    pub fn reach(&self, t: f32) -> f32 {
-        let ramp = self.air_top / self.air_accel;
-        if t <= ramp {
-            0.5 * self.air_accel * t * t
-        } else {
-            self.air_top * (t - ramp / 2.0)
-        }
-    }
-}
-
-impl Trajectory for Ballistic {
+impl Trajectory for Engine {
+    /// Off `from`'s target (where its bounce comes down) straight up at
+    /// its launch, onto `to`'s target height:
+    ///
+    /// - with the stick let go it comes down within [`Engine::max_time`]
+    ///   (a seam over the top is never reached), at `to`'s need or faster
+    ///   and no faster than [`Engine::max_speed_in`];
+    /// - `to` is not farther than the full stick could carry it in that
+    ///   time (no flight needed to rule it out), and the pursuit of its
+    ///   target (`superbounce::flight::pursue`) comes down within
+    ///   [`Engine::catch`] of it;
+    /// - a V's arm only from across its bisector.
     fn leg(&self, from: &Site, to: &Site) -> Option<Leg> {
         let v = from.launch;
-        if v <= 0.0 {
+        if v.is_nan() || v <= 0.0 {
             return None;
         }
-        let z0 = from.bounce.stand[2];
-        let z1 = to.target()[2];
-        let g = self.gravity;
-        // The top must clear the next site's floor.
-        if z0 + v * v / (2.0 * g) < z1 + CLEARANCE {
+        let start = from.target();
+        let at = to.target();
+        if !to.approached_from([start[0], start[1]]) {
             return None;
         }
-        let d = v * v + 2.0 * g * (z0 - z1);
-        let speed_in = d.sqrt();
-        let time = (v + speed_in) / g;
-        let steer = dist_xy(from.target(), to.target());
-        if steer > self.margin * self.reach(time) {
+        let floor = |_: [f32; 2]| at[2];
+        let up = [0.0, 0.0, v];
+        let down = flight::hold(start, up, [0.0; 2], floor)?;
+        let time = down.time();
+        if time > self.max_time {
             return None;
         }
+        let speed_in = down.speed;
         if to.need > 0.0 && speed_in < to.need {
             return None;
         }
         if self.max_speed_in.is_some_and(|m| speed_in > m) {
             return None;
         }
-        // A V's arm only from across its bisector.
-        let at = from.target();
-        if !to.approached_from([at[0], at[1]]) {
+        let landing = [down.row[0], down.row[1]];
+        let gap = [at[0] - landing[0], at[1] - landing[1]];
+        let steer = gap[0].hypot(gap[1]);
+        if steer > flight::AIR_TOP * time + self.catch {
             return None;
         }
+        let pursuit = flight::pursue(start, up, [at[0], at[1]], floor)?;
+        if pursuit.miss > self.catch {
+            return None;
+        }
+        let dir = if steer > 1e-6 {
+            [gap[0] / steer, gap[1] / steer]
+        } else {
+            [0.0; 2]
+        };
+        let reach = flight::reach_along(start, up, landing, dir, floor);
         Some(Leg {
             time,
             steer,
             speed_in,
+            miss: pursuit.miss,
+            reach,
+            cost: flight::cost(steer, reach, to.need, speed_in),
+            sure: to.proven(),
         })
     }
 }
 
-/// The sites a launch off `from` can come down on, with their legs, the
-/// least steering first. `from` itself is among them (straight back down
-/// onto the same seam) when its own flight allows it.
+/// The order a row's legs come in: proven sites first, then the lowest
+/// cost, then the least steering.
+fn order(a: &Leg, b: &Leg) -> std::cmp::Ordering {
+    (!a.sure)
+        .cmp(&!b.sure)
+        .then(a.cost.total_cmp(&b.cost))
+        .then(a.steer.total_cmp(&b.steer))
+}
+
+/// The sites a launch off `from` can come down on, with their legs,
+/// proven first, then the easiest ([`Leg::cost`]). `from` itself is among
+/// them (straight back down onto the same seam) when its own flight
+/// allows it.
 pub fn reachable(from: &Site, sites: &[Site], model: &dyn Trajectory) -> Vec<(Site, Leg)> {
     let mut out: Vec<(Site, Leg)> = sites
         .iter()
         .filter_map(|s| Some((*s, model.leg(from, s)?)))
         .collect();
-    out.sort_by(|a, b| a.1.steer.total_cmp(&b.1.steer));
+    out.sort_by(|a, b| order(&a.1, &b.1));
     out
 }
 
+/// Two stands this near (world units) are one site.
+pub const SAME: f32 = 0.05;
+
+/// The flight net: for each of a set of sites, the sites its launch can
+/// come down on ([`reachable`]). Only sites a route plays
+/// ([`Site::plays`]: a candidate crease is the training's until it is
+/// proved) are in it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Net {
+    sites: Vec<Site>,
+    rows: Vec<Vec<(usize, Leg)>>,
+}
+
+impl Net {
+    /// The net over `sites` on `model`: every leg between two sites a
+    /// route plays.
+    pub fn build(sites: &[Site], model: &dyn Trajectory) -> Net {
+        let sites: Vec<Site> = sites.iter().copied().filter(Site::plays).collect();
+        let rows = sites
+            .iter()
+            .map(|from| {
+                let mut row: Vec<(usize, Leg)> = sites
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, to)| Some((i, model.leg(from, to)?)))
+                    .collect();
+                row.sort_by(|a, b| order(&a.1, &b.1));
+                row
+            })
+            .collect();
+        Net { sites, rows }
+    }
+
+    /// The sites in the net.
+    pub fn sites(&self) -> &[Site] {
+        &self.sites
+    }
+
+    /// How many legs the net holds.
+    pub fn legs(&self) -> usize {
+        self.rows.iter().map(Vec::len).sum()
+    }
+
+    /// The net's index of `site`: the site whose stand is within [`SAME`]
+    /// of its stand at the same height to [`CLEARANCE`].
+    pub fn index(&self, site: &Site) -> Option<usize> {
+        let p = site.bounce.stand;
+        self.sites.iter().position(|s| {
+            let q = s.bounce.stand;
+            dist_xy(p, q) < SAME && (p[2] - q[2]).abs() < CLEARANCE
+        })
+    }
+
+    /// The sites a launch off `site` comes down on, with their legs, in
+    /// the row's order (proven first, then the easiest); none for a site
+    /// not in the net.
+    pub fn from(&self, site: &Site) -> Vec<(Site, Leg)> {
+        self.index(site).map_or_else(Vec::new, |i| {
+            self.rows[i]
+                .iter()
+                .map(|&(j, leg)| (self.sites[j], leg))
+                .collect()
+        })
+    }
+}
+
 /// A chain of up to `links` sites after `first`: each link one of the
-/// sites the last one's launch reaches ([`reachable`]), chosen by
-/// `choose` (an index into them, or `None` to stop there). The chain
+/// sites the last one's launch reaches in `net` ([`Net::from`]), chosen
+/// by `choose` (an index into them, or `None` to stop there). The chain
 /// stops at the first link with nothing in reach or nothing chosen.
 pub fn plan(
     first: &Site,
-    sites: &[Site],
-    model: &dyn Trajectory,
+    net: &Net,
     links: usize,
     choose: &mut dyn FnMut(&Site, &[(Site, Leg)]) -> Option<usize>,
 ) -> Vec<Site> {
     let mut out = Vec::new();
     let mut from = *first;
     for _ in 0..links {
-        let near = reachable(&from, sites, model);
+        let near = net.from(&from);
         let Some(i) = choose(&from, &near).filter(|&i| i < near.len()) else {
             break;
         };

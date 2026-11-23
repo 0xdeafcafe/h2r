@@ -29,6 +29,7 @@ use crate::mind::RouteMotion;
 use crate::nav::RouteWalk;
 use crate::spots::{Crouch, Known, Site, dist_xy};
 use crate::tuning::BounceTuning;
+use superbounce::flight;
 use superbounce::learned::{How, Knobs};
 
 pub mod chain;
@@ -94,13 +95,6 @@ pub fn path_length(m: &MapData, from: Vec3, to: Vec3) -> Option<f32> {
     crate::nav::walk_length(m, from, to, false, ARRIVED)
 }
 
-/// Gravity (world units a second squared): the jump model's estimate
-/// (`nav::route`).
-pub const GRAVITY: f32 = 5.2;
-/// How fast the bot can move sideways in the air (world units a second).
-/// **[guess]**: not traced; air control is limited and the route steers
-/// with the full stick.
-pub const AIR_SPEED: f32 = 2.5;
 /// Headroom over the goal the flight's top must have (world units).
 pub const CLEARANCE: f32 = 0.3;
 /// What priming costs in the walking it is compared with (world units).
@@ -239,35 +233,41 @@ pub type Walk<'a> = &'a dyn Fn(Vec3, Vec3) -> Option<f32>;
 /// run off; `None` when there is none.
 pub type Ledge<'a> = &'a dyn Fn(&Site) -> Option<Vec3>;
 
-/// A launch from a site: how it flies.
+/// A launch from a site: how it flies, on the flight model the HUD flies
+/// (`superbounce::flight`, docs/game/superbounce.md, "The flight model").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Flight {
     /// Height of the top (world units, absolute).
     pub apex: f32,
-    /// Seconds from the launch to coming down through the goal's height.
+    /// Seconds from the launch to the last free row over the goal's
+    /// height.
     pub time: f32,
-    /// How far sideways the bot gets in that time.
+    /// How far sideways the full air stick moves the bot in that time,
+    /// from no sideways speed.
     pub reach: f32,
 }
 
 /// The flight of a launch from `site` toward a point at height `z`:
-/// up at `launch`, down under [`GRAVITY`], steering at [`AIR_SPEED`].
-/// `None` when it never gets [`CLEARANCE`] above `z`.
+/// straight up off its stand at its launch speed, on the flight model
+/// (`superbounce::flight`: the measured gravity, and the air stick
+/// driving the sideways speed toward 1.2 units/s at 1.05 units/s²). The
+/// reach is the full stick's from no sideways speed. `None` when its top
+/// never gets [`CLEARANCE`] above `z`, or it does not come down there.
 pub fn flight(site: &Site, z: f32) -> Option<Flight> {
-    let z0 = site.bounce.stand[2];
+    let s = site.bounce.stand;
     let v = site.launch;
-    if v <= 0.0 {
+    if v.is_nan() || v <= 0.0 {
         return None;
     }
-    let apex = z0 + v * v / (2.0 * GRAVITY);
+    let apex = flight::apex(s[2], v);
     if apex < z + CLEARANCE {
         return None;
     }
-    let time = (v + (v * v + 2.0 * GRAVITY * (z0 - z)).sqrt()) / GRAVITY;
+    let down = flight::hold(s, [0.0, 0.0, v], [1.0, 0.0], |_| z)?;
     Some(Flight {
         apex,
-        time,
-        reach: AIR_SPEED * time,
+        time: down.time(),
+        reach: (down.row[0] - s[0]).max(0.0),
     })
 }
 
@@ -409,9 +409,7 @@ fn candidate(
 
 fn flight_z(ask: &Ask, site: &Site) -> f32 {
     if ask.mode == Mode::Fun {
-        ask.to[2].min(
-            site.bounce.stand[2] + site.launch * site.launch / (2.0 * GRAVITY) - CLEARANCE - 0.01,
-        )
+        ask.to[2].min(flight::apex(site.bounce.stand[2], site.launch) - CLEARANCE - 0.01)
     } else {
         ask.to[2]
     }
@@ -822,12 +820,12 @@ pub const LOG: usize = 64;
 
 const TICKS: f32 = 30.0;
 
-/// Gravity on a falling body (world units a second squared): the
-/// superbounce scan's fit of the recipe (`superbounce::bounce`'s
-/// `GRAVITY`), and what the round-3 bounce-practice runs show: a standing
+/// Gravity on a falling body (world units a second squared): the flight
+/// model's (`superbounce::flight::GRAVITY`, the sim's fall model), which
+/// the HUD flies too. The round-3 bounce-practice runs agree: a standing
 /// jump's vertical speed goes from +3.08 to -2.90 in 43 ticks
 /// (docs/game/notes/2026-11-21-bot-bounce-sim.md).
-pub const FALL_GRAVITY: f32 = 4.15;
+pub const FALL_GRAVITY: f32 = flight::GRAVITY;
 /// A jump's vertical speed on its first tick (world units a second): the
 /// same runs, every jump.
 pub const JUMP_VZ: f32 = 3.08;
@@ -836,9 +834,11 @@ pub const JUMP_VZ: f32 = 3.08;
 /// docs/game/notes/2026-11-21-bot-bounce-sim.md).
 pub const RUN_SPEED: f32 = 2.0;
 /// The smallest stick that moves the body: past the move stick's dead
-/// zone (`nav::route`'s 0.15). The runs' standing jumps held 0.15 of
-/// stick toward the drift in the air and gained no sideways speed at all.
-pub const MIN_STICK: f32 = 0.2;
+/// zone (`nav::route`'s 0.15), the flight model's dead zone
+/// (`superbounce::flight::DEAD_ZONE`). The runs' standing jumps held 0.15
+/// of stick toward the drift in the air and gained no sideways speed at
+/// all.
+pub const MIN_STICK: f32 = flight::DEAD_ZONE;
 /// A drop's run starts this far (world units) behind its launch point.
 pub const RUN_UP: f32 = 0.6;
 /// The jump is pressed this far (world units) short of the launch point,
@@ -854,26 +854,26 @@ pub const INPUT_LAG: u32 = 5;
 /// in the air". Letting go is holding the sideways speed ([`air_stick`]).
 pub const AIR_DEAD: f32 = 0.03;
 /// How fast the air stick changes the sideways speed (world units a second
-/// squared): 0.035 units/s a tick in every drill run, braking and pushing,
-/// at every stick past the dead zone.
-pub const AIR_ACCEL: f32 = 1.05;
+/// squared): the flight model's (`superbounce::flight::AIR_ACCEL`), 0.035
+/// units/s a tick in every drill run, braking and pushing, at every stick
+/// past the dead zone.
+pub const AIR_ACCEL: f32 = flight::AIR_ACCEL;
 /// The sideways speed a full air stick drives toward (world units a
-/// second). **[rough]**: under a stick of 0.8 to 1 pushing on, the drill
-/// runs' flights held 0.9 to 1.3 and never went faster, and a small stick
-/// on slowed a 0.46 one to 0.40; a faster flight slows toward it.
-pub const AIR_TOP: f32 = 1.2;
+/// second): the flight model's (`superbounce::flight::AIR_TOP`). Under a
+/// stick of 0.8 to 1 pushing on, the drill runs' flights held 0.9 to 1.3
+/// and never went faster, and a small stick on slowed a 0.46 one to 0.40;
+/// a faster flight slows toward it.
+pub const AIR_TOP: f32 = flight::AIR_TOP;
 /// A landing, as it flies, this far (world units) past the target brakes
 /// with the full stick.
 pub const AIR_PAST: f32 = 0.3;
 
 /// How long (seconds) a fall from `vz` (up positive) takes to come down
-/// `height` (world units, positive down), under [`FALL_GRAVITY`]. `None`
-/// when it never gets there.
+/// `height` (world units, positive down), on the flight model
+/// (`superbounce::flight::fall`): the ticks to its last free row over the
+/// floor. `None` when it never gets there.
 pub fn fall_time(height: f32, vz: f32) -> Option<f32> {
-    let d = vz * vz + 2.0 * FALL_GRAVITY * height;
-    (d >= 0.0)
-        .then(|| (vz + d.sqrt()) / FALL_GRAVITY)
-        .filter(|t| *t > 0.0)
+    flight::fall(height, vz, 0.0).map(|l| l.time())
 }
 
 /// The ground speed (world units a second) a stick runs at, from what the
@@ -902,33 +902,8 @@ pub fn ground_speed(stick: f32) -> f32 {
     RUN_SPEED
 }
 
-/// How far (world units) a flight goes sideways in `t` seconds from a
-/// sideways speed `u`, along its line: braking with the full air stick
-/// the whole way (to a stop, no further), and pushing on with it (toward
-/// [`AIR_TOP`], which a faster flight slows to).
-pub fn air_reach(u: f32, t: f32) -> (f32, f32) {
-    let a = AIR_ACCEL;
-    let u = u.max(0.0);
-    let t = t.max(0.0);
-    let near = if u <= a * t {
-        u * u / (2.0 * a)
-    } else {
-        u * t - 0.5 * a * t * t
-    };
-    // Toward the top at `a`, then at it.
-    let (dv, sign) = if u >= AIR_TOP {
-        (u - AIR_TOP, -1.0)
-    } else {
-        (AIR_TOP - u, 1.0)
-    };
-    let t1 = (dv / a).min(t);
-    let far = u * t1 + sign * 0.5 * a * t1 * t1 + (u + sign * a * t1) * (t - t1);
-    (near, far)
-}
-
 /// How a drop leaves its launch floor: the run's stick, and whether it
-/// jumps; and what the flight model ([`fall_time`], [`air_reach`]) makes
-/// of it.
+/// jumps; and what the flight model (`superbounce::flight`) makes of it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Takeoff {
     /// A running jump; else a run off the edge.
@@ -936,12 +911,16 @@ pub struct Takeoff {
     /// The run's stick, and the ground speed it gives ([`ground_speed`]).
     pub stick: f32,
     pub speed: f32,
-    /// Seconds from the floor to the target's height.
+    /// Seconds from the floor to the last free row over the target's
+    /// height.
     pub time: f32,
-    /// The speed it comes down at (world units a second, down).
+    /// The speed it comes down at (world units a second, down): its last
+    /// free row's, as the HUD reads a touchdown.
     pub speed_in: f32,
-    /// How far it goes sideways braking and pushing ([`air_reach`]), and
-    /// how far the target is from the launch point.
+    /// How far along the launch-to-target line it comes down with the air
+    /// stick let go (braking to a stop) and held full along the line
+    /// (toward [`AIR_TOP`]), on the flight model; and how far the target
+    /// is from the launch point.
     pub near: f32,
     pub far: f32,
     pub gap: f32,
@@ -953,9 +932,13 @@ impl Takeoff {
         self.gap >= self.near && self.gap <= self.far
     }
 
-    /// It comes down at least as fast as `need` (0: anything).
+    /// It comes down at least as fast as `need` (0: anything) on some
+    /// phase of the tick it meets the floor on: [`Takeoff::speed_in`] is
+    /// its last free row's, and the row that meets the floor comes in up
+    /// to one tick's gravity faster, by where in the tick the floor is
+    /// (docs/runtime/bounce-search.md, the `depth` axis).
     pub fn fast_enough(&self, need: f32) -> bool {
-        need <= 0.0 || self.speed_in >= need
+        need <= 0.0 || self.speed_in + flight::GRAVITY * flight::TICK >= need
     }
 
     /// How far (world units) the target is outside what it reaches.
@@ -964,24 +947,30 @@ impl Takeoff {
     }
 }
 
-/// The flight of a drop from `from` onto `site`'s target, run at `stick`,
-/// jumping or not. `None` when it never comes down there.
+/// The flight of a drop from `from` onto `site`'s target, run at `stick`
+/// along the launch-to-target line, jumping or not, flown on the flight
+/// model (`superbounce::flight`) onto the target's height. `None` when it
+/// never comes down there.
 pub fn takeoff(from: Vec3, site: &Site, stick: f32, jump: bool) -> Option<Takeoff> {
     let target = site.target();
-    let h = from[2] - target[2];
+    let (line, gap) = norm([target[0] - from[0], target[1] - from[1]]);
+    let line = if gap > 1e-6 { line } else { [1.0, 0.0] };
     let vz = if jump { JUMP_VZ } else { 0.0 };
-    let time = fall_time(h, vz)?;
     let speed = ground_speed(stick);
-    let (near, far) = air_reach(speed, time);
+    let v = [line[0] * speed, line[1] * speed, vz];
+    let floor = |_: [f32; 2]| target[2];
+    let braked = flight::hold(from, v, [0.0; 2], floor)?;
+    let pushed = flight::hold(from, v, line, floor)?;
+    let along = |l: &flight::Landing| (l.row[0] - from[0]) * line[0] + (l.row[1] - from[1]) * line[1];
     Some(Takeoff {
         jump,
         stick,
         speed,
-        time,
-        speed_in: (vz * vz + 2.0 * FALL_GRAVITY * h).max(0.0).sqrt(),
-        near,
-        far,
-        gap: dist_xy(from, target),
+        time: braked.time(),
+        speed_in: braked.speed,
+        near: along(&braked),
+        far: along(&pushed),
+        gap,
     })
 }
 
@@ -2221,22 +2210,26 @@ impl OrderRun {
     }
 
     /// The stick in the air ([`air_stick`]): where the landing comes down
-    /// with the sideways speed held, from where the body will be once the
-    /// stick acts ([`INPUT_LAG`] on) and the fall left then, against the
-    /// target; [`Flown::gain`] (the tuning's `air_gain`) and
-    /// [`Flown::letgo`].
+    /// with the sideways speed kept (the keeping stick,
+    /// `superbounce::flight::keep`), flown on the flight model the HUD
+    /// flies onto the target's height, against the target, with the time
+    /// left once the stick acts ([`INPUT_LAG`] on); [`Flown::gain`] (the
+    /// tuning's `air_gain`) and [`Flown::letgo`]. A flight the model has no
+    /// landing for (under the target's height, or rising past it for
+    /// good) is steered as one about to land: its miss from where it is.
     fn drop_air(&self, f: &Flown, at: Vec3, v: Vec3) -> RouteMotion {
         let target = f.target;
-        let lag = INPUT_LAG as f32 / TICKS;
-        let rem = fall_time(at[2] - target[2], v[2]).unwrap_or(0.0);
-        let rem_after = (rem - lag).max(1.0 / TICKS);
-        let ahead = rem.min(lag);
-        let lands = [
-            at[0] + v[0] * (ahead + rem_after),
-            at[1] + v[1] * (ahead + rem_after),
-        ];
+        let vxy = [v[0], v[1]];
+        let held = flight::hold(at, v, flight::keep(vxy), |_| target[2]);
+        let (lands, rem_after) = match held {
+            Some(l) => (
+                [l.row[0], l.row[1]],
+                (l.time() - INPUT_LAG as f32 / TICKS).max(1.0 / TICKS),
+            ),
+            None => ([at[0], at[1]], 1.0 / TICKS),
+        };
         let miss = [target[0] - lands[0], target[1] - lands[1]];
-        let (dir, speed) = air_stick([v[0], v[1]], miss, rem_after, f.gain, f.letgo);
+        let (dir, speed) = air_stick(vxy, miss, rem_after, f.gain, f.letgo);
         let (to_target, _) = norm([target[0] - at[0], target[1] - at[1]]);
         RouteMotion {
             dir,
