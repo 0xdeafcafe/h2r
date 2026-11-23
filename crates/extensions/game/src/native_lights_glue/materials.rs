@@ -43,7 +43,7 @@ pub(super) struct Resolved {
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct Variant {
     shader: TagId,
-    inputs: InputKey,
+    inputs: Option<InputKey>,
     layer: usize,
     implementation: usize,
     // A structure part uses WorldVertex. Model programs depend on the actual
@@ -55,7 +55,7 @@ type ResultSlot = OnceLock<(u64, Result<Resolved, Keep>)>;
 
 struct Job {
     key: Variant,
-    inputs: LightInputs,
+    inputs: Option<LightInputs>,
     instance: Box<EngineInputs>,
     model: Option<Arc<ModelLights>>,
     slot: Weak<ResultSlot>,
@@ -72,7 +72,7 @@ impl Variants {
         &mut self,
         sender: &mpsc::SyncSender<Job>,
         key: Variant,
-        inputs: LightInputs,
+        inputs: Option<LightInputs>,
         instance: &EngineInputs,
         model: Option<&Arc<ModelLights>>,
     ) -> Result<Resolved, Keep> {
@@ -149,14 +149,23 @@ impl Resolver {
     /// Passes of model parts hold the model load's images: they are
     /// rebuilt by a reload of the models, not here.
     pub(super) fn refresh_images(&self, queue: &wgpu::Queue, decoded: &Images) {
-        self.shared.edited.lock().unwrap_or_else(|e| e.into_inner()).extend(decoded.iter().map(|(k, v)| (*k, v.clone())));
+        self.shared
+            .edited
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(decoded.iter().map(|(k, v)| (*k, v.clone())));
         let mut built = self.shared.built.lock().unwrap_or_else(|e| e.into_inner());
         built.retain(|(_, gpu)| gpu.strong_count() != 0);
-        let mut images: Vec<(TagId, u32)> = decoded.keys().map(|&(_, bitmap, image)| (bitmap, image)).collect();
+        let mut images: Vec<(TagId, u32)> = decoded
+            .keys()
+            .map(|&(_, bitmap, image)| (bitmap, image))
+            .collect();
         images.sort_by_key(|&(bitmap, image)| (bitmap.0, image));
         images.dedup();
         for (model, gpu) in built.iter() {
-            let (false, Some(gpu)) = (*model, gpu.upgrade()) else { continue };
+            let (false, Some(gpu)) = (*model, gpu.upgrade()) else {
+                continue;
+            };
             let gpu = gpu.lock().unwrap_or_else(|e| e.into_inner());
             for &(bitmap, image) in &images {
                 let held = gpu.held(bitmap, image);
@@ -234,7 +243,7 @@ impl Resolver {
         &self,
         key: Variant,
         instance: &EngineInputs,
-        inputs: LightInputs,
+        inputs: Option<LightInputs>,
         model: Option<&Arc<ModelLights>>,
     ) -> Result<Resolved, Keep> {
         let queue = self.queue.get().ok_or(LOADING)?;
@@ -251,12 +260,28 @@ impl Resolver {
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
-            inputs: inputs.key(),
+            inputs: Some(inputs.key()),
             layer,
             implementation,
             model: None,
         };
-        self.request(key, &material.instance, inputs, None)
+        self.request(key, &material.instance, Some(inputs), None)
+    }
+
+    /// A structure caster pass, resolved with the instance's inputs only.
+    pub(super) fn world_shadow(
+        &self,
+        material: &LitMaterial,
+        implementation: usize,
+    ) -> Result<Resolved, Keep> {
+        let key = Variant {
+            shader: material.shader,
+            inputs: None,
+            layer: native_render::shadow_look::CASTER_LAYER,
+            implementation,
+            model: None,
+        };
+        self.request(key, &material.instance, None, None)
     }
 
     pub(super) fn model(
@@ -271,7 +296,7 @@ impl Resolver {
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader,
-            inputs: inputs.key(),
+            inputs: Some(inputs.key()),
             layer,
             implementation,
             model: Some((
@@ -280,7 +305,29 @@ impl Resolver {
                 u32::from(entry.stream.vertex_class),
             )),
         };
-        self.request(key, instance, inputs, Some(lights))
+        self.request(key, instance, Some(inputs), Some(lights))
+    }
+
+    /// A model caster pass over the entry's resident section buffer.
+    pub(super) fn model_shadow(
+        &self,
+        shader: TagId,
+        instance: &EngineInputs,
+        lights: &Arc<ModelLights>,
+        entry: &LightEntry,
+    ) -> Result<Resolved, Keep> {
+        let key = Variant {
+            shader,
+            inputs: None,
+            layer: native_render::shadow_look::CASTER_LAYER,
+            implementation: usize::from(entry.binding.implementation),
+            model: Some((
+                entry.model,
+                entry.stream.section,
+                u32::from(entry.stream.vertex_class),
+            )),
+        };
+        self.request(key, instance, None, Some(lights))
     }
 }
 
@@ -303,22 +350,28 @@ impl Worker {
         &mut self,
         key: Variant,
         instance: &EngineInputs,
-        inputs: &LightInputs,
+        inputs: &Option<LightInputs>,
         model: Option<&ModelLights>,
     ) -> Result<Resolved, Keep> {
+        let resolved_inputs = inputs.as_ref().map_or_else(
+            || instance.clone(),
+            |inputs| engine_inputs(instance, inputs),
+        );
         let material = self
             .lib
-            .material(key.shader, Some(engine_inputs(instance, inputs)))
+            .material(key.shader, Some(resolved_inputs))
             .map_err(|error| Keep::Refused(format!("material: {error}")))?;
-        let look =
-            light_look(&material, key.layer, key.implementation).map_err(
-                |reason| match reason {
-                    LightRefusal::NoLayer => {
-                        Keep::Unsupported("built light entry has no native material pass")
-                    }
-                    reason => Keep::Refused(format!("{reason:?}")),
-                },
-            )?;
+        let look = if key.layer == native_render::shadow_look::CASTER_LAYER {
+            native_render::shadow_look::shadow_look(&material, key.implementation)
+        } else {
+            light_look(&material, key.layer, key.implementation)
+        }
+        .map_err(|reason| match reason {
+            LightRefusal::NoLayer => {
+                Keep::Unsupported("built light entry has no native material pass")
+            }
+            reason => Keep::Refused(format!("{reason:?}")),
+        })?;
         let (program, buffer) = match (key.model, model) {
             (Some((model, section, class)), Some(lights)) => {
                 let section = lights
@@ -341,17 +394,29 @@ impl Worker {
                     .microcode
                     .get(&(look.vertex_shader, class))
                     .ok_or(Keep::Unsupported("no model vertex program"))?;
-                (
-                    compile_light_model(&look, code, buffer.provided(), buffer.fetch()),
-                    Some(index),
-                )
+                let program = if key.layer == native_render::shadow_look::CASTER_LAYER {
+                    native_render::shadow_look::compile_shadow_model(
+                        &look,
+                        code,
+                        buffer.provided(),
+                        buffer.fetch(),
+                    )
+                } else {
+                    compile_light_model(&look, code, buffer.provided(), buffer.fetch())
+                };
+                (program, Some(index))
             }
             (None, None) => {
                 let code = self
                     .code
                     .get(&look.vertex_shader)
                     .ok_or(Keep::Unsupported("no world-space vertex program"))?;
-                (compile_light(&look, code), None)
+                let program = if key.layer == native_render::shadow_look::CASTER_LAYER {
+                    native_render::shadow_look::compile_shadow(&look, code)
+                } else {
+                    compile_light(&look, code)
+                };
+                (program, None)
             }
             _ => return Err(Keep::Unsupported("light geometry unavailable")),
         };
@@ -379,7 +444,11 @@ impl Worker {
                             return None;
                         };
                         let key = (stage, bitmap, image);
-                        model.is_none().then(|| edited.get(&key).cloned()).flatten().or_else(|| images.get(&key).cloned())
+                        model
+                            .is_none()
+                            .then(|| edited.get(&key).cloned())
+                            .flatten()
+                            .or_else(|| images.get(&key).cloned())
                     },
                 );
                 drop(edited);
@@ -417,7 +486,7 @@ mod tests {
         let (send, recv) = mpsc::sync_channel(1);
         let key = |layer| Variant {
             shader: TagId(9),
-            inputs: InputKey([0; 5]),
+            inputs: Some(InputKey([0; 5])),
             layer,
             implementation: 0,
             model: None,
@@ -433,8 +502,10 @@ mod tests {
             falloff_0: 0.,
         };
         let mut variants = Variants::default();
-        let request =
-            |v: &mut Variants, layer| v.request(&send, key(layer), inputs, &instance, None).err();
+        let request = |v: &mut Variants, layer| {
+            v.request(&send, key(layer), Some(inputs), &instance, None)
+                .err()
+        };
         assert_eq!(request(&mut variants, 12), Some(LOADING));
         assert_eq!(
             request(&mut variants, 12),
