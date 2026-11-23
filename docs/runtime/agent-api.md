@@ -3751,6 +3751,14 @@ then says `bots: phantoms: the session's membership was rewritten on 30
 frames in a row (...)` once per run of such frames
 (`crates/live/bots/src/phantom.rs`, `churn_line`).
 
+`facing_releases` is counted on the action gather, not on render frames.
+It counts built actions after which the host cleared a phantom biped's
+facing-set flag, as retail's control update does for a local player
+([bots.md](../game/bots.md), "The facing release"). It rises by about
+one per melee lunge. A bot whose aim stops following its right stick
+while this stays flat points at a facing write the release does not
+cover.
+
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.
 The full vector contains `radar_use`, `noob_combo`, `dual_wield`,
@@ -3769,6 +3777,8 @@ difficulty’s reaction window.
 | `weapon_switches`, `grenades_used` | Observed exchanges of the two carried weapon definitions and decreases in grenade inventory within a life. |
 | `last_reaction_ticks`, `total_reaction_ticks`, `reactions` | Ticks from the selected target's first fight observation to the first attack decision on that target. The mean is the total divided by the sample count. |
 | `think_ms`, `total_think_ms`, `think_ticks` | Wall time for the latest brain decision and controller update, accumulated time and sample count. Guest reads, worker queueing and retail input processing fall outside this interval. |
+| `goal_decisions`, `standing_decisions` | Decisions per goal for the match, and those whose left stick (under 0.2) stood the bot still. `standing_decisions.recover / goal_decisions.recover` is the share of shield recovery spent standing. |
+| `look_asked`, `look_stalled` | Decisions after one whose right stick asked for a turn (over 0.3), and those whose observed aim had not moved since. A healthy bot stalls only for its input latency. A stall share near one means the look is not reaching the unit ([bots.md](../game/bots.md), "The facing release"). |
 
 `accuracy` groups the game's registered shots and credited enemy hits by
 weapon and decision range at fire time. Close is under 3 world units,

@@ -37,6 +37,10 @@ pub struct Me {
     /// shield can go over 1 with an overshield.
     pub shield: f32,
     pub health: f32,
+    /// The shield a spawn gives it (`0x1588b0`, the spawn writes it at
+    /// `0x14cc79`): the variant's shields times its handicap's factor. 0
+    /// with no shields; over 1 with overshields.
+    pub shield_full: f32,
     /// What it carries (docs/game/bots.md section 3.6); `None` when not
     /// read, and then the brain never acts on ammunition.
     pub arms: Option<Arms>,
@@ -50,6 +54,7 @@ impl Default for Me {
             team: 0,
             shield: 1.0,
             health: 1.0,
+            shield_full: 1.0,
             arms: None,
         }
     }

@@ -748,6 +748,74 @@ fn shields_down_it_backs_off_instead_of_chasing() {
     assert_eq!(m.doing, Doing::Chase([6.0, 0.0, 0.0]));
 }
 
+/// A handicap or the variant's shields make the full shield less than 1:
+/// the shield thresholds read a fraction of it, so a full quarter shield
+/// is not "shields down" for ever.
+#[test]
+fn shields_down_is_a_fraction_of_the_full_shield() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    let p = |shield, others, tick| Perception {
+        me: Some(Me {
+            position: [0.0; 3],
+            aim: X,
+            shield,
+            shield_full: 0.25,
+            ..Me::default()
+        }),
+        others,
+        tick,
+        ..Perception::default()
+    };
+    m.step(&p(0.25, vec![enemy(1, [6.0, 0.0, 0.0])], 0), None);
+    m.step(&p(0.25, vec![], 5), None);
+    assert_eq!(m.doing, Doing::Chase([6.0, 0.0, 0.0]), "full at a quarter");
+    assert!(!m.recovering);
+    // A fifth of its full shield is down.
+    m.step(&p(0.05, vec![], 15), None);
+    assert_eq!(m.doing, Doing::Recover([6.0, 0.0, 0.0]));
+    // Back to 0.9 of full: the chase goes on.
+    m.step(&p(0.23, vec![], 20), None);
+    assert_eq!(m.doing, Doing::Chase([6.0, 0.0, 0.0]));
+}
+
+/// With no shields the body's vitality stands in: never "recovering" at
+/// full health, backing off when hurt.
+#[test]
+fn without_shields_it_backs_off_on_health_alone() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    let p = |health, others, tick| Perception {
+        me: Some(Me {
+            position: [0.0; 3],
+            aim: X,
+            shield: 0.0,
+            health,
+            shield_full: 0.0,
+            ..Me::default()
+        }),
+        others,
+        tick,
+        ..Perception::default()
+    };
+    m.step(&p(1.0, vec![enemy(1, [6.0, 0.0, 0.0])], 0), None);
+    m.step(&p(1.0, vec![], 5), None);
+    assert_eq!(m.doing, Doing::Chase([6.0, 0.0, 0.0]), "no shields is not shields down");
+    m.step(&p(0.1, vec![], 10), None);
+    assert_eq!(m.doing, Doing::Recover([6.0, 0.0, 0.0]));
+    m.step(&p(1.0, vec![], 15), None);
+    assert_eq!(m.doing, Doing::Chase([6.0, 0.0, 0.0]));
+}
+
+#[test]
+fn relative_shield_scales_by_the_full_shield_and_keeps_an_overshield() {
+    let me = |shield, health, shield_full| Me { shield, health, shield_full, ..Me::default() };
+    assert_eq!(relative_shield(me(0.25, 1.0, 0.25)).shield, 1.0);
+    assert_eq!(relative_shield(me(0.125, 1.0, 0.25)).shield, 0.5);
+    assert_eq!(relative_shield(me(0.5, 1.0, 1.0)).shield, 0.5);
+    // Overshields: full is the normal shield, the extra stays over 1.
+    assert_eq!(relative_shield(me(2.0, 1.0, 3.0)).shield, 2.0);
+    assert_eq!(relative_shield(me(0.0, 0.4, 0.0)).shield, 0.4);
+}
+
 // ---- getting unstuck (section 3.2) ----
 
 #[test]

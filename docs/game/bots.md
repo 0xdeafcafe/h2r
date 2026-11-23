@@ -994,6 +994,27 @@ way until the shield is back. Fear sends a bot off on its own only while
 its shield is under the recovery line (0.9); with a full shield a fearful
 bot regroups with a teammate if there is one, else follows its own lead.
 
+**Full shield.** Every shield line in the brain (the recovery lines,
+the fight's back-off and the decision layer's 0.4 to 0.86) reads the
+shield as a fraction of the bot's full shield. The perception reads that
+full shield as `0x1588b0` computes it for a spawn
+(`guest::full_shield`, `Me::shield_full`): the variant's shields (1, 0,
+or `[0x45dbd4]` for overshields) times the handicap's factor (1, 0.75,
+0.5, 0.25). `mind::relative_shield` divides by it, capped at 1, so an
+overshield still reads above 1. In a variant without shields the body's
+vitality stands in for the shield, so the bot still backs off when hurt
+and comes back when healed. With absolute lines, a bot whose full shield
+was under 0.25 was always "shields down". In game
+`09af571f9fec7f1a33ed37edb397a140` the bots carried a handicap of 3 and
+spent the match recovering. The median angle between their walk and their
+aim while firing was 178–180°, so they backpedalled through every fight.
+In game `c9a3aa1a3f867c298a6ae32b56e50399`, with full shields, it was 90°,
+a strafe. `bots.stats` `combat.standing_decisions.recover` shows the time
+spent recovering. The tests are
+`mind::tests::shields_down_is_a_fraction_of_the_full_shield`,
+`without_shields_it_backs_off_on_health_alone` and
+`guest::tests::the_full_shield_follows_the_variant_and_the_handicap`.
+
 Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
 for reload and 1.3 s for switch. Melee also needs a target in reach and
@@ -3733,8 +3754,22 @@ bytes), and they finished with 2 kills to the host's 24.
   unit's shields with it (`0xd60c5`, `0xbcec6`), and a change of handicap
   in `0x14be90` calls `0x1583d0`, which clamps the shields down to a
   higher handicap's scale at once or starts a recharge for a lower one.
-  These four are `0x1588b0`'s only callers; no reader of the handicap that
-  scales damage dealt was found.
+  These four are `0x1588b0`'s only callers. The handicap also scales the
+  damage a player deals: the damage step calls `0x15dec0` at `0xd9cb8`
+  with the attacker's player (`ecx`, damage data `+8`) and the victim's
+  (`eax`, from `0xd7ae0`), and multiplies the damage by its result. It
+  reads the attacker's handicap at player `+0xc1` through the jump table
+  at `0x15e00c`, with the same factors 1, 0.75, 0.5 and 0.25. It then
+  applies the attacker's extra-damage trait (`0x15ff50` with 2, times
+  `[0x43ff08]`), the victim's resistance trait (`0x15ff50` with 3, times
+  0.5), the victim's player `+0x194` (times `[0x45dc68]` while above 0)
+  and, without friendly fire, the engine's team check `0x15e020`, which
+  can make it 0. In Clanker Team Slayer game `09af571f9fec7f1a33ed37edb397a140`
+  the bots carried the host's handicap 3. Their shields never passed
+  0.25, and every bot SMG hit did 0.0156 against the human's 0.055–0.066.
+  In game `c9a3aa1a3f867c298a6ae32b56e50399`, with no handicap, bot and
+  human SMG hits both did 0.066 and BR hits both 0.086. Live telemetry's
+  per-hit `amount` by weapon, bot against human, checks this.
 - **What stays the host's.** Only the level: the matchmaking start
   (`0x66050`) refuses a player whose level byte is below the hopper's
   (`+0x5e4`), and the host's passes it. The team is the host's only until
@@ -4081,6 +4116,33 @@ supplies the unit or vehicle camera origin for the observer at `0x4e9c8c`.
 Only the validated action crosses back to the host. A repeated gather
 in one tick reuses that action. A phantom samples once per game tick
 and advances the button clock by elapsed simulation milliseconds.
+
+**The facing release.** One write of the builder's must reach the live
+world. When something other than the control turns a biped, such as a
+melee lunge, the biped's facing update `0xe01d0` sets bit 5 (`0x20`) of
+biped flags `+0x348` (`0xe0c47`). For a biped on foot with that bit set,
+the control update in `0x186ab0` reseeds the control yaw and pitch from
+the unit's aim `+0x168` with `fpatan` and then clears the bit
+(`0x186f8b..0x18700b`). The reseed overwrites the look delta that
+`0x187510` added from the right stick. For a local player the clear lands
+in the live unit, so the reseed happens once. The phantom's private build
+discards it. With the bit left set, every later build reseeds the look
+from the aim and drops the right stick, so the bot's aim freezes until it
+dies, while its movement, fire and other buttons still work. After a
+built action, `slot_action` in `crates/live/bots/src/phantom/action.rs`
+therefore clears the bit on the phantom's live biped and counts it in
+`bots.stats` `maintenance.facing_releases`. Film replay takes the same
+path. A missed build leaves the bit set for the next build. The test is
+`a_built_action_releases_the_bipeds_facing_flag`.
+
+In the Clanker Team Slayer game `09af571f9fec7f1a33ed37edb397a140`,
+before the release, every bot's aim stayed within 0.001 of one vector
+from its first melee until death or the end of the match. That covers
+31% of all bot frames. In those frames the bots scored 2.6 hits a minute,
+against 19.3 in the rest, and their median angle between walking and aim
+was 90–115°. Live telemetry shows the release working when no bot's aim
+stays unchanged for more than 60 frames after an action that includes
+`melee`.
 
 The first 12 sims with a phantom seat stopped between ticks 91 and 1945. In the
 Lockout log, `0x2d6307` is the return from kernel ordinal 234 inside

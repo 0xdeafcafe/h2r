@@ -85,9 +85,47 @@ pub(crate) const GAME_TIME_RATE: u32 = 2;
 pub const GAME_TIME_TICK: u32 = 8;
 /// Unit `+0x168`: the aim, a world-space unit vector.
 pub const UNIT_AIM: u32 = 0x168;
+/// Biped flags (`+0x348`) and their facing-set bit, which the local action
+/// builder's control update clears after it reseeds the look from the aim
+/// (docs/game/bots.md §5.1, "The facing release").
+pub(crate) const BIPED_FLAGS: u32 = guest_layout::Biped::FLAGS.offset;
+pub(crate) const BIPED_FACING_SET: u8 = guest_layout::unit::FACING_SET;
 /// Crouch request bit on a biped (docs/live/live-gamestate.md).
 const BIPED_UNIT_FLAGS: u32 = 0x134;
 const BIPED_CROUCH_REQUEST: u32 = 1 << 23;
+
+/// `[GAME_GLOBALS] + 0x1c4`: the variant's shields, 0 normal, 1 none,
+/// 2 overshields (`0x1588b0`).
+const GAME_SHIELDS: u32 = 0x1c4;
+/// The overshield variant's shield scale, an `f32` in the image's data.
+const OVERSHIELD_SCALE: u32 = 0x0045_dbd4;
+/// Player `+0xc1`: the active configuration's handicap (`+0x44 + 0x7d`),
+/// 0 none to 3.
+const PLAYER_HANDICAP: u32 = 0xc1;
+
+/// The shield a spawn gives the player at `player` in a multiplayer game,
+/// as `0x1588b0(player, 2)` computes it: the variant's shield scale (1,
+/// 0, or `[0x45dbd4]` for overshields) times the handicap's factor (1,
+/// 0.75, 0.5, 0.25, jump table `0x15897c`). Its Juggernaut branch, which
+/// gives the Juggernaut the overshield scale, is not followed.
+pub(crate) fn full_shield(
+    m: &dyn GuestMemory,
+    globals: u32,
+    player: u32,
+) -> Result<f32, MemFault> {
+    let scale = match m.u32(globals + GAME_SHIELDS)? {
+        1 => 0.0,
+        2 => m.f32(OVERSHIELD_SCALE)?,
+        _ => 1.0,
+    };
+    let factor = match m.u8(player + PLAYER_HANDICAP)? {
+        1 => 0.75,
+        2 => 0.5,
+        3 => 0.25,
+        _ => 1.0,
+    };
+    Ok(scale * factor)
+}
 
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
@@ -444,6 +482,7 @@ pub(crate) fn perception_with(
                 team,
                 shield: body.shield(m)?,
                 health: body.health(m)?,
+                shield_full: full_shield(m, globals, p.addr)?,
                 arms: crate::arms::read(m, body.addr).ok(),
             });
         } else {
