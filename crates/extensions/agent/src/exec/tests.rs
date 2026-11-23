@@ -695,6 +695,7 @@ fn methods_and_features_list() {
             + agent_proto::trace::method::ALL.len()
             + agent_proto::state::method::ALL.len()
             + agent_proto::live::METHODS.len()
+            + agent_proto::picture::METHODS.len()
     );
     assert_eq!(next(&rx)["result"]["plan"][1], "agent: on");
 }

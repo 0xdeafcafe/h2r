@@ -177,6 +177,7 @@ mod tests {
         ask(&a, conn, 1, wire::OPEN, json!({"width": 8, "fps": 30}));
         a.on_tick(&mut Menu);
         let reply: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert!(reply["error"].is_null(), "{reply}");
         let opened: Opened = serde_json::from_value(reply["result"].clone()).unwrap();
         assert_eq!(
             (opened.transport, opened.size, opened.fps),
