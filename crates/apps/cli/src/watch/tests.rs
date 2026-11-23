@@ -324,7 +324,7 @@ fn host_change_builds_offers_and_restarts() {
             Action::Status(Some(info("Rebuilding h2\u{2026}"))),
         ]
     );
-    let a = s.handle(Event::Built(1, Ok(Some(build("local-1")))));
+    let a = s.handle(Event::Built(Ok(Some(build("local-1")))));
     let n = status_of(&a).unwrap().unwrap();
     assert_eq!(n.kind, NoticeKind::Ready);
     assert_eq!(
@@ -356,7 +356,6 @@ fn a_failed_build_keeps_the_game_and_is_carried_into_the_next() {
         "crates/recompiler/lift/src/lib.rs",
     ])));
     let a = s.handle(Event::Built(
-        1,
         Err("error[E0308]: mismatched types".into()),
     ));
     assert_eq!(
@@ -383,7 +382,7 @@ fn changes_during_a_build_merge_into_one_queued_build() {
     ])));
     assert_eq!(a, vec![Action::Status(Some(info("Rebuilding h2\u{2026}")))]);
     s.handle(Event::Changes(Plan::of(["assets/ui/design.yaml"])));
-    let a = s.handle(Event::Built(1, Ok(Some(build("local-1")))));
+    let a = s.handle(Event::Built(Ok(Some(build("local-1")))));
     assert!(matches!(&a[0], Action::StartBuild { id: 2, plan, .. } if plan.host && plan.image));
     let n = status_of(&a).unwrap().unwrap();
     assert_eq!(n.kind, NoticeKind::Ready);
@@ -395,7 +394,7 @@ fn an_unchanged_build_offers_nothing() {
     let mut s = Supervisor::new(build("local-0"));
     s.handle(Event::Changes(host()));
     assert_eq!(
-        s.handle(Event::Built(1, Ok(None))),
+        s.handle(Event::Built(Ok(None))),
         vec![Action::Status(None)]
     );
 }
@@ -466,7 +465,7 @@ impl Builder for FakeBuilder {
     fn start(&mut self, id: u64, plan: &Plan, _: &[PathBuf]) {
         self.started.push((id, plan.clone()));
         let r = self.results.remove(0);
-        self.tx.send(Event::Built(id, r)).unwrap();
+        self.tx.send(Event::Built(r)).unwrap();
     }
     fn cancel(&mut self) {}
 }

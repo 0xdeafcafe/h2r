@@ -424,7 +424,7 @@ pub enum Event {
     Changes(Plan),
     /// Build `id` finished: a new build, `None` when it made the same `h2`
     /// and game code as the running ones, or its first error line.
-    Built(u64, Result<Option<Build>, String>),
+    Built(Result<Option<Build>, String>),
     /// The hot runner finished: what to show, if anything.
     Hot(Option<Notice>),
     /// The game exited with this code.
@@ -570,7 +570,7 @@ impl Supervisor {
                 actions.push(Action::Status(self.notice()));
                 actions
             }
-            Event::Built(_, result) => {
+            Event::Built(result) => {
                 let plan = self.building.take().map(|(_, p)| p).unwrap_or_default();
                 if self.stopping {
                     return vec![];
@@ -1050,7 +1050,7 @@ impl Builder for LocalBuilder {
                             log_path.display()
                         )),
                     }
-                    let _ = tx.send(Event::Built(id, r));
+                    let _ = tx.send(Event::Built(r));
                 })
                 .expect("spawning the builder"),
         );
