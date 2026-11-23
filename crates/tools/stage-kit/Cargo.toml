@@ -1,0 +1,23 @@
+[package]
+name = "stage-kit"
+description = "The content stage: Studio's test map of ours, its layout, geometry, collision and textures built from art/stage (docs/editor/content-stage.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["editor/content-stage.md"]
+status = "in progress"
+
+[dependencies]
+# The layout (art/stage/stage.yaml) and its report form.
+serde.workspace = true
+serde_yaml_ng.workspace = true
+# The stage's collision BSP, compiled from the same faces it draws.
+collision-build = { path = "../collision-build" }
+tags.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

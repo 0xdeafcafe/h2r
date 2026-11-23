@@ -1,6 +1,6 @@
 # The content stage: a test map of ours that Studio drives the game on
 
-Status: Design. Nothing here is built; "Build slices" is the order to build it in, and "Open questions" lists what the owner still has to choose.
+Status: In progress. Slice S1 is built: the layout (`stage_kit::layout`), the faces that are both the render mesh and the collision (`stage_kit::mesh`) and the textures (`stage_kit::texture`). The rest is design; "Build slices" is the order to build it in, and "Open questions" lists what the owner still has to choose.
 Code: `crates/tools/stage-kit` (the map's own tags), `art/stage/` (its sources and its project), `crates/tools/workspace` (the build), `crates/apps/studio/src/api/stage.rs` (`stage.*`). Tests: `crates/tools/stage-kit/src/tests.rs`, `crates/tools/stage-kit/tests/disc.rs` (`#[ignore]`), `api::tests` in Studio.
 Switch: none. The stage is built on first use. It is the first project of the [tag workspace](tag-workspace.md).
 
