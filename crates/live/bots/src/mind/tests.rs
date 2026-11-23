@@ -1801,6 +1801,8 @@ fn a_weapon_stood_on_that_does_not_come_is_given_up_for_a_while() {
         with(&mut m, at, a, vec![], vec![rifle], t);
         assert_eq!(m.doing, Doing::Rearm(rifle.position), "tick {t}");
     }
+    // The tick it is given up on still walks it; the next plans without it.
+    with(&mut m, at, a, vec![], vec![rifle], errand::ON_IT_TICKS);
     for t in errand::ON_IT_TICKS + 1..errand::ON_IT_TICKS + 400 {
         with(&mut m, at, a, vec![], vec![rifle], t);
         assert_ne!(m.doing, Doing::Rearm(rifle.position), "tick {t}");
