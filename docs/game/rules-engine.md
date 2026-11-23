@@ -618,11 +618,10 @@ at the next open) it is written as its bundle and the pending file goes.
   a bundle under `ported/` (`variants::portable::port`), keyed by the
   SHA-256 of its record and
   signature, so an edited save ports again and the rest are skipped. The
-  saves are only read. `variants.port.script` decides the script:
-  `keep` (the record as it is, its engine's lifted rules) or `builtin`
-  (the engine's built-in script named in the block and carried). A save
-  whose record already names a script is refused by name: its IR is not
-  in the save. One line per run gives the counts ported, skipped and
+  saves are only read. Each is ported with its engine's built-in
+  script named in the block and carried; the input's own `hx` extras are
+  not kept. A save whose record already names a script is refused by
+  name: its IR is not in the save. One line per run gives the counts ported, skipped and
   refused, with each refusal's name and reason. The retail built-ins and
   the community variants are already in the list, so they are not ported
   at boot; `port::port_builtins` ports them on request.

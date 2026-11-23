@@ -14,9 +14,9 @@ use rules::ir::OptionValue;
 use variants::portable::{self, Bundle, PortScript};
 use variants::record::GameVariant;
 
-const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|keep|<file.rules|file.rir>]
+const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|<file.rules|file.rir>]
                         [--name <name>] [--description <text>] [--option <key>=<value>]... [-o <dir>]
-       h2 variants port --all-builtins [disc] [--script builtin|keep] [--option <key>=<value>]... [-o <dir>]
+       h2 variants port --all-builtins [disc] [--script builtin] [--option <key>=<value>]... [-o <dir>]
        h2 variants from-script <file.rules> [--option <key>=<value>]... [-o <dir>]
   port writes one version-2 .h2variant per input, named by the variant's
   name, and prints each file's id (the SHA-256 of its canonical bytes) and
@@ -24,14 +24,14 @@ const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|keep|<
   record and its signature), a hopper record slot (0x37c bytes) or a
   .h2variant of either version.
   --script builtin (the default) attaches the built-in script of the
-  record's engine; keep leaves the variant unscripted, playing retail
-  rules; a .rules file is compiled and travels with its source, a .rir
-  blob travels alone. The same input and script give the same id.
+  record's engine; a .rules file is compiled and travels with its source,
+  a .rir blob travels alone. Every ported variant names a script. The
+  script's settings are the only extras the record carries: the input's
+  own `hx` extras are not kept. The same input and script give the same id.
   --name and --description replace the variant's name and description;
   they take one input. --option sets a script option by name (an int,
   true or false, or an enum value's name), checked against the attached
   script's options; it repeats, and an option left out takes its default.
-  keep attaches no script, so it takes no --option.
   --all-builtins writes every retail built-in variant. It needs the disc:
   the built-ins are read from mainmenu.map's goof tag. [disc] is an .iso;
   without it, $H2_DISC or the .iso in disc/. Community variants are added
@@ -174,7 +174,6 @@ fn parse(words: &[String]) -> Result<Parsed> {
 fn script(arg: Option<&str>) -> Result<PortScript> {
     Ok(match arg {
         None | Some("builtin") => PortScript::Builtin,
-        Some("keep") => PortScript::Keep,
         Some(path) => {
             let p = Path::new(path);
             match p.extension().and_then(|e| e.to_str()) {
@@ -184,7 +183,7 @@ fn script(arg: Option<&str>) -> Result<PortScript> {
                 Some("rir") => {
                     PortScript::Ir(std::fs::read(p).with_context(|| format!("reading {path}"))?)
                 }
-                _ => bail!("--script takes builtin, keep, a .rules file or a .rir blob"),
+                _ => bail!("--script takes builtin, a .rules file or a .rir blob"),
             }
         }
     })
@@ -330,9 +329,9 @@ mod tests {
 
     #[test]
     fn parses_port_words() {
-        let p = parse(&words("a.bin b.h2variant --script keep -o out")).unwrap();
+        let p = parse(&words("a.bin b.h2variant --script builtin -o out")).unwrap();
         assert_eq!(p.inputs, [PathBuf::from("a.bin"), PathBuf::from("b.h2variant")]);
-        assert_eq!(p.script.as_deref(), Some("keep"));
+        assert_eq!(p.script.as_deref(), Some("builtin"));
         assert_eq!(p.out, Some(PathBuf::from("out")));
         assert!(parse(&words("--all-builtins")).unwrap().all_builtins);
         assert!(parse(&[]).is_err());
@@ -391,7 +390,7 @@ mod tests {
         };
         let e = port_bytes(&bytes, PortScript::Builtin, &bad).unwrap_err();
         assert_eq!(e.to_string(), "the option values: the script has no option \"hill_points\"");
-        assert!(port_bytes(&bytes, PortScript::Keep, &with).is_err());
+        assert!(script(Some("keep")).is_err(), "there is no keep path");
     }
 
     #[test]
@@ -412,11 +411,6 @@ mod tests {
         assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
         let b = out[0].1.as_ref().unwrap();
         assert_eq!(b.script.as_ref().unwrap().name, "King of the Hill");
-        // Keep gives another file, with no script.
-        let kept = port_text(&inputs[..1], &PortScript::Keep, &Settings::default());
-        let k = kept[0].1.as_ref().unwrap();
-        assert!(k.script.is_none());
-        assert_ne!(k.id(), ids[0]);
         // A short file is refused by name.
         let bad = port_text(&[("short".into(), vec![0; 4])], &PortScript::Builtin, &Settings::default());
         assert_eq!(bad[0].1.as_ref().unwrap_err(), &portable::PortableError::Record);

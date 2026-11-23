@@ -173,6 +173,10 @@ pub enum PortableError {
     Setting(String),
     #[error("{0}")]
     Edit(String),
+    /// An `hx` extra no script setting sets (speed, weapon ids, team size,
+    /// the superbounce flag), beside a script.
+    #[error("the record's extension block has {0}, which no script setting sets")]
+    Extras(&'static str),
 }
 
 /// Writes a version-1 file: name, game type and record.
@@ -232,8 +236,9 @@ pub fn read(text: &str) -> Result<Bundle, PortableError> {
 impl Bundle {
     /// A version-2 bundle of `v` named `name`. With a script, the record's
     /// block is set to mode 2 with the script's hash prefix and `options`
-    /// (the script's defaults when None); without one, a record that
-    /// names a script is refused. The result passes [`Bundle::check`].
+    /// (the script's defaults when None), and its extras are the ones the
+    /// script's `settings` set, whatever `v`'s were; without one, a record
+    /// that names a script is refused. The result passes [`Bundle::check`].
     pub fn new(
         v: &GameVariant,
         name: &str,
@@ -253,7 +258,9 @@ impl Bundle {
                 let (ir, _) = rules::verify::load(&a.ir)
                     .map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
                 let id = Sha256::of(&a.ir);
-                let mut e = v.ext();
+                // The script's settings are the only source of the block's
+                // extras: the input record's own are not kept.
+                let mut e = settings_record(&ir)?.ext();
                 e.script = ext::Script {
                     mode: Mode::Rules,
                     prefix: id.0[..8].try_into().unwrap(),
@@ -388,6 +395,10 @@ impl Bundle {
         if let Some((_, ir)) = &c.script {
             let report = rules::verify(ir).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
             rules::fits(ir, &report).map_err(|e| PortableError::ScriptCost(e.to_string()))?;
+            // The block's extras are the script's settings and nothing else.
+            if let Some(what) = non_setting_extra(&c.variant.ext()) {
+                return Err(PortableError::Extras(what));
+            }
             // A script whose own record the game would not keep makes no
             // variant ([`settings_record`]).
             settings_record(ir)?;
@@ -536,6 +547,77 @@ pub fn settings_record(ir: &rules::Ir) -> Result<GameVariant, PortableError> {
     Ok(v)
 }
 
+/// The first extra of `e` that no [`rules::settings::TABLE`] row stores:
+/// only gravity, damage, shield, health and unlimited grenades have rows.
+fn non_setting_extra(e: &ext::Ext) -> Option<&'static str> {
+    let d = ext::Ext::default();
+    [
+        (e.speed != d.speed, "a movement speed"),
+        (e.superbounce != d.superbounce, "the superbounce flag"),
+        (e.primary != d.primary, "a primary weapon id"),
+        (e.secondary != d.secondary, "a secondary weapon id"),
+        (e.team_size != d.team_size, "a team size"),
+    ]
+    .into_iter()
+    .find_map(|(set, what)| set.then_some(what))
+}
+
+/// Sets the [`rules::settings::TABLE`] row `index` of `v` to `value`: the
+/// record setting the row stores on `v`'s carrier, or its `hx` field.
+/// Refused as a script's setting is: a row past the table, one that does
+/// not apply to the carrier or a value out of its range. The one way an
+/// editor writes an extra.
+pub fn set_row(v: &mut GameVariant, index: u16, value: i32) -> Result<(), PortableError> {
+    let engine = v.game_type().engine();
+    let carrier = u8::try_from(engine)
+        .map_err(|_| PortableError::Setting(format!("engine {engine} is no carrier")))?;
+    let mut e = v.ext();
+    write_setting(v, &mut e, carrier, rules::ir::Setting { index, value })?;
+    v.set_ext(&e)
+        .map_err(|e| PortableError::Edit(e.to_string()))
+}
+
+/// Attaches the built-in script of `v`'s engine to a record that names
+/// none: mode 2, its prefix and its default options. The block keeps the
+/// extras the table has rows for (gravity, damage, shield, health,
+/// unlimited grenades) and drops the rest. Returns false and changes
+/// nothing for a record that names a script already, one whose block is
+/// ignored, and an engine with no built-in script.
+pub fn attach_builtin(v: &mut GameVariant) -> Result<bool, PortableError> {
+    let named = match v.ext_state() {
+        Block::None => false,
+        Block::Ext(e) => e.script.mode != Mode::None,
+        Block::Ignored(_) => return Ok(false),
+    };
+    if named {
+        return Ok(false);
+    }
+    let Some(src) = u8::try_from(v.game_type().engine())
+        .ok()
+        .and_then(rules::builtin::builtin)
+    else {
+        return Ok(false);
+    };
+    let ir = rules::compile(src).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+    let now = v.ext();
+    let mut e = ext::Ext {
+        gravity: now.gravity,
+        damage: now.damage,
+        shield: now.shield,
+        health: now.health,
+        unlimited_grenades: now.unlimited_grenades,
+        ..ext::Ext::default()
+    };
+    e.script = ext::Script {
+        mode: Mode::Rules,
+        prefix: ir.id().0[..8].try_into().unwrap(),
+        options: ir.default_options(),
+    };
+    v.set_ext(&e)
+        .map_err(|e| PortableError::Edit(e.to_string()))?;
+    Ok(true)
+}
+
 /// The carrier's name in a script (`slayer`), for messages.
 fn carrier_word(carrier: u8) -> String {
     rules::caps::CARRIERS
@@ -645,9 +727,6 @@ pub enum PortScript {
     /// options. The built-ins read the retail settings from the record by
     /// name, so nothing else is packed.
     Builtin,
-    /// No script: a retail variant plays the retail rules. A record that
-    /// names a script is refused (its blob is not at hand).
-    Keep,
     /// This IR blob.
     Ir(Vec<u8>),
     /// This source, compiled and verified here; it travels with its IR.
@@ -678,38 +757,36 @@ pub fn port_with_options(
 ) -> Result<Bundle, PortableError> {
     let name = name.map_or_else(|| v.name(), str::to_string);
     let attach = match script {
-        PortScript::Keep => None,
         PortScript::Builtin => {
+            // A record that names a script is refused: its blob is not at
+            // hand, and the engine's built-in is not that script.
+            if matches!(v.ext_state(), Block::Ext(e) if e.script.mode == Mode::Rules) {
+                return Err(PortableError::ScriptMissing);
+            }
             let engine = v.game_type().engine();
             let src = u8::try_from(engine)
                 .ok()
                 .and_then(rules::builtin::builtin)
                 .ok_or(PortableError::NoBuiltin(engine))?;
-            Some(Attach::from_source(src)?)
+            Attach::from_source(src)?
         }
-        PortScript::Ir(ir) => Some(Attach {
+        PortScript::Ir(ir) => Attach {
             ir,
             source: None,
             options: None,
-        }),
-        PortScript::Source(src) => Some(Attach::from_source(&src)?),
+        },
+        PortScript::Source(src) => Attach::from_source(&src)?,
     };
-    let attach = match attach {
-        None if !options.is_empty() => {
-            return Err(PortableError::Options("no script is attached to take them".into()));
-        }
-        Some(mut a) if !options.is_empty() => {
-            let (ir, _) = rules::verify::load(&a.ir)
-                .map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
-            let bits = ir
-                .pack_options(options)
-                .map_err(|e| PortableError::Options(e.to_string()))?;
-            a.options = Some(bits);
-            Some(a)
-        }
-        a => a,
-    };
-    Bundle::new(v, &name, description.unwrap_or(""), attach)
+    let mut attach = attach;
+    if !options.is_empty() {
+        let (ir, _) = rules::verify::load(&attach.ir)
+            .map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+        let bits = ir
+            .pack_options(options)
+            .map_err(|e| PortableError::Options(e.to_string()))?;
+        attach.options = Some(bits);
+    }
+    Bundle::new(v, &name, description.unwrap_or(""), Some(attach))
 }
 
 /// The records in a file to port: a raw 0x130-byte record, a saved-variant
@@ -944,7 +1021,6 @@ mod tests {
     fn porting_is_deterministic() {
         for script in [
             PortScript::Builtin,
-            PortScript::Keep,
             PortScript::Ir(slayer_ir()),
             PortScript::Source(rules::builtin::SLAYER.to_string()),
         ] {
@@ -953,16 +1029,43 @@ mod tests {
             assert_eq!(a.canonical(), b.canonical());
             assert_eq!(a.id(), b.id());
         }
-        // Keep leaves the record as it was and carries no script.
-        let k = port(&slayer(), Some("Plain"), None, PortScript::Keep).unwrap();
-        assert!(k.script.is_none());
-        assert_eq!(k.name, "Plain");
-        assert_eq!(k.variant().unwrap().ext_state(), Block::None);
         // An IR alone travels without source.
         let i = port(&slayer(), None, None, PortScript::Ir(slayer_ir())).unwrap();
         assert!(i.script.as_ref().unwrap().source.is_none());
-        // A different script, a different id.
-        assert_ne!(k.id(), i.id());
+        // A different script text, a different id.
+        let b = port(&slayer(), None, None, PortScript::Builtin).unwrap();
+        assert_ne!(b.id(), i.id());
+        // No port leaves a record without a script.
+        for bundle in [&b, &i] {
+            assert_eq!(bundle.variant().unwrap().ext().script.mode, Mode::Rules);
+        }
+    }
+
+    #[test]
+    fn a_port_keeps_no_extras_of_the_input_record() {
+        let mut v = slayer();
+        v.set_ext(&ext::Ext {
+            gravity: 50,
+            speed: 120,
+            team_size: 2,
+            ..ext::Ext::default()
+        })
+        .unwrap();
+        let b = port(&v, None, None, PortScript::Builtin).unwrap();
+        let e = b.variant().unwrap().ext();
+        assert_eq!(e.gravity, 100);
+        assert_eq!(e.speed, 100);
+        assert_eq!(e.team_size, 0);
+        assert_eq!(e.script.mode, Mode::Rules);
+        assert!(b.check().is_ok());
+        // A bundle with an extra no script setting sets is refused.
+        let mut bad = b.variant().unwrap();
+        let mut e = bad.ext();
+        e.speed = 120;
+        bad.set_ext(&e).unwrap();
+        let mut bundle = b.clone();
+        bundle.record_hex = hex(bad.bytes());
+        assert_eq!(bundle.check().unwrap_err(), PortableError::Extras("a movement speed"));
     }
 
     #[test]
@@ -986,20 +1089,19 @@ mod tests {
             port(&other, None, None, PortScript::Builtin).unwrap_err(),
             PortableError::NoBuiltin(5)
         );
-        assert!(matches!(
-            port(&other, None, None, PortScript::Keep),
-            Err(PortableError::Refused(_))
-        ));
-        // A record that names a script cannot be kept without it.
+        // A record that names a script is not given the engine's built-in
+        // in its place ...
         let scripted = port(&slayer(), None, None, PortScript::Builtin).unwrap();
         let v = scripted.variant().unwrap();
         assert_eq!(
-            port(&v, None, None, PortScript::Keep).unwrap_err(),
+            port(&v, None, None, PortScript::Builtin).unwrap_err(),
             PortableError::ScriptMissing
         );
         // ... but can be given its script again.
         assert_eq!(
-            port(&v, None, None, PortScript::Builtin).unwrap().id(),
+            port(&v, None, None, PortScript::Source(rules::builtin::SLAYER.into()))
+                .unwrap()
+                .id(),
             scripted.id()
         );
         for (name, want) in [
@@ -1011,18 +1113,18 @@ mod tests {
             ("\u{1f600}", "has a character the game cannot hold"),
         ] {
             assert_eq!(
-                port(&slayer(), Some(name), None, PortScript::Keep).unwrap_err(),
+                port(&slayer(), Some(name), None, PortScript::Builtin).unwrap_err(),
                 PortableError::Name(want),
                 "{name:?}"
             );
         }
         assert!(matches!(
-            port(&slayer(), Some(&"n".repeat(32)), None, PortScript::Keep),
+            port(&slayer(), Some(&"n".repeat(32)), None, PortScript::Builtin),
             Err(PortableError::Name(_))
         ));
-        assert!(port(&slayer(), Some("Wheeeeee!"), None, PortScript::Keep).is_ok());
+        assert!(port(&slayer(), Some("Wheeeeee!"), None, PortScript::Builtin).is_ok());
         assert!(matches!(
-            port(&slayer(), None, Some(&"d".repeat(151)), PortScript::Keep),
+            port(&slayer(), None, Some(&"d".repeat(151)), PortScript::Builtin),
             Err(PortableError::Description(_))
         ));
     }
@@ -1055,10 +1157,6 @@ mod tests {
             refused(vec![("nope".into(), OptionValue::Int(1))], PortScript::Builtin),
             PortableError::Options("the script has no option \"nope\"".into())
         );
-        assert!(matches!(
-            refused(vec![("kill_points".into(), OptionValue::Int(2))], PortScript::Keep),
-            PortableError::Options(_)
-        ));
     }
 
     #[test]
@@ -1106,7 +1204,7 @@ mod tests {
             }),
             PortableError::ScriptPrefix
         );
-        let plain = port(&slayer(), None, None, PortScript::Keep).unwrap();
+        let plain = Bundle::new(&slayer(), "Fists", "", None).unwrap();
         let mut b = plain.clone();
         b.script = good.script.clone();
         assert_eq!(read(&b.canonical()).unwrap_err(), PortableError::ScriptUnexpected);

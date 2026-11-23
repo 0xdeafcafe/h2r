@@ -189,8 +189,11 @@ quick time_limit, bounce_points, suicide_costs
 
 **The full editor** shows everything, marked or not. The record settings
 are on the game's own pages (Change Rules, then Edit, which copies a
-built-in first). The `hx` extras and the script's options are on More
-Options (`variant_page.rs`): after its fixed rows, one row per `option`
+built-in first). The `hx` extras the table has rows for (gravity, damage,
+shield, health, unlimited grenades) are the table's rows, so More
+Options edits them as a script's `settings` block names them, and the
+extras no row stores are not offered. The extras and the script's options
+are on More Options (`variant_page.rs`): after its fixed rows, one row per `option`
 in declaration order, with the IR's label and description, stepping
 through the option's range or its enum's names and writing the option
 bits of the edited record's block (`variant_page::EDITED_BLOCK`). This
@@ -344,7 +347,8 @@ through `record_for` and reads it back.
   script's name and `about` as the bundle's, and the script part.
   `h2 variants from-script <file.rules> [--option KEY=VALUE]... [-o DIR]`
   (new) writes it. `h2 variants port <input> --script FILE` keeps the
-  input's record, as now. A bundle's checks are unchanged
+  input's record settings and attaches the script; the block's extras are
+  the script's settings, not the input's. A bundle's checks are unchanged
   (`Bundle::integrity`): the IR still must hash to the file's hash and
   ride the record's engine.
 - **Live.** `bundle_for_script` (`crates/live/live-server/src/game_variants.rs`)

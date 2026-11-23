@@ -248,11 +248,15 @@ file, so it carries no signature.
   for the editors, which have no script blob at hand. `import` reads
   either and lists what the clean-up would reject.
 - **Porting.** `portable::port(record, name, description, script)` makes
-  a version-2 file of any record: `PortScript::Builtin` attaches the
-  record's engine's built-in script (`rules::builtin::builtin`) with its
-  default options and sets mode 2 and the prefix, `Keep` leaves it
-  unscripted (it plays the retail rules; a record that names a script is
-  refused), and `Ir` or `Source` attach a given script. The same inputs
+  a version-2 file of any record, and every port attaches a script:
+  `PortScript::Builtin` attaches the record's engine's built-in script
+  (`rules::builtin::builtin`) with its default options and sets mode 2
+  and the prefix (a record that already names a script is refused: its
+  blob is not at hand), and `Ir` or `Source` attach a given script. The
+  block's extras are the script's `settings` and nothing else:
+  `Bundle::new` does not keep the input record's `hx` extras, and
+  `Bundle::check` refuses an extra no settings row stores (movement
+  speed, weapon ids, team size, the superbounce flag). The same inputs
   give the same id. `portable::port_input` takes a raw record, a
   saved-variant file (record and signature), a hopper record slot
   (`0x37c` bytes, the record at `+0x24c`) or a `.h2variant` of either
@@ -260,13 +264,13 @@ file, so it carries no signature.
   name against the attached script (`rules::Ir::pack_options`), and
   `Bundle::check` refuses a script over the tick budget or the IR cap
   (`rules::fits`). `h2 variants port <input>... [--script
-  builtin|keep|FILE] [--name NAME] [--description TEXT] [--option
+  builtin|FILE] [--name NAME] [--description TEXT] [--option
   KEY=VALUE]... [-o DIR]` (`crates/apps/cli/src/variants_cmd.rs`) writes
   one file per input, named by the variant (`portable::file_name`), and
   prints each id. `--name` and `--description` take one input; each
   `--option` is an int, `true` or `false`, or an enum value's name, and
-  an option the script does not declare, a value out of range or an
-  option with `keep` is refused. `--all-builtins [disc]` ports every retail built-in, read from the
+  an option the script does not declare or a value out of range is
+  refused. `--all-builtins [disc]` ports every retail built-in, read from the
   disc's `goof` tag (`Schema::build`), and refuses without a disc. The
   community variants are built by the game at boot and are not ported by
   the tool.
@@ -306,12 +310,24 @@ update in place, but new saves cannot be named).
 
 - `is_dirty`, `save` (refuses records the clean-up would change),
   `undo`/`redo`/`can_undo`/`can_redo`/`revert`, `set_setting`,
-  `set_name` (typing a name is one undo step), `copy_builtin(name)`,
-  `new_variant(type)`, `open_builtin`/`open_saved`, `delete`,
+  `set_name` (typing a name is one undo step), `set_row(name, value)`
+  (a settings-table row, the way the `hx` extras are edited),
+  `copy_builtin(name)`, `new_variant(type)`, `open_builtin`/`open_saved`,
+  `delete`,
   `export_current`/`import`, `current`, `origin`, `issues`, `status`.
 
 Built-ins are read-only; `copy_builtin(name)` (the editor's **Copy**)
 makes a named copy and clears the built-in flag like the game's Edit.
+
+Every record the editor opens or makes names a script. A built-in is
+loaded with its engine's built-in script attached
+(`portable::attach_builtin`), so its copy names it. `new_variant(type)`
+opens `portable::record_for_named` of that built-in script, named "New
+<type>". `open_saved` and `import` attach the built-in to a record that
+names none; a saved variant opened that way is unsaved until it is
+saved. A game type with no built-in script (a type the engine has none
+for) opens as the type's plain defaults and the status says it has no
+script.
 The editor asks before picking another variant over unsaved changes
 (editor.md, "Game variants").
 
@@ -345,9 +361,12 @@ Options the record has no field for (gravity first) live in our
 extension block in the spare bytes `+0x10c..+0x12f` (`variants::ext`;
 layout and CRC in docs/game/game-options.md section 3). All zero means
 none, so a retail record has none, and every copy of the record (saves,
-`.h2variant` files, hopper slots) carries it. Studio edits it in "More
-options (h2recomp)" (`VariantEditor::set_ext`); a block the game would
-ignore is reported as `Issue::Ext`.
+`.h2variant` files, hopper slots) carries it. Studio edits the extras
+the settings table has rows for (gravity, damage, shield, health,
+unlimited grenades) in "More options (h2recomp)" as those rows
+(`VariantEditor::set_row`, `portable::set_row`), and a script's own
+options on the Script section; the extras no row stores are not shown.
+A block the game would ignore is reported as `Issue::Ext`.
 
 ## Open
 

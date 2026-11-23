@@ -247,11 +247,12 @@ h2 variants port my_record.bin --script my_mode.rules -o out/
   input file's description (one input only). `--option key=value`, once
   per option, sets a script option by name: an int (whole seconds for a
   `time` option), `true` or `false`, or an enum value's name. An option the script does not declare, a value
-  out of range, or any option with `--script keep` is refused. Options
+  out of range is refused. Options
   left out take their defaults. A script over the budget is refused.
 - `--script builtin` (the default) attaches the record's engine's
-  built-in; `keep` leaves it unscripted; `x.rules` compiles, verifies and
-  carries the source; `x.rir` carries the blob alone.
+  built-in; `x.rules` compiles, verifies and carries the source; `x.rir`
+  carries the blob alone. Every port names a script, and the script's
+  `settings` are the only `hx` extras the record carries.
 - It prints `<id>  <path>` per file; the id is the SHA-256 of the file's
   canonical bytes, and the same input and script give the same id. Exit is
   nonzero if any input failed.
