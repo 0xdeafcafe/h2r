@@ -17,6 +17,8 @@ map.workspace = true
 tags.workspace = true
 # The strip's texels, for the cropped meter's ramp.
 assets.workspace = true
+# The pictures a gauge draws (`font::ring`): the charge ring's arcs.
+font = { path = "../../formats/font" }
 
 [lints]
 workspace = true

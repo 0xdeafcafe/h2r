@@ -10,7 +10,7 @@ use hud_edit::render::{self, Cover};
 use serde_json::{Value as Json, json};
 
 use crate::compile::{self, AsHudEdit, Compiled};
-use crate::model::{Describe, Hud, Kind, NAVPOINT_FONT, Style, Values, WORLD_FONT};
+use crate::model::{Describe, GAUGE_FONT, Hud, Kind, NAVPOINT_FONT, Style, Values, WORLD_FONT};
 use crate::preview::{self, MESSAGE_FONT, Shot, mode_name};
 use crate::rects::{self, FRAME_SLACK, RESERVED, TRAINING_PAD};
 use crate::source::Source;
@@ -234,9 +234,18 @@ fn glyphs_in(
 /// The glyph check: every character of every text's longest and of every
 /// state's text, in each font the element is drawn in (a channel's in
 /// font 6 and, split screen, 5; a navpoint's number in [`NAVPOINT_FONT`];
-/// a world mark's label in [`WORLD_FONT`]).
+/// a world mark's label in [`WORLD_FONT`]), and every picture of every
+/// gauge, empty to full, in [`GAUGE_FONT`].
 pub fn glyphs(r: &mut Report, hud: &Hud, states: &[(&'static str, Values)], has: GlyphLookup) {
     for e in &hud.elements {
+        if let Kind::Gauge { glyphs } = &e.kind {
+            let pictures: String = glyphs
+                .units()
+                .filter_map(|u| char::from_u32(u32::from(u)))
+                .collect();
+            glyphs_in(r, has, hud.name, None, e.id, GAUGE_FONT.engine(), &pictures);
+            continue;
+        }
         let fs: Vec<i16> = match &e.kind {
             Kind::Text { font, .. } => vec![font.engine()],
             Kind::Navpoint { .. } => vec![NAVPOINT_FONT.engine()],
@@ -565,6 +574,23 @@ fn per_shot(
                 Check::Drawn,
                 vec![d.id.into()],
                 format!("{} shows {t:?} but draws no pixels{why}", d.id),
+            ));
+        }
+        // Drawn: a gauge shown here draws its picture.
+        if matches!(e.kind, Kind::Gauge { .. })
+            && d.shown
+            && e.at.offset(s.mode).is_some()
+            && !d.drawn
+        {
+            let why = if d.notes.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", d.notes.join("; "))
+            };
+            r.push(f(
+                Check::Drawn,
+                vec![d.id.into()],
+                format!("{} is shown but draws no pixels{why}", d.id),
             ));
         }
         // Prompt: in the modes the channel shows in.

@@ -81,6 +81,7 @@ fn hud() -> (Hud, Compiled) {
                 bytes: bitmap,
                 crop: Some([0.5, 1.0, 0.0, 1.0]),
                 ramp: Some([0.25, 0.75]),
+                glyphs: None,
             },
             records::Widget {
                 id: "x",
@@ -88,6 +89,7 @@ fn hud() -> (Hud, Compiled) {
                 bytes: text,
                 crop: None,
                 ramp: None,
+                glyphs: None,
             },
         ],
         channels: Vec::new(),
@@ -382,6 +384,34 @@ fn the_string_is_the_values_text_in_its_font() {
     assert_eq!(m.f32(MATERIAL_INPUTS).unwrap(), 3.0);
     assert!(!string(&mut m, SP, t.widgets[0].address, &t, &shown_values(0.0)).unwrap());
     assert_eq!(utf16("abc", 2), vec![b'a', 0, 0, 0], "cut with its zero");
+}
+
+/// A gauge's string is the one character of its picture for the value's
+/// fill, whatever text the value carries.
+#[test]
+fn a_gauges_string_is_the_character_for_its_fill() {
+    let mut m = memory();
+    let (hud, c) = hud();
+    let mut t = install(&mut m, &hud, &c);
+    t.widgets[1].widget.glyphs = Some(hud_kit_core::model::Glyphs {
+        first: 0xe2c0,
+        steps: 6,
+        size: (6, 16),
+    });
+    let (values, out, font) = (SP + 0x100, SP + 0x200, SP + 0x300);
+    m.set_u32(SP, STRING_RETURN).unwrap();
+    m.set_u32(SP + 8, values).unwrap();
+    m.set_u32(SP + 12, out).unwrap();
+    m.set_u32(SP + 16, font).unwrap();
+    let text = t.widgets[1].address;
+    let at = |fill: f32| move |_: usize, _: &str| Some(Value { text: "42".into(), ..Value::fill(fill) });
+    for (fill, unit) in [(0.0, 0xe2c0u16), (0.5, 0xe2c3), (1.0, 0xe2c6)] {
+        assert!(string(&mut m, SP, text, &t, &at(fill)).unwrap());
+        let mut got = [0; 4];
+        m.read(out, &mut got).unwrap();
+        let [lo, hi] = unit.to_le_bytes();
+        assert_eq!(got, [lo, hi, 0, 0], "{fill}");
+    }
 }
 
 /// A crop narrows the sprite's bounds; the sprite hook reads the bitmap's

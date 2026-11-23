@@ -60,11 +60,12 @@ impl Hud {
         out
     }
 
-    /// Whether any element is a text widget (and needs the text template).
+    /// Whether any element is a text widget, a text or a gauge (and needs
+    /// the text template).
     pub fn has_text(&self) -> bool {
         self.elements
             .iter()
-            .any(|e| matches!(e.kind, Kind::Text { .. }))
+            .any(|e| matches!(e.kind, Kind::Text { .. } | Kind::Gauge { .. }))
     }
 
     /// Whether any element is placed in the grenade row (and needs the
@@ -143,6 +144,18 @@ impl Element {
             outside: 0,
         }
     }
+    /// A gauge of `glyphs` ([`Kind::Gauge`]): its top-left corner at the
+    /// place.
+    pub fn gauge(id: &'static str, glyphs: Glyphs, at: Place) -> Self {
+        Element {
+            id,
+            kind: Kind::Gauge { glyphs },
+            at,
+            over: None,
+            hide_when_d: 0,
+            outside: 0,
+        }
+    }
     pub fn pointer(id: &'static str, art: Art, at: Place) -> Self {
         Element {
             id,
@@ -200,6 +213,12 @@ pub enum Kind {
     Icon { art: Art },
     /// An icon turned to [`Value::angle`] about its centre.
     Pointer { art: Art },
+    /// A picture of ours that fills with [`Value::fill`], 0 to 1, in
+    /// steps: a text widget in [`GAUGE_FONT`] whose one character is the
+    /// picture of [`Glyphs`] for the fill, in the HUD's text colour. For a
+    /// shape no retail bitmap has, as an arc: the pictures are drawn in
+    /// code and served in the fonts (`font::ring`).
+    Gauge { glyphs: Glyphs },
     /// A notification in the pickup list, top left, that fades (the
     /// notification queue, `0x0024cbbf`).
     Message { longest: &'static str },
@@ -225,6 +244,56 @@ pub enum Kind {
         shape: Shape,
         longest: &'static str,
     },
+}
+
+/// The font a gauge's pictures are drawn in: the HUD font, a text
+/// widget's font byte 0.
+pub const GAUGE_FONT: Font = Font::Hud;
+
+/// A gauge's pictures ([`Kind::Gauge`]): a run of `steps + 1` characters
+/// of ours in the fonts, the first the empty picture and the last the
+/// full one, each the same size with its top-left corner at the text's
+/// point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Glyphs {
+    /// The UTF-16 unit of the empty picture; step `k`'s is `first + k`.
+    pub first: u16,
+    /// The fill's steps: a fill of 1 is step `steps`.
+    pub steps: u8,
+    /// The pictures' size in HUD pixels, wide and tall.
+    pub size: (i16, i16),
+}
+
+impl Glyphs {
+    /// The step that shows `fill`: the nearest of 0 to `steps`. A fill
+    /// that is not a number is empty.
+    pub fn step(&self, fill: f32) -> u8 {
+        if fill.is_nan() {
+            return 0;
+        }
+        (fill.clamp(0.0, 1.0) * f32::from(self.steps)).round() as u8
+    }
+    /// The UTF-16 unit of the picture that shows `fill`.
+    pub fn unit(&self, fill: f32) -> u16 {
+        self.first + u16::from(self.step(fill))
+    }
+    /// Every picture's unit, the empty one first.
+    pub fn units(&self) -> impl Iterator<Item = u16> + use<> {
+        let first = self.first;
+        (0..=u16::from(self.steps)).map(move |k| first + k)
+    }
+    /// The text the widget draws at `fill`: the one character.
+    pub fn text(&self, fill: f32) -> String {
+        char::from_u32(u32::from(self.unit(fill)))
+            .map(String::from)
+            .unwrap_or_default()
+    }
+    /// The picture that shows `fill`, as the code that draws it gives it
+    /// (`font::ring::picture`): what the fonts are served with. `None`
+    /// for a unit no code of ours draws.
+    pub fn picture(&self, fill: f32) -> Option<font::ring::Picture> {
+        font::ring::picture(self.unit(fill))
+    }
 }
 
 /// The font a world mark's label is in: the HUD font, engine font 6, at
@@ -263,6 +332,7 @@ impl Kind {
             Kind::Meter { .. } => "meter",
             Kind::Icon { .. } => "icon",
             Kind::Pointer { .. } => "pointer",
+            Kind::Gauge { .. } => "gauge",
             Kind::Message { .. } => "message",
             Kind::Prompt { .. } => "prompt",
             Kind::Training { .. } => "training",
@@ -569,7 +639,7 @@ impl Pulse {
 pub struct Value {
     pub shown: bool,
     pub text: String,
-    /// A meter's fill, 0 to 1.
+    /// A meter's or a gauge's fill, 0 to 1.
     pub fill: f32,
     /// A pointer's turn, radians clockwise from straight up.
     pub angle: f32,

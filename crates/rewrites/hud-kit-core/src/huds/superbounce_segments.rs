@@ -1,23 +1,26 @@
 //! The charge segments (docs/game/hud-kit.md, "The charge segments"):
-//! nine short pieces of the battery strip round the motion tracker's
-//! left, bottom and right sides, three a side, [`GAP`] clear of its rim.
-//! They are the priming indicator: they fill from the top of the left
-//! side, along the bottom and up the right as the recipe's steps are
-//! done, and wipe back the other way as the charge runs out.
+//! nine arcs round the motion tracker's left, bottom and right sides,
+//! three a side, concentric with its rim and [`GAP`] clear of it. They are
+//! the priming indicator: they fill from the top of the left side, round
+//! the bottom and up the right as the recipe's steps are done, and wipe
+//! back the other way as the charge runs out.
 //!
 //! ```text
 //!        .---.
-//!  1 =  /     \  = 9
-//!  2 = | track | = 8
-//!  3 =  \     /  = 7
-//!        '---'
-//!       =  =  =
+//!  1 (  /     \  ) 9
+//!  2 ( | track | ) 8
+//!  3  \ \     / /  7
+//!      \ '---' /
+//!       ' ___ '
 //!       4  5  6
 //! ```
 //!
 //! They are elements of the readout HUD ([`super::superbounce_readout`]),
-//! fullscreen only as it is. Each is a meter, so the segment at the edge
-//! of the fill is part lit and the wipe is smooth.
+//! fullscreen only as it is. Each is a gauge (`Kind::Gauge`): a text
+//! widget whose one character is the arc's picture for its fill, drawn in
+//! code and served in the fonts (`font::ring`), in the HUD's own text
+//! colour. A fill has `font::ring::STEPS` steps, so the arc at the edge
+//! of the fill is part lit and the wipe moves along it.
 //!
 //! [`Stage`] names what they show and [`segments`] maps the mode's charge
 //! (`superbounce_charge::ChargePhase`, as [`super::superbounce::Phase`])
@@ -33,14 +36,16 @@
 //! | `Warning` | `Primed`, half the charge or less (19 still ticks) | what is left, flashing the timer's warning |
 //! | `Lost` | `Lost`: the word left -3 | none; all nine blink and go |
 
-use crate::model::{Anchor, Art, Element, Place, Pulse, Style, Value, Values};
+use font::ring;
+
+use crate::model::{Anchor, Element, Glyphs, Place, Pulse, Style, Value, Values};
 use crate::motion::Motion;
 
 use super::superbounce::{Charge, LOW_CHARGE, Phase};
 
 /// How many segments, and how many a side.
-pub const SEGMENTS: usize = 9;
-pub const SIDE: usize = 3;
+pub const SEGMENTS: usize = ring::SEGMENTS;
+pub const SIDE: usize = ring::SIDE;
 /// The segments, in fill order: down the left side, along the bottom
 /// left to right, up the right side.
 pub const IDS: [&str; SEGMENTS] = [
@@ -55,52 +60,86 @@ pub const IDS: [&str; SEGMENTS] = [
     "sbr.seg.9",
 ];
 
-/// A segment: the battery strip's last columns, as wide as this and the
-/// strip's 8 pixels high.
-pub const COLUMNS: u8 = 9;
-pub const HEIGHT: i16 = 8;
 /// The motion tracker's rim fullscreen, screen pixels: left, top, right,
-/// bottom (`hud_kit::rects::TRACKER`, which a test holds this to).
+/// bottom (`hud_kit::rects::TRACKER`, which a test holds this to). The
+/// arcs' geometry is in this rectangle's pixels (`font::ring`), whose
+/// rim is as wide.
 pub const TRACKER: [i16; 4] = [47, 360, 130, 443];
-/// Pixels between the rim's rectangle and a segment: clearly apart from
-/// the ring, and off the tracker's blips.
-pub const GAP: i16 = 4;
+/// Pixels between the rim and an arc's inner edge: clearly apart from the
+/// ring, and off the tracker's blips (`font::ring::GAP`).
+pub const GAP: i16 = ring::GAP as i16;
 /// The fullscreen frame's bottom-left corner, the segments' anchor
 /// (`hud_kit::rects::BOTTOM_LEFT`).
 pub const CORNER: (i16, i16) = (48, 444);
 
-const LEFT_X: i16 = TRACKER[0] - GAP - COLUMNS as i16;
-const RIGHT_X: i16 = TRACKER[2] + GAP;
-const BOTTOM_Y: i16 = TRACKER[3] + GAP;
-/// The side segments' tops: 19 apart, the lowest ending 13 over the
-/// rim's foot, the highest 13 under the shield meter's band (y 371).
-const SIDE_Y: [i16; SIDE] = [384, 403, 422];
-/// The bottom segments' left edges: 24 apart, the middle one under the
-/// tracker's centre.
-const BOTTOM_X: [i16; SIDE] = [60, 84, 108];
-
-/// Each segment's top-left corner fullscreen, screen pixels, in fill
-/// order.
-pub const AT: [(i16, i16); SEGMENTS] = [
-    (LEFT_X, SIDE_Y[0]),
-    (LEFT_X, SIDE_Y[1]),
-    (LEFT_X, SIDE_Y[2]),
-    (BOTTOM_X[0], BOTTOM_Y),
-    (BOTTOM_X[1], BOTTOM_Y),
-    (BOTTOM_X[2], BOTTOM_Y),
-    (RIGHT_X, SIDE_Y[2]),
-    (RIGHT_X, SIDE_Y[1]),
-    (RIGHT_X, SIDE_Y[0]),
-];
+/// Each segment's picture's top-left corner fullscreen, screen pixels, in
+/// fill order: its box in the rim's pixels (`font::ring::BOXES`) from the
+/// rim's corner.
+pub const AT: [(i16, i16); SEGMENTS] = {
+    let mut at = [(0, 0); SEGMENTS];
+    let mut i = 0;
+    while i < SEGMENTS {
+        at[i] = (TRACKER[0] + ring::BOXES[i][0], TRACKER[1] + ring::BOXES[i][1]);
+        i += 1;
+    }
+    at
+};
+/// Each segment's picture's size, wide and tall.
+pub const SIZE: [(i16, i16); SEGMENTS] = {
+    let mut size = [(0, 0); SEGMENTS];
+    let mut i = 0;
+    while i < SEGMENTS {
+        let (w, h) = ring::size(i);
+        size[i] = (w as i16, h as i16);
+        i += 1;
+    }
+    size
+};
 
 /// How far outside the HUD frame the segments sit (`Element::outside`):
 /// the left side is left of the frame's left edge (x 48) and the bottom
 /// under its foot (y 444), where the tracker's rim is on both. They are
 /// in the screen's margin, as nothing of the retail HUD is.
-pub const OUTSIDE: i16 = CORNER.0 - LEFT_X;
+pub const OUTSIDE: i16 = {
+    let mut out = 0;
+    let mut i = 0;
+    while i < SEGMENTS {
+        let left = CORNER.0 - AT[i].0;
+        let under = AT[i].1 + SIZE[i].1 - CORNER.1;
+        if left > out {
+            out = left;
+        }
+        if under > out {
+            out = under;
+        }
+        i += 1;
+    }
+    out
+};
 /// The segments' right edge fullscreen, screen pixels: the readout's
 /// rows start right of it.
-pub const RIGHT_EDGE: i16 = RIGHT_X + COLUMNS as i16;
+pub const RIGHT_EDGE: i16 = {
+    let mut edge = 0;
+    let mut i = 0;
+    while i < SEGMENTS {
+        let right = AT[i].0 + SIZE[i].0;
+        if right > edge {
+            edge = right;
+        }
+        i += 1;
+    }
+    edge
+};
+
+/// Segment `index`'s pictures: the arc's run of `font::ring::STEPS` + 1
+/// characters, the empty track first.
+pub const fn glyphs(index: usize) -> Glyphs {
+    Glyphs {
+        first: ring::unit(index, 0),
+        steps: ring::STEPS,
+        size: SIZE[index % SEGMENTS],
+    }
+}
 
 /// What the segments show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -150,7 +189,8 @@ pub fn segments(charge: Option<Charge>) -> Segments {
 }
 
 /// Segment `index`'s fill for `lit` segments lit: 1 under the edge, 0
-/// past it, the fraction on it.
+/// past it, the fraction on it (drawn as the nearest of the arc's steps,
+/// `Glyphs::step`).
 pub fn fill_of(index: usize, lit: f32) -> f32 {
     (lit - index as f32).clamp(0.0, 1.0)
 }
@@ -181,10 +221,11 @@ pub fn value(index: usize, s: &Segments) -> Value {
 pub fn elements() -> Vec<Element> {
     IDS.iter()
         .zip(AT)
-        .map(|(id, (x, y))| {
-            Element::meter(
+        .enumerate()
+        .map(|(i, (id, (x, y)))| {
+            Element::gauge(
                 *id,
-                Art::StripMeterEnd(COLUMNS),
+                glyphs(i),
                 Place::new(Anchor::BottomLeft, (x - CORNER.0, y - CORNER.1)),
             )
             .outside(OUTSIDE)
@@ -218,6 +259,7 @@ pub fn samples() -> Vec<(&'static str, Option<Charge>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Kind;
 
     fn fills(s: &Segments) -> [f32; SEGMENTS] {
         std::array::from_fn(|i| value(i, s).fill)
@@ -296,46 +338,92 @@ mod tests {
         assert_eq!(value(8, &segments(None)).motion, Motion::Ease);
     }
 
-    /// Three a side round the tracker's left, bottom and right, each
-    /// `GAP` clear of the rim's rectangle and of each other, none over
-    /// the rim; the same from the left and from the right.
+    /// Three arcs a side round the tracker's left, bottom and right, each
+    /// concentric with the rim and `GAP` clear of it, their boxes apart,
+    /// none over the rim; the same from the left and from the right.
     #[test]
     fn the_segments_are_round_the_tracker_and_clear_of_it() {
         let [l, t, r, b] = TRACKER;
-        let (w, h) = (i16::from(COLUMNS), HEIGHT);
-        for (i, (x, y)) in AT.into_iter().enumerate() {
-            let outside = x + w <= l - GAP || x >= r + GAP || y >= b + GAP;
-            assert!(outside, "segment {}: ({x}, {y})", i + 1);
-            assert!(y >= t + 13, "under the shield meter's band");
-            assert!(x >= 0 && y + h <= 480, "on the screen");
+        // The rim the arcs are drawn round is the tracker's: as wide, and
+        // the arcs' pixels are counted from its corner.
+        assert_eq!(f32::from(r - l), 2.0 * ring::RIM);
+        assert_eq!(f32::from(b - t), 2.0 * ring::RIM);
+        assert_eq!((GAP, SEGMENTS, SIDE), (4, 9, 3));
+        assert_eq!(
+            AT,
+            [
+                (40, 384),
+                (40, 404),
+                (45, 422),
+                (62, 439),
+                (80, 446),
+                (100, 439),
+                (120, 422),
+                (130, 404),
+                (131, 384)
+            ]
+        );
+        let centre = (f32::from(l + r) / 2.0, f32::from(t + b) / 2.0);
+        for (i, ((x, y), (w, h))) in AT.into_iter().zip(SIZE).enumerate() {
+            assert!(w > 0 && h > 0, "segment {}", i + 1);
+            assert!(y >= t + 24, "segment {}: 13 under the shield meter's band (y 371)", i + 1);
+            assert!(x >= 0 && x + w <= 640 && y + h <= 480, "on the screen");
             // Its mirror about the tracker's middle is a segment too, in
             // the mirrored order.
-            let m = AT[SEGMENTS - 1 - i];
-            assert_eq!((l + r - (x + w), y), m, "segment {}", i + 1);
+            let (m, ms) = (AT[SEGMENTS - 1 - i], SIZE[SEGMENTS - 1 - i]);
+            assert_eq!(((l + r - (x + w), y), (w, h)), (m, ms), "segment {}", i + 1);
+            // No ink of the full picture is on the rim or inside it: every
+            // inked pixel is GAP from the rim, less the edge's one pixel.
+            let p = glyphs(i).picture(1.0).unwrap();
+            assert_eq!((i32::from(p.width), i32::from(p.height)), (i32::from(w), i32::from(h)));
+            for (n, px) in p.pixels.iter().enumerate() {
+                if px >> 12 == 0 {
+                    continue;
+                }
+                let px_x = f32::from(x) + (n % usize::from(p.width)) as f32 + 0.5;
+                let px_y = f32::from(y) + (n / usize::from(p.width)) as f32 + 0.5;
+                let from_centre = (px_x - centre.0).hypot(px_y - centre.1);
+                assert!(
+                    from_centre > ring::RIM + ring::GAP - 1.0,
+                    "segment {}: ink {from_centre} from the centre",
+                    i + 1
+                );
+                assert!(from_centre < ring::OUTER + 1.0, "segment {}", i + 1);
+            }
         }
         for i in 0..SEGMENTS {
             for j in i + 1..SEGMENTS {
-                let (a, c) = (AT[i], AT[j]);
-                let apart = a.0 + w + GAP <= c.0
-                    || c.0 + w + GAP <= a.0
-                    || a.1 + h + GAP <= c.1
-                    || c.1 + h + GAP <= a.1;
+                let ((ax, ay), (aw, ah)) = (AT[i], SIZE[i]);
+                let ((cx, cy), (cw, ch)) = (AT[j], SIZE[j]);
+                let apart = ax + aw <= cx || cx + cw <= ax || ay + ah <= cy || cy + ch <= ay;
                 assert!(apart, "{} and {}", i + 1, j + 1);
             }
         }
-        assert_eq!((AT[0], AT[4], AT[8]), ((34, 384), (84, 447), (134, 384)));
-        assert_eq!((OUTSIDE, RIGHT_EDGE), (14, 143));
-        // The elements: meters of the strip's end, from the frame's
+        assert_eq!((OUTSIDE, RIGHT_EDGE), (8, 137));
+        // The elements: gauges of the arcs' pictures, from the frame's
         // bottom-left corner, fullscreen only, let outside the frame.
         let e = elements();
         assert_eq!(e.iter().map(|e| e.id).collect::<Vec<_>>(), IDS);
-        for (e, (x, y)) in e.iter().zip(AT) {
+        for (i, (e, (x, y))) in e.iter().zip(AT).enumerate() {
             assert_eq!(e.at.anchor, Anchor::BottomLeft);
             assert_eq!(e.at.full, (x - 48, y - 444));
             assert_eq!((e.at.half, e.at.quarter, e.outside), (None, None, OUTSIDE));
+            let g = glyphs(i);
+            assert_eq!(e.kind, Kind::Gauge { glyphs: g });
+            assert_eq!((g.first, g.steps, g.size), (ring::unit(i, 0), ring::STEPS, SIZE[i]));
+            // A fill is the arc's nearest step: empty, half, full.
+            assert_eq!(g.unit(0.0), ring::unit(i, 0));
+            assert_eq!(g.unit(0.5), ring::unit(i, ring::STEPS / 2));
+            assert_eq!(g.unit(1.0), ring::unit(i, ring::STEPS));
+            assert_eq!(g.unit(f32::NAN), ring::unit(i, 0));
+            assert_eq!(g.text(1.0).chars().count(), 1);
+            assert_eq!(g.units().count(), usize::from(ring::STEPS) + 1);
+            assert_eq!(g.picture(0.5).unwrap().pixels, ring::draw(i, ring::STEPS / 2));
         }
-        // The lowest is 11 under the frame's foot, inside what is let.
-        assert!(BOTTOM_Y + h - CORNER.1 <= OUTSIDE);
+        // The lowest is 6 under the frame's foot and the leftmost 8 left of
+        // it, inside what is let.
+        assert_eq!(AT[4].1 + SIZE[4].1 - CORNER.1, 6);
+        assert_eq!(CORNER.0 - AT[0].0, 8);
     }
 
     /// The preview's moments: one for each stage, and a wipe.

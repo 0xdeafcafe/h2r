@@ -25,6 +25,7 @@ pub mod medals;
 pub mod mod_marks;
 pub mod patch;
 pub mod raster;
+pub mod ring;
 
 pub use raster::{Bitmap, RenderOptions, render};
 

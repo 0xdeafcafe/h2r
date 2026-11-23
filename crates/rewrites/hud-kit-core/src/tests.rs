@@ -472,6 +472,74 @@ fn the_ramp_and_the_end_crop_refuse_what_cannot_fill() {
     assert!(templates::end_crop(92.0, 0).is_err());
 }
 
+/// A gauge is a text widget in the HUD font, its point its top-left
+/// corner, hidden in the modes it has no place in; the string hook's text
+/// for it is the one character of its picture for the fill.
+#[test]
+fn a_gauge_is_a_text_widget_whose_character_is_its_fill() {
+    let glyphs = Glyphs {
+        first: 0xe2c0,
+        steps: 6,
+        size: (6, 16),
+    };
+    let hud = Hud {
+        name: "t",
+        elements: vec![
+            Element::gauge("g", glyphs, Place::new(Anchor::BottomLeft, (-8, -60))).outside(8),
+            Element::text("x", Font::Lcd, Justify::End, "88", Place::new(Anchor::TopLeft, (1, 2))),
+        ],
+    };
+    assert!(hud.has_text() && hud.arts().is_empty() && !hud.uses_grenade_row());
+    assert_eq!(hud.elements[0].kind.name(), "gauge");
+    assert!(!hud.elements[0].kind.is_channel());
+    assert_eq!(hud.elements[0].kind.longest(), None);
+    let t = templates(Vec::new());
+    assert_eq!(t.missing(&hud), Vec::<String>::new());
+    let c = compile(&hud, &t).unwrap();
+    let kinds: Vec<_> = c.widgets.iter().map(|w| (w.id, w.kind)).collect();
+    assert_eq!(kinds, [("g", WidgetKind::Text), ("x", WidgetKind::Text)]);
+    let g = c.widget("g").unwrap();
+    assert_eq!(g.bytes.len(), TEXT_SIZE);
+    assert_eq!((g.glyphs, g.crop, g.ramp), (Some(glyphs), None, None));
+    assert_eq!(u16_at(&g.bytes, tf::ANCHOR), Anchor::BottomLeft as u16);
+    assert_eq!(u16_at(&g.bytes, tf::JUSTIFICATION), Justify::Start as u16);
+    assert_eq!(
+        (
+            u16_at(&g.bytes, tf::OFFSETS[0]) as i16,
+            u16_at(&g.bytes, tf::OFFSETS[0] + 2) as i16
+        ),
+        (-8, -60)
+    );
+    assert_eq!(
+        g.bytes[tf::FONTS..tf::FONTS + 3],
+        [GAUGE_FONT.byte() as u8, NO_FONT as u8, NO_FONT as u8]
+    );
+    assert_eq!(u32_at(&g.bytes, tf::SHADER + 4), 0xe000_0003);
+    assert_eq!(u32_at(&g.bytes, tf::STRING), 0x0400_0123);
+    // The text: the picture for the fill, whatever the value's text.
+    let at = |fill: f32| g.text(&Value { text: "no".into(), ..Value::fill(fill) });
+    assert_eq!(at(0.0), "\u{e2c0}");
+    assert_eq!(at(0.5), "\u{e2c3}");
+    assert_eq!(at(1.0), "\u{e2c6}");
+    assert_eq!(at(0.08), "\u{e2c0}");
+    assert_eq!(at(0.09), "\u{e2c1}");
+    assert_eq!(at(7.0), "\u{e2c6}");
+    assert_eq!(at(f32::NAN), "\u{e2c0}");
+    assert_eq!(glyphs.units().collect::<Vec<_>>(), (0xe2c0..=0xe2c6).collect::<Vec<u16>>());
+    // A text's is its value's.
+    let x = c.widget("x").unwrap();
+    assert_eq!((x.glyphs, x.text(&Value::text("17"))), (None, "17".to_owned()));
+    // A text template missing is the gauge's to name too.
+    let mut none = t.clone();
+    none.text = Err("no count".into());
+    let only = Hud {
+        name: "t",
+        elements: vec![hud.elements[0].clone()],
+    };
+    assert_eq!(none.missing_widgets(&only), ["the text template: no count"]);
+    assert!(compile(&only, &none).unwrap_err().to_string().contains("g: no count"));
+}
+
 #[test]
 fn the_modes_are_the_widgets_three() {
     assert_eq!(Mode::ALL.map(Mode::index), [0, 1, 2]);

@@ -292,10 +292,12 @@ impl Fonts {
     /// Font file `name` as the game's font rewrite serves it: the message
     /// fonts with the superbounce medals added (`font::medals`,
     /// docs/game/hud-kit.md, "The medals"), and every font with the
-    /// HUD's direction arrows (`font::arrows`, "Direction arrows").
+    /// HUD's direction arrows (`font::arrows`, "Direction arrows") and
+    /// the charge ring's arcs (`font::ring`, "The charge segments").
     fn as_served(name: &str, bytes: Vec<u8>) -> Vec<u8> {
         let bytes = font::medals::patch(name, &bytes).unwrap_or(bytes);
-        font::arrows::patch(&bytes).unwrap_or(bytes)
+        let bytes = font::arrows::patch(&bytes).unwrap_or(bytes);
+        font::ring::patch(&bytes).unwrap_or(bytes)
     }
     fn table(b: &[u8]) -> Vec<String> {
         String::from_utf8_lossy(b)

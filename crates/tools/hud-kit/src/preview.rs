@@ -18,7 +18,9 @@ use hud_edit::state::{Grenade, HudState};
 use serde_json::{Value as Json, json};
 
 use crate::compile::{AsHudEdit, Compiled};
-use crate::model::{Element, Hud, Kind, NAVPOINT_FONT, Style, Value, Values, WORLD_FONT};
+use crate::model::{
+    Element, GAUGE_FONT, Glyphs, Hud, Kind, NAVPOINT_FONT, Style, Value, Values, WORLD_FONT,
+};
 use hud_kit_core::world::{self, Pose, Shape};
 use crate::rects::{MESSAGE_LINE, PROMPT_DOWN, TRAINING_PAD};
 use crate::source::{Colours, Source};
@@ -273,9 +275,15 @@ impl KitAnswers<'_> {
 }
 
 impl Answers for KitAnswers<'_> {
+    /// A gauge is placed by the HUD editor and not drawn by it: its
+    /// picture is [`gauge`]'s, from the code that draws it.
     fn shown(&self, h: usize, w: &Widget) -> Option<bool> {
         let (e, v) = self.of(h, w)?;
-        Some(v.shown && e.at.offset(self.mode).is_some())
+        Some(
+            v.shown
+                && e.at.offset(self.mode).is_some()
+                && !matches!(e.kind, Kind::Gauge { .. }),
+        )
     }
     /// `hud_input1` as the runtime's input hook gives it: the fill, or a
     /// cropped meter's ramp at the fill (`hud_kit_core::records::Widget::input`).
@@ -366,6 +374,91 @@ fn blit(
                 }
             }
         }
+    }
+}
+
+/// A gauge as the game's text draw draws it: the picture of its fill
+/// (`Glyphs::picture`, the pixels the fonts are served with) with its
+/// top-left corner at the widget's point `point`, in the kit text colour
+/// for its style; a flash is drawn as `Normal`, as the runtime draws it
+/// and as a meter's is ([`style_look`]). The picture comes from the code that draws it, so the
+/// synthetic source, which has no fonts, draws the same one; on a disc
+/// the `glyphs` check holds the served font to having each of them. A
+/// gauge shown with no picture, or one of another size than it claims,
+/// is not drawn and says why.
+fn gauge(
+    canvas: &mut Canvas,
+    colours: &Colours,
+    mode: Mode,
+    e: &Element,
+    glyphs: &Glyphs,
+    v: &Value,
+    point: Option<[f32; 2]>,
+) -> Drawn {
+    let in_mode = e.at.offset(mode).is_some();
+    let size = [f32::from(glyphs.size.0), f32::from(glyphs.size.1)];
+    let rect = point
+        .filter(|_| in_mode)
+        .map(|p| place::text_rect(p, size, 0));
+    let mut notes = Vec::new();
+    let mut cover = None;
+    let mut drawn = false;
+    if let Some(r) = rect.filter(|_| v.shown) {
+        let unit = glyphs.unit(v.fill);
+        match glyphs.picture(v.fill) {
+            Some(p) if (i32::from(p.width), i32::from(p.height))
+                == (i32::from(glyphs.size.0), i32::from(glyphs.size.1)) =>
+            {
+                let style = match v.style {
+                    Style::Flash(_) => Style::Normal,
+                    s => s,
+                };
+                let colour = style_colour(colours.widget, style, colours);
+                let [x0, y0] = [r.x0.round() as i32, r.y0.round() as i32];
+                let width = usize::from(p.width).max(1);
+                let mut c = Cover::new();
+                for (n, px) in p.pixels.iter().enumerate() {
+                    let alpha = u32::from(*px >> 12) * 17 * u32::from(colour[3]) / 255;
+                    let (x, y) = (x0 + (n % width) as i32, y0 + (n / width) as i32);
+                    // Opaque as the text draw counts it.
+                    if alpha > 64 {
+                        c.set(x, y);
+                    }
+                    drawn |= canvas.blend(x, y, [colour[0], colour[1], colour[2], alpha as u8]);
+                }
+                cover = Some(c);
+            }
+            Some(p) => notes.push(format!(
+                "its picture U+{unit:04X} is {} by {}, not the {} by {} it claims",
+                p.width, p.height, glyphs.size.0, glyphs.size.1
+            )),
+            None => notes.push(format!("no code of ours draws U+{unit:04X}")),
+        }
+    }
+    let hidden = if !in_mode {
+        Some(format!("no {} offset", mode.label()))
+    } else if !v.shown {
+        Some("not shown in this state".to_owned())
+    } else {
+        None
+    };
+    Drawn {
+        id: e.id,
+        kind: e.kind.name(),
+        channel: false,
+        rect,
+        reserved: rect,
+        text: None,
+        style: v.style,
+        fill: Some(v.fill),
+        angle: None,
+        shown: v.shown,
+        drawn,
+        hidden,
+        cover,
+        font: Some(GAUGE_FONT.engine()),
+        notes,
+        world: None,
     }
 }
 
@@ -892,6 +985,10 @@ pub fn shot(
             .iter()
             .find(|p| p.hud == KIT && p.name == e.id)
             .with_context(|| format!("{} was not placed", e.id))?;
+        if let Kind::Gauge { glyphs } = &e.kind {
+            elements.push(gauge(&mut canvas, &src.colours, mode, e, glyphs, &v, p.point));
+            continue;
+        }
         let in_mode = e.at.offset(mode).is_some();
         let (font, reserved) = match &e.kind {
             Kind::Text {
