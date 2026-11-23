@@ -508,11 +508,13 @@ fn the_coarse_pass_finds_the_same_band() {
     for (from, v, some) in [
         ([-10.457, 2.9, 0.25], [0.0, 0.3, 0.0], true),
         ([-10.457, 2.0, -0.2], [0.0, 0.6, 0.0], true),
-        ([-10.457, 1.0, 0.25], [0.0, 2.0, 0.0], true),
+        // At a run (2 u/s) the window is under a tick wide: the band may
+        // be empty, and only the two passes' agreement is checked.
+        ([-10.457, 1.0, 0.25], [0.0, 2.0, 0.0], false),
         ([-10.9, 1.5, 0.25], [0.2, 0.9, 0.0], false),
         ([-10.457, 3.6, 0.25], [0.0, -0.5, 0.0], false),
     ] {
-        let speed = v[0].hypot(v[1]);
+        let speed = f32::hypot(v[0], v[1]);
         let dir = [v[0] / speed, v[1] / speed];
         let range = [-0.3, speed * 3.0 + 0.3];
         let fine = band_by(&s, from, dir, jump(v), range, 0.0, false);
