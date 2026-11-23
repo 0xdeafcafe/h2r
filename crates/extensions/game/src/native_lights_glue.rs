@@ -1124,6 +1124,10 @@ pub const RASTERIZER_DATA: u32 = 0x108;
 /// reads `[[0x00485a80]+0xc]`, `0x00019673` `[[0x00485a80]+4]`).
 pub const NORMALIZATION_DATUM: u32 = 0xc;
 pub const ATTENUATION_DATUM: u32 = 4;
+/// The element's bitmap datum engine textures 14 and 15 bind (`+0x14`,
+/// the datum word of the tag reference at `+0x10`: `0x000197e6` and
+/// `0x00019801` read `[[0x00485a80]+0x14]`); 15 is its image 1.
+pub const RASTERIZER_DATUM_14: u32 = 0x14;
 
 /// The light textures' bitmaps named by the `matg` at `matg` (its payload
 /// address), read through `read(address, len)`: `(normalization,
@@ -1163,6 +1167,19 @@ pub fn matg_light_bitmaps(
     light_bitmaps(
         &|addr, len| meta.bytes(addr, len).ok().map(<[u8]>::to_vec),
         matg,
+    )
+}
+
+/// [`rasterizer_bitmap`] over the map's ordinary metadata at `offset`.
+pub fn matg_rasterizer_bitmap(
+    meta: &tags::shader::Metadata,
+    matg: u32,
+    offset: u32,
+) -> Option<map::TagId> {
+    rasterizer_bitmap(
+        &|addr, len| meta.bytes(addr, len).ok().map(<[u8]>::to_vec),
+        matg,
+        offset,
     )
 }
 

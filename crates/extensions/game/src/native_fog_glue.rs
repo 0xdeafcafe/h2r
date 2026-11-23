@@ -120,7 +120,20 @@ pub fn load<R: std::io::Read + std::io::Seek>(
                         Some((m, shader, lib.material(shader, None).map_err(|e| format!("material: {e}"))))
                     })
                     .collect();
+                let rasterizer = map
+                    .tags()
+                    .iter()
+                    .find(|tag| tag.group.0 == *b"matg")
+                    .and_then(|tag| tag.location.as_ref())
+                    .and_then(|loc| {
+                        crate::native_lights_glue::matg_rasterizer_bitmap(
+                            lib.metadata(),
+                            loc.address,
+                            crate::native_lights_glue::RASTERIZER_DATUM_14,
+                        )
+                    });
                 let selection = fog_gpu::Selection {
+                    rasterizer,
                     implementation: Some(usize::from(LOADED_IMPLEMENTATION)),
                     layer_cull: !resolved
                         .iter()

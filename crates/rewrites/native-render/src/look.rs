@@ -172,7 +172,7 @@ pub fn unlit_bsp_pass(
     if imp.index != UNLIT_BSP_IMPLEMENTATION {
         return Err(Refusal::MissingImplementation(UNLIT_BSP_IMPLEMENTATION));
     }
-    let look = look_with_engine(pass.pass, imp, normalization)?;
+    let look = look_with_engine(pass.pass, imp, normalization, None)?;
     world_pass(look, imp, inputs)
 }
 
@@ -234,10 +234,30 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
 /// why it stays on the D3D path: its vertex program, stage textures and
 /// instance constants, nothing animated or computed per draw.
 pub fn implementation_look(pass: TagId, imp: &ResolvedImplementation) -> Result<PassLook, Refusal> {
-    look_with_engine(pass, imp, None)
+    look_with_engine(pass, imp, None, None)
 }
 
-fn look_with_engine(pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>) -> Result<PassLook, Refusal> {
+/// The image of the rasterizer data's `+0x14` bitmap that engine texture
+/// `id` binds. Both jump-table entries (`0x000197dd` for 14, `0x000197fb`
+/// for 15) call `0x000143c0` with that bitmap; 14 clears `ecx` first (image
+/// 0), 15 leaves the 1 `0x00019538` loaded (image 1).
+pub fn rasterizer_image(id: u8) -> u32 {
+    u32::from(id == 15)
+}
+
+/// [`implementation_look`] with the rasterizer data's bitmap at `+0x14`
+/// (engine textures 14 and 15, `screen_look::engine_texture`) resolved to
+/// `rasterizer`: a stage naming either samples it ([`rasterizer_image`]).
+/// `None` refuses them as [`implementation_look`] does.
+pub fn implementation_look_with_rasterizer(
+    pass: TagId, imp: &ResolvedImplementation, rasterizer: Option<TagId>,
+) -> Result<PassLook, Refusal> {
+    look_with_engine(pass, imp, None, rasterizer)
+}
+
+fn look_with_engine(
+    pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>, rasterizer: Option<TagId>,
+) -> Result<PassLook, Refusal> {
     let vertex_shader = imp.vertex_shader.ok_or(Refusal::NoVertexShader)?;
     if !imp.animated.is_empty() {
         return Err(Refusal::Animated);
@@ -253,6 +273,9 @@ fn look_with_engine(pass: TagId, imp: &ResolvedImplementation, normalization: Op
             Some(TextureSource::Lightmap) => Stage::Lightmap,
             Some(TextureSource::Engine(1)) => Stage::Bitmap {
                 bitmap: normalization.ok_or(Refusal::EngineTexture(1))?, image: 0,
+            },
+            Some(TextureSource::Engine(id @ (14 | 15))) => Stage::Bitmap {
+                bitmap: rasterizer.ok_or(Refusal::EngineTexture(id))?, image: rasterizer_image(id),
             },
             Some(TextureSource::Engine(id)) => return Err(Refusal::EngineTexture(id)),
             Some(TextureSource::UnsetSlot(s)) => return Err(Refusal::UnsetSlot(s)),
@@ -470,6 +493,22 @@ mod tests {
         assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)), Err(Refusal::MissingImplementation(3)));
         selected.layer_passes = 2;
         assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)), Err(Refusal::Passes(2)));
+    }
+
+    #[test]
+    fn engine_textures_14_and_15_are_the_rasterizer_bitmap_s_first_and_second_image() {
+        let mut imp = implementation(0, true);
+        imp.textures[1] = texture(TextureSource::Engine(14));
+        imp.textures[2] = texture(TextureSource::Engine(15));
+        let bitmap = TagId(0xe000_0042);
+        let look = implementation_look_with_rasterizer(TagId(1), &imp, Some(bitmap)).unwrap();
+        assert_eq!(look.textures[1], Stage::Bitmap { bitmap, image: 0 });
+        assert_eq!(look.textures[2], Stage::Bitmap { bitmap, image: 1 });
+        // Without the bitmap, or through the plain look, 14 refuses first.
+        assert_eq!(implementation_look_with_rasterizer(TagId(1), &imp, None), Err(Refusal::EngineTexture(14)));
+        assert_eq!(implementation_look(TagId(1), &imp), Err(Refusal::EngineTexture(14)));
+        imp.textures[1] = None;
+        assert_eq!(implementation_look(TagId(1), &imp), Err(Refusal::EngineTexture(15)));
     }
 
     #[test]

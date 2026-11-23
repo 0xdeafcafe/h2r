@@ -196,6 +196,7 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
         let selection = fog_gpu::Selection {
             implementation: None,
             layer_cull: !resolved.values().any(|m| fog_gpu::layer_sets_other_cull(m, usize::from(layer))),
+            rasterizer: None,
         };
         for (&m, material) in &resolved {
             if !material

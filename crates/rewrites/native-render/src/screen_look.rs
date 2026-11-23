@@ -209,7 +209,7 @@ pub enum ScreenStage {
 pub enum EngineTexture {
     /// A bitmap reference in the rasterizer data, at this offset (1:
     /// `+0xc`, the normalization cube; 9: `+4`, the attenuation volume;
-    /// 14 and 15: `+0x14`).
+    /// 14 and 15: `+0x14`, image 0 and image 1).
     Rasterizer(u32),
     /// Render target `n` (2 and 3: 1; 6: 3; 8: 10; 13: 9; 17: `0x13`; 19:
     /// `0x15`; 20: `0x16`; 21: 13; 22: `0x11`; 23: `0x17`).

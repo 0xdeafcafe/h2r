@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::gpu::Image;
-use crate::look::{implementation_look, PassLook, Refusal, Stage};
+use crate::look::{implementation_look_with_rasterizer, PassLook, Refusal, Stage};
 use crate::pass_state::{pass_state, PassState, StateRefusal};
 use crate::program::{
     compile_pass, described_pipeline, world_constants_read, Gpu, MaterialProgram, PipelineUse, Rigid, RigidProgram, ViewInputs,
@@ -186,6 +186,10 @@ pub struct Selection {
     /// `CULLMODE` unset draws with [`layer_cull`]. `false`: such a pass
     /// is refused ([`FogRefusal::InheritsCull`]).
     pub layer_cull: bool,
+    /// The bitmap of the globals' rasterizer data at `+0x14`, which
+    /// engine textures 14 and 15 bind (`0x00019530`). `None`: a stage
+    /// naming one refuses the material.
+    pub rasterizer: Option<map::TagId>,
 }
 
 /// The cull a layer's draws start with, and keep until a pass sets
@@ -320,6 +324,12 @@ fn passes_of(material: &Material, layer: usize, supplied: bool, selection: Selec
                     None | Some(tags::material::TextureSource::None) => Stage::Empty,
                     Some(tags::material::TextureSource::Bitmap { bitmap, image, .. }) => Stage::Bitmap { bitmap, image },
                     Some(tags::material::TextureSource::Lightmap) => Stage::Lightmap,
+                    Some(tags::material::TextureSource::Engine(id @ (14 | 15))) if selection.rasterizer.is_some() => {
+                        Stage::Bitmap {
+                            bitmap: selection.rasterizer.unwrap_or(map::TagId::NULL),
+                            image: crate::look::rasterizer_image(id),
+                        }
+                    }
                     Some(tags::material::TextureSource::Engine(id)) => {
                         match crate::screen_look::engine_texture(id) {
                             crate::screen_look::EngineTexture::View | crate::screen_look::EngineTexture::Target(_) => {
@@ -350,7 +360,8 @@ fn passes_of(material: &Material, layer: usize, supplied: bool, selection: Selec
                 per_draw_inputs: imp.per_draw_inputs,
             }
         } else {
-            implementation_look(pass.pass, imp).map_err(|refusal| FogRefusal::Look { pass: n, refusal })?
+            implementation_look_with_rasterizer(pass.pass, imp, selection.rasterizer)
+                .map_err(|refusal| FogRefusal::Look { pass: n, refusal })?
         };
         if !imp.animated.is_empty() {
             return Err(FogRefusal::Look { pass: n, refusal: Refusal::Animated });
