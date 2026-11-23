@@ -18,6 +18,9 @@ pub enum Severity {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub severity: Severity,
+    /// Which check found it: `off_screen`, `outside_frame`,
+    /// `art_overlap`, `text_overlap` or `text_spills`.
+    pub code: &'static str,
     pub text: String,
     pub widgets: Vec<(usize, WidgetKey)>,
 }
@@ -54,12 +57,14 @@ pub fn check(p: &Picture) -> Vec<Finding> {
         if !screen.contains(&r) {
             out.push(Finding {
                 severity: Severity::Warning,
+                code: "off_screen",
                 text: format!("{} runs off the screen ({})", w.name, show(&r)),
                 widgets: id,
             });
         } else if !frame.contains(&r) {
             out.push(Finding {
                 severity: Severity::Note,
+                code: "outside_frame",
                 text: format!("{} leaves the HUD frame ({})", w.name, show(&r)),
                 widgets: id,
             });
@@ -84,6 +89,7 @@ pub fn check(p: &Picture) -> Vec<Finding> {
                     if n >= OVERLAP_MIN {
                         out.push(Finding {
                             severity: Severity::Warning,
+                            code: "art_overlap",
                             text: format!("{} and {} overlap ({n} opaque pixels)", a.name, b.name),
                             widgets: ids,
                         });
@@ -97,6 +103,7 @@ pub fn check(p: &Picture) -> Vec<Finding> {
                     if n > 0 {
                         out.push(Finding {
                             severity: Severity::Warning,
+                            code: "text_overlap",
                             text: format!("texts {} and {} overlap", a.name, b.name),
                             widgets: ids,
                         });
@@ -123,6 +130,7 @@ pub fn check(p: &Picture) -> Vec<Finding> {
         let names: Vec<_> = crossed.iter().map(|b| b.name.as_str()).collect();
         out.push(Finding {
             severity: Severity::Warning,
+            code: "text_spills",
             text: format!(
                 "{} ({}) spills out of {} ({})",
                 t.name,

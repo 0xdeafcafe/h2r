@@ -7041,6 +7041,7 @@ dependencies = [
  "hopper-edit",
  "hs",
  "hud-edit",
+ "hud-kit",
  "libc",
  "live-mirror",
  "live-proto",

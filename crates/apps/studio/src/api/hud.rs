@@ -83,7 +83,7 @@ const METHODS: &[MethodDef] = &[
         m::HUD_CHECK,
         "The layout checks at a state: overlaps, art off the screen, text spilling out of its art",
         r#"{"hud?":"string","state?":"object"}"#,
-        r#"[{"severity":"note|warning","text":"string","widgets":"[{hud,widget}]"}]"#,
+        r#"[{"severity":"note|warning","code":"off_screen|outside_frame|art_overlap|text_overlap|text_spills","text":"string","widgets":"[{hud,widget}]"}]"#,
         r#"{"state":{"gate":true}}"#,
     ),
     def(
@@ -211,6 +211,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                                 Severity::Note => "note",
                                 Severity::Warning => "warning",
                             },
+                            "code": f.code,
                             "text": f.text,
                             "widgets": f.widgets.iter().map(|(hud, k)| json!({"hud": hud, "widget": widget_name(*k)})).collect::<Vec<_>>(),
                         })

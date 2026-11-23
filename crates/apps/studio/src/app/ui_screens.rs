@@ -18,6 +18,7 @@ use boot::ui_kit::spec::ScreenSpec;
 use boot::ui_kit::view::View;
 
 pub mod browse;
+pub mod check;
 pub mod gallery;
 
 pub use browse::{Browse, Root};
@@ -226,13 +227,7 @@ impl UiScreens {
         let Some(Pick::Native { screen, .. }) = &self.pick else {
             return Some(spec);
         };
-        match boot::ui_kit::data::screen(screen) {
-            Some(doc) => boot::ui_kit::data::present(&spec, &doc, boot::ui_kit::data::design())
-                .map_err(|e| eprintln!("ui screens: {screen}: {e}"))
-                .ok()
-                .or(Some(spec)),
-            None => Some(spec),
-        }
+        Some(presented(screen, spec))
     }
 
     pub fn animation(&self) -> Phase {
@@ -422,6 +417,18 @@ impl UiScreens {
         };
         written.push(preview::write_sheet(&from, dir)?);
         Ok(written)
+    }
+}
+
+/// Screen `screen`'s `spec` as its screen doc presents it: the doc in
+/// scope ([`edit::ours::with_docs`]: the edits), else the reloaded or
+/// baked one, laid over what the Rust builds ([`UiScreens::spec`]).
+pub fn presented(screen: &str, spec: ScreenSpec) -> ScreenSpec {
+    match boot::ui_kit::data::screen(screen) {
+        Some(doc) => boot::ui_kit::data::present(&spec, &doc, boot::ui_kit::data::design())
+            .map_err(|e| eprintln!("ui screens: {screen}: {e}"))
+            .unwrap_or(spec),
+        None => spec,
     }
 }
 

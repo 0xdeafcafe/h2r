@@ -37,6 +37,9 @@
 //! - **game type scripts** (`app::rules_edit`): `rules.open`, `rules.get`,
 //!   `rules.set`, `rules.save`, `rules.format` and `rules.reload`
 //!   ([`super::game_script`]).
+//! - **content checks**: `sound.measure` ([`super::sound_measure`]),
+//!   `ui.check` ([`super::ui_check`]) and `check.run`, whose checks are
+//!   the rows of [`super::checks::CHECKS`].
 //! - **player models** and **customisation**: `model.*` and `custom.*`
 //!   are planned the same way (docs/editor/agent-api.md).
 //!
@@ -93,4 +96,9 @@ pub fn register(api: &mut Api) {
     // A retail screen's tag edits past a rect: a block hidden or copied,
     // a string ID set (app::ui_screens::edit::retail_tag).
     api.register(Box::new(super::ui_retail::UiRetail));
+    // Content checks: a sound's levels against the map's, our screens and
+    // HUDs checked, and every check in one list (check.run).
+    api.register(Box::new(super::sound_measure::SoundMeasure));
+    api.register(Box::new(super::ui_check::UiCheck));
+    api.register(Box::new(super::checks::Checks));
 }
