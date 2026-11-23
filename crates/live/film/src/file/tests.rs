@@ -286,3 +286,121 @@ fn a_container_converts_to_a_film_file_that_decodes_to_the_same_actions() {
     fs::write(&other, damaged).unwrap();
     assert!(verify(&path, &other).is_err());
 }
+
+fn decode_all(bytes: &[u8]) -> (FilmReader<Cursor<&[u8]>>, Vec<(u16, Vec<Option<[u8; ACTION_BYTES]>>)>) {
+    let mut r = FilmReader::open(Cursor::new(bytes)).unwrap();
+    let mut decoder = ChunkDecoder::new().unwrap();
+    let mut buf = Vec::new();
+    let mut rows = Vec::new();
+    for chunk in 0..r.chunk_count() {
+        r.read_chunk(chunk, &mut decoder, &mut buf).unwrap();
+        for t in 0..decoder.ticks() {
+            let mut seats = Vec::new();
+            for s in 0..SEATS {
+                let mut out = [0u8; ACTION_BYTES];
+                seats.push(decoder.action(t, s, &mut out).then_some(out));
+            }
+            rows.push((decoder.digest(t), seats));
+        }
+    }
+    (r, rows)
+}
+
+#[test]
+fn the_container_writer_mirrors_its_machine_chunks_into_the_film_file() {
+    let film = Arc::new(Mutex::new(
+        FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap(),
+    ));
+    let mut w = Writer::new(Cursor::new(Vec::new()), &header(5)).unwrap();
+    w.set_mirror(Some(machine_mirror(Arc::clone(&film))));
+    w.chunk_bytes(*b"DATA", b"disk").unwrap();
+    // The container keeps what the film file does not carry.
+    w.chunk_bytes(crate::KEYF, &[1, 2, 3, 4]).unwrap();
+    w.chunk_bytes(*b"TAPE", b"calls").unwrap();
+    w.set_mirror(None);
+    w.chunk_bytes(*b"HASH", b"after").unwrap();
+    let container = w.finish().unwrap().into_inner();
+    let film = Arc::try_unwrap(film).ok().unwrap().into_inner().unwrap();
+    let bytes = film.finish().unwrap().into_inner();
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    let tags: Vec<_> = r.machine.iter().map(|b| b.tag).collect();
+    assert_eq!(tags, [*b"DATA", *b"TAPE"]);
+    let mut raw = Vec::new();
+    for block in r.machine.clone() {
+        raw.push(zstd::bulk::decompress(&r.read_block(&block).unwrap(), 64).unwrap());
+    }
+    assert_eq!(raw, [b"disk".to_vec(), b"calls".to_vec()]);
+    // The stored frame is the container's own.
+    let reader = Reader::new(Cursor::new(&container)).unwrap();
+    let data = reader.entries.iter().find(|e| e.tag == *b"DATA").unwrap();
+    let stored = &container[data.offset as usize + 8..][..data.size as usize];
+    let block = r.machine[0];
+    assert_eq!(r.read_block(&block).unwrap(), stored);
+}
+
+#[test]
+fn a_cut_film_is_whole_while_the_running_film_goes_on() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    w.machine(*b"DATA", &zstd::bulk::compress(b"disk", 3).unwrap())
+        .unwrap();
+    let push = |w: &mut FilmWriter<Cursor<Vec<u8>>>, from: u64, to: u64| {
+        for tick in from..=to {
+            w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+            if tick == 301 {
+                w.seat_record(3, RECORD_JOIN, &[3, 0]).unwrap();
+            }
+        }
+    };
+    push(&mut w, 1, 600);
+    let mut cut_seed = seed();
+    cut_seed.header = header(6);
+    let mut cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap();
+    assert!(cut.push_tick(0, 0, &seats(1)).is_err());
+    cut.machine(*b"MARK", &zstd::bulk::compress(b"end", 3).unwrap())
+        .unwrap();
+    let cut = cut.finish().unwrap().into_inner();
+    // Cutting on a full chunk's last tick, a seat record still lands on it.
+    push(&mut w, 601, 768);
+    w.seat_record(1, RECORD_LEAVE, &[1]).unwrap();
+    let full_cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap().finish().unwrap().into_inner();
+    push(&mut w, 769, 800);
+    let whole = w.finish().unwrap().into_inner();
+
+    let (r, rows) = decode_all(&cut);
+    assert_eq!(r.seed, cut_seed);
+    assert!(r.sealed);
+    assert_eq!((r.length_ticks, r.chunk_count(), rows.len()), (600, 3, 600));
+    let tags: Vec<_> = r.machine.iter().map(|b| b.tag).collect();
+    assert_eq!(tags, [*b"DATA", *b"MARK"]);
+    for (i, (digest, row)) in rows.iter().enumerate() {
+        let tick = i as u64 + 1;
+        assert_eq!(*digest, (tick * 77) as u16);
+        assert_eq!(row.as_slice(), seats(tick).as_slice());
+    }
+
+    let (r, rows) = decode_all(&full_cut);
+    assert_eq!((r.length_ticks, r.chunk_count(), rows.len()), (768, 3, 768));
+
+    let (r, rows) = decode_all(&whole);
+    assert_eq!(r.seed, seed());
+    assert_eq!((r.length_ticks, r.chunk_count(), rows.len()), (800, 4, 800));
+    for (i, (digest, row)) in rows.iter().enumerate() {
+        let tick = i as u64 + 1;
+        assert_eq!(*digest, (tick * 77) as u16);
+        assert_eq!(row.as_slice(), seats(tick).as_slice());
+    }
+}
+
+#[test]
+fn a_seat_record_follows_the_last_tick_of_a_full_chunk() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    for tick in 1..=CHUNK_TICKS as u64 {
+        w.push_tick(0, 0, &seats(tick)).unwrap();
+    }
+    w.seat_record(2, RECORD_LEAVE, &[2]).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    let mut decoder = ChunkDecoder::new().unwrap();
+    r.read_chunk(0, &mut decoder, &mut Vec::new()).unwrap();
+    assert_eq!(decoder.seat_records().count(), 1);
+}

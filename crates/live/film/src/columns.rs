@@ -616,6 +616,24 @@ impl ChunkEncoder {
     }
 }
 
+impl ChunkEncoder {
+    /// The chunk as it stands, as [`ChunkEncoder::finish`] would make it,
+    /// and leave the encoder as it was: the same ticks pending, the same
+    /// predictor state. A cut film ends with a copy of the open chunk while
+    /// the running film keeps filling it.
+    pub fn finish_copy(&mut self, arena_hash: u64) -> Result<Vec<u8>> {
+        let (n, state) = (self.n, self.state);
+        let (len, count, payload) = (self.records.len, self.record_count, self.record_payload);
+        let frame = self.finish(arena_hash)?.to_vec();
+        self.n = n;
+        self.state = state;
+        self.records.len = len;
+        self.record_count = count;
+        self.record_payload = payload;
+        Ok(frame)
+    }
+}
+
 /// A seat record read back.
 #[derive(Clone, Copy)]
 struct Record {

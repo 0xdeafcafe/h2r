@@ -159,12 +159,17 @@ pub struct Entry {
     pub size: u32,
 }
 
+/// Sees every chunk the writer stores: its tag and the zstd frame that
+/// went to the file ([`Writer::set_mirror`]).
+pub type Mirror = Box<dyn FnMut(Tag, &[u8]) -> Result<()> + Send>;
+
 pub struct Writer<W: Write + Seek> {
     out: W,
     index: Vec<Entry>,
     failed: bool,
     version: u32,
     ranges: Option<Box<range::Build>>,
+    mirror: Option<Mirror>,
 }
 impl<W: Write + Seek> Writer<W> {
     pub fn new(mut out: W, header: &Header) -> Result<Self> {
@@ -190,9 +195,17 @@ impl<W: Write + Seek> Writer<W> {
             failed: false,
             version: header.version,
             ranges,
+            mirror: None,
         };
         w.chunk(HEAD, header)?;
         Ok(w)
+    }
+    /// Hand each chunk stored from now on, with its stored frame, to
+    /// `mirror`, so the film file's machine part ([`file::machine_mirror`])
+    /// is written as the container's is, without a second compression. A
+    /// cut ([`Writer::fork`]) does not inherit it.
+    pub fn set_mirror(&mut self, mirror: Option<Mirror>) {
+        self.mirror = mirror;
     }
     pub fn chunk(&mut self, tag: Tag, value: &impl Serialize) -> Result<()> {
         ensure!(tag != INDX, "finish writes the index");
@@ -344,6 +357,7 @@ impl<W: Write + Seek> Writer<W> {
             failed: false,
             version: self.version,
             ranges: Some(ranges),
+            mirror: None,
         })
     }
 
@@ -355,6 +369,9 @@ impl<W: Write + Seek> Writer<W> {
         self.index
             .push(write_envelope(&mut self.out, tag, offset, &bytes)?);
         self.failed = false;
+        if let Some(mirror) = &mut self.mirror {
+            mirror(tag, &bytes)?;
+        }
         Ok(())
     }
     pub fn finish(mut self) -> Result<W> {
