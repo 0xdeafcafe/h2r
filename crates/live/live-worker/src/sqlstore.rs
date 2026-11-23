@@ -1076,44 +1076,57 @@ mod tests {
         let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
         let author = created["id"].as_str().unwrap().to_string();
         let token = || issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
-        let game = serde_json::json!({
-            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Firefight",
-            "team_play": false, "tick": 0, "kind": "custom",
-            "players": [
-                {"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true},
-                {"index": 1, "name": "Clanker 1", "team": 0, "local": true, "bot": true}
-            ]
-        });
-        let (status, started) =
-            call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
-        assert_eq!(status, 201, "{started}");
-        let id = started["game_id"].as_str().unwrap().to_string();
-        let at = parse_time(&format_unix(now())).unwrap();
-        let mut events: Vec<(String, Value)> = serde_json::from_str::<Vec<Value>>(include_str!(
-            "../../live-server/tests/fixtures/firefight-events.json"
-        ))
-        .unwrap()
-        .into_iter()
-        .map(|e| (e["kind"].as_str().unwrap().to_string(), e["data"].clone()))
-        .collect();
-        events.push((
-            "GameEnded".into(),
-            serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
-        ));
-        let bodies: Vec<EventBody> = events
-            .into_iter()
-            .map(|(kind, data)| {
-                EventBody::new(&key, &author, &format!("game-{id}"), &kind, data, at)
-            })
-            .collect();
-        let (status, body) = call(
-            "POST",
-            format!("/v1/games/{id}/events"),
-            Some(token()),
-            sign_batch(&key, &bodies),
-        )
-        .await;
-        assert_eq!(status, 201, "{body}");
+        let clanker = |index: u32, team: u32| {
+            serde_json::json!({"index": index, "name": format!("Clanker {index}"), "team": team, "local": true, "bot": true})
+        };
+        let host = serde_json::json!({"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true});
+        // The one-team match, then the two-team one (Crossfire): the same
+        // fixtures as live-server's test.
+        let matches = [
+            (
+                serde_json::json!([host.clone(), clanker(1, 0)]),
+                include_str!("../../live-server/tests/fixtures/firefight-events.json"),
+            ),
+            (
+                serde_json::json!([host, clanker(1, 0), clanker(2, 1), clanker(3, 1)]),
+                include_str!("../../live-server/tests/fixtures/firefight-crossfire-events.json"),
+            ),
+        ];
+        for (players, fixture) in matches {
+            let game = serde_json::json!({
+                "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Firefight",
+                "team_play": false, "tick": 0, "kind": "custom",
+                "players": players
+            });
+            let (status, started) =
+                call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
+            assert_eq!(status, 201, "{started}");
+            let id = started["game_id"].as_str().unwrap().to_string();
+            let at = parse_time(&format_unix(now())).unwrap();
+            let mut events: Vec<(String, Value)> = serde_json::from_str::<Vec<Value>>(fixture)
+                .unwrap()
+                .into_iter()
+                .map(|e| (e["kind"].as_str().unwrap().to_string(), e["data"].clone()))
+                .collect();
+            events.push((
+                "GameEnded".into(),
+                serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ));
+            let bodies: Vec<EventBody> = events
+                .into_iter()
+                .map(|(kind, data)| {
+                    EventBody::new(&key, &author, &format!("game-{id}"), &kind, data, at)
+                })
+                .collect();
+            let (status, body) = call(
+                "POST",
+                format!("/v1/games/{id}/events"),
+                Some(token()),
+                sign_batch(&key, &bodies),
+            )
+            .await;
+            assert_eq!(status, 201, "{body}");
+        }
 
         let (_, v) = call(
             "GET",

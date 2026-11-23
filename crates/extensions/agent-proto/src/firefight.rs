@@ -83,8 +83,13 @@ pub struct Director {
     pub wave: u8,
     /// Actors of the wave not placed yet, at the current player count.
     pub reserve: u16,
-    /// The shared lives pool.
-    pub pool: u16,
+    /// Player teams: 1, or 2 that also fight each other.
+    pub teams: u8,
+    /// Each team's shared lives pool, by Firefight team (one entry with
+    /// one team; unused when lives are not shared).
+    pub pools: Vec<u16>,
+    /// Each team's points, by Firefight team.
+    pub scores: Vec<u32>,
     /// Actors the director counts as alive, and the cap at the current
     /// player count.
     pub live_actors: u16,
@@ -154,6 +159,12 @@ pub enum Command {
         zone: u8,
         weapon_tier: u8,
     },
+    /// Two teams, after a `place_squad`: the Firefight team the squad is
+    /// sent at; its `hunt` goes to that team's base.
+    Target {
+        slot: u8,
+        team: u8,
+    },
     Hunt {
         slot: u8,
     },
@@ -173,6 +184,11 @@ pub enum Command {
     Lives {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         player: Option<u8>,
+        pool: u16,
+    },
+    /// A team's shared pool, with two teams.
+    TeamLives {
+        team: u8,
         pool: u16,
     },
     Score {
@@ -208,6 +224,8 @@ pub enum Skull {
 pub enum ScoreReason {
     Kill,
     Assist,
+    /// A kill of a player on the other team (two teams).
+    PlayerKill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +233,10 @@ pub enum ScoreReason {
 pub enum Outcome {
     Won,
     Lost,
+    /// Two teams: this Firefight team won.
+    TeamWon { team: u8 },
+    /// Two teams: level on score and lives.
+    Draw,
 }
 
 /// `firefight.command`'s answer.
@@ -253,11 +275,16 @@ pub struct Kit {
     /// Each class the kit maps, to its character palette row.
     #[serde(default)]
     pub classes: BTreeMap<String, u16>,
+    /// Each player team's base point, by Firefight team: base 0 is the
+    /// home base. A squad's hunt goes to its target team's base.
+    #[serde(default)]
+    pub bases: Vec<[f32; 3]>,
     /// Rows in the scenario's character palette.
     pub characters: u16,
-    /// The scenario order the kit authors for hunting (`ff_hunt`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hunt_order: Option<u16>,
+    /// The scenario orders the kit authors for hunting, by base
+    /// (`ff_hunt_00`, `ff_hunt_01`), `null` for a base without one.
+    #[serde(default)]
+    pub hunt_orders: Vec<Option<u16>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -279,6 +306,7 @@ mod tests {
     fn commands_take_the_host_logs_shape_and_nothing_else() {
         for value in [
             json!({"place_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
+            json!({"target": {"slot": 0, "team": 1}}),
             json!({"hunt": {"slot": 3}}),
             json!({"erase_squad": {"slot": 0}}),
             json!({"round": {"index": 1}}),
@@ -286,9 +314,13 @@ mod tests {
             json!({"skull": {"id": "low_gravity", "on": true}}),
             json!({"lives": {"pool": 3}}),
             json!({"lives": {"player": 1, "pool": 2}}),
+            json!({"team_lives": {"team": 1, "pool": 9}}),
             json!({"score": {"player": 0, "points": 50, "reason": "assist"}}),
+            json!({"score": {"player": 2, "points": 50, "reason": "player_kill"}}),
             json!({"respawn": {"player": 0}}),
             json!({"finish": {"outcome": "won"}}),
+            json!({"finish": {"outcome": {"team_won": {"team": 1}}}}),
+            json!({"finish": {"outcome": "draw"}}),
         ] {
             let command: Command = from_value(value.clone()).unwrap();
             assert_eq!(to_value(command).unwrap(), value);
@@ -297,7 +329,10 @@ mod tests {
             json!({"hunt": {"slot": 3, "zone": 1}}),
             json!({"skip_wave": {}}),
             json!({"skull": {"id": "iron", "on": true}}),
-            json!({"finish": {"outcome": "draw"}}),
+            json!({"finish": {"outcome": "tie"}}),
+            json!({"finish": {"outcome": {"team_won": {}}}}),
+            json!({"target": {"slot": 0}}),
+            json!({"team_lives": {"pool": 3}}),
             json!({"respawn": {}}),
         ] {
             assert!(from_value::<Command>(value.clone()).is_err(), "{value}");

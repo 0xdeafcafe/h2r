@@ -1286,3 +1286,77 @@ fn a_rostered_phantom_uses_the_same_profile_as_every_other_seat_with_its_name() 
     let profile = bots::name_profile::NameProfile::for_name("Rusty Lugnut");
     assert_eq!(first.brain.view().profile, Some(profile));
 }
+
+// --- Firefight seats -------------------------------------------------------
+
+fn firefight_store(teams: i64) -> Arc<Store> {
+    let s = Arc::new(Store::defaults(&crate::firefight::options::DEFS));
+    s.set(crate::firefight::options::TEAMS.key, Value::Int(teams))
+        .unwrap();
+    s
+}
+
+/// Clankers sit on Firefight's player teams only: one team seats every
+/// Clanker on team 0, and the Firefight host gives the actors a team no
+/// player team uses. Outside Firefight the seat rule stays off.
+#[test]
+fn clankers_never_take_the_ai_team() {
+    use crate::lobby_start::Mode;
+    let one = firefight_store(1);
+    let read = |s: &Arc<Store>| crate::firefight::options::Options::read(s);
+    assert_eq!(firefight_seat_teams(Mode::Firefight, || read(&one)), Some(1));
+    assert_eq!(
+        firefight_seat_teams(Mode::Firefight, || Err("unreadable".into())),
+        Some(1),
+        "options that cannot be read seat on one team"
+    );
+    for mode in [Mode::Multiplayer, Mode::Forge] {
+        assert_eq!(firefight_seat_teams(mode, || read(&one)), None, "{mode:?}");
+    }
+    // However the lobby is held, a Clanker joins team 0.
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        let team = bots::firefight::seat_team(held.iter().copied(), 1);
+        assert_eq!(team, 0);
+        held.push(team);
+    }
+    // The actors' team is clear of every player team, even when the kit
+    // names team 0 or a held one.
+    let players: std::collections::BTreeSet<u8> = held.iter().copied().collect();
+    for (teams, kit) in [(1, 0), (1, 3), (2, 0), (2, 1), (2, 5)] {
+        let ai = crate::firefight::host::actor_team(teams, kit, &players).unwrap();
+        assert!(ai >= teams, "{teams} teams, kit {kit}: the actors on {ai}");
+        assert!(!players.contains(&ai));
+    }
+}
+
+/// With two Firefight teams each new Clanker joins the team with fewer
+/// players, so the host and five Clankers make three a side.
+#[test]
+fn two_team_firefight_balances_clankers() {
+    use crate::lobby_start::Mode;
+    let two = firefight_store(2);
+    let teams = firefight_seat_teams(Mode::Firefight, || {
+        crate::firefight::options::Options::read(&two)
+    });
+    assert_eq!(teams, Some(2));
+    // Crossfire's own two teams seat the same way.
+    let crossfire = firefight_store(crate::firefight::options::DEFAULT_TEAMS);
+    crossfire
+        .set(crate::firefight::options::WAVE_SET.key, Value::Int(3))
+        .unwrap();
+    assert_eq!(
+        firefight_seat_teams(Mode::Firefight, || {
+            crate::firefight::options::Options::read(&crossfire)
+        }),
+        Some(2)
+    );
+    let mut held = vec![0u8];
+    for _ in 0..5 {
+        let team = bots::firefight::seat_team(held.iter().copied(), teams.unwrap());
+        assert!(team < 2, "a player team, not the AI's");
+        held.push(team);
+    }
+    let reds = held.iter().filter(|&&t| t == 0).count();
+    assert_eq!((reds, held.len() - reds), (3, 3), "{held:?}");
+}

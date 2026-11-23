@@ -2,7 +2,7 @@ use firefight::{Count, Def, Drop, FORMAT, Limits, MAX_DOC_BYTES, Refusal, builti
 use serde_json::{Value, json};
 
 fn fixture() -> (String, Limits) {
-    let [def, _, _] = builtin::definitions();
+    let [def, ..] = builtin::definitions();
     (def.canonical_json().unwrap(), Limits::new(["elite"]))
 }
 
@@ -21,7 +21,7 @@ fn the_byte_limit_applies_before_parsing_and_hashing() {
 
     // An authored document can also exceed the byte limit while fitting its
     // individual collection bounds and the actor budget.
-    let [mut doc, _, _] = builtin::definitions();
+    let [mut doc, ..] = builtin::definitions();
     let class = "a".repeat(32);
     doc.scoring.by_class = [(class.clone(), 1)].into();
     doc.caps.live_actors_by_players = vec![(16, 16)];

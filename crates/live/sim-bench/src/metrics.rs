@@ -755,6 +755,11 @@ pub struct Report {
     /// ([`crate::bounces`]; docs/runtime/bounce-search.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bounces: Option<crate::bounces::BouncesRun>,
+    /// A Firefight match's rounds cleared, outcome and per-team score
+    /// ([`crate::firefight::FirefightReport`]; docs/runtime/sim.md,
+    /// "Firefight").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firefight: Option<crate::firefight::FirefightReport>,
     /// The flat RAM window's fixups per tick; `None` without a window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flat: Option<FlatReport>,
@@ -1424,6 +1429,7 @@ impl Tally {
             }),
             drops: None,
             bounces: None,
+            firefight: None,
             flat: None,
             guest_census: self.census(),
             notes,

@@ -637,6 +637,7 @@ mod tests {
             bounce: None,
             drops: None,
             bounces: None,
+            firefight: None,
             flat: None,
             guest_census: None,
             notes: vec![],

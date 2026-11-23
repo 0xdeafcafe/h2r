@@ -789,7 +789,7 @@ async fn firefight_scores_do_not_touch_ranks() {
             ),
             (
                 "FirefightEnded",
-                json!({"tick": 800, "set": "Holdout", "outcome": "won", "rounds_cleared": 3, "lives_used": 4}),
+                json!({"tick": 800, "set": "Holdout", "teams": 1, "outcome": "won", "scores": [100], "rounds_cleared": 3, "lives_used": 4}),
             ),
             (
                 "ScoreChanged",

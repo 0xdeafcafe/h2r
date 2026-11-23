@@ -82,6 +82,7 @@ impl Recipes for ScenarioRecipes {
                     &bytes,
                     &r.base,
                     firefight_kit::Mode::Probe,
+                    &firefight_kit::Config::default(),
                     &content::store::maps_dir(data_root),
                     &r.package_dir(),
                     replace,
@@ -92,7 +93,7 @@ impl Recipes for ScenarioRecipes {
                     report: serde_json::json!({
                         "recipe": r.name, "base": r.base, "fidelity": r.fidelity,
                         "counts": {"squads": saved.squads, "zones": saved.zones},
-                        "costs": saved.costs, "expect": r.expect,
+                        "costs": saved.costs, "bases": saved.bases, "expect": r.expect,
                     }),
                 })
             }

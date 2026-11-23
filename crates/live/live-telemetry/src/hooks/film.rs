@@ -471,7 +471,10 @@ mod tests {
         telemetry.firefight_ended(FirefightEnded {
             tick: 12,
             set: "Holdout".into(),
+            teams: 1,
             outcome: "won".into(),
+            team: None,
+            scores: vec![150],
             rounds_cleared: 3,
             lives_used: 1,
         });

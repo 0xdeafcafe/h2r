@@ -13,7 +13,7 @@
 //! with no script keeps the formatter's rows.
 //!
 //! The lobby's mode (`crate::lobby_mode`) puts its lines first (the Forge
-//! map; Firefight's wave set, difficulty and starting lives). The party
+//! map; Firefight's wave set and teams, difficulty and starting lives). The party
 //! lobby's header (`crate::lobby_tabs::header::panel`) has its own hook on
 //! the same point, inside this one, so the header names the mode with
 //! this feature off too.
@@ -475,6 +475,7 @@ mod tests {
         let ff = crate::firefight::options::Options {
             lives: Some(30),
             wave_set: 2,
+            teams: Some(2),
             difficulty: ::firefight::Difficulty::Legendary,
             ..Default::default()
         };

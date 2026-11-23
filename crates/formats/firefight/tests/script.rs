@@ -231,7 +231,12 @@ fn random_matches_over_the_built_ins_give_the_same_commands() {
 
 #[test]
 fn the_built_ins_as_authored_give_the_same_commands() {
-    let difficulties = [Difficulty::Normal, Difficulty::Heroic, Difficulty::Legendary];
+    let difficulties = [
+        Difficulty::Normal,
+        Difficulty::Heroic,
+        Difficulty::Legendary,
+        Difficulty::Easy,
+    ];
     for (i, def) in builtin::definitions().into_iter().enumerate() {
         let settings = with(40 + i as u64, difficulties[i], &[]);
         let players = 1 + 5 * i as u8;
@@ -242,7 +247,7 @@ fn the_built_ins_as_authored_give_the_same_commands() {
 
 #[test]
 fn starting_skulls_and_difficulty_give_the_same_commands() {
-    let skulls = [Skull::Famine, Skull::Angry, Skull::Ghost];
+    let skulls = [Skull::Famine, Skull::Angry, Skull::Ghost, Skull::Blind];
     for (i, def) in quick_builtins().into_iter().enumerate() {
         let settings = with(7 + i as u64, Difficulty::Heroic, &skulls[..=i]);
         check(&def, &settings, 3, eight_zones(), 50_000, random_script(9 + i as u64));
@@ -294,6 +299,7 @@ fn a_player_listed_twice_or_leaving_gives_the_same_commands() {
             seen.players.push(PlayerSeen {
                 slot: 1,
                 alive: false,
+                team: 1,
             });
         }
         if (20..30).contains(&tick) {
@@ -327,4 +333,120 @@ fn resumed_script_state_gives_the_same_commands() {
         commands.extend(resumed.step(tick, seen).into_iter().map(|c| (tick, c)));
     }
     assert_eq!(commands, original.commands);
+}
+
+/// Two-team matches over Crossfire and two-team forms of the other sets,
+/// with shared and own lives: player kills, targets, each team's pool and
+/// score, and every way a match ends.
+#[test]
+fn two_team_matches_give_the_same_commands() {
+    let mut outcomes = BTreeSet::new();
+    for index in 0..24u64 {
+        let base = quick_builtins()[(index % 4) as usize].clone();
+        let mut def = builtin::with_teams(base, 2);
+        def.lives.shared = index % 3 != 0;
+        let players = 2 + (index % 7) as u8;
+        let run = check(
+            &def,
+            &settings(index),
+            players,
+            eight_zones(),
+            50_000,
+            random_script(index),
+        );
+        outcomes.insert(format!("{:?}", run.outcome));
+    }
+    assert!(outcomes.len() >= 2, "{outcomes:?}");
+}
+
+/// The two-team ends, scripted: a team out of lives, both out at once
+/// level and on score, a lone team out, and the last round on score, on
+/// lives (shared and own) and level.
+#[test]
+fn two_team_ends_give_the_same_commands() {
+    let die = |at: u32, who: &'static [u8]| {
+        move |tick: u32, world: &mut World| {
+            if tick == at {
+                for &slot in who {
+                    world.players.insert(slot, false);
+                }
+            }
+        }
+    };
+    check(&pair_def(0, true), &settings(1), 2, two_zones(), 20, die(4, &[1]));
+    check(&pair_def(0, true), &settings(1), 2, two_zones(), 20, die(4, &[0, 1]));
+    check(&pair_def(0, true), &settings(1), 1, two_zones(), 20, die(4, &[0]));
+    check(&pair_def(0, true), &settings(1), 2, two_zones(), 20, |tick, world| {
+        if tick == 6 {
+            world.kill_squad(0, Some(1));
+        }
+        die(10, &[0, 1])(tick, world);
+    });
+    for (pool, shared, players, killer) in [
+        (5, true, 2, Some(1)),
+        (5, true, 2, None),
+        (2, false, 4, None),
+        (5, true, 1, None),
+    ] {
+        check(
+            &pair_def(pool, shared),
+            &settings(2),
+            players,
+            two_zones(),
+            100,
+            move |tick, world| {
+                if tick == 4 {
+                    world.players.insert(players - 1, false);
+                }
+                for slot in 0..firefight::director::SQUAD_SLOTS {
+                    if world.squads[slot].0 > 0 && tick - world.squads[slot].1 == 3 {
+                        world.kill_squad(slot, killer);
+                    }
+                }
+            },
+        );
+    }
+}
+
+/// Player kills across the teams, within a team, by oneself and by a fall,
+/// and a player whose game team changes after it is first seen.
+#[test]
+fn player_kills_and_fixed_teams_give_the_same_commands() {
+    check(&pair_def(5, true), &settings(3), 4, two_zones(), 30, |tick, world| {
+        match tick {
+            1 => {
+                world.kill_player(1, Some(0));
+                world.kill_player(2, Some(0));
+                world.kill_player(3, Some(3));
+                world.kill_player(0, None);
+            }
+            8 => {
+                world.teams.insert(1, 0);
+                world.kill_player(0, Some(1));
+            }
+            _ => {}
+        }
+        kill_at_age_three(tick, world);
+    });
+}
+
+/// Squads sent at each team and dropped on its side, with zones that lean
+/// from one team to the other, and zones all on one team's side.
+#[test]
+fn targets_and_team_sides_give_the_same_picks() {
+    let mut def = pair_def(3, true);
+    for wave in def.rounds.iter_mut().flat_map(|round| &mut round.waves) {
+        wave.squads = vec![wave.squads[0].clone(); 4];
+    }
+    let mut zones = eight_zones();
+    for (i, z) in zones.iter_mut().enumerate() {
+        let i = i as u32;
+        z.team_distance = [i * 10, 70 - i * 10];
+        z.seen = i == 1;
+    }
+    check(&def, &settings(5), 4, zones.clone(), 400, kill_at_age_three);
+    for z in &mut zones {
+        z.team_distance = [90, 10];
+    }
+    check(&def, &settings(6), 4, zones, 400, kill_at_age_three);
 }

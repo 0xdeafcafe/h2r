@@ -52,7 +52,8 @@ user's data and cache directories.
    point, facing, tag path, team, whether it reached a floor) and an
    `expect` list for `sim.expect`: the spawn's point when the rig has one
    starting location, then the recipe's own `expect` lines. The Firefight
-   probe reports the zone and squad counts, the kit's byte costs and the
+   probe reports the zone and squad counts, the kit's byte costs, the two
+   bases it armed (`bases`: points, source and home team) and the
    recipe's `expect` lines.
 
 ### The build
@@ -161,7 +162,8 @@ fields = { team = 1 }
   A type must be in the base's palette or, for netgame items, in its tag
   index. A rig requiring geometry, lighting or tags beyond these edits is
   `approximate`, with the missing part in its `note`.
-- The Firefight probe samples the base's own geometry and spawn points.
+- The Firefight probe samples the base's own geometry, spawn points and
+  CTF flag stands, with red's base as the home base.
   Its builder chooses the squad locations and refuses placement edits or
   anchors in the recipe. To build the same package offline, run
   `h2 firefight kit coagulation --probe`.

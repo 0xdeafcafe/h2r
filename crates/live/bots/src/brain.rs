@@ -139,7 +139,8 @@ pub struct Perception {
     pub observations: Observations,
     /// `None` while the bot has no living unit (dead, or not in a game).
     pub me: Option<Me>,
-    /// The other players with living units.
+    /// The other players with living units, and in Firefight the AI's
+    /// actors, with ids from [`crate::firefight::ACTOR_ID_BASE`].
     pub others: Vec<Seen>,
     /// A team game: same-team players are friends. In free-for-all
     /// everyone is an enemy.

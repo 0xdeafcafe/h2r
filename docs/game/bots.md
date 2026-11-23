@@ -331,7 +331,9 @@ The brain reads game state the way telemetry already does
 - nearby grenade projectiles, identified by the loaded map's grenade
   definitions and checked against view and collision;
 - shots (the existing `0x104150` point) for a brief look toward the sound,
-  and kills (`0x15ce70`) for emote triggers (§3.5).
+  and kills (`0x15ce70`) for emote triggers (§3.5);
+- in Firefight, the AI's living actors from the actor pool, as enemies
+  (§3.10).
 
 **Line of sight** is a ray against the map's BSP collision, the same data
 the nav mesh comes from. A bot sees an enemy only when all three hold:
@@ -2517,6 +2519,82 @@ Legendary. §11.4 is the checklist.
 **Open** (§12): phantom observations of each seat's entry and
 exit, the lock time and zoom requirement, and measured lift and flight
 behaviour. A Warthog driver waiting for its gunner remains open.
+
+### 3.10 Firefight
+
+Code: `crates/live/bots/src/firefight.rs`, tests in
+`crates/live/bots/src/firefight/tests.rs`. The mode is
+[firefight.md](firefight.md).
+
+Clankers play Firefight as players. They are always on a player team,
+never on the AI's. With one player team they fill seats on it alongside
+people; with two they fill seats on either, keeping the teams even, and
+fight the AI and the other player team.
+
+**Seats.** While the lobby is set up for Firefight the game sets the
+player team count (`bots::firefight::set_seat_teams`, 1 or 2). A new
+phantom's lobby team (`phantom::session::lobby_team`) is then
+`firefight::seat_team`: team 0 with one player team, else whichever of 0
+and 1 has fewer players, 0 on a tie. `rebalance` moves a phantom on any
+other team onto a player team. The host gives the actors a team no player
+holds (firefight.md, "The host runtime").
+
+**The match.** The Firefight runtime describes the match to the bots
+with `firefight::set_context(Some(Context))` and clears it with `None`:
+
+| `Context` field | Meaning |
+|---|---|
+| `player_teams` | the player teams' engine team indices, Firefight team 0 first (one or two) |
+| `ai_team` | the actors' engine team |
+| `bases` | each player team's home base point: the kit's zones `ff_base_00` and `ff_base_01` (the host's `Kit.bases`) |
+| `lives` | each player team's lives left, `None` for unlimited |
+| `phase` | `Fighting` during a wave, `Between` before and between waves |
+| `drop_zones` | the kit's drop zones, where waves arrive |
+
+**Enemies.** Each sample, while a context is set and the bot is alive,
+`firefight::read_actors` appends the actor pool's living actors to the
+perception's others. Each is a `Seen` with id `ACTOR_ID_BASE` (`0x100`)
+plus the actor's datum index, its unit's origin (a rider's is its
+vehicle's) and its team. A unit whose body is depleted is left out.
+`firefight::normalise` then makes the game a team game; with one player
+team it puts every player on that team whatever the engine's team byte
+says; and it gives actors the AI's team, or `ACTOR_TEAM` when the AI's
+team is a player team or the bot's own. The sight filter keeps an actor
+only while it is in view (an actor has no player bit), and the mind treats
+an actor as an enemy whatever its team (`firefight::hostile`). So actors
+go through the same sight, target choice, aim and grenade path as
+players. A teammate is never a target. With two teams the other team's
+players are enemies as in any team game.
+
+**Behaviour.** `firefight::State::plan` gives the goal, after an outside
+order and before the objective's:
+
+| Condition | Goal |
+|---|---|
+| the team's lives at or under its living players (the bot and teammates in view or marked) | hold home within `REGROUP_RADIUS` (3) |
+| shield (at most 1) plus health under the name's fall-back line | hold home within `FALLBACK_RADIUS` (2.5) |
+| between waves, within the errand radius of home, and not at a drop zone alone | none: the bot rearms, collects grenades and roams as in any game |
+| otherwise | hold home within the name's hold radius |
+
+The errand radius is `ERRAND` (2) hold radii. A point within `DROP_NEAR`
+(8) of a drop zone outside the hold radius is the drop zone's, and the
+bot goes there only with a teammate within `COMPANY` (5). Once out of
+its free area, it walks back inside the hold radius before it is free
+again. A hold goal leashes a fight to the radius (§3.3), so the bot
+fights from home and never chases out to a drop zone. Weapons and
+ammunition outside the free area are left where they lie
+(`State::blocks`, in the weapon plan's filter).
+
+Two numbers come from the name (`bots::name_profile`): the hold radius
+is `HOLD_RADIUS` (8) times 0.75 to 1.25 by the name's aggression, and
+the fall-back line is 0.4 to 1.0 of vitality by its retreat.
+
+A bot on no player team (never seated so) asks nothing of Firefight and
+still fights the actors.
+
+**Not verified.** Whether the actor pool's positions match what a
+player sees on a client, whether the sight filter's chest height suits
+every AI class, and the leash and radii in a played match.
 
 ## 4. Way in 1: local slots
 

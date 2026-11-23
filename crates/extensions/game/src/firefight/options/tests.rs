@@ -93,10 +93,10 @@ fn the_options_page_steps_and_opens_pickers() {
             vec![(&ENABLED, Value::Bool(true))],
         ),
         case(
-            "focus-2",
+            "focus-3",
             &[A],
             vec![open()],
-            "focus 2 Difficulty = Normal",
+            "focus 3 Difficulty = Normal",
             vec![(&DIFFICULTY, Value::Int(1))],
         ),
         // Right and left step through the choices, saved at once.
@@ -122,51 +122,66 @@ fn the_options_page_steps_and_opens_pickers() {
             &[Down, Left],
             vec![
                 ListEffect::Focus(1),
-                stepped("firefight: left on row 1: firefight.waveset -> Last Stand"),
+                stepped("firefight: left on row 1: firefight.waveset -> Crossfire"),
             ],
-            "focus 1 Wave set = Last Stand",
-            vec![(&WAVE_SET, Value::Int(2))],
+            "focus 1 Wave set = Crossfire",
+            vec![(&WAVE_SET, Value::Int(3))],
+        ),
+        // The teams start at the wave set's own and wrap both ways.
+        case(
+            "focus-2",
+            &[Right],
+            vec![stepped("firefight: right on row 2: firefight.teams -> One team")],
+            "focus 2 Teams = One team",
+            vec![(&TEAMS, Value::Int(1))],
         ),
         case(
             "focus-2",
             &[Left],
-            vec![stepped("firefight: left on row 2: firefight.difficulty -> Easy")],
-            "focus 2 Difficulty = Easy",
+            vec![stepped("firefight: left on row 2: firefight.teams -> Two teams")],
+            "focus 2 Teams = Two teams",
+            vec![(&TEAMS, Value::Int(2))],
+        ),
+        case(
+            "focus-3",
+            &[Left],
+            vec![stepped("firefight: left on row 3: firefight.difficulty -> Easy")],
+            "focus 3 Difficulty = Easy",
             vec![(&DIFFICULTY, Value::Int(0))],
         ),
         // Right three times from Normal goes Heroic, Legendary, Easy.
         case(
-            "focus-2",
+            "focus-3",
             &[Right, Right, Right],
             vec![
-                stepped("firefight: right on row 2: firefight.difficulty -> Heroic"),
-                stepped("firefight: right on row 2: firefight.difficulty -> Legendary"),
-                stepped("firefight: right on row 2: firefight.difficulty -> Easy"),
+                stepped("firefight: right on row 3: firefight.difficulty -> Heroic"),
+                stepped("firefight: right on row 3: firefight.difficulty -> Legendary"),
+                stepped("firefight: right on row 3: firefight.difficulty -> Easy"),
             ],
-            "focus 2 Difficulty = Easy",
+            "focus 3 Difficulty = Easy",
             vec![(&DIFFICULTY, Value::Int(0))],
         ),
         // The lives start at the wave set's own and wrap both ways.
         case(
-            "focus-2",
+            "focus-3",
             &[Down, Right],
-            vec![ListEffect::Focus(3), stepped("firefight: right on row 3: firefight.lives -> 1")],
-            "focus 3 Starting lives = 1",
+            vec![ListEffect::Focus(4), stepped("firefight: right on row 4: firefight.lives -> 1")],
+            "focus 4 Starting lives = 1",
             vec![(&LIVES, Value::Int(1))],
         ),
         case(
-            "focus-2",
+            "focus-3",
             &[Down, Left],
-            vec![ListEffect::Focus(3), stepped("firefight: left on row 3: firefight.lives -> 30")],
-            "focus 3 Starting lives = 30",
+            vec![ListEffect::Focus(4), stepped("firefight: left on row 4: firefight.lives -> 30")],
+            "focus 4 Starting lives = 30",
             vec![(&LIVES, Value::Int(30))],
         ),
         // The ends: down at the last row and up at the first stay put.
         case(
-            "focus-4",
+            "focus-5",
             &[Down],
             vec![ListEffect::None],
-            "focus 4 Skulls = On",
+            "focus 5 Skulls = On",
             vec![],
         ),
         case(
@@ -177,9 +192,10 @@ fn the_options_page_steps_and_opens_pickers() {
             vec![],
         ),
         case(
-            "focus-4",
-            &[Up, Up, Up, Up, Up],
+            "focus-5",
+            &[Up, Up, Up, Up, Up, Up],
             vec![
+                ListEffect::Focus(4),
                 ListEffect::Focus(3),
                 ListEffect::Focus(2),
                 ListEffect::Focus(1),
@@ -190,10 +206,10 @@ fn the_options_page_steps_and_opens_pickers() {
             vec![],
         ),
         case(
-            "focus-4",
+            "focus-5",
             &[Right],
-            vec![stepped("firefight: right on row 4: firefight.skulls -> Off")],
-            "focus 4 Skulls = Off",
+            vec![stepped("firefight: right on row 5: firefight.skulls -> Off")],
+            "focus 5 Skulls = Off",
             vec![(&SKULLS, Value::Bool(false))],
         ),
         // B and Back close the page.
@@ -205,10 +221,10 @@ fn the_options_page_steps_and_opens_pickers() {
             vec![],
         ),
         case(
-            "focus-2",
+            "focus-3",
             &[Down, Back],
-            vec![ListEffect::Focus(3), ListEffect::Close],
-            "focus 3 Starting lives = Default",
+            vec![ListEffect::Focus(4), ListEffect::Close],
+            "focus 4 Starting lives = Default",
             vec![],
         ),
     ]);
@@ -220,9 +236,10 @@ fn the_options_page_steps_and_opens_pickers() {
 fn a_opens_the_value_picker_on_every_row() {
     use crate::list_class::Rows;
     let s = screen(&store());
-    let expected: [(&str, &[&str]); 5] = [
+    let expected: [(&str, &[&str]); 6] = [
         ("FIREFIGHT", &["Off", "On"]),
-        ("WAVE SET", &["Holdout", "Attrition", "Last Stand"]),
+        ("WAVE SET", &["Holdout", "Attrition", "Last Stand", "Crossfire"]),
+        ("TEAMS", &["Default", "One team", "Two teams"]),
         ("DIFFICULTY", &["Easy", "Normal", "Heroic", "Legendary"]),
         (
             "STARTING LIVES",
@@ -265,10 +282,41 @@ fn the_defaults_are_the_documented_match() {
     assert_eq!(Options::read(&store()), Ok(Options::default()));
     let d = Options::default();
     assert_eq!(
-        (d.enabled, d.wave_set, d.difficulty, d.lives, d.skulls),
-        (true, 0, Difficulty::Normal, None, true)
+        (d.enabled, d.wave_set, d.teams, d.difficulty, d.lives, d.skulls),
+        (true, 0, None, Difficulty::Normal, None, true)
     );
     assert_eq!(d.definition().unwrap(), builtin::definitions()[0]);
+    assert_eq!(d.player_teams(), 1);
+}
+
+/// The Teams row plays a wave set by one team or two; Default keeps the
+/// set's own, so Crossfire is two teams and the others one.
+#[test]
+fn the_teams_choice_reaches_the_definition() {
+    let kept = store();
+    let read = |kept: &Arc<Store>| Options::read(kept).unwrap();
+    let d = read(&kept).definition().unwrap();
+    assert_eq!((d.teams, d.scoring.player_kill), (1, 0));
+    kept.set(TEAMS.key, Value::Int(2)).unwrap();
+    let o = read(&kept);
+    assert_eq!((o.teams, o.player_teams()), (Some(2), 2));
+    let d = o.definition().unwrap();
+    assert_eq!(d.name, "Holdout");
+    assert_eq!(
+        (d.teams, d.scoring.player_kill),
+        (2, builtin::PLAYER_KILL_POINTS)
+    );
+    kept.set(WAVE_SET.key, Value::Int(3)).unwrap();
+    kept.set(TEAMS.key, Value::Int(DEFAULT_TEAMS)).unwrap();
+    let o = read(&kept);
+    assert_eq!((o.teams, o.player_teams()), (None, 2));
+    assert_eq!(o.definition().unwrap().name, "Crossfire");
+    kept.set(TEAMS.key, Value::Int(1)).unwrap();
+    let d = read(&kept).definition().unwrap();
+    assert_eq!((d.name.as_str(), d.teams, d.scoring.player_kill), ("Crossfire", 1, 0));
+    kept.set(TEAMS.key, Value::Int(3)).unwrap();
+    let e = Options::read(&kept).unwrap_err();
+    assert!(e.contains("firefight.teams"), "{e}");
 }
 
 #[test]
@@ -284,6 +332,7 @@ fn the_choices_reach_the_definition_and_the_difficulty() {
         Options {
             enabled: true,
             wave_set: 2,
+            teams: None,
             difficulty: Difficulty::Legendary,
             lives: Some(3),
             skulls: false,
@@ -317,16 +366,20 @@ fn the_choices_reach_the_definition_and_the_difficulty() {
 fn every_wave_set_and_lives_choice_makes_a_valid_definition() {
     let limits = ::firefight::Limits::new(["elite".to_string()]);
     for wave_set in 0..builtin::definitions().len() {
-        for lives in lives_choices() {
-            for skulls in [true, false] {
-                let o = Options {
-                    wave_set,
-                    lives,
-                    skulls,
-                    ..Options::default()
-                };
-                let def = o.definition().unwrap();
-                ::firefight::validate(&def, &limits).unwrap_or_else(|e| panic!("{o:?}: {e}"));
+        for teams in [None, Some(1), Some(2)] {
+            for lives in lives_choices() {
+                for skulls in [true, false] {
+                    let o = Options {
+                        wave_set,
+                        teams,
+                        lives,
+                        skulls,
+                        ..Options::default()
+                    };
+                    let def = o.definition().unwrap();
+                    ::firefight::validate(&def, &limits)
+                        .unwrap_or_else(|e| panic!("{o:?}: {e}"));
+                }
             }
         }
     }
@@ -348,7 +401,7 @@ fn a_store_that_lacks_a_setting_is_an_error_naming_it() {
     let empty = Store::defaults(&[]);
     let e = Options::read(&empty).unwrap_err();
     assert!(e.contains("firefight.enabled"), "{e}");
-    let without_skulls = Store::defaults(&[&ENABLED, &WAVE_SET, &DIFFICULTY, &LIVES]);
+    let without_skulls = Store::defaults(&[&ENABLED, &WAVE_SET, &TEAMS, &DIFFICULTY, &LIVES]);
     let e = Options::read(&without_skulls).unwrap_err();
     assert!(e.contains("firefight.skulls"), "{e}");
 }

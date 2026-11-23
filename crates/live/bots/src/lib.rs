@@ -17,6 +17,7 @@ pub mod decisions;
 pub mod drill;
 pub mod emote;
 pub mod experience;
+pub mod firefight;
 pub mod glass;
 pub mod glitches;
 pub mod goto;
@@ -701,6 +702,18 @@ impl Brain {
             pad_source::PadSource::reset_input(self);
             return Sampled::Pad(HostPadState::default());
         }
+        // Firefight (crate::firefight): the AI's actors join the others as
+        // enemies, before the sight filter, and the match's teams are
+        // put in its terms. A fault reading actors leaves none.
+        let ff = firefight::current();
+        if let Some(ctx) = &ff {
+            let p = &mut observation.perception;
+            if p.me.is_some() && firefight::read_actors(f.guest, &mut p.others).is_err() {
+                p.others.retain(|o| !firefight::is_actor(o.id));
+            }
+            firefight::normalise(p, ctx);
+        }
+        self.mind.set_firefight(ff);
         if let Some(name) = name_change {
             self.mind.bounces = glitches::bounces(&name);
             self.mind.experience.enter(&name);

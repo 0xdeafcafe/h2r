@@ -96,8 +96,9 @@ fn every_drop_zone_has_a_path_to_the_middle() {
     let (pf, data) = build_with_pathfinding(&grid(), 0, 7).unwrap();
     let middle = [14., 14., 0.];
     let starts = [middle, [2., 2., 0.]];
-    let arena = choose_zones(&pf, &data, &starts, 2, |_| Some(3)).unwrap();
+    let arena = choose_zones(&pf, &data, &starts, &[], 2, |_| Some(3)).unwrap();
     assert!((6..=12).contains(&arena.zones.len()));
+    assert!(arena.bases.is_empty());
     let center = data.nav.poly_near(middle).unwrap();
     assert!(
         data.nav.corridor(49, center).is_some(),
@@ -141,4 +142,110 @@ fn every_drop_zone_has_a_path_to_the_middle() {
             );
         }
     }
+}
+
+/// Two bases at either end of the square arena, a start at each.
+const BASES: [V3; 2] = [[2., 14., 0.], [26., 14., 0.]];
+const BASE_STARTS: [V3; 2] = [[3., 13., 0.], [25., 15., 0.]];
+
+fn based_arena() -> (PathfindingData, MapData, Arena) {
+    let (pf, data) = build_with_pathfinding(&grid(), 0, 7).unwrap();
+    let arena = choose_zones(&pf, &data, &BASE_STARTS, &BASES, 2, |_| Some(3)).unwrap();
+    (pf, data, arena)
+}
+
+#[test]
+fn every_drop_zone_has_a_path_to_each_base() {
+    let (pf, data, arena) = based_arena();
+    assert!((6..=12).contains(&arena.zones.len()));
+    let absent_from_engine = |e: &bots::nav::Edge| {
+        !pf.links.iter().any(|link| {
+            let a = u32::from(link.left_sector);
+            let b = u32::from(link.right_sector);
+            (a, b) == (e.from, e.to) || (a, b) == (e.to, e.from)
+        })
+    };
+    let goals = BASES.map(|b| data.nav.poly_near(b).unwrap());
+    for zone in &arena.zones {
+        for p in &zone.firing_positions {
+            for &goal in &goals {
+                assert!(
+                    data.nav
+                        .corridor_avoiding(p.sector, goal, &absent_from_engine)
+                        .is_some(),
+                    "{} to base polygon {goal}",
+                    zone.name
+                );
+            }
+        }
+    }
+    // One zone per base after the drops, around its base point.
+    assert_eq!(arena.bases.len(), 2);
+    for (i, zone) in arena.bases.iter().enumerate() {
+        assert_eq!(zone.name, format!("ff_base_{i:02}"));
+        assert_eq!(zone.manual_bsp, 2);
+        assert!(zone.firing_positions.len() >= 2);
+        assert_eq!(zone.areas[0].count as usize, zone.firing_positions.len());
+        assert!(distance2(zone.areas[0].mean, BASES[i]) < BASE_RADIUS.powi(2));
+        for p in &zone.firing_positions {
+            assert!(data.nav.corridor(p.sector, goals[i]).is_some());
+        }
+    }
+    // A base the drops cannot walk to: the detached island east of the
+    // arena has no engine link in, so no component holds both bases.
+    let island = [[2., 14., 0.], [30.2, 14., 0.]];
+    assert!(choose_zones(&pf, &data, &BASE_STARTS, &island, 2, |_| Some(3)).is_none());
+}
+
+#[test]
+fn drops_are_chosen_away_from_the_home_base() {
+    let (_, _, arena) = based_arena();
+    let clearance = base_clearance(&BASES);
+    assert_eq!(clearance, 6.0);
+    let mut sides = [0usize; 2];
+    for zone in &arena.zones {
+        assert!(zone.name.starts_with("ff_drop_"));
+        // The first firing position is the drop polygon's centre.
+        let centre = zone.firing_positions[0].position;
+        for base in BASES {
+            assert!(
+                distance2(centre, base) >= clearance.powi(2),
+                "{} at {centre:?} is on a base",
+                zone.name
+            );
+        }
+        for s in BASE_STARTS {
+            assert!(distance2(centre, s) >= DROP_START_CLEARANCE.powi(2));
+            for p in &zone.firing_positions {
+                assert!(distance2(p.position, s) >= SPAWN_CLEARANCE.powi(2));
+            }
+        }
+        sides[bases::nearest(&BASES, centre)] += 1;
+    }
+    // Drops alternate between the bases' sides.
+    assert!(sides[0] >= 3 && sides[1] >= 3, "{sides:?}");
+    assert!(sides[0].abs_diff(sides[1]) <= 1, "{sides:?}");
+    // The same inputs choose the same zones on every machine.
+    let (_, _, again) = based_arena();
+    assert_eq!(arena.zones, again.zones);
+    assert_eq!(arena.bases, again.bases);
+}
+
+#[test]
+fn firing_positions_face_the_nearer_base() {
+    let middle = [14., 14., 0.];
+    assert_eq!(facing(&BASES, middle, [20., 3., 0.]), BASES[1]);
+    assert_eq!(facing(&BASES, middle, [8., 25., 0.]), BASES[0]);
+    // Halfway is the home base's.
+    assert_eq!(facing(&BASES, middle, [14., 0., 0.]), BASES[0]);
+    assert_eq!(facing(&[], middle, [20., 3., 0.]), middle);
+    // The cover probe runs level, two units toward the base, or to it.
+    assert_eq!(
+        cover_ray([22., 14., 1.], BASES[1]),
+        ([22., 14., 1.5], [24., 14., 1.5])
+    );
+    assert_eq!(
+        cover_ray([25., 14., 0.], BASES[1]),
+        ([25., 14., 0.5], [26., 14., 0.5])
+    );
 }

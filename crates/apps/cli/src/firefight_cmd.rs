@@ -4,12 +4,14 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use boot::new_maps::{Disc, IsoDisc};
-use firefight_kit::Mode;
+use firefight_kit::{Config, Mode, Team};
 use scenario_edit::{MapSource, recipe};
 
 const USAGE: &str =
-    "usage: h2 firefight kit MAP [--disc ISO_OR_EXTRACTED_DISC] [--data DIR] [--probe] [--replace]
-  builds <data>/maps/firefight-MAP from a multiplayer map on the disc.
+    "usage: h2 firefight kit MAP [--home red|blue] [--disc ISO_OR_EXTRACTED_DISC] [--data DIR] [--probe] [--replace]
+  builds <data>/maps/firefight-MAP from a multiplayer map on the disc, e.g. beavercreek.
+  --home picks the map team whose base is the home base (default red): the
+    players' base, or team 0's with two teams. Drops keep off both bases.
   --probe builds the firefight-probe test map with one squad of two Elites.
   --replace updates an existing package of the same name.";
 
@@ -19,6 +21,7 @@ struct Args {
     data: Option<PathBuf>,
     probe: bool,
     replace: bool,
+    config: Config,
 }
 
 fn parse(words: Vec<String>) -> Result<Option<Args>> {
@@ -33,11 +36,17 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
     let mut data = None;
     let mut probe = false;
     let mut replace = false;
+    let mut config = Config::default();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--probe" => probe = true,
             "--replace" => replace = true,
+            "--home" => {
+                let team = it.next().context("--home requires red or blue")?;
+                config.home = Team::parse(&team)
+                    .with_context(|| format!("--home takes red or blue, got {team:?}"))?;
+            }
             "--disc" => disc = Some(PathBuf::from(it.next().context("--disc requires a path")?)),
             "--data" => {
                 data = Some(PathBuf::from(
@@ -61,6 +70,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
         data,
         probe,
         replace,
+        config,
     }))
 }
 
@@ -82,10 +92,23 @@ pub fn run(words: Vec<String>) -> Result<()> {
     let bytes = MapSource::region(file.path, Some((file.offset, file.len))).read_base()?;
     let data = args.data.unwrap_or_else(content::store::default_data_root);
     let maps = content::store::maps_dir(&data);
-    let saved = firefight_kit::build_package(&bytes, &args.base, mode, &maps, &dir, args.replace)?;
+    let saved = firefight_kit::build_package(
+        &bytes,
+        &args.base,
+        mode,
+        &args.config,
+        &maps,
+        &dir,
+        args.replace,
+    )?;
     println!("{}", maps.join(dir).display());
     println!("MapId {}", saved.id);
     println!("{} drop zones, {} squads", saved.zones, saved.squads);
+    let [home, other] = saved.bases.points;
+    println!(
+        "home base ({:?} team) at {home:?}, other base at {other:?}, from the {:?}",
+        saved.bases.home, saved.bases.source
+    );
     println!("{}", saved.costs);
     Ok(())
 }
@@ -108,8 +131,25 @@ mod tests {
         assert_eq!(a.disc.unwrap(), PathBuf::from("disc.iso"));
         assert_eq!(a.data.unwrap(), PathBuf::from("own-data"));
         assert!(!args("kit lockout").unwrap().unwrap().probe);
-        for bad in ["kit", "kit ../some-file", "kit one two", "kit one --disc"] {
+        assert_eq!(args("kit lockout").unwrap().unwrap().config.home, Team::Red);
+        for bad in [
+            "kit",
+            "kit ../some-file",
+            "kit one two",
+            "kit one --disc",
+            "kit one --home",
+            "kit one --home green",
+        ] {
             assert!(args(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_home_option_picks_a_team() {
+        let a = args("kit beavercreek --home blue").unwrap().unwrap();
+        assert_eq!(a.base, "beavercreek");
+        assert_eq!(a.config.home, Team::Blue);
+        let red = args("kit beavercreek --home Red").unwrap().unwrap();
+        assert_eq!(red.config.home, Team::Red);
     }
 }

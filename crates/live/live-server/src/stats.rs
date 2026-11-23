@@ -29,7 +29,11 @@
 //! section of the summary, [`firefight::Summary`], folded from the host's
 //! `FirefightScore` and `FirefightEnded`. It is not multiplayer's kills and
 //! deaths, and no rank reads it. The Worker composes this same projection,
-//! so both homes give the same summary.
+//! so both homes give the same summary. Every finished match counts in
+//! `games`; `won` is one team's wins against the AI; a two-team match
+//! counts again in `versus`, by the team that won or as a draw. A player
+//! kill (two teams) counts in `player_kills`, the totals' and the killer's
+//! row's.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -196,6 +200,7 @@ struct FfPlayer {
     score: u64,
     kills: u64,
     assists: u64,
+    player_kills: u64,
     games: u64,
 }
 
@@ -207,6 +212,8 @@ struct FfAgg {
     rounds_cleared: u64,
     lives_used: u64,
     score: u64,
+    player_kills: u64,
+    versus: firefight::VersusRow,
     /// Wave set -> (games, won, rounds cleared).
     sets: BTreeMap<String, (u64, u64, u64)>,
     classes: BTreeMap<String, u64>,
@@ -220,6 +227,11 @@ impl FfAgg {
         self.rounds_cleared += o.rounds_cleared;
         self.lives_used += o.lives_used;
         self.score += o.score;
+        self.player_kills += o.player_kills;
+        self.versus.games += o.versus.games;
+        self.versus.wins[0] += o.versus.wins[0];
+        self.versus.wins[1] += o.versus.wins[1];
+        self.versus.draws += o.versus.draws;
         for (k, v) in &o.sets {
             let e = self.sets.entry(k.clone()).or_default();
             *e = (e.0 + v.0, e.1 + v.1, e.2 + v.2);
@@ -236,6 +248,7 @@ impl FfAgg {
             e.score += p.score;
             e.kills += p.kills;
             e.assists += p.assists;
+            e.player_kills += p.player_kills;
             e.games += p.games;
         }
     }
@@ -281,6 +294,7 @@ impl FfAgg {
                 score: p.score,
                 kills: p.kills,
                 assists: p.assists,
+                player_kills: p.player_kills,
                 games: p.games,
             })
             .collect();
@@ -292,6 +306,8 @@ impl FfAgg {
             rounds_cleared: self.rounds_cleared,
             lives_used: self.lives_used,
             score: self.score,
+            player_kills: self.player_kills,
+            versus: self.versus.clone(),
             sets,
             kills_by_class,
             players,
@@ -622,20 +638,24 @@ impl Inner {
             .filter(|_| !g.bots.contains(&d.player))
             .and_then(|s| Some((s.0?, s.1.clone())));
         let points = u64::from(d.points);
-        let kill = d.reason == "kill";
+        let reason = d.reason.as_str();
         self.bump(at, |b| {
             let f = &mut b.firefight;
             f.score += points;
-            if let Some(class) = d.class.as_ref().filter(|_| kill) {
+            if reason == "player_kill" {
+                f.player_kills += 1;
+            }
+            if let Some(class) = d.class.as_ref().filter(|_| reason == "kill") {
                 *f.classes.entry(class.clone()).or_default() += 1;
             }
             if let Some((x, name)) = &who {
                 let p = f.player(*x, name, at);
                 p.score += points;
-                if kill {
-                    p.kills += 1;
-                } else {
-                    p.assists += 1;
+                match reason {
+                    "kill" => p.kills += 1,
+                    "assist" => p.assists += 1,
+                    "player_kill" => p.player_kills += 1,
+                    _ => {}
                 }
             }
         });
@@ -662,10 +682,20 @@ impl Inner {
             })
             .collect();
         let won = d.outcome == "won";
+        let versus = d.teams == 2;
+        let winner = d.winner().map(usize::from).filter(|&t| t < 2);
+        let draw = d.outcome == "draw";
         self.bump(at, |b| {
             let f = &mut b.firefight;
             f.games += 1;
             f.won += won as u64;
+            if versus {
+                f.versus.games += 1;
+                f.versus.draws += draw as u64;
+                if let Some(t) = winner {
+                    f.versus.wins[t] += 1;
+                }
+            }
             f.rounds_cleared += u64::from(d.rounds_cleared);
             f.lives_used += u64::from(d.lives_used);
             let set = f.sets.entry(d.set.clone()).or_default();
@@ -1418,29 +1448,46 @@ mod tests {
     }
 
     const FIREFIGHT_EVENTS: &str = include_str!("../tests/fixtures/firefight-events.json");
+    const CROSSFIRE_EVENTS: &str =
+        include_str!("../tests/fixtures/firefight-crossfire-events.json");
     const FIREFIGHT_GOLDEN: &str = include_str!("../tests/fixtures/firefight-summary.json");
 
-    /// The scripted Firefight match: Host (an account), a Clanker and the
-    /// events the fixture holds, then `GameEnded`.
-    fn firefight_match(log: &mut Log, game: &str, at: i64) {
-        log.start(
-            game,
-            json!({"players": [
-                {"index": 0, "name": "Host", "xuid": A, "team": 0},
-                {"index": 1, "name": "Clanker 1", "team": 0, "bot": true},
-            ]}),
-            at,
-        );
-        for e in serde_json::from_str::<Vec<Value>>(FIREFIGHT_EVENTS).unwrap() {
+    /// A scripted Firefight match: `players`, the events `fixture` holds,
+    /// then `GameEnded`.
+    fn scripted(log: &mut Log, game: &str, players: Value, fixture: &str, at: i64) {
+        log.start(game, json!({ "players": players }), at);
+        for e in serde_json::from_str::<Vec<Value>>(fixture).unwrap() {
             log.push(game, e["kind"].as_str().unwrap(), e["data"].clone(), at + 1);
         }
         log.end(game, "finished", json!({"player": 0}), at + 2);
+    }
+
+    /// The one-team match: Host (an account) and a Clanker.
+    fn firefight_match(log: &mut Log, game: &str, at: i64) {
+        let players = json!([
+            {"index": 0, "name": "Host", "xuid": A, "team": 0},
+            {"index": 1, "name": "Clanker 1", "team": 0, "bot": true},
+        ]);
+        scripted(log, game, players, FIREFIGHT_EVENTS, at);
+    }
+
+    /// The two-team match (Crossfire): Host and a Clanker on team 0, two
+    /// Clankers on team 1.
+    fn crossfire_match(log: &mut Log, game: &str, at: i64) {
+        let players = json!([
+            {"index": 0, "name": "Host", "xuid": A, "team": 0},
+            {"index": 1, "name": "Clanker 1", "team": 0, "bot": true},
+            {"index": 2, "name": "Clanker 2", "team": 1, "bot": true},
+            {"index": 3, "name": "Clanker 3", "team": 1, "bot": true},
+        ]);
+        scripted(log, game, players, CROSSFIRE_EVENTS, at);
     }
 
     #[test]
     fn a_scripted_match_projects_to_the_golden_summary() {
         let mut log = Log::new();
         firefight_match(&mut log, "ff", T0);
+        crossfire_match(&mut log, "cf", T0 + 10);
         let golden: Value = serde_json::from_str(&FIREFIGHT_GOLDEN.replace("$HOST", A)).unwrap();
         let s = log.stats.summary_at(None, T0 + 100);
         assert_eq!(serde_json::to_value(&s.firefight).unwrap(), golden);
@@ -1448,11 +1495,18 @@ mod tests {
         // reports one gives the summary nothing to count.
         let mut again = Log::new();
         firefight_match(&mut again, "ff", T0);
+        crossfire_match(&mut again, "cf", T0 + 10);
         again.push(
             "ff",
             "FirefightEnded",
-            json!({"tick": 801, "set": "Holdout", "outcome": "lost", "rounds_cleared": 9, "lives_used": 9}),
+            json!({"tick": 801, "set": "Holdout", "teams": 1, "outcome": "lost", "scores": [0], "rounds_cleared": 9, "lives_used": 9}),
             T0 + 3,
+        );
+        again.push(
+            "cf",
+            "FirefightEnded",
+            json!({"tick": 801, "set": "Crossfire", "teams": 2, "outcome": "draw", "scores": [0, 0], "rounds_cleared": 9, "lives_used": 9}),
+            T0 + 13,
         );
         assert_eq!(again.stats.summary_at(None, T0 + 100).firefight, s.firefight);
         // The window reads the same fold.
@@ -1460,6 +1514,56 @@ mod tests {
         // Firefight is not multiplayer's kills or deaths.
         assert_eq!((s.totals.kills, s.totals.deaths), (0, 0));
         assert_eq!(row(&s, A).kills, 0);
+    }
+
+    /// Two teams: every match counts in `games`, none in the one-team `won`;
+    /// `versus` counts each team's wins and the draws, and a match both
+    /// teams lost in `games` alone. Player kills count in the totals and the
+    /// killer's row; a bot's in the totals only.
+    #[test]
+    fn a_two_team_match_projects_wins_by_team() {
+        let mut log = Log::new();
+        crossfire_match(&mut log, "c1", T0);
+        let end = |outcome: &str, team: Option<u8>| {
+            let mut d = json!({"tick": 800, "set": "Crossfire", "teams": 2, "outcome": outcome,
+                "scores": [10, 20], "rounds_cleared": 1, "lives_used": 2});
+            if let Some(t) = team {
+                d["team"] = json!(t);
+            }
+            d
+        };
+        for (game, data) in [
+            ("c2", end("team_won", Some(1))),
+            ("c3", end("team_won", Some(1))),
+            ("c4", end("draw", None)),
+            ("c5", end("lost", None)),
+        ] {
+            log.start(game, json!({"players": [
+                {"index": 0, "name": "Host", "xuid": A, "team": 0},
+                {"index": 1, "name": "Clanker 1", "team": 1, "bot": true},
+            ]}), T0 + 10);
+            log.push(game, "FirefightEnded", data, T0 + 11);
+            log.end(game, "finished", json!({"player": 0}), T0 + 12);
+        }
+        let f = log.stats.summary_at(None, T0 + 100).firefight;
+        assert_eq!((f.games, f.won), (5, 0));
+        assert_eq!(
+            f.versus,
+            firefight::VersusRow {
+                games: 5,
+                wins: [1, 2],
+                draws: 1
+            }
+        );
+        assert_eq!(f.player_kills, 2);
+        let host = &f.players[0];
+        assert_eq!((host.player_kills, host.kills, host.games), (1, 1, 5));
+        assert_eq!(f.sets[0].set, "Crossfire");
+        assert_eq!((f.sets[0].games, f.sets[0].won), (5, 0));
+        // A one-team match counts in `won`, never in `versus`.
+        firefight_match(&mut log, "h1", T0 + 20);
+        let f = log.stats.summary_at(None, T0 + 100).firefight;
+        assert_eq!((f.games, f.won, f.versus.games), (6, 1, 5));
     }
 
     /// Superbounces and bounce deaths count in the totals, a player's in

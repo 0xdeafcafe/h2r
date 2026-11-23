@@ -214,7 +214,8 @@ pub struct PlayerState {
     pub lives: u16,
     /// A respawn was issued and the player has not been seen alive since.
     pub respawning: bool,
-    /// The player's Firefight team, as last seen (0 with one team).
+    /// The player's Firefight team, fixed when the director first sees
+    /// the player (0 with one team).
     pub team: u8,
 }
 
@@ -378,7 +379,6 @@ impl Director {
                     team: seen.team,
                 }
             });
-            state.team = seen.team;
             if seen.alive {
                 state.respawning = false;
             }
@@ -529,9 +529,10 @@ impl Director {
         let mut present = [false; MAX_TEAMS];
         let mut up = [false; MAX_TEAMS];
         for (slot, seen) in players {
-            let team = usize::from(seen.team);
+            let player = &self.state.players[slot];
+            let team = usize::from(player.team);
             present[team] = true;
-            if seen.alive || self.state.players[slot].respawning {
+            if seen.alive || player.respawning {
                 up[team] = true;
             }
         }
@@ -656,10 +657,7 @@ impl Director {
     /// present, else the one fewer live actors are sent at, else by the
     /// squad's place in the wave (even squads at team 0).
     fn choose_target(&self, players: &BTreeMap<u8, Present>) -> u8 {
-        let mut present = [false; MAX_TEAMS];
-        for seen in players.values() {
-            present[usize::from(seen.team)] = true;
-        }
+        let present = self.teams_present(players);
         match present {
             [true, false] => return 0,
             [false, true] => return 1,
@@ -792,15 +790,20 @@ impl Director {
         if !self.two_teams() {
             return Outcome::Won;
         }
-        let mut present = [false; MAX_TEAMS];
-        for seen in players.values() {
-            present[usize::from(seen.team)] = true;
-        }
-        match present {
+        match self.teams_present(players) {
             [true, false] => Outcome::TeamWon { team: 0 },
             [false, true] => Outcome::TeamWon { team: 1 },
             _ => self.decide(),
         }
+    }
+
+    /// Which teams have a player present this tick.
+    fn teams_present(&self, players: &BTreeMap<u8, Present>) -> [bool; MAX_TEAMS] {
+        let mut present = [false; MAX_TEAMS];
+        for slot in players.keys() {
+            present[self.team_of(*slot)] = true;
+        }
+        present
     }
 
     fn finish(&mut self, outcome: Outcome, out: &mut Vec<Command>) {
@@ -839,7 +842,8 @@ fn slot_alive(slot: &Slot) -> u16 {
     }
 }
 
-/// A present player: alive, and its Firefight team.
+/// A present player: alive, and the Firefight team of its first entry
+/// (the director keeps a player's team from the tick it first sees it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Present {
     pub alive: bool,

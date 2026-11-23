@@ -1070,6 +1070,7 @@ pub static ALL: &[&Def] = &[
     // (crate::firefight::options, docs/game/firefight.md).
     &crate::firefight::options::ENABLED,
     &crate::firefight::options::WAVE_SET,
+    &crate::firefight::options::TEAMS,
     &crate::firefight::options::DIFFICULTY,
     &crate::firefight::options::LIVES,
     &crate::firefight::options::SKULLS,

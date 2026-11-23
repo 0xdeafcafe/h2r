@@ -454,6 +454,24 @@ fn the_panel_lines_follow_the_mode() {
         panel_lines(Mode::Firefight, None, Some(Ok(o)))[2],
         "5 starting lives"
     );
+    // Two teams say so on the wave set's line: Crossfire's own, or a set
+    // the Teams row splits.
+    o.wave_set = 3;
+    assert_eq!(
+        panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
+        "Crossfire waves, 2 teams"
+    );
+    o.teams = Some(1);
+    assert_eq!(
+        panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
+        "Crossfire waves"
+    );
+    o.wave_set = 2;
+    o.teams = Some(2);
+    assert_eq!(
+        panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
+        "Last Stand waves, 2 teams"
+    );
     let unread = panel_lines(
         Mode::Firefight,
         None,

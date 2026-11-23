@@ -1,10 +1,15 @@
 {
-  "games": 1,
+  "games": 2,
   "won": 1,
-  "rounds_cleared": 3,
-  "lives_used": 4,
-  "score": 525,
-  "sets": [{"set": "Holdout", "games": 1, "won": 1, "rounds_cleared": 3}],
-  "kills_by_class": [{"class": "grunt", "kills": 2}, {"class": "elite", "kills": 1}],
-  "players": [{"xuid": "$HOST", "name": "Host", "score": 425, "kills": 2, "assists": 1, "games": 1}]
+  "rounds_cleared": 5,
+  "lives_used": 9,
+  "score": 850,
+  "player_kills": 2,
+  "versus": {"games": 1, "wins": [1, 0], "draws": 0},
+  "sets": [
+    {"set": "Crossfire", "games": 1, "won": 0, "rounds_cleared": 2},
+    {"set": "Holdout", "games": 1, "won": 1, "rounds_cleared": 3}
+  ],
+  "kills_by_class": [{"class": "elite", "kills": 3}, {"class": "grunt", "kills": 2}],
+  "players": [{"xuid": "$HOST", "name": "Host", "score": 575, "kills": 3, "assists": 1, "player_kills": 1, "games": 2}]
 }

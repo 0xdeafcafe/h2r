@@ -719,9 +719,13 @@ fn players_teams(m: &dyn GuestMemory, s: u32) -> R<Vec<(u32, u32, u8)>> {
 /// players of red, blue and any other a player is on, the lowest on a tie
 /// (docs/game/bots.md §5.1). The host's configuration pass (`0x65cb0`)
 /// takes a requested team as it is in a team game (clamped to 0..7), so
-/// the bots keep the teams even.
+/// the bots keep the teams even. In a Firefight lobby only the player
+/// teams count ([`crate::firefight::seat_team`]): never the AI's.
 pub fn lobby_team(m: &dyn GuestMemory, s: u32) -> R<u8> {
     let teams = players_teams(m, s)?;
+    if let Some(n) = crate::firefight::seat_teams() {
+        return Ok(crate::firefight::seat_team(teams.iter().map(|t| t.2), n));
+    }
     let count = team_counts(teams.iter().map(|t| t.2));
     Ok(fewest(&count))
 }
@@ -781,6 +785,11 @@ pub(super) fn rebalance_teams(
     }
     let players = players_teams(&*m, s)?;
     let mut count = team_counts(players.iter().map(|t| t.2));
+    // Firefight (crate::firefight): a phantom on any other team than the
+    // player teams moves onto one.
+    if let Some(n) = crate::firefight::seat_teams() {
+        count.retain(|c| c.0 < n);
+    }
     let mut moved = Vec::new();
     for &(slot, p, team) in &players {
         if !movable.contains(&p) {
