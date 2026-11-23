@@ -926,6 +926,28 @@ fn the_seam_drops_example_loads() {
     assert!(s.control.is_some());
 }
 
+/// The bounce search example in docs/runtime/sim-examples stays valid.
+#[test]
+fn the_bounce_search_example_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("ascension-bounces.toml")).unwrap();
+    assert!(!m.superbounce);
+    assert_eq!(m.config.map, "ascension");
+    assert_eq!(m.bots.len(), crate::drops::SEATS as usize);
+    assert!(m.team_play);
+    let b = m.config.bounces.unwrap();
+    assert_eq!(b.max_targets, Some(60));
+    assert!(b.targets.is_scan());
+    let s = b.settings().unwrap();
+    assert_eq!(s.variants.len(), 3);
+    // 60 sites: over 100,000 trials.
+    assert!(60 * s.trials_per_site() > 100_000);
+    // A file with both tables is refused by name.
+    let both = "map = \"ascension\"\n[drops]\n[bounces]\n";
+    let e = resolve(parse_match(both, false).unwrap(), &no_files).unwrap_err();
+    assert!(e.contains("bounces: a [drill], a [train] or a [drops]"), "{e}");
+}
+
 #[test]
 fn think_and_component_keys() {
     let ok = |extra: &str| {

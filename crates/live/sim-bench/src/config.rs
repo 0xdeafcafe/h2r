@@ -786,6 +786,10 @@ pub struct MatchConfig {
     /// the pair word held at -3 (docs/runtime/sim.md, "Seam drops").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drops: Option<crate::drops::DropsConfig>,
+    /// The forked bounce search: trials on each seam from a saved machine
+    /// (docs/runtime/bounce-search.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounces: Option<crate::bounces::BouncesConfig>,
     #[serde(default, rename = "bot")]
     pub bots: Vec<BotSpec>,
 }
@@ -921,6 +925,26 @@ pub fn resolve(
             config.time_limit_s = Some(0);
         }
         // Free-for-all sims end at tick 0 (a sim bug), so team play.
+        if config.team_play.is_none() {
+            config.team_play = Some(true);
+        }
+        if config.detail.is_none() {
+            config.detail = Some(Detail::Training.name().into());
+        }
+    }
+    if let Some(b) = &config.bounces {
+        // A bounce search file is filled in as a drops file is.
+        if config.map.trim().is_empty()
+            && let Some(m) = &b.map
+        {
+            config.map = m.clone();
+        }
+        if config.bots.is_empty() {
+            config.bots = b.seat_bots();
+        }
+        if config.time_limit_s.is_none() {
+            config.time_limit_s = Some(0);
+        }
         if config.team_play.is_none() {
             config.team_play = Some(true);
         }
@@ -1074,6 +1098,18 @@ pub fn resolve(
             superbounce,
             config.drill.is_some(),
             config.train.is_some(),
+        ));
+        if !problems.is_empty() {
+            return Err(problems.join("\n"));
+        }
+    }
+    if let Some(b) = &config.bounces {
+        problems.extend(b.problems(
+            &config.map,
+            superbounce,
+            config.drill.is_some(),
+            config.train.is_some(),
+            config.drops.is_some(),
         ));
         if !problems.is_empty() {
             return Err(problems.join("\n"));

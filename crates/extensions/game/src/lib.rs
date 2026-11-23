@@ -204,6 +204,7 @@ pub mod sha;
 pub mod signin_keyboard;
 pub mod signin_screen;
 pub mod sim_bots;
+pub mod sim_bounces;
 pub mod sim_census;
 pub mod sim_drops;
 pub mod sim_glue;

@@ -24,6 +24,21 @@ pub fn in_keyframe() -> bool {
     KEYFRAME.get()
 }
 
+/// Runs `work` as a keyframe's save or load: the parts serialise what
+/// only a whole-machine keyframe may ([`in_keyframe`]). The bounce
+/// search's fork is one with no film (docs/runtime/bounce-search.md, "The
+/// fork").
+pub(crate) fn keyframe_scope<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            KEYFRAME.set(self.0);
+        }
+    }
+    let _guard = Restore(KEYFRAME.replace(true));
+    work()
+}
+
 const CAPTURE_TICKS: u64 = 150;
 const CAPTURE_RETRY_TICKS: u64 = 30;
 const POINTS_PER_KEYFRAME: u64 = 6;
@@ -290,14 +305,7 @@ impl Session {
     }
 
     pub(super) fn with_keyframe<T>(&self, work: impl FnOnce() -> T) -> T {
-        struct Restore(bool);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                KEYFRAME.set(self.0);
-            }
-        }
-        let _guard = Restore(KEYFRAME.replace(true));
-        work()
+        keyframe_scope(work)
     }
 
     pub(super) fn capture_ready(&self, machine: &mut BootMachine<'_>) -> Result<()> {

@@ -626,6 +626,22 @@ impl Sim {
             );
             crate::sim_drops::set(map, job);
         }
+        if let Some(b) = &self.0.matched.config.bounces {
+            // The bounce search (docs/runtime/bounce-search.md): every
+            // seat is driven by the "sim: bounces" hook, its pad held, its
+            // brain ignored.
+            let map = &self.0.matched.config.map;
+            let job = sim_bench::bounces::Job::new(b, map, self.0.matched.bots.len() as u32)
+                .map_err(anyhow::Error::msg)?;
+            eprintln!(
+                "sim: bounces: at most {} trials on {} sites in {} batches, {} seats",
+                job.planned(),
+                job.sites(),
+                job.batches(),
+                self.0.matched.bots.len()
+            );
+            crate::sim_bounces::set(map, job);
+        }
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed)
                 .with_name_profile(&b.name)
@@ -675,6 +691,22 @@ impl Sim {
         features
             .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback })
             .map_err(|e| anyhow::anyhow!("sim metrics: {e}"))?;
+        if self.0.matched.config.bounces.is_some() {
+            // The search's teleports go the drops' way.
+            match crate::superbounce_verify::calls() {
+                Some(q) => crate::sim_bounces::set_calls(q.clone()),
+                None => {
+                    let q = agent::sim::calls::shared();
+                    match features.add(&agent::sim::calls::CallsFeature(q.clone())) {
+                        Ok(true) => crate::sim_bounces::set_calls(q),
+                        Ok(false) => eprintln!(
+                            "sim: bounces: agent-calls is switched off by H2_FEATURES; no trial can be placed"
+                        ),
+                        Err(e) => bail!("sim: bounces: agent-calls: {e}"),
+                    }
+                }
+            }
+        }
         if self.0.matched.config.drops.is_some() {
             // The drops teleport through the agent's guest calls: its
             // queue when the agent is on, else one of our own.
@@ -767,6 +799,7 @@ impl Sim {
                 .map(|stats| json!(stats));
         }
         report.drops = crate::sim_drops::report();
+        report.bounces = crate::sim_bounces::report();
         report
     }
 
@@ -831,6 +864,10 @@ impl Sim {
             eprintln!("sim: {note}");
             self.0.lock().notes.push(note);
         }
+        if let Some(note) = crate::sim_bounces::save() {
+            eprintln!("sim: {note}");
+            self.0.lock().notes.push(note);
+        }
         let r = self.report();
         eprintln!(
             "sim: {} after {} ticks ({:.0} game s) in {:.1} s: {:.2}x real time ({:.2}x with the boot)",
@@ -864,6 +901,10 @@ impl Sim {
         // A control that did not bounce: the run's named error.
         if let Some(e) = crate::sim_drops::error() {
             bail!("sim: drops: {e}");
+        }
+        // A fork that failed: the search's named error.
+        if let Some(e) = crate::sim_bounces::error() {
+            bail!("sim: bounces: {e}");
         }
         if self.0.lock().bindings.len() != self.matched().bots.len() {
             bail!(
@@ -937,6 +978,7 @@ impl Sim {
             },
             "end": s.end.map(End::name),
             "drops": crate::sim_drops::status(),
+            "bounces": crate::sim_bounces::status(),
         })
     }
 }
@@ -1633,6 +1675,54 @@ impl hooks::Feature for SimMetrics {
                         let mut s = me.lock();
                         if let Some(e) = crate::sim_drops::error() {
                             let note = format!("drops: {e}");
+                            if !s.notes.contains(&note) {
+                                eprintln!("sim: {note}");
+                                s.notes.push(note);
+                            }
+                        }
+                        me.end(&mut s, End::Stopped);
+                    }
+                    Ok(Flow::Continue)
+                })
+                .last();
+        }
+        if self.sim.matched.config.bounces.is_some() {
+            // The bounce search (docs/runtime/bounce-search.md): the
+            // drops' reads and acts, and a fork when the job asks: the
+            // slice ends here and the boot loop saves or restores the
+            // machine (`sim_bounces::between_slices`).
+            let me = Arc::clone(&self.sim);
+            b.raw()
+                .before(&points::GAME_TICK, "sim: bounces", move |c| {
+                    let seats: Vec<crate::sim_drops::Seat> = {
+                        let s = me.lock();
+                        if s.phase != Phase::Playing {
+                            return Ok(Flow::Continue);
+                        }
+                        s.bindings
+                            .iter()
+                            .map(|(&seat, &player)| crate::sim_drops::Seat {
+                                seat,
+                                player,
+                                handle: s
+                                    .machines
+                                    .get(&seat)
+                                    .copied()
+                                    .and_then(bots::phantom::handle_of),
+                            })
+                            .collect()
+                    };
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut g = rt.memory();
+                    let ticked = crate::sim_bounces::tick(&mut g, &seats);
+                    drop(g);
+                    if ticked.fork {
+                        rt.request_preempt(runtime::preempt::REQUEST);
+                    }
+                    if ticked.done {
+                        let mut s = me.lock();
+                        if let Some(e) = crate::sim_bounces::error() {
+                            let note = format!("bounces: {e}");
                             if !s.notes.contains(&note) {
                                 eprintln!("sim: {note}");
                                 s.notes.push(note);

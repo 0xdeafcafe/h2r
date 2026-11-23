@@ -69,7 +69,7 @@ struct Entry<T> {
     entry_bytes: usize,
 }
 
-pub(super) struct Ring<T> {
+pub(crate) struct Ring<T> {
     entries: VecDeque<Entry<T>>,
     pool: Pool,
     cap: usize,
@@ -87,7 +87,7 @@ fn dirty_pages(ranges: &[DirtyRange]) -> impl Iterator<Item = usize> + '_ {
 }
 
 impl<T> Ring<T> {
-    pub(super) fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             entries: VecDeque::new(),
             pool: Pool::default(),
@@ -97,21 +97,21 @@ impl<T> Ring<T> {
         }
     }
 
-    pub(super) fn cap(&self) -> usize {
+    pub(crate) fn cap(&self) -> usize {
         self.cap
     }
 
-    pub(super) fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.pool.bytes() + self.entries.iter().map(|e| e.entry_bytes).sum::<usize>()
     }
 
-    pub(super) fn ticks(&self) -> Vec<u64> {
+    pub(crate) fn ticks(&self) -> Vec<u64> {
         let mut ticks: Vec<_> = self.entries.iter().map(|entry| entry.tick).collect();
         ticks.sort_unstable();
         ticks
     }
 
-    pub(super) fn closest(&self, target: u64) -> Option<u64> {
+    pub(crate) fn closest(&self, target: u64) -> Option<u64> {
         self.entries
             .iter()
             .map(|e| e.tick)
@@ -123,11 +123,11 @@ impl<T> Ring<T> {
         self.entries.iter().find(|e| e.tick == tick)
     }
 
-    pub(super) fn get(&self, tick: u64) -> Option<&T> {
+    pub(crate) fn get(&self, tick: u64) -> Option<&T> {
         self.entry(tick).map(|entry| &entry.data)
     }
 
-    pub(super) fn clear(&mut self, guest: &mut Guest) {
+    pub(crate) fn clear(&mut self, guest: &mut Guest) {
         if let Some(watch) = self.watch {
             guest.unsubscribe_writes(watch);
         }
@@ -151,7 +151,7 @@ impl<T> Ring<T> {
     }
 
     /// Refusing a capture too large to keep never consumes the guest's dirt.
-    pub(super) fn capture(
+    pub(crate) fn capture(
         &mut self,
         tick: u64,
         guest: &mut Guest,
@@ -224,7 +224,7 @@ impl<T> Ring<T> {
     /// Restore only pages which can differ from the target. `restore_with`
     /// validates the guest layout first and invalidates the other consumers'
     /// memory caches after the copy.
-    pub(super) fn restore_ram(
+    pub(crate) fn restore_ram(
         &mut self,
         tick: u64,
         guest: &mut Guest,
