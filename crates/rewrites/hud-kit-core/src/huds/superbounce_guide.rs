@@ -159,7 +159,7 @@ pub fn box_value(call: Call) -> Value {
         Call::OffLine => Value::shown().styled(Style::Dim),
         Call::LinedUp => Value::shown(),
         Call::TooShallow => Value::text(TOO_SHALLOW),
-        Call::WillBounce => Value::text(WILL_BOUNCE).styled(Style::Lock),
+        Call::WillBounce => Value::text(WILL_BOUNCE).styled(Style::Go),
     }
 }
 
@@ -176,7 +176,7 @@ pub fn set_values(out: &mut Values, g: Option<&Guide>) {
     };
     let will = g.call == Call::WillBounce;
     out.set(BOX, box_value(g.call));
-    out.set(PIPPER, shown(g.pipper, if will { Style::Lock } else { Style::Normal }));
+    out.set(PIPPER, shown(g.pipper, if will { Style::Go } else { Style::Normal }));
     out.set(TICKS, shown(g.ticks && g.pipper, Style::Normal));
     out.set(
         DRIFT,
@@ -299,7 +299,7 @@ mod tests {
     }
 
     /// The values: dim off the line, lit lined up, the two calls of a
-    /// fall with their words (the bounce in the lock's red, the pipper
+    /// fall with their words (the bounce in the go green, the pipper
     /// with it), ticks only with a pipper, the arrow lit by the drift.
     #[test]
     fn the_values_say_the_call() {
@@ -323,8 +323,8 @@ mod tests {
         assert_eq!(shallow.get(PIPPER).unwrap().style, Style::Normal);
         let will = values(Some(g(Call::WillBounce)));
         assert_eq!(will.get(BOX).unwrap().text, WILL_BOUNCE);
-        assert_eq!(will.get(BOX).unwrap().style, Style::Lock);
-        assert_eq!(will.get(PIPPER).unwrap().style, Style::Lock);
+        assert_eq!(will.get(BOX).unwrap().style, Style::Go);
+        assert_eq!(will.get(PIPPER).unwrap().style, Style::Go);
         let no_pipper = values(Some(Guide { pipper: false, ..g(Call::OffLine) }));
         assert!(!no_pipper.get(PIPPER).unwrap().shown && !no_pipper.get(TICKS).unwrap().shown);
         let lit = values(Some(Guide { drift: Some(true), ..g(Call::LinedUp) }));

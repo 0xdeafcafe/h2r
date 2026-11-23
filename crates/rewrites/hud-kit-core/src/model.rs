@@ -519,11 +519,11 @@ pub enum Style {
     Inactive,
     /// Run through a `hudg` flash record.
     Flash(Pulse),
-    /// The lock's red (`world::LOCK_RED`), for a world mark alone: "this
-    /// will hit", as the game's reticle is red over a target in range. A
+    /// The go green (`world::GO_GREEN`), for a world mark alone: "this
+    /// will work", as the approach guide's will-bounce call. A
     /// widget or a text channel in it is a finding of the `world` check
     /// and is not drawn.
-    Lock,
+    Go,
 }
 
 impl Style {
@@ -533,7 +533,7 @@ impl Style {
             Style::Dim => "dim".into(),
             Style::Inactive => "inactive".into(),
             Style::Flash(p) => format!("flash {}", p.name()),
-            Style::Lock => "lock".into(),
+            Style::Go => "go".into(),
         }
     }
 }

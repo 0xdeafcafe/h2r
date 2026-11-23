@@ -52,6 +52,25 @@ pub fn segments_of(state: &str) -> Option<segs::Segments> {
     (view.scan == Scan::Ready).then(|| segs::segments(view.charge))
 }
 
+/// The moment that shows the wipe-back: the superbounce state "primed
+/// ending" is the arm's ending at a full charge, so the segments take a
+/// charge just over two thirds left, six of nine lit, between full and the warning.
+pub const WIPE_MOMENT: &str = "23-primed-ending";
+pub const WIPE_FILL: f32 = 0.67;
+
+/// The segments of `moment`, which pairs the superbounce state `state`:
+/// [`segments_of`] but for [`WIPE_MOMENT`].
+pub fn moment_segments(moment: &str, state: &str) -> Option<segs::Segments> {
+    segments_of(state)?;
+    if moment == WIPE_MOMENT {
+        return Some(segs::segments(Some(superbounce::Charge {
+            phase: superbounce::Phase::Primed,
+            fill: WIPE_FILL,
+        })));
+    }
+    segments_of(state)
+}
+
 /// Both HUDs at once.
 pub struct All;
 
@@ -87,7 +106,7 @@ impl Describe for All {
                 v.0.extend(pick(&rd, b).0);
                 // One charge: the superbounce state's, whatever ring the
                 // readout's state has.
-                segs::set_values(&mut v, segments_of(a).as_ref());
+                segs::set_values(&mut v, moment_segments(name, a).as_ref());
                 (*name, v)
             })
             .collect()
@@ -160,13 +179,17 @@ mod tests {
         use segs::Stage;
         let stage = |moment: &str| {
             let (_, a, _) = MOMENTS.iter().find(|(n, _, _)| *n == moment).unwrap();
-            segments_of(a).map(|s| (s.stage, s.lit))
+            moment_segments(moment, a).map(|s| (s.stage, s.lit))
         };
         assert_eq!(stage("1-walking"), Some((Stage::Idle, 0.0)));
         assert_eq!(stage("21-priming-near"), Some((Stage::Near, 0.0)));
         assert_eq!(stage("2-arming"), Some((Stage::Under, 3.0)));
         assert_eq!(stage("22-priming-held"), Some((Stage::Held, 6.0)));
-        assert_eq!(stage("23-primed-ending"), Some((Stage::Primed, 9.0)));
+        // The wipe-back: partly lit, over the warning's count, under full.
+        let (st, lit) = stage("23-primed-ending").unwrap();
+        assert_eq!(st, Stage::Primed);
+        assert!((6.0..6.1).contains(&lit), "{lit}");
+        assert!(lit < 9.0 && lit > 9.0 * crate::huds::superbounce::LOW_CHARGE);
         assert_eq!(stage("3-primed-targets"), Some((Stage::Primed, 9.0)));
         assert_eq!(stage("5-charge-draining"), Some((Stage::Warning, 2.25)));
         assert_eq!(stage("24-charge-warning"), Some((Stage::Warning, 4.5)));
@@ -183,9 +206,16 @@ mod tests {
                 .count()
         };
         assert_eq!(
-            ["1-walking", "2-arming", "22-priming-held", "3-primed-targets", "25-charge-lost"]
-                .map(lit),
-            [0, 3, 6, 9, 0]
+            [
+                "1-walking",
+                "2-arming",
+                "22-priming-held",
+                "23-primed-ending",
+                "3-primed-targets",
+                "25-charge-lost"
+            ]
+            .map(lit),
+            [0, 3, 6, 6, 9, 0]
         );
     }
 

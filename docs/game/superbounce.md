@@ -1349,7 +1349,7 @@ a hint, lit by any speed the drift's way (`drift_lit`).
 
 Fullscreen, while the guide is on a seam the [lock-on](#lock-on)'s
 brackets are not drawn (`superbounce_world::lock_shown`): the guide's
-box is on the seam in their place, and its red is the lock's red. In
+box is on the seam in their place, and its green says the fall will bounce. In
 split screen the lock-on's brackets are drawn.
 
 `superbounce.state` returns the guide as `guide`: the seam's point, the
@@ -1836,7 +1836,7 @@ is not written: it is input to the simulation and the network.
 The colours are the game's: lines take the user's HUD colour, the
 three floats at `0x00468c84` (the human triple `0x0013927e` returns),
 read from the guest each frame (`superbounce_font::hud_colour`), but the
-lock's red. The Elite triple and the `hudg` timer-warning colour are not
+the go green. The Elite triple and the `hudg` timer-warning colour are not
 used. Labels are drawn in the disc's HUD font (font 6) with its button
 glyphs, in sentence case, numbers in whole metres. No letter shape is
 ours.

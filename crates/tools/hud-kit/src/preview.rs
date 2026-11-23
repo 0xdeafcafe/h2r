@@ -65,7 +65,8 @@ pub const WORLD_FRAME: f32 = 396.0;
 /// How much of a unit of the scene's depth (+Y, away from the viewer)
 /// goes up the screen: the floor seen from above and behind.
 pub const WORLD_TILT: f32 = 0.5;
-/// Pixels between a world mark's lines and its label above them.
+/// Pixels between a world mark's lines and its label below them: below,
+/// as the guide's drift arrow is past the box on the other side.
 pub const WORLD_LABEL_GAP: f32 = 3.0;
 
 /// Where the sample scene's point `p` is drawn in `frame`: an oblique
@@ -184,6 +185,8 @@ pub struct WorldDrawn {
     pub edges: usize,
     /// The screen rectangle its lines and label cover.
     pub bounds: Option<Rect>,
+    /// The screen rectangle its label covers, if it has one.
+    pub label: Option<Rect>,
 }
 
 /// One picture: a HUD at a state and a screen mode.
@@ -226,9 +229,9 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
         // The record's colour at its start (`hudg::Flash::start`); the
         // curve over `since_tick` is slice 4's.
         Style::Flash(p) => colours.flash(p),
-        // The lock's red, a world mark's alone (`world::LOCK_RED`).
-        Style::Lock => {
-            let [r, g, b] = world::LOCK_RED.map(|v| (v * 255.0).round() as u8);
+        // The go green, a world mark's alone (`world::GO_GREEN`).
+        Style::Go => {
+            let [r, g, b] = world::GO_GREEN.map(|v| (v * 255.0).round() as u8);
             [r, g, b, base[3]]
         }
     }
@@ -238,7 +241,7 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
 /// (`Normal`, `Flash`), faded (`Dim`), greyed (`Inactive`).
 pub fn style_look(style: Style) -> Option<Look> {
     match style {
-        Style::Normal | Style::Flash(_) | Style::Lock => None,
+        Style::Normal | Style::Flash(_) | Style::Go => None,
         Style::Dim => Some(Look {
             alpha: DIM_ALPHA,
             grey: false,
@@ -740,7 +743,7 @@ fn draw_line(canvas: &mut Canvas, cover: &mut Cover, a: [f32; 2], b: [f32; 2], c
 /// A world mark (`hud_kit_core::world`): its shape's lines at the HUD's
 /// sample pose for this state, projected by [`project`], in the user's
 /// HUD colour (the notifications' here) at the value's style and the
-/// pose's strength, and its label centred [`WORLD_LABEL_GAP`] above them
+/// pose's strength, and its label centred [`WORLD_LABEL_GAP`] below them
 /// in [`WORLD_FONT`]. The game draws the same lines through the window's
 /// world-line pass, under the HUD, from the camera.
 #[allow(clippy::too_many_arguments)]
@@ -787,6 +790,7 @@ fn world_mark(
             pose: pose.copied(),
             edges: edges.len(),
             bounds: None,
+            label: None,
         }),
     };
     let Some(pose) = pose.filter(|_| d.hidden.is_none()) else {
@@ -801,6 +805,7 @@ fn world_mark(
     ];
     let mut cover = Cover::new();
     let mut bounds: Option<Rect> = None;
+    let mut label_rect: Option<Rect> = None;
     for [a, b] in &edges {
         let (a, b) = (project(frame, *a), project(frame, *b));
         draw_line(canvas, &mut cover, a, b, colour);
@@ -819,14 +824,16 @@ fn world_mark(
         let size = render::text_size(fonts, font, text);
         let at = centred(
             (lines.x0 + lines.x1) / 2.0,
-            lines.y0 - WORLD_LABEL_GAP - size[1],
+            lines.y1 + WORLD_LABEL_GAP,
             size,
         );
         blit(canvas, &mut cover, fonts, font, text, colour, [at.x0, at.y0]);
         bounds = Some(union(bounds, at));
+        label_rect = Some(at);
     }
     if let Some(w) = d.world.as_mut() {
         w.bounds = bounds;
+        w.label = label_rect;
     }
     d.drawn = !edges.is_empty();
     d.cover = Some(cover);

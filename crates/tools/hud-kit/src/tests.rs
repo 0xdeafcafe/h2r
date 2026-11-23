@@ -1056,7 +1056,7 @@ impl Describe for WorldCase {
 
 /// The world check: a mark a state shows needs a sample pose without a
 /// fault that draws lines inside the frame; a pose names a world mark;
-/// the lock's red is a world mark's alone. A sound case passes, and its
+/// the go green is a world mark's alone. A sound case passes, and its
 /// mark claims no rectangle, so nothing overlaps it.
 #[test]
 fn the_world_check_fires_on_marks_built_to_break_it() {
@@ -1128,19 +1128,19 @@ fn the_world_check_fires_on_marks_built_to_break_it() {
         world(&c),
         ["a pose for t, which is a text", "a pose for nope, which is not an element"]
     );
-    // The lock's red on a text.
+    // The go green on a text.
     let c = case(
         vec![text("t")],
-        vec![("t", Value::text("AB").styled(Style::Lock))],
+        vec![("t", Value::text("AB").styled(Style::Go))],
         vec![],
     );
-    assert_eq!(world(&c), ["t is a text in the lock's red, a world mark's alone"]);
+    assert_eq!(world(&c), ["t is a text in the go green, a world mark's alone"]);
 }
 
 /// The approach guide in the readout's preview: each moment draws the
 /// marks it shows where the sample scene puts them, and the checks pass.
 /// On the approach the pipper is outside the box with ticks between; in
-/// a caught fall it is inside, the box is in the lock's red and says so.
+/// a caught fall it is inside, the box is in the go green and says so.
 #[test]
 fn the_approach_guide_draws_in_its_moments() {
     use crate::huds::superbounce_guide as guide;
@@ -1185,7 +1185,7 @@ fn the_approach_guide_draws_in_its_moments() {
     assert!(t.y1 <= p.y1 && t.y0 >= b.y0, "{t:?} between {b:?} and {p:?}");
     // Caught: no ticks, the pipper inside the box, the call above it.
     for (state, label, style) in [
-        ("guide-falling-caught", guide::WILL_BOUNCE, Style::Lock),
+        ("guide-falling-caught", guide::WILL_BOUNCE, Style::Go),
         ("guide-too-shallow", guide::TOO_SHALLOW, Style::Normal),
     ] {
         assert!(!drawn(state, guide::TICKS), "{state}");
@@ -1200,12 +1200,20 @@ fn the_approach_guide_draws_in_its_moments() {
         bounds("guide-lined-up", guide::DRIFT),
     );
     assert!(a.y1 <= b.y0 + 2.0, "{a:?} {b:?}");
-    // The lock's red is drawn red: the box's top-left corner pixel.
+    // The box's call is below the box, and never over the drift arrow.
+    for state in ["guide-falling-caught", "guide-too-shallow"] {
+        let d = shot(state, Mode::Full).element(guide::BOX).unwrap();
+        let label = d.world.as_ref().unwrap().label.expect(state);
+        let arrow = bounds(state, guide::DRIFT);
+        assert!(arrow.y1 <= label.y0, "{state}: arrow {arrow:?} label {label:?}");
+        assert_eq!(label.intersect(&arrow), None, "{state}: {label:?} over {arrow:?}");
+    }
+    // The go green is drawn green: the box's top-left corner pixel.
     let s = shot("guide-falling-caught", Mode::Full);
     let corner = preview::project(&frame, [-guide::BOX_ALONG, guide::BOX_ACROSS, 0.02]);
     let at = ((corner[1].round() as u32 * s.canvas.width + corner[0].round() as u32) * 4) as usize;
     let px = &s.canvas.rgba[at..at + 3];
-    assert!(px[0] > px[1] && px[0] > px[2], "{px:?}");
+    assert!(px[1] > px[0] && px[1] > px[2], "{px:?}");
     // The other states draw no mark.
     for id in guide::MARKS {
         assert!(!drawn("falling-on-seam", id), "{id}");

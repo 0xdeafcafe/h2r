@@ -46,7 +46,7 @@ pub struct MarkLines {
 
 /// A mark's colour and alpha for its style on the HUD colour `hud`:
 /// `Normal` and a flash as it is, `Dim` at [`DIM_ALPHA`], `Inactive` grey
-/// at [`INACTIVE_ALPHA`], `Lock` the lock's red (`world::LOCK_RED`).
+/// at [`INACTIVE_ALPHA`], `Go` the go green (`world::GO_GREEN`).
 pub fn colour(style: Style, hud: [f32; 3]) -> ([f32; 3], f32) {
     match style {
         Style::Normal | Style::Flash(_) => (hud, 1.0),
@@ -55,7 +55,7 @@ pub fn colour(style: Style, hud: [f32; 3]) -> ([f32; 3], f32) {
             let luma = 0.299 * hud[0] + 0.587 * hud[1] + 0.114 * hud[2];
             ([luma; 3], INACTIVE_ALPHA)
         }
-        Style::Lock => (world::LOCK_RED, 1.0),
+        Style::Go => (world::GO_GREEN, 1.0),
     }
 }
 
@@ -154,7 +154,7 @@ mod gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hud_kit_core::world::{LOCK_RED, Pose, Shape};
+    use hud_kit_core::world::{GO_GREEN, Pose, Shape};
 
     const HUD: [f32; 3] = [0.3, 0.6, 0.9];
 
@@ -177,7 +177,7 @@ mod tests {
         let out = lines(
             &[
                 mark(Shape::Bracket, Style::Normal, "", pose),
-                mark(Shape::Bracket, Style::Lock, "Will bounce", pose.strength(0.5)),
+                mark(Shape::Bracket, Style::Go, "Will bounce", pose.strength(0.5)),
                 mark(Shape::Arrow, Style::Dim, "", pose),
             ],
             HUD,
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!((out[0].color, out[0].style.alpha, out[0].label.as_deref()), (HUD, 1.0, None));
         assert_eq!(out[0].style.label_face, LabelFace::Hud);
         assert!(out[0].style.fade.is_none(), "a mark shows from any distance");
-        assert_eq!(out[1].color, LOCK_RED);
+        assert_eq!(out[1].color, GO_GREEN);
         assert_eq!(out[1].style.alpha, 0.5);
         assert_eq!(out[1].label.as_deref(), Some("Will bounce"));
         assert_eq!(out[1].anchor, [1.0, 2.0, 3.0 + LABEL_RAISE]);

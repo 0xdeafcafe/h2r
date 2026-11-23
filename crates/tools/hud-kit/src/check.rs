@@ -47,7 +47,7 @@ pub enum Check {
     Drawn,
     /// A world mark a state shows has a sample pose without a fault,
     /// draws lines there and stays in the frame; a pose names a world
-    /// mark; the lock's red is on a world mark alone.
+    /// mark; the go green is on a world mark alone.
     World,
 }
 
@@ -304,7 +304,7 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             r.push(finding(Check::OneLayout, Some(*s), None, Vec::new(), p));
         }
     }
-    // World: the sample poses and the lock's red, before anything is
+    // World: the sample poses and the go green, before anything is
     // drawn.
     for (s, v) in &states {
         for (id, pose) in d.world(s) {
@@ -320,13 +320,13 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             }
         }
         for e in hud.elements.iter().filter(|e| e.kind.world().is_none()) {
-            if v.get(e.id).is_some_and(|x| x.shown && x.style == Style::Lock) {
+            if v.get(e.id).is_some_and(|x| x.shown && x.style == Style::Go) {
                 r.push(finding(
                     Check::World,
                     Some(*s),
                     None,
                     vec![e.id.to_owned()],
-                    format!("{} is a {} in the lock's red, a world mark's alone", e.id, e.kind.name()),
+                    format!("{} is a {} in the go green, a world mark's alone", e.id, e.kind.name()),
                 ));
             }
         }

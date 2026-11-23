@@ -416,7 +416,7 @@ pub enum Art {
 }
 pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
 pub enum PillPart { Body, End }       // the pill's first PILL_BODY (20) pixels, its last PILL_END (7)
-pub enum Style { Normal, Dim, Inactive, Flash(Pulse), Lock } // Lock: a world mark's red, alone
+pub enum Style { Normal, Dim, Inactive, Flash(Pulse), Go } // Go: a world mark's green, alone
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
 pub struct Value {
@@ -570,12 +570,11 @@ preview and the checks").
 
 A mark is drawn in the user's HUD colour. `Dim` halves its alpha and
 `Inactive` greys it, as for a widget, and the pose's strength scales the
-alpha again. One more style is a world mark's alone: `Lock`, the
-lock-on's red (`world::LOCK_RED`, the colour the superbounce lock-on
-draws its brackets in, [superbounce.md](superbounce.md#lock-on)), for a
-mark that says "this will work" as the game's reticle is red over a
-target in range. The `world` check refuses `Lock` on any other kind. The
-value's text is the mark's label, centred over its point in the HUD font
+alpha again. One more style is a world mark's alone: `Go`, a
+green (`world::GO_GREEN`, [0.35, 0.95, 0.45]) for a mark that says "this
+will work": the approach guide's "this fall will bounce"
+([superbounce.md](superbounce.md#the-approach-guide)). The `world` check refuses `Go` on any other kind. The
+value's text is the mark's label, centred over its point in the game, and in the preview below the lines (the guide's drift arrow is on the other side), in the HUD font
 (`model::WORLD_FONT`); `longest` is the widest label any state gives it.
 
 A pose is the runtime's, each tick, as a navpoint's point is:
@@ -844,7 +843,7 @@ the check, the elements and the state and mode:
 | prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding |
-| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Lock` is on world marks alone. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
+| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` is on world marks alone. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
 
 The synthetic source has no fonts, so it skips the glyph check and says
 so, and its retail check is against the flat boxes, not the disc's art.
@@ -1401,8 +1400,10 @@ guide's (the walk up, lined up, falling and caught, falling too shallow,
 and off the line), and the last five the priming states the others
 lack: near, held, the primed ending, the warning and the loss. A
 moment's segments are its superbounce state's charge
-(`superbounce_all::segments_of`), so every moment shows the ring as the
-game would.
+(`superbounce_all::moment_segments`), so every moment shows the ring as
+the game would, but the primed ending: its state is the arm's ending at
+a full charge, so the moment takes 0.67 of the charge left (six
+of nine lit) to show the wipe-back.
 
 **The runtime.** `crates/extensions/game/src/superbounce_readout.rs`
 registers it after the superbounce HUD, so that HUD's navpoint is the
@@ -1526,8 +1527,8 @@ are built.
 
 | Element | Shape | Pose | Values |
 |---|---|---|---|
-| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Lock` with `Will bounce` (`box_value`, `Call`) |
-| `sbr.guide.pipper` | `Pipper` | at the predicted landing on the seam's floor, radius 0.06 | shown while a landing is predicted by the seam; `Lock` with the box |
+| `sbr.guide.box` | `Bracket` | at the seam's landing point, heading along its edge; half 0.3 along (at most half the edge) and 0.1 across, the catch, so a pipper inside the box is a caught landing | `Dim` off the line; `Normal` lined up; `Normal` with `Too shallow`; `Go` with `Will bounce` (`box_value`, `Call`) |
+| `sbr.guide.pipper` | `Pipper` | at the predicted landing on the seam's floor, radius 0.06 | shown while a landing is predicted by the seam; `Go` with the box |
 | `sbr.guide.ticks` | `Ticks` | from the pipper's ring toward the box's centre, over the distance between them, 0.6 at most (`ticks_run`) | shown while the landing is not caught; under a run of 0.02 it has no pose |
 | `sbr.guide.drift` | `Arrow` | 0.06 outside the box on the drift's side, pointing along the drift | `Normal` while the player moves the drift's way, `Dim` when not; hidden on a seam with no drift |
 
@@ -1563,8 +1564,8 @@ as the readout is.
   field.
 - A HUD may use only the styles above. A new colour is a new retail
   source, named in "Colours", not a constant of ours. The one constant
-  is `world::LOCK_RED`, a world mark's `Lock`: the window draws world
-  marks, not the game's HUD, and it is the lock-on's red.
+  is `world::GO_GREEN`, a world mark's `Go`: the window draws world
+  marks, not the game's HUD, and it means "this fall will bounce".
 - A kit widget is drawn only while the game draws the HUD.
 - Fullscreen first: an element without split-screen offsets is hidden in
   split screen.
