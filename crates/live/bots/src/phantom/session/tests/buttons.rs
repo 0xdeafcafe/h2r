@@ -814,11 +814,10 @@ fn a_built_action_releases_the_bipeds_facing_flag() {
     assert_eq!(missed.guest.u8(flags).unwrap(), guest::BIPED_FACING_SET);
     assert_eq!(ph.maintenance().facing_releases, 1);
 
-    // A vehicle or other non-biped has no biped flags to touch.
+    // The next build releases it.
     let mut g = missed.guest;
-    g.put_u8(OBJECTS_DATA + 0xc + 3, 1);
     at_tick(&mut g, 104);
     let g = gather(&ph, g, slot);
-    assert_eq!(g.u8(flags).unwrap(), guest::BIPED_FACING_SET);
-    assert_eq!(ph.maintenance().facing_releases, 1);
+    assert_eq!(g.u8(flags).unwrap(), 0);
+    assert_eq!(ph.maintenance().facing_releases, 2);
 }
