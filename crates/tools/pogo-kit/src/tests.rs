@@ -457,78 +457,7 @@ impl tags::geometry::RawSource for Raw {
     }
 }
 
-/// The class the fixtures' kits are built with: the fixture map has no
-/// animation graphs to read one from.
-pub(crate) fn fixture_class() -> (String, String) {
-    ("pistol".to_owned(), "hp".to_owned())
-}
-
-/// The group of the fixture's padding tag: one nothing reads.
-const PAD_GROUP: &[u8; 4] = b"bloc";
-
-/// A multiplayer map of invented tags holding what the kit reads from a
-/// map: a shader template with its default bitmaps, and globals naming
-/// materials. `pad` adds a tag of that many bytes.
-pub(crate) fn fixture(pad: usize) -> Vec<u8> {
-    let mut set = TagSet::new(CacheType::Multiplayer, "court", r"invented\court");
-    for group in [b"scnr", b"matg", b"stem", b"bitm", PAD_GROUP] {
-        set.add_group(FourCC(*group), None, None);
-    }
-    let globals = {
-        let mut names = Block::zeroed(2 * 0xb4);
-        names.string_id(0, "soft_organic_flesh");
-        names.string_id(0xb4, kit::MATERIAL);
-        let mut root = Block::zeroed(0x284);
-        root.block(0x150, 2, names);
-        root
-    };
-    set.globals = set
-        .add_tag(
-            FourCC(*b"matg"),
-            r"globals\globals",
-            TagPayload::Built(globals),
-        )
-        .unwrap();
-    set.scenario = set
-        .add_tag(
-            FourCC(*b"scnr"),
-            r"invented\court",
-            TagPayload::Built(Block::zeroed(0x3e0)),
-        )
-        .unwrap();
-    set.add_tag(
-        FourCC(*b"stem"),
-        kit::LAYOUTS[0].stem,
-        TagPayload::Built(Block::zeroed(0x60)),
-    )
-    .unwrap();
-    let grey = texture::Rgba {
-        width: 4,
-        height: 4,
-        pixels: vec![128; 64],
-    };
-    for path in [
-        r"shaders\default_bitmaps\bitmaps\default_vector",
-        r"shaders\default_bitmaps\bitmaps\default_detail",
-        r"shaders\default_bitmaps\bitmaps\color_white",
-        r"shaders\default_bitmaps\bitmaps\default_additive_cube_map",
-        r"rasterizer\linear_corner_fade",
-    ] {
-        texture::bitmap(&grey)
-            .unwrap()
-            .install(&mut set, path)
-            .unwrap();
-    }
-    if pad > 0 {
-        set.add_tag(
-            FourCC(*PAD_GROUP),
-            "pad",
-            TagPayload::Built(Block::zeroed(pad)),
-        )
-        .unwrap();
-    }
-    set.build().expect("the fixture builds").0
-}
+pub(crate) use crate::fixture::{fixture, fixture_class};
 
 fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())

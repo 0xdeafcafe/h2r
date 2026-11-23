@@ -37,8 +37,11 @@
 //! - **game type scripts** (`app::rules_edit`): `rules.open`, `rules.get`,
 //!   `rules.set`, `rules.save`, `rules.format` and `rules.reload`
 //!   ([`super::game_script`]).
-//! - **player models** and **customisation**: `model.*` and `custom.*`
-//!   are planned the same way (docs/editor/agent-api.md).
+//! - **models**: `model.list`, `read`, `render` and `check` over the map
+//!   the scenario tool has open, or a named one, with the Pogo Stick's kit
+//!   when asked ([`super::models`]); read-only, so no actions.
+//!   `model.colors`, `model.emblem` and `custom.*` are planned
+//!   (docs/editor/agent-api.md).
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::perform`]: crate::App::perform
@@ -93,4 +96,7 @@ pub fn register(api: &mut Api) {
     // A retail screen's tag edits past a rect: a block hidden or copied,
     // a string ID set (app::ui_screens::edit::retail_tag).
     api.register(Box::new(super::ui_retail::UiRetail));
+    // model.*: objects' models read, rendered (ground, third and first
+    // person) and checked as content, Pogo kit maps included.
+    api.register(Box::new(super::models::Models::default()));
 }

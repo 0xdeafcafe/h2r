@@ -1311,5 +1311,7 @@ impl NativeObjects {
     }
 }
 
+pub mod preview;
+
 #[cfg(test)]
 mod tests;

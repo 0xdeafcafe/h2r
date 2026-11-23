@@ -541,7 +541,7 @@ Each tool is an `api::Provider` (`crates/apps/studio/src/api/seams.rs`)
 and its edits are the tool's own actions through `App::perform`, so the
 window and the API stay one path. All are listed by `session.methods`
 and documented in [agent-api.md](agent-api.md) when built. `model.*` is
-already a planned namespace there, so poses use `anim.*`.
+already a namespace there (player models and looks), so poses use `anim.*`.
 
 | Method | Params | Result |
 |---|---|---|

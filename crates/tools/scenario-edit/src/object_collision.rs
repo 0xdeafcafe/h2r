@@ -209,7 +209,7 @@ impl ObjectCollisions {
 
 /// An object's model: an item or vehicle collection stands for its first
 /// entry, as the viewport draws it.
-pub(crate) fn resolve(
+pub fn resolve(
     ctx: &Context,
     object: TagId,
 ) -> Result<(TagId, Option<ResolvedModel>), String> {

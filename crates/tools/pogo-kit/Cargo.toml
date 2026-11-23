@@ -21,6 +21,10 @@ serde_yaml_ng.workspace = true
 tags.workspace = true
 vfs.workspace = true
 
+[features]
+# The invented multiplayer map (`pogo_kit::fixture`) for other crates' tests.
+fixture = []
+
 [dev-dependencies]
 xiso.workspace = true
 

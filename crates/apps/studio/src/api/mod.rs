@@ -13,8 +13,8 @@
 //!   (the user sees an agent's edits live), or `h2-editor --serve`.
 //! - [`seams`]: where the parallel tools plug in. A [`Provider`] answers
 //!   methods ahead of the built-in ones: the Tags tool's `tag.*` and the
-//!   HUD tool's `hud.*`; `model.*` and `custom.*` are planned namespaces
-//!   answering NOT_YET until one does.
+//!   HUD tool's `hud.*`, and `model.*`; `model.colors`, `model.emblem` and
+//!   `custom.*` are planned, answering NOT_YET until one does.
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::dispatch`]: crate::App::dispatch
@@ -32,6 +32,7 @@ mod game_script;
 mod geometry;
 mod hud;
 mod mirror;
+mod models;
 mod nav;
 mod nav_mesh;
 mod pair;
@@ -619,25 +620,8 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"scene":"boolean","lightmap_pages":"integer","bsps":"[{bsp,lighting,detail}]","triangles":"{blend: integer}","solid_triangles":"integer","lightmapped_triangles":"integer","materials":"[{shader,template,blend,blend_from_passes,emissive,base,details,mask}]","sky":"string|null","atmosphere":"{sky,sun,fog,fallback_rgb}"}"#,
         "null",
     ),
-    // Planned namespaces: designed seams with no provider yet.
-    planned(
-        m::MODEL_LIST,
-        "Bipeds and their model variants (hlmt, mode permutations)",
-        r#"{"group?":"string"}"#,
-        "player models (not started)",
-    ),
-    planned(
-        m::MODEL_READ,
-        "A model: regions, permutations, variants, change colours",
-        r#"{"tag":"string"}"#,
-        "player models (not started)",
-    ),
-    planned(
-        m::MODEL_RENDER,
-        "Render a model variant with colours from a camera to a PNG",
-        r#"{"tag":"string","variant?":"string","colors?":"any","camera?":"any","out?":"string"}"#,
-        "player models (not started)",
-    ),
+    // Planned namespaces: designed seams with no provider yet. `model.list`,
+    // `read`, `render` and `check` are the models provider's (api/models.rs).
     planned(
         m::MODEL_COLORS,
         "A player's primary, secondary, detail and emblem colours",

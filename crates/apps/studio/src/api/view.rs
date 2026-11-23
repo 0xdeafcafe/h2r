@@ -23,8 +23,8 @@ use crate::app::Action;
 /// A wgpu device for offscreen renders, made on the first.
 pub struct Gpu {
     _census: mem_watch::gpu::DeviceRegistration,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
 }
 
 impl Gpu {

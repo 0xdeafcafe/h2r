@@ -7047,6 +7047,7 @@ dependencies = [
  "map",
  "mem-watch",
  "png",
+ "pogo-kit",
  "pollster",
  "rfd",
  "rules",
