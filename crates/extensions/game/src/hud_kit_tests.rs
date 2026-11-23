@@ -921,3 +921,111 @@ fn a_world_mark_draws_shown_posed_and_in_its_mode() {
     // The go green is not a style the widget hooks draw.
     assert!(!draws(Style::Go));
 }
+
+/// The banner's fields as `0x0024cc73` leaves them: the text (62 units
+/// and a zero at most), the tick twice, shown, the shared order byte
+/// stepped, and the duration; each user's own state.
+#[test]
+fn the_banner_is_written_as_the_game_writes_its_timed_line() {
+    let mut m = memory();
+    let (huds, time) = (0x0055_a000, 0x0055_f000);
+    // No game time yet: nothing.
+    m.set_u32(USER_HUDS, huds).unwrap();
+    assert!(!write_banner(&mut m, 0, "WAVE 3", BANNER_TICKS).unwrap());
+    m.set_u32(GAME_TIME, time).unwrap();
+    m.set_u32(time + GAME_TIME_TICK, 1234).unwrap();
+    m.set_u8(huds + MESSAGE_ORDER, 7).unwrap();
+    assert!(write_banner(&mut m, 1, "WAVE 3", BANNER_TICKS).unwrap());
+    let hud = huds + USER_HUD_LEN;
+    let units: Vec<u16> = "WAVE 3".encode_utf16().chain([0]).collect();
+    for (k, u) in units.iter().enumerate() {
+        assert_eq!(
+            m.u16(hud + BANNER_TEXT + 2 * k as u32).unwrap(),
+            *u,
+            "unit {k}"
+        );
+    }
+    assert_eq!(m.u32(hud + BANNER_STAMP).unwrap(), 1234);
+    assert_eq!(m.u32(hud + BANNER_START).unwrap(), 1234);
+    assert_eq!(m.u32(hud + BANNER_DURATION).unwrap(), 90);
+    assert_eq!(m.u8(hud + BANNER_SHOWN).unwrap(), 1);
+    assert_eq!(m.u8(hud + BANNER_ORDER).unwrap(), 7);
+    assert_eq!(
+        m.u8(huds + MESSAGE_ORDER).unwrap(),
+        8,
+        "the order byte steps"
+    );
+    // User 0's state is untouched.
+    assert_eq!(m.u8(huds + BANNER_SHOWN).unwrap(), 0);
+    // A long text keeps 62 units and its zero, before the shown byte.
+    assert!(write_banner(&mut m, 0, &"A".repeat(80), 30).unwrap());
+    assert_eq!(m.u16(huds + BANNER_TEXT + 2 * 61).unwrap(), u16::from(b'A'));
+    assert_eq!(m.u16(huds + BANNER_TEXT + 2 * 62).unwrap(), 0);
+    assert_eq!(BANNER_TEXT + 2 * 63, BANNER_SHOWN);
+    assert_eq!(m.u8(huds + BANNER_ORDER).unwrap(), 8);
+    // No local user 4.
+    assert!(!write_banner(&mut m, USERS, "WAVE 3", 30).unwrap());
+}
+
+/// A banner is written when its text changes or follows none, not again
+/// for the same text, and runs out on its own when hidden.
+#[test]
+fn the_banner_is_written_on_a_change_of_text() {
+    let mut last = None;
+    let s = |t: &str| Some(t.to_owned());
+    assert_eq!(banner_due(&mut last, s("GET READY")), s("GET READY"));
+    assert_eq!(banner_due(&mut last, s("GET READY")), None);
+    assert_eq!(banner_due(&mut last, s("WAVE 1")), s("WAVE 1"));
+    assert_eq!(banner_due(&mut last, None), None);
+    assert_eq!(last, None);
+    // The same text after a gap is a new line.
+    assert_eq!(banner_due(&mut last, s("WAVE 1")), s("WAVE 1"));
+}
+
+/// The banner of a HUD: its first shown banner element in a mode its
+/// place has; a text the game cannot keep is none.
+#[test]
+fn the_banner_is_the_first_shown_in_its_mode() {
+    let mut split = Element::channel("b.split", Kind::Banner { longest: "WAVE 3" });
+    split.at = Place::GAME.split((0, 0), (0, 0));
+    let hud = Hud {
+        name: "b",
+        elements: vec![
+            Element::channel("b.full", Kind::Banner { longest: "VICTORY" }),
+            split,
+        ],
+    };
+    let mut values = Values::default();
+    values.set("b.full", Value::text("VICTORY"));
+    values.set("b.split", Value::text("WAVE 3"));
+    assert_eq!(
+        banner_of(&hud, &values, Mode::Full).as_deref(),
+        Some("VICTORY")
+    );
+    assert_eq!(
+        banner_of(&hud, &values, Mode::Half).as_deref(),
+        Some("WAVE 3")
+    );
+    values.set("b.full", Value::hidden());
+    assert_eq!(
+        banner_of(&hud, &values, Mode::Full).as_deref(),
+        Some("WAVE 3")
+    );
+    values.set("b.split", Value::text("A".repeat(63)));
+    assert_eq!(banner_of(&hud, &values, Mode::Quarter), None);
+    values.set("b.split", Value::hidden());
+    assert_eq!(banner_of(&hud, &values, Mode::Full), None);
+}
+
+/// The local users the banner goes to: the local views, one to four.
+#[test]
+fn the_local_users_are_the_views_one_to_four() {
+    let mut m = memory();
+    assert_eq!(local_users(&m).unwrap(), 1);
+    m.set_u16(GLOBALS + 8, 3).unwrap();
+    assert_eq!(local_users(&m).unwrap(), 3);
+    m.set_u16(GLOBALS + 8, 0).unwrap();
+    assert_eq!(local_users(&m).unwrap(), 1);
+    m.set_u16(GLOBALS + 8, 9).unwrap();
+    assert_eq!(local_users(&m).unwrap(), 4);
+}

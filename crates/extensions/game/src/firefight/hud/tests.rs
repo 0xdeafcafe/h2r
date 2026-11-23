@@ -241,9 +241,9 @@ fn each_player_reads_their_own_lives_from_the_blob() {
     assert_eq!(mode.lives, Lives::Each(vec![(0, 6), (3, 6)]));
     let blob = mode.encode();
     let mine = view(&Mode::decode(&blob).unwrap(), 3);
-    assert_eq!(mine.get(LIVES).unwrap().text, "LIVES 6");
+    assert_eq!(mine.get(LIVES_COUNT).unwrap().text, "6");
     let absent = view(&Mode::decode(&blob).unwrap(), 5);
-    assert!(!absent.get(LIVES).unwrap().shown, "no count, no line");
+    assert!(!absent.get(LIVES_COUNT).unwrap().shown, "no count, no pill");
 }
 
 #[test]
@@ -377,19 +377,16 @@ fn a_blob_it_does_not_understand_is_refused() {
     assert_eq!(Mode::decode(&each), Err(Error::Field("lives")));
 }
 
-/// With two teams each viewer reads its own team's pool, both teams'
-/// points show at every stage, and the end names the winner or a draw.
+/// With two teams each viewer reads its own team's pool, and the end
+/// names the winner or a draw. The points are the game's own score
+/// display's, not the kit HUD's.
 #[test]
-fn two_teams_show_both_scores_and_each_viewer_its_teams_lives() {
+fn two_teams_show_each_viewer_its_teams_lives() {
     let m = two_team_mode();
     let red = view(&m, 0);
     let blue = view(&m, 3);
-    assert_eq!(red.get(LIVES).unwrap().text, "LIVES 6");
-    assert_eq!(blue.get(LIVES).unwrap().text, "LIVES 2");
-    for v in [&red, &blue] {
-        assert_eq!(v.get(SCORE).unwrap().text, "RED 450 BLUE 1100");
-    }
-    assert!(!view(&sample_mode(), 0).get(SCORE).unwrap().shown, "one team: no scores");
+    assert_eq!(red.get(LIVES_COUNT).unwrap().text, "6");
+    assert_eq!(blue.get(LIVES_COUNT).unwrap().text, "2");
     for (stage, banner) in [
         (Stage::Team0Won, "RED TEAM WINS"),
         (Stage::Team1Won, "BLUE TEAM WINS"),
@@ -403,8 +400,7 @@ fn two_teams_show_both_scores_and_each_viewer_its_teams_lives() {
             3,
         );
         assert_eq!(over.get(BANNER).unwrap().text, banner);
-        assert!(over.get(SCORE).unwrap().shown, "{banner}: the result's points");
-        assert!(!over.get(LIVES).unwrap().shown, "{banner}");
+        assert!(!over.get(LIVES_COUNT).unwrap().shown, "{banner}");
     }
     assert_eq!(Stage::team_won(0), Stage::Team0Won);
     assert_eq!(Stage::team_won(1), Stage::Team1Won);
@@ -431,13 +427,14 @@ fn the_directors_two_teams_reach_the_blob() {
     assert_eq!(won.stage, Stage::Team1Won);
 }
 
-/// The words, stage by stage, with the spacing the HUD copy keeps.
+/// The words, stage by stage: the banner, the lives and the enemies left.
 #[test]
 fn each_stage_has_its_words() {
     let text = |m: &Mode| -> Vec<String> {
         view(m, 0)
             .0
             .iter()
+            .filter(|(id, _)| [BANNER, LIVES_COUNT, ENEMIES_COUNT].contains(id))
             .map(|(id, v)| {
                 if v.shown {
                     format!("{id}={}", v.text)
@@ -449,14 +446,7 @@ fn each_stage_has_its_words() {
     };
     assert_eq!(
         text(&sample_mode()),
-        [
-            "banner=-",
-            "round=ROUND 2 OF 3",
-            "wave=WAVE 3 OF 5",
-            "enemies=ENEMIES 9",
-            "lives=LIVES 4",
-            "score=-"
-        ]
+        ["ff.banner=-", "ff.lives.count=4", "ff.enemies.count=9"]
     );
     let boss = Mode {
         stage: Stage::Spawning,
@@ -464,8 +454,7 @@ fn each_stage_has_its_words() {
         boss: true,
         ..sample_mode()
     };
-    assert_eq!(text(&boss)[0], "banner=BOSS WAVE");
-    assert_eq!(text(&boss)[2], "wave=BOSS WAVE");
+    assert_eq!(text(&boss)[0], "ff.banner=BOSS WAVE");
     let won = Mode {
         stage: Stage::Won,
         left: 0,
@@ -473,149 +462,93 @@ fn each_stage_has_its_words() {
     };
     assert_eq!(
         text(&won),
-        [
-            "banner=VICTORY",
-            "round=-",
-            "wave=-",
-            "enemies=-",
-            "lives=-",
-            "score=-"
-        ]
+        ["ff.banner=VICTORY", "ff.lives.count=-", "ff.enemies.count=-"]
     );
     let lost = Mode {
         stage: Stage::Lost,
         ..won.clone()
     };
-    assert_eq!(text(&lost)[0], "banner=GAME OVER");
+    assert_eq!(text(&lost)[0], "ff.banner=GAME OVER");
     let between = Mode {
         stage: Stage::Intermission,
         left: 0,
         ..sample_mode()
     };
-    assert_eq!(text(&between)[0], "banner=WAVE COMPLETE");
-    assert_eq!(text(&between)[3], "enemies=-", "none while no wave is on");
+    assert_eq!(text(&between)[0], "ff.banner=WAVE COMPLETE");
+    assert_eq!(text(&between)[2], "ff.enemies.count=-", "none while no wave is on");
 }
 
 #[test]
-fn the_last_life_and_none_are_flagged() {
+fn the_last_life_and_none_flash() {
     let style = |n: u16| {
         let m = Mode {
             lives: Lives::Shared(n),
             ..sample_mode()
         };
-        view(&m, 0).get(LIVES).unwrap().style
+        view(&m, 0).get(LIVES_COUNT).unwrap().style
     };
     assert_eq!(style(2), Style::Normal);
-    assert_eq!(style(1), Style::Warn);
-    assert_eq!(style(0), Style::Warn);
+    let warn = Style::Flash(hud_kit_core::model::Pulse::TimeWarning);
+    assert_eq!(style(1), warn);
+    assert_eq!(style(0), warn);
 }
 
-/// The kit's layout rules hold in every state and every screen mode.
+/// Every blob gives the kit HUD's one layout: a value for each of its
+/// elements and nothing else, in every stage, lives kind and viewer.
 #[test]
-fn every_state_passes_the_layout_checks() {
-    let all = states();
-    let names: Vec<_> = all.iter().map(|(n, _)| n.as_str()).collect();
-    for stage in [
-        "warmup",
-        "spawning",
-        "boss",
-        "fighting",
-        "cleanup",
-        "wave-complete",
-        "round-complete",
-        "won",
-        "lost",
-        "over",
-        "last-life",
-        "no-lives",
-        "widest",
-        "own-lives",
-        "no-own-lives",
-        "two-teams",
-        "two-teams-own-lives",
-        "two-teams-widest",
-        "red-wins",
-        "blue-wins",
-        "draw",
-    ] {
-        assert!(names.contains(&stage), "no state {stage}");
-    }
-    let mut unique = names.clone();
-    unique.sort();
-    unique.dedup();
-    assert_eq!(unique.len(), names.len(), "state names are unique");
-    assert_eq!(check(&all), vec![]);
-    for (name, values) in &all {
-        let ids: Vec<_> = values.0.iter().map(|(i, _)| *i).collect();
-        assert_eq!(
-            ids,
-            LAYOUT.iter().map(|e| e.id).collect::<Vec<_>>(),
-            "{name}: one layout"
-        );
-    }
-}
-
-/// Each rule fires on a state built to break it.
-#[test]
-fn each_layout_check_fires_on_a_state_built_to_break_it() {
-    let good = view(&sample_mode(), 0);
-    let with = |id: &'static str, text: &str| {
-        let mut v = good.clone();
-        let entry = v.0.iter_mut().find(|(i, _)| *i == id).unwrap();
-        entry.1 = Value {
-            shown: true,
-            text: text.into(),
-            style: Style::Normal,
+fn every_blob_gives_the_kits_one_layout() {
+    let hud = hud_kit_core::huds::firefight::hud();
+    let mut modes = vec![sample_mode(), two_team_mode()];
+    for stage in Stage::ALL {
+        let base = if stage.two_teams_only() {
+            two_team_mode()
+        } else {
+            sample_mode()
         };
-        vec![("broken".to_string(), v)]
-    };
-    assert_eq!(
-        check(&with(LIVES, "LIVES 1234567")),
-        [Finding::Wide {
-            state: "broken".into(),
-            id: LIVES,
-            text: "LIVES 1234567".into()
-        }]
-    );
-    for text in [" LIVES 4", "LIVES 4 ", "LIVES  4"] {
-        assert!(
-            matches!(&check(&with(LIVES, text))[..], [Finding::Spacing { .. }]),
-            "{text:?}"
-        );
+        modes.push(Mode { stage, ..base });
     }
-    assert!(matches!(
-        &check(&with(LIVES, "Lives 4"))[..],
-        [Finding::Glyph { ch: 'i', .. }]
-    ));
-    assert!(matches!(
-        &check(&with(LIVES, ""))[..],
-        [Finding::Empty { .. }]
-    ));
-    let mut fewer = good.clone();
-    fewer.0.pop();
-    assert_eq!(
-        check(&[("short".to_string(), fewer)]),
-        [Finding::Layout {
-            state: "short".into()
-        }]
-    );
-}
-
-/// No two lines meet in any screen mode, and a hidden one has no
-/// rectangle.
-#[test]
-fn the_layout_keeps_its_lines_apart_in_every_screen_mode() {
-    for screen in Screen::ALL {
-        let rects: Vec<_> = LAYOUT.iter().filter_map(|e| rect(e, screen)).collect();
-        assert!(!rects.is_empty(), "{screen:?}");
-        for (i, a) in rects.iter().enumerate() {
-            for b in &rects[i + 1..] {
-                assert!(!overlaps(*a, *b), "{screen:?}: {a:?} {b:?}");
-            }
+    modes.push(Mode {
+        lives: Lives::Each(vec![(0, 3), (2, 1)]),
+        ..sample_mode()
+    });
+    for m in &modes {
+        for local in [0, 1, 3, 7] {
+            let v = view(m, local);
+            assert_eq!(v.layout_problems(&hud), Vec::<String>::new(), "{m:?} {local}");
+            assert!(!v.get(NOTE).unwrap().shown, "a note is sent, not published");
         }
     }
-    assert!(rect(&LAYOUT[0], Screen::Quarter).is_none());
-    assert!(rect(&LAYOUT[4], Screen::Quarter).is_some());
+}
+
+/// The feed: no match hides the HUD; a match's first view sends no note,
+/// a new round and a lost life one each; an unreadable blob hides it and
+/// forgets the last view.
+#[test]
+fn the_feed_publishes_the_view_and_sends_the_notes_a_change_makes() {
+    let hidden = hud_kit_core::huds::firefight::hidden();
+    let mut f = Feed::default();
+    assert_eq!(f.tick(None), (hidden.clone(), Vec::new()));
+    let a = view_of(&sample_mode(), 0);
+    let (values, notes) = f.tick(Some(Ok(a.clone())));
+    assert_eq!(values, view(&sample_mode(), 0));
+    assert!(notes.is_empty(), "the first view");
+    let next = Mode {
+        stage: Stage::Spawning,
+        round: 2,
+        wave: 0,
+        lives: Lives::Shared(3),
+        ..sample_mode()
+    };
+    let (_, notes) = f.tick(Some(Ok(view_of(&next, 0))));
+    assert_eq!(notes, ["Round 3 of 3", "A life lost"]);
+    let (values, notes) = f.tick(Some(Err(Error::Version(1))));
+    assert_eq!(values, hidden);
+    assert!(notes.is_empty());
+    assert_eq!(f.error.as_deref(), Some(Error::Version(1).to_string().as_str()));
+    // After it, a view is the first again.
+    let (_, notes) = f.tick(Some(Ok(view_of(&next, 0))));
+    assert!(notes.is_empty());
+    assert_eq!(f.error, None);
 }
 
 #[test]

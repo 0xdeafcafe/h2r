@@ -53,7 +53,7 @@ Paths without a crate are under `crates/extensions/game/src/`.
 | Forge dialogs (palette, properties, link, menu, load) | the same compositor path; the spec is a kit dialog spec, but no game widget exists | `ui_kit/forge/dialogs.rs:232`, `forge_glue.rs:55` |
 | Gizmo | pixels the compositor writes into that image | `forge_glue/gizmo.rs:75` |
 | Monitor marker | the same, a ring in the seat's colour | `forge_glue/marker.rs` on the branch `forge-look` |
-| Firefight HUD | nothing. The view is computed and checked; no code reads `hud::current` | `firefight/hud.rs:26`, `firefight/hud.rs:347` |
+| Firefight HUD | the game's HUD: the HUD kit's `firefight` HUD, fed from `hud::current` each tick ("The Firefight HUD") | `hud_kit_core::huds::firefight`, `firefight/hud.rs` (`Feed`) |
 
 ### Why each reads as fake
 
@@ -112,15 +112,6 @@ page with value rows does), and its opener is Game Setup
 (`forge_glue/gizmo.rs:87`) and a flat ring: a modelling tool's idiom,
 aliased, drawn behind the strip's pixels and in front of everything in
 the world.
-
-**The Firefight HUD.** Not drawn, so in a match the mode shows nothing.
-The checked layout would not read as Halo 2 either: five lines of
-"LABEL NUMBER" text ("ROUND 1 OF 3", "ENEMIES 12", "LIVES 5") stacked at
-the top right at invented offsets (`firefight/hud.rs:395`), an anchor the
-HUD does not have (`Anchor::TopCenter`, `firefight/hud.rs:362`), a
-guessed glyph width (`firefight/hud.rs:568`) and a private copy of the
-kit's types (`firefight/hud.rs:354` to `:384`). Halo 2's HUD shows counts
-as an icon with an LCD number, never as a labelled line.
 
 ## Targets
 
@@ -432,17 +423,16 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 
 ## The Firefight HUD
 
-A HUD kit `Hud` named `firefight`, fed by `hud::view` from the mode blob
-as it is ([firefight.md](firefight.md), "The HUD"). `hud::LAYOUT`, the
-private `Element`, `Place` and `Anchor` types and `hud::check` are
-replaced by the kit's.
+A HUD kit `Hud` named `firefight` (`hud_kit_core::huds::firefight`), fed
+by `hud::view` from the mode blob as it is ([firefight.md](firefight.md),
+"The HUD"), with the kit's elements, places and checks.
 
 | Element | Kind | Place | Shows |
 |---|---|---|---|
 | `ff.banner` | Banner (slice K2) | the message routine's centred line | GET READY, WAVE 3, BOSS WAVE, ROUND COMPLETE, VICTORY, GAME OVER; timed, then gone |
 | `ff.lives.pill`, `.end`, `ff.lives.count` | Icon and LCD Text | the grenade row's next place | lives; `Flash(Pulse::TimeWarning)` at 1 and 0 |
 | `ff.enemies.pill`, `.end`, `ff.enemies.count` | Icon and LCD Text | the place after | enemies left while a wave is on |
-| `ff.note` | Message | the notification list | "Round 2 of 3", a skull switched on, a life lost |
+| `ff.note` | Message | the notification list | "Round 2 of 3", a life lost (`huds::firefight::notes`) |
 
 - The round and wave are not permanent lines. They are in the banner
   when they change and in the notification list.
@@ -450,10 +440,15 @@ replaced by the kit's.
   ([firefight.md](firefight.md), "Guest boundary"), which the retail
   score display and scoreboard show.
 - Split screen: the pills keep the grenade row's half and quarter
-  offsets; the banner is the game's in every mode.
-- A pill's icon is retail art by widget name, chosen from the disc
-  census when the slice is built (**S**); a pill with no icon is the
-  fallback, never new art.
+  offsets; the banner and the notes are the game's in every mode.
+- The enemies pill is a kit pill's width and the retail panel's 3-pixel
+  gap right of the lives pill (`huds::firefight::PILL_STEP`, 30); a
+  count shows 99 at most.
+- A pill has no icon: the fallback, never new art. A pill's icon is
+  retail art by widget name, chosen from the disc census (**S**, not
+  done).
+- No note says a skull switched on: the mode blob carries no skulls, and
+  the view reads the blob alone.
 
 ## Slices
 
@@ -470,8 +465,8 @@ their first user. The editing slices P1 to P6 are in
 | **U4** | Forge screens in the game: the bindings table and Halo 3 pad gate, object menu, Properties from a table, Tools picker, Tool settings (Rotation snap), Link, questions, GAME MENU rows, Forge options, Controls; input handover | L | nothing | `h2 ui preview forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`, `forge.link`, `forge.question`, `forge.options`, `forge.controls --state all --animation all`; `Page` tables carried over from `ui_kit/forge/tests.rs` plus `x_opens_objects_or_properties_by_aim`, `no_is_focused_on_every_question`, `every_action_has_one_binding`, `the_controls_page_lists_the_bindings_table`, `game_menu_adds_five_rows`; a gate table test that RB and LB rise and fall, RT held manipulates, hold Y deletes and B cancels; `list_class` runner test that a picker opens with its pick in a game; layout and content checks in every state; a disc test that each base resolves in `shared` |
 | **K1** | HUD kit: monitor mode (retail widgets gated off per user but the motion tracker, grenade origins without the row) | S | the HUD kit on `master` | `hud_kit_tests`: a retail widget of a monitor user is not drawn, the motion tracker is, and another user's widgets are; `h2 hud preview forge --state all --mode all --synthetic` |
 | **U3** | Forge HUD on the kit: `forge` HUD, feed from `forge_glue`, copy table with buttons from the bindings table | M | K1, U4's bindings | `h2 hud preview forge --state all`; the kit's checks (fit, glyphs, frame, retail, own, one layout, prompt, drawn) in every state and mode; table test `every_tool_state_has_one_prompt` over the states of `ui_kit/forge/pages.rs` |
-| **K2** | HUD kit: the `Banner` channel (the timed centred line) | S | the HUD kit on `master` | `FlatMemory` test of the text, start and duration fields; the prompt check extended to it; preview draws it at the routine's place |
-| **U5** | Firefight HUD on the kit | M | K2; kit `Message` | `h2 hud preview firefight --state all --mode all`; `the_hud_reads_only_the_mode_blob` unchanged; `every_stage_has_a_banner_or_none` table; the kit's checks replace `hud::check` |
+| **K2** (built) | HUD kit: the `Banner` channel (the timed centred line) | S | the HUD kit on `master` | `FlatMemory` test of the text, start and duration fields (`the_banner_is_written_as_the_game_writes_its_timed_line`, `the_banner_is_written_on_a_change_of_text`); the prompt check extended to it; preview draws it at the routine's place (`the_banner_is_drawn_centred_above_the_frames_bottom`) |
+| **U5** (built) | Firefight HUD on the kit | M | K2; kit `Message` | `h2 hud preview firefight --state all --mode all` (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`); `the_hud_reads_only_the_mode_blob` unchanged; `every_stage_has_a_banner_or_none` table; the kit's checks replace `hud::check`; `the_feed_publishes_the_view_and_sends_the_notes_a_change_makes` |
 | **K3** | HUD kit: several navpoints for one HUD, the number drawn | S | the kit's navpoint number | `FlatMemory` test of n slots kept and released; preview with three points |
 | **K4** | HUD kit: the `Segment` kind, a line between two screen points in a HUD colour | S | the HUD kit on `master` | `FlatMemory` test of the record's ends and colour; the frame check clips a segment to the safe frame; preview draws three |
 | **U6** | Forge markers as navpoints; the gizmo as three segments in the Axes setting's basis; remove the marker and gizmo painters | S | K3, K4, U3 | table test: held, aimed, linking and two monitors give the expected points and segments; `h2 hud preview forge --state holding` |

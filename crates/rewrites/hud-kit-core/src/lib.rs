@@ -10,7 +10,8 @@
 //! - [`motion`]: how a value moves between ticks, on wall time;
 //! - [`world`]: a world mark's shape at a pose, as line segments;
 //! - [`records`]: elements to `nhdt` widget record bytes;
-//! - [`huds`]: the HUDs the kit knows (superbounce).
+//! - [`huds`]: the HUDs the kit knows (superbounce, the Forge readout,
+//!   Firefight).
 //!
 //! Guest-free: no guest memory, no hook. The game extension reads and
 //! writes the guest; this crate only computes.

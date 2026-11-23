@@ -937,6 +937,22 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         ),
         Check::Prompt,
     );
+    // prompt: a banner over the game's 62 characters, and one of two
+    // lines.
+    fires(
+        case(
+            vec![Element::channel("b", Kind::Banner { longest: "A" })],
+            &[("b", Value::text("A".repeat(63)))],
+        ),
+        Check::Prompt,
+    );
+    fires(
+        case(
+            vec![Element::channel("b", Kind::Banner { longest: "A" })],
+            &[("b", Value::text("WAVE 3\nBOSS WAVE"))],
+        ),
+        Check::Prompt,
+    );
     // modes: one element with split-screen offsets, one without.
     fires(
         case(
@@ -1628,4 +1644,105 @@ fn the_preview_draws_a_line_in_a_team_colour() {
     let (red, blue) = (pixel(&shot(0)), pixel(&shot(1)));
     assert_eq!(red, preview::PREVIEW_TEAMS[0].to_vec());
     assert_eq!(blue, preview::PREVIEW_TEAMS[1].to_vec());
+}
+
+/// The banner is drawn where the message routine draws its timed line:
+/// one line centred across the frame, its top 40 pixels above the frame's
+/// bottom, in every screen mode its place has, in the notifications'
+/// colour; a short banner passes the prompt check.
+#[test]
+fn the_banner_is_drawn_centred_above_the_frames_bottom() {
+    let mut banner = Element::channel(
+        "b",
+        Kind::Banner {
+            longest: "ROUND COMPLETE",
+        },
+    );
+    banner.at = Place::GAME.split((0, 0), (0, 0));
+    let c = case(vec![banner], &[("b", Value::text("WAVE 3"))]);
+    let r = check::hud(&mut synthetic(), &c, &Mode::ALL).unwrap();
+    let prompt: Vec<_> = r.of(Check::Prompt).collect();
+    assert!(prompt.is_empty(), "{prompt:#?}");
+    for mode in Mode::ALL {
+        let s = r.shots.iter().find(|s| s.mode == mode).unwrap();
+        let d = s.element("b").unwrap();
+        assert!(d.channel && d.drawn, "{mode:?}");
+        assert_eq!(d.kind, "banner");
+        assert_eq!(d.text.as_deref(), Some("WAVE 3"));
+        let rect = d.rect.unwrap();
+        let f = &s.frame;
+        let centre = (f32::from(f.left) + f32::from(f.right)) / 2.0;
+        assert!(
+            ((rect.x0 + rect.x1) / 2.0 - centre).abs() <= 1.0,
+            "{mode:?}: {rect:?}"
+        );
+        assert_eq!(
+            rect.y0,
+            f32::from(f.bottom) - preview::BANNER_UP,
+            "{mode:?}"
+        );
+        // The longest is reserved wider than the text drawn.
+        let reserved = d.reserved.unwrap();
+        assert!(reserved.x1 - reserved.x0 >= rect.x1 - rect.x0, "{mode:?}");
+    }
+    // Fullscreen only unless its place says otherwise.
+    let full = case(
+        vec![Element::channel("b", Kind::Banner { longest: "WAVE 3" })],
+        &[("b", Value::text("WAVE 3"))],
+    );
+    let r = check::hud(&mut synthetic(), &full, &[Mode::Half]).unwrap();
+    let d = r.shots[0].element("b").unwrap();
+    assert!(!d.drawn && d.reserved.is_none());
+}
+
+/// The Firefight HUD on the synthetic sheet (`h2 hud preview firefight
+/// --state all --mode all --synthetic`): every state and mode passes every
+/// check but the glyphs (no fonts); in a wave's placing the banner, both
+/// pills and their counts draw in every mode, the enemies pill right of
+/// the lives pill, and the banner is the wave's.
+#[test]
+fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
+    use crate::huds::firefight::{self as ff, Firefight};
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&Firefight], &Mode::ALL).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    assert_eq!(r.shots.len(), Firefight.states().len() * 3);
+    for mode in Mode::ALL {
+        let s = r
+            .shots
+            .iter()
+            .find(|s| s.state == "spawning" && s.mode == mode)
+            .unwrap();
+        for id in [
+            ff::BANNER,
+            ff::LIVES_PILL,
+            ff::LIVES_END,
+            ff::LIVES_COUNT,
+            ff::ENEMIES_PILL,
+            ff::ENEMIES_END,
+            ff::ENEMIES_COUNT,
+        ] {
+            assert!(s.element(id).unwrap().drawn, "{mode:?} {id}");
+        }
+        let rect = |id: &str| s.element(id).unwrap().rect.unwrap();
+        assert!(
+            rect(ff::LIVES_END).x1 <= rect(ff::ENEMIES_PILL).x0,
+            "{mode:?}: {:?} {:?}",
+            rect(ff::LIVES_END),
+            rect(ff::ENEMIES_PILL)
+        );
+        assert_eq!(
+            s.element(ff::BANNER).unwrap().text.as_deref(),
+            Some("WAVE 2")
+        );
+        assert!(!s.element(ff::NOTE).unwrap().drawn, "{mode:?}: no note");
+    }
+    // Between waves the enemies pill is gone and the lives pill stays.
+    let between = r
+        .shots
+        .iter()
+        .find(|s| s.state == "wave-complete" && s.mode == Mode::Full)
+        .unwrap();
+    assert!(between.element(ff::LIVES_PILL).unwrap().drawn);
+    assert!(!between.element(ff::ENEMIES_PILL).unwrap().drawn);
 }
