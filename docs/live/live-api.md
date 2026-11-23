@@ -1354,6 +1354,8 @@ event tail). The stored log is unchanged.
 | Events | Who reads them |
 |---|---|
 | `GameInviteSent`, `GameInviteAnswered` | the invitation's sender and recipient |
+| `MessageSent` | the message's sender and recipient |
+| `MessageDeleted` | the recipient |
 | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | the two accounts and the current friends of either |
 | `ContentReported` | admins only |
 | `PlayerReported`, `ReportReviewed` | admins only ([Player reports](#player-reports)) |
@@ -2308,14 +2310,39 @@ lock, preventing duplicate concurrent answers or a race with session deletion.
 
 `GET /v1/accounts/by-xuid/{xuid}/mailbox` always requires a `read` token signed
 by that recipient, including on a public server. It returns
-`{items, next: null, position}` with at most 100 pending invitations to open
-sessions, newest first. Each item is
+`{items, messages, next: null, position}` with at most 100 pending invitations to open
+sessions, newest first, and at most 100 text messages ([below](#text-messages)). Each item is
 `{id, from, to, gamertag, session_id, sent_at, answer: null}`; `sent_at` is Unix
 seconds. Sender names come from the account projection. Answered or
 closed/expired-session invitations disappear from this list. The projection
 rebuilds from the log on restart. As with the rest of this service, raw events
 follow the server's general public/private log policy; mailbox authorization is
 not a promise of encrypted or secret event contents.
+
+### Text messages
+
+Friends message each other through the same mailboxes, as signed events on
+`mailbox-<recipient xuid>` with an `events.write` token.
+
+| event | signed data | authority |
+|---|---|---|
+| `MessageSent` | `{from, text}` | A signed-in account messaging a friend of its own |
+| `MessageDeleted` | `{by, message_id}` | The mailbox owner deleting one message |
+
+`text` is 1 to 512 characters (`live_proto::mailbox::TEXT_MAX`), not blank, with no
+control characters but newline and tab. The sent time is the signed event's own
+time. `from` is the signing account and not the recipient, and the two are
+friends (`State::is_friends`): otherwise 403. Bad text or an unknown field is
+400, a recipient with 100 messages waiting is 409, a Clanker recipient 403.
+`message_id` is the sent event's log position; a message that is not in the
+owner's mailbox is 400. Voice messages are not supported.
+
+The mailbox read lists each waiting message as
+`{id, from, to, gamertag, text, sent_at}` (`sent_at` is Unix seconds), newest
+first. Deleted messages disappear; the projection rebuilds from the log on
+restart. The log shows `MessageSent` only to its sender and recipient and
+`MessageDeleted` only to the recipient (admins and the operator see both),
+like the invitation events.
 
 The HLE fetches this mailbox with the current account's key. Successful delivery
 is not acceptance or a joined player: an accepted invite becomes a local launch

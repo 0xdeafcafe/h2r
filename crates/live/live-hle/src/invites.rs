@@ -6,7 +6,7 @@ use crate::{
 };
 use live_proto::{
     Xuid,
-    mailbox::{Answer, Answered, Invite},
+    mailbox::{Answer, Answered, Invite, TextDeleted, TextMessage},
 };
 use runtime::{Guest, guest::Access};
 use std::{
@@ -60,6 +60,10 @@ pub(crate) struct Invites {
     accepted: VecDeque<Accepted>,
     message_ids: BTreeMap<u64, u32>,
     known: BTreeMap<u32, Invite>,
+    /// Text messages by the message ID the title was given, and the ones
+    /// it opened with Details.
+    texts_known: BTreeMap<u32, TextMessage>,
+    text_details: BTreeMap<u32, TextMessage>,
     next_message: u32,
     details: BTreeMap<u32, Invite>,
     /// The accepted invitation the title read last, until taken.
@@ -82,8 +86,10 @@ impl Invites {
         self.read = None;
         self.last = None;
         self.details.clear();
+        self.text_details.clear();
         self.message_ids.clear();
         self.known.clear();
+        self.texts_known.clear();
     }
     pub fn users_changed(&mut self, users: &[u64; 4]) {
         self.accepted
@@ -99,6 +105,8 @@ impl Invites {
         self.internal.retain(|v| users[v.controller] == v.actor);
         self.details.retain(|_, v| users.contains(&v.to.0));
         self.known.retain(|_, v| users.contains(&v.to.0));
+        self.text_details.retain(|_, v| users.contains(&v.to.0));
+        self.texts_known.retain(|_, v| users.contains(&v.to.0));
         for (c, user) in self.cache.iter_mut().zip(users) {
             if c.user != *user {
                 *c = Cache {
@@ -183,7 +191,9 @@ impl Invites {
         self.tasks.get(&h).map(|t| t.status)
     }
     pub fn close(&mut self, h: u32) -> bool {
-        self.details.remove(&h).is_some() || self.tasks.remove(&h).is_some()
+        self.details.remove(&h).is_some()
+            || self.text_details.remove(&h).is_some()
+            || self.tasks.remove(&h).is_some()
     }
     pub fn refresh(
         &mut self,
@@ -207,6 +217,7 @@ impl Invites {
                         || old.friends.requests_in != view.friends.requests_in
                         || old.friends.requests_out != view.friends.requests_out
                         || old.invites != view.invites
+                        || old.messages != view.messages
                         || old.sessions != view.sessions
                 });
                 if changed {
@@ -301,45 +312,87 @@ impl Invites {
         }
         rows.into_values().take(100).collect()
     }
-    fn message_id(&mut self, invite: &Invite) -> u32 {
-        let id = invite.id;
+    fn assign_id(&mut self, id: u64) -> u32 {
         if let Some(v) = self.message_ids.get(&id) {
-            self.known.insert(*v, invite.clone());
             return *v;
         }
         self.next_message = self.next_message.saturating_add(1);
         self.message_ids.insert(id, self.next_message);
-        self.known.insert(self.next_message, invite.clone());
         self.next_message
     }
-    pub fn enumerate(&mut self, index: usize, m: &mut Guest, a: &[u32]) -> Result<u32, Error> {
-        let invites = self.pending_invites(index);
-        m.check(a[2], 4, Access::Write, 1)?;
-        m.check(a[1], invites.len() * 64, Access::Write, 1)?;
-        for (i, v) in invites.iter().enumerate() {
-            let id = self.message_id(v);
-            m.write_bytes(a[1] + i as u32 * 64, &summary(v, id), 1)?;
+    fn message_id(&mut self, invite: &Invite) -> u32 {
+        let n = self.assign_id(invite.id);
+        self.known.insert(n, invite.clone());
+        n
+    }
+    fn text_id(&mut self, text: &TextMessage) -> u32 {
+        let n = self.assign_id(text.id);
+        self.texts_known.insert(n, text.clone());
+        n
+    }
+    fn pending_texts(&self, index: usize) -> Vec<TextMessage> {
+        self.cache[index]
+            .view
+            .as_ref()
+            .into_iter()
+            .flat_map(|v| &v.messages)
+            .filter(|v| !self.cache[index].hidden.contains(&v.id))
+            .cloned()
+            .collect()
+    }
+    /// The player's inbox, invitations and text messages together, newest
+    /// first, at most [`INBOX_MAX`].
+    fn inbox(&self, index: usize) -> Vec<Item> {
+        let mut items: Vec<Item> = self
+            .pending_invites(index)
+            .into_iter()
+            .map(Item::Invite)
+            .chain(self.pending_texts(index).into_iter().map(Item::Text))
+            .collect();
+        items.sort_by_key(|v| std::cmp::Reverse(v.id()));
+        items.truncate(INBOX_MAX);
+        items
+    }
+    fn item_id(&mut self, item: &Item) -> u32 {
+        match item {
+            Item::Invite(v) => self.message_id(v),
+            Item::Text(v) => self.text_id(v),
         }
-        m.set_u32(a[2], invites.len() as u32)?;
+    }
+    pub fn enumerate(&mut self, index: usize, m: &mut Guest, a: &[u32]) -> Result<u32, Error> {
+        let items = self.inbox(index);
+        m.check(a[2], 4, Access::Write, 1)?;
+        m.check(a[1], items.len() * 64, Access::Write, 1)?;
+        for (i, v) in items.iter().enumerate() {
+            let id = self.item_id(v);
+            let row = match v {
+                Item::Invite(v) => summary(v, id),
+                Item::Text(v) => text_summary(v, id),
+            };
+            m.write_bytes(a[1] + i as u32 * 64, &row, 1)?;
+        }
+        m.set_u32(a[2], items.len() as u32)?;
         Ok(0)
     }
     pub fn notification(&mut self, index: usize, m: &mut Guest, a: &[u32]) -> Result<u32, Error> {
         m.check(a[1], 9, Access::Write, 1)?;
         m.check(a[2], 4, Access::Write, 1)?;
         let next = self
-            .pending_invites(index)
+            .inbox(index)
             .into_iter()
-            .find(|v| !self.cache[index].notified.contains(&v.id));
+            .find(|v| !self.cache[index].notified.contains(&v.id()));
         let mut out = [0; 9];
         let mut flags = 0;
         if let Some(v) = next {
-            out[0] = 3;
-            out[1..5].copy_from_slice(&self.message_id(&v).to_le_bytes());
-            self.cache[index].notified.insert(v.id);
+            // The notification's type is the message's type: 3 for a game
+            // invitation, 1 for a generic message.
+            out[0] = v.kind();
+            out[1..5].copy_from_slice(&self.item_id(&v).to_le_bytes());
+            self.cache[index].notified.insert(v.id());
             flags = u32::from(
-                self.pending_invites(index)
+                self.inbox(index)
                     .iter()
-                    .any(|v| !self.cache[index].notified.contains(&v.id)),
+                    .any(|v| !self.cache[index].notified.contains(&v.id())),
             );
         }
         let found = u32::from(out[0] != 0);
@@ -400,6 +453,11 @@ impl Invites {
             .into_iter()
             .find(|v| self.message_ids.get(&v.id) == Some(&id))
     }
+    fn find_text(&self, index: usize, id: u32) -> Option<TextMessage> {
+        self.pending_texts(index)
+            .into_iter()
+            .find(|v| self.message_ids.get(&v.id) == Some(&id))
+    }
     pub fn details(
         &mut self,
         m: &mut Guest,
@@ -409,10 +467,16 @@ impl Invites {
         if a[4] != 0 {
             return Ok(INVALID_ARGUMENT);
         }
-        let Some(v) = self.find_message(a[0] as usize, a[1]) else {
-            return Ok(MESSAGE_INVALID_ID);
+        let invite = self.find_message(a[0] as usize, a[1]);
+        let text = if invite.is_some() {
+            None
+        } else {
+            self.find_text(a[0] as usize, a[1])
         };
-        if self.details.len() >= 64 {
+        if invite.is_none() && text.is_none() {
+            return Ok(MESSAGE_INVALID_ID);
+        }
+        if self.details.len() + self.text_details.len() >= 64 {
             return Ok(OUT_OF_MEMORY);
         }
         m.check(a[5], 4, Access::Write, 1)?;
@@ -420,16 +484,33 @@ impl Invites {
             return Ok(OUT_OF_MEMORY);
         };
         m.set_u32(a[5], h)?;
-        self.details.insert(h, v);
+        if let Some(v) = invite {
+            self.details.insert(h, v);
+        }
+        if let Some(v) = text {
+            self.text_details.insert(h, v);
+        }
         Ok(0)
     }
     pub fn property(&self, m: &mut Guest, a: &[u32]) -> Result<u32, Error> {
-        let Some(v) = self.details.get(&a[0]) else {
+        let bytes = if let Some(v) = self.details.get(&a[0]) {
+            match a[1] as u16 {
+                0x581 => session_bytes(&v.session_id).to_vec(),
+                _ => return Ok(MESSAGE_PROPERTY_NOT_FOUND),
+            }
+        } else if let Some(v) = self.text_details.get(&a[0]) {
+            match a[1] as u16 {
+                // The text property, a NUL-ended UTF-16 string.
+                0x6c4 => v
+                    .text
+                    .encode_utf16()
+                    .chain([0])
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+                _ => return Ok(MESSAGE_PROPERTY_NOT_FOUND),
+            }
+        } else {
             return Ok(INVALID_ARGUMENT);
-        };
-        let bytes = match a[1] as u16 {
-            0x581 => session_bytes(&v.session_id).to_vec(),
-            _ => return Ok(MESSAGE_PROPERTY_NOT_FOUND),
         };
         if a[4] != 0 {
             m.check(a[4], 4, Access::Write, 1)?;
@@ -454,7 +535,8 @@ impl Invites {
         })
     }
     pub fn details_status(&self, h: u32) -> Option<u32> {
-        self.details.contains_key(&h).then_some(TASK_SUCCESS)
+        (self.details.contains_key(&h) || self.text_details.contains_key(&h))
+            .then_some(TASK_SUCCESS)
     }
     pub fn invoke(
         &mut self,
@@ -722,6 +804,40 @@ impl Invites {
         });
         Ok(())
     }
+    /// Deletes one text message server-side and hides it at once.
+    fn delete_text(
+        &mut self,
+        index: usize,
+        t: &TextMessage,
+        service: Option<&Service>,
+        session: Option<&Session>,
+    ) -> u32 {
+        if self.cache[index].hidden.contains(&t.id) {
+            return 0;
+        }
+        if self.internal.len() >= 64 {
+            return TASK_BUSY;
+        }
+        if let (Some(service), Some(session)) = (service, session) {
+            let request = SocialRequest::TextDelete(TextDeleted {
+                by: t.to,
+                message_id: t.id,
+            });
+            let pending = match service.social(session, t.to.0, request) {
+                Ok(p) => p,
+                Err(e) => return e,
+            };
+            self.internal.push(Task {
+                pending: Some(pending),
+                controller: index,
+                status: 0,
+                invite: Some(t.id),
+                actor: t.to.0,
+            });
+        }
+        self.cache[index].hidden.insert(t.id);
+        0
+    }
     pub fn delete(
         &mut self,
         index: usize,
@@ -730,6 +846,14 @@ impl Invites {
         service: Option<&Service>,
         session: Option<&Session>,
     ) -> u32 {
+        if let Some(t) = self
+            .texts_known
+            .get(&id)
+            .filter(|v| v.to.0 == self.cache[index].user)
+            .cloned()
+        {
+            return self.delete_text(index, &t, service, session);
+        }
         let Some(v) = self
             .known
             .get(&id)
@@ -785,6 +909,43 @@ fn friend(uid: u64, tag: &str, flags: u32, title: u32, at: u64) -> [u8; FRIEND_S
     v[32..40].copy_from_slice(&at.to_le_bytes());
     v[48..52].copy_from_slice(&title.to_le_bytes());
     v
+}
+/// The most entries the inbox lists.
+const INBOX_MAX: usize = 100;
+/// One inbox entry: a game invitation or a friend's text message.
+enum Item {
+    Invite(Invite),
+    Text(TextMessage),
+}
+impl Item {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Invite(v) => v.id,
+            Self::Text(v) => v.id,
+        }
+    }
+    /// The message type the title knows it by (the MessageCreate type).
+    fn kind(&self) -> u8 {
+        match self {
+            Self::Invite(_) => 3,
+            Self::Text(_) => 1,
+        }
+    }
+}
+/// A text message's 64-byte summary: laid out as an invitation's, with
+/// the generic message type and the has-text creation flag (8) where an
+/// invitation has its own.
+fn text_summary(v: &TextMessage, id: u32) -> [u8; 64] {
+    let mut b = [0; 64];
+    b[..8].copy_from_slice(&v.from.0.to_le_bytes());
+    b[12] = 1;
+    b[24..32].copy_from_slice(&filetime(v.sent_at).to_le_bytes());
+    b[32..36].copy_from_slice(&id.to_le_bytes());
+    b[46..48].copy_from_slice(&8u16.to_le_bytes());
+    b[40..44].copy_from_slice(&0x4d530064u32.to_le_bytes());
+    let n = v.gamertag.len().min(15);
+    b[48..48 + n].copy_from_slice(&v.gamertag.as_bytes()[..n]);
+    b
 }
 fn summary(v: &Invite, id: u32) -> [u8; 64] {
     let mut b = [0; 64];

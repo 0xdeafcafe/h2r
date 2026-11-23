@@ -277,3 +277,267 @@ async fn pending_mailbox_replays_from_the_event_log() {
     let after: Value = read(&h2, &b).await.json();
     assert_eq!(after, before);
 }
+async fn befriend(h: &Harness, a: &User, b: &User) {
+    for (by, kind) in [
+        (a, live_proto::types::FRIEND_REQUESTED),
+        (b, live_proto::types::FRIEND_ACCEPTED),
+    ] {
+        let r = h
+            .post_event(
+                by,
+                h.event(
+                    by,
+                    &live_proto::streams::account(by.xuid),
+                    kind,
+                    json!({"from":a.xuid,"to":b.xuid}),
+                ),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    }
+}
+fn text_event(h: &Harness, from: &User, to: &User, text: &str) -> String {
+    h.event(
+        from,
+        &mailbox::stream(to.xuid),
+        mailbox::TEXT_SENT,
+        json!({"from":from.xuid,"text":text}),
+    )
+}
+fn delete_event(h: &Harness, u: &User, id: u64) -> String {
+    h.event(
+        u,
+        &mailbox::stream(u.xuid),
+        mailbox::TEXT_DELETED,
+        json!({"by":u.xuid,"message_id":id}),
+    )
+}
+#[tokio::test]
+async fn friends_send_read_and_delete_text_messages() {
+    let h = harness().await;
+    let a = h.create("Sender").await;
+    let b = h.create("Reader").await;
+    let other = h.create("Other").await;
+    befriend(&h, &a, &b).await;
+    let r = h.post_event(&a, text_event(&h, &a, &b, "hello \u{96ea}\nthere")).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let event = r.json();
+    let stored = SignedEvent::open(event["jws"].as_str().unwrap()).unwrap();
+    stored.verify(a.key.public()).unwrap();
+    let id = event["position"].as_u64().unwrap();
+    let v = read(&h, &b).await.json();
+    assert_eq!(v["items"], json!([]));
+    let m = &v["messages"];
+    assert_eq!(m.as_array().unwrap().len(), 1);
+    assert_eq!(m[0]["id"].as_u64().unwrap(), id);
+    assert_eq!(m[0]["from"], a.xuid.to_string());
+    assert_eq!(m[0]["to"], b.xuid.to_string());
+    assert_eq!(m[0]["gamertag"], "Sender");
+    assert_eq!(m[0]["text"], "hello \u{96ea}\nthere");
+    assert!(m[0]["sent_at"].as_i64().unwrap() > 0);
+    // Only the owner reads the mailbox; the sender's own has nothing.
+    assert_eq!(read(&h, &a).await.json()["messages"], json!([]));
+    assert_eq!(
+        h.call(
+            Method::GET,
+            &format!("/v1/accounts/by-xuid/{}/mailbox", b.xuid),
+            &[h.bearer(&other, lxm::READ)],
+            Body::empty()
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    // Only the recipient deletes, and only a message that is there.
+    assert_eq!(
+        h.post_event(&a, delete_event(&h, &a, id)).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.post_event(
+            &a,
+            h.event(
+                &a,
+                &mailbox::stream(b.xuid),
+                mailbox::TEXT_DELETED,
+                json!({"by":b.xuid,"message_id":id})
+            )
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        h.post_event(&b, delete_event(&h, &b, id + 1000)).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = h.post_event(&b, delete_event(&h, &b, id)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(read(&h, &b).await.json()["messages"], json!([]));
+    assert_eq!(
+        h.post_event(&b, delete_event(&h, &b, id)).await.status,
+        StatusCode::BAD_REQUEST,
+        "a deleted message is gone"
+    );
+}
+#[tokio::test]
+async fn text_messages_need_friends_and_sound_text() {
+    let h = harness().await;
+    let a = h.create("Sender").await;
+    let b = h.create("Reader").await;
+    let c = h.create("Stranger").await;
+    befriend(&h, &a, &b).await;
+    // Not friends, either way, or to oneself.
+    assert_eq!(
+        h.post_event(&c, text_event(&h, &c, &b, "hi")).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        h.post_event(&b, text_event(&h, &b, &c, "hi")).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        h.post_event(&a, text_event(&h, &a, &a, "hi")).await.status,
+        StatusCode::FORBIDDEN
+    );
+    // The sender is the signing account.
+    assert_eq!(
+        h.post_event(
+            &a,
+            h.event(
+                &a,
+                &mailbox::stream(b.xuid),
+                mailbox::TEXT_SENT,
+                json!({"from":b.xuid,"text":"as someone else"})
+            )
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    // Text: not empty, blank, too long or with control characters; no
+    // unknown fields.
+    for bad in [
+        String::new(),
+        "  \n".into(),
+        "x".repeat(mailbox::TEXT_MAX + 1),
+        "bell\u{7}".into(),
+        "nul\u{0}".into(),
+    ] {
+        assert_eq!(
+            h.post_event(&a, text_event(&h, &a, &b, &bad)).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        h.post_event(
+            &a,
+            h.event(
+                &a,
+                &mailbox::stream(b.xuid),
+                mailbox::TEXT_SENT,
+                json!({"from":a.xuid,"text":"hi","session_id":"8000000000000001"})
+            )
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    let longest = "x".repeat(mailbox::TEXT_MAX);
+    assert_eq!(
+        h.post_event(&a, text_event(&h, &a, &b, &longest)).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        read(&h, &b).await.json()["messages"].as_array().unwrap().len(),
+        1
+    );
+    // Unfriending ends messaging.
+    let r = h
+        .post_event(
+            &a,
+            h.event(
+                &a,
+                &live_proto::streams::account(a.xuid),
+                live_proto::types::FRIEND_REMOVED,
+                json!({"by":a.xuid,"friend":b.xuid}),
+            ),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(
+        h.post_event(&a, text_event(&h, &a, &b, "hi")).await.status,
+        StatusCode::FORBIDDEN
+    );
+}
+#[tokio::test]
+async fn text_messages_show_in_the_log_only_to_their_two_accounts() {
+    let h = harness().await;
+    let a = h.create("Sender").await;
+    let b = h.create("Reader").await;
+    let c = h.create("Friend").await;
+    befriend(&h, &a, &b).await;
+    befriend(&h, &a, &c).await;
+    let r = h.post_event(&a, text_event(&h, &a, &b, "secret")).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let id = r.json()["position"].as_u64().unwrap();
+    let r = h.post_event(&b, delete_event(&h, &b, id)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let kinds = |u: Option<&User>| {
+        let h = &h;
+        async move {
+            let headers: Vec<_> = u.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+            let r = h
+                .call(Method::GET, "/v1/events", &headers, Body::empty())
+                .await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+            r.json()["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|e| e["type"].as_str())
+                .filter(|t| mailbox::is_kind(t))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(kinds(None).await, Vec::<String>::new());
+    assert_eq!(kinds(Some(&c)).await, Vec::<String>::new(), "a friend of the sender");
+    assert_eq!(kinds(Some(&a)).await, [mailbox::TEXT_SENT]);
+    assert_eq!(
+        kinds(Some(&b)).await,
+        [mailbox::TEXT_SENT, mailbox::TEXT_DELETED]
+    );
+}
+#[tokio::test]
+async fn text_messages_replay_from_the_event_log() {
+    let store = Arc::new(MemoryStore::new());
+    let h = start(store.clone(), Policy::default()).await;
+    let a = h.create("Sender").await;
+    let b = h.create("Reader").await;
+    befriend(&h, &a, &b).await;
+    let r = h.post_event(&a, text_event(&h, &a, &b, "one")).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let r = h.post_event(&a, text_event(&h, &a, &b, "two")).await;
+    let two = r.json()["position"].as_u64().unwrap();
+    let r = h.post_event(&b, delete_event(&h, &b, two)).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let before = read(&h, &b).await.json();
+    assert_eq!(before["messages"].as_array().unwrap().len(), 1);
+    let replay = Live::start(
+        store,
+        ServerIdentity::load(&h.dir).unwrap(),
+        Policy::default(),
+    )
+    .await
+    .unwrap();
+    let h2 = Harness {
+        app: live_server::http::router(replay.clone()),
+        live: replay,
+        operator: ServerIdentity::load(&h.dir).unwrap().key,
+        id: h.id.clone(),
+        dir: temp_dir(),
+    };
+    assert_eq!(read(&h2, &b).await.json(), before);
+}

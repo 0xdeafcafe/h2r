@@ -3534,6 +3534,132 @@ fn friend_requests_made_in_the_game_reach_the_server_and_can_be_answered() {
         friend_events(&s, types::FRIEND_ACCEPTED, a.xuid, b.xuid)
     });
 }
+fn wide_text(text: &str) -> Vec<u8> {
+    text.encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+/// Composes a generic text message in `w` and sends it to `to` with the
+/// game's XOnlineMessageSend; the send's task.
+fn send_text(w: &mut World, to: Xuid, text: &str) -> u32 {
+    assert_eq!(
+        w.call("XOnlineMessageCreate", &[1, 0, 0, 0, 0, 0x08, 0x4ec0, OUT]),
+        0
+    );
+    let msg = w.u32(OUT);
+    let bytes = wide_text(text);
+    w.put(BUFFER, &bytes);
+    assert_eq!(
+        w.call(
+            "XOnlineMessageSetProperty",
+            &[msg, 0x6c4, bytes.len() as u32, BUFFER, 0]
+        ),
+        0
+    );
+    w.put(INV_FRIEND, &to.0.to_le_bytes());
+    w.word(INV_FRIEND + 8, 0);
+    assert_eq!(
+        w.call("XOnlineMessageSend", &[0, msg, 1, INV_FRIEND, 0, OUT]),
+        0
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.call("XOnlineMessageDestroy", &[msg]), 0);
+    task
+}
+fn text_events(s: &Server, kind: &str) -> Vec<WireEvent> {
+    s.events().into_iter().filter(|e| e.kind == kind).collect()
+}
+#[test]
+fn friends_text_messages_reach_the_inbox_and_delete_on_the_server() {
+    let s = Server::new();
+    let a = s.account("Sender");
+    let b = s.account("Reader");
+    let c = s.account("Stranger");
+    friend_pair(&s, &a, &b);
+    let mut sender = World::new(&s.embedded.url, &[&a]);
+    let mut reader = World::new(&s.embedded.url, &[&b]);
+    let mut stranger = World::new(&s.embedded.url, &[&c]);
+    sender.logon();
+    reader.logon();
+    stranger.logon();
+
+    // A sends B a message: the task reports the server's answer, and the
+    // mailbox has the signed event with the text.
+    let text = "Hello \u{96ea} from the game";
+    let task = send_text(&mut sender, b.xuid, text);
+    assert_eq!(sender.wait(task), TASK_SUCCESS);
+    let sent = text_events(&s, live_proto::mailbox::TEXT_SENT);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].data["text"], text);
+    assert_eq!(sent[0].data["from"], a.xuid.to_string());
+    assert_eq!(sent[0].stream, live_proto::mailbox::stream(b.xuid));
+
+    // B's inbox lists it with the sender and the text.
+    guest_until(&mut reader, |w| {
+        w.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]) == 0 && w.u32(OUT) == 1
+    });
+    assert_eq!(reader.bytes(INV_RECORD, 8), a.xuid.0.to_le_bytes());
+    assert_eq!(reader.bytes(INV_RECORD + 12, 1), vec![1]);
+    assert_eq!(reader.bytes(INV_RECORD + 48, 6), b"Sender");
+    let message = reader.u32(INV_RECORD + 32);
+    assert_eq!(
+        reader.call("XOnlineGetNotificationEx", &[0, OUT, OUT + 16]),
+        1
+    );
+    assert_eq!(reader.bytes(OUT, 1), vec![1]);
+    assert_eq!(reader.u32(OUT + 1), message);
+    assert_eq!(
+        reader.call("XOnlineGetNotificationEx", &[0, OUT, OUT + 16]),
+        0,
+        "one toast per message"
+    );
+    assert_eq!(
+        reader.call("XOnlineMessageDetails", &[0, message, 0, 0, 0, OUT]),
+        0
+    );
+    let details = reader.u32(OUT);
+    assert_eq!(reader.wait(details), TASK_SUCCESS);
+    let expected = wide_text(text);
+    assert_eq!(
+        reader.call(
+            "XOnlineMessageDetailsGetResultsProperty",
+            &[details, 0x6c4, 256, BUFFER, OUT, OUT + 4]
+        ),
+        0
+    );
+    assert_eq!(reader.u32(OUT), expected.len() as u32);
+    assert_eq!(reader.bytes(BUFFER, expected.len()), expected);
+    assert_eq!(
+        reader.call(
+            "XOnlineMessageDetailsGetResultsProperty",
+            &[details, 0x3c2, 256, BUFFER, OUT, OUT + 4]
+        ),
+        MESSAGE_PROPERTY_NOT_FOUND
+    );
+    assert_eq!(reader.call("XOnlineTaskClose", &[details]), 0);
+
+    // Deleting it removes it on the server and from the list.
+    assert_eq!(reader.call("XOnlineMessageDelete", &[0, message, 0]), 0);
+    guest_until(&mut reader, |_| {
+        text_events(&s, live_proto::mailbox::TEXT_DELETED)
+            .iter()
+            .any(|e| e.data["message_id"] == sent[0].position)
+    });
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            reader.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]),
+            0
+        );
+        assert_eq!(reader.u32(OUT), 0, "still gone after the next refresh");
+    }
+
+    // A stranger is refused: the task fails and nothing is stored.
+    let task = send_text(&mut stranger, b.xuid, "let me in");
+    assert_eq!(stranger.wait(task), FRIEND_NOT_FOUND);
+    assert_eq!(text_events(&s, live_proto::mailbox::TEXT_SENT).len(), 1);
+}
 fn guest_until(w: &mut World, mut condition: impl FnMut(&mut World) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(6);
     while !condition(w) {

@@ -1588,6 +1588,46 @@ impl State {
                 let pending = service.social(&session, sender, request);
                 self.outbox.attach(m.u32(out)?, pending);
             }
+            // A plain text message (the generic send) reaches each friend's
+            // server mailbox as a signed `MessageSent`; the task reports the
+            // server's answer. Voice attachments are not sent, and a message
+            // with no text property stays a local capture.
+            if result == 0
+                && op == crate::outbox::Op::Send
+                && let (Some(service), Some(session)) = (&self.service, self.session())
+            {
+                let capture = self.outbox.last().unwrap();
+                let text = match capture
+                    .message
+                    .properties
+                    .get(&TEXT_PROPERTY)
+                    .filter(|_| capture.message.message_type == 1)
+                {
+                    Some(crate::outbox::MessageProperty {
+                        value: crate::outbox::MessageValue::String(t),
+                        ..
+                    }) if !t.trim().is_empty() => Some(t.clone()),
+                    _ => None,
+                };
+                if let Some(text) = text {
+                    let to = capture
+                        .recipients
+                        .iter()
+                        .filter_map(|r| match r {
+                            crate::outbox::MessageRecipient::User(u) => {
+                                Some(live_proto::Xuid(u.xuid))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let pending = service.social(
+                        &session,
+                        sender,
+                        client::SocialRequest::Text { to, text },
+                    );
+                    self.outbox.attach(m.u32(a[5])?, pending);
+                }
+            }
             return Ok(result);
         }
         if let Arbitration(op) = op {
@@ -2531,6 +2571,9 @@ fn bot_record(xuid: u64, gamertag: &str) -> [u8; USER_SIZE] {
     r[12..12 + tag.len()].copy_from_slice(tag);
     r
 }
+
+/// The message property that holds a text message's text (a UTF-16 string).
+const TEXT_PROPERTY: u16 = 0x6c4;
 
 /// Presence's words for a co-op campaign on `level` (cut to fit).
 pub fn coop_activity(level: &str) -> String {

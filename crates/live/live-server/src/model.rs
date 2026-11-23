@@ -270,6 +270,8 @@ pub struct State {
     /// the session (`GET /v1/coop/games`, newest first by that position).
     pub coop_games: BTreeMap<u64, crate::sessions::CoopGame>,
     pub mailboxes: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::Invite>>,
+    /// Text messages by recipient, then by the sent event's position.
+    pub texts: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::TextMessage>>,
     pub games: HashMap<String, Game>,
     /// Consumed by the GameStarted appended together with each private link.
     pending_session_links: HashMap<String, String>,

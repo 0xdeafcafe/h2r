@@ -1756,8 +1756,16 @@ account stream (`SocialRequest::FriendRequest` / `FriendRequestByName` in
 `/v1/accounts/{gamertag}` for the xuid. The task completes when the server has
 the event; an unknown gamertag or xuid completes it with FRIEND_NOT_FOUND
 (`0x80152008`), and a refused request (already friends or pending, a Clanker)
-with INVALID_ARGUMENT. Generic message captures remain local; clan recruitment has its separate
-server-backed Teams path.
+with INVALID_ARGUMENT. A plain text message, the generic MessageSend of a type-1 message, posts a
+signed `MessageSent` event to each recipient's mailbox (`SocialRequest::Text`
+in `client.rs`, started from `state.rs`). The text is the `0x6c4` property,
+cut to `live_proto::mailbox::TEXT_MAX` characters. The task reports the
+server's answer: success once the event is stored, FRIEND_NOT_FOUND
+(`0x80152008`) when the recipient is not a friend or the account is unknown,
+INVALID_ARGUMENT for text the server refuses. A message with voice and text
+sends the text only; a message with no text stays a local capture. Voice
+attachments are not delivered. Other generic captures remain local; clan
+recruitment has its separate server-backed Teams path.
 
 Every accepted local send returns a task whose Continue result is
 XONLINETASK_S_SUCCESS (`0x001500f0`), rather than the running value S_OK. The game
@@ -1807,12 +1815,16 @@ These reads do not implement sending or accepting friend requests: establish the
 friendship through the existing CLI or web UI first.
 
 MessageEnumerate presents each pending invite as a type-3, 64-byte summary from
-the real inviter XUID/gamertag. GetNotificationEx returns one type-3 notification
+the real inviter XUID/gamertag, and each text message from a friend as a type-1
+summary (creation flag 8, has text) from the sender, together newest first and
+at most 100 (`Invites::inbox`). GetNotificationEx returns one type-3 notification
 per invite; repeated polls return FALSE with cleared output. Details owns a
 snapshot task, and DetailsGetResultsProperty returns the required session-ID
-property `0x0581`. Other properties report PROPERTY_NOT_FOUND and no attachment
-is invented. MessageDelete queues a remove (or block-sender) answer and hides
-the item; an already handled known ID is acknowledged. Title resources remain
+property `0x0581` of an invitation, or the text property `0x06c4` (a NUL-ended
+UTF-16 string) of a text message. Other properties report PROPERTY_NOT_FOUND and
+no attachment is invented. MessageDelete queues a remove (or block-sender)
+answer and hides the item; for a text message it posts a signed `MessageDeleted`
+and the server drops the message. An already handled known ID is acknowledged. Title resources remain
 on the storage path and never become inbox messages or notifications.
 
 FriendsAnswerGameInvite and GameInviteAnswer queue an authenticated recipient

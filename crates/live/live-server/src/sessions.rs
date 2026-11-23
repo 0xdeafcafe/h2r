@@ -647,7 +647,8 @@ fn mark_redacted(w: &mut live_proto::WireEvent) {
 }
 
 /// Whether an event of a private kind shows to `viewer`, from its data:
-/// game invitations to their sender and recipient, friend events to the
+/// game invitations and text messages to their sender and recipient (a
+/// deletion to the recipient), friend events to the
 /// two accounts and the friends of either, content and player reports and
 /// who downloaded which map to admins only, bans to the banned player,
 /// mutes to the muting player.
@@ -695,6 +696,19 @@ pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
                     .map(|i| i.from)
             };
             me == to || from == Some(me)
+        }
+        mailbox::TEXT_SENT | mailbox::TEXT_DELETED => {
+            let Viewer::Account(me) = viewer else {
+                return false;
+            };
+            let Some(to) = b
+                .stream
+                .strip_prefix("mailbox-")
+                .and_then(|v| Xuid::parse(v).ok())
+            else {
+                return false;
+            };
+            me == to || (b.kind == mailbox::TEXT_SENT && xuid("from") == Some(me))
         }
         types::FRIEND_REQUESTED
         | types::FRIEND_ACCEPTED

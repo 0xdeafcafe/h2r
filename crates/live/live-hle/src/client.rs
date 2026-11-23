@@ -281,6 +281,10 @@ pub(crate) enum MatchRequest {
 pub(crate) enum SocialRequest {
     Refresh,
     Send { to: Vec<Xuid>, session_id: String },
+    /// A text message to friends, as the generic message send makes it.
+    Text { to: Vec<Xuid>, text: String },
+    /// The player deletes a text message from their mailbox.
+    TextDelete(live_proto::mailbox::TextDeleted),
     Answer(live_proto::mailbox::Answered),
     /// The signed-in player answers a pending friend request: accepted, or
     /// declined (also for XDK's "never", which the server has no event for).
@@ -304,6 +308,7 @@ pub(crate) struct ReportRequest {
 pub(crate) struct SocialSnapshot {
     pub friends: live_proto::Friends,
     pub invites: Vec<live_proto::mailbox::Invite>,
+    pub messages: Vec<live_proto::mailbox::TextMessage>,
     pub sessions: Vec<live_proto::session::Session>,
 }
 enum Work {
@@ -1798,8 +1803,18 @@ impl Worker {
         )?;
         Ok(())
     }
-    fn mailbox(&self, user: &Identity) -> Result<Vec<live_proto::mailbox::Invite>, Error> {
-        let page: live_proto::Page<live_proto::mailbox::Invite> = self.team_json(
+    /// The player's pending invitations and text messages.
+    fn mailbox(
+        &self,
+        user: &Identity,
+    ) -> Result<
+        (
+            Vec<live_proto::mailbox::Invite>,
+            Vec<live_proto::mailbox::TextMessage>,
+        ),
+        Error,
+    > {
+        let page: live_proto::mailbox::Mailbox = self.team_json(
             user,
             &format!("/accounts/by-xuid/{}/mailbox", Xuid(user.xuid)),
         )?;
@@ -1813,7 +1828,17 @@ impl Worker {
         {
             return Err(Error::Protocol);
         }
-        Ok(page.items)
+        if page.messages.len() > live_proto::mailbox::TEXT_BOX_MAX
+            || page.messages.iter().any(|v| {
+                v.to != Xuid(user.xuid)
+                    || v.gamertag.len() > 15
+                    || !v.gamertag.is_ascii()
+                    || !live_proto::mailbox::valid_text(&v.text)
+            })
+        {
+            return Err(Error::Protocol);
+        }
+        Ok((page.items, page.messages))
     }
     fn friends_for(&self, user: &Identity) -> Result<live_proto::Friends, Error> {
         self.team_json(
@@ -1829,7 +1854,7 @@ impl Worker {
         match request {
             SocialRequest::Refresh => {
                 let friends = self.friends_for(user)?;
-                let invites = self.mailbox(user)?;
+                let (invites, messages) = self.mailbox(user)?;
                 let sessions = self.matches_request(
                     user,
                     MatchRequest::Search {
@@ -1841,6 +1866,7 @@ impl Worker {
                 Ok(Reply::Social(SocialSnapshot {
                     friends,
                     invites,
+                    messages,
                     sessions,
                 }))
             }
@@ -1855,9 +1881,36 @@ impl Worker {
                 }
                 Ok(Reply::Done)
             }
+            SocialRequest::Text { to, text } => {
+                let text: String = text.chars().take(live_proto::mailbox::TEXT_MAX).collect();
+                for recipient in to {
+                    self.social_event(
+                        user,
+                        *recipient,
+                        mailbox::TEXT_SENT,
+                        json!({"from":Xuid(user.xuid),"text":text}),
+                    )
+                    // Only friends may message: say so as an unknown friend.
+                    .map_err(|e| match e {
+                        Error::Status(403) => Error::Status(404),
+                        e => e,
+                    })?;
+                }
+                Ok(Reply::Done)
+            }
+            SocialRequest::TextDelete(deleted) => {
+                self.social_event(
+                    user,
+                    Xuid(user.xuid),
+                    mailbox::TEXT_DELETED,
+                    serde_json::to_value(deleted).map_err(|_| Error::Protocol)?,
+                )?;
+                Ok(Reply::Done)
+            }
             SocialRequest::Answer(answer) => {
                 let invite = self
                     .mailbox(user)?
+                    .0
                     .into_iter()
                     .find(|v| v.id == answer.invite_id && v.session_id == answer.session_id)
                     .ok_or(Error::Status(404))?;
