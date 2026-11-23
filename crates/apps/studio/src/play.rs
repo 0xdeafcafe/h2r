@@ -234,7 +234,12 @@ pub struct Play {
     baseline: Option<(String, Baseline)>,
     /// Send edits as they are made.
     pub live_edits: bool,
-    next_push: Instant,
+    /// When the next field batch may leave, at the frame's clock. `None`
+    /// when one is due on the next frame: the paths that run inside a
+    /// frame ([`Play::apply_edits`], the batch and raw answers) must not
+    /// stamp the wall clock here, or the frame's own time falls behind
+    /// the deadline for good.
+    next_push: Option<Instant>,
     edits: Edits,
     presence: presence::Presence,
     objects: objects::State,
@@ -302,7 +307,7 @@ impl Play {
             session: None,
             baseline: None,
             live_edits: false,
-            next_push: Instant::now(),
+            next_push: Some(Instant::now()),
             edits: Edits::default(),
             presence: Default::default(),
             objects: objects::State::default(),
@@ -852,8 +857,8 @@ impl Play {
             self.window_focus(app, true);
         }
         if !matches!(self.conn, Conn::Reconnecting { .. }) {
-            if now >= self.next_push {
-                self.next_push = now + PUSH_EVERY;
+            if self.next_push.is_none_or(|due| now >= due) {
+                self.next_push = Some(now + PUSH_EVERY);
                 self.push_edits(app);
             } else if self.edits.document_changed(app) {
                 self.refresh_pending(app, false);
@@ -1136,7 +1141,7 @@ impl Play {
                     app.pairing.journal.clear();
                     app.info("game link interrupted a write; checking the game journal");
                 }
-                self.next_push = Instant::now();
+                self.next_push = None;
                 self.edits.transport_lost();
                 if let Conn::Reconnecting { why: last, .. } = &mut self.conn {
                     *last = why;

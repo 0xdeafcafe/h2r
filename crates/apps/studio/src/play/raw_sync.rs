@@ -1099,7 +1099,7 @@ impl Play {
             }
         }
         self.edits.last_diff = None;
-        self.next_push = Instant::now();
+        self.next_push = None;
         if std::mem::take(&mut self.edits.restore_after_batch)
             && let Err(why) = self.apply_edits(app, Apply::Restore)
         {
