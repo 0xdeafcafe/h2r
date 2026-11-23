@@ -1022,28 +1022,10 @@ Not yet:
 
 ### Embedded play (not built)
 
-Showing the game's picture inside the viewport, rather than in its own
-window, could be done two ways:
-
-- **In process.** Link the runtime into the editor and run the game on a
-  thread, its renderer drawing into a wgpu texture the editor registers
-  with ImGui, as the viewport does. The editor and game would share one
-  device. That means the editor depends on the boot crate's whole game
-  host (image loading, audio, input, the dylib), takes on its process-wide
-  state (one game per process, its signal handlers and memory map), and a
-  game crash takes the editor down. Input would have to be routed from
-  ImGui to the game's XAPI pads. It is the lowest latency but the most
-  coupling; not cheap.
-- **Frames over the socket.** The game, run as now, encodes its presented
-  frame (downscaled, JPEG or raw RGBA in shared memory) when a client
-  asks, and the editor uploads it to a texture each time it arrives. The
-  agent has `render.frame` for pass and draw records, not pixels; a
-  `render.picture {width, every}` subscription streaming frames as events,
-  or a shared-memory ring for local clients, would be the new piece. It
-  keeps the processes apart and works with `h2 serve`, at the cost of a
-  copy per frame and a frame or two of latency; input stays in the game's
-  window (or goes over `input.pad`). This is the one to build if embedded
-  play is wanted.
+The game's picture inside Studio is designed in
+[game-view.md](game-view.md): a Game panel fed by a shared-memory ring
+of the game's frames, an own game in editor mode and an attached mode,
+with the game always a separate process.
 
 ## Game variants
 
