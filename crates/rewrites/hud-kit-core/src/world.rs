@@ -29,6 +29,8 @@ pub const TICKS: usize = 3;
 /// The drawn part of each tick's slot of the run; the rest is the gap to
 /// the next.
 pub const TICK_DUTY: f32 = 0.55;
+/// A bar's band ends: this fraction of the bar's length.
+pub const BAR_END: f32 = 0.5;
 /// The go green: the one colour a world mark has beside the user's HUD
 /// colour, for "this fall will bounce" (docs/game/superbounce.md, "The
 /// approach guide"). [`Style::Go`](crate::model::Style::Go) draws in it.
@@ -49,10 +51,16 @@ pub enum Shape {
     /// [`TICKS`] short dashes from the point along the heading, over a
     /// run of `half[0]`: closure cues, shorter as the run closes.
     Ticks,
+    /// A line on the floor across the heading, `half[1]` either side of
+    /// the point; with `half[0]` over 0, the two ends of a band
+    /// `half[0]` either side of it along the heading, as shorter lines
+    /// ([`BAR_END`] of its length).
+    Bar,
 }
 
 impl Shape {
-    pub const ALL: [Shape; 4] = [Shape::Pipper, Shape::Bracket, Shape::Arrow, Shape::Ticks];
+    pub const ALL: [Shape; 5] =
+        [Shape::Pipper, Shape::Bracket, Shape::Arrow, Shape::Ticks, Shape::Bar];
 
     /// The name the JSON and the findings use.
     pub fn name(self) -> &'static str {
@@ -61,6 +69,7 @@ impl Shape {
             Shape::Bracket => "bracket",
             Shape::Arrow => "arrow",
             Shape::Ticks => "ticks",
+            Shape::Bar => "bar",
         }
     }
 }
@@ -146,6 +155,8 @@ fn offset(p: Vec3, d: [f32; 2], by: f32) -> Vec3 {
 ///   its wing to the tip.
 /// - [`Shape::Ticks`]: [`TICKS`] dashes, the first starting at the point,
 ///   each [`TICK_DUTY`] of a third of the run.
+/// - [`Shape::Bar`]: the line across the heading through the point, then
+///   with a band its near and far ends, each [`BAR_END`] as long.
 pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
     if pose.fault().is_some() {
         return Vec::new();
@@ -213,6 +224,18 @@ pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
                 })
                 .collect()
         }
+        Shape::Bar => {
+            if b <= 0.0 {
+                return Vec::new();
+            }
+            let across = |at: Vec3, half: f32| [offset(at, n, -half), offset(at, n, half)];
+            let mut out = vec![across(c, b)];
+            if a > 0.0 {
+                out.push(across(offset(c, u, -a), b * BAR_END));
+                out.push(across(offset(c, u, a), b * BAR_END));
+            }
+            out
+        }
     }
 }
 
@@ -222,7 +245,7 @@ pub fn reach(shape: Shape, pose: &Pose) -> f32 {
     let [a, b] = pose.half;
     match shape {
         Shape::Pipper | Shape::Ticks => a,
-        Shape::Bracket | Shape::Arrow => a.hypot(b),
+        Shape::Bracket | Shape::Arrow | Shape::Bar => a.hypot(b),
     }
 }
 
@@ -317,6 +340,25 @@ mod tests {
         let near = edges(Shape::Ticks, &at(0.15));
         assert!(length(&near[0]) < length(&far[0]) / 3.9);
         assert!(edges(Shape::Ticks, &at(0.0)).is_empty());
+    }
+
+    /// A bar lies across its heading through the point, and a band adds
+    /// its two ends, shorter, either side along the heading.
+    #[test]
+    fn a_bar_lies_across_its_heading() {
+        let pose = Pose::at([1.0, 2.0, 0.0], [0.0, 0.25]).heading([0.0, 1.0]);
+        let e = edges(Shape::Bar, &pose);
+        assert_eq!(e.len(), 1);
+        assert!(close(e[0][0][1], 2.0) && close(e[0][1][1], 2.0), "across +Y is X: {e:?}");
+        assert!(close(length(&e[0]), 0.5));
+        let band = edges(Shape::Bar, &Pose { half: [0.03, 0.25], ..pose });
+        assert_eq!(band.len(), 3);
+        assert!(close(band[1][0][1], 1.97) && close(band[2][0][1], 2.03), "{band:?}");
+        for end in &band[1..] {
+            assert!(close(length(end), 0.5 * BAR_END));
+            assert!(close((end[0][0] + end[1][0]) / 2.0, 1.0), "centred on the point");
+        }
+        assert!(edges(Shape::Bar, &Pose { half: [0.03, 0.0], ..pose }).is_empty());
     }
 
     /// Every shape's lines stay within its reach of the point, and a

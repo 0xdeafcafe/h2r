@@ -497,7 +497,7 @@ fn the_line_up_is_to_the_landing_point_and_wants_the_seams_drift() {
 #[test]
 fn the_approach_guide_is_the_states_with_its_option() {
     use crate::superbounce_guide::{Body, guide};
-    use hud_kit_core::huds::superbounce_guide::{BOX, Call, DRIFT, MARKS, PIPPER, TICKS};
+    use hud_kit_core::huds::superbounce_guide::{BOX, Call, DRIFT, MARKS, PIPPER, TAKEOFF, TICKS};
     use hud_kit_core::model::Style;
     let spot = Spot {
         drift: [1.0, 0.0],
@@ -518,19 +518,38 @@ fn the_approach_guide_is_the_states_with_its_option() {
     s.guide = guide(&body, &spot);
     let v = view(&s, Options::DEFAULT, None).guide.unwrap();
     assert_eq!((v.call, v.pipper, v.ticks, v.drift), (Call::OffLine, true, true, Some(false)));
-    // From the seam's own floor no jump comes down fast enough: 0%.
-    assert_eq!(v.chance, Some(0));
+    // From the seam's own floor no jump comes down fast enough: no
+    // percentage, no jump cue, no takeoff line.
+    assert_eq!((v.chance, v.cue, v.takeoff), (None, None, false));
     let values = rd::values(&view(&s, Options::DEFAULT, None));
-    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true; 4]);
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [true, true, true, true, false]);
     assert_eq!(values.get(BOX).unwrap().style, Style::Dim);
-    assert_eq!(values.get(BOX).unwrap().text, "0%");
+    assert_eq!(values.get(BOX).unwrap().text, "");
     let poses = guide_poses(&s, Options::DEFAULT);
     assert_eq!(poses.map(|(id, _)| id), MARKS);
-    assert!(poses.iter().all(|(_, p)| p.is_some()));
+    assert!(poses.iter().all(|(id, p)| p.is_some() == (*id != TAKEOFF)));
     let at = |id: &str| poses.iter().find(|(i, _)| *i == id).unwrap().1.unwrap().at;
     assert_eq!(at(BOX), [10.0, 0.0, 2.0]);
     assert_eq!(at(PIPPER), [9.0, 0.0, 2.0]);
     assert!(at(TICKS)[0] > 9.0 && at(TICKS)[0] < 10.0 && at(DRIFT)[0] > 10.0);
+    // Standing on a ledge 3.45 over the seam: the walk-up's takeoff line
+    // up the drift, short of the seam, across +X, and `Walk to line`.
+    let ledge = Body {
+        position: [7.0, 0.0, 5.45],
+        ..body
+    };
+    s.guide = guide(&ledge, &spot);
+    let values = rd::values(&view(&s, Options::DEFAULT, None));
+    assert_eq!(values.get(BOX).unwrap().text, "Walk to line");
+    let t = guide_poses(&s, Options::DEFAULT)
+        .into_iter()
+        .find(|(id, _)| *id == TAKEOFF)
+        .and_then(|(_, p)| p)
+        .unwrap();
+    assert_eq!(t.along, [1.0, 0.0]);
+    assert!(t.at[0] > 7.5 && t.at[0] < 9.5, "{:?}", t.at);
+    assert!((t.at[2] - (5.45 - crate::superbounce_guide::CLEARANCE)).abs() < 1e-5);
+    assert!(values.get(TAKEOFF).unwrap().shown);
     // The variant's option takes all of it away.
     let off = Options {
         approach_guide: false,
@@ -539,7 +558,7 @@ fn the_approach_guide_is_the_states_with_its_option() {
     assert_eq!(view(&s, off, None).guide, None);
     assert!(guide_poses(&s, off).iter().all(|(_, p)| p.is_none()));
     let values = rd::values(&view(&s, off, None));
-    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [false; 4]);
+    assert_eq!(MARKS.map(|id| values.get(id).unwrap().shown), [false; 5]);
 }
 
 /// In a primed fall the guide's percentage is on the box after its call

@@ -388,28 +388,32 @@ fn the_agent_reply_carries_the_call_and_the_depth() {
     near(r.row.unwrap()[2] as f32, -2.83, 1e-6);
     near(r.impact.unwrap()[2] as f32, -3.2, 1e-6);
     near(r.seam[1] as f32, 3.976, 1e-4);
-    // The chance: a fall's confidence, with no count of jumps; on this
-    // measured seam it is not capped.
+    // The chance: a fall's confidence; on this measured seam it is not
+    // capped. A fall has no jump cue and no takeoff line.
     near(r.chance.unwrap() as f32, 0.929, 2e-3);
-    assert_eq!((r.chance_jumps, r.chance_capped), (None, false));
+    assert!(!r.chance_capped);
+    assert_eq!((r.jump_in, r.cue.as_deref(), r.takeoff.is_some()), (None, None, false));
     let scan = Spot { landed: false, ..ascension() };
     let capped = guide_reply(&guide(&body, &scan).unwrap());
     near(capped.chance.unwrap() as f32, SCAN_ONLY_CAP, 1e-6);
     assert!(capped.chance_capped);
-    // On the ground it is the jumps' share, with their count.
-    let walking = Body {
-        position: [-10.457, 3.205, 0.25],
-        velocity: [0.0, 0.3, 0.0],
-        airborne: false,
-        primed: true,
-    };
-    let w = guide_reply(&guide(&walking, &ascension()).unwrap());
+    // On the ground: no chance, but the ticks to `Jump now`, the cue as
+    // the box reads it, and the takeoff line along the walk.
+    let w = guide_reply(&guide(&walking(3.205), &ascension()).unwrap());
     assert!(w.jump);
-    near(w.chance.unwrap() as f32, 0.375, 1e-6);
-    assert_eq!((w.chance_jumps, w.chance_capped), (Some(6), false));
-    // Not primed there is none.
+    assert_eq!((w.chance, w.chance_capped), (None, false));
+    let n = w.jump_in.unwrap();
+    assert!((2..=4).contains(&n), "{n}");
+    assert_eq!(w.cue, Some(marks::cue_text(Cue::In(marks::tenths(n)))));
+    let t = w.takeoff.unwrap();
+    assert!(!t.walk);
+    assert_eq!(t.heading, [0.0, 1.0]);
+    near(t.speed as f32, 0.3, 1e-6);
+    near(t.at[2] as f32, 0.25 - CLEARANCE, 1e-6);
+    // Not primed there is none of it.
     let idle = guide_reply(&guide(&Body { primed: false, ..body }, &ascension()).unwrap());
-    assert_eq!((idle.chance, idle.chance_jumps, idle.chance_capped), (None, None, false));
+    assert_eq!((idle.chance, idle.chance_capped), (None, false));
+    assert_eq!((idle.jump_in, idle.cue, idle.takeoff), (None, None, None));
     let shallow = guide(&Body { position: [-10.457, 3.95, -2.77], ..body }, &ascension()).unwrap();
     assert_eq!(guide_reply(&shallow).call, "too_shallow");
     assert_eq!(guide_reply(&shallow).deep, Some(false));
@@ -427,8 +431,8 @@ fn the_agent_reply_carries_the_call_and_the_depth() {
 }
 
 /// A body on a ledge 3.45 over Ascension's seam, walking at 0.3 units/s
-/// along its drift from `y`: each tick's jump lands 0.01 further on, 64
-/// ticks later at 5.82 units/s.
+/// along its drift from `y`: a jump from anywhere on the walk lands 64
+/// ticks later, 0.64 on, at 5.82 units/s.
 fn walking(y: f32) -> Body {
     Body {
         position: [-10.457, y, 0.25],
@@ -438,94 +442,275 @@ fn walking(y: f32) -> Body {
     }
 }
 
-/// Before the jump the chance is the share of the next 16 ticks a jump
-/// on which would bounce: a known line gives a known share.
-#[test]
-fn the_ground_chance_is_the_share_of_the_jumps_that_bounce() {
-    assert_eq!(CHANCE_TICKS, 16);
-    let s = seam();
-    let hits = |b: &Body| jump_hits(&s, b.position, b.velocity);
-    // From y 3.205 a jump now lands 0.155 before the edge, and the jumps
-    // of ticks 9 to 14 land 0.065 to 0.015 before it: in the landing
-    // window, their last free rows 0.015 to 0.053 under the cut. The
-    // next is 0.005 before the edge, past the window. Six of 16.
-    assert_eq!(hits(&walking(3.205)), Some(6));
-    // Twice as fast from a ledge 3.0 over the seam the landings are
-    // 0.02 apart: three of them in the window, all deep.
-    let brisk = Body {
-        position: [-10.457, 2.505, -0.2],
-        velocity: [0.0, 0.6, 0.0],
-        ..walking(0.0)
-    };
-    assert_eq!(hits(&brisk), Some(3));
-    // Standing still every tick's jump is the same one: all or none.
-    let still = |y: f32, z: f32| Body {
-        position: [-10.457, y, z],
-        velocity: [0.0; 3],
-        ..walking(0.0)
-    };
-    assert_eq!(hits(&still(3.955, -0.2)), Some(16));
-    assert_eq!(hits(&still(3.7, -0.2)), Some(0), "short of the catch");
-    // From the seam's own floor a jump comes down too slow to bounce.
-    assert_eq!(hits(&still(3.955, -3.2 + CLEARANCE)), Some(0));
-    // Nowhere near the seam there is nothing to say, nor on a seam with
-    // no drift.
-    assert_eq!(hits(&still(-40.0, -0.2)), None);
-    assert_eq!(jump_hits(&Seam { drift: [0.0; 2], ..s }, [-10.457, 3.955, -0.2], [0.0; 3]), None);
-    // Wide of the edge's end the same line bounces nothing.
-    let wide = Body {
-        position: [-9.5, 3.205, 0.25],
-        ..walking(3.205)
-    };
-    assert_eq!(hits(&wide), Some(0));
+/// The ground a run at `speed` covers in `ticks`.
+fn run(speed: f32, ticks: u32) -> f32 {
+    speed * ticks as f32 * TICK
 }
 
-/// The guide carries the ground chance, it climbs as the run closes on
-/// a good line, and the marks show it as a whole percentage.
-#[test]
-fn the_ground_chance_climbs_on_the_run_in() {
-    let spot = ascension();
-    let at = |y: f32| guide(&walking(y), &spot).unwrap();
-    let chances: Vec<_> = [3.105, 3.155, 3.205].map(|y| at(y).chance.unwrap()).to_vec();
-    assert_eq!(
-        chances.iter().map(|c| c.jumps).collect::<Vec<_>>(),
-        [Some(0), Some(2), Some(6)]
-    );
-    for (c, want) in chances.iter().zip([0.0, 0.125, 0.375]) {
-        near(c.value, want, 1e-6);
-        assert!(!c.capped);
-    }
-    let g = at(3.205);
-    // A jump now is short of the catch: off the line, with the share on
-    // the box all the same.
-    assert_eq!((g.call, g.jump), (Call::OffLine, true));
-    assert_eq!(g.view().chance, Some(38));
-    assert_eq!(at(3.155).view().chance, Some(13));
-    // Standing in the right place over a measured seam: every jump.
-    let still = |spot: &Spot, primed: bool| {
-        let body = Body {
-            position: [-10.457, 3.955, -0.2],
-            velocity: [0.0; 3],
-            airborne: false,
-            primed,
-        };
-        guide(&body, spot).unwrap()
-    };
-    let sure = still(&spot, true).chance.unwrap();
-    assert_eq!((sure.value, sure.jumps, sure.capped), (1.0, Some(16), false));
-    assert_eq!(still(&spot, true).view().chance, Some(100));
-    // A seam no run has landed on is capped, and says so.
-    let scan = Spot { landed: false, ..spot };
-    let capped = still(&scan, true).chance.unwrap();
-    assert_eq!((capped.value, capped.jumps, capped.capped), (SCAN_ONLY_CAP, Some(16), true));
-    assert_eq!(still(&scan, true).view().chance, Some(60));
-    // Not primed nothing bounces: no chance.
-    assert_eq!(still(&spot, false).chance, None);
-    assert_eq!(still(&spot, false).view().chance, None);
-    // A seam with no drift has no depth rule, and so none.
-    let plain = Spot { drift: [0.0; 2], ..spot };
-    assert_eq!(still(&plain, true).chance, None);
+/// Whether a jump from `from` at `velocity` bounces on `s`, as the box
+/// would call its fall.
+fn bounces(s: &Seam, from: Vec3, velocity: Vec3) -> bool {
+    impact(from, velocity, |xy| s.contact(xy))
+        .is_some_and(|i| call(s, Some(&i), true, true) == Call::WillBounce)
 }
+
+/// The takeoff line on a known line: walking at 0.3 from y 3.205, the
+/// jumps that bounce leave the floor from y 3.29 to 3.35 (the landing
+/// window, y 3.93 to 3.99, less the 0.64 carry), the jumps of ticks 9 to
+/// 14. The line is where to press for those: 5 ticks (0.05) short, from
+/// 0.035 to 0.095 ahead, on the ledge under the body.
+#[test]
+fn the_takeoff_line_is_solved_along_the_path() {
+    let s = seam();
+    let b = walking(3.205);
+    let t = takeoff(&s, b.position, b.velocity).unwrap();
+    assert!(!t.walk());
+    assert_eq!(t.heading, [0.0, 1.0]);
+    near(t.speed, 0.3, 1e-6);
+    let lead = run(0.3, PRESS_LEAD);
+    near(lead, 0.05, 1e-6);
+    let [lo, hi] = t.ahead.unwrap();
+    near(3.205 + lo + lead, 3.29, 0.008);
+    near(3.205 + hi + lead, 3.35, 0.008);
+    near3(t.at, [-10.457, 3.205 + (lo + hi) / 2.0, 0.25 - CLEARANCE]);
+    near(t.half, (hi - lo) / 2.0, 1e-6);
+    // A jump on each of the next 20 ticks bounces when it leaves the
+    // floor inside the band, and only then: ticks 9 to 14.
+    let up = jump(b.velocity);
+    for k in 0..20 {
+        let y = 3.205 + 0.01 * k as f32;
+        let inside = (lo + lead..=hi + lead).contains(&(y - 3.205));
+        assert_eq!(bounces(&s, [-10.457, y, 0.25], up), inside, "tick {k}");
+        assert_eq!(inside, (9..=14).contains(&k), "tick {k}");
+    }
+    // A press on the line's centre leaves the floor the lead on, and
+    // bounces.
+    assert!(bounces(&s, [t.at[0], t.at[1] + lead, 0.25], up));
+    // Twice as fast from a ledge 3.0 over the seam the band is as wide
+    // (the landing moves with the takeoff), the lead twice as long.
+    let brisk = takeoff(&s, [-10.457, 2.505, -0.2], [0.0, 0.6, 0.0]).unwrap();
+    let [lo, hi] = brisk.ahead.unwrap();
+    assert!(hi - lo > 0.04 && hi - lo < 0.08, "{lo} {hi}");
+    let at = [brisk.at[0], brisk.at[1] + run(0.6, PRESS_LEAD), -0.2];
+    assert!(bounces(&s, at, jump([0.0, 0.6, 0.0])));
+    // Wide of the edge's end the same walk has no band ahead: the
+    // walk-up's line, up the drift to the seam's point.
+    let wide = takeoff(&s, [-9.5, 3.205, 0.25], [0.0, 0.3, 0.0]).unwrap();
+    assert!(wide.walk());
+    near(wide.at[0], -10.457, 1e-3);
+}
+
+/// The coarse pass, which tries every step only near the landing
+/// window, finds the band a step-by-step scan finds.
+#[test]
+fn the_coarse_pass_finds_the_same_band() {
+    let s = seam();
+    for (from, v, some) in [
+        ([-10.457, 2.9, 0.25], [0.0, 0.3, 0.0], true),
+        ([-10.457, 2.0, -0.2], [0.0, 0.6, 0.0], true),
+        ([-10.457, 1.0, 0.25], [0.0, 2.0, 0.0], true),
+        ([-10.9, 1.5, 0.25], [0.2, 0.9, 0.0], false),
+        ([-10.457, 3.6, 0.25], [0.0, -0.5, 0.0], false),
+    ] {
+        let speed = v[0].hypot(v[1]);
+        let dir = [v[0] / speed, v[1] / speed];
+        let range = [-0.3, speed * 3.0 + 0.3];
+        let fine = band_by(&s, from, dir, jump(v), range, 0.0, false);
+        assert_eq!(band_by(&s, from, dir, jump(v), range, 0.0, true), fine, "{from:?} {v:?}");
+        assert!(!some || fine.is_some(), "{from:?} {v:?}");
+    }
+}
+
+/// The count is the walk to the line: from y 3.105 the line's near end
+/// is 0.135 on, 14 ticks at 0.3. The count falls one a tick, and reaches
+/// `Jump now` as the body comes within a tick ([`NOW_EARLY`]) of the
+/// line, after `Jump in 0.1 s`; it stays `Jump now` through the band,
+/// and the line stays put. Past the band the line is the walk-up's.
+#[test]
+fn the_count_reaches_jump_now_at_the_line() {
+    let s = seam();
+    let step = run(0.3, 1);
+    let (mut last, mut first_now, mut passed) = (None::<(u32, Vec3, Cue)>, None, false);
+    let (mut shown, mut held) = (None, 0);
+    for k in 0..30u32 {
+        let b = walking(3.105 + step * k as f32);
+        let Some(t) = takeoff(&s, b.position, b.velocity) else { break };
+        if t.walk() {
+            passed = true;
+            break;
+        }
+        let n = t.jump_in().unwrap();
+        let [near_end, far_end] = t.ahead.unwrap();
+        assert!(far_end >= 0.0, "tick {k}");
+        if let Some((m, at, _)) = last {
+            assert!((t.at[1] - at[1]).abs() <= TAKEOFF_STEP + 1e-4, "tick {k}: the line moved");
+            assert_eq!(n, m.saturating_sub(1), "tick {k}");
+        }
+        if n > 0 {
+            assert!(near_end > step * NOW_EARLY as f32 - 1e-4, "tick {k}: {near_end}");
+            assert_eq!(t.cue(), Cue::In(marks::tenths(n)), "tick {k}");
+        } else {
+            assert_eq!(t.cue(), Cue::Now, "tick {k}");
+            if first_now.is_none() {
+                first_now = Some(k);
+                assert!(near_end <= step * NOW_EARLY as f32 + 1e-4, "{near_end}");
+                assert_eq!(last.map(|l| l.2), Some(Cue::In(1)), "0.1 s before");
+                // `Jump now` shows `NOW_EARLY` ticks ahead of the band:
+                // a press that many ticks on, or one more, leaves the
+                // floor in it, and bounces.
+                for late in NOW_EARLY..=NOW_EARLY + 1 {
+                    let y = b.position[1] + step * late as f32 + run(0.3, PRESS_LEAD);
+                    assert!(bounces(&s, [-10.457, y, 0.25], jump(b.velocity)), "{late}");
+                }
+            }
+        }
+        // Settled, a steady count is the same count.
+        (shown, held) = settle(shown, held, Some(t.cue()));
+        assert_eq!(shown, Some(t.cue()), "tick {k}");
+        last = Some((n, t.at, t.cue()));
+    }
+    let first = first_now.expect("Jump now");
+    assert!((12..=14).contains(&first), "{first}");
+    assert!(passed, "past the band the line is the walk-up's");
+}
+
+/// Standing, the line is a walk-up's: up the seam's drift at the walk
+/// speed (0.8), no count, `Walk to line`. A jump at 0.8 carries 1.71
+/// in its 64 ticks, so the takeoffs that bounce are about y 2.22 to 2.28,
+/// and the line is the lead (0.13) short of them. Moving away is the
+/// same; from the seam's own floor, and on a seam with no drift, there
+/// is no line.
+#[test]
+fn standing_the_line_is_a_walk_ups() {
+    let s = seam();
+    let still = Body {
+        velocity: [0.0; 3],
+        ..walking(2.6)
+    };
+    let t = takeoff(&s, still.position, still.velocity).unwrap();
+    assert!(t.walk());
+    assert_eq!((t.jump_in(), t.cue()), (None, Cue::Walk));
+    assert_eq!((t.heading, t.speed), ([0.0, 1.0], WALK_UP));
+    let lead = run(WALK_UP, PRESS_LEAD);
+    near(t.at[0], -10.457, 1e-3);
+    near(t.at[1] + lead, 2.253, 0.04);
+    near(t.at[2], 0.25 - CLEARANCE, 1e-6);
+    assert!(t.half > 0.0 && t.half < 0.05, "{}", t.half);
+    // A walk-up pressing on the line's centre bounces.
+    let walk = [0.0, WALK_UP, JUMP_VZ];
+    assert!(bounces(&s, [t.at[0], t.at[1] + lead, 0.25], walk));
+    // Where on the ledge the body stands does not move it.
+    let other = takeoff(&s, [-10.457, 1.0, 0.25], [0.0; 3]).unwrap();
+    near3(other.at, t.at);
+    // Moving away: the walk-up's line, no count.
+    let away = takeoff(&s, still.position, [0.0, -0.3, 0.0]).unwrap();
+    assert!(away.walk());
+    near3(away.at, t.at);
+    // Creeping slower than `MOVING` is standing.
+    let creep = takeoff(&s, still.position, [0.0, MOVING / 2.0, 0.0]).unwrap();
+    assert!(creep.walk());
+    // From the seam's own floor no jump bounces; a seam with no drift
+    // has no depth rule.
+    assert_eq!(takeoff(&s, [-10.457, 3.9, -3.2 + CLEARANCE], [0.0; 3]), None);
+    assert_eq!(takeoff(&Seam { drift: [0.0; 2], ..s }, still.position, [0.0; 3]), None);
+    assert_eq!(takeoff(&s, [f32::NAN, 2.6, 0.25], [0.0; 3]), None);
+}
+
+/// The cue holds steady: a count down shows as it is; a step a tenth
+/// back up, `Jump now` against 0.1, and a count against a missing line
+/// are held for `CUE_GRACE` ticks at most; anything else shows at once,
+/// and `Jump now` never outlasts its band.
+#[test]
+fn the_cue_holds_steady() {
+    use Cue::{In, Now, Walk};
+    let shown = |raw: &[Option<Cue>]| {
+        let (mut c, mut h) = (None, 0);
+        raw.iter()
+            .map(|r| {
+                (c, h) = settle(c, h, *r);
+                c
+            })
+            .collect::<Vec<_>>()
+    };
+    let counting = [Some(In(5)), Some(In(5)), Some(In(4)), Some(In(4)), Some(In(3))];
+    assert_eq!(shown(&counting), counting);
+    // Jitter a tenth up and back down is held.
+    let jitter = [Some(In(5)), Some(In(6)), Some(In(5)), Some(In(6)), Some(In(5))];
+    assert_eq!(shown(&jitter), [Some(In(5)); 5]);
+    // A step up that lasts shows after `CUE_GRACE` ticks.
+    assert_eq!(CUE_GRACE, 3);
+    let up = [Some(In(5)), Some(In(6)), Some(In(6)), Some(In(6)), Some(In(6))];
+    assert_eq!(shown(&up), [Some(In(5)), Some(In(5)), Some(In(5)), Some(In(5)), Some(In(6))]);
+    // A bigger step is a new line: at once.
+    assert_eq!(shown(&[Some(In(5)), Some(In(9))]), [Some(In(5)), Some(In(9))]);
+    // `Jump now` holds against a count of 0.1 flickering back.
+    let flicker = [Some(In(1)), Some(Now), Some(In(1)), Some(Now)];
+    assert_eq!(shown(&flicker), [Some(In(1)), Some(Now), Some(Now), Some(Now)]);
+    // A count holds through a dropped tick, but not for good.
+    assert_eq!(shown(&[Some(In(4)), None, Some(In(3))]), [Some(In(4)), Some(In(4)), Some(In(3))]);
+    let gone = [Some(In(4)), None, None, None, None];
+    assert_eq!(shown(&gone), [Some(In(4)), Some(In(4)), Some(In(4)), Some(In(4)), None]);
+    // `Jump now` goes with its band, and a walk-up or a count shows at
+    // once.
+    assert_eq!(shown(&[Some(Now), None]), [Some(Now), None]);
+    assert_eq!(shown(&[Some(Now), Some(Walk)]), [Some(Now), Some(Walk)]);
+    assert_eq!(shown(&[Some(Walk), Some(In(20))]), [Some(Walk), Some(In(20))]);
+}
+
+/// On the ground while primed the guide carries the takeoff line and
+/// its cue, which the marks show (`Jump in 0.4 s` or so on the box, the
+/// line drawn) in place of a percentage; the cue settles against the
+/// last tick's on the same seam only. Not primed, and in the air, there
+/// is neither.
+#[test]
+fn the_guide_carries_the_cue_on_the_ground() {
+    use hud_kit_core::model::Values;
+    let spot = ascension();
+    let g = guide(&walking(3.105), &spot).unwrap().settled(None);
+    let t = g.takeoff.unwrap();
+    assert_eq!(g.cue, Some(t.cue()));
+    assert!(matches!(g.cue, Some(Cue::In(4..=5))), "{:?}", g.cue);
+    assert_eq!(g.chance, None);
+    let v = g.view();
+    assert!(v.takeoff);
+    assert_eq!((v.chance, v.cue), (None, g.cue));
+    let l = g.layout().takeoff.unwrap();
+    assert_eq!((l.at, l.heading, l.half), (t.at, t.heading, t.half));
+    let mut out = Values::default();
+    marks::set_values(&mut out, Some(&v));
+    assert!(out.get(marks::BOX).unwrap().text.starts_with("Jump in 0."));
+    assert!(out.get(marks::TAKEOFF).unwrap().shown);
+    // Settled: a tenth back up is held, on the same seam alone.
+    let Some(Cue::In(n)) = g.cue else { unreachable!() };
+    let jitter = Guide {
+        cue: Some(Cue::In(n + 1)),
+        ..g
+    };
+    let held = jitter.settled(Some(&g));
+    assert_eq!((held.cue, held.held), (Some(Cue::In(n)), 1));
+    let elsewhere = Guide {
+        seam: Seam {
+            edge: [[0.0; 3], [1.0, 0.0, 0.0]],
+            ..g.seam
+        },
+        ..g
+    };
+    assert_eq!(jitter.settled(Some(&elsewhere)).cue, Some(Cue::In(n + 1)));
+    // Not primed: no line, no cue.
+    let idle = guide(&Body { primed: false, ..walking(3.105) }, &spot).unwrap();
+    assert_eq!((idle.takeoff, idle.cue), (None, None));
+    // In the air: the fall's chance instead.
+    let falling = Body {
+        position: [-10.457, 3.95, -2.83],
+        velocity: [0.0, 0.3, -5.3],
+        airborne: true,
+        primed: true,
+    };
+    let f = guide(&falling, &spot).unwrap().settled(Some(&g));
+    assert_eq!((f.takeoff, f.cue), (None, None));
+    assert!(f.chance.is_some());
+}
+
 
 /// In the air the chance is a confidence: 50% on the depth cut and on
 /// either end of the landing window, about 95% deep and centred, low
@@ -617,8 +802,8 @@ fn a_scan_only_seam_is_capped() {
     assert_eq!((m.call, s.call), (Call::WillBounce, Call::WillBounce));
     let (mc, sc) = (m.chance.unwrap(), s.chance.unwrap());
     near(mc.value, 0.929, 2e-3);
-    assert_eq!((mc.jumps, mc.capped), (None, false));
-    assert_eq!((sc.value, sc.jumps, sc.capped), (SCAN_ONLY_CAP, None, true));
+    assert!(!mc.capped);
+    assert_eq!((sc.value, sc.capped), (SCAN_ONLY_CAP, true));
     assert_eq!((m.view().chance, s.view().chance), (Some(93), Some(60)));
     // Too shallow is under the cap on either: the same on both.
     let (m, s) = (guide(&body(-2.77), &ascension()).unwrap(), guide(&body(-2.77), &scan).unwrap());

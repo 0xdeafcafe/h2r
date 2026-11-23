@@ -20,15 +20,17 @@
 //!   into it. Its constants are measured on one seam
 //!   (docs/game/notes/2026-11-22-seam-drop-depth.md).
 //! - **The call** ([`call`]): what the box says of the landing.
-//! - **The chance** ([`chance`]): the bounce's predicted percentage. On
-//!   the ground, the share of the next [`CHANCE_TICKS`] ticks a jump on
-//!   which would bounce ([`jump_hits`]); in the air, how sure the call is
-//!   ([`confidence`]). A seam with no measured landing is capped
-//!   ([`SCAN_ONLY_CAP`]).
+//! - **The jump cue** ([`takeoff`], [`settle`]): on the ground, the
+//!   takeoff line, where to press jump for the landing to bounce, solved
+//!   along the body's path, and the count to it, `Jump in 0.7 s`, then
+//!   `Jump now`; standing, a walk-up's line and `Walk to line`.
+//! - **The chance** ([`chance`]): in the air, the bounce's predicted
+//!   percentage, how sure the call is ([`confidence`]). A seam with no
+//!   measured landing is capped ([`SCAN_ONLY_CAP`]).
 //! - **Visibility** ([`strength`]): full while primed or within
 //!   [`NEAR`] of the seam, fading out to [`FAR`].
 
-use hud_kit_core::huds::superbounce_guide::{self as marks, Call, Layout};
+use hud_kit_core::huds::superbounce_guide::{self as marks, Call, Cue, Layout};
 use superbounce::{Kind, Spot, Vec3};
 
 use crate::superbounce_assist::{drift_unit, stand_near};
@@ -92,9 +94,41 @@ pub const DEPTH_SPEED: f32 = 5.2;
 /// way, at any speed, is all the hint asks.
 pub const DRIFT_HINT: f32 = 0.0;
 
-/// On the ground the chance is taken over a jump on each of this many
-/// ticks, this one and the 15 after: about half a second of the run.
-pub const CHANCE_TICKS: u32 = 16;
+/// A press of jump leaves the floor this many ticks later: the drill
+/// runs' jumps left it 4 to 6 ticks after the press
+/// (`bots::bounce_route::INPUT_LAG`,
+/// docs/game/notes/2026-11-21-bot-bounce-sim.md). The takeoff line is
+/// where to press, the ground of this many ticks short of where the body
+/// leaves the floor.
+pub const PRESS_LEAD: u32 = bots::bounce_route::INPUT_LAG;
+/// `Jump now` shows from this many ticks before the body reaches the
+/// line's band, and through the band: the tolerance for the eye and the
+/// thumb, which act a frame or more after the cue shows.
+pub const NOW_EARLY: u32 = 1;
+/// The furthest along the run the line is looked for: three seconds.
+pub const LOOK_AHEAD: u32 = 90;
+/// Under this ground speed (units/s) the body is standing, and the line
+/// is a walk-up's ([`WALK_UP`]).
+pub const MOVING: f32 = 0.05;
+/// Standing, or not moving toward a line, the line is for a walk up the
+/// seam's drift at the speed the fall assist crosses a strip at
+/// (`superbounce_assist::ARRIVE_SPEED`).
+pub const WALK_UP: f32 = crate::superbounce_assist::ARRIVE_SPEED;
+/// Takeoffs are tried this far apart along the run.
+pub const TAKEOFF_STEP: f32 = 0.005;
+/// A stretch of the run this long is passed over when the landings from
+/// both its ends are clear of the landing window on the same side
+/// ([`TAKEOFF_CLEAR`]): only near the window is every step tried.
+pub const TAKEOFF_COARSE: f32 = 0.04;
+/// A landing this far outside the landing window, or outside the catch,
+/// is clear of it.
+pub const TAKEOFF_CLEAR: f32 = 0.12;
+/// The band is looked for from this far behind the body, so a band the
+/// body is inside stays where it is.
+pub const TAKEOFF_BEHIND: f32 = 0.3;
+/// The cue holds a count's step up, `Jump now` against a count of 0.1,
+/// and a count against no line, for at most this many ticks ([`settle`]).
+pub const CUE_GRACE: u8 = 3;
 /// The most a fall is promised, and one minus this the least: no number
 /// of the depth rule's is sure enough for 100 or for 0.
 pub const CONFIDENCE_TOP: f32 = 0.95;
@@ -340,43 +374,232 @@ pub fn confidence(depth: &Depth, caught: bool) -> f32 {
     0.5 + (CONFIDENCE_TOP - 0.5) * m.tanh()
 }
 
-/// How many of the next [`CHANCE_TICKS`] ticks a jump on which would
-/// bounce, for a body on the ground at `position` moving `velocity`:
-/// each tick's jump is from where the run has carried the body by then
-/// (its height kept), flown as [`impact`] has it, and counts when
-/// [`call`] would say it will bounce: in the catch, at [`DEPTH_SPEED`]
-/// or faster, in the landing window and deep. `None` when no tick's jump
-/// comes down within [`PIPPER_RANGE`] of the seam's landing point, and
-/// for a seam with no drift.
-pub fn jump_hits(seam: &Seam, position: Vec3, velocity: Vec3) -> Option<u32> {
-    if !seam.drifts() {
-        return None;
-    }
-    let up = jump(velocity);
-    let (mut near, mut hits) = (false, 0);
-    for k in 0..CHANCE_TICKS {
-        let from = [
-            position[0] + velocity[0] * k as f32 * TICK,
-            position[1] + velocity[1] * k as f32 * TICK,
-            position[2],
-        ];
-        let Some(i) = impact(from, up, |xy| seam.contact(xy)) else {
-            continue;
-        };
-        near |= (i.row[0] - seam.point[0]).hypot(i.row[1] - seam.point[1]) <= PIPPER_RANGE;
-        hits += u32::from(call(seam, Some(&i), true, true) == Call::WillBounce);
-    }
-    near.then_some(hits)
+/// Where a jump bounces from, on the ground: the takeoff line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Takeoff {
+    /// The line's centre: the middle of the band of places to press
+    /// jump on, on the ground ([`CLEARANCE`] under the body).
+    pub at: Vec3,
+    /// The run's direction, a flat unit: the line lies across it.
+    pub heading: [f32; 2],
+    /// Half the band's length along the run.
+    pub half: f32,
+    /// The run's ground speed the line is for (units/s).
+    pub speed: f32,
+    /// How far along the run the band's near and far ends are from the
+    /// body (negative: behind it); `None` for a walk-up's line
+    /// ([`WALK_UP`]).
+    pub ahead: Option<[f32; 2]>,
 }
 
-/// The bounce's predicted chance.
+impl Takeoff {
+    /// A walk-up's line: the body is not moving toward a band.
+    pub fn walk(&self) -> bool {
+        self.ahead.is_none()
+    }
+
+    /// Ticks until `Jump now`: the ticks of the run to the band's near
+    /// end, rounded up, less [`NOW_EARLY`]; 0 within that of the band
+    /// and inside it. `None` for a walk-up's line.
+    pub fn jump_in(&self) -> Option<u32> {
+        let [near, _] = self.ahead?;
+        let step = self.speed * TICK;
+        if !(step > 0.0 && near.is_finite()) {
+            return None;
+        }
+        let ticks = (near / step).ceil().max(0.0) as u32;
+        Some(ticks.saturating_sub(NOW_EARLY))
+    }
+
+    /// The cue for this line, before [`settle`]: `Walk to line` for a
+    /// walk-up's, `Jump now` at 0 ticks, else the count in tenths of a
+    /// second (`marks::tenths`).
+    pub fn cue(&self) -> Cue {
+        match self.jump_in() {
+            None => Cue::Walk,
+            Some(0) => Cue::Now,
+            Some(t) => Cue::In(marks::tenths(t)),
+        }
+    }
+}
+
+/// How a landing stands against `seam`'s landing window, for the coarse
+/// pass of [`band`]: `None` near the window and in or near the catch,
+/// where every step is tried; else which side it is clear on (short,
+/// long, off either end of the edge, or no landing at all).
+fn clear(seam: &Seam, landing: Option<&Impact>) -> Option<u8> {
+    let Some(i) = landing else { return Some(0) };
+    let row = [i.row[0], i.row[1]];
+    let past = seam.frame(i.row)[0];
+    if past < LANDING_WINDOW[0] - TAKEOFF_CLEAR {
+        Some(1)
+    } else if past > LANDING_WINDOW[1] + TAKEOFF_CLEAR {
+        Some(2)
+    } else if superbounce::catch_miss(seam.edge, row) > TAKEOFF_CLEAR {
+        let [a, b] = seam.edge;
+        let t = (row[0] - a[0]) * (b[0] - a[0]) + (row[1] - a[1]) * (b[1] - a[1]);
+        Some(if t < 0.0 { 3 } else { 4 })
+    } else {
+        None
+    }
+}
+
+/// The first band of takeoffs along the run from `origin` the unit
+/// `dir`, at distances `range`, whose jump at `velocity` would bounce on
+/// `seam` (as [`call`] says in a primed fall), and whose far end is at or
+/// past `keep`: as distances along the run, each end widened by half a
+/// step ([`TAKEOFF_STEP`]). Every takeoff keeps `origin`'s height.
+/// `coarse` passes over stretches clear of the window ([`clear`]); the
+/// band is the same without it, which a test checks.
+fn band_by(
+    seam: &Seam,
+    origin: Vec3,
+    dir: [f32; 2],
+    velocity: Vec3,
+    range: [f32; 2],
+    keep: f32,
+    coarse: bool,
+) -> Option<[f32; 2]> {
+    let at = |d: f32| [origin[0] + dir[0] * d, origin[1] + dir[1] * d, origin[2]];
+    let land = |d: f32| impact(at(d), velocity, |xy| seam.contact(xy));
+    let side = |d: f32| clear(seam, land(d).as_ref());
+    let d_of = |i: u32| range[0] + i as f32 * TAKEOFF_STEP;
+    let span = range[1] - range[0];
+    if !(span >= 0.0 && span.is_finite()) {
+        return None;
+    }
+    let n = (span / TAKEOFF_STEP).floor() as u32;
+    let skip = (TAKEOFF_COARSE / TAKEOFF_STEP).round() as u32;
+    let (mut start, mut last) = (None::<f32>, 0.0f32);
+    let mut i = 0;
+    while i <= n {
+        let d = d_of(i);
+        if coarse && start.is_none() && i + skip <= n {
+            let a = side(d);
+            if a.is_some() && a == side(d_of(i + skip)) {
+                i += skip;
+                continue;
+            }
+        }
+        if land(d).is_some_and(|l| call(seam, Some(&l), true, true) == Call::WillBounce) {
+            start = start.or(Some(d));
+            last = d;
+        } else if let Some(s) = start.take()
+            && last >= keep
+        {
+            return Some([s - TAKEOFF_STEP / 2.0, last + TAKEOFF_STEP / 2.0]);
+        }
+        i += 1;
+    }
+    start
+        .filter(|_| last >= keep)
+        .map(|s| [s - TAKEOFF_STEP / 2.0, last + TAKEOFF_STEP / 2.0])
+}
+
+/// [`band_by`] with its coarse pass.
+fn band(
+    seam: &Seam,
+    origin: Vec3,
+    dir: [f32; 2],
+    velocity: Vec3,
+    range: [f32; 2],
+    keep: f32,
+) -> Option<[f32; 2]> {
+    band_by(seam, origin, dir, velocity, range, keep, true)
+}
+
+/// The takeoff line for a body on the ground at `position` moving
+/// `velocity`, on `seam` (docs/game/superbounce.md, "The jump cue").
+///
+/// - **Moving** ([`MOVING`] or faster): along the body's path,
+///   `position + velocity × t` at its height, the first band of places
+///   whose jump (the run's speed kept, [`jump`]) would bounce, within
+///   [`LOOK_AHEAD`] ticks of the run. The band is of takeoffs; the line
+///   is [`PRESS_LEAD`] ticks of the run short of it, where to press.
+/// - **Standing, or no band ahead**: the line for a walk up the seam's
+///   drift at [`WALK_UP`], toward its landing point, at the body's
+///   height. It has no count ([`Takeoff::walk`]).
+///
+/// `None` for a seam with no drift, and where no jump from the body's
+/// height bounces.
+pub fn takeoff(seam: &Seam, position: Vec3, velocity: Vec3) -> Option<Takeoff> {
+    if !seam.drifts() || !position.iter().chain(&velocity).all(|v| v.is_finite()) {
+        return None;
+    }
+    let ground = position[2] - CLEARANCE;
+    let line = |origin: Vec3, dir: [f32; 2], [lo, hi]: [f32; 2], speed: f32, ahead| {
+        let mid = (lo + hi) / 2.0;
+        Takeoff {
+            at: [origin[0] + dir[0] * mid, origin[1] + dir[1] * mid, ground],
+            heading: dir,
+            half: (hi - lo) / 2.0,
+            speed,
+            ahead,
+        }
+    };
+    let lead = |speed: f32| speed * PRESS_LEAD as f32 * TICK;
+    let speed = velocity[0].hypot(velocity[1]);
+    if speed >= MOVING {
+        let dir = [velocity[0] / speed, velocity[1] / speed];
+        let (lead, reach) = (lead(speed), speed * LOOK_AHEAD as f32 * TICK);
+        let found = band(
+            seam,
+            position,
+            dir,
+            jump(velocity),
+            [lead - TAKEOFF_BEHIND, lead + reach],
+            lead,
+        );
+        if let Some([lo, hi]) = found {
+            let press = [lo - lead, hi - lead];
+            return Some(line(position, dir, press, speed, Some(press)));
+        }
+    }
+    // A walk up the drift to the seam's landing point, from as far back
+    // as the longest flight carries.
+    let dir = seam.drift;
+    let reach = WALK_UP * MAX_TICKS as f32 * TICK;
+    let origin = [
+        seam.point[0] - dir[0] * reach,
+        seam.point[1] - dir[1] * reach,
+        position[2],
+    ];
+    let walk = [dir[0] * WALK_UP, dir[1] * WALK_UP, JUMP_VZ];
+    let [lo, hi] = band(seam, origin, dir, walk, [0.0, reach], 0.0)?;
+    let lead = lead(WALK_UP);
+    Some(line(origin, dir, [lo - lead, hi - lead], WALK_UP, None))
+}
+
+/// The cue shown this tick, and how many ticks it has been held, from
+/// the last tick's shown cue `prev` (held `held` ticks) and this tick's
+/// own `raw`. For [`CUE_GRACE`] ticks at most it holds:
+///
+/// - a count against a count a tenth higher (a step back up is the
+///   count's own jitter);
+/// - `Jump now` against a count of 0.1;
+/// - a count against no line, or a walk-up's.
+///
+/// Anything else shows at once: a count down, a new line, the walk-up,
+/// and the end of `Jump now`, which never outlasts its band.
+pub fn settle(prev: Option<Cue>, held: u8, raw: Option<Cue>) -> (Option<Cue>, u8) {
+    let hold = match (prev, raw) {
+        (Some(Cue::In(p)), Some(Cue::In(r))) => r == p.saturating_add(1),
+        (Some(Cue::Now), Some(Cue::In(1))) => true,
+        (Some(Cue::In(_)), None | Some(Cue::Walk)) => true,
+        _ => false,
+    };
+    if hold && held < CUE_GRACE {
+        (prev, held + 1)
+    } else {
+        (raw, 0)
+    }
+}
+
+/// The bounce's predicted chance in a fall.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chance {
     /// 0 to 1, after the seam's cap.
     pub value: f32,
-    /// On the ground: how many of [`CHANCE_TICKS`] jumps bounce. `None`
-    /// in the air, where the value is a confidence.
-    pub jumps: Option<u32>,
     /// The seam has no measured landing and the value was over
     /// [`SCAN_ONLY_CAP`].
     pub capped: bool,
@@ -390,31 +613,21 @@ pub fn cap(value: f32, measured: bool) -> (f32, bool) {
     (if capped { SCAN_ONLY_CAP } else { value }, capped)
 }
 
-/// The chance that `body` bounces on `seam`, with `impact` the guide's
-/// touchdown (the fall's in the air).
+/// The chance that `body`'s fall bounces on `seam`, with `impact` the
+/// fall's touchdown: at [`DEPTH_SPEED`] or faster, the [`confidence`] of
+/// the landing's depth, capped by the seam's evidence ([`cap`]).
 ///
-/// - On the ground: the share of the next [`CHANCE_TICKS`] ticks' jumps
-///   that bounce ([`jump_hits`]).
-/// - In the air, touching down at [`DEPTH_SPEED`] or faster:
-///   [`confidence`] of the landing's depth.
-/// - Capped by the seam's evidence ([`cap`]).
-///
-/// `None` where nothing bounces or nothing is measured: not primed, a
-/// seam with no drift, no landing by the seam, a fall slower than the
-/// depth rule is measured at.
+/// `None` on the ground (the jump cue says when to jump instead,
+/// [`takeoff`]), and where nothing bounces or nothing is measured: not
+/// primed, a seam with no drift, no landing by the seam, a fall slower
+/// than the depth rule is measured at.
 pub fn chance(seam: &Seam, body: &Body, impact: Option<&Impact>) -> Option<Chance> {
-    if !body.primed {
+    if !body.primed || !body.airborne {
         return None;
     }
-    let (value, jumps) = if body.airborne {
-        let i = impact.filter(|i| i.speed >= DEPTH_SPEED)?;
-        (confidence(&depth(seam, i)?, caught(seam, i)), None)
-    } else {
-        let hits = jump_hits(seam, body.position, body.velocity)?;
-        (hits as f32 / CHANCE_TICKS as f32, Some(hits))
-    };
-    let (value, capped) = cap(value, seam.measured);
-    Some(Chance { value, jumps, capped })
+    let i = impact.filter(|i| i.speed >= DEPTH_SPEED)?;
+    let (value, capped) = cap(confidence(&depth(seam, i)?, caught(seam, i)), seam.measured);
+    Some(Chance { value, capped })
 }
 
 /// How strongly the guide draws for a player `distance` from the seam's
@@ -491,8 +704,15 @@ pub struct Guide {
     /// The body's speed along the seam's drift (units/s); `None` for a
     /// seam with none.
     pub across: Option<f32>,
-    /// The bounce's predicted chance ([`chance`]).
+    /// The bounce's predicted chance in a fall ([`chance`]).
     pub chance: Option<Chance>,
+    /// On the ground while primed, the takeoff line ([`takeoff`]).
+    pub takeoff: Option<Takeoff>,
+    /// The jump cue on the box: the takeoff line's, settled against the
+    /// last tick's ([`Guide::settled`]).
+    pub cue: Option<Cue>,
+    /// Ticks the cue has been held against this tick's own ([`settle`]).
+    pub held: u8,
     /// The fade ([`strength`]).
     pub strength: f32,
 }
@@ -509,6 +729,17 @@ impl Guide {
         self.impact.is_some_and(|i| caught(&self.seam, &i))
     }
 
+    /// This guide with its cue settled against the last tick's guide
+    /// `prev` ([`settle`]), when that was on the same seam (its edge) and
+    /// on the ground too; else the cue is this tick's own.
+    pub fn settled(mut self, prev: Option<&Guide>) -> Guide {
+        let prev = prev.filter(|p| p.seam.edge == self.seam.edge && p.jump && self.jump);
+        let (cue, held) = settle(prev.and_then(|p| p.cue), prev.map_or(0, |p| p.held), self.cue);
+        self.cue = cue;
+        self.held = held;
+        self
+    }
+
     /// What the marks show.
     pub fn view(&self) -> marks::Guide {
         marks::Guide {
@@ -517,6 +748,8 @@ impl Guide {
             ticks: self.impact.is_some() && !self.caught(),
             drift: self.across.map(drift_lit),
             chance: self.chance.map(|c| marks::percent(c.value)),
+            cue: self.cue,
+            takeoff: self.takeoff.is_some(),
         }
     }
 
@@ -531,13 +764,20 @@ impl Guide {
             half_along: if half > 1e-4 { half.min(marks::BOX_ALONG) } else { marks::BOX_ALONG },
             drift: self.seam.drift,
             impact: self.pipper(),
+            takeoff: self.takeoff.map(|t| marks::Line {
+                at: t.at,
+                heading: t.heading,
+                half: t.half,
+            }),
             strength: self.strength,
         }
     }
 }
 
 /// The guide for `body` on the bounce spot `spot`, or `None` when it is
-/// not shown ([`strength`] 0, or `spot` is not a bounce spot).
+/// not shown ([`strength`] 0, or `spot` is not a bounce spot). Its cue is
+/// this tick's own; the mode settles it against the last tick's
+/// ([`Guide::settled`]).
 pub fn guide(body: &Body, spot: &Spot) -> Option<Guide> {
     if spot.kind != Kind::Bounce {
         return None;
@@ -561,10 +801,16 @@ pub fn guide(body: &Body, spot: &Spot) -> Option<Guide> {
     let impact = flight.filter(|i| {
         (i.row[0] - seam.point[0]).hypot(i.row[1] - seam.point[1]) <= PIPPER_RANGE
     });
+    let takeoff = (body.primed && !body.airborne)
+        .then(|| takeoff(&seam, body.position, body.velocity))
+        .flatten();
     Some(Guide {
         seam,
         impact,
         chance: chance(&seam, body, impact.as_ref()),
+        takeoff,
+        cue: takeoff.map(|t| t.cue()),
+        held: 0,
         jump: !body.airborne,
         call: call(&seam, impact.as_ref(), body.airborne, body.primed),
         depth: impact.and_then(|i| depth(&seam, &i)),

@@ -155,9 +155,10 @@ pub fn kinds(m: crate::superbounce_options::TargetMode) -> rd::Kinds {
 ///   targets to (`superbounce_targets::Switch`), over the other lines.
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
-/// - The approach guide: the state's `guide`, with `approach_guide`. Its
-///   chance is the box's percentage and, on a fall toward its seam, the
-///   fall row's (`rd::fall_chance`).
+/// - The approach guide: the state's `guide`, with `approach_guide`. On
+///   the ground its jump cue is the box's label; in a fall its chance is
+///   the box's percentage and, on a fall toward its seam, the fall row's
+///   (`rd::fall_chance`).
 /// - The charge segments: [`segments`], with `charge_segments`.
 pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
     let metres =
@@ -191,7 +192,10 @@ pub fn segments(s: &State) -> Option<Segments> {
 /// The approach guide's marks' poses for `s` under `o`: each of
 /// `guide_marks::MARKS` with its pose, `None` for one with nothing to
 /// lie on.
-pub fn guide_poses(s: &State, o: Options) -> [(&'static str, Option<Pose>); 4] {
+pub fn guide_poses(
+    s: &State,
+    o: Options,
+) -> [(&'static str, Option<Pose>); guide_marks::MARKS.len()] {
     let poses = s
         .guide
         .filter(|_| o.approach_guide)

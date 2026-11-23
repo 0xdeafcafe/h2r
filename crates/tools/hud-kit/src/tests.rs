@@ -1294,6 +1294,16 @@ fn the_approach_guide_draws_in_its_moments() {
     let at = ((corner[1].round() as u32 * s.canvas.width + corner[0].round() as u32) * 4) as usize;
     let px = &s.canvas.rgba[at..at + 3];
     assert!(px[1] > px[0] && px[1] > px[2], "{px:?}");
+    // On the ground the takeoff line is drawn below the box on the
+    // screen (nearer the viewer), green on it; a fall has none.
+    for state in ["guide-approach", "guide-lined-up", "guide-jump-now", "guide-walk-to-line"] {
+        assert!(drawn(state, guide::TAKEOFF), "{state}");
+        let (b, t) = (bounds(state, guide::BOX), bounds(state, guide::TAKEOFF));
+        assert!(t.y0 > b.y1, "{state}: {t:?} below {b:?}");
+    }
+    let d = shot("guide-jump-now", Mode::Full).element(guide::TAKEOFF).unwrap();
+    assert_eq!(d.style, Style::Go);
+    assert!(!drawn("guide-falling-caught", guide::TAKEOFF));
     // The other states draw no mark.
     for id in guide::MARKS {
         assert!(!drawn("falling-on-seam", id), "{id}");

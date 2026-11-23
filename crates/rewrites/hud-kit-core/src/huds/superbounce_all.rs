@@ -15,7 +15,7 @@ use super::superbounce_segments as segs;
 pub const NAME: &str = "superbounce-all";
 
 /// The moments: a name, the superbounce HUD's state, the readout's.
-pub const MOMENTS: [(&str, &str, &str); 27] = [
+pub const MOMENTS: [(&str, &str, &str); 29] = [
     ("1-walking", "not-primed", "moving"),
     ("2-arming", "under", "idle"),
     ("3-primed-targets", "primed-full", "targets"),
@@ -43,6 +43,8 @@ pub const MOMENTS: [(&str, &str, &str); 27] = [
     ("25-charge-lost", "lost-stood-still", "segments-lost"),
     ("26-guide-on-the-cut", "primed-full", "guide-on-the-cut"),
     ("27-guide-scan-only", "primed-full", "guide-scan-only"),
+    ("28-guide-jump-now", "primed-full", "guide-jump-now"),
+    ("29-guide-walk-to-line", "primed-full", "guide-walk-to-line"),
 ];
 
 /// The charge segments at a moment: the superbounce state's charge, as
@@ -144,9 +146,9 @@ mod tests {
         }
     }
 
-    /// The approach guide's seven moments pose the marks they show; the
-    /// others have none. Each has the guide's percentage on its box:
-    /// alone before the jump, after the call in a fall.
+    /// The approach guide's nine moments pose the marks they show; the
+    /// others have none. Before the jump the box has the jump cue; in a
+    /// fall the guide's percentage, after the call.
     #[test]
     fn the_guides_moments_pose_their_marks() {
         use crate::huds::superbounce_guide as guide;
@@ -164,7 +166,9 @@ mod tests {
                 "19-guide-too-shallow",
                 "20-guide-off-line",
                 "26-guide-on-the-cut",
-                "27-guide-scan-only"
+                "27-guide-scan-only",
+                "28-guide-jump-now",
+                "29-guide-walk-to-line"
             ]
         );
         let states = All.states();
@@ -172,8 +176,10 @@ mod tests {
             let (_, v) = states.iter().find(|(n, _)| *n == moment).unwrap();
             v.get(guide::BOX).unwrap().text.clone()
         };
-        assert_eq!(label("16-guide-approach"), "13%");
-        assert_eq!(label("17-guide-lined-up"), "62%");
+        assert_eq!(label("16-guide-approach"), "Jump in 0.7 s");
+        assert_eq!(label("17-guide-lined-up"), "Jump in 0.1 s");
+        assert_eq!(label("28-guide-jump-now"), "Jump now");
+        assert_eq!(label("29-guide-walk-to-line"), "Walk to line");
         assert_eq!(label("18-guide-falling-caught"), "Will bounce 82%");
         assert_eq!(label("19-guide-too-shallow"), "Too shallow 30%");
         assert_eq!(label("20-guide-off-line"), "5%");

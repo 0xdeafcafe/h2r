@@ -161,24 +161,52 @@ pub struct Guide {
     /// absent on a seam with none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub across: Option<f64>,
-    /// The bounce's predicted chance, 0 to 1, as the box and the fall
-    /// row show it in whole percent. On the ground (`jump`) it is the
-    /// share of the next 16 ticks a jump on which would bounce; in the
-    /// air, how sure the call is: 0.5 on the depth cut or an end of the
-    /// landing window, 0.95 deep and centred. Absent while not primed,
-    /// on a seam with no drift, with no landing by the seam, and in a
-    /// fall slower than the depth rule is measured at.
+    /// The bounce's predicted chance in a fall, 0 to 1, as the box and
+    /// the fall row show it in whole percent: how sure the call is, 0.5
+    /// on the depth cut or an end of the landing window, 0.95 deep and
+    /// centred. Absent on the ground (`jump`), while not primed, on a
+    /// seam with no drift, with no landing by the seam, and in a fall
+    /// slower than the depth rule is measured at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chance: Option<f64>,
-    /// On the ground: how many of the next 16 ticks' jumps would bounce.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chance_jumps: Option<u32>,
     /// The seam has no measured landing and `chance` was cut to the
     /// scan-only cap, 0.6.
     #[serde(default)]
     pub chance_capped: bool,
+    /// On the ground, moving toward the takeoff line: game ticks until
+    /// the box says `Jump now` (0 on the line). Absent standing, moving
+    /// away, in the air and with no line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_in: Option<u32>,
+    /// The jump cue on the box as it reads, settled: `Walk to line`,
+    /// `Jump in 0.7 s` or `Jump now`. Absent in the air and with no line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cue: Option<String>,
+    /// On the ground while primed, where to press jump for the landing
+    /// to bounce; absent with no such place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeoff: Option<TakeoffLine>,
     /// 0 to 1: the guide's fade with distance.
     pub strength: f64,
+}
+
+/// `superbounce.state`'s `guide.takeoff`: the takeoff line
+/// (docs/game/superbounce.md, "The jump cue").
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TakeoffLine {
+    /// The line's centre on the ground: the middle of the band of places
+    /// to press jump on.
+    pub at: [f64; 3],
+    /// The run's direction, a flat unit; the line lies across it.
+    pub heading: [f64; 2],
+    /// Half the band's length along the run, world units.
+    pub half: f64,
+    /// The ground speed the line is for, world units a second: the
+    /// player's own, or the walk-up's 0.8.
+    pub speed: f64,
+    /// A walk-up's line, up the seam's drift: the player is standing or
+    /// not moving toward a line, and the box says `Walk to line`.
+    pub walk: bool,
 }
 
 /// `superbounce.state`'s `targets`.
@@ -1429,8 +1457,10 @@ mod tests {
                 past: Some(-0.05),
                 across: None,
                 chance: Some(0.82),
-                chance_jumps: None,
                 chance_capped: false,
+                jump_in: None,
+                cue: None,
+                takeoff: None,
                 strength: 1.0,
             }),
             last_landing: Some(Landing {
@@ -1487,14 +1517,38 @@ mod tests {
         assert!(v["guide"].get("across").is_none());
         assert_eq!(v["guide"]["chance"], 0.82);
         assert_eq!(v["guide"]["chance_capped"], false);
-        assert!(v["guide"].get("chance_jumps").is_none());
-        // An older reply without the chance reads as none.
+        // In a fall there is no jump cue or takeoff line.
+        for k in ["jump_in", "cue", "takeoff"] {
+            assert!(v["guide"].get(k).is_none(), "{k}");
+        }
+        // A reply without the chance reads as none.
         let mut old = v["guide"].clone();
         for k in ["chance", "chance_capped"] {
             old.as_object_mut().unwrap().remove(k);
         }
         let back: Guide = serde_json::from_value(old).unwrap();
-        assert_eq!((back.chance, back.chance_jumps, back.chance_capped), (None, None, false));
+        assert_eq!((back.chance, back.chance_capped, back.jump_in), (None, false, None));
+        // On the ground: the count, the cue as the box reads it, and the
+        // line.
+        let ground = Guide {
+            jump: true,
+            chance: None,
+            jump_in: Some(12),
+            cue: Some("Jump in 0.4 s".into()),
+            takeoff: Some(TakeoffLine {
+                at: [1.0, 1.2, 0.22],
+                heading: [0.0, 1.0],
+                half: 0.03,
+                speed: 0.3,
+                walk: false,
+            }),
+            ..s.guide.clone().unwrap()
+        };
+        let g = serde_json::to_value(&ground).unwrap();
+        assert_eq!((g["jump_in"].clone(), g["cue"].clone()), (12.into(), "Jump in 0.4 s".into()));
+        assert_eq!(g["takeoff"]["walk"], false);
+        assert_eq!(g["takeoff"]["half"], 0.03);
+        assert_eq!(serde_json::from_value::<Guide>(g).unwrap(), ground);
         assert_eq!(v["options"]["approach_guide"], true);
         assert_eq!(v["nav_target"]["fall"], 0.0);
         assert_eq!(v["last_landing"]["result"], "not_primed");
