@@ -147,9 +147,11 @@ impl Editor {
             }
         }
         net.replies.settle(net.node.take_settled());
-        if self.busy() || (net.joined.is_none() && net.backlog.is_empty()) {
+        let idle = net.joined.is_none() && net.backlog.is_empty();
+        if idle || self.busy() {
             return;
         }
+        let Some(net) = self.net.as_mut() else { return };
         let joined = net.joined.take();
         let items = std::mem::take(&mut net.backlog);
         let seat = net.node.seat();
