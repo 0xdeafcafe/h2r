@@ -60,6 +60,10 @@ pub struct Facts {
     pub pending_rebuild: usize,
     /// The rotation snap, an index into `ui_kit::forge::ANGLE_STEPS`.
     pub rotation_snap: usize,
+    /// The movement snap, an index into `sheet::MOVE_STEPS`.
+    pub movement_snap: usize,
+    /// Local rather than World axes.
+    pub local_axes: bool,
     pub tool: Option<sheet::Tool>,
     /// The saved Forge maps, for Load.
     pub saved: Vec<String>,
@@ -234,7 +238,7 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
     let f = facts();
     let sheet = match kind {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
-        Kind::Settings => sheet::settings(f.rotation_snap),
+        Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
         Kind::Options => sheet::options(),
         Kind::Controls => sheet::controls(),
         Kind::Objects | Kind::Properties | Kind::Link | Kind::Question => {

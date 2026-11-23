@@ -335,6 +335,41 @@ fn push_and_pull_move_the_hold_distance_within_the_wall_and_the_near_gap() {
     assert_eq!(big.near(), 3. + NEAR_GAP);
 }
 
+#[test]
+fn movement_snap_uses_the_world_grid_or_the_pickups_own_grid() {
+    let session = session(2);
+    let mut tool = Tool::default();
+    tool.monitor = true;
+    tool.camera = Some(eye());
+    tool.select(0);
+    tool.distance = 1.3;
+    tool.offset = [0.0, 0.29, 0.12];
+    tool.set_movement_step(0.5);
+    tool.update(&session, 1, Input::default()).unwrap();
+    let world = tool.ghost.unwrap();
+    assert_eq!(world.position, [1.5, 0.5, 0.0]);
+
+    tool.set_axes(crate::tool::Axes::Local);
+    tool.initial_position = [1.2, 0.0, 0.0];
+    tool.initial_rotation = [std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+    tool.update(&session, 2, Input::default()).unwrap();
+    let local = tool.ghost.unwrap();
+    assert_eq!(local.position, [1.2, 0.5, 0.0]);
+
+    // Turning about the pickup's own axes is initial * delta, not a
+    // component-wise addition: a quarter pitch after a quarter yaw.
+    tool.rotation = [0.0, std::f32::consts::FRAC_PI_2, 0.0];
+    tool.update(&session, 3, Input::default()).unwrap();
+    let turned = tool.ghost.unwrap();
+    assert!(turned.rotation[0].abs() < 1e-4, "{:?}", turned.rotation);
+    assert!((turned.rotation[1] - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+
+    tool.set_movement_step(0.0);
+    tool.set_rotation_step(0.0);
+    tool.update(&session, 4, Input::default()).unwrap();
+    assert_eq!(tool.ghost.unwrap().position, [1.37, 0.29, 0.12]);
+}
+
 // ---- aiming at every thing (docs/game/forge-map-variants.md, slice M9) ----
 
 use crate::base_tests::{self as base, Call};

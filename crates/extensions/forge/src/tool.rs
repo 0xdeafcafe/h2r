@@ -64,6 +64,24 @@ impl Show {
     }
 }
 
+/// The basis movement snap and object rotation use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Axes {
+    #[default]
+    World,
+    /// The object's axes as they were when it was picked up.
+    Local,
+}
+
+impl Axes {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::World => "world",
+            Self::Local => "local",
+        }
+    }
+}
+
 /// Whether `thing` is one the game type with engine index `game` has (the
 /// variant record's `+0x44`: 1 CTF, 2 Slayer, 3 Oddball, 4 King of the Hill,
 /// 7 Juggernaut, 8 Territories, 9 Assault). With no game type known, every
@@ -263,6 +281,10 @@ pub struct Tool {
     pub game: Option<i32>,
     /// What is aimed at besides this game type's things.
     pub show: Show,
+    /// The basis for movement snap and turning.
+    pub axes: Axes,
+    /// World units between movement snaps; 0 is off.
+    movement_step: f32,
     pub placing: Option<usize>,
     pub ghost: Option<Frame>,
     /// The Links tool is selected instead of the Objects tool.
@@ -278,6 +300,8 @@ pub struct Tool {
     extents: Arc<[Extent]>,
     /// Orientation on pickup. Snap the *delta* so picking up never changes orientation.
     initial_rotation: [f32; 3],
+    /// Position on pickup, the origin of a Local movement snap.
+    initial_position: [f32; 3],
     /// Offset from the aim point along the camera's forward, right and up,
     /// so a held object turns with the view and keeps its place in it.
     offset: [f32; 3],
@@ -298,6 +322,8 @@ impl Default for Tool {
             held_thing: None,
             game: None,
             show: Show::default(),
+            axes: Axes::default(),
+            movement_step: 0.0,
             placing: None,
             ghost: None,
             links: false,
@@ -307,6 +333,7 @@ impl Default for Tool {
             rotation: [0.; 3],
             extents: Arc::from(Vec::new()),
             initial_rotation: [0.; 3],
+            initial_position: [0.; 3],
             offset: [0.; 3],
             distance: 4.0,
         }
@@ -384,8 +411,27 @@ impl Tool {
     }
 
     pub fn set_rotation_step(&mut self, degrees: f32) {
-        if degrees.is_finite() && degrees > 0.0 {
+        if degrees.is_finite() && degrees >= 0.0 {
             self.rotation_step = degrees;
+        }
+    }
+
+    pub fn set_movement_step(&mut self, units: f32) {
+        if units.is_finite() && units >= 0.0 {
+            self.movement_step = units;
+        }
+    }
+
+    /// Change basis without moving what is held: its current frame is the
+    /// new Local baseline.
+    pub fn set_axes(&mut self, axes: Axes) {
+        if self.axes != axes {
+            self.axes = axes;
+            if let Some(ghost) = self.ghost {
+                self.initial_position = ghost.position;
+                self.initial_rotation = ghost.rotation;
+                self.rotation = [0.; 3];
+            }
         }
     }
 
@@ -399,6 +445,34 @@ impl Tool {
         }
     }
 
+    /// The carried frame in the basis in force: movement snap is on the
+    /// world grid or the pickup's own grid, and turning is about those axes.
+    fn snapped_frame(&self, raw: [f32; 3]) -> Frame {
+        let turn = self
+            .rotation
+            .map(|v| snap(v, self.rotation_step.to_radians()));
+        let rotation = match self.axes {
+            Axes::World => std::array::from_fn(|i| self.initial_rotation[i] + turn[i]),
+            Axes::Local => to_euler(mat_mul(from_euler(self.initial_rotation), from_euler(turn))),
+        };
+        let position = match (self.axes, self.movement_step > 0.0) {
+            (_, false) => raw,
+            (Axes::World, true) => raw.map(|v| snap(v, self.movement_step)),
+            (Axes::Local, true) => {
+                let delta = to_local(
+                    from_euler(self.initial_rotation),
+                    sub(raw, self.initial_position),
+                );
+                let snapped = delta.map(|v| snap(v, self.movement_step));
+                add(
+                    self.initial_position,
+                    to_world(from_euler(self.initial_rotation), snapped),
+                )
+            }
+        };
+        Frame { position, rotation }
+    }
+
     fn cancel(&mut self) {
         self.link_from = None;
         self.held = None;
@@ -406,6 +480,7 @@ impl Tool {
         self.placing = None;
         self.ghost = None;
         self.initial_rotation = [0.; 3];
+        self.initial_position = [0.; 3];
         self.rotation = [0.; 3];
         self.offset = [0.; 3];
         self.distance = 4.0;
@@ -534,13 +609,7 @@ impl Tool {
                 let distance = carried(self.distance);
                 let pos = eye.point(distance);
                 let offset = eye.to_world(self.offset);
-                let step = self.rotation_step.to_radians();
-                self.ghost = Some(Frame {
-                    position: std::array::from_fn(|i| pos[i] + offset[i]),
-                    rotation: std::array::from_fn(|i| {
-                        self.initial_rotation[i] + (self.rotation[i] / step).round() * step
-                    }),
-                });
+                self.ghost = Some(self.snapped_frame(std::array::from_fn(|i| pos[i] + offset[i])));
             }
         }
         Ok(match input.action {
@@ -583,6 +652,7 @@ impl Tool {
                     self.offset =
                         camera.to_local(std::array::from_fn(|i| thing.frame.position[i] - p[i]));
                     self.initial_rotation = thing.frame.rotation;
+                    self.initial_position = thing.frame.position;
                     self.ghost = Some(thing.frame);
                     None
                 } else {
@@ -682,4 +752,54 @@ fn aim(
     }
     let side: f32 = (0..3).map(|i| (d[i] - along * forward[i]).powi(2)).sum();
     (side <= (radius + along * RETICLE_SPREAD).powi(2)).then_some(along)
+}
+
+fn snap(v: f32, step: f32) -> f32 {
+    if step > 0.0 {
+        (v / step).round() * step
+    } else {
+        v
+    }
+}
+
+fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| a[i] + b[i])
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| a[i] - b[i])
+}
+
+/// `Rz(yaw) · Ry(−pitch) · Rx(roll)` as row vectors, the scenario's basis.
+fn from_euler([yaw, pitch, roll]: [f32; 3]) -> [[f32; 3]; 3] {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let (sr, cr) = roll.sin_cos();
+    [
+        [cy * cp, sy * cp, sp],
+        [sy * cr + cy * sp * sr, cy * cr - sy * sp * sr, -cp * sr],
+        [sy * sr - cy * sp * cr, -cy * sr - sy * sp * cr, cp * cr],
+    ]
+}
+
+fn to_euler(m: [[f32; 3]; 3]) -> [f32; 3] {
+    [
+        m[1][0].atan2(m[0][0]).rem_euclid(std::f32::consts::TAU),
+        m[0][2].clamp(-1.0, 1.0).asin(),
+        (-m[1][2]).atan2(m[2][2]),
+    ]
+}
+
+fn to_local(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    m.map(|axis| axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2])
+}
+
+fn to_world(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| m[0][i] * v[0] + m[1][i] * v[1] + m[2][i] * v[2])
+}
+
+fn mat_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    std::array::from_fn(|r| {
+        std::array::from_fn(|c| a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c])
+    })
 }

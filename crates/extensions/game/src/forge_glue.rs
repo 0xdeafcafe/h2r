@@ -69,12 +69,13 @@ pub fn page() -> Option<ScreenSpec> {
 /// World-space axes and the held object's outline, projected through the
 /// render frame's camera.
 pub fn gizmo() -> Option<gizmo::Axes> {
-    let (frame, extent) = {
+    let (frame, extent, local) = {
         let driver = current()?;
         let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-        driver.editor.as_ref()?.ghost()?
+        let editor = driver.editor.as_ref()?;
+        (editor.ghost()?, editor.local_axes())
     };
-    gizmo::project(frame, extent)
+    gizmo::project(frame, extent, local)
 }
 
 /// A click on a compositor dialog's row. The Forge screens are the game's

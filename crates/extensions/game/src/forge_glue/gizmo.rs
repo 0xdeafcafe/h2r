@@ -19,7 +19,11 @@ pub struct Axes {
 #[cfg(any(feature = "desktop-runtime", test))]
 const MAX_RING: f32 = 2048.0;
 
-pub(super) fn project(frame: forge::Frame, extent: forge::tool::Extent) -> Option<Axes> {
+pub(super) fn project(
+    frame: forge::Frame,
+    extent: forge::tool::Extent,
+    local: bool,
+) -> Option<Axes> {
     #[cfg(feature = "desktop-runtime")]
     {
         let scene = render_bridge::scene_step::last()?;
@@ -27,11 +31,11 @@ pub(super) fn project(frame: forge::Frame, extent: forge::tool::Extent) -> Optio
             .views
             .iter()
             .find(|v| v.key.kind == frame_scene::ViewKind::Game && v.key.view == 0)?;
-        Axes::from_frame(frame, extent, &view.camera)
+        Axes::from_frame(frame, extent, &view.camera, local)
     }
     #[cfg(not(feature = "desktop-runtime"))]
     {
-        let _ = (frame, extent);
+        let _ = (frame, extent, local);
         None
     }
 }
@@ -90,10 +94,15 @@ impl Axes {
         frame: forge::Frame,
         extent: forge::tool::Extent,
         camera: &RenderCamera,
+        local: bool,
     ) -> Option<Self> {
         let point = |p: [f32; 3]| pixel_of(camera, p);
         let origin = point(frame.position)?;
-        let (x, z) = live_telemetry::rotation_axes(frame.rotation.map(f64::from));
+        let (x, z) = if local {
+            live_telemetry::rotation_axes(frame.rotation.map(f64::from))
+        } else {
+            ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+        };
         let y = [
             z[1] * x[2] - z[2] * x[1],
             z[2] * x[0] - z[0] * x[2],
@@ -203,16 +212,18 @@ mod tests {
             radius: 1.,
             offset: [0.; 3],
         };
-        let front = Axes::from_frame(frame, extent, &camera).unwrap();
+        let front = Axes::from_frame(frame, extent, &camera, true).unwrap();
         assert_eq!(front.origin, [320, 240]);
         assert_eq!(front.ends[0], Some(front.origin));
         assert!(front.ends[1].unwrap()[0] < 320);
         assert!(front.ends[2].unwrap()[1] < 240);
         frame.rotation[0] = std::f32::consts::FRAC_PI_2;
-        let turned = Axes::from_frame(frame, extent, &camera).unwrap();
+        let turned = Axes::from_frame(frame, extent, &camera, true).unwrap();
         assert_eq!(turned.ends[0], front.ends[1]);
+        let world = Axes::from_frame(frame, extent, &camera, false).unwrap();
+        assert_eq!(world.ends, front.ends, "World ignores the object's turn");
         frame.position[0] = -4.;
-        assert!(Axes::from_frame(frame, extent, &camera).is_none());
+        assert!(Axes::from_frame(frame, extent, &camera, true).is_none());
     }
 
     #[test]
@@ -232,7 +243,7 @@ mod tests {
             rotation: [0.; 3],
         };
         let ring = |radius: f32, offset: [f32; 3], at: forge::Frame| {
-            Axes::from_frame(at, forge::tool::Extent { radius, offset }, &camera)
+            Axes::from_frame(at, forge::tool::Extent { radius, offset }, &camera, true)
                 .unwrap()
                 .ring
         };

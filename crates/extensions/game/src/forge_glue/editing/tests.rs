@@ -155,8 +155,14 @@ fn tools_and_settings_open_and_their_choices_set_the_tool() {
     assert_eq!(screens::take_request(), Some(Kind::Settings));
     e.choose(4, Choice::Set(Prop::RotationSnap, 3)).unwrap();
     assert_eq!(e.rotation_step, 3);
+    e.choose(5, Choice::Set(Prop::MovementSnap, 2)).unwrap();
+    assert_eq!(e.movement_step, 2);
+    assert_eq!(e.status()["movement_snap"], 0.1);
+    e.choose(6, Choice::Set(Prop::Axes, 1)).unwrap();
+    assert!(e.local_axes && e.local_axes());
+    assert_eq!(e.status()["axes"], "local");
     // The Forge menu is GAME MENU's, refused by name here.
-    assert!(e.command(5, Command::Menu).unwrap_err().contains("Start"));
+    assert!(e.command(7, Command::Menu).unwrap_err().contains("Start"));
 }
 
 /// A second screen while one is opening is refused by name, never

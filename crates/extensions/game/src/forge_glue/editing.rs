@@ -5,7 +5,7 @@
 use super::{GENERATION, admitted, controls};
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
-use forge::tool::{Command, Extent, Tool};
+use forge::tool::{Axes, Command, Extent, Tool};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
@@ -60,6 +60,8 @@ pub(super) struct Editor {
     filename: Option<String>,
     selected: usize,
     rotation_step: usize,
+    movement_step: usize,
+    local_axes: bool,
     notice: Option<(String, u32)>,
     /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
@@ -101,6 +103,8 @@ impl Editor {
             filename: None,
             selected: 0,
             rotation_step: 2,
+            movement_step: 0,
+            local_axes: false,
             notice: None,
             link_dialog: None,
             delete_asked: None,
@@ -137,6 +141,11 @@ impl Editor {
         self.notice = Some((text, tick));
     }
 
+    /// Whether the gizmo uses the object's own axes at pickup.
+    pub fn local_axes(&self) -> bool {
+        self.tool.axes == Axes::Local
+    }
+
     /// The proposed frame of what is placed or held, with its bounding
     /// sphere: the gizmo's axes and outline.
     pub fn ghost(&self) -> Option<(forge::Frame, Extent)> {
@@ -167,6 +176,8 @@ impl Editor {
             "variant":local_api::variant_status(self.session.document(), self.filename.as_deref(), self.dirty()),
             "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
             "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
+            "rotation_snap":ANGLE_STEPS[self.rotation_step], "movement_snap":sheet::MOVE_STEPS[self.movement_step],
+            "axes":self.tool.axes.name(),
             "ui_up":self.ui_up, "dirty":self.dirty(),
             "aimed_link":self.tool.aimed_link.map(linkable_json), "link_from":self.tool.link_from.map(linkable_json),
             "teleporters":self.session.teleporters().iter().map(|t| json!({
@@ -498,6 +509,8 @@ impl Editor {
             dirty: self.dirty(),
             pending_rebuild: self.session.pending_rebuild(),
             rotation_snap: self.rotation_step,
+            movement_snap: self.movement_step,
+            local_axes: self.local_axes,
             tool: Some(if self.tool.links {
                 ToolKind::Links
             } else {
@@ -656,6 +669,19 @@ impl Editor {
                 let step = *ANGLE_STEPS.get(i).ok_or("No such rotation snap.")?;
                 self.rotation_step = i;
                 self.tool.set_rotation_step(step);
+            }
+            Choice::Set(Prop::MovementSnap, i) => {
+                let step = *sheet::MOVE_STEPS.get(i).ok_or("No such movement snap.")?;
+                self.movement_step = i;
+                self.tool.set_movement_step(step);
+            }
+            Choice::Set(Prop::Axes, i) => {
+                self.local_axes = i == 1;
+                self.tool.set_axes(if self.local_axes {
+                    Axes::Local
+                } else {
+                    Axes::World
+                });
             }
             Choice::Set(Prop::Heading, i) => {
                 let yaw = HEADINGS.get(i).ok_or("No such heading.")?.to_radians();

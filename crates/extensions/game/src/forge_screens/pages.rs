@@ -62,7 +62,10 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             ("objects", sheet::tools(Tool::Objects)),
             ("links", sheet::tools(Tool::Links)),
         ],
-        Kind::Settings => vec![("open", sheet::settings(2)), ("fine", sheet::settings(0))],
+        Kind::Settings => vec![
+            ("open", sheet::settings(2, 0, false)),
+            ("fine", sheet::settings(0, 0, true)),
+        ],
         Kind::Link => vec![
             (
                 "teleporter",

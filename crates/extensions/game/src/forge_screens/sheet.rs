@@ -144,6 +144,20 @@ pub enum Prop {
     Heading,
     /// The tool's rotation snap, a value of [`ANGLE_STEPS`].
     RotationSnap,
+    /// The tool's movement snap, a value of [`MOVE_STEPS`].
+    MovementSnap,
+    /// World or Local axes.
+    Axes,
+    /// Open the six-coordinate editor.
+    Coordinates,
+    /// A spawn or goal's team.
+    Team,
+    /// A goal's netgame flag type.
+    Role,
+    /// A goal's identifier.
+    Order,
+    /// An item entry's respawn time.
+    RespawnTime,
 }
 
 /// A tool of the Tools picker.
@@ -590,32 +604,90 @@ pub struct SettingDef {
     pub description: &'static str,
 }
 
+/// Movement snap choices, world units; 0 is off.
+pub const MOVE_STEPS: &[f32] = &[0.0, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0];
+
 /// The tool settings, in order (docs/game/forge-editing.md "Precision").
-/// Movement snap, Axes and Fine movement join in P1.
-pub const SETTINGS: &[SettingDef] = &[SettingDef {
-    prop: Prop::RotationSnap,
-    label: "Rotation snap",
-    description: "How far each turn of a held object goes.",
-}];
+pub const SETTINGS: &[SettingDef] = &[
+    SettingDef {
+        prop: Prop::RotationSnap,
+        label: "Rotation snap",
+        description: "How far each turn of a held object goes.",
+    },
+    SettingDef {
+        prop: Prop::MovementSnap,
+        label: "Movement snap",
+        description: "The grid a held object's position lands on.",
+    },
+    SettingDef {
+        prop: Prop::Axes,
+        label: "Axes",
+        description: "World axes, or the object's own axes at pickup.",
+    },
+];
+
+fn snap_text(v: f32, unit: &str) -> String {
+    if v == 0.0 {
+        "Off".into()
+    } else if unit.is_empty() {
+        format!("{v}")
+    } else {
+        format!("{v} {unit}")
+    }
+}
+
+fn text_value_row(
+    label: &str,
+    description: &str,
+    prop: Prop,
+    values: &[String],
+    current: usize,
+) -> SheetRow {
+    let pick = PickSpec {
+        title: label.into(),
+        values: values.to_vec(),
+        current,
+        details: Vec::new(),
+        description: description.into(),
+        choices: (0..values.len()).map(|i| Choice::Set(prop, i)).collect(),
+        closes: false,
+    };
+    SheetRow::new(label, Act::Pick(pick))
+        .value(&values[current])
+        .describe(description)
+}
 
 /// The Tool settings page: [`SETTINGS`]' rows, `rotation_snap` an index
-/// into [`ANGLE_STEPS`].
-pub fn settings(rotation_snap: usize) -> Sheet {
+/// into [`ANGLE_STEPS`], `movement_snap` into [`MOVE_STEPS`], and
+/// `local_axes` whether Local is selected.
+pub fn settings(rotation_snap: usize, movement_snap: usize, local_axes: bool) -> Sheet {
     let rows = SETTINGS
         .iter()
         .map(|d| match d.prop {
             Prop::RotationSnap => {
                 let i = rotation_snap.min(ANGLE_STEPS.len() - 1);
-                value_row(
+                let values: Vec<String> = ANGLE_STEPS
+                    .iter()
+                    .map(|v| snap_text(*v, "degrees"))
+                    .collect();
+                text_value_row(d.label, d.description, d.prop, &values, i)
+            }
+            Prop::MovementSnap => {
+                let i = movement_snap.min(MOVE_STEPS.len() - 1);
+                let values: Vec<String> = MOVE_STEPS.iter().map(|v| snap_text(*v, "")).collect();
+                text_value_row(d.label, d.description, d.prop, &values, i)
+            }
+            Prop::Axes => {
+                let values = vec!["World".into(), "Local".into()];
+                text_value_row(
                     d.label,
                     d.description,
                     d.prop,
-                    &ANGLE_STEPS,
-                    degrees(ANGLE_STEPS[i]),
-                    i,
+                    &values,
+                    usize::from(local_axes),
                 )
             }
-            Prop::Heading => unreachable!("a property, not a tool setting"),
+            _ => unreachable!("a property, not a tool setting"),
         })
         .collect();
     Sheet {
