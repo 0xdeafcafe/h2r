@@ -2,10 +2,11 @@
 
 **Built.** Converted Halo 1 maps default to their source unit, grenade and
 weapon interfaces. The HUD pair recorded by the converter also supports the
-player's Halo 2 HUD choice. A read-only disc census found 1,497 authored
+player's Halo 2 HUD choice. A read-only disc census counts 1,497 authored
 weapon draw entries in 360 interfaces across ten campaign and thirteen
-multiplayer maps. The placement test also walks inherited entries for each
-owning interface. Runtime verification of this rebuild is pending.
+multiplayer maps ([note](notes/hud.md)). The placement test also walks
+inherited entries for each owning interface. Runtime verification of this
+rebuild is pending.
 
 Labels as in [health.md](health.md): **E**
 engine code (`h2 disasm`), **V** checked on the owner's discs, **D** a
@@ -128,9 +129,8 @@ it at `weap +0x2b0`; the Halo 2 counterpart's `nhdt` becomes the Halo 2
 side of the weapon's HUD pair. `weapon_hud` is the function to call for
 any other builder of a `weap`. A chain with no element at all (V: the
 multiplayer maps' flamethrower, `flame thrower` → `master fuel`) draws
-nothing in Halo 1 and becomes an `nhdt` with no widget (since converter
-v87; before, it was refused and the flamethrower kept the shotgun's
-Halo 2 HUD). A failed element stops conversion with the map and source interface in the error.
+nothing in Halo 1 and becomes an `nhdt` with no widget. A failed element
+stops conversion with the map and source interface in the error.
 
 ### Held and stowed weapons
 
@@ -143,14 +143,10 @@ on `0x06`. The magnum has a second panel on the opposite corner for the
 off hand. All three use a dedicated `backpack` bitmap widget at a different
 offset from their held panels. It shows on `0x04`.
 
-The overlap in converted Blood Gulch came from using the shield-meter
-state for weapon panels, meters, icons and counts. Word A could show them
-on every pass, so a stowed weapon drew its entire panel at the same
-top-left coordinates as the held weapon. The older Blood Gulch serve
-reported both the assault rifle and sniper reserve counts at the same
-top-left offset with `hide_when_c` zero (`h2 agent edit get`).
-The widget gate (`0x0013ac87`) accepts a match on **any** show word. A primary show bit
-alone would still permit a stowed draw when another show word matched.
+The widget gate (`0x0013ac87`) accepts a match on **any** show word, so
+a primary show bit alone would still draw a stowed weapon's panel when
+another show word matched; the hide mask in word C is what keeps a widget
+to one pass.
 
 Halo 1 draws a single weapon HUD. Its converted bitmap and text widgets
 all set the retail primary panel's hide mask `0x06` in word C
@@ -268,25 +264,13 @@ The tint adapter verifies the return to `0x13a62a` before looking up the
 weapon that actually supplied the widget. Switching HUDs returns the
 native widgets to the normal input, visibility and material paths.
 
-v83 showed "Reload" on a full magazine (seen 2026-11-19 on the hud
-serve: assault rifle, 60 loaded, 180 in reserve). The converter wrote the
-thresholds right (`00 0b 01 00` at the widget's `+0x18`), but the
-from-scratch map build reads every tag through the inferred schema, which
-typed that word as a raw-resource pointer; it copied "the resource" at
-file offset `0x10b00` and wrote the copy's offset there (`00 da 22 01` in
-the built map: rounds loaded below 218, so always). Since v84 the schema
-leaves the word out (`tags::schema::infer::ENGINE_DATA`,
-docs/formats/tag-schema.md step 9), so the bytes reach the map as
-written. The live proof of the gate above wrote the thresholds into
-memory with `edit.set`, after the build, which is why it did not see this.
-Live, v83 map (2026-11-19): writing each weapon's thresholds back with
-`edit.set` (`bitmap_widgets[3].raw_18`, assault rifle `0x00010b00`)
-hid "Reload" at 60 loaded, showed it at 5 loaded with 180 in reserve, and
-showed "No ammo" alone at nothing loaded and nothing in reserve. Every
-other weapon's HUD, drawn on the held assault rifle by pointing its `hud`
-reference at it, had its panel, count, icon and meter where Halo 1 puts
-them and no widget over another; only the always-on "Reload" overlapped
-the crosshair.
+The from-scratch map build reads every tag through the inferred schema,
+which leaves the warning widget's threshold word raw
+(`tags::schema::infer::ENGINE_DATA`,
+[../formats/tag-schema.md](../formats/tag-schema.md) step 9), so the
+bytes the converter writes reach the map as written. The gate and the
+weapon HUD layout were checked live on a converter-v83 map
+([note](notes/hud.md)).
 
 ### Zoom level
 
@@ -463,13 +447,13 @@ times the diffuse is inferred from the vertex layout; the texture stages
 were not read). So an element of colour `0x00000000` adds nothing and
 takes nothing away: Halo 1 does not draw it. Each ballistic weapon on
 Blood Gulch has one, `hud_ammo_alphas` on the rounds-loaded state (V:
-assault rifle, pistol, shotgun, rocket launcher, sniper rifle, needler),
-which v66's first cut drew opaque. `h1hud::static_alpha` gives such a
-weapon static empty show words. Unit and grenade statics with that colour are omitted. A colour with alpha 0 but some RGB adds the
+assault rifle, pistol, shotgun, rocket launcher, sniper rifle, needler).
+`h1hud::static_alpha` gives such a weapon static empty show words. Unit
+and grenade statics with that colour are omitted. A colour with alpha 0 but some RGB adds the
 sprite's colour (a glow in Halo 1); Halo 2's `widget_gradient_flash`
 blends by alpha only, so it is drawn at full alpha. Any other colour's
 alpha goes into the sprite as for the unit HUD ("Colours" below): weapon
-statics now get the same `<bitmap>_alpha_<aa>` copies (their panels'
+statics get the same `<bitmap>_alpha_<aa>` copies (their panels'
 `0xdc`).
 
 ## Grenades
@@ -541,13 +525,11 @@ The text's font and where its digits fall:
 - Halo 1's digit sprites (`hud_counter_numbers`) are 12 rows, drawn from
   the number's point down on a top anchor.
 
-Up to v65 the text's top was Halo 1's y (3), so the digits' ink was rows
-8..20 under the indicator's top, which ends at row 17 (V: the `grhi`
-background's texels, x 82..119, y 1..17): the count stuck out of the
-bottom of the indicator, the bug seen at v60. Now the point's y is set
-so the ink is centred on Halo 1's digit sprite: y -2, ink rows 3..15,
-Halo 1's sprite rows 3..15 (`hud_layout_disc`
-`grenade_count_digits_sit_inside_the_indicator`).
+The point's y is set so the ink is centred on Halo 1's digit sprite: y
+-2, ink rows 3..15, Halo 1's sprite rows 3..15 (`hud_layout_disc`
+`grenade_count_digits_sit_inside_the_indicator`). The indicator's top
+ends at row 17 (V: the `grhi` background's texels, x 82..119, y 1..17),
+so the digits sit inside it.
 
 ## Scale
 
@@ -580,9 +562,8 @@ byte (A8, A8Y8, A8R8G8B8) are scaled in place. The rest (block-compressed,
 decoder (`h1bitmaps::decode_image`) and the copy written as linear
 A8R8G8B8, top level only, rows at Halo 2's 64-byte linear pitch
 (`h1hud::alpha_scaled_argb`). Retail Halo 2 HUD bitmaps are stored the
-same way (E: `grenade_bkd`'s images, linear A8R8G8B8). Before this the
-sensor background drew opaque in the shader's light blue (seen in a run
-on a10 and a30); now it should be a faint disc at `0x28/255`.
+same way (E: `grenade_bkd`'s images, linear A8R8G8B8). The sensor
+background is a faint disc at `0x28/255`.
 Halo 1's colour RGB needs a `shad` per colour whose
 constant reaches the pixel shader's last-stage `c0`; which `colors` entry
 or animation binding feeds it is not yet established
@@ -629,7 +610,7 @@ together and nothing within it. The disc test checks the two rectangles
 equal for every element of every unit HUD on the disc, both grenade
 HUDs and every converted static and meter of Blood Gulch's weapons.
 
-### Shield over health (fixed in v66)
+### Shield over health
 
 The cyborg's shield meter sprite (122 x 31) and health meter (88 x 14)
 overlap as rectangles in Halo 1 too: the health meter sits in the shield
@@ -643,10 +624,9 @@ stage 3's `c1` at `0xffffffff`, nothing the engine writes). Halo 1's meter
 sprites are A8Y8 with their luminance ramp carried under the clear parts
 too: the cyborg's shield meter has 1435 clear texels with a luminance,
 722 of them on the health meter's visible texels. With both meters
-full, 849 texels showed both (297 on `cyborg_mp`): the shield drawn over
-the health meter, the bug seen at v60.
+full, 849 texels of the two would show in both (297 on `cyborg_mp`).
 
-The converter now gives each meter its own copy, `<bitmap>_meter`, with
+The converter gives each meter its own copy, `<bitmap>_meter`, with
 every clear texel's colour made black (`h1hud::clear_meter_colour`;
 other formats decoded to linear A8R8G8B8 first). A visible texel is
 unchanged, and the copy shows exactly Halo 1's texels (checked for the
@@ -687,7 +667,7 @@ nothing of them to carry. What differs is the motion sensor's range and
 movement threshold, one message time, and the assets (the waypoint
 arrow's bitmap and arrows, the message icons, the damage arrows).
 
-Not converted, for two reasons:
+Two reasons keep `hudg` out of the conversion:
 
 - `hudg` is one tag for the whole game (Halo 2 keeps it at `[0x00510c94]`,
   E `0x00191764`: `matg +0x110` interface element `+0x30`), not a HUD's,
@@ -701,7 +681,10 @@ Not converted, for two reasons:
   scales to the screen, a factor not read yet. Halo 1's range belongs in
   Halo 2's `+0x290` only once that factor is known, scaled by it.
 
-- **HUD globals** (`hudg`). See the field comparison above.
+## Not converted
+
+Besides the HUD globals above:
+
 - **Motion sensor sweep**: Halo 1 draws a sweep around its sensor
   centre; Halo 2's sensor draws its own blips only. The sweep is not
   carried.
@@ -780,7 +763,7 @@ the sniper rifle: the view darkened around the scope, "2x" at the first
 zoom and "10x" at the second. The pistol and rocket launcher show
 their scope mask when zoomed too. Nothing of
 `hud_ammo_alphas` under the ammunition panel (colour 0: Halo 1 does not
-draw it; v66's first cut did); the panel itself slightly translucent, as
+draw it); the panel itself slightly translucent, as
 Halo 1's (alpha `0xdc`). With the shield
 full, only the shield bar's own shape is lit: nothing of it over the
 health bar under it. The shield bar drains from the right as the shield
