@@ -81,7 +81,7 @@ pub const PHYSICS_RADIUS: f32 = 0.03;
 pub const PHYSICS_MASS: f32 = 8.0;
 
 /// The folder the kit's tags are named under.
-pub const FOLDER: &str = r"objects\weapons\multiplayer\pogo";
+pub use pogo::FOLDER;
 
 /// The tag every look shares, by group.
 pub fn shared_path() -> String {

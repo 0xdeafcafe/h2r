@@ -2,7 +2,7 @@
 //! grips), the piston, each trick's start, height and end, the flips as
 //! rigid turns, and what is left alone.
 
-use pogo_kit::{RIG, Style};
+use pogo::{RIG, Style};
 
 use super::*;
 use crate::pogo::Phase;

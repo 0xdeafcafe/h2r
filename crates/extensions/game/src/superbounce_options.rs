@@ -18,7 +18,7 @@
 
 use std::sync::atomic::{AtomicU16, Ordering};
 
-use pogo_kit::Style;
+use pogo::Style;
 
 use engine::GuestMemory;
 use ::rules::ir::Ir;

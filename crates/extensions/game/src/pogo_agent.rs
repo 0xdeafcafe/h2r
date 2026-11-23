@@ -44,7 +44,7 @@ pub fn state_reply() -> wire::State {
     let map = crate::superbounce_mode::state().map;
     let weapons = map
         .as_deref()
-        .and_then(pogo_kit::placed::get)
+        .and_then(pogo::placed::get)
         .map(|p| p.weapons.to_vec())
         .unwrap_or_default();
     let camera = crate::pogo_camera::view();
@@ -100,7 +100,7 @@ pub fn install(agent: &agent::Agent) {
 mod tests {
     use super::*;
     use crate::pogo::{Phase, Sample};
-    use pogo_kit::Style;
+    use pogo::Style;
 
     fn ridden(trick: Option<(Trick, f32)>) -> Ridden {
         Ridden {

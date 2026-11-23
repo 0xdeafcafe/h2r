@@ -22,8 +22,8 @@ use engine::GuestMemory;
 use engine::handle::DatumHandle;
 use engine::points;
 use hooks::Flow;
-use pogo_kit::Style;
-use pogo_kit::placed::Placed;
+use pogo::Style;
+use pogo::placed::Placed;
 
 use crate::superbounce_options::Options;
 
@@ -76,7 +76,7 @@ pub fn decide(m: &dyn GuestMemory, esp: u32) -> Option<u32> {
         ret,
         true,
         crate::superbounce_options::read(m),
-        pogo_kit::placed::get(&map),
+        pogo::placed::get(&map),
     )
 }
 

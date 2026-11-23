@@ -43,6 +43,7 @@ workspace_library(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/map:map",
+        "//crates/formats/pogo:pogo",
         "//crates/formats/tags:tags",
         "//crates/runtime/vfs:vfs",
         "//crates/tools/h1-assets:h1-assets",
@@ -70,6 +71,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/map:map",
+        "//crates/formats/pogo:pogo",
         "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
         "//crates/runtime/vfs:vfs",

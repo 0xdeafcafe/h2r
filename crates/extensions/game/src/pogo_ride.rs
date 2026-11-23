@@ -7,7 +7,7 @@
 //! filed on the tick, so a bounce's verdict reaches the rider on the tick
 //! it is made. It reads one thing more of each player: the weapon held,
 //! and which of the map's sticks it is ([`crate::pogo_loadout::held_style`],
-//! against `pogo_kit::placed`). A player holding a stick is published as
+//! against `pogo::placed`). A player holding a stick is published as
 //! a [`Ridden`]; the pose ([`crate::pogo_pose_glue`]), the camera
 //! ([`crate::pogo_camera`]) and `pogo.state` read that list.
 //!
@@ -21,8 +21,8 @@ use std::sync::{Mutex, MutexGuard};
 use engine::GuestMemory;
 use engine::handle::DatumHandle;
 use hud_kit_core::huds::superbounce::Medal;
-use pogo_kit::Style;
-use pogo_kit::placed::Placed;
+use pogo::Style;
+use pogo::placed::Placed;
 
 use crate::pogo::{Bounce, Cue, RiderTick, Riders, Sample, Trick};
 use crate::superbounce_chain::{Award, Seen};
@@ -167,7 +167,7 @@ pub(crate) fn on_tick(
     players: &[Seen],
     awards: &[Award],
 ) -> Vec<Cue> {
-    let placed = map.and_then(pogo_kit::placed::get);
+    let placed = map.and_then(pogo::placed::get);
     if placed.is_none() {
         // No kit in this map (the feature off, or the map refused): no
         // stick can be held.

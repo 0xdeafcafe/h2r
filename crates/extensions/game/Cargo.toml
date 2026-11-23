@@ -83,7 +83,7 @@ live-telemetry = { path = "../../live/live-telemetry" }
 superbounce = { path = "../../live/superbounce" }
 # The Pogo Stick's styles and where the map rewrite placed its tags
 # (pogo_loadout; docs/game/pogo-stick.md).
-pogo-kit = { path = "../../tools/pogo-kit" }
+pogo = { path = "../../formats/pogo" }
 # The HUD kit's model, templates and record compiler (hud_kit,
 # superbounce_hud; docs/game/hud-kit.md).
 hud-kit-core.workspace = true
