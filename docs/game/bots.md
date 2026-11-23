@@ -646,7 +646,7 @@ biped's state in the synthetic object table before either brain runs.
 | Motion tracker | An unzoomed player can investigate the nearest moving hostile blip inside the sensor disc. It gives an approximate horizontal position through walls. The bot needs sight to identify a player or fire. |
 | Ground objects and placement records | Sight reveals loose grenade equipment and a weapon’s model. Its remaining ammo becomes known when held. Occupied power sites require sight. A successful scan establishes emptiness only at a known pad the bot can inspect. A failed scan supplies no observation. |
 | Vehicles and seats | A visible hull or the bot's own ride supplies the model, pose and seat layout. Identifying a rider on another vehicle also requires sight of that player. Remote vehicle health uses a neutral estimate. The bot can read its own ride's health. |
-| Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. |
+| Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. Out of sight, a CTF or Assault bot plans from its own memory and from the public spawns (section 3.7, "Belief"). |
 | Shots, projectiles and death log | Audible shots give a direction for a look or search. A grenade dodge requires a close, visible projectile. The kill feed supplies identities. A fresh visible body or the bot's own death can supply a position. |
 | Scoreboard, radio and map tags | Scores and team membership are public. Radio distributes dated observations on completed ticks. Static placement periods and player starts describe the map. No variant countdown or actual enemy spawn selection feeds the planner. |
 
@@ -869,12 +869,50 @@ detour to get a usable weapon. In King, it only collects guns inside the
 active hill.
 
 A bot can fire at a visible opponent while walking toward the hill,
-guarding its flag or escorting a carrier. Target choice combines the
+guarding its flag or escorting a carrier. Inside a held zone in Oddball,
+King of the Hill and Territories (one of at least `FOOTWORK_ROOM`, 1
+world unit) it keeps its fight footwork; past half the zone's radius the
+step loses the part that leads out (`objective::within`), so it strafes
+in the hill rather than standing still and never fights its way out. Target choice combines the
 existing range, turn and stickiness costs with the objective, teammates'
 calls, recent kills and visible openings. A bot that loses sight plays its
-objective first. In Slayer it can recover shields, respond to a call,
-regroup after withdrawing, collect a due supply, hold an angle, investigate
-its last sighting, or roam. A team call alone never authorizes a shot.
+objective first. In Slayer (`Mind::between_fights`,
+`crates/live/bots/src/mind/strategy.rs`) it then takes, in order: recover
+shields; regroup with the nearest teammate after withdrawing or while
+afraid; its own lead (hold the angle it lost the target round, then chase
+the last sighting); a teammate's call or a trade; a due supply or loose
+grenades; a heard shot or a guessed respawn; move up with the lower-slot
+teammate when that one is more than 10 to 19 units away; a firing
+position; roam. A teammate's call never pulls a bot off a fresh lead of
+its own, and trailing a teammate comes only once nothing else is left. A
+team call alone never authorizes a shot.
+
+#### Finishing and breaking off
+
+A target whose shield is down is run down, not strafed at while its
+shield comes back. The bot reads the shield from the visible contact (at
+or under 0.25), or counts it as down after twice the melee finish's pulls
+on target (`weapons::Combo::softened`: 6 at Legendary, about 1.6 s of
+automatic fire). With an automatic, a shotgun or nothing loaded it runs
+straight in from within 6 units; with a rifle only from within 2.5,
+since its headshot finishes further out; never with a sniper, splash gun
+or sword (`tactics::finish_push`). Running in uses the rush footwork and
+the plasma reach for the melee (1.17 units), so the melee lands. It
+does not run in while carrying or withdrawing, and it keeps firing on
+the way.
+
+The bot withdraws when it sees more enemies within 8 plus 12 times its
+awareness units than it has teammates there with a clear line, plus a
+margin of one or two from its caution, aggression and drive. A softened
+target overrides that when the bot's own shield is at least 0.5 and it is
+outnumbered by no more than one beyond the margin. The Juggernaut never
+withdraws (posture Press).
+
+Recovering shields, it backs away from the last sighting for 1.5 s after
+losing sight (`mind::RECOVER_BACK_TICKS`), then stands and watches that
+way until the shield is back. Fear sends a bot off on its own only while
+its shield is under the recovery line (0.9); with a full shield a fearful
+bot regroups with a teammate if there is one, else follows its own lead.
 
 Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
@@ -935,11 +973,11 @@ difficulty and style.
 | Trait | What changes in play | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|---|
 | Aggression | Takes openings and closes distance | .05–.95 | .12–.92 | .24–.90 | .35–.88 |
-| Caution | Respects being outnumbered and routes around recent danger | .05–.90 | .16–.88 | .30–.84 | .46–.82 |
+| Caution | Respects being outnumbered, routes around recent danger and plays a hill's edge | .05–.90 | .16–.88 | .30–.84 | .46–.82 |
 | Teamwork | Responds to radio calls and helps teammates | .08–.85 | .18–.88 | .32–.88 | .46–.87 |
-| Objective focus | Stays closer to the assignment during a fight | .05–.90 | .18–.88 | .35–.90 | .48–.89 |
+| Objective focus | Stays closer to the assignment during a fight, and holds a hill, a territory or the ball carrier's fight one enemy longer | .05–.90 | .18–.88 | .35–.90 | .48–.89 |
 | Composure | Has smaller swings in mood and settles faster | .08–.50 | .28–.70 | .50–.86 | .73–.96 |
-| Patience | Holds a strafe or a corner longer before chasing | .05–.48 | .22–.72 | .42–.85 | .65–.91 |
+| Patience | Holds a strafe or a corner longer before chasing, and waits for teammates before pushing the ball carrier | .05–.48 | .22–.72 | .42–.85 | .65–.91 |
 | Showboating | Attempts riskier melee and sword lunges and taunts more often | .10–.95 | .10–.87 | .12–.75 | .15–.67 |
 | Weapon loyalty | Favors a weapon family and may take a short detour for it during a lull | .05–.95 | .13–.88 | .20–.80 | .28–.72 |
 | Chattiness | Refreshes radio sightings more often. New targets and urgent help go out immediately | .05–.95 | .12–.90 | .25–.83 | .36–.80 |
@@ -1347,7 +1385,13 @@ it shoots to (world units):
 | blast | 5 to 25 | 2.5 to 35 | 5 |
 
 An identified SMG fires within its aim-assist reach, bounded to 4.5–9
-world units. Beyond that the movement closes distance or the player draws
+world units. A plasma rifle or plasma pistol (by identity), or any
+automatic whose projectile is slower than 150 world units a second,
+keeps its target within 6 and fires to 10 at most
+(`weapons::SLOW_BOLT_BAND`, `SLOW_BOLT_FIRE`): a strafing target steps out
+of slow bolts ([round 1 on Midship](notes/2026-11-23-bots-natural-round1.md):
+the plasma rifle hit 0.42 of its shots under 3 units, 0.17 from 3 to 12
+and almost none beyond). Beyond that the movement closes distance or the player draws
 another weapon. For a visible approaching enemy, the draw considers half
 a second of observed motion, capped at two units of advance.
 
@@ -1386,6 +1430,15 @@ Seeking walks there along the nav mesh. A weapon of a kind it already
 carries is walked over: the game moves its ammunition across by itself
 (`0x101740`). One of another kind is taken by holding X on it (within 0.5
 world units) for at most 1 s; the dry one in hand is dropped for it.
+
+**Trips that fail** (`crates/live/bots/src/mind/errand.rs`). A walk to a
+weapon may take 3 s plus 20 ticks per world unit of the straight line at
+its start. A bot within 1 unit of it for 1.5 s while the weapons decision
+still wants it has not got it: a walk-over that gives nothing, a weapon
+on a ledge or in a wall. A held X that takes nothing in 1 s ends the same
+way. The weapon (its object) is then refused for 30 s and its spot
+blacklisted for 10 s, so the bot goes back to fighting and roaming
+instead of walking the same trip again.
 
 The presses are Halo 2's Default layout (X reload and action, Y switch,
 B melee, A jump, left stick click crouch), which every bot's profile is
@@ -1522,6 +1575,32 @@ it has found itself):
   approximation for loose pickups and observations without a scoring mask.
 
 A fault leaves `Perception::objective` `None`: the bot plays as in Slayer.
+Script games ride a retail engine index (rules-engine.md, "Which engine
+index a script rides") and keep its objective registry, so the same reads
+serve a `.rules` game on the CTF or Assault carrier.
+
+**Without the engine's globals.** A rules script that keeps no per-engine
+globals (docs/game/rules-engine.md, "Porting the seven engines") still
+leaves the bots an objective, read from the scenario's netgame flags
+(`objective/zones.rs`):
+
+- Oddball with `[0x51ecc4]` zero: the neutral type-4 spawns (designator
+  8, at most three). The balls themselves come from the objective
+  records, which a script's `spawn_objective` fills;
+- King of the Hill with `[0x51ecc8]` zero: the lowest-numbered hill's
+  corners (types 11 to 18). Who is in it is judged by the corners;
+- Territories with `[0x51eccc]` zero: `State::Markers`, for each
+  identifier 0 to 7 the first type-10 flag with it (`+0x14`), as
+  `0x2bf5b0` picks them. No owner is known; a player within
+  `TERRITORY_REACH` (3 units XY, 2 in height) of a marker stands in it.
+
+**What a bot knows of it.** Perception (`perceive::observe_for_brain`)
+keeps a flag or bomb only while the bot sees it, carries it, or a
+teammate carries it. The Oddball ball is kept wherever it is: its
+waypoint is on every Oddball HUD, so a hidden carrier's place is known,
+though the carrier as a player stays unseen (not traced; the HUD's ball
+waypoint is taken from play). Hill and territory occupancy is masked to
+the players the bot knows of.
 
 **Roles** (`objective::role_of`). Every bot sorts its living teammates
 and itself by player index; its rank and the team's size give its role,
@@ -1530,29 +1609,112 @@ attacks; of two, the higher index defends; from three, a third (rounded
 down) defend, the highest ranks. Humans count in the ranks: the bots do
 not know who is a bot.
 
-**The decision** (`objective::plan`, pure):
+**Belief** (`objective::belief`, CTF and Assault). Perception keeps a
+loose flag or bomb, and an enemy carrying one, only while it is in view;
+the bases (the netgame flags) are public. The planner works from what the
+bot believes (`Belief::know`, `mind::strategy`):
+
+- a flag or bomb in view is where it is; one seen loose is remembered
+  there for 45 s, and forgotten when the bot is within 15 world units with
+  the spot in view and it is not there;
+- an enemy carrying our flag is followed to where it was last seen for
+  4 s; then our flag is *missing*;
+- a flag or bomb never seen (or forgotten) is at its spawn (CTF types 0;
+  Assault type 2, a spawn with no team being the neutral bomb's). A spawn
+  in view within 15 with nothing on it makes that team's flag or bomb
+  missing;
+- a missing one stays missing until it is seen or 20 s pass (a return or a
+  capture puts it back at its spawn);
+- a destination the stuck machine repaths at 3 times (section 3.2), or a
+  loose item the bot stands on for 3 s without taking it, is given up for
+  15 s (`Belief::pursue`): the item drops out of the plan, and a return
+  point or plate drops out while another of its team remains.
+
+So from the spawn the attackers head for the enemy base whether or not
+the enemy flag is in view, and a bot looking at an empty spawn plays on
+rather than waiting.
+
+**Roles** (`objective::role_of`, `objective::Lean`). Every bot sorts its
+living teammates and itself by player index; its rank and the team's
+size give its slot, so all of a team's bots agree with nothing said
+between them. One alone attacks; of two, the higher index defends; from
+three, a third (rounded down) defend, the highest ranks. Humans count in
+the ranks: the bots do not know who is a bot.
+
+Within the slot the bot plays its name. `Lean::of` takes four of the
+name's personality draws (aggression, caution, teamwork, objective
+focus; section 3.3), each continuous within the difficulty's band:
+
+| Leaning | From | What it changes |
+|---|---|---|
+| escorts | teamwork over the mean of aggression and focus | an attacker with another attacker nearer the loose flag or bomb covers them (**escort**) instead of racing them; the nearest attacker always goes |
+| guard radius | 4 × (1 + aggression − caution), 3 to 8 | how far a defender strays from our flag or plate to fight |
+| return range | 25 × (0.5 + teamwork) | how far an attacker turns back to return our dropped flag |
+| carrier pull | 1.5 − focus | an attacker hunts our flag's carrier when it is nearer than this share of the way to its own target |
+
+A neutral leaning (all 0.5) gives the ranked plan unchanged. Of the eight
+round-1 names at Legendary, three escort and five grab.
+
+**The decision** (`objective::plan_with`, pure; `plan` with a neutral
+leaning and nothing missing):
 
 CTF uses this order.
 
 1. it carries the enemy flag: **carry** it to our return point, else our
-   flag's spawn, along the nav mesh;
+   flag's spawn, along the nav mesh (straight at it while no route is
+   ready);
 2. an enemy carries our flag: **hunt** the carrier (defenders always;
-   attackers when the carrier is nearer than the flag they are after);
+   attackers by the carrier pull);
 3. our flag lies more than 2 world units from its spawn: **go** and touch
-   it to return it (defenders always; attackers within 25);
-4. attackers: **go** for the enemy flag where it lies (at home or
-   dropped). With it taken by a teammate, the remaining players divide
-   escort and guard duties. A lone teammate escorts within 3 world units.
-5. defenders, and attackers with nothing to do: **hold** our flag's spawn,
-   within 4 world units, fighting from there.
+   it to return it (defenders always; attackers within the return range).
+   Our flag missing, a defender **goes** to the enemy return point (else
+   their spawn), where the carrier is heading;
+4. a teammate has the enemy flag: the remaining players divide escort and
+   guard duties. A lone teammate escorts within 3 world units;
+5. attackers: **go** for the enemy flag where it is believed to be (at its
+   spawn or dropped), or escort a nearer attacker by their leaning. With
+   the enemy flag missing they play as in Slayer until it turns up;
+6. defenders: **hold** our flag's spawn within the guard radius, fighting
+   from there.
 
-Oddball: carrying, **keep** it; a free ball, **go** for it; an enemy's,
-**hunt** them; a teammate's, **escort** them. Between balls, approach
-the closest neutral type-4 spawn selected by Oddball init.
+Every bot's goal also takes its name's temper (`objective::Temper`:
+patience and caution from the personality, `plan_with`).
 
-**King of the Hill.** Approach the current corners' centre, hold the spot
-where the engine counts the bot inside, and fight from there. Moving
-the hill rebuilds its corners. The bot follows the next scoring mask.
+**Oddball** (`zones::ball`):
+
+1. carrying, **keep** it: cover away from the threat, melee at arm's
+   length;
+2. a loose ball: the two of the team nearest it (`RUSHERS`) **go** for
+   it, the rest **hold** within `BALL_COVER` (6 units) of it. In a fight
+   the runners keep walking onto it, shooting on the way, and hold X on
+   it; in free-for-all everyone runs;
+3. an enemy has it: **hunt** the carrier as a group. A hunter between 6
+   and 18 units from it (`SHOWDOWN`, `STAGE`), with no teammate within 8
+   (`GROUP`) and one coming more than a lead behind it (6 to 20 units, the
+   patient the shorter), holds where it is (3 units) until they close
+   up; a teammate more than twice `STAGE` further off (respawning) is not
+   waited for. The carrier is the hunters' first target, and since it
+   cannot shoot it does not count as a gun when a hunter weighs whether
+   it is outnumbered;
+4. a teammate has it: **escort** as a screen, `SCREEN` (3.5 units) out
+   from the carrier towards the nearest enemy it knows within 25, the
+   escorts fanned out by index (0, ±0.6, ±1.2 rad) so each stands in its
+   own spot; with no threat, by the carrier. An escort's first target is
+   an enemy within 12 of the carrier;
+5. between balls, the closest neutral type-4 spawn.
+
+**King of the Hill** (`zones::hill`). Approach the current corners'
+centre. In the hill (the engine's mask, else the corners), **hold** the
+centre within a share of its radius, 0.4 to 0.65 by caution
+(`HILL_KEEP`, `HILL_KEEP_CAUTION`), so the cautious play its edge; where
+the mask counts the bot in but the corners do not, hold the spot. Out of
+it with two teammates already holding it and nobody contesting, a bot of
+caution 0.6 or more (`EDGE_CAUTION`) covers it from just outside, within
+`1 + caution` radii of the centre. Everyone else goes in, and an enemy in
+the hill sends the cautious in too, to clear it; an enemy standing in it
+is the preferred target. Holding the hill, a focused bot stays in a fight
+one enemy longer before backing off. Moving the hill rebuilds its
+corners and the bot follows the next scoring mask.
 
 **Assault.** Take a friendly or neutral bomb to an active enemy plate.
 In one-bomb, only the designated defender's plates score. Carrying the
@@ -1560,22 +1722,46 @@ bomb on foot inside the arming volume advances the counter toward
 `G+0x244` seconds times tick rate. Outside, it falls by three per tick
 to a floor of -1. Stay on the plate through arming; when armed, close to
 score. The engine releases the planted bomb, records the planter at
-`A+0x17c+4·bombTeam` and sets the planted bit. Escorts cover that bomb.
-Defenders guard the plate or intercept the enemy carrier. An ordinary
-dropped friendly bomb can be recovered by the nearest teammate.
+`A+0x17c+4·bombTeam` and sets the planted bit; the team's point comes when
+it goes off, about 3 s later, killing whoever stands near (round 1 on
+Midship: the planter and an escort 3 units away). Escorts cover the
+arming from the plate. A planted bomb is nobody's target: any goal whose
+point lies within `BLAST_CLEAR` (6 world units, XY) of it, or a bot with
+no goal standing there, becomes a **hold** within 1.5 of a spot 7.5 out
+along the line from the bomb to the bot (`objective::clear_of`).
+Defenders guard the plate within the guard radius or intercept the enemy
+carrier. An ordinary dropped friendly bomb can be recovered by the
+nearest teammate; a loose one elsewhere goes to the nearest attacker, the
+escorting names covering it.
 
-**Territories.** Relieve a friendly capture site occupied by an enemy,
-finish a capture already under way, then take an unowned or hostile site.
-Break equal priorities by distance. The bot holds its position inside
-the chosen volume while fighting. FFA ownership follows the player slot.
+**Territories** (`zones::territory`). A team spreads over the sites.
+Every bot ranks each pair of teammate and site the same way: a friendly
+site with an enemy in it, or one the teammate stands in and is taking,
+first; then a site not ours; then ours; nearer first. Going down that
+list, each site takes one teammate, two where an enemy stands in it, so
+two relieve a site under pressure while the rest take the others; a bot
+the sites have no room for goes where it would alone. In its site it
+**holds** within `TERRITORY_KEEP` (1.5 units) of the marker, fighting from
+there; a site taken drops to the bottom of the list, so its taker moves
+on to the next unless nothing else is left. Holding a territory, a
+focused bot stays in a fight one enemy longer. FFA ownership follows the
+player slot and every bot plays alone.
 
-**Juggernaut.** Hunters engage the visible Juggernaut and ignore fellow
-hunters. On a transfer, the new Juggernaut can rush a visible hunter
-while firing, then melee up close. Movement bonuses come from the game
-variant. The role mask alone reveals no target position to the planner.
+**Juggernaut.** Every other player sees the Juggernaut by its waypoint,
+so a hunter's goal is the Juggernaut wherever it is: it walks to it with
+no one in view and fights it on sight. Hunters ignore fellow hunters. The
+Juggernaut has no marks on the others: it hunts the nearest hunter in its
+own view, and roams otherwise (`juggernaut_quarry`,
+`crates/live/bots/src/mind/strategy.rs`). It never withdraws, runs at a
+visible hunter while firing, then melees up close. Movement bonuses come
+from the game variant.
 
 **Picking up.** Approach the chosen item and hold X while it remains
-loose within pickup range. `0x1517ec..0x1518d6` gives a nonzero
+loose within pickup range: 0.5 world units in XY and 1 in height
+(`TAKE_HEIGHT`), as an item on a step or lip sits off the unit's origin.
+A goal counts as reached in XY within its radius (at least
+`nav::REACHED`) and in height within its radius (at least 1), so a bot
+does not walk on at an item it is standing on. `0x1517ec..0x1518d6` gives a nonzero
 multiplayer weapon type the contextual interaction kind 7. The held-X
 path accepts kinds 1 and 7 at `0x15195c` and requests primary pickup.
 There is also a proximity path (`0x15098f`) whose primary pickup is
@@ -5928,6 +6114,20 @@ Natural feel ("Built: natural feel (sol)" in §10):
     Leave it waiting and check the lobby selection and respawn remain
     under the human's control.
 
+Finishing fights (§3.3, "Finishing and breaking off"), Slayer on Midship
+and Lockout:
+
+32. A bot that has your shield down closes in and melees instead of
+    strafing at range while your shield comes back.
+33. A plasma rifle bot does not fire at you across the map; it closes to a
+    few metres first.
+34. A bot that loses you round a corner holds the corner or follows you
+    before it answers a teammate's call or walks back to a teammate.
+35. In Juggernaut, hunters head for the Juggernaut even when it is out of
+    sight, and the Juggernaut does not back away from two hunters.
+36. No bot stands on a weapon, or walks back and forth to one, for more
+    than a couple of seconds.
+
 ### 11.2 Objectives in play (checklist)
 
 For the user, or a coordinator run. Two teams of two or three (a human
@@ -5935,8 +6135,10 @@ and Clankers), Normal. Each line is a yes or no.
 
 CTF on Lockout or Beaver Creek:
 
-1. With both flags home, one bot per team runs for the enemy flag and
-   (with three or more on the team) one stays near its own flag.
+1. With both flags home and out of view, the attackers leave the spawn
+   for the enemy base; the nearest goes for the flag, escorting names
+   follow it, and (with three or more on the team) one stays near its
+   own flag. They fight whoever they meet on the way.
 2. A bot reaching the enemy flag takes it even with a full inventory.
    Check the X hold while the flag is loose and its release on pickup.
 3. A bot carrying the flag runs home along the floor, does not shoot,
@@ -5946,23 +6148,28 @@ CTF on Lockout or Beaver Creek:
 4. Reaching home with our flag there, it scores (the score goes up).
 5. Take a bot team's flag: its defender, and an attacker nearer to you,
    come after you; when you drop it, the nearest bot walks over it and it
-   goes home.
+   goes home. Break line of sight with it: the defender looks where you
+   were, then heads for your base.
 6. A bot whose teammate has the enemy flag runs near them.
 7. Spawns and returns are right on both maps: the bots' "home" is their
    own base, not the enemy's (the designator map, `E+8`/`E+0x10`).
 
 Oddball (any small map):
 
-8. When the ball spawns, the bots run for it.
+8. When the ball spawns, the bots run for it; in teams two of a side run
+   and the others stay near it.
 9. A bot with the ball takes cover or moves away from an approaching enemy.
    It keeps its trigger up and melees a human who comes close.
-10. When a human has the ball, the bots come after them; in teams, a
-    bot's teammate with it is followed, not attacked.
+10. When a human has the ball, the bots come after them, together rather
+    than one at a time, even with the human out of sight; in teams, a
+    bot's teammate with it is screened, the escorts standing between it
+    and you.
 
 King of the Hill (Midship or Lockout):
 
-11. The bots go to the hill and stay in it, fighting from it, rather than
-    chasing out of it.
+11. The bots go to the hill and stay in it, fighting from it and strafing
+    inside it, rather than standing still or chasing out of it. With the
+    hill held, a cautious bot covers it from its edge.
 12. When the hill moves, they go to the new one within a few seconds.
 13. A bot in the hill counts as in it (the hill's colour and the score
     say so). Check the score on a different floor over the same XY and after a move.
@@ -5970,7 +6177,9 @@ King of the Hill (Midship or Lockout):
 Assault (if tried):
 
 14. Check which side picks up a team bomb and a neutral bomb, and whether
-    the carrier scores at the plate its escorts defend (§3.7).
+    the carrier scores at the plate its escorts defend (§3.7). After the
+    plant nobody, of either side, stays within about 6 world units of the
+    bomb when it goes off.
 
 All:
 
@@ -5979,13 +6188,16 @@ All:
     stays until armed and plants on the active plate, and escorts cover
     a planted bomb while recovering a loose one.
 17. In team Territories, contest a friendly site while a neutral site
-    is closer. Watch the bot relieve it and hold through a capture. In
+    is closer. Watch two bots relieve it and hold through a capture. A
+    team's bots take different sites rather than stacking on one. In
     FFA, check that another player's territory counts as hostile.
 18. Kill the Juggernaut in front of two hunters. Check they switch to
     the new Juggernaut and leave one another alone. As Juggernaut the
     bot should close on a visible opponent and melee.
 19. In Oddball check the first spawn and a reset against a neutral type-4
     marker on the map.
+20. In Oddball, kill the bot carrier: the nearest bots of both teams run
+    onto the dropped ball and one picks it up.
 
 ### 11.3 Decisions boost in play (checklist)
 

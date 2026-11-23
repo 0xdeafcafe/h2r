@@ -108,8 +108,12 @@ pub(crate) fn observe_for_brain(
             }
             _ => {}
         }
+        // The ball's waypoint is on every Oddball HUD: where it lies, or
+        // who carries it, is known through walls (bots.md section 3.7).
+        let waypoint = o.game == crate::objective::Game::Oddball;
         o.items.retain(|item| {
-            item.carrier.is_some_and(|id| Some(id) == own)
+            waypoint
+                || item.carrier.is_some_and(|id| Some(id) == own)
                 || visible(item.position, CHEST)
                 || item.carrier.is_some_and(|id| {
                     p.others
@@ -258,7 +262,7 @@ pub(crate) mod honesty {
             });
             p.objective = Some(Objective {
                 me: 0,
-                game: Game::Oddball,
+                game: Game::Ctf,
                 state: Default::default(),
                 hill: None,
                 spots: vec![],
@@ -269,9 +273,16 @@ pub(crate) mod honesty {
                     position: at,
                 }],
             });
+            let mut ball = p.clone();
+            ball.objective.as_mut().unwrap().game = Game::Oddball;
             observe(&mut p, &mut Sight::default(), &mut kills, Some(&map));
             assert_eq!(p.others.len(), usize::from(seen));
             assert_eq!(p.objective.unwrap().items.len(), usize::from(seen));
+            // The ball's waypoint shows it, and so its carrier's place,
+            // through the wall; the carrier as a player stays unseen.
+            observe(&mut ball, &mut Sight::default(), &mut [], Some(&map));
+            assert_eq!(ball.others.len(), usize::from(seen));
+            assert_eq!(ball.objective.unwrap().items.len(), 1);
             assert_eq!(kills[0].at, seen.then_some(at));
             assert_eq!(kills[0].attacker, Some(2));
         }

@@ -264,6 +264,25 @@ fn a_melee_finisher_requires_reach_and_facing() {
 }
 
 #[test]
+fn a_softened_target_is_run_down_with_a_short_gun_but_not_a_long_one() {
+    let mut plasma = gun(Trigger::Automatic, 0, 10.0, 60.0, 36);
+    plasma.profile.dual = Some(crate::arms::DualGun::PlasmaRifle);
+    // Shield down within a few metres: in for the beatdown.
+    assert!(finish_push(Some(plasma), 4.0, true));
+    assert!(!finish_push(Some(plasma), 4.0, false), "full shield: keep strafing");
+    assert!(!finish_push(Some(plasma), FINISH_PUSH + 0.5, true), "too far to run down");
+    // A rifle's headshot finishes at range; only point blank is a beatdown.
+    assert!(!finish_push(Some(rifle()), 4.0, true));
+    assert!(finish_push(Some(rifle()), 2.0, true));
+    // Nothing loaded: running in is all it has.
+    let empty = gun(Trigger::Single, 1, 3.0, 400.0, 0);
+    assert!(finish_push(Some(empty), 4.0, true));
+    // A sniper or a splash gun never runs in.
+    assert!(!finish_push(Some(gun(Trigger::Single, 2, 1.0, 900.0, 4)), 2.0, true));
+    assert!(!finish_push(Some(gun(Trigger::Single, 0, 1.0, 40.0, 4)), 2.0, true));
+}
+
+#[test]
 fn name_jitter_biases_fresh_reactions_within_the_skill_window() {
     let mut fast_sum = 0;
     let mut slow_sum = 0;
