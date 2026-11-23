@@ -501,7 +501,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !d.can_external_pass() || d.bound_target()[..2] != expected {
             return Err(Keep::Shadow("target"));
         }
-        if scene_extract::light_groups::shadow_pass(&ReadMemory(&*mem), 10) != Some(shadow) {
+        if render_bridge::scene_step::shadow_pass(&ReadMemory(&*mem), 10) != Some(shadow) {
             return Err(Keep::Shadow("state"));
         }
         let ready = self.ready(mem)?;

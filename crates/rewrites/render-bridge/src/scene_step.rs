@@ -34,6 +34,9 @@ use native_render::world_layers::{Site, layer_site};
 use scene_extract::GuestRead;
 use scene_extract::extract;
 use scene_extract::light_groups::{self, Cause, Sorted};
+/// The shadow pass a light-group layer draws into, read from the guest
+/// (for the glue that checks a caster group before skipping its handlers).
+pub use scene_extract::light_groups::shadow_pass;
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 

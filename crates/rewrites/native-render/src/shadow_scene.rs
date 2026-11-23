@@ -109,14 +109,15 @@ mod tests {
         let scene = FrameScene::default();
         let valid = group();
         assert_eq!(plan(&scene, &valid, &Empty).unwrap().draws.len(), 0);
-        for change in [
-            (|g: &mut LightGroup| g.layer = 11) as &dyn Fn(&mut LightGroup),
+        let changes: [&dyn Fn(&mut LightGroup); 6] = [
+            &|g| g.layer = 11,
             &|g| g.projection = None,
             &|g| g.pass.as_mut().unwrap().target = 10,
             &|g| g.pass.as_mut().unwrap().size[0] = 0,
             &|g| g.pass.as_mut().unwrap().stencil_mode = 1,
             &|g| g.pass = None,
-        ] {
+        ];
+        for change in changes {
             let mut invalid = valid.clone();
             change(&mut invalid);
             assert_eq!(plan(&scene, &invalid, &Empty).unwrap_err(), Refusal::State);
