@@ -1,12 +1,14 @@
 # Halo 1 multiplayer maps in the Halo 2 engine (design)
 
-Status: in progress, started 2026-11-16; converted maps confirmed in the
-game by the owner (2026-11-17). Each section says what is
-**Built** (with its proof) and what is design only. This applies the rules
+Status: Partly built; each section says what is **Built** (with its
+proof) and what is design only. The converted maps run in the game
+(**Run**: the owner confirmed them in game;
+[notes/multiplayer.md](notes/multiplayer.md)). This applies the rules
 of [campaign.md](campaign.md) to multiplayer: Halo 2's engine runs
-everything (physics, AI, rendering, game types); Halo 1's health bar and
-Both settings retain Halo 1's health packs, overshields and active
-camouflage. Halo 1's assets are the default.
+everything (physics, AI, rendering, game types), with Halo 1's health
+bar from the health subsystem in the Halo 1 sandbox. Both settings
+retain Halo 1's health packs, overshields and active camouflage.
+Halo 1's assets are the default.
 
 Like every import, this reads the user's own disc (`disc/halo1.iso`). No
 map bytes, tag dumps or extracted assets are in the repository. Tests use
@@ -91,8 +93,8 @@ polygon, on 50,000 random points (open or solid, and which leaf), on 20,000
 random segments and 20,000 segments from open space (where each first
 enters solid, compared exactly), and on a ray down from every spawn point.
 
-**Placed scenery joins it** (converter version 96,
-`h1convert::scenery_collision`). For each scenery placement there from the
+**Placed scenery joins it** (`h1convert::scenery_collision`). For each
+scenery placement there from the
 start, its object's collision (`h1objects::coll::object_bsps`: each
 collision node's BSP for permutation 0 of its region, the one a converted
 placement draws, placed by the render model's default pose) is moved to
@@ -126,14 +128,13 @@ Ry(−pitch) · Rx(roll)`, the record's `+0x14` as it is drawn) and merged:
   cluster of the first level leaf it stands in (`sbsp +0x2c`, the sound
   and visibility cluster). The level's own blocks keep their indices;
   nothing is renumbered. So a merge grows the level by one tree and six
-  nodes per level leaf. Version 92 as first written copied the whole
-  tree into every level leaf the box reached instead: Blood Gulch's
-  12,071 nodes became 51,007 for 25 placements, past what the pinned
-  build's BSP space holds.
-- **Room.** What the merge adds is the pieces themselves: Boarding
-  Action's 21 placements with collision take its collision BSP from
-  311,492 bytes to 537,388, and its structure region past Beaver Creek's
-  BSP space (its `sbsp` and `ltmp` are 655,344 bytes on the disc). A pinned map can't grow that space: every region loads
+  nodes per level leaf; copying the whole tree into every level leaf the
+  box reaches instead outgrows the pinned build's BSP space (Blood
+  Gulch's node counts: [notes/multiplayer.md](notes/multiplayer.md)).
+- **Room.** What the merge adds is the pieces themselves, which can
+  outgrow the base's BSP space (Boarding Action's merged collision
+  passes Beaver Creek's region; the figures are in
+  [notes/multiplayer.md](notes/multiplayer.md)). A pinned map can't grow that space: every region loads
   at one base right under the metadata, and pinned metadata keeps its
   addresses. The fresh build doesn't need it to: it takes the converted
   BSP from the set, not from the pinned intermediate's bytes, and lays
@@ -141,7 +142,7 @@ Ry(−pitch) · Rx(roll)`, the record's `+0x14` as it is drawn) and merged:
   intermediate it builds is built with `check_bsp_space` off
   (`Prepared::assemble`; [map-builder.md](../formats/map-builder.md),
   "Pinned maps"), and a `--pinned` Boarding Action is refused with
-  "BSP space outgrew the pinned metadata base", as before.
+  "BSP space outgrew the pinned metadata base".
 - **Havok.** The structure's MOPP code is built over every structure
   surface after the merge (`structure_mopp`), so the rocks' surfaces are
   keyed with the level's.
@@ -288,13 +289,14 @@ grow go to the end of the metadata. **Proof:** a synthetic test on the
 editor's fixture reads every written field back, and
 `the_plan_applies_to_a_retail_base` writes beavercreek's plan into the
 Halo 2 disc's `beavercreek` (70 spawns, 88 flags, 28 items, 56 base
-placements removed; the 3 camouflage spawns were reported by the base-only conversion, the base has
-none) and reads the scenario back.
+placements removed; the 3 camouflage spawns are the missing collections
+the base-only conversion reports, the base having none) and reads the
+scenario back.
 
 The names of Halo 2's netgame flag kind values (`H2Flag::raw`) are
 unverified; the disc's values fit them (`h1convert/tests/h2_scenario.rs`:
 0 and 1 once per team on all 12 maps, 4 always neutral, 7 and 8 in equal
-numbers, 10 to 16 runs of boundary points); not yet confirmed from engine
+numbers, 10 to 16 runs of boundary points); not confirmed from engine
 code.
 
 **Trigger volumes (Built, `convert::park_trigger_volumes`).** The base's
@@ -378,13 +380,12 @@ The base's old BSP region stays in the file, unused.
   part's box) and a reorder table of `2n` entries, the leaf order and its
   inverse, which is how the engine's volume pass (E `0x00044e90`) reads
   a wholly seen subtree's keys (docs/formats/structure-bsp.md). Without
-  them the pass took the object branch and faulted every converted level
-  at converter version 7 (pc `0x4539c`). Version 9 keyed a leaf per
-  triangle and wrote a table of `n`: the pass read past it and set bits
-  past the view's mask area, into the area's word count, and clearing
-  that many words ran over the view and what follows it. The campaign
-  levels faulted: a30 and d20 in the clear (`0x134925`), a10, b30 and d40
-  on a render pass object it had zeroed (`0x147b75`).
+  them the pass takes the object branch and faults (pc `0x4539c`); with
+  a table of `n` entries instead of `2n` it sets bits past the view's
+  mask area, into the area's word count, and clearing that many words
+  runs over the view and what follows it (a30 and d20 fault in the
+  clear, `0x134925`; a10, b30 and d40 on a render pass object it has
+  zeroed, `0x147b75`).
   `tests/render_fields.rs` surveys which 16-bit words of every drawn
   retail multiplayer cluster, part and section are nonzero, and which
   words of every retail bitmap image are none, and fails if a converted
@@ -397,24 +398,24 @@ The base's old BSP region stays in the file, unused.
   and the scenario's cluster data agree, and every collision leaf plays
   its Halo 1 cluster's pair (all 700,932 leaves).
 - **Bitmap images say "not cached".** Every converted image (Halo 1's
-  textures, its lightmap) wrote 0 at `+0x20..+0x33`; every retail image
+  textures, its lightmap) writes 0 at `+0x20..+0x33`; every retail image
   has `0xffffffff` there: LOD pointers 1 and 2, and the texture cache's
   handle per LOD (`+0x28`, `+0x2c`, `+0x30`). The cache reads a handle
   other than -1 as "resident in that slot" and never loads the pixels
-  (E `0x0012c9fb`), so every converted texture drew whatever cache slot
-  0 held: the level's one flat colour. `h1bitmaps` now writes -1 there
-  (`IMAGE_NONE_WORDS`).
+  (E `0x0012c9fb`), so a converted image with 0 there draws whatever
+  cache slot 0 holds: the level's one flat colour. `h1bitmaps` writes
+  -1 there (`IMAGE_NONE_WORDS`).
 - **Clusters and portals** (`h1convert::clusters`). Halo 2 draws a
   structure by flooding portals from the camera's cluster (E
   `0x00173130`, `0x00172840`): from a cluster it walks the portal list at
   `+0x8c` (u16), takes each portal (`sbsp +0x5c`, `0x24` each) whose
   plane faces the right way, which is open and whose screen rectangle
-  overlaps the current one, and draws the cluster on its far side. Until
-  converter version 40 there were no portals and every collision leaf
-  was in cluster 0, so only cluster 0 was drawn: Blood Gulch's capture
-  had one structure draw, cluster 0's cliffs, and no ground, and sky
-  showed where the level should be. Now Halo 1's clusters, portals and
-  leaves are kept. Halo 1's portal (`sbsp +0x154`, `0x40` each) has
+  overlaps the current one, and draws the cluster on its far side. Halo
+  1's clusters, portals and leaves are kept: with no portals every
+  collision leaf falls in cluster 0 and only cluster 0 is drawn (Blood
+  Gulch's one-draw capture is in
+  [notes/multiplayer.md](notes/multiplayer.md)). Halo 1's portal
+  (`sbsp +0x154`, `0x40` each) has
   Halo 2's fields in Halo 2's order: `+0x00` the cluster behind the
   plane, `+0x02` the one in front, `+0x04` the collision plane, `+0x08`
   centre, `+0x14` radius, and its polygon (`+0x34` in Halo 1, `+0x1c` in
@@ -432,10 +433,10 @@ The base's old BSP region stays in the file, unused.
   Halo 1 never draws either. A surface that crosses a portal is listed by
   every cluster it is in (760 of Blood Gulch's 5503): Halo 1 draws it
   when any of them is seen, Halo 2 draws a cluster's section only when
-  the flood reaches that cluster. Until converter version 65 such a
-  surface went to its first cluster only, and looking from another of
-  its clusters without seeing the first, it vanished: the culling the
-  owner saw on Blood Gulch at version 60. `h1convert::flood` models the
+  the flood reaches that cluster, so a surface listed by its first
+  cluster alone vanishes seen from another of its clusters (the culling
+  the owner saw on Blood Gulch is in
+  [notes/multiplayer.md](notes/multiplayer.md)). `h1convert::flood` models the
   flood (one node per chain of portals, at most 256, E `0x001729d9`; the
   camera against the portal's collision plane within 1/64, E
   `0x00173890`; the portal's screen polygon clipped to the node's, E
@@ -500,12 +501,12 @@ The base's old BSP region stays in the file, unused.
   (`0xff`): `0x0014b360` turns -1 into sky 0 only when the scenario's
   `+0x12` has bit 1 and it has a sky (`0x0014b399`..`0x0014b3a6`), and
   converted scenarios leave the bit clear, so the engine draws no sky
-  there, as Halo 1 doesn't. Until converter version 65 every cluster
-  named sky 0; until 81 so did every cluster no sky reaches, and a10's
-  cryo bay (`a10a`, 33 clusters, none with a sky or a portal to one)
-  drew `sky\space\space` as a flat grey slab over two thirds of the view
-  (proven live: the camera's cluster's `+0x6e` set to `0xff`, the bay
-  drew whole and the sky's draw left the frame). Each
+  there, as Halo 1 doesn't. Naming sky 0 instead draws the first sky
+  over an interior's view as a flat grey slab: a10's cryo bay (`a10a`,
+  33 clusters, none with a sky or a portal to one) under
+  `sky\space\space` (**Run**: the camera's cluster's `+0x6e` set to
+  `0xff`, the bay drew whole and the sky's draw left the frame;
+  [notes/multiplayer.md](notes/multiplayer.md)). Each
   sky the Halo 1 scenario names is converted by `h1sky` (model, lights,
   fog colour, and a model scale that keeps it behind the level;
   docs/halo1/sky.md) and added as a new tag, and every
@@ -571,18 +572,15 @@ The base's old BSP region stays in the file, unused.
   colour. So the pages stay as Halo 1 stored them: no quantizing.
 
   **Every converted image is a cache resource (`0x200`); the dark
-  lightmap.** a10 at version 14 drew without light. A capture of a10
-  (frame 2806) showed why: the structure's lighting pass (pixel shader:
-  `r0 = t3 · (1 + v1.a)`, then `× t0 × 2`, `t0` the screen copy of the
-  albedo pass) had nothing bound at stage 3, and no R5G6B5 texture was
-  created in the whole run. The binding itself was right (group, checksum
-  and page all pass `0x00018bfe`); the texture cache returned null. It
-  loads an image only when its flags have `0x200` (E `0x0012cd26`,
-  `0x0012ce81`: `test byte [image+0Fh], 2`); otherwise it hands back the
-  image's runtime texture (`+0x50`), never set for these. Every retail
-  image has the bit (all 1,686 of Coagulation's and 2,231 of Delta
-  Approach's: `0x203` DXT, `0x1209` swizzled, `0x290` linear) and no Halo
-  1 image does. `h1bitmaps` now sets it on every converted image
+  lightmap.** The texture cache loads an image only when its flags have
+  `0x200` (E `0x0012cd26`, `0x0012ce81`: `test byte [image+0Fh], 2`);
+  otherwise it hands back the image's runtime texture (`+0x50`), never
+  set for a converted image, so the lighting pass samples nothing and
+  the level draws unlit (a10's capture is in
+  [notes/multiplayer.md](notes/multiplayer.md)).
+  Every retail image has the bit (all 1,686 of Coagulation's and 2,231
+  of Delta Approach's: `0x203` DXT, `0x1209` swizzled, `0x290` linear)
+  and no Halo 1 image does. `h1bitmaps` sets it on every converted image
   (`IMAGE_CACHED`), which covers the lightmap pages, Halo 1's textures on
   structure and objects, skies and the map card. Both disc tests check
   every image in every converted map (`check_images`).
@@ -604,17 +602,29 @@ nothing); nothing written for play does.
 
 Not covered by the engine reading and left empty: root blocks at `+0x4c`,
 `+0x94`, `+0x148` and `+0x1d0`, which every retail multiplayer BSP fills
-(see the disc survey under "Still to do"). No direct read of them from
+(survey below). No direct read of them from
 the active BSP pointer was found; if the game faults on load, these are
 the first suspects.
+
+What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
+all 12 multiplayer maps; element sizes are upper bounds from block
+spacing, not yet engine-backed): every map uses the root blocks at
+`+0x0c` (collision materials, 20), `+0x14` (collision BSP), `+0x2c`
+(8 bytes, **one per collision leaf** on every map: V), `+0x4c` (8),
+`+0x54` (1), `+0x5c`, `+0x94` (36), `+0x9c` (clusters, `0xb0`),
+`+0xa4` (materials, 32), `+0xac` (2), `+0xd4` (100), `+0xdc` (72),
+`+0x138`/`+0x140` (instanced geometry, `0xc8`/`0x58`), `+0x148`,
+`+0x150`, `+0x1d0` (one element), `+0x1e0` (bytes, up to 160 KB: a
+likely Havok MOPP code block), `+0x21c`, `+0x224`, `+0x234` (one
+element each). The rest are used by some maps only.
 
 ## What the engine reads
 
 Read from the retail XBE's code (static reading only; **E** cites the
 instruction, **Guess** is inference). The scan followed every load of the
 active BSP pointer `[0x4e0348]` and active lightmap `[0x4e0344]`, and the
-cluster pointers derived from them. Plan: **one cluster** holding all of
-Halo 1's render geometry, no portals, no instanced geometry.
+cluster pointers derived from them, to find the least a structure BSP
+can hold.
 
 ### Blocker: the structure's Havok MOPP (`sbsp+0x1e0`)
 
@@ -636,13 +646,13 @@ Halo 1's render geometry, no portals, no instanced geometry.
   surface `key & 0xffff` (E `0x001ef3e0`).
 - A one-byte program (`00`) would load, but no Havok body (vehicles,
   dropped weapons, grenades, crates) would ever touch the level: they
-  fall through the floor. Bipeds use Halo's own collision BSP (Guess). That
-  is a hack, so it isn't done. **A converted map needs MOPP code that
-  emits every structure surface a query box overlaps**: an offline MOPP
-  writer, built from the interpreter's opcodes (`0x00300740`,
+  fall through the floor. Bipeds use Halo's own collision BSP (Guess).
+  That is a hack, so it is not written. **A converted map needs MOPP
+  code that emits every structure surface a query box overlaps**: an
+  offline MOPP writer, built from the interpreter's opcodes (`0x00300740`,
   `0x00301610`, `0x003027b0`), whose output is checked by running the
-  engine's own interpreter semantics in a test against the collision BSP.
-  **Done:** `mopp::build_structure(&bsp)` returns the block's bytes
+  engine's own interpreter semantics in a test against the collision
+  BSP. `mopp::build_structure(&bsp)` returns the block's bytes
   ([mopp.md](../formats/mopp.md), proven on all 78 retail BSPs).
 - `+0x204/+0x208` (a second MOPP, breakable surfaces, Guess) is optional:
   E `jle` at `0x001c293a`. `+0x1ec..+0x200` is the world box (min, max)
@@ -709,7 +719,8 @@ cargo h2 h1 convert path/to/beavercreek.map --dry-run
 ```
 
 Multiplayer maps are written **fresh** by default (`--pinned` for the
-old way, `--fresh` still accepted), and so does `h2 import halo1`: the same map with **nothing pinned**:
+pinned way, `--fresh` to state the default), as does `h2 import halo1`:
+the same map with **nothing pinned**:
 every tag is rebuilt as a tree, and the base's raw resources, sound
 chunks and low-detail bitmaps are copied, so nothing depends on the base's
 file layout. The scenario is built from its blocks. See
@@ -724,17 +735,19 @@ cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps [--pinned]
 in `Prepared::assemble`, so both the `--pinned` map and the fresh build's
 intermediate). A pinned map keeps the base's metadata where it is and puts
 every built tag after it, so it holds all of Coagulation's retail tags
-(546 effects, 708 bitmaps) beside the conversion's; once the weapons took
-Halo 1's effects and sounds (converter version 97) Blood Gulch's Halo 1
-sandbox was 0x634000 of the multiplayer 0x62c000 (`map::Error::TagMemory`
-names the groups). The fresh build's roots and edits are applied to the
+(546 effects, 708 bitmaps) beside the conversion's; with Halo 1's
+effects and sounds that takes Blood Gulch's Halo 1 sandbox past the
+multiplayer tag memory (`map::Error::TagMemory`
+names the groups; [notes/multiplayer.md](notes/multiplayer.md)). The
+fresh build's roots and edits are applied to the
 pinned set: base entries of the scenery, sound scenery, light fixture and
 crate palettes nulled in the pinned scenario's bytes, and in every object
 palette (`tags::object::OBJECT_TYPES`) each base entry no placement names
 (a placement's `+0` short is its palette index; `fresh::null_unplaced`):
 in the Halo 1 sandbox the base's vehicles, bipeds and weapons stay in
-their palettes with nothing placing them, and kept everything they name. its tag list
-(`+0x3d8`) keeping a base tag only when something else reaches it, then
+their palettes with nothing placing them, and keep everything they name.
+The scenario's tag list
+(`+0x3d8`) keeps a base tag only when something else reaches it; then
 every pinned base tag not reached from the scenario, the globals,
 `fresh::KEEP_GROUPS`, `fresh::KEEP_PREFIXES`, the precision collections
 and the Halo 2 HUDs is dropped, its slot left empty and its bytes free
@@ -757,17 +770,15 @@ holder's blocks in a third tag make that one a holder too; one whose
 root doesn't read by the schema is reached whole. The holder must stay
 a tag: the schema moves a block outside its tag only when it sits
 inside another tag (`tags::schema::walk`). Kept as metadata no tag owns
-instead, the bytes broke the fresh build (1288 references out of bounds
-on every map). Before converter version 97 such an array kept the whole
-tag and every reference in it, and the wraith model kept the wraith.
+instead, the bytes break the fresh build (1288 references out of bounds
+on every map).
 A size-0 tag (an alias) reads its root in another tag's bytes, so a
 reached alias makes that tag its holder the same way; otherwise the
-pinned map's alias pointed at freed bytes.
+pinned map's alias points at freed bytes.
 Every word of a kept pinned tag that names a dropped tag is nulled
 (`Pruned::nulled_words`): stale words no walked array covers keep
-nothing, and the pinned Blood Gulch scenario still named the base's
-dropped powerups, vehicles, ambience, reverbs and decorators through
-them.
+nothing, among them a pinned Blood Gulch scenario's references to the
+base's dropped powerups, vehicles, ambience, reverbs and decorators.
 An array below the root that doesn't read (outside the
 metadata, implausibly long) is skipped, and the tag's own words then
 name tags as datums only (`Pruned::partly_walked`). Only a field the
@@ -776,11 +787,11 @@ describe (or whose root doesn't read) is read word by word, every word a
 datum and an address: metadata no tag owns that it points into is read
 the same way, and a base tag it points into is kept. A gap nothing
 points into keeps nothing. A built tag names its fixups and words as
-datums only. Before converter version 97 every word of a built tag was
-also an address: the sound gestalt, rebuilt with Halo 1's sounds, holds
+datums only: read as addresses too, they would keep retail tags — the
+sound gestalt, rebuilt with Halo 1's sounds, holds
 raw offsets (`0x804f3600`, `0x8030a600`, `0x802f3400`) that fall inside
-Coagulation's wraith and warthog models and collision, and that kept
-every retail vehicle (`Pruned::why` named the edge). The scenario's own edits (trigger
+Coagulation's wraith and warthog models and collision, which kept
+every retail vehicle (`Pruned::why` names the edge). The scenario's own edits (trigger
 volumes parked, Halo 1's skies and ambience, the base's light fixtures
 and decorators emptied) are made before this, so the base's sky,
 ambience and decorators they replace go too. On the fresh map Blood Gulch drops
@@ -799,26 +810,28 @@ the warthog, ghost, scorpion, wraith, banshee, spectre, none,
 `h_turret_ap`, none, none, `c_turret_ap`. It is the only place that
 names every retail vehicle (S: the swaps a variant's vehicle options
 make take their vehicle from it, by its shape; the reader is not
-traced), and the `mulg` is kept whole, so it kept
+traced), and the `mulg` is kept whole, so left as the base has it, it
+keeps
 every retail vehicle and all each names (models, collision, physics,
 animations, the warthog's and scorpion's turrets) in a pinned Halo 1
-sandbox map: the chain each kept tag was reached by is
+sandbox map: the chain each kept tag is reached by is
 `fresh::Pruned::why` (`Prepared::build_pruned`), and the pinned test
 prints it for the vehicles. In the Halo 1 sandbox each entry whose
 vehicle the spawns place a Halo 1 vehicle of the same role for
 (`convert::halo1::halo1_vehicle_for`: the warthog's entry the plain
 warthog, not the rocket warthog; a role Halo 1 has no vehicle of takes
 the placed one of its netgame type, so the wraith's entry names the
-scorpion, the other heavy vehicle) now names that vehicle
+scorpion, the other heavy vehicle) names that vehicle
 (`plan_vehicle_list`, written with `globals::set_universal_list` when the
 map is built, as the weapon list is), so a variant's swap gives a
 Halo 1 vehicle and the retail ones the spawns stand in for are dropped.
-The others keep the base's and are reported: on Blood Gulch the banshee,
-spectre and both turrets. The wraith had to go too: its minigun turret
+The others (on Blood Gulch the banshee, spectre and both turrets) name
+none. The wraith's entry names the scorpion rather than keeping the
+wraith: the wraith's minigun turret
 names `ai\generic_turret`, which names `ai\generic`, which names every
-retail vehicle (V, Coagulation; read off the disc), so a kept wraith kept
-the warthog, ghost and scorpion the list no longer names. A pinned map
-that is over its tag memory still shows what it keeps and why:
+retail vehicle (V, Coagulation; read off the disc), so a kept wraith
+keeps the warthog, ghost and scorpion the list names as Halo 1 ones. A
+pinned map that is over its tag memory shows what it keeps and why:
 `Prepared::pinned_set` gives the pruned set before the build, with each
 kept tag's first edge (`Pruned::why`) and the pinned tags read word by
 word (`Pruned::word_read`).
@@ -855,7 +868,7 @@ The converter maps each Halo 1 pair through the written palettes
 and each collision leaf names its Halo 1 cluster
 (`clusters::sound_zones`). `check_sound_clusters` checks the ranges on
 every converted map. A gestalt that gains sounds is built, not pinned, and a fresh
-build now copies its base chunks from the pinned file too
+build copies its base chunks from the pinned file too
 (`fresh::sound_gestalt`). `h1sounds/tests/looping_disc.rs`: all 734
 looping sounds (829 tracks, 52 detail sounds, 1261 sounds) and 63 sound
 environments on the disc convert.
@@ -877,13 +890,13 @@ Campaign levels use the same machinery with their own scenario
 Blood Gulch on Coagulation drops 253 tags (85 `bitm`, 50 `shad`, 15
 `snd!`, 14 `mode`, 13 `hlmt`, 12 `scen`, 11 `lsnd`, ...), 25 palette
 entries and 21 tag list entries; all 21471 references in the kept tags
-still resolve (`tests/fresh.rs`, converter version 17). The scenery palette at `+0x58` is
-pruned like the others (converter version 17): its elements are `0x28`
+resolve (`tests/fresh.rs`). The scenery palette at `+0x58` is
+pruned like the others: its elements are `0x28`
 bytes, a reference at `+0`, which the XBE settles
 (`docs/formats/tag-schema.md`, "Engine strides"). The dropped tags' raw
 data stays in the file, unused.
 
-**Then built from scratch (`h1convert::scratch`, converter version 28).**
+**Then built from scratch (`h1convert::scratch`).**
 The pruned set is a step, not the output: `fresh::from_scratch` reads
 every tag by `(group, path)` through `tags::repo` (`scratch::LevelSource`:
 the conversion's tags from the pinned map it wrote, the rest from the
@@ -897,8 +910,7 @@ sound gestalt, which the readers that take one tag's bytes
 (`scratch::SELF_CONTAINED`). If it fails, the conversion fails with
 the reason (`Error::Fresh`, "not built from scratch"); the pruned set is
 never written. A reference to a tag no source holds is the same
-error, naming the tag, field and missing tag (it was nulled before
-version 101). Blood Gulch on Coagulation: 4,385 tags
+error, naming the tag, field and missing tag. Blood Gulch on Coagulation: 4,385 tags
 (4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
 slots, 0 dangling, 25.2 MB (pinned 48.6 MB); every tag but the sounds
 identical to the pinned map's by name, address- and index-free, the
@@ -1037,14 +1049,14 @@ the doc for a multiplayer option, and a switch in `h1_options::switch`.
 `boot::h1_variants` (`set_mp_sandbox`, set from the setting at boot and
 by the pregame screen's row). 1.0 opens a new map from its content
 package, `T:\$c\<offer>\h1_<map>.map` (map-pack.md "Loading"), which
-`boot::new_maps` still writes once with the setting's variant. The install
+`boot::new_maps` writes once with the setting's variant. The install
 also registers, for each converted map, that path and both variant files
 (`new_maps::variant_pair`, `content_path`) in a `vfs::ContentVariants`
 table, and the data partition is mounted through `vfs::VariantFiles`
 over its host backend, which serves the registered path from the variant
 chosen when it is opened. Nothing is copied when the choice changes.
 
-- A file open now keeps its variant until its last handle closes
+- A file open keeps its variant until its last handle closes
   (`opened`, `closed`).
 - `map_changed` is true for a closed map last opened in the other
   variant. `boot::map_slots` reads content package slots too
@@ -1056,8 +1068,8 @@ chosen when it is opened. Nothing is copied when the choice changes.
   next game start.
 - `map_id` of the path is the served variant's `MapId`. The map probe the
   Live advertisement and telemetry use asks for `d:\maps\<map>.map`, which
-  a new map has none of, so they send no `MapId` for a converted map,
-  before this change and after it. A guest loads its own setting's
+  a new map has none of, so they send no `MapId` for a converted map.
+  A guest loads its own setting's
   variant: the host's choice is not carried to guests (not solved).
 - The other variant's file is served as the package has it; its hash is
   checked at import, not again when the choice switches to it.
@@ -1123,9 +1135,9 @@ So a converted vehicle's collection is the base's when it has one, and
 the conversion frees (below): weight 1, the `vehi`, the variant
 (`gauss` for the gauss warthog, `multiplayer` for the scorpion and wraith,
 as retail collections name them; none otherwise), and the `+0x8` word of
-one of the base's collections. Every netgame equipment entry now gets
-its class's type (weapons 0, grenades 8, powerups 9, vehicles above);
-before, every entry kept the base's first entry's type. The rocket
+one of the base's collections. Every netgame equipment entry gets
+its class's type (weapons 0, grenades 8, powerups 9, vehicles above),
+not the base's first entry's type. The rocket
 warthog becomes the gauss warthog (the user's decision). Blood Gulch and
 Sidewinder place all 8 of their vehicles (2 warthogs, 4 ghosts, 2
 scorpions; the Xbox maps have no rocket warthog).
@@ -1149,10 +1161,9 @@ tags (`TagSet::add_tag`, which keeps the pinned index's tail); its datum
 is known when the placements are written (slot `n`, salt `0xe174 + n`,
 `convert::halo1::added_datum`) and checked when the map is built. No base
 tag gives up its slot (`tests/disc_maps.rs` checks every built collection
-and the index size). The converted lightmap still takes the base's own
+and the index size). The converted lightmap takes the base's own
 lightmap bitmap's slot: it replaces that bitmap, whose pixels would
-otherwise stay in the map unused. (`h1convert::slots::spare`, the freed
-slots the collections used before, is no longer called.)
+otherwise stay in the map unused.
 
 ## What isn't placed, and why
 
@@ -1221,51 +1232,20 @@ one, and pointing the palette at a retail `weat` would be Halo 2's
 weather, not Halo 1's. The structure side is also the render lane's
 (`structure.rs`). The palette stays empty and each cluster `-1`.
 
-## Still to do, in order
+## Open work
 
-1. ~~**MOPP writer**~~: done, `mopp::build_structure`
-   ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
-2. ~~**Decals and lights** of the base~~: lights emptied, no placed
-   decals (above); the base's unreachable tags are dropped in fresh
-   builds (`fresh::prune`, above); Halo 1's background sounds and sound
-   environments fill the scenario's palettes ("Ambient sound"). Each
-   cluster names its pair (above), on campaign levels too, and
-   `h1campaign` converts its scripts' `looping_sound` references with
-   `h1sounds::looping` (campaign.md, "Music, ambience and the map file"). The
-   scenery palette at `+0x58` is settled (`0x28`) and pruned.
-3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
-   `senv`/`swat` shaders: done (above), and object and scenery models
-   (item 6), with Halo 1's tiling scales on the structure's.
-   What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
-   all 12 multiplayer maps; element sizes are upper bounds from block
-   spacing, not yet engine-backed): every map uses the root blocks at
-   `+0x0c` (collision materials, 20), `+0x14` (collision BSP), `+0x2c`
-   (8 bytes, **one per collision leaf** on every map: V), `+0x4c` (8),
-   `+0x54` (1), `+0x5c`, `+0x94` (36), `+0x9c` (clusters, `0xb0`),
-   `+0xa4` (materials, 32), `+0xac` (2), `+0xd4` (100), `+0xdc` (72),
-   `+0x138`/`+0x140` (instanced geometry, `0xc8`/`0x58`), `+0x148`,
-   `+0x150`, `+0x1d0` (one element), `+0x1e0` (bytes, up to 160 KB: a
-   likely Havok MOPP code block), `+0x21c`, `+0x224`, `+0x234` (one
-   element each). The rest are used by some maps only. The converter
-   writes `+0x4c`, `+0x94`, `+0x148` and `+0x1d0` empty without an engine
-   reading that allows it (above).
-4. **Precision variants**: built (above). A game run should show the
-   battle rifle on Blood Gulch's assault rifle spawns in a BR-start
-   variant and the SMG in Slayer.
-5. **The setting and the map list** (below): built, with its row.
-6. **Halo 1 sandbox**: objects, the cyborg as the player and the health
-   model per variant are built (below), and Halo 1's skies. Next a HUD
-   with the health meter. Halo 1's textures on the converted object
-   models are built (below). The structure lists predicted resources
-   (above). Converted object models don't need them: prediction only
-   prefetches. A model's geometry block is loaded when drawn
-   (`0x0012de70` → `0x00223c70`, from the draw paths) and a bitmap image
-   when sampled with no cache handle (`0x0012c9fb` → `0x0012d5a0`); the
-   lists (`obje +0xb4`, read at `0x000bbe00`..`0x000bbeb6` →
-   `0x0016e5e0`, type 2 a render model at `0x0016e950`) only start those
-   loads early. A converted object keeps its template's list, which
-   prefetches the template's model; the cost is a possible first-frame
-   hitch, not a missing model.
+- **Precision variants in a game run**: the battle rifle on Blood
+  Gulch's assault rifle spawns in a BR-start variant, and the SMG in
+  Slayer.
+- Converted object models need no predicted resources: the structure
+  lists predict them, but prediction only prefetches. A model's geometry
+  block is loaded when drawn (`0x0012de70` → `0x00223c70`, from the draw
+  paths) and a bitmap image when sampled with no cache handle
+  (`0x0012c9fb` → `0x0012d5a0`); the lists (`obje +0xb4`, read at
+  `0x000bbe00`..`0x000bbeb6` → `0x0016e5e0`, type 2 a render model at
+  `0x0016e950`) only start those loads early. A converted object keeps
+  its template's list, which prefetches the template's model; the cost
+  is a possible first-frame hitch, not a missing model.
 
 ## Importing (**Built**: `cli::h1_import`)
 
@@ -1317,9 +1297,9 @@ changed.
   the variant the setting names, through the resolver's variant
   selection (above). The VFS serves the same variant: `boot` mounts the
   package library with the same setting (`map_override::mount_with_hashes`),
-  and a rescan keeps it (`Library::reopen`). Opened without the
-  setting, the VFS served the default variant (Halo 1's) whichever
-  variant the menu listed.
+  and a rescan keeps it (`Library::reopen`). Mounted without the
+  setting, the VFS serves the default variant (Halo 1's) whichever
+  variant the menu lists.
 - **Names (decided):** converted maps are `h1_<map>` (`h1_beavercreek`:
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.
@@ -1342,17 +1322,13 @@ salt `0xe174 + n` (`TagSet::from_map`), so the spawns name each new tag's
 datum before it exists (`convert::halo1::added_datum`), and the build
 checks the datums came out so.
 
-**Each netgame equipment spawn names a collection built from Halo 1's**
-(converter version 52). The spawner `0x0015aad0` reads the entry's item
+**Each netgame equipment spawn names a collection built from Halo 1's.**
+The spawner `0x0015aad0` reads the entry's item
 (`+0x58` group, `+0x5c` datum) and rolls it with `0x0019f1a0` only when
 the group is `itmc` or `vehc` (E `0x0015ab12`..`0x0015ab23`); any other
-group leaves the item -1, and `0x0015ab8b` returns without placing.
-Through version 49 each Halo 1 sandbox spawn named its `weap`, `eqip` or
-`vehi` directly (the doc then read `0x0015aad0` as placing any other tag
-as it is), so **no weapon, grenade, powerup or vehicle ever spawned** in
-the Halo 1 sandbox: the user's "no weapons and no vehicles in the world"
-on Blood Gulch, from the first Halo 1 sandbox build. Now
-`convert::halo1` builds one `itmc` per Halo 1 item collection a spawn
+group leaves the item -1, and `0x0015ab8b` returns without placing, so a
+spawn naming its converted `weap`, `eqip` or `vehi` directly places
+nothing. `convert::halo1` builds one `itmc` per Halo 1 item collection a spawn
 uses (each converted item at Halo 1's weight; Halo 1's respawn time as
 the root `i16` at `+8`, which the spawner reads when the spawn's own
 `+0xe` is 0, E `0x0015ac83`..`0x0015acb0`) and one `vehc` per Halo 1
@@ -1379,14 +1355,15 @@ and the cyborg (`characters\cyborg_mp\cyborg_mp`, on `masterchief_mp`):
 template's root bytes with Halo 1's values written over, so every block
 field it doesn't rebuild still holds the template's address in the
 pinned map. A fresh map lays the base's tags out anew, so those
-addresses hold other bytes there. In a vehicle that meant `+0x2f8`
+addresses hold other bytes there. In a vehicle that is `+0x2f8`
 (elements of `0x2a0`), whose element `+0x38` count the load-time loop
 `0x205550` (from `0x11c8f3`, resource preparation `0x11c840`) runs over,
-writing `0x90`-byte entries from element `+0x60` with room for 4. The
-junk counts (`0x290000b`, `0x3f800000`, `0xffffffff` on Blood Gulch)
-wrote past the element: pc `0x205574` on Blood Gulch and Sidewinder. The
+writing `0x90`-byte entries from element `+0x60` with room for 4: junk
+counts (`0x290000b`, `0x3f800000`, `0xffffffff` on Blood Gulch) write
+past the element (pc `0x205574` on Blood Gulch and Sidewinder). The
 cyborg (10 fields), its model (4) and every
-weapon, projectile and powerup were stale too. `build_fresh` now walks
+weapon, projectile and powerup go stale the same way. `build_fresh`
+walks
 each built tag with the schema and copies every block field that still
 holds a pinned metadata address as a tree of its own
 (`Unpinner::rehome`, `FreshReport::rehomed`; refusals in
@@ -1410,7 +1387,7 @@ elements 2 and 3 at the converted cyborg and clears the word;
 sandbox's disc test checks both elements name the added cyborg, which
 decodes with a render model.
 
-**First-person arms (converter version 54).** The element's `+0x0` is the
+**First-person arms.** The element's `+0x0` is the
 first-person arms model (`+0x8` the first-person body). The Halo 1
 sandbox and the Halo 1 campaign put Halo 1's arms there
 (`globals::set_player_hands`; the arms Halo 1's globals name at
@@ -1419,23 +1396,23 @@ converted on their own by `h1objects`). The engine binds the arms' nodes
 and the weapon's first-person model's nodes to the weapon's first-person
 graph **by name** (E `0x001dd4c0`, called from `0x001680eb` for the
 weapon model and `0x00168083` for the arms): Halo 2's arms name no node
-of a converted Halo 1 graph (`l_upperarm` against `frame l upperarm`), so
-until version 54 every converted first-person graph drove the arms with
-no node bound. Halo 2's arms stay in the Halo 2 sandbox. The first-person
+of a converted Halo 1 graph (`l_upperarm` against `frame l upperarm`),
+which is why the arms are converted too; driven by a converted graph,
+they hang with no node bound. Halo 2's arms stay in the Halo 2 sandbox. The first-person
 body stays Halo 2's (Halo 1 has none; its nodes bind to no node of a
 Halo 1 graph either).
 
-**The player's camera and hands (converter version 52).** A rebuilt
+**The player's camera and hands.** A rebuilt
 biped names its model's Halo 1 markers in the unit's marker fields
 (`h1objects::rebuild::UNIT_MARKERS`): the camera at `unit +0xd4`
 (`head`), and the weapon markers at `+0x158`/`+0x15c` (`right hand`,
 `left hand`), which `0x000d0870` passes to the attach `0x0010cec0` when
 a unit takes a weapon. Halo 1's units hold no marker names (its engine
-uses fixed ones) and the rebuild left all three empty, so the cyborg's
-camera sat at its origin (the feet in view, the view low: the user's
-report on Blood Gulch) and its weapons had no marker to attach to (the
-player held nothing; the converted Blood Gulch had no item to pick up
-either, above). The disc test checks the cyborg's three fields name
+uses fixed ones); with all three empty the camera sits at the biped's
+origin, the feet in view and the view low, and the weapons have no
+marker to attach to, so the player holds nothing (**Run**: the owner's
+report on Blood Gulch; [notes/multiplayer.md](notes/multiplayer.md)). The disc
+test checks the cyborg's three fields name
 markers of its render model.
 
 **The health model per variant (Built, `boot::health`).** At each game
@@ -1447,10 +1424,9 @@ Halo 2 sandbox; Halo 1's campaign level names (`a10` to `d40`) are Halo
 1's. `H2_HEALTH_MODEL` still overrides. The HUD meter is the window's
 until a converted HUD has a body widget.
 
-**Halo 1's scenery, in both sandboxes (Built, converter version 53:
-`convert::halo1::plan_scenery`, `fresh::put_scenery`).** The trees,
-rocks and shrubs of a Halo 1 map were never placed: the conversion
-empties the base's placements and placed none of Halo 1's. Now each
+**Halo 1's scenery, in both sandboxes (Built:
+`convert::halo1::plan_scenery`, `fresh::put_scenery`).** The conversion
+empties the base's placements and places Halo 1's own: each
 Halo 1 scenery palette entry (`scnr +0x21c`, `0x30`) is converted
 through `h1objects` (the `scen` from its definition) and every placement
 (`+0x210`, `0x48`) on an entry that converted is placed: Halo 2's
@@ -1459,7 +1435,7 @@ palette entry, no name, Halo 1's "not placed automatically" bit, Halo
 `h1campaign` writes. The palette (`scnr +0x58`, `0x28`) and placements
 (`+0x50`, `0x5c`) go into the **fresh** build's scenario, which is a
 built tree there and takes any size; the pinned build (`--fresh false`)
-can't grow the base's palette and places none. The Halo 2 sandbox now
+can't grow the base's palette and places none. The Halo 2 sandbox
 converts through `h1objects` too (`halo1::prepare_halo2`): its scenery
 tags are added after the vehicle collections, which are added first.
 `every_map_places_halo1_s_scenery_in_both_sandboxes`
@@ -1468,12 +1444,12 @@ tags are added after the vehicle collections, which are added first.
 Blood Gulch 50 placements on 19 entries, Battle Creek 30 on 9, none left
 out.
 
-**Placed scenery is solid as structure (Built, converter version 96:
+**Placed scenery is solid as structure (Built:
 `h1convert::scenery_collision`, `convert::halo1::merge_scenery_collision`).**
 The engine gives scenery no Havok body, so a placed rock or tree drawn as
-scenery was walked through ([objects.md](objects.md), "Collision for
-Havok"). Retail Halo 2 builds its rocks into the structure, and so does the
-conversion now: in both sandboxes, every scenery placement there from the
+scenery alone is walked through ([objects.md](objects.md), "Collision for
+Havok"). Retail Halo 2 builds its rocks into the structure, and so does
+the conversion: in both sandboxes, every scenery placement there from the
 start whose object has a collision model (decided by the `coll`, not the
 name: Blood Gulch's boulders and trees among them) has that collision
 merged into the level's collision BSP, and the object still draws as
@@ -1491,34 +1467,35 @@ reads `soso` (base `+0xa4`, detail `+0xdc`), `senv`, `swat`, `smet`,
 (`h1bitmaps`) and names the copies in the model's materials;
 campaign scenery goes through `h1objects` too, so it gets them as well.
 On Blood Gulch's sandbox 17 models are converted and 81 materials draw
-Halo 1 textures. Since converter version 73 a model shader that is not
+Halo 1 textures. A model shader that is not
 `senv` or `soso` (glass, chicago, generic, meter, plasma, water) is
 rebuilt first as the structure's shaders are (`shad::read_h1`, its own
 blended, additive or self-illuminated stem and maps); the `tex_bump`
-copy is what's left when that finds no stem or map. Before, a10's cryo
-tube glass (`sotr` `levels\a10\shaders\cryo glass`, no map at the
-offset `h1_maps_of` reads) named the stand-in below, a marine's head
-shader, and drew as an opaque grey pane over the view from inside the
+copy is what's left when that finds no stem or map. Without the
+rebuild, a10's cryo tube glass (`sotr` `levels\a10\shaders\cryo glass`,
+no map at the offset `h1_maps_of` reads) names the stand-in below, a
+marine's head
+shader, and draws as an opaque grey pane over the view from inside the
 tube (`tests/model_shaders_disc.rs`). A transparent shader's map that is
 a cube is its reflection, in `one_alpha_env`'s cube slot, and the least
 tiled 2D map is its picture (`shad::transparent_maps`): the cryo glass
-lists its reflection cube first. Since converter version 76 a `soso`
+lists its reflection cube first. A `soso`
 with a reflection (a cube map at `+0x164` and a brightness at `+0x144`
 or `+0x154`, `shad::soso_reflection`) is rebuilt the same way on
 `tex_bump_env` (the commonest retail object stem, 27 of Coagulation's
 weapon, vehicle and character shaders) with its cube map and Halo 1's
 tints facing the eye and grazing. Halo 1's weapons take their metal from
 that reflection over dark base maps (the sniper rifle's averages 35 of
-255); the tex_bump copy drew them near black, most visibly in first
-person. **The reflection mask (converter version 80).** Halo 1 masks a
+255); the tex_bump copy draws them near black, most visibly in first
+person. **The reflection mask.** Halo 1 masks a
 `soso`'s reflection with its multipurpose map (`+0xbc`): every weapon
 `soso` on Blood Gulch has one, and on this (Xbox) disc the mask is its red
 channel (V: the sniper rifle's, DXT1 512x512, is red only, mostly dark:
 the metal reflects in places). `tex_bump_env` has no mask map of its own:
 the reflection is masked by the colour pass's alpha, the base map's times
 the detail's (`shad::TEX_BUMP_ENV`). Halo 1's weapon bases are DXT1 with
-no alpha, so through version 79 the converted weapons reflected everywhere
-at full strength. Now a `soso` drawn on `tex_bump_env` takes a copy of its
+no alpha, so without the mask a converted weapon reflects everywhere at
+full strength. A `soso` drawn on `tex_bump_env` takes a copy of its
 base whose alpha is the multipurpose map's red
 (`h1bitmaps::mask::red_into_alpha`, `Converter::masked_bitmap`), named
 `<base>_reflection_<multipurpose leaf>` and built once per pair: DXT5, as
@@ -1531,19 +1508,20 @@ same index, or by a single-image mask's only image
 (`h1bitmaps::mask::convert_reflection_mask`; D: b30's `light fixtures`
 and the grunt's maps come in two-image pairs with their `multi` maps). A
 base or mask that does not decode, or images that do not pair, fail the
-conversion (converter version 100; they kept the plain base before).
+conversion.
 Proof: h1bitmaps
 `a_base_takes_its_masks_red_as_alpha` and the block round trips;
 `tests/model_shaders_disc.rs`, `bloodgulch_sniper_metal_reflects_its_cube_map`
 (the sniper's converted base against its multipurpose red). **Detail
-tiling and cut-outs (converter version 84).** A `soso` tiles its detail
+tiling and cut-outs.** A `soso` tiles its detail
 map by its own scale (`+0xd8`, v times `+0xec`; `textures::scales_from`):
 16 on the Warthog's hull and chain gun and the Scorpion's hull, 8 on the
-Ghost's, 10 on the cyborg's armour. Before, both the `tex_bump` copy and
-the reflection rebuild tiled it once over the base, so the corroded metal
-lay over each hull as a few large dark smears (proven live: the Ghost's
-hull detail vector set to 8 and the Warthog's to 16 each turned the flat
-panels into Halo 1's fine corroded metal). And Halo 1
+Ghost's, 10 on the cyborg's armour; both the `tex_bump` copy and the
+reflection rebuild tile it by that scale, and tiled once over the base
+the corroded metal lies over each hull as a few large dark smears
+(**Run**: the Ghost's hull detail vector set to 8 and the Warthog's to
+16 each turned the flat panels into Halo 1's fine corroded metal;
+[notes/multiplayer.md](notes/multiplayer.md)). And Halo 1
 alpha-tests a model shader's base unless its flags (`+0x28`) set bit 2,
 "not alpha-tested", which no Blood Gulch `soso` does
 (`shad::soso_alpha_tested`). Where the base stores an alpha (DXT3 and the
@@ -1552,11 +1530,12 @@ other alpha formats, `shad::h1_has_alpha`), the shader is rebuilt on
 (retail's `tex_bump_env_alpha_test` binds seven maps, which has no layout
 here; retail's ammunition bags are alpha-tested without a reflection
 too): the plants' and trees' leaves (DXT3, three quarters clear), the
-ammunition bags and the weapon and ammunition decals, which drew as solid
-cards on the opaque copy (a live frame shows the broadleaf's leaves as
-dark green cards). The stem alone still left the cards whole: its depth
-and shadow passes cut by the bump map's alpha, and from converter
-version 92 the bump slot holds a flat bump cut out where the base is
+ammunition bags and the weapon and ammunition decals, which draw as
+solid cards on the opaque copy (a live frame shows the broadleaf's
+leaves as dark green cards; [notes/multiplayer.md](notes/multiplayer.md)).
+The stem alone leaves the cards whole: its depth
+and shadow passes cut by the bump map's alpha, and the bump slot holds a
+flat bump cut out where the base is
 (objects.md "Cut-out model shaders"). Proof:
 `a_model_shader_tiles_its_detail_by_its_scale`,
 `a_model_shader_cuts_out_where_its_base_is_clear`, and
@@ -1565,12 +1544,12 @@ version 92 the bump slot holds a flat bump cut out where the base is
 yet: a `soso`'s self-illumination (multipurpose green times its animated
 colour, `+0x70` to `+0x8c`), its detail mask (`+0xd6`) and the reflection of a
 cut-out one. A `soso`'s change colour (`+0x4c`, multipurpose
-blue) draws with Halo 2's change-colour stem from converter version 84
+blue) draws with Halo 2's change-colour stem
 (objects.md "Change colours"). A player biped also carries the player's
 emblem (models.md "The emblem").
 
-**Additive chicago chains and the view-angle fade
-(converter version 90).** Blood Gulch's teleporter receivers (the three
+**Additive chicago chains and the view-angle fade.** Blood Gulch's
+teleporter receivers (the three
 `scenery\teleporter_base\teleporter_base` placements; the senders are
 in the bases' structure) draw a light cone,
 `scenery\teleporter_base\shaders\teleporter_cone` (`schi`, additive,
@@ -1578,10 +1557,7 @@ two-sided, framebuffer fade mode 2, "fade when parallel"): three maps,
 each map's colour function (`+0x2c`, 2 multiply) multiplying it into the
 next, the grey noise `base volumetric dust` twice, each scrolling at its
 own rate (u 6 s, v −20 s; u −4 s, v 15 s), times `teleporter_dust`, a
-32×32 green ramp black at the top (v ×1.05). Before, a transparent
-shader drew its least tiled map alone: the first dust, so the cone was a
-static grey speckled shell at full brightness, back faces culled, its
-silhouette hard and none of Halo 1's green. Now an additive `schi` or
+32×32 green ramp black at the top (v ×1.05). An additive `schi` or
 `scex` whose maps all multiply (every map but the last on function 2 or
 3, `shad::multiply_chain`) is rebuilt on `two_add_clouds` (Coagulation,
 Beaver Creek, 05a; `rgb = t1 × t2 × 2 × v0.rgb × c0.a × v0.a`, blend
@@ -1590,8 +1566,11 @@ clouds tree scrolls (`shad::CLOUDS_TREE`, as retail's `cr_stream`), its
 first still map on bitmap 1, and every other map folded into the tint
 as its mean colour (a scrolling layer averages to it), halved for the
 stem's doubling (`shad::Chain`). Without the stem, `one_add_illum` draws
-the still map with the rest folded in. Every additive transparent shader
-now also fades as Halo 1's fade mode says (`+0x2e`; `shad::Tint`): the
+the still map with the rest folded in; drawn on its least tiled map
+alone, the cone is a static grey speckled shell at full brightness, back
+faces culled, its silhouette hard and none of Halo 1's green. Every
+additive transparent shader also fades as Halo 1's fade mode says
+(`+0x2e`; `shad::Tint`): the
 stems' vertex shader (`transparent_generic_reflection`) blends the
 perpendicular colour and alpha (`v[10]`, the surface facing the eye)
 into the parallel ones (`v[11]`, grazing), and the pass multiplies its
@@ -1609,7 +1588,7 @@ parallel, one `sotr` when perpendicular. Proof: `shad` unit tests
 `the_fade_mode_sets_the_facing_and_grazing_alphas`) and
 `tests/shad_rebuild.rs`,
 `additive_chicago_chains_draw_two_maps_scrolling_and_faded`. **Plasma
-`sotr` (converter version 90).** The receiver also draws
+`sotr`.** The receiver also draws
 `scenery\teleporter_shield\shaders\teleporter_shield` (`sotr`,
 additive, fade when parallel): seven combiner stages over four maps,
 `energy plasma` twice (scrolling u 10 s backwards and v 6 s; u 11 s and
@@ -1619,10 +1598,8 @@ the difference of two scrolling noise samples, squared and sharpened
 into thin moving bands, coloured and masked by the picture, the same
 idea as Halo 2's `plasma_alpha` (retail's own teleporter and needler
 shaders: `r0 = t1 − t2`, squared ×4 and `bx2` squared, coloured between
-colour 1 and colour 0, times the mask's alpha and the fade). Before, it
-drew its least tiled map alone on `one_add_illum`: `energy plasma`,
-white, added over the base as a blown-out white square (live frame,
-`before-receiver-close.png`). A `sotr` is now a plasma
+colour 1 and colour 0, times the mask's alpha and the fade). A `sotr`
+is a plasma
 (`shad::is_plasma`) when it is additive with seven stages over four 2D
 maps, the first two the same bitmap and both scrolling, the last two
 still; it is rebuilt on `plasma_alpha` (`shad::plasma_shader`): the first
@@ -1663,14 +1640,14 @@ second (the clouds tree, bitmap target 1, `c[22]` and `c[23]`),
 04a's `glass_gravunit_glow` the first (bitmap target 0, binding words
 `0x01d2` and `0x01f3`: `c[20]` and `c[21]`).
 
-**Teleporter receiver brightness against Halo 1 (converter version
-90).** Face on, per channel (`teleporter_receiver_brightness_against_halo1`,
+**Teleporter receiver brightness against Halo 1.** Face on, per channel
+(`teleporter_receiver_brightness_against_halo1`,
 numbers from the disc's bitmaps). The cone (Halo 1 `dust × dust ×
 ramp`, no doubling): Halo 1's mean (0.012, 0.030, 0.014) and the
 conversion's are equal by construction (the dropped dust folded in as
 its mean); its peak (0.148, 0.362, 0.175) against the conversion's
-(0.062, 0.154, 0.073), the folded dust's peak averaged away. Before
-version 90 the grey dust drew alone: peak 0.61 in every channel.
+(0.062, 0.154, 0.073), the folded dust's peak averaged away. The grey
+dust drawn alone peaks at 0.61 in every channel.
 
 The shield's last stage (`teleporter_shield` stage 6, and every plasma
 but the jackal's and the generator's shields) adds `picture.rgb × (band
@@ -1695,10 +1672,9 @@ line Halo 1's glow peaks at (0, 0.262, 0.040) and averages (0, 0.067,
 0.014), the conversion's (0, 0.247, 0.051) and (0, 0.066, 0.014)
 (simulated before DXT5; the test decodes the mask the converter
 writes). The red and blue peaks differ because the stem has one hue
-where Halo 1 colours each texel its own. The first plasma rebuild (unreleased) drew the picture's
-mean colour masked by its alpha (0.10 to 0.13, nearly flat): peak
-(0.0005, 0.027, 0.004), 37 times too dim, shapeless and with no glow;
-before that `energy plasma`, white, peak 1.0 in every channel. Lost: a
+where Halo 1 colours each texel its own. The earlier rebuilds that
+motivated this one are in [notes/multiplayer.md](notes/multiplayer.md).
+Lost: a
 glow an object's A output animates (the jackal's shield) holds at its
 lower bound; a plasma whose last stage is another sum (the jackal's and
 the generator's shields add `v1 × (1 − picture.a)`) gets no glow.
@@ -1716,11 +1692,10 @@ A material never names no shader (NONE). The shader draw begin
 cached words `0x485a64..0x485a70`. It still calls the draw
 `0x16b90(0x485b48, NONE, ...)`, which reads tag slot `0xffff`'s entry (past
 the table) as a `shad` and dereferences its compiled postprocess
-(`0x16bc7`, `0x16bde`). Before converter version 21, converted skies named NONE on all 5
-materials. That is the likely cause of the null read on Blood Gulch's
-first frame (pc `0x16bde`, ebp `0x485b48`, the state cache).
+(`0x16bc7`, `0x16bde`) — a null read on the first frame (pc `0x16bde`,
+ebp `0x485b48`, the state cache).
 
-### Starting weapons (**Built**, converter version 56)
+### Starting weapons (**Built**)
 
 A game variant's starting weapons are bytes (primary `+0xd6`, secondary
 `+0xd7` of the variant; `variants` settings 89 and 94). `0x0019eda0`
@@ -1741,7 +1716,7 @@ rifle, needler, carbine, none, brute shot, beam rifle, energy sword,
 rocket launcher, sentinel beam, none). The Halo 1 cyborg's graph has no
 Halo 2 weapon type, so the default variants' SMG was refused
 (docs/halo1/objects.md, "Weapon class and type") and players spawned
-unarmed. In the Halo 1 sandbox every entry naming a weapon now names a
+unarmed. In the Halo 1 sandbox every entry naming a weapon names a
 Halo 1 one (`sandbox::HALO1_WEAPON_LIST`, `convert::halo1`), the first of
 its choices the map has:
 
@@ -1767,7 +1742,7 @@ Halo 1 sandbox reads the original scenario's starting equipment at
 `+0x390`, including the flags, four game-type selectors, collection order
 and permutation weights. Blood Gulch has an assault rifle and pistol in
 its CTF row and a plasma pistol in its other row. Both H2 bases have a
-single SMG collection; its slot no longer supplies H1 starting weapons.
+single SMG collection; its slot supplies no H1 starting weapons.
 
 A weapon the map lacks falls to the next choice (the needler to the
 plasma pistol, the plasma rifle, then the assault rifle, which every Halo 1
@@ -1803,7 +1778,12 @@ evidence](text.md#multiplayer-pickup-text).
 
 ## What only a game run can prove
 
-- that the engine loads a converted `sbsp`/`ltmp` and the player stands on
-  the converted collision;
-- that spawn points, flags and weapons land where the Halo 1 map had them;
-- that the map is listed and starts from the multiplayer lobby.
+- that the precision swap lands: the battle rifle on Blood Gulch's assault
+  rifle spawns in a BR-start variant, the SMG in Slayer ("Precision
+  variants", above).
+
+That the engine loads a converted `sbsp`/`ltmp`, that the player stands
+on the converted collision, that spawn points, flags and weapons land
+where the Halo 1 map had them, and that the map is listed and starts
+from the multiplayer lobby are confirmed in game
+([notes/multiplayer.md](notes/multiplayer.md)).
