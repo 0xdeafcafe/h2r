@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
-use render_bridge::native_first_person::{Host, ItemMasks};
-use render_bridge::native_objects::NativeSet;
 use native_render::object_program_gpu::PlannedDraw;
 use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;
 use native_render::objects::{ClearedObjects, ItemDraw, ObjectFrame};
 use native_render::program::ViewInputs;
+use render_bridge::native_first_person::{Host, ItemMasks};
+use render_bridge::native_objects::NativeSet;
 
 use crate::native_first_person_load::{self, MapState, Models};
 use crate::native_world_glue::{ReadMemory, palettes_hold, stage_palettes};
@@ -118,7 +118,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let map_generation = render_bridge::native_map_work::generation();
         reload_on_shader_edit(&self.state, &name);
         let current = |state: &Option<MapState>| {
-            state.as_ref().is_some_and(|s| s.name == name.as_ref() && s.map_generation == map_generation)
+            state
+                .as_ref()
+                .is_some_and(|s| s.name == name.as_ref() && s.map_generation == map_generation)
         };
         if !current(&self.state.lock().unwrap_or_else(|e| e.into_inner())) {
             let _dispatch = timeline::setup::dispatch();
@@ -204,61 +206,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = Some(entry);
         Some(set)
     }
-
-    /// Applies the queued live edits to the first-person models
-    /// (docs/editor/realtime-edits.md, "The native refresh"): an edited
-    /// `mode` that was asked for is asked of the loader again, which
-    /// reads it from the map file the raw overlay serves edited and
-    /// replaces it in the draw set; each edited image is decoded again
-    /// and its textures rewritten, on a worker
-    /// ([`native_first_person_load::refresh_images`]).
-    fn refresh_edits(&self, models: &Arc<Models>) {
-        use render_bridge::native_edits::{self, Consumer, Edit};
-        if !native_edits::pending(Consumer::FirstPerson) || self.refreshing.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        let (name, map_generation) = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(state) = state.as_ref().filter(|s| s.map_generation == render_bridge::native_map_work::generation()) else {
-                return;
-            };
-            (state.name.clone(), state.map_generation)
-        };
-        let edits = native_edits::drain(Consumer::FirstPerson);
-        let mut images = Vec::new();
-        {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(state) = state.as_ref() else { return };
-            for edit in edits {
-                match edit {
-                    Edit::Model { tag } => {
-                        if let Some(&asked) = state.requested.get(&(tag as u16))
-                            && let Some(worker) = &state.worker
-                        {
-                            let _ = worker.send(asked);
-                        }
-                    }
-                    Edit::Image { bitmap, image } => images.push((map::TagId(bitmap), image)),
-                    Edit::Section { .. } | Edit::Tag { .. } | Edit::Shader { .. } => {}
-                }
-            }
-        }
-        if images.is_empty() {
-            return;
-        }
-        self.refreshing.store(true, std::sync::atomic::Ordering::Release);
-        let refreshing = Arc::clone(&self.refreshing);
-        let (models, queue) = (Arc::clone(models), self.gpu.1.clone());
-        let launched = background::spawn("native-first-person edits", move || {
-            native_first_person_load::refresh_images(&name, map_generation, &models, &images, &queue);
-            refreshing.store(false, std::sync::atomic::Ordering::Release);
-        });
-        if let Err(e) = launched {
-            self.refreshing.store(false, std::sync::atomic::Ordering::Release);
-            eprintln!("native-first-person: could not start the live edit refresh ({e}); the models keep their pixels until the map reloads");
-        }
-    }
-
     fn want(&self, model: u32) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(state) = state.as_mut() else {
@@ -281,7 +228,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         models: HashMap<u16, u32>,
         masks: ItemMasks,
     ) -> Option<ClearedObjects> {
-        if crate::h1_cinematics::reflection_active(mem) { return None; }
+        if crate::h1_cinematics::reflection_active(mem) {
+            return None;
+        }
         let gpu = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(
@@ -303,7 +252,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let (gpu_device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
-        if !gpu.lit.try_lock().ok()?.as_mut()?.prewarm_draws(&gpu_device, color, depth, &plan.draws) {
+        if !gpu
+            .lit
+            .try_lock()
+            .ok()?
+            .as_mut()?
+            .prewarm_draws(&gpu_device, color, depth, &plan.draws)
+        {
             return None;
         }
         let mut drawn = vec![false; items.len()];
@@ -336,12 +291,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // Pin the load through mask application and the commit. A replaced
         // generation cannot win after the copies have been reserved.
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state
-            .as_ref()
-            .is_some_and(|state| state.generation == generation
+        if !state.as_ref().is_some_and(|state| {
+            state.generation == generation
                 && state.map_generation == render_bridge::native_map_work::generation()
-                && Arc::ptr_eq(&state.models, &gpu))
-        {
+                && Arc::ptr_eq(&state.models, &gpu)
+        }) {
             return None;
         }
         let cleared = masks.apply(mem, &drawn)?;
@@ -350,10 +304,83 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 }
 
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Applies the queued live edits to the first-person models
+    /// (docs/editor/realtime-edits.md, "The native refresh"): an edited
+    /// `mode` that was asked for is asked of the loader again, which
+    /// reads it from the map file the raw overlay serves edited and
+    /// replaces it in the draw set; each edited image is decoded again
+    /// and its textures rewritten, on a worker
+    /// ([`native_first_person_load::refresh_images`]).
+    fn refresh_edits(&self, models: &Arc<Models>) {
+        use render_bridge::native_edits::{self, Consumer, Edit};
+        if !native_edits::pending(Consumer::FirstPerson)
+            || self.refreshing.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let (name, map_generation) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(state) = state
+                .as_ref()
+                .filter(|s| s.map_generation == render_bridge::native_map_work::generation())
+            else {
+                return;
+            };
+            (state.name.clone(), state.map_generation)
+        };
+        let edits = native_edits::drain(Consumer::FirstPerson);
+        let mut images = Vec::new();
+        {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(state) = state.as_ref() else { return };
+            for edit in edits {
+                match edit {
+                    Edit::Model { tag } => {
+                        if let Some(&asked) = state.requested.get(&(tag as u16))
+                            && let Some(worker) = &state.worker
+                        {
+                            let _ = worker.send(asked);
+                        }
+                    }
+                    Edit::Image { bitmap, image } => images.push((map::TagId(bitmap), image)),
+                    Edit::Section { .. } | Edit::Tag { .. } | Edit::Shader { .. } => {}
+                }
+            }
+        }
+        if images.is_empty() {
+            return;
+        }
+        self.refreshing
+            .store(true, std::sync::atomic::Ordering::Release);
+        let refreshing = Arc::clone(&self.refreshing);
+        let (models, queue) = (Arc::clone(models), self.gpu.1.clone());
+        let launched = background::spawn("native-first-person edits", move || {
+            native_first_person_load::refresh_images(
+                &name,
+                map_generation,
+                &models,
+                &images,
+                &queue,
+            );
+            refreshing.store(false, std::sync::atomic::Ordering::Release);
+        });
+        if let Err(e) = launched {
+            self.refreshing
+                .store(false, std::sync::atomic::Ordering::Release);
+            eprintln!(
+                "native-first-person: could not start the live edit refresh ({e}); the models keep their pixels until the map reloads"
+            );
+        }
+    }
+}
+
 /// Installs the host beside the other native render stages.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    let Some(gpu) = device.lock().ok().and_then(|d| d.backend.upload_device()) else { return };
+    let Some(gpu) = device.lock().ok().and_then(|d| d.backend.upload_device()) else {
+        return;
+    };
     let state = Arc::new(Mutex::new(None));
     *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     render_bridge::native_first_person::set_host(Arc::new(Glue {
@@ -377,7 +404,9 @@ impl crate::native_layers_glue::LayerModels for Models {
     }
 
     fn ready(&self, model: u32) -> bool {
-        self.lit.try_lock().is_ok_and(|lit| lit.as_ref().is_some_and(|lit| lit.has(model)))
+        self.lit
+            .try_lock()
+            .is_ok_and(|lit| lit.as_ref().is_some_and(|lit| lit.has(model)))
     }
 }
 
@@ -386,7 +415,8 @@ impl crate::native_layers_glue::LayerModels for Models {
 /// ones its layer 3 draws from (its call loads them; this never does),
 /// only while the stage palettes they were expanded through hold.
 pub(crate) fn layer_models<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory,
+    device: &d3d::Device<B>,
+    mem: &dyn GuestMemory,
 ) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
     let source = LAYER_SOURCE.lock().ok()?.clone()?;
     let mut map_name = [0; 32];
@@ -394,10 +424,16 @@ pub(crate) fn layer_models<B: d3d::backend::Backend>(
     let map_generation = render_bridge::native_map_work::generation();
     let models = {
         let state = source.lock().unwrap_or_else(|e| e.into_inner());
-        let s = state.as_ref().filter(|s| s.name == name.as_ref() && s.map_generation == map_generation)?;
+        let s = state
+            .as_ref()
+            .filter(|s| s.name == name.as_ref() && s.map_generation == map_generation)?;
         Arc::clone(&s.models)
     };
-    let used = models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let used = models
+        .palettes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     if used.iter().any(Option::is_some) {
         let now = stage_palettes(device, mem);
         if !palettes_hold(&used, &|stage| now[stage].clone()) {
@@ -426,7 +462,9 @@ fn plan_view(
     entry: &LayerEntry,
 ) -> ViewPlan {
     let mut out = ViewPlan::default();
-    let Ok(lit) = models.lit.try_lock() else { return out };
+    let Ok(lit) = models.lit.try_lock() else {
+        return out;
+    };
     for (index, item) in items.iter().enumerate() {
         let frame = &objects[item.object];
         let model = record_models[&item.key.record];
@@ -486,7 +524,9 @@ impl FirstPersonPass {
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let constants = self.view.ok_or("first-person view constants unavailable")?;
         let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let lit = guard.as_mut().ok_or("planned first-person geometry unavailable")?;
+        let lit = guard
+            .as_mut()
+            .ok_or("planned first-person geometry unavailable")?;
         if !self
             .draws
             .iter()

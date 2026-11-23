@@ -704,6 +704,7 @@ mod publication_tests {
             set: Arc::new(NativeSet::default()),
             next: None,
             tried: HashSet::new(),
+            requested: HashMap::new(),
             worker: None,
         };
         Arc::make_mut(&mut state.set).definitions.insert(4, 2);
