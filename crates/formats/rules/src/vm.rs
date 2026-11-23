@@ -888,6 +888,32 @@ impl Vm {
         Some(row[self.pos[slot] as usize])
     }
 
+    /// Writes a global by name, between ticks, for a host that holds the
+    /// mode's state in the script (Firefight's pools). `false` when the
+    /// script declares no global of that name.
+    pub fn set_global(&mut self, name: &str, value: i32) -> bool {
+        let Some(slot) = self.slot_named(name, Scope::Global) else {
+            return false;
+        };
+        let at = self.pos[slot] as usize;
+        self.ext.globals[at] = value;
+        true
+    }
+
+    /// Writes a player variable by name, between ticks. `false` when the
+    /// script declares no player variable of that name or the slot is
+    /// outside the roster.
+    pub fn set_player_var(&mut self, player: u8, name: &str, value: i32) -> bool {
+        let Some(slot) = self.slot_named(name, Scope::Player) else {
+            return false;
+        };
+        let Some(row) = self.ext.players.get_mut(player as usize) else {
+            return false;
+        };
+        row[self.pos[slot] as usize] = value;
+        true
+    }
+
     fn slot_named(&self, name: &str, scope: Scope) -> Option<usize> {
         self.ir.slots.iter().position(|s| {
             s.scope == scope && self.ir.strings.get(s.name as usize).is_some_and(|n| n == name)
@@ -1520,6 +1546,23 @@ mod tests {
         for n in 1..50u64 {
             assert!(below(&mut s, n) < n);
         }
+    }
+
+    #[test]
+    fn host_writes_change_only_the_named_slots() {
+        let src = "rules \"Write\" 1\ncarrier slayer\n\
+                   global var pool: int = 7\nplayer var lives: int = 3\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        assert!(vm.set_global("pool", 4));
+        assert_eq!(vm.global("pool"), Some(4));
+        assert!(!vm.set_global("none_such", 1), "an unknown global");
+
+        assert!(vm.set_player_var(2, "lives", 0));
+        assert_eq!(vm.player_var(2, "lives"), Some(0));
+        assert_eq!(vm.player_var(1, "lives"), Some(3), "another player's row");
+        assert!(!vm.set_player_var(2, "none_such", 1), "an unknown variable");
+        assert!(!vm.set_player_var(16, "lives", 1), "outside the roster");
     }
 
     fn ext() -> RulesExt {

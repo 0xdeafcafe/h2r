@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use firefight::director::SQUAD_SLOTS;
-use firefight::{Command, Count, Def, Director, Outcome, ScoreReason};
+use firefight::{Command, Count, Def, Outcome, ScoreReason, ScriptDirector};
 
 /// Every squad dies `killer`'s way three ticks after it appears.
 fn clear_at_age_three(killer: Option<u8>) -> impl FnMut(u32, &mut World) {
@@ -19,8 +19,13 @@ fn clear_at_age_three(killer: Option<u8>) -> impl FnMut(u32, &mut World) {
     }
 }
 
-fn play(def: Def, players: u8, limit: u32, script: impl FnMut(u32, &mut World)) -> (Director, Run) {
-    let mut director = Director::new(def, settings(1)).unwrap();
+fn play(
+    def: Def,
+    players: u8,
+    limit: u32,
+    script: impl FnMut(u32, &mut World),
+) -> (ScriptDirector, Run) {
+    let mut director = ScriptDirector::new(def, settings(1)).unwrap();
     let mut world = World::new(players, two_zones());
     let run = run(&mut director, &mut world, limit, script, |_, _, _, _, _| {});
     (director, run)
@@ -60,7 +65,7 @@ fn two_teams_start_with_a_pool_each_and_spend_their_own() {
 /// it was given.
 #[test]
 fn a_team_pool_set_from_outside_is_the_one_its_respawns_spend() {
-    let mut director = Director::new(pair_def(3, true), settings(1)).unwrap();
+    let mut director = ScriptDirector::new(pair_def(3, true), settings(1)).unwrap();
     let mut world = World::new(2, two_zones());
     let mut commands = Vec::new();
     for tick in 0..8 {
@@ -104,19 +109,19 @@ fn a_team_pool_set_from_outside_is_the_one_its_respawns_spend() {
 /// one team.
 #[test]
 fn pools_set_from_outside_are_refused_where_the_match_keeps_none() {
-    let mut two = Director::new(pair_def(3, true), settings(1)).unwrap();
+    let mut two = ScriptDirector::new(pair_def(3, true), settings(1)).unwrap();
     assert!(two.set_team_pool(2, 1).is_err(), "no third player team");
     assert!(two.set_lives(None, 1).is_err(), "two teams: a team's pool");
     assert!(two.set_lives(Some(0), 1).is_err(), "shared lives");
     assert_eq!(two.state().pools, [3, 3]);
 
-    let mut one = Director::new(small_def(3, true), settings(1)).unwrap();
+    let mut one = ScriptDirector::new(small_def(3, true), settings(1)).unwrap();
     assert!(one.set_team_pool(1, 1).is_err(), "one team");
     one.set_lives(None, 0).unwrap();
     one.set_team_pool(0, 2).unwrap();
     assert_eq!(one.state().pools[0], 2);
 
-    let mut own = Director::new(pair_def(3, false), settings(1)).unwrap();
+    let mut own = ScriptDirector::new(pair_def(3, false), settings(1)).unwrap();
     assert!(own.set_team_pool(0, 1).is_err(), "each player's own lives");
     assert!(own.set_lives(Some(0), 7).is_err(), "not seen yet");
     let mut world = World::new(2, two_zones());
@@ -338,7 +343,7 @@ fn the_team_fewer_actors_press_gets_the_next_squad() {
 #[test]
 fn a_squad_drops_on_its_target_teams_side() {
     let side = |zones: Vec<firefight::director::ZoneSeen>| {
-        let mut director = Director::new(four_squads(), settings(1)).unwrap();
+        let mut director = ScriptDirector::new(four_squads(), settings(1)).unwrap();
         let mut world = World::new(4, zones);
         run(&mut director, &mut world, 4, |_, _| {}, |_, _, _, _, _| {})
             .commands

@@ -34,8 +34,8 @@
 
 use std::sync::Mutex;
 
-use ::firefight::director::{Director, Phase};
-use ::firefight::{MAX_TEAMS, Outcome};
+use ::firefight::director::Phase;
+use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector};
 
 /// The blob's format.
 pub const VERSION: u8 = 2;
@@ -217,7 +217,11 @@ impl Mode {
     /// The blob for the director's state on the host. `players` is the
     /// player count the reserve is measured at, `finished` the outcome of
     /// the last `Finish` in the host log, if any.
-    pub fn of(director: &Director, players: u8, finished: Option<Outcome>) -> Result<Mode, Error> {
+    pub fn of(
+        director: &ScriptDirector,
+        players: u8,
+        finished: Option<Outcome>,
+    ) -> Result<Mode, Error> {
         let (state, def) = (director.state(), director.def());
         let two = def.teams > 1;
         let stage = match (finished, state.phase) {

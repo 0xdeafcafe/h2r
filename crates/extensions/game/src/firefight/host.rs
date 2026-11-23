@@ -18,7 +18,7 @@ use ::firefight::director::{
     Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen, firefight_team,
 };
 use ::firefight::{
-    Command, Def, Director, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason,
+    Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
     Settings, Skull,
 };
 use host_log::{Entry, Log, LogHead, Sha256};
@@ -145,6 +145,8 @@ pub enum Refusal {
     NoZones,
     /// The definition is invalid or names a class the kit lacks.
     Def(::firefight::Refusal),
+    /// The definition's rules script did not build or verify.
+    Script(String),
     /// Every team is held by a player or is a player team.
     NoFreeTeam,
     /// Two player teams, and the kit marks fewer bases than that.
@@ -158,6 +160,7 @@ impl std::fmt::Display for Refusal {
             Refusal::NoKit => f.write_str("the map does not carry the Firefight kit"),
             Refusal::NoZones => f.write_str("the map's Firefight kit has no drop zones"),
             Refusal::Def(refusal) => write!(f, "the Firefight definition: {refusal}"),
+            Refusal::Script(refusal) => write!(f, "the director script: {refusal}"),
             Refusal::NoFreeTeam => f.write_str("every team is held by a player"),
             Refusal::Bases { have, need } => write!(
                 f,
@@ -240,8 +243,9 @@ struct Progress {
 /// One match on one machine.
 pub struct Host {
     role: Role,
-    /// The host's director; none on a replica or a client.
-    director: Option<Director>,
+    /// The host's director (the definition's rules script on the VM); none
+    /// on a replica or a client.
+    director: Option<ScriptDirector>,
     log: Log<Command>,
     /// The sequence number of the last applied entry.
     applied: u32,
@@ -292,7 +296,10 @@ impl Host {
         let genesis = genesis(&def, settings.seed)?;
         let log = Log::new(LogHead::genesis(genesis)).map_err(|e| Refusal::Log(e.to_string()))?;
         let director = match role {
-            Role::Host => Some(Director::new(def, settings).map_err(Refusal::Def)?),
+            Role::Host => Some(
+                ScriptDirector::new(def, settings)
+                    .map_err(|refusal| Refusal::Script(refusal.to_string()))?,
+            ),
             Role::Replica | Role::Client => None,
         };
         let by_character = kit
@@ -347,12 +354,12 @@ impl Host {
     }
 
     /// The director's mode blob, on the host.
-    pub fn state(&self) -> Option<&State> {
-        self.director.as_ref().map(Director::state)
+    pub fn state(&self) -> Option<State> {
+        self.director.as_ref().map(ScriptDirector::state)
     }
 
     /// The director, on the host.
-    pub fn director(&self) -> Option<&Director> {
+    pub fn director(&self) -> Option<&ScriptDirector> {
         self.director.as_ref()
     }
 
@@ -647,7 +654,7 @@ fn credits(
 /// Where the director is after a step: the round, whether the last
 /// round's last wave is cleared, and the teams' points. The respawns are
 /// the host's to fill in.
-fn progress(director: &Director) -> Progress {
+fn progress(director: &ScriptDirector) -> Progress {
     let (state, def) = (director.state(), director.def());
     let rounds = def.rounds.len() as u32;
     let round = u32::from(state.round);

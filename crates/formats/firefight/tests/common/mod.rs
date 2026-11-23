@@ -1,14 +1,14 @@
-//! Scenarios shared by the director's tests and the script parity tests:
-//! invented definitions, a fake world that applies commands a tick later
-//! as the host runtime does, and seeded random matches.
+//! Scenarios shared by the director's tests: invented definitions, a fake
+//! world that applies commands a tick later as the host runtime does, and
+//! seeded random matches.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use firefight::{
-    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Director, Drop, FORMAT, Lives,
-    Observed, Outcome, PlayerKill, Round, Scoring, Skull, SquadSpec, Wave, builtin,
+    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
+    Outcome, PlayerKill, Round, Scoring, ScriptDirector, Skull, SquadSpec, Wave, builtin,
 };
 
 /// One round of five one-actor waves, two ticks apart, with Famine on.
@@ -212,11 +212,11 @@ pub struct Run {
 }
 
 pub fn run(
-    director: &mut Director,
+    director: &mut ScriptDirector,
     world: &mut World,
     limit: u32,
     mut script: impl FnMut(u32, &mut World),
-    mut check: impl FnMut(u32, &Director, &World, &Observed, &[Command]),
+    mut check: impl FnMut(u32, &ScriptDirector, &World, &Observed, &[Command]),
 ) -> Run {
     let mut commands = Vec::new();
     let mut observed = Vec::new();
@@ -316,11 +316,11 @@ pub fn eight_zones() -> Vec<ZoneSeen> {
 
 pub fn random_match(
     index: u64,
-    check: impl FnMut(u32, &Director, &World, &Observed, &[Command]),
+    check: impl FnMut(u32, &ScriptDirector, &World, &Observed, &[Command]),
 ) -> (Def, Run) {
     let def = quick_builtins()[(index % 4) as usize].clone();
     let players = (index % 16) as u8 + 1;
-    let mut director = Director::new(def.clone(), settings(index)).unwrap();
+    let mut director = ScriptDirector::new(def.clone(), settings(index)).unwrap();
     let mut world = World::new(players, eight_zones());
     let run = run(
         &mut director,

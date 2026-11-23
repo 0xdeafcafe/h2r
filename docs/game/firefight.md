@@ -8,8 +8,10 @@ entries and the `firefight` feature that runs it, the agent API
 view (FF8, without the drawing), and the dedicated host's whole-pack
 admission and bundled kits (FF10) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
-Code: `crates/formats/firefight` defines and validates wave sets and holds
-the director (`src/director.rs`) and kill scoring (`src/scoring.rs`).
+Code: `crates/formats/firefight` defines and validates wave sets, compiles
+a definition to the director's rules script (`src/script.rs`, run by
+`ScriptDirector`) and holds the kill-point math its tests check against
+(`src/scoring.rs`) and the director's interface types (`src/director.rs`).
 `crates/tools/firefight-kit` builds the map kit. The offline command lives
 in `crates/apps/h2-tools/src/firefight_cmd.rs`. The host runtime is
 `crates/extensions/game/src/firefight/` with the shared squad entry in
@@ -182,11 +184,13 @@ player kill scores the set's own points or `builtin::PLAYER_KILL_POINTS`
 
 ### The director
 
-`firefight::Director` (`crates/formats/firefight/src/director.rs`) is a
-state machine with no I/O:
+`firefight::ScriptDirector` (`crates/formats/firefight/src/script.rs`)
+compiles the definition to a rules script and runs it on the rules VM. It
+is a state machine with no I/O:
 
 ```rust
-pub fn new(def: Def, settings: Settings) -> Result<Director>;   // Settings { seed, difficulty, skulls }
+pub fn new(def: Def, settings: Settings) -> Result<ScriptDirector, ScriptRefusal>;
+                                       // Settings { seed, difficulty, skulls }
 pub fn step(&mut self, tick: u32, seen: &Observed) -> Vec<Command>;
 pub struct Observed { players: Vec<PlayerSeen { slot, alive, team }>,
                       actors_alive_by_squad: [u16; 16],
@@ -200,10 +204,11 @@ pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Target 
 pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
 ```
 
-- `Director::new` refuses a definition that is not structurally valid.
-  Its generator (SplitMix64) starts from the match seed XORed with the
-  first eight bytes of `Def::id`. The director reads no clock, uses no
-  floating point and iterates only ordered collections, so the same
+- `ScriptDirector::new` refuses a definition that is not structurally
+  valid, and one whose script does not build or verify. The VM's generator
+  (SplitMix64) starts from the match seed XORed with the first eight bytes
+  of `Def::id`. The director reads no clock, uses no floating point and
+  iterates only ordered collections, so the same
   definition, settings and observed sequence give the same commands.
 - The host fills `Observed` after each game tick. `kills` are the tick's
   `SimEvent::ActorKilled` events ([ai-networking.md](ai-networking.md),
@@ -251,8 +256,9 @@ pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
 - Its state (`director::State`: phase, round, wave, the reserve's next
   squad, slots with each squad's target, each team's pool and score,
   players with their team, active skulls, generator) is the mode blob
-  the actor channel sends as `State`. `Director::resume` continues from
-  it.
+  the actor channel sends as `State`. `ScriptDirector::state` reads it
+  back from the script's variables, and `ScriptDirector::resume` continues
+  from the VM state (`RulesExt`).
 
 #### Two teams
 
@@ -297,10 +303,9 @@ a one-team match.
 ### The director as a rules script
 
 `firefight::script` (`crates/formats/firefight/src/script.rs`) compiles
-a definition to a rules blob that does what `Director` does, and runs it
-([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). The
-host runtime still runs the Rust director; the script is checked against
-it in tests.
+a definition to a rules blob and runs it
+([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)); the host
+runtime runs the script, and the director's tests are its scenarios.
 
 - `compile(&def)` builds the IR directly. The squads, waves, rounds
   (each round's skull schedule), actor caps, class points, difficulty
@@ -312,8 +317,8 @@ it in tests.
 - The difficulty and the skulls on from the start are script options
   (`script::options`). The VM seeds its generator from the match seed
   and the blob's hash; `script::match_seed` hands it a seed that starts
-  it where the director's generator starts, and `random(n)` draws as the
-  director does (SplitMix64, modulo `n`).
+  where the director's generator starts, and `random(n)` draws by
+  SplitMix64, modulo `n`.
 - Kill points are formed exactly: the class points, the difficulty
   multiplier and nine skull multipliers (1,000 for a skull that is off)
   are multiplied in base-1,000 limbs and divided by 1,000^10 once.
@@ -338,29 +343,31 @@ it in tests.
   `ff_team_finish(winner)` (`none` a draw) stand for the two-team parts
   of `Observed` and `Command`. The blob's header has `teams` 1 or 2.
 
-The parity tests (`crates/formats/firefight/tests/script.rs`) replay each
-scenario of the director's tests through both and compare commands and
-state tick by tick: the golden match, the empty pool, the lost match,
-unshared lives, assists, kill points at the multiplier limits, zone
-choice, 48 random matches over the quick built-in sets at every player
-count (Crossfire among them, with player kills), the built-in sets as
-authored, starting skulls, unshared lives, zero gaps, zones all in sight
-and ties, duplicate and absent players, a resumed state, and two teams:
-24 random two-team matches with shared and own lives, every two-team
-end, player kills of each kind with a team change after first sight,
-and targets with zones on each side.
+The director's tests (`crates/formats/firefight/tests`) drive the script
+over their scenarios, and every match the fake world plays is replayed
+through a fresh script for the same commands: the golden match, the empty
+pool, the lost match, unshared lives, assists, kill points at the
+multiplier limits, zone choice, 48 random matches over the quick built-in
+sets at every player count (Crossfire among them, with player kills), the
+built-in sets as authored, starting skulls, unshared lives, zero gaps,
+zones all in sight and ties, duplicate and absent players, a resumed
+state, and two teams: 24 random two-team matches with shared and own
+lives, every two-team end, player kills of each kind with a team change
+after first sight, and targets with zones on each side. `scoring.rs`'s
+kill-point math is what the scoring tests check the script's limbs
+against.
 
-Limits of the script against the director:
+Limits of the script:
 
 - A worst-tick estimate that fits. The zone choice ranks the zones with
   a nested `for each` over the labelled set, and the verifier bounds a
   labelled set at 256 members, so `Report::fits` is false. The VM's run
   time budget (20,000 ops a tick) holds for the kit's 6 to 12 zones.
-- Player slots of 16 and over, which the VM addresses as `none`: the
-  director would still score and register them.
-- Zone distances over 2^31 - 1, which the script reads clamped.
-- A tick with more than 128 commands, past the VM's queue: a script
-  error, where the director has no limit.
+- Player slots of 16 and over, which the VM addresses as `none`: such a
+  player is not scored or registered.
+- Zone distances over 2^31 - 1 are read clamped.
+- A tick with more than 128 commands, past the VM's queue, is a script
+  error.
 
 ### The host runtime
 
@@ -451,8 +458,8 @@ A snapshot is refused while a match runs.
    slot's team, and a slot's `Hunt` goes to that team's base order
    (`SquadOp::Hunt { slot, base }`, the kit's `ff_hunt_NN`). The engine
    keeps no pool, one team's or two, so `Lives` and `TeamLives` set the
-   director's (`Director::set_lives`, `Director::set_team_pool`; the
-   director's own set the count it holds, an operator's changes it), and
+   director's (`ScriptDirector::set_lives`, `ScriptDirector::set_team_pool`;
+   the director's own set the count it holds, an operator's changes it), and
    the director spends a team's respawns from its pool and holds them at
    0, through the same `Respawn` entry as one team; the HUD reads the
    pools from the mode blob. `Finish` ends the game through the engine's

@@ -9,10 +9,9 @@
 //! at build time, nothing depends on the language's own lowering, and the
 //! blob is a pure function of the definition, so its hash is too.
 //!
-//! The Rust [`crate::Director`] is the oracle: for the same definition,
-//! settings and `Observed` sequence, [`ScriptDirector::step`] gives the
-//! same commands and [`ScriptDirector::state`] the same [`State`]. See
-//! `docs/game/firefight.md`, "The director as a rules script".
+//! The director's tests (`crates/formats/firefight/tests`) drive this over
+//! their scenarios and built-in definitions. See `docs/game/firefight.md`,
+//! "The director as a rules script".
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -434,6 +433,7 @@ pub fn match_seed(def: &Def, ir: &Ir, seed: u64) -> Result<u64, ScriptRefusal> {
 
 /// The Firefight director run as a rules script on the VM.
 pub struct ScriptDirector {
+    def: Def,
     vm: Vm,
     teams: u8,
 }
@@ -445,8 +445,9 @@ impl ScriptDirector {
         let seed = match_seed(&def, &ir, settings.seed)?;
         let bits = options(&ir, &settings);
         Ok(Self {
-            vm: Vm::new(ir, bits, seed)?,
             teams: def.teams,
+            vm: Vm::new(ir, bits, seed)?,
+            def,
         })
     }
 
@@ -455,9 +456,20 @@ impl ScriptDirector {
         let ir = compile(&def)?;
         let bits = options(&ir, settings);
         Ok(Self {
-            vm: Vm::resume(ir, bits, ext)?,
             teams: def.teams,
+            vm: Vm::resume(ir, bits, ext)?,
+            def,
         })
+    }
+
+    /// The definition the script was built from.
+    pub fn def(&self) -> &Def {
+        &self.def
+    }
+
+    /// The definition's player teams: 1, or 2.
+    pub fn teams(&self) -> u8 {
+        self.teams
     }
 
     pub fn vm(&self) -> &Vm {
@@ -474,7 +486,7 @@ impl ScriptDirector {
         self.vm.ext().stopped
     }
 
-    /// Advance one tick, as [`crate::Director::step`] does. The host fires
+    /// Advance one tick. The host fires
     /// `on init` once, `on join` for each player present for the first
     /// time (in slot order), `on actor_kill` and `on actor_assist` for each
     /// kill in event order, `on kill` for each player killed by a player,
@@ -594,6 +606,108 @@ impl ScriptDirector {
             rng: self.vm.ext().rng,
             started: g("started") == 1,
         }
+    }
+
+    /// Set a team's shared pool from outside the script: a `TeamLives` the
+    /// host applies, an operator's among them. The engine keeps no team
+    /// pool, so the script's `pool_<team>` is the pool: the next step
+    /// spends respawns from it, and a team at 0 waits for the wave to end.
+    /// Refused for a team the definition does not have, and when lives are
+    /// not shared.
+    pub fn set_team_pool(&mut self, team: u8, pool: u16) -> std::result::Result<(), String> {
+        if team >= self.def.teams {
+            return Err(format!(
+                "the match has {} player team(s), not team {team}",
+                self.def.teams
+            ));
+        }
+        if !self.def.lives.shared {
+            return Err("lives are each player's own, not a team's pool".into());
+        }
+        if self.vm.set_global(&format!("pool_{team}"), i32::from(pool)) {
+            Ok(())
+        } else {
+            Err(format!("the script keeps no pool for team {team}"))
+        }
+    }
+
+    /// Set the shared pool of one team (`player` none) or a player's own
+    /// lives from outside the script: a `Lives` the host applies. Refused
+    /// where the definition keeps no such count: a shared pool with two
+    /// teams (that is `TeamLives`), a player's own lives when lives are
+    /// shared, and a player the script has not seen.
+    pub fn set_lives(&mut self, player: Option<u8>, pool: u16) -> std::result::Result<(), String> {
+        let shared = self.def.lives.shared;
+        match player {
+            None if !shared => Err("lives are each player's own: name the player".into()),
+            None if self.teams > 1 => {
+                Err("with two teams each team has its own pool: set it with team_lives".into())
+            }
+            None => self
+                .vm
+                .set_global("pool_0", i32::from(pool))
+                .then_some(())
+                .ok_or_else(|| "the script keeps no shared pool".to_string()),
+            Some(_) if shared => Err("lives are a shared pool, not each player's own".into()),
+            Some(slot) => {
+                if self.vm.player_var(slot, "registered") != Some(1) {
+                    return Err(format!("the director has not seen player {slot}"));
+                }
+                if self.vm.set_player_var(slot, "lives", i32::from(pool)) {
+                    Ok(())
+                } else {
+                    Err(format!("the script keeps no lives for player {slot}"))
+                }
+            }
+        }
+    }
+
+    /// Actors the script counts as alive.
+    pub fn live_actors(&self) -> u16 {
+        self.state()
+            .slots
+            .iter()
+            .map(|slot| match *slot {
+                Slot::Placed { alive, .. } => alive,
+                Slot::Free | Slot::Draining { .. } => 0,
+            })
+            .sum()
+    }
+
+    /// Actors of the current wave not yet placed, at `players`.
+    pub fn reserve(&self, players: u8) -> u16 {
+        let state = self.state();
+        let players = self.supported_players(players);
+        let current = || {
+            self.def
+                .rounds
+                .get(usize::from(state.round))?
+                .waves
+                .get(usize::from(state.wave))
+        };
+        current().map_or(0, |wave| {
+            wave.squads[usize::from(state.next_squad).min(wave.squads.len())..]
+                .iter()
+                .map(|squad| squad.count.for_players(players))
+                .sum()
+        })
+    }
+
+    /// The live actor cap at a player count, clamped to the definition's tiers.
+    pub fn cap(&self, players: u8) -> u16 {
+        let players = self.supported_players(players);
+        self.def.caps.for_players(players).unwrap_or(0)
+    }
+
+    /// Clamp a player count to the definition's tiers (1 to the last bound).
+    fn supported_players(&self, players: u8) -> u8 {
+        let largest = self
+            .def
+            .caps
+            .live_actors_by_players
+            .last()
+            .map_or(1, |&(upper, _)| upper);
+        players.clamp(1, largest.max(1))
     }
 }
 
@@ -1348,7 +1462,7 @@ fn on_actor_assist(g: &Gen) -> Result<Handler, ScriptRefusal> {
     c.finish(Event::ActorAssist)
 }
 
-/// `Director::score_players`: with two teams, a kill of a player on the
+/// Player kills across the teams: with two teams, a kill of a player on the
 /// other team scores the fixed `player_kill`.
 fn on_kill(g: &Gen) -> Result<Handler, ScriptRefusal> {
     let mut c = Code::new(g, Event::Kill.args());
@@ -1576,7 +1690,7 @@ fn team_presence(c: &mut Code, g: &Gen) -> ([Reg; MAX_TEAMS], [Reg; MAX_TEAMS]) 
     (here, up)
 }
 
-/// `Director::out_of_lives`: a team present with nobody alive and no
+/// Out of lives: a team present with nobody alive and no
 /// respawn coming is out. One team (or one of two present) out: lost. Both
 /// present: the other team wins, and both out at once is decided.
 fn out_of_lives(c: &mut Code, g: &Gen, present: Reg) {
@@ -1633,7 +1747,7 @@ fn out_of_lives(c: &mut Code, g: &Gen, present: Reg) {
     });
 }
 
-/// `Director::decide`: the winning team by score, then lives left; `none`
+/// The decided winner: the winning team by score, then lives left; `none`
 /// for a draw.
 fn decide(c: &mut Code, g: &Gen) -> Reg {
     let winner = c.kt(Ty::Team, -1);
@@ -1662,7 +1776,7 @@ fn decide(c: &mut Code, g: &Gen) -> Reg {
     winner
 }
 
-/// `Director::lives_left`: team `t`'s pool, or its registered players'
+/// Lives left: team `t`'s pool, or its registered players'
 /// own counts.
 fn lives_left(c: &mut Code, g: &Gen, t: usize) -> Reg {
     let v = &g.v;
@@ -1687,7 +1801,7 @@ fn lives_left(c: &mut Code, g: &Gen, t: usize) -> Reg {
     sum
 }
 
-/// `Director::observe_slots`, unrolled over the 16 slots.
+/// The slot pass, unrolled over the 16 slots.
 fn observe_slots(c: &mut Code, g: &Gen, tick: Reg) {
     let v = &g.v;
     for s in 0..SQUAD_SLOTS {
@@ -1756,7 +1870,7 @@ fn observe_slots(c: &mut Code, g: &Gen, tick: Reg) {
     }
 }
 
-/// `Director::respawn`: a life for each dead player not yet respawning,
+/// Respawn: a life for each dead player not yet respawning,
 /// from the team's pool or the player's own count; with none left, a free
 /// respawn only between waves.
 fn respawn(c: &mut Code, g: &Gen) {
@@ -1830,7 +1944,7 @@ fn spend(c: &mut Code, g: &Gen, p: Reg, between: Reg, pool: Option<usize>) {
     );
 }
 
-/// `Director::end_wave`: respawn the dead, then the next wave, the next
+/// The end of a wave: respawn the dead, then the next wave, the next
 /// round with its lives bonus, or the end.
 fn end_wave(c: &mut Code, g: &Gen, tick: Reg) {
     let v = &g.v;
@@ -1916,7 +2030,7 @@ fn end_wave(c: &mut Code, g: &Gen, tick: Reg) {
     c.bind(won);
 }
 
-/// `Director::last_round_outcome` with two teams: the only team present,
+/// The last round's outcome with two teams: the only team present,
 /// else decided by score and lives (`none` for a draw).
 fn last_round_winner(c: &mut Code, g: &Gen) -> Reg {
     let (here, _) = team_presence(c, g);
@@ -1940,7 +2054,7 @@ fn last_round_winner(c: &mut Code, g: &Gen) -> Reg {
     winner
 }
 
-/// `Director::start_wave`: a round's first wave announces the round and
+/// The start of a wave: a round's first wave announces the round and
 /// switches its skulls on, in schedule order.
 fn start_wave(c: &mut Code, g: &Gen) {
     let v = &g.v;
@@ -1977,7 +2091,7 @@ fn start_wave(c: &mut Code, g: &Gen) {
     c.store_k(v.phase, SPAWNING);
 }
 
-/// `Director::choose_target`: the only team present, else the one fewer
+/// The target team: the only team present, else the one fewer
 /// live actors are sent at, else even squads at team 0. An int, 0 or 1.
 fn choose_target(c: &mut Code, g: &Gen, here: &[Reg; MAX_TEAMS], next: Reg) -> Reg {
     let v = &g.v;
@@ -2033,7 +2147,7 @@ fn choose_target(c: &mut Code, g: &Gen, here: &[Reg; MAX_TEAMS], next: Reg) -> R
     target
 }
 
-/// `Director::place`: up to two squads from the reserve, in definition
+/// Placement: up to two squads from the reserve, in definition
 /// order, while the next fits under the cap and a slot and a zone are free.
 fn place(c: &mut Code, g: &Gen, tick: Reg, present: Reg) {
     let v = &g.v;

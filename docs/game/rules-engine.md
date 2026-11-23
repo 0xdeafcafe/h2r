@@ -1969,21 +1969,21 @@ engines' hooks, observers and bot readers that parse per-engine globals
 
 ## Firefight, AI and bounces
 
-**Firefight is the first port.** `firefight::Director`
-(`crates/formats/firefight/src/director.rs`) and its scoring
-(`src/scoring.rs`) compile to one rules script: waves, rounds, lives,
-skulls and scoring. The wave-set format stays the authoring format.
-`firefight::Def` is already validated, bounded and hashed, and the hopper
-tool offers definitions; `firefight::script::compile`
-(`crates/formats/firefight/src/script.rs`) builds the director script's
-IR from a `Def`, with the definition's squads, waves, rounds, caps,
-points and multipliers as constant tables. It builds IR, not source: the
-loops over the 16 squad slots unroll at build time and the blob depends
-on nothing but the definition, so a wave set is one blob with one hash,
-mode 1 folds into mode 2, and the built-in sets need no rewrite by hand.
-The Rust director and its tests are the oracle: for the same `Observed`
-sequence `firefight::ScriptDirector` gives the same `Command` log and the
-same director state ([firefight.md](firefight.md#the-director-as-a-rules-script)).
+**Firefight is the first port, and runs as one.** `firefight::ScriptDirector`
+(`crates/formats/firefight/src/script.rs`) compiles the wave-set
+definition to one rules script — waves, rounds, lives, skulls and
+scoring — and runs it: the host runtime steps it each tick
+([firefight.md](firefight.md#the-director-as-a-rules-script)). The
+wave-set format stays the authoring format. `firefight::Def` is already
+validated, bounded and hashed, and the hopper tool offers definitions;
+`firefight::script::compile` builds the director script's IR from a
+`Def`, with the definition's squads, waves, rounds, caps, points and
+multipliers as constant tables. It builds IR, not source: the loops over
+the 16 squad slots unroll at build time and the blob depends on nothing
+but the definition, so a wave set is one blob with one hash, mode 1
+folds into mode 2, and the built-in sets need no rewrite by hand. The
+director's tests are its scenarios: every match the fake world plays is
+replayed through a fresh script for the same `Command` log.
 
 **AI is commanded by squad.** A script places a squad from the kit's
 palette at a label, sets its team and orders, reads how many of its
@@ -2202,7 +2202,7 @@ Each phase lands by itself and ends on its exit criteria.
 | 1 | `SimExt` side arena (forge-design.md slice F7; sim-rewrite.md section 2) | a test record survives checkpoint, revert, snapshot and a film keyframe, and changes the sim hash |
 | 2 | Forge labels | labels round-trip through the document and the edit log (built); the built-in flag-type table resolves on a disc map (`#[ignore]` test, not built) |
 | 3 | Language, verifier, IR, VM, host runtime, capabilities | the compiler and verifier pass their suites; a fuzzer finds no panic in the verifier or VM; a script scores a fake game through the `Game`-style trait; a call or grant outside `requires` is refused, and a blob naming an unknown capability is refused by that name |
-| 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both. Built in tests: `crates/formats/firefight/tests/script.rs` compares commands and `State` tick by tick. Not built: the host runtime running the script, and `firefight.state` reading it |
+| 4 | Firefight port | the host runtime runs the definition's script (`ScriptDirector`), and `firefight.state` reads its `Command` log and `State`. Built in tests: `crates/formats/firefight/tests` replays every scenario through a fresh script for the same commands |
 | 5 | Slayer port | parity on every retail Slayer built-in on three maps; a script Slayer game played on Live |
 | 6 | The other six ports, in the order Juggernaut, Oddball, King, CTF with Assault, Territories | parity per engine; the API rows each needs are named points |
 | 7 | AI squads for any script | a script outside Firefight places, orders and erases squads on a kit map; `on squad_dead` fires on the tick the count reaches 0 in a test over the fake squad entry |

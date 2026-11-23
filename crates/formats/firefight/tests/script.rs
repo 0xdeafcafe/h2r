@@ -1,6 +1,6 @@
-//! The director compiled to a rules script gives the Rust director's
-//! commands and state, tick by tick, over the director's own scenarios and
-//! every built-in definition.
+//! The director's scenarios over the compiled rules script: every match
+//! the fake world plays is replayed through a fresh script over what it
+//! observed, and gives the same commands.
 
 mod common;
 
@@ -9,32 +9,30 @@ use std::collections::BTreeSet;
 use common::*;
 use firefight::director::{Kill, PlayerSeen, ZoneSeen};
 use firefight::{
-    Command, Def, Difficulty, Director, Observed, Outcome, ScriptDirector, Settings, Skull,
-    builtin,
+    Command, Def, Difficulty, Observed, Outcome, ScriptDirector, Settings, Skull, builtin,
 };
 use rules::vm::RulesExt;
 
-/// Feeds one observed sequence to the director and to the script, and
-/// checks that each tick gives the same commands and the same state.
-/// Returns the commands with their tick.
-fn parity(def: &Def, settings: &Settings, observed: &[Observed]) -> Vec<(u32, Command)> {
-    let mut director = Director::new(def.clone(), settings.clone()).unwrap();
+/// Feeds one observed sequence to a fresh script and returns the commands
+/// with their tick. A script error fails the replay.
+fn replay(def: &Def, settings: &Settings, observed: &[Observed]) -> Vec<(u32, Command)> {
     let mut script = ScriptDirector::new(def.clone(), settings.clone()).unwrap();
     let mut log = Vec::new();
     for (tick, seen) in observed.iter().enumerate() {
         let tick = tick as u32;
-        let want = director.step(tick, seen);
-        let got = script.step(tick, seen);
-        assert_eq!(got, want, "{}: tick {tick}", def.name);
-        assert_eq!(script.state(), *director.state(), "{}: tick {tick}", def.name);
-        log.extend(want.into_iter().map(|command| (tick, command)));
+        log.extend(
+            script
+                .step(tick, seen)
+                .into_iter()
+                .map(|command| (tick, command)),
+        );
     }
-    assert_eq!(script.error(), None);
+    assert_eq!(script.error(), None, "{}", def.name);
     log
 }
 
-/// Runs the director in the fake world, then replays what it observed
-/// through [`parity`].
+/// Runs the script in the fake world, then replays what it observed
+/// through a fresh one for the same commands.
 fn check(
     def: &Def,
     settings: &Settings,
@@ -43,10 +41,10 @@ fn check(
     limit: u32,
     script: impl FnMut(u32, &mut World),
 ) -> Run {
-    let mut director = Director::new(def.clone(), settings.clone()).unwrap();
+    let mut director = ScriptDirector::new(def.clone(), settings.clone()).unwrap();
     let mut world = World::new(players, zones);
     let run = run(&mut director, &mut world, limit, script, |_, _, _, _, _| {});
-    assert_eq!(parity(def, settings, &run.observed), run.commands);
+    assert_eq!(replay(def, settings, &run.observed), run.commands);
     run
 }
 
@@ -59,7 +57,7 @@ fn with(seed: u64, difficulty: Difficulty, skulls: &[Skull]) -> Settings {
 }
 
 #[test]
-fn the_golden_match_gives_the_same_commands() {
+fn the_golden_match_replays_the_same_commands() {
     let run = check(&small_def(1, true), &settings(7), 1, two_zones(), 100, |tick, world| {
         if tick == 4 {
             world.players.insert(0, false);
@@ -132,7 +130,7 @@ fn kills_score_by_the_definition_with_assists() {
             assist: Some(1),
         },
     ];
-    let log = parity(&def, &settings(1), &[seen]);
+    let log = replay(&def, &settings(1), &[seen]);
     assert_eq!(log.len(), 4, "{log:?}");
 }
 
@@ -193,7 +191,7 @@ fn kill_points_are_exact_at_the_limits() {
     ] {
         let sets: [&[Skull]; 5] = [&all, &all[..1], &all[3..4], &all[6..8], &[]];
         for on in sets {
-            let log = parity(&def, &with(0, difficulty, on), &observed());
+            let log = replay(&def, &with(0, difficulty, on), &observed());
             assert!(!log.is_empty());
         }
     }
@@ -219,18 +217,18 @@ fn zone_choice_follows_the_definition_and_the_seed() {
 
 /// Every pairing of a quick built-in set with a player count from 1 to 16.
 #[test]
-fn random_matches_over_the_built_ins_give_the_same_commands() {
+fn random_matches_over_the_built_ins_replay_the_same_commands() {
     let mut outcomes = BTreeSet::new();
     for index in 0..48 {
         let (def, run) = random_match(index, |_, _, _, _, _| {});
-        assert_eq!(parity(&def, &settings(index), &run.observed), run.commands);
+        assert_eq!(replay(&def, &settings(index), &run.observed), run.commands);
         outcomes.insert(format!("{:?}", run.outcome));
     }
     assert!(outcomes.len() >= 2, "{outcomes:?}");
 }
 
 #[test]
-fn the_built_ins_as_authored_give_the_same_commands() {
+fn the_built_ins_as_authored_replay_the_same_commands() {
     let difficulties = [
         Difficulty::Normal,
         Difficulty::Heroic,
@@ -246,7 +244,7 @@ fn the_built_ins_as_authored_give_the_same_commands() {
 }
 
 #[test]
-fn starting_skulls_and_difficulty_give_the_same_commands() {
+fn starting_skulls_and_difficulty_replay_the_same_commands() {
     let skulls = [Skull::Famine, Skull::Angry, Skull::Ghost, Skull::Blind];
     for (i, def) in quick_builtins().into_iter().enumerate() {
         let settings = with(7 + i as u64, Difficulty::Heroic, &skulls[..=i]);
@@ -255,7 +253,7 @@ fn starting_skulls_and_difficulty_give_the_same_commands() {
 }
 
 #[test]
-fn unshared_lives_over_whole_matches_give_the_same_commands() {
+fn unshared_lives_over_whole_matches_replay_the_same_commands() {
     for (i, mut def) in quick_builtins().into_iter().enumerate() {
         def.lives.shared = false;
         let seed = 4 * i as u64;
@@ -289,7 +287,7 @@ fn zones_in_sight_and_ties_give_the_same_picks() {
 }
 
 #[test]
-fn a_player_listed_twice_or_leaving_gives_the_same_commands() {
+fn a_player_listed_twice_or_leaving_replays_the_same_commands() {
     let def = small_def(2, false);
     let mut world = World::new(3, two_zones());
     let mut observed = Vec::new();
@@ -310,11 +308,11 @@ fn a_player_listed_twice_or_leaving_gives_the_same_commands() {
         }
         observed.push(seen);
     }
-    parity(&def, &settings(3), &observed);
+    replay(&def, &settings(3), &observed);
 }
 
 #[test]
-fn resumed_script_state_gives_the_same_commands() {
+fn resumed_script_state_replays_the_same_commands() {
     let (def, original) = random_match(9, |_, _, _, _, _| {});
     let settings = settings(9);
     let split = original.observed.len() / 2;
@@ -339,7 +337,7 @@ fn resumed_script_state_gives_the_same_commands() {
 /// with shared and own lives: player kills, targets, each team's pool and
 /// score, and every way a match ends.
 #[test]
-fn two_team_matches_give_the_same_commands() {
+fn two_team_matches_replay_the_same_commands() {
     let mut outcomes = BTreeSet::new();
     for index in 0..24u64 {
         let base = quick_builtins()[(index % 4) as usize].clone();
@@ -363,7 +361,7 @@ fn two_team_matches_give_the_same_commands() {
 /// level and on score, a lone team out, and the last round on score, on
 /// lives (shared and own) and level.
 #[test]
-fn two_team_ends_give_the_same_commands() {
+fn two_team_ends_replay_the_same_commands() {
     let die = |at: u32, who: &'static [u8]| {
         move |tick: u32, world: &mut World| {
             if tick == at {
@@ -411,7 +409,7 @@ fn two_team_ends_give_the_same_commands() {
 /// Player kills across the teams, within a team, by oneself and by a fall,
 /// and a player whose game team changes after it is first seen.
 #[test]
-fn player_kills_and_fixed_teams_give_the_same_commands() {
+fn player_kills_and_fixed_teams_replay_the_same_commands() {
     check(&pair_def(5, true), &settings(3), 4, two_zones(), 30, |tick, world| {
         match tick {
             1 => {
@@ -433,7 +431,7 @@ fn player_kills_and_fixed_teams_give_the_same_commands() {
 /// Squads sent at each team and dropped on its side, with zones that lean
 /// from one team to the other, and zones all on one team's side.
 #[test]
-fn targets_and_team_sides_give_the_same_picks() {
+fn targets_and_team_sides_replay_the_same_picks() {
     let mut def = pair_def(3, true);
     for wave in def.rounds.iter_mut().flat_map(|round| &mut round.waves) {
         wave.squads = vec![wave.squads[0].clone(); 4];

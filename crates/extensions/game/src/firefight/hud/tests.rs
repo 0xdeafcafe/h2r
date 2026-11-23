@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use ::firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use ::firefight::{
-    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Director, Drop, FORMAT, Observed,
-    Outcome, Round, Scoring, Settings, Skull, SquadSpec, Wave,
+    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Observed, Outcome,
+    Round, Scoring, ScriptDirector, Settings, Skull, SquadSpec, Wave,
 };
 
 use super::*;
@@ -72,8 +72,8 @@ fn two_team_def(shared: bool, rounds: usize) -> Def {
     ::firefight::builtin::with_teams(small_def(shared, rounds), 2)
 }
 
-fn director(def: Def) -> Director {
-    Director::new(
+fn director(def: Def) -> ScriptDirector {
+    ScriptDirector::new(
         def,
         Settings {
             seed: 7,
@@ -124,7 +124,7 @@ struct Played {
 /// lives ten ticks and is killed by the first player. At each tick the
 /// client's mode and view must equal the host's, from the encoded bytes
 /// alone.
-fn play(mut d: Director, players: &[u8], local: u8) -> Played {
+fn play(mut d: ScriptDirector, players: &[u8], local: u8) -> Played {
     let mut alive = [0u16; SQUAD_SLOTS];
     let mut placed_at = [0u32; SQUAD_SLOTS];
     let mut out = Played {

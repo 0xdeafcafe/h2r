@@ -440,7 +440,7 @@ impl Game for GuestGame<'_> {
     }
     /// As [`Game::set_lives`]: the engine keeps no team pool, so a team's is
     /// the director's, which spends it on that team's respawns and holds
-    /// them at 0 (`Director::set_team_pool`).
+    /// them at 0 (`ScriptDirector::set_team_pool`).
     fn set_team_lives(&mut self, _team: u8, _pool: u16) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1065,7 +1065,7 @@ fn log(host: &Host) -> wire::Log {
     }
 }
 
-fn director(d: &::firefight::Director, game: &Match) -> wire::Director {
+fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
     use ::firefight::director::Phase;
     let s = d.state();
     let (phase, phase_tick) = match s.phase {
