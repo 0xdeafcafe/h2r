@@ -33,7 +33,9 @@ workspace_library(
     crate = "firefight_kit",
     crate_root = "crates/tools/firefight-kit/src/lib.rs",
     description = "Offline stage-one Firefight map kit",
-    features = [],
+    features = [
+        "testkit",
+    ],
     manifest = "crates/tools/firefight-kit",
     package = "firefight-kit",
     tree = ":lib-tree",
@@ -60,7 +62,9 @@ workspace_test(
     crate = "firefight_kit",
     crate_root = "crates/tools/firefight-kit/src/lib.rs",
     description = "Offline stage-one Firefight map kit",
-    features = [],
+    features = [
+        "testkit",
+    ],
     manifest = "crates/tools/firefight-kit",
     package = "firefight-kit",
     tree = ":test-tree",
