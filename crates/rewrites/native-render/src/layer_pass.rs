@@ -1,6 +1,7 @@
 //! A layer draw planned from the scene alone (docs/graphics/framescene.md,
 //! slice 4): for each item of a [`frame_scene::LayerPass`] of layers 1, 5,
-//! 7, 8 and 20 (the scene's and the first person's), the material passes
+//! 7, 8 and 20 (the scene's and the first person's) and of the scene's
+//! layer 17 ([`BLOOM_LAYER`]), the material passes
 //! the layer draws for it, the implementation of each, the engine inputs
 //! the item's draw evaluates and the values of the material's animated
 //! properties, from the pass's [`LayerInputs`], the item's owner and
@@ -51,6 +52,23 @@ use crate::object_lighting::{LIGHTING_SCALARS, LIGHTING_VECTORS, ShaderValues, s
 /// The layers the stage plans: the scene's 1, 5, 7, 8 and 20 and the
 /// first person's 1, 7, 8 and 20.
 pub const LAYERS: [u8; 5] = [1, 5, 7, 8, 20];
+
+/// The scene's layer 17 (S: bloom), drawn late in `render_scene_passes`
+/// (the layer draw at `0x0002c306`, returning `0x0002c30b`) when the
+/// caller's colour byte is set, the colour byte of `render_screen_effects`
+/// (docs/graphics/native-post-hud.md). Its begin (`0x00044370`) draws it
+/// when `[0x004ba024]` is set and the scene list's mask has it, binds the
+/// view's target (the descriptor at `0x0043fa1c` gives -1), clears the
+/// channels of the descriptor's flags `0x10` first unless `[0x00485a75]`
+/// or `[0x00485a76]` is set, sets the byte `[0x00485a74]` the colour
+/// pass's combiners read (`engine::glow::COMBINER_BYTE`), and stencil mode
+/// 0. Planned like [`LAYERS`]: the scene's caller only.
+pub const BLOOM_LAYER: u8 = 17;
+
+/// Whether the stage plans `layer`: one of [`LAYERS`] or [`BLOOM_LAYER`].
+pub fn planned(layer: u8) -> bool {
+    LAYERS.contains(&layer) || layer == BLOOM_LAYER
+}
 
 /// The scalar input the shader instance gives (`shad +0x44`).
 const SHADER_SCALARS: u64 = 1 << 21;
@@ -203,7 +221,7 @@ pub fn plan(scene: &FrameScene, pass: &LayerPass, materials: &mut dyn Materials)
 
 /// One item's draw.
 pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materials) -> Result<LayerDraw, LayerRefusal> {
-    if !LAYERS.contains(&pass.layer) {
+    if !planned(pass.layer) {
         return Err(LayerRefusal::Layer(pass.layer));
     }
     let shader = item.key.shader;
@@ -1108,5 +1126,6 @@ mod tests {
         assert_eq!(by_cause["material"], 1);
         let three = pass(3, view_inputs());
         assert_eq!(plan_item(&three, &item(LayerOwner::Cluster(1), 0, None), &mut lib).unwrap_err(), LayerRefusal::Layer(3));
+        assert!(planned(BLOOM_LAYER) && !planned(16) && !planned(3), "layer 17 is planned; 3 and 16 are other stages'");
     }
 }

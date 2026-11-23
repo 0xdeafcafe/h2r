@@ -41,7 +41,10 @@ pub fn layer_site(layer: u32, return_address: u32) -> Site {
         | (8, 0x0002_bfaa)
         | (20, 0x0002_c010)
         | (7, 0x0002_c039)
-        | (2, 0x0002_c060) => Site::Scene,
+        | (2, 0x0002_c060)
+        // Layer 17 (S: bloom), late in the passes: `call 0x00044550` at
+        // `0x0002c306`, after the begin at `0x0002c2fd` returned true.
+        | (17, 0x0002_c30b) => Site::Scene,
         (1, 0x0002_bd5c) | (3, 0x0002_bd74) | (5, 0x0002_bd8c) | (2, 0x0002_bda8) => {
             Site::AlternateView
         }
@@ -281,6 +284,8 @@ mod tests {
         assert_eq!(sorted_site(18, 0x0002_c0e9), None, "another caller's");
         assert_eq!(sorted_site(16, 0x0004_1ffd), None, "the handler's replay of layer 16 is not taken");
         assert_eq!(layer_site(18, 0x0004_2015), Site::Other, "no scene site");
+        assert_eq!(layer_site(17, 0x0002_c30b), Site::Scene, "the late layer 17");
+        assert_eq!(layer_site(17, 0x0002_c010), Site::Other, "layer 20's return names only 20");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Native renderer stage 5: post and HUD
 
-Status: Partly built. The colour-pass glow, the scenario screen effects and the native UI and HUD are drawn natively; `0x0002df00`, `0x0002dd30` and layer 17 are not, and parity with D3D is not verified.
+Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items and the native UI and HUD are drawn natively; `0x0002df00` and `0x0002dd30` (the lens flares) are not, and parity with D3D is not verified.
 Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -36,12 +36,26 @@ frame.
   `0x00040870` when BL is set (the transparents again, then
   `[0x004b6284]` copied to `[0x004b6280]`), `[0x00485a76]` cleared, then
   the late passes:
-  - `0x0002dd30` when the caller's byte `[esp+0x28]` is set: its own
-    target (`[0x00485602]`), render states (`0x003f5cf0`), a stipple
-    (`0x003f8cc0`) and quads (`0x0001cf50`, `0x0001c590`, `0x0001c710`,
-    `0x00020bb0`);
+  - `0x0002dd30` when the caller's byte `[esp+0x28]` is set (and the
+    view kind is not 2): the lens flares' visibility tests. It binds the
+    target `[0x00485602]` with no depth surface argument, stencil mode 0,
+    resets the stipple when `[0x004b8494]` is not 1 (`0x003f8cc0`), turns
+    the colour writes off (state `0x40358` 0) and the depth writes off,
+    clears the desired textures, writes an empty combiner (`0x0048503c`
+    `0x11001`), binds the rasterizer bitmap at `[[0x00485a80]+0x5c]+0x54`
+    (`0x0001c590`, `0x0001c710` on `0x0051f0f0`), and, outside view kinds
+    4 to 7, runs the flare writer `0x00020bb0` (view `[0x004b9ed4]`, mask
+    `0x1f`, callback `0x0002e540`): a counted draw per flare
+    ([retire-d3d.md](retire-d3d.md), "Lens flares");
   - layer 17 when the byte `[esp+0x2c]` is set (S: bloom; 250 passes on
-    the disc, from the scene list, gated by `0x004ba024`);
+    the disc, from the scene list). Its begin draws it when
+    `[0x004ba024]` is set and the list has the layer, on the view's
+    target (the descriptor at `0x0043fa1c` gives -1) after a clear of
+    the descriptor's channel flags `0x10` (skipped while `[0x00485a75]`
+    or `[0x00485a76]` is set), with stencil mode 0, and sets the byte
+    `[0x00485a74]` the colour pass's combiners read
+    (`engine::glow::COMBINER_BYTE`). The layer draw at `0x0002c306`
+    returns to `0x0002c30b`;
   - `0x00020770`: the occlusion query results (`[0x0051f408]`,
     `[0x0051f409]`, the frame count mod 3, `0x003f8630`);
   - `render_screen_effects` (`0x00013870`,
@@ -70,9 +84,14 @@ frame.
      whose values (`0x00134fc0`) decide whether `0x0002d140` draws the
      entry (a shader through `0x00016610`). S: 03a's map holds one
      `egor`, `effects\screen_effects\blur`.
-  3. With `late`, `0x0002df00`. It is shaped like `0x0002dd30`: a
-     target, render states, the viewport (`0x003f6840`, `0x003f6f40`,
-     `0x003f6390`, `0x003f6190`) and quads.
+  3. With `late`, `0x0002df00`: the lens flares drawn. It binds the same
+     target, colour writes on (`0x10101`), blending on with factors
+     `0x302` and 1 and equation `0x8006`, depth writes off, the viewport
+     (`0x003f6390`, `0x003f6190`), a two-stage combiner (`0x0048503c`
+     `0x11002`) through `0x0001ccf0`, the same bitmap, then the flare
+     writer `0x00020bb0` (mask `0xf`, callback `0x0002e9e0`), which
+     collects up to its count `[0x004c1a04]` entries of `0x10` bytes at
+     `0x004c19c4`; each is drawn by the immediate draw `0x00046ea0`.
 - **After the scene.** `0x00040890` is a full-screen fade: when the mode
   `[0x00485870]` is not 0, it draws the colour at `0x00485874..`
   (packed by `0x00131e50`), with a blend picked through the jump table
@@ -296,7 +315,8 @@ uses D3D for that call.
 | Kept convolution | It emits no draws. Its result names the pass's target. |
 | Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
 | Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
-| `0x0002df00`, `0x0002dd30` and layer 17 | D3D. The fade, UI and HUD are the native UI, above. |
+| Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`). |
+| `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts. The fade, UI and HUD are the native UI, above. |
 
 ### The post hooks
 
@@ -712,7 +732,7 @@ Its numbers are ported: `engine::colour_pass`
 
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
-- `0x0002df00` and `0x0002dd30` (same shape as the screen-effect passes) and layer 17 (S: bloom) are not drawn natively. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
+- `0x0002df00` and `0x0002dd30`, the lens flares and their visibility tests, are not typed stages: their draws are carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
 
 ## Not verified
 

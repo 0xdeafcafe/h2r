@@ -850,8 +850,18 @@ pub(crate) mod tests {
 
     #[test]
     fn the_views_own_target_is_a_stage_the_host_binds_as_a_copy() {
+        use gfx::state::RenderStateType as R;
         use tags::material::{StageTexture, TextureSource};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let state = |t: R, value: u32| tags::shader::RenderStateValue {
+            state: (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a slot"),
+            value,
+        };
         let mut imp = lit();
+        // A layer pass names the states it draws with.
+        imp.render_states = vec![state(R::AlphaBlendEnable, 0), state(R::ZWriteEnable, 0)];
         imp.textures[1] = Some(StageTexture {
             source: TextureSource::Engine(VIEW_TEXTURE),
             size: None,

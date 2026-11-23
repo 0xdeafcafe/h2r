@@ -1,6 +1,6 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Dynamic lights' layers 12 and 13 over cluster and model geometry for a group drawn from the scene, all three shadow layers drawn from the scene, the object filter, the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, the first-person lights and parity with D3D are not.
+Status: Partly built. Dynamic lights' layers 12 and 13 over cluster and model geometry for a group drawn from the scene, all three shadow layers drawn from the scene, the object filter, the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk, the shadow replacements and the first-person lights' layers 12 and 13 drawn from the scene are built; the visible-light gather, the first-person lights' layers 11 and 14 and parity with D3D are not.
 Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -63,8 +63,23 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
   shadow falls on.
 - **First-person lights.** `0x000404b0` (from `0x0002c2b9`, after the
   first-person draw `0x0003fdf0`) draws the recorded lights again over the
-  first-person view, with its own constants (`0x0004a1e0`) and layers on
-  `0x004c1a60`.
+  first-person view. Its table (`0x004c6700`, `0x408` bytes an entry, the
+  count at `[0x00509440]`) holds per light up to 32 render records
+  (`0x20` bytes each), then the light datum at `+0x400` and the record
+  count at `+0x404`; the gather's record at `0x004c6b00` is the datum of
+  the first entry. Per entry with records it rebuilds the light's list
+  `0x004c1a60` from them (`0x000402b0`: the records copied into the
+  render records at `0x004ba138`, their items built by `0x00041040`),
+  poses the light volume (`0x000c17f0`, a local of its frame) and calls
+  `0x0004a1e0` at `0x0004057e` (EDX the datum, shadow 0, weight 1). It
+  sets the flags itself: bit 0 when the volume's first word is 0, bit 1
+  when a colour B global is above 0, no shadow bits
+  (`light_passes::first_person_steps`). Then, each after stencil mode 0
+  and drawn when the list's mask has its layer: layer 11 on the view's
+  target, 14 on target 1, 12 on the view's target and, with flag bits 0
+  and 1, 13 on the view's target. The layer draws return to
+  `0x00040642`, `0x000406ab`, `0x00040718` and `0x0004079c`
+  (`render_bridge::native_lights::FIRST_PERSON_LAYERS`).
 
 ### Gathered light and shadow geometry
 
@@ -187,6 +202,27 @@ geometry or GPU). `light_walk_layer_builds` counts replaced builds.
 bypassed. `shadow_walk_layers` counts committed shadow layers, including
 object shadows outside a dynamic light.
 
+### First-person lights from the scene
+
+At a first-person light's first layer draw
+(`native_lights::first_person_layer`; the loop's light index and entry
+pointer read from its frame, `first_person_entry`), the light goes into
+the first person's view of the frame scene with its steps
+(`scene_step::first_person_light`). Its constants are the globals as the
+loop's `0x0004a1e0` call left them and the flags it set
+(`LightGlobals::stored`, `stored_light_constants`), read rather than
+computed, since the light volume is a local of the loop's frame. At each
+of its layers 12 and 13 the gathered walk's build puts the light's
+sorted entries into the scene as a group of the light, and when the
+scene holds the group whole the host draws it alone
+(`Glue::alone`, the same path as a dynamic light's whole group): the
+entry loop gets no entries and no handler runs. A group the scene does
+not hold whole, or the host refuses, keeps the guest's build and
+handlers, and so do layers 11 and 14 and a light with a shader gel. The
+resolved-draw path takes no first-person layer. `render.scene` counts
+the layers drawn this way in `scene_first_person_light_layers_alone`
+(included in `scene_light_layers_alone`).
+
 ### What a native light draws
 
 - **Geometry.** On the resolved-draw path, the gathered BSP owner, part
@@ -211,8 +247,7 @@ object shadows outside a dynamic light.
 - `0x0004a1e0` (`ret 0x10`, about 250 instructions): EAX the light
   record's `+0x84` (so `[EAX+0x50]` is the record's colour A at
   `+0xd4`, `+0x5c` colour B, `+0x68`..`+0x84` the record's words
-  `+0xec`..`+0x108`), EDX the light datum (-1 for the first-person
-  pass's own), ECX the context (its word into `[0x004858c8]`), stack
+  `+0xec`..`+0x108`), EDX the light datum, ECX the context (its word into `[0x004858c8]`), stack
   `(ligh definition address, 1024.0, shadow byte, weight)`. It writes
   the light's globals: `[0x004858bc]` 1 (the tail's zero),
   `[0x004858c4]` the definition, `[0x004858cc]` the driver object,
@@ -452,10 +487,12 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 - On the resolved-draw path only structure geometry is drawn natively, and models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole group of layer 12 or 13, structure and model entries alike, is drawn from the scene with no handler.
 - A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state from a source other than the instance's scalar 21 or an unsupplied constant keeps its D3D passes (`light_look`).
-- The visible-light gather at `0x00031c80`, the object-model lights, the object-shadow call `0x00032350`'s lights and the first-person lights (`0x000404b0`) run in the guest. The first-person records at `0x004c6b00` would need writing before the gather can be skipped.
+- The visible-light gather at `0x00031c80`, the object-model lights and the object-shadow call `0x00032350`'s lights run in the guest. The first-person lights' loop (`0x000404b0`) runs in the guest too: its list rebuild, constants, flags and layers 11 and 14; only its layers 12 and 13 whose groups the scene holds whole are drawn from the scene. The first-person table at `0x004c6700` would need writing before the gather can be skipped.
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 
 ## Not verified
+
+- A first-person light's layers 12 and 13 drawn from the scene against its handlers' draws (pixel parity over the first-person weapon in a lit room), and that the view's target the dynamic lights recorded is the one the first-person layers draw on (a different one refuses, `light view target changed`).
 
 - A shadowed light's layers 12 and 13 drawn natively over its D3D or shadow-stage layers 10, 11 and 14 (pixel parity on a scene with one).
 - An object entry's layers 12 and 13 drawn from the scene against its handler's draw (`render.compare` on a scene with a lit object); that the sorted entry's classification is the one the model parts are built for (`classification` from the section's `+0x14`), and that the light frame needs no per-object transform.

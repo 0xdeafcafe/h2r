@@ -3,7 +3,10 @@
 //! admits individual packets when those handlers execute, for each of a
 //! light's layers 12 and 13 its passes draw. At the passes' entry the
 //! light and its steps (`scene_extract::layout::light_passes`) go into
-//! the frame step's open view. On with the native renderer
+//! the frame step's open view. The first-person lights (`0x000404b0`) go
+//! into the first person's view at their first layer draw, and their
+//! layers 12 and 13 whose groups the scene holds whole are drawn from it
+//! alone ([`FIRST_PERSON_LAYERS`]). On with the native renderer
 //! (`impl.render.native`, on by default).
 pub mod walk;
 
@@ -42,8 +45,27 @@ pub const LIGHT_LIST: u32 = 0x004c_1a60;
 /// (`0x000314ca`). The gathered walk takes any of them; the resolved-draw
 /// path takes 12 and 13 ([`RESOLVED_LAYERS`]). Layers 10 and 11 are the
 /// shadow stage's (`native_render::shadows::site`); the first-person
-/// lights' draws on the same list (`0x000404b0`) are not taken.
+/// lights' draws on the same list are [`FIRST_PERSON_LAYERS`].
 pub const SPLIT_LAYERS: [(u32, u32); 3] = [(14, 0x0003_13e2), (12, 0x0003_144f), (13, 0x0003_14cf)];
+
+/// The first-person lights' (`0x000404b0`) draws of the light's list, by
+/// the layer draw's return address, in their order: 11 (`0x00040642`),
+/// 14 (`0x000406ab`), 12 (`0x00040718`) and 13 (`0x0004079c`). Their 12
+/// and 13 are drawn from the scene alone when the scene holds the group
+/// whole (`walk`); every other draw, and a group the host refuses, keeps
+/// its handlers. The resolved-draw path takes none of them.
+pub const FIRST_PERSON_LAYERS: [(u32, u32); 4] = [
+    (11, 0x0004_0642),
+    (14, 0x0004_06ab),
+    (12, 0x0004_0718),
+    (13, 0x0004_079c),
+];
+
+/// Whether a layer draw returning to `ret` is the first-person lights'
+/// draw of `layer`.
+pub fn first_person_site(layer: u32, ret: u32) -> bool {
+    FIRST_PERSON_LAYERS.contains(&(layer, ret))
+}
 
 /// The layers the resolved-draw path admits: diffuse and specular.
 pub const RESOLVED_LAYERS: u32 = 1 << 12 | 1 << 13;
@@ -137,10 +159,17 @@ struct Candidate {
     shader_gel: Option<(u32, u32)>,
     layers: u32,
     inside: Option<u32>,
+    /// A first-person light's (`0x000404b0`): its layers are drawn only
+    /// alone, and the object shadows do not read its constants.
+    first_person: bool,
 }
 thread_local! {
     static CANDIDATE: RefCell<Option<Candidate>> = const { RefCell::new(None) };
     static VIEW_TARGET: Cell<Option<[u32; 8]>> = const { Cell::new(None) };
+    /// The first-person light whose layers draw: its entry's datum
+    /// address in `light_passes::FIRST_PERSON_LIGHTS` and the order (in
+    /// [`FIRST_PERSON_LAYERS`]) of its last layer draw.
+    static FIRST_PERSON: Cell<Option<(u32, usize)>> = const { Cell::new(None) };
 }
 
 pub fn set_host(host: Arc<dyn Host>) {
@@ -156,8 +185,12 @@ pub fn draw_shadow_alone(
     if Stage::Lights.standing_down() {
         return Err("device");
     }
-    let light =
-        CANDIDATE.with_borrow(|candidate| candidate.as_ref().and_then(|c| c.light.constants));
+    let light = CANDIDATE.with_borrow(|candidate| {
+        candidate
+            .as_ref()
+            .filter(|c| !c.first_person)
+            .and_then(|c| c.light.constants)
+    });
     let host = HOST
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -195,6 +228,7 @@ fn leave_layer() -> Option<u32> {
 
 pub fn new_view() {
     finish_candidate();
+    FIRST_PERSON.set(None);
     SERIAL.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let target = host.and_then(|h| {
@@ -211,6 +245,7 @@ pub fn new_view() {
 pub fn forget_runs() {
     CANDIDATE.take();
     VIEW_TARGET.set(None);
+    FIRST_PERSON.set(None);
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         host.clear_admission();
     }
@@ -293,19 +328,44 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
     };
     let g = lc::light_globals(mem, &call, fpu, &mut |_| None).ok()?;
     let f = lp::pass_flags(mem, &g, shadow as u8, e.mxcsr).ok()?;
+    constants_of(mem, &g, f.flags, definition)
+}
+
+/// The constants of the light whose `0x0004a1e0` call has run and whose
+/// flags are set: the globals as the call left them
+/// (`engine::light_constants::LightGlobals::stored`) and the flags at
+/// `[0x004ba014]`. The first-person lights' (`0x000404b0`): their call's
+/// light volume is a local of the loop's frame, and the loop sets the
+/// flags itself (`light_passes::first_person_steps`), so they are read,
+/// not computed. `None` when a read faults.
+pub fn stored_light_constants(mem: &dyn GuestMemory) -> Option<LightConstants> {
+    let g = engine::light_constants::LightGlobals::stored(mem).ok()?;
+    let flags = mem.u32(engine::light_passes::global::PASS_FLAGS).ok()?;
+    constants_of(mem, &g, flags, g.definition)
+}
+
+/// [`LightConstants`] of the globals `g` with the passes' `flags` and the
+/// `ligh` definition at `definition`.
+fn constants_of(
+    mem: &dyn GuestMemory,
+    g: &engine::light_constants::LightGlobals,
+    flags: u32,
+    definition: u32,
+) -> Option<LightConstants> {
+    use engine::light_passes as lp;
     let definition_flags = mem.u32(definition).ok()?;
     let gel_shader = mem
         .u32(definition.wrapping_add(lp::DEFINITION_GEL_SHADER))
         .ok()?;
     let gel = lp::gel(
-        f.flags,
+        flags,
         definition_flags,
         gel_shader,
         mem.u32(definition.wrapping_add(lp::DEFINITION_GEL)).ok()?,
     );
     Some(LightConstants {
         frame: g.frame_constants(mem).ok()?,
-        flags: f.flags,
+        flags,
         colour_a: g.colour_a_input(),
         colour_b: g.colour_b_input(),
         mode: g.mode,
@@ -382,6 +442,7 @@ fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
             layers,
             shader_gel,
             inside: None,
+            first_person: false,
         })),
         Err(why) => {
             refused(why);
@@ -402,12 +463,114 @@ fn scene_light(light: &Light, inputs: &light_passes::Inputs) -> frame_scene::Sce
     }
 }
 
+/// The first-person light entry whose layers the loop `0x000404b0` draws,
+/// read from its frame at a layer draw (`esp` the layer draw's: the
+/// return address, then the loop's frame, its light index at `+0x14` and
+/// its entry pointer at `+0x18`): the address of the entry's datum
+/// (`light_passes::FIRST_PERSON_LIGHT_DATUM`). `None` when they do not
+/// read or do not agree with the table.
+pub fn first_person_entry(mem: &dyn GuestMemory, esp: u32) -> Option<u32> {
+    use light_passes::{
+        FIRST_PERSON_LIGHT_COUNT, FIRST_PERSON_LIGHT_DATUM, FIRST_PERSON_LIGHT_SIZE,
+        FIRST_PERSON_LIGHTS,
+    };
+    let index = mem.u32(esp.wrapping_add(4 + 0x14)).ok()?;
+    let at = mem.u32(esp.wrapping_add(4 + 0x18)).ok()?;
+    let count = mem.u32(FIRST_PERSON_LIGHT_COUNT).ok()? as i32;
+    let expected = FIRST_PERSON_LIGHTS
+        .checked_add(index.checked_mul(FIRST_PERSON_LIGHT_SIZE)?)?
+        .checked_add(FIRST_PERSON_LIGHT_DATUM)?;
+    ((index as i32) < count.min(8) && at == expected).then_some(at)
+}
+
+/// Before a layer draw returning to `ret`: when it is one of
+/// [`FIRST_PERSON_LAYERS`] on the light's list, the first of a light's
+/// (another entry, or a layer not after the last one drawn) begins it
+/// ([`begin_first_person`]).
+fn first_person_layer(mem: &dyn GuestMemory, esp: u32, ret: u32) {
+    let Some(order) = FIRST_PERSON_LAYERS.iter().position(|&(_, at)| at == ret) else {
+        return;
+    };
+    let layer = FIRST_PERSON_LAYERS[order].0;
+    if mem.u32(skip::CURRENT_LAYER).ok() != Some(layer)
+        || mem.u32(skip::CURRENT_LIST).ok() != Some(LIGHT_LIST)
+    {
+        return;
+    }
+    let Some(entry) = first_person_entry(mem, esp) else {
+        FIRST_PERSON.set(None);
+        refused("unreadable first-person light entry");
+        return;
+    };
+    let new = first_person_begins(FIRST_PERSON.get(), entry, order);
+    FIRST_PERSON.set(Some((entry, order)));
+    if new {
+        begin_first_person(mem, entry);
+    }
+}
+
+/// Whether the layer draw of order `order` (in [`FIRST_PERSON_LAYERS`])
+/// for `entry` begins a light after `last`: another entry, or the same
+/// entry's layers over again (the next view's, or the loop's next pass).
+fn first_person_begins(last: Option<(u32, usize)>, entry: u32, order: usize) -> bool {
+    last.is_none_or(|(at, before)| at != entry || order <= before)
+}
+
+/// A first-person light's layers begin: its record (weight 1, no shadow,
+/// as the loop's call), its constants as the call left them
+/// ([`stored_light_constants`]) and its steps
+/// (`light_passes::first_person_steps`) go into the first person's view,
+/// and its layers 12 and 13 that draw become the candidate's.
+fn begin_first_person(mem: &dyn GuestMemory, entry: u32) {
+    finish_candidate();
+    if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        host.clear_admission();
+    }
+    let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
+    let Ok(handle) = mem.u32(entry) else {
+        refused("unreadable first-person light datum");
+        return;
+    };
+    let Some(mut light) = read_light(mem, handle, false, 1.0) else {
+        refused("invalid or unreadable first-person light record");
+        return;
+    };
+    light.constants = stored_light_constants(mem);
+    let prepare = || {
+        let c = light
+            .constants
+            .ok_or("unreadable first-person light constants")?;
+        if c.animated_gel {
+            return Err("a first-person light's shader gel draws through its handler");
+        }
+        let inputs = light_passes::read(&Ro(mem), c.flags, c.definition_flags)
+            .ok_or("unreadable light layer mask")?;
+        let steps = light_passes::first_person_steps(&inputs);
+        crate::scene_step::first_person_light(mem, scene_light(&light, &inputs), steps.as_slice());
+        Ok(steps.drawn() & RESOLVED_LAYERS)
+    };
+    match prepare() {
+        Ok(0) => {}
+        Ok(layers) => CANDIDATE.set(Some(Candidate {
+            light,
+            serial,
+            layers,
+            shader_gel: None,
+            inside: None,
+            first_person: true,
+        })),
+        Err(why) => {
+            refused(why);
+        }
+    }
+}
+
 /// The layer of [`SPLIT_LAYERS`] a layer draw returning to `ret` runs,
 /// when the candidate is to draw it and the current layer and list are
 /// that layer and the light's.
 fn enter_layer(mem: &dyn GuestMemory, ret: u32) {
     CANDIDATE.with_borrow_mut(|candidate| {
-        if let Some(c) = candidate {
+        if let Some(c) = candidate.as_mut().filter(|c| !c.first_person) {
             c.inside = SPLIT_LAYERS
                 .iter()
                 .find(|&&(layer, at)| at == ret && c.layers & 1 << layer != 0)
@@ -475,10 +638,10 @@ pub fn draw_alone(mem: &mut dyn GuestMemory, layer: u32, group: &SceneGroup) -> 
     if !matches!(layer, 12 | 13) || Stage::Lights.standing_down() {
         return false;
     }
-    let Some((light, serial, shader_gel)) = CANDIDATE.with_borrow(|slot| {
+    let Some((light, serial, shader_gel, first_person)) = CANDIDATE.with_borrow(|slot| {
         slot.as_ref()
             .filter(|c| c.layers & 1 << layer != 0)
-            .map(|c| (c.light, c.serial, c.shader_gel))
+            .map(|c| (c.light, c.serial, c.shader_gel, c.first_person))
     }) else {
         return false;
     };
@@ -508,6 +671,9 @@ pub fn draw_alone(mem: &mut dyn GuestMemory, layer: u32, group: &SceneGroup) -> 
         }
     });
     ALONE.fetch_add(1, Ordering::Relaxed);
+    if first_person {
+        FIRST_PERSON_ALONE.fetch_add(1, Ordering::Relaxed);
+    }
     let objects = group
         .entries
         .iter()
@@ -519,10 +685,16 @@ pub fn draw_alone(mem: &mut dyn GuestMemory, layer: u32, group: &SceneGroup) -> 
 
 static ALONE: AtomicU64 = AtomicU64::new(0);
 static ALONE_OBJECTS: AtomicU64 = AtomicU64::new(0);
+static FIRST_PERSON_ALONE: AtomicU64 = AtomicU64::new(0);
 
 /// Light layers drawn from the scene alone, no handler run.
 pub fn drawn_alone() -> u64 {
     ALONE.load(Ordering::Relaxed)
+}
+
+/// Of those layers, the first-person lights'.
+pub fn first_person_drawn_alone() -> u64 {
+    FIRST_PERSON_ALONE.load(Ordering::Relaxed)
 }
 
 /// Object entries of those layers: model parts drawn from the scene.
@@ -587,7 +759,9 @@ impl Feature for NativeLights {
                     return;
                 }
                 let mem = o.guest();
-                enter_layer(&*mem, mem.u32(o.cpu.esp).unwrap_or(0));
+                let ret = mem.u32(o.cpu.esp).unwrap_or(0);
+                enter_layer(&*mem, ret);
+                first_person_layer(&*mem, o.cpu.esp, ret);
             })
             .after_feature(crate::native_world::ID)
             .after_feature(crate::native_objects::ID)
@@ -664,6 +838,7 @@ mod tests {
             shader_gel: None,
             layers,
             inside: None,
+            first_person: false,
         }
     }
 
@@ -783,5 +958,68 @@ mod tests {
         CANDIDATE.take();
         VIEW_TARGET.set(None);
         *HOST.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn the_first_person_entry_is_read_from_the_loops_frame() {
+        use light_passes::{
+            FIRST_PERSON_LIGHT_COUNT, FIRST_PERSON_LIGHT_DATUM, FIRST_PERSON_LIGHT_SIZE,
+            FIRST_PERSON_LIGHTS,
+        };
+        const ESP: u32 = 0x1000;
+        let second = FIRST_PERSON_LIGHTS + FIRST_PERSON_LIGHT_SIZE + FIRST_PERSON_LIGHT_DATUM;
+        let mut m = FlatMemory::new(0, 0x0060_0000);
+        m.set_u32(FIRST_PERSON_LIGHT_COUNT, 2).unwrap();
+        m.set_u32(ESP + 4 + 0x14, 1).unwrap();
+        m.set_u32(ESP + 4 + 0x18, second).unwrap();
+        assert_eq!(first_person_entry(&m, ESP), Some(second));
+        m.set_u32(ESP + 4 + 0x18, second + 4).unwrap();
+        assert_eq!(first_person_entry(&m, ESP), None, "not the index's entry");
+        m.set_u32(ESP + 4 + 0x18, second).unwrap();
+        m.set_u32(FIRST_PERSON_LIGHT_COUNT, 1).unwrap();
+        assert_eq!(first_person_entry(&m, ESP), None, "past the count");
+    }
+
+    #[test]
+    fn a_first_person_light_begins_at_its_first_layer_draw_only() {
+        const A: u32 = 0x004c_6b00;
+        const B: u32 = A + 0x408;
+        assert!(
+            first_person_begins(None, A, 2),
+            "the first draw, whichever layer"
+        );
+        assert!(
+            !first_person_begins(Some((A, 0)), A, 2),
+            "its layer 12 after its 11"
+        );
+        assert!(!first_person_begins(Some((A, 2)), A, 3));
+        assert!(first_person_begins(Some((A, 3)), B, 0), "the next entry");
+        assert!(
+            first_person_begins(Some((A, 2)), A, 2),
+            "the same entry drawn over again"
+        );
+        assert!(first_person_site(12, 0x0004_0718) && first_person_site(13, 0x0004_079c));
+        assert!(
+            !first_person_site(12, 0x0004_079c),
+            "13's return names only 13"
+        );
+        assert!(!SPLIT_LAYERS.iter().any(|&(l, at)| first_person_site(l, at)));
+    }
+
+    #[test]
+    fn a_first_person_candidate_is_not_the_resolved_draw_paths() {
+        CANDIDATE.set(Some(Candidate {
+            first_person: true,
+            ..candidate(RESOLVED_LAYERS)
+        }));
+        enter_layer(&drawing(12, LIGHT_LIST), 0x0003_144f);
+        assert_eq!(
+            layers(),
+            Some((RESOLVED_LAYERS, None)),
+            "a dynamic light's layer draw does not enter a first-person light's layer"
+        );
+        enter_layer(&drawing(12, LIGHT_LIST), 0x0004_0718);
+        assert_eq!(layers(), Some((RESOLVED_LAYERS, None)), "nor its own");
+        CANDIDATE.take();
     }
 }

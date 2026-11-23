@@ -1,6 +1,6 @@
 # Native renderer stage 2: objects and skinning
 
-Status: Built. Objects draw natively in the default configuration; the first-person lights are not native.
+Status: Built. Objects draw natively in the default configuration; the first-person lights' layers 12 and 13 draw from the scene ([native-lights.md](native-lights.md)), their layers 11 and 14 on D3D.
 Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/{native_objects,native_edits}.rs`, `crates/extensions/game/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -272,7 +272,7 @@ pins. With the native renderer on (the default),
 `0x00040136` in each of the two `0x0003fdf0` invocations when it has one
 in-layer item. The native path reserves the draw before clearing its flag
 and restores the flag at the next layer draw. Mixed lists can issue native
-contiguous ranges after the guest sort, as described below. The `0x000404b0` light step and the transparent call
+contiguous ranges after the guest sort, as described below. The `0x000404b0` light step's layers 12 and 13 draw from the scene when it holds their groups whole ([native-lights.md](native-lights.md), "First-person lights from the scene"); its other layers and the transparent call
 after the second model draw stay on their original paths. The local
 player's third-person body draws natively like any biped when the game
 queues it.
@@ -319,7 +319,8 @@ models under one owner are therefore independent draws. An incomplete or
 non-geometry list leaves the whole call on D3D, and a mode with a refused
 material or a texture-accumulation dependency stays there too. Loader
 publication is pinned to a map generation, including A → B → A transitions.
-The first-person lights themselves are not native.
+The first-person lights are the lights stage's
+([native-lights.md](native-lights.md)).
 
 The path logs native draws,
 objects, skipped items and queue refusals every 1,800 first-person layer-3
@@ -726,8 +727,8 @@ only build `0x0004cbf0`): they stay on D3D. Their own stage is
   draws.
 - Which split of layer 3's D3D calls belongs to the world and which to
   objects (`render-census` can give it).
-- The first-person lights, and a frame comparison of the first-person
-  path.
+- A frame comparison of the first-person path, its lights' layers 12
+  and 13 included.
 
 ## Related
 

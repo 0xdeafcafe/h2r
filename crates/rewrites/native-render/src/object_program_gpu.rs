@@ -173,13 +173,13 @@ impl SubpartRanges {
 }
 
 /// The world layers besides 3 whose passes an object item draws natively
-/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8 and
-/// 20, and from the sorted list's handlers the camouflage's 18 and 19
+/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8, 20
+/// and 17 (`layer_pass::BLOOM_LAYER`), and from the sorted list's handlers the camouflage's 18 and 19
 /// and the hologram's 21 (docs/graphics/native-water-fog.md). In layer 5 an item whose model has
 /// a PRT block draws its pass's PRT variant ([`LitLayerPass::prt`]) with
 /// the stream and constants the geometry draw adds
 /// (`frame_scene::PrtStream`).
-pub const OBJECT_LAYERS: [u8; 8] = [1, PRT_LAYER, 7, 8, 20, CAMO_LAYER, CAMO_MODULATE_LAYER, HOLOGRAM_LAYER];
+pub const OBJECT_LAYERS: [u8; 9] = [1, PRT_LAYER, 7, 8, 20, crate::layer_pass::BLOOM_LAYER, CAMO_LAYER, CAMO_MODULATE_LAYER, HOLOGRAM_LAYER];
 
 /// Active camouflage, the layer the sorted handler `0x00041cc0` draws its
 /// records' camouflage passes in (`scene_extract::layout::world_layers::sorted_site`).
@@ -3115,10 +3115,12 @@ mod tests {
         assert_eq!(built.input.programs[camo_program].pass.view, [false, true, false, false]);
         assert_eq!(built.input.programs[camo_program].images[1], None, "the copy is bound per encode");
         let (programs, buffers) = (model.input.programs.len(), model.input.buffers.len());
+        let own_parts = model.input.parts.len();
+        assert_eq!(own_parts, 2, "both parts draw the model's own layer 3");
         let theirs = built.input.layers[0].passes[0].implementations[0].unwrap();
         model.input.append(built.input);
         assert_eq!(model.input.layers.len(), 6);
-        assert_eq!(model.input.parts.len(), 1, "the model's layer-3 part alone");
+        assert_eq!(model.input.parts.len(), own_parts, "the model's layer-3 parts alone");
         assert_eq!(
             model.input.layers[0].passes[0].implementations[0],
             Some((theirs.0 + programs, theirs.1 + buffers)),

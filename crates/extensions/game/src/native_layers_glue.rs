@@ -1,5 +1,5 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
-//! the scene's world layers 1, 5, 7, 8 and 20, the first person's
+//! the scene's world layers 1, 5, 7, 8, 20 and 17, the first person's
 //! layers 1, 7, 8 and 20, and the sorted handlers' layers 18 and 19
 //! (camouflage) and 21 (hologram) (docs/graphics/native-water-fog.md),
 //! drawn from the scene's plan

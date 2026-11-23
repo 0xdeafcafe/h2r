@@ -490,7 +490,7 @@ costs the most guest time" where it is not.
 | 1 | Camera, world layer 3, objects | read guest at the layer hook, game-thread prepare, packets | typed; render-thread prepare | none yet (masks stay while there is a remainder) | 1, 2 |
 | 2 | Object-walk remainder | about 14 objects a frame through D3D | typed (`PartFlags`) | the layer-3 geometry handlers for objects | 3 |
 | 3 | First person | per-item replacement at issue | typed | the layer-3 call in `0x0003fdf0` | 3 |
-| 4 | World layers 1, 5, 7, 8, 20 | recorded at the resolved draw | typed | those layers' draws | 3 |
+| 4 | World layers 1, 5, 7, 8, 20 and 17 | recorded at the resolved draw | typed | those layers' draws | 3 |
 | 5 | Lights and shadows | admitted per packet; some lights refused | typed, shadows batched in one pass sequence | the light pass `0x00031c80` and the shadow layers | 3 |
 | 6 | Opaque block as a whole | mask bits edited and restored | whole-call replacement | `LAYER_DRAW` for layers 1, 3, 5, 7, 8, 20 | 4 |
 | 7 | Fog, water | native passes at their layer hooks | typed | layers 16 and 6 | 5 |
@@ -1011,7 +1011,8 @@ to the guest's draws (**Code**):
     the rest, `object_streams::STREAM_TYPES`), the buffer holds the
     section's registers only, and the program carries what the stream
     feeds (`PrtInput`).
-    Before a scene view's layer draw (`layer_site` is `Site::Scene`),
+    Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
+    late layer 17 at `0x0002c30b` among them, `layer_pass::BLOOM_LAYER`),
     before the first person's layers 1, 7, 8 and 20 (`Site::FirstPerson`;
     its layer 3 is `native_first_person`'s), and before the sorted
     transparent list's camouflage layers 18 and 19 and hologram layer 21 (`sorted_site`,

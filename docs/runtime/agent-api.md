@@ -1876,6 +1876,8 @@ h2 agent render.parity '{"arm": true}'
   sorted entry in it), `scene_light_layers_alone` (light layers drawn
   from the scene with no handler run), `scene_light_objects_alone`
   (their object entries: model parts drawn with no handler),
+  `scene_first_person_light_layers_alone` (of those layers, the
+  first-person lights'),
   `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,

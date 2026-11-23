@@ -394,6 +394,23 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
     });
 }
 
+/// A first-person light (`0x000404b0`) begins: it goes into the first
+/// person's view (opened when none is for the current guest view and
+/// camera) with its steps, and its groups follow
+/// ([`light_group`]). Its object shadows and candidates are not read.
+pub fn first_person_light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
+    if open_kind(mem, ViewKind::FirstPerson).is_none() {
+        return;
+    }
+    with_step(|step| {
+        step.shadow_open = false;
+        step.light_open = step.builder.push_light(light, steps).is_ok();
+        if !step.light_open {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
 /// The main view's light pass is over (at the decal mode that follows
 /// it). Fill the candidate data alongside the original draw steps, which
 /// already hold their final group indices.
@@ -915,6 +932,10 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         (
             "scene_light_objects_alone",
             crate::native_lights::objects_drawn_alone(),
+        ),
+        (
+            "scene_first_person_light_layers_alone",
+            crate::native_lights::first_person_drawn_alone(),
         ),
         (
             "scene_shadow_groups",

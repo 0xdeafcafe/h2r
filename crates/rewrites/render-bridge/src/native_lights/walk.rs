@@ -618,6 +618,46 @@ pub(super) fn install(b: &mut Builder) {
                     refused(Counter::LightWalkMemory);
                     return Ok(Flow::Continue);
                 };
+                // A first-person light's layer 12 or 13 the scene holds
+                // whole is drawn from it alone; otherwise the guest builds
+                // and runs its handlers, as without the walk.
+                if matches!(layer, 12 | 13) && super::first_person_site(layer, caller) {
+                    if !lights
+                        || list != shadows::RECEIVERS
+                        || args(4) != Some(list)
+                        || args(8) != Some(c.cpu.ebp)
+                        || args(12) != Some(layer)
+                        || mem.u32(skip::CURRENT_LIST).ok() != Some(list)
+                        || mem.u32(skip::CURRENT_LAYER).ok() != Some(layer)
+                    {
+                        return Ok(Flow::Continue);
+                    }
+                    let Some(buffer) = esp.checked_add(0x1c).filter(|&slot| args(16) == Some(slot))
+                    else {
+                        return Ok(Flow::Continue);
+                    };
+                    end_layer();
+                    let Ok(built) = build(mem, list, layer, buffer) else {
+                        return Ok(Flow::Continue);
+                    };
+                    let group = crate::scene_step::light_group(
+                        mem,
+                        list,
+                        layer,
+                        frame_scene::GroupSite::Light,
+                        &built.sorted(),
+                    );
+                    if built.count() != 0
+                        && let Some(group) = &group
+                        && super::draw_alone(mem, layer, group)
+                    {
+                        phase::count(Counter::LightWalkBuilds, 1);
+                        phase::count(Counter::LightWalkHandlersSkipped, built.count() as u64);
+                        c.cpu.eax = 0;
+                        return Ok(Flow::Return(guest.ret(c.cpu, 16)?));
+                    }
+                    return Ok(Flow::Continue);
+                }
                 let site = shadows::site(layer, caller);
                 let shadow = site.is_some();
                 if !(shadow || super::SPLIT_LAYERS.contains(&(layer, caller))) {
