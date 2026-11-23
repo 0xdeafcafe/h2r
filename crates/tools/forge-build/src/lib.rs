@@ -35,7 +35,7 @@ pub use kit::Reservation;
 pub const VERSIONS: BuilderVersions = BuilderVersions::CURRENT;
 
 /// A generate recipe that makes the F2 session kit part of document content.
-pub const KIT_RECIPE: &str = "forge_kit";
+pub const KIT_RECIPE: &str = forge_doc::KIT_RECIPE;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

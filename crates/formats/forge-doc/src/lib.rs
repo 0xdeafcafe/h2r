@@ -12,6 +12,7 @@ mod links;
 mod log;
 mod resolve;
 mod validate;
+mod variant;
 mod wire;
 
 pub use content::{MapId, Sha256};
@@ -23,6 +24,7 @@ pub use log::*;
 pub use map::scenario_layout::BlockKind;
 pub use resolve::{Printed, Resolved, resolve};
 pub use validate::{Limits, WorldBounds, validate};
+pub use variant::{KIT_RECIPE, MAX_VARIANT_NAME, Tier, kit, play_form, session_form, variant_name};
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +49,11 @@ pub enum Refusal {
         block: BlockKind,
         index: u32,
     },
+    /// A document offered as a map variant holds more than one may: a
+    /// recipe other than the kit's, an import slot, a source map, a tag
+    /// write or a placement op by running index other than an add.
+    #[error("the document is a Forge map, not a map variant")]
+    Tier,
     #[error("invalid JSON: {0}")]
     Json(String),
     #[error("{what} exceeds its limit of {max}")]

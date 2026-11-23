@@ -91,6 +91,15 @@ replay parity on its invented cache.
   `ForgeDoc::links` and `labels` follow entry removals the same way,
   and leave out a removal a later reset covers. `inverse` retracts an
   entry op as it does any other.
+- `ForgeDoc::tier` is `Tier::Variant` when the document holds scenario
+  edits only (placement adds, entry ops, links, unlinks and labels, no
+  recipe but the session kit's `forge_kit`, no import slot or source
+  map), else `Tier::Map`. `play_form` drops the kit recipe and
+  `session_form` appends it, each dropping `expect` when it changes the
+  recipes; the play form of the session form is the document.
+  `variant_name` holds a map variant's name to 1 to 16 characters, not
+  blank and without control characters, and `ForgeDoc::check_variant`
+  refuses a document of the map tier as `Refusal::Tier`.
 - The `format` is the highest any op needs: 3 when any op is an entry
   op or any endpoint has a print, else 2 when any op is a label op,
   else 1. `validate` refuses any other number, so a document has one
@@ -130,7 +139,9 @@ documents. `tests/resolve.rs` checks `resolve` against hand replays of
 add, remove, set and reset orders, entry-op replay against the editor's
 session on its invented cache, a wrong print refused before any write,
 a reset giving the fixture's bytes back, and a fold then undo of entry
-ops giving the start. All inputs are invented.
+ops giving the start. `tests/variant.rs` covers a table of documents and
+their tiers, the forms' round trip and `expect`, and the variant name
+rule. All inputs are invented.
 
 ## Docs
 

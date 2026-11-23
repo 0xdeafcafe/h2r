@@ -1,6 +1,6 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
-Status: Design. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built; nothing named here as new is.
+Status: Design, slices K5 and H1 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1). The readout does not yet have the `fgr.zone` marks, its `never_with` declaration or team-coloured near marks (a near mark's team is in its label); everything else named here as new is not built.
 Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, huds/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -80,8 +80,8 @@ nudge and nothing else.
 | any | Coordinates... | the Coordinates page ([forge-editing.md](forge-editing.md), "Precision") | position, rotation | P1 |
 | any with a rotation | Reset orientation | acts | rotation | P1 |
 | any | Duplicate | acts; holds the copy | `Placement::Add` with the source's fields | P1; P2 for a kind that needs the kit |
-| any | Delete | the question when it has links, else acts | `Entry::Remove` | M6 |
-| own, changed | Restore original | the question | `Entry::Reset` | M6 |
+| any | Delete | the question when it has links, else acts | `EntryOp::Remove` | M6 |
+| own, changed | Restore original | the question | `EntryOp::Reset` | M6 |
 | Object | Object... | a picker of its group's palette | the palette entry | M6 |
 | Object | Game types... | the Game types dialog | the `games` property | G1 |
 | Object | Label... | a picker of the labels the session's script declares, then a number | the label ([rules-engine.md](rules-engine.md#forge-labels)) | P5 |
@@ -124,7 +124,7 @@ nudge and nothing else.
 ### The readout
 
 A HUD kit `Hud` named `forge-readout`
-(`crates/rewrites/hud-kit-core/src/huds/forge_readout.rs` (new)),
+(`crates/rewrites/hud-kit-core/src/huds/forge_readout.rs`),
 beside the monitor's `forge` HUD
 ([forge-firefight-ui.md](forge-firefight-ui.md), "The monitor HUD").
 It copies the superbounce readout's place and build: three rows of
@@ -371,8 +371,8 @@ they land one after another.
 
 ## Not verified
 
-- The engine's source for a team's colour, and that a world mark in it
-  reads against every level's floor.
+- That a world mark in a team's colour reads against every level's
+  floor.
 - The radius the engine uses for a starting point, a teleporter and a
   territory.
 - That three rows of font 6 right of the tracker stay clear of the

@@ -1,6 +1,7 @@
 //! `h2 forge build` and `h2 forge check`. Both materialise the document
-//! against the user's disc and print each entry print they compared with
-//! the disc's row. Check stops before writing the local package.
+//! against the user's disc and print its tier (map variant or Forge map)
+//! and each entry print they compared with the disc's row. Check stops
+//! before writing the local package.
 
 use std::{fs::File, path::PathBuf};
 
@@ -79,6 +80,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             .find(|(map, _)| map.eq_ignore_ascii_case(name))
             .map(|(_, source)| source.clone())
     })?;
+    println!("Tier {}", document.tier().name());
     println!("MapId {}", built.manifest().map_id());
     for line in print_lines(&built.prints) {
         println!("{line}");

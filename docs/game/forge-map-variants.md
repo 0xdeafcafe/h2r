@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M3 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), and the materialiser's entry ops and print check (M3); everything else named here as new is not.
+Status: Design, slices M1 to M4 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), and the tier, the play and session forms and the variant name rule (M4); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`), `crates/extensions/agent/src/forge/local.rs` (`ForgeWorld`), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -315,26 +315,34 @@ A map variant is a Forge document, in the form a game is played from.
   ([forge-design.md](forge-design.md), "The document"). There is no
   second format and no envelope: the name is the document's `title`,
   the author its `author`, the base its `base {map, sha256}`.
-- **What it may hold** (`ForgeDoc::tier() -> Tier`, new;
-  `Tier::Variant` or `Tier::Map`). A variant holds `Placement::Add`,
-  `EntryOp`, link and label ops, and nothing else: no recipe, no import
-  slot, no source map, no tag-field, mesh or bitmap op. So a variant
+- **What it may hold** (`ForgeDoc::tier() -> Tier`,
+  `Tier::Variant` or `Tier::Map`, in
+  `crates/formats/forge-doc/src/variant.rs`). A variant holds
+  `Placement::Add`, `EntryOp`, link, unlink and label ops, and nothing
+  else: no recipe but the kit's, no import slot, no source map, no
+  placement set or removal by running index, no tag-field, mesh or
+  bitmap op. So a variant
   changes the scenario's placement blocks and no tag, its build is a
   scenario patch, and it fits every map the kit fits. A document with
   more is a **Forge map**: it is picked as a map
   ([forge-design.md](forge-design.md), slice F14), keeps `.h2forge`,
   and is never offered as a variant.
 - **Play form and session form.** A session's document has the
-  `forge_kit` recipe and a saved variant does not
-  ([forge-design.md](forge-design.md), "The kit").
-  `forge_doc::play_form(&doc)` (new) drops it and
-  `session_form(&doc)` adds it; Save writes the play form and Load
+  `forge_kit` recipe (`forge_doc::KIT_RECIPE`) and a saved variant does
+  not ([forge-design.md](forge-design.md), "The kit").
+  `forge_doc::play_form(&doc)` drops it and `session_form(&doc)`
+  appends it after any other recipe, so the play form of the session
+  form is the document. A form that changes the recipes changes the
+  identity, so it drops `expect`. Save writes the play form and Load
   opens the session form at a fresh log head. The tier is judged on
   the play form.
-- **The name** is 1 to 16 characters, the length of the game's own
-  variant names, so it fits every retail text that shows one. Two
-  variants of one base map may not share a name, compared without
-  case.
+- **The name** is 1 to 16 characters (`forge_doc::MAX_VARIANT_NAME`),
+  the length of the game's own variant names, so it fits every retail
+  text that shows one; it is not blank and has no control character
+  (`forge_doc::variant_name`). `ForgeDoc::check_variant` holds a
+  document to the variant tier (`Refusal::Tier`) and its title to
+  that rule. Two variants of one base map may not share a name,
+  compared without case: the store's check.
 - **Identity.** A variant's id is the document's
   (`ForgeDoc::id`). The map it makes has the `MapId` of format 2, the
   hash of the base's hash and the document's
@@ -465,8 +473,9 @@ Every machine builds the map from its own disc; no built byte travels
 - **`forge-doc`**: `Endpoint::Base.print`, `print`, `check_print`, `Edit::Entry`,
   `EntryOp`, `Property`, `resolve`, `Resolved`, `Printed`,
   `Apply::prints`, `Refusal::Print`, `games::{GameSet,
-  encode, decode}`, `Tier`, `ForgeDoc::tier`, `play_form`,
-  `session_form`.
+  encode, decode}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
+  `Refusal::Tier`, `play_form`, `session_form`, `KIT_RECIPE`,
+  `variant_name`.
 - **`forge`**: `Thing {id: Endpoint, kind, own, frame, fields, changed}`,
   `Session::{things, move_thing, set_field, remove, reset}`, and on
   `World`: `base_move`, `base_field`, `base_inert`, `base_restore`.
@@ -484,7 +493,8 @@ Every machine builds the map from its own disc; no built byte travels
   whether it has unsaved edits.
 - **CLI**: `h2 forge check` and `build` read a `.h2mapvariant` as they
   read a `.h2forge`, and print each print they compared
-  (`print <block> <index> <print>: matches`).
+  (`print <block> <index> <print>: matches`) and the tier
+  (`Tier variant` or `Tier map`).
 - **Live**: the two `map-variants` routes; `map_variant` on a hopper
   record; `HopperVariantsSet`; in [live-api.md](../live/live-api.md)
   when built. `NewSession` is unchanged.
