@@ -1,7 +1,8 @@
-//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20, and
-//! the first person's layers 1, 7, 8 and 20, drawn from the scene's plan
-//! instead of the guest's draws under the layer call
-//! (docs/graphics/framescene.md, slice 4). On with the native renderer;
+//! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20, the
+//! first person's layers 1, 7, 8 and 20, and the sorted transparent list's
+//! camouflage layer 18, drawn from the scene's plan instead of the guest's
+//! draws under the layer call (docs/graphics/framescene.md, slice 4;
+//! docs/graphics/native-water-fog.md for 18). On with the native renderer;
 //! `frame-scene.layers=off` leaves every layer to the D3D path.
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), as
@@ -10,8 +11,10 @@
 //! - first it sets back the bits it cleared at the last layer it took,
 //!   each only if the item still holds the mask it left;
 //! - then, when the current layer is one of [`LAYERS`] and the caller is
-//!   the scene's, or one of [`FIRST_PERSON_LAYERS`] and the caller the
+//!   the scene's, one of [`FIRST_PERSON_LAYERS`] and the caller the
 //!   first person's `0x0003fdf0` (`native_render::world_layers::layer_site`),
+//!   or one of [`SORTED_LAYERS`] and the caller its sorted handler
+//!   (`native_render::world_layers::sorted_site`),
 //!   it asks the [`Host`] (boot's glue: the plan, the GPU layer sets, the
 //!   object models and the D3D device) for the native pass; the host
 //!   clears the layer's bit on the items it draws, from the list's first,
@@ -30,7 +33,7 @@ use engine::points;
 use frame_scene::{FrameScene, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::skip::{self, Cleared};
-use native_render::world_layers::{Site, layer_site};
+use native_render::world_layers::{Site, SortedHandler, layer_site, sorted_site};
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 
@@ -45,6 +48,12 @@ pub const LAYERS: [u32; 5] = [1, 5, 7, 8, 20];
 /// it has no layer 5.
 pub const FIRST_PERSON_LAYERS: [u32; 4] = [1, 7, 8, 20];
 
+/// The sorted transparent list's handlers' layers taken: the
+/// camouflage handler `0x00041cc0`'s 18. Their items are object render
+/// records only; the handlers' replays of the scene's layers stay on the
+/// D3D path.
+pub const SORTED_LAYERS: [u32; 1] = [18];
+
 /// Which caller's layer draw is about to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerCaller {
@@ -52,11 +61,17 @@ pub enum LayerCaller {
     Scene,
     /// The first person's (`0x0003fdf0`): its arms' and weapon's items.
     FirstPerson,
+    /// A sorted transparent entry's handler (`0x00041cc0`): the scene's
+    /// object items it adds for its records.
+    Sorted(SortedHandler),
 }
 
 /// The caller of `layer` this stage takes, from the layer draw's return
 /// address; `None` for every other.
 pub fn caller(layer: u32, ret: u32) -> Option<LayerCaller> {
+    if let Some(handler) = sorted_site(layer, ret).filter(|_| SORTED_LAYERS.contains(&layer)) {
+        return Some(LayerCaller::Sorted(handler));
+    }
     match layer_site(layer, ret) {
         Site::Scene if LAYERS.contains(&layer) => Some(LayerCaller::Scene),
         Site::FirstPerson if FIRST_PERSON_LAYERS.contains(&layer) => Some(LayerCaller::FirstPerson),
@@ -85,7 +100,20 @@ pub trait Host: Send + Sync {
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 static PLACED: AtomicBool = AtomicBool::new(false);
-static CLEARED: Mutex<Option<(Cleared, Vec<u32>)>> = Mutex::new(None);
+/// What the last taken layer cleared, with each item as it was left
+/// ([`Left`]).
+static CLEARED: Mutex<Option<(Cleared, Vec<Left>)>> = Mutex::new(None);
+
+/// An item as the skip left it: its mask (`+0x10`), shader (`+8`) and
+/// record argument (`+0xc`). A sorted handler's layer can be the last of
+/// its list (the next layer draw follows the next entry's rebuild of the
+/// same items), so the bit goes back only on an item that is still the
+/// one cleared.
+type Left = [u32; 3];
+
+fn left_of(m: &dyn GuestRead, item: u32) -> Left {
+    [0x10, 8, 0xc].map(|at| m.read_u32(item + at).unwrap_or(0))
+}
 static ASKED: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
@@ -114,18 +142,19 @@ pub fn count(layer: u32, outcome: &str, n: u64) {
 }
 
 /// [`count`] for `caller`'s layer: the first person's outcomes under
-/// `layer_plan_fp<layer>_<outcome>`.
+/// `layer_plan_fp<layer>_<outcome>`, a sorted handler's under
+/// `layer_plan_sorted<layer>_<outcome>`.
 pub fn count_for(caller: LayerCaller, layer: u32, outcome: &str, n: u64) {
-    match caller {
-        LayerCaller::Scene => count(layer, outcome, n),
-        LayerCaller::FirstPerson => {
-            if n == 0 {
-                return;
-            }
-            let mut o = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());
-            *o.entry(format!("layer_plan_fp{layer}_{outcome}")).or_default() += n;
-        }
+    let prefix = match caller {
+        LayerCaller::Scene => return count(layer, outcome, n),
+        LayerCaller::FirstPerson => "fp",
+        LayerCaller::Sorted(_) => "sorted",
+    };
+    if n == 0 {
+        return;
     }
+    let mut o = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());
+    *o.entry(format!("layer_plan_{prefix}{layer}_{outcome}")).or_default() += n;
 }
 
 /// The counters `render.scene` reports: layer calls asked, layer calls
@@ -152,7 +181,7 @@ pub fn extract(mem: &dyn GuestMemory, layer: u8, caller: LayerCaller) -> Option<
     let mut b = SceneBuilder::default();
     b.begin(SceneId::default());
     let kind = match caller {
-        LayerCaller::Scene => ViewKind::Game,
+        LayerCaller::Scene | LayerCaller::Sorted(_) => ViewKind::Game,
         LayerCaller::FirstPerson => ViewKind::FirstPerson,
     };
     b.open_view(ViewKey { kind, player: 0, view: 0 }, camera).ok()?;
@@ -203,12 +232,12 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     DRAWN.fetch_add(1, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
     let m = Mem(mem);
-    let left = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+    let left = cleared.items.iter().map(|&item| left_of(&m, item)).collect();
     *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
 }
 
 /// Sets back the bits the last taken layer cleared, on the items that
-/// still hold the mask it left.
+/// still hold the mask, shader and argument it left.
 pub fn restore_pending(mem: &mut dyn GuestMemory) {
     let Some((cleared, left)) = CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return;
@@ -216,8 +245,8 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
     let mut m = Mem(mem);
     let bit = 1u32 << cleared.layer;
     for (&item, &was) in cleared.items.iter().zip(&left) {
-        if m.read_u32(item + 0x10) == Some(was) {
-            let _ = m.write_u32(item + 0x10, was | bit);
+        if left_of(&m, item) == was {
+            let _ = m.write_u32(item + 0x10, was[0] | bit);
         }
     }
 }
@@ -230,7 +259,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20 and the first person's 1, 7, 8 and 20 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20, the first person's 1, 7, 8 and 20 and the camouflage handler's 18 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -293,5 +322,36 @@ mod tests {
         assert_eq!(caller(3, 0x0004_0136), None, "native_first_person's");
         assert_eq!(caller(3, 0x0002_bed5), None, "native_objects' and the world's");
         assert_eq!(caller(1, 0x0002_bd5c), None, "an alternate view's");
+    }
+
+    #[test]
+    fn the_stage_takes_the_camouflage_handlers_layer_18() {
+        assert_eq!(caller(18, 0x0004_2015), Some(LayerCaller::Sorted(SortedHandler::Camouflage)));
+        assert_eq!(caller(16, 0x0004_1ffd), None, "the handler's replay of the scene's layers stays on D3D");
+        assert_eq!(caller(18, 0x0002_c0e9), None);
+        count_for(LayerCaller::Sorted(SortedHandler::Camouflage), 18, "taken", 4);
+        let c: BTreeMap<String, u64> = counters().into_iter().collect();
+        assert!(c["layer_plan_sorted18_taken"] >= 4, "a sorted handler's apart");
+    }
+
+    #[test]
+    fn a_cleared_bit_goes_back_only_on_the_same_item() {
+        use engine::memory::FlatMemory;
+        const BASE: u32 = 0x0060_0000;
+        let mut mem = FlatMemory::new(BASE, 0x100);
+        let (a, b) = (BASE, BASE + 0x18);
+        for (item, shader) in [(a, 0xe000_0020u32), (b, 0xe000_0021)] {
+            mem.set_u32(item + 8, shader).unwrap();
+            mem.set_u32(item + 0xc, 0x0000_0500).unwrap();
+            mem.set_u32(item + 0x10, 1 << 15).unwrap();
+        }
+        let cleared = Cleared { layer: 18, items: vec![a, b] };
+        let left = vec![left_of(&Mem(&mut mem), a), left_of(&Mem(&mut mem), b)];
+        *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
+        // The list was built again: `b` is another record's item now.
+        mem.set_u32(b + 0xc, 0x0000_0600).unwrap();
+        restore_pending(&mut mem);
+        assert_eq!(mem.u32(a + 0x10).unwrap(), 1 << 15 | 1 << 18, "the same item's bit back");
+        assert_eq!(mem.u32(b + 0x10).unwrap(), 1 << 15, "another item left alone");
     }
 }

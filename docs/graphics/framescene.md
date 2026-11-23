@@ -1011,9 +1011,11 @@ to the guest's draws (**Code**):
     the rest, `object_streams::STREAM_TYPES`), the buffer holds the
     section's registers only, and the program carries what the stream
     feeds (`PrtInput`).
-    Before a scene view's layer draw (`layer_site` is `Site::Scene`), and
+    Before a scene view's layer draw (`layer_site` is `Site::Scene`),
     before the first person's layers 1, 7, 8 and 20 (`Site::FirstPerson`;
-    its layer 3 is `native_first_person`'s), the bridge extracts the
+    its layer 3 is `native_first_person`'s), and before the sorted
+    transparent list's camouflage layer 18 (`sorted_site`,
+    [native-water-fog.md](native-water-fog.md)), the bridge extracts the
     layer's pass from guest memory and the host plans it
     (`render_bridge::native_layers::caller`). A structure item (the
     scene's caller only) is drawn when it is a cluster's or a
@@ -1083,7 +1085,8 @@ to the guest's draws (**Code**):
     stage cannot draw. Each ask's outcomes are counted in `render.scene`
     as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>` (the first person's as
-    `layer_plan_fp<layer>_*`): the plan's causes
+    `layer_plan_fp<layer>_*`, a sorted handler's as
+    `layer_plan_sorted<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
     extraction's object causes (`LayerObjectRefusal::name`,
     `object_fade` and the rest), `object_prt` (layer 5's PRT stream
@@ -1101,7 +1104,8 @@ to the guest's draws (**Code**):
     `stencil` (the device's stencil does not read, tests or writes it on
     a depth with no stencil aspect, or layer 1's stencil is off and the
     device is not in mode 1), `warming`, `palettes`, `device`, `program`
-    (no material of the layer compiled), `first_person_structure`, `order`
+    (no material of the layer compiled), `first_person_structure`,
+    `sorted_structure`, `order`
     (planned, but from the first item the sets cannot draw on) and
     `unread` (the layer's pass did not read); `layer_plan_asked`,
     `layer_plan_drawn` and `layer_plan_items` count the layer calls

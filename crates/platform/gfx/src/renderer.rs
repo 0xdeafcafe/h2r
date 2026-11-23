@@ -1292,6 +1292,29 @@ pub fn set_skip_idle_counted(skip: Option<bool>) {
     SKIP_IDLE_COUNTED.set(skip);
 }
 
+/// Encodes `draws` in order into `pass`, a render pass the caller opened
+/// on the attachments they were recorded for: for a stage whose commands
+/// must come between the frame's passes (a copy of the bound colour before
+/// draws that sample it). Draws that count their samples or ask for a pass
+/// of their own are refused, as is a draw whose pipeline did not build;
+/// nothing is encoded then.
+pub fn encode_in_pass(pass: &mut wgpu::RenderPass<'_>, draws: &[RecordedDraw]) -> Result<(), &'static str> {
+    if draws.iter().any(|d| d.counts_samples() || d.new_pass) {
+        return Err("a draw needs a pass of its own");
+    }
+    wait_for_pipelines(draws);
+    if draws.iter().any(|d| d.pipeline.get().is_none()) {
+        return Err("a draw's pipeline did not build");
+    }
+    let mut state = PassState::default();
+    for p in draws {
+        if let Some(pipeline) = p.pipeline.get() {
+            state.draw(pass, p, pipeline);
+        }
+    }
+    Ok(())
+}
+
 /// The state an open render pass has had set, so a draw only sets what
 /// differs from the draw before it. A pipeline switch keeps bind groups wgpu
 /// has already validated against a compatible layout, so groups are

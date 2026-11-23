@@ -150,6 +150,10 @@ pub struct ObjectPass {
     /// ([`TEXACCUM_TEXTURE`]; empty in `program.stages`; the host binds the
     /// level the D3D path drew, in texel coordinates).
     pub texaccum: [bool; 4],
+    /// The stages that sample the view's own target ([`VIEW_TEXTURE`];
+    /// empty in `program.stages`; the host binds a copy of the bound
+    /// colour made before the pass, in texel coordinates).
+    pub view: [bool; 4],
     /// The vertex program's instruction words (four per instruction, no
     /// header) and the translation's options: what the D3D path's draw of
     /// the same part binds.
@@ -221,6 +225,7 @@ fn object_pass_with(
         EngineBound {
             normalization,
             texaccum,
+            view,
         },
     ) = object_look_stages(pass, imp)?;
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
@@ -236,6 +241,7 @@ fn object_pass_with(
         EngineBound {
             normalization,
             texaccum,
+            view,
         },
         microcode,
         state.alpha_test,
@@ -266,6 +272,7 @@ fn object_pass_with(
         implementation: imp.clone(),
         normalization,
         texaccum,
+        view,
         words,
         options,
         prt: None,
@@ -347,6 +354,14 @@ pub const TEXACCUM_TEXTURE: u8 = 3;
 /// [`crate::object_nodes::texaccum_bound`]).
 pub const TEXACCUM_HEADER: u32 = crate::object_nodes::TEXACCUM_HEADER;
 
+/// The engine texture of the view's own target (Code): the engine-texture
+/// table (`0x00019530`, the jump table at `0x00019b68`) binds for 5 the
+/// render target the view is drawing into
+/// (`crate::screen_look::EngineTexture::View`). The camouflage layers'
+/// passes sample it as the scene behind the object; a render target is a
+/// linear texture, read in texels as the texture accumulation target is.
+pub const VIEW_TEXTURE: u8 = 5;
+
 /// The stages of an object pass the host binds an engine texture at
 /// (empty in the look).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -356,11 +371,14 @@ pub struct EngineBound {
     pub normalization: [bool; 4],
     /// The texture accumulation target (engine texture 3, 2D, unbiased).
     pub texaccum: [bool; 4],
+    /// The view's own target (engine texture 5, 2D, unbiased): a copy of
+    /// the bound colour.
+    pub view: [bool; 4],
 }
 
 /// [`object_look`] with the stages that sample the vector normalization
-/// cube or the texture accumulation target, which the host binds; in the
-/// look those stages are empty.
+/// cube, the texture accumulation target or the view's own target, which
+/// the host binds; in the look those stages are empty.
 pub fn object_look_stages(
     pass: map::TagId,
     imp: &ResolvedImplementation,
@@ -382,6 +400,7 @@ pub fn object_look_stages(
                 &mut bound.normalization[n]
             }
             tags::material::TextureSource::Engine(TEXACCUM_TEXTURE) => &mut bound.texaccum[n],
+            tags::material::TextureSource::Engine(VIEW_TEXTURE) => &mut bound.view[n],
             _ => continue,
         };
         *slot = true;
@@ -460,7 +479,7 @@ pub fn compile_object_stages(
             dims: std::array::from_fn(|n| {
                 if engine.normalization[n] {
                     Some(shaders::psh::TextureDim::Cube)
-                } else if engine.texaccum[n] {
+                } else if engine.texaccum[n] || engine.view[n] {
                     Some(shaders::psh::TextureDim::D2)
                 } else {
                     (look.textures[n] != crate::look::Stage::Empty)
@@ -827,6 +846,59 @@ pub(crate) mod tests {
         let mut other = p.vertex.clone();
         texaccum_dimensions(&mut other, &imp, [true, false, false, false], (640, 480));
         assert_eq!(other.constants[20], p.vertex.constants[20]);
+    }
+
+    #[test]
+    fn the_views_own_target_is_a_stage_the_host_binds_as_a_copy() {
+        use tags::material::{StageTexture, TextureSource};
+        let mut imp = lit();
+        imp.textures[1] = Some(StageTexture {
+            source: TextureSource::Engine(VIEW_TEXTURE),
+            size: None,
+            stage_size: None,
+        });
+        // The combiners sample t1 (PROJECT2D, 5 bits a stage).
+        imp.pixel_shader = shaders::PixelShaderDef {
+            texture_modes: 1 << 5,
+            ..Default::default()
+        }
+        .to_bytes();
+        assert_eq!(
+            crate::screen_look::engine_texture(VIEW_TEXTURE),
+            crate::screen_look::EngineTexture::View
+        );
+        assert!(
+            crate::look::implementation_look(map::TagId(0xe000_0001), &imp).is_err(),
+            "the world's look refuses it"
+        );
+        let (look, bound) = object_look_stages(map::TagId(0xe000_0001), &imp).unwrap();
+        assert_eq!(bound.view, [false, true, false, false]);
+        assert_eq!(
+            (bound.texaccum, bound.normalization),
+            ([false; 4], [false; 4])
+        );
+        assert_eq!(look.textures[1], Stage::Empty, "bound by the host");
+        let p = compile_object_stages(
+            &look,
+            bound,
+            &rigid_program(),
+            None,
+            WORLD,
+            [shaders::vsh::InputFetch::Float; 16],
+        )
+        .unwrap();
+        assert_eq!(p.dims[1], Some(shaders::psh::TextureDim::D2));
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let pass = object_layer_pass(
+            map::TagId(0xe000_0001),
+            &imp,
+            &rigid_program(),
+            WORLD,
+            fetch,
+        )
+        .unwrap();
+        assert_eq!(pass.view, [false, true, false, false]);
+        assert_eq!(pass.texaccum, [false; 4]);
     }
 
     #[test]
