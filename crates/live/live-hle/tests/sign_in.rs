@@ -693,6 +693,8 @@ fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library()
         "XOnlinePresenceClear",
         "XOnlinePresenceGetLatest",
         "XOnlineSaveLogonState",
+        "XOnlineFriendsRemove",
+        "XOnlineFriendsAnswerRequest",
     ];
     for e in ENTRIES.iter().filter(|e| !implemented.contains(&e.name)) {
         w.cpu = CpuAbi {
