@@ -21,9 +21,14 @@
 //! ([`crate::debug_views::CollisionEdits`]), whose collision lines are
 //! built from the map file and would otherwise show the old level.
 //!
-//! The bots' line-of-sight walls (`bots::los::Walls`, built offline per
-//! map and BSP) are not told: docs/editor/realtime-edits.md, "Not
-//! verified".
+//! The game's activation is [`QueuedActivation`]: the deactivate and
+//! activate pair `BSP_SWITCH` runs, queued on the agent's guest calls
+//! (`crate::sim::calls::Call::ReactivateStructure`), since `BSP_SWITCH`
+//! itself returns at once for the BSP already loaded and active.
+//!
+//! A structure commit is also told to the game's listeners
+//! ([`Agent::on_structure_collision`]): the game glue rebuilds the bots'
+//! line-of-sight walls (`bots::los::Walls`) from the committed BSP.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -86,6 +91,80 @@ pub trait Activation: Send {
 /// Where the game's [`Activation`] is installed
 /// ([`Agent::set_collision_activation`]).
 pub type Activator = Arc<Mutex<Option<Box<dyn Activation>>>>;
+
+/// The game's [`Activation`] over the agent's guest calls: `start` queues
+/// [`crate::sim::calls::Call::ReactivateStructure`] for the next tick and
+/// `poll` reads its outcome.
+pub struct QueuedActivation {
+    calls: crate::sim::calls::Shared,
+    pending: Option<crate::sim::calls::PendingCall>,
+}
+
+impl QueuedActivation {
+    pub fn new(calls: crate::sim::calls::Shared) -> Self {
+        QueuedActivation { calls, pending: None }
+    }
+}
+
+impl Activation for QueuedActivation {
+    fn start(&mut self, _g: &mut Guest) -> Result<(), String> {
+        // A start replaces a call never polled to its end: dropping its
+        // ticket withdraws it if it has not run.
+        self.pending = None;
+        let ticket = crate::sim::calls::submit(&self.calls, crate::sim::calls::Call::ReactivateStructure)?;
+        self.pending = Some(ticket);
+        Ok(())
+    }
+
+    fn poll(&mut self, _g: &Guest) -> Option<Result<(), String>> {
+        let Some(pending) = &self.pending else {
+            return Some(Err("no BSP activation was started".into()));
+        };
+        let out = pending.outcome()?;
+        self.pending = None;
+        Some(out.map(|_| ()).map_err(|e| e.message))
+    }
+}
+
+/// A structure's level collision a commit replaced, as its listeners
+/// ([`Agent::on_structure_collision`]) hear it: once the pairs are written
+/// and, for an activated commit, after the activation.
+#[derive(Clone, Debug)]
+pub struct StructureCommit {
+    /// The structure BSP tag's datum and address.
+    pub tag: u32,
+    pub address: u32,
+    /// Whether it is the active structure (`[0x4e0348]`) when committed.
+    pub active: bool,
+    /// The committed collision BSP.
+    pub bsp: Arc<Bsp>,
+}
+
+/// A listener for [`StructureCommit`]s.
+pub type StructureListener = Arc<dyn Fn(&StructureCommit) + Send + Sync>;
+
+/// The listeners [`Agent::on_structure_collision`] adds to.
+pub type StructureListeners = Arc<Mutex<Vec<StructureListener>>>;
+
+/// Tells `listeners` that `place`'s structure now holds `bsp`.
+fn tell(listeners: &StructureListeners, g: &Guest, place: &Place, bsp: &Bsp) {
+    let listeners = lock(listeners).clone();
+    if listeners.is_empty() {
+        return;
+    }
+    let active = g
+        .u32(engine::sim_collision::layout::ACTIVE_STRUCTURE)
+        .is_ok_and(|at| at == place.root);
+    let commit = StructureCommit {
+        tag: place.tag,
+        address: place.root,
+        active,
+        bsp: Arc::new(bsp.clone()),
+    };
+    for l in &listeners {
+        l(&commit);
+    }
+}
 
 /// How long a commit waits for its activation.
 const ACTIVATION_TICKS: u64 = 120;
@@ -563,13 +642,14 @@ pub(super) fn add_methods<S>(
         Ok(reply)
     });
 
-    let (ed, g, probe, state_c, act, ed_edits) = (
+    let (ed, g, probe, state_c, act, ed_edits, listeners_c) = (
         Arc::clone(editor),
         Arc::clone(guest),
         Arc::clone(session),
         Arc::clone(&state),
         Arc::clone(&activator),
         Arc::clone(&edits),
+        agent.structure_listeners(),
     );
     agent.add_game_method(method::EDIT_COLLISION_COMMIT, Access::Act, move |p, ctx| {
         let o = object(&p)?;
@@ -699,6 +779,7 @@ pub(super) fn add_methods<S>(
                     me.retired.extend(retire);
                 }
                 if place.kind == Kind::Structure {
+                    tell(&listeners_c, g, &place, &staged.bsp);
                     ed_edits.replace(place.tag, staged.bsp);
                 }
                 let mut reply = reply;
@@ -733,9 +814,10 @@ pub(super) fn add_methods<S>(
             return Ok(done);
         }
         let (state, g, act, edits) = (Arc::clone(&state_c), Arc::clone(&g), Arc::clone(&act), Arc::clone(&ed_edits));
+        let listeners = Arc::clone(&listeners_c);
         ctx.defer(
             ACTIVATION_TICKS,
-            Box::new(move |_| settle(&state, &g, &act, &edits, &shared)),
+            Box::new(move |_| settle(&state, &g, &act, &edits, &listeners, &shared)),
         );
         Ok(Value::Null)
     });
@@ -777,6 +859,7 @@ fn settle(
     guest: &WithGuest,
     act: &Activator,
     edits: &crate::debug_views::CollisionEdits,
+    listeners: &StructureListeners,
     shared: &arena::Shared,
 ) -> Option<Result<Value, RpcError>> {
     let mut me = lock(state);
@@ -799,6 +882,7 @@ fn settle(
                 retired.into_iter().filter(|at| arena.free(*at).is_some()).collect()
             };
             if a.place.kind == Kind::Structure {
+                with(guest, |g| tell(listeners, g, &a.place, &a.bsp));
                 edits.replace(a.place.tag, a.bsp);
             }
             let mut reply = a.reply;

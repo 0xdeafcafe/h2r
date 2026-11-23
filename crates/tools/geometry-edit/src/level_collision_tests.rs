@@ -266,3 +266,52 @@ fn a_solid_that_cannot_be_added_is_refused_by_name() {
         .unwrap_err();
     assert!(e.to_string().contains("no open space"), "{e}");
 }
+
+#[test]
+fn a_box_solid_is_the_closed_box_wound_outward() {
+    assert_eq!(box_solid([2.0, 2.0, 1.0], [3.0, 3.0, 2.0], 0), solid());
+    assert!(box_solid([0.0; 3], [1.0; 3], 1).iter().all(|p| p.material == 1));
+}
+
+#[test]
+fn boxes_chain_on_one_edit_from_the_files_source() {
+    let src = map_bytes(0x200);
+    let source = read(&mut open(&src), sbsp()).unwrap();
+    let one = source.add_box([2.0, 2.0, 1.0], [3.0, 3.0, 2.0], 0).unwrap();
+    let two = one.add_box([5.0, 5.0, 1.0], [6.0, 6.0, 2.0], 0).unwrap();
+    // The source stays the file's, so the save and the undo stage the
+    // file's blocks with every box added.
+    assert_eq!(two.source, source);
+    assert!(two.added.level.bsp.surfaces.len() > one.added.level.bsp.surfaces.len());
+    // The same two boxes added in one go to the file's level: the same
+    // level.
+    let direct = source
+        .add_solid(&solid(), &Options::default())
+        .unwrap()
+        .added
+        .level
+        .add_solid(&cube([5.0, 5.0, 1.0], [6.0, 6.0, 2.0]), &Options::default())
+        .unwrap();
+    assert_eq!(two.added.level, direct.level);
+    // The chained edit saves and reads back as its level.
+    let out = saved(&src, &two.writes());
+    let mut m = open(&out);
+    m.validate_checksum().unwrap();
+    assert_eq!(read(&mut m, sbsp()).unwrap().level, two.added.level);
+}
+
+#[test]
+fn a_box_with_no_volume_or_a_bad_corner_is_refused_by_name() {
+    let src = map_bytes(0x200);
+    let source = read(&mut open(&src), sbsp()).unwrap();
+    for (lo, hi) in [
+        ([2.0, 2.0, 1.0], [2.0, 3.0, 2.0]),
+        ([2.0, 2.0, 1.0], [1.0, 3.0, 2.0]),
+        ([2.0, f32::NAN, 1.0], [3.0, 3.0, 2.0]),
+    ] {
+        match source.add_box(lo, hi, 0) {
+            Err(Error::Refused { target, .. }) => assert_eq!(target, target_id(sbsp())),
+            other => panic!("{lo:?} {hi:?}: {other:?}"),
+        }
+    }
+}

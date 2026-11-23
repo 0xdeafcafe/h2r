@@ -1135,6 +1135,47 @@ pub fn offer(map: &str, data: Arc<MapData>, generation: u64) -> bool {
     true
 }
 
+/// The newest [`collision_edited`] call: an older rebuild that finishes
+/// later is dropped.
+static WALL_EDITS: AtomicU64 = AtomicU64::new(0);
+
+/// A live collision commit replaced the loaded map's structure collision
+/// (docs/editor/realtime-edits.md, "Collision"): its walls are stale.
+/// Rebuilds them from `bsp` ([`cache::walls_of`]) on a thread of its own
+/// and publishes them beside the same nav mesh and tactical places, for
+/// the map load this call saw. The new walls have no visibility grid, so
+/// line of sight walks the cells until the map loads again; the nav mesh
+/// keeps the old shape. False when no map is loaded.
+pub fn collision_edited(bsp: Arc<tags::collision::Bsp>) -> bool {
+    let (map, generation) = {
+        let l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+        if l.name.is_empty() {
+            return false;
+        }
+        (l.name.clone(), l.generation)
+    };
+    let n = WALL_EDITS.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::Builder::new()
+        .name("bots-walls".into())
+        .spawn(move || {
+            let walls = cache::walls_of(&bsp);
+            let Some(data) = cache::current() else { return };
+            if WALL_EDITS.load(Ordering::SeqCst) != n {
+                return;
+            }
+            let next = Arc::new(MapData {
+                nav: data.nav.clone(),
+                walls,
+                places: data.places.clone(),
+            });
+            drop(data);
+            if offer(&map, next, generation) {
+                eprintln!("bots: {map}: walls rebuilt from a live collision edit");
+            }
+        })
+        .is_ok()
+}
+
 /// Read the local BSP on a utility worker. An automatically managed map
 /// must match the header the active slot's mounted source supplied. A
 /// manual or sim run has only the local file. Publish the mesh first so

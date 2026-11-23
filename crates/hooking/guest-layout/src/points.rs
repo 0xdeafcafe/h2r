@@ -1419,8 +1419,28 @@ points! { ALL;
     GAME_STATE_REVERT @ 0x0012_3f60: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Restore the whole game state from a saved image (header checked).
     GAME_STATE_RESTORE @ 0x0012_4380: [opaque], Optional; "docs/runtime/checkpoints.md";
-    /// Switch the structure BSP (prepare, dispose, load, publish).
-    BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-boot.md";
+    /// Switch the structure BSP (prepare, dispose, load, publish): stdcall
+    /// `(bsp, unload)`, the index an `i16` in the first word, `unload`
+    /// (a byte) whether the old BSP's tag data is released. Returns at
+    /// once, AL 1, when `bsp` is both the loaded BSP (`0x4686c4`) and the
+    /// active one (game globals `+2`), so it cannot rebuild the active BSP
+    /// in place; [`STRUCTURE_BSP_DEACTIVATE`] then
+    /// [`STRUCTURE_BSP_ACTIVATE`] do (docs/editor/realtime-edits.md,
+    /// "Collision").
+    BSP_SWITCH @ 0x0011_c1b0: [fn(bsp: stack 0, unload: stack 1) -> al ret 8], Optional; "docs/runtime/level-boot.md";
+    /// Each game system's dispose-from-old-structure-BSP callback (the
+    /// lifecycle table's column 5, `0x440dec + 0x24 n`, last to first),
+    /// then the active BSP (game globals `+2`) set to -1. `BSP_SWITCH`
+    /// calls it when the active BSP changes (`0x11c23a`).
+    STRUCTURE_BSP_DEACTIVATE @ 0x0013_7da0: [fn() ret 0], Optional; "docs/editor/realtime-edits.md";
+    /// Clears three `0x40`-byte tables of the game globals (`+0x1138`,
+    /// `+0x1178`, `+0x11b8`), sets the active BSP (`+2`) to the loaded one
+    /// (`0x4686c4`) and runs each game system's
+    /// initialize-for-new-structure-BSP callback (column 4, `0x440de8 +
+    /// 0x24 n`): physics builds its Havok world over the structure
+    /// (`0x1c2690`), objects find their locations again (`0xb6bb0`).
+    /// `BSP_SWITCH` calls it last (`0x11c345`).
+    STRUCTURE_BSP_ACTIVATE @ 0x0013_7d40: [fn() ret 0], Optional; "docs/editor/realtime-edits.md";
     /// HaloScript `cinematic_start`.
     CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-boot.md";
     /// HaloScript `cinematic_stop`.

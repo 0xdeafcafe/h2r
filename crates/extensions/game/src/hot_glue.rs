@@ -13,6 +13,10 @@
 //! it holds, and every applied raw act queues its native refresh on
 //! `render_bridge::native_edits`.
 //!
+//! Live collision commits (`edit.collision.*`) get the game's BSP
+//! activation ([`install_collision_activation`]) and make the bots'
+//! walls stale ([`install`]).
+//!
 //! Grown tag blocks go to the edit arena (`hot_tags::arena`, in the HLE
 //! reservation, pages mapped through the runtime's memory as it grows).
 //! [`install`] hands back its [`hot_tags::arena::Link`] so the boot can
@@ -89,6 +93,14 @@ fn install_edits(
         Box::new(RawGlue { vfs, overlay: vfs::RawOverlay::global().clone() }),
         Box::new(|r| render_bridge::native_edits::push(native_edit(r))),
     );
+    // A live collision commit on the active structure makes the bots'
+    // line-of-sight walls stale: rebuilt from the committed BSP
+    // (docs/editor/realtime-edits.md, "Collision").
+    agent.on_structure_collision(|c| {
+        if c.active {
+            bots::autonav::collision_edited(Arc::clone(&c.bsp));
+        }
+    });
     let pages_rt = Arc::clone(rt);
     let rt = Arc::clone(rt);
     agent::hot::add_edit_methods(
@@ -109,6 +121,15 @@ fn install_edits(
             f(guest)
         }),
     }
+}
+
+/// The BSP activation `edit.collision.commit` runs with `activate` or
+/// `mode: rebuild`: the deactivate and activate pair `BSP_SWITCH` calls,
+/// queued on the agent's guest calls for the next tick
+/// (`agent::hot::collision::QueuedActivation`;
+/// docs/editor/realtime-edits.md, "Collision").
+pub fn install_collision_activation(agent: &agent::Agent, calls: agent::sim::calls::Shared) {
+    agent.set_collision_activation(Box::new(agent::hot::collision::QueuedActivation::new(calls)));
 }
 
 /// Tag lookup for `sim.give` and `sim.spawn`: the loaded map's tags by

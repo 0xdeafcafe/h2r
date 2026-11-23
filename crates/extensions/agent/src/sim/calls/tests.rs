@@ -1625,5 +1625,68 @@ fn probe_animation_uses_the_units_graph_and_resolves_the_engine_selection() {
     assert_eq!(out["selected"], json!([1, 2, 3]));
 }
 
+
+/// A game with structure BSP `loaded` loaded and `active` active: the
+/// game globals at [`GLOBALS`].
+const GLOBALS: u32 = 0x8050_0000;
+
+fn structure_world(loaded: i16, active: i16) -> World {
+    let mut w = world();
+    w.g.map(engine::points::GAME_GLOBALS.base, 4);
+    w.g.put_u32(engine::points::GAME_GLOBALS.base, GLOBALS);
+    w.g.map(GLOBALS, 0x10);
+    w.g.put_u16(GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP, active as u16);
+    w.g.map(addr::LOADED_STRUCTURE_BSP, 2);
+    w.g.put_u16(addr::LOADED_STRUCTURE_BSP, loaded as u16);
+    w
+}
+
+/// The callees as the game's: deactivate sets the active BSP to -1,
+/// activate to `to` (the loaded one, in the game).
+fn structure_callees(to: i16) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs {
+    move |c, m| {
+        let at = GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP;
+        if c.target == engine::points::STRUCTURE_BSP_DEACTIVATE.base {
+            m.set_u16(at, u16::MAX).unwrap();
+        } else if c.target == engine::points::STRUCTURE_BSP_ACTIVATE.base {
+            m.set_u16(at, to as u16).unwrap();
+        }
+        Regs::default()
+    }
+}
+
+#[test]
+fn reactivating_the_structure_deactivates_then_activates_the_loaded_bsp() {
+    let (out, calls, g) = one(structure_world(1, 1), Call::ReactivateStructure, structure_callees(1));
+    assert_eq!(out.unwrap(), json!({"bsp": 1}));
+    let targets: Vec<u32> = calls.iter().map(|c| c.target).collect();
+    assert_eq!(
+        targets,
+        [
+            engine::points::STRUCTURE_BSP_DEACTIVATE.base,
+            engine::points::STRUCTURE_BSP_ACTIVATE.base
+        ]
+    );
+    // Neither takes an argument.
+    assert!(calls.iter().all(|c| c.args.is_empty()));
+    assert_eq!(g.u16(GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP).unwrap(), 1);
+    // The loaded BSP is the game's to change: the call leaves it.
+    assert_eq!(g.u16(addr::LOADED_STRUCTURE_BSP).unwrap(), 1);
+}
+
+#[test]
+fn reactivating_needs_a_loaded_active_structure_and_checks_what_it_left() {
+    // Nothing loaded, or a switch half done: refused before any call.
+    for (loaded, active) in [(-1, -1), (0, -1), (1, 0)] {
+        let (out, calls, _) = one(structure_world(loaded, active), Call::ReactivateStructure, structure_callees(loaded));
+        assert_eq!(out.unwrap_err().code, REFUSED, "{loaded} {active}");
+        assert!(calls.is_empty());
+    }
+    // An activation that leaves another BSP active is an error.
+    let (out, calls, _) = one(structure_world(0, 0), Call::ReactivateStructure, structure_callees(-1));
+    assert!(out.unwrap_err().message.contains("left BSP -1 active"));
+    assert_eq!(calls.len(), 2);
+}
+
 mod base;
 mod same_calls;

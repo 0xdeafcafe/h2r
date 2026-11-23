@@ -463,3 +463,87 @@ fn a_committed_structure_replaces_the_debug_views_level_collision() {
     assert!(generation > 0);
     assert_eq!(replaced.get(&SBSP).map(|b| b.edges.len()), Some(3));
 }
+
+/// The structure commits the listeners heard.
+fn listen(agent: &Agent) -> Arc<Mutex<Vec<StructureCommit>>> {
+    let heard: Arc<Mutex<Vec<StructureCommit>>> = Arc::default();
+    let h = Arc::clone(&heard);
+    agent.on_structure_collision(move |c| h.lock().unwrap().push(c.clone()));
+    heard
+}
+
+#[test]
+fn structure_listeners_hear_each_commit_once_with_its_bsp() {
+    // The structure is the active one.
+    let mut g = level(0);
+    g.set_u32(engine::sim_collision::layout::ACTIVE_STRUCTURE, SBSP_AT).unwrap();
+    let mut game = Game::new(g, agent_proto::sim::SessionKind::Local, true);
+    let heard = listen(&game.agent);
+
+    // A stage alone tells nobody.
+    let staged = game.ok(method::EDIT_COLLISION_STAGE, stage_of(&grown(0.0)));
+    assert!(heard.lock().unwrap().is_empty());
+
+    // Without activation: at the commit.
+    let done = game.commit(&staged, "append", false);
+    assert!(done.get("error").is_none(), "{done}");
+    {
+        let h = heard.lock().unwrap();
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].tag, h[0].address, h[0].active), (SBSP, SBSP_AT, true));
+        assert_eq!(h[0].bsp.planes.len(), 2);
+    }
+
+    // With activation: once, after it ran.
+    let mut more = grown(0.0);
+    more.planes.push(Plane([0.0, 0.0, 1.0, 1.0]));
+    let staged = game.ok(method::EDIT_COLLISION_STAGE, stage_of(&more));
+    let done = game.commit(&staged, "append", true);
+    assert_eq!(done["result"]["activated"], true, "{done}");
+    assert_eq!(game.switches.load(Ordering::SeqCst), 1);
+    let h = heard.lock().unwrap();
+    assert_eq!(h.len(), 2);
+    assert_eq!(h[1].bsp.planes.len(), 3);
+}
+
+#[test]
+fn a_structure_that_is_not_active_is_heard_as_such() {
+    let mut game = Game::new(level(0), agent_proto::sim::SessionKind::Local, false);
+    let heard = listen(&game.agent);
+    let staged = game.ok(method::EDIT_COLLISION_STAGE, stage_of(&grown(0.0)));
+    let done = game.commit(&staged, "append", false);
+    assert!(done.get("error").is_none(), "{done}");
+    let h = heard.lock().unwrap();
+    assert_eq!(h.len(), 1);
+    assert!(!h[0].active);
+}
+
+#[test]
+fn the_queued_activation_is_one_reactivate_call_and_its_outcome() {
+    let q = crate::sim::calls::shared();
+    let mut a = QueuedActivation::new(Arc::clone(&q));
+    let mut g = Guest::new();
+    // No feature makes the calls: the start is refused, so the commit
+    // puts its pairs back.
+    assert!(a.start(&mut g).is_err());
+    crate::sim::calls::lock(&q).arm();
+
+    a.start(&mut g).unwrap();
+    assert_eq!(a.poll(&g), None);
+    let work = crate::sim::calls::lock(&q).drain();
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].1, crate::sim::calls::Call::ReactivateStructure);
+    assert_eq!(a.poll(&g), None);
+    crate::sim::calls::lock(&q).finish(work[0].0, Ok(json!({"bsp": 0})));
+    assert_eq!(a.poll(&g), Some(Ok(())));
+    // One outcome per start.
+    assert!(matches!(a.poll(&g), Some(Err(_))));
+
+    a.start(&mut g).unwrap();
+    let work = crate::sim::calls::lock(&q).drain();
+    crate::sim::calls::lock(&q).finish(
+        work[0].0,
+        Err(RpcError::new(REFUSED, "no structure BSP is loaded and active")),
+    );
+    assert_eq!(a.poll(&g), Some(Err("no structure BSP is loaded and active".into())));
+}

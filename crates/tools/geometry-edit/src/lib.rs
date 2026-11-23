@@ -36,6 +36,8 @@ mod write;
 
 /// The kernel the session edits with: `MeshOp` is the API's op value.
 pub use mesh_edit;
+/// The level collision compiler: `Polygon` is [`level_collision`]'s solid.
+pub use collision_build;
 pub use session::{
     Check, Drawn, Error, GeometrySession, OpenInfo, Patches, Preview, RAW_ALIGN, RawAppend,
     RawWrite, RegionWrite, WriteClass,

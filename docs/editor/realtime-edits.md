@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, and the editor's send, `play/collision_sync.rs`; no BSP activation is installed and its live check has not run) are built, and what they build on is cited as **Code**.
-Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs`, `crates/apps/studio/src/play/objects/drive/placements.rs`, `crates/extensions/agent/src/hot/collision.rs`, `crates/extensions/agent/src/debug_views/debug_static.rs` and `crates/apps/studio/src/play/collision_sync.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`), R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) and R7 (`edit.collision.stage` and `.commit`, `crates/extensions/agent/src/hot/collision.rs`, the structure activation `sim::calls::Call::ReactivateStructure`, and the editor's send, `play/collision_sync.rs`, fed by the Modeling tool's collision box; its live check has not run) are built, and what they build on is cited as **Code**.
+Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs`, `crates/apps/studio/src/play/objects/drive/placements.rs`, `crates/extensions/agent/src/hot/collision.rs`, `crates/extensions/agent/src/debug_views/debug_static.rs`, `crates/live/bots/src/autonav.rs` (`collision_edited`), `crates/apps/studio/src/play/collision_sync.rs` and `crates/apps/studio/src/app/modeling.rs` (`ModelAction::AddCollisionBox`); planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -292,31 +292,55 @@ the next activation, and the old extents stay allocated until then.
 
 | Mode | When | Activation | Shows |
 |---|---|---|---|
-| `append` | solids added by `collision_build::merge` (`geometry_edit::level_collision::LevelEdit::stage` gives the blocks, the per-leaf table and the MOPP, `collision_build::level::LevelStage`): every existing plane, surface and leaf keeps its index | none; or, with `activate: true`, the switch below | rays next tick; Havok bodies after an activation |
-| `rebuild` | surfaces moved or deleted: indices change | always: a BSP switch to the active BSP through `BSP_SWITCH` (`scenario_switch_structure_bsp`), which rebuilds the Havok structure, re-creates the placed objects and fires the Rust observers | after a hitch of one BSP switch; players and their state stay, as across a campaign switch |
+| `append` | solids added by `collision_build::merge` (`geometry_edit::level_collision::LevelEdit::stage` gives the blocks, the per-leaf table and the MOPP, `collision_build::level::LevelStage`): every existing plane, surface and leaf keeps its index | none; or, with `activate: true`, the structure activation below | rays next tick; Havok bodies after an activation |
+| `rebuild` | surfaces moved or deleted: indices change | always: the structure activation below, which rebuilds the Havok world over the structure and finds every object's location again | after a hitch of one activation; players and their state stay, as across a campaign switch |
 
 The editor sends `append` unless an indexed block shrinks, and asks for
 `activate: true` whenever the stage's reply says the game has an
 activation, so Havok bodies match the collision the rays see. Each
-activated commit costs one BSP-switch hitch; the editor commits once per
-edit it sends, not per mouse event. The activation is a seam the game
-installs (`hot::collision::Activation`, `Agent::set_collision_activation`);
-the game glue installs none yet, because `BSP_SWITCH`'s calling
-convention is not known (**S**). Until it does, `activate` and `rebuild`
+activated commit costs one activation's hitch; the editor commits once
+per edit it sends, not per mouse event.
+
+The activation is a seam the game installs (`hot::collision::Activation`,
+`Agent::set_collision_activation`). `BSP_SWITCH` (`0x11c1b0`, stdcall
+`(bsp, unload)`, AL the result, `ret 8`; **E**, `h2 disasm 0x11c1b0`)
+cannot be asked for the active BSP: when the BSP asked for is both the
+loaded one (`0x4686c4`) and the active one (game globals `+2`) it returns
+at once. Its second half can: `STRUCTURE_BSP_DEACTIVATE` (`0x137da0`) runs
+every game system's dispose-from-old-structure-BSP callback (the lifecycle
+table's column 5, last to first) and sets the active BSP to -1, and
+`STRUCTURE_BSP_ACTIVATE` (`0x137d40`) sets it to the loaded BSP again and
+runs every initialize-for-new-structure-BSP callback (column 4): physics
+builds its Havok world over the structure (`0x1c2690`), objects find
+their locations again (`0xb6bb0`). Both are `fn() ret 0`. The game glue
+installs `hot::collision::QueuedActivation` (`hot_glue::install_collision_activation`),
+which queues `sim::calls::Call::ReactivateStructure` on the agent's guest
+calls: at the start of the next tick, refused unless a structure is loaded
+and active, the pair runs and the active index is read back. The BSP's
+tag data is not loaded again (`0x122b40` is skipped), so the committed
+pairs stay; the `BSP_SWITCH` observers do not fire. A game without the
+agent's guest calls has no activation, and there `activate` and `rebuild`
 are refused and bodies keep the old shape until the next BSP switch.
 
 What follows the commit without more work (**Code**):
 `sim_collision`'s page watches over the header, the eight blocks and the
 leaf table start a new generation when a block is repointed (test
 `a_warm_point_walk_observes_aliased_edits_and_relocated_planes`,
-`crates/rewrites/engine/src/sim_collision/sources.rs`); the `BSP_SWITCH`
-observers invalidate the collision world and reload the native world.
-What the commit does itself: it hands the new BSP to the debug views
-(`debug_views::CollisionEdits`), whose static cache replaces the
-structure's lines on its next refresh (`StaticViews::replace_structure`,
-`debug_static.rs`). It does not mark the bots' `los::Walls` stale, which
-are built offline per map and BSP ([bots.md](../game/bots.md)): bots see
-the old walls until the map reloads.
+`crates/rewrites/engine/src/sim_collision/sources.rs`), so the activation
+needs none of the `BSP_SWITCH` observers. What the commit does itself:
+it hands the new BSP to the debug views (`debug_views::CollisionEdits`),
+whose static cache replaces the structure's lines on its next refresh
+(`StaticViews::replace_structure`, `debug_static.rs`), and tells the
+listeners `Agent::on_structure_collision` adds (after the activation,
+when it asks for one). The game glue's listener marks the bots'
+`los::Walls` stale when the structure is the active one
+(`[0x4e0348]`): `bots::autonav::collision_edited` rebuilds them from the
+committed BSP on a thread of their own (`bots::cache::walls_of`, every
+surface's ring fanned, the glass) and publishes them beside the same nav
+mesh and places for the same map load. The new walls have no visibility
+grid, so line of sight walks the cells until the map loads again, and the
+nav mesh, built offline per map and BSP ([bots.md](../game/bots.md)),
+keeps the old shape.
 
 What holds an index across ticks and so decides `append` against
 `rebuild`: each object's location (leaf, cluster, BSP;
@@ -508,8 +532,12 @@ Plain integers keep `render-bridge` free of the agent's types.
   batch and no raw plan is waiting. A refusal holds the row **After
   reload** with the game's reason, and a `MISMATCH` marks it `conflict`;
   sending again after a mismatch commits against the pairs the game said
-  it holds. Nothing in the Modeling tool sets a level collision edit yet
-  ([modeling.md](modeling.md)).
+  it holds. The Modeling tool's collision box sets the edit
+  (`ModelAction::AddCollisionBox`: the section's Add collision box, the
+  editor API's `geometry.collision.add_box`; each box goes onto the ones
+  before, from the file's collision), and `ModelAction::ClearCollision`
+  (`geometry.collision.clear`) drops it, which stages the file's blocks
+  again ([modeling.md](modeling.md)).
 - `mirror.pending` and `mirror.apply` ([agent-api.md](agent-api.md)) list
   and send these with `doc` `geometry`, `bitmaps` and `collision`.
 
@@ -524,8 +552,8 @@ Plain integers keep `render-bridge` free of the agent's types.
 | Add or remove a placement | `world.placement.edit` | next tick | reload for the shapes creation refuses |
 | Add a spawn point, netgame equipment | `world.placement.edit` | next spawn | |
 | Netgame flag | `world.placement.edit` | next game | |
-| Add a solid to level collision | stage, commit `append` with activation | rays and bodies after one BSP switch, on every commit | reload if the arena is full |
-| Move or delete level collision | commit `rebuild` | after one BSP switch | reload on retail maps |
+| Add a solid to level collision | stage, commit `append` with activation | rays and bodies after one structure activation, on every commit | reload if the arena is full |
+| Move or delete level collision | commit `rebuild` | after one structure activation | reload on retail maps |
 | `coll` BSP | stage, commit | bullets next tick, bodies on respawn | |
 | `phmo` primitive | `writes` | on respawn | |
 | Paint pixels, same size and format | `raw` | next frame | |
@@ -598,7 +626,7 @@ methods in its own section of the runtime agent API page.
 | **R4** Edit arena and block moves (built; live check not run) | the arena, its allocator, `moves`, `edit.arena`; arena capacity for R3's growth | `crates/extensions/hot-tags/src/arena.rs` (new) and the batch, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, the capacity call in `calls/placement.rs` | allocator: first fit, free, coalesce, full; a move then a path read resolves through the new address; revert puts the pair back and frees; an `at` write inside a moved block is admitted | `edit.arena` on a loaded multiplayer map records the free size (a note in `docs/editor/notes/`); a ninth scenery entry on a block of eight appears and survives a BSP switch | R1, R3 |
 | **R5** Editor: geometry and pixels live (built) | `play/raw_sync.rs`; the effect chips; Pending rows; dirty spans from `GeometrySession`; the stroke push | `crates/apps/studio/src/play/raw_sync.rs` (new), `crates/apps/studio/src/play/tag_sync.rs`, `crates/apps/studio/src/play.rs`, `crates/tools/geometry-edit` | fake game: a `mesh.transform` is one batch with `raw` and bounds; undo sends the old bytes; View mode sends nothing; a mismatch leaves the batch pending; a grown edit sends append, `writes`, `evict` in that order; a stroke sends its tiles (`crates/apps/studio/src/play/raw_sync/tests.rs`; each patch's owner and `was` in `crates/tools/geometry-edit/src/session_tests.rs`) | `mesh.transform` through the editor's API on a paired game, `render.frame` with `snap` shows the moved faces; `mirror.pending` is empty after | R1; R2 for the native picture; modeling slices 5 to 7 for pixels and grown sections |
 | **R6** Editor: placements live | add, remove and their undo as `world.placement.edit`; the layout-revision rule; Pending text | `crates/apps/studio/src/play/objects.rs`, `crates/apps/studio/src/play/objects`, `crates/apps/studio/src/play/sync.rs` | fake game: add, remove, undo and redo each send one transaction and leave `mirror.pending` empty; a refused shape lands under Reload with the game's reason; a lost reply does not send twice | add and delete a crate in the editor and watch `mirror.objects` follow within a second | R3 |
-| **R7** Collision live (built; activation not installed, live check not run) | `edit.collision.stage` and `.commit`, both modes; overlay cache drop; the editor's send | `crates/extensions/agent/src/hot/collision.rs` (new), `crates/extensions/agent-proto/src/hot.rs`, `crates/apps/studio/src/play/collision_sync.rs` (new) | fake game: a commit repoints all pairs at one boundary or none; `sim_collision` over synthetic memory answers from the new blocks after it; freed extents return to the arena; `rebuild` is refused on a map with pathfinding the stage did not replace | `debug.view collision_geometry` shows the new solid after an `append` commit; after `activate: true`, `sim.state.set` puts a player above it and `sim.expect` finds the player resting on its top | R4; modeling slices 8 and 11 |
+| **R7** Collision live (built; live check not run) | `edit.collision.stage` and `.commit`, both modes; overlay cache drop; the structure activation; the bots' walls; the editor's send and its collision box | `crates/extensions/agent/src/hot/collision.rs` (new), `crates/extensions/agent/src/sim/calls.rs` (`Call::ReactivateStructure`), `crates/extensions/agent-proto/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/live/bots/src/autonav.rs`, `crates/apps/studio/src/play/collision_sync.rs` (new), `crates/apps/studio/src/app/modeling.rs` | fake game: a commit repoints all pairs at one boundary or none; `sim_collision` over synthetic memory answers from the new blocks after it; freed extents return to the arena; `rebuild` is refused on a map with pathfinding the stage did not replace; the activation is one queued deactivate and activate pair, refused with no loaded and active structure; listeners hear each structure commit once; walls fan every surface; boxes chain, save and clear as Modeling actions | `debug.view collision_geometry` shows the new solid after an `append` commit; after `activate: true`, `sim.state.set` puts a player above it and `sim.expect` finds the player resting on its top | R4; modeling slices 8 and 11 |
 
 R1, R2 and R3 start together, beside modeling.md's slices 5 to 8, which
 own `bitmap-edit`, `assets`' encoder, `map`'s raw writers and
@@ -666,10 +694,11 @@ which is why R4 follows R1.
   list and always with `was`; whether a BSP the game has not activated is
   absent from that list is not checked. R5's live check on a map with two
   BSPs verifies it.
-- **S**: a BSP switch to the active BSP runs the whole switch rather than
-  returning early, and Havok's structure shape reads the collision blocks
-  through the pairs and not through addresses it kept. Reading
-  `scenario_switch_structure_bsp` and the new-BSP callback verifies both.
+- **S**: physics' initialize-for-new-structure-BSP callback (`0x1c2690`)
+  builds the structure's Havok shape from the collision pairs and the
+  MOPP pair as they are when it runs, and a deactivate and activate pair
+  mid-game keeps players, vehicles and placed objects as a campaign
+  switch does. R7's live check verifies both.
 - **S**: writing the placement index into the placement data yields a
   linked object equal to a loaded one for the supported shapes. R3's
   comparison with `map.reload {}` verifies it.
@@ -684,7 +713,8 @@ which is why R4 follows R1.
 - Havok contacts on appended collision: resting bodies, vehicles, a biped
   standing where a solid appears, and how odd the gap between rays and
   bodies looks before the activation.
-- Bots after a collision change, with stale `los::Walls`.
+- Bots after a collision change: their walls follow it, their nav mesh
+  does not.
 - A System Link host with clients after local geometry, pixel and
   collision edits.
 

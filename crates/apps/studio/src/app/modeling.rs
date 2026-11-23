@@ -6,7 +6,7 @@ use super::App;
 use geometry_edit::mesh_edit::MeshOp;
 use geometry_edit::{GeometrySession, Preview, Target, TargetInfo};
 use scenario_edit::geometry::RawFiles;
-use scenario_edit::{BspPatch, GeometryChanges, RawPatch};
+use scenario_edit::{BspPatch, GeometryChanges, GeometryGrown, RawPatch};
 
 /// Why a save with geometry edits is refused while the session switch is
 /// off.
@@ -48,6 +48,19 @@ pub enum ModelAction {
     Seal,
     Undo,
     Redo,
+    /// Add a closed box solid inside `[lo, hi]` to structure `structure`'s
+    /// level collision, onto the solids added before
+    /// (`geometry_edit::level_collision::LevelEdit::add_box`). A paired
+    /// game gets it live (`play::collision_sync`); a save writes it.
+    AddCollisionBox {
+        structure: map::TagId,
+        lo: [f32; 3],
+        hi: [f32; 3],
+        material: u16,
+    },
+    /// Drop every solid added to `structure`'s level collision: the file's
+    /// collision again, in the save and in a paired game.
+    ClearCollision { structure: map::TagId },
 }
 
 impl App {
@@ -121,11 +134,49 @@ impl App {
                 self.info(msg);
                 Ok(())
             }
+            ModelAction::AddCollisionBox {
+                structure,
+                lo,
+                hi,
+                material,
+            } => self.add_collision_box(structure, lo, hi, material),
+            ModelAction::ClearCollision { structure } => {
+                let had = self.modeling.level_collision.contains_key(&structure);
+                self.set_level_collision(structure, None);
+                self.info(if had {
+                    format!("{:#010x}: level collision as the file holds it", structure.0)
+                } else {
+                    format!("{:#010x}: no level collision edit to clear", structure.0)
+                });
+                Ok(())
+            }
         };
         if let Err(e) = r {
             self.error(format!("modeling: {e}"));
         }
         self.push_geometry_changes();
+    }
+
+    /// [`ModelAction::AddCollisionBox`]: the structure's edit with the box
+    /// added, its level read from the open map the first time.
+    fn add_collision_box(&mut self, structure: map::TagId, lo: [f32; 3], hi: [f32; 3], material: u16) -> Result<(), String> {
+        let edit = match self.modeling.level_collision.get(&structure) {
+            Some(edit) => edit.add_box(lo, hi, material),
+            None => {
+                let source = self.session.source().cloned().ok_or("no map is open")?;
+                let mut map = source.open().map_err(|e| e.to_string())?;
+                geometry_edit::level_collision::read(&mut map, structure).and_then(|s| s.add_box(lo, hi, material))
+            }
+        }
+        .map_err(|e| e.to_string())?;
+        let surfaces = edit.added.level.bsp.surfaces.len();
+        let was = edit.source.level.bsp.surfaces.len();
+        self.set_level_collision(structure, Some(edit));
+        self.info(format!(
+            "{:#010x}: added a collision box ({} surfaces, {was} in the file)",
+            structure.0, surfaces
+        ));
+        Ok(())
     }
 
     fn open_model_target(&mut self, t: Target) -> Result<(), String> {
@@ -176,10 +227,13 @@ impl App {
         self.geometry_changes().refusal
     }
 
-    /// What [`Self::push_geometry_changes`] hands the save.
+    /// What [`Self::push_geometry_changes`] hands the save: the session's
+    /// writes and each level collision edit's (patches in place, grown
+    /// blocks in the metadata).
     fn geometry_changes(&self) -> GeometryChanges {
         let g = &self.modeling.session;
         let mut c = GeometryChanges::default();
+        let edited = g.has_changes() || !self.modeling.level_collision.is_empty();
         if g.has_changes() {
             match g.changes() {
                 Ok(p) => {
@@ -218,9 +272,29 @@ impl App {
                 }
                 Err(e) => c.refusal = Some(e.to_string()),
             }
-            if c.refusal.is_none() && !self.modeling.allow_unverified {
-                c.refusal = Some(UNVERIFIED_REFUSAL.to_owned());
+        }
+        for edit in self.modeling.level_collision.values() {
+            let w = edit.writes();
+            for p in w.patches {
+                match p.space {
+                    None => c.patches.push((p.address, p.bytes)),
+                    Some(space) => c.bsp_patches.push(BspPatch {
+                        space,
+                        address: p.address,
+                        bytes: p.bytes,
+                    }),
+                }
             }
+            c.grown.extend(w.grown.into_iter().map(|g| GeometryGrown {
+                pair_space: g.pair_space,
+                pair: g.pair,
+                count: g.count,
+                bytes: g.bytes,
+                align: g.align,
+            }));
+        }
+        if edited && c.refusal.is_none() && !self.modeling.allow_unverified {
+            c.refusal = Some(UNVERIFIED_REFUSAL.to_owned());
         }
         c
     }

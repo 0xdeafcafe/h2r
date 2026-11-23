@@ -5334,7 +5334,12 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      from each, jumps at a jump, and when no progress is made for 30 frames
      (1 s), jumps once, then asks for a new path.
    - **Walls** (`los::Walls`): every collision surface as triangles on a
-     2 m grid, for line of sight (stage 3).
+     2 m grid, for line of sight (stage 3). A live collision commit on the
+     active structure (the editor's `edit.collision.commit`) rebuilds them
+     from the committed BSP for the running map
+     (`autonav::collision_edited`, `cache::walls_of`), with no visibility
+     grid, and leaves the nav mesh as it was
+     ([realtime-edits.md](../editor/realtime-edits.md), "Collision").
    - **Visibility grid** (`bots::vis`, `<map>.<bsp>.vis`): which cells of
      walkable space never see each other, so `Walls::clear` skips the ray
      (§3.1, "Visibility grid"). Built and written by the same worker,

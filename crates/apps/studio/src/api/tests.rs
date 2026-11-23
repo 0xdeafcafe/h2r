@@ -202,6 +202,11 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, bytes).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
+        m::GEOMETRY_COLLISION_ADD_BOX | m::GEOMETRY_COLLISION_CLEAR => {
+            let map = t.path("level.map");
+            std::fs::write(&map, level_collision_map()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::GEOMETRY_LIST
         | m::GEOMETRY_OPEN
         | m::GEOMETRY_CLOSE
@@ -4727,4 +4732,127 @@ fn ui_pick_names_a_retail_screens_sample_variant() {
         code_of(api.call(&mut app, m::UI_PICK, json!({"screen": "kit.example", "sample": "switch-to"}))),
         code::INVALID_PARAMS
     );
+}
+
+/// The invented map with a compiled box room, open inside `[0, 8] x
+/// [0, 8] x [0, 4]`, as structure e1000004's level collision: its eight
+/// blocks, a per-leaf block of one element a leaf and two collision
+/// materials, no MOPP. `geometry_edit::level_collision::read` reads it.
+fn level_collision_map() -> Vec<u8> {
+    use geometry_edit::collision_build;
+    use geometry_edit::level_collision::{LEAVES_FIELD, MATERIALS_FIELD, box_solid};
+    use scenario_edit::fixture::{META, META_FILE, SBSP, SBSP_COLLISION_AT, SBSP_SIZE};
+    const LEAVES_AT: usize = 0x1a00;
+    let mut room = box_solid([0.0; 3], [8.0, 8.0, 4.0], 1);
+    for p in &mut room {
+        p.points.reverse();
+    }
+    let bsp = collision_build::build(&room).unwrap().bsp;
+    let mut b = fixture::fixture_with_collision();
+    let root = META_FILE + SBSP;
+    let blocks = META + (SBSP + SBSP_COLLISION_AT) as u32;
+    let encoded = bsp.encode_blocks(blocks);
+    assert!(SBSP_COLLISION_AT + encoded.len() <= SBSP_SIZE);
+    let at = root + SBSP_COLLISION_AT;
+    b[at..root + SBSP_SIZE].fill(0);
+    b[at..at + encoded.len()].copy_from_slice(&encoded);
+    fixture::put(&mut b, root + MATERIALS_FIELD, 2);
+    fixture::put(&mut b, root + MATERIALS_FIELD + 4, META + 0x1900);
+    let leaves = vec![0u8; 8 * bsp.leaves.len()];
+    assert!(LEAVES_AT + leaves.len() <= 0x2000);
+    b[META_FILE + LEAVES_AT..META_FILE + LEAVES_AT + leaves.len()].copy_from_slice(&leaves);
+    fixture::put(&mut b, root + LEAVES_FIELD, bsp.leaves.len() as u32);
+    fixture::put(&mut b, root + LEAVES_FIELD + 4, META + LEAVES_AT as u32);
+    fixture::metadata_last(b)
+}
+
+#[test]
+fn collision_boxes_chain_save_and_clear_as_modeling_actions() {
+    let t = Temp::new("geometry-collision");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let map = t.path("level.map");
+    std::fs::write(&map, level_collision_map()).unwrap();
+    call(&mut api, &mut app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+    let structure = json!("e1000004");
+
+    let one = call(
+        &mut api,
+        &mut app,
+        m::GEOMETRY_COLLISION_ADD_BOX,
+        json!({"structure": structure, "lo": [2, 2, 1], "hi": [3, 3, 2]}),
+    );
+    assert_eq!(one["structure"], "0xe1000004");
+    let file = one["file_surfaces"].as_u64().unwrap();
+    assert!(one["surfaces"].as_u64().unwrap() > file, "{one}");
+    // The edit is what Play sends (`Modeling::level_collision`).
+    let tag = map::TagId(0xe100_0004);
+    assert_eq!(app.modeling.level_collision.len(), 1);
+    let rev = app.modeling.level_collision_rev;
+
+    // A second box goes onto the first, from the same file.
+    let two = call(
+        &mut api,
+        &mut app,
+        m::GEOMETRY_COLLISION_ADD_BOX,
+        json!({"structure": structure, "lo": [5, 5, 1], "hi": [6, 6, 2], "material": 1}),
+    );
+    assert!(two["surfaces"].as_u64().unwrap() > one["surfaces"].as_u64().unwrap(), "{two}");
+    assert_eq!(two["file_surfaces"].as_u64().unwrap(), file);
+    assert!(app.modeling.level_collision_rev > rev);
+    let edit = app.modeling.level_collision[&tag].clone();
+
+    // A box with no volume, or one outside the room, changes nothing.
+    for bad in [
+        json!({"structure": structure, "lo": [2, 2, 1], "hi": [2, 3, 2]}),
+        json!({"structure": structure, "lo": [20, 20, 1], "hi": [21, 21, 2]}),
+    ] {
+        assert!(api.call(&mut app, m::GEOMETRY_COLLISION_ADD_BOX, bad.clone()).is_err(), "{bad}");
+        assert_eq!(app.modeling.level_collision[&tag], edit);
+    }
+    // Not a structure: refused.
+    assert!(
+        api.call(
+            &mut app,
+            m::GEOMETRY_COLLISION_ADD_BOX,
+            json!({"structure": "e1000001", "lo": [2, 2, 1], "hi": [3, 3, 2]}),
+        )
+        .is_err()
+    );
+
+    // Clear: the file's collision again, and nothing for the save.
+    let cleared = call(&mut api, &mut app, m::GEOMETRY_COLLISION_CLEAR, json!({"structure": structure}));
+    assert_eq!(cleared["cleared"], true);
+    assert!(app.modeling.level_collision.is_empty());
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null)["save_refusal"], Value::Null);
+    let again = call(&mut api, &mut app, m::GEOMETRY_COLLISION_CLEAR, json!({"structure": structure}));
+    assert_eq!(again["cleared"], false);
+
+    // The same two boxes again: the same level.
+    for (lo, hi, material) in [([2, 2, 1], [3, 3, 2], 0), ([5, 5, 1], [6, 6, 2], 1)] {
+        call(
+            &mut api,
+            &mut app,
+            m::GEOMETRY_COLLISION_ADD_BOX,
+            json!({"structure": structure, "lo": lo, "hi": hi, "material": material}),
+        );
+    }
+    assert_eq!(app.modeling.level_collision[&tag], edit);
+
+    // The save needs the unverified switch, then writes both boxes.
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["save_refusal"], crate::app::modeling::UNVERIFIED_REFUSAL);
+    app.dispatch(Action::SetAllowUnverifiedGeometry(true));
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null)["save_refusal"], Value::Null);
+    let out = t.path("boxes.map");
+    call(
+        &mut api,
+        &mut app,
+        m::DOC_SAVE_AS,
+        json!({"doc": "map", "path": out.display().to_string()}),
+    );
+    let mut saved = ::map::Map::from_reader(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    saved.validate_checksum().unwrap();
+    let back = geometry_edit::level_collision::read(&mut saved, tag).unwrap();
+    assert_eq!(back.level, edit.added.level);
 }

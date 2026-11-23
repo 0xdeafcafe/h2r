@@ -1314,6 +1314,9 @@ fn run_configured(
             // world.placement.edit grows blocks into edit.batch's arena.
             if let Some(calls) = sim.calls() {
                 agent::sim::calls::lock(&calls).set_arena(arena);
+                // edit.collision.commit's BSP activation runs on the same
+                // guest calls (hot_glue.rs).
+                hot_glue::install_collision_activation(&a.agent, calls);
             }
         }
         // world.* results name their tags the same way.
