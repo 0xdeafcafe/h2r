@@ -66,7 +66,9 @@ fn get(input: &mut &[u8]) -> Result<u64> {
 }
 
 fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8]> {
-    let (head, rest) = input.split_at_checked(len).context("truncated tape batch")?;
+    let (head, rest) = input
+        .split_at_checked(len)
+        .context("truncated tape batch")?;
     *input = rest;
     Ok(head)
 }
@@ -145,11 +147,17 @@ pub fn encode_batch(calls: &[Call]) -> Result<Vec<u8>> {
             names.push(&call.op);
         }
     }
-    ensure!(names.len() as u64 <= MAX_OPS, "too many operations in a tape batch");
+    ensure!(
+        names.len() as u64 <= MAX_OPS,
+        "too many operations in a tape batch"
+    );
     let mut out = vec![MAGIC];
     put(&mut out, names.len() as u64);
     for name in &names {
-        ensure!(name.len() as u64 <= MAX_NAME, "tape operation name too long");
+        ensure!(
+            name.len() as u64 <= MAX_NAME,
+            "tape operation name too long"
+        );
         put(&mut out, name.len() as u64);
         out.extend_from_slice(name.as_bytes());
     }
@@ -214,7 +222,10 @@ pub fn decode_batch(mut input: &[u8]) -> Result<Vec<Call>> {
     let mut previous = 0u64;
     for _ in 0..count {
         let code = usize::try_from(get(input)?)?;
-        let op = names.get(code).context("unknown tape operation code")?.clone();
+        let op = names
+            .get(code)
+            .context("unknown tape operation code")?
+            .clone();
         let thread = u32::try_from(get(input)?)?;
         previous = previous.wrapping_add(unzigzag(get(input)?) as u64);
         let word = get(input)?;
@@ -241,11 +252,20 @@ pub fn decode_batch(mut input: &[u8]) -> Result<Vec<Call>> {
                     ensure!(len <= MAX_OUTPUT, "tape output too large");
                     take(input, len as usize)?.to_vec()
                 }
-                REPEAT => last.get(&key).context("tape repeat has no earlier output")?.clone(),
+                REPEAT => last
+                    .get(&key)
+                    .context("tape repeat has no earlier output")?
+                    .clone(),
                 DELTA => {
-                    let mut bytes = last.get(&key).context("tape delta has no earlier output")?.clone();
+                    let mut bytes = last
+                        .get(&key)
+                        .context("tape delta has no earlier output")?
+                        .clone();
                     let changed = get(input)?;
-                    ensure!(changed <= bytes.len() as u64, "tape delta changes too many bytes");
+                    ensure!(
+                        changed <= bytes.len() as u64,
+                        "tape delta changes too many bytes"
+                    );
                     let mut at = 0usize;
                     for _ in 0..changed {
                         at = at
@@ -261,7 +281,14 @@ pub fn decode_batch(mut input: &[u8]) -> Result<Vec<Call>> {
             last.insert(key, bytes.clone());
             outputs.push(bytes);
         }
-        calls.push(Call { index: previous, op, args, thread, result, outputs });
+        calls.push(Call {
+            index: previous,
+            op,
+            args,
+            thread,
+            result,
+            outputs,
+        });
     }
     ensure!(input.is_empty(), "trailing bytes in a tape batch");
     Ok(calls)

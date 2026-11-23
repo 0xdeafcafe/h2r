@@ -689,16 +689,17 @@ fn dead_tape(path: &Path) {
             .unwrap();
         }
         if n == 200 {
-            tape.chunk(
-                film::NETR,
-                &vec![Call {
+            tape.chunk_bytes(
+                film::tape::TAPE,
+                &film::tape::encode_batch(&[Call {
                     index: 0,
                     op: "Recv".into(),
                     thread: 7,
                     args: vec![],
                     result: Ok(1),
                     outputs: vec![],
-                }],
+                }])
+                .unwrap(),
             )
             .unwrap();
             tape.chunk(

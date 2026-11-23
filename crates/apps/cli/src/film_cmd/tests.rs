@@ -267,3 +267,67 @@ fn film_stat_counts_tape_batches_bytes_and_operations() {
     assert!(report.contains("PDEV calls=0 inflated="), "{report}");
     assert!(!report.contains("outputs"), "{report}");
 }
+
+/// 40 ticks of one seat: it turns 0.25 more every tick and presses a
+/// button on tick 11 and holds it.
+fn actions_film() -> Vec<u8> {
+    let mut out = film::Writer::new(Cursor::new(Vec::new()), &header(2, 40)).unwrap();
+    let mut track = TrackWriter::default();
+    for tick in 1..=40u64 {
+        let mut action = [0u8; 92];
+        action[4..8].copy_from_slice(&(tick as f32 * 0.25).to_bits().to_le_bytes());
+        if tick >= 11 {
+            action[0] = 4;
+        }
+        track
+            .push(
+                &mut out,
+                Tick {
+                    tick,
+                    inputs: vec![film::blam::SeatInput { seat: 0, pad: None, action: Some(action) }],
+                    events: vec![],
+                    closing_events: vec![],
+                    post_hash: None,
+                    forge: vec![],
+                },
+            )
+            .unwrap();
+    }
+    let descriptor = MatchHeader {
+        map: film::blam::MapIdentity {
+            name: "example".into(),
+            origin: "mod".into(),
+            sha256: "a".repeat(64),
+            ..Default::default()
+        },
+        variant_blob: vec![0],
+        ..Default::default()
+    };
+    track.finish(&mut out, &descriptor, &Summary::default()).unwrap();
+    out.finish().unwrap().into_inner()
+}
+
+#[test]
+fn film_stat_fields_counts_changes_and_prices_each_predictor() {
+    let bytes = actions_film();
+    let films = || vec![film::Reader::new(Cursor::new(bytes.clone())).unwrap()];
+    let report = fields(films()).unwrap();
+    assert!(report.contains("films: 1\nticks: 40\n"), "{report}");
+    assert!(
+        report.contains("FIELD yaw words=1 seat_ticks=40 changed=40 (100.0%) seat_chunks=1 stored_chunks=1 "),
+        "{report}"
+    );
+    assert!(
+        report.contains("FIELD buttons words=1 seat_ticks=40 changed=1 (2.5%) seat_chunks=1 stored_chunks=1 "),
+        "{report}"
+    );
+    // A field that never leaves its start is stored nowhere.
+    assert!(
+        report.contains("FIELD tail words=1 seat_ticks=40 changed=0 (0.0%) seat_chunks=1 stored_chunks=0 "),
+        "{report}"
+    );
+    // Two films are one report.
+    let both = fields([films(), films()].concat()).unwrap();
+    assert!(both.contains("films: 2\nticks: 80\n"), "{both}");
+    assert!(both.contains("FIELD yaw words=1 seat_ticks=80 changed=80 "), "{both}");
+}

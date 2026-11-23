@@ -22,18 +22,44 @@ fn round_trip(calls: &[Call]) -> usize {
 fn every_shape_of_call_round_trips() {
     round_trip(&[
         call(0, "Socket", &[], Ok(0), &[]),
-        call(1, "Recv", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], Err(10040), &[b"abcd"]),
-        call(2, "RecvFrom", &[u32::MAX, 0, 1], Ok(u32::MAX), &[b"", &[0; 16], &[1, 2, 3, 4]]),
+        call(
+            1,
+            "Recv",
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            Err(10040),
+            &[b"abcd"],
+        ),
+        call(
+            2,
+            "RecvFrom",
+            &[u32::MAX, 0, 1],
+            Ok(u32::MAX),
+            &[b"", &[0; 16], &[1, 2, 3, 4]],
+        ),
         call(7, "XInputGetState", &[0x1234], Ok(0), &[&[9; 22]]),
         // The same handle and slot: a repeat, a delta, a change of length, a delta again.
         call(8, "XInputGetState", &[0x1234], Ok(0), &[&[9; 22]]),
-        call(9, "XInputGetState", &[0x1234], Ok(0), &[&[9, 9, 9, 9, 8, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7]]),
+        call(
+            9,
+            "XInputGetState",
+            &[0x1234],
+            Ok(0),
+            &[&[
+                9, 9, 9, 9, 8, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7,
+            ]],
+        ),
         call(10, "XInputGetState", &[0x1234], Ok(0), &[&[1; 3]]),
         call(11, "XInputGetState", &[0x1234], Ok(0), &[&[1, 2, 1]]),
         // Another handle keeps its own last packet.
         call(12, "XInputGetState", &[0x9999], Ok(0), &[&[9; 22]]),
         // Calls out of order and a call index past 32 bits.
-        call(5, "Select", &[0, 1, 0, 0, 0], Ok(1), &[&[1, 0, 0, 0, 3, 0, 0, 0]]),
+        call(
+            5,
+            "Select",
+            &[0, 1, 0, 0, 0],
+            Ok(1),
+            &[&[1, 0, 0, 0, 3, 0, 0, 0]],
+        ),
         call(u64::MAX, "Select", &[0], Err(u32::MAX), &[]),
         call(0, "Random", &[16], Ok(0), &[&[0xff; 16]]),
     ]);
@@ -70,11 +96,23 @@ fn the_binary_stream_is_a_fraction_of_the_json_one_on_a_synthetic_tape() {
         calls.push(call(index, "XInputGetState", &[0x40], Ok(0), &[&packet]));
         index += 1;
         if tick % 3 == 0 {
-            calls.push(call(index, "RecvFrom", &[0x100, 0, 1500, 0, 0, 0], Err(10035), &[]));
+            calls.push(call(
+                index,
+                "RecvFrom",
+                &[0x100, 0, 1500, 0, 0, 0],
+                Err(10035),
+                &[],
+            ));
             index += 1;
         }
         if tick % 10 == 0 {
-            calls.push(call(index, "Select", &[0, 0, 0, 0, 0], Ok(0), &[&[0, 0, 0, 0]]));
+            calls.push(call(
+                index,
+                "Select",
+                &[0, 0, 0, 0, 0],
+                Ok(0),
+                &[&[0, 0, 0, 0]],
+            ));
             index += 1;
         }
     }
@@ -99,7 +137,16 @@ fn a_batch_the_encoder_would_not_write_is_refused() {
     let long = "x".repeat(65);
     assert!(encode_batch(&[call(0, &long, &[], Ok(0), &[])]).is_err());
     assert!(encode_batch(&[call(0, "Op", &[0; 33], Ok(0), &[])]).is_err());
-    assert!(encode_batch(&[call(0, "Op", &[], Ok(0), &[&[], &[], &[], &[], &[], &[], &[], &[], &[]])]).is_err());
+    assert!(
+        encode_batch(&[call(
+            0,
+            "Op",
+            &[],
+            Ok(0),
+            &[&[], &[], &[], &[], &[], &[], &[], &[], &[]]
+        )])
+        .is_err()
+    );
 }
 
 #[test]
@@ -108,7 +155,11 @@ fn a_truncated_or_fuzzed_batch_is_refused_and_never_reads_out_of_bounds() {
         .map(|i| {
             call(
                 i,
-                if i % 2 == 0 { "XInputGetState" } else { "RecvFrom" },
+                if i % 2 == 0 {
+                    "XInputGetState"
+                } else {
+                    "RecvFrom"
+                },
                 &[0x40, i as u32],
                 if i % 7 == 0 { Err(10035) } else { Ok(i as u32) },
                 &[&[(i % 3) as u8; 22], &[0xab; 5]],
