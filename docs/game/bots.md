@@ -5059,7 +5059,7 @@ actions in step 8 separately.
    Mods opens as Content Download did.
 3. OptiMatch lists the eight human playlists and no Clanker one.
 4. Clankermatch lists Rumble Pit, Team Slayer, Team Skirmish, Team Snipers,
-   Big Team Battle, Big Team Heavies, Solo Training and Team Training (the
+   Big Team Battle, BTB Heavies, Solo Training and Team Training (the
    log: `clankermatch: the playlists are the clanker hoppers`; at logon
    `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`).
 5. Pick Rumble Pit: the retail search screen runs for 4 to 20 s

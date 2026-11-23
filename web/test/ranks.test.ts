@@ -91,7 +91,7 @@ describe("the playlist menu", () => {
     expect(menu.filter((p) => p.group === "unranked").map((p) => p.name)).toEqual(["Free for All", "Unranked Teams"]);
     expect(menu.filter((p) => p.group === "clanker").map((p) => p.name)).toEqual([
       "Rumble Pit", "Team Slayer", "Team Skirmish", "Team Snipers", "Big Team Battle",
-      "Big Team Heavies", "Solo Training", "Team Training",
+      "BTB Heavies", "Solo Training", "Team Training",
     ]);
     expect(menu[1]).toMatchObject({ id: "1", size: "2 teams of 3–4", games: ["Team Slayer"] });
     expect(menu[0]).toMatchObject({ id: "0", size: "4–8 players, free for all", games: ["Rumble Slayer", "Oddball", "King of the Hill"] });

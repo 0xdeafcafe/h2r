@@ -30,7 +30,9 @@ async fn the_default_lineup_is_served_until_a_file_is_published() {
     let h = harness().await;
 
     // The game's download: the built-in file, a valid envelope.
-    let got = h.get(FILE).await;
+    // The full rotation; a plain download is the disc-only projection.
+    let full = format!("{FILE}?{}", live_proto::hopper::FULL_HOPPER_QUERY);
+    let got = h.get(&full).await;
     assert_eq!(got.status, StatusCode::OK);
     assert!(got.body.len() <= MAX_FILE);
     let file = HopperFile::parse(&got.body).unwrap();
@@ -44,7 +46,7 @@ async fn the_default_lineup_is_served_until_a_file_is_published() {
         .unwrap()
         .to_string();
     let again = h
-        .call(Method::GET, FILE, &[("if-none-match", etag.clone())], "")
+        .call(Method::GET, &full, &[("if-none-match", etag.clone())], "")
         .await;
     assert_eq!(again.status, StatusCode::NOT_MODIFIED);
 

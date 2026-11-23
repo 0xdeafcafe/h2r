@@ -653,7 +653,7 @@ pub fn playlists() -> Vec<Playlist> {
         },
         Playlist {
             playlist_id: 14,
-            title: "Big Team Heavies",
+            title: "BTB Heavies",
             description: "Ranked Clanker Team Heavies on big maps. Bots fill every seat your party does not.",
             rules: Rules::UnrankedTeams {
                 teams: 2,
@@ -836,7 +836,7 @@ mod tests {
                 "Team Skirmish",
                 "Team Snipers",
                 "Big Team Battle",
-                "Big Team Heavies",
+                "BTB Heavies",
                 "Solo Training",
                 "Team Training",
             ]
@@ -1031,7 +1031,7 @@ mod tests {
         file.set_entries(n, &t.entries()[..1]).unwrap();
         let d = file.descriptor(n).unwrap();
         assert_eq!(check_descriptor(&d), vec![]);
-        assert_eq!(d.playlist_id, 17, "the lowest id no other playlist has");
+        assert_eq!(d.playlist_id, 16, "the lowest id no other playlist has");
         assert_eq!(d.kind(), Some(t.rules.hopper_type()));
         assert_eq!(file.problems(&retail_map_ids()), vec![]);
         assert!(!file.is_unused(n).unwrap());

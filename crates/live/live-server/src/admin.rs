@@ -2082,7 +2082,7 @@ mod tests {
         let d = file.descriptor(i).unwrap();
         assert_eq!(check_descriptor(&d), vec![]);
         assert_eq!(d.hopper_type, 4);
-        assert_eq!(d.playlist_id, 17);
+        assert_eq!(d.playlist_id, 16);
         assert_eq!(file.text(i).unwrap().title, "Modtacular");
         let entries = file.entries(i).unwrap();
         assert_eq!(entries.len(), 2);

@@ -30,7 +30,7 @@ const DEFAULT_LINEUP: Array<[string, string, number, [number, number, number], s
   ["Team Skirmish", "Ranked Clanker Team Skirmish, two against two. Bots fill every seat your party does not.", 3, [2, 1, 2], ["Team Slayer", "Teamball"], true],
   ["Team Snipers", "Ranked Clanker Team Snipers, four against four. Bots fill every seat your party does not.", 3, [2, 1, 4], ["Team Snipers"], true],
   ["Big Team Battle", "Ranked Clanker Big Team Battle on big maps. Bots fill every seat your party does not.", 3, [2, 1, 8], ["Team Slayer", "Classic CTF", "Assault", "Territories"], true],
-  ["Big Team Heavies", "Ranked Clanker Team Heavies on big maps. Bots fill every seat your party does not.", 3, [2, 1, 8], ["Team Heavies"], true],
+  ["BTB Heavies", "Ranked Clanker Team Heavies on big maps. Bots fill every seat your party does not.", 3, [2, 1, 8], ["Team Heavies"], true],
   ["Solo Training", "Unranked Clanker free for all training, up to 8. Bots fill every seat your party does not.", 1, [2, 8, 0], ["Rumble Slayer", "Oddball", "King of the Hill"], true],
   ["Team Training", "Unranked Clanker team training, four against four. Bots fill every seat your party does not.", 3, [2, 1, 4], ["Team Slayer", "Classic CTF", "Team King", "Teamball"], true],
 ];

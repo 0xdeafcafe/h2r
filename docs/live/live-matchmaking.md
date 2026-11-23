@@ -651,7 +651,7 @@ variants in one playlist rather than having a separate Big Team Objective.
 | 10 | Team Skirmish | Clanker, ranked | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer, Teamball |
 | 11 | Team Snipers | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Snipers |
 | 12 | Big Team Battle | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Slayer, Classic CTF, Assault, Territories |
-| 13 | Big Team Heavies | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Heavies |
+| 13 | BTB Heavies | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Heavies |
 | 14 | Solo Training | Clanker, unranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
 | 15 | Team Training | Clanker, unranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer, Classic CTF, Team King, Teamball |
 
