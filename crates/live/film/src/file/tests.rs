@@ -219,6 +219,7 @@ fn container(path: &Path, ticks: u64) {
                     closing_events: vec![],
                     post_hash: (tick % 30 == 0).then_some(tick * 1_000_003),
                     forge: vec![],
+                    firefight: vec![],
                 },
             )
             .unwrap();

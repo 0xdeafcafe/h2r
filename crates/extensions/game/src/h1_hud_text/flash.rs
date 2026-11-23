@@ -10,6 +10,13 @@ const ENABLED: u32 = 0x1384;
 
 pub(super) use hud_kit_core::flash::colour as flash_colour;
 
+/// Seconds since `start` on the game clock.
+pub(super) fn elapsed(mem: &dyn GuestMemory, start: u32) -> Result<f32, MemFault> {
+    let time = mem.u32(GAME_TIME)?;
+    let ticks = mem.u32(time + 8)?.wrapping_sub(start) as i32;
+    Ok(ticks.max(0) as f32 * mem.f32(time + 4)?)
+}
+
 pub(super) fn help_colour(mem: &dyn GuestMemory, tag: u32, hud: u32) -> Result<[f32; 4], MemFault> {
     let mut record = [0; hud_kit_core::flash::RECORD_LEN];
     mem.read(tag + h1_contract::hud::HELP_FLASH, &mut record)?;
