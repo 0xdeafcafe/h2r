@@ -87,6 +87,7 @@ connection to hold `session.claim`.
 | `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.lobby.tabs`, `ui.browser.filters`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
+| `audio.meter` | read | [`audio.meter`](#audiometer) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
@@ -2773,6 +2774,43 @@ Sample the main menu before and after an audible change. Compare present
 numbers in `transitions` and `menu_changes` with the output counters and
 their last-change times to identify the selection change, idle-triggered
 restart or gap at the device.
+
+### `audio.meter`
+
+The level of the host mixer's output bus: the stereo samples
+DirectSound's output renders, before the device, so a run with no audio
+device meters the same samples
+([audio.md](../audio/audio.md#metering-the-mixer)). A game method in
+`crates/extensions/game/src/mixer_meter.rs`; types in
+`crates/extensions/agent-proto/src/audio.rs`.
+
+```sh
+h2 agent audio.meter '{"window_ms": 1000}'
+h2 agent audio.meter '{"play": "pogo/spring"}'
+```
+
+| Params | Result |
+|---|---|
+| `{window_ms?}`: 50 to 5000, default 1000 | `{window_ms, frames, rate, channels, peak_dbfs, rms_dbfs, lufs, max_momentary_lufs, clipped}` |
+| `{play}`: a host clip | the same, with `play: {clip, duration_ms}` |
+
+- **A window.** Meters the latest `window_ms` of output. The capture
+  starts with the first request and keeps 10 seconds, so the first call
+  answers once that much has been rendered.
+- **`play`.** Starts a host clip in the mixer as the game plays it:
+  `pogo/compress`, `pogo/spring`, `pogo/settle` or `announcer/<medal id>`
+  (an unknown name's error lists them). It answers when the clip has
+  played, metering from the call to its end plus 20 ms, with anything
+  else the game played meanwhile. `window_ms` is that span. The clip is
+  removed from the mixer when the method answers or times out.
+- **Levels.** Peak and RMS in dBFS, integrated loudness and the loudest
+  400 ms block in LUFS (ITU-R BS.1770-4, the meter Studio's
+  `sound.measure` uses), each to 0.1 dB; silence reads -120. `clipped`
+  counts samples at or past full scale.
+- **Errors.** A clock-only run (a light host or sim) renders no samples:
+  `UNAVAILABLE`. So is a clip still a Git LFS pointer, or one over
+  5 seconds. Bad params and unknown clips are `INVALID_PARAMS`. Audio
+  time is logical, so a paused game does not answer until it runs.
 
 ## HaloScript state
 

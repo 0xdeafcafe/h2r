@@ -11,6 +11,7 @@
 //! - [`resample`]: linear sample-rate conversion.
 //! - [`devices`]: picking a host output device by name (the controller speaker).
 //! - [`dsound`]: buffers, streams, 3D stub: the DirectSound-shaped model.
+//! - [`meter`]: peak, RMS and BS.1770 loudness of PCM (Studio's `sound.measure`, the game's `audio.meter`).
 //! - [`mixer`]: software mixer rendering voices to a host buffer.
 //! - [`route`]: Xbox mix bins folded down to stereo.
 //! - [`snap`]: the mixer's machine-snapshot section.
@@ -24,6 +25,7 @@ pub mod dsound;
 pub mod format;
 pub mod fx;
 mod hrtf;
+pub mod meter;
 pub mod mixer;
 pub mod resample;
 pub mod reverb;

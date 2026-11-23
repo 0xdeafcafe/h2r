@@ -18,6 +18,7 @@ write on a Rust struct, and a software mixer renders the result.
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `MixIn` (an FX-send bus), `Listener`/`Source3d`/`Spatial`. |
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
+| `meter` | Peak, RMS and BS.1770-4 loudness of PCM; see "Metering the mixer". |
 | `hrtf` | Binaural filtering for positioned mix-ins (on by default). |
 | `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
 | `devices` | Picks an output device by name (the DualSense speaker); no device access. |
@@ -347,6 +348,41 @@ So the queue is idle when it is empty, or holds only a head whose delay
 has run out and whose sound has ended. Whether the game lowers other
 sounds under an announcer line is not read.
 
+## Metering the mixer
+
+Code: `crates/platform/audio/src/meter.rs` (the maths),
+`crates/extensions/game/src/mixer_meter.rs` (the tap and `audio.meter`),
+the tap's wiring in boot's `lib.rs`. Tests: `meter.rs`'s own and
+`mixer_meter/tests.rs`.
+
+`audio.meter` ([agent-api.md](../runtime/agent-api.md#audiometer))
+reads the level of the mixer's output bus: the interleaved stereo `f32`
+DirectSound's output thread renders in logical time, handed to
+`dsound::Output::tap_samples` before the device queue. The same tap
+carries a recording film's sound. A run with no audio device renders
+into a `NullSink` and meters the same samples a speaker would get. A
+clock-only run (a light host or sim) renders no samples, so the meter is
+not connected and the method answers `UNAVAILABLE`.
+
+- **Capture.** Nothing is kept until the first request. Then the last
+  10 seconds of output (`KEEP_SECONDS`) stay in a ring, counted in frames
+  from that request.
+- **Levels.** `audio::meter::measure_f32` gives the sample peak and RMS
+  in dBFS, integrated loudness after ITU-R BS.1770-4 (K-weighting, 400 ms
+  blocks stepped 100 ms, gated at -70 LUFS and 10 LU under the gated
+  mean) and the loudest block. Each channel weighs 1. Studio's
+  `sound.measure` meters 16-bit clips with the same code
+  (`audio::meter::measure`), so a clip's own level and its level after
+  the mixer compare on one scale.
+- **Host clips.** `play` starts one of our embedded clips as a plain 2D
+  buffer in the mixer, as the game does: `pogo/compress`, `pogo/spring`,
+  `pogo/settle` ([pogo-stick.md](../game/pogo-stick.md)) and
+  `announcer/<medal id>`. No game sound tag carries these, so only this
+  bus shows their level. The reply meters from the call to the clip's end
+  plus 20 ms (`TAIL_MS`), with whatever else the game plays in that span,
+  and the buffer leaves the mixer when it answers. A clip that is still
+  a Git LFS pointer answers `UNAVAILABLE`.
+
 ## Our medals' announcer lines
 
 Code: `crates/extensions/game/src/medal_announcer.rs`. Tests:
@@ -381,8 +417,9 @@ says Monster bounce. Bounced has no clip and is silent.
   mix bins (both speakers), under the mixer's master volume. Halo 2 has
   no announcer or dialogue volume setting; the gain the game's sound
   classes give its own dialogue is not applied, and our lines neither
-  duck nor are ducked. Boot connects the mixer only with real audio
-  output; headless clock-only runs drop the lines.
+  duck nor are ducked. Boot connects the mixer whenever audio renders
+  samples, into a device or a `NullSink`; clock-only runs (a light host
+  or sim) drop the lines.
 - **Embedded.** The clips are compiled in with `include_bytes!`, so the
   installed `h2` needs no repository next to it. They are in Git LFS: a
   checkout without them (the lab's `GIT_LFS_SKIP_SMUDGE`) still builds,

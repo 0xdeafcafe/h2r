@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod audio;
 mod client;
 pub mod discover;
 #[cfg(any(unix, windows))]
@@ -311,6 +312,9 @@ pub mod method {
     pub const AUDIO_LISTENERS: &str = "audio.listeners";
     /// Active guest looping sounds, their transitions and host output health.
     pub const AUDIO_LOOPS: &str = "audio.loops";
+    /// The host mixer's output level over a window, or of a host clip it
+    /// starts ([`crate::audio::MeterParams`]).
+    pub const AUDIO_METER: &str = "audio.meter";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.

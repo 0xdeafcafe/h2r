@@ -10,7 +10,9 @@
 //!
 //! A cue starts its clip at once, over whatever is still sounding, up to
 //! [`VOICES`] at a time: a touchdown's clank and the bounce's spring three
-//! ticks later overlap. Without audio (a headless run) cues are dropped.
+//! ticks later overlap. A clock-only run (a light host or sim) renders
+//! no audio and drops the cues; a run with no device plays them into a
+//! `NullSink`, where `audio.meter` ([`crate::mixer_meter`]) meters them.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
