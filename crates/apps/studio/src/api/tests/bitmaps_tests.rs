@@ -569,3 +569,277 @@ fn a_reshaped_image_is_appended_and_reads_back_through_the_decoder() {
         );
     }
 }
+
+/// The invented textured map whose metadata ends the file (it takes new
+/// raw blocks and appended metadata), open, and its bytes.
+fn bitmaps_last(t: &Temp) -> (Api, App, Vec<u8>) {
+    let mut app = app(t);
+    let mut api = Api::new();
+    let map = t.path("textured.map");
+    let src = fixture::fixture_with_textured_bsp_last();
+    std::fs::write(&map, &src).unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::SOURCE_OPEN,
+        json!({"path": map.display().to_string()}),
+    );
+    (api, app, src)
+}
+
+/// Saves the bitmaps document as `name` and reads it back.
+fn save_as(api: &mut Api, app: &mut App, t: &Temp, name: &str) -> Vec<u8> {
+    let out = t.path(name);
+    let saved = call(
+        api,
+        app,
+        m::DOC_SAVE_AS,
+        json!({"doc": "bitmaps", "path": out.display().to_string()}),
+    );
+    assert_eq!(saved["saved"], true);
+    std::fs::read(&out).unwrap()
+}
+
+/// The floor bitmap of a map's bytes, decoded, and its images' mip 0
+/// pixels as RGBA.
+fn floor_of(bytes: &[u8]) -> (::tags::Bitmap, Vec<Vec<u8>>) {
+    let mut m = ::map::Map::from_reader(std::io::Cursor::new(bytes.to_vec())).unwrap();
+    let tag = ::tags::DecodedTag::read(&mut m, fixture::id(7)).unwrap();
+    let ::tags::TagData::Bitmap(b) = tag.data else {
+        panic!("a bitmap")
+    };
+    let mut files = ::assets::ResourceFiles::new();
+    files.set_bytes(
+        ::map::ResourceFile::Local,
+        std::sync::Arc::from(bytes.to_vec()),
+    );
+    let pixels = b
+        .images
+        .iter()
+        .map(|img| {
+            let d = ::assets::decode_image(img, &mut files).unwrap();
+            let l = d.levels.iter().find(|l| l.level == 0).unwrap();
+            l.rgba[..(l.width * l.height * 4) as usize].to_vec()
+        })
+        .collect();
+    (*b, pixels)
+}
+
+/// Every tag of `src` but the floor bitmap has the same bytes and index
+/// entry in `out`.
+fn other_tags_kept(src: &[u8], out: &[u8]) {
+    let mut a = ::map::Map::from_reader(std::io::Cursor::new(src.to_vec())).unwrap();
+    let mut b = ::map::Map::from_reader(std::io::Cursor::new(out.to_vec())).unwrap();
+    b.validate_checksum().unwrap();
+    let ids: Vec<_> = a
+        .tags()
+        .iter()
+        .filter(|t| t.location.is_some() && t.id != fixture::id(7))
+        .map(|t| t.id)
+        .collect();
+    assert!(!ids.is_empty());
+    for id in ids {
+        assert_eq!(
+            a.read_tag_bytes(id).unwrap(),
+            b.read_tag_bytes(id).unwrap(),
+            "tag {:#010x}",
+            id.0
+        );
+        let (x, y) = (a.tag(id).unwrap(), b.tag(id).unwrap());
+        assert_eq!(
+            (x.index_address, x.index_size),
+            (y.index_address, y.index_size)
+        );
+    }
+}
+
+#[test]
+fn an_added_image_saves_by_moving_the_tag_and_keeps_everything_else() {
+    let t = Temp::new("bitmaps-add");
+    let (mut api, mut app, src) = bitmaps_last(&t);
+    let (before, before_px) = floor_of(&src);
+    assert_eq!(before.images.len(), 1);
+    // An 8 by 8 image after the floor's one, shaped like it.
+    let add = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_IMAGE_ADD,
+        json!({"bitmap": "floor", "size": [8, 8]}),
+    );
+    assert_eq!(
+        (add["image"].clone(), add["width"].clone(), add["images"].clone()),
+        (json!(1), json!(8), json!(2))
+    );
+    let read = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_READ,
+        json!({"bitmap": "floor"}),
+    );
+    assert_eq!(read["grown"], true);
+    assert_eq!(read["movable"], Value::Null);
+    assert_eq!(read["images"][1]["write"], "new");
+    assert_eq!(read["images"][1]["added_from"], 0);
+    assert_eq!(read["images"][1]["layers"], json!(["1:0:0"]));
+    // Transparent until painted; a fill makes it one colour.
+    let corner = json!({"bitmap": "floor", "image": 1, "rect": [0, 0, 1, 1]});
+    assert_eq!(
+        call(&mut api, &mut app, m::BITMAP_PIXELS, corner)["rgba"],
+        "00000000"
+    );
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_FILL,
+        json!({"bitmap": "floor", "image": 1, "rect": [0, 0, 8, 8], "color": [10, 200, 30, 255]}),
+    );
+    let out = save_as(&mut api, &mut app, &t, "added.map");
+    // Read back: two images; the first keeps its pixels, the second is
+    // the fill; every other tag is byte for byte the source's.
+    let (after, px) = floor_of(&out);
+    assert_eq!(after.images.len(), 2);
+    assert_eq!(px[0], before_px[0]);
+    assert_eq!(
+        (after.images[1].dimensions[0], after.images[1].dimensions[1]),
+        (8, 8)
+    );
+    assert_eq!(after.images[1].format, before.images[0].format);
+    assert_eq!(px[1], [10, 200, 30, 255].repeat(64));
+    assert!(after.images[1].low_detail.is_none());
+    other_tags_kept(&src, &out);
+    // The tag moved past the source's metadata.
+    let m = ::map::Map::from_reader(std::io::Cursor::new(out.clone())).unwrap();
+    let old = ::map::Map::from_reader(std::io::Cursor::new(src.clone())).unwrap();
+    let was = old.tag(fixture::id(7)).unwrap();
+    let floor = m.tag(fixture::id(7)).unwrap();
+    let end = old.metadata_space().unwrap();
+    assert!(floor.index_address >= end.virtual_base + end.size);
+    assert!(floor.index_size > was.index_size);
+    // Undo the fill and the image: the save is the source again.
+    for _ in 0..2 {
+        let u = call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+        assert_eq!(u["done"], true);
+    }
+    let read = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_READ,
+        json!({"bitmap": "floor"}),
+    );
+    assert_eq!(read["images"].as_array().unwrap().len(), 1);
+    assert_eq!(read["grown"], false);
+    assert_eq!(save_as(&mut api, &mut app, &t, "clean.map"), src);
+    // Redo brings the image back with its fill.
+    call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "bitmaps"}));
+    call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "bitmaps"}));
+    let last = json!({"bitmap": "floor", "image": 1, "rect": [7, 7, 1, 1]});
+    assert_eq!(
+        call(&mut api, &mut app, m::BITMAP_PIXELS, last)["rgba"],
+        "0ac81eff"
+    );
+    // A copy of an image the bitmap does not have, or an empty size, is
+    // refused now.
+    for params in [
+        json!({"bitmap": "floor", "from": 5}),
+        json!({"bitmap": "floor", "size": [0, 8]}),
+    ] {
+        assert!(
+            api.call(&mut app, m::BITMAP_IMAGE_ADD, params.clone()).is_err(),
+            "{params}"
+        );
+    }
+}
+
+#[test]
+fn a_resized_image_is_one_undo_step_and_saves_at_its_new_size() {
+    let t = Temp::new("bitmaps-resize");
+    let (mut api, mut app, src) = bitmaps_last(&t);
+    let r = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_IMAGE_RESIZE,
+        json!({"bitmap": "floor", "size": [8, 8]}),
+    );
+    assert_eq!(r["reshape"]["width"], 8);
+    assert_eq!(r["edited"], true);
+    // Undo takes it back, redo brings it.
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    let read = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_READ,
+        json!({"bitmap": "floor"}),
+    );
+    assert_eq!(read["images"][0]["reshape"], Value::Null);
+    assert_eq!(save_as(&mut api, &mut app, &t, "same.map"), src);
+    call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "bitmaps"}));
+    let out = save_as(&mut api, &mut app, &t, "resized.map");
+    let (b, px) = floor_of(&out);
+    assert_eq!(
+        (b.images[0].dimensions[0], b.images[0].dimensions[1]),
+        (8, 8)
+    );
+    // Upsampled from one colour: that colour everywhere.
+    assert_eq!(px[0], fixture::TEX_BASE_RGBA.repeat(64));
+    // A resize keeps the tag where it is: nothing was added.
+    other_tags_kept(&src, &out);
+    let m = ::map::Map::from_reader(std::io::Cursor::new(out)).unwrap();
+    let old = ::map::Map::from_reader(std::io::Cursor::new(src)).unwrap();
+    assert_eq!(
+        m.tag(fixture::id(7)).unwrap().index_address,
+        old.tag(fixture::id(7)).unwrap().index_address
+    );
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::BITMAP_IMAGE_RESIZE,
+            json!({"bitmap": "floor"})
+        )),
+        code::INVALID_PARAMS
+    );
+}
+
+#[test]
+fn an_added_sequence_names_the_added_image_and_reads_back() {
+    let t = Temp::new("bitmaps-sequence");
+    let (mut api, mut app, src) = bitmaps_last(&t);
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_IMAGE_ADD,
+        json!({"bitmap": "floor"}),
+    );
+    let s = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SEQUENCE_ADD,
+        json!({"bitmap": "floor", "first": 1, "label": "new icon"}),
+    );
+    assert_eq!(s["sequence"], 0);
+    assert_eq!(
+        s["sequences"][0],
+        json!({"sequence": 0, "label": "new icon", "first": 1, "count": 1, "sprites": 0, "added": true})
+    );
+    // Images past the bitmap's are refused.
+    assert!(
+        api.call(
+            &mut app,
+            m::BITMAP_SEQUENCE_ADD,
+            json!({"bitmap": "floor", "first": 1, "count": 2})
+        )
+        .is_err()
+    );
+    let out = save_as(&mut api, &mut app, &t, "sequence.map");
+    let (b, _) = floor_of(&out);
+    assert_eq!(b.images.len(), 2);
+    assert_eq!(b.sequences.len(), 1);
+    let w = &b.sequences[0].wire;
+    assert_eq!((w.first_image, w.image_count), (1, 1));
+    other_tags_kept(&src, &out);
+    // Undoing the sequence leaves the image; undoing that, the source.
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    let (b, _) = floor_of(&save_as(&mut api, &mut app, &t, "image-only.map"));
+    assert_eq!((b.images.len(), b.sequences.len()), (2, 0));
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
+    assert_eq!(save_as(&mut api, &mut app, &t, "clean.map"), src);
+}

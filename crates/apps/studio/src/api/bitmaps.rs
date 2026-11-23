@@ -7,8 +7,10 @@
 //!
 //! Edits stay in the editor until a save: `doc.save` and `doc.save_as` on
 //! the `bitmaps` document are the map's, and encode every edited image
-//! (`assets::write`) into the file. `bitmap.reshape` asks for a new size
-//! or format, `bitmap.spans` shows the stored bytes an edit changes.
+//! (`assets::write`) into the file. `bitmap.reshape` and
+//! `bitmap.image.resize` ask for a new size or format, `bitmap.image.add`
+//! and `bitmap.sequence.add` grow the bitmap (the save then moves the tag),
+//! `bitmap.spans` shows the stored bytes an edit changes.
 
 use std::path::PathBuf;
 
@@ -63,9 +65,9 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::BITMAP_READ,
-        "One bitmap's images (opening it decodes them): size, depth, format, kind (D2, D3, Cube), mips stored, where LOD 0's pixels are, the layers each has, why one is read only, the write class (`in_place`: every stored LOD is in this map and a save patches the touched bytes; `appended`: a LOD is in a shared cache and a save copies it into the map; `none`: read only) and any `reshape` asked for",
+        "One bitmap's images (opening it decodes them): size, depth, format, kind (D2, D3, Cube), mips stored, where LOD 0's pixels are, the layers each has, why one is read only, the write class (`in_place`: every stored LOD is in this map and a save patches the touched bytes; `appended`: a LOD is in a shared cache and a save copies it into the map; `new`: an added image, written whole; `none`: read only), any `reshape` asked for, and the bitmap's sequences (label, first image, image count, sprites; `added` for one added in Studio). `grown` says a save writes the whole tag again (images or sequences added); `movable` is null, or why it cannot gain any",
         r#"{"bitmap":"string","image?":"integer"}"#,
-        r#"{"bitmap":"string","name":"string","edited":"boolean","images":"[{image,width,height,depth,format,kind,mips,pixels,layers,write,reshape,locked,error,edited}]"}"#,
+        r#"{"bitmap":"string","name":"string","edited":"boolean","grown":"boolean","movable":"string|null","images":"[{image,width,height,depth,format,kind,mips,pixels,layers,write,reshape,locked,error,edited,added_from}]","sequences":"[{sequence,label,first,count,sprites,added}]"}"#,
         r#"{"bitmap":"floor"}"#,
     ),
     def(
@@ -105,7 +107,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::BITMAP_RESHAPE,
-        "Ask for a new size and/or format for an image (`format`: a8, y8, ay8, a8y8, rgb565, argb1555, argb4444, xrgb8888, argb8888, dxt1, dxt3 or dxt5; what is left out keeps its value). A save writes the image whole at that size: every layer resampled, every LOD it stores re-encoded and appended to the map, the record's size, format, flags and mips patched. A cube stays square, DXT needs power of two sides, a side that is not a power of two is linear without mips. Refused now when the save would refuse. Not an undo step; `doc.close` with `discard` drops it. Giving the image's own size and format clears it",
+        "Ask for a new size and/or format for an image (`format`: a8, y8, ay8, a8y8, rgb565, argb1555, argb4444, xrgb8888, argb8888, dxt1, dxt3 or dxt5; what is left out keeps its value). A save writes the image whole at that size: every layer resampled, every LOD it stores re-encoded and appended to the map, the record's size, format, flags and mips patched. A cube stays square, DXT needs power of two sides, a side that is not a power of two is linear without mips. Refused now when the save would refuse. One undo step; `doc.close` with `discard` drops it. Giving the image's own size and format clears it",
         r#"{"bitmap":"string","image?":"integer","width?":"integer","height?":"integer","format?":"string"}"#,
         r#"{"bitmap":"string","image":"integer","reshape":"{width,height,format}|null","edited":"boolean"}"#,
         r#"{"bitmap":"floor","width":8,"height":8,"format":"dxt1"}"#,
@@ -116,6 +118,27 @@ const METHODS: &[MethodDef] = &[
         r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","rect?":"{x,y,w,h}"}"#,
         r#"{"bitmap":"string","image":"integer","write":"string","spans":"[{lod,offset,len,bytes}]","bytes":"integer"}"#,
         r#"{"bitmap":"floor"}"#,
+    ),
+    def(
+        m::BITMAP_IMAGE_ADD,
+        "Add an image after the bitmap's last: its record copied from image `from` (default 0; a 2D image), at `size` and `format` (default `from`'s), its pixels transparent black until painted, imported or generated into. Answers the new index. One undo step. A save writes the whole tag again at the end of the map's metadata, the new image's pixels as new raw blocks, and points the tag's index entry at the copy; the other images keep their pixels and every other tag its bytes",
+        r#"{"bitmap":"string","from?":"integer","size?":"[w,h]","format?":"string"}"#,
+        r#"{"bitmap":"string","image":"integer","width":"integer","height":"integer","format":"string","images":"integer"}"#,
+        r#"{"bitmap":"floor","size":[8,8]}"#,
+    ),
+    def(
+        m::BITMAP_IMAGE_RESIZE,
+        "Give an image a new size and/or format, as bitmap.reshape, as one undo step: every layer resampled and every LOD written whole by the save. An added image is resized the same way",
+        r#"{"bitmap":"string","image?":"integer","size?":"[w,h]","width?":"integer","height?":"integer","format?":"string"}"#,
+        r#"{"bitmap":"string","image":"integer","reshape":"{width,height,format}|null","edited":"boolean"}"#,
+        r#"{"bitmap":"floor","size":[8,8]}"#,
+    ),
+    def(
+        m::BITMAP_SEQUENCE_ADD,
+        "Add a sequence of `count` images (default 1) from image `first` after the bitmap's last sequence, labelled `label` (31 bytes at most), shaped like its first sequence and with one sprite per image when that one has sprites. Answers the new index and the bitmap's sequences. One undo step; the save moves the tag as bitmap.image.add does",
+        r#"{"bitmap":"string","first":"integer","count?":"integer","label?":"string"}"#,
+        r#"{"bitmap":"string","sequence":"integer","sequences":"[{sequence,label,first,count,sprites,added}]"}"#,
+        r#"{"bitmap":"floor","first":0,"label":"floor"}"#,
     ),
     def(
         m::BITMAP_PIXELS,
@@ -347,10 +370,66 @@ fn images_json(app: &App, tag: TagId, only: Option<usize>) -> Value {
                     "locked": i.locked,
                     "error": i.error,
                     "edited": edited,
+                    "added_from": i.added.as_ref().map(|a| a.from),
                 })
             })
             .collect(),
     )
+}
+
+fn sequences_json(app: &App, tag: TagId) -> Value {
+    let Some(open) = app.textures.open.get(&tag) else {
+        return Value::Null;
+    };
+    Value::Array(
+        open.sequences()
+            .into_iter()
+            .map(|s| {
+                json!({
+                    "sequence": s.index,
+                    "label": s.label,
+                    "first": s.first,
+                    "count": s.count,
+                    "sprites": s.sprites,
+                    "added": s.added,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// `size` as `[w, h]`, else `width` and `height`.
+fn size_of(p: &P) -> Result<(Option<u32>, Option<u32>), RpcError> {
+    let dim = |k: &str| -> Result<Option<u32>, RpcError> {
+        p.opt_u64(k)?
+            .map(|n| u32::try_from(n).map_err(|_| bad(format!("{k}: too large"))))
+            .transpose()
+    };
+    match p.get("size") {
+        None | Some(Value::Null) => Ok((dim("width")?, dim("height")?)),
+        Some(v) => match v.as_array().map(Vec::as_slice) {
+            Some([w, h]) => match (w.as_u64(), h.as_u64()) {
+                (Some(w), Some(h)) if (1..=4096).contains(&w) && (1..=4096).contains(&h) => {
+                    Ok((Some(w as u32), Some(h as u32)))
+                }
+                _ => Err(bad("size is [w, h], each 1 to 4096")),
+            },
+            _ => Err(bad("size is [w, h]")),
+        },
+    }
+}
+
+fn reshape_json(app: &App, tag: TagId, image: usize) -> Value {
+    json!({
+        "bitmap": super::scenario::tag_id(tag),
+        "image": image,
+        "reshape": app.textures.reshape.get(&(tag, image)).map(|r| json!({
+            "width": r.width,
+            "height": r.height,
+            "format": format!("{:?}", r.format),
+        })),
+        "edited": app.textures.open.get(&tag).is_some_and(|o| app.textures.edited(o)),
+    })
 }
 
 /// `doc.diff` of the `bitmaps` document: which layers differ from how
@@ -414,7 +493,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                     "bitmap": super::scenario::tag_id(tag),
                     "name": path,
                     "open": open.is_some(),
-                    "edited": open.is_some_and(|o| o.bitmap.is_edited()),
+                    "edited": open.is_some_and(|o| app.textures.edited(o)),
                     "images": open.map(|o| o.images.len()),
                 }));
             }
@@ -442,8 +521,81 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             Ok(json!({
                 "bitmap": super::scenario::tag_id(tag),
                 "name": open.name,
-                "edited": open.bitmap.is_edited(),
+                "edited": app.textures.edited(open),
+                "grown": open.grown(),
+                "movable": open.parts.as_ref().err(),
                 "images": images_json(app, tag, only),
+                "sequences": sequences_json(app, tag),
+            }))
+        }
+        m::BITMAP_IMAGE_ADD => {
+            let tag = bitmap(app, p)?;
+            let from = p.opt_usize("from")?;
+            let (width, height) = size_of(p)?;
+            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            run(
+                app,
+                BitmapAction::AddImage {
+                    tag,
+                    from,
+                    width,
+                    height,
+                    format,
+                },
+            )?;
+            let open = &app.textures.open[&tag];
+            let i = open.images.last().ok_or_else(|| bad("the bitmap has no image"))?;
+            Ok(json!({
+                "bitmap": super::scenario::tag_id(tag),
+                "image": i.index,
+                "width": i.width,
+                "height": i.height,
+                "format": i.format,
+                "images": open.images.len(),
+            }))
+        }
+        m::BITMAP_IMAGE_RESIZE => {
+            let tag = bitmap(app, p)?;
+            let image = p.opt_usize("image")?.unwrap_or(0);
+            let (width, height) = size_of(p)?;
+            let format = p.opt_str("format")?.map(format_of).transpose()?;
+            if width.is_none() && height.is_none() && format.is_none() {
+                return Err(bad("give size, width, height and/or format"));
+            }
+            run(
+                app,
+                BitmapAction::Reshape {
+                    tag,
+                    image,
+                    width,
+                    height,
+                    format,
+                },
+            )?;
+            Ok(reshape_json(app, tag, image))
+        }
+        m::BITMAP_SEQUENCE_ADD => {
+            let tag = bitmap(app, p)?;
+            let first = p
+                .opt_usize("first")?
+                .ok_or_else(|| bad("first is required"))?;
+            let count = p.opt_u64("count")?.unwrap_or(1);
+            let count = u16::try_from(count).map_err(|_| bad("count: too large"))?;
+            let label = p.opt_str("label")?.unwrap_or("").to_owned();
+            run(
+                app,
+                BitmapAction::AddSequence {
+                    tag,
+                    first,
+                    count,
+                    label,
+                },
+            )?;
+            let n = app.textures.open[&tag].sequences().len();
+            Ok(json!({
+                "bitmap": super::scenario::tag_id(tag),
+                "sequence": n - 1,
+                "sequences": sequences_json(app, tag),
             }))
         }
         m::BITMAP_EXPORT => {

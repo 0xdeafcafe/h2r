@@ -228,6 +228,9 @@ pub mod method {
     pub const BITMAP_PIXELS: &str = "bitmap.pixels";
     pub const BITMAP_RESHAPE: &str = "bitmap.reshape";
     pub const BITMAP_SPANS: &str = "bitmap.spans";
+    pub const BITMAP_IMAGE_ADD: &str = "bitmap.image.add";
+    pub const BITMAP_IMAGE_RESIZE: &str = "bitmap.image.resize";
+    pub const BITMAP_SEQUENCE_ADD: &str = "bitmap.sequence.add";
 
     // Image generation (docs/editor/agent-api.md, "Generating images").
     pub const IMAGE_GENERATE: &str = "image.generate";

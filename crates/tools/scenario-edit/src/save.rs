@@ -182,6 +182,28 @@ pub fn write_patched<R: Read + Seek>(
             ));
         }
     }
+    // A tag written whole to a new place leaves its old bytes dead: a
+    // patch there would be lost, so it refuses the save by name.
+    for m in &changes.tag_moves {
+        let loc = editor
+            .source()
+            .tag(m.tag)?
+            .location
+            .ok_or(Error::Save("a moved tag has no payload"))?;
+        let (lo, hi) = (
+            u64::from(loc.address),
+            u64::from(loc.address) + u64::from(loc.size),
+        );
+        if changes.patches.iter().any(|(a, b)| {
+            let (a, e) = (u64::from(*a), u64::from(*a) + b.len() as u64);
+            a < hi && lo < e
+        }) {
+            return Err(Error::Declined(format!(
+                "{:#010x} is written whole to a new place, and another edit patches its old bytes: save that edit first",
+                m.tag.0
+            )));
+        }
+    }
     for (address, bytes) in &changes.patches {
         editor.patch_metadata(*address, bytes)?;
     }
@@ -226,6 +248,39 @@ pub fn write_patched<R: Read + Seek>(
             None => editor.patch_metadata(g.pair, &pair)?,
             Some(space) => editor.patch_bsp(space, g.pair, &pair)?,
         }
+    }
+    // A tag that grew (a bitmap with images or sequences added): its raw
+    // blocks first, their pointers written into the copy, then the copy
+    // at the end of the metadata with its block pointers rebased to where
+    // it lands, and the tag's index entry pointed at it.
+    for m in &changes.tag_moves {
+        let mut bytes = m.bytes.clone();
+        for r in &m.raw {
+            let word = editor.append_raw(&r.bytes, r.align)?.encode().to_le_bytes();
+            let at = r.pointer as usize;
+            bytes
+                .get_mut(at..at + 4)
+                .ok_or(Error::Save("a moved tag's raw pointer is past its bytes"))?
+                .copy_from_slice(&word);
+        }
+        let address = editor.next_metadata_address(16)?;
+        for &o in &m.rebase {
+            let at = o as usize;
+            let w = bytes
+                .get_mut(at..at + 4)
+                .ok_or(Error::Save("a moved tag's block pointer is past its bytes"))?;
+            let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+            w.copy_from_slice(&v.wrapping_add(address).to_le_bytes());
+        }
+        let at = editor.append_metadata(&bytes, 16)?;
+        if at != address {
+            return Err(Error::Save(
+                "a moved tag did not land where it was laid out",
+            ));
+        }
+        let size =
+            u32::try_from(bytes.len()).map_err(|_| Error::Save("a moved tag is too large"))?;
+        editor.move_tag(m.tag, at, size)?;
     }
     Ok(editor.write_to(out)?)
 }

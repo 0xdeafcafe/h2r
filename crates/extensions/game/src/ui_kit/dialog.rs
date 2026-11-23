@@ -416,9 +416,18 @@ pub mod icon {
         "spartan", "crown", "lightning", "skull", "helmet", "sack", "flag", "bomb", "squares",
         "banner", "question",
     ];
-    /// The icon a doc names (`settings.icon`), if it is one.
+    /// The icon a doc names (`settings.icon`), if it is one: a name of
+    /// [`NAMES`], or `image-N` for image `N` of `mp_games2`, an image added
+    /// to it in Studio (`bitmap.image.add`, docs/editor/agent-api.md). An
+    /// index the user's `mainmenu.map` does not have leaves the picture's
+    /// image as the widget made it (0, the Spartan):
+    /// `list_class::set_image` refuses it.
     pub fn named(name: &str) -> Option<u16> {
-        NAMES.iter().position(|n| *n == name).map(|i| i as u16)
+        NAMES
+            .iter()
+            .position(|n| *n == name)
+            .map(|i| i as u16)
+            .or_else(|| name.strip_prefix("image-")?.parse().ok())
     }
 }
 
@@ -968,6 +977,18 @@ mod tests {
             &Synthetic,
             "t",
         )
+    }
+
+    /// A doc's icon is a name of the eleven, or `image-N` for an image
+    /// added to `mp_games2`.
+    #[test]
+    fn an_icon_is_a_name_or_an_added_image() {
+        assert_eq!(icon::named("crown"), Some(icon::CROWN));
+        assert_eq!(icon::named("image-11"), Some(11));
+        assert_eq!(icon::named("image-3"), Some(3));
+        for bad in ["moon", "image-", "image-x", "11", "image--1"] {
+            assert_eq!(icon::named(bad), None, "{bad}");
+        }
     }
 
     /// Six cells centred on the panel, 59 apart, the halves 12 further.

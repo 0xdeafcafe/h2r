@@ -284,6 +284,38 @@ fn layers_edit_apart() {
 }
 
 #[test]
+fn an_image_taken_out_comes_back_with_its_edits() {
+    let mut b = Bitmap::new();
+    b.add_layer(L0, Canvas::new(8, 8, BLACK).unwrap(), None);
+    let added = LayerId::new(1, 0, 0);
+    b.add_layer(added, Canvas::new(8, 8, BLACK).unwrap(), None);
+    let fill = BitmapOp::Fill {
+        layer: added,
+        at: None,
+        rect: Some(Rect::new(0, 0, 2, 2)),
+        color: WHITE,
+        tolerance: 0.0,
+        channels: Channels::ALL,
+    };
+    b.apply(&fill).unwrap();
+    let rev = b.rev();
+    let out = b.remove_image(1);
+    assert_eq!(out.len(), 1);
+    assert!(b.layer(added).is_none());
+    assert!(b.layer(L0).is_some());
+    assert_ne!(b.rev(), rev);
+    b.restore_layers(out);
+    let l = b.layer(added).unwrap();
+    assert_eq!(l.canvas.pixel(0, 0), WHITE);
+    assert!(l.is_edited());
+    // Its undo step still applies to it.
+    assert!(b.undo().is_some());
+    assert_eq!(b.layer(added).unwrap().canvas.pixel(0, 0), BLACK);
+    b.clear_redo();
+    assert!(!b.can_redo());
+}
+
+#[test]
 fn ops_round_trip_through_json() {
     let ops = vec![
         dab([1.5, 2.5]),

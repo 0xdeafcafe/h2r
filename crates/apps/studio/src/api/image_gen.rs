@@ -30,9 +30,9 @@ const RESULT_SHAPE: &str = r#"{"id":"integer","state":"running|done|failed","why
 const METHODS: &[MethodDef] = &[
     def(
         m::IMAGE_GENERATE,
-        "Generate a picture from a prompt and reference pictures (PNG paths, or {bitmap, image} of the open map, exported for the generator), for image `image` of `bitmap` (fitted to its size, format and alpha) or a `size`. The references are the user's picks. Runs as a job: answers with its id at once; image.result has the outcome",
-        r#"{"prompt":"string","references":"[path | {bitmap, image?}]","bitmap?":"string","image?":"integer","size?":"[w,h]","alpha?":"auto|image|luma|opaque","out?":"string","from?":"integer"}"#,
-        r#"{"id":"integer","state":"running","generator":"string"}"#,
+        "Generate a picture from a prompt and reference pictures (PNG paths, or {bitmap, image} of the open map, exported for the generator), for image `image` of `bitmap` (fitted to its size, format and alpha) or a `size`. `image: \"new\"` first adds an image to `bitmap` (bitmap.image.add, shaped like image `like`, default 0, or at `size`) and generates into it; `slot` names it. The references are the user's picks. Runs as a job: answers with its id at once; image.result has the outcome",
+        r#"{"prompt":"string","references":"[path | {bitmap, image?}]","bitmap?":"string","image?":"integer|\"new\"","like?":"integer","size?":"[w,h]","alpha?":"auto|image|luma|opaque","out?":"string","from?":"integer"}"#,
+        r#"{"id":"integer","state":"running","generator":"string","slot":"{bitmap,image}|null"}"#,
         r#"{"prompt":"a round blue badge","references":[],"bitmap":"floor"}"#,
     ),
     def(
@@ -162,13 +162,29 @@ fn generate(app: &mut App, p: &P) -> Reply {
     if references.len() > 10 {
         return Err(bad("at most 10 references"));
     }
-    let image = p.opt_u64("image")?.map(|n| n as usize);
-    let slot = match p.opt_str("bitmap")? {
+    // `image: "new"` adds an image to the bitmap first (shaped like image
+    // `like`, or at `size`) and generates into it.
+    let new = p.get("image").and_then(Value::as_str) == Some("new");
+    let image = if new {
+        None
+    } else {
+        match p.get("image") {
+            Some(Value::String(s)) => {
+                return Err(bad(format!("image is a whole number or \"new\", not {s:?}")));
+            }
+            _ => p.opt_u64("image")?.map(|n| n as usize),
+        }
+    };
+    let like = p.opt_usize("like")?;
+    if like.is_some() && !new {
+        return Err(bad("like goes with image \"new\""));
+    }
+    let mut slot = match p.opt_str("bitmap")? {
         Some(b) => Some((b.to_owned(), image.unwrap_or(0))),
-        None if image.is_some() => return Err(bad("image needs bitmap")),
+        None if image.is_some() || new => return Err(bad("image needs bitmap")),
         None => None,
     };
-    let size = match p.get("size") {
+    let mut size = match p.get("size") {
         None | Some(Value::Null) => None,
         Some(v) => match v.as_array().map(Vec::as_slice) {
             Some([w, h]) => match (w.as_u64(), h.as_u64()) {
@@ -180,7 +196,7 @@ fn generate(app: &mut App, p: &P) -> Reply {
             _ => return Err(bad("size is [w, h]")),
         },
     };
-    if slot.is_some() && size.is_some() {
+    if slot.is_some() && size.is_some() && !new {
         return Err(bad("give bitmap or size, not both: a slot has its own size"));
     }
     let alpha = match p.opt_str("alpha")? {
@@ -194,6 +210,19 @@ fn generate(app: &mut App, p: &P) -> Reply {
     {
         return Err(bad(format!("no image {f} to regenerate (image.result lists the last ones)")));
     }
+    if new {
+        if app.image_jobs().busy() {
+            return Err(err(
+                code::REFUSED,
+                "an image is still being generated: wait for it (image.result)",
+            ));
+        }
+        let (bitmap, _) = slot.take().expect("new needs bitmap, checked above");
+        let index = app
+            .image_new_slot(&bitmap, like.unwrap_or(0), size.take())
+            .map_err(refused)?;
+        slot = Some((bitmap, index));
+    }
     let input = GenInput {
         prompt,
         references,
@@ -203,11 +232,16 @@ fn generate(app: &mut App, p: &P) -> Reply {
         out,
         from,
     };
+    let slot = input
+        .slot
+        .as_ref()
+        .map(|(bitmap, image)| json!({"bitmap": bitmap, "image": image}));
     let id = app.image_generate(input).map_err(refused)?;
     Ok(json!({
         "id": id,
         "state": "running",
         "generator": app.imagegen.source_name(),
+        "slot": slot,
     }))
 }
 

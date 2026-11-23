@@ -276,7 +276,8 @@ pub struct SettingsDoc {
     /// dialog, in the game maps too).
     pub host: String,
     /// The header's icon of `mp_games2` by name
-    /// ([`crate::ui_kit::dialog::icon::NAMES`]); the menu host only.
+    /// ([`crate::ui_kit::dialog::icon::NAMES`]), or `image-N` for an
+    /// image added to it in Studio; the menu host only.
     pub icon: Option<String>,
     /// The header's white line: what the window changes. The menu host
     /// only.
@@ -632,7 +633,10 @@ impl ScreenDoc {
             (Some(i), true) if crate::ui_kit::dialog::icon::named(i).is_none() => {
                 return err(
                     "settings.icon".into(),
-                    format!("no icon {i:?}: one of {:?}", crate::ui_kit::dialog::icon::NAMES),
+                    format!(
+                        "no icon {i:?}: one of {:?}, or image-N for an image added to mp_games2",
+                        crate::ui_kit::dialog::icon::NAMES
+                    ),
                 );
             }
             (None, true) => {
