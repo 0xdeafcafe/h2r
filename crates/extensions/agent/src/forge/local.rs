@@ -8,9 +8,11 @@ use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code, forge::method};
 use engine::GuestMemory;
 use forge_doc::{Entry, ForgeDoc, Op, Sha256, TagKey};
+use map::scenario_layout as layout;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::base::{self, BaseStep};
 use crate::sim::calls::{self, Call, ForgeStep, ForgeTarget};
 use crate::{Access, Agent};
 
@@ -48,6 +50,10 @@ pub const OBJECT_GONE: &str = "forge_object_gone";
 /// resolve.
 pub const OBJECT_KIND: &str = "forge_object_kind";
 
+/// A base edit names an own entry whose live object is held or attached, so
+/// it is not the placement's to move.
+pub const OBJECT_HELD: &str = "forge_object_held";
+
 /// The `world.object` kind of a block's live objects.
 fn live_kind(block: BlockKind) -> Option<Kind> {
     Some(match block {
@@ -66,6 +72,15 @@ enum Staged {
     Move(ForgeTarget, Frame),
     Delete(ForgeTarget),
     Channel(u32, i16),
+    /// An own entry's step that needs no tag resolved.
+    Base(BaseStep),
+    /// An own entry's field write, its value still a document value.
+    Field {
+        block: BlockKind,
+        index: u32,
+        field: &'static str,
+        value: forge_doc::Value,
+    },
 }
 
 /// A validated command can build a candidate document and log on a private
@@ -113,6 +128,22 @@ impl ForgeWorld {
                         Staged::Move(target, frame) => ForgeStep::Move { target, frame },
                         Staged::Delete(target) => ForgeStep::Delete { target },
                         Staged::Channel(flag, channel) => ForgeStep::Channel { flag, channel },
+                        Staged::Base(step) => ForgeStep::Base(step),
+                        Staged::Field {
+                            block,
+                            index,
+                            field,
+                            value,
+                        } => {
+                            let (def, value) =
+                                base::field_value(block, field, &value, |k| resolve(k))?;
+                            ForgeStep::Base(BaseStep::Field {
+                                block,
+                                index,
+                                field: def.name,
+                                value,
+                            })
+                        }
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -183,6 +214,62 @@ impl World for ForgeWorld {
     /// scenario, after the batch's objects.
     fn channel(&mut self, flag: u32, channel: i16) -> Result<(), String> {
         self.steps.push(Staged::Channel(flag, channel));
+        Ok(())
+    }
+}
+
+/// The base calls: an own entry is named by its block and the index the
+/// base map has it at, and each call stages one [`BaseStep`] (`base.rs`).
+/// They are inherent so far; the session's `World` takes them as its
+/// `base_move`, `base_field`, `base_inert` and `base_restore`.
+impl ForgeWorld {
+    /// Move and turn own entry `index` of `block`: its position and
+    /// orientation in the loaded scenario, and its live object when the
+    /// block makes objects.
+    pub fn base_move(&mut self, block: BlockKind, index: u32, frame: Frame) -> Result<(), String> {
+        if layout::block(block).role(layout::Role::Position).is_none() {
+            return Err(format!("{} rows have no position", block.name()));
+        }
+        self.steps.push(Staged::Base(BaseStep::Move {
+            block,
+            index,
+            frame,
+        }));
+        Ok(())
+    }
+
+    /// Set one typed, editable field of the entry in the loaded scenario.
+    pub fn base_field(
+        &mut self,
+        block: BlockKind,
+        index: u32,
+        field: &str,
+        value: &forge_doc::Value,
+    ) -> Result<(), String> {
+        let def = base::field_def(block, field)?;
+        // The shape is checked now; a tag key resolves when the edit is applied.
+        base::field_value(block, field, value, |_| Ok(0))?;
+        self.steps.push(Staged::Field {
+            block,
+            index,
+            field: def.name,
+            value: value.clone(),
+        });
+        Ok(())
+    }
+
+    /// Make the entry's row inert and delete its live object.
+    pub fn base_inert(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+        self.steps
+            .push(Staged::Base(BaseStep::Inert { block, index }));
+        Ok(())
+    }
+
+    /// Write the kept `row` back and make the entry's object again.
+    pub fn base_restore(&mut self, block: BlockKind, index: u32, row: &[u8]) -> Result<(), String> {
+        let row = base::RowBytes::new(block, row)?;
+        self.steps
+            .push(Staged::Base(BaseStep::Restore { block, index, row }));
         Ok(())
     }
 }

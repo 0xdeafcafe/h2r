@@ -953,3 +953,184 @@ fn a_teleporter_link_stages_one_channel_write_after_the_objects() {
     assert!(result.unwrap_err().contains("not a teleporter"));
     assert_eq!(session.document().ops.len(), 1);
 }
+
+// ---- the base calls (docs/game/forge-map-variants.md, "Applying an edit in a session") ----
+
+/// A session with no objects of its own, to stage base calls over.
+fn base_session() -> ::forge::Session {
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(::forge::BlockKind::Weapons, 4)].into(),
+        ..Default::default()
+    };
+    ::forge::Session::new(draft(), limits, vec![], 3).unwrap()
+}
+
+fn base_guard() -> local::Guard {
+    local::Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    }
+}
+
+#[test]
+fn each_base_call_stages_one_step_on_the_call_queue() {
+    use ::forge::{BlockKind, Frame};
+    use base::{BaseStep, FieldValue, RowBytes};
+    use calls::ForgeStep;
+    let session = base_session();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let frame = Frame {
+        position: [1.0, 2.0, 3.0],
+        rotation: [0.5, 0.0, 0.0],
+    };
+    let kept = vec![7; map::scenario_layout::block(BlockKind::Weapons).stride as usize];
+    let mut edit = stage(&session, &q, base_guard(), |_, w| {
+        w.base_move(BlockKind::Weapons, 2, frame)?;
+        w.base_field(
+            BlockKind::Weapons,
+            2,
+            "scale",
+            &forge_doc::Value::Float(forge_doc::F32::new(2.0).unwrap()),
+        )?;
+        // A tag key resolves to the datum the game holds when the edit is applied.
+        w.base_field(
+            BlockKind::Weapons,
+            2,
+            "palette index",
+            &forge_doc::Value::Tag(Some(forge_doc::TagKey {
+                group: "weap".into(),
+                path: "objects\\fixture".into(),
+            })),
+        )?;
+        w.base_inert(BlockKind::Weapons, 2)?;
+        w.base_restore(BlockKind::Weapons, 2, &kept)
+    });
+    let (steps, result) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert!(result.is_ok());
+    let block = BlockKind::Weapons;
+    assert_eq!(
+        steps,
+        [
+            ForgeStep::Base(BaseStep::Move {
+                block,
+                index: 2,
+                frame
+            }),
+            ForgeStep::Base(BaseStep::Field {
+                block,
+                index: 2,
+                field: "scale",
+                value: FieldValue::Float(2.0),
+            }),
+            ForgeStep::Base(BaseStep::Field {
+                block,
+                index: 2,
+                field: "palette index",
+                value: FieldValue::Palette { datum: TAG },
+            }),
+            ForgeStep::Base(BaseStep::Inert { block, index: 2 }),
+            ForgeStep::Base(BaseStep::Restore {
+                block,
+                index: 2,
+                row: RowBytes::new(block, &kept).unwrap(),
+            }),
+        ]
+    );
+    assert!(!calls::lock(&q).has_pending());
+}
+
+#[test]
+fn a_base_call_the_layout_does_not_allow_is_refused_while_staging() {
+    use ::forge::{BlockKind, Frame};
+    let session = base_session();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let float = forge_doc::Value::Float(forge_doc::F32::new(1.0).unwrap());
+    let refuse = |call: &dyn Fn(&mut local::ForgeWorld) -> Result<(), String>, says: &str| {
+        let error =
+            local::ForgeWorld::apply(&session, &q, base_guard(), |_| Ok(TAG), |_, w| call(w))
+                .err()
+                .unwrap();
+        assert!(error.contains(says), "{error} does not say {says}");
+    };
+    refuse(
+        &|w| w.base_field(BlockKind::Weapons, 0, "no such field", &float),
+        "no field",
+    );
+    refuse(
+        &|w| {
+            w.base_field(
+                BlockKind::Weapons,
+                0,
+                "name index",
+                &forge_doc::Value::Int(1),
+            )
+        },
+        "read-only",
+    );
+    refuse(
+        &|w| w.base_field(BlockKind::Weapons, 0, "scale", &forge_doc::Value::Int(1)),
+        "another kind of value",
+    );
+    refuse(
+        &|w| {
+            w.base_field(
+                BlockKind::Weapons,
+                0,
+                "placement flags",
+                &forge_doc::Value::Int(-1),
+            )
+        },
+        "another kind of value",
+    );
+    refuse(&|w| w.base_restore(BlockKind::Weapons, 0, &[0; 3]), "bytes");
+    refuse(
+        &|w| w.base_move(BlockKind::StartingEquipment, 0, Frame::default()),
+        "no position",
+    );
+    // Nothing was submitted by any of them.
+    assert!(!calls::lock(&q).has_pending());
+}
+
+#[test]
+fn the_inert_row_is_the_kits_spare_form_for_every_block() {
+    use ::forge::BlockKind::*;
+    // The marks `forge-build`'s `kit.rs` (`Block::entry`) gives a reserved
+    // row: the byte ranges that are 0xff; every other byte is zero.
+    let marks: &[(::forge::BlockKind, &[std::ops::Range<usize>])] = &[
+        (Scenery, &[0..4]),
+        (Vehicles, &[0..4]),
+        (Equipment, &[0..4]),
+        (Weapons, &[0..4]),
+        (Machines, &[0..4]),
+        (SoundScenery, &[0..4]),
+        (Crates, &[0..4]),
+        (StartingLocations, &[0x2c..0x2e]),
+        (NetgameFlags, &[0x10..0x12]),
+        (NetgameEquipment, &[0x58..0x60]),
+        (StartingEquipment, &[]),
+    ];
+    assert_eq!(marks.len(), map::scenario_layout::BLOCKS.len());
+    for (block, ranges) in marks {
+        let row = base::inert_row(*block);
+        assert_eq!(
+            row.len(),
+            map::scenario_layout::block(*block).stride as usize
+        );
+        assert!(row.len() <= base::ROW_MAX);
+        for (i, byte) in row.iter().enumerate() {
+            let marked = ranges.iter().any(|r| r.contains(&i));
+            assert_eq!(
+                *byte,
+                if marked { 0xff } else { 0 },
+                "{block:?} byte {i:#x}"
+            );
+        }
+    }
+}

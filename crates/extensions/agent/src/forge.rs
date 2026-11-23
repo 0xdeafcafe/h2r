@@ -11,6 +11,7 @@ use guest_layout::{game::GameGlobals, global};
 use crate::sim::{SimHandle, hashes::HashLog};
 use crate::{Access, Agent, GameCtx};
 
+pub mod base;
 mod capacity;
 pub use capacity::object_pool;
 pub mod local;
