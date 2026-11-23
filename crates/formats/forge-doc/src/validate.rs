@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use map::scenario_layout::{self as layout, BlockDef, FieldType, Role};
+use map::scenario_layout::{self as layout, BlockDef, FieldDef, FieldType, Role};
 
 use crate::{
-    BlockKind, BuilderVersions, Edit, FieldWrite, ForgeDoc, ImportId, MAX_DOC_BYTES, Op,
-    OpId, Placement, Recipe, Refusal, Result, Sha256, TagKey, TagWrite, Value,
+    BlockKind, BuilderVersions, Edit, Endpoint, EntryOp, FieldWrite, ForgeDoc, ImportId,
+    MAX_DOC_BYTES, Op, OpId, Placement, Recipe, Refusal, Result, Sha256, TagKey, TagWrite, Value,
     document::{MAX_FIELDS, MAX_IMPORTS, MAX_OPS, MAX_RECIPES, MAX_SOURCES},
     wire,
 };
@@ -163,7 +163,7 @@ pub(crate) fn document(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
         }
         counts.push(item, limits)?;
     }
-    crate::links::check(&doc.ops, &limits.base_counts)
+    crate::links::check_with(&doc.ops, limits)
 }
 
 fn validate_recipe(
@@ -218,6 +218,7 @@ pub(crate) fn op(op: &Op, limits: &Limits, in_log: bool) -> Result<()> {
         Edit::Placement(p) => placement(p, limits),
         Edit::TagField(write) => tag_write(write),
         Edit::Forge(edit) => crate::links::op(edit),
+        Edit::Entry(edit) => crate::entry::check_op(edit, limits),
         Edit::Undo if in_log => Ok(()),
         edit => Err(edit.unsupported()),
     }
@@ -281,7 +282,11 @@ fn fields(
     Ok(())
 }
 
-fn placement_field(def: &BlockDef, write: &FieldWrite, world: Option<WorldBounds>) -> Result<()> {
+pub(crate) fn placement_field(
+    def: &BlockDef,
+    write: &FieldWrite,
+    world: Option<WorldBounds>,
+) -> Result<()> {
     let field = def
         .field(&write.field)
         .ok_or_else(|| Refusal::invalid(def.kind.name(), "unknown placement field"))?;
@@ -347,9 +352,26 @@ fn reference_group(what: &str, tag: Option<&TagKey>, groups: &[[u8; 4]]) -> Resu
     Ok(())
 }
 
-fn block_max(def: &BlockDef) -> u32 {
+pub(crate) fn block_max(def: &BlockDef) -> u32 {
     def.max_count
         .map_or(MAX_BLOCK_INDEX + 1, |count| count as u32)
+}
+
+/// Whether `value` has the field's storage type, as a print reads it: a
+/// palette index is the tag key of the entry it selects, a tag reference
+/// its tag key, and integers fit the field. Read-only fields count.
+pub(crate) fn typed(field: &FieldDef, value: &Value) -> bool {
+    match (field.ty, field.role, value) {
+        (_, Role::PaletteIndex, value) => matches!(value, Value::Tag(_)),
+        (FieldType::U8, _, Value::Int(n)) => u8::try_from(*n).is_ok(),
+        (FieldType::I16, _, Value::Int(n)) => i16::try_from(*n).is_ok(),
+        (FieldType::U16, _, Value::Int(n)) => u16::try_from(*n).is_ok(),
+        (FieldType::U32, _, Value::Int(n)) => u32::try_from(*n).is_ok(),
+        (FieldType::F32, _, Value::Float(_))
+        | (FieldType::Vec3, _, Value::Vec3(_))
+        | (FieldType::TagRef, _, Value::Tag(_)) => true,
+        _ => false,
+    }
 }
 
 /// Possible entry counts after a prefix of the document. Knowing the base
@@ -364,11 +386,18 @@ struct Count {
 pub(crate) struct Counts {
     blocks: BTreeMap<BlockKind, Count>,
     adds: usize,
+    /// The block of each add op, for entry ops that name an added entry.
+    added: BTreeMap<OpId, BlockKind>,
+    /// Entries an entry op removed and no reset has put back, by identity.
+    removed: BTreeSet<Endpoint>,
 }
 
 pub(crate) struct CountBefore {
     block: Option<(BlockKind, Option<Count>)>,
     adds: usize,
+    added: Option<OpId>,
+    /// An entry `removed` gained (`true`) or lost (`false`).
+    removed: Option<(Endpoint, bool)>,
 }
 
 impl Counts {
@@ -376,6 +405,8 @@ impl Counts {
         Self {
             blocks: BTreeMap::new(),
             adds: 0,
+            added: BTreeMap::new(),
+            removed: BTreeSet::new(),
         }
     }
 
@@ -383,10 +414,20 @@ impl Counts {
         let mut before = CountBefore {
             block: None,
             adds: self.adds,
+            added: None,
+            removed: None,
         };
+        if let Edit::Entry(edit) = &op.edit {
+            self.entry(edit, limits, &mut before);
+            return Ok(before);
+        }
         let Edit::Placement(placement) = &op.edit else {
             return Ok(before);
         };
+        if let Placement::Add { block, .. } = placement {
+            self.added.insert(op.id, *block);
+            before.added = Some(op.id);
+        }
         let kind = placement.block();
         let cap = block_max(layout::block(kind));
         let previous = self.blocks.get(&kind).copied();
@@ -433,8 +474,58 @@ impl Counts {
         Ok(before)
     }
 
+    /// An entry removal takes one entry from its block and a reset that
+    /// puts it back returns it. The identity rules are the document
+    /// pass's (`links::check`); an op it would refuse changes nothing here.
+    fn entry(&mut self, edit: &EntryOp, limits: &Limits, before: &mut CountBefore) {
+        let target = edit.target().identity();
+        let block = match target {
+            Endpoint::Base { block, .. } => block,
+            Endpoint::Added(add) => match self.added.get(&add) {
+                Some(&block) => block,
+                None => return,
+            },
+        };
+        let back = match edit {
+            EntryOp::Set { .. } => return,
+            EntryOp::Remove { .. } if self.removed.insert(target) => false,
+            EntryOp::Reset { .. } if self.removed.remove(&target) => true,
+            _ => return,
+        };
+        before.removed = Some((target, !back));
+        let previous = self.blocks.get(&block).copied();
+        let cap = block_max(layout::block(block));
+        let mut count = previous.unwrap_or_else(|| {
+            limits
+                .base_counts
+                .get(&block)
+                .map_or(Count { low: 0, high: cap }, |&n| Count { low: n, high: n })
+        });
+        if back {
+            count.low = (count.low + 1).min(cap);
+            count.high = (count.high + 1).min(cap);
+        } else {
+            count.low = count.low.saturating_sub(1);
+            count.high = count.high.saturating_sub(1);
+        }
+        self.blocks.insert(block, count);
+        before.block = Some((block, previous));
+    }
+
     pub(crate) fn pop(&mut self, before: CountBefore) {
         self.adds = before.adds;
+        if let Some(id) = before.added {
+            self.added.remove(&id);
+        }
+        match before.removed {
+            Some((end, true)) => {
+                self.removed.remove(&end);
+            }
+            Some((end, false)) => {
+                self.removed.insert(end);
+            }
+            None => {}
+        }
         match before.block {
             Some((kind, Some(count))) => {
                 self.blocks.insert(kind, count);

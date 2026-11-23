@@ -31,10 +31,7 @@ pub enum Linkable {
 impl Linkable {
     pub(crate) fn endpoint(self) -> Endpoint {
         match self {
-            Self::Teleporter(index) => Endpoint::Base {
-                block: BlockKind::NetgameFlags,
-                index,
-            },
+            Self::Teleporter(index) => Endpoint::base(BlockKind::NetgameFlags, index),
             Self::Object(id) => Endpoint::Added(id),
         }
     }

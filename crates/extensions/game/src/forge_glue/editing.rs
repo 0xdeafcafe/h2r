@@ -243,6 +243,7 @@ impl Editor {
             Endpoint::Base {
                 block: BlockKind::NetgameFlags,
                 index,
+                ..
             } => self.linkable(Linkable::Teleporter(index)),
             Endpoint::Base { index, .. } => format!("Machine {index}"),
             Endpoint::Added(id) => self.linkable(Linkable::Object(id)),

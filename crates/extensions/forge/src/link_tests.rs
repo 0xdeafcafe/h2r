@@ -74,10 +74,7 @@ fn channels(s: &Session) -> Vec<i16> {
 }
 
 fn flag(index: u32) -> Endpoint {
-    Endpoint::Base {
-        block: BlockKind::NetgameFlags,
-        index,
-    }
+    Endpoint::base(BlockKind::NetgameFlags, index)
 }
 
 #[test]

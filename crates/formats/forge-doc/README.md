@@ -60,11 +60,37 @@ replay parity on its invented cache.
   `assault_bomb_spawn` (2), `assault_bomb_return` (3), `oddball_spawn`
   (4), `teleporter_sender` (7), `teleporter_receiver` (8), `territory`
   (10) and `hill_corner` with the hill number (11 to 18).
-- The `format` is 1, or 2 when any op is a label op. `validate` refuses
-  the other number, so a document has one spelling: every document
-  without labels keeps its bytes and identity, and a fold that retracts
-  the last label returns to format 1. This build reads both; an older
-  build refuses a labelled document whole.
+- Entry ops (`Edit::Entry`, `EntryOp`) edit the map's own entries as
+  well as added ones: `Set` writes one typed, editable field, `Remove`
+  removes the entry and `Reset` drops the effect of every earlier entry
+  op on a base entry, so it is in the map again as the disc has it.
+  Links and labels are their own ops and a reset leaves them. A target
+  is an endpoint, as for links and labels; a base target carries its
+  **print**, the first eight bytes (sixteen hex digits) of the SHA-256
+  of the canonical JSON `{"block": <name>, "fields": [...]}` of the
+  entry's typed fields as `Value`s in the layout's order, a tag
+  reference or palette index as its tag key. `print(block, fields)`
+  computes it, and an adapter calls `check_print` before its first
+  write to a base entry: a differing print is `Refusal::Print {block,
+  index}` and nothing is written. A link or label endpoint may carry a
+  print and need not. The validator refuses a base target without a
+  print, an index past the block's limit or the base count, an add ID
+  of 0 or of no add op, a field the block lacks or does not mark
+  editable, a value of another type or out of range or outside the
+  BSP bounds, a target an earlier op removed, the removal of a linked
+  or labelled entry, a reset of an added entry or of an entry with no
+  entry op since its last reset, and one entry named with two prints.
+  `replay` refuses entry ops as unsupported until they lower to
+  placement edits by running index (docs/game/forge-map-variants.md,
+  slice M2); `ForgeDoc::links` and `labels` already follow them, and
+  leave out a removal a later reset covers.
+- The `format` is the highest any op needs: 3 when any op is an entry
+  op or any endpoint has a print, else 2 when any op is a label op,
+  else 1. `validate` refuses any other number, so a document has one
+  spelling: every document without the newer ops keeps its bytes and
+  identity, and a fold that retracts the last of them returns to the
+  lower format. This build reads all three; an older build refuses a
+  newer document whole.
 - The sequence-zero log head hashes the starting document. An entry
   hashes its canonical JSON including the preceding hash. The host
   checks the proposal's author, conditions and map state and calls
@@ -85,13 +111,17 @@ replay parity on its invented cache.
 
 ## Tests
 
-`cargo test --locked -p forge-doc` covers document and entry hash
+`cargo xtask test -p forge-doc` covers document and entry hash
 vectors, chain integrity and inverses, validator refusals, a seeded
 10,000-document fuzz test, link identity and refusals, label rules, format
 1 and 2 vectors and the built-in table, and placement
-parity against `scenario_edit::Session`. All inputs are invented.
+parity against `scenario_edit::Session`. `src/tests/entry.rs` covers
+print and format 3 golden vectors, each entry op rule's refusal, final
+indices after an entry removal and a reset, a fold and undo of entry
+ops, and a seeded fuzz of entry documents. All inputs are invented.
 
 ## Docs
 
 - [Forge design](../../../docs/game/forge-design.md)
 - [Forge features](../../../docs/game/forge-features.md)
+- [Forge map variants](../../../docs/game/forge-map-variants.md)

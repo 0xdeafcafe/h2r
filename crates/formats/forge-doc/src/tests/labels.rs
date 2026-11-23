@@ -9,7 +9,7 @@ const WEAPONS: BlockKind = BlockKind::Weapons;
 const LABELLED: &str = r#"{"author":"Editor","base":{"map":"fixture","sha256":"1111111111111111111111111111111111111111111111111111111111111111"},"builder":{"bots":3,"forge_build":1,"pathfind":2},"description":"row 1\nrow 2","format":2,"imports":[],"ops":[{"edit":{"forge":{"label":{"label":{"number":3,"text":"checkpoint"},"target":{"base":{"block":"netgame_flags","index":0}}}}},"id":1}],"recipes":[],"sources":[],"title":"Forge \"é\""}"#;
 
 fn base(block: BlockKind, index: u32) -> Endpoint {
-    Endpoint::Base { block, index }
+    Endpoint::base(block, index)
 }
 
 fn text(text: &str, number: Option<i32>) -> Label {

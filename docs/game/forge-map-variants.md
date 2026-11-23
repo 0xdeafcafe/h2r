@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)); everything named here as new is not.
+Status: Design, slice M1 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`), `crates/extensions/agent/src/forge/local.rs` (`ForgeWorld`), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -73,8 +73,10 @@ Endpoint::Added (OpId)
   entry on every machine that passes the base check.
 - **The print** is the first eight bytes, as sixteen hex digits, of the
   SHA-256 of the canonical JSON of the entry's typed fields as
-  `forge_doc::Value`s, in the layout's order, with its block's name
-  (`forge_doc::print(block, &[Value])`, new). A tag reference enters as
+  `forge_doc::Value`s, in the layout's order, with its block's name:
+  `{"block": <name>, "fields": [...]}` (`forge_doc::print(block,
+  &[Value])`, which refuses a field list of another length or type). A
+  tag reference enters as
   its `TagKey` and a palette index as the key of the palette entry it
   selects, so the print holds no salted ID. It is a digest, as a tag
   write's `was` is: no value of the map can be read back from it.
@@ -87,9 +89,11 @@ Endpoint::Added (OpId)
   the disc's scenario, the session from the loaded one as it stood when
   the session opened. A print that differs is the refusal
   `Refusal::Print {block, index}`, "the map's entry is not the one this
-  edit was made on", and nothing is written.
+  edit was made on", and nothing is written. `forge_doc::check_print`
+  is that check.
 - Links and labels written before a print existed carry none and keep
-  their identity. Every op this page adds requires one.
+  their spelling and identity; one that carries a print makes the
+  document format 3. Every op this page adds requires one.
 
 The base hash already proves the whole map. The print is the second
 lock: it catches a map served under the right name and hash rule but
@@ -101,16 +105,18 @@ map; that tool is not designed here.
 
 ### The ops
 
-A new family beside `Placement`, `TagField` and `Forge`
-(`forge_doc::Edit::Entry`, in `crates/formats/forge-doc/src/entry.rs`
-(new)):
+A family beside `Placement`, `TagField` and `Forge`
+(`forge_doc::Edit::Entry(EntryOp)`, in
+`crates/formats/forge-doc/src/entry.rs`; the type is `EntryOp` because
+`forge_doc::Entry` is the log entry). `Set`, `Remove` and `Reset` are
+built; `Property` is slice D4's:
 
 | Op | Does | Carries |
 |---|---|---|
-| `Entry::Set {target, write}` | sets one typed, editable field of the entry | a `FieldWrite`: the field's layout name and a `Value` |
-| `Entry::Remove {target}` | removes the entry | nothing |
-| `Entry::Reset {target}` | drops the effect of every earlier op on an own entry: it is in the map again, as the disc has it | nothing |
-| `Entry::Property {target, property}` | sets or clears a property that has no retail field ("Properties without a retail field") | the property's own value |
+| `EntryOp::Set {target, write}` | sets one typed, editable field of the entry | a `FieldWrite`: the field's layout name and a `Value` |
+| `EntryOp::Remove {target}` | removes the entry | nothing |
+| `EntryOp::Reset {target}` | drops the effect of every earlier entry op on an own entry: it is in the map again, as the disc has it. Links and labels are their own ops and stay | nothing |
+| `EntryOp::Property {target, property}` | sets or clears a property that has no retail field ("Properties without a retail field") | the property's own value |
 
 `Placement::Add` stays the one way to make an entry, and its `OpId` is
 the new entry's name.
@@ -120,9 +126,9 @@ the new entry's name.
   swap-removes, as `ForgeDoc::links` does for final indices, and hands
   the adapter the `Placement::Set` or `Placement::Remove` of that
   running index. `forge_doc::Apply` and both adapters keep their two
-  methods. `Entry::Reset` lowers to nothing: the fold leaves out the
+  methods. `EntryOp::Reset` lowers to nothing: the fold leaves out the
   ops it covers, as it leaves out a retracted op.
-- **The session writes only `Entry` ops and adds.** `Placement::Set`
+- **The session writes only `EntryOp` ops and adds.** `Placement::Set`
   and `Placement::Remove` by running index stay in the format for the
   editor's scripts and `h2 forge build`, where one author writes one
   sequence. A proposal from a peer whose `base_seq` is stale can name a
@@ -131,16 +137,23 @@ the new entry's name.
   the fold replays the rest from the base (`forge_doc::fold_from`), so
   undoing the removal of an own entry needs no byte of it in the
   document. The map's entry is on every machine.
-- **Format.** A document with an `Entry` op or a print has `format` 3
-  (`content::forge::DOCUMENT_FORMAT_ENTRIES`, new).
+- **Format.** A document with an `EntryOp` op or a print has `format` 3
+  (`content::forge::DOCUMENT_FORMAT_ENTRIES`).
   `ForgeDoc::required_format` is the highest number its ops need, so a
   document without them keeps its number and its identity.
-- **Validation without a map** (`validate.rs`): the block has the
+- **Validation without a map** (`validate.rs`, and the identity pass in
+  `links.rs`): a base target carries its print; the block has the
   field and the layout marks it editable; the value's type is the
   field's; a target that an earlier op removed is refused; a removal of
-  a linked entry is refused, as it is today; `Reset` names a base entry.
-  With a map, the adapter adds the print, the tag behind a reference
+  a linked or labelled entry is refused, as it is today; `Reset` names
+  a base entry that an entry op has changed since its last reset; one
+  entry has one print in a document. With a map, the adapter adds the
+  print check (`forge_doc::check_print`), the tag behind a reference
   and the block's count and limit.
+- **Until `resolve`.** `forge_doc::replay` refuses an entry op as
+  unsupported, so no adapter applies one before slice M2.
+  `ForgeDoc::links` and `labels` already follow entry removals, and
+  leave out a removal that a later `Reset` covers.
 
 ### Applying an edit in a session
 
@@ -179,7 +192,7 @@ allows at runtime".
   arrive there. A refusal leaves the document, the log and the world
   as they were.
 - **Holding** an own entry is the same hold: moves are sent at most
-  once a tick and the drop is one `Entry::Set` for position and one for
+  once a tick and the drop is one `EntryOp::Set` for position and one for
   rotation, in one undo step.
 
 ### Fields by kind
@@ -216,7 +229,7 @@ section 2 is where the page for it is.
 Spare clips, a spawner's team and a starting point's weight are in
 Halo 3's variants (**C**, forge.md 1.1) and have no field in Halo 2's
 entries (**C**, **S**). They are properties of the document
-(`Entry::Property`), in the labels' manner: document data with no
+(`EntryOp::Property`), in the labels' manner: document data with no
 scenario bytes (`forge_doc::Labels`).
 
 | Property | On | Reaches the game by | State |
@@ -287,7 +300,7 @@ A map variant is a Forge document, in the form a game is played from.
   the author its `author`, the base its `base {map, sha256}`.
 - **What it may hold** (`ForgeDoc::tier() -> Tier`, new;
   `Tier::Variant` or `Tier::Map`). A variant holds `Placement::Add`,
-  `Entry`, link and label ops, and nothing else: no recipe, no import
+  `EntryOp`, link and label ops, and nothing else: no recipe, no import
   slot, no source map, no tag-field, mesh or bitmap op. So a variant
   changes the scenario's placement blocks and no tag, its build is a
   scenario patch, and it fits every map the kit fits. A document with
@@ -432,8 +445,8 @@ Every machine builds the map from its own disc; no built byte travels
 
 ## Interfaces
 
-- **`forge-doc`**: `Endpoint::Base.print`, `print`, `Edit::Entry`,
-  `Entry`, `Property`, `resolve`, `Refusal::Print`, `games::{GameSet,
+- **`forge-doc`**: `Endpoint::Base.print`, `print`, `check_print`, `Edit::Entry`,
+  `EntryOp`, `Property`, `resolve`, `Refusal::Print`, `games::{GameSet,
   encode, decode}`, `Tier`, `ForgeDoc::tier`, `play_form`,
   `session_form`.
 - **`forge`**: `Thing {id: Endpoint, kind, own, frame, fields, changed}`,
@@ -446,7 +459,7 @@ Every machine builds the map from its own disc; no built byte travels
   when built. `forge.things {kind?, changed?}` (read, new) lists the
   things with their endpoints, fields and prints: every test and lane
   that edits the map's entries needs to name one, and `forge.status`
-  holds only the aimed and held one. `forge.propose` takes `Entry` ops.
+  holds only the aimed and held one. `forge.propose` takes `EntryOp` ops.
   `forge.variants {map?}` (read, new) and `forge.variant.pick {map_id?}`
   (act, new) list the store and set the lobby's pick, for lobby and
   start-gate checks. `forge.status` reports the variant's name, id and
@@ -505,12 +518,12 @@ are under `crates/` unless they start with `docs/`, `assets/` or `web/`.
 
 | # | Slice | Owns | Tests | Done when |
 |---|---|---|---|---|
-| **M1** | Prints and `Entry` ops in the document: `Endpoint::Base.print`, `print`, `Entry::{Set, Remove, Reset}`, format 3, the validator's rules, `Refusal::Print` | `formats/forge-doc/src/{entry.rs (new), document.rs, links.rs, validate.rs, lib.rs}`, `formats/forge-doc/src/tests/entry.rs` (new), `formats/content/src/forge.rs`, the crate README | golden vectors for a print and a format 3 id; a document without entry ops keeps its id; each validator rule has a refusing case; the seeded fuzz covers the new ops | `cargo xtask test -p forge-doc -p content` passes |
+| **M1** | Prints and `EntryOp` ops in the document: `Endpoint::Base.print`, `print`, `EntryOp::{Set, Remove, Reset}`, format 3, the validator's rules, `Refusal::Print` | `formats/forge-doc/src/{entry.rs (new), document.rs, links.rs, validate.rs, lib.rs}`, `formats/forge-doc/src/tests/entry.rs` (new), `formats/content/src/forge.rs`, the crate README | golden vectors for a print and a format 3 id; a document without entry ops keeps its id; each validator rule has a refusing case; the seeded fuzz covers the new ops | `cargo xtask test -p forge-doc -p content` passes |
 | **M2** | `resolve`: identities to running indices, lowering to `Placement` ops, the fold over `Reset` | `formats/forge-doc/src/{resolve.rs (new), log.rs, lib.rs}`, `tests/resolve.rs` (new) | a table of add, remove and set orders gives the indices a hand replay gives; lowered ops on a `scenario_edit::fixture` equal the same edits through `scenario_edit::Session`; fold then undo gives the start; `Reset` leaves the entry's bytes as the fixture's | the parity test passes with entry ops |
 | **M3** | Materialise entry ops with the print check | `tools/forge-build/src/{entry.rs (new), placement.rs, lib.rs}`, `tools/forge-build/tests/entry.rs` (new), `apps/cli/src/forge_cmd.rs` | moving own entry 2 changes its bytes and the checksum only; a removal swap-removes and repoints names as the editor does; a wrong print is `variant_print` with the block and index and no file; two builds are byte-equal | `h2 forge check` on a fixture document prints each print compared |
 | **M4** | Tier, forms and the name rule: `Tier`, `ForgeDoc::tier`, `play_form`, `session_form`, the 16-character name | `formats/forge-doc/src/{variant.rs (new), lib.rs}`, `tests/variant.rs` (new) | a table of documents and their tiers; `play_form(session_form(d))` is `d`; a recipe other than the kit's makes `Tier::Map`; a 17-character name is refused for a variant | tests pass |
-| **M5** | Things in the session: `Thing`, `Session::things`, `move_thing` on own and added entries, the hold | `extensions/forge/src/{things.rs (new), scene.rs, session.rs, lib.rs}`, `extensions/forge/src/base_tests.rs` (new) | over a fake `World`: a drop of an own entry is two `Entry::Set` in one undo step and one `base_move`; undo calls `base_move` with the first frame; a print the fake changes is refused and the document is the same bytes | existing `tests.rs`, `tool_tests.rs`, `link_tests.rs` pass unchanged |
-| **M6** | Field edits, removal, reset: `Session::{set_field, remove, reset}`, `forge::props` for the fields that need nothing | `extensions/forge/src/{props.rs (new), session.rs}`, `extensions/forge/src/props_tests.rs` (new) | a table of `props` by kind; each row's write is one `Entry::Set`; remove calls `base_inert`, undo `base_restore`; removing a linked entry ends its links in the same step; a property not in the table is absent | tests pass |
+| **M5** | Things in the session: `Thing`, `Session::things`, `move_thing` on own and added entries, the hold | `extensions/forge/src/{things.rs (new), scene.rs, session.rs, lib.rs}`, `extensions/forge/src/base_tests.rs` (new) | over a fake `World`: a drop of an own entry is two `EntryOp::Set` in one undo step and one `base_move`; undo calls `base_move` with the first frame; a print the fake changes is refused and the document is the same bytes | existing `tests.rs`, `tool_tests.rs`, `link_tests.rs` pass unchanged |
+| **M6** | Field edits, removal, reset: `Session::{set_field, remove, reset}`, `forge::props` for the fields that need nothing | `extensions/forge/src/{props.rs (new), session.rs}`, `extensions/forge/src/props_tests.rs` (new) | a table of `props` by kind; each row's write is one `EntryOp::Set`; remove calls `base_inert`, undo `base_restore`; removing a linked entry ends its links in the same step; a property not in the table is absent | tests pass |
 | **M7** | The loaded map's things: `forge_map` reads every block's rows, typed fields and prints | `extensions/game/src/forge_map.rs`, its tests | on invented guest memory: each kind's things are listed with the layout's fields; a print equals `forge-build`'s for the same rows; a block that does not read is left out by name | tests pass |
 | **M8** | `ForgeWorld`'s base calls: object by type and placement index, scenario field writes, the inert row, restore | `extensions/agent/src/forge/{base.rs (new), local.rs, tests.rs}` | over the fake game: `base_move` moves the object and writes the placement; an object that is gone is `forge_object_gone` with nothing written; the inert row equals the kit's spare form; restore writes the kept row | tests pass; `cargo check -p cli --no-default-features --features host` |
 | **M9** | Aim at any thing: the reticle picks marks of starting points, goals and spawners with nothing out, and the map's own objects | `extensions/forge/src/{tool.rs, tool_tests.rs}`, `extensions/game/src/forge_glue/editing.rs` | a ray table: the nearest thing within its pick radius wins; a thing of another game type is aimed at only with Show at All | tests pass |
@@ -518,7 +531,7 @@ are under `crates/` unless they start with `docs/`, `assets/` or `web/`.
 | **D1** | Decode: the item spawner's and starting point's game-type slots, the respawn mode's two values, a census of how the disc's maps use them. Research with `h2 disasm`; names from the public layout are hints | `formats/map/src/scenario_layout.rs`, `tools/scenario-edit/src/tests.rs`, `docs/editor/scenario-editor.md` | the ignored disc test checks every value against the decoded range | each field has an **E** or is left out, and section 7 of the editor's page loses its line |
 | **D2** | `forge_doc::games`: the set, `encode`, `decode`, the flag type's game type | `formats/forge-doc/src/{games.rs (new), lib.rs}`, `tests/games.rs` (new) | a table of sets and slots both ways; five single engines are refused; an unknown slot value decodes to "not editable" | tests pass |
 | **D3** | Rows for D1's fields in `forge::props`: Game types, Place at start | `extensions/forge/src/{props.rs, props_tests.rs}` | the table gains the rows; a set change is one op a changed slot | tests pass |
-| **D4** | `Entry::Property` and the `team` property | `formats/forge-doc/src/{entry.rs, validate.rs}`, `tests/entry.rs`, `extensions/forge/src/props.rs` | golden vector; a property on a kind that has none is refused; `forge_doc::labelled` reports the team | tests pass |
+| **D4** | `EntryOp::Property` and the `team` property | `formats/forge-doc/src/{entry.rs, validate.rs}`, `tests/entry.rs`, `extensions/forge/src/props.rs` | golden vector; a property on a kind that has none is refused; `forge_doc::labelled` reports the team | tests pass |
 | **D5** | Spare clips and weight, each after its trace: the weapon reserve's field, the spawn chooser's rule | `docs/game/notes/forge-probes.md`, then `extensions/agent/src/forge/base.rs`, `extensions/forge/src/props.rs` | a differential test of the write on the fake game | the row appears; until then it is absent |
 | **V1** | The variant store: per-map directories, `.h2mapvariant`, list, save, load, rename, duplicate, delete, the named errors | `extensions/forge/src/{files.rs, lib.rs}`, `extensions/forge/src/file_tests.rs` (new) | in a temporary directory: a save reads back to the same id; a name taken is refused without case; a file of the map tier is `variant_tier`; a base of another hash lists with `variant_base_hash` | tests pass |
 | **V2** | The lobby's pick and the build before Start: `lobby_start::map_variant`, the checks, the package selection | `extensions/game/src/{map_variant.rs (new), lobby_start.rs, lobby_status.rs}` | over a fake library: a pick builds once and reuses the receipt; each refusal of the table gives its sentence and holds the start state; a map change clears the pick | tests pass |
@@ -589,7 +602,7 @@ above follow.
 - **C**: the game-type slots of the two blocks and the absence of a
   team, a clip count and a weight: field names of the public Halo 2
   scenario layout. Nothing is built on them before D1.
-- **Design**: the print, the `Entry` family, the inert row in a
+- **Design**: the print, the `EntryOp` family, the inert row in a
   session, the tier, the pick's forms, the refusals.
 
 ## Not verified
