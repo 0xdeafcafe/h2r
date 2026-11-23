@@ -1654,9 +1654,10 @@ mod tests {
         assert_eq!(pick.values, ["First", "Second", "Third"]);
         assert_eq!(pick.current, 2);
         assert!((pick.set)(0).contains("Third -> First"));
-        let w = p.live_text().writes;
+        // Option texts may be redrawn beside it (another test in the
+        // process can leave the built count); the record is one write.
+        let w: Vec<_> = p.live_text().writes.into_iter().filter(|(id, _)| *id == EDITED_BLOCK).collect();
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].0, EDITED_BLOCK);
         let n = Ext::in_effect(&w[0].1.clone().try_into().unwrap());
         assert_eq!(n.script.options, o[2].set(0, 4));
         assert_eq!((n.gravity, n.health, n.unlimited_grenades), (50, 200, true));
