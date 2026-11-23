@@ -48,12 +48,56 @@ established).
   player's own launch
   ([playback](#the-forced-crouch-leaves-state-trace-lab-playback),
   [pair word](#the-pair-word-trace-lab-playback)). **Trace**
+- A primed landing bounces when the sweep of the biped's collision agent
+  is on, the swept capsule's axis goes through a floor polygon close to
+  one of its edges, and the body moves across that edge
+  ([the bounce rule](#the-bounce-rule-code-trace)). **Code**, **Trace**
 - Only the touchdown tick needs the word at −3. At 0 the pair pass widens
   its tolerance on that tick and catches the floor 2.7 cm above it. At −3
   it makes no contact, the capsule drops 14 to 23 cm into the two facing
   walls of the slot at the seam, and the solver's two opposing pushes of
   about 77,600 leave the upward part of the tilted face's normal as the
   launch ([touchdown tick](#the-touchdown-tick-trace-stepped)). **Trace**
+
+## The bounce rule (Code, Trace)
+
+What has to be true on the tick of contact, from the pair pass, the
+biped's collision agent and stepped runs
+([notes/2026-11-23-why-bounces-work.md](notes/2026-11-23-why-bounces-work.md)):
+
+1. **The pair word is −3.** The pair pass (`0x00317950`) is the
+   narrowphase. At a word of 0 or more it checks every contact point
+   against the pair's allowed penetration and puts a body that is too
+   deep back on the floor (`0x00316460`). At a negative word the
+   allowance is −1000 and nothing is checked.
+2. **The sweep is on.** The biped's agent (`0x002db2b0`) stretches the
+   capsule along the tick's motion when the body's speed, with this
+   tick's gravity, is over 5.4465 units/s (the wrapper shape's `+0x20`,
+   29.6644, against the speed squared).
+3. **The swept capsule's axis goes through a floor polygon nearer one
+   of its edges than the axis reaches under it.** The contact normal is
+   then sideways, out through that edge, and the polygon across the edge
+   pushes back: the pinch of
+   [the touchdown tick](#the-touchdown-tick-trace-stepped). Further from
+   an edge the normal is straight up and the landing pops at +2.
+4. **The body moves across the edge**, at 0.1 units/s or more. The
+   normal on the side it moves toward leans up by the drift over the
+   fall speed, and the lean is the launch.
+
+A fall gains 0.139 units/s a tick, so the sweep comes on during exactly
+one tick: the one that starts at 5.3075 to 5.4465. The tick before, the
+capsule is tested where it stands and a primed body goes up to 0.14 into
+the floor untouched. So near the threshold a bounce needs that earlier
+tick to start with the origin 0.045 to 0.17 over the floor, which is the
+drop: 3.35 to 3.60 from the apex, and at 3.45 about three phases in
+four. A faster fall has the sweep on all the way down and bounces from
+above when the origin starts the tick under `speed / 30 − 0.165` over
+the floor: rarely under 6 units/s, a quarter of the phases at 10.
+
+Any edge between two floor polygons does it, a coplanar seam as much as
+a crease. The 57 Ascension sites of the search bounce alike. The rule,
+stepped over a site's polygons with no game, agrees with 98.9% of the
+search's 63,843 first-round trials.
 
 ## Forced crouch (Code)
 
@@ -806,6 +850,11 @@ the excess (the gain is unmeasured). The drop that reaches the threshold
 from a standing jump is 2.43 (`speed::fall`, gravity 4.15). The sim's
 [seam drops](../runtime/sim.md#seam-drops) measure both (`drops.json`'s
 `bounce_speed` and `gain`).
+
+The retail rule is not a floor on the speed. Near 5.4 it is a band one
+tick of gravity wide and a drop of 3.35 to 3.60, and faster falls bounce
+by another route ([the bounce rule](#the-bounce-rule-code-trace)).
+`speed.rs` does not model either.
 
 The community guides' landing posture fits this: "land vertically, no
 buttons", "release forward in mid-air", walk forward only with no
@@ -1773,19 +1822,20 @@ lift the mode reads to a row before it reads the depth.
   sleep both rebuild it at 0, which ends the effect. How long a stand it
   takes to sleep isn't measured.
 - **60 frames a second.** The player reports no bounces at 60. That isn't
-  measured here, and how a frame rate would reach the 30 Hz tick isn't
-  known.
-- **The launch rule.** It is Havok's contact response for a capsule
-  pushed into a concave crease next to a coplanar seam. Decoding it means
-  reading the solver in the Havok library code (the step at `0x00311100`
-  and its contact managers).
+  measured here. The sweep's threshold is a speed and its length one
+  tick ([the bounce rule](#the-bounce-rule-code-trace)), so a 60 Hz tick
+  would move every window.
+- **The launch rule.** [The bounce rule](#the-bounce-rule-code-trace)
+  says when the two contacts pinch. How the convex agent (`0x002eeb40`)
+  picks the sideways normal, and how the solver (the step at
+  `0x00311100`) turns two impulses of 24,000 to 134,000 into 18.5 to 22
+  units/s, are not decoded.
 - **Lunges.** Whether a landing on the crease during the 1.5 s after a
   lunge (body offset from the origin) bounces differently is not
   traced.
-- **Other bounce spots.** Only this patch was traced. Whether every
-  superbounce spot is a crease next to a seam is not checked. The
-  [scan](#spots-in-the-geometry) finds candidates of that shape; none is
-  traced.
+- **Other bounce spots.** Every edge between two floor polygons bounces
+  on Ascension ([the bounce rule](#the-bounce-rule-code-trace)). Other
+  maps and other bipeds are not measured.
 
 ## Charge, crouch spots and landings
 
