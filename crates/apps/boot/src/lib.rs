@@ -1558,7 +1558,7 @@ fn run_configured(
         audit.installed(&installed);
     }
     if film.is_some()
-        && let Some(why) = installed.off_reason("theater-film")
+        && let Some(why) = installed.off_reason(theater::OBSERVER_FEATURE)
     {
         bail!("film observer unavailable: {why}");
     }

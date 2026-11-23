@@ -212,7 +212,7 @@ fn registry_with_film(
             perf_level: case.level,
             bots: case.xapi,
         },
-        film,
+        film.clone(),
         case.light,
         None,
     )
@@ -319,6 +319,18 @@ fn registry_with_film(
         features
             .add(&crate::return_to_menu::ReturnToMenu(Arc::new(|_| {})))
             .unwrap();
+    }
+    // Boot's film branch: the session's observer.
+    if let Some(film) = &film {
+        assert!(
+            features
+                .add(&crate::theater::Observer(
+                    film.clone(),
+                    late.agent.as_ref().map(|a| a.agent.clone()),
+                ))
+                .unwrap(),
+            "theater-film feature is disabled"
+        );
     }
     features
 }
@@ -703,7 +715,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
         "host audit",
         "not covered: needs the generated module and the running stamp",
     ),
-    ("theater::Observer", "not covered: needs a film session"),
+    ("theater::Observer", "registry_with_film"),
     ("film camera hooks", "not covered: needs a film session"),
 ];
 
@@ -948,6 +960,37 @@ fn on_features(registry: hooks::Registry) -> std::collections::BTreeSet<&'static
         .filter(|f| f.off.is_none())
         .map(|f| f.id)
         .collect()
+}
+
+/// A recording session with the in-game Theater plans exactly one feature
+/// with the film observer's id; the Theater's screens once took it too and
+/// every autorecorded game failed its plan.
+#[test]
+fn a_recording_with_the_theater_plans_one_film_observer() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-observer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let case = Case::full("");
+    assert!(case.theater);
+    let profile = super::compiled_render_hooks();
+    let auto = recording(&dir, "auto.h2film", true);
+    let plan = registry_with_film(&case, profile, Some(auto))
+        .build(&hooks::Base)
+        .map_err(|conflicts| {
+            conflicts
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap();
+    let observers: Vec<_> = plan
+        .features
+        .iter()
+        .filter(|f| f.id == crate::theater::OBSERVER_FEATURE)
+        .collect();
+    assert_eq!(observers.len(), 1);
+    assert!(observers[0].off.is_none(), "{:?}", observers[0].off);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// A default recording turns nothing off: Live session links, the Custom
