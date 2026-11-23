@@ -240,7 +240,7 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - [hud.md](halo1/hud.md): Halo 1's HUD on converted maps: the unit HUD, weapon HUDs, warnings, zoom and grenade counts convert; the HUD globals and the sensor sweep do not
 - [script-builtins.md](halo1/script-builtins.md): Halo 1 unit, object and miscellaneous script builtins: retail equivalents and the hooks on converted campaign maps (`boot::h1_script_builtins`)
 - [shared-map.md](halo1/shared-map.md): design for a shared Halo 1 cache and the Halo 1 sandbox on every map: the sandbox built once and added to a map as a layer, its raw in an appendix to `shared.map`'s offset space (not built)
-- Notes: [shared-map.md](halo1/notes/shared-map.md) (what the converted maps repeat, and the room in the shared caches), [hud.md](halo1/notes/hud.md) (the weapon HUD census, the live layout check), [campaign-picker.md](halo1/notes/campaign-picker.md) (the card rewrite on the disc's mainmenu, the retail level-picture frame, the owner's progress), [not-adopted.md](halo1/notes/not-adopted.md)
+- Notes: [shared-map.md](halo1/notes/shared-map.md) (what the converted maps repeat, and the room in the shared caches), [hud.md](halo1/notes/hud.md) (the weapon HUD census, the live layout check), [campaign-picker.md](halo1/notes/campaign-picker.md) (the card rewrite on the disc's mainmenu, the retail level-picture frame, the owner's progress), [models.md](halo1/notes/models.md) (the round-trip and skinning error figures, the disc censuses behind the V labels), [not-adopted.md](halo1/notes/not-adopted.md)
 
 Reading and converting Halo 1 data:
 
@@ -253,7 +253,7 @@ Reading and converting Halo 1 data:
 - [ai.md](halo1/ai.md): Halo 1 AI data (actors, encounters, command lists) read, Halo 2's scenario AI blocks and `char` decoded, and the conversion between them (`crates/tools/h1campaign`)
 - [ai-control.md](halo1/ai-control.md): Halo 1 encounter script controls bound to Halo 2 evaluators (`h1scripts::aicontrol`, `h1ai::control`)
 - [scripts.md](halo1/scripts.md): Halo 1 campaign scripts decoded, decompiled, translated to Halo 2 builtins and compiled to Halo 2 nodes (`crates/tools/h1campaign`)
-- [sky.md](halo1/sky.md): Halo 1 and Halo 2 `sky ` tags: layouts, the disc census, and conversion (`crates/tools/h1-assets`)
+- [sky.md](halo1/sky.md): Halo 1 and Halo 2 `sky ` tags: layouts, field meanings, and conversion (`crates/tools/h1-assets`)
 - [text.md](halo1/text.md): Halo 1 `ustr` and `hmt ` text: reading UTF-16 lists and HUD messages, converting them to Halo 2 `unic` locale rows (`crates/tools/h1-assets`)
 
 ## Xbox Live (`live/`)
