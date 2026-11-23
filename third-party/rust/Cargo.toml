@@ -64,6 +64,7 @@ memmap2 = { version = "=0.9.12", default-features = false }
 meshopt = { version = "=0.7.0", default-features = false }
 mime_guess = { version = "=2.0.5", default-features = false, features = ["default", "rev-mappings"] }
 naga = { version = "=30.0.2", default-features = false, features = ["default", "glsl-out", "hlsl-out", "msl-out", "spv-out", "termcolor", "wgsl-in", "wgsl-out"] }
+notify = { version = "=9.0.0", default-features = false, features = ["macos_fsevent", "objc2-core-foundation", "objc2-core-services"] }
 object_store = { version = "=0.14.2", default-features = false, features = ["aws-base", "base64", "cloud-base", "crc-fast", "form_urlencoded", "fs", "http-body-util", "hyper", "md-5", "nix", "quick-xml", "rand", "reqwest", "ring", "rustls-pki-types", "serde", "serde_json", "serde_urlencoded", "tokio", "walkdir", "windows-sys"] }
 paste = { version = "=1.0.15", default-features = false }
 percent-encoding = { version = "=2.3.2", default-features = false, features = ["alloc", "default", "std"] }

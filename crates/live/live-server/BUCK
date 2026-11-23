@@ -46,6 +46,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/live-proto:live-proto",
@@ -100,6 +101,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -164,6 +166,7 @@ workspace_binary(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/live-proto:live-proto",
@@ -219,6 +222,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -287,6 +291,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -355,6 +360,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -423,6 +429,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -491,6 +498,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -559,6 +567,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -627,6 +636,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -695,6 +705,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -763,6 +774,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -831,6 +843,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -899,6 +912,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -967,6 +981,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1035,6 +1050,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1103,6 +1119,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1171,6 +1188,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1239,6 +1257,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1307,6 +1326,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1375,6 +1395,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1443,6 +1464,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1511,6 +1533,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1579,6 +1602,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1647,6 +1671,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1715,6 +1740,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1783,6 +1809,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1851,6 +1878,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1919,6 +1947,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -1987,6 +2016,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2055,6 +2085,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2123,6 +2154,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2191,6 +2223,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2259,6 +2292,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2327,6 +2361,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2395,6 +2430,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2463,6 +2499,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2531,6 +2568,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2599,6 +2637,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2667,6 +2706,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2735,6 +2775,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2803,6 +2844,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2871,6 +2913,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -2939,6 +2982,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -3007,6 +3051,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -3075,6 +3120,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -3143,6 +3189,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",
@@ -3211,6 +3258,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/firefight:firefight",
         "//crates/formats/rules:rules",
         "//crates/formats/variants:variants",
         "//crates/live/coop:coop",

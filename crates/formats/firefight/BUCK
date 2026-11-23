@@ -165,3 +165,23 @@ workspace_test(
         ":firefight",
     ],
 )
+
+workspace_test(
+    name = "teams",
+    crate = "teams",
+    crate_root = "crates/formats/firefight/tests/teams.rs",
+    description = "Portable Firefight definitions and admission rules",
+    features = [],
+    manifest = "crates/formats/firefight",
+    package = "firefight",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":firefight",
+    ],
+)
