@@ -5,10 +5,14 @@ probes and monitor UI. Place, move, turn, delete, undo and redo apply to the
 running game's objects through live-mirror M8's object calls. The Links
 tool joins teleporter flags on a channel, written to the running game's
 scenario, and machines into device groups, written when the map is
-materialised. Networked editing is planned.
+materialised. The synchronous network mode's protocol (the log on the
+network, roles, holding, join in progress) is built and tested over fake
+machines; no transport or game carries it yet. The host-replicated mode
+is planned.
 Code: `crates/formats/forge-doc` defines the document and log.
 `crates/tools/forge-build` materialises it. `crates/extensions/forge`
-owns the local session and its tools ([forge-editing.md](forge-editing.md)). The host is
+owns the local session and its tools ([forge-editing.md](forge-editing.md)), and its
+`net` module the synchronous protocol. The host is
 `crates/extensions/game/src/forge_glue.rs`, the screens are in
 `crates/extensions/game/src/forge_screens.rs`, the HUD strip is in
 `crates/extensions/game/src/ui_kit/forge.rs`, and the game calls and API
@@ -221,37 +225,91 @@ The host owns the log. Every edit, the host's included, is a proposal
 until the host accepts it.
 
 ```
-proposal:  {author, base_seq, op, was?}        peer -> host
-entry:     {seq, tick, author, op, prev_hash}  host -> every peer
+up:      propose {nonce, proposal: {author, base_seq, op, was?}}   machine -> host
+         hold {nonce, target} | carry {target, frame} | release
+reply:   accepted {nonce, n} | refused {nonce, refusal}            host -> author
+stream:  {n, tick, item}                                           host -> every machine
+item:    entry {seq, tick, author, op, prev_hash} | hold | carry
+         | release | member | left | through
 ```
 
-The shared `host-log` crate handles entries, the hash chain and the head
-([ai-networking.md](ai-networking.md), "How it works"). The multiplayer
-integration uses `host_log::Entry<Op>` with the authenticated author set.
-Its canonical bytes and SHA-256 match the authored F1 entry.
+`forge::net` (`crates/extensions/forge/src/net.rs`) is the protocol. It
+is pure: no clock, socket or guest. `net::Host` is the one authority.
+Every machine, the host's own included, runs a `net::Peer` fed by the
+host's stream. An entry is F1's `forge_doc::Entry`; its canonical bytes
+and SHA-256 are those of `host_log::Entry<Op>` with the author set
+([ai-networking.md](ai-networking.md), "How it works"). Only entries form
+the hash chain and reach the document. Holds, carries, releases, members
+and the watermark ride the same stream and never do.
 
-- The host validates a proposal (schema, permission, budget, bounds,
-  `was` against what it holds), assigns the next `seq` and an apply
-  `tick` a few ticks ahead, and sends the entry to every machine on a
-  reliable ordered channel. A refused proposal is answered to its author
-  with the reason and never enters the log.
+- **The stream.** The host numbers every item it writes from 1 (`n`)
+  and gives it an apply tick at least `APPLY_DELAY` (4) ticks ahead;
+  the ticks of all items but the watermark never go backwards. Once a
+  tick (`Host::tick`) it writes `through`, the watermark: no item at or
+  before its tick follows. A peer buffers items by `n`, whatever order
+  they arrive in, ignores a copy, and hands its game the items due at a
+  tick in `n` order (`Peer::due`). It holds the tick (`PeerError::Wait`)
+  until the watermark reaches it, so every machine applies every item at
+  the same tick. An item for a tick a machine has already run ends that
+  machine's session (`PeerError::Late`).
+- **Admitting an edit** (`Host::propose`). The author must be a member
+  whose role edits. The host writes the seat's name as the author, so a
+  machine cannot speak for another. A proposal from a later position than
+  the host's is refused (`ahead`). One from an earlier position is
+  rebased onto the head when it names its entry by identity (an entry
+  op, a link, a label, an add without `like`, an undo); one that names an
+  entry by its running index (a placement set or remove, an add with
+  `like`) is refused as `stale`, since an add or remove since may have
+  moved the index. `was` is checked against what the host holds now,
+  through the game's `net::Admit`. The host stamps the entry at the head
+  (`LogHead::stamp`), folds it, checks that every entry op still names an
+  entry (`forge_doc::resolve`), and asks `Admit::admit` about the
+  document it leaves (palette, budget, bounds). A refused proposal is
+  answered to its author with the reason (`net::NetRefusal`) and never
+  enters the log.
+- **The whole-log rules.** Folding one entry at a time forgets an undone
+  op and the author of an op already folded. `net::State` keeps every op
+  the log has named with its author, so the host admits exactly what one
+  fold of the whole log admits: an undo by another author is
+  `undo_author`, and an undone op's ID taken by a different op is
+  `duplicate_op`. Re-proposing the same op is a redo.
+- **Op IDs.** Seat `s` makes new ops with IDs `s + 1`, `s + 17`,
+  `s + 33` and so on (`net::lane`, `Peer::op_ids`), above every ID the
+  session has named, so two machines never pick the same ID. An ID at or
+  below the starting document's largest belongs to no seat. A new op
+  outside its author's lane is refused (`lane`).
 - The first entry names the starting document's hash. Later entries
   name their predecessor's hash. `validate_chain` checks these links,
   consecutive sequences, nondecreasing ticks and an expected head when
-  supplied. Machines report their log head in the session's keep-alive.
-  A head that differs ends that machine's session with a named error.
+  supplied. Machines report their log head and stream position in the
+  session's keep-alive (`net::Beat`). `Host::check` compares the head
+  with its own at that sequence; a head that differs ends that machine's
+  session with `head_differs`.
 - Each machine applies an entry at the start of `tick`, in `seq` order.
-- **Holding.** Picking an object up is a `hold` entry; the host refuses a
-  second hold. Moves of a held object are sent at most once a tick and
-  only the last one before the drop is kept in the document.
+- **Holding.** Picking a thing up is a `hold` item; the host refuses a
+  second hold of the thing (`held`, naming the holder), and a seat's new
+  hold replaces its old one. While a thing is held, the host refuses
+  another seat's edit of it, and of any entry of its block named by
+  index. Moves of a held thing are `carry` items, at most one for each
+  apply tick, inside the world bounds; they move the world and never reach
+  the document. The drop is the holder's edit, then a `release`. An entry
+  that removes or retracts the held thing ends the hold, and so does a
+  role that cannot edit and leaving. A Rebuild waits until no one holds
+  anything (`Host::may_rebuild`).
 - **Undo** is the inverse op proposed by the same author. The log only
   grows. F1 folds an inverse by retracting the latest active op by ID
   and replays the remaining edits from the base. The map's existing
   placements and their intact fields are available locally on replay.
-- **Join in progress.** The newcomer gets the document as of a log
-  position and the entries after it, materialises, then joins.
-- **Roles.** The host gives each player a role: editor, player or
-  spectator. Tools can be allowed per role.
+- **Join in progress** (`Host::join`, `net::Welcome`). The newcomer
+  gets the document the session's map was materialised from, the entries
+  after it up to what every machine has applied at the host's tick, the
+  head they end at, the members and holds at that point, and the items
+  still to apply. `Peer::join` folds the entries one at a time and in one
+  fold, refuses a log that does not reach the host's head, and goes on
+  from there. The newcomer materialises, then joins.
+- **Roles.** The host gives each player a role (`net::Role`): editor,
+  player or spectator. An editor edits, holds and carries; a player and a
+  spectator do none of these. A role change is a `member` item.
 
 Forge has two network modes, built in this order.
 
@@ -315,8 +373,10 @@ retail's distributed protocol as any map package does.
   playback materialises it first. Map content is already part of a
   film's match ([film-format.md](film-format.md), "Determinism and
   verification").
-- A film of an editing session records each log entry as a tagged record
-  at its tick (a new tag, "Forge entry"), beside the inputs. Playback
+- A film of an editing session records each stream item as a tagged
+  record at its tick (a new tag, "Forge entry"), beside the inputs, and
+  the session's welcome at its start. The payload is the item's bytes
+  (`net::Stamped::to_bytes`). Playback feeds them to a `net::Peer` and
   applies them as the session did. `simulation_hooks` covers Forge's
   hooks, so a film records whether Forge was installed.
 - `ForgeExt` is in the keyframes and the sim hash through `SimExt`
@@ -554,7 +614,7 @@ and the game. Sizes as under Features.
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
 | **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the compositor until U3 | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
-| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash |
+| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Protocol built** (below); the transport, the game's applier, the film tag and the `ForgeExt` hash are not |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, except the generator half: `bots::autonav`'s teleporter reader is private, so the test checks the bytes it reads (below) |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
 | **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
@@ -703,6 +763,28 @@ draft validates its base and builder and opens its folded document at a
 fresh log head. The local session ends on a map change. Multiplayer
 proposals, roles and film entries belong to F5.
 
+**F5 in detail.** The protocol is `forge::net`, as "The edit log and
+multiplayer" describes, with its tests in
+`crates/extensions/forge/src/net/tests.rs`: a host and two editing
+machines propose against whatever each has applied, the host takes the
+proposals in a seeded shuffled order and each machine gets the stream in
+its own shuffled order and at its own pace, over 24 seeds; every machine
+and one fold of the whole log end at the host's head, document, members
+and holds, and some proposals were rebased. Other tests cover a second
+hold, an edit of a held thing, roles, a stale edit by index, a lane, an
+undo by another author, `was` after a rebase, the map's admit, a late
+joiner with items in flight, a changed welcome, a head that differs, the
+watermark, a late item, and a recorded stream replayed through a fresh
+peer to the same state. F3's measurements in
+[notes/forge-probes.md](notes/forge-probes.md) are still to be taken, so
+whether the synchronous protocol holds a multiplayer map is **S**. Not
+built: carrying `net::Up` and the stream on the session's reliable
+ordered channel and the beat in its keep-alive; the game's `Admit` and
+applier over `forge::Session` (a local session stamps its own entries and
+allocates IDs without lanes); the Forge entry film tag; the `ForgeExt`
+hash, which waits for F7; `forge.status`, `forge.propose` and `forge.log`
+over the network session.
+
 **F6 in detail.** `forge_doc::Forge` holds Forge-family edits: a
 `Link` and an `Unlink` naming the link op it ends. A teleporter link
 names a sender and a receiver netgame flag and a channel; a device link
@@ -788,6 +870,9 @@ The owner's choices, which the sections above follow.
   validation and folding.
 - **Code**: `forge-build` materialises the document, including its kit
   allocation. `content::Library::resolve_package` loads the local map.
+- **Test**: the synchronous protocol (`forge::net`) converges over fake
+  machines with reordered proposals and delivery
+  (`crates/extensions/forge/src/net/tests.rs`).
 - **Design**: the two network modes, `ForgeExt`, the chassis
   rule, the sharing table, and the model upload check.
 

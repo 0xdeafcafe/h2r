@@ -7,6 +7,7 @@ pub mod camera;
 mod files;
 mod links;
 pub mod look;
+pub mod net;
 pub mod props;
 mod scene;
 mod session;
