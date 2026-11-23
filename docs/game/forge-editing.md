@@ -110,7 +110,7 @@ the tool in use.
 
 | Tool | Aims at | Slice |
 |---|---|---|
-| Objects | placed objects and, in a kit session, spawns, goals and item entries | built; P2 |
+| Objects | placed objects; the map's own objects, item spawners, starting points and goals ([forge-map-variants.md](forge-map-variants.md), "Things"); and, in a kit session, new spawns, goals and item entries | built for placed objects; M5 to M9; P2 |
 | Links | teleporter flags and machines, then every port | built (F6); F7 |
 | Volumes | trigger volumes, boundaries, barriers | F7, F8 |
 | Emitters | emitters | F7 |
@@ -224,6 +224,15 @@ opens a picker; an action row acts and closes.
 | group member | Group... | the group op | none | P5 |
 | light | Colour, Size, Brightness | fields of the light's generated tag | Live | P6 |
 
+- **The map's own entries.** Every row applies to an entry the base
+  map has as it does to one the session added, through ops that name
+  the entry by identity
+  ([forge-map-variants.md](forge-map-variants.md), "The ops"). The rows
+  by kind, with Game types, Spare clips, Weight and Restore original,
+  and the doc the page is built from, are in
+  [forge-map-variants-ui.md](forge-map-variants-ui.md), "The Properties
+  page"; where the two tables differ on a row that is not built, that
+  page is the design.
 - **Role and Label are Reach's labels, split in two.** A part in a
   retail game type is the netgame flag's type and team, which the
   retail engines already read. A part in a scripted game type is the
@@ -321,6 +330,10 @@ opens a picker; an action row acts and closes.
 - [forge-design.md](forge-design.md): the document, the log, the kit, the slices.
 - [forge-firefight-ui.md](forge-firefight-ui.md): how each screen and HUD piece is drawn.
 - [forge-features.md](forge-features.md): each feature's mechanism.
+- [forge-map-variants.md](forge-map-variants.md),
+  [forge-map-variants-ui.md](forge-map-variants-ui.md): editing the
+  map's own placements, map variants, and the readout, marks and
+  screens for them.
 - [forge.md](forge.md): what retail Halo 2 has.
 - [notes/forge-prior-art.md](notes/forge-prior-art.md): the retail Forges, with sources.
 - [rules-engine.md](rules-engine.md): labels and the graph's IR.
